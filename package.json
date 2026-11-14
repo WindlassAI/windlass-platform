@@ -1,0 +1,15 @@
+{
+  "name": "windlass-platform",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "sandbox:build": "sandbox/build.sh",
+    "sandbox:cleanup": "sandbox/cleanup.sh --keep-image",
+    "dev:server": "scripts/dev.sh",
+    "dev:web": "pnpm --filter @windlass-platform/web dev",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @windlass-platform/web test && pnpm --filter @windlass-platform/server e2e"
+  }
+}

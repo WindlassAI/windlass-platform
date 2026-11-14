@@ -1,0 +1,95 @@
+/*
+ * Design tokens. One set of names, two sets of values: dark (the default, after the Windlass
+ * terminal interface: charcoal, an olive-yellow accent, pink for code) and light (the same hues on
+ * warm paper). Components use the names only.
+ */
+:root {
+	--font-mono: "Commit Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+	--font-text: "Instrument Sans Variable", "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+	--font-display: "Newsreader Variable", "Newsreader", "Iowan Old Style", Georgia, serif;
+
+	--size-mono: 0.8125rem;
+	--size-mono-small: 0.75rem;
+	--size-text: 0.9375rem;
+	--size-small: 0.8125rem;
+
+	--radius-s: 4px;
+	--radius-m: 7px;
+	--radius-l: 12px;
+
+	--topbar: 52px;
+	--gutter: clamp(16px, 4vw, 40px);
+	--measure: 900px;
+	--panel: 372px;
+
+	--ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+:root,
+:root[data-theme="dark"] {
+	color-scheme: dark;
+	--bg: #15161a;
+	--bg-sunk: #0f1013;
+	--bg-raised: #1b1d22;
+	--bg-hover: #22252b;
+	--line: #2a2d34;
+	--line-strong: #3d414a;
+	--ink: #dddfd7;
+	--ink-dim: #a0a3a8;
+	--ink-faint: #71757d;
+	--accent: #bcc46a;
+	--accent-strong: #d6de8a;
+	--accent-fill: #bcc46a;
+	--accent-fill-hover: #cdd57c;
+	--accent-ink: #15160d;
+	--accent-wash: rgb(188 196 106 / 0.1);
+	--code: #d995c6;
+	--bad: #e8807b;
+	--bad-fill: #c9544f;
+	--bad-wash: rgb(232 128 123 / 0.1);
+	--warn: #e2ae66;
+	--warn-wash: rgb(226 174 102 / 0.1);
+	--info: #82c6b6;
+	--info-wash: rgb(130 198 182 / 0.09);
+	--add: #c8d07a;
+	--add-wash: rgb(188 196 106 / 0.11);
+	--del: #ea8b86;
+	--del-wash: rgb(232 128 123 / 0.11);
+	--shadow: 0 24px 60px -20px rgb(0 0 0 / 0.7), 0 2px 8px rgb(0 0 0 / 0.3);
+	--backdrop: rgb(8 9 11 / 0.66);
+	--grain: 0.05;
+}
+
+:root[data-theme="light"] {
+	color-scheme: light;
+	--bg: #f4f1e7;
+	--bg-sunk: #e9e5d7;
+	--bg-raised: #fcfaf3;
+	--bg-hover: #ebe7d9;
+	--line: #dad5c4;
+	--line-strong: #b9b39e;
+	--ink: #1e1f1a;
+	--ink-dim: #585a50;
+	--ink-faint: #85867a;
+	--accent: #5a6510;
+	--accent-strong: #434c08;
+	--accent-fill: #bcc558;
+	--accent-fill-hover: #aeb848;
+	--accent-ink: #1c1e0c;
+	--accent-wash: rgb(120 132 20 / 0.11);
+	--code: #9a3381;
+	--bad: #ac2f2a;
+	--bad-fill: #b83a34;
+	--bad-wash: rgb(172 47 42 / 0.08);
+	--warn: #8a5609;
+	--warn-wash: rgb(170 110 10 / 0.1);
+	--info: #1c6f5f;
+	--info-wash: rgb(28 111 95 / 0.08);
+	--add: #46520a;
+	--add-wash: rgb(120 132 20 / 0.16);
+	--del: #a32f2a;
+	--del-wash: rgb(172 47 42 / 0.1);
+	--shadow: 0 24px 60px -24px rgb(60 50 20 / 0.35), 0 2px 8px rgb(60 50 20 / 0.1);
+	--backdrop: rgb(60 56 40 / 0.42);
+	--grain: 0.035;
+}

@@ -1,0 +1,75 @@
+import "@fontsource/commit-mono/400.css";
+import "@fontsource/commit-mono/400-italic.css";
+import "@fontsource/commit-mono/700.css";
+import "@fontsource-variable/instrument-sans/wght.css";
+import "@fontsource-variable/instrument-sans/wght-italic.css";
+import "@fontsource-variable/newsreader/opsz.css";
+import "./styles/tokens.css";
+import "./styles/base.css";
+import "./styles/shell.css";
+import "./styles/signin.css";
+import "./styles/home.css";
+import "./styles/new-agent.css";
+import "./styles/session.css";
+import { QUESTION_TIMEOUT_MS } from "@contract";
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { App } from "./App";
+import type { PlatformClient } from "./api/client";
+import { AppProvider } from "./state/app";
+
+/** The mock backend is chosen at build time (`VITE_WLP_MOCK=1`) or in the address (`?mock=1`). */
+function wantsMock(): boolean {
+	if (import.meta.env.VITE_WLP_MOCK === "1") return true;
+	return new URLSearchParams(location.search).get("mock") === "1";
+}
+
+/**
+ * How long the mock's questions wait: `?question-timeout=real` for the platform's own ten minutes,
+ * `?question-timeout=<seconds>` for any other; the mock's shorter default otherwise.
+ */
+function mockQuestionTimeout(): number | undefined {
+	const asked = new URLSearchParams(location.search).get("question-timeout");
+	if (asked === "real") return QUESTION_TIMEOUT_MS;
+	const seconds = Number(asked);
+	return asked !== null && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
+}
+
+async function createPlatformClient(): Promise<PlatformClient> {
+	// Each implementation is its own chunk: the mock never loads RivetKit, the real client never loads the fixtures.
+	if (wantsMock()) {
+		const { createMockClient } = await import("./api/mock");
+		const client = createMockClient({ questionTimeoutMs: mockQuestionTimeout() });
+		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),
+		// `__wlpMock.mockNextAnswer("elsewhere" | "error")` (an answer that does not go through).
+		(window as unknown as { __wlpMock: unknown }).__wlpMock = client;
+		return client;
+	}
+	const { createRivetClient } = await import("./api/rivet");
+	return createRivetClient();
+}
+
+const root = createRoot(document.getElementById("root") as HTMLElement);
+
+createPlatformClient().then(
+	(client) => {
+		root.render(
+			<StrictMode>
+				<AppProvider client={client}>
+					<App />
+				</AppProvider>
+			</StrictMode>,
+		);
+	},
+	(error: unknown) => {
+		root.render(
+			<main className="state state-page state-error" role="alert">
+				<h1 className="display display-small">Windlass could not start</h1>
+				<p>{error instanceof Error ? error.message : "The application failed to load."}</p>
+				<button type="button" className="button button-outline" onClick={() => location.reload()}>
+					Reload
+				</button>
+			</main>,
+		);
+	},
+);

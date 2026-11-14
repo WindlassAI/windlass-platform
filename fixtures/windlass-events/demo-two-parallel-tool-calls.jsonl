@@ -1,0 +1,28 @@
+{"type":"session.created","v":1,"data":{"cwd":"/repo","title":null,"lineage":null,"settings":{"model":"gpt-test","reasoningEffort":"medium"}},"sessionId":"ses_demo","seq":1,"time":1794666018657}
+{"type":"inbox.enqueued","v":1,"data":{"messageId":"u1","origin":null,"delivery":"steer","content":[{"type":"text","text":"Fix the failing test."}]},"sessionId":"ses_demo","seq":2,"time":1794666018657}
+{"type":"execution.started","v":1,"data":{"executionId":"exe_1"},"sessionId":"ses_demo","seq":3,"time":1794666018697}
+{"type":"baseline.set","v":1,"data":{"instructions":"You are a coding agent.","tools":[{"name":"read","description":"The read tool","inputSchema":{"type":"object"}},{"name":"shell","description":"The shell tool","inputSchema":{"type":"object"}},{"name":"write","description":"The write tool","inputSchema":{"type":"object"}}],"sources":[{"source":"date","fingerprint":"35269a311675f95c96331be023ef4cb9c9bfec98851002ee091552368acc293d"}]},"sessionId":"ses_demo","seq":4,"time":1794666018737}
+{"type":"inbox.delivered","v":1,"data":{"messageId":"u1"},"sessionId":"ses_demo","seq":5,"time":1794666018777}
+{"type":"step.started","v":1,"data":{"messageId":"a1","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":6,"time":1794666018857}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_1","name":"read","input":"{\"pat"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_1","name":"read","input":"h\":\"a"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_1","name":"read","input":".ts\"}"}
+{"type":"tool.called","v":1,"data":{"messageId":"a1","callId":"call_1","name":"read","input":"{\"path\":\"a.ts\"}","providerData":null},"sessionId":"ses_demo","seq":7,"time":1794666019427}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_2","name":"read","input":"{\"pat"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_2","name":"read","input":"h\":\"b"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_2","name":"read","input":".ts\"}"}
+{"type":"tool.called","v":1,"data":{"messageId":"a1","callId":"call_2","name":"read","input":"{\"path\":\"b.ts\"}","providerData":null},"sessionId":"ses_demo","seq":8,"time":1794666019547}
+{"type":"tool.started","v":1,"data":{"messageId":"a1","callId":"call_1","effect":"read"},"sessionId":"ses_demo","seq":9,"time":1794666019587}
+{"type":"tool.started","v":1,"data":{"messageId":"a1","callId":"call_2","effect":"read"},"sessionId":"ses_demo","seq":10,"time":1794666019627}
+{"type":"tool.settled","v":1,"data":{"messageId":"a1","callId":"call_2","outcome":"success","output":"export const b = 2","truncation":null,"attachments":[],"display":null},"sessionId":"ses_demo","seq":11,"time":1794666019807}
+{"type":"tool.settled","v":1,"data":{"messageId":"a1","callId":"call_1","outcome":"success","output":"export const a = 1","truncation":null,"attachments":[],"display":null},"sessionId":"ses_demo","seq":12,"time":1794666019987}
+{"type":"step.ended","v":1,"data":{"messageId":"a1","finish":"tool_calls","usage":{"inputTokens":1000,"cachedInputTokens":800,"outputTokens":50,"reasoningTokens":10}},"sessionId":"ses_demo","seq":13,"time":1794666020027}
+{"type":"step.started","v":1,"data":{"messageId":"a2","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":14,"time":1794666020107}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a2","text":"a is "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a2","text":"1 and "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a2","text":"b is "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a2","text":"2."}
+{"type":"text.ended","v":1,"data":{"messageId":"a2","text":"a is 1 and b is 2.","providerData":null},"sessionId":"ses_demo","seq":15,"time":1794666020729}
+{"type":"step.ended","v":1,"data":{"messageId":"a2","finish":"stop","usage":{"inputTokens":1000,"cachedInputTokens":800,"outputTokens":50,"reasoningTokens":10}},"sessionId":"ses_demo","seq":16,"time":1794666020769}
+{"type":"execution.succeeded","v":1,"data":{"executionId":"exe_1","verification":{"status":"not_configured"}},"sessionId":"ses_demo","seq":17,"time":1794666020809}
+{"type":"cli.summary","sessionId":"ses_demo","executionId":"exe_1","outcome":"succeeded","steps":2,"summaryCalls":0,"requests":2,"durationMs":2112,"usage":{"inputTokens":2000,"cachedInputTokens":1600,"outputTokens":100,"reasoningTokens":20},"cachedShare":0.8}

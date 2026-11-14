@@ -1,0 +1,20 @@
+{"type":"session.created","v":1,"data":{"cwd":"/repo","title":null,"lineage":null,"settings":{"model":"gpt-test","reasoningEffort":"medium"}},"sessionId":"ses_demo","seq":1,"time":1794666019210}
+{"type":"inbox.enqueued","v":1,"data":{"messageId":"u1","origin":null,"delivery":"steer","content":[{"type":"text","text":"Fix the failing test."}]},"sessionId":"ses_demo","seq":2,"time":1794666019210}
+{"type":"execution.started","v":1,"data":{"executionId":"exe_1"},"sessionId":"ses_demo","seq":3,"time":1794666019250}
+{"type":"baseline.set","v":1,"data":{"instructions":"You are a coding agent.","tools":[{"name":"read","description":"The read tool","inputSchema":{"type":"object"}},{"name":"shell","description":"The shell tool","inputSchema":{"type":"object"}},{"name":"write","description":"The write tool","inputSchema":{"type":"object"}}],"sources":[{"source":"date","fingerprint":"35269a311675f95c96331be023ef4cb9c9bfec98851002ee091552368acc293d"}]},"sessionId":"ses_demo","seq":4,"time":1794666019290}
+{"type":"inbox.delivered","v":1,"data":{"messageId":"u1"},"sessionId":"ses_demo","seq":5,"time":1794666019330}
+{"type":"step.started","v":1,"data":{"messageId":"a1","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":6,"time":1794666019410}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_1","name":"shell","input":"{\"comman"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_1","name":"shell","input":"d\":\"bun "}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_1","name":"shell","input":"test\"}"}
+{"type":"tool.called","v":1,"data":{"messageId":"a1","callId":"call_1","name":"shell","input":"{\"command\":\"bun test\"}","providerData":null},"sessionId":"ses_demo","seq":7,"time":1794666019980}
+{"type":"tool.started","v":1,"data":{"messageId":"a1","callId":"call_1","effect":"exec"},"sessionId":"ses_demo","seq":8,"time":1794666020020}
+{"type":"execution.interrupt_requested","v":1,"data":{"executionId":"exe_1","reason":"user"},"sessionId":"ses_demo","seq":9,"time":1794666020760}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_1","text":"Stopped by the user after 4 s. Output so far:"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_1","text":"Stopped by the user after 4 s. Output so far:\n12 pass"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_1","text":"Stopped by the user after 4 s. Output so far:\n12 pass\n"}
+{"type":"tool.settled","v":1,"data":{"messageId":"a1","callId":"call_1","outcome":"error","output":"Stopped by the user after 4 s. Output so far:\n12 pass\n","truncation":null,"attachments":[],"display":null},"sessionId":"ses_demo","seq":10,"time":1794666021660}
+{"type":"step.failed","v":1,"data":{"messageId":"a1","error":{"kind":"interrupted","reason":"user"},"usage":{"inputTokens":1000,"cachedInputTokens":800,"outputTokens":50,"reasoningTokens":10}},"sessionId":"ses_demo","seq":11,"time":1794666021700}
+{"type":"synthetic.appended","v":1,"data":{"messageId":"s1","origin":"interrupt","content":[{"type":"text","text":"The user stopped the previous response before it finished."}]},"sessionId":"ses_demo","seq":12,"time":1794666021740}
+{"type":"execution.interrupted","v":1,"data":{"executionId":"exe_1","reason":"user"},"sessionId":"ses_demo","seq":13,"time":1794666021780}
+{"type":"cli.summary","sessionId":"ses_demo","executionId":"exe_1","outcome":"interrupted","steps":1,"summaryCalls":0,"requests":1,"durationMs":2530,"usage":{"inputTokens":1000,"cachedInputTokens":800,"outputTokens":50,"reasoningTokens":10},"cachedShare":0.8}

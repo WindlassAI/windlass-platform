@@ -1,0 +1,273 @@
+/* Sign in: the pitch on one side, the one thing to do on the other. */
+
+.signin {
+	position: relative;
+	min-height: 100dvh;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.signin-bar {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	width: min(1120px, 100%);
+	margin: 0 auto;
+	padding: 14px var(--gutter) 0;
+}
+
+.signin-main {
+	position: relative;
+	flex: 1;
+	display: grid;
+	grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+	gap: clamp(32px, 6vw, 88px);
+	align-items: center;
+	width: min(1120px, 100%);
+	margin: 0 auto;
+	padding: clamp(32px, 6vh, 72px) var(--gutter) clamp(40px, 8vh, 96px);
+}
+
+.signin-pitch {
+	animation: arrive 480ms var(--ease) both;
+}
+
+.signin-mark {
+	display: block;
+	margin: 0 0 28px -10px;
+	color: var(--accent);
+	stroke-width: 1.1;
+}
+
+.signin-lede {
+	max-width: 50ch;
+	margin-top: 22px;
+	font-size: 1.0625rem;
+	line-height: 1.6;
+	color: var(--ink-dim);
+}
+
+.signin-points {
+	display: grid;
+	gap: 8px;
+	margin-top: 28px;
+	padding-top: 22px;
+	border-top: 1px solid var(--line);
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.signin-points li {
+	display: grid;
+	grid-template-columns: 76px minmax(0, 1fr);
+	gap: 12px;
+	align-items: baseline;
+}
+.signin-point-key {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--accent);
+}
+
+.signin-card {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	padding: clamp(20px, 3vw, 32px);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-l);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow);
+	animation: arrive 480ms 90ms var(--ease) both;
+}
+
+.signin-title {
+	font-family: var(--font-display);
+	font-size: 1.75rem;
+	font-weight: 450;
+	line-height: 1.15;
+	letter-spacing: -0.012em;
+}
+
+.signin-text {
+	color: var(--ink-dim);
+}
+
+.signin-primary {
+	width: 100%;
+	margin-top: 4px;
+}
+
+.signin-demo {
+	display: grid;
+	gap: 12px;
+	margin-top: 2px;
+}
+.signin-demo .button {
+	width: 100%;
+	min-height: 40px;
+}
+.signin-or {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+}
+.signin-or::before,
+.signin-or::after {
+	content: "";
+	flex: 1;
+	height: 1px;
+	background: var(--line);
+}
+
+.signin-aside {
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.signin-aside-quiet {
+	color: var(--ink-faint);
+}
+
+.signin-steps-head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+}
+.signin-clock {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono);
+	font-variant-numeric: tabular-nums;
+	color: var(--ink-dim);
+}
+
+.steps {
+	display: grid;
+	gap: 0;
+}
+.step {
+	position: relative;
+	display: grid;
+	grid-template-columns: 28px minmax(0, 1fr);
+	gap: 14px;
+	padding-bottom: 22px;
+}
+.step:last-child {
+	padding-bottom: 4px;
+}
+/* The two steps hang on one line. */
+.step:not(:last-child)::before {
+	content: "";
+	position: absolute;
+	left: 13.500px;
+	top: 30px;
+	bottom: 2px;
+	width: 1px;
+	background: var(--line-strong);
+}
+.step-number {
+	display: grid;
+	place-items: center;
+	width: 28px;
+	height: 28px;
+	border: 1px solid var(--line-strong);
+	border-radius: 50%;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	font-weight: 700;
+	color: var(--ink);
+	transition:
+		background-color 200ms var(--ease),
+		color 200ms var(--ease),
+		border-color 200ms var(--ease);
+}
+.step-done .step-number {
+	border-color: var(--accent-fill);
+	background: var(--accent-fill);
+	color: var(--accent-ink);
+}
+.step-body {
+	display: grid;
+	gap: 10px;
+	justify-items: start;
+	min-width: 0;
+}
+.step-body .input,
+.step-body .label {
+	justify-self: stretch;
+}
+.step-body .label {
+	margin-bottom: -4px;
+}
+.step-body .field-note {
+	margin-top: -4px;
+}
+.step-title {
+	font-size: 1rem;
+	font-weight: 650;
+	line-height: 28px;
+}
+.step-text {
+	margin-top: -6px;
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+
+.signin-restart {
+	align-self: flex-start;
+	font-size: var(--size-small);
+}
+
+.signin-foot {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	padding-top: 12px;
+	border-top: 1px solid var(--line);
+	font-size: var(--size-mono-small);
+	font-family: var(--font-mono);
+	color: var(--ink-faint);
+}
+.signin-foot svg {
+	flex: none;
+}
+
+.mock-authorize {
+	display: grid;
+	place-items: center;
+	min-height: 100dvh;
+	padding: 24px 16px;
+}
+.mock-authorize .signin-card {
+	width: min(480px, 100%);
+}
+.mock-authorize-actions {
+	display: flex;
+	gap: 10px;
+	margin-top: 6px;
+}
+
+@media (max-width: 860px) {
+	.signin-main {
+		grid-template-columns: minmax(0, 1fr);
+		align-items: start;
+		gap: 28px;
+		padding-top: 28px;
+	}
+	.signin-mark {
+		width: 72px;
+		height: 72px;
+		margin: 0 0 16px -6px;
+	}
+	.signin-points {
+		display: none;
+	}
+	.signin-lede {
+		margin-top: 14px;
+		font-size: 1rem;
+	}
+}

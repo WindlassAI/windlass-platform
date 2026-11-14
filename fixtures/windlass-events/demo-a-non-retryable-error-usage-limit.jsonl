@@ -1,0 +1,9 @@
+{"type":"session.created","v":1,"data":{"cwd":"/repo","title":null,"lineage":null,"settings":{"model":"gpt-test","reasoningEffort":"medium"}},"sessionId":"ses_demo","seq":1,"time":1794666034730}
+{"type":"inbox.enqueued","v":1,"data":{"messageId":"u1","origin":null,"delivery":"steer","content":[{"type":"text","text":"Fix the failing test."}]},"sessionId":"ses_demo","seq":2,"time":1794666034730}
+{"type":"execution.started","v":1,"data":{"executionId":"exe_1"},"sessionId":"ses_demo","seq":3,"time":1794666034770}
+{"type":"baseline.set","v":1,"data":{"instructions":"You are a coding agent.","tools":[{"name":"read","description":"The read tool","inputSchema":{"type":"object"}},{"name":"shell","description":"The shell tool","inputSchema":{"type":"object"}},{"name":"write","description":"The write tool","inputSchema":{"type":"object"}}],"sources":[{"source":"date","fingerprint":"35269a311675f95c96331be023ef4cb9c9bfec98851002ee091552368acc293d"}]},"sessionId":"ses_demo","seq":4,"time":1794666034810}
+{"type":"inbox.delivered","v":1,"data":{"messageId":"u1"},"sessionId":"ses_demo","seq":5,"time":1794666034850}
+{"type":"step.started","v":1,"data":{"messageId":"a1","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":6,"time":1794666034930}
+{"type":"step.failed","v":1,"data":{"messageId":"a1","error":{"kind":"provider","error":{"kind":"usage_limit","retryable":false,"message":"Usage limit reached; it resets in 3 hours.","status":429,"code":null,"retryAfterMs":null,"requestId":null}},"usage":null},"sessionId":"ses_demo","seq":7,"time":1794666035420}
+{"type":"execution.failed","v":1,"data":{"executionId":"exe_1","message":"Usage limit reached; it resets in 3 hours."},"sessionId":"ses_demo","seq":8,"time":1794666036160}
+{"type":"cli.summary","sessionId":"ses_demo","executionId":"exe_1","outcome":"failed","steps":1,"summaryCalls":0,"requests":1,"durationMs":1390,"usage":null,"cachedShare":null}

@@ -1,0 +1,100 @@
+{"type":"session.created","v":1,"data":{"cwd":"/repo","title":null,"lineage":null,"settings":{"model":"gpt-test","reasoningEffort":"medium"}},"sessionId":"ses_demo","seq":1,"time":1794666018286}
+{"type":"inbox.enqueued","v":1,"data":{"messageId":"u1","origin":null,"delivery":"steer","content":[{"type":"text","text":"The add test is failing. Find out why and fix it."}]},"sessionId":"ses_demo","seq":2,"time":1794666018286}
+{"type":"execution.started","v":1,"data":{"executionId":"exe_1"},"sessionId":"ses_demo","seq":3,"time":1794666018326}
+{"type":"baseline.set","v":1,"data":{"instructions":"You are a coding agent.","tools":[{"name":"read","description":"The read tool","inputSchema":{"type":"object"}},{"name":"shell","description":"The shell tool","inputSchema":{"type":"object"}},{"name":"write","description":"The write tool","inputSchema":{"type":"object"}}],"sources":[{"source":"date","fingerprint":"35269a311675f95c96331be023ef4cb9c9bfec98851002ee091552368acc293d"}]},"sessionId":"ses_demo","seq":4,"time":1794666018366}
+{"type":"inbox.delivered","v":1,"data":{"messageId":"u1"},"sessionId":"ses_demo","seq":5,"time":1794666018406}
+{"type":"step.started","v":1,"data":{"messageId":"a1","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":6,"time":1794666018486}
+{"type":"reasoning.delta","sessionId":"ses_demo","messageId":"a1","text":"**Locating the "}
+{"type":"reasoning.delta","sessionId":"ses_demo","messageId":"a1","text":"test**\n\nI "}
+{"type":"reasoning.delta","sessionId":"ses_demo","messageId":"a1","text":"should find "}
+{"type":"reasoning.delta","sessionId":"ses_demo","messageId":"a1","text":"where `add` "}
+{"type":"reasoning.delta","sessionId":"ses_demo","messageId":"a1","text":"is defined "}
+{"type":"reasoning.delta","sessionId":"ses_demo","messageId":"a1","text":"and tested, "}
+{"type":"reasoning.delta","sessionId":"ses_demo","messageId":"a1","text":"and run "}
+{"type":"reasoning.delta","sessionId":"ses_demo","messageId":"a1","text":"the failing "}
+{"type":"reasoning.delta","sessionId":"ses_demo","messageId":"a1","text":"test to "}
+{"type":"reasoning.delta","sessionId":"ses_demo","messageId":"a1","text":"see the "}
+{"type":"reasoning.delta","sessionId":"ses_demo","messageId":"a1","text":"error."}
+{"type":"reasoning.ended","v":1,"data":{"messageId":"a1","text":"**Locating the test**\n\nI should find where `add` is defined and tested, and run the failing test to see the error.","providerData":{"encrypted_content":"gAAAA"}},"sessionId":"ses_demo","seq":7,"time":1794666019134}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a1","text":"I'll find "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a1","text":"the code "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a1","text":"and run "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a1","text":"the failing "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a1","text":"test."}
+{"type":"text.ended","v":1,"data":{"messageId":"a1","text":"I'll find the code and run the failing test.","providerData":null},"sessionId":"ses_demo","seq":8,"time":1794666019334}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_1","name":"grep","input":"{\"pattern\":"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_1","name":"grep","input":"\"add\\\\(\",\"p"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_1","name":"grep","input":"ath\":\"src\"}"}
+{"type":"tool.called","v":1,"data":{"messageId":"a1","callId":"call_1","name":"grep","input":"{\"pattern\":\"add\\\\(\",\"path\":\"src\"}","providerData":null},"sessionId":"ses_demo","seq":9,"time":1794666019454}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_2","name":"shell","input":"{\"command\":\"b"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_2","name":"shell","input":"un test src/a"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_2","name":"shell","input":"dd.test.ts\"}"}
+{"type":"tool.called","v":1,"data":{"messageId":"a1","callId":"call_2","name":"shell","input":"{\"command\":\"bun test src/add.test.ts\"}","providerData":null},"sessionId":"ses_demo","seq":10,"time":1794666019574}
+{"type":"tool.started","v":1,"data":{"messageId":"a1","callId":"call_1","effect":"read"},"sessionId":"ses_demo","seq":11,"time":1794666019614}
+{"type":"tool.started","v":1,"data":{"messageId":"a1","callId":"call_2","effect":"exec"},"sessionId":"ses_demo","seq":12,"time":1794666019654}
+{"type":"tool.settled","v":1,"data":{"messageId":"a1","callId":"call_1","outcome":"success","output":"src/add.ts:1:export function add(a: number, b: number) {\nsrc/add.test.ts:4:  expect(add(1, 2)).toBe(3)\nsrc/add.test.ts:5:  expect(add(0, 0)).toBe(0)\nsrc/index.ts:3:export { add } from \"./add.ts\"","truncation":null,"attachments":[],"display":{"matches":4,"files":3,"engine":"ripgrep"}},"sessionId":"ses_demo","seq":13,"time":1794666019834}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_2","text":"bun test v1.4.0"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_2","text":"bun test v1.4.0\n"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_2","text":"bun test v1.4.0\n\nsrc/add.test.ts:"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_2","text":"bun test v1.4.0\n\nsrc/add.test.ts:\n✗ add > adds two numbers [0.31ms]"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_2","text":"bun test v1.4.0\n\nsrc/add.test.ts:\n✗ add > adds two numbers [0.31ms]\n  error: expect(received).toBe(expected)"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_2","text":"bun test v1.4.0\n\nsrc/add.test.ts:\n✗ add > adds two numbers [0.31ms]\n  error: expect(received).toBe(expected)\n  Expected: 3"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_2","text":"bun test v1.4.0\n\nsrc/add.test.ts:\n✗ add > adds two numbers [0.31ms]\n  error: expect(received).toBe(expected)\n  Expected: 3\n  Received: -1"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_2","text":"bun test v1.4.0\n\nsrc/add.test.ts:\n✗ add > adds two numbers [0.31ms]\n  error: expect(received).toBe(expected)\n  Expected: 3\n  Received: -1\n"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_2","text":"bun test v1.4.0\n\nsrc/add.test.ts:\n✗ add > adds two numbers [0.31ms]\n  error: expect(received).toBe(expected)\n  Expected: 3\n  Received: -1\n\n 0 pass"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_2","text":"bun test v1.4.0\n\nsrc/add.test.ts:\n✗ add > adds two numbers [0.31ms]\n  error: expect(received).toBe(expected)\n  Expected: 3\n  Received: -1\n\n 0 pass\n 1 fail"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a1","callId":"call_2","text":"bun test v1.4.0\n\nsrc/add.test.ts:\n✗ add > adds two numbers [0.31ms]\n  error: expect(received).toBe(expected)\n  Expected: 3\n  Received: -1\n\n 0 pass\n 1 fail\n[Exit code 1]"}
+{"type":"tool.settled","v":1,"data":{"messageId":"a1","callId":"call_2","outcome":"error","output":"bun test v1.4.0\n\nsrc/add.test.ts:\n✗ add > adds two numbers [0.31ms]\n  error: expect(received).toBe(expected)\n  Expected: 3\n  Received: -1\n\n 0 pass\n 1 fail\n[Exit code 1]","truncation":null,"attachments":[],"display":{"exitCode":1,"signal":null,"timedOut":false,"interrupted":null,"durationMs":612}},"sessionId":"ses_demo","seq":14,"time":1794666023134}
+{"type":"step.ended","v":1,"data":{"messageId":"a1","finish":"tool_calls","usage":{"inputTokens":8214,"cachedInputTokens":0,"outputTokens":196,"reasoningTokens":64}},"sessionId":"ses_demo","seq":15,"time":1794666023174}
+{"type":"step.started","v":1,"data":{"messageId":"a2","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":16,"time":1794666023254}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a2","callId":"call_1","name":"read","input":"{\"path\""}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a2","callId":"call_1","name":"read","input":":\"src/a"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a2","callId":"call_1","name":"read","input":"dd.ts\"}"}
+{"type":"tool.called","v":1,"data":{"messageId":"a2","callId":"call_1","name":"read","input":"{\"path\":\"src/add.ts\"}","providerData":null},"sessionId":"ses_demo","seq":17,"time":1794666023824}
+{"type":"tool.started","v":1,"data":{"messageId":"a2","callId":"call_1","effect":"read"},"sessionId":"ses_demo","seq":18,"time":1794666023864}
+{"type":"tool.settled","v":1,"data":{"messageId":"a2","callId":"call_1","outcome":"success","output":"1\texport function add(a: number, b: number) {\n2\t  return a - b\n3\t}","truncation":null,"attachments":[],"display":{"path":"src/add.ts","offset":1,"lines":3,"totalLines":3}},"sessionId":"ses_demo","seq":19,"time":1794666024044}
+{"type":"step.ended","v":1,"data":{"messageId":"a2","finish":"tool_calls","usage":{"inputTokens":8870,"cachedInputTokens":8192,"outputTokens":41,"reasoningTokens":0}},"sessionId":"ses_demo","seq":20,"time":1794666024084}
+{"type":"step.started","v":1,"data":{"messageId":"a3","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":21,"time":1794666024164}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a3","text":"`add` subtracts "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a3","text":"instead of "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a3","text":"adding. Fixing "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a3","text":"it."}
+{"type":"text.ended","v":1,"data":{"messageId":"a3","text":"`add` subtracts instead of adding. Fixing it.","providerData":null},"sessionId":"ses_demo","seq":22,"time":1794666024786}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a3","callId":"call_1","name":"edit","input":"{\"path\":\"src/add.ts\",\"old_s"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a3","callId":"call_1","name":"edit","input":"tring\":\"  return a - b\",\"ne"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a3","callId":"call_1","name":"edit","input":"w_string\":\"  return a + b\"}"}
+{"type":"tool.called","v":1,"data":{"messageId":"a3","callId":"call_1","name":"edit","input":"{\"path\":\"src/add.ts\",\"old_string\":\"  return a - b\",\"new_string\":\"  return a + b\"}","providerData":null},"sessionId":"ses_demo","seq":23,"time":1794666024906}
+{"type":"tool.started","v":1,"data":{"messageId":"a3","callId":"call_1","effect":"write"},"sessionId":"ses_demo","seq":24,"time":1794666024946}
+{"type":"tool.settled","v":1,"data":{"messageId":"a3","callId":"call_1","outcome":"success","output":"Edited src/add.ts: replaced 1 occurrence (line 2).","truncation":null,"attachments":[],"display":{"path":"src/add.ts","replacements":1,"diff":"--- a/src/add.ts\n+++ b/src/add.ts\n@@ -1,3 +1,3 @@\n export function add(a: number, b: number) {\n-  return a - b\n+  return a + b\n }"}},"sessionId":"ses_demo","seq":25,"time":1794666025126}
+{"type":"step.ended","v":1,"data":{"messageId":"a3","finish":"tool_calls","usage":{"inputTokens":9012,"cachedInputTokens":8704,"outputTokens":77,"reasoningTokens":0}},"sessionId":"ses_demo","seq":26,"time":1794666025166}
+{"type":"step.started","v":1,"data":{"messageId":"a4","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":27,"time":1794666025246}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a4","callId":"call_1","name":"shell","input":"{\"command\":\"b"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a4","callId":"call_1","name":"shell","input":"un test src/a"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a4","callId":"call_1","name":"shell","input":"dd.test.ts\"}"}
+{"type":"tool.called","v":1,"data":{"messageId":"a4","callId":"call_1","name":"shell","input":"{\"command\":\"bun test src/add.test.ts\"}","providerData":null},"sessionId":"ses_demo","seq":28,"time":1794666025816}
+{"type":"tool.started","v":1,"data":{"messageId":"a4","callId":"call_1","effect":"exec"},"sessionId":"ses_demo","seq":29,"time":1794666025856}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a4","callId":"call_1","text":"bun test v1.4.0"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a4","callId":"call_1","text":"bun test v1.4.0\n"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a4","callId":"call_1","text":"bun test v1.4.0\n\nsrc/add.test.ts:"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a4","callId":"call_1","text":"bun test v1.4.0\n\nsrc/add.test.ts:\n✓ add > adds two numbers [0.12ms]"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a4","callId":"call_1","text":"bun test v1.4.0\n\nsrc/add.test.ts:\n✓ add > adds two numbers [0.12ms]\n"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a4","callId":"call_1","text":"bun test v1.4.0\n\nsrc/add.test.ts:\n✓ add > adds two numbers [0.12ms]\n\n 1 pass"}
+{"type":"tool.progress","sessionId":"ses_demo","messageId":"a4","callId":"call_1","text":"bun test v1.4.0\n\nsrc/add.test.ts:\n✓ add > adds two numbers [0.12ms]\n\n 1 pass\n 0 fail"}
+{"type":"tool.settled","v":1,"data":{"messageId":"a4","callId":"call_1","outcome":"success","output":"bun test v1.4.0\n\nsrc/add.test.ts:\n✓ add > adds two numbers [0.12ms]\n\n 1 pass\n 0 fail","truncation":null,"attachments":[],"display":{"exitCode":0,"signal":null,"timedOut":false,"interrupted":null,"durationMs":540}},"sessionId":"ses_demo","seq":30,"time":1794666027956}
+{"type":"step.ended","v":1,"data":{"messageId":"a4","finish":"tool_calls","usage":{"inputTokens":9240,"cachedInputTokens":8960,"outputTokens":30,"reasoningTokens":0}},"sessionId":"ses_demo","seq":31,"time":1794666027996}
+{"type":"step.started","v":1,"data":{"messageId":"a5","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":32,"time":1794666028076}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a5","text":"Fixed. `add` "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a5","text":"in `src/add.ts` "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a5","text":"returned `a "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a5","text":"- b`; "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a5","text":"it now "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a5","text":"returns `a "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a5","text":"+ b`.\n\n"}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a5","text":"`bun test "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a5","text":"src/add.test.ts` passes "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a5","text":"(1 pass, "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a5","text":"0 fail)."}
+{"type":"text.ended","v":1,"data":{"messageId":"a5","text":"Fixed. `add` in `src/add.ts` returned `a - b`; it now returns `a + b`.\n\n`bun test src/add.test.ts` passes (1 pass, 0 fail).","providerData":null},"sessionId":"ses_demo","seq":33,"time":1794666028894}
+{"type":"step.ended","v":1,"data":{"messageId":"a5","finish":"stop","usage":{"inputTokens":9410,"cachedInputTokens":9216,"outputTokens":52,"reasoningTokens":0}},"sessionId":"ses_demo","seq":34,"time":1794666028934}
+{"type":"execution.succeeded","v":1,"data":{"executionId":"exe_1","verification":{"status":"not_configured"}},"sessionId":"ses_demo","seq":35,"time":1794666028974}
+{"type":"cli.summary","sessionId":"ses_demo","executionId":"exe_1","outcome":"succeeded","steps":5,"summaryCalls":0,"requests":5,"durationMs":10648,"usage":{"inputTokens":44746,"cachedInputTokens":35072,"outputTokens":396,"reasoningTokens":64},"cachedShare":0.784}

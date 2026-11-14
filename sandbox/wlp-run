@@ -1,0 +1,79 @@
+#!/bin/sh
+# The platform's process helper inside a sandbox container.
+#
+#   wlp-run exec <tag> <program> [args...]
+#       Runs <program> as the leader of a new session with WLP_RUN_TAG=<tag> in its environment, which
+#       every descendant inherits (Windlass starts its engine, `windlass acp`, in a session of its own,
+#       so a session or process group does not catch everything). The leader's pid is written to
+#       /tmp/.wlp-run/<tag>.pid while it runs. The exit status is the program's.
+#   wlp-run signal <tag> <SIGNAL> leader|all
+#       Sends SIGNAL to the leader, or to every process that carries the tag. Exit 0 always.
+#   wlp-run list <tag>
+#       Prints the pids that carry the tag, one per line.
+#
+# The platform needs this because killing the local `docker exec` client does not reach the process
+# inside the container.
+set -eu
+dir=/tmp/.wlp-run
+
+check_tag() {
+  case "$1" in
+    ''|*[!A-Za-z0-9_-]*) echo "wlp-run: bad tag" >&2; exit 125 ;;
+  esac
+}
+
+tagged() {
+  for env in /proc/[0-9]*/environ; do
+    pid=${env#/proc/}
+    pid=${pid%/environ}
+    [ "$pid" = "$$" ] && continue
+    if tr '\0' '\n' < "$env" 2>/dev/null | grep -qx "WLP_RUN_TAG=$1"; then echo "$pid"; fi
+  done
+}
+
+command="${1:-}"
+[ $# -gt 0 ] && shift
+case "$command" in
+  exec)
+    tag="$1"; shift; check_tag "$tag"
+    mkdir -p "$dir"; chmod 700 "$dir"
+    status=0
+    WLP_RUN_TAG="$tag" setsid -w sh -c 'echo $$ > "$0"; exec "$@"' "$dir/$tag.pid" "$@" || status=$?
+    rm -f "$dir/$tag.pid"
+    exit "$status"
+    ;;
+  signal)
+    tag="$1"; sig="$2"; who="$3"; check_tag "$tag"
+    case "$sig" in INT|TERM|KILL) ;; *) echo "wlp-run: bad signal" >&2; exit 125 ;; esac
+    if [ "$who" = leader ]; then
+      if [ -f "$dir/$tag.pid" ]; then kill -s "$sig" "$(cat "$dir/$tag.pid")" 2>/dev/null || true; fi
+    else
+      pids=$(tagged "$tag")
+      # shellcheck disable=SC2086
+      [ -n "$pids" ] && kill -s "$sig" $pids 2>/dev/null || true
+    fi
+    exit 0
+    ;;
+  list)
+    tag="$1"; check_tag "$tag"
+    tagged "$tag"
+    exit 0
+    ;;
+  tags-of)
+    # tags-of <program>: the tags of every tagged process whose program is <program> (e.g. windlass)
+    prog="$1"
+    for env in /proc/[0-9]*/environ; do
+      pid=${env#/proc/}
+      pid=${pid%/environ}
+      [ "$pid" = "$$" ] && continue
+      argv0=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | head -n 1) || continue
+      [ "${argv0##*/}" = "$prog" ] || continue
+      tr '\0' '\n' < "$env" 2>/dev/null | sed -n 's/^WLP_RUN_TAG=//p'
+    done | sort -u
+    exit 0
+    ;;
+  *)
+    echo "usage: wlp-run exec <tag> <program> [args...] | signal <tag> INT|TERM|KILL leader|all | list <tag> | tags-of <program>" >&2
+    exit 125
+    ;;
+esac

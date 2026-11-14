@@ -1,0 +1,198 @@
+/* The application frame: the bar across the top, the wordmark, the account menu. */
+
+.app {
+	min-height: 100dvh;
+}
+
+.topbar {
+	position: sticky;
+	top: 0;
+	z-index: 20;
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	height: var(--topbar);
+	padding: 0 clamp(12px, 2.4vw, 24px);
+	border-bottom: 1px solid var(--line);
+	background: color-mix(in srgb, var(--bg) 88%, transparent);
+	backdrop-filter: blur(10px);
+}
+
+.topbar-home {
+	display: inline-flex;
+	text-decoration: none;
+	border-radius: var(--radius-m);
+}
+
+.wordmark {
+	display: inline-flex;
+	align-items: center;
+	gap: 9px;
+	color: var(--accent);
+}
+.wordmark-name {
+	font-family: var(--font-mono);
+	font-size: 0.9375rem;
+	font-weight: 700;
+	letter-spacing: -0.01em;
+	color: var(--ink);
+}
+.wordmark-large {
+	gap: 16px;
+}
+.wordmark-large .wordmark-name {
+	font-size: 1.75rem;
+}
+
+.mock-flag {
+	padding: 1px 7px;
+	border: 1px dashed var(--line-strong);
+	border-radius: var(--radius-s);
+	font-family: var(--font-mono);
+	font-size: 0.6875rem;
+	letter-spacing: 0.06em;
+	color: var(--ink-faint);
+}
+
+.topbar-middle {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+}
+
+.topbar-end {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex: none;
+}
+
+.account {
+	position: relative;
+}
+.account-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	max-width: 220px;
+	height: 34px;
+	padding: 0 10px;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-m);
+	background: none;
+	color: var(--ink-dim);
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+}
+.account-button:hover,
+.account-button[aria-expanded="true"] {
+	color: var(--ink);
+	border-color: var(--line-strong);
+	background: var(--bg-hover);
+}
+.account-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.menu {
+	position: absolute;
+	top: calc(100% + 8px);
+	right: 0;
+	z-index: 30;
+	width: min(320px, calc(100vw - 24px));
+	padding: 16px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-l);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow);
+	animation: rise 140ms var(--ease);
+}
+.menu-title {
+	font-weight: 650;
+	overflow-wrap: anywhere;
+}
+.menu-id {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+	overflow-wrap: anywhere;
+}
+.menu-note {
+	margin-top: 10px;
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.menu-action {
+	width: 100%;
+	margin-top: 14px;
+	border-color: var(--line-strong);
+	color: var(--ink);
+}
+
+/* The session's place in the bar: back, title, state. */
+.crumb {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-width: 0;
+	padding-left: 12px;
+	border-left: 1px solid var(--line);
+}
+.crumb-back {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex: none;
+	padding: 4px 6px;
+	margin-left: -6px;
+	border-radius: var(--radius-s);
+	font-size: var(--size-small);
+	font-weight: 600;
+	color: var(--ink-dim);
+	text-decoration: none;
+}
+.crumb-back:hover {
+	color: var(--ink);
+	background: var(--bg-hover);
+}
+.crumb-sep {
+	color: var(--ink-faint);
+}
+.crumb-title {
+	min-width: 0;
+	font-size: 0.9375rem;
+	font-weight: 650;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+	.topbar {
+		gap: 8px;
+	}
+	.topbar-home .wordmark-name,
+	.account-name,
+	.crumb-sep,
+	.crumb-back span,
+	.mock-flag {
+		display: none;
+	}
+	.crumb {
+		gap: 8px;
+		padding-left: 8px;
+	}
+	.account-button {
+		width: 34px;
+		padding: 0;
+		justify-content: center;
+		border-color: transparent;
+	}
+	.crumb .status-badge {
+		font-size: 0;
+		gap: 0;
+	}
+}

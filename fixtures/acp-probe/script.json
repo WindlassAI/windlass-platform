@@ -1,0 +1,14 @@
+{"responses":[
+ [{"type":"reasoning","text":"The user wants the response headers of example.com. That needs the network, which the sandbox does not give, so I ask for it."},
+  {"type":"text","text":"I'll fetch the headers. This needs network access, so you'll be asked first."},
+  {"type":"tool_call","callId":"c1","name":"shell","input":{"command":"curl -sI --max-time 10 https://example.com | head -n 3","sandbox":{"network":true}}},
+  {"type":"usage","inputTokens":7400,"cachedInputTokens":0,"outputTokens":80,"reasoningTokens":30},
+  {"type":"finish","reason":"tool_calls"}],
+ [{"type":"text","text":"Now a slow command, so there is time to steer."},
+  {"type":"tool_call","callId":"c2","name":"shell","input":{"command":"echo working; sleep 3; echo finished"}},
+  {"type":"usage","inputTokens":8000,"cachedInputTokens":7168,"outputTokens":40,"reasoningTokens":0},
+  {"type":"finish","reason":"tool_calls"}],
+ [{"type":"text","text":"Done: the request above shows what came back, and I saw your note."},
+  {"type":"usage","inputTokens":8400,"cachedInputTokens":7808,"outputTokens":30,"reasoningTokens":0},
+  {"type":"finish","reason":"stop"}]
+]}

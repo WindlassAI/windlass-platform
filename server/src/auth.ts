@@ -1,0 +1,103 @@
+/**
+ * Who is calling an actor, decided from the connection parameter `{ token }` and nothing else.
+ *
+ * RivetKit runs `onBeforeConnect` for WebSocket connections and for every stateless action call (the
+ * handle's `params` arrive in a header and a short-lived connection is made for the call), so both
+ * are rejected there. Every action then checks its caller again from `c.conn.params`: deny by default,
+ * and a token that expires while a connection is open stops working.
+ */
+
+import { UserError } from "rivetkit";
+import { config } from "./config.js";
+import type { UserProfile } from "./contract.js";
+import { SandboxUserError } from "./sandbox/api.js";
+import { type Caller, issueServiceToken, verifyToken } from "./tokens.js";
+
+interface HasRequest {
+	request?: Request;
+}
+
+interface HasCaller {
+	key: string[];
+	conn?: { params: unknown } | null;
+}
+
+/** Browsers send their origin; only the web app's may connect. Other clients send none. */
+export function assertOrigin(c: HasRequest): void {
+	const origin = c.request?.headers.get("origin");
+	if (!origin) return;
+	if (!config.origins.includes(origin.replace(/\/+$/, ""))) {
+		throw new UserError("This origin is not allowed to connect.", { code: "origin_not_allowed" });
+	}
+}
+
+function tokenOf(params: unknown): unknown {
+	return typeof params === "object" && params !== null ? (params as { token?: unknown }).token : undefined;
+}
+
+/** The verified caller of an actor whose key starts with a uid. Throws a UserError otherwise. */
+export function authenticate(key: string[], params: unknown): Caller {
+	const token = tokenOf(params);
+	if (token === undefined || token === null || token === "") {
+		throw new UserError("Sign in first.", { code: "unauthorized" });
+	}
+	const caller = verifyToken(token);
+	if (!caller) throw new UserError("Your sign-in is not valid any more. Sign in again.", { code: "invalid_token" });
+	if (caller.kind === "user" && caller.profile.uid !== key[0]) {
+		throw new UserError("This belongs to another user.", { code: "forbidden" });
+	}
+	return caller;
+}
+
+function callerOf(c: HasCaller): Caller {
+	if (!c.conn) throw new UserError("Sign in first.", { code: "unauthorized" });
+	return authenticate(c.key, c.conn.params);
+}
+
+/** For the actions of the contract: the caller is the user the actor belongs to. */
+export function requireUser(c: HasCaller): UserProfile {
+	const caller = callerOf(c);
+	if (caller.kind !== "user") throw new UserError("This action is for users.", { code: "forbidden" });
+	return caller.profile;
+}
+
+/** For the actions actors call on each other: the caller holds a service token. */
+export function requireService(c: HasCaller): void {
+	const caller = callerOf(c);
+	if (caller.kind !== "service") throw new UserError("This action is internal.", { code: "forbidden" });
+}
+
+/** For `canSubscribe`: true only for the actor's own user. */
+export function maySubscribe(c: HasCaller): boolean {
+	try {
+		return callerOf(c).kind === "user";
+	} catch {
+		return false;
+	}
+}
+
+/** Connection parameters for a call from one actor to another. */
+export function serviceParams(): { token: string } {
+	return { token: issueServiceToken("call") };
+}
+
+export function isSandboxUserError(error: unknown): error is Error {
+	return error instanceof SandboxUserError || (error instanceof Error && error.name === "SandboxUserError");
+}
+
+/**
+ * What to throw to the client for a failure: a UserError passes through, a SandboxUserError becomes
+ * one with its message, and anything else is logged here and replaced by `fallback`.
+ */
+export function clientError(log: { error: (entry: unknown) => void }, error: unknown, fallback: string, code = "internal_error"): UserError {
+	if (error instanceof UserError) return error;
+	if (isSandboxUserError(error)) return new UserError(error.message, { code: "sandbox_error" });
+	log.error({ msg: fallback, error: error instanceof Error ? (error.stack ?? error.message) : String(error) });
+	return new UserError(fallback, { code });
+}
+
+/** A short, single-paragraph rendering of an error for a timeline message. */
+export function describeError(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	return message.replace(/\s+/g, " ").trim().slice(0, 600) || "unknown error";
+}

@@ -1,0 +1,763 @@
+/**
+ * A sandbox layer with no Docker in it, for `WLP_SANDBOX=fake`: sandboxes are objects in memory,
+ * `runTurn` replays a recorded Windlass run from fixtures/windlass-events/, and sign-ins return a
+ * synthetic account. No model is called and nothing leaves the process.
+ *
+ * Words in the prompt choose the recording, as they choose the demo scenario of the real layer:
+ *
+ *   network, fetch, download, curl, http, headers, website, url
+ *                   a command asks for network access: the turn stops at `approval.requested`, calls
+ *                   `onQuestion`, and goes on with the recording in which the user allowed the call or
+ *                   the one in which they declined it. Without `onQuestion` the call is refused at once
+ *                   (`approval.denied`, reason `unattended`), as Windlass does when nobody can answer.
+ *   long, slow, build, progress, wait
+ *                   one command that prints for a while: the turn to steer, or to stop one call of
+ *
+ * Switches in the prompt reach every other ending:
+ *
+ *   "(slow)"          twenty times the delay between events, long enough to stop a turn or a call
+ *   "(slow-stop)"     a stopped turn takes most of a second to wind down
+ *   "(crash)"         Windlass dies after a few events: exit code 1, no summary, text on stderr,
+ *                     `failure.reason` "engine"
+ *   "(throw)"         the layer itself fails: `runTurn` rejects
+ *   "(auth-fail)"     the recorded run of a refused sign-in: `failure.reason` "auth_required"
+ *   "(session-gone)"  Windlass no longer has the session to continue: "session_not_found", no events
+ *   "(session-busy)"  another process holds the session: "session_in_use", no events
+ *   "(exec-fail)"     the model call fails for good: outcome `failed`, "execution_failed"
+ *   "(lose-sandbox)"  the sandbox is gone when the turn ends, as if its container had been removed
+ *
+ * A repository address that contains "slow-clone" takes a second and a half to clone, which holds a
+ * turn in `starting`; one that contains "fail-clone" fails.
+ *
+ * `TurnControl.steer` writes the `inbox.enqueued` a real steer produces and its `inbox.delivered` at
+ * the next step; `TurnControl.cancelCall` settles a running call early (`tool.cancel_requested`, then
+ * `tool.settled` with what it had printed) and the turn goes on. After the last recorded event the
+ * layer's own `cli.summary`-shaped event follows, built from the events as the real layer builds it.
+ *
+ * Sign-in: paste `<redirectPrefix>?code=<name>` to sign in as `<name>@example.com`; `code=refused`
+ * is refused, and `code=nosignin` signs in an account whose sign-in is then missing.
+ */
+
+import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { FIXTURES_DIR } from "./config.js";
+import type { SandboxProfile, SandboxProfileId, WindlassEvent } from "./contract.js";
+import {
+	type ChatgptAccount,
+	type ChatgptLogins,
+	type CreateSandboxInput,
+	type ExecOptions,
+	type ExecResult,
+	type RunTurnInput,
+	type RunTurnResult,
+	type SandboxHandle,
+	type SandboxLayer,
+	type Sandboxes,
+	SandboxUserError,
+	type ScriptedModel,
+	type TurnAnswer,
+	type TurnControl,
+	type TurnQuestion,
+	type Windlass,
+} from "./sandbox/api.js";
+
+const WORKSPACE = "/workspace";
+const REDIRECT_PREFIX = "http://127.0.0.1:1455/auth/callback";
+const FAKE_MODELS = ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"];
+const SLOW_CLONE_MS = 1_500;
+const SLOW_STOP_MS = 800;
+
+const PROFILES: SandboxProfile[] = [
+	{
+		id: "docker-windlass-sandbox",
+		name: "Docker + Windlass sandbox",
+		summary: "Fake layer: stands in for a container whose commands Windlass sandboxes again.",
+		layers: ["In-memory sandbox (fake layer)", "Windlass's sandbox around each command (simulated)"],
+		approval: "auto",
+		commandNetwork: false,
+		commandsCanReadLogin: false,
+		available: true,
+	},
+	{
+		id: "docker-hardened",
+		name: "Docker, hardened",
+		summary: "Fake layer: stands in for a container under Docker's default profiles.",
+		layers: ["In-memory sandbox (fake layer)"],
+		approval: "full",
+		commandNetwork: true,
+		commandsCanReadLogin: true,
+		available: true,
+	},
+	...(["e2b", "daytona", "firecracker", "agentos"] as const).map(
+		(id): SandboxProfile => ({
+			id,
+			name: id,
+			summary: "Not available in the fake layer.",
+			layers: [id],
+			approval: "auto",
+			commandNetwork: true,
+			commandsCanReadLogin: false,
+			available: false,
+			unavailableReason: "The fake sandbox layer only stands in for the two Docker profiles.",
+		}),
+	),
+];
+
+interface FakeSandbox {
+	id: string;
+	uid: string;
+	sessionId: string;
+	profile: SandboxProfileId;
+	state: "running" | "paused";
+	/** Files that differ from the last commit: path -> content. */
+	files: Map<string, string>;
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted || ms <= 0) {
+			resolve();
+			return;
+		}
+		const finish = () => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", finish);
+			resolve();
+		};
+		const timer = setTimeout(finish, ms);
+		signal?.addEventListener("abort", finish, { once: true });
+	});
+}
+
+function ok(stdout = ""): ExecResult {
+	return { exitCode: 0, timedOut: false, aborted: false, stdout, stderr: "" };
+}
+
+class FakeHandle implements SandboxHandle {
+	readonly cwd = WORKSPACE;
+
+	constructor(
+		readonly sandbox: FakeSandbox,
+		private readonly exists: () => boolean,
+	) {}
+
+	get id(): string {
+		return this.sandbox.id;
+	}
+
+	get profile(): SandboxProfileId {
+		return this.sandbox.profile;
+	}
+
+	async run(command: string, options: ExecOptions = {}): Promise<ExecResult> {
+		await delay(/\bgit clone\b/.test(command) && command.includes("slow-clone") ? SLOW_CLONE_MS : 5, options.signal);
+		if (options.signal?.aborted) return { exitCode: null, timedOut: false, aborted: true, stdout: "", stderr: "" };
+		if (!this.exists()) throw new Error(`fake sandbox ${this.sandbox.id} does not exist`);
+		const result = this.interpret(command);
+		if (result.stdout) options.onStdout?.(result.stdout);
+		if (result.stderr) options.onStderr?.(result.stderr);
+		return result;
+	}
+
+	/** Understands the few commands the platform runs; anything else succeeds with no output. */
+	private interpret(command: string): ExecResult {
+		const files = this.sandbox.files;
+		if (/\bgit clone\b/.test(command)) {
+			if (command.includes("fail-clone")) {
+				return { exitCode: 128, timedOut: false, aborted: false, stdout: "", stderr: "fatal: repository 'https://example.com/fail-clone.git/' not found\n" };
+			}
+			return ok();
+		}
+		if (/\bstatus\b.*--porcelain/.test(command)) {
+			const separator = /\s-z\b/.test(command) ? "\0" : "\n";
+			return ok([...files.keys()].sort().map((path) => `?? ${path}${separator}`).join(""));
+		}
+		if (/\bdiff\b/.test(command)) {
+			const parts = [...files.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([path, content]) => {
+				const lines = content.replace(/\n$/, "").split("\n");
+				return [
+					`diff --git a/${path} b/${path}`,
+					"new file mode 100644",
+					"--- /dev/null",
+					`+++ b/${path}`,
+					`@@ -0,0 +1,${lines.length} @@`,
+					...lines.map((line) => `+${line}`),
+					"",
+				].join("\n");
+			});
+			return ok(parts.join(""));
+		}
+		return ok();
+	}
+
+	async readTextFile(path: string): Promise<string> {
+		const content = this.sandbox.files.get(path.replace(`${WORKSPACE}/`, ""));
+		if (content === undefined) throw new Error(`no such file: ${path}`);
+		return content;
+	}
+
+	async writeTextFile(path: string, content: string): Promise<void> {
+		this.sandbox.files.set(path.replace(`${WORKSPACE}/`, ""), content);
+	}
+}
+
+class FakeSandboxes implements Sandboxes {
+	readonly all = new Map<string, FakeSandbox>();
+
+	profiles(): SandboxProfile[] {
+		return PROFILES;
+	}
+
+	profile(id: SandboxProfileId): SandboxProfile {
+		const found = PROFILES.find((profile) => profile.id === id);
+		if (!found) throw new Error(`unknown sandbox profile: ${id}`);
+		return found;
+	}
+
+	async create(input: CreateSandboxInput): Promise<string> {
+		if (!this.profile(input.profile).available) throw new Error(`sandbox profile ${input.profile} is not available`);
+		await delay(20);
+		const id = `fake-${randomBytes(6).toString("hex")}`;
+		this.all.set(id, { id, uid: input.uid, sessionId: input.sessionId, profile: input.profile, state: "running", files: new Map() });
+		return id;
+	}
+
+	async connect(id: string): Promise<SandboxHandle | undefined> {
+		const sandbox = this.all.get(id);
+		if (!sandbox) return undefined;
+		sandbox.state = "running";
+		return new FakeHandle(sandbox, () => this.all.has(id));
+	}
+
+	async state(id: string): Promise<"none" | "running" | "paused"> {
+		return this.all.get(id)?.state ?? "none";
+	}
+
+	async suspend(id: string): Promise<void> {
+		const sandbox = this.all.get(id);
+		if (sandbox) sandbox.state = "paused";
+	}
+
+	async destroy(id: string): Promise<void> {
+		this.all.delete(id);
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Windlass
+// ---------------------------------------------------------------------------------------------
+
+const fixtureCache = new Map<string, WindlassEvent[]>();
+
+function fixture(name: string): WindlassEvent[] {
+	let events = fixtureCache.get(name);
+	if (!events) {
+		events = readFileSync(join(FIXTURES_DIR, name), "utf8")
+			.split("\n")
+			.filter((line) => line.trim() !== "")
+			.map((line) => JSON.parse(line) as WindlassEvent);
+		fixtureCache.set(name, events);
+	}
+	return events;
+}
+
+/** The words that choose a scenario; the real layer's demo scripts go by the same ones. */
+const APPROVAL_WORDS = /\b(network|fetch|downloads?|curl|https?|headers?|websites?|urls?)\b/;
+const LONG_WORDS = /\b(long|slow|build|progress|wait)\b/;
+
+function fixtureFor(text: string, turn: number): string {
+	if (text.includes("(auth-fail)")) return "demo-a-non-retryable-error-authentication.jsonl";
+	if (LONG_WORDS.test(text)) return "demo-a-long-build-command.jsonl";
+	if (/\b(tests?|failing|fix)\b/.test(text)) return "demo-find-and-fix-a-failing-test.jsonl";
+	if (/\bparallel\b/.test(text)) return "demo-two-parallel-tool-calls.jsonl";
+	if (/\b(checks?|verify)\b/.test(text)) return "demo-the-checks-fail-the-model-fixes-the-code-and-they-pass.jsonl";
+	return turn % 2 === 1 ? "real-scripted-bwrap.jsonl" : "demo-several-steps-in-one-turn.jsonl";
+}
+
+function dataOf(event: WindlassEvent): Record<string, unknown> {
+	return event.data ?? {};
+}
+
+/** A call's identity: providers reuse call ids, so the step's message id is part of it. */
+function callKey(messageId: unknown, callId: unknown): string {
+	return `${String(messageId)}/${String(callId)}`;
+}
+
+interface ApprovalScenario {
+	/** The whole recording in which the user allowed the call. */
+	approved: WindlassEvent[];
+	/** What follows `approval.answered` in the recording in which they declined, in the ids of the other one. */
+	deniedTail: WindlassEvent[];
+}
+
+let approvalCache: ApprovalScenario | null = null;
+
+/**
+ * The two recordings of the approval turn made into one scenario. Both were recorded with a second
+ * message steered in; that message is left out here, since a replay is steered only when its caller
+ * steers it. The recordings are the same script up to the question, so the declined one's ids can be
+ * mapped onto the approved one's, event by event.
+ */
+function approvalScenario(): ApprovalScenario {
+	if (approvalCache) return approvalCache;
+	const withoutRecordedSteer = (events: WindlassEvent[]): WindlassEvent[] => {
+		const enqueued = events.filter((event) => event.type === "inbox.enqueued");
+		const steered = enqueued.length > 1 ? dataOf(enqueued[1]).messageId : undefined;
+		return events.filter((event) => !((event.type === "inbox.enqueued" || event.type === "inbox.delivered") && dataOf(event).messageId === steered));
+	};
+	const approved = withoutRecordedSteer(fixture("acp-approval-approved.jsonl"));
+	const denied = withoutRecordedSteer(fixture("acp-approval-denied.jsonl"));
+	const asked = approved.findIndex((event) => event.type === "approval.requested");
+	const askedDenied = denied.findIndex((event) => event.type === "approval.requested");
+	const answeredDenied = denied.findIndex((event) => event.type === "approval.answered");
+	if (asked < 0 || asked !== askedDenied || answeredDenied !== asked + 1) throw new Error("the approval fixtures do not line up");
+
+	const ids = new Map<string, string>();
+	for (let index = 0; index <= asked; index += 1) {
+		for (const read of [(event: WindlassEvent) => dataOf(event).messageId, (event: WindlassEvent) => event.messageId, (event: WindlassEvent) => dataOf(event).executionId]) {
+			const from = read(denied[index]);
+			const to = read(approved[index]);
+			if (typeof from === "string" && typeof to === "string" && from !== to) ids.set(from, to);
+		}
+	}
+	const deniedTail = denied.slice(answeredDenied + 1).map((event) => {
+		let text = JSON.stringify(event);
+		for (const [from, to] of ids) text = text.split(from).join(to);
+		return JSON.parse(text) as WindlassEvent;
+	});
+	approvalCache = { approved, deniedTail };
+	return approvalCache;
+}
+
+function questionOf(event: WindlassEvent): TurnQuestion {
+	const data = dataOf(event);
+	const question = (data.question ?? {}) as { title?: unknown; subject?: unknown; details?: unknown; choices?: unknown };
+	const choices = Array.isArray(question.choices) ? (question.choices as Array<Record<string, unknown>>) : [];
+	return {
+		messageId: String(data.messageId),
+		callId: String(data.callId),
+		title: String(question.title ?? ""),
+		subject: String(question.subject ?? ""),
+		details: Array.isArray(question.details) ? question.details.map(String) : [],
+		choices: choices.map((choice) => ({
+			id: String(choice.id),
+			label: String(choice.label ?? choice.id),
+			approve: choice.approve === true,
+			remembers: typeof choice.remembers === "string" ? choice.remembers : null,
+		})),
+		subagent: null,
+	};
+}
+
+const EXEC_FAIL_MESSAGE = "The model call failed 4 times: the provider answered 503 (fake layer).";
+
+interface Usage {
+	inputTokens: number;
+	cachedInputTokens: number;
+	outputTokens: number;
+	reasoningTokens: number;
+}
+
+/** The events that end a turn, and the outcome each one means. */
+const TERMINAL = new Map([
+	["execution.succeeded", "succeeded"],
+	["execution.failed", "failed"],
+	["execution.interrupted", "interrupted"],
+]);
+
+class FakeWindlass implements Windlass {
+	/** The last `seq` written to each fake Windlass session, so a continued session keeps counting. */
+	private readonly lastSeq = new Map<string, number>();
+	private readonly turns = new Map<string, number>();
+
+	constructor(
+		private readonly sandboxes: FakeSandboxes,
+		private readonly eventDelayMs: number,
+	) {}
+
+	async version(): Promise<string | null> {
+		return "0.1.0-fake";
+	}
+
+	async models(): Promise<string[]> {
+		return FAKE_MODELS;
+	}
+
+	demoScript(prompt: string, turn: number): ScriptedModel {
+		return { responses: [[{ type: "text", text: `Fake reply ${turn} to: ${prompt.slice(0, 80)}` }, { type: "finish", reason: "stop" }]] };
+	}
+
+	async runTurn(sandbox: SandboxHandle, input: RunTurnInput): Promise<RunTurnResult> {
+		const text = input.prompt.toLowerCase();
+		if (text.includes("(throw)")) throw new Error("fake layer: docker exec failed: container is not running");
+		if (!this.sandboxes.all.has(sandbox.id)) throw new Error(`fake sandbox ${sandbox.id} does not exist`);
+
+		// Refusals Windlass makes before a turn exists: nothing is written, nothing is emitted.
+		if (text.includes("(session-gone)")) {
+			const id = input.windlassSessionId ?? "ses_fake0000000000000000";
+			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: { reason: "session_not_found", message: `Windlass has no session ${id}.` } };
+		}
+		if (text.includes("(session-busy)")) {
+			const id = input.windlassSessionId ?? "ses_fake0000000000000000";
+			return {
+				exitCode: 0,
+				aborted: false,
+				timedOut: false,
+				windlassSessionId: input.windlassSessionId ?? null,
+				summary: null,
+				stderrTail: "",
+				failure: { reason: "session_in_use", message: `Session ${id} is open in another Windlass process (pid 4242). It can be continued once that process has closed it.` },
+			};
+		}
+
+		const continued = input.windlassSessionId !== undefined;
+		const sessionId = input.windlassSessionId ?? `ses_fake${randomBytes(8).toString("hex")}`;
+		const turn = (this.turns.get(sessionId) ?? 0) + 1;
+		this.turns.set(sessionId, turn);
+		const gap = this.eventDelayMs * (text.includes("(slow)") ? 20 : 1);
+		const crashAfter = text.includes("(crash)") ? 6 : Number.POSITIVE_INFINITY;
+		const execFailAfter = text.includes("(exec-fail)") ? 8 : Number.POSITIVE_INFINITY;
+		const approval = !text.includes("(auth-fail)") && APPROVAL_WORDS.test(text) ? approvalScenario() : null;
+		const signal = input.signal;
+		const startedAt = Date.now();
+
+		let seq = this.lastSeq.get(sessionId) ?? 0;
+		let emitted = 0;
+		let ended = false;
+		let promptSeen = false;
+		let executionId: string | null = null;
+		let currentStep: string | null = null;
+		let outcome: string | null = null;
+		let steps = 0;
+		let requests = 0;
+		let usage: Usage | null = null;
+		let summary: WindlassEvent | null = null;
+		/** Calls that started and have not settled, with what each has printed so far. */
+		const running = new Map<string, string>();
+		const cancelled = new Set<string>();
+		/** Steered messages admitted and not yet delivered to the model. */
+		const undelivered: string[] = [];
+		let wake: (() => void) | null = null;
+
+		const emit = (recorded: WindlassEvent): void => {
+			const event: WindlassEvent = { ...recorded, sessionId };
+			const durable = typeof recorded.seq === "number";
+			if (durable) {
+				seq += 1;
+				event.seq = seq;
+				event.time = Date.now();
+			}
+			const data = dataOf(event);
+			switch (event.type) {
+				case "inbox.enqueued":
+					// The first one of a recording is the prompt; a steer writes its own.
+					if (!promptSeen) {
+						promptSeen = true;
+						event.data = { ...data, content: [{ type: "text", text: input.prompt }] };
+					}
+					break;
+				case "execution.started":
+					if (typeof data.executionId === "string") executionId = data.executionId;
+					break;
+				case "step.started":
+					requests += 1;
+					currentStep = typeof data.messageId === "string" ? data.messageId : null;
+					if (input.model) event.data = { ...data, model: input.model };
+					break;
+				case "step.ended": {
+					steps += 1;
+					const used = data.usage as Partial<Usage> | null | undefined;
+					if (used && typeof used.inputTokens === "number") {
+						usage = {
+							inputTokens: (usage?.inputTokens ?? 0) + used.inputTokens,
+							cachedInputTokens: (usage?.cachedInputTokens ?? 0) + (used.cachedInputTokens ?? 0),
+							outputTokens: (usage?.outputTokens ?? 0) + (used.outputTokens ?? 0),
+							reasoningTokens: (usage?.reasoningTokens ?? 0) + (used.reasoningTokens ?? 0),
+						};
+					}
+					break;
+				}
+				case "step.failed":
+					steps += 1;
+					break;
+				case "tool.started":
+					running.set(callKey(data.messageId, data.callId), "");
+					break;
+				case "tool.progress": {
+					const key = callKey(event.messageId, event.callId);
+					if (running.has(key)) running.set(key, String(event.text ?? ""));
+					break;
+				}
+				case "tool.settled":
+					running.delete(callKey(data.messageId, data.callId));
+					break;
+				default:
+					outcome = TERMINAL.get(event.type) ?? outcome;
+			}
+			emitted += 1;
+			input.onEvent(event);
+		};
+
+		/** How the turn ended, once an event has said so. */
+		const finished = (): string | null => outcome;
+
+		/** The event the layer makes itself after Windlass's last one: what `windlass --json` printed as `cli.summary`. */
+		const summarize = (): void => {
+			const total = usage as Usage | null;
+			summary = {
+				type: "cli.summary",
+				sessionId,
+				executionId,
+				outcome: outcome ?? "interrupted",
+				steps,
+				requests,
+				durationMs: Date.now() - startedAt,
+				usage: total,
+				cachedShare: total && total.inputTokens > 0 ? Math.round((total.cachedInputTokens / total.inputTokens) * 1000) / 1000 : null,
+			};
+			input.onEvent(summary);
+		};
+
+		/** Waits between two events; a stop of the turn or of a call ends the wait early. */
+		const pause = (ms: number): Promise<void> =>
+			new Promise((resolve) => {
+				if (signal?.aborted || ms <= 0) {
+					resolve();
+					return;
+				}
+				const finish = () => {
+					clearTimeout(timer);
+					signal?.removeEventListener("abort", finish);
+					if (wake === finish) wake = null;
+					resolve();
+				};
+				const timer = setTimeout(finish, ms);
+				signal?.addEventListener("abort", finish, { once: true });
+				wake = finish;
+			});
+
+		const deliverSteers = (): void => {
+			for (const messageId of undelivered.splice(0)) emit({ type: "inbox.delivered", v: 1, data: { messageId }, seq: 0, time: 0 });
+		};
+
+		const control: TurnControl = {
+			steer: async (message: string): Promise<void> => {
+				if (ended || signal?.aborted) throw new Error("the turn has ended");
+				const messageId = `msg_${randomBytes(12).toString("hex")}`;
+				emit({ type: "inbox.enqueued", v: 1, data: { messageId, origin: null, delivery: "steer", content: [{ type: "text", text: message }] }, seq: 0, time: 0 });
+				undelivered.push(messageId);
+			},
+			cancelCall: async (messageId: string, callId: string): Promise<{ stopped: boolean; message: string | null }> => {
+				if (ended) throw new Error("the turn has ended");
+				const key = callKey(messageId, callId);
+				if (!running.has(key)) return { stopped: false, message: "That call is not running, so there is nothing to stop." };
+				if (cancelled.has(key)) return { stopped: false, message: "That call was already asked to stop." };
+				cancelled.add(key);
+				emit({ type: "tool.cancel_requested", v: 1, data: { messageId, callId }, seq: 0, time: 0 });
+				wake?.();
+				return { stopped: true, message: null };
+			},
+		};
+
+		/**
+		 * Puts the question of an `approval.requested` to the caller and returns the events that follow
+		 * the answer, or null when the question was withdrawn because the turn was stopped.
+		 */
+		const ask = async (requested: WindlassEvent, rest: WindlassEvent[], scenario: ApprovalScenario): Promise<WindlassEvent[] | null> => {
+			const question = questionOf(requested);
+			const { messageId, callId } = question;
+			const declined = (output: string): WindlassEvent[] =>
+				scenario.deniedTail.map((event) => (event.type === "tool.settled" && dataOf(event).callId === callId ? { ...event, data: { ...dataOf(event), output } } : event));
+
+			if (!input.onQuestion) {
+				const data = dataOf(requested);
+				emit({ type: "approval.denied", v: 1, data: { messageId, callId, mode: data.mode, paths: data.paths, escalation: data.escalation, reason: "unattended", needs: data.needs, stop: false }, seq: 0, time: 0 });
+				return declined("Not run: this call needs the user's approval for network access, and this run has no one to approve it.");
+			}
+
+			emit(requested);
+			const asking = new AbortController();
+			let answer: TurnAnswer | null = null;
+			const how = await new Promise<"answered" | "declined" | "withdrawn">((resolve) => {
+				if (signal?.aborted) {
+					resolve("withdrawn");
+					return;
+				}
+				const withdrawn = () => resolve("withdrawn");
+				signal?.addEventListener("abort", withdrawn, { once: true });
+				const settle = (result: "answered" | "declined") => {
+					signal?.removeEventListener("abort", withdrawn);
+					resolve(result);
+				};
+				let promise: Promise<TurnAnswer>;
+				try {
+					promise = input.onQuestion!(question, asking.signal);
+				} catch {
+					settle("declined");
+					return;
+				}
+				promise.then(
+					(value) => {
+						answer = value;
+						settle("answered");
+					},
+					() => settle("declined"),
+				);
+			});
+			if (how === "withdrawn") {
+				asking.abort();
+				return null;
+			}
+
+			const given = answer as TurnAnswer | null;
+			// An option the question does not have declines, as does a promise that rejected.
+			const choice = how === "answered" && given ? question.choices.find((candidate) => candidate.id === given.choice) : undefined;
+			const note = choice && typeof given?.note === "string" && given.note !== "" ? given.note : null;
+			const approve = choice?.approve === true;
+			emit({ type: "approval.answered", v: 1, data: { messageId, callId, choice: choice?.id ?? "deny", approve, note, grants: [] }, seq: 0, time: 0 });
+			if (approve) return rest.filter((event) => event.type !== "approval.answered");
+			return declined(`Not run: the user declined this call.${note ? ` Their note: ${note}` : ""}`);
+		};
+
+		try {
+			input.onControl?.(control);
+			let queue = [...(approval ? approval.approved : fixture(fixtureFor(text, turn)))];
+			while (queue.length > 0) {
+				const recorded = queue.shift() as WindlassEvent;
+				// The recordings made with `windlass --json` end with the command line's own summary line.
+				if (recorded.type === "cli.summary") continue;
+				if (continued && (recorded.type === "session.created" || recorded.type === "baseline.set")) continue;
+				if (signal?.aborted) break;
+				if (emitted >= crashAfter) {
+					return {
+						exitCode: 1,
+						aborted: false,
+						timedOut: false,
+						windlassSessionId: sessionId,
+						summary: null,
+						stderrTail: "windlass: fatal: simulated crash (fake layer)\n",
+						failure: { reason: "engine", message: "Windlass stopped before the turn was finished (exit code 1)." },
+					};
+				}
+				if (emitted >= execFailAfter && recorded.type !== "step.failed" && !TERMINAL.has(recorded.type)) {
+					const error = { kind: "provider", error: { kind: "server", retryable: true, message: "The provider answered 503.", status: 503, code: null, retryAfterMs: null, requestId: null } };
+					queue = [
+						{ type: "step.failed", v: 1, data: { messageId: currentStep, error, usage: null }, seq: 0, time: 0 },
+						{ type: "execution.failed", v: 1, data: { executionId, message: EXEC_FAIL_MESSAGE }, seq: 0, time: 0 },
+					];
+					continue;
+				}
+
+				// A steered message reaches the model at the next step, or just before the turn would end.
+				if (recorded.type === "step.started" || TERMINAL.has(recorded.type)) deliverSteers();
+
+				if (recorded.type === "tool.progress" && cancelled.has(callKey(recorded.messageId, recorded.callId))) continue;
+				if (recorded.type === "tool.settled" && cancelled.has(callKey(dataOf(recorded).messageId, dataOf(recorded).callId))) {
+					const data = dataOf(recorded);
+					const printed = running.get(callKey(data.messageId, data.callId)) ?? "";
+					const display = typeof data.display === "object" && data.display !== null ? { ...data.display, exitCode: null, signal: "SIGTERM", interrupted: "call" } : data.display;
+					emit({ ...recorded, data: { ...data, outcome: "error", output: `${printed}${printed ? "\n" : ""}[Stopped by the user. The command had not finished.]`, display } });
+					await pause(gap);
+					continue;
+				}
+
+				if (recorded.type === "approval.requested" && approval) {
+					const next = await ask(recorded, queue, approval);
+					if (next === null) break;
+					queue = [...next];
+					await pause(gap);
+					continue;
+				}
+
+				emit(recorded);
+				await pause(gap);
+			}
+
+			// A stop that arrives after Windlass's last event has nothing left to interrupt.
+			if (signal?.aborted && finished() === null) {
+				if (text.includes("(slow-stop)")) await delay(SLOW_STOP_MS);
+				emit({ type: "execution.interrupt_requested", v: 1, data: { reason: "user" }, seq: 0, time: 0 });
+				emit({ type: "execution.interrupted", v: 1, data: { reason: "user" }, seq: 0, time: 0 });
+				summarize();
+				return { exitCode: 130, aborted: true, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure: null };
+			}
+			summarize();
+
+			const files = this.sandboxes.all.get(sandbox.id)?.files;
+			files?.set(`notes/turn-${turn}.md`, `# Turn ${turn}\n\n${input.prompt.slice(0, 200)}\n`);
+			if (turn === 1) files?.set("made.txt", "hello\n");
+			if (text.includes("(lose-sandbox)")) this.sandboxes.all.delete(sandbox.id);
+
+			let failure: RunTurnResult["failure"] = null;
+			if (text.includes("(auth-fail)")) failure = { reason: "auth_required", message: "Signed out: sign in again to continue." };
+			else if (finished() === "failed") failure = { reason: "execution_failed", message: EXEC_FAIL_MESSAGE };
+			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure };
+		} finally {
+			ended = true;
+			this.lastSeq.set(sessionId, seq);
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sign-in
+// ---------------------------------------------------------------------------------------------
+
+class FakeLogins implements ChatgptLogins {
+	private readonly attempts = new Map<string, ChatgptAccount | null>();
+	private readonly users = new Map<string, ChatgptAccount | null>();
+
+	async start(attemptId: string): Promise<{ url: string; redirectPrefix: string }> {
+		this.attempts.set(attemptId, null);
+		return { url: `https://auth.openai.com/oauth/authorize?fake=1&state=${encodeURIComponent(attemptId)}`, redirectPrefix: REDIRECT_PREFIX };
+	}
+
+	async finish(attemptId: string, pastedUrl: string): Promise<ChatgptAccount> {
+		if (!this.attempts.has(attemptId)) throw new SandboxUserError("This sign-in attempt is not known. Start again.");
+		if (!pastedUrl.startsWith(REDIRECT_PREFIX)) {
+			throw new SandboxUserError(`That is not the address the sign-in ends on. It starts with ${REDIRECT_PREFIX}`);
+		}
+		let code: string | null = null;
+		try {
+			code = new URL(pastedUrl).searchParams.get("code");
+		} catch {
+			code = null;
+		}
+		if (!code) throw new SandboxUserError("The address has no sign-in code in it. Copy the whole address.");
+		if (code === "refused") throw new SandboxUserError("OpenAI refused the sign-in. Start again.");
+		if (code === "explode") throw new Error("fake layer: docker run failed with /var/run/docker.sock: permission denied");
+		const account: ChatgptAccount = { sub: `fake|${code}`, email: `${code}@example.com`, accessExpiresAt: Date.now() + 60 * 60 * 1000 };
+		this.attempts.set(attemptId, code === "nosignin" ? null : account);
+		return account;
+	}
+
+	async adopt(attemptId: string, uid: string): Promise<void> {
+		if (!this.attempts.has(attemptId)) throw new Error(`unknown sign-in attempt ${attemptId}`);
+		this.users.set(uid, this.attempts.get(attemptId) ?? null);
+		this.attempts.delete(attemptId);
+	}
+
+	async discard(attemptId: string): Promise<void> {
+		this.attempts.delete(attemptId);
+	}
+
+	async status(uid: string): Promise<ChatgptAccount | null> {
+		return this.users.get(uid) ?? null;
+	}
+
+	async logout(uid: string): Promise<void> {
+		if (this.users.has(uid)) this.users.set(uid, null);
+	}
+
+	async ensureUserVolume(uid: string): Promise<void> {
+		if (!this.users.has(uid)) this.users.set(uid, null);
+	}
+}
+
+export function createFakeSandboxLayer(): SandboxLayer {
+	const raw = Number.parseInt(process.env.WLP_FAKE_DELAY_MS ?? "", 10);
+	const eventDelayMs = Number.isFinite(raw) && raw >= 0 ? raw : 15;
+	const sandboxes = new FakeSandboxes();
+	return { sandboxes, windlass: new FakeWindlass(sandboxes, eventDelayMs), logins: new FakeLogins() };
+}

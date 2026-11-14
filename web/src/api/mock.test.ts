@@ -1,0 +1,493 @@
+import type { AuthResult, LiveDelta, PendingQuestion, SessionSnapshot, SessionSummary, TimelineItem } from "@contract";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { applyDelta, applyItem, fromSnapshot, toolBlocks, type SessionView } from "../lib/timeline";
+import { PlatformError, type ConnectionState, type SessionFeed } from "./client";
+import { LIVE_TYPES } from "./feed";
+import { createMockClient, type MockClient } from "./mock";
+
+/** A feed that records what it is given and folds it, as the session screen does. */
+function recorder() {
+	const record = {
+		snapshots: [] as SessionSnapshot[],
+		items: [] as TimelineItem[],
+		deltas: [] as LiveDelta[],
+		summaries: [] as SessionSummary[],
+		questions: [] as Array<PendingQuestion | null>,
+		/** The question as the screen would hold it: from the snapshot, then from the events. */
+		question: null as PendingQuestion | null,
+		connection: [] as ConnectionState[],
+		errors: [] as PlatformError[],
+		view: null as SessionView | null,
+	};
+	const feed: SessionFeed = {
+		onSnapshot(snapshot) {
+			record.snapshots.push(snapshot);
+			record.view = fromSnapshot(snapshot);
+			record.question = snapshot.question;
+		},
+		onItem(item) {
+			record.items.push(item);
+			if (record.view) record.view = applyItem(record.view, item);
+		},
+		onDelta(delta) {
+			record.deltas.push(delta);
+			if (record.view) record.view = applyDelta(record.view, delta);
+		},
+		onSummary(summary) {
+			record.summaries.push(summary);
+		},
+		onQuestion(question) {
+			record.questions.push(question);
+			record.question = question;
+		},
+		onConnection(state, error) {
+			record.connection.push(state);
+			if (error) record.errors.push(error);
+		},
+	};
+	return { record, feed };
+}
+
+/** Lets `ms` of the mock's time pass, then gives the promise's value. */
+async function after<T>(ms: number, promise: Promise<T>): Promise<T> {
+	await vi.advanceTimersByTimeAsync(ms);
+	return promise;
+}
+
+const strip = (view: SessionView | null) => view && { ...view, nextId: 0, turns: view.turns.map((turn) => ({ ...turn, blocks: turn.blocks.map((block) => ({ ...block, id: "", at: null })) })) };
+
+let client: MockClient;
+let auth: AuthResult;
+
+beforeEach(async () => {
+	vi.useFakeTimers();
+	vi.setSystemTime(new Date("2026-11-14T12:00:00Z"));
+	client = createMockClient({ origin: "http://localhost:5173" });
+	auth = await after(1000, client.login.demo());
+});
+
+afterEach(() => {
+	client.dispose();
+	vi.useRealTimers();
+});
+
+async function freshSession(profile: "docker-windlass-sandbox" | "docker-hardened" = "docker-windlass-sandbox") {
+	const summary = await after(500, client.user(auth).createSession({ profile }));
+	const api = client.session(auth, summary.id);
+	const { record, feed } = recorder();
+	const close = api.open(feed);
+	await vi.advanceTimersByTimeAsync(500);
+	return { summary, api, record, close };
+}
+
+describe("what the mock serves", () => {
+	it("lists six sandbox profiles: two available, four not, each with its reason", async () => {
+		const info = await after(500, client.info());
+		expect(info.demoEnabled).toBe(true);
+		expect(info.profiles).toHaveLength(6);
+		expect(info.profiles.filter((profile) => profile.available).map((profile) => profile.id)).toEqual(["docker-windlass-sandbox", "docker-hardened"]);
+		for (const profile of info.profiles.filter((candidate) => !candidate.available)) expect(profile.unavailableReason?.length).toBeGreaterThan(40);
+		expect(info.models.length).toBeGreaterThan(0);
+	});
+
+	it("has sessions in different states, newest first, one of them at work", async () => {
+		const sessions = await after(500, client.user(auth).listSessions());
+		expect(sessions.length).toBeGreaterThanOrEqual(6);
+		expect(sessions.map((session) => session.createdAt)).toEqual([...sessions.map((session) => session.createdAt)].sort((a, b) => b - a));
+		expect(sessions[0]).toMatchObject({ id: "harbor-build", turns: 1 });
+		expect(sessions.find((session) => session.id === "headers")).toMatchObject({ status: "waiting", turns: 1 });
+		expect(["starting", "running"]).toContain(sessions[0]?.status);
+		expect(new Set(sessions.map((session) => session.lastOutcome))).toEqual(new Set(["succeeded", "failed", "interrupted", "error", null]));
+		expect(new Set(sessions.map((session) => session.sandbox))).toEqual(new Set(["none", "running", "paused"]));
+	});
+
+	it("pushes the list to whoever watches it", async () => {
+		const lists: SessionSummary[][] = [];
+		const close = client.user(auth).watch({ onSessions: (sessions) => lists.push(sessions) });
+		await vi.advanceTimersByTimeAsync(300);
+		expect(lists).toHaveLength(1);
+		const created = await after(500, client.user(auth).createSession({ profile: "docker-hardened", title: "Mine" }));
+		expect(lists.at(-1)?.[0]).toMatchObject({ id: created.id, title: "Mine", status: "idle", sandbox: "none" });
+		await after(500, client.user(auth).renameSession(created.id, "Renamed"));
+		expect(lists.at(-1)?.[0]?.title).toBe("Renamed");
+		await after(500, client.user(auth).deleteSession(created.id));
+		expect(lists.at(-1)?.some((session) => session.id === created.id)).toBe(false);
+		close();
+	});
+
+	it("refuses a sandbox that is not available, and says why", async () => {
+		const attempt = client.user(auth).createSession({ profile: "e2b" });
+		const failure = after(500, attempt.catch((error: unknown) => error));
+		expect(await failure).toMatchObject({ code: "user", message: expect.stringContaining("E2B cannot be used yet") });
+	});
+});
+
+describe("signing in", () => {
+	it("finishes only from an address under the redirect prefix, with a code and the attempt's state", async () => {
+		const started = await after(1000, client.login.start());
+		expect(started.redirectPrefix).toBe("http://127.0.0.1:1455/auth/callback");
+		expect(started.expiresAt).toBeGreaterThan(Date.now());
+		const state = new URL(started.url).searchParams.get("state");
+
+		const fail = async (pasted: string) => after(1000, client.login.finish(pasted).catch((error: unknown) => error));
+		expect(await fail("https://example.com/?code=1")).toMatchObject({ code: "user", message: expect.stringContaining("not the address") });
+		expect(await fail(`${started.redirectPrefix}?state=${state}`)).toMatchObject({ code: "user", message: expect.stringContaining("no sign-in code") });
+		expect(await fail(`${started.redirectPrefix}?error=access_denied&state=${state}`)).toMatchObject({ message: expect.stringContaining("access_denied") });
+
+		const result = await after(1000, client.login.finish(`${started.redirectPrefix}?code=abc&state=${state}`));
+		expect(result.profile).toEqual({ uid: "u_ada", email: "ada@example.com", demo: false });
+		expect(await after(500, client.user(result).chatgpt())).toMatchObject({ connected: true, email: "ada@example.com" });
+	});
+
+	it("rejects an attempt that has expired", async () => {
+		const started = await after(1000, client.login.start());
+		const state = new URL(started.url).searchParams.get("state");
+		vi.setSystemTime(started.expiresAt + 1000);
+		const failure = await after(1000, client.login.finish(`${started.redirectPrefix}?code=abc&state=${state}`).catch((error: unknown) => error));
+		expect(failure).toMatchObject({ code: "user", message: expect.stringContaining("expired") });
+	});
+
+	it("rejects a token it did not issue", async () => {
+		const states: Array<[ConnectionState, string | undefined]> = [];
+		client.user({ token: "not-a-mock-token", profile: auth.profile }).watch({ onSessions: () => undefined, onConnection: (state, error) => states.push([state, error?.code]) });
+		const refused = expect(client.user({ token: "x", profile: auth.profile }).listSessions()).rejects.toMatchObject({ code: "unauthorized" });
+		await vi.advanceTimersByTimeAsync(500);
+		await refused;
+		expect(states).toEqual([
+			["connecting", undefined],
+			["failed", "unauthorized"],
+		]);
+	});
+});
+
+describe("a turn played from a recording", () => {
+	it("stores durable events, broadcasts streaming ones, and ends where a snapshot would", async () => {
+		const { api, record } = await freshSession();
+		expect(record.connection).toEqual(["connecting", "connected"]);
+		expect(record.snapshots[0]).toMatchObject({ timeline: [], pending: [], windlassSessionId: null, question: null });
+
+		// The first unrecognised prompt plays "find and fix a failing test".
+		const accepted = await after(400, api.prompt({ text: "The add test is failing. Find out why and fix it.", effort: "low" }));
+		expect(accepted).toEqual({ turn: 1, steered: false });
+		await vi.advanceTimersByTimeAsync(30_000);
+
+		// Stored and streamed, as contract.ts splits them.
+		expect(record.items.map((item) => item.seq)).toEqual(record.items.map((_, index) => index + 1));
+		const stored = record.items.flatMap((item) => (item.kind === "windlass" ? [item.event.type] : []));
+		expect(stored.some((type) => LIVE_TYPES.has(type))).toBe(false);
+		expect(stored).toEqual(expect.arrayContaining(["session.created", "baseline.set", "step.started", "tool.called", "tool.settled", "text.ended", "cli.summary"]));
+		expect(new Set(record.deltas.map((delta) => delta.event.type))).toEqual(LIVE_TYPES);
+		expect(record.deltas.every((delta) => delta.turn === 1 && delta.event.seq === undefined)).toBe(true);
+
+		// The platform's own entries around Windlass's.
+		expect(record.items[0]).toMatchObject({ kind: "user", text: "The add test is failing. Find out why and fix it.", effort: "low", turn: 1 });
+		expect(record.items[1]).toMatchObject({ kind: "platform", text: "Creating sandbox: Docker + Windlass sandbox" });
+		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended", outcome: "succeeded", steps: 5, exitCode: 0 });
+
+		// The session's summary went through its states.
+		expect(record.summaries.map((summary) => summary.status).filter((status, index, all) => status !== all[index - 1])).toEqual(["starting", "running", "idle"]);
+		expect(record.summaries.at(-1)).toMatchObject({ turns: 1, lastOutcome: "succeeded", sandbox: "running", title: "The add test is failing. Find out why and fix it." });
+
+		// What was streamed live folds to the same view as a snapshot taken afterwards.
+		const late = recorder();
+		api.open(late.feed);
+		await vi.advanceTimersByTimeAsync(500);
+		expect(late.record.snapshots[0]?.pending).toEqual([]);
+		expect(late.record.snapshots[0]?.timeline).toEqual(record.items);
+		expect(late.record.snapshots[0]?.windlassSessionId).toMatch(/^ses_[0-9a-f]{24}$/);
+		expect(strip(late.record.view)).toEqual(strip(record.view));
+
+		// And the workspace has the change.
+		expect(await after(500, api.changes())).toEqual([{ path: "src/add.ts", status: " M" }]);
+		expect(await after(500, api.diff())).toContain("+  return a + b");
+	});
+
+	it("gives a client that joins mid-turn the text streamed so far", async () => {
+		const { api, record } = await freshSession();
+		await after(400, api.prompt({ text: "Run the full build and tell me if it passes." }));
+		// Into the first answer, before its `text.ended`.
+		while (!record.deltas.some((delta) => delta.event.type === "text.delta")) await vi.advanceTimersByTimeAsync(20);
+		await vi.advanceTimersByTimeAsync(30);
+
+		const late = recorder();
+		api.open(late.feed);
+		await vi.advanceTimersByTimeAsync(170);
+		const snapshot = late.record.snapshots[0];
+		expect(snapshot?.summary.status).toBe("running");
+		expect(snapshot?.pending.length).toBeGreaterThan(0);
+		expect(snapshot?.pending.every((delta) => LIVE_TYPES.has(delta.event.type))).toBe(true);
+		const joined = late.record.view?.turns[0]?.blocks.find((block) => block.kind === "text");
+		expect(joined).toMatchObject({ streaming: true });
+		expect("Running the build and the test suite.".startsWith(joined?.kind === "text" ? joined.text : "?")).toBe(true);
+
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(strip(late.record.view)).toEqual(strip(record.view));
+		expect(record.view?.turns[0]?.end?.outcome).toBe("succeeded");
+	});
+
+	it("refuses a message while the sandbox is starting, as turn_running", async () => {
+		const { api } = await freshSession();
+		await after(200, api.prompt({ text: "Run the full build." }));
+		const failure = await after(200, api.prompt({ text: "And another thing" }).catch((error: unknown) => error));
+		expect(failure).toBeInstanceOf(PlatformError);
+		expect(failure).toMatchObject({ code: "user", reason: "turn_running" });
+		expect(await after(400, api.prompt({ text: "   " }).catch((error: unknown) => error))).toMatchObject({ code: "user" });
+	});
+});
+
+describe("stopping a turn", () => {
+	it("winds it down mid-tool as Windlass does", async () => {
+		const { api, record } = await freshSession();
+		await after(400, api.prompt({ text: "Run the full build and the tests." }));
+		while (!record.deltas.some((delta) => delta.event.type === "tool.progress")) await vi.advanceTimersByTimeAsync(50);
+		expect(toolBlocks(record.view?.turns[0] as never)[0]?.state).toBe("running");
+
+		await after(200, api.stop());
+		expect(record.summaries.at(-1)?.status).toBe("stopping");
+		await vi.advanceTimersByTimeAsync(5000);
+
+		const types = record.items.flatMap((item) => (item.kind === "windlass" ? [item.event.type] : [item.kind]));
+		const tail = types.slice(types.indexOf("execution.interrupt_requested"));
+		expect(tail).toEqual(["execution.interrupt_requested", "tool.settled", "step.failed", "synthetic.appended", "execution.interrupted", "cli.summary", "turn.ended"]);
+		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended", outcome: "interrupted", steps: 1 });
+		expect(record.summaries.at(-1)).toMatchObject({ status: "idle", lastOutcome: "interrupted" });
+
+		const [call] = toolBlocks(record.view?.turns[0] as never);
+		expect(call).toMatchObject({ state: "failed", interrupted: true });
+		expect(call?.output).toMatch(/^Stopped by the user after \d+ s\. Output so far:\n\$ tsc/);
+		// Nothing more arrives from the recording once it is stopped.
+		const count = record.items.length;
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(record.items).toHaveLength(count);
+	});
+
+	it("keeps the visible part of an answer that was being written", async () => {
+		const { api, record } = await freshSession();
+		await after(400, api.prompt({ text: "Run the full build and the tests." }));
+		while (!record.deltas.some((delta) => delta.event.type === "text.delta")) await vi.advanceTimersByTimeAsync(20);
+		await after(200, api.stop());
+		await vi.advanceTimersByTimeAsync(5000);
+		const text = record.view?.turns[0]?.blocks.find((block) => block.kind === "text");
+		expect(text).toMatchObject({ streaming: false });
+		expect(text?.kind === "text" && text.text.length).toBeGreaterThan(0);
+		expect(record.view?.turns[0]?.end?.outcome).toBe("interrupted");
+	});
+
+	it("can stop before Windlass has started", async () => {
+		const { api, record } = await freshSession();
+		await after(200, api.prompt({ text: "Anything" }));
+		await after(100, api.stop());
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended", outcome: "interrupted", steps: null, usage: null });
+		expect(record.items.some((item) => item.kind === "windlass")).toBe(false);
+	});
+});
+
+describe("turns that do not go well", () => {
+	it("ends in a provider error the user can read", async () => {
+		const { api, record } = await freshSession();
+		await after(400, api.prompt({ text: "Use up the usage limit." }));
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended", outcome: "failed" });
+		expect(record.view?.turns[0]?.blocks.filter((block) => block.kind === "error")).toEqual([expect.objectContaining({ message: "Usage limit reached; it resets in 3 hours." })]);
+	});
+
+	it("ends in a platform error when the sandbox fails", async () => {
+		const { api, record } = await freshSession();
+		await after(400, api.prompt({ text: "crash the sandbox" }));
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended", outcome: "error", exitCode: null, message: expect.stringContaining("stopped responding") });
+		expect(record.items.filter((item) => item.kind === "platform").at(-1)).toMatchObject({ level: "error" });
+	});
+
+	it("plays a call that is refused", async () => {
+		const { api, record } = await freshSession("docker-hardened");
+		await after(400, api.prompt({ text: "Run it with nobody to approve it." }));
+		await vi.advanceTimersByTimeAsync(20_000);
+		const [call] = toolBlocks(record.view?.turns[0] as never);
+		expect(call).toMatchObject({ state: "refused", refusal: { reason: "unattended" } });
+		expect(record.view?.turns[0]?.blocks.some((block) => block.kind === "notice")).toBe(true);
+		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended", outcome: "succeeded" });
+	});
+});
+
+describe("a dropped connection", () => {
+	it("reports reconnecting, then hands over a fresh snapshot", async () => {
+		const { record } = await freshSession();
+		client.simulateDrop(1000);
+		expect(record.connection.at(-1)).toBe("reconnecting");
+		await vi.advanceTimersByTimeAsync(1100);
+		expect(record.connection.at(-1)).toBe("connected");
+		expect(record.snapshots).toHaveLength(2);
+	});
+
+	it("reports a session that does not exist", async () => {
+		const { record, feed } = recorder();
+		client.session(auth, "nope").open(feed);
+		await vi.advanceTimersByTimeAsync(500);
+		expect(record.connection).toEqual(["connecting", "failed"]);
+		expect(record.errors[0]?.code).toBe("not_found");
+	});
+});
+
+// ---------------------------------------------------------------------------------------------
+// Interactive turns
+// ---------------------------------------------------------------------------------------------
+
+/** Plays a network prompt up to its question. */
+async function untilAsked(text = "Fetch the response headers of example.com") {
+	const session = await freshSession();
+	await after(400, session.api.prompt({ text }));
+	while (session.record.question === null) await vi.advanceTimersByTimeAsync(50);
+	return session;
+}
+
+const toolOf = (view: SessionView | null, turnNumber = 1) => toolBlocks(view?.turns.find((one) => one.turn === turnNumber) as never);
+
+describe("a question", () => {
+	it("stops the turn at the question and says so", async () => {
+		const { record } = await untilAsked();
+		const question = record.question as PendingQuestion;
+		expect(question).toMatchObject({ turn: 1, callId: "c1", title: "Allow network access for this command?", subject: "curl -sI --max-time 10 https://example.com | head -n 3", subagent: null });
+		expect(question.details).toEqual(["With network access the command can send anything it can read to any host."]);
+		expect(question.choices.map((choice) => [choice.id, choice.approve])).toEqual([
+			["once", true],
+			["session", true],
+			["deny", false],
+		]);
+		expect(question.expiresAt - question.askedAt).toBe(3 * 60_000);
+		expect(record.summaries.at(-1)?.status).toBe("waiting");
+		expect(toolOf(record.view)[0]).toMatchObject({ state: "asking", question: { title: question.title } });
+		// Nothing more happens while it waits.
+		const count = record.items.length;
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(record.items).toHaveLength(count);
+	});
+
+	it("carries on with the approved recording when allowed for the session", async () => {
+		const { api, record } = await untilAsked();
+		await after(400, api.answer({ questionId: (record.question as PendingQuestion).id, choice: "session" }));
+		expect(record.question).toBeNull();
+		await vi.advanceTimersByTimeAsync(20_000);
+		const [call, slow] = toolOf(record.view);
+		expect(call).toMatchObject({ state: "done", answer: { choice: "session", approve: true, by: "user", remembers: "network for sandboxed commands, for the rest of this session" } });
+		expect(slow).toMatchObject({ state: "done" });
+		expect(record.view?.turns[0]?.blocks.filter((block) => block.kind === "notice").map((block) => block.kind === "notice" && block.noticeKind)).toEqual(["taint"]);
+		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended", outcome: "succeeded", steps: 3 });
+		expect(record.summaries.at(-1)?.status).toBe("idle");
+	});
+
+	it("carries on with the declined recording, with the note", async () => {
+		const { api, record } = await untilAsked();
+		await after(400, api.answer({ questionId: (record.question as PendingQuestion).id, choice: "deny", note: "  use the cached copy  " }));
+		await vi.advanceTimersByTimeAsync(20_000);
+		const [call] = toolOf(record.view);
+		expect(call).toMatchObject({ state: "refused", answer: { choice: "deny", approve: false, note: "use the cached copy", by: "user" }, output: "Not run: the user declined this call. Their note: use the cached copy" });
+		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended", outcome: "succeeded" });
+	});
+
+	it("is declined by the platform when nobody answers", async () => {
+		const { record } = await untilAsked();
+		await vi.advanceTimersByTimeAsync(3 * 60_000 + 20_000);
+		expect(record.questions.at(-1)).toBeNull();
+		const [call] = toolOf(record.view);
+		expect(call).toMatchObject({ state: "refused", answer: { choice: "deny", by: "platform", platformText: "Nobody answered within 3 minutes, so the platform declined the call." } });
+		// The platform's line is told once, with the call, not as a line of its own.
+		expect(record.view?.turns[0]?.blocks.some((block) => block.kind === "platform" && block.text.startsWith("Nobody"))).toBe(false);
+		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended" });
+	});
+
+	it("refuses an answer to a question that is gone, with no_question", async () => {
+		const { api, record } = await untilAsked();
+		const id = (record.question as PendingQuestion).id;
+		await after(400, api.answer({ questionId: id, choice: "once" }));
+		const failure = await after(400, api.answer({ questionId: id, choice: "once" }).catch((error: unknown) => error));
+		expect(failure).toMatchObject({ code: "user", reason: "no_question" });
+	});
+
+	it("can be made to fail as if answered in another tab", async () => {
+		const { api, record } = await untilAsked();
+		client.mockNextAnswer("elsewhere");
+		const failure = await after(400, api.answer({ questionId: (record.question as PendingQuestion).id, choice: "deny" }).catch((error: unknown) => error));
+		expect(failure).toMatchObject({ reason: "no_question", message: expect.stringContaining("another tab") });
+		expect(record.question).toBeNull();
+	});
+
+	it("is withdrawn when the turn is stopped", async () => {
+		const { api, record } = await untilAsked();
+		await after(200, api.stop());
+		expect(record.question).toBeNull();
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(toolOf(record.view)[0]).toMatchObject({ state: "refused", outcome: "not_started" });
+		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended", outcome: "interrupted" });
+	});
+
+	it("is in the snapshot of a client that joins while it waits, and gone from one after", async () => {
+		const { api, record } = await untilAsked();
+		const late = recorder();
+		api.open(late.feed);
+		await vi.advanceTimersByTimeAsync(300);
+		expect(late.record.snapshots[0]?.question).toEqual(record.question);
+		expect(toolOf(late.record.view)[0]).toMatchObject({ state: "asking" });
+		await after(400, api.answer({ questionId: (record.question as PendingQuestion).id, choice: "once" }));
+		client.simulateDrop(500);
+		await vi.advanceTimersByTimeAsync(700);
+		expect(late.record.snapshots.at(-1)?.question).toBeNull();
+	});
+
+	it("says which task asked, for a subagent", async () => {
+		const { record } = await untilAsked("Have a subagent fetch the headers");
+		expect(record.question?.subagent).toBe("Check what the API's health endpoint returns");
+	});
+
+	it("is waiting in the seeded session when the app loads", async () => {
+		const { record, feed } = recorder();
+		client.session(auth, "headers").open(feed);
+		await vi.advanceTimersByTimeAsync(300);
+		expect(record.snapshots[0]?.summary.status).toBe("waiting");
+		expect(record.question).toMatchObject({ turn: 2, title: "Allow network access for this command?" });
+		expect(toolOf(record.view, 2)[0]).toMatchObject({ state: "asking" });
+	});
+});
+
+describe("steering", () => {
+	it("adds the message to the running turn, and delivers it at the next step", async () => {
+		const { api, record } = await untilAsked();
+		const result = await after(400, api.prompt({ text: "Also, keep it short.", model: "gpt-6-luna" }));
+		expect(result).toEqual({ turn: 1, steered: true });
+		const steer = record.items.find((item) => item.kind === "user" && item.steer === true);
+		expect(steer).toMatchObject({ turn: 1, text: "Also, keep it short.", model: "gpt-6.1-sol" });
+		const enqueued = record.items.find((item) => item.kind === "windlass" && item.event.type === "inbox.enqueued" && item.event.data?.delivery === "steer" && item.seq > (steer?.seq ?? 0));
+		expect(enqueued).toBeDefined();
+		await after(400, api.answer({ questionId: (record.question as PendingQuestion).id, choice: "once" }));
+		await vi.advanceTimersByTimeAsync(20_000);
+		const types = record.items.flatMap((item) => (item.kind === "windlass" ? [item.event.type] : []));
+		expect(types.indexOf("inbox.delivered", types.indexOf("approval.answered"))).toBeLessThan(types.indexOf("step.started", types.indexOf("approval.answered") + 1) + 1);
+		expect(record.view?.turns[0]?.blocks.filter((block) => block.kind === "user").map((block) => block.kind === "user" && block.steer)).toEqual([false, true]);
+	});
+});
+
+describe("stopping one call", () => {
+	it("stops the call and lets the turn go on", async () => {
+		const { api, record } = await freshSession();
+		await after(400, api.prompt({ text: "Run the full build and the tests." }));
+		while (!record.deltas.some((delta) => delta.event.type === "tool.progress")) await vi.advanceTimersByTimeAsync(50);
+		const [running] = toolOf(record.view);
+		const result = await after(200, api.stopCall({ messageId: running?.messageId ?? "", callId: running?.callId ?? "" }));
+		expect(result).toEqual({ stopped: true, message: null });
+		expect(toolOf(record.view)[0]).toMatchObject({ state: "running", stopRequested: true });
+		const again = await after(200, api.stopCall({ messageId: running?.messageId ?? "", callId: running?.callId ?? "" }));
+		expect(again.stopped).toBe(false);
+		await vi.advanceTimersByTimeAsync(20_000);
+		const [stopped] = toolOf(record.view);
+		expect(stopped).toMatchObject({ state: "failed", stoppedByUser: true, interrupted: true, stopRequested: false });
+		expect(stopped?.output).toMatch(/\[Stopped by the user after \d+ s\]$/);
+		expect(record.items.filter((item) => item.kind === "windlass" && item.event.type === "tool.settled")).toHaveLength(1);
+		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended", outcome: "succeeded" });
+	});
+
+	it("says why when the call is not running", async () => {
+		const { api } = await freshSession();
+		expect(await after(300, api.stopCall({ messageId: "a1", callId: "c1" }).catch((error: unknown) => error))).toMatchObject({ code: "user", message: "No turn is running." });
+	});
+});

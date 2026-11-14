@@ -1,0 +1,46 @@
+{"type":"session.created","v":1,"data":{"cwd":"/repo","title":null,"lineage":null,"settings":{"model":"gpt-test","reasoningEffort":"medium"}},"sessionId":"ses_demo","seq":1,"time":1794666034932}
+{"type":"inbox.enqueued","v":1,"data":{"messageId":"u1","origin":null,"delivery":"steer","content":[{"type":"text","text":"Fix the failing test."}]},"sessionId":"ses_demo","seq":2,"time":1794666034932}
+{"type":"execution.started","v":1,"data":{"executionId":"exe_1"},"sessionId":"ses_demo","seq":3,"time":1794666034972}
+{"type":"snapshot.taken","v":1,"data":{"id":"w0","point":"delivery","messageId":null},"sessionId":"ses_demo","seq":4,"time":1794666035012}
+{"type":"baseline.set","v":1,"data":{"instructions":"You are a coding agent.","tools":[{"name":"read","description":"The read tool","inputSchema":{"type":"object"}},{"name":"shell","description":"The shell tool","inputSchema":{"type":"object"}},{"name":"write","description":"The write tool","inputSchema":{"type":"object"}}],"sources":[{"source":"date","fingerprint":"35269a311675f95c96331be023ef4cb9c9bfec98851002ee091552368acc293d"}]},"sessionId":"ses_demo","seq":5,"time":1794666035052}
+{"type":"inbox.delivered","v":1,"data":{"messageId":"u1"},"sessionId":"ses_demo","seq":6,"time":1794666035092}
+{"type":"step.started","v":1,"data":{"messageId":"a1","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":7,"time":1794666035172}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_1","name":"write","input":"{\"path\":\"add.ts\",\"content\":\"e"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_1","name":"write","input":"xport const add = (a: number,"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a1","callId":"call_1","name":"write","input":" b: number) => b + a - 1\\n\"}"}
+{"type":"tool.called","v":1,"data":{"messageId":"a1","callId":"call_1","name":"write","input":"{\"path\":\"add.ts\",\"content\":\"export const add = (a: number, b: number) => b + a - 1\\n\"}","providerData":null},"sessionId":"ses_demo","seq":8,"time":1794666035742}
+{"type":"snapshot.taken","v":1,"data":{"id":"w0","point":"step_start","messageId":"a1"},"sessionId":"ses_demo","seq":9,"time":1794666035782}
+{"type":"tool.started","v":1,"data":{"messageId":"a1","callId":"call_1","effect":"write"},"sessionId":"ses_demo","seq":10,"time":1794666035822}
+{"type":"tool.settled","v":1,"data":{"messageId":"a1","callId":"call_1","outcome":"success","output":"Wrote add.ts","truncation":null,"attachments":[],"display":null},"sessionId":"ses_demo","seq":11,"time":1794666036002}
+{"type":"snapshot.taken","v":1,"data":{"id":"w1","point":"step_end","messageId":"a1"},"sessionId":"ses_demo","seq":12,"time":1794666036042}
+{"type":"step.ended","v":1,"data":{"messageId":"a1","finish":"tool_calls","usage":{"inputTokens":1000,"cachedInputTokens":800,"outputTokens":50,"reasoningTokens":10}},"sessionId":"ses_demo","seq":13,"time":1794666036082}
+{"type":"step.started","v":1,"data":{"messageId":"a2","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":14,"time":1794666036162}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a2","text":"Fixed add."}
+{"type":"text.ended","v":1,"data":{"messageId":"a2","text":"Fixed add.","providerData":null},"sessionId":"ses_demo","seq":15,"time":1794666036700}
+{"type":"step.ended","v":1,"data":{"messageId":"a2","finish":"stop","usage":{"inputTokens":1000,"cachedInputTokens":800,"outputTokens":50,"reasoningTokens":10}},"sessionId":"ses_demo","seq":16,"time":1794666036740}
+{"type":"snapshot.taken","v":1,"data":{"id":"w1","point":"checks_start","messageId":null},"sessionId":"ses_demo","seq":17,"time":1794666036780}
+{"type":"checks.started","v":1,"data":{"run":1,"checks":["test"]},"sessionId":"ses_demo","seq":18,"time":1794666036820}
+{"type":"snapshot.taken","v":1,"data":{"id":"w1","point":"checks_end","messageId":null},"sessionId":"ses_demo","seq":19,"time":1794666036860}
+{"type":"checks.finished","v":1,"data":{"run":1,"evidence":{"run":1,"afterSeq":0,"changedFiles":["add.ts"],"checks":[{"name":"test","command":"bun test","status":"failed","exitCode":1,"signal":null,"durationMs":0,"files":["add.ts"],"fingerprint":"fingerprint","reusedFromSeq":null,"outputPath":null,"outputBytes":7,"outputLines":1}]}},"sessionId":"ses_demo","seq":20,"time":1794666036900}
+{"type":"synthetic.appended","v":1,"data":{"messageId":"r1","origin":"check_report","content":[{"type":"text","text":"Checks run by the harness after your changes: 1 failed.\n\nfailed: test (bun test), exit code 1. Output:\n1 fail\n[end of test output]\n\nFix the code so that this check passes, or, if you cannot, call report_check_failure with the name of each failing check and the reason.\n"}]},"sessionId":"ses_demo","seq":21,"time":1794666036940}
+{"type":"step.started","v":1,"data":{"messageId":"a3","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":22,"time":1794666037720}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a3","callId":"call_1","name":"write","input":"{\"path\":\"add.ts\",\"content\":\""}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a3","callId":"call_1","name":"write","input":"export const add = (a: numbe"}
+{"type":"tool.input.delta","sessionId":"ses_demo","messageId":"a3","callId":"call_1","name":"write","input":"r, b: number) => a + b\\n\"}"}
+{"type":"tool.called","v":1,"data":{"messageId":"a3","callId":"call_1","name":"write","input":"{\"path\":\"add.ts\",\"content\":\"export const add = (a: number, b: number) => a + b\\n\"}","providerData":null},"sessionId":"ses_demo","seq":23,"time":1794666038290}
+{"type":"snapshot.taken","v":1,"data":{"id":"w1","point":"step_start","messageId":"a3"},"sessionId":"ses_demo","seq":24,"time":1794666038330}
+{"type":"tool.started","v":1,"data":{"messageId":"a3","callId":"call_1","effect":"write"},"sessionId":"ses_demo","seq":25,"time":1794666038370}
+{"type":"tool.settled","v":1,"data":{"messageId":"a3","callId":"call_1","outcome":"success","output":"Wrote add.ts","truncation":null,"attachments":[],"display":null},"sessionId":"ses_demo","seq":26,"time":1794666038550}
+{"type":"snapshot.taken","v":1,"data":{"id":"w2","point":"step_end","messageId":"a3"},"sessionId":"ses_demo","seq":27,"time":1794666038590}
+{"type":"step.ended","v":1,"data":{"messageId":"a3","finish":"tool_calls","usage":{"inputTokens":1000,"cachedInputTokens":800,"outputTokens":50,"reasoningTokens":10}},"sessionId":"ses_demo","seq":28,"time":1794666038630}
+{"type":"step.started","v":1,"data":{"messageId":"a4","attempt":1,"model":"gpt-test"},"sessionId":"ses_demo","seq":29,"time":1794666038710}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a4","text":"Now it "}
+{"type":"text.delta","sessionId":"ses_demo","messageId":"a4","text":"adds."}
+{"type":"text.ended","v":1,"data":{"messageId":"a4","text":"Now it adds.","providerData":null},"sessionId":"ses_demo","seq":30,"time":1794666039276}
+{"type":"step.ended","v":1,"data":{"messageId":"a4","finish":"stop","usage":{"inputTokens":1000,"cachedInputTokens":800,"outputTokens":50,"reasoningTokens":10}},"sessionId":"ses_demo","seq":31,"time":1794666039316}
+{"type":"snapshot.taken","v":1,"data":{"id":"w2","point":"checks_start","messageId":null},"sessionId":"ses_demo","seq":32,"time":1794666040056}
+{"type":"checks.started","v":1,"data":{"run":2,"checks":["test"]},"sessionId":"ses_demo","seq":33,"time":1794666040096}
+{"type":"snapshot.taken","v":1,"data":{"id":"w2","point":"checks_end","messageId":null},"sessionId":"ses_demo","seq":34,"time":1794666040136}
+{"type":"checks.finished","v":1,"data":{"run":2,"evidence":{"run":2,"afterSeq":0,"changedFiles":["add.ts"],"checks":[{"name":"test","command":"bun test","status":"passed","exitCode":0,"signal":null,"durationMs":0,"files":["add.ts"],"fingerprint":"fingerprint","reusedFromSeq":null,"outputPath":null,"outputBytes":0,"outputLines":0}]}},"sessionId":"ses_demo","seq":35,"time":1794666040176}
+{"type":"execution.succeeded","v":1,"data":{"executionId":"exe_1","verification":{"status":"passed","evidence":{"run":2,"afterSeq":0,"changedFiles":["add.ts"],"checks":[{"name":"test","command":"bun test","status":"passed","exitCode":0,"signal":null,"durationMs":0,"files":["add.ts"],"fingerprint":"fingerprint","reusedFromSeq":null,"outputPath":null,"outputBytes":0,"outputLines":0}]}}},"sessionId":"ses_demo","seq":36,"time":1794666040216}
+{"type":"cli.summary","sessionId":"ses_demo","executionId":"exe_1","outcome":"succeeded","steps":4,"summaryCalls":0,"requests":4,"durationMs":5244,"usage":{"inputTokens":4000,"cachedInputTokens":3200,"outputTokens":200,"reasoningTokens":40},"cachedShare":0.8}
