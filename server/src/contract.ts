@@ -2,14 +2,14 @@
  * The contract between the server's actors and the web app. Types and constants only: this file
  * imports nothing, so the web app can import it without pulling in server code.
  *
- * Four actors:
+ * Three actors, and one HTTP route:
  *
- *   platform      key ["main"]            public facts about this deployment
+ *   GET /platform/info                    public facts about this deployment, from any server
  *   login         key [attemptId]         one sign-in attempt (ChatGPT, or the demo user)
  *   user          key [uid]               a user's profile and the index of their sessions
  *   agentSession  key [uid, sessionId]    one agent: its sandbox, its timeline, its runs
  *
- * `platform` and `login` take no credentials. `user` and `agentSession` require the connection
+ * The route and `login` take no credentials. `user` and `agentSession` require the connection
  * parameter `{ token }` (an AuthToken from `login`), and the token's uid must equal key[0].
  */
 
@@ -54,7 +54,7 @@ export interface SandboxProfile {
 }
 
 // ---------------------------------------------------------------------------------------------
-// platform actor
+// Platform information (HTTP, `GET PLATFORM_INFO_PATH`; once the `platform` actor)
 // ---------------------------------------------------------------------------------------------
 
 export interface PlatformInfo {
@@ -69,6 +69,7 @@ export interface PlatformInfo {
 	efforts: string[];
 }
 
+/** @deprecated The `platform` actor is gone: the information is served over HTTP (PLATFORM_INFO_PATH). */
 export interface PlatformActions {
 	info(): Promise<PlatformInfo>;
 }
@@ -395,6 +396,13 @@ export interface AgentSessionEvents {
 
 /** Where the server's Rivet endpoint listens in development. */
 export const DEFAULT_ENDPOINT = "http://localhost:6420";
+/**
+ * Where the server's own HTTP routes listen in development. Every server serves them; with several
+ * servers the web app is pointed at whatever spreads requests over them.
+ */
+export const DEFAULT_PLATFORM_URL = "http://localhost:6440";
+/** `GET` on the platform's HTTP address: this deployment's `PlatformInfo`, as JSON. */
+export const PLATFORM_INFO_PATH = "/platform/info";
 
 export const MAX_PROMPT_CHARS = 20_000;
 export const MAX_TITLE_CHARS = 80;

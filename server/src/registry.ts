@@ -1,13 +1,15 @@
-/** The four actors of the contract. */
+/**
+ * The three actors of the contract. The platform's information is not an actor any more: every server
+ * serves it over HTTP (index.ts), so no single actor stands in the way of every visitor.
+ */
 
 import { setup } from "rivetkit";
 import { agentSession } from "./actors/agent-session.js";
 import { login } from "./actors/login.js";
-import { platform } from "./actors/platform.js";
 import { user } from "./actors/user.js";
 
 export const registry = setup({
-	use: { platform, login, user, agentSession },
+	use: { login, user, agentSession },
 	// A prompt may be 20,000 characters, and a snapshot carries a session's whole timeline.
 	maxIncomingMessageSize: 256 * 1024,
 	maxOutgoingMessageSize: 12 * 1024 * 1024,

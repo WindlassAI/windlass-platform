@@ -3,17 +3,17 @@
  */
 
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
+import { DATA_DIR, WORKSPACE, randomId } from "./provider.js";
+
+// The layout inside a sandbox is every provider's, so provider.ts names it; it is passed on here for the Docker code.
+export { DATA_DIR, WORKSPACE, randomId };
 
 /** The sandbox image the server uses. A layer made for another one (`createSandboxLayer({ image })`) is for the layer's own checks. */
 export const IMAGE = "windlass-platform-sandbox:latest";
 /** Every resource the platform creates carries `dev.windlass-platform=1`. */
 export const LABEL = "dev.windlass-platform";
 export const LABEL_ARG = `${LABEL}=1`;
-/** Windlass's data directory inside the image (`$XDG_DATA_HOME` is unset, so `~/.local/share/windlass`). */
-export const DATA_DIR = "/home/agent/.local/share/windlass";
-export const WORKSPACE = "/workspace";
 
 export interface DockerResult {
 	code: number | null;
@@ -62,10 +62,6 @@ export function docker(args: string[], options: DockerOptions = {}): Promise<Doc
 			else resolve(result);
 		});
 	});
-}
-
-export function randomId(bytes = 8): string {
-	return randomBytes(bytes).toString("hex");
 }
 
 /** Marks the helper containers this process starts, so one process can find its own among another's. */

@@ -37,14 +37,17 @@
  * layer's own `cli.summary`-shaped event follows, built from the events as the real layer builds it.
  *
  * Sign-in: paste `<redirectPrefix>?code=<name>` to sign in as `<name>@example.com`; `code=refused`
- * is refused, and `code=nosignin` signs in an account whose sign-in is then missing.
+ * is refused. The steps, the sealed attempt and the user's sign-in in the `user` actor are the real
+ * ones (server/src/signin/): only Windlass is stood in for (`FakeSignInCommands`), so what a sign-in
+ * holds here is a made-up `auth.json` with obviously fake tokens.
  *
  * Access tokens: a turn without a script asks the layer's token source for its user's access token
  * first, as the real layer does, and is handed one (a line `[wlp] token.handed` says so; the token is
  * obviously fake and goes nowhere). A demo turn asks for none. The account's name decides the answer:
  * `code=expired` signs in an account whose sign-in can no longer be refreshed ("auth_required": sign
- * in again), `code=offline` one whose token cannot be had this time ("token_unavailable"). The token
- * source fails as the real one does, by the kind of error it makes from Windlass's code: a
+ * in again), `code=offline` one whose token cannot be had this time ("token_unavailable"), and
+ * `code=brief` one whose saved token has only a minute left, so the first request refreshes it. The
+ * stand-in fails as Windlass does, by the kind of error the real commands make from Windlass's code: a
  * `SandboxUserError` for a sign-in that is missing (`signed_out`) or refused (`invalid_grant`), and a
  * `SignInRefreshError` with the code `network_error` for a sign-in service that cannot be reached.
  * Nothing here is told by the words of a message; the switches above are this layer's own.
@@ -76,6 +79,9 @@ import {
 	type Windlass,
 } from "./sandbox/api.js";
 import { NOT_SIGNED_IN, SIGN_IN_EXPIRED, SIGN_IN_UNREACHABLE, SignInRefreshError, TOKEN_VALID_FOR_MS, outdatedWindlass, tokenSourceFailure } from "./sandbox/handoff.js";
+import type { SignInCommands, TokenAnswer } from "./signin/commands.js";
+import { actorSignIns, memorySignIns } from "./signin/facade.js";
+import type { SignInMaterial } from "./signin/material.js";
 
 const WORKSPACE = "/workspace";
 const REDIRECT_PREFIX = "http://127.0.0.1:1455/auth/callback";
@@ -219,6 +225,8 @@ class FakeHandle implements SandboxHandle {
 
 class FakeSandboxes implements Sandboxes {
 	readonly all = new Map<string, FakeSandbox>();
+	/** As on Docker: the fake Windlass sessions are not tied to a sandbox. */
+	readonly sessionsLiveInSandbox = false;
 
 	profiles(): SandboxProfile[] {
 		return PROFILES;
@@ -734,23 +742,37 @@ class FakeWindlass implements Windlass {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Sign-in
+// Sign-in and access tokens: Windlass's sign-in commands, stood in for
 // ---------------------------------------------------------------------------------------------
 
-class FakeLogins implements ChatgptLogins {
-	private readonly attempts = new Map<string, ChatgptAccount | null>();
-	/** The users, each with the sign-in in its (imaginary) auth volume; null for a user without one. */
-	readonly users = new Map<string, ChatgptAccount | null>();
-	/** Called when a user's sign-in was replaced or forgotten. */
-	changed: (uid: string) => void = () => {};
+/** What the stand-in keeps in a sign-in's `auth.json`: the fields the platform reads, and tokens that are obviously not real. */
+interface FakeCredentials {
+	account: { sub: string; email: string };
+	accessToken: string;
+	refreshToken: string;
+	expiresAt: number;
+}
 
-	async start(attemptId: string): Promise<{ url: string; redirectPrefix: string }> {
-		this.attempts.set(attemptId, null);
-		return { url: `https://auth.openai.com/oauth/authorize?fake=1&state=${encodeURIComponent(attemptId)}`, redirectPrefix: REDIRECT_PREFIX };
+/**
+ * Windlass's sign-in commands without Windlass (signin/commands.ts has the real ones): the same steps
+ * over the same kind of material, so everything above them runs as it does for real, sealing, the
+ * actors' storage and the one-request-at-a-time token source included. `token` answers as
+ * `windlass login token --valid-for 20m` does: the saved token while that has twenty minutes left
+ * (`TOKEN_VALID_FOR_MS`), and otherwise a new one that lasts an hour, with a new refresh token, which
+ * is a changed `auth.json` for the caller to save.
+ */
+class FakeSignInCommands implements SignInCommands {
+	/** How many times the (imaginary) `windlass login token --json --valid-for 20m` ran. */
+	asked = 0;
+	private issued = 0;
+
+	async start(): Promise<{ url: string; redirectPrefix: string; material: SignInMaterial }> {
+		const state = randomBytes(8).toString("hex");
+		return { url: `https://auth.openai.com/oauth/authorize?fake=1&state=${state}`, redirectPrefix: REDIRECT_PREFIX, material: { files: { "auth-pending.json": JSON.stringify({ fake: true, state }) } } };
 	}
 
-	async finish(attemptId: string, pastedUrl: string): Promise<ChatgptAccount> {
-		if (!this.attempts.has(attemptId)) throw new SandboxUserError("This sign-in attempt is not known. Start again.");
+	async finish(material: SignInMaterial, pastedUrl: string): Promise<{ account: ChatgptAccount; material: SignInMaterial }> {
+		if (material.files["auth-pending.json"] === undefined) throw new SandboxUserError("This sign-in attempt is not known. Start again.");
 		if (!pastedUrl.startsWith(REDIRECT_PREFIX)) {
 			throw new SandboxUserError(`That is not the address the sign-in ends on. It starts with ${REDIRECT_PREFIX}`);
 		}
@@ -763,89 +785,45 @@ class FakeLogins implements ChatgptLogins {
 		if (!code) throw new SandboxUserError("The address has no sign-in code in it. Copy the whole address.");
 		if (code === "refused") throw new SandboxUserError("OpenAI refused the sign-in. Start again.");
 		if (code === "explode") throw new Error("fake layer: docker run failed with /var/run/docker.sock: permission denied");
-		const account: ChatgptAccount = { sub: `fake|${code}`, email: `${code}@example.com`, accessExpiresAt: Date.now() + 60 * 60 * 1000 };
-		this.attempts.set(attemptId, code === "nosignin" ? null : account);
-		return account;
+		const saved = this.issue({ sub: `fake|${code}`, email: `${code}@example.com` }, code === "brief" ? 60_000 : 60 * 60 * 1000);
+		return { account: { ...saved.account, accessExpiresAt: saved.expiresAt }, material: { files: { "auth.json": JSON.stringify(saved) } } };
 	}
 
-	async adopt(attemptId: string, uid: string): Promise<void> {
-		if (!this.attempts.has(attemptId)) throw new Error(`unknown sign-in attempt ${attemptId}`);
-		this.users.set(uid, this.attempts.get(attemptId) ?? null);
-		this.attempts.delete(attemptId);
-		this.changed(uid);
+	async token(material: SignInMaterial): Promise<TokenAnswer> {
+		const text = material.files["auth.json"];
+		if (text === undefined) return { ok: false, material, error: new SandboxUserError(NOT_SIGNED_IN) };
+		this.asked += 1;
+		await delay(10);
+		const saved = JSON.parse(text) as FakeCredentials;
+		if (saved.account.sub === "fake|expired") return { ok: false, material, error: new SandboxUserError(SIGN_IN_EXPIRED) };
+		// As the real commands word Windlass's `network_error`: its sentence, which names the host and the reason.
+		if (saved.account.sub === "fake|offline") return { ok: false, material, error: new SignInRefreshError("could not reach the sign-in service at auth.openai.com: the fake layer has no network", SIGN_IN_UNREACHABLE) };
+		if (saved.expiresAt - Date.now() > TOKEN_VALID_FOR_MS) return { ok: true, material, token: { accessToken: saved.accessToken, expiresAt: saved.expiresAt }, shorter: false };
+		// A refresh: the sign-in comes back with another refresh token, and has to be saved.
+		const next = this.issue(saved.account, 60 * 60 * 1000);
+		return { ok: true, material: { files: { ...material.files, "auth.json": JSON.stringify(next) } }, token: { accessToken: next.accessToken, expiresAt: next.expiresAt }, shorter: false };
 	}
 
-	async discard(attemptId: string): Promise<void> {
-		this.attempts.delete(attemptId);
-	}
-
-	async status(uid: string): Promise<ChatgptAccount | null> {
-		return this.users.get(uid) ?? null;
-	}
-
-	async logout(uid: string): Promise<void> {
-		if (this.users.has(uid)) this.users.set(uid, null);
-		this.changed(uid);
-	}
-
-	async ensureUserVolume(uid: string): Promise<void> {
-		if (!this.users.has(uid)) this.users.set(uid, null);
+	private issue(account: FakeCredentials["account"], lastsMs: number): FakeCredentials {
+		const number = (this.issued += 1);
+		return { account, accessToken: `FAKE-ACCESS-TOKEN-${number}-not-a-real-token`, refreshToken: `FAKE-REFRESH-TOKEN-${number}-not-a-real-token`, expiresAt: Date.now() + lastsMs };
 	}
 }
 
-// ---------------------------------------------------------------------------------------------
-// Access tokens
-// ---------------------------------------------------------------------------------------------
+/** The stand-in for Windlass's sign-in commands: what the server's sign-in machinery runs with WLP_SANDBOX=fake (signin/index.ts). */
+export function createFakeSignInCommands(): SignInCommands {
+	return new FakeSignInCommands();
+}
 
 /**
- * The real token source's behaviour without Windlass: one request per user at a time, and an answer
- * reused for as long as it is good for `TOKEN_VALID_FOR_MS` (twenty minutes) more, which is what a
- * token is asked with. A new one lasts an hour, as a refresh gives it.
+ * `signIns: "memory"` keeps the users' sign-ins in this process instead of in the server's actors: for
+ * a check that uses the layer by itself, with no server beside it.
  */
-class FakeAccessTokens implements AccessTokens {
-	private readonly cache = new Map<string, AccessToken>();
-	private readonly running = new Map<string, Promise<AccessToken>>();
-	/** How many times the (imaginary) `windlass login token --json --valid-for 20m` ran. */
-	asked = 0;
-
-	constructor(private readonly logins: FakeLogins) {}
-
-	async current(uid: string): Promise<AccessToken> {
-		const cached = this.cache.get(uid);
-		if (cached !== undefined && cached.expiresAt - Date.now() > TOKEN_VALID_FOR_MS) return { ...cached };
-		let running = this.running.get(uid);
-		if (running === undefined) {
-			running = this.ask(uid).finally(() => this.running.delete(uid));
-			this.running.set(uid, running);
-		}
-		return { ...(await running) };
-	}
-
-	forget(uid: string): void {
-		this.cache.delete(uid);
-	}
-
-	private async ask(uid: string): Promise<AccessToken> {
-		// The run's number is taken before the wait: two users asked at once get two tokens.
-		const run = (this.asked += 1);
-		await delay(10);
-		const account = this.logins.users.get(uid) ?? null;
-		if (account === null) throw new SandboxUserError(NOT_SIGNED_IN);
-		if (account.sub === "fake|expired") throw new SandboxUserError(SIGN_IN_EXPIRED);
-		// As the real token source words Windlass's `network_error`: its sentence, which names the host and the reason.
-		if (account.sub === "fake|offline") throw new SignInRefreshError("could not reach the sign-in service at auth.openai.com: the fake layer has no network", SIGN_IN_UNREACHABLE);
-		const token = { accessToken: `FAKE-ACCESS-TOKEN-${run}-not-a-real-token`, expiresAt: Date.now() + 60 * 60 * 1000 };
-		this.cache.set(uid, token);
-		return token;
-	}
-}
-
-export function createFakeSandboxLayer(): SandboxLayer {
+export function createFakeSandboxLayer(options: { signIns?: "actors" | "memory" } = {}): SandboxLayer {
 	const raw = Number.parseInt(process.env.WLP_FAKE_DELAY_MS ?? "", 10);
 	const eventDelayMs = Number.isFinite(raw) && raw >= 0 ? raw : 15;
 	const sandboxes = new FakeSandboxes();
-	const logins = new FakeLogins();
-	const tokens = new FakeAccessTokens(logins);
-	logins.changed = (uid) => tokens.forget(uid);
+	// The sign-in steps and the token source are the real ones, over the stand-in for Windlass above.
+	const { logins, tokens } = options.signIns === "memory" ? memorySignIns({ commands: createFakeSignInCommands(), rows: new Map() }) : actorSignIns();
 	return { sandboxes, windlass: new FakeWindlass(sandboxes, eventDelayMs, tokens), logins, tokens };
 }

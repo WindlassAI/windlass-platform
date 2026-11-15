@@ -1,0 +1,9 @@
+# server/Dockerfile builds from the repository root and needs only the server, its lockfile and fixtures/.
+**/node_modules
+.data
+.git
+web/dist
+web/screenshots
+docs
+**/*.log
+.env

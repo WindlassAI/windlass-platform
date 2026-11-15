@@ -4,6 +4,9 @@
  * (token-file.ts). `commandsCanReadAccessToken` says whether a command the agent runs can read that
  * file: not where Windlass sandboxes commands (its sandbox hides the data directory), yes where commands
  * run directly in the container. web/src/api/mock.ts repeats these texts for the web app's mock.
+ *
+ * `PROFILES` is the list of a server on local Docker; `profilesFor` gives the list of either kind of
+ * server, and `e2bProfile` says what the E2B profile promises and why.
  */
 
 import type { SandboxProfile, SandboxProfileId } from "../contract.js";
@@ -63,6 +66,7 @@ export const PROFILES: SandboxProfile[] = [
 		commandsCanReadAccessToken: true,
 		available: true,
 	},
+	// As a server on Docker lists it: it cannot be chosen there, so its fields promise nothing. `e2bProfile` is what a server on E2B offers.
 	{
 		id: "e2b",
 		name: "E2B",
@@ -72,7 +76,7 @@ export const PROFILES: SandboxProfile[] = [
 		commandNetwork: true,
 		commandsCanReadAccessToken: false,
 		available: false,
-		unavailableReason: "Not built here yet: it needs an E2B provider in the sandbox layer, an E2B template with Windlass in it and an E2B account. Windlass no longer stands in the way: a session there would be handed a short-lived access token, as the Docker sessions are, and the sign-in would stay on the platform.",
+		unavailableReason: "This server runs its sandboxes on local Docker. E2B is built: a server started with WLP_SANDBOX=e2b, an E2B API key and the E2B template (README, \"E2B\") offers it in place of the Docker profiles, and says there what it promises.",
 	},
 	{
 		id: "daytona",
@@ -108,6 +112,68 @@ export const PROFILES: SandboxProfile[] = [
 		unavailableReason: "agentOS cannot run the Windlass executable, and Windlass's tools would have to work through agentOS's remote execution interface, which they do not. Handing a session an access token changes nothing about that.",
 	},
 ];
+
+/**
+ * The `e2b` profile where the server is configured for E2B (WLP_SANDBOX=e2b). What it promises is what
+ * holds whether or not Windlass's bubblewrap sandbox works inside an E2B microVM, which nobody has
+ * tried yet (scripts/e2b-check.ts reports it):
+ *
+ *   approval "auto"   Windlass probes bubblewrap when it starts. Where the probe passes, commands run in
+ *                     its sandbox; where it fails, Windlass sandboxes nothing and asks before every
+ *                     command instead (its docs/troubleshooting.md, "The sandbox is unavailable").
+ *                     Neither way does a command run unasked and unsandboxed, which "full" would allow
+ *   commandNetwork, commandsCanReadAccessToken
+ *                     true, the weaker promise: a command the user allowed to run outside the sandbox
+ *                     has the microVM's network and can read the file, and without bubblewrap that is
+ *                     every command
+ *
+ * `windlassSandbox: true` is for a deployment whose owner has seen the check pass and set
+ * WLP_E2B_WINDLASS_SANDBOX=1: then the stronger promise of the first Docker profile is made, and
+ * `E2bSandboxes.create` holds every new sandbox to it (it runs Windlass's own probe and removes a
+ * sandbox in which it fails).
+ */
+export function e2bProfile(options: { windlassSandbox: boolean }): SandboxProfile {
+	if (options.windlassSandbox) {
+		return {
+			id: "e2b",
+			name: "E2B + Windlass sandbox",
+			summary:
+				"A microVM of its own, hosted by E2B, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the microVM.",
+			layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace, credentials hidden)"],
+			approval: "auto",
+			commandNetwork: false,
+			commandsCanReadAccessToken: false,
+			available: true,
+		};
+	}
+	return {
+		id: "e2b",
+		name: "E2B",
+		summary:
+			"A microVM of its own, hosted by E2B. Whether Windlass's own sandbox works inside it has not been established, so nothing is promised of it: a command the agent runs may have network and may read the session's access token, which lasts about an hour and cannot be renewed. Windlass asks before any command it cannot sandbox. Your ChatGPT sign-in is never in the microVM.",
+		layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)"],
+		approval: "auto",
+		commandNetwork: true,
+		commandsCanReadAccessToken: true,
+		available: true,
+	};
+}
+
+/**
+ * Every profile, in the picker's order, as a server of this kind offers them. A deployment has one
+ * provider: a server on Docker cannot reach E2B, and one on E2B makes no local containers, since a
+ * container on one server machine is out of reach of the others.
+ */
+export function profilesFor(provider: "docker" | "e2b", e2b: { windlassSandbox: boolean } = { windlassSandbox: false }): SandboxProfile[] {
+	return PROFILES.map((profile): SandboxProfile => {
+		if (provider === "e2b" && profile.id === "e2b") return e2bProfile(e2b);
+		if (provider === "e2b" && PROFILE_RUN_FLAGS[profile.id] !== undefined) {
+			const { unavailableReason: _, ...rest } = profile;
+			return { ...rest, layers: [...profile.layers], available: false, unavailableReason: "This deployment runs its sandboxes on E2B, so that every server machine can reach them; a local Docker container is out of reach of the other machines." };
+		}
+		return { ...profile, layers: [...profile.layers] };
+	});
+}
 
 export function findProfile(id: SandboxProfileId): SandboxProfile {
 	const profile = PROFILES.find((item) => item.id === id);

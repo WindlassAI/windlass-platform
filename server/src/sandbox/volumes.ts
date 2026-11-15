@@ -1,24 +1,29 @@
 /**
- * The volumes of a user:
+ * The Docker volumes of a user:
  *
- *   wlp-auth-<uid>   the ChatGPT sign-in (`auth.json`, `host-id`, and `auth.lock` once it was refreshed).
- *                    Mounted at Windlass's data directory in helper containers only: the sign-in steps
- *                    (logins.ts) and `windlass login token` (tokens.ts). Made when a sign-in is adopted.
  *   wlp-user-<uid>   Windlass's data directory in the user's session containers: session logs, memory,
  *                    and the access token files of running turns. Never a sign-in.
  *
- * Before sign-ins had a volume of their own they were in the user volume. `migrateSignIn` moves one
- * that is still there.
+ * A sign-in is not in a volume any more: it is kept, sealed, in the user's `user` actor
+ * (server/src/signin/). Two older layouts are still found on a machine that ran the platform before,
+ * and are taken in the first time such a user is touched:
+ *
+ *   wlp-auth-<uid>   the single-machine layout: the sign-in (`auth.json`, `host-id`, and `auth.lock`
+ *                    once it was refreshed) in a volume of its own. `dockerLegacySignIns` reads it for
+ *                    the user's holder, which seals and saves it and then has the volume removed.
+ *   wlp-user-<uid>   the layout before that: the sign-in beside Windlass's sessions in the user volume.
+ *                    `migrateSignIn` moves it to wlp-auth-<uid>, from where it is taken in like any other.
+ *
+ * Both only exist on the one machine that has the volumes, so taking them in only happens when the
+ * user's actor runs on that machine: on a server without Docker's volumes there is nothing to find.
  */
 
-import { DATA_DIR, LABEL, createVolume, helperFlags, runHelper, tmpName, volumeExists } from "./docker.js";
+import type { LegacySignIns } from "../signin/holder.js";
+import { MATERIAL_FILES, MAX_MATERIAL_FILE_BYTES, type SignInMaterial, assertName, cleanMaterial, hasSignIn } from "../signin/material.js";
+import { DATA_DIR, LABEL, createVolume, helperFlags, removeVolume, runHelper, tmpName, volumeExists } from "./docker.js";
 
-/** User ids and attempt ids become Docker volume names: letters, digits, `_` and `-`, starting with a letter or digit, at most 64. */
-const NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-
-export function assertName(value: string, what: string): void {
-	if (typeof value !== "string" || !NAME.test(value)) throw new Error(`invalid ${what}: it must be 1 to 64 letters, digits, "_" or "-", starting with a letter or digit`);
-}
+// User ids become Docker volume names, which is why they are held to a safe alphabet (signin/material.ts).
+export { assertName };
 
 export const userVolume = (uid: string) => {
 	assertName(uid, "user id");
@@ -28,11 +33,6 @@ export const userVolume = (uid: string) => {
 export const authVolume = (uid: string) => {
 	assertName(uid, "user id");
 	return `wlp-auth-${uid}`;
-};
-
-export const loginVolume = (attemptId: string) => {
-	assertName(attemptId, "sign-in attempt id");
-	return `wlp-login-${attemptId}`;
 };
 
 /**
@@ -57,15 +57,67 @@ export async function ensureUserVolume(uid: string, image?: string): Promise<voi
 	else await migrateSignIn(uid, image);
 }
 
-/** Makes sure the user's auth volume exists. Returns whether it was created now. */
+/** Makes sure the auth volume of the single-machine layout exists, for a sign-in found in the layout before it. Returns whether it was created now. */
 export async function ensureAuthVolume(uid: string, image?: string): Promise<boolean> {
 	return ensureDataVolume(authVolume(uid), { [`${LABEL}.uid`]: uid, [`${LABEL}.holds`]: "sign-in" }, image);
 }
 
-/** The name of a turn's access token file in the user volume: one per sandbox (see windlass.ts). */
+/** The name of a turn's access token file in Windlass's data directory: one per sandbox (see token-file.ts). */
 export const TOKEN_FILE_PREFIX = "access-token-";
 
-// ---- the old layout ----
+/**
+ * The Docker provider's part of forgetting a sign-in (`SignInHolder.logout`): the token files of the
+ * user's turns that still run are removed from the user's data volume, so Windlass has none at its next
+ * model call. It works where the volume is, which is the one machine Docker sandboxes run on.
+ */
+export async function removeTokenFiles(uid: string, image?: string): Promise<void> {
+	const sessions = userVolume(uid);
+	if (!(await volumeExists(sessions))) return;
+	const helper = tmpName();
+	const result = await runHelper([...helperFlags(helper, "none"), "-v", `${sessions}:${DATA_DIR}`], helper, ["sh", "-c", `rm -f -- ${DATA_DIR}/${TOKEN_FILE_PREFIX}*`], { timeoutMs: 60_000, image });
+	if (result.code !== 0) throw new Error(`could not remove the access tokens handed to running turns: ${result.stderr.trim()}`);
+}
+
+// ---- the single-machine layout ----
+
+/** Prints the sign-in's files in the volume mounted at /mnt/auth as `{"files": {name: text}}`. The output is a secret. */
+const READ_SIGN_IN = `
+import json, os, sys
+files = {}
+for name in ${JSON.stringify([...MATERIAL_FILES])}:
+    path = os.path.join("/mnt/auth", name)
+    if os.path.isfile(path) and not os.path.islink(path) and os.path.getsize(path) <= ${MAX_MATERIAL_FILE_BYTES}:
+        with open(path) as f:
+            files[name] = f.read()
+json.dump({"files": files}, sys.stdout)
+`;
+
+/**
+ * The sign-ins the single-machine layout left in `wlp-auth-<uid>` volumes, for the users' holders to
+ * take in (signin/holder.ts). `take` first moves a sign-in of the layout before that into such a
+ * volume, so both arrive the same way. What it reads is handed to the holder and to nothing else.
+ */
+export function dockerLegacySignIns(image?: string): LegacySignIns {
+	return {
+		where: (uid) => `the Docker volume ${authVolume(uid)}`,
+		async take(uid): Promise<SignInMaterial | null> {
+			await migrateSignIn(uid, image);
+			const volume = authVolume(uid);
+			if (!(await volumeExists(volume))) return null;
+			const helper = tmpName();
+			const result = await runHelper([...helperFlags(helper, "none"), "-v", `${volume}:/mnt/auth:ro`], helper, ["python3", "-I", "-c", READ_SIGN_IN], { timeoutMs: 60_000, image });
+			if (result.code !== 0) throw new Error(`could not read the sign-in in volume ${volume}: ${result.stderr.trim()}`);
+			const material = cleanMaterial((JSON.parse(result.stdout) as { files?: unknown }).files);
+			// A volume without a sign-in (it was forgotten there) is still one to remove.
+			return hasSignIn(material) ? material : { files: {} };
+		},
+		async remove(uid): Promise<void> {
+			await removeVolume(authVolume(uid));
+		},
+	};
+}
+
+// ---- the layout before it ----
 
 /**
  * Exit 0: nothing to move. 10: the sign-in was moved. 11: the auth volume already had a newer sign-in,
@@ -94,9 +146,9 @@ exit "$status"
 const checked = new Map<string, Promise<void>>();
 
 /**
- * Moves a sign-in that an earlier version of the platform left in the user's data volume to the user's
- * auth volume. Called the first time this process touches a user; costs one short helper container
- * when the user volume already existed, and a second one when there is something to move.
+ * Moves a sign-in that the first layout left in the user's data volume to an auth volume, from where the
+ * user's holder takes it in. Called the first time this process touches a user; costs one short helper
+ * container when the user volume already existed, and a second one when there is something to move.
  */
 export function migrateSignIn(uid: string, image?: string): Promise<void> {
 	let pending = checked.get(uid);

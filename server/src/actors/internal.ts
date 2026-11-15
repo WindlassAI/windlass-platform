@@ -1,6 +1,11 @@
 /**
  * How the actors call each other. Each call goes through `c.client()` with a short-lived service token
  * as its credential (see tokens.ts); the actions on this page accept nothing else.
+ *
+ * The same credential is what a server shows the `user` actor when it asks for a user's sign-in or
+ * access token (`internalAdoptSignIn`, `internalSignInStatus`, `internalSignOut`, `internalAccessToken`).
+ * Those calls are not made from here: the code that runs a turn has no actor's `c`, so
+ * signin/directory.ts makes them with a client of its own.
  */
 
 import type { SandboxProfileId, SessionSummary } from "../contract.js";

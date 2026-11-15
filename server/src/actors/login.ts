@@ -2,33 +2,42 @@
  * `login`, key [attemptId]: one sign-in attempt. Takes no credentials; it is what hands them out.
  *
  * The actor lives for one attempt: it destroys itself shortly after it has issued a token, or when the
- * attempt expires, and an unfinished attempt's data volume is discarded with it.
+ * attempt expires, and an unfinished attempt is gone with it.
+ *
+ * Between `start` and `finish` the attempt is what Windlass saved of the pending sign-in (the PKCE
+ * verifier, state and nonce in `auth-pending.json`, and `host-id`). It is kept in this actor's storage,
+ * sealed for this attempt with a key the storage does not hold (signin/seal.ts), and nowhere else: the
+ * two steps may be served by different servers, and all that connects them is that blob. A finished
+ * sign-in stays here only until the user's actor has taken it, sealed for that user.
  */
 
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, clientError } from "../auth.js";
 import { config } from "../config.js";
 import type { AuthResult, LoginStart, UserProfile } from "../contract.js";
 import { getLayer } from "../layer.js";
+import { uidOfAccount } from "../signin/material.js";
 import { issueUserToken } from "../tokens.js";
 
 /** How long a started attempt is accepted: ten minutes. */
 const ATTEMPT_TTL_MS = config.loginTtlMs;
 /** How long the actor stays after it has issued a token, so the reply reaches the client first. */
 const CLEANUP_DELAY_MS = 3_000;
-/** The attempt id names a Docker volume, so it is held to a safe alphabet. */
+/** The attempt id is part of what a sealed attempt is bound to, and it may name things at a provider, so it is held to a safe alphabet. */
 const ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 
 interface Attempt {
 	/** `new`: nothing started. `started`: waiting for the pasted address. `done`: a token was issued. */
 	state: "new" | "started" | "done";
 	expiresAt: number;
-	/** Whether the sandbox layer holds a data volume for this attempt that nobody has adopted. */
-	volume: boolean;
+	/** The attempt's sign-in material, sealed for this attempt: pending after `start`, finished until the user's actor has it. Null otherwise. */
+	sealed: string | null;
 	/** The pending `expire` schedule, cancelled when the attempt is restarted. */
 	scheduleId: string | null;
+	/** Set when an attempt that held material was emptied because it expired: said when the actor goes. */
+	discarded?: boolean;
 }
 
 interface LoginVars {
@@ -39,13 +48,13 @@ interface LoginVars {
 type AttemptRow = {
 	state: Attempt["state"];
 	expires_at: number;
-	volume: number;
+	sealed: string | null;
 	schedule_id: string | null;
 };
 
 async function save(c: { db: RawAccess; vars: LoginVars }): Promise<void> {
-	const { state, expiresAt, volume, scheduleId } = c.vars.attempt;
-	await c.db.execute("UPDATE attempt SET state = ?, expires_at = ?, volume = ?, schedule_id = ? WHERE id = 1", state, expiresAt, volume ? 1 : 0, scheduleId);
+	const { state, expiresAt, sealed, scheduleId } = c.vars.attempt;
+	await c.db.execute("UPDATE attempt SET state = ?, expires_at = ?, sealed = ?, schedule_id = ? WHERE id = 1", state, expiresAt, sealed, scheduleId);
 }
 
 /** One sign-in step at a time: the steps talk to the sandbox layer and must not interleave. */
@@ -69,10 +78,15 @@ export const login = actor({
 					id INTEGER PRIMARY KEY CHECK (id = 1),
 					state TEXT NOT NULL,
 					expires_at INTEGER NOT NULL,
-					volume INTEGER NOT NULL,
-					schedule_id TEXT
+					volume INTEGER NOT NULL DEFAULT 0,
+					schedule_id TEXT,
+					sealed TEXT
 				)
 			`);
+			// An attempt made before attempts were kept here has the table without the column. (`volume`
+			// is from that time: whether a Docker volume held the attempt. Nothing reads it any more.)
+			const columns = await db.execute<{ name: string }>("PRAGMA table_info(attempt)");
+			if (!columns.some((column) => column.name === "sealed")) await db.execute("ALTER TABLE attempt ADD COLUMN sealed TEXT");
 		},
 	}),
 
@@ -84,11 +98,11 @@ export const login = actor({
 	},
 
 	createVars: async (c): Promise<LoginVars> => {
-		const [row] = await c.db.execute<AttemptRow>("SELECT state, expires_at, volume, schedule_id FROM attempt WHERE id = 1");
+		const [row] = await c.db.execute<AttemptRow>("SELECT state, expires_at, sealed, schedule_id FROM attempt WHERE id = 1");
 		return {
 			attempt: row
-				? { state: row.state, expiresAt: row.expires_at, volume: row.volume === 1, scheduleId: row.schedule_id }
-				: { state: "new", expiresAt: Date.now() + ATTEMPT_TTL_MS, volume: false, scheduleId: null },
+				? { state: row.state, expiresAt: row.expires_at, sealed: row.sealed, scheduleId: row.schedule_id }
+				: { state: "new", expiresAt: Date.now() + ATTEMPT_TTL_MS, sealed: null, scheduleId: null },
 			busy: false,
 		};
 	},
@@ -97,16 +111,10 @@ export const login = actor({
 		assertOrigin(c);
 	},
 
-	// Runs when the attempt expires and when the actor has done its job.
-	onDestroy: async (c) => {
-		if (!c.vars.attempt.volume) return;
-		try {
-			const { logins } = await getLayer();
-			await logins.discard(c.key[0]);
-			console.log(`[wlp] login.discarded attempt=${c.key[0]}`);
-		} catch (error) {
-			c.log.error({ msg: "could not discard the sign-in attempt", error: String(error) });
-		}
+	// Runs when the attempt expires and when the actor has done its job. What an unfinished attempt
+	// held was in this actor's storage only (`expire` has emptied it), and goes with the actor.
+	onDestroy: (c) => {
+		if (c.vars.attempt.state !== "done" && c.vars.attempt.discarded) console.log(`[wlp] login.discarded attempt=${c.key[0]}`);
 	},
 
 	actions: {
@@ -120,16 +128,11 @@ export const login = actor({
 				if (attempt.state === "done") throw new UserError("This sign-in is already finished.", { code: "attempt_done" });
 				try {
 					const { logins } = await getLayer();
-					if (attempt.volume) {
-						await logins.discard(attemptId);
-						attempt.volume = false;
-					}
-					// Recorded before the call: a failure halfway may still have left a volume behind.
-					attempt.volume = true;
-					await save(c);
-					const { url, redirectPrefix } = await logins.start(attemptId);
+					// Calling it again restarts the attempt: what was pending is replaced.
+					const { url, redirectPrefix, attempt: sealed } = await logins.start(attemptId);
 
 					if (attempt.scheduleId) await c.schedule.cancel(attempt.scheduleId);
+					attempt.sealed = sealed;
 					attempt.state = "started";
 					attempt.expiresAt = Date.now() + ATTEMPT_TTL_MS;
 					attempt.scheduleId = await c.schedule.after(ATTEMPT_TTL_MS + 1_000, "expire");
@@ -149,16 +152,22 @@ export const login = actor({
 				const attemptId = c.key[0];
 				const attempt = c.vars.attempt;
 				if (attempt.state === "done") throw new UserError("This sign-in is already finished.", { code: "attempt_done" });
-				if (attempt.state !== "started") throw new UserError("Start the sign-in first.", { code: "attempt_not_started" });
+				if (attempt.state !== "started" || attempt.sealed === null) throw new UserError("Start the sign-in first.", { code: "attempt_not_started" });
 				if (Date.now() > attempt.expiresAt) throw new UserError("This sign-in attempt has expired. Start again.", { code: "attempt_expired" });
 
 				try {
 					const { logins } = await getLayer();
-					const account = await logins.finish(attemptId, pastedUrl.trim());
+					const finished = await logins.finish(attemptId, attempt.sealed, pastedUrl.trim());
+					const account = finished.account;
 					if (typeof account?.sub !== "string" || account.sub === "") throw new Error("the sign-in returned no account identifier");
-					const uid = `u_${createHash("sha256").update(account.sub).digest("hex").slice(0, 20)}`;
-					await logins.adopt(attemptId, uid);
-					attempt.volume = false;
+					// Kept before it is handed on: OpenAI takes the code in the address once, so when the user's
+					// actor cannot be reached now, the same address finishes the attempt when it is sent again.
+					attempt.sealed = finished.attempt;
+					await save(c);
+					const uid = uidOfAccount(account.sub);
+					await logins.adopt(attemptId, finished.attempt, uid);
+					// The user's actor has it: nothing of the sign-in stays here.
+					attempt.sealed = null;
 
 					const profile: UserProfile = { uid, email: typeof account.email === "string" ? account.email : null, demo: false };
 					const token = issueUserToken(profile);
@@ -207,6 +216,12 @@ export const login = actor({
 			}
 			// A schedule left over from before a restart of the attempt: the newer one will come.
 			if (attempt.state === "started" && Date.now() < attempt.expiresAt) return;
+			// What the attempt held goes before the actor does, whatever becomes of a destroyed actor's storage.
+			if (attempt.sealed !== null) {
+				attempt.sealed = null;
+				attempt.discarded = true;
+				await save(c);
+			}
 			c.destroy();
 		},
 	},

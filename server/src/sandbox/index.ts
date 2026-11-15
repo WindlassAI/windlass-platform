@@ -1,40 +1,88 @@
 /**
- * The sandbox layer: Docker containers for sessions, Windlass run inside them, the ChatGPT sign-in done
- * by Windlass in throwaway containers, and the one place that turns a sign-in into the short-lived
- * access token a turn is handed. See api.ts for the interface and sandbox/ for the image.
+ * The sandbox layer, put together: `createSandboxLayer` for a server on Docker, `createE2bLayer` for
+ * one on E2B (server/src/layer.ts chooses by WLP_SANDBOX).
+ *
+ * On Docker: containers for sessions and Windlass run inside them. The ChatGPT sign-in
+ * and the access token a turn is handed are not Docker's: they are the users' actors' (server/src/signin/),
+ * and this layer only passes them on, with the two things Docker adds (the user's data volume, and for
+ * a machine that ran the first version, its old auth volumes). See api.ts for the interface and
+ * sandbox/ for the image.
  */
 
 import type { SandboxLayer } from "./api.js";
-import { DockerChatgptLogins } from "./logins.js";
+import { WindlassSignIns } from "../signin/commands.js";
+import type { MemorySignInDirectory } from "../signin/directory.js";
+import { type SignInLogins, type SignInTokens, actorSignIns, memorySignIns } from "../signin/facade.js";
+import { DockerLoginRunner } from "./logins.js";
 import { DockerSandboxes } from "./sandboxes.js";
-import { DockerAccessTokens } from "./tokens.js";
+import { dockerLegacySignIns, ensureUserVolume, removeTokenFiles } from "./volumes.js";
 import { DockerWindlass } from "./windlass.js";
 
 export interface DockerSandboxLayer extends SandboxLayer {
 	sandboxes: DockerSandboxes;
 	windlass: DockerWindlass;
-	logins: DockerChatgptLogins;
-	tokens: DockerAccessTokens;
+	logins: SignInLogins;
+	tokens: SignInTokens;
+	/** The sign-ins kept in this process, with `signIns: "memory"`; null on a server, where the users' actors hold them. */
+	signIns: MemorySignInDirectory | null;
 }
 
 /** For the layer's own checks; the server takes the defaults. */
 export interface SandboxLayerOptions {
 	/** Another image than windlass-platform-sandbox:latest. */
 	image?: string;
-	/** "none": the helper that asks Windlass for an access token gets no network, so it can send nothing: a token that needs no refresh is printed all the same, and one that needs one fails. */
+	/**
+	 * "memory": the users' sign-ins are kept in this process instead of in the server's `user` actors,
+	 * and Windlass's sign-in commands run in helper containers of `image`. For a check that uses the
+	 * layer by itself, with no server beside it; one process only, so never for a deployment. The
+	 * default, "actors", is the server's: `logins` and `tokens` call the users' actors, and the commands
+	 * run where the server is configured to run them (signin/index.ts).
+	 */
+	signIns?: "actors" | "memory";
+	/** With "memory". "none": the helper that asks Windlass for an access token gets no network, so it can send nothing: a token that needs no refresh is printed all the same, and one that needs one fails. */
 	tokenNetwork?: "bridge" | "none";
+	/** With "memory": more `docker run` flags for that helper (a volume a stand-in for the sign-in service reads its plan from). */
+	signInHelperFlags?: string[];
 }
 
 export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSandboxLayer {
 	const { image } = options;
-	const tokens = new DockerAccessTokens({ image, network: options.tokenNetwork });
+	// Docker's part of a user: the volume Windlass's own data of that user's sessions is in.
+	const ensureUserData = (uid: string) => ensureUserVolume(uid, image);
+	const signIns =
+		options.signIns === "memory"
+			? memorySignIns({
+					commands: new WindlassSignIns(new DockerLoginRunner({ image, network: options.tokenNetwork, extraFlags: options.signInHelperFlags })),
+					legacy: dockerLegacySignIns(image),
+					revoke: (uid) => removeTokenFiles(uid, image),
+					ensureUserData,
+				})
+			: { ...actorSignIns({ ensureUserData }), directory: null };
 	return {
 		sandboxes: new DockerSandboxes({ image }),
-		windlass: new DockerWindlass(tokens, { image }),
-		// A sign-in that is replaced or forgotten takes the tokens kept of it with it.
-		logins: new DockerChatgptLogins({ image, changed: (uid) => tokens.forget(uid) }),
-		tokens,
+		windlass: new DockerWindlass(signIns.tokens, { image }),
+		logins: signIns.logins,
+		tokens: signIns.tokens,
+		signIns: signIns.directory,
 	};
+}
+
+/**
+ * The layer of a server on E2B (WLP_SANDBOX=e2b): sessions' sandboxes are E2B microVMs (e2b/), which
+ * every server machine of a deployment reaches. The sign-ins are the users' actors', as on Docker, and
+ * E2B adds nothing to a user: Windlass's data directory is on each sandbox's own disk, so there is no
+ * `ensureUserData`. The E2B provider and E2B's SDK are loaded here and not before, so a server on
+ * Docker needs neither. Throws, with what to set, when E2B_API_KEY is missing.
+ */
+export async function createE2bLayer(): Promise<SandboxLayer> {
+	const { createE2bSandboxLayer } = await import("./e2b/index.js");
+	const signIns = actorSignIns();
+	return createE2bSandboxLayer({
+		logins: signIns.logins,
+		tokens: signIns.tokens,
+		// Where Windlass's sign-in commands run is the server's to configure (WLP_WINDLASS_BIN, signin/index.ts): no image of the sandboxes is on this machine.
+		problem: async () => (await import("../signin/index.js")).signInProblem(),
+	});
 }
 
 export { SandboxUserError } from "./api.js";

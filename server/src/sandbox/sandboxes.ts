@@ -15,7 +15,8 @@ import { StringDecoder } from "node:string_decoder";
 import type { SandboxProfile, SandboxProfileId } from "../contract.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type SandboxHandle, SandboxUserError, type Sandboxes } from "./api.js";
 import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, WORKSPACE, docker, randomId } from "./docker.js";
-import { COMMON_RUN_FLAGS, PROFILES, PROFILE_RUN_FLAGS, findProfile } from "./profiles.js";
+import { COMMON_RUN_FLAGS, PROFILE_RUN_FLAGS, findProfile, profilesFor } from "./profiles.js";
+import { type Answer, type InternalExecResult, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, markTurnSandbox } from "./provider.js";
 import { tokenFilePath } from "./token-file.js";
 import { assertName, ensureUserVolume, userVolume } from "./volumes.js";
 
@@ -25,50 +26,7 @@ const STDERR_CAP = 256 * 1024;
 
 export const containerName = (id: string) => `wlp-session-${id}`;
 
-export interface InternalExecResult extends ExecResult {
-	/** SIGKILL had to be sent. */
-	killed: boolean;
-	/** Signals sent during a stop, in order, with ms since the stop began. */
-	stopLog: string[];
-	/** Processes of the run still alive after it ended and was reaped (should be 0). */
-	leftovers: number;
-}
-
-export interface StartOptions {
-	cwd?: string;
-	env?: Record<string, string>;
-	onStdout?: (chunk: string) => void;
-	onStderr?: (chunk: string) => void;
-}
-
-/** How a started program ended, as its local `docker exec` client saw it. */
-export interface ProcessEnd {
-	/** The program's exit code; null when the client was ended by a signal or could not be started. */
-	code: number | null;
-	/** The signal that ended the local client, if one did. */
-	signal: string | null;
-	/** Set when `docker` itself could not be run. */
-	error: Error | null;
-}
-
-/**
- * A program running in the sandbox under wlp-run, with its standard input left open: what a turn's
- * `windlass acp` is. Everything it starts carries the tag, so `signal` and `sweep` reach all of it.
- */
-export interface SandboxProcess {
-	readonly tag: string;
-	/** Writes to standard input. False once it is closed or the client is gone. */
-	write(text: string): boolean;
-	closeStdin(): void;
-	/** Resolves when the local client has ended and all its output was handed over. Never rejects. */
-	readonly ended: Promise<ProcessEnd>;
-	/** Whether `ended` has resolved. */
-	readonly hasEnded: boolean;
-	/** Sends a signal inside the sandbox: to the program itself, or to every process that carries the tag. */
-	signal(sig: "INT" | "TERM" | "KILL", who: "leader" | "all"): Promise<void>;
-	/** Kills the local client. It does not stop anything inside the sandbox. */
-	killClient(): void;
-}
+export type { InternalExecResult, ProcessEnd, SandboxProcess, StartOptions } from "./provider.js";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -77,14 +35,20 @@ function within<T>(promise: Promise<T>, ms: number): Promise<boolean> {
 	return Promise.race([promise.then(() => true), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), ms)))]).finally(() => clearTimeout(timer));
 }
 
-export class DockerSandboxHandle implements SandboxHandle {
+export class DockerSandboxHandle implements TurnSandbox {
 	readonly cwd = WORKSPACE;
 	constructor(
 		readonly id: string,
 		readonly profile: SandboxProfileId,
 		/** The user whose data volume the container mounts, from the container's label. */
 		readonly uid: string,
-	) {}
+	) {
+		markTurnSandbox(this);
+	}
+
+	get approval(): "auto" | "full" {
+		return findProfile(this.profile).approval;
+	}
 
 	get container(): string {
 		return containerName(this.id);
@@ -159,6 +123,18 @@ export class DockerSandboxHandle implements SandboxHandle {
 				child.kill("SIGKILL");
 			},
 		};
+	}
+
+	/** Runs argv directly with `docker exec`: no shell, no standard input, not under wlp-run. Null when `docker` could not be run. */
+	async ask(argv: string[], options: { env?: Record<string, string>; timeoutMs?: number } = {}): Promise<Answer | null> {
+		const env = Object.entries(options.env ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
+		const result = await docker(["exec", ...env, this.container, ...argv], { timeoutMs: options.timeoutMs }).catch(() => null);
+		return result === null ? null : { code: result.code, stdout: result.stdout, stderr: result.stderr };
+	}
+
+	/** A container runs until it is stopped: there is nothing to keep alive for a turn. */
+	async holdForTurn(): Promise<() => Promise<void>> {
+		return async () => {};
 	}
 
 	/** Runs argv (no shell) under wlp-run to its end, with stdin, streaming, timeout and a stop that reaches the container. */
@@ -252,7 +228,7 @@ export class DockerSandboxHandle implements SandboxHandle {
 	 * kills what is left, and removes `files`. Returns how many processes were still there after that.
 	 */
 	async sweep(tag: string, options: { waitMs?: number; files?: string[] } = {}): Promise<number> {
-		if (!/^[A-Za-z0-9_-]+$/.test(tag)) throw new Error("invalid run tag");
+		if (!RUN_TAG.test(tag)) throw new Error("invalid run tag");
 		const list = async () => {
 			const result = await docker(["exec", this.container, "wlp-run", "list", tag], { timeoutMs: 10_000 }).catch(() => null);
 			if (result === null || result.code !== 0) return 0; // the container is gone or stopped: nothing runs
@@ -270,8 +246,7 @@ export class DockerSandboxHandle implements SandboxHandle {
 			if (count === 0 && files.length === 0) return 0;
 		}
 		// One call: SIGKILL to what is left, the files removed, and what still runs after that counted.
-		const script = 'tag=$1; shift; if [ -n "$(wlp-run list "$tag")" ]; then wlp-run signal "$tag" KILL all; sleep 0.2; fi; [ $# -gt 0 ] && rm -f -- "$@"; wlp-run list "$tag" | wc -l';
-		const result = await docker(["exec", this.container, "sh", "-c", script, "sh", tag, ...files], { timeoutMs: 15_000 }).catch(() => null);
+		const result = await docker(["exec", this.container, "sh", "-c", SWEEP_SCRIPT, "sh", tag, ...files], { timeoutMs: 15_000 }).catch(() => null);
 		const left = result === null || result.code !== 0 ? 0 : Number(result.stdout.trim());
 		return Number.isFinite(left) ? left : 0;
 	}
@@ -297,8 +272,7 @@ export class DockerSandboxHandle implements SandboxHandle {
 	 * line. One write of a path at a time.
 	 */
 	async writeSecretFile(path: string, content: string): Promise<void> {
-		const script = 'set -eu; umask 077; tmp="$1.tmp"; trap \'rm -f -- "$tmp"\' EXIT; cat > "$tmp"; mv -f -- "$tmp" "$1"';
-		const result = await docker(["exec", "-i", this.container, "sh", "-c", script, "sh", path], { stdin: content, timeoutMs: 30_000 });
+		const result = await docker(["exec", "-i", this.container, "sh", "-c", SECRET_FILE_SCRIPT, "sh", path], { stdin: content, timeoutMs: 30_000 });
 		// What `sh` says about a failure names the path, never the content.
 		if (result.code !== 0) throw new Error(`cannot write ${path}: ${result.timedOut ? "timed out" : result.stderr.trim() || `exit ${result.code}`}`);
 	}
@@ -348,8 +322,11 @@ export class DockerSandboxes implements Sandboxes {
 		this.image = options.image ?? IMAGE;
 	}
 
+	/** The data directory is a volume of the user's (wlp-user-<uid>): it outlives every sandbox. */
+	readonly sessionsLiveInSandbox = false;
+
 	profiles(): SandboxProfile[] {
-		return PROFILES.map((profile) => ({ ...profile, layers: [...profile.layers] }));
+		return profilesFor("docker");
 	}
 
 	profile(id: SandboxProfileId): SandboxProfile {
@@ -362,7 +339,7 @@ export class DockerSandboxes implements Sandboxes {
 		const profile = findProfile(input.profile);
 		const flags = PROFILE_RUN_FLAGS[input.profile];
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
-		// The user's data volume, and only that one: the volume with the sign-in (wlp-auth-<uid>) is never mounted here.
+		// The user's data volume, and only that one. It holds no sign-in: that is in the user's actor (signin/).
 		await ensureUserVolume(input.uid, this.image);
 		const id = randomId(6);
 		const name = containerName(id);

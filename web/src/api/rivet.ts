@@ -1,5 +1,7 @@
 /**
- * The real `PlatformClient`: the four actors of contract.ts over `rivetkit/client` (3.1.1).
+ * The real `PlatformClient`: the three actors of contract.ts over `rivetkit/client` (3.1.1), and the
+ * platform's information over plain HTTP (`GET PLATFORM_INFO_PATH` on the platform's address, which
+ * any of the servers answers; it is not an actor).
  *
  * Nothing else in the web app imports RivetKit. The backend did not exist when this was written, so
  * everything here that rests on a reading of the docs rather than on a running server is marked
@@ -9,7 +11,7 @@
  * - Actors are addressed by name and key through the untyped client (`client.getOrCreate(name, key)`),
  *   because the server's registry type is not part of the contract. Arguments and results are typed
  *   here from contract.ts.
- * - `platform` and `login` are called without parameters. `user` and `agentSession` get the
+ * - `login` is called without parameters. `user` and `agentSession` get the
  *   connection parameter `{ token }` on every handle, which RivetKit sends both when a connection
  *   opens and with each stateless action call.
  * - Actions are stateless calls on the handle (HTTP). The two live feeds each hold one connection
@@ -21,11 +23,13 @@
  */
 import {
 	DEFAULT_ENDPOINT,
+	DEFAULT_PLATFORM_URL,
+	PLATFORM_INFO_PATH,
+	type PlatformInfo,
 	type AgentSessionActions,
 	type AgentSessionEvents,
 	type AuthResult,
 	type LoginActions,
-	type PlatformActions,
 	type SessionSnapshot,
 	type SessionSummary,
 	type TimelineItem,
@@ -45,7 +49,7 @@ type Handle = ActorHandle<Untyped>;
 type Conn = ActorConn<Untyped>;
 
 /** The actor names, as the server's registry is expected to register them. ASSUMPTION 1. */
-const ACTOR = { platform: "platform", login: "login", user: "user", agentSession: "agentSession" } as const;
+const ACTOR = { login: "login", user: "user", agentSession: "agentSession" } as const;
 
 /** Error codes a server might use for a refused token. ASSUMPTION 5. */
 const UNAUTHORIZED_CODES = new Set(["unauthorized", "unauthenticated", "forbidden", "invalid_token", "token_expired", "bad_token", "auth"]);
@@ -84,11 +88,63 @@ async function call<A, K extends keyof A & string>(target: Handle | Conn, endpoi
 	}
 }
 
-export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_ENDPOINT || DEFAULT_ENDPOINT): PlatformClient {
+/**
+ * An address without the namespace and token it may carry (`https://namespace:pk_...@api.rivet.dev`),
+ * for messages. The token is a public one, but it has no business on the screen.
+ */
+export function displayAddress(address: string): string {
+	try {
+		const url = new URL(address);
+		url.username = "";
+		url.password = "";
+		return url.toString().replace(/\/+$/, "");
+	} catch {
+		return address;
+	}
+}
+
+/**
+ * Where the platform's HTTP routes are: VITE_WLP_API when it is set; otherwise, in development, the
+ * Rivet endpoint's host on the platform's port, so that a browser on another machine pointed at
+ * `http://host:6420` finds them at `http://host:6440`.
+ */
+export function platformUrl(endpoint: string, configured: string | undefined = import.meta.env.VITE_WLP_API): string {
+	if (configured) return configured.replace(/\/+$/, "");
+	try {
+		const url = new URL(endpoint);
+		const local = new URL(DEFAULT_PLATFORM_URL);
+		if (url.port === "6420") return `${url.protocol}//${url.hostname}:${local.port}`;
+	} catch {
+		// Falls through to the default.
+	}
+	return DEFAULT_PLATFORM_URL;
+}
+
+/** `GET PLATFORM_INFO_PATH`. Refusals and failures have the shape of RivetKit's errors, and are read as those are. */
+async function fetchInfo(api: string): Promise<PlatformInfo> {
+	const abort = new AbortController();
+	const timer = setTimeout(() => abort.abort(), CONNECT_PATIENCE_MS);
+	try {
+		const response = await fetch(`${api}${PLATFORM_INFO_PATH}`, { signal: abort.signal, headers: { accept: "application/json" } });
+		const body: unknown = await response.json().catch(() => null);
+		if (!response.ok) {
+			if (isRivetError(body)) throw toPlatformError(body, api);
+			throw new PlatformError("internal", `The server at ${api} answered ${response.status}.`);
+		}
+		return body as PlatformInfo;
+	} catch (error) {
+		if (abort.signal.aborted) throw new PlatformError("network", `The server at ${api} did not answer.`, { cause: error });
+		throw toPlatformError(error, api);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_ENDPOINT || DEFAULT_ENDPOINT, api: string = platformUrl(endpoint)): PlatformClient {
 	// `devtools` defaults to true on localhost and injects a script from the endpoint; the app does not want it.
 	const client = createClient({ endpoint, devtools: false });
-
-	const platform = () => client.getOrCreate<Untyped>(ACTOR.platform, ["main"]);
+	// What messages name; the endpoint itself may carry a namespace and a token.
+	const shown = displayAddress(endpoint);
 
 	// One sign-in attempt at a time; `start`, `finish` and `demo` must reach the same actor.
 	let attemptId: string | null = null;
@@ -120,7 +176,7 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 			const isCurrent = () => !closed && mine === generation;
 			load(conn, isCurrent).catch((error: unknown) => {
 				if (!isCurrent()) return;
-				const failure = toPlatformError(error, endpoint);
+				const failure = toPlatformError(error, shown);
 				// A connection that drops during the load is retried by RivetKit; anything else is final.
 				if (conn.connStatus === "connected") report("failed", failure);
 				else lastError = failure;
@@ -137,7 +193,7 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 				// RivetKit gave up: the open was refused (a bad token, a destroyed actor). `onError` said why.
 				generation++;
 				reportedFailure = true;
-				report("failed", lastError ?? new PlatformError("network", `The connection to ${endpoint} could not be opened.`));
+				report("failed", lastError ?? new PlatformError("network", `The connection to ${shown} could not be opened.`));
 			} else {
 				generation++;
 				if (!reportedFailure) report(everConnected ? "reconnecting" : "connecting");
@@ -148,7 +204,7 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 			conn.onStatusChange(onStatus),
 			conn.onError((error) => {
 				if (closed) return;
-				lastError = toPlatformError(error, endpoint);
+				lastError = toPlatformError(error, shown);
 				// Whatever RivetKit does next (it may keep retrying), these two will not get better by waiting.
 				if (lastError.code === "unauthorized" || lastError.code === "not_found") {
 					generation++;
@@ -165,7 +221,7 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 		const patience = setTimeout(() => {
 			if (closed || everConnected || reportedFailure) return;
 			reportedFailure = true;
-			report("failed", lastError ?? new PlatformError("network", `The server at ${endpoint} is not answering.`));
+			report("failed", lastError ?? new PlatformError("network", `The server at ${shown} is not answering.`));
 		}, CONNECT_PATIENCE_MS);
 
 		return {
@@ -182,7 +238,7 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 
 	function userApi(auth: AuthResult): UserApi {
 		const handle = userHandle(auth);
-		const act = <K extends keyof UserActions & string>(name: K, ...args: Parameters<UserActions[K]>) => call<UserActions, K>(handle, endpoint, name, ...(args as never));
+		const act = <K extends keyof UserActions & string>(name: K, ...args: Parameters<UserActions[K]>) => call<UserActions, K>(handle, shown, name, ...(args as never));
 		return {
 			me: () => act("me"),
 			chatgpt: () => act("chatgpt"),
@@ -200,7 +256,7 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 					},
 					async (conn, isCurrent) => {
 						live = false;
-						const sessions = await call<UserActions, "listSessions">(conn, endpoint, "listSessions");
+						const sessions = await call<UserActions, "listSessions">(conn, shown, "listSessions");
 						if (!isCurrent()) return;
 						feed.onConnection?.("connected");
 						feed.onSessions(sessions);
@@ -221,7 +277,7 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 
 	function sessionApi(auth: AuthResult, sessionId: string): SessionApi {
 		const handle = sessionHandle(auth, sessionId);
-		const act = <K extends keyof AgentSessionActions & string>(name: K, ...args: Parameters<AgentSessionActions[K]>) => call<AgentSessionActions, K>(handle, endpoint, name, ...(args as never));
+		const act = <K extends keyof AgentSessionActions & string>(name: K, ...args: Parameters<AgentSessionActions[K]>) => call<AgentSessionActions, K>(handle, shown, name, ...(args as never));
 		const reloads = new Set<() => void>();
 		return {
 			prompt: (input) => act("prompt", input),
@@ -248,7 +304,7 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 					async (conn, isCurrent) => {
 						live = false;
 						early = [];
-						const snapshot: SessionSnapshot = await call<AgentSessionActions, "snapshot">(conn, endpoint, "snapshot");
+						const snapshot: SessionSnapshot = await call<AgentSessionActions, "snapshot">(conn, shown, "snapshot");
 						if (!isCurrent()) return;
 						feed.onConnection("connected");
 						// A server without questions sends no `question`: read it as none.
@@ -289,17 +345,17 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 
 	return {
 		kind: "rivet",
-		endpoint,
-		info: () => call<PlatformActions, "info">(platform(), endpoint, "info"),
+		endpoint: shown,
+		info: () => fetchInfo(api),
 		login: {
-			start: () => call<LoginActions, "start">(login(), endpoint, "start"),
+			start: () => call<LoginActions, "start">(login(), shown, "start"),
 			finish: async (pastedUrl) => {
-				const result = await call<LoginActions, "finish">(login(), endpoint, "finish", pastedUrl);
+				const result = await call<LoginActions, "finish">(login(), shown, "finish", pastedUrl);
 				attemptId = null;
 				return result;
 			},
 			demo: async () => {
-				const result = await call<LoginActions, "demo">(login(), endpoint, "demo");
+				const result = await call<LoginActions, "demo">(login(), shown, "demo");
 				attemptId = null;
 				return result;
 			},
@@ -343,12 +399,11 @@ function isRivetError(error: unknown): error is { group: string; code: string; m
 /*
  * ASSUMPTIONS to check against the running backend
  *
- * 1. Actor names. The registry registers the actors as `platform`, `login`, `user`, `agentSession`
- *    (`setup({ use: { platform, login, user, agentSession } })`), with keys ["main"], [attemptId],
- *    [uid], [uid, sessionId].
+ * 1. Actor names. The registry registers the actors as `login`, `user`, `agentSession`
+ *    (`setup({ use: { login, user, agentSession } })`), with keys [attemptId], [uid], [uid, sessionId].
  * 2. Parameters. `{ params: { token } }` given to `getOrCreate` / `get` reaches the actor's
  *    `onBeforeConnect(c, params)` both for `.connect()` and for a stateless `handle.action(...)`.
- * 3. Creation. `platform`, `login` and `user` may be created by the client's `getOrCreate`. An
+ * 3. Creation. `login` and `user` may be created by the client's `getOrCreate`. An
  *    `agentSession` is created by the server in `user.createSession`; the client uses `get`, and an
  *    unknown session fails with group "actor", code "not_found".
  * 4. Events. `c.broadcast("item", item)` (one argument) arrives as `conn.on("item", (item) => ...)`;

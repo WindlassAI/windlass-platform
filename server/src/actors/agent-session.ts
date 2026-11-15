@@ -15,6 +15,11 @@
  * turn, a sleep or a restart; `answer()` settles it, as does the platform when nobody answers in time.
  * `prompt()` during a turn steers it, and `stopCall()` stops one running tool call.
  *
+ * A sandbox nobody uses is suspended, and after longer removed (config.idleSuspendMs, idleDestroyMs),
+ * by the actor's own durable schedule (`c.schedule`): it holds while the actor sleeps and across a
+ * restart, and wakes the actor when it is due. The check never touches a turn in progress or one being
+ * accepted, and a prompt waits for a suspend or removal under way, then resumes or recreates the sandbox.
+ *
  * Codes of the UserErrors the contract's actions throw, besides those of auth.ts:
  *   session_not_found   the session was deleted, or never properly created
  *   empty_prompt, prompt_too_long, bad_effort, bad_model   `prompt()`: its input
@@ -107,6 +112,13 @@ interface SessionMeta {
 	cloned: boolean;
 	windlassSessionId: string | null;
 	turnStartedAt: number | null;
+	/**
+	 * When the last turn ended, or the workspace was last read through the sandbox: what the idle times
+	 * count from. Absent in sessions made before it; `updatedAt` stands in.
+	 */
+	lastUsedAt?: number;
+	/** The idle check the durable schedule holds: its id, and when it fires. */
+	idleCheck?: { id: string; at: number } | null;
 }
 
 /** A question put to the user: the copy the clients see, and the ways to settle the layer's promise. */
@@ -155,6 +167,12 @@ interface SessionVars {
 	reporting: Promise<void> | null;
 	reportAgain: boolean;
 	signedInUntil: number;
+	/** A suspend or removal of the idle sandbox under way; a prompt or a read of the workspace waits for it. */
+	idling: Promise<void> | null;
+	/** The copy of the workspace taken when the last turn ended; undefined until it is read from SQLite. */
+	workspace: WorkspaceCopy | null | undefined;
+	/** The tail of the queue that sets the idle check, so two of them cannot cross. */
+	arming: Promise<void>;
 }
 
 /** What the helpers below need of an actor context; every hook's and action's `c` fits. */
@@ -167,6 +185,7 @@ interface Ctx {
 	// biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
 	client(): any;
 	keepAwake<T>(promise: Promise<T>): Promise<T>;
+	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
 }
 
 type NewItem =
@@ -482,6 +501,12 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 			meta.sandbox = "none";
 			meta.cloned = false;
 		}
+		if (meta.windlassSessionId && layer.sandboxes.sessionsLiveInSandbox) {
+			// Windlass's own session went with the old sandbox: asking for it would only fail the turn.
+			meta.windlassSessionId = null;
+			note(c, turn, "info", "The agent's memory of the conversation went with the old sandbox, so it starts this turn without it.");
+		}
+		await dropWorkspace(c);
 		note(c, turn, "info", "Creating sandbox");
 		const id = await layer.sandboxes.create({ uid: meta.uid, sessionId: meta.sessionId, profile: meta.profile });
 		console.log(`[wlp] sandbox.created id=${id} session=${meta.sessionId}`);
@@ -513,6 +538,98 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	return handle;
 }
 
+/**
+ * Reading the workspace through the sandbox starts a paused one, so it counts as using it: the idle
+ * times start again, and a check is set for the sandbox that now runs.
+ */
+function markUsed(c: Ctx, meta: SessionMeta): void {
+	if (c.vars.turn) return;
+	meta.lastUsedAt = Date.now();
+	void c.keepAwake(armIdle(c, meta));
+}
+
+/** The changed files of the workspace and their diff, as they were when it was last read. */
+interface WorkspaceCopy {
+	files: WorkspaceFile[];
+	diff: string;
+}
+
+/** Null when git could not say. */
+async function readFiles(c: Ctx, sandbox: SandboxHandle): Promise<WorkspaceFile[] | null> {
+	const status = await sandbox.run(STATUS_COMMAND, { timeoutMs: GIT_TIMEOUT_MS });
+	if (status.exitCode !== 0) {
+		c.log.warn({ msg: "git status failed in the sandbox", exitCode: status.exitCode, stderr: tail(status.stderr, 3, 300) });
+		return null;
+	}
+	return parseStatus(status.stdout);
+}
+
+/** Null when git could not say. */
+async function readDiff(c: Ctx, sandbox: SandboxHandle): Promise<string | null> {
+	const diff = await sandbox.run(DIFF_COMMAND, { timeoutMs: GIT_TIMEOUT_MS });
+	if (diff.exitCode !== 0 && diff.stdout === "") {
+		c.log.warn({ msg: "git diff failed in the sandbox", exitCode: diff.exitCode, stderr: tail(diff.stderr, 3, 300) });
+		return null;
+	}
+	return diff.stdout.length > MAX_DIFF_CHARS ? diff.stdout.slice(0, MAX_DIFF_CHARS) : diff.stdout;
+}
+
+/** Reads the workspace from a running sandbox and keeps the copy. Null, and no copy kept, when it could not be read. Never throws. */
+async function copyWorkspace(c: Ctx, sandbox: SandboxHandle): Promise<WorkspaceCopy | null> {
+	try {
+		const files = await readFiles(c, sandbox);
+		const diff = files === null ? null : await readDiff(c, sandbox);
+		if (files === null || diff === null) return null;
+		const copy: WorkspaceCopy = { files, diff };
+		await c.db.execute("INSERT OR REPLACE INTO workspace (id, files, diff) VALUES (1, ?, ?)", JSON.stringify(files), diff);
+		c.vars.workspace = copy;
+		return copy;
+	} catch (error) {
+		c.log.warn({ msg: "could not copy the workspace's changes", error: describeError(error) });
+		return null;
+	}
+}
+
+async function savedWorkspace(c: Ctx): Promise<WorkspaceCopy | null> {
+	if (c.vars.workspace !== undefined) return c.vars.workspace;
+	const [row] = await c.db.execute<{ files: string; diff: string }>("SELECT files, diff FROM workspace WHERE id = 1");
+	c.vars.workspace = row ? { files: JSON.parse(row.files) as WorkspaceFile[], diff: row.diff } : null;
+	return c.vars.workspace;
+}
+
+/** Forgets the copy: the workspace it was taken from is gone, or changed without a new copy. Never throws. */
+async function dropWorkspace(c: Ctx): Promise<void> {
+	c.vars.workspace = null;
+	await c.db.execute("DELETE FROM workspace").catch((error: unknown) => {
+		c.log.warn({ msg: "could not forget the copy of the workspace", error: describeError(error) });
+	});
+}
+
+/**
+ * What `changes` and `diff` answer from: null without a sandbox. Only a turn changes the workspace, so
+ * between turns the copy taken when the last one ended is exact, and answering from it starts no paused
+ * sandbox: looking at a session costs nothing. During a turn, and where there is no copy (a session from
+ * before the copies, or a turn that ended without one), the sandbox itself is read.
+ */
+async function workspaceView(c: Ctx, meta: SessionMeta): Promise<WorkspaceCopy | { sandbox: SandboxHandle } | null> {
+	if (c.vars.idling) await c.vars.idling.catch(() => undefined);
+	if (!meta.sandboxId) return null;
+	if (!c.vars.turn) {
+		const saved = await savedWorkspace(c);
+		if (saved) return saved;
+	}
+	const { sandboxes } = await getLayer();
+	const sandbox = await sandboxes.connect(meta.sandboxId);
+	if (!sandbox) {
+		noteSandbox(c, meta, "none");
+		return null;
+	}
+	noteSandbox(c, meta, "running");
+	if (c.vars.turn) return { sandbox };
+	markUsed(c, meta);
+	return (await copyWorkspace(c, sandbox)) ?? { sandbox };
+}
+
 /** Asks the sandbox layer what state the sandbox is really in. */
 async function refreshSandbox(c: Ctx, meta: SessionMeta): Promise<void> {
 	if (!meta.sandboxId) return;
@@ -529,6 +646,9 @@ async function refreshSandbox(c: Ctx, meta: SessionMeta): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 
 function duration(ms: number): string {
+	const plural = (count: number, unit: string) => (count === 1 ? `1 ${unit}` : `${count} ${unit}s`);
+	if (ms >= 2 * 86_400_000 || (ms >= 86_400_000 && ms % 86_400_000 === 0)) return plural(Math.round(ms / 86_400_000), "day");
+	if (ms >= 2 * 3_600_000 || (ms >= 3_600_000 && ms % 3_600_000 === 0)) return plural(Math.round(ms / 3_600_000), "hour");
 	if (ms >= 60_000) {
 		const minutes = Math.round(ms / 60_000);
 		return minutes === 1 ? "1 minute" : `${minutes} minutes`;
@@ -666,6 +786,104 @@ function sealTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): void {
 }
 
 // ---------------------------------------------------------------------------------------------
+// An idle sandbox
+// ---------------------------------------------------------------------------------------------
+
+/** How long a check that failed, or found a prompt being accepted, waits before it looks again. */
+const IDLE_RETRY_MS = 60_000;
+
+function lastUsed(meta: SessionMeta): number {
+	return meta.lastUsedAt ?? meta.updatedAt;
+}
+
+/** When the sandbox is next due: to be suspended while it runs, to be removed while it exists. Null when there is none. */
+function idleDue(meta: SessionMeta): number | null {
+	if (!meta.sandboxId) return null;
+	return lastUsed(meta) + (meta.sandbox === "running" ? config.idleSuspendMs : config.idleDestroyMs);
+}
+
+/**
+ * Sets the durable schedule to look at the session when its sandbox is next due, not before `notBefore`.
+ * A check already set for that moment is kept; one set for another is replaced. Queued, so two calls
+ * cannot both schedule; never rejects.
+ */
+function armIdle(c: Ctx, meta: SessionMeta, notBefore = 0): Promise<void> {
+	const run = c.vars.arming.then(async () => {
+		if (c.vars.destroying || c.vars.meta !== meta) return;
+		const due = idleDue(meta);
+		const at = due === null ? null : Math.max(due, notBefore);
+		const current = meta.idleCheck ?? null;
+		if (current?.at === at || (current === null && at === null)) return;
+		meta.idleCheck = at === null ? null : { id: await c.schedule.at(at, "internalIdle"), at };
+		// Written before the old one is cancelled: a crash in between leaves the old one, which still works.
+		await persist(c);
+		if (current) await c.schedule.cancel(current.id).catch(() => false);
+	});
+	c.vars.arming = run.catch((error) => {
+		c.log.warn({ msg: "could not schedule the idle check of the sandbox", error: describeError(error) });
+	});
+	return c.vars.arming;
+}
+
+/** The durable schedule's visit: suspends or removes the sandbox when it is due, then sets the next visit. */
+async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
+	// A turn in progress, or one waiting on the user's answer, is never cut off: its end sets the next check.
+	if (c.vars.turn || meta.status !== "idle") {
+		console.log(`[wlp] sandbox.idle_kept session=${meta.sessionId} status=${meta.status}`);
+		return;
+	}
+	// A prompt being accepted may fail before it starts a turn, and then nothing would set one.
+	if (c.vars.accepting || c.vars.idling) {
+		await armIdle(c, meta, Date.now() + IDLE_RETRY_MS);
+		return;
+	}
+	const id = meta.sandboxId;
+	const since = lastUsed(meta);
+	const now = Date.now();
+	const remove = id !== null && now >= since + config.idleDestroyMs;
+	const suspend = id !== null && !remove && meta.sandbox === "running" && now >= since + config.idleSuspendMs;
+	let retry = 0;
+	if (id && (remove || suspend)) {
+		// Set in the same step as the checks above: from here a prompt waits for it.
+		const work = (async () => {
+			const { sandboxes } = await getLayer();
+			if (remove) {
+				await sandboxes.destroy(id);
+				console.log(`[wlp] sandbox.idle_removed id=${id} session=${meta.sessionId}`);
+				meta.sandboxId = null;
+				meta.sandbox = "none";
+				meta.cloned = false;
+				await dropWorkspace(c);
+				note(c, meta.turns, "info", `Removed the sandbox and its files after ${duration(config.idleDestroyMs)} without use; the next prompt starts a new one.`);
+			} else {
+				const state = await sandboxes.state(id);
+				if (state === "running") {
+					await sandboxes.suspend(id);
+					console.log(`[wlp] sandbox.idle_suspended id=${id} session=${meta.sessionId}`);
+					meta.sandbox = "paused";
+					note(c, meta.turns, "info", `Suspended the sandbox after ${duration(config.idleSuspendMs)} without use; the next prompt resumes it.`);
+				} else {
+					// Paused by a sleep, or gone: nothing to suspend, and nothing to say.
+					meta.sandbox = state;
+				}
+			}
+			publish(c);
+			await persist(c);
+		})();
+		c.vars.idling = work;
+		try {
+			await work;
+		} catch (error) {
+			c.log.error({ msg: remove ? "could not remove the idle sandbox" : "could not suspend the idle sandbox", sandbox: id, error: describeError(error) });
+			retry = Date.now() + IDLE_RETRY_MS;
+		} finally {
+			c.vars.idling = null;
+		}
+	}
+	await armIdle(c, meta, retry);
+}
+
+// ---------------------------------------------------------------------------------------------
 // A turn
 // ---------------------------------------------------------------------------------------------
 
@@ -716,6 +934,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 	let problem: string | null = null;
 	let events = 0;
 	let open = true;
+	let used: SandboxHandle | null = null;
 	// A turn that never ends would hold its sandbox, and one of the user's running slots, for ever.
 	const limit = setTimeout(() => {
 		if (!open) return;
@@ -727,6 +946,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		await persist(c);
 		const layer = await getLayer();
 		const sandbox = await openSandbox(c, meta, turn, signal, layer);
+		used = sandbox;
 		if (!signal.aborted) {
 			if (meta.status === "starting") {
 				meta.status = "running";
@@ -815,6 +1035,14 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		}
 		if (result?.windlassSessionId && outcome !== "error") meta.windlassSessionId = result.windlassSessionId;
 
+		// The turn may have changed the workspace: a new copy, taken before the turn is reported as ended so
+		// that whoever asks then gets it. Without one (the actor is stopping, or git failed) the old copy is
+		// wrong, and the next read goes to the sandbox.
+		if (used) {
+			const copied = c.vars.stopping || c.vars.destroying ? null : await copyWorkspace(c, used);
+			if (!copied) await dropWorkspace(c);
+		}
+
 		c.vars.pending = [];
 		append(c, {
 			turn,
@@ -830,6 +1058,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		meta.status = "idle";
 		meta.lastOutcome = outcome;
 		meta.updatedAt = Date.now();
+		meta.lastUsedAt = meta.updatedAt;
 		meta.turnStartedAt = null;
 		c.vars.turn = null;
 		publish(c);
@@ -840,12 +1069,15 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		// Whatever went wrong while closing the turn, the session must not stay "running".
 		c.log.error({ msg: "could not close the turn cleanly", error: describeError(error) });
 		meta.status = "idle";
+		meta.lastUsedAt = Date.now();
 		meta.turnStartedAt = null;
 		c.vars.turn = null;
 		c.vars.pending = [];
 		publish(c);
 		await persist(c);
 	}
+	// The idle times count from here.
+	await armIdle(c, meta);
 }
 
 /** Waits for `promise`, but no longer than `ms`. Never rejects. */
@@ -925,6 +1157,7 @@ export const agentSession = actor({
 					item TEXT NOT NULL
 				)
 			`);
+			await db.execute("CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK (id = 1), files TEXT NOT NULL, diff TEXT NOT NULL)");
 		},
 	}),
 
@@ -978,6 +1211,9 @@ export const agentSession = actor({
 			reporting: null,
 			reportAgain: false,
 			signedInUntil: 0,
+			idling: null,
+			workspace: undefined,
+			arming: Promise.resolve(),
 		};
 	},
 
@@ -1015,12 +1251,14 @@ export const agentSession = actor({
 			meta.status = "idle";
 			meta.lastOutcome = "interrupted";
 			meta.updatedAt = Date.now();
+			meta.lastUsedAt = meta.updatedAt;
 			meta.turnStartedAt = null;
 			await persist(c);
 			publish(c);
 		}
-		// The sandbox may have been paused, removed or left running while the actor was away.
-		void c.keepAwake(refreshSandbox(c, meta));
+		// The sandbox may have been paused, removed or left running while the actor was away. A session
+		// from before the idle checks, or one whose check was lost, gets one here.
+		void c.keepAwake(refreshSandbox(c, meta).then(() => armIdle(c, meta)));
 	},
 
 	onSleep: async (c) => {
@@ -1038,6 +1276,8 @@ export const agentSession = actor({
 				c.log.error({ msg: "could not pause the sandbox", error: describeError(error) });
 			}
 		}
+		// A paused sandbox is due for removal later: the schedule wakes the actor for it.
+		await within(armIdle(c, meta), REPORT_WAIT_MS);
 		await persist(c);
 		await within(c.vars.reporting, REPORT_WAIT_MS);
 	},
@@ -1123,6 +1363,8 @@ export const agentSession = actor({
 			c.vars.accepting = true;
 			let claimed = false;
 			try {
+				// A suspend or removal of the idle sandbox finishes first; the turn then resumes or recreates it.
+				if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 				let model = meta.model;
 				if (input.model !== undefined && input.model !== null && input.model !== "") {
 					const models = await platformModels();
@@ -1250,21 +1492,10 @@ export const agentSession = actor({
 		changes: async (c): Promise<WorkspaceFile[]> => {
 			requireUser(c);
 			const meta = liveMeta(c);
-			if (!meta.sandboxId) return [];
 			try {
-				const { sandboxes } = await getLayer();
-				const sandbox = await sandboxes.connect(meta.sandboxId);
-				if (!sandbox) {
-					noteSandbox(c, meta, "none");
-					return [];
-				}
-				noteSandbox(c, meta, "running");
-				const status = await sandbox.run(STATUS_COMMAND, { timeoutMs: GIT_TIMEOUT_MS });
-				if (status.exitCode !== 0) {
-					c.log.warn({ msg: "git status failed in the sandbox", exitCode: status.exitCode, stderr: tail(status.stderr, 3, 300) });
-					return [];
-				}
-				return parseStatus(status.stdout);
+				const view = await workspaceView(c, meta);
+				if (view === null) return [];
+				return "sandbox" in view ? ((await readFiles(c, view.sandbox)) ?? []) : view.files;
 			} catch (error) {
 				throw clientError(c.log, error, "The workspace's changes could not be read.");
 			}
@@ -1273,23 +1504,28 @@ export const agentSession = actor({
 		diff: async (c): Promise<string> => {
 			requireUser(c);
 			const meta = liveMeta(c);
-			if (!meta.sandboxId) return "";
 			try {
-				const { sandboxes } = await getLayer();
-				const sandbox = await sandboxes.connect(meta.sandboxId);
-				if (!sandbox) {
-					noteSandbox(c, meta, "none");
-					return "";
-				}
-				noteSandbox(c, meta, "running");
-				const diff = await sandbox.run(DIFF_COMMAND, { timeoutMs: GIT_TIMEOUT_MS });
-				if (diff.exitCode !== 0 && diff.stdout === "") {
-					c.log.warn({ msg: "git diff failed in the sandbox", exitCode: diff.exitCode, stderr: tail(diff.stderr, 3, 300) });
-					return "";
-				}
-				return diff.stdout.length > MAX_DIFF_CHARS ? diff.stdout.slice(0, MAX_DIFF_CHARS) : diff.stdout;
+				const view = await workspaceView(c, meta);
+				if (view === null) return "";
+				return "sandbox" in view ? ((await readDiff(c, view.sandbox)) ?? "") : view.diff;
 			} catch (error) {
 				throw clientError(c.log, error, "The workspace's diff could not be read.");
+			}
+		},
+
+		// --- called by the actor's own schedule only ------------------------------------------------
+
+		internalIdle: async (c): Promise<void> => {
+			// RivetKit sets `scheduledFire` on the context of a call its schedule makes; a client cannot.
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			const meta = c.vars.meta;
+			if (!meta || c.vars.destroying) return;
+			// A check that was replaced by a later one, and whose cancel did not reach it, does nothing.
+			if (meta.idleCheck && meta.idleCheck.id !== c.scheduledFire.id) return;
+			try {
+				await idleCheck(c, meta);
+			} catch (error) {
+				c.log.error({ msg: "the idle check of the sandbox failed", error: describeError(error) });
 			}
 		},
 

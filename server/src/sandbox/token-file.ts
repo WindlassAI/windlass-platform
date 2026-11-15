@@ -9,7 +9,7 @@
  *   what    `{"accessToken":"...","expiresAt":<ms>}`, as `windlass login token --json` prints it. With
  *           the expiry Windlass refuses an expired token before it sends anything.
  *   how     written to a file beside it (`<file>.tmp`) and renamed into place, mode 0600, the content on
- *           standard input (`DockerSandboxHandle.writeSecretFile`).
+ *           standard input (`TurnSandbox.writeSecretFile`).
  *   when    before Windlass starts, with a token that is good for at least `TOKEN_VALID_FOR_MS` (twenty
  *           minutes) more, then again when the token in it has `TOKEN_REPLACE_LEAD_MS` (ten minutes)
  *           left. The token source asks Windlass for one with twenty, so at that moment, whenever it
@@ -29,8 +29,9 @@
  *           Removed when the turn ends; `Sandboxes.suspend` and `destroy` remove what a turn that was
  *           cut off with its server left there, and `ChatgptLogins.logout` the files of all the user's
  *           running turns.
- *   whose   one file per sandbox, so per session, not per user. A user's sessions share the data volume
- *           and may run turns at the same time: with one file each, a turn writes, replaces and removes
+ *   whose   one file per sandbox, so per session, not per user. On Docker a user's sessions share the data
+ *           volume and may run turns at the same time (on E2B each sandbox has a data directory of its
+ *           own, and the file is named the same way): with one file each, a turn writes, replaces and removes
  *           only what is its own, the file is there only while a turn runs, and no turn's schedule
  *           depends on a token another turn wrote. (One file per user would have to stay for as long as
  *           any of the user's turns runs, and an older token written late by one turn could outlive
@@ -45,9 +46,8 @@
  */
 
 import { type AccessToken, type AccessTokens, SandboxUserError } from "./api.js";
-import { DATA_DIR } from "./docker.js";
 import { TOKEN_REPLACE_LEAD_MS, TOKEN_REPLACE_RETRY_MS, type TokenFileState, tokenFileContent } from "./handoff.js";
-import type { DockerSandboxHandle } from "./sandboxes.js";
+import { DATA_DIR, type TurnSandbox } from "./provider.js";
 import { TOKEN_FILE_PREFIX } from "./volumes.js";
 
 /** Where a sandbox's turn finds its access token. */
@@ -109,7 +109,7 @@ export class TokenFile {
 	replaced = 0;
 
 	constructor(
-		private readonly sandbox: DockerSandboxHandle,
+		private readonly sandbox: TurnSandbox,
 		private readonly tokens: AccessTokens,
 		options: TokenFileOptions = {},
 	) {

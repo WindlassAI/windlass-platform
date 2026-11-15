@@ -6,6 +6,10 @@
  * No real model is called, no real sign-in is completed, and nothing is sent to OpenAI:
  *
  *   - every sign-in here is a synthetic auth.json with obviously fake tokens (`FAKE-ACCESS-TOKEN-...`);
+ *   - no server runs beside this check, so its layers keep the users' sign-ins in this process
+ *     (`signIns: "memory"`) where a server keeps them in the users' actors: the same holders, sealed
+ *     the same way, over a store in memory. Windlass's sign-in commands run in helper containers of
+ *     the image, as a development server runs them;
  *   - the helper that asks Windlass for an access token has no network in this check's layers
  *     (`tokenNetwork: "none"`), so it can send nothing: a token that has the time left the platform
  *     asks for is printed all the same, and one that needs a refresh fails;
@@ -48,6 +52,7 @@ import { createSandboxLayer } from "../server/src/sandbox/index.js";
 import type { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { TOKEN_REMOVED, tokenFilePath } from "../server/src/sandbox/token-file.js";
 import { ensureAuthVolume } from "../server/src/sandbox/volumes.js";
+import type { SignInMaterial } from "../server/src/signin/material.js";
 import { DockerWindlass } from "../server/src/sandbox/windlass.js";
 import { warnAboutWindlass } from "../server/src/startup.js";
 
@@ -55,22 +60,25 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 /** This machine's architecture as Windlass's builds name it. */
 const ARCH = process.arch === "arm64" ? "arm64" : "x64";
 /** The helper that asks Windlass for an access token gets no network here: nothing this check does can reach OpenAI. */
-const layer = createSandboxLayer({ tokenNetwork: "none" });
+const layer = createSandboxLayer({ signIns: "memory", tokenNetwork: "none" });
 const run = randomId(3);
 const uid = `chk-${run}`;
 const uid2 = `chk-${run}-b`;
 /** A user with no sign-in at all, for the turn that must fail for want of one. */
 const uid3 = `chk-${run}-n`;
-/** The users of the token source, of the old layout (two), of the hand-off (two), of the old images (two) and of `--valid-for`. */
+/** The users of the token source, of the older layouts (three), of the hand-off (two), of the old images (two) and of `--valid-for`. */
 const uidT = `chk-${run}-t`;
 const uidM = `chk-${run}-m`;
 const uidM2 = `chk-${run}-m2`;
+const uidM3 = `chk-${run}-m3`;
 const uidH = `chk-${run}-h`;
 const uidD = `chk-${run}-d`;
 const uidO = `chk-${run}-o`;
 const uidO2 = `chk-${run}-o2`;
 const uidV = `chk-${run}-v`;
-const allUids = [uid, uid2, uid3, uidT, uidM, uidM2, uidH, uidD, uidO, uidO2, uidV];
+const allUids = [uid, uid2, uid3, uidT, uidM, uidM2, uidM3, uidH, uidD, uidO, uidO2, uidV];
+/** The volume the stand-in for OpenAI's token endpoint reads its plan from and notes its requests in (see STANDIN). */
+const STANDIN_VOLUME = `wlp-standin-chk-${run}`;
 /** Throwaway images this run built. */
 const createdImages = new Set<string>();
 
@@ -101,7 +109,6 @@ const only = (process.env.WLP_CHECK_SECTIONS ?? "")
 const createdSandboxes = new Set<string>();
 /** Every sandbox this run created, removed or not. */
 const everySandbox = new Set<string>();
-const createdAttempts = new Set<string>();
 let failures = 0;
 let passes = 0;
 
@@ -467,9 +474,9 @@ function turnClient(container: string): number | null {
 	return null;
 }
 
-/** Writes a synthetic, obviously fake auth.json into a volume. */
-async function writeFakeAuth(volume: string, account: { sub: string; email: string }, expiresAt: number, accessToken = TOKEN_A): Promise<void> {
-	const credentials = {
+/** A synthetic, obviously fake sign-in as Windlass saves one. */
+function fakeCredentials(account: { sub: string; email: string }, expiresAt: number, accessToken = TOKEN_A) {
+	return {
 		hostId: "urn:uuid:00000000-0000-4000-8000-00000000c0de",
 		clientId: "FAKE-client-id-for-sandbox-check",
 		account,
@@ -479,6 +486,17 @@ async function writeFakeAuth(volume: string, account: { sub: string; email: stri
 		scopes: ["openid", "chatgpt.tokens.use.direct"],
 		expiresAt,
 	};
+}
+
+/** The same as sign-in material: what a user's holder is handed, and what it keeps sealed. */
+function fakeSignIn(account: { sub: string; email: string }, expiresAt: number, accessToken = TOKEN_A): SignInMaterial {
+	const credentials = fakeCredentials(account, expiresAt, accessToken);
+	return { files: { "auth.json": JSON.stringify(credentials, null, 2), "host-id": credentials.hostId } };
+}
+
+/** Writes a synthetic, obviously fake auth.json into a volume: where the layouts before this one kept a sign-in. */
+async function writeFakeAuth(volume: string, account: { sub: string; email: string }, expiresAt: number, accessToken = TOKEN_A): Promise<void> {
+	const credentials = fakeCredentials(account, expiresAt, accessToken);
 	const helper = tmpName();
 	const result = await runHelper(
 		[...helperFlags(helper, "none"), "-v", `${volume}:${DATA_DIR}`],
@@ -497,11 +515,34 @@ async function lsVolume(volume: string): Promise<string> {
 
 const fakeAccount = (user: string) => ({ sub: `fake-sub-${user}`, email: "check@example.invalid" });
 
-/** A synthetic sign-in in the user's auth volume, as `adopt` leaves one, with nothing kept of an earlier one. */
+/** A synthetic sign-in in the user's store, as `adopt` leaves one, with nothing kept of an earlier one. The store is one for all of this check's layers, as it is for all servers; what `from` keeps of the user's token is dropped. */
 async function signInFake(user: string, accessToken: string, expiresAt: number, from = layer): Promise<void> {
-	await ensureAuthVolume(user);
-	await writeFakeAuth(`wlp-auth-${user}`, fakeAccount(user), expiresAt, accessToken);
+	saveFakeSignIn(user, accessToken, expiresAt);
 	from.tokens.forget(user);
+}
+
+/** The same without dropping the token a layer keeps: what a refresh leaves in the store. */
+function saveFakeSignIn(user: string, accessToken: string, expiresAt: number): void {
+	layer.signIns!.put(user, fakeSignIn(fakeAccount(user), expiresAt, accessToken));
+}
+
+/** A finished sign-in attempt, simulated: the synthetic sign-in Windlass would have saved, sealed for the attempt as `finish` hands it back. */
+function finishedAttempt(attemptId: string, account: { sub: string; email: string }, expiresAt: number, accessToken = TOKEN_A): string {
+	return layer.signIns!.sealer.seal("attempt", attemptId, JSON.stringify({ files: fakeSignIn(account, expiresAt, accessToken).files }));
+}
+
+/** What a user's store holds, as it is stored: null when nothing was ever saved for the user. */
+const storedSignIn = (user: string) => layer.signIns!.stored(user);
+
+const volumeGone = async (name: string) => (await docker(["volume", "inspect", name])).code !== 0;
+
+/** The sign-in in a volume of its own, as the single-machine layout kept it: `wlp-auth-<uid>`, with the lock a refresh leaves. */
+async function authVolumeLayout(user: string, account: { sub: string; email: string }, accessToken: string, expiresAt: number): Promise<void> {
+	await ensureAuthVolume(user);
+	await writeFakeAuth(`wlp-auth-${user}`, account, expiresAt, accessToken);
+	const helper = tmpName();
+	const result = await runHelper([...helperFlags(helper, "none"), "-v", `wlp-auth-${user}:${DATA_DIR}`], helper, ["sh", "-c", `: > ${DATA_DIR}/auth.lock`]);
+	if (result.code !== 0) throw new Error(`could not write the single-machine layout: ${result.stderr}`);
 }
 
 /** A user volume as the platform left it before sign-ins had a volume of their own: the sign-in, its lock, and a session log beside them. */
@@ -553,9 +594,11 @@ async function until(test: () => boolean, ms: number): Promise<boolean> {
  * network: Windlass is pointed at it as its HTTPS proxy, so the request Windlass means for
  * auth.openai.com arrives here instead, is answered here, and goes nowhere else. The answer is what a
  * refresh gives: a new access token and a new refresh token, both obviously fake, and how long the
- * access token lasts, which the check says in `standin.json` beside the sign-in; or, when the check
- * says so there, a refusal with the OAuth error code and the status it names. Each request is noted
- * in `standin.log` there (where it was meant for and what it asked, never a token).
+ * access token lasts, which the check says in `standin.json` in a volume of the stand-in's own (the
+ * helper has no volume of a sign-in to put it beside: the sign-in comes and goes on its standard input
+ * and output); or, when the check says so there, a refusal with the OAuth error code and the status it
+ * names. Each request is noted in `standin.log` there (where it was meant for and what it asked, never
+ * a token).
  */
 const STANDIN = `
 import json, os, socket, ssl, sys
@@ -604,10 +647,15 @@ while True:
         pass
 `;
 
-/** `windlass` in the throwaway image: the real one, with the stand-in beside it when it is asked for a token of a sign-in that has a `standin.json`. */
+/** Where the stand-in's volume is mounted in the helper container. */
+const STANDIN_PLAN = "/opt/standin/plan";
+/** The image the stand-in's volume is made with, so it belongs to the user Windlass runs as. Set when the image is built. */
+let standInImage = "";
+
+/** `windlass` in the throwaway image: the real one, with the stand-in beside it when it is asked for a token and the check has said what to answer (`standin.json`). */
 const STANDIN_WINDLASS = `#!/bin/sh
-if [ "\${1:-} \${2:-}" = "login token" ] && [ -f ${DATA_DIR}/standin.json ]; then
-  python3 -I /opt/standin/standin.py ${DATA_DIR} >/dev/null 2>&1 &
+if [ "\${1:-} \${2:-}" = "login token" ] && [ -f ${STANDIN_PLAN}/standin.json ]; then
+  python3 -I /opt/standin/standin.py ${STANDIN_PLAN} >/dev/null 2>&1 &
   tries=0
   while [ ! -f /tmp/standin.ready ] && [ "$tries" -lt 100 ]; do sleep 0.1; tries=$((tries + 1)); done
   HTTPS_PROXY=http://127.0.0.1:3128 NODE_EXTRA_CA_CERTS=/opt/standin/cert.pem exec /usr/local/bin/windlass-real "$@"
@@ -619,7 +667,7 @@ exec /usr/local/bin/windlass-real "$@"
 const STANDIN_DOCKERFILE = `FROM ${IMAGE}
 USER root
 RUN mv /usr/local/bin/windlass /usr/local/bin/windlass-real \\
- && mkdir -p /opt/standin \\
+ && mkdir -p ${STANDIN_PLAN} && chown agent ${STANDIN_PLAN} \\
  && openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=auth.openai.com -addext subjectAltName=DNS:auth.openai.com \\
       -keyout /opt/standin/key.pem -out /opt/standin/cert.pem 2>/dev/null \\
  && chmod 644 /opt/standin/key.pem
@@ -637,31 +685,38 @@ function buildStandInImage(tag: string): string {
 		writeFileSync(join(context, "windlass"), STANDIN_WINDLASS);
 		writeFileSync(join(context, "standin.py"), STANDIN);
 		const built = spawnSync("docker", ["build", "--quiet", "--network", "none", "--label", LABEL_ARG, "--tag", tag, context], { encoding: "utf8" });
+		if (built.status === 0) standInImage = tag;
 		return built.status === 0 ? "" : built.stderr.trim() || `docker build exited with ${built.status}`;
 	} finally {
 		rmSync(context, { recursive: true, force: true });
 	}
 }
 
-/** Says what the stand-in answers the next refresh of this user's sign-in with: a token that lasts this long. */
-async function standInIssues(user: string, seconds: number): Promise<void> {
+/** The `docker run` flags that give a helper the stand-in's volume: what a layer on the throwaway image runs its sign-in helpers with. */
+const standInFlags = () => ["-v", `${STANDIN_VOLUME}:${STANDIN_PLAN}`];
+
+/** Runs a short command in the stand-in's volume. The volume is made, labelled, the first time, by a container of the throwaway image, whose directory there is the agent's. */
+async function inStandInVolume(command: string, stdin?: string): Promise<string> {
+	if ((await docker(["volume", "inspect", STANDIN_VOLUME])).code !== 0) await docker(["volume", "create", "--label", LABEL_ARG, STANDIN_VOLUME], { check: true });
 	const helper = tmpName();
-	const result = await runHelper([...helperFlags(helper, "none"), "-v", `wlp-auth-${user}:${DATA_DIR}`], helper, ["sh", "-c", `cat > ${DATA_DIR}/standin.json`], { stdin: JSON.stringify({ expiresIn: seconds }) });
-	if (result.code !== 0) throw new Error(`could not write the stand-in's plan: ${result.stderr}`);
+	const result = await runHelper([...helperFlags(helper, "none"), ...standInFlags()], helper, ["sh", "-c", command], { stdin, image: standInImage });
+	if (result.code !== 0) throw new Error(`could not reach the stand-in's plan: ${result.stderr}`);
+	return result.stdout;
 }
 
-/** Says that the stand-in refuses the next refreshes of this user's sign-in, with this OAuth error code and HTTP status. */
-async function standInRefuses(user: string, code: string, status: number): Promise<void> {
-	const helper = tmpName();
-	const result = await runHelper([...helperFlags(helper, "none"), "-v", `wlp-auth-${user}:${DATA_DIR}`], helper, ["sh", "-c", `cat > ${DATA_DIR}/standin.json`], { stdin: JSON.stringify({ refuse: code, status }) });
-	if (result.code !== 0) throw new Error(`could not write the stand-in's plan: ${result.stderr}`);
+/** Says what the stand-in answers the next refresh with: a token that lasts this long. (One plan serves the one user whose sign-in is refreshed there.) */
+async function standInIssues(_user: string, seconds: number): Promise<void> {
+	await inStandInVolume(`cat > ${STANDIN_PLAN}/standin.json`, JSON.stringify({ expiresIn: seconds }));
 }
 
-/** The requests the stand-in answered for this user's sign-in, one line each: where Windlass meant it to go and what it asked. */
-async function standInRequests(user: string): Promise<string[]> {
-	const helper = tmpName();
-	const result = await runHelper([...helperFlags(helper, "none"), "-v", `wlp-auth-${user}:${DATA_DIR}:ro`], helper, ["sh", "-c", `cat ${DATA_DIR}/standin.log 2>/dev/null || true`]);
-	return result.stdout.split("\n").filter((line) => line.trim() !== "");
+/** Says that the stand-in refuses the next refreshes, with this OAuth error code and HTTP status. */
+async function standInRefuses(_user: string, code: string, status: number): Promise<void> {
+	await inStandInVolume(`cat > ${STANDIN_PLAN}/standin.json`, JSON.stringify({ refuse: code, status }));
+}
+
+/** The requests the stand-in answered, one line each: where Windlass meant it to go and what it asked. */
+async function standInRequests(_user: string): Promise<string[]> {
+	return (await inStandInVolume(`cat ${STANDIN_PLAN}/standin.log 2>/dev/null || true`)).split("\n").filter((line) => line.trim() !== "");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -783,8 +838,8 @@ async function main(): Promise<void> {
 			const mounted = await mountsOf(handle.container);
 			const holds = (await handle.run(DATA_LS)).stdout.trim();
 			expect(
-				"the session's container mounts the user's data volume only, not the auth volume, and holds no sign-in",
-				mounted === `wlp-user-${uid}:${DATA_DIR}` && !/auth\.json|host-id|auth\.lock/.test(holds) && (await lsVolume(`wlp-auth-${uid}`)).includes("auth.json"),
+				"the session's container mounts the user's data volume only and holds no sign-in, though the user has one",
+				mounted === `wlp-user-${uid}:${DATA_DIR}` && !/auth\.json|host-id|auth\.lock/.test(holds) && (await layer.logins.status(uid)) !== null,
 				`mounts: ${mounted}; data directory: ${holds === "" ? "empty" : holds}`,
 			);
 			const git = await handle.run("git rev-parse --is-inside-work-tree && git log --oneline | wc -l && ls -A");
@@ -1390,8 +1445,9 @@ async function main(): Promise<void> {
 	});
 
 	await section("sign-in", async () => {
+		const sealer = layer.signIns!.sealer;
 		const attempt = `chk${run}a`;
-		createdAttempts.add(attempt);
+		const resourcesBefore = await listOurs();
 		await throwsAny("start() refuses an invalid attempt id", () => layer.logins.start("../../x"));
 		await throwsAny("status() refuses an invalid uid", () => layer.logins.status("a b"));
 		const started1 = await layer.logins.start(attempt);
@@ -1401,47 +1457,56 @@ async function main(): Promise<void> {
 			url.origin === "https://auth.openai.com" && started1.redirectPrefix === "http://127.0.0.1:1455/auth/callback" && url.searchParams.get("redirect_uri") === started1.redirectPrefix,
 			`${url.origin}${url.pathname}, redirect ${started1.redirectPrefix}`,
 		);
-		expect("the attempt volume holds the pending sign-in", (await lsVolume(`wlp-login-${attempt}`)) === "auth-pending.json host-id");
 		const state = url.searchParams.get("state") ?? "";
-		const callback = started1.redirectPrefix;
-		// Each of these is rejected by Windlass before any network request (packages/core/src/auth/chatgpt.ts finishLogin).
-		await throwsUserError("finish() rejects a malformed address (checked here)", () => layer.logins.finish(attempt, "not an address"), /not the address/);
-		await throwsUserError("finish() rejects another site's address (checked here)", () => layer.logins.finish(attempt, `https://example.com/auth/callback?code=x&state=${state}`), /not the address/);
-		await throwsUserError("finish() rejects a wrong state (Windlass: state_mismatch)", () => layer.logins.finish(attempt, `${callback}?code=fake-code&state=wrong-state`), /different sign-in attempt/);
-		await throwsUserError("finish() reports a refusal in the browser (Windlass: access_denied)", () => layer.logins.finish(attempt, `${callback}?error=access_denied&state=${state}`), /not approved/);
-		await throwsUserError("finish() rejects an address without an issued client (Windlass: registration_incomplete)", () => layer.logins.finish(attempt, `${callback}?code=fake-code&state=${state}`), /registering/);
-		await throwsUserError("finish() rejects an unknown attempt", () => layer.logins.finish(`chk${run}none`, `${callback}?code=fake-code&state=${state}`), /unknown or has expired/);
-		expect("the attempt is still pending after the rejections", (await lsVolume(`wlp-login-${attempt}`)) === "auth-pending.json host-id");
-		await throwsUserError("adopt() refuses an attempt that is not finished", () => layer.logins.adopt(attempt, uid2), /not finished/);
-
-		expect("status() is null for a user without a volume", (await layer.logins.status(`chk-${run}-nobody`)) === null);
-		await layer.logins.ensureUserVolume(uid2);
-		await layer.logins.ensureUserVolume(uid2);
-		const noAuthVolume = (await docker(["volume", "inspect", `wlp-auth-${uid2}`])).code !== 0;
-		expect("ensureUserVolume() creates an empty data volume (idempotent) and no auth volume, as for a demo user; status() is null", (await layer.logins.status(uid2)) === null && (await lsVolume(`wlp-user-${uid2}`)) === "" && noAuthVolume);
-
-		// A finished attempt, simulated: the synthetic auth.json Windlass would have saved.
-		const expiresAt = Date.now() + 3_600_000;
-		await writeFakeAuth(`wlp-login-${attempt}`, { sub: "fake-sub-123", email: "fake.user@example.invalid" }, expiresAt);
-		await layer.logins.adopt(attempt, uid2);
-		createdAttempts.delete(attempt);
-		const gone = await docker(["volume", "inspect", `wlp-login-${attempt}`]);
-		const account = await layer.logins.status(uid2);
-		const authLabels = await docker(["volume", "inspect", "--format", `{{index .Labels "${LABEL}"}} {{index .Labels "${LABEL}.uid"}}`, `wlp-auth-${uid2}`]);
+		const pending = Object.keys((JSON.parse(sealer.open("attempt", attempt, started1.attempt)) as { files: Record<string, string> }).files).sort();
+		const resourcesAfter = await listOurs();
 		expect(
-			"adopt() moves the sign-in into the user's auth volume, which carries the label, and removes the attempt; the data volume gets nothing",
-			gone.code !== 0 && (await lsVolume(`wlp-auth-${uid2}`)).split(" ").sort().join(" ") === "auth.json host-id" && (await lsVolume(`wlp-user-${uid2}`)) === "" && authLabels.stdout.trim() === `1 ${uid2}`,
-			`wlp-auth-${uid2}: ${await lsVolume(`wlp-auth-${uid2}`)}; labels: ${authLabels.stdout.trim()}`,
+			"what it hands back is the pending sign-in Windlass saved, sealed for this attempt: the blob shows nothing of it, and the helper that ran Windlass left no volume and no container",
+			pending.join(" ") === "auth-pending.json host-id" && state !== "" && !started1.attempt.includes(state) && resourcesAfter.volumes.join(" ") === resourcesBefore.volumes.join(" ") && resourcesAfter.containers.join(" ") === resourcesBefore.containers.join(" "),
+			`${pending.join(", ")}; ${started1.attempt.length} characters`,
+		);
+		const callback = started1.redirectPrefix;
+		// Each of these is rejected by Windlass before any network request (packages/core/src/auth/chatgpt.ts finishLogin), and the helper has no network.
+		await throwsUserError("finish() rejects a malformed address (checked here)", () => layer.logins.finish(attempt, started1.attempt, "not an address"), /not the address/);
+		await throwsUserError("finish() rejects another site's address (checked here)", () => layer.logins.finish(attempt, started1.attempt, `https://example.com/auth/callback?code=x&state=${state}`), /not the address/);
+		await throwsUserError("finish() rejects a wrong state (Windlass: state_mismatch)", () => layer.logins.finish(attempt, started1.attempt, `${callback}?code=fake-code&state=wrong-state`), /different sign-in attempt/);
+		await throwsUserError("finish() reports a refusal in the browser (Windlass: access_denied)", () => layer.logins.finish(attempt, started1.attempt, `${callback}?error=access_denied&state=${state}`), /not approved/);
+		await throwsUserError("finish() rejects an address without an issued client (Windlass: registration_incomplete)", () => layer.logins.finish(attempt, started1.attempt, `${callback}?code=fake-code&state=${state}`), /registering/);
+		await throwsUserError("finish() under another attempt's id finds the attempt unknown: the blob is this attempt's only", () => layer.logins.finish(`chk${run}none`, started1.attempt, `${callback}?code=fake-code&state=${state}`), /unknown or has expired/);
+		await throwsUserError("finish() of something that is not a sealed attempt finds the attempt unknown", () => layer.logins.finish(attempt, "not a blob", `${callback}?code=fake-code&state=${state}`), /unknown or has expired/);
+		await throwsUserError("adopt() refuses an attempt that is not finished", () => layer.logins.adopt(attempt, started1.attempt, uid2), /not finished/);
+
+		expect("status() is null for a user who never signed in", (await layer.logins.status(`chk-${run}-nobody`)) === null && storedSignIn(`chk-${run}-nobody`) === null);
+		await layer.logins.ensureUserVolume(uid2);
+		await layer.logins.ensureUserVolume(uid2);
+		expect("ensureUserVolume() creates an empty data volume (idempotent) and nothing for a sign-in, as for a demo user; status() is null", (await layer.logins.status(uid2)) === null && (await lsVolume(`wlp-user-${uid2}`)) === "" && (await volumeGone(`wlp-auth-${uid2}`)));
+
+		// A finished attempt, simulated: the synthetic auth.json Windlass would have saved, sealed as `finish` hands it back.
+		const expiresAt = Date.now() + 3_600_000;
+		await layer.logins.adopt(attempt, finishedAttempt(attempt, { sub: "fake-sub-123", email: "fake.user@example.invalid" }, expiresAt), uid2);
+		const account = await layer.logins.status(uid2);
+		const row = storedSignIn(uid2);
+		expect(
+			"adopt() puts the sign-in in the user's store, sealed for that user: no volume holds it, the data volume gets nothing, and what is stored shows no token and no account",
+			row?.sealed != null && !SECRET.test(row.sealed) && !row.sealed.includes("fake-sub-123") && !row.sealed.includes("fake.user") && (await volumeGone(`wlp-auth-${uid2}`)) && (await volumeGone(`wlp-login-${attempt}`)) && (await lsVolume(`wlp-user-${uid2}`)) === "",
+			`${row?.sealed?.length ?? 0} characters stored`,
 		);
 		expect("status() reports sub, email and expiry only", JSON.stringify(account) === JSON.stringify({ sub: "fake-sub-123", email: "fake.user@example.invalid", accessExpiresAt: expiresAt }) && !JSON.stringify(account).includes("FAKE-"), JSON.stringify(account));
+		let opened = "it opened";
+		try {
+			sealer.open("user", uid, row!.sealed!);
+		} catch (error) {
+			opened = error instanceof Error ? error.name : String(error);
+		}
+		const asAnother = await layer.signIns!.adopt(uid3, row!.sealed!).then(
+			() => null,
+			(error: unknown) => error,
+		);
+		expect("the stored sign-in is of no use to another user: it does not open as theirs, and their holder refuses it", opened === "SealError" && asAnother instanceof Error && (await layer.logins.status(uid3)) === null, opened);
 
 		// A second sign-in replaces the first.
 		const attempt2 = `chk${run}b`;
-		createdAttempts.add(attempt2);
-		await layer.logins.start(attempt2);
-		await writeFakeAuth(`wlp-login-${attempt2}`, { sub: "fake-sub-456", email: "other@example.invalid" }, expiresAt + 1);
-		await layer.logins.adopt(attempt2, uid2);
-		createdAttempts.delete(attempt2);
+		await layer.logins.adopt(attempt2, finishedAttempt(attempt2, { sub: "fake-sub-456", email: "other@example.invalid" }, expiresAt + 1), uid2);
 		expect("adopt() replaces an earlier sign-in", (await layer.logins.status(uid2))?.sub === "fake-sub-456");
 
 		// A token file a turn of this user would have in the data volume while it runs: logout takes it too.
@@ -1451,71 +1516,86 @@ async function main(): Promise<void> {
 		}
 		await layer.logins.logout(uid2);
 		expect(
-			"logout() forgets the sign-in in the auth volume and removes the token files of running turns from the data volume",
-			(await layer.logins.status(uid2)) === null && !(await lsVolume(`wlp-auth-${uid2}`)).includes("auth.json") && (await lsVolume(`wlp-user-${uid2}`)) === "sessions",
-			`wlp-auth-${uid2}: ${await lsVolume(`wlp-auth-${uid2}`)}; wlp-user-${uid2}: ${await lsVolume(`wlp-user-${uid2}`)}`,
+			"logout() forgets the sign-in in the user's store and removes the token files of running turns from the data volume",
+			(await layer.logins.status(uid2)) === null && storedSignIn(uid2)?.sealed === null && (await lsVolume(`wlp-user-${uid2}`)) === "sessions",
+			`wlp-user-${uid2}: ${await lsVolume(`wlp-user-${uid2}`)}`,
 		);
 		await layer.logins.logout(`chk-${run}-nobody`);
-		expect("logout() of a user without volumes is a no-op and makes none", (await docker(["volume", "inspect", `wlp-auth-chk-${run}-nobody`])).code !== 0 && (await docker(["volume", "inspect", `wlp-user-chk-${run}-nobody`])).code !== 0);
+		expect("logout() of a user without a sign-in is a no-op and makes no volume", (await volumeGone(`wlp-auth-chk-${run}-nobody`)) && (await volumeGone(`wlp-user-chk-${run}-nobody`)));
 
-		// The old layout: a platform that was used before sign-ins had a volume of their own.
+		// The single-machine layout: a machine that ran the first version has each user's sign-in in a volume wlp-auth-<uid>.
 		const oldExpiry = Date.now() + 3_600_000;
-		await oldLayout(uidM, TOKEN_B, oldExpiry);
-		expect("a user volume of the old layout holds the sign-in beside Windlass's sessions", (await lsVolume(`wlp-user-${uidM}`)).split(" ").sort().join(" ") === "auth.json auth.lock host-id sessions");
-		const movedBefore = wlpLines.length;
+		await authVolumeLayout(uidM, fakeAccount(uidM), TOKEN_B, oldExpiry);
+		expect("an auth volume of the single-machine layout holds the sign-in", (await lsVolume(`wlp-auth-${uidM}`)).split(" ").sort().join(" ") === "auth.json auth.lock host-id" && storedSignIn(uidM) === null);
+		const importedBefore = wlpLines.length;
 		// The first touch of this user: here, asking who is signed in.
-		const migrated = await layer.logins.status(uidM);
-		const said = wlpLines.slice(movedBefore).filter((line) => line.includes("sign-in.moved"));
+		const imported = await layer.logins.status(uidM);
+		const said = wlpLines.slice(importedBefore).filter((line) => line.includes("sign-in.imported"));
+		const importedRow = storedSignIn(uidM);
 		expect(
-			"the first time such a user is touched the sign-in is moved to the auth volume: status() finds it there, the data volume keeps only the sessions",
-			migrated?.sub === `fake-sub-${uidM}` && migrated.accessExpiresAt === oldExpiry && (await lsVolume(`wlp-auth-${uidM}`)).split(" ").sort().join(" ") === "auth.json host-id" && (await lsVolume(`wlp-user-${uidM}`)) === "sessions",
-			`wlp-auth-${uidM}: ${await lsVolume(`wlp-auth-${uidM}`)}; wlp-user-${uidM}: ${await lsVolume(`wlp-user-${uidM}`)}`,
+			"the first time such a user is touched the sign-in is taken into the user's store, sealed, and the volume is removed: status() finds it there",
+			imported?.sub === `fake-sub-${uidM}` && imported.accessExpiresAt === oldExpiry && importedRow?.sealed != null && !SECRET.test(importedRow.sealed) && (await volumeGone(`wlp-auth-${uidM}`)),
+			`${importedRow?.sealed?.length ?? 0} characters stored; wlp-auth-${uidM} ${(await volumeGone(`wlp-auth-${uidM}`)) ? "is gone" : "is still there"}`,
 		);
-		expect("a log line says that the sign-in was moved, once", said.length === 1 && said[0]!.includes(`uid=${uidM}`) && said[0]!.includes(`wlp-user-${uidM}`) && said[0]!.includes(`wlp-auth-${uidM}`), said.join(" | "));
-		const movedToken = await layer.tokens.current(uidM);
+		expect("a log line says that the sign-in was taken in and the volume removed, once, without a token", said.length === 1 && said[0]!.includes(`uid=${uidM}`) && said[0]!.includes(`wlp-auth-${uidM}`) && /was removed/.test(said[0]!) && !SECRET.test(said[0]!), said.join(" | "));
+		const importedToken = await layer.tokens.current(uidM);
 		await layer.logins.status(uidM);
-		expect("the moved sign-in works: the token source returns its token; touching the user again moves nothing", movedToken.accessToken === TOKEN_B && movedToken.expiresAt === oldExpiry && wlpLines.slice(movedBefore).filter((line) => line.includes("sign-in.moved")).length === 1);
+		expect("the sign-in works from there: the token source returns its token; touching the user again takes nothing in", importedToken.accessToken === TOKEN_B && importedToken.expiresAt === oldExpiry && wlpLines.slice(importedBefore).filter((line) => line.includes("sign-in.imported")).length === 1);
 
-		// An old sign-in left beside a newer one that is already in the auth volume: the newer one stays.
+		// The layout before that: the sign-in beside Windlass's sessions in the user's data volume.
 		await oldLayout(uidM2, TOKEN_B, oldExpiry);
-		await ensureAuthVolume(uidM2);
-		await writeFakeAuth(`wlp-auth-${uidM2}`, { sub: "fake-sub-newer", email: "newer@example.invalid" }, oldExpiry + 5, TOKEN_C);
-		const staleBefore = wlpLines.length;
+		expect("a user volume of the first layout holds the sign-in beside Windlass's sessions", (await lsVolume(`wlp-user-${uidM2}`)).split(" ").sort().join(" ") === "auth.json auth.lock host-id sessions");
+		const movedBefore = wlpLines.length;
 		// The first touch of this one: asking for its access token.
-		const newer = await layer.tokens.current(uidM2);
-		const staleSaid = wlpLines.slice(staleBefore).filter((line) => line.includes("sign-in.moved"));
+		const moved = await layer.tokens.current(uidM2);
+		const movedSaid = wlpLines.slice(movedBefore).filter((line) => /sign-in\.(moved|imported)/.test(line));
 		expect(
-			"an old sign-in beside a newer one in the auth volume is removed, not moved: the newer one's token is returned",
-			newer.accessToken === TOKEN_C && (await layer.logins.status(uidM2))?.sub === "fake-sub-newer" && (await lsVolume(`wlp-user-${uidM2}`)) === "sessions" && staleSaid.length === 1 && /already holds a newer one/.test(staleSaid[0]!),
+			"such a sign-in is taken in the same way, by way of an auth volume that is gone again afterwards: the token source returns its token, and the data volume keeps only the sessions",
+			moved.accessToken === TOKEN_B && moved.expiresAt === oldExpiry && (await layer.logins.status(uidM2))?.sub === `fake-sub-${uidM2}` && (await lsVolume(`wlp-user-${uidM2}`)) === "sessions" && (await volumeGone(`wlp-auth-${uidM2}`)) && movedSaid.length === 2 && movedSaid[0]!.includes("sign-in.moved") && movedSaid[1]!.includes("sign-in.imported"),
+			movedSaid.map((line) => line.split(":")[0]).join(" | "),
+		);
+
+		// An old sign-in in a volume beside a newer one the user's store already holds: the newer one stays.
+		saveFakeSignIn(uidM3, TOKEN_C, oldExpiry + 5);
+		await authVolumeLayout(uidM3, { sub: "fake-sub-older", email: "older@example.invalid" }, TOKEN_B, oldExpiry);
+		const staleBefore = wlpLines.length;
+		const newer = await layer.tokens.current(uidM3);
+		const staleSaid = wlpLines.slice(staleBefore).filter((line) => line.includes("sign-in.imported"));
+		expect(
+			"an old sign-in in a volume beside a newer one in the store is removed, not taken in: the newer one's token is returned",
+			newer.accessToken === TOKEN_C && (await layer.logins.status(uidM3))?.sub === `fake-sub-${uidM3}` && (await volumeGone(`wlp-auth-${uidM3}`)) && staleSaid.length === 1 && /already holds a newer one/.test(staleSaid[0]!),
 			staleSaid.join(" | "),
 		);
 
 		const attempt3 = `chk${run}c`;
-		createdAttempts.add(attempt3);
-		await layer.logins.start(attempt3);
-		await layer.logins.start(attempt3);
-		await layer.logins.discard(attempt3);
-		await layer.logins.discard(attempt3);
-		createdAttempts.delete(attempt3);
-		expect("start() again restarts an attempt; discard() removes it and is a no-op when gone", (await docker(["volume", "inspect", `wlp-login-${attempt3}`])).code !== 0);
+		const once = await layer.logins.start(attempt3);
+		const twice = await layer.logins.start(attempt3);
+		const leftovers = (await listOurs()).volumes.filter((name) => name.startsWith("wlp-login-"));
+		expect(
+			"start() again restarts an attempt with a new pending sign-in; an attempt is nothing but its blob, so there is nothing to discard",
+			new URL(once.url).searchParams.get("state") !== new URL(twice.url).searchParams.get("state") && once.attempt !== twice.attempt && leftovers.length === 0,
+			leftovers.join(", ") || "no attempt volumes",
+		);
 	});
 
 	await section("token source", async () => {
 		const tokens = layer.tokens;
 		let asked = tokens.asked;
 		await throwsUserError("current() tells a user without any sign-in to sign in with ChatGPT", () => tokens.current(uidT), /Sign in with ChatGPT/);
-		expect("for that it does not start Windlass: there is no auth volume to ask in", tokens.asked === asked);
+		expect("for that it does not start Windlass: there is no sign-in to ask about", tokens.asked === asked);
 		await throwsAny("current() refuses an invalid uid", () => tokens.current("../etc"));
 
 		// A synthetic sign-in whose token is new: Windlass prints it without a request, so the helper needs no network (and here has none).
 		const expiresAt = Date.now() + 3_600_000;
 		await signInFake(uidT, TOKEN_A, expiresAt);
 		asked = tokens.asked;
+		const resourcesBefore = await listOurs();
 		let start = Date.now();
 		const first = await tokens.current(uidT);
+		const resourcesAfter = await listOurs();
 		expect(
-			"current() returns the access token of the saved sign-in with its expiry, from a helper container that has no network",
-			first.accessToken === TOKEN_A && first.expiresAt === expiresAt && tokens.asked === asked + 1,
+			"current() returns the access token of the user's sign-in with its expiry, from a helper container that has no network, mounts no volume and is gone afterwards",
+			first.accessToken === TOKEN_A && first.expiresAt === expiresAt && tokens.asked === asked + 1 && resourcesAfter.volumes.join(" ") === resourcesBefore.volumes.join(" ") && resourcesAfter.containers.join(" ") === resourcesBefore.containers.join(" "),
 			`a token that expires in ${Math.round((first.expiresAt - Date.now()) / 60_000)} min, ${ms(start)}, one run of \`${loginTokenCommand().join(" ")}\` with --network none`,
 		);
 		start = Date.now();
@@ -1539,11 +1619,7 @@ async function main(): Promise<void> {
 
 		// A new sign-in: what was kept of the old one is not handed out again.
 		const attempt = `chk${run}t`;
-		createdAttempts.add(attempt);
-		await layer.logins.start(attempt);
-		await writeFakeAuth(`wlp-login-${attempt}`, fakeAccount(uidT), expiresAt + 1, TOKEN_B);
-		await layer.logins.adopt(attempt, uidT);
-		createdAttempts.delete(attempt);
+		await layer.logins.adopt(attempt, finishedAttempt(attempt, fakeAccount(uidT), expiresAt + 1, TOKEN_B), uidT);
 		const adopted = await tokens.current(uidT);
 		expect("after adopt() the new sign-in's token is returned, not the one that was kept", adopted.accessToken === TOKEN_B && adopted.expiresAt === expiresAt + 1);
 
@@ -1589,9 +1665,8 @@ async function main(): Promise<void> {
 
 		await layer.logins.logout(uidT);
 		asked = tokens.asked;
-		// The one answer of `windlass login token` that has no code: a line of its own, which is read by its words.
-		await throwsUserError("after logout() current() says to sign in with ChatGPT: Windlass reports that nobody is signed in", () => tokens.current(uidT), /^You are not signed in with ChatGPT\. Sign in with ChatGPT/);
-		expect("that answer came from Windlass (`login token --valid-for` exits 1)", tokens.asked === asked + 1);
+		await throwsUserError("after logout() current() says to sign in with ChatGPT", () => tokens.current(uidT), /^You are not signed in with ChatGPT\. Sign in with ChatGPT/);
+		expect("for that Windlass is not started: the user's store holds no sign-in to ask it about", tokens.asked === asked && storedSignIn(uidT)?.sealed === null);
 	});
 
 	await section("hand-off", async () => {
@@ -1627,8 +1702,8 @@ async function main(): Promise<void> {
 				const mounted = await mountsOf(boxed.container);
 				// The first replacement is due now and fails: the token has less left than is asked for, so Windlass has to refresh, and the helper has no network.
 				const failed = await until(() => has("token.replace_failed"), 30_000);
-				// What a refresh would have saved, written by this check instead: a new token in the auth volume.
-				await writeFakeAuth(`wlp-auth-${uidH}`, fakeAccount(uidH), expiresB, TOKEN_B);
+				// What a refresh would have saved, written by this check instead: a new token in the user's store.
+				saveFakeSignIn(uidH, TOKEN_B, expiresB);
 				const replaced = await until(() => has("token.replaced"), 30_000);
 				const after = replaced ? (JSON.parse(await boxed.readTextFile(path)) as AccessToken) : null;
 				const factsAfter = (await boxed.run(fileFacts(path))).stdout.trim().split("\n");
@@ -1926,7 +2001,7 @@ async function main(): Promise<void> {
 			await (forgetting as Promise<unknown> | null);
 			expect(
 				"logout() while a turn runs takes the turn's token file away (Windlass's code is `handed_in_missing` again), and the turn ends as `auth_required` with the sentence that says to sign in with ChatGPT: the token source is asked and reports no sign-in",
-				forgetting !== null && f.result.failure?.reason === "auth_required" && f.result.failure.message === NOT_SIGNED_IN && lastStepCode(f) === "handed_in_missing" && lastStepError(f) === "auth" && outcomeOf(f) === "failed" && layer.tokens.asked === askedBefore + 1 && (await layer.logins.status(uidH)) === null && !leaks(f),
+				forgetting !== null && f.result.failure?.reason === "auth_required" && f.result.failure.message === NOT_SIGNED_IN && lastStepCode(f) === "handed_in_missing" && lastStepError(f) === "auth" && outcomeOf(f) === "failed" && layer.tokens.asked === askedBefore && (await layer.logins.status(uidH)) === null && !leaks(f),
 				`${f.result.failure?.reason}: ${f.result.failure?.message} (${f.durationMs} ms)`,
 			);
 			expect("after those the sandbox holds no token file and no process", !(await boxed.run(DATA_LS)).stdout.includes("access-token") && (await strayProcesses(boxed.container)).length === 0);
@@ -2112,7 +2187,7 @@ async function main(): Promise<void> {
 		const latest = await idOf(IMAGE);
 		createdImages.add(tag);
 		const wrong = buildStandInImage(tag);
-		const standin = createSandboxLayer({ image: tag, tokenNetwork: "none" });
+		const standin = createSandboxLayer({ image: tag, signIns: "memory", tokenNetwork: "none", signInHelperFlags: standInFlags() });
 		const usable = wrong === "" && (await idOf(tag)) !== "" && (await idOf(IMAGE)) === latest && (await standin.windlass.problem()) === null && (await standin.windlass.version()) === (await layer.windlass.version());
 		expect("a throwaway image is built from the server's: the same Windlass, with a stand-in for OpenAI's token endpoint beside it, so a refresh works in a helper that has no network", usable, wrong || `${tag}, Windlass ${await standin.windlass.version()}`);
 		if (!usable) return;
@@ -2395,7 +2470,7 @@ async function main(): Promise<void> {
 				plain.code === (kind.reads ? 1 : 2) && option.code === 2 && kind.refusal.test(option.stderr),
 				`without the option: exit ${plain.code}; with it: exit ${option.code}, ${option.stderr.trim().split("\n")[0]}`,
 			);
-			const old = createSandboxLayer({ image: tag, tokenNetwork: "none" });
+			const old = createSandboxLayer({ image: tag, signIns: "memory", tokenNetwork: "none" });
 			const problem = await old.windlass.problem();
 			expect(
 				"windlass.problem() says what that image lacks and what to do: rebuild it from a Windlass with `login token --valid-for`",
@@ -2475,8 +2550,8 @@ async function main(): Promise<void> {
 
 	await section("cleanup", async () => {
 		for (const id of createdSandboxes) await layer.sandboxes.destroy(id);
-		for (const attempt of createdAttempts) await layer.logins.discard(attempt);
 		for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}`, `wlp-auth-${user}`]);
+		await docker(["volume", "rm", "-f", STANDIN_VOLUME]);
 		for (const image of createdImages) await removeImage(image);
 		const now = await listOurs();
 		// What this run made: its sandboxes, the volumes named after it, and the helper containers of this process.
@@ -2531,10 +2606,10 @@ async function removeImage(tag: string): Promise<boolean> {
 
 async function emergencyCleanup(): Promise<void> {
 	for (const id of createdSandboxes) await docker(["rm", "-f", `wlp-session-${id}`]).catch(() => undefined);
-	for (const attempt of createdAttempts) await docker(["volume", "rm", "-f", `wlp-login-${attempt}`]).catch(() => undefined);
 	const tmp = await docker(["ps", "-aq", "--filter", `label=${LABEL_ARG}`, "--filter", `name=^wlp-tmp-${PROCESS_MARK}-`]);
 	if (tmp.stdout.trim() !== "") await docker(["rm", "-f", ...tmp.stdout.trim().split("\n")]);
 	for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}`, `wlp-auth-${user}`]).catch(() => undefined);
+	await docker(["volume", "rm", "-f", STANDIN_VOLUME]).catch(() => undefined);
 	for (const image of createdImages) await removeImage(image).catch(() => undefined);
 }
 

@@ -1,26 +1,36 @@
 /**
  * The sandbox layer's interface: what the actors call, and what `server/src/sandbox/` implements.
  *
- * Everything that knows about Docker, about the sandbox image, and about how the `windlass` binary is
- * invoked lives behind this file. The actors know none of it.
+ * Everything that knows about Docker, about E2B, about the sandbox image, and about how the `windlass`
+ * binary is invoked lives behind this file. The actors know none of it.
+ *
+ * Sessions' sandboxes come from one provider per deployment (WLP_SANDBOX): local Docker containers, or
+ * E2B microVMs (server/src/sandbox/e2b/), which every server machine of a deployment can reach. What a
+ * provider owes the code that runs a turn is in server/src/sandbox/provider.ts.
  *
  * Names of Docker resources (all carry the label `dev.windlass-platform=1` so they can be listed and
  * removed together):
  *
  *   image      windlass-platform-sandbox:latest   built by sandbox/build.sh
- *   volume     wlp-auth-<uid>                     a user's ChatGPT sign-in (`auth.json`, `host-id`). Mounted only
- *                                                 into the short-lived helper containers of `ChatgptLogins` and
- *                                                 `AccessTokens`, never into a session's container
  *   volume     wlp-user-<uid>                     Windlass's data directory in that user's sessions: its session
  *                                                 logs and memory, and while a turn runs the access token file of
  *                                                 that turn. No sign-in
- *   volume     wlp-login-<attemptId>              a sign-in attempt's data directory, until it is adopted
  *   container  wlp-session-<sandboxId>            one per agent session; the workspace is /workspace
  *
- * No sandbox holds a sign-in. `AccessTokens` is the one place that reads it and refreshes it, and a turn
- * is handed a short-lived access token (see `Windlass.runTurn`). How much time such a token has left
- * when it is handed over, when a turn's token is replaced and how long one is reused are three
- * durations that belong together: handoff.ts has them and says why.
+ * On E2B a session's sandbox is a microVM made from the template `windlass-platform-sandbox`, which is
+ * built from the same image. Its id is E2B's; its metadata (`wlp_deployment`, `wlp_uid`, `wlp_session`,
+ * `wlp_profile`) is how a deployment's sandboxes are listed, counted and removed together. Windlass's
+ * data directory is on the microVM's own disk there: no volume, and nothing shared between sessions.
+ *
+ * No sandbox holds a sign-in, and no provider stores one. A user's sign-in is kept, encrypted, in that
+ * user's `user` actor, which is the one place that reads it and refreshes it (server/src/signin/), and
+ * a turn is handed a short-lived access token (see `Windlass.runTurn`). `ChatgptLogins` and
+ * `AccessTokens` below are the same for every provider: signin/facade.ts implements them. How much time
+ * a token has left when it is handed over, when a turn's token is replaced and how long one is reused
+ * are three durations that belong together: handoff.ts has them and says why.
+ *
+ * (A machine that ran the first version may still have volumes `wlp-auth-<uid>`, each a user's sign-in.
+ * The Docker layer takes one into the user's actor the first time that user is touched, and removes it.)
  */
 
 import type { SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
@@ -60,7 +70,8 @@ export interface ExecResult {
  * A running sandbox: commands with standard input, separate stderr and an abort that reaches the
  * process inside, and text files. (Rivet's `@rivet-dev/sandbox-adapter` has a similar `Sandbox`, but
  * its Docker provider can mount no volume and cannot relax the security options Windlass's own
- * sandbox needs, so this layer drives Docker itself.)
+ * sandbox needs, and a turn needs more of a sandbox than it offers (provider.ts), so this layer
+ * drives Docker and E2B itself.)
  */
 export interface SandboxHandle {
 	readonly id: string;
@@ -79,12 +90,31 @@ export interface CreateSandboxInput {
 }
 
 export interface Sandboxes {
+	/**
+	 * Whether Windlass's data directory, and with it Windlass's own sessions, is on the sandbox's own disk
+	 * and goes when the sandbox does. False on Docker, where it is a volume of the user's that outlives
+	 * every sandbox. True on E2B: a sandbox made in place of one that is gone has no Windlass session to
+	 * continue, so a turn that names one (`RunTurnInput.windlassSessionId`) ends with `session_not_found`.
+	 * Whoever replaces a lost sandbox can read this and start a new Windlass session at once.
+	 */
+	readonly sessionsLiveInSandbox: boolean;
 	/** Every profile, available or not, in the order the picker shows them. */
 	profiles(): SandboxProfile[];
 	profile(id: SandboxProfileId): SandboxProfile;
-	/** Creates and starts a sandbox with an empty git repository in its workspace. Returns its id. */
+	/**
+	 * Creates and starts a sandbox with an empty git repository in its workspace. Returns its id.
+	 * Throws SandboxUserError, with a sentence fit to show, when the profile is not available here, and on
+	 * E2B when the deployment already runs as many sandboxes at once as it may (WLP_E2B_MAX_RUNNING):
+	 * trying again later may work.
+	 */
 	create(input: CreateSandboxInput): Promise<string>;
-	/** Starts the sandbox if it is paused. Undefined when it no longer exists. */
+	/**
+	 * Starts the sandbox if it is paused. Undefined when it no longer exists. On E2B, starting a paused
+	 * sandbox counts against the same limit as `create`, and throws the same SandboxUserError when the
+	 * limit is reached; a sandbox that runs stops by itself a few minutes after the last `connect` unless
+	 * a turn runs in it (e2b/sandboxes.ts, "The dead-man switch"), so `state` may say "paused" of a
+	 * sandbox nobody suspended.
+	 */
 	connect(id: string): Promise<SandboxHandle | undefined>;
 	/** "none" when it does not exist. */
 	state(id: string): Promise<"none" | "running" | "paused">;
@@ -94,8 +124,9 @@ export interface Sandboxes {
 	 */
 	suspend(id: string): Promise<void>;
 	/**
-	 * Removes it with its files. A no-op when already gone. The user's data volume stays; an access token
-	 * file a turn left in it for this sandbox is removed when the sandbox was running.
+	 * Removes it with its files. A no-op when already gone. On Docker the user's data volume stays, and an
+	 * access token file a turn left in it for this sandbox is removed when the sandbox was running. On
+	 * E2B Windlass's data directory goes with the sandbox.
 	 */
 	destroy(id: string): Promise<void>;
 }
@@ -217,7 +248,11 @@ export interface ScriptedModel {
 }
 
 export interface Windlass {
-	/** The binary's version in the image, e.g. "0.1.1+0f5192c3ea"; null when the image is missing. */
+	/**
+	 * The binary's version in the image, e.g. "0.1.1+0f5192c3ea"; null when the image is missing. On E2B
+	 * it is the version in the template, which is known once a sandbox was made from it (or from
+	 * WLP_E2B_WINDLASS_VERSION): null until then, since asking would mean starting a sandbox.
+	 */
 	version(): Promise<string | null>;
 	/**
 	 * What keeps this layer from running turns on a ChatGPT sign-in, in a sentence that says what to do
@@ -282,42 +317,47 @@ export class SandboxUserError extends Error {
 	}
 }
 
+/**
+ * The sign-in steps, for the actors. None of them keeps anything in the sandbox layer or on the server
+ * it runs on: an attempt is a sealed blob its `login` actor stores between `start` and `finish`, and a
+ * user's sign-in lives in that user's `user` actor. So every step can be served by any server.
+ *
+ * A sealed attempt (`attempt` below) is what Windlass saved of the sign-in so far, encrypted with a
+ * key that is derived from the server's secret and bound to the attempt's id (signin/seal.ts): it is
+ * of no use for another attempt, and unreadable to whoever stores it.
+ */
 export interface ChatgptLogins {
-	/** Begins a sign-in in a fresh data volume for this attempt and returns the address to open. */
-	start(attemptId: string): Promise<{ url: string; redirectPrefix: string }>;
+	/** Begins a sign-in and returns the address to open, and the pending attempt, sealed, to hand to `finish`. */
+	start(attemptId: string): Promise<{ url: string; redirectPrefix: string; attempt: string }>;
 	/**
-	 * Finishes the attempt from the pasted address and returns the account that signed in. Throws
-	 * SandboxUserError when the address is not the one expected, the attempt is unknown or OpenAI
-	 * refuses the exchange.
+	 * Finishes the attempt from the pasted address and returns the account that signed in, and the
+	 * finished attempt, sealed, to hand to `adopt`. Throws SandboxUserError when the address is not the
+	 * one expected, the attempt is unknown (the blob is not this attempt's) or OpenAI refuses the
+	 * exchange. An attempt that is finished already is finished again by the address that finished it,
+	 * without a second exchange, and by no other.
 	 */
-	finish(attemptId: string, pastedUrl: string): Promise<ChatgptAccount>;
+	finish(attemptId: string, attempt: string, pastedUrl: string): Promise<{ account: ChatgptAccount; attempt: string }>;
 	/**
-	 * Moves the attempt's sign-in into the user's auth volume, replacing an earlier one, and removes the
-	 * attempt. The user's data volume is made too. Tokens of the earlier sign-in are not handed out again.
+	 * Hands the finished attempt's sign-in to the user's actor, sealed for that user, where it replaces
+	 * an earlier one. The provider's place for the user's sessions is made too (`ensureUserVolume`).
+	 * Tokens of the earlier sign-in are not handed out again. Throws SandboxUserError when the attempt
+	 * is not finished.
 	 */
-	adopt(attemptId: string, uid: string): Promise<void>;
-	/** Removes an unfinished attempt. A no-op when it is gone. */
-	discard(attemptId: string): Promise<void>;
-	/** The sign-in saved in the user's auth volume, or null. */
+	adopt(attemptId: string, attempt: string, uid: string): Promise<void>;
+	/** The sign-in the user's actor holds: who signed in and when the saved access token expires. Null when there is none. */
 	status(uid: string): Promise<ChatgptAccount | null>;
 	/**
-	 * Forgets the user's saved sign-in: it is removed from the auth volume, no token of it is handed out
-	 * again, and the token files of turns still running are removed from the user's data volume. An
-	 * access token already read stays valid until it expires, within the hour.
+	 * Forgets the user's sign-in: it is removed from the user's actor, no token of it is handed out
+	 * again, and the provider removes the token files of turns still running. An access token already
+	 * read stays valid until it expires, within the hour.
 	 */
 	logout(uid: string): Promise<void>;
 	/**
-	 * Makes sure the user's data volume exists: Windlass's data directory in the user's sessions. It never
-	 * holds a sign-in, and a demo user has this volume only: no auth volume is made for one.
+	 * Makes sure the provider's place for Windlass's own data of the user's sessions exists (on Docker:
+	 * the volume wlp-user-<uid>). It never holds a sign-in, and it is all a demo user has.
 	 */
 	ensureUserVolume(uid: string): Promise<void>;
 }
-
-/*
- * A user volume written before sign-ins had a volume of their own still has `auth.json` in it. The
- * first time such a user is touched (any method of `ChatgptLogins` or `AccessTokens` that takes a uid,
- * or `Sandboxes.create`), that sign-in is moved to the user's auth volume, and a log line says so.
- */
 
 // ---------------------------------------------------------------------------------------------
 // Access tokens: the one place that reads a sign-in and refreshes it
@@ -348,8 +388,12 @@ export interface AccessTokens {
 	 *
 	 * Throws SandboxUserError, with a sentence that tells the user to sign in with ChatGPT, when the user
 	 * has no sign-in or OpenAI no longer accepts it; any other error means the token could not be had
-	 * this time (no network, the image's Windlass is too old: it has no `windlass login token
-	 * --valid-for`, ...). No error message contains a token.
+	 * this time (no network, the Windlass that fetches tokens is too old: it has no `windlass login
+	 * token --valid-for`, ...). No error message contains a token.
+	 *
+	 * It is a call to the user's `user` actor, from whichever server asks: the actor is where "one
+	 * request per user at a time" and the reuse hold for every server at once, and it saves a refreshed
+	 * sign-in before it answers. The token travels back encrypted for the request that asked.
 	 */
 	current(uid: string): Promise<AccessToken>;
 }

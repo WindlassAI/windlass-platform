@@ -1,8 +1,11 @@
 /**
- * End-to-end check of the server's four actors, through RivetKit's client, as the web app uses them.
+ * End-to-end check of the server's three actors, through RivetKit's client, as the web app uses them,
+ * and of its HTTP routes (`/platform/info`, `/health`).
  *
  *   cd server && npx tsx ../scripts/e2e.ts                 starts its own server on fresh state
- *   cd server && npx tsx ../scripts/e2e.ts --endpoint URL  uses a server that is already running
+ *   cd server && npx tsx ../scripts/e2e.ts --endpoint URL  uses a server that is already running; its
+ *                                                          HTTP routes are on the same host, port 6440,
+ *                                                          or at WLP_E2E_API
  *
  * WLP_SANDBOX chooses the sandbox layer of the server it starts (default here: fake). The server is
  * always started with WLP_DEMO=1; with --endpoint the server must have it too. Some checks need the
@@ -16,7 +19,7 @@
 
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createWriteStream, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createWriteStream, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -41,6 +44,8 @@ const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server")
 const args = process.argv.slice(2);
 const endpointArg = args.includes("--endpoint") ? args[args.indexOf("--endpoint") + 1] : undefined;
 const ENDPOINT = endpointArg ?? "http://127.0.0.1:6420";
+/** The server's own HTTP routes. */
+const API = process.env.WLP_E2E_API ?? `${new URL(ENDPOINT).protocol}//${new URL(ENDPOINT).hostname}:6440`;
 const MODE = (process.env.WLP_SANDBOX ?? "fake") as "fake" | "docker";
 const OWN_SERVER = endpointArg === undefined;
 const FAKE = MODE === "fake";
@@ -185,25 +190,20 @@ class Server {
 			log.write(`\n[e2e] server exited: code ${code} signal ${signal}\n`);
 		});
 
-		const client = createClient<Registry>(ENDPOINT);
-		try {
-			await waitFor(
-				"the server to answer",
-				async () => {
-					if (!this.child) throw new Error(`the server exited while starting; see ${this.logFile}\n${this.output.slice(-1500)}`);
-					try {
-						await client.platform.getOrCreate(["main"]).info();
-						return true;
-					} catch {
-						return false;
-					}
-				},
-				120_000,
-				400,
-			);
-		} finally {
-			await client.dispose().catch(() => undefined);
-		}
+		// The HTTP routes come up once the node has registered with the engine.
+		await waitFor(
+			"the server to answer",
+			async () => {
+				if (!this.child) throw new Error(`the server exited while starting; see ${this.logFile}\n${this.output.slice(-1500)}`);
+				try {
+					return (await fetch(`${API}/platform/info`)).ok;
+				} catch {
+					return false;
+				}
+			},
+			120_000,
+			400,
+		);
 	}
 
 	/** Stops the server as Ctrl-C would. */
@@ -225,7 +225,7 @@ class Server {
 		// The engine is a child of the server; make sure it does not outlive it and keep the port.
 		await sleep(500);
 		this.reapEngine();
-		await waitFor("port 6420 to be free", portFree, 20_000, 200);
+		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
 	}
 
 	private reapEngine(): void {
@@ -243,12 +243,53 @@ class Server {
 	}
 }
 
-function portFree(): Promise<boolean> {
+function portFree(port = 6420): Promise<boolean> {
 	return new Promise((done) => {
 		const probe = createServer();
 		probe.once("error", () => done(false));
-		probe.listen(6420, "127.0.0.1", () => probe.close(() => done(true)));
+		probe.listen(port, "127.0.0.1", () => probe.close(() => done(true)));
 	});
+}
+
+/** Both of the server's ports: the engine's and the platform's HTTP routes. */
+async function portsFree(): Promise<boolean> {
+	return (await portFree(6420)) && (await portFree(6440));
+}
+
+/** `GET /platform/info`, from a page at `origin` when one is given. */
+function platformInfo(origin?: string): Promise<Response> {
+	return fetch(`${API}/platform/info`, { headers: origin ? { Origin: origin } : {} });
+}
+
+/**
+ * Starts the server with a remote engine configured and no WLP_SECRET; it must stop by itself, before
+ * it connects anywhere. The endpoint is a closed local port with a made-up token.
+ */
+async function startWithoutSecret(): Promise<{ code: number | null; output: string }> {
+	const env: Record<string, string | undefined> = { ...process.env, WLP_SANDBOX: "fake", RIVET_ENDPOINT: "http://e2e-namespace:sk_e2e_made_up@127.0.0.1:9", WLP_HTTP_PORT: "6449" };
+	delete env.WLP_SECRET;
+	const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { cwd: SERVER_DIR, env, stdio: ["ignore", "pipe", "pipe"] });
+	let output = "";
+	child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")));
+	child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")));
+	const code = await withTimeout(
+		"the server to refuse to start",
+		new Promise<number | null>((done) => child.on("exit", (exitCode) => done(exitCode))),
+		30_000,
+	).catch((error) => {
+		child.kill("SIGKILL");
+		throw error;
+	});
+	return { code, output };
+}
+
+/** The `docker inspect` state of a sandbox's container ("running", "paused", "exited", ...), or "gone". */
+function containerState(sandboxId: string): string {
+	try {
+		return execFileSync("docker", ["inspect", "-f", "{{.State.Status}}", `wlp-session-${sandboxId}`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+	} catch {
+		return "gone";
+	}
 }
 
 function sandboxContainers(): string[] {
@@ -434,8 +475,11 @@ async function main(server: Server | null): Promise<void> {
 
 	let availableProfile = "docker-windlass-sandbox";
 	let models: string[] = [];
-	await check("platform.info", async () => {
-		const info = await client.platform.getOrCreate(["main"]).info();
+	await check("platform info over HTTP, from any server, with no actor", async () => {
+		const response = await platformInfo();
+		assert(response.ok, `GET /platform/info answered ${response.status}`);
+		assert(response.headers.get("content-type")?.startsWith("application/json"), `content-type is ${response.headers.get("content-type")}`);
+		const info = (await response.json()) as import("../server/src/contract.js").PlatformInfo;
 		assert(info.demoEnabled === true, "demoEnabled is not true: start the server with WLP_DEMO=1");
 		assert(info.profiles.length >= 2, "fewer than two profiles");
 		const available = info.profiles.filter((profile) => profile.available);
@@ -446,8 +490,45 @@ async function main(server: Server | null): Promise<void> {
 		if (!FAKE) assert(typeof info.windlassVersion === "string" && info.windlassVersion !== "", "windlassVersion is null: is the sandbox image built?");
 		availableProfile = available[0].id;
 		models = info.models;
-		return `windlass ${info.windlassVersion}, ${available.length}/${info.profiles.length} profiles available, models ${info.models.join(", ")}`;
+		if (OWN_SERVER) {
+			// The information is no actor's: none named "platform" exists, whoever asked.
+			const listed = (await (await controlPlane("/actors?namespace=default&name=platform")).json()) as { actors?: unknown[] };
+			assert((listed.actors ?? []).length === 0, `the control plane lists ${listed.actors?.length} platform actors`);
+		}
+		const health = await fetch(`${API}/health`);
+		assert(health.ok, `GET /health answered ${health.status}`);
+		assert((await fetch(`${API}/nothing-here`)).status === 404, "an unknown path did not answer 404");
+		return `windlass ${info.windlassVersion}, ${available.length}/${info.profiles.length} profiles available, models ${info.models.join(", ")}; /health ${health.status}`;
 	});
+
+	await check("platform info: only the web app's origin may read it", async () => {
+		const evil = await platformInfo("http://evil.example");
+		assert(evil.status === 403, `a page on another site got ${evil.status}`);
+		const body = (await evil.json()) as { group?: string; code?: string; message?: string };
+		assert(body.group === "user" && body.code === "origin_not_allowed" && body.message === "This origin is not allowed to connect.", `refused with ${plain(body)}`);
+		assert(evil.headers.get("access-control-allow-origin") === null, "the refusal carries a CORS header");
+		const good = await platformInfo("http://localhost:5173");
+		assert(good.ok && good.headers.get("access-control-allow-origin") === "http://localhost:5173", `the web app's origin got ${good.status}, CORS ${good.headers.get("access-control-allow-origin")}`);
+		const preflight = await fetch(`${API}/platform/info`, { method: "OPTIONS", headers: { Origin: "http://127.0.0.1:5173", "Access-Control-Request-Method": "GET" } });
+		assert(preflight.status === 204 && preflight.headers.get("access-control-allow-origin") === "http://127.0.0.1:5173", `preflight answered ${preflight.status}`);
+		const none = await platformInfo();
+		assert(none.ok && none.headers.get("access-control-allow-origin") === null, "a client without an origin was not let through plainly");
+		return "another site 403 origin_not_allowed; the web app's origins allowed with CORS; no origin allowed";
+	});
+
+	if (OWN_SERVER) {
+		await check("with a remote engine and no WLP_SECRET the server refuses to start, in one sentence", async () => {
+			const { code, output } = await startWithoutSecret();
+			assert(code === 1, `the server exited with ${code}: ${output.slice(-500)}`);
+			const lines = output.trim().split("\n");
+			assert(lines.length === 1 && lines[0].startsWith("[wlp] WLP_SECRET is not set:") && lines[0].endsWith("on all of them."), `it said: ${output.slice(0, 600)}`);
+			assert(!output.includes("sk_e2e_made_up"), "the output shows the engine's token");
+			assert(await portFree(6449), "it bound its HTTP port before refusing");
+			return lines[0];
+		});
+	} else {
+		skip("with a remote engine and no WLP_SECRET the server refuses to start, in one sentence", "needs to start a server");
+	}
 
 	// --- sign-in ----------------------------------------------------------------------------------
 
@@ -570,9 +651,8 @@ async function main(server: Server | null): Promise<void> {
 		const evil = newClient({ origin: "http://evil.example" });
 		const good = newClient({ origin: "http://localhost:5173" });
 		try {
-			await refused(() => evil.platform.getOrCreate(["main"]).info(), "origin_not_allowed");
 			await refused(() => evil.user.getOrCreate([uid], { params: { token } }).me(), "origin_not_allowed");
-			await good.platform.getOrCreate(["main"]).info();
+			await refused(() => evil.login.getOrCreate([attempt()]).start(), "origin_not_allowed");
 			await good.user.getOrCreate([uid], { params: { token } }).me();
 
 			webSocketOrigin = "http://evil.example";
@@ -1421,16 +1501,16 @@ async function main(server: Server | null): Promise<void> {
 
 	if (FAKE) {
 		await check("the fake layer's token source: no token without a sign-in, one request per user at a time, a fresh answer reused, a new sign-in's token after adopt", async () => {
-			// The layer itself, beside the server's: what the actors' turns ask before they start.
+			// The layer itself, beside the server's, with the users' sign-ins kept in this process: what the actors' turns ask before they start.
 			const { createFakeSandboxLayer } = await import("../server/src/sandbox-fake.js");
 			const { SandboxUserError } = await import("../server/src/sandbox/api.js");
 			const { SignInRefreshError } = await import("../server/src/sandbox/handoff.js");
-			const fake = createFakeSandboxLayer();
+			const fake = createFakeSandboxLayer({ signIns: "memory" });
 			const signIn = async (uid: string, code: string) => {
 				const id = attempt();
 				const started = await fake.logins.start(id);
-				await fake.logins.finish(id, `${started.redirectPrefix}?code=${code}`);
-				await fake.logins.adopt(id, uid);
+				const finished = await fake.logins.finish(id, started.attempt, `${started.redirectPrefix}?code=${code}`);
+				await fake.logins.adopt(id, finished.attempt, uid);
 			};
 			const refusal = async (uid: string) =>
 				fake.tokens.current(uid).then(
@@ -1457,13 +1537,18 @@ async function main(server: Server | null): Promise<void> {
 			await fake.logins.logout("u_ann");
 			const out = await refusal("u_ann");
 			assert(out instanceof SandboxUserError && /Sign in with ChatGPT/.test(out.message), "after logout a token was still handed out");
+			// A sign-in whose saved token is about to run out: asking refreshes it, once for everyone who asks.
+			await signIn("u_eve", "brief");
+			const due = await Promise.all(Array.from({ length: 4 }, () => fake.tokens.current("u_eve")));
+			assert(due.every((token) => token.accessToken === due[0]!.accessToken) && due[0]!.expiresAt - Date.now() > 55 * 60_000, "a token that was due was not replaced by one new token for all who asked");
+			assert((await fake.logins.status("u_eve"))?.accessExpiresAt === due[0]!.expiresAt, "the refreshed sign-in was not saved");
 			const expired = await refusal(await signIn("u_cat", "expired").then(() => "u_cat"));
 			assert(expired instanceof SandboxUserError && /Sign in with ChatGPT again/.test(expired.message), "a sign-in that is no longer accepted is not the user's to renew");
 			const offline = await refusal(await signIn("u_dan", "offline").then(() => "u_dan"));
 			assert(offline instanceof Error && !(offline instanceof SandboxUserError), "a token that cannot be had this time was reported as the user's doing");
 			assert(offline instanceof SignInRefreshError && offline.code === "network_error", "a sign-in service that cannot be reached is not told by Windlass's code for it, `network_error`");
 			for (const said of [none, out, expired, offline]) assert(!/FAKE-ACCESS-TOKEN/.test(String((said as Error).message)), "an error message contains a token");
-			return `not signed in: "${(none as Error).message}"; 6 requests at once: one answer; reused; replaced by adopt; gone after logout; expired: SandboxUserError; offline: ${(offline as Error).name} (${(offline as { code?: string }).code})`;
+			return `not signed in: "${(none as Error).message}"; 6 requests at once: one answer; reused; replaced by adopt; gone after logout; a token that was due: one refresh for 4 requests, saved; expired: SandboxUserError; offline: ${(offline as Error).name} (${(offline as { code?: string }).code})`;
 		});
 
 		await check("ChatGPT sign-in: start, finish, token, and the actor goes away", async () => {
@@ -1511,9 +1596,13 @@ async function main(server: Server | null): Promise<void> {
 				const started = await handle.start();
 				return handle.finish(`${started.redirectPrefix}?code=${code}`);
 			};
-			const without = await signIn("nosignin");
+			// A user who signed in and then had the sign-in forgotten: the platform's token is still good, the ChatGPT sign-in is gone.
+			const without = await signIn("carol");
 			const withoutUser = client.user.getOrCreate([without.profile.uid], { params: { token: without.token } });
-			assert((await withoutUser.chatgpt()).connected === false, "a user with no saved sign-in is reported as connected");
+			assert((await withoutUser.chatgpt()).connected === true, "a user who just signed in is not reported as connected");
+			await withoutUser.forgetChatgpt();
+			await withoutUser.forgetChatgpt();
+			assert((await withoutUser.chatgpt()).connected === false, "a user whose sign-in was forgotten is reported as connected");
 			const blocked = await withoutUser.createSession({ profile: availableProfile as never });
 			const blockedHandle = client.agentSession.get([without.profile.uid, blocked.id], { params: { token: without.token } });
 			const message = await refused(() => blockedHandle.prompt({ text: "hello" }), "chatgpt_required");
@@ -1543,6 +1632,96 @@ async function main(server: Server | null): Promise<void> {
 				handed = `each of the signed-in user's 2 turns was handed a token, none of the ${demoUids.length} demo users' turns was`;
 			}
 			return `refusal: "${message}"; ${handed}`;
+		});
+
+		await check("the sign-in is the user's actor's: turns started at once cause one refresh, the refreshed sign-in outlives the actor's sleep, a forgotten one yields nothing, and the actor data holds no token", async () => {
+			const handle = client.login.getOrCreate([attempt()]);
+			const started = await handle.start();
+			// `brief`: the saved token has a minute left, so the first request for it has to refresh the sign-in.
+			const eve = await handle.finish(`${started.redirectPrefix}?code=brief`);
+			const uidOfEve = eve.profile.uid;
+			const user = client.user.getOrCreate([uidOfEve], { params: { token: eve.token } });
+			const before = await user.chatgpt();
+			assert(before.connected && typeof before.accessExpiresAt === "number" && before.accessExpiresAt - Date.now() < 2 * 60_000, `the sign-in's saved token is not about to run out: ${plain(before)}`);
+
+			// Only servers may ask the actor for the sign-in or its token: the user's own token is refused, and so is everyone else's.
+			const inner = user as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+			for (const call of [() => inner.internalAccessToken!("n".repeat(22)), () => inner.internalSignInStatus!(), () => inner.internalSignOut!(), () => inner.internalAdoptSignIn!("x")]) await refused(call, "forbidden");
+			const stranger = client.user.getOrCreate([uidOfEve], { params: { token } }) as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+			await refused(() => stranger.chatgpt!(), "forbidden");
+			await refused(() => stranger.forgetChatgpt!(), "forbidden");
+			await refused(() => stranger.internalAccessToken!("n".repeat(22)), "forbidden");
+
+			// Three turns at once, each of which asks for the user's token before it starts.
+			const sessions = await Promise.all([1, 2, 3].map(() => user.createSession({ profile: availableProfile as never })));
+			const watches = sessions.map((session) => new Watch(client, uidOfEve, session.id, eve.token));
+			try {
+				await Promise.all(watches.map((watch) => watch.conn.prompt({ text: "hello" })));
+				const ended = await Promise.all(watches.map((watch) => watch.untilEnded(1)));
+				assert(ended.every((turn) => turn.outcome === "succeeded"), `the three turns ended ${ended.map((turn) => turn.outcome).join(", ")}`);
+				const after = await user.chatgpt();
+				assert(after.connected && (after.accessExpiresAt ?? 0) - Date.now() > 55 * 60_000, `the refreshed sign-in was not saved: ${plain(after)}`);
+				const linesOf = (what: string) => (server ? server.output.split("\n").filter((line) => line.includes(`[wlp] ${what}`) && line.includes(`uid=${uidOfEve}:`)) : []);
+				if (server) {
+					assert(linesOf("token.handed").length === 3, `the three turns were handed a token ${linesOf("token.handed").length} times`);
+					assert(linesOf("sign-in.refreshed").length === 1, `three turns at once refreshed the sign-in ${linesOf("sign-in.refreshed").length} times`);
+				}
+
+				// The actor sleeps: the token it kept in memory is gone, and what it wakes with is what it stored.
+				const list = (await (await controlPlane("/actors?namespace=default&name=user")).json()) as { actors: Array<{ actor_id: string; key: string }> };
+				const record = list.actors.find((entry) => entry.key.includes(uidOfEve));
+				assert(record, "the control plane does not list the user's actor");
+				const slept = await controlPlane(`/actors/${record.actor_id}/sleep?namespace=default`, "POST");
+				assert(slept.ok, `the control plane refused the sleep: ${slept.status}`);
+				await sleep(1_500);
+				await watches[0]!.conn.prompt({ text: "and once more" });
+				assert((await watches[0]!.untilEnded(2)).outcome === "succeeded", "a turn after the user's actor slept did not succeed");
+				if (server) {
+					assert(linesOf("token.handed").length === 4, "the turn after the sleep was not handed a token");
+					// Had the refreshed sign-in not been stored, the actor would have woken with the one whose token had a minute left, and refreshed again.
+					assert(linesOf("sign-in.refreshed").length === 1, "the user's actor woke with the sign-in from before the refresh");
+				}
+
+				await user.forgetChatgpt();
+				assert((await user.chatgpt()).connected === false, "a forgotten sign-in is still reported");
+				// A session that ran a moment ago takes the prompt (it asks who is signed in only now and then): its turn is handed nothing and ends by saying so.
+				await watches[1]!.conn.prompt({ text: "hello again" });
+				const unsigned = await watches[1]!.untilEnded(2);
+				assert(unsigned.outcome === "error" && /sign in with chatgpt again/i.test(unsigned.message ?? "") && watches[1]!.items.filter((item) => item.kind === "windlass" && item.turn === 2).length === 0, `a turn after the sign-in was forgotten ended ${plain(unsigned)}`);
+				if (server) assert(linesOf("token.handed").length === 4, "a turn was handed a token of a sign-in that was forgotten");
+				// A session that asks is refused before a turn starts.
+				const late = await user.createSession({ profile: availableProfile as never });
+				sessions.push(late);
+				const message = await refused(() => client.agentSession.get([uidOfEve, late.id], { params: { token: eve.token } }).prompt({ text: "hello" }), "chatgpt_required");
+
+				let stored = "the server's actor data is not at hand";
+				if (server) {
+					// Everything the engine wrote for this server's actors: the sealed sign-ins are in there, and no token is.
+					let files = 0;
+					let sealed = 0;
+					const leaks: string[] = [];
+					const walk = (dir: string) => {
+						for (const entry of readdirSync(dir, { withFileTypes: true })) {
+							const path = join(dir, entry.name);
+							if (entry.isDirectory()) walk(path);
+							else if (entry.isFile() && path !== server.logFile && statSync(path).size < 256 * 1024 * 1024) {
+								const text = readFileSync(path).toString("latin1");
+								files += 1;
+								if (text.includes("wlps1.")) sealed += 1;
+								if (/FAKE-(ACCESS|REFRESH)-TOKEN/.test(text)) leaks.push(path.replace(server.storage, ""));
+							}
+						}
+					};
+					walk(server.storage);
+					assert(leaks.length === 0, `a token is readable in the actor data: ${leaks.join(", ")}`);
+					assert(!/FAKE-(ACCESS|REFRESH)-TOKEN/.test(server.output), "a token is in the server's output");
+					stored = sealed > 0 ? `${files} files of actor data read: sealed sign-ins in ${sealed}, a token in none` : `${files} files of actor data read: a token in none (and no sealed blob was found as text either, so the engine's files may not be readable this way)`;
+				}
+				return `3 turns at once: one refresh; after the actor's sleep: no second one; forgotten: a running session's turn ends "${unsigned.message}", a new one is refused "${message}"; ${stored}`;
+			} finally {
+				for (const watch of watches) await watch.conn.dispose().catch(() => undefined);
+				for (const session of sessions) await user.deleteSession(session.id).catch(() => undefined);
+			}
 		});
 
 		await check("a sign-in that is no longer accepted, or whose token cannot be had, ends the turn with what to do", async () => {
@@ -1579,6 +1758,7 @@ async function main(server: Server | null): Promise<void> {
 	} else {
 		skip("ChatGPT sign-in: start, finish, token, and the actor goes away", "a real sign-in is never completed by this script; run in fake mode");
 		skip("a user without a ChatGPT sign-in is told to sign in; with one, turns run unscripted on an access token handed to them", "needs a signed-in account; run in fake mode, or scripts/sandbox-check.ts for the real hand-off");
+		skip("the sign-in is the user's actor's: turns started at once cause one refresh, the refreshed sign-in outlives the actor's sleep, a forgotten one yields nothing, and the actor data holds no token", "needs a signed-in account; run in fake mode, or scripts/signin-check.ts for the same with a real Windlass");
 		skip("a sign-in that is no longer accepted, or whose token cannot be had, ends the turn with what to do", "needs a signed-in account; run in fake mode");
 	}
 
@@ -1591,11 +1771,11 @@ async function main(server: Server | null): Promise<void> {
 			assert(Math.abs(started.expiresAt - (Date.now() + loginTtlMs)) < 8_000, "expiresAt is off");
 			// Neither layer contacts OpenAI for an address that is not the loopback one.
 			const wrong = await refused(() => handle.finish("https://example.com/not-the-callback"), "sandbox_error");
-			if (!FAKE) assert(loginVolumes().includes(`wlp-login-${id}`), "the attempt has no data volume");
+			// An attempt is kept, sealed, in its actor: no layer makes a volume for it.
+			if (!FAKE) assert(loginVolumes().length === 0, `an attempt left a volume: ${loginVolumes().join(", ")}`);
 			await waitFor("the attempt to be discarded", () => server.output.includes(`[wlp] login.discarded attempt=${id}`), loginTtlMs + 20_000, 250);
-			if (!FAKE) assert(!loginVolumes().includes(`wlp-login-${id}`), "the attempt's data volume still exists");
 			await refused(() => client.login.get([id]).finish(`${started.redirectPrefix}?code=late&state=x`), "not_found");
-			return `after ${Math.round(loginTtlMs / 1000)} s the actor and the attempt${FAKE ? "" : "'s volume"} were gone; a wrong address was answered with "${wrong}"`;
+			return `after ${Math.round(loginTtlMs / 1000)} s the actor and the attempt in it were gone; a wrong address was answered with "${wrong}"`;
 		});
 	} else {
 		skip("an unfinished sign-in attempt is discarded when it expires", "needs its own server, restarted with a short expiry");
@@ -1628,7 +1808,7 @@ async function main(server: Server | null): Promise<void> {
 		await check("the turn's time limit applies while a question waits", async () => {
 			const limitMs = 3_000;
 			await server.stop();
-			await waitFor("port 6420 to be free", portFree, 20_000, 200);
+			await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
 			await server.start({ WLP_TURN_TIMEOUT_MS: String(limitMs), WLP_LOGIN_TTL_MS: String(loginTtlMs) });
 			const limited = await userHandle.createSession({ profile: availableProfile as never, title: "Limited" });
 			const limitedWatch = new Watch(client, uid, limited.id, token);
@@ -1657,7 +1837,176 @@ async function main(server: Server | null): Promise<void> {
 		skip("the turn's time limit applies while a question waits", "needs its own server with the fake layer, restarted with a short limit");
 	}
 
+	// --- idle sandboxes, on a server restarted with short idle times ---------------------------------
+
+	if (server) {
+		await idleChecks(server, client, uid, token, availableProfile, ASK, LONG);
+	} else {
+		for (const name of IDLE_CHECKS) skip(name, "needs its own server, restarted with short idle times");
+	}
+
 	await client.dispose().catch(() => undefined);
+}
+
+const IDLE_CHECKS = [
+	"an idle sandbox is suspended by itself, with one line in the timeline",
+	"a prompt after an automatic suspend resumes the sandbox",
+	"no suspend while a turn runs or waits on a question",
+	"the running-sessions count after an automatic suspend",
+	"an idle sandbox is removed after the longer time; the timeline stays and the next prompt starts a new one",
+	"the idle checks hold across a server restart",
+];
+
+async function idleChecks(server: Server, client: Client, uid: string, token: string, profile: string, ASK: string, LONG: string): Promise<void> {
+	const SUSPEND_MS = FAKE ? 3_000 : 6_000;
+	const DESTROY_MS = FAKE ? 12_000 : 25_000;
+	const seconds = (ms: number) => `${ms / 1000} seconds`;
+	const SUSPENDED = `Suspended the sandbox after ${seconds(SUSPEND_MS)} without use; the next prompt resumes it.`;
+	const REMOVED = `Removed the sandbox and its files after ${seconds(DESTROY_MS)} without use; the next prompt starts a new one.`;
+	await server.stop();
+	await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+	await server.start({ WLP_IDLE_SUSPEND_MS: String(SUSPEND_MS), WLP_IDLE_DESTROY_MS: String(DESTROY_MS), WLP_LOGIN_TTL_MS: String(loginTtlMs) });
+
+	const userHandle = client.user.getOrCreate([uid], { params: { token } });
+	const idle = await userHandle.createSession({ profile: profile as never, title: "Idle" });
+	const handle = client.agentSession.get([uid, idle.id], { params: { token } });
+	const watch = new Watch(client, uid, idle.id, token);
+	type PlatformItem = Extract<TimelineItem, { kind: "platform" }>;
+	const lines = (text: string) => watch.items.filter((item): item is PlatformItem => item.kind === "platform" && item.text === text);
+	const logged = (what: string) => [...server.output.matchAll(new RegExp(`\\[wlp\\] sandbox\\.${what} id=(\\S+) session=${idle.id}`, "g"))].map((match) => match[1]);
+	const sandboxOf = () => [...server.output.matchAll(/\[wlp\] sandbox\.created id=(\S+) session=(\S+)/g)].filter((match) => match[2] === idle.id).map((match) => match[1]).at(-1);
+	let ok = true;
+	const step = async (name: string, body: () => Promise<string | undefined>) => {
+		if (!ok) {
+			skip(name, "an earlier idle check failed");
+			return;
+		}
+		ok = await check(name, body);
+	};
+
+	try {
+		await step(IDLE_CHECKS[0], async () => {
+			await refused(() => handle.internalIdle(), "forbidden");
+			const { turn } = await watch.conn.prompt({ text: "Write a short program" });
+			const ended = await watch.untilEnded(turn);
+			const line = await waitFor("the suspend line", () => lines(SUSPENDED)[0], SUSPEND_MS + 20_000, 100);
+			const after = line.at - ended.at;
+			assert(after >= SUSPEND_MS - 100 && after < SUSPEND_MS + 10_000, `suspended ${after} ms after the turn ended; the idle time is ${SUSPEND_MS} ms`);
+			assert(line.kind === "platform" && line.level === "info" && line.turn === turn, `the line is ${plain(line)}`);
+			await waitFor("the summary to show the sandbox paused", () => watch.summaries.at(-1)?.sandbox === "paused", 5_000);
+			const listed = await waitFor("the user's list to show it", async () => {
+				const entry = (await userHandle.listSessions()).find((candidate) => candidate.id === idle.id);
+				return entry?.sandbox === "paused" ? entry : undefined;
+			}, 5_000, 100);
+			assert(listed.status === "idle", `the user's list shows ${listed.status}`);
+			const id = logged("idle_suspended")[0];
+			assert(id && id === sandboxOf(), "the server did not log the suspend of this session's sandbox");
+			if (!FAKE) assert(containerState(id) !== "running", `container wlp-session-${id} is still running`);
+			return `after ${after} ms: "${line.text}"${FAKE ? "" : `; docker: ${containerState(id)}`}`;
+		});
+
+		await step(IDLE_CHECKS[1], async () => {
+			const { turn } = await watch.conn.prompt({ text: "Write a short program" });
+			const ended = await watch.untilEnded(turn);
+			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+			assert(watch.items.some((item) => item.kind === "platform" && item.turn === turn && item.text === "Resuming sandbox"), 'no "Resuming sandbox" item');
+			assert(!watch.items.some((item) => item.kind === "platform" && item.turn === turn && item.text === "Creating sandbox"), "a new sandbox was created");
+			if (!FAKE) assert(containerState(sandboxOf() ?? "") === "running", "the container is not running after the turn");
+			return `turn ${turn} ${ended.outcome} in the same sandbox`;
+		});
+
+		await step(IDLE_CHECKS[2], async () => {
+			// The turn before this one armed a check that falls due while this one waits on its question.
+			const kept = server.output.split("\n").filter((line) => line.includes(`sandbox.idle_kept session=${idle.id}`)).length;
+			const suspends = logged("idle_suspended").length;
+			const { turn } = await watch.conn.prompt({ text: ASK });
+			const asked = await watch.untilQuestion(turn);
+			await waitFor("the idle check to find the turn", () => server.output.split("\n").filter((line) => line.includes(`sandbox.idle_kept session=${idle.id}`)).length > kept, SUSPEND_MS + 10_000, 100);
+			await sleep(1_000);
+			assert(logged("idle_suspended").length === suspends && lines(SUSPENDED).length === 1, "the sandbox was suspended while the turn waited on a question");
+			const waiting = await handle.snapshot();
+			assert(waiting.summary.status === "waiting" && waiting.summary.sandbox === "running" && waiting.question?.id === asked.id, `while waiting: ${plain(waiting.summary)}`);
+			const waited = Date.now() - asked.askedAt;
+			await watch.conn.answer({ questionId: asked.id, choice: "once" });
+			const ended = await watch.untilEnded(turn);
+			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+			const line = await waitFor("the suspend after the answered turn", () => lines(SUSPENDED)[1], SUSPEND_MS + 20_000, 100);
+			assert(line.at - ended.at >= SUSPEND_MS - 100, "suspended before the idle time after the turn had passed");
+			return `kept while the question waited ${waited} ms (idle time ${SUSPEND_MS} ms); suspended ${line.at - ended.at} ms after the answered turn ended`;
+		});
+
+		if (FAKE) {
+			await step(IDLE_CHECKS[3], async () => {
+				const others = [await userHandle.createSession({ profile: profile as never, title: "busy 1" }), await userHandle.createSession({ profile: profile as never, title: "busy 2" }), await userHandle.createSession({ profile: profile as never, title: "one too many" })];
+				const handles = others.map((entry) => client.agentSession.get([uid, entry.id], { params: { token } }));
+				try {
+					const entry = (await userHandle.listSessions()).find((candidate) => candidate.id === idle.id);
+					assert(entry?.status === "idle" && entry.sandbox === "paused", `the suspended session is listed as ${plain(entry)}`);
+					await handles[0].prompt({ text: LONG });
+					await handles[1].prompt({ text: LONG });
+					// Suspended, it holds no place: it can take the third.
+					const { turn } = await handle.prompt({ text: LONG });
+					const message = await refused(() => handles[2].prompt({ text: "One too many" }), "too_many_running");
+					await handle.stop();
+					await watch.untilEnded(turn);
+					await handles[0].stop();
+					await handles[1].stop();
+					await waitFor("the busy sessions to be idle", async () => (await Promise.all(handles.slice(0, 2).map((one) => one.snapshot()))).every((snap) => snap.summary.status === "idle"), 15_000, 100);
+					return `the suspended session took the third place; the fourth was refused: "${message}"`;
+				} finally {
+					for (const entry of others) await userHandle.deleteSession(entry.id).catch(() => undefined);
+				}
+			});
+		} else {
+			skip(IDLE_CHECKS[3], "four containers at once is too much for this machine; run in fake mode");
+		}
+
+		await step(IDLE_CHECKS[4], async () => {
+			// The last turn of this session has ended; nothing touches it until the removal.
+			const lastEnd = [...watch.items].reverse().find((item) => item.kind === "turn.ended");
+			assert(lastEnd, "no turn has ended");
+			const id = sandboxOf();
+			assert(id, "no sandbox was logged for the session");
+			const line = await waitFor("the removal line", () => lines(REMOVED)[0], DESTROY_MS + 30_000, 200);
+			const after = line.at - lastEnd.at;
+			assert(after >= DESTROY_MS - 100 && after < DESTROY_MS + 15_000, `removed ${after} ms after the last turn ended; the time is ${DESTROY_MS} ms`);
+			await waitFor("the summary to show no sandbox", () => watch.summaries.at(-1)?.sandbox === "none", 5_000);
+			assert(logged("idle_removed").includes(id), "the server did not log the removal of this session's sandbox");
+			if (!FAKE) assert(containerState(id) === "gone", `container wlp-session-${id} is ${containerState(id)}`);
+			const snapshot = await handle.snapshot();
+			assert(plain(snapshot.timeline) === plain(watch.items), "the timeline differs from what was seen");
+			dense(snapshot.timeline);
+			const { turn } = await watch.conn.prompt({ text: "Write a short program" });
+			const ended = await watch.untilEnded(turn);
+			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+			const fresh = watch.items.filter((item) => item.kind === "platform" && item.turn === turn);
+			assert(fresh.some((item) => item.kind === "platform" && item.text === "Creating sandbox"), 'no "Creating sandbox" item');
+			assert(!fresh.some((item) => item.kind === "platform" && item.level === "warn"), "the new sandbox came with a warning");
+			return `after ${after} ms: "${line.text}"; ${snapshot.timeline.length} items readable; turn ${turn} in a new sandbox`;
+		});
+
+		await step(IDLE_CHECKS[5], async () => {
+			const lastEnd = [...watch.items].reverse().find((item) => item.kind === "turn.ended");
+			assert(lastEnd, "no turn has ended");
+			const removals = logged("idle_removed").length;
+			// Nobody is connected to the session from here on: only its schedule can wake it.
+			await watch.conn.dispose().catch(() => undefined);
+			await server.stop();
+			await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+			const restarted = Date.now();
+			await server.start({ WLP_IDLE_SUSPEND_MS: String(SUSPEND_MS), WLP_IDLE_DESTROY_MS: String(DESTROY_MS), WLP_LOGIN_TTL_MS: String(loginTtlMs) });
+			await waitFor("the removal after the restart", () => logged("idle_removed").length > removals, DESTROY_MS + 40_000, 200);
+			const snapshot = await handle.snapshot();
+			const line = snapshot.timeline.filter((item) => item.kind === "platform" && item.text === REMOVED).at(-1);
+			assert(line && line.at >= restarted && line.at >= lastEnd.at + DESTROY_MS - 100, `the removal line is ${plain(line)}`);
+			assert(snapshot.summary.sandbox === "none", `the sandbox is ${snapshot.summary.sandbox}`);
+			if (!FAKE) assert(containerState(logged("idle_removed").at(-1) ?? "") === "gone", "the container still exists");
+			return `removed ${line.at - lastEnd.at} ms after the last turn, by a server started ${restarted - lastEnd.at} ms after it`;
+		});
+	} finally {
+		await watch.conn.dispose().catch(() => undefined);
+		await userHandle.deleteSession(idle.id).catch(() => undefined);
+	}
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1667,7 +2016,7 @@ let crashed = false;
 try {
 	console.log(`e2e: sandbox layer ${MODE}; ${OWN_SERVER ? "starting a server on fresh state" : `using ${ENDPOINT}`}`);
 	if (OWN_SERVER) {
-		if (!(await portFree())) throw new Error("port 6420 is in use: stop the running server, or pass --endpoint to test it");
+		if (!(await portsFree())) throw new Error("port 6420 or 6440 is in use: stop the running server, or pass --endpoint to test it");
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
 		await server.start();

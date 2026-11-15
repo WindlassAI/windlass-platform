@@ -102,7 +102,7 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 		commandNetwork: true,
 		commandsCanReadAccessToken: false,
 		available: false,
-		unavailableReason: "Not built here yet: it needs an E2B provider in the sandbox layer, an E2B template with Windlass in it and an E2B account. Windlass no longer stands in the way: a session there would be handed a short-lived access token, as the Docker sessions are, and the sign-in would stay on the platform.",
+		unavailableReason: "This server runs its sandboxes on local Docker. E2B is built: a server started with WLP_SANDBOX=e2b, an E2B API key and the E2B template (README, \"E2B\") offers it in place of the Docker profiles, and says there what it promises.",
 	},
 	{
 		id: "daytona",
@@ -728,10 +728,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			message: end.message,
 		});
 		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: end.outcome, updatedAt: now() });
-		// An idle sandbox is paused after a while; its files stay.
+		// An idle sandbox is suspended after a while, and the timeline says so as the server's does; its files stay.
 		if (clock === null) {
-			session.pauseTimer = later(90_000, () => {
-				if (session.run === null && session.summary.sandbox === "running") setSummary(world, session, { sandbox: "paused" });
+			session.pauseTimer = later(2 * MINUTE, () => {
+				if (session.run !== null || session.summary.sandbox !== "running") return;
+				store(session, { turn: state.turn, kind: "platform", level: "info", text: "Suspended the sandbox after 2 minutes without use; the next prompt resumes it." });
+				setSummary(world, session, { sandbox: "paused" });
 			});
 		}
 	}
