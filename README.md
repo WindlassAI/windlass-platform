@@ -570,12 +570,16 @@ key (a `.pem` file is downloaded).
 
 All five of the first must be set, the same on every server. With some of them missing the feature is off and
 the server says which (`[wlp] WARNING: GitHub is off: ...`). On a Rivet Cloud cluster the two secrets are
-cluster secrets and the rest plain variables:
+cluster secrets and the rest plain variables. A cluster's secret holds at most 1024 bytes and the key in base64
+is over two thousand, so it goes in as pieces, `WLP_GITHUB_PRIVATE_KEY_1`, `_2`, ..., which the server puts
+together in order:
 
 ```sh
 rivet cluster secret set WLP_GITHUB_CLIENT_SECRET
-base64 -w0 <file>.pem | rivet cluster secret set WLP_GITHUB_PRIVATE_KEY
-rivet deploy ... --secret WLP_GITHUB_CLIENT_SECRET --secret WLP_GITHUB_PRIVATE_KEY \
+base64 -w0 <file>.pem | fold -w 1000 | { n=1; while read -r piece; do
+  printf %s "$piece" | rivet cluster secret set "WLP_GITHUB_PRIVATE_KEY_$n" --yes; n=$((n + 1)); done; }
+rivet deploy ... --secret WLP_GITHUB_CLIENT_SECRET \
+  --secret WLP_GITHUB_PRIVATE_KEY_1 --secret WLP_GITHUB_PRIVATE_KEY_2 --secret WLP_GITHUB_PRIVATE_KEY_3 \
   --env WLP_GITHUB_APP_ID=<id> --env WLP_GITHUB_APP_SLUG=<slug> --env WLP_GITHUB_CLIENT_ID=<client id>
 ```
 

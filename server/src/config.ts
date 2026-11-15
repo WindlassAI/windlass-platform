@@ -139,7 +139,9 @@
  *                              secret: it signs the app's own tokens and never leaves the server. As
  *                              it is, with its line breaks, or with `\n` in their place, or the whole
  *                              file in base64 (`base64 -w0 key.pem`), which is the form to give a
- *                              secret store that takes one line
+ *                              secret store that takes one line. Where a secret may not be that long
+ *                              (a Rivet Cloud cluster's ends at 1024 bytes), the base64 cut into
+ *                              WLP_GITHUB_PRIVATE_KEY_1, _2, ..., which are put together in order
  *   WLP_GITHUB_API_URL         GitHub's API (default https://api.github.com). For GitHub Enterprise
  *                              Server, https://<host>/api/v3; the checks point it at a stand-in
  *   WLP_GITHUB_URL             GitHub itself, where users authorize and git clones from (default
@@ -301,7 +303,7 @@ const GITHUB_REQUIRED = ["WLP_GITHUB_APP_ID", "WLP_GITHUB_APP_SLUG", "WLP_GITHUB
  * variable and never repeats a secret.
  */
 export function githubConfig(env: NodeJS.ProcessEnv = process.env): GithubConfig {
-	const read = (name: string) => (env[name] ?? "").trim();
+	const read = (name: string) => (name === "WLP_GITHUB_PRIVATE_KEY" ? rawGithubPrivateKey(env) : (env[name] ?? "").trim());
 	const missing = GITHUB_REQUIRED.filter((name) => read(name) === "");
 	if (missing.length > 0) return { app: null, missing: missing.length === GITHUB_REQUIRED.length ? [] : missing };
 	const appId = read("WLP_GITHUB_APP_ID");
@@ -333,12 +335,28 @@ export function githubClientSecret(env: NodeJS.ProcessEnv = process.env): string
 }
 
 /**
+ * The private key as it was given: WLP_GITHUB_PRIVATE_KEY, or, where a secret store holds less than a
+ * key is long (a Rivet Cloud cluster's secrets end at 1024 bytes, and the file in base64 is over two
+ * thousand), its pieces in WLP_GITHUB_PRIVATE_KEY_1, _2, ... put together in that order. "" when unset.
+ */
+function rawGithubPrivateKey(env: NodeJS.ProcessEnv): string {
+	const whole = (env.WLP_GITHUB_PRIVATE_KEY ?? "").trim();
+	if (whole !== "") return whole;
+	let joined = "";
+	for (let part = 1; ; part += 1) {
+		const piece = (env[`WLP_GITHUB_PRIVATE_KEY_${part}`] ?? "").trim();
+		if (piece === "") return joined;
+		joined += piece;
+	}
+}
+
+/**
  * The GitHub App's private key as PEM text, or null: WLP_GITHUB_PRIVATE_KEY as it is, with `\n` for its
  * line breaks, or in base64. Whether it is a key at all is found out by whoever signs with it
  * (github/app.ts), which says so without repeating it.
  */
 export function githubPrivateKey(env: NodeJS.ProcessEnv = process.env): string | null {
-	const raw = (env.WLP_GITHUB_PRIVATE_KEY ?? "").trim();
+	const raw = rawGithubPrivateKey(env);
 	if (raw === "") return null;
 	if (raw.includes("-----BEGIN")) return `${raw.replace(/\\n/g, "\n").trim()}\n`;
 	const decoded = Buffer.from(raw, "base64").toString("utf8");
