@@ -30,6 +30,29 @@
  *                              (default 6440)
  *   WLP_HTTP_HOST              the address they bind (default 127.0.0.1 with the local engine, 0.0.0.0
  *                              with a remote one)
+ *   WLP_WEB_DIR                the web app's built files (`web/dist`), for the server to serve itself
+ *                              on that port (web.ts): one address for the whole platform. Unset: it
+ *                              serves none, and the web app is hosted elsewhere. server/Dockerfile sets it
+ *
+ * What browsers connect with (`GET /platform/connection`, platform-info.ts; README, "Running on several
+ * servers"). None of it is needed with the local engine, which asks for no token:
+ *
+ *   WLP_PUBLIC_ENDPOINT        the Rivet endpoint browsers connect to, without a namespace or a token in
+ *                              it: for a Rivet Cloud cluster, https://<name>-api.onrivet.dev. It is
+ *                              not RIVET_ENDPOINT, which is the server's own way to the engine and may be
+ *                              an address only the server reaches. Unset: the web app uses the endpoint
+ *                              it was built with
+ *   RIVET_ADMIN_TOKEN          the engine's admin token, for an engine that asks browsers for a token (a
+ *                              Rivet Cloud cluster, or an engine of your own with `auth.admin_token`).
+ *                              A secret: it is sent to the engine as a bearer and to nothing else, and
+ *                              is never logged or put in an error or an answer. The server uses it for
+ *                              one thing, to issue the short-lived tokens it hands browsers
+ *                              (connection-tokens.ts), and asks the engine at WLP_PUBLIC_ENDPOINT, which
+ *                              must then be set. Unset: browsers are handed no token
+ *   WLP_CONNECTION_TOKEN_TTL_MS
+ *                              how long such a token lasts (default 3600000, one hour; at least one
+ *                              minute, and at most the 24 hours a Rivet Cloud cluster issues one for).
+ *                              A server hands one token to every browser until half of that is gone
  *
  * With WLP_SANDBOX=e2b (read in sandbox/e2b/config.ts; README, "E2B"). The defaults are sized for E2B's
  * free Hobby plan, which runs on a one-time credit: every one of them errs on the side of using less.
@@ -66,7 +89,8 @@
  * The Rivet engine is RivetKit's to configure, from its own variables: without RIVET_ENDPOINT it starts
  * a local engine on :6420 (development), with it the server joins that engine as one of its nodes
  * (RIVET_ENDPOINT, RIVET_NAMESPACE, RIVET_TOKEN, RIVET_POOL, RIVET_NODE_VERSION; README, "Running on
- * several servers"). `engine` below is what this server makes of them; it never holds the token.
+ * several servers"). `engine` below is what this server makes of them; it never holds the token, and
+ * neither does anything else in `config`: the admin token is read where it is used (`engineAdminToken`).
  */
 
 import { randomBytes } from "node:crypto";
@@ -93,6 +117,14 @@ export interface EngineConfig {
 	pool: string;
 }
 
+export interface BrowserConnectionConfig {
+	/** WLP_PUBLIC_ENDPOINT without a trailing slash; null when browsers are to use the endpoint they were built with. */
+	endpoint: string | null;
+	/** True when RIVET_ADMIN_TOKEN is set: browsers are handed tokens this server issues with it. */
+	tokens: boolean;
+	tokenTtlMs: number;
+}
+
 export interface Config {
 	demo: boolean;
 	sandbox: SandboxMode;
@@ -100,8 +132,11 @@ export interface Config {
 	/** False when a remote engine is configured and WLP_SECRET is not: the server refuses to start (startup.ts). */
 	secretConfigured: boolean;
 	engine: EngineConfig;
+	browsers: BrowserConnectionConfig;
 	httpPort: number;
 	httpHost: string;
+	/** The web app's built files, when the server serves them itself. */
+	webDir: string | null;
 	idleSuspendMs: number;
 	idleDestroyMs: number;
 	origins: string[];
@@ -137,6 +172,38 @@ function readEngine(): EngineConfig {
 }
 
 const engine = readEngine();
+
+/**
+ * The engine's admin token, or null. It is not part of `config`, so that nothing that prints or passes
+ * on the configuration can carry it; whoever needs it asks here and keeps it to itself.
+ */
+export function engineAdminToken(): string | null {
+	const token = (process.env.RIVET_ADMIN_TOKEN ?? "").trim();
+	return token === "" ? null : token;
+}
+
+/** A day: the longest a Rivet Cloud cluster issues a token for. */
+const MAX_CONNECTION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+
+function readBrowsers(): BrowserConnectionConfig {
+	const raw = (process.env.WLP_PUBLIC_ENDPOINT ?? "").trim();
+	let endpoint: string | null = null;
+	if (raw !== "") {
+		let url: URL;
+		try {
+			url = new URL(raw);
+		} catch {
+			throw new Error("WLP_PUBLIC_ENDPOINT must be a URL, such as https://<name>-api.onrivet.dev");
+		}
+		if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("WLP_PUBLIC_ENDPOINT must be an http or https URL");
+		// It is handed to every browser as it is. The value is not repeated here: it may hold a token.
+		if (url.username !== "" || url.password !== "") throw new Error("WLP_PUBLIC_ENDPOINT must not carry a namespace or a token: browsers are handed both by the server");
+		endpoint = url.toString().replace(/\/+$/, "");
+	}
+	const ttl = Number(process.env.WLP_CONNECTION_TOKEN_TTL_MS);
+	const tokenTtlMs = Number.isFinite(ttl) && ttl >= 60_000 ? Math.min(Math.floor(ttl), MAX_CONNECTION_TOKEN_TTL_MS) : 60 * 60 * 1000;
+	return { endpoint, tokens: engineAdminToken() !== null, tokenTtlMs };
+}
 
 function readSecret(): Buffer {
 	const fromEnv = process.env.WLP_SECRET;
@@ -224,8 +291,10 @@ export const config: Config = {
 	secret: readSecret(),
 	secretConfigured: !engine.remote || Boolean(process.env.WLP_SECRET),
 	engine,
+	browsers: readBrowsers(),
 	httpPort: readHttpPort(),
 	httpHost: process.env.WLP_HTTP_HOST || (engine.remote ? "0.0.0.0" : "127.0.0.1"),
+	webDir: (process.env.WLP_WEB_DIR ?? "").trim() || null,
 	idleSuspendMs,
 	idleDestroyMs,
 	origins: readOrigins(),

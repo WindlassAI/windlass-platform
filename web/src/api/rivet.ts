@@ -3,6 +3,10 @@
  * platform's information over plain HTTP (`GET PLATFORM_INFO_PATH` on the platform's address, which
  * any of the servers answers; it is not an actor).
  *
+ * Where the actors are reached, and with which token, is asked of the same address when the client is
+ * made (connection.ts): the RivetKit client is created once that answer is there, and gets its token
+ * from a function, so a token that runs out is replaced without a new client and without a reload.
+ *
  * Nothing else in the web app imports RivetKit. The backend did not exist when this was written, so
  * everything here that rests on a reading of the docs rather than on a running server is marked
  * ASSUMPTION and listed again at the bottom of the file.
@@ -38,6 +42,10 @@ import {
 } from "@contract";
 import { createClient, type ActorConn, type ActorConnStatus, type ActorHandle } from "rivetkit/client";
 import { PlatformError, type ConnectionState, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
+import { CONNECT_PATIENCE_MS, ConnectionSource, getPlatform } from "./connection";
+import { isRefusedConnectionToken, toPlatformError } from "./errors";
+
+export { toPlatformError };
 
 /**
  * The server's registry type is not part of the contract, so the actor definition is `any`: RivetKit
@@ -51,46 +59,33 @@ type Conn = ActorConn<Untyped>;
 /** The actor names, as the server's registry is expected to register them. ASSUMPTION 1. */
 const ACTOR = { login: "login", user: "user", agentSession: "agentSession" } as const;
 
-/** Error codes a server might use for a refused token. ASSUMPTION 5. */
-const UNAUTHORIZED_CODES = new Set(["unauthorized", "unauthenticated", "forbidden", "invalid_token", "token_expired", "bad_token", "auth"]);
-
 /**
  * How long an action may take. RivetKit retries an endpoint that does not answer for as long as it
  * is asked to, so without a limit a call to a server that is down would never settle.
  */
 const ACTION_TIMEOUT_MS = 30_000;
-/** How long a feed may take to open before the screen is told the server is not answering. */
-const CONNECT_PATIENCE_MS = 12_000;
 
 /** What an action of a contract interface resolves to. */
 type ResultOf<A, K extends keyof A> = A[K] extends (...args: never[]) => Promise<infer R> ? R : never;
 
-/** Calls one action through a stateless handle or a connection, typed from the contract's interface. */
-async function call<A, K extends keyof A & string>(target: Handle | Conn, endpoint: string, name: K, ...args: A[K] extends (...args: infer P) => unknown ? P : never): Promise<ResultOf<A, K>> {
-	const abort = new AbortController();
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	// The first call of a page load is `info`: it is how the app learns the server is not there, so it waits less.
-	const limit = name === "info" ? CONNECT_PATIENCE_MS : ACTION_TIMEOUT_MS;
-	const timeout = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => {
-			reject(new PlatformError("network", `The server at ${endpoint} did not answer.`));
-			abort.abort();
-		}, limit);
-	});
-	try {
-		// `action({ name, args })` is the raw form of `handle.name(...args)`; it exists on both.
-		const result: Promise<ResultOf<A, K>> = target.action({ name, args, signal: abort.signal });
-		return await Promise.race([result, timeout]);
-	} catch (error) {
-		throw toPlatformError(error, endpoint);
-	} finally {
-		clearTimeout(timer);
-	}
+/** Makes something once, when it is first asked for, and again after a failure. */
+function lazy<T>(make: () => Promise<T>): () => Promise<T> {
+	let made: Promise<T> | null = null;
+	return () => {
+		if (!made) {
+			const mine = make();
+			made = mine;
+			mine.catch(() => {
+				if (made === mine) made = null;
+			});
+		}
+		return made;
+	};
 }
 
 /**
- * An address without the namespace and token it may carry (`https://namespace:pk_...@api.rivet.dev`),
- * for messages. The token is a public one, but it has no business on the screen.
+ * An address without the namespace and token it may carry (`https://namespace:token@host`), for
+ * messages: neither has any business on the screen.
  */
 export function displayAddress(address: string): string {
 	try {
@@ -103,13 +98,21 @@ export function displayAddress(address: string): string {
 	}
 }
 
+/** The address the built web app was loaded from: where the platform's server is when it serves the web app itself. */
+function servedFrom(): string | undefined {
+	return import.meta.env.PROD && typeof location !== "undefined" ? location.origin : undefined;
+}
+
 /**
- * Where the platform's HTTP routes are: VITE_WLP_API when it is set; otherwise, in development, the
- * Rivet endpoint's host on the platform's port, so that a browser on another machine pointed at
- * `http://host:6420` finds them at `http://host:6440`.
+ * Where the platform's HTTP routes are: VITE_WLP_API when it is set. Otherwise a built web app asks the
+ * address it was loaded from, since the platform's server can serve the web app itself (WLP_WEB_DIR),
+ * and so needs nothing set at build time. In development it is the Rivet endpoint's host on the
+ * platform's port, so that a browser on another machine pointed at `http://host:6420` finds them at
+ * `http://host:6440`.
  */
-export function platformUrl(endpoint: string, configured: string | undefined = import.meta.env.VITE_WLP_API): string {
+export function platformUrl(endpoint: string, configured: string | undefined = import.meta.env.VITE_WLP_API, page: string | undefined = servedFrom()): string {
 	if (configured) return configured.replace(/\/+$/, "");
+	if (page) return page;
 	try {
 		const url = new URL(endpoint);
 		const local = new URL(DEFAULT_PLATFORM_URL);
@@ -120,65 +123,109 @@ export function platformUrl(endpoint: string, configured: string | undefined = i
 	return DEFAULT_PLATFORM_URL;
 }
 
-/** `GET PLATFORM_INFO_PATH`. Refusals and failures have the shape of RivetKit's errors, and are read as those are. */
-async function fetchInfo(api: string): Promise<PlatformInfo> {
-	const abort = new AbortController();
-	const timer = setTimeout(() => abort.abort(), CONNECT_PATIENCE_MS);
-	try {
-		const response = await fetch(`${api}${PLATFORM_INFO_PATH}`, { signal: abort.signal, headers: { accept: "application/json" } });
-		const body: unknown = await response.json().catch(() => null);
-		if (!response.ok) {
-			if (isRivetError(body)) throw toPlatformError(body, api);
-			throw new PlatformError("internal", `The server at ${api} answered ${response.status}.`);
-		}
-		return body as PlatformInfo;
-	} catch (error) {
-		if (abort.signal.aborted) throw new PlatformError("network", `The server at ${api} did not answer.`, { cause: error });
-		throw toPlatformError(error, api);
-	} finally {
-		clearTimeout(timer);
-	}
-}
-
-export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_ENDPOINT || DEFAULT_ENDPOINT, api: string = platformUrl(endpoint)): PlatformClient {
-	// `devtools` defaults to true on localhost and injects a script from the endpoint; the app does not want it.
-	const client = createClient({ endpoint, devtools: false });
+/**
+ * `built` is the Rivet endpoint the app was built with (`VITE_WLP_ENDPOINT`), used when the server
+ * names none, as a development server does; `api` is the platform's address, which is asked for the
+ * connection as soon as the client is made, beside the platform's information.
+ */
+export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPOINT || DEFAULT_ENDPOINT, api: string = platformUrl(built), source: ConnectionSource = new ConnectionSource({ api })): PlatformClient {
 	// What messages name; the endpoint itself may carry a namespace and a token.
-	const shown = displayAddress(endpoint);
+	let shown = displayAddress(built);
+
+	const connect = lazy(async () => {
+		const connection = await source.connection();
+		const endpoint = connection.endpoint ?? built;
+		shown = displayAddress(endpoint);
+		return createClient({
+			endpoint,
+			// The server's namespace goes with the server's endpoint; an endpoint the app was built with says its own.
+			...(connection.endpoint !== null ? { namespace: connection.namespace } : {}),
+			// Asked before every request and every WebSocket open, and again when the engine refuses the answer.
+			...(connection.tokens ? { getToken: source.token } : {}),
+			// `devtools` defaults to true on localhost and injects a script from the endpoint; the app does not want it.
+			devtools: false,
+		});
+	});
+	// A server that is not there is said by `info`, and by whatever asks for the client next.
+	connect().catch(() => undefined);
+
+	/**
+	 * Calls one action through a stateless handle or a connection, typed from the contract's interface.
+	 * An action the engine refuses for its token (`auth.token_expired`: the browser's clock runs behind,
+	 * so RivetKit took the token for good) is sent once more: the engine refused it before any actor saw
+	 * it, and RivetKit has fetched the next token by the time the refusal is thrown.
+	 */
+	async function call<A, K extends keyof A & string>(target: Handle | Conn | Promise<Handle>, name: K, ...args: A[K] extends (...args: infer P) => unknown ? P : never): Promise<ResultOf<A, K>> {
+		const abort = new AbortController();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		// The first call of a page load is `info`: it is how the app learns the server is not there, so it waits less.
+		const limit = name === "info" ? CONNECT_PATIENCE_MS : ACTION_TIMEOUT_MS;
+		const timeout = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => {
+				// While the connection is still being asked for, what is not answering is the platform's own address.
+				reject(source.failure() ?? new PlatformError("network", `The server at ${shown} did not answer.`));
+				abort.abort();
+			}, limit);
+		});
+		// `action({ name, args })` is the raw form of `handle.name(...args)`; it exists on both.
+		const send = async (): Promise<ResultOf<A, K>> => (await target).action({ name, args, signal: abort.signal });
+		try {
+			const result = send().catch((error: unknown) => {
+				if (!isRefusedConnectionToken(error) || abort.signal.aborted) throw error;
+				return send();
+			});
+			return await Promise.race([result, timeout]);
+		} catch (error) {
+			throw toPlatformError(error, shown);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
 
 	// One sign-in attempt at a time; `start`, `finish` and `demo` must reach the same actor.
 	let attemptId: string | null = null;
-	const login = () => {
+	const login = async () => {
+		const client = await connect();
 		attemptId ??= crypto.randomUUID();
 		return client.getOrCreate<Untyped>(ACTOR.login, [attemptId]);
 	};
 
 	// ASSUMPTION 2: `params` on the handle is what `onBeforeConnect` receives, for `.connect()` and for stateless actions alike.
-	const userHandle = (auth: AuthResult) => client.getOrCreate<Untyped>(ACTOR.user, [auth.profile.uid], { params: { token: auth.token } });
+	const userHandle = (auth: AuthResult) => lazy(async () => (await connect()).getOrCreate<Untyped>(ACTOR.user, [auth.profile.uid], { params: { token: auth.token } }));
 	// ASSUMPTION 3: a session's actor is created by `user.createSession`, so the web app only ever looks it up.
-	const sessionHandle = (auth: AuthResult, sessionId: string) => client.get<Untyped>(ACTOR.agentSession, [auth.profile.uid, sessionId], { params: { token: auth.token } });
+	const sessionHandle = (auth: AuthResult, sessionId: string) => lazy(async () => (await connect()).get<Untyped>(ACTOR.agentSession, [auth.profile.uid, sessionId], { params: { token: auth.token } }));
 
 	/**
 	 * A connection that keeps a feed alive: `load` runs on every "connected" (the first and each
 	 * reconnect); `live` tells the event handlers whether what they receive follows the loaded state.
+	 * The connection is opened once the client is there; `listen` subscribes to its events and returns
+	 * what unsubscribes.
 	 */
-	function feedConnection(handle: Handle, report: (state: ConnectionState, error?: PlatformError) => void, load: (conn: Conn, isCurrent: () => boolean) => Promise<void>): { conn: Conn; reload: () => void; close: () => void } {
-		const conn = handle.connect();
+	function feedConnection(
+		handle: () => Promise<Handle>,
+		report: (state: ConnectionState, error?: PlatformError) => void,
+		load: (conn: Conn, isCurrent: () => boolean) => Promise<void>,
+		listen: (conn: Conn) => Array<() => void>,
+	): { reload: () => void; close: () => void } {
+		let conn: Conn | null = null;
 		let closed = false;
 		let everConnected = false;
 		/** The screen was told the feed failed; RivetKit's further attempts are not reported until one succeeds. */
 		let reportedFailure = false;
 		let generation = 0;
 		let lastError: PlatformError | null = null;
+		let offs: Array<() => void> = [];
 
 		const reload = () => {
+			const open = conn;
+			if (!open) return;
 			const mine = ++generation;
 			const isCurrent = () => !closed && mine === generation;
-			load(conn, isCurrent).catch((error: unknown) => {
+			load(open, isCurrent).catch((error: unknown) => {
 				if (!isCurrent()) return;
 				const failure = toPlatformError(error, shown);
 				// A connection that drops during the load is retried by RivetKit; anything else is final.
-				if (conn.connStatus === "connected") report("failed", failure);
+				if (open.connStatus === "connected") report("failed", failure);
 				else lastError = failure;
 			});
 		};
@@ -200,45 +247,58 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 			}
 		};
 
-		const offs = [
-			conn.onStatusChange(onStatus),
-			conn.onError((error) => {
-				if (closed) return;
-				lastError = toPlatformError(error, shown);
-				// Whatever RivetKit does next (it may keep retrying), these two will not get better by waiting.
-				if (lastError.code === "unauthorized" || lastError.code === "not_found") {
-					generation++;
-					reportedFailure = true;
-					report("failed", lastError);
-				}
-			}),
-		];
 		report("connecting");
-		// The connection opens by itself; if it is already open, the status callback will not fire for it.
-		if (conn.connStatus === "connected") onStatus("connected");
-		// RivetKit keeps trying a server that does not answer. Say so after a while; if it does connect
-		// later, "connected" follows and the screen recovers.
+		handle().then(
+			(found) => {
+				if (closed) return;
+				const opened: Conn = found.connect();
+				conn = opened;
+				offs = [
+					...listen(opened),
+					opened.onStatusChange(onStatus),
+					opened.onError((error) => {
+						if (closed) return;
+						lastError = toPlatformError(error, shown);
+						// Whatever RivetKit does next (it may keep retrying), these two will not get better by waiting.
+						if (lastError.code === "unauthorized" || lastError.code === "not_found") {
+							generation++;
+							reportedFailure = true;
+							report("failed", lastError);
+						}
+					}),
+				];
+				// The connection opens by itself; if it is already open, the status callback will not fire for it.
+				if (opened.connStatus === "connected") onStatus("connected");
+			},
+			(error: unknown) => {
+				// The server refused to say how to connect: asking again will not change that.
+				if (closed) return;
+				reportedFailure = true;
+				report("failed", toPlatformError(error, shown));
+			},
+		);
+		// RivetKit keeps trying a server that does not answer, and the connection is asked for as long.
+		// Say so after a while; if it does connect later, "connected" follows and the screen recovers.
 		const patience = setTimeout(() => {
 			if (closed || everConnected || reportedFailure) return;
 			reportedFailure = true;
-			report("failed", lastError ?? new PlatformError("network", `The server at ${shown} is not answering.`));
+			report("failed", lastError ?? source.failure() ?? new PlatformError("network", `The server at ${shown} is not answering.`));
 		}, CONNECT_PATIENCE_MS);
 
 		return {
-			conn,
 			reload,
 			close: () => {
 				closed = true;
 				clearTimeout(patience);
 				for (const off of offs) off();
-				conn.dispose().catch(() => undefined);
+				conn?.dispose().catch(() => undefined);
 			},
 		};
 	}
 
 	function userApi(auth: AuthResult): UserApi {
 		const handle = userHandle(auth);
-		const act = <K extends keyof UserActions & string>(name: K, ...args: Parameters<UserActions[K]>) => call<UserActions, K>(handle, shown, name, ...(args as never));
+		const act = <K extends keyof UserActions & string>(name: K, ...args: Parameters<UserActions[K]>) => call<UserActions, K>(handle(), name, ...(args as never));
 		return {
 			me: () => act("me"),
 			chatgpt: () => act("chatgpt"),
@@ -256,28 +316,27 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 					},
 					async (conn, isCurrent) => {
 						live = false;
-						const sessions = await call<UserActions, "listSessions">(conn, shown, "listSessions");
+						const sessions = await call<UserActions, "listSessions">(conn, "listSessions");
 						if (!isCurrent()) return;
 						feed.onConnection?.("connected");
 						feed.onSessions(sessions);
 						live = true;
 					},
+					// ASSUMPTION 4: an event broadcast as `c.broadcast("sessions", list)` arrives as `on("sessions", (list) => ...)`.
+					(conn) => [
+						conn.on("sessions" satisfies keyof UserEvents, (sessions: SessionSummary[]) => {
+							if (live) feed.onSessions(sessions);
+						}),
+					],
 				);
-				// ASSUMPTION 4: an event broadcast as `c.broadcast("sessions", list)` arrives as `on("sessions", (list) => ...)`.
-				const off = feedConn.conn.on("sessions" satisfies keyof UserEvents, (sessions: SessionSummary[]) => {
-					if (live) feed.onSessions(sessions);
-				});
-				return () => {
-					off();
-					feedConn.close();
-				};
+				return () => feedConn.close();
 			},
 		};
 	}
 
 	function sessionApi(auth: AuthResult, sessionId: string): SessionApi {
 		const handle = sessionHandle(auth, sessionId);
-		const act = <K extends keyof AgentSessionActions & string>(name: K, ...args: Parameters<AgentSessionActions[K]>) => call<AgentSessionActions, K>(handle, shown, name, ...(args as never));
+		const act = <K extends keyof AgentSessionActions & string>(name: K, ...args: Parameters<AgentSessionActions[K]>) => call<AgentSessionActions, K>(handle(), name, ...(args as never));
 		const reloads = new Set<() => void>();
 		return {
 			prompt: (input) => act("prompt", input),
@@ -304,7 +363,7 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 					async (conn, isCurrent) => {
 						live = false;
 						early = [];
-						const snapshot: SessionSnapshot = await call<AgentSessionActions, "snapshot">(conn, shown, "snapshot");
+						const snapshot: SessionSnapshot = await call<AgentSessionActions, "snapshot">(conn, "snapshot");
 						if (!isCurrent()) return;
 						feed.onConnection("connected");
 						// A server without questions sends no `question`: read it as none.
@@ -313,30 +372,28 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 						early = [];
 						live = true;
 					},
+					(conn) => [
+						conn.on("item" satisfies keyof AgentSessionEvents, (item: AgentSessionEvents["item"]) => {
+							if (live) feed.onItem(item);
+							else early.push(item);
+						}),
+						conn.on("delta" satisfies keyof AgentSessionEvents, (delta: AgentSessionEvents["delta"]) => {
+							if (live) feed.onDelta(delta);
+						}),
+						conn.on("summary" satisfies keyof AgentSessionEvents, (summary: AgentSessionEvents["summary"]) => {
+							if (live) feed.onSummary(summary);
+						}),
+						// ASSUMPTION 9. One that arrives before the snapshot is dropped, like a delta: by ASSUMPTION 7
+						// the snapshot is newer, and unlike an item a question has no `seq` to tell. The snapshot's
+						// `question` is the whole truth after every (re)connect, so one settled during a gap disappears.
+						conn.on("question" satisfies keyof AgentSessionEvents, (question: AgentSessionEvents["question"] | undefined) => {
+							if (live) feed.onQuestion(question ?? null);
+						}),
+					],
 				);
-				const { conn } = feedConn;
-				const offs = [
-					conn.on("item" satisfies keyof AgentSessionEvents, (item: AgentSessionEvents["item"]) => {
-						if (live) feed.onItem(item);
-						else early.push(item);
-					}),
-					conn.on("delta" satisfies keyof AgentSessionEvents, (delta: AgentSessionEvents["delta"]) => {
-						if (live) feed.onDelta(delta);
-					}),
-					conn.on("summary" satisfies keyof AgentSessionEvents, (summary: AgentSessionEvents["summary"]) => {
-						if (live) feed.onSummary(summary);
-					}),
-					// ASSUMPTION 9. One that arrives before the snapshot is dropped, like a delta: by ASSUMPTION 7
-					// the snapshot is newer, and unlike an item a question has no `seq` to tell. The snapshot's
-					// `question` is the whole truth after every (re)connect, so one settled during a gap disappears.
-					conn.on("question" satisfies keyof AgentSessionEvents, (question: AgentSessionEvents["question"] | undefined) => {
-						if (live) feed.onQuestion(question ?? null);
-					}),
-				];
 				reloads.add(feedConn.reload);
 				return () => {
 					reloads.delete(feedConn.reload);
-					for (const off of offs) off();
 					feedConn.close();
 				};
 			},
@@ -345,17 +402,20 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 
 	return {
 		kind: "rivet",
-		endpoint: shown,
-		info: () => fetchInfo(api),
+		// The address the app was built with until the server has named the one to use.
+		get endpoint() {
+			return shown;
+		},
+		info: () => getPlatform<PlatformInfo>(api, PLATFORM_INFO_PATH),
 		login: {
-			start: () => call<LoginActions, "start">(login(), shown, "start"),
+			start: () => call<LoginActions, "start">(login(), "start"),
 			finish: async (pastedUrl) => {
-				const result = await call<LoginActions, "finish">(login(), shown, "finish", pastedUrl);
+				const result = await call<LoginActions, "finish">(login(), "finish", pastedUrl);
 				attemptId = null;
 				return result;
 			},
 			demo: async () => {
-				const result = await call<LoginActions, "demo">(login(), shown, "demo");
+				const result = await call<LoginActions, "demo">(login(), "demo");
 				attemptId = null;
 				return result;
 			},
@@ -363,37 +423,13 @@ export function createRivetClient(endpoint: string = import.meta.env.VITE_WLP_EN
 		user: userApi,
 		session: sessionApi,
 		dispose() {
-			client.dispose().catch(() => undefined);
+			source.close();
+			connect().then(
+				(client) => client.dispose().catch(() => undefined),
+				() => undefined,
+			);
 		},
 	};
-}
-
-/**
- * What RivetKit throws, as the screens want it. A `UserError` thrown in an actor arrives as an
- * `ActorError` (RivetKit's `RivetError`) with `group: "user"`, the `code` it was given (or the
- * default) and its message; any other error thrown in an actor arrives with `group: "rivetkit"`,
- * `code: "internal_error"` and a generic message.
- */
-export function toPlatformError(error: unknown, endpoint: string): PlatformError {
-	if (error instanceof PlatformError) return error;
-	if (isRivetError(error)) {
-		const { group, code, message } = error;
-		if (UNAUTHORIZED_CODES.has(code)) return new PlatformError("unauthorized", message || "This sign-in is no longer accepted. Sign in again.", { cause: error });
-		if (code === "not_found" || (group === "actor" && code.startsWith("destroyed"))) return new PlatformError("not_found", "There is no agent at this address.", { cause: error });
-		// ASSUMPTION 10: the UserError's own code (`no_question`, `turn_running`) arrives as `code`.
-		if (group === "user") return new PlatformError("user", message, { cause: error, reason: code });
-		if (group === "client") return new PlatformError("network", `The server at ${endpoint} could not be reached.`, { cause: error });
-		if (code === "internal_error") return new PlatformError("internal", "The server hit an internal error. Its log has the details.", { cause: error });
-		return new PlatformError("internal", message || "The server refused the request.", { cause: error });
-	}
-	// `fetch` rejects with a TypeError when nothing answers.
-	if (error instanceof TypeError) return new PlatformError("network", `The server at ${endpoint} could not be reached.`, { cause: error });
-	return new PlatformError("internal", error instanceof Error && error.message !== "" ? error.message : "Something went wrong.", { cause: error });
-}
-
-/** Structural, like `RivetError.isRivetError`: an error decoded from the wire need not be an instance. */
-function isRivetError(error: unknown): error is { group: string; code: string; message: string } {
-	return typeof error === "object" && error !== null && "group" in error && typeof error.group === "string" && "code" in error && typeof error.code === "string" && "message" in error && typeof error.message === "string";
 }
 
 /*
@@ -411,7 +447,7 @@ function isRivetError(error: unknown): error is { group: string; code: string; m
  *    "delta", "summary" (agentSession). Subscriptions survive a reconnect (RivetKit resends them).
  * 5. Errors. A `UserError` arrives with `group: "user"` and its message intact, through both the
  *    stateless handle and a connection. A refused token is recognised by its `code` only: one of
- *    UNAUTHORIZED_CODES above. A UserError with another code and the same meaning would be shown as
+ *    UNAUTHORIZED_CODES (errors.ts). A UserError with another code and the same meaning would be shown as
  *    an ordinary message instead of signing the user out.
  * 6. Connection status. "connected" is reported on the first open and on every reconnect;
  *    "disconnected" / "connecting" in between; "idle" when RivetKit stops retrying, after `onError`

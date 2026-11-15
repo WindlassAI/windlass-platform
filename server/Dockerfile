@@ -9,20 +9,52 @@
 # for its own nodes), and WLP_SECRET must be set, to the same value on every server, or it refuses to
 # start. README, "Running on several servers", has the variables.
 
-FROM node:22-bookworm-slim
+# The image is built for the machine that runs it on the machine that builds it, which may be of another
+# architecture (`rivet deploy` builds linux/amd64, also on an arm64 machine): the first stage runs on the
+# builder and installs the dependencies for the target, and the second only copies, so nothing of the
+# target's architecture is run during the build.
 
-ENV NODE_ENV=production \
-	PNPM_HOME=/pnpm \
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS deps
+ARG TARGETARCH
+ENV PNPM_HOME=/pnpm \
 	PATH=/pnpm:$PATH
 RUN corepack enable
-
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY server/package.json server/
 # tsx is a dev dependency and runs the server's TypeScript as it is, so dev dependencies are installed too.
-# RivetKit's native module for this platform (@rivetkit/rivetkit-napi-linux-*) is picked by the install.
-RUN pnpm install --frozen-lockfile --filter @windlass-platform/server --prod=false
+# The native modules (RivetKit's @rivetkit/rivetkit-napi-linux-*, esbuild's) are the target's, not the builder's.
+RUN cpu="$TARGETARCH" && [ "$cpu" != amd64 ] || cpu=x64 \
+	&& pnpm install --frozen-lockfile --filter @windlass-platform/server --prod=false --os linux --cpu "$cpu" --libc glibc
+# Actor data is the engine's; this directory only ever holds what RivetKit writes for itself.
+RUN mkdir -p /app/.data
 
+# The web app's files are the same for every architecture, so they are built on the builder too. Built
+# with nothing set, the web app asks the address it was loaded from for its connection (web/src/api/rivet.ts).
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web
+ENV PNPM_HOME=/pnpm \
+	PATH=/pnpm:$PATH
+RUN corepack enable
+WORKDIR /app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY web/package.json web/
+RUN pnpm install --frozen-lockfile --filter @windlass-platform/web
+COPY web web
+# The one file the web app shares with the server, and the recorded runs its mock replays.
+COPY server/src/contract.ts server/src/contract.ts
+COPY fixtures fixtures
+# `vite build` alone: the web app's own `build` type-checks first, tests included, and those reach into the server's sources.
+RUN pnpm --filter @windlass-platform/web exec vite build
+
+FROM node:22-bookworm-slim
+ARG TARGETARCH
+ENV NODE_ENV=production
+
+WORKDIR /app
+COPY --from=deps /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
+COPY --from=deps /app/node_modules node_modules
+COPY --from=deps /app/server server
+COPY --from=deps --chown=node:node /app/.data .data
 COPY server/tsconfig.json server/
 COPY server/src server/src
 # The fake layer replays these; config.ts names the directory.
@@ -32,12 +64,13 @@ COPY fixtures fixtures
 # a build for this image's architecture with `login token --valid-for`. The turns do not use it: they
 # run in the sandbox provider's own image. server/stage-windlass.sh puts the builds where this line
 # finds them; run it before building.
-ARG TARGETARCH
 COPY --chmod=0755 server/vendor/windlass-linux-${TARGETARCH} /usr/local/bin/windlass
 ENV WLP_WINDLASS_BIN=/usr/local/bin/windlass
 
-# Actor data is the engine's; this directory only ever holds what RivetKit writes for itself.
-RUN mkdir -p /app/.data && chown node:node /app/.data
+# The web app, served by this server on its own port: the platform has one address.
+COPY --from=web /app/web/dist /app/web/dist
+ENV WLP_WEB_DIR=/app/web/dist
+
 USER node
 
 WORKDIR /app/server

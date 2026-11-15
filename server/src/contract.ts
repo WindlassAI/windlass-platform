@@ -75,6 +75,36 @@ export interface PlatformActions {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The browser's connection to the actors (HTTP, `GET PLATFORM_CONNECTION_PATH`)
+// ---------------------------------------------------------------------------------------------
+
+/** A token of the Rivet engine's for browsers: good for a while, and for reaching this deployment's actors only. */
+export interface ConnectionToken {
+	token: string;
+	/** When the engine stops accepting it, ms since the epoch, by the engine's clock. */
+	expiresAt: number;
+	/**
+	 * How long it is good for, counted from this answer. A browser's clock may be wrong by more than a
+	 * token lasts, so the web app counts from when the answer arrived and never compares `expiresAt`
+	 * with its own clock.
+	 */
+	validForMs: number;
+}
+
+/** What a browser needs to reach the actors. */
+export interface PlatformConnection {
+	/**
+	 * The Rivet endpoint browsers connect to, or null when the server was not told one (development):
+	 * the web app then uses the one it was built with, or DEFAULT_ENDPOINT.
+	 */
+	endpoint: string | null;
+	/** The namespace the actors live in. */
+	namespace: string;
+	/** Null when the engine asks for no token: the local engine of a development server. */
+	token: ConnectionToken | null;
+}
+
+// ---------------------------------------------------------------------------------------------
 // login actor
 // ---------------------------------------------------------------------------------------------
 
@@ -403,6 +433,11 @@ export const DEFAULT_ENDPOINT = "http://localhost:6420";
 export const DEFAULT_PLATFORM_URL = "http://localhost:6440";
 /** `GET` on the platform's HTTP address: this deployment's `PlatformInfo`, as JSON. */
 export const PLATFORM_INFO_PATH = "/platform/info";
+/**
+ * `GET` on the same address: this deployment's `PlatformConnection`, as JSON. Asked when the web app
+ * starts and again whenever its token runs out.
+ */
+export const PLATFORM_CONNECTION_PATH = "/platform/connection";
 
 export const MAX_PROMPT_CHARS = 20_000;
 export const MAX_TITLE_CHARS = 80;

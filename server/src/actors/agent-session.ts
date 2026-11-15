@@ -1228,7 +1228,15 @@ export const agentSession = actor({
 		c.abortSignal.addEventListener(
 			"abort",
 			() => {
-				if (c.vars.turn) abortTurn(c, meta, c.vars.turn);
+				// RivetKit may have let go of the actor's state by the time the signal fires, and reading
+				// `c.vars` then throws "Actor stopping". Thrown from a listener, that is an uncaught
+				// error, which ends the whole server and every other session on it. A turn still
+				// running then is stopped by `onSleep`.
+				try {
+					if (c.vars.turn) abortTurn(c, meta, c.vars.turn);
+				} catch (error) {
+					console.warn(`[wlp] session=${meta.sessionId}: the actor was already stopping when its abort signal fired (${describeError(error)})`);
+				}
 			},
 			{ once: true },
 		);

@@ -52,7 +52,8 @@ Without Docker, `WLP_SANDBOX=fake scripts/dev.sh` runs in-memory sandboxes that 
 ## How it fits together
 
 ```
-browser ── HTTP ───────▶ any server (:6440)  GET /platform/info   what this deployment offers; no actor
+browser ── HTTP ───────▶ any server (:6440)  GET /platform/info         what this deployment offers; no actor
+                                             GET /platform/connection   where the actors are reached, and the token for it
 browser ── WebSocket ──▶ Rivet endpoint (:6420)
                            │
                            ├─ login         [attemptId]         one sign-in attempt
@@ -267,32 +268,56 @@ Every server is one Rivet node. With `RIVET_ENDPOINT` set it starts no engine of
 connection to the one engine all servers share, and that engine places each actor on one of them, wakes it on
 another when its server stops, keeps every actor's SQLite data and runs every actor's schedule. Nothing of a
 user or a session is kept on a server. Browsers reach the actors through the engine's gateway, never through a
-server; a server's own port serves only `GET /platform/info` and `/health`, and any server answers either.
+server; a server's own port serves only `GET /platform/info`, `GET /platform/connection` and `/health`, and any
+server answers each.
 
 What every server needs, the same on all of them:
 
 | Variable | Value |
 |---|---|
-| `RIVET_ENDPOINT` | `https://<namespace>:<secret token>@<engine host>`: the engine, the namespace the actors live in, and a secret token (`sk_...`) of that namespace. `RIVET_NAMESPACE` and `RIVET_TOKEN` may carry the last two instead |
+| `RIVET_ENDPOINT` | `https://<namespace>:<token>@<engine host>`: the engine as the server reaches it, the namespace the actors live in, and the token a node joins with. `RIVET_NAMESPACE` and `RIVET_TOKEN` may carry the last two instead. A Rivet Cloud cluster sets these on its node itself |
 | `RIVET_POOL` | the node pool to join (default `default`); the engine refuses a node whose pool does not exist |
 | `RIVET_NODE_VERSION` | a number that goes up with every deploy, so that new and woken actors go to the newest servers |
 | `NODE_ENV` | `production`: RivetKit then never starts an engine of its own |
 | `WLP_SECRET` | one secret, at least 16 characters (`openssl rand -hex 32`), the same on every server: a token one server signs must pass on all. A server with `RIVET_ENDPOINT` and no `WLP_SECRET` stops with `[wlp] WLP_SECRET is not set: ...` and nothing else |
 | `WLP_SANDBOX` | `e2b`. Docker sandboxes exist on the machine that made them, and a session's actor can wake on any server, so the Docker layer only works with one server |
 | `WLP_WEB_ORIGINS` | the web app's address |
+| `WLP_PUBLIC_ENDPOINT` | the engine's address for browsers, with no namespace and no token in it. It need not be the address in `RIVET_ENDPOINT`: on a cluster that one is internal to the node |
+| `RIVET_ADMIN_TOKEN` | the engine's admin token, a secret, where the engine asks browsers for a token ("What browsers connect with" below). With it set, a server without `WLP_PUBLIC_ENDPOINT` stops with `[wlp] WLP_PUBLIC_ENDPOINT is not set: ...` |
+| `WLP_CONNECTION_TOKEN_TTL_MS` | optional: how long a browser's token lasts (default one hour, at most 24) |
 | `WLP_WINDLASS_BIN` | a Windlass executable on the server, for the sign-in commands ("Sign-ins"). `server/Dockerfile` puts one at `/usr/local/bin/windlass` and sets this |
 | `WLP_SIGNIN_KEY` | optional; when set, the same on every server: what the key that encrypts sign-ins is derived from, in place of `WLP_SECRET` |
 | `WLP_DEMO`, `WLP_TURN_TIMEOUT_MS`, `WLP_QUESTION_TIMEOUT_MS`, `WLP_IDLE_SUSPEND_MS`, `WLP_IDLE_DESTROY_MS` | the same values everywhere: a session's limits are applied by whichever server holds its actor |
 | `WLP_HTTP_PORT` or `PORT` | the port the load balancer sends `/platform/info` to |
 
-The web app is built with `VITE_WLP_ENDPOINT=https://<namespace>:<public token>@<engine host>`: a public token
-(`pk_...`), not a secret one, which may sit in a browser; and not a connection token (`ck_...`) either, which
-cannot create actors, as the web app does for a sign-in attempt and a user. `VITE_WLP_API` is the address in
-front of the servers' HTTP port.
+**What browsers connect with.** An engine that is shared is one that checks who connects. A Rivet Cloud
+cluster is such an engine, run for one customer, and it has one credential: an admin token, which may do
+everything in every namespace and so stays on the servers. It has none of the fixed tokens of a Rivet Cloud
+project (`pk_...`, `sk_...`, `ck_...`); those are another product's. What a browser holds is a scoped token: a
+JWT the engine issues when it is asked with the admin token, good for one namespace, for the operations it
+names, and for a limited time.
 
-Shared by all servers: the engine with the actors' data and schedules, `WLP_SECRET`, and the sandbox provider.
-Kept by each server for itself, and rebuilt when it is asked again: the cached platform information and the
-sandbox layer's own caches. Still on one machine: the Docker layer. The ChatGPT sign-ins are not: they are in
+The servers issue it. `GET /platform/connection`, under the same origin check as `/platform/info`, answers
+with the engine's address for browsers (`WLP_PUBLIC_ENDPOINT`), the namespace, and a token with its expiry. The
+token may create, list and read actors and call them through the gateway (`actor`: `create`, `list`, `read`;
+`actor_gateway`: `read`, `create`), which is what the web app does, and nothing else: no deleting, no nodes, no
+pools. It says only that its holder is a client of this deployment. Who the user is, and what is theirs, is
+still decided by the platform's own token in every actor. A server asks the engine once and hands the same
+token to every browser until half of its life is gone, so the engine is asked about twice an hour by each
+server, and a browser always gets one that is good for half an hour or more. Each server keeps a token of its
+own; all of them are good at the one engine.
+
+The web app is therefore built with one address, `VITE_WLP_API`: the address in front of the servers' HTTP
+port. It asks there for its connection when it starts, and has no token and no engine address built in. When
+its token runs out it asks again: the next request or reconnect is made with the new one, and nothing is
+reloaded. A feed that is open stays open, since the engine checks a token when a connection is opened and not
+afterwards. While the servers cannot be reached to renew it, a feed shows that it is reconnecting and goes on
+when they can.
+
+Shared by all servers: the engine with the actors' data and schedules, `WLP_SECRET`, the admin token, and the
+sandbox provider. Kept by each server for itself, and rebuilt when it is asked again: the cached platform
+information, the token it hands browsers, and the sandbox layer's own caches. Still on one machine: the Docker
+layer. The ChatGPT sign-ins are not: they are in
 the users' actors, and every server needs `WLP_WINDLASS_BIN` (and the same `WLP_SIGNIN_KEY`, when it is set) to
 run Windlass's sign-in commands ("Sign-ins").
 
@@ -302,22 +327,33 @@ repository root:
 
 ```sh
 rivet cluster secret set WLP_SECRET           # prompts for the value
+rivet cluster secret set RIVET_ADMIN_TOKEN    # the cluster's admin token
 rivet cluster secret set E2B_API_KEY          # and whatever else the E2B layer reads
+server/stage-windlass.sh                      # the Windlass builds the image takes its own from
 rivet deploy --cluster <cluster> --dockerfile server/Dockerfile --build-context . \
-  --secret WLP_SECRET --secret E2B_API_KEY \
-  --env WLP_SANDBOX=e2b --env WLP_WEB_ORIGINS=https://<web app>
+  --secret WLP_SECRET --secret RIVET_ADMIN_TOKEN --secret E2B_API_KEY \
+  --env WLP_SANDBOX=e2b --env WLP_WEB_ORIGINS=https://<name>.onrivet.dev \
+  --env WLP_PUBLIC_ENDPOINT=https://<name>-api.onrivet.dev
 ```
 
-The CLI builds the image for linux/amd64 and prints the pool's public address, which serves the port in `PORT`:
-that address is `VITE_WLP_API`. There is no Docker on a cluster's node, so `WLP_SANDBOX=e2b` is required there.
-The web app's endpoint and public token are the cluster's, from its dashboard. The cluster rolls its pool from
+The CLI builds the image for linux/amd64 (on an arm64 machine too: the image's build runs nothing of the other
+architecture) and prints the pool's public address, `https://<name>.onrivet.dev`, which serves the port in
+`PORT`. The image holds the web app as well and serves it there (`WLP_WEB_DIR`, `server/src/web.ts`), so that
+address is the platform: the web app is built with nothing set and asks the address it was loaded from, and
+`WLP_WEB_ORIGINS` names that same address. A web app hosted elsewhere is built with `VITE_WLP_API` set to it. The
+cluster's engine answers browsers at `https://<name>-api.onrivet.dev`, which is `WLP_PUBLIC_ENDPOINT`; the
+address the node itself is given in `RIVET_ENDPOINT` is an internal one. The server asks the engine for its
+first token when it starts, and says so if it is refused (`[wlp] WARNING: Browsers cannot connect: ...`). There
+is no Docker on a cluster's node, so `WLP_SANDBOX=e2b` is required there. The cluster rolls its pool from
 one build to the next itself; if the server says `node version defaulted` when it starts there, add
 `--env RIVET_NODE_VERSION=<n>`, a number that goes up with every deploy.
 
 **On servers of your own.** Each runs the same image, or `cd server && npx tsx src/index.ts`, with the
 variables above, behind a load balancer for port 6440. The Rivet docs describe such nodes joining an engine by
 `RIVET_ENDPOINT` and a secret token; whether a Rivet Cloud cluster accepts nodes of your own beside its hosted
-one, they do not say.
+one, they do not say. An engine of your own that has an admin token (`auth.admin_token`) is told to the servers
+as a cluster's is, with `RIVET_ADMIN_TOKEN` and `WLP_PUBLIC_ENDPOINT`; one that lets everybody in needs neither,
+and the web app is then built with its address in `VITE_WLP_ENDPOINT`.
 
 ## E2B
 
@@ -400,27 +436,38 @@ a failed turn, though the sandbox goes on until its timeout.
 |---|---|
 | `server/src/contract.ts` | The contract between the actors and the web app: types only |
 | `server/src/actors/` | The three actors |
-| `server/src/index.ts`, `platform-info.ts` | The server: one Rivet node, and its HTTP routes (`/platform/info`, `/health`) |
+| `server/src/index.ts`, `platform-info.ts` | The server: one Rivet node, and its HTTP routes (`/platform/info`, `/platform/connection`, `/health`) |
+| `server/src/web.ts` | The web app's built files, served on the same port where `WLP_WEB_DIR` names them |
+| `server/src/connection-tokens.ts` | The tokens browsers connect with: issued by the engine for the admin token, kept and handed out by each server |
 | `server/Dockerfile` | The server as an image, for a Rivet Cloud cluster or a machine of your own ("Running on several servers") |
 | `server/src/sandbox/api.ts` | The sandbox layer's interface; everything about Docker and the `windlass` command line is behind it |
 | `server/src/sandbox/` | That layer on Docker: containers, volumes, running a turn, the hand-off of an access token to a turn, the demo scripts |
 | `server/src/signin/` | The ChatGPT sign-in for every layer: Windlass's sign-in commands and where they run, the encryption, and the one place per user that asks for an access token |
 | `server/src/sandbox-fake.ts` | The same interface in memory, for tests |
 | `sandbox/` | The sandbox image, `build.sh`, `cleanup.sh` |
-| `web/` | The web app (Vite, React); `src/api/rivet.ts` is the real client, `src/api/mock.ts` the mock |
+| `web/` | The web app (Vite, React); `src/api/rivet.ts` is the real client, `src/api/connection.ts` where it gets its connection and renews its token, `src/api/mock.ts` the mock |
 | `fixtures/windlass-events/` | Recorded Windlass events, used by the fake layer, the mock and the reducer's tests |
-| `scripts/` | `dev.sh`, `e2e.ts` (the actors), `sandbox-check.ts` (the sandbox layer) |
+| `scripts/` | `dev.sh`, `e2e.ts` (the actors), `sandbox-check.ts` (the sandbox layer), `signin-check.ts` (the sign-ins), `connection-check.ts` and `connection-e2e.ts` (what browsers connect with, and its renewal) |
 
 ## Checks
 
 ```sh
 pnpm -r typecheck
-pnpm --filter @windlass-platform/web test                         # the timeline reducer against every fixture
+pnpm --filter @windlass-platform/web test                         # the timeline reducer against every fixture; the connection and its renewal
 cd server && pnpm e2e                                             # the actors, fake sandboxes
 cd server && WLP_DEMO=1 pnpm e2e:docker                           # the actors, real containers
 cd server && npx tsx ../scripts/sandbox-check.ts                  # the sandbox layer on its own
 cd server && npx tsx ../scripts/signin-check.ts                   # the sign-in machinery: no server, no Docker, a stand-in for OpenAI
+cd server && npx tsx ../scripts/connection-check.ts               # the tokens browsers connect with: a stand-in for the engine
+cd server && npx tsx --tsconfig ../web/tsconfig.json ../scripts/connection-e2e.ts
+                                                                  # the web app's client through an engine whose tokens run out
 ```
+
+`connection-check.ts` also runs against a real engine when it is given one, with about ten requests that issue
+and read back tokens and nothing else (`WLP_CHECK_ENGINE=https://<name>-api.onrivet.dev RIVET_ADMIN_TOKEN=...`).
+The local engine asks for no token, so `connection-e2e.ts` puts a front before it that asks for one as a
+cluster's engine does, with tokens that last twelve seconds, and runs real turns through it with the web
+app's own client: past a token's expiry, across a dropped connection, and with a clock that runs behind.
 
 The end-to-end scripts start their own server on ports 6420 and 6440, so stop a running one first.
 
@@ -437,13 +484,17 @@ The end-to-end scripts start their own server on ports 6420 and 6440, so stop a 
 | `WLP_QUESTION_TIMEOUT_MS` | how long a question waits for an answer before the platform declines it (default 10 minutes) |
 | `WLP_IDLE_SUSPEND_MS` | how long after a session's last turn ended its sandbox is suspended (default 10 minutes) |
 | `WLP_IDLE_DESTROY_MS` | how long after its last use a sandbox is removed with its files; the timeline stays (default 7 days) |
-| `WLP_HTTP_PORT` | the port of the server's own routes, `/platform/info` and `/health` (default `PORT` when that is set, else 6440) |
+| `WLP_HTTP_PORT` | the port of the server's own routes, `/platform/info`, `/platform/connection` and `/health` (default `PORT` when that is set, else 6440) |
+| `WLP_WEB_DIR` | the web app's built files (`web/dist`), for the server to serve on that port; unset, it serves none. `server/Dockerfile` sets it |
 | `WLP_HTTP_HOST` | the address they bind (default `127.0.0.1` with the local engine, `0.0.0.0` with a remote one) |
 | `RIVET_ENDPOINT`, `RIVET_NAMESPACE`, `RIVET_TOKEN`, `RIVET_POOL`, `RIVET_NODE_VERSION` | RivetKit's own: the engine to join instead of starting a local one ("Running on several servers") |
+| `WLP_PUBLIC_ENDPOINT` | the Rivet endpoint browsers connect to, which the server tells the web app. Unset: the web app uses `VITE_WLP_ENDPOINT` |
+| `RIVET_ADMIN_TOKEN` | the engine's admin token, a secret: the server issues the short-lived tokens browsers connect with. Needs `WLP_PUBLIC_ENDPOINT`. Unset, as with the local engine: browsers are handed no token |
+| `WLP_CONNECTION_TOKEN_TTL_MS` | how long such a token lasts (default one hour; from one minute to 24 hours) |
 | `WINDLASS_BINARY` | the executable `sandbox/build.sh` puts in the image (default: the local build with `login token --valid-for`, see "Run it") |
 | `WLP_SANDBOX_IMAGE` | `sandbox/build.sh` only: another tag for the image it builds, for a throwaway image; the server always uses `windlass-platform-sandbox:latest` |
-| `VITE_WLP_ENDPOINT` | the Rivet endpoint the web app connects to (default `http://localhost:6420`); may carry a namespace and a public token, `https://<namespace>:<pk_...>@<host>` |
-| `VITE_WLP_API` | where the web app asks for `/platform/info` (default: the endpoint's host on port 6440 when the endpoint is on 6420, else `http://localhost:6440`) |
+| `VITE_WLP_ENDPOINT` | the Rivet endpoint the web app connects to when the server names none, as a development server does (default `http://localhost:6420`). A server with `WLP_PUBLIC_ENDPOINT` names its own, and this is not needed |
+| `VITE_WLP_API` | where the web app asks for `/platform/info` and `/platform/connection` (default: the endpoint's host on port 6440 when the endpoint is on 6420, else `http://localhost:6440`) |
 | `VITE_WLP_MOCK` | `1`: the web app runs on its mock, with no server |
 
 Actor data is in `.data/.rivetkit`; stop the server and remove that directory to start from nothing.
@@ -467,6 +518,12 @@ rebuilt, also when that Windlass is older than the codes ("What went wrong with 
   every command would otherwise need an answer.
 - **Signing out only forgets the token in the browser.** The token stays valid until it expires (30 days).
 - **Each demo sign-in leaves a small volume** until `sandbox/cleanup.sh` runs.
+- **A browser's connection token cannot be withdrawn.** Whoever asks a server gets one, and it is good until it
+  expires, an hour by default, for creating, listing, reading and calling this deployment's actors; what an
+  actor then does for its caller is decided by the platform's own sign-in, as before. RivetKit's client puts
+  the token in the address of some requests (`rvt-token`, or after the actor's id), where a proxy's log may
+  keep it. A server whose token the engine refuses for another reason than its age goes on handing it out
+  until half of its life is gone, or until the server is restarted.
 - **An access token that was handed out stays valid until it expires.** Forgetting a sign-in removes it and the
   token files of running turns, but a token a command already read in the hardened profile works for the rest of
   its hour.

@@ -1,6 +1,6 @@
 /**
  * End-to-end check of the server's three actors, through RivetKit's client, as the web app uses them,
- * and of its HTTP routes (`/platform/info`, `/health`).
+ * and of its HTTP routes (`/platform/info`, `/platform/connection`, `/health`).
  *
  *   cd server && npx tsx ../scripts/e2e.ts                 starts its own server on fresh state
  *   cd server && npx tsx ../scripts/e2e.ts --endpoint URL  uses a server that is already running; its
@@ -164,20 +164,21 @@ class Server {
 
 	async start(extraEnv: Record<string, string> = {}): Promise<void> {
 		const log = createWriteStream(this.logFile, { flags: "a" });
-		const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
-			cwd: SERVER_DIR,
-			env: {
-				...process.env,
-				WLP_DEMO: "1",
-				WLP_SANDBOX: MODE,
-				WLP_SECRET: this.secret,
-				RIVETKIT_STORAGE_PATH: this.storage,
-				WLP_FAKE_DELAY_MS: process.env.WLP_FAKE_DELAY_MS ?? "15",
-				WLP_QUESTION_TIMEOUT_MS: String(QUESTION_MS),
-				...extraEnv,
-			},
-			stdio: ["ignore", "pipe", "pipe"],
-		});
+		const env: Record<string, string | undefined> = {
+			...process.env,
+			WLP_DEMO: "1",
+			WLP_SANDBOX: MODE,
+			WLP_SECRET: this.secret,
+			RIVETKIT_STORAGE_PATH: this.storage,
+			WLP_FAKE_DELAY_MS: process.env.WLP_FAKE_DELAY_MS ?? "15",
+			WLP_QUESTION_TIMEOUT_MS: String(QUESTION_MS),
+			...extraEnv,
+		};
+		// The local engine asks browsers for no token. An admin token in the shell this is run from is some
+		// other engine's, and must not be sent to this one or anywhere else.
+		delete env.RIVET_ADMIN_TOKEN;
+		delete env.WLP_PUBLIC_ENDPOINT;
+		const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { cwd: SERVER_DIR, env, stdio: ["ignore", "pipe", "pipe"] });
 		this.child = child;
 		const keep = (chunk: Buffer) => {
 			this.output += chunk.toString("utf8");
@@ -265,9 +266,20 @@ function platformInfo(origin?: string): Promise<Response> {
  * Starts the server with a remote engine configured and no WLP_SECRET; it must stop by itself, before
  * it connects anywhere. The endpoint is a closed local port with a made-up token.
  */
-async function startWithoutSecret(): Promise<{ code: number | null; output: string }> {
-	const env: Record<string, string | undefined> = { ...process.env, WLP_SANDBOX: "fake", RIVET_ENDPOINT: "http://e2e-namespace:sk_e2e_made_up@127.0.0.1:9", WLP_HTTP_PORT: "6449" };
-	delete env.WLP_SECRET;
+/** `GET /platform/connection`, from a page at `origin` when one is given. */
+function platformConnection(origin?: string): Promise<Response> {
+	return fetch(`${API}/platform/connection`, { headers: origin ? { Origin: origin } : {} });
+}
+
+/**
+ * Starts a server that is expected to refuse to start, on a port of its own, and returns what it said.
+ * `change` is given the environment it would otherwise start with.
+ */
+async function startRefused(change: (env: Record<string, string | undefined>) => void): Promise<{ code: number | null; output: string }> {
+	const env: Record<string, string | undefined> = { ...process.env, WLP_SANDBOX: "fake", WLP_SECRET: randomBytes(24).toString("hex"), WLP_HTTP_PORT: "6449" };
+	delete env.RIVET_ADMIN_TOKEN;
+	delete env.WLP_PUBLIC_ENDPOINT;
+	change(env);
 	const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { cwd: SERVER_DIR, env, stdio: ["ignore", "pipe", "pipe"] });
 	let output = "";
 	child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")));
@@ -518,7 +530,10 @@ async function main(server: Server | null): Promise<void> {
 
 	if (OWN_SERVER) {
 		await check("with a remote engine and no WLP_SECRET the server refuses to start, in one sentence", async () => {
-			const { code, output } = await startWithoutSecret();
+			const { code, output } = await startRefused((env) => {
+				env.RIVET_ENDPOINT = "http://e2e-namespace:sk_e2e_made_up@127.0.0.1:9";
+				delete env.WLP_SECRET;
+			});
 			assert(code === 1, `the server exited with ${code}: ${output.slice(-500)}`);
 			const lines = output.trim().split("\n");
 			assert(lines.length === 1 && lines[0].startsWith("[wlp] WLP_SECRET is not set:") && lines[0].endsWith("on all of them."), `it said: ${output.slice(0, 600)}`);
@@ -1843,6 +1858,50 @@ async function main(server: Server | null): Promise<void> {
 		await idleChecks(server, client, uid, token, availableProfile, ASK, LONG);
 	} else {
 		for (const name of IDLE_CHECKS) skip(name, "needs its own server, restarted with short idle times");
+	}
+
+	// --- what browsers connect with ----------------------------------------------------------------
+	// Last, so that the checks above run when they always did: several of them are about what an actor
+	// does a set time after it was last used.
+
+	await check("the connection for browsers over HTTP: no token, and no endpoint, where the engine asks for none", async () => {
+		const response = await platformConnection();
+		assert(response.ok, `GET /platform/connection answered ${response.status}`);
+		assert(response.headers.get("content-type")?.startsWith("application/json"), `content-type is ${response.headers.get("content-type")}`);
+		assert(response.headers.get("cache-control") === "no-store", `cache-control is ${response.headers.get("cache-control")}`);
+		const connection = (await response.json()) as import("../server/src/contract.js").PlatformConnection;
+		// With --endpoint the server may be one that issues tokens: then it must say where browsers connect. No token is shown.
+		if (OWN_SERVER) assert(plain(connection) === plain({ endpoint: null, namespace: "default", token: null }), `the server answered ${plain({ ...connection, token: connection.token === null ? null : "(a token)" })}`);
+		else assert(typeof connection.namespace === "string" && (connection.token === null || (typeof connection.endpoint === "string" && connection.token.validForMs > 0)), "the answer is not a connection");
+		const evil = await platformConnection("http://evil.example");
+		assert(evil.status === 403, `a page on another site got ${evil.status}`);
+		const refusal = (await evil.json()) as { code?: string; token?: unknown };
+		assert(refusal.code === "origin_not_allowed" && refusal.token === undefined && evil.headers.get("access-control-allow-origin") === null, `refused with ${plain({ code: refusal.code })}`);
+		const good = await platformConnection("http://localhost:5173");
+		assert(good.ok && good.headers.get("access-control-allow-origin") === "http://localhost:5173", `the web app's origin got ${good.status}, CORS ${good.headers.get("access-control-allow-origin")}`);
+		const post = await fetch(`${API}/platform/connection`, { method: "POST" });
+		assert(post.status === 405, `POST answered ${post.status}`);
+		if (server) {
+			assert(server.output.includes("[wlp] browsers: the endpoint the web app was built with, with no token (RIVET_ADMIN_TOKEN is not set)"), "the server did not say at its start what browsers connect with");
+			assert(!server.output.includes("connection.token_failed"), "the server tried to issue a token");
+		}
+		return `endpoint ${connection.endpoint}, namespace ${connection.namespace}, token ${connection.token === null ? "none" : "issued"}; another site 403; POST 405`;
+	});
+
+	if (OWN_SERVER) {
+		await check("with an admin token and no address for browsers the server refuses to start, in one sentence", async () => {
+			const { code, output } = await startRefused((env) => {
+				env.RIVET_ADMIN_TOKEN = "e2e_made_up_admin_token";
+			});
+			assert(code === 1, `the server exited with ${code}: ${output.slice(-500)}`);
+			const lines = output.trim().split("\n");
+			assert(lines.length === 1 && lines[0].startsWith("[wlp] WLP_PUBLIC_ENDPOINT is not set:"), `it said: ${output.slice(0, 600)}`);
+			assert(!output.includes("e2e_made_up_admin_token"), "the output shows the admin token");
+			assert(await portFree(6449), "it bound its HTTP port before refusing");
+			return lines[0];
+		});
+	} else {
+		skip("with an admin token and no address for browsers the server refuses to start, in one sentence", "needs to start a server");
 	}
 
 	await client.dispose().catch(() => undefined);
