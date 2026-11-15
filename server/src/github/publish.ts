@@ -1,0 +1,268 @@
+/**
+ * Getting a session's work out and in: the clone of a connected repository when its sandbox is made,
+ * and the push with its pull request. Each is the platform's doing, step by step, with a token GitHub
+ * issued for that step and that repository alone (app.ts, git.ts). The `agentSession` actor calls these
+ * and keeps what they return; nothing here knows of actors, so the checks run them against a stand-in.
+ *
+ *   clone    contents: read                  the token goes into the sandbox, for `git clone`
+ *   push     contents: write                 the token goes into the sandbox, for `git push`
+ *   pull     pull requests: write            the token stays on the server, for GitHub's API
+ *
+ * Before each, GitHub is asked what the connected user may do in the repository (repos.ts): the
+ * platform pushes as the app, and must not push where its user could not.
+ *
+ * Every failure a user can do something about is a `GithubProblem` with a sentence that says what:
+ * no write access, a protected branch, a repository or an installation that is gone, a connection that
+ * was removed.
+ */
+
+import type { PublishMessage, PullRequestInfo, SessionRepository } from "../contract.js";
+import type { SandboxHandle } from "../sandbox/api.js";
+import { type GithubApp, GithubError, type Pull } from "./app.js";
+import { CLONE_MINUTES, type GitOutcome, cloneWithToken, commitWork, discardHandover, probeWork, pushWithToken } from "./git.js";
+import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveRepository } from "./repos.js";
+
+/** What a session keeps of the repository it was launched on. */
+export interface StoredRepository extends SessionRepository {
+	/** The installation that covered it when the session was made. A hint: the connection is asked again each time. */
+	installationId: number;
+}
+
+const fullName = (repository: { owner: string; name: string }) => `${repository.owner}/${repository.name}`;
+
+/** `windlass/<the title in a few words>-<the end of the session's id>`: named for the session, and unlike any other session's. */
+export function branchFor(title: string, sessionId: string): string {
+	const words = title
+		.normalize("NFKD")
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 40)
+		.replace(/-+$/g, "");
+	const end = sessionId.replace(/[^A-Za-z0-9]/g, "").slice(-6);
+	return `windlass/${words === "" ? "agent" : words}-${end}`;
+}
+
+/** The address GitHub credits a user's commits by, when the user keeps their own private. */
+function authorOf(connection: StoredConnection): { name: string; email: string } {
+	return { name: connection.user.login, email: `${connection.user.id}+${connection.user.login}@users.noreply.github.com` };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cloning
+// ---------------------------------------------------------------------------------------------
+
+/** What a clone or a push that failed means for the user. */
+function gitProblem(outcome: GitOutcome, what: "clone" | "push", repository: string, account: string, branch: string): GithubProblem {
+	const said = outcome.said ? ` Git said: ${outcome.said}` : "";
+	switch (outcome.failure) {
+		case "gone":
+			return new GithubProblem("github_gone", `${repository} is no longer on GitHub, or the GitHub App can no longer see it. Check that the repository exists and that the app's installation on ${account} still includes it.`);
+		case "denied":
+			return new GithubProblem(
+				"github_denied",
+				what === "push"
+					? `GitHub did not let the GitHub App push to ${repository}. Its installation on ${account} needs the permission "Contents: read and write"; if it has it, the repository's own rules keep the app out.`
+					: `GitHub did not let the GitHub App read ${repository}. Check that its installation on ${account} still includes the repository.`,
+			);
+		case "protected":
+			return new GithubProblem("github_denied", `GitHub refused the push: a rule of ${repository} protects branches named like ${branch}. Let the GitHub App create such branches in the repository's branch rules, then push again.`);
+		case "workflow":
+			return new GithubProblem("github_denied", `GitHub refused the push because it changes a workflow file under .github/workflows, which the GitHub App is not allowed to do. Take that change out, or make it yourself.`);
+		case "diverged":
+			return new GithubProblem("github_failed", `The branch ${branch} at GitHub has commits this workspace does not have, so the push was refused rather than overwrite them. Ask the agent to bring them in (they cannot be fetched from inside the sandbox), or delete the branch at GitHub and push again.`);
+		case "no_branch":
+			return new GithubProblem("github_gone", `${repository} has no branch ${branch} any more.`);
+		case "unreachable":
+			return new GithubProblem("github_unreachable", `GitHub could not be reached from the sandbox.${said} Try again in a moment.`);
+		case "timeout":
+			return new GithubProblem("github_failed", what === "clone" ? `Cloning ${repository} took longer than ${CLONE_MINUTES} minutes and was stopped.` : `Pushing to ${repository} took too long and was stopped. Try again.`);
+		default:
+			return new GithubProblem("github_failed", `${what === "clone" ? `Cloning ${repository}` : `Pushing to ${repository}`} failed.${said}`);
+	}
+}
+
+/**
+ * Clones the session's repository into its new sandbox. Resolves with `false` when it was aborted,
+ * and throws GithubProblem when it could not be done. The token is good for reading this one
+ * repository, and is revoked when the clone has ended.
+ */
+export async function cloneRepository(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, sandbox: SandboxHandle, signal?: AbortSignal): Promise<boolean> {
+	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
+	const resolved = await resolveRepository(app, connection, repository.id, "read");
+	const name = fullName(resolved.repository);
+	const account = resolved.installation.account.login;
+	let outcome: GitOutcome;
+	try {
+		outcome = await app.withToken(
+			resolved.installation.id,
+			{ repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } },
+			(token) => cloneWithToken(sandbox, token, { url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), branch: repository.branch, directory: resolved.repository.name, signal }),
+			{ revokeAfter: true },
+		);
+	} catch (error) {
+		throw problemOf(error, account, name);
+	}
+	if (outcome.failure === "aborted") return false;
+	if (!outcome.ok) throw gitProblem(outcome, "clone", name, account, repository.branch);
+	return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pushing, and the pull request
+// ---------------------------------------------------------------------------------------------
+
+export interface PublishInput {
+	app: GithubApp;
+	/** The user's connection as their actor has it now; null when there is none. */
+	connection: StoredConnection | null;
+	repository: StoredRepository;
+	sandbox: SandboxHandle;
+	sessionId: string;
+	/** The branch the work goes to. */
+	branch: string;
+	/** The pull request the session has, if any. */
+	pull: PullRequestInfo | null;
+	/** The commit the platform last pushed to the branch, if it pushed before. */
+	pushed: string | null;
+	message: PublishMessage;
+}
+
+export interface Published {
+	pull: PullRequestInfo;
+	/** True when this run opened the pull request. */
+	opened: boolean;
+	/** The branch's commit at GitHub now, when git said which. */
+	head: string | null;
+	/** How many files the platform's commit holds; 0 when the agent had committed everything itself; null when git did not say. */
+	committedFiles: number | null;
+}
+
+/** Thrown when the push went through and the pull request did not: the commit is at GitHub, so the caller keeps it. */
+export class PullProblem extends GithubProblem {
+	constructor(
+		problem: GithubProblem,
+		readonly head: string | null,
+	) {
+		super(problem.code, problem.message);
+	}
+}
+
+function infoOf(pull: Pull, pushedAt: number): PullRequestInfo {
+	return { number: pull.number, url: pull.url, state: pull.state, title: pull.title, branch: pull.head, base: pull.base, pushedAt };
+}
+
+const isOpen = (pull: PullRequestInfo | null): pull is PullRequestInfo => pull !== null && (pull.state === "open" || pull.state === "draft");
+
+function commitMessage(message: PublishMessage): string {
+	const body = message.body.trim();
+	return body === "" ? message.title.trim() : `${message.title.trim()}\n\n${body}`;
+}
+
+/**
+ * Commits what is uncommitted, pushes the session's branch, and opens a pull request when none is
+ * open. Throws GithubProblem; a `PullProblem` when the push itself went through.
+ */
+export async function publishWork(input: PublishInput): Promise<Published> {
+	const { app, connection, repository, sandbox, branch } = input;
+	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
+	// Asked before anything is committed: a user who may not push gets no commit made in their name.
+	const resolved = await resolveRepository(app, connection, repository.id, "write");
+	const { installation } = resolved;
+	const name = fullName(resolved.repository);
+	const account = installation.account.login;
+
+	const committed = await commitWork(sandbox, { sessionId: input.sessionId, branch, base: repository.branch, pushed: input.pushed, author: authorOf(connection) }, commitMessage(input.message));
+	if (!committed.ok) {
+		if (committed.failure === "timeout") throw new GithubProblem("github_failed", "Committing the workspace's changes took too long and was stopped. Try again.");
+		throw new GithubProblem("github_failed", `The workspace's changes could not be committed.${committed.said ? ` Git said: ${committed.said}` : ""}`);
+	}
+	if (committed.marks.has("norepo")) throw new GithubProblem("github_failed", "The workspace is not a git repository any more, so there is nothing to push.");
+	const nothingNew = committed.marks.has("nothing");
+	const open = isOpen(input.pull) ? input.pull : null;
+	if (nothingNew && open) throw new GithubProblem("github_failed", `There is nothing to push: ${branch} at GitHub already has everything in the workspace.`);
+	// Nothing new, and nothing of this session at GitHub to ask a pull request for.
+	if (nothingNew && input.pushed === null) throw new GithubProblem("github_failed", `There is nothing to open a pull request with: the workspace has no changes and no commit that ${repository.branch} does not have.`);
+
+	let head = committed.marks.get("head") || null;
+	const count = Number(committed.marks.get("committed"));
+	const committedFiles = committed.marks.has("committed") && Number.isInteger(count) ? count : null;
+
+	if (!nothingNew) {
+		let pushed: GitOutcome;
+		try {
+			pushed = await app.withToken(
+				installation.id,
+				{ repositoryId: repository.id, permissions: { metadata: "read", contents: "write" } },
+				(token) => pushWithToken(sandbox, token, { sessionId: input.sessionId, url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), branch }),
+				{ revokeAfter: true },
+			);
+		} catch (error) {
+			// No token was to be had, so the push never ran: what the commit step left for it goes.
+			await discardHandover(sandbox, input.sessionId);
+			throw problemOf(error, account, name);
+		}
+		if (!pushed.ok) {
+			if (pushed.marks.has("nohandover")) throw new GithubProblem("github_failed", "The commit to push could not be found in the sandbox. Try again.");
+			throw gitProblem(pushed, "push", name, account, branch);
+		}
+		head = pushed.marks.get("pushed") || head;
+	}
+
+	const now = Date.now();
+	try {
+		return await app.withToken(installation.id, { repositoryId: repository.id, permissions: { metadata: "read", pull_requests: "write" } }, async (token): Promise<Published> => {
+			const { owner, name: repo } = resolved.repository;
+			if (open) {
+				// It may have been merged or closed at GitHub since: then the push went to a branch with no pull request.
+				const current = await app.pull(token, owner, repo, open.number).catch(() => null);
+				if (current && (current.state === "open" || current.state === "draft")) return { pull: infoOf(current, now), opened: false, head, committedFiles };
+			}
+			try {
+				const created = await app.createPull(token, owner, repo, { title: input.message.title.trim(), body: input.message.body.trim(), head: branch, base: repository.branch });
+				return { pull: infoOf(created, now), opened: true, head, committedFiles };
+			} catch (error) {
+				// One pull request per pair of branches: one that is open already is the session's.
+				if (error instanceof GithubError && error.status === 422 && /already exists/i.test(error.said)) {
+					const existing = await app.openPull(token, owner, repo, branch, repository.branch);
+					if (existing) return { pull: infoOf(existing, now), opened: false, head, committedFiles };
+				}
+				if (error instanceof GithubError && error.status === 422 && /no commits between/i.test(error.said)) {
+					throw new GithubProblem("github_failed", `GitHub opened no pull request: ${branch} has no commit that ${repository.branch} does not have.`);
+				}
+				if (error instanceof GithubError && error.status === 403) {
+					throw new GithubProblem("github_denied", `The work is on ${branch} at GitHub, but the GitHub App may not open pull requests in ${name}. Its installation on ${account} needs the permission "Pull requests: read and write"; then choose "Open pull request" again.`);
+				}
+				throw error;
+			}
+		});
+	} catch (error) {
+		throw new PullProblem(problemOf(error, account, name), head);
+	}
+}
+
+/**
+ * The pull request as GitHub describes it now, or as it was known when GitHub cannot be asked: a
+ * panel that shows a state a few minutes old is better than one that shows an error.
+ */
+export async function refreshPull(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, pull: PullRequestInfo): Promise<PullRequestInfo> {
+	if (!connection) return pull;
+	try {
+		const resolved = await resolveRepository(app, connection, repository.id, "read");
+		const current = await app.withToken(resolved.installation.id, { repositoryId: repository.id, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, resolved.repository.owner, resolved.repository.name, pull.number));
+		return infoOf(current, pull.pushedAt);
+	} catch (error) {
+		console.error(`[wlp] github.pull.refresh_failed repository=${repository.id} pull=${pull.number}: ${error instanceof Error ? error.message : "unknown error"}`);
+		return pull;
+	}
+}
+
+/**
+ * Whether the workspace has something GitHub does not, read from a sandbox that is running: true,
+ * false, or null when git did not say (the sandbox layer's fake says nothing).
+ */
+export async function hasUnpushedWork(sandbox: SandboxHandle, base: string, pushed: string | null): Promise<boolean | null> {
+	const probed = await probeWork(sandbox, base, pushed);
+	if (!probed.ok || (!probed.marks.has("head") && !probed.marks.has("nothing"))) return null;
+	return probed.marks.has("dirty") || !probed.marks.has("nothing");
+}

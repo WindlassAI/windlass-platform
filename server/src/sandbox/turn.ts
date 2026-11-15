@@ -28,9 +28,13 @@
  *   initialize                         every engine event is asked for as `_windlass/event`, no standard updates
  *   session/new | _windlass/resolve + session/resume
  *                                      model, effort, the profile's approval mode, whether anyone can answer
+ *   _windlass/mcp                      the servers the project's configuration names that wait for approval,
+ *                                      each put to `onServerQuestion` before the prompt goes
+ *     -> _windlass/mcp_approve         a server the user said to start; it starts at once
  *   session/prompt                     answered when the turn ends, with how it ended
  *     <- _windlass/event               passed on unchanged, in order
  *     <- session/request_permission    a tool call's approval question, put to `onQuestion`
+ *     <- _windlass/mcp_changed         a server came to wait, started or failed while the turn runs
  *     -> _windlass/steer               a message into the running turn (`TurnControl.steer`)
  *     -> _windlass/cancel_call         one running tool call stopped (`TurnControl.cancelCall`)
  *     -> session/cancel                the turn stopped (`signal`)
@@ -38,6 +42,14 @@
  *
  * No prompt text is ever on a command line. The process lives for one turn, so nothing has to be kept
  * between turns and a server that restarts loses nothing but the turn it was running.
+ *
+ * A project's MCP servers are asked about as Windlass's own command line asks (its docs/acp.md, "A
+ * question about a project's hook, language server or MCP server put before a message is sent"): what
+ * waits is read before the prompt, the prompt goes after the answers, and the turn starts with what the
+ * user allowed. A server approved then is running, and in the model's list of tools, at the turn's
+ * first step. One that Windlass reports later (`_windlass/mcp_changed`) is asked about while the turn
+ * runs: approved, it starts at once, its tools can be called at once, and the model is told of them at
+ * its next step. The approval itself is Windlass's to remember, in its data directory in the sandbox.
  *
  * When a turn fails, what the failure means is read from the stable code Windlass gives it, not from
  * the words of its message: the code on the error the engine answered with (`data.windlass.code`,
@@ -48,7 +60,7 @@
  */
 
 import type { WindlassEvent } from "../contract.js";
-import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnControl, TurnQuestion, Windlass } from "./api.js";
+import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnControl, TurnQuestion, TurnServerOutcome, TurnServerQuestion, Windlass } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
 import { ACCESS_TOKEN_FILE_ENV, type Failure, OUTDATED_SANDBOX, WindlassOutdatedError, handedInFailure, handedInProblem, handedInProblemInWords, tokenRanOut, tokenSourceFailure } from "./handoff.js";
@@ -65,6 +77,9 @@ const EXT = {
 	steer: `_${NS}/steer`,
 	cancelCall: `_${NS}/cancel_call`,
 	resolve: `_${NS}/resolve`,
+	mcp: `_${NS}/mcp`,
+	mcpChanged: `_${NS}/mcp_changed`,
+	mcpApprove: `_${NS}/mcp_approve`,
 };
 const PROTOCOL_VERSION = 1;
 
@@ -90,6 +105,16 @@ const EXIT_WAIT_MS = 3000;
 const FORCED_WAIT_MS = 1500;
 /** After the turn's end, how long a message admitted too late to be part of it may take to start its own execution. */
 const FOLLOW_UP_MS = 3000;
+/** How long Windlass may take to say which servers wait, and to take an approval. */
+const SERVERS_TIMEOUT_MS = 20_000;
+/**
+ * After an approval, how long the layer waits for the server to have started or failed before it
+ * reports "starting". A server that needs nothing takes a tenth of a second; Windlass itself gives one
+ * 30 s (`startupTimeoutSeconds`) and holds the turn's first step 1.5 s for it.
+ */
+const SERVER_START_WAIT_MS = 5000;
+/** How long reading a server's definition, and asking which variables are set, may take. */
+const DEFINITION_TIMEOUT_MS = 10_000;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -342,6 +367,18 @@ class Turn {
 	/** One question at a time: the next waits for the one before it. */
 	private questionLine: Promise<void> = Promise.resolve();
 
+	/** The project's servers as Windlass last described them. */
+	private servers: ServerState[] = [];
+	/** The definitions this turn has asked about, or is about to: `<name>:<fingerprint>`. Each is asked about once. */
+	private readonly serversAsked = new Set<string>();
+	/** The questions about servers that are open: one at a time, and each withdrawn when the turn is stopped or ends. */
+	private readonly serverQuestions = new Set<AbortController>();
+	private serverLine: Promise<void> = Promise.resolve();
+	/** Woken when Windlass says its servers changed. */
+	private readonly serverWaiters = new Set<() => void>();
+	/** What the engine was started with, for asking the sandbox what the engine can see. */
+	private engineEnv: Record<string, string> = {};
+
 	/** The access token file of a turn that is not scripted. */
 	private readonly tokenFile: TokenFile | null;
 	/** Windlass's code for `failure`, when the error it came from carried one (`data.windlass.code`). */
@@ -388,20 +425,22 @@ class Turn {
 			if (release !== null && (await this.prepare(scriptPath)) && !this.abortRequested) {
 				// A token a command printed is taken out before the message is read: it reaches no event.
 				const lines = new LineSplitter((line) => this.peer.receive(tokenFile === null ? line : tokenFile.scrub(line)));
+				const env = {
+					// A server that lives for one turn must not start other sessions' wake-up turns, as the command line's one-prompt runs do not.
+					WINDLASS_WAKE: "off",
+					// Only warnings and errors on stderr: that is what `stderrTail` is for.
+					WINDLASS_ACP_LOG: "warn",
+					...(scriptPath === null ? {} : { WINDLASS_ACP_SCRIPT: scriptPath }),
+					// The file Windlass reads its access token from at every model call; it never looks for a saved sign-in then.
+					...(tokenFile === null ? {} : { [ACCESS_TOKEN_FILE_ENV]: tokenFile.path }),
+				};
 				const run = sandbox.start(this.options.engineCommand ?? ["windlass", "acp"], {
-					env: {
-						// A server that lives for one turn must not start other sessions' wake-up turns, as the command line's one-prompt runs do not.
-						WINDLASS_WAKE: "off",
-						// Only warnings and errors on stderr: that is what `stderrTail` is for.
-						WINDLASS_ACP_LOG: "warn",
-						...(scriptPath === null ? {} : { WINDLASS_ACP_SCRIPT: scriptPath }),
-						// The file Windlass reads its access token from at every model call; it never looks for a saved sign-in then.
-						...(tokenFile === null ? {} : { [ACCESS_TOKEN_FILE_ENV]: tokenFile.path }),
-					},
+					env,
 					onStdout: (chunk) => lines.push(chunk),
 					onStderr: (chunk) => (this.stderr = (this.stderr + chunk).slice(-STDERR_KEPT)),
 				});
 				this.process = run;
+				this.engineEnv = { ...env, WLP_RUN_TAG: run.tag };
 				void run.ended.then((end) => {
 					lines.flush();
 					this.processEnd = end;
@@ -560,6 +599,10 @@ class Turn {
 			return;
 		}
 
+		// The project's servers that wait for the user's approval, before the prompt goes: the turn starts with what was allowed.
+		const asked = await this.unlessAborted(this.askAboutServers());
+		if (asked === "aborted" || this.abortRequested || this.peer.closed) return;
+
 		this.promptSent = true;
 		void peer.request<{ stopReason?: unknown; _meta?: Record<string, unknown> }>("session/prompt", { sessionId: this.session, prompt: [{ type: "text", text: input.prompt }] }).then(
 			(result) => {
@@ -672,6 +715,10 @@ class Turn {
 	// ---- what the engine sends ----
 
 	private notification(method: string, params: Record<string, unknown>): void {
+		if (method === EXT.mcpChanged) {
+			if (params.sessionId === this.session) this.serversSaid(params);
+			return;
+		}
 		if (method !== EXT.event) return;
 		const event = params.event as WindlassEvent | undefined;
 		if (typeof params.sessionId !== "string" || typeof event !== "object" || event === null || typeof event.type !== "string") return;
@@ -758,6 +805,155 @@ class Turn {
 		}
 	}
 
+	// ---- the project's MCP servers ----
+
+	/**
+	 * Before the prompt: Windlass is asked which servers wait (`_windlass/mcp` reads the configuration as
+	 * it is now), and each is put to the user. An answer can bring the next question (a definition that
+	 * changed under its own question waits anew), so this returns when none is left. A Windlass that
+	 * cannot say leaves the turn as it was before the platform asked: such servers stay stopped.
+	 */
+	private async askAboutServers(): Promise<void> {
+		if (this.input.onServerQuestion === undefined) return;
+		try {
+			this.serversSaid(await this.peer.request(EXT.mcp, { sessionId: this.session }, { timeoutMs: SERVERS_TIMEOUT_MS }));
+		} catch (error) {
+			if (!(error instanceof AcpError && error.reason === "closed")) {
+				this.notes.push(`[platform] Windlass did not say which MCP servers of the project wait for approval (${error instanceof Error ? error.message : String(error)}); none was asked about`);
+			}
+			return;
+		}
+		for (let line: Promise<void> | null = null; line !== this.serverLine; ) {
+			line = this.serverLine;
+			await line;
+		}
+	}
+
+	/**
+	 * What Windlass says of the session's servers: the answer to `_windlass/mcp` and to an approval, and
+	 * `_windlass/mcp_changed`. A definition that waits and was not asked about in this turn joins the line
+	 * of questions; whoever waits for a server to start is woken.
+	 */
+	private serversSaid(raw: unknown): void {
+		const servers = serversOf(raw);
+		if (servers === null) return;
+		this.servers = servers;
+		for (const wake of [...this.serverWaiters]) wake();
+		if (this.input.onServerQuestion === undefined || this.over) return;
+		for (const server of servers) {
+			if (server.state !== "awaiting_approval" || server.fingerprint === null) continue;
+			const key = `${server.name}:${server.fingerprint}`;
+			if (this.serversAsked.has(key)) continue;
+			this.serversAsked.add(key);
+			this.serverLine = this.serverLine.then(() => this.askServer(server)).catch(() => undefined);
+		}
+	}
+
+	/** Puts one server's question, and has Windlass start the server on a yes. Never throws. */
+	private async askServer(server: ServerState): Promise<void> {
+		const ask = this.input.onServerQuestion;
+		const gone = () => this.over || this.abortRequested || this.cancelSent || this.peer.closed;
+		if (ask === undefined || gone() || !this.stillWaits(server)) return;
+		const controller = new AbortController();
+		const withdrawn = new Promise<null>((resolve) => controller.signal.addEventListener("abort", () => resolve(null), { once: true }));
+		this.serverQuestions.add(controller);
+		try {
+			const unset = await Promise.race([this.unsetVariables(server), withdrawn]);
+			// Meanwhile the turn may have ended, or the definition changed: then this one is no longer the question.
+			if (unset === null || gone() || !this.stillWaits(server)) return;
+			const question: TurnServerQuestion = {
+				name: server.name,
+				fingerprint: server.fingerprint ?? "",
+				argv: server.argv,
+				url: server.argv === null ? server.target : null,
+				file: server.file,
+				unset,
+				holdsTurn: !this.promptSent,
+			};
+			const start = await Promise.race([
+				Promise.resolve()
+					.then(() => ask(question, controller.signal))
+					.catch(() => false),
+				withdrawn,
+			]);
+			if (controller.signal.aborted || start !== true) return;
+			const outcome = await this.approveServer(question);
+			try {
+				this.input.onServerApproved?.(question, outcome);
+			} catch {
+				// A listener's failure must not stop the turn.
+			}
+		} finally {
+			this.serverQuestions.delete(controller);
+		}
+	}
+
+	/** Whether Windlass still says that exactly this definition waits. */
+	private stillWaits(server: ServerState): boolean {
+		return this.servers.some((now) => now.name === server.name && now.state === "awaiting_approval" && now.fingerprint === server.fingerprint);
+	}
+
+	/** `_windlass/mcp_approve`, and what became of the server: Windlass starts it at once and says so (`_windlass/mcp_changed` comes before the answer). */
+	private async approveServer(question: TurnServerQuestion): Promise<TurnServerOutcome> {
+		let answer: { approved?: unknown } | null;
+		try {
+			answer = await this.peer.request<{ approved?: unknown } | null>(EXT.mcpApprove, { sessionId: this.session, name: question.name, fingerprint: question.fingerprint }, { timeoutMs: SERVERS_TIMEOUT_MS });
+		} catch (error) {
+			return { state: "refused", reason: error instanceof Error ? error.message : String(error) };
+		}
+		// Its answer has the servers as they are now; a definition that waits in place of this one is asked about in its turn.
+		this.serversSaid(answer);
+		// No such server waited: the definition changed after the question was put.
+		if (answer?.approved !== true) return { state: "changed" };
+		const deadline = Date.now() + SERVER_START_WAIT_MS;
+		for (;;) {
+			const now = this.servers.find((server) => server.name === question.name);
+			if (now?.state === "running") return { state: "running", tools: now.tools ?? 0 };
+			if (now?.state === "failed" || now?.state === "stopped") return { state: "failed", reason: now.error ?? "Windlass gave no reason" };
+			const left = deadline - Date.now();
+			if (left <= 0 || this.over || this.peer.closed) return { state: "starting" };
+			await this.serversChange(left);
+		}
+	}
+
+	/** Resolves when Windlass next says its servers changed, the turn is over, or `ms` have passed. */
+	private serversChange(ms: number): Promise<void> {
+		return new Promise<void>((resolve) => {
+			const done = () => {
+				clearTimeout(timer);
+				this.serverWaiters.delete(done);
+				resolve();
+			};
+			const timer = setTimeout(done, ms);
+			this.serverWaiters.add(done);
+			void this.whenOver.then(done);
+		});
+	}
+
+	/**
+	 * The variables a server's definition reads that are not set where the engine runs. Windlass puts
+	 * `${NAME}` in a definition's `env` and `headers` in place from its own environment when the server
+	 * starts, and does not start a server that names one that is not set. Which names a definition reads
+	 * is in the file Windlass says defines it, and whether each is set is asked of the sandbox with the
+	 * engine's own environment, so the user can be told before they answer. Empty when the file cannot
+	 * be read as Windlass reads it: the server's failure then says it, in Windlass's words.
+	 */
+	private async unsetVariables(server: ServerState): Promise<string[]> {
+		try {
+			if (server.file === null || !server.file.startsWith("/")) return [];
+			const file = await this.sandbox.ask(["cat", "--", server.file], { timeoutMs: DEFINITION_TIMEOUT_MS });
+			if (file === null || file.code !== 0) return [];
+			const names = variablesRead(file.stdout, server.name);
+			if (names.length === 0) return [];
+			const said = await this.sandbox.ask(["sh", "-c", 'for name in "$@"; do printenv "$name" >/dev/null || echo "$name"; done', "sh", ...names], { env: this.engineEnv, timeoutMs: DEFINITION_TIMEOUT_MS });
+			if (said === null || said.code !== 0) return [];
+			const unset = new Set(said.stdout.split("\n").map((line) => line.trim()));
+			return names.filter((name) => unset.has(name));
+		} catch {
+			return [];
+		}
+	}
+
 	// ---- how the turn ends ----
 
 	/**
@@ -786,6 +982,7 @@ class Turn {
 		clearTimeout(this.cancelTimer);
 		clearTimeout(this.followUpTimer);
 		for (const question of this.questions) question.abort();
+		for (const question of this.serverQuestions) question.abort();
 		// Without a cancel there is no interrupt to wait for before a question left open is answered.
 		if (!this.cancelSent) this.resolveInterrupted();
 		this.resolveOver();
@@ -797,6 +994,8 @@ class Turn {
 		if (this.abortRequested || this.over) return;
 		this.abortRequested = true;
 		this.resolveAborted();
+		// A question about a server is the platform's own to withdraw: Windlass waits for nothing there.
+		for (const question of this.serverQuestions) question.abort();
 		// With the prompt sent there is a turn to cancel; before that, `converse` gives up where it is.
 		if (this.promptSent) this.cancel();
 	}
@@ -825,6 +1024,8 @@ class Turn {
 	/** The summary, the session let go of, and the process gone. */
 	private async end(): Promise<void> {
 		this.finish();
+		// An approval on its way to Windlass is reported before the turn is: its question was withdrawn above, so this is short.
+		await within(this.serverLine, SERVERS_TIMEOUT_MS);
 		const cutOff = this.tally.running !== null;
 		// A turn that was cut off is closed first: what the engine records of that still belongs before the summary.
 		if (cutOff) await this.closeSession();
@@ -954,6 +1155,73 @@ function questionOf(params: Record<string, unknown>): TurnQuestion | null {
 		choices,
 		subagent: label === null || label.trim() === "" ? null : label.trim(),
 	};
+}
+
+/** One MCP server of the session as `_windlass/mcp` describes it (Windlass's docs/acp.md, "The session's features"). */
+interface ServerState {
+	name: string;
+	/** "running", "starting", "failed", "awaiting_approval", "disabled", "stopped" or "not_started". */
+	state: string;
+	/** The command and its arguments; null for a server reached at an address. */
+	argv: string[] | null;
+	/** The command with its arguments, or the address. */
+	target: string | null;
+	tools: number | null;
+	error: string | null;
+	file: string | null;
+	/** Of the definition that waits (`question.fingerprint`); null when none does. */
+	fingerprint: string | null;
+}
+
+/** The servers in an answer to `_windlass/mcp` or `_windlass/mcp_approve`, or in `_windlass/mcp_changed`; null when it has none. */
+function serversOf(raw: unknown): ServerState[] | null {
+	const servers = (raw as { servers?: unknown } | null | undefined)?.servers;
+	if (!Array.isArray(servers)) return null;
+	return servers.flatMap((item: unknown) => {
+		const server = item as { name?: unknown; state?: unknown; argv?: unknown; target?: unknown; tools?: unknown; error?: unknown; file?: unknown; question?: { fingerprint?: unknown } | null };
+		if (typeof server?.name !== "string" || typeof server.state !== "string") return [];
+		return [
+			{
+				name: server.name,
+				state: server.state,
+				argv: Array.isArray(server.argv) && server.argv.every((argument): argument is string => typeof argument === "string") ? server.argv : null,
+				target: typeof server.target === "string" ? server.target : null,
+				tools: typeof server.tools === "number" ? server.tools : null,
+				error: typeof server.error === "string" && server.error !== "" ? server.error : null,
+				file: typeof server.file === "string" && server.file !== "" ? server.file : null,
+				fingerprint: typeof server.question?.fingerprint === "string" && server.question.fingerprint !== "" ? server.question.fingerprint : null,
+			},
+		];
+	});
+}
+
+/** `${NAME}` in a value of a server's definition: Windlass's own pattern (its packages/core/src/mcp/config.ts). */
+const VARIABLE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
+/**
+ * The variables the definition of `name` in a configuration file reads: every `${NAME}` in the values
+ * of its `env` and `headers`, in order of first appearance. The file is the repository's own, so
+ * nothing is assumed of it: anything that is not the shape Windlass reads gives no names.
+ */
+export function variablesRead(text: string, name: string): string[] {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return [];
+	}
+	const object = (value: unknown): Record<string, unknown> | null => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null);
+	const servers = object(object(object(parsed)?.mcp)?.servers);
+	const definition = servers !== null && Object.hasOwn(servers, name) ? object(servers[name]) : null;
+	if (definition === null) return [];
+	const names: string[] = [];
+	for (const key of ["env", "headers"]) {
+		for (const value of Object.values(object(definition[key]) ?? {})) {
+			if (typeof value !== "string") continue;
+			for (const match of value.matchAll(VARIABLE)) if (!names.includes(match[1])) names.push(match[1]);
+		}
+	}
+	return names;
 }
 
 function describeEnd(end: ProcessEnd): string {

@@ -71,15 +71,19 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
  * The layer of a server on E2B (WLP_SANDBOX=e2b): sessions' sandboxes are E2B microVMs (e2b/), which
  * every server machine of a deployment reaches. The sign-ins are the users' actors', as on Docker, and
  * E2B adds nothing to a user: Windlass's data directory is on each sandbox's own disk, so there is no
- * `ensureUserData`. The E2B provider and E2B's SDK are loaded here and not before, so a server on
- * Docker needs neither. Throws, with what to set, when E2B_API_KEY is missing.
+ * `ensureUserData`. That disk goes with the sandbox, so where a bucket is configured a copy of
+ * Windlass's session data is kept there (backup.ts); the Docker layer has none: its data directory is
+ * a volume that outlives every sandbox. The E2B provider and E2B's SDK are loaded here and not before,
+ * so a server on Docker needs neither. Throws, with what to set, when E2B_API_KEY is missing.
  */
 export async function createE2bLayer(): Promise<SandboxLayer> {
 	const { createE2bSandboxLayer } = await import("./e2b/index.js");
+	const { backupsFromConfig } = await import("./backup.js");
 	const signIns = actorSignIns();
 	return createE2bSandboxLayer({
 		logins: signIns.logins,
 		tokens: signIns.tokens,
+		backups: await backupsFromConfig(),
 		// Where Windlass's sign-in commands run is the server's to configure (WLP_WINDLASS_BIN, signin/index.ts): no image of the sandboxes is on this machine.
 		problem: async () => (await import("../signin/index.js")).signInProblem(),
 	});

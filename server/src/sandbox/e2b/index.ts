@@ -8,7 +8,7 @@
  * for E2B.
  */
 
-import type { AccessTokens, ChatgptLogins, SandboxLayer } from "../api.js";
+import type { AccessTokens, ChatgptLogins, SandboxLayer, SessionBackups } from "../api.js";
 import type { TurnOptions } from "../turn.js";
 import type { E2bClient } from "./client.js";
 import { type E2bSettings, readE2bConfig } from "./config.js";
@@ -26,6 +26,12 @@ export interface E2bLayerParts {
 	tokens: AccessTokens;
 	/** What keeps this server from handing turns an access token (its sign-in commands have nowhere to run), or null: `Windlass.problem()`, which the server prints when it starts. */
 	problem?: () => Promise<string | null>;
+	/**
+	 * Where the copies of Windlass's session data go (../backup.ts). On E2B that data is on the microVM's
+	 * own disk and goes with it; with this, a session whose sandbox is lost goes on in the same Windlass
+	 * session in the next one. Null or absent: no bucket, and such a session starts a new one.
+	 */
+	backups?: SessionBackups | null;
 }
 
 export interface E2bLayerOptions extends Pick<E2bSandboxesOptions, "log" | "now" | "sleep"> {
@@ -52,7 +58,7 @@ export function createE2bSandboxLayer(parts: E2bLayerParts, options: E2bLayerOpt
 	}
 	const windlass = new E2bWindlass(parts.tokens, { ...options.turn, version: settings.windlassVersion, problem: parts.problem });
 	const sandboxes = new E2bSandboxes(client, settings, { log: options.log, now: options.now, sleep: options.sleep, onVersion: (version) => windlass.noteVersion(version) });
-	return { sandboxes, windlass, logins: withTokenFiles(parts.logins, sandboxes), tokens: parts.tokens };
+	return { sandboxes, windlass, logins: withTokenFiles(parts.logins, sandboxes), tokens: parts.tokens, backups: parts.backups ?? null };
 }
 
 /**

@@ -27,6 +27,28 @@
  *   "(session-busy)"  another process holds the session: "session_in_use", no events
  *   "(exec-fail)"     the model call fails for good: outcome `failed`, "execution_failed"
  *   "(lose-sandbox)"  the sandbox is gone when the turn ends, as if its container had been removed
+ *   "(big-memory)"    Windlass's session grows by two mebibytes in this turn, for a copy that is over
+ *                     the limit (with WLP_FAKE_BACKUP_DIR, below)
+ *
+ * And the project's own MCP servers, which Windlass leaves stopped until the user approves them. Each
+ * switch says what the workspace's `.windlass/config.json` names in this turn; the question is put
+ * through `onServerQuestion` before the first event, as the real layer puts it before the prompt:
+ *
+ *   "(mcp)"           the server "harbor", started by `python3 tools/harbor_mcp.py`; approved, it runs
+ *                     with two tools
+ *   "(mcp-changed)"   the same server with another argument: another definition, asked about anew
+ *   "(mcp-env)"       its definition reads HARBOR_TOKEN, which is not set: the question says so, and
+ *                     approved it fails to start with Windlass's sentence
+ *   "(mcp-remote)"    a server "docs" that is reached at an address and not started
+ *   "(mcp-moved)"     the definition changes while the question is open: the approval finds nothing
+ *                     waiting (`changed`), and the new definition is asked about
+ *   "(mcp-late)"      "harbor" with yet another argument, which Windlass reports at the turn's first model call, so the
+ *                     question is put while the turn runs; with a word that makes the turn ask about a
+ *                     tool call, both questions are open at once
+ *
+ * An approval is remembered as Windlass remembers it: for exactly that definition, where its data is
+ * (per sandbox with WLP_FAKE_BACKUP_DIR, as on E2B; otherwise per user, as on Docker's volume). A
+ * server left stopped is asked about again by the next turn that names it.
  *
  * A repository address that contains "slow-clone" takes a second and a half to clone, which holds a
  * turn in `starting`; one that contains "fail-clone" fails.
@@ -35,6 +57,17 @@
  * the next step; `TurnControl.cancelCall` settles a running call early (`tool.cancel_requested`, then
  * `tool.settled` with what it had printed) and the turn goes on. After the last recorded event the
  * layer's own `cli.summary`-shaped event follows, built from the events as the real layer builds it.
+ *
+ * With WLP_FAKE_BACKUP_DIR=<directory> the layer behaves as the E2B layer does where a bucket is
+ * configured. Windlass's sessions then live in the sandbox they were made in (`sessionsLiveInSandbox`):
+ * a turn that names a session its sandbox does not hold ends with `session_not_found`, as with a real
+ * Windlass. And the layer has `backups`: the real `SandboxSessionBackups` (sandbox/backup.ts) over a
+ * stand-in for the bucket that keeps each object as a file in that directory (bucket/stand-in.ts). The
+ * fake sandbox has no shell, so it plays the three scripts' parts itself (`FakeHandle.backupStep`):
+ * it packs its sessions, uploads and downloads through the signed link, and checks what it fetched
+ * against the size and hash it is told, with the same answers the scripts give. A test removes or
+ * damages an object's file to play a bucket that lost or spoiled it; restarting the server loses the
+ * sandboxes and keeps the directory.
  *
  * Sign-in: paste `<redirectPrefix>?code=<name>` to sign in as `<name>@example.com`; `code=refused`
  * is refused. The steps, the sealed attempt and the user's sign-in in the `user` actor are the real
@@ -53,10 +86,11 @@
  * Nothing here is told by the words of a message; the switches above are this layer's own.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { FIXTURES_DIR } from "./config.js";
+import { StandInObjectStore } from "./bucket/stand-in.js";
+import { FIXTURES_DIR, backupConfig } from "./config.js";
 import type { SandboxProfile, SandboxProfileId, WindlassEvent } from "./contract.js";
 import {
 	type AccessToken,
@@ -76,8 +110,10 @@ import {
 	type TurnAnswer,
 	type TurnControl,
 	type TurnQuestion,
+	type TurnServerQuestion,
 	type Windlass,
 } from "./sandbox/api.js";
+import { BACKUP_ENV, SandboxSessionBackups } from "./sandbox/backup.js";
 import { NOT_SIGNED_IN, SIGN_IN_EXPIRED, SIGN_IN_UNREACHABLE, SignInRefreshError, TOKEN_VALID_FOR_MS, outdatedWindlass, tokenSourceFailure } from "./sandbox/handoff.js";
 import type { SignInCommands, TokenAnswer } from "./signin/commands.js";
 import { actorSignIns, memorySignIns } from "./signin/facade.js";
@@ -133,6 +169,19 @@ interface FakeSandbox {
 	state: "running" | "paused";
 	/** Files that differ from the last commit: path -> content. */
 	files: Map<string, string>;
+	/** The Windlass sessions on this sandbox's own disk, where sessions live in the sandbox. */
+	windlass: Map<string, FakeSession>;
+	/** The archive `backupStep` packed and has not uploaded yet. */
+	packed: Buffer | null;
+}
+
+/** What the fake Windlass keeps of a session: enough to continue it, and to notice when it is gone. */
+interface FakeSession {
+	/** The last `seq` written, so a continued session keeps counting. */
+	seq: number;
+	turns: number;
+	/** Bytes the session's data is larger by than the few it really has: "(big-memory)". */
+	padding: number;
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -161,6 +210,8 @@ class FakeHandle implements SandboxHandle {
 	constructor(
 		readonly sandbox: FakeSandbox,
 		private readonly exists: () => boolean,
+		/** The stand-in for the bucket a signed link opens; null where the layer keeps no copies. */
+		private readonly bucket: StandInObjectStore | null = null,
 	) {}
 
 	get id(): string {
@@ -175,7 +226,8 @@ class FakeHandle implements SandboxHandle {
 		await delay(/\bgit clone\b/.test(command) && command.includes("slow-clone") ? SLOW_CLONE_MS : 5, options.signal);
 		if (options.signal?.aborted) return { exitCode: null, timedOut: false, aborted: true, stdout: "", stderr: "" };
 		if (!this.exists()) throw new Error(`fake sandbox ${this.sandbox.id} does not exist`);
-		const result = this.interpret(command);
+		const step = options.env?.[BACKUP_ENV.step];
+		const result = step === undefined ? this.interpret(command) : this.backupStep(step, options.env ?? {}, options.stdin ?? "");
 		if (result.stdout) options.onStdout?.(result.stdout);
 		if (result.stderr) options.onStderr?.(result.stderr);
 		return result;
@@ -212,6 +264,50 @@ class FakeHandle implements SandboxHandle {
 		return ok();
 	}
 
+	/**
+	 * A step of sandbox/backup.ts, played without a shell: the same environment in, the same one line
+	 * out. The archive is the sandbox's Windlass sessions as a line of JSON, and after it as many bytes
+	 * as the sessions are padded by.
+	 */
+	private backupStep(step: string, env: Record<string, string>, stdin: string): ExecResult {
+		const sandbox = this.sandbox;
+		const link = /^url = "(.*)"$/m.exec(stdin)?.[1] ?? "";
+		const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+		if (step === "pack") {
+			sandbox.packed = null;
+			if (sandbox.windlass.size === 0) return ok("empty\n");
+			const padding = [...sandbox.windlass.values()].reduce((sum, session) => sum + session.padding, 0);
+			const size = Buffer.byteLength(JSON.stringify([...sandbox.windlass])) + 1 + padding;
+			// As the script: an archive over the limit is not kept.
+			if (size > Number(env[BACKUP_ENV.max])) return ok(`too_large ${size}\n`);
+			sandbox.packed = Buffer.concat([Buffer.from(`${JSON.stringify([...sandbox.windlass])}\n`), Buffer.alloc(padding)]);
+			return ok(`packed ${sandbox.packed.length} ${sha256(sandbox.packed)}\n`);
+		}
+		if (this.bucket === null) return ok("curl 6\n");
+		if (step === "upload") {
+			const packed = sandbox.packed;
+			sandbox.packed = null;
+			if (packed === null || String(packed.length) !== env[BACKUP_ENV.size]) return ok("changed\n");
+			return ok(`http ${this.bucket.use(link, "PUT", packed).status}\n`);
+		}
+		if (step === "restore") {
+			const fetched = this.bucket.use(link, "GET");
+			if (fetched.status !== 200 || fetched.body === undefined) return ok(`http ${fetched.status}\n`);
+			if (String(fetched.body.length) !== env[BACKUP_ENV.size]) return ok(`size ${fetched.body.length}\n`);
+			if (sha256(fetched.body) !== env[BACKUP_ENV.sha256]) return ok(`hash ${sha256(fetched.body)}\n`);
+			let sessions: Array<[string, FakeSession]>;
+			try {
+				const end = fetched.body.indexOf(0x0a);
+				sessions = JSON.parse(fetched.body.subarray(0, end < 0 ? undefined : end).toString("utf8")) as Array<[string, FakeSession]>;
+			} catch {
+				return ok("unpack\n");
+			}
+			for (const [id, session] of sessions) sandbox.windlass.set(id, session);
+			return ok(sandbox.windlass.has(env[BACKUP_ENV.session] ?? "") ? "restored\n" : "no_session\n");
+		}
+		return { exitCode: 2, timedOut: false, aborted: false, stdout: "", stderr: `unknown backup step: ${step}\n` };
+	}
+
 	async readTextFile(path: string): Promise<string> {
 		const content = this.sandbox.files.get(path.replace(`${WORKSPACE}/`, ""));
 		if (content === undefined) throw new Error(`no such file: ${path}`);
@@ -225,8 +321,29 @@ class FakeHandle implements SandboxHandle {
 
 class FakeSandboxes implements Sandboxes {
 	readonly all = new Map<string, FakeSandbox>();
-	/** As on Docker: the fake Windlass sessions are not tied to a sandbox. */
-	readonly sessionsLiveInSandbox = false;
+	/** As on Docker, the fake Windlass sessions are not tied to a sandbox; with a stand-in for the bucket they are, as on E2B. */
+	readonly sessionsLiveInSandbox: boolean;
+	/** The Windlass sessions where they outlive sandboxes: all in one place, as on a volume. */
+	private readonly shared = new Map<string, FakeSession>();
+	/** The definitions of project servers Windlass was told to start, by where its data directory is. */
+	private readonly approvals = new Map<string, Set<string>>();
+
+	/** The approvals the Windlass in this sandbox remembers: its own where its data is in the sandbox, its user's where it is on a volume. */
+	approvalsOf(id: string): Set<string> {
+		const key = this.sessionsLiveInSandbox ? `sandbox:${id}` : `user:${this.all.get(id)?.uid ?? ""}`;
+		const found = this.approvals.get(key) ?? new Set<string>();
+		this.approvals.set(key, found);
+		return found;
+	}
+
+	constructor(private readonly bucket: StandInObjectStore | null = null) {
+		this.sessionsLiveInSandbox = bucket !== null;
+	}
+
+	/** Where the Windlass that runs in this sandbox keeps its sessions. */
+	windlassOf(id: string): Map<string, FakeSession> {
+		return this.sessionsLiveInSandbox ? (this.all.get(id)?.windlass ?? new Map()) : this.shared;
+	}
 
 	profiles(): SandboxProfile[] {
 		return PROFILES;
@@ -242,7 +359,7 @@ class FakeSandboxes implements Sandboxes {
 		if (!this.profile(input.profile).available) throw new Error(`sandbox profile ${input.profile} is not available`);
 		await delay(20);
 		const id = `fake-${randomBytes(6).toString("hex")}`;
-		this.all.set(id, { id, uid: input.uid, sessionId: input.sessionId, profile: input.profile, state: "running", files: new Map() });
+		this.all.set(id, { id, uid: input.uid, sessionId: input.sessionId, profile: input.profile, state: "running", files: new Map(), windlass: new Map(), packed: null });
 		return id;
 	}
 
@@ -250,7 +367,7 @@ class FakeSandboxes implements Sandboxes {
 		const sandbox = this.all.get(id);
 		if (!sandbox) return undefined;
 		sandbox.state = "running";
-		return new FakeHandle(sandbox, () => this.all.has(id));
+		return new FakeHandle(sandbox, () => this.all.has(id), this.bucket);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {
@@ -375,6 +492,43 @@ function questionOf(event: WindlassEvent): TurnQuestion {
 
 const EXEC_FAIL_MESSAGE = "The model call failed 4 times: the provider answered 503 (fake layer).";
 
+/** A server the project's configuration names in a turn of the fake layer. */
+interface FakeServer {
+	name: string;
+	fingerprint: string;
+	argv: string[] | null;
+	url: string | null;
+	unset: string[];
+	/** Reported while the turn runs instead of before its prompt. */
+	late: boolean;
+	/** The definition it has changed to by the time the first approval arrives. */
+	movedTo: FakeServer | null;
+}
+
+const SERVER_FILE = `${WORKSPACE}/.windlass/config.json`;
+
+/** What the prompt's switches say the project names; the fingerprints stand for Windlass's hash of each definition. */
+function fakeServers(text: string): FakeServer[] {
+	const harbor = (fingerprint: string, extra: string[] = [], rest: Partial<FakeServer> = {}): FakeServer => ({
+		name: "harbor",
+		fingerprint,
+		argv: ["python3", "tools/harbor_mcp.py", ...extra],
+		url: null,
+		unset: [],
+		late: false,
+		movedTo: null,
+		...rest,
+	});
+	const servers: FakeServer[] = [];
+	if (text.includes("(mcp)")) servers.push(harbor("81498df752b8ef7d"));
+	if (text.includes("(mcp-changed)")) servers.push(harbor("5d0c2a7be1f94c36", ["--berths", "12"]));
+	if (text.includes("(mcp-env)")) servers.push(harbor("748df09716dce52c", [], { unset: ["HARBOR_TOKEN"] }));
+	if (text.includes("(mcp-moved)")) servers.push(harbor("2b9e0f6a4d7c8135", ["--port", "old"], { movedTo: harbor("9a3f5c1e7b2d4068", ["--port", "new"]) }));
+	if (text.includes("(mcp-late)")) servers.push(harbor("3c7d9e1f5a2b4680", ["--tide"], { late: true }));
+	if (text.includes("(mcp-remote)")) servers.push({ name: "docs", fingerprint: "e4d1a80c93f6b275", argv: null, url: "https://docs.example.com/mcp", unset: [], late: false, movedTo: null });
+	return servers;
+}
+
 interface Usage {
 	inputTokens: number;
 	cachedInputTokens: number;
@@ -390,10 +544,6 @@ const TERMINAL = new Map([
 ]);
 
 class FakeWindlass implements Windlass {
-	/** The last `seq` written to each fake Windlass session, so a continued session keeps counting. */
-	private readonly lastSeq = new Map<string, number>();
-	private readonly turns = new Map<string, number>();
-
 	constructor(
 		private readonly sandboxes: FakeSandboxes,
 		private readonly eventDelayMs: number,
@@ -454,8 +604,16 @@ class FakeWindlass implements Windlass {
 
 		const continued = input.windlassSessionId !== undefined;
 		const sessionId = input.windlassSessionId ?? `ses_fake${randomBytes(8).toString("hex")}`;
-		const turn = (this.turns.get(sessionId) ?? 0) + 1;
-		this.turns.set(sessionId, turn);
+		const sessions = this.sandboxes.windlassOf(sandbox.id);
+		// Where sessions live in the sandbox, one it does not hold cannot be continued: Windlass's own refusal.
+		if (continued && this.sandboxes.sessionsLiveInSandbox && !sessions.has(sessionId)) {
+			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: { reason: "session_not_found", message: `there is no session ${sessionId}` } };
+		}
+		const session: FakeSession = sessions.get(sessionId) ?? { seq: 0, turns: 0, padding: 0 };
+		sessions.set(sessionId, session);
+		session.turns += 1;
+		const turn = session.turns;
+		if (text.includes("(big-memory)")) session.padding += 2 * 1024 * 1024;
 		const gap = this.eventDelayMs * (text.includes("(slow)") ? 20 : 1);
 		const crashAfter = text.includes("(crash)") ? 6 : Number.POSITIVE_INFINITY;
 		const execFailAfter = text.includes("(exec-fail)") ? 8 : Number.POSITIVE_INFINITY;
@@ -463,7 +621,7 @@ class FakeWindlass implements Windlass {
 		const signal = input.signal;
 		const startedAt = Date.now();
 
-		let seq = this.lastSeq.get(sessionId) ?? 0;
+		let seq = session.seq;
 		let emitted = 0;
 		let ended = false;
 		let promptSeen = false;
@@ -661,7 +819,50 @@ class FakeWindlass implements Windlass {
 			return declined(`Not run: the user declined this call.${note ? ` Their note: ${note}` : ""}`);
 		};
 
+		/** The questions about servers that are open: withdrawn when the turn is stopped, and when it ends. */
+		const serverQuestions = new Set<AbortController>();
+		/**
+		 * Puts the question about one server, unless Windlass remembers an approval of exactly this
+		 * definition, and plays what Windlass makes of a yes.
+		 */
+		const askServer = async (server: FakeServer, holdsTurn: boolean): Promise<void> => {
+			const approved = this.sandboxes.approvalsOf(sandbox.id);
+			const key = `${server.name}:${server.fingerprint}`;
+			if (approved.has(key) || !input.onServerQuestion || signal?.aborted || ended) return;
+			const question: TurnServerQuestion = { name: server.name, fingerprint: server.fingerprint, argv: server.argv, url: server.url, file: SERVER_FILE, unset: server.unset, holdsTurn };
+			const asking = new AbortController();
+			const withdrawn = new Promise<null>((resolve) => asking.signal.addEventListener("abort", () => resolve(null), { once: true }));
+			const stop = () => asking.abort();
+			signal?.addEventListener("abort", stop, { once: true });
+			serverQuestions.add(asking);
+			try {
+				const start = await Promise.race([
+					Promise.resolve()
+						.then(() => input.onServerQuestion!(question, asking.signal))
+						.catch(() => false),
+					withdrawn,
+				]);
+				if (asking.signal.aborted || start !== true) return;
+				if (server.movedTo) {
+					input.onServerApproved?.(question, { state: "changed" });
+					await askServer(server.movedTo, holdsTurn);
+					return;
+				}
+				approved.add(key);
+				input.onServerApproved?.(question, server.unset.length > 0 ? { state: "failed", reason: `the environment variable ${server.unset[0]} named in its env is not set` } : { state: "running", tools: 2 });
+			} finally {
+				signal?.removeEventListener("abort", stop);
+				serverQuestions.delete(asking);
+			}
+		};
+		const servers = fakeServers(text);
+		let lateAsked = false;
+
 		try {
+			// What waits is asked about before Windlass gets the prompt: nothing of the turn has happened yet.
+			for (const server of servers) if (!server.late) await askServer(server, true);
+			if (signal?.aborted) return { exitCode: null, aborted: true, timedOut: false, windlassSessionId: continued ? sessionId : null, summary: null, stderrTail: "", failure: null };
+
 			input.onControl?.(control);
 			let queue = [...(approval ? approval.approved : fixture(fixtureFor(text, turn)))];
 			while (queue.length > 0) {
@@ -692,6 +893,12 @@ class FakeWindlass implements Windlass {
 
 				// A steered message reaches the model at the next step, or just before the turn would end.
 				if (recorded.type === "step.started" || TERMINAL.has(recorded.type)) deliverSteers();
+
+				// A server Windlass reports while the turn runs: its question does not hold the turn.
+				if (recorded.type === "step.started" && !lateAsked) {
+					lateAsked = true;
+					for (const server of servers) if (server.late) void askServer(server, false);
+				}
 
 				if (recorded.type === "tool.progress" && cancelled.has(callKey(recorded.messageId, recorded.callId))) continue;
 				if (recorded.type === "tool.settled" && cancelled.has(callKey(dataOf(recorded).messageId, dataOf(recorded).callId))) {
@@ -736,7 +943,8 @@ class FakeWindlass implements Windlass {
 			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure };
 		} finally {
 			ended = true;
-			this.lastSeq.set(sessionId, seq);
+			session.seq = seq;
+			for (const asking of serverQuestions) asking.abort();
 		}
 	}
 }
@@ -822,8 +1030,11 @@ export function createFakeSignInCommands(): SignInCommands {
 export function createFakeSandboxLayer(options: { signIns?: "actors" | "memory" } = {}): SandboxLayer {
 	const raw = Number.parseInt(process.env.WLP_FAKE_DELAY_MS ?? "", 10);
 	const eventDelayMs = Number.isFinite(raw) && raw >= 0 ? raw : 15;
-	const sandboxes = new FakeSandboxes();
+	// A directory that stands in for the bucket: Windlass's sessions then live in the sandboxes, and are copied there.
+	const backupDir = (process.env.WLP_FAKE_BACKUP_DIR ?? "").trim();
+	const bucket = backupDir === "" ? null : new StandInObjectStore({ dir: backupDir });
+	const sandboxes = new FakeSandboxes(bucket);
 	// The sign-in steps and the token source are the real ones, over the stand-in for Windlass above.
 	const { logins, tokens } = options.signIns === "memory" ? memorySignIns({ commands: createFakeSignInCommands(), rows: new Map() }) : actorSignIns();
-	return { sandboxes, windlass: new FakeWindlass(sandboxes, eventDelayMs, tokens), logins, tokens };
+	return { sandboxes, windlass: new FakeWindlass(sandboxes, eventDelayMs, tokens), logins, tokens, backups: bucket === null ? null : new SandboxSessionBackups(bucket, { maxBytes: backupConfig().maxBytes }) };
 }

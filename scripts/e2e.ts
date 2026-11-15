@@ -19,12 +19,13 @@
 
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createWriteStream, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient, type Registry } from "../server/src/client.js";
+import { GithubStandin } from "./github-standin.js";
 import {
 	type AuthResult,
 	type LiveDelta,
@@ -1337,6 +1338,222 @@ async function main(server: Server | null): Promise<void> {
 	await askWatch.conn.dispose().catch(() => undefined);
 	await userConnTwo.deleteSession(asking.id).catch(() => undefined);
 
+	// --- the project's MCP servers (fake layer's switches) -------------------------------------------
+
+	if (FAKE) {
+		const harbor = await userConnTwo.createSession({ profile: availableProfile as never, title: "Servers" });
+		const harborWatch = new Watch(client, uid, harbor.id, token);
+		const harborHandle = client.agentSession.get([uid, harbor.id], { params: { token } });
+		await harborWatch.conn.snapshot();
+		const idle = () => waitFor("the session to be idle", () => harborWatch.summaries.length === 0 || harborWatch.summaries.at(-1)?.status === "idle", TURN_MS);
+		/** The platform's lines of a turn that name the server. */
+		const linesOf = (turn: number) => harborWatch.items.flatMap((item) => (item.kind === "platform" && item.turn === turn && item.text.includes("MCP server") ? [item] : []));
+		/** Starts a turn whose project names a server, and returns the question about it once it is announced. */
+		const askAbout = async (text: string): Promise<PendingQuestion> => {
+			await idle();
+			const { turn } = await harborWatch.conn.prompt({ text });
+			const asked = await harborWatch.untilQuestion(turn);
+			assert(asked.server !== undefined, `the question is not about a server: ${plain(asked).slice(0, 200)}`);
+			return asked;
+		};
+
+		let firstId = "";
+		await check("a server the project names is asked about before the prompt goes: the session waits, and nothing of the turn has run", async () => {
+			const asked = await askAbout("say hello (mcp)");
+			firstId = asked.id;
+			await waitFor("the summary event to say waiting", () => harborWatch.summaries.at(-1)?.status === "waiting", 5_000);
+			assert(asked.title === 'Start this project\'s MCP server "harbor"?', `title: ${asked.title}`);
+			assert(asked.subject === "python3 tools/harbor_mcp.py", `subject: ${asked.subject}`);
+			assert(asked.messageId === "" && asked.callId === "" && asked.subagent === null, "a server's question names a call or a subagent");
+			assert(plain(asked.server) === plain({ name: "harbor", file: "/workspace/.windlass/config.json", remote: false, unset: [], holdsTurn: true }), `server: ${plain(asked.server)}`);
+			assert(plain(asked.choices.map((choice) => [choice.id, choice.label, choice.approve])) === plain([["start", "Start it for this project", true], ["not_now", "Not now", false]]), `choices: ${plain(asked.choices)}`);
+			assert(asked.choices[0].remembers?.includes("30 days") && asked.choices[1].remembers === null, `remembers: ${plain(asked.choices.map((choice) => choice.remembers))}`);
+			// The fake profile is the one whose commands Windlass sandboxes: the question says what the server can do that they cannot.
+			assert(asked.details.length === 2 && /outside Windlass's sandbox around commands: unlike the agent's commands, it has the network/.test(asked.details[0]), `details: ${plain(asked.details)}`);
+			assert(/remembered for 30 days for exactly this definition/.test(asked.details[1]), `details: ${plain(asked.details)}`);
+			if (OWN_SERVER) assert(asked.expiresAt - asked.askedAt === QUESTION_MS, `the question expires after ${asked.expiresAt - asked.askedAt} ms`);
+			assert(harborWatch.items.every((item) => item.turn !== asked.turn || item.kind !== "windlass"), "Windlass had events of the turn before the question was answered");
+			const snapshot = await harborHandle.snapshot();
+			assert(plain(snapshot.question) === plain(asked) && snapshot.summary.status === "waiting", `snapshot: ${plain(snapshot.question).slice(0, 200)}, ${snapshot.summary.status}`);
+			await refused(() => harborWatch.conn.answer({ questionId: asked.id, choice: "once" }), "bad_choice");
+			return `"${asked.title}" ${asked.subject}; ${asked.details[0]}`;
+		});
+
+		await check('"not now" leaves the server stopped: one line, and the turn runs', async () => {
+			const asked = await harborHandle.snapshot().then((snapshot) => snapshot.question);
+			assert(asked?.id === firstId, "the first question is not pending any more");
+			const from = harborWatch.summaries.length - 1;
+			await harborWatch.conn.answer({ questionId: asked.id, choice: "not_now", note: "ignored" });
+			await waitFor("the question event to say null", () => harborWatch.questions.at(-1) === null, 5_000);
+			const ended = await harborWatch.untilEnded(asked.turn);
+			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+			const lines = linesOf(asked.turn);
+			assert(lines.length === 1 && lines[0].level === "info" && lines[0].text === 'Left the MCP server "harbor" stopped. If the agent tries to use it, it is told that the server waits for you; your next message asks again.', `lines: ${plain(lines.map((line) => line.text))}`);
+			const firstEvent = harborWatch.items.find((item) => item.turn === asked.turn && item.kind === "windlass");
+			assert(firstEvent !== undefined && firstEvent.seq > lines[0].seq, "the turn's events do not come after the answer");
+			assert(harborWatch.statusesFrom(from) === "waiting > running > idle", `statuses were ${harborWatch.statusesFrom(from)}`);
+			await refused(() => harborWatch.conn.answer({ questionId: asked.id, choice: "start" }), "no_question");
+			return lines[0].text;
+		});
+
+		await check("the next message asks again, and approving starts the server: one line that says when the agent has its tools", async () => {
+			const asked = await askAbout("say hello again (mcp)");
+			assert(asked.id !== firstId && asked.subject === "python3 tools/harbor_mcp.py", `asked: ${plain(asked).slice(0, 200)}`);
+			await harborWatch.conn.answer({ questionId: asked.id, choice: "start" });
+			const ended = await harborWatch.untilEnded(asked.turn);
+			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+			const lines = linesOf(asked.turn);
+			assert(lines.length === 1 && lines[0].level === "info" && lines[0].text === 'Started the MCP server "harbor" for this project: 2 tools. The agent has them from this turn on.', `lines: ${plain(lines.map((line) => line.text))}`);
+			return lines[0].text;
+		});
+
+		await check("an approved definition is not asked about again, and a changed one is", async () => {
+			await idle();
+			const before = harborWatch.questions.length;
+			const { turn } = await harborWatch.conn.prompt({ text: "once more (mcp)" });
+			await harborWatch.untilEnded(turn);
+			assert(harborWatch.questions.length === before && linesOf(turn).length === 0, `an approved server was asked about again: ${plain(harborWatch.questions.slice(before)).slice(0, 200)}`);
+			const asked = await askAbout("and now (mcp-changed)");
+			assert(asked.subject === "python3 tools/harbor_mcp.py --berths 12" && asked.server?.name === "harbor", `asked: ${plain(asked).slice(0, 200)}`);
+			await harborWatch.conn.answer({ questionId: asked.id, choice: "start" });
+			await harborWatch.untilEnded(asked.turn);
+			assert(linesOf(asked.turn).length === 1 && linesOf(asked.turn)[0].text.startsWith('Started the MCP server "harbor"'), `lines: ${plain(linesOf(asked.turn).map((line) => line.text))}`);
+			return `no question for the approved definition; asked again about ${asked.subject}`;
+		});
+
+		await check("a definition that reads a variable which is not set says so, in the question and after an approval", async () => {
+			const asked = await askAbout("try (mcp-env)");
+			assert(plain(asked.server?.unset) === plain(["HARBOR_TOKEN"]), `unset: ${plain(asked.server?.unset)}`);
+			assert(asked.details.length === 3 && asked.details[2] === "It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set in the sandbox, and the platform cannot set variables for a session yet.", `details: ${plain(asked.details)}`);
+			await harborWatch.conn.answer({ questionId: asked.id, choice: "start" });
+			const ended = await harborWatch.untilEnded(asked.turn);
+			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+			const lines = linesOf(asked.turn);
+			assert(
+				lines.length === 1 &&
+					lines[0].level === "warn" &&
+					lines[0].text === 'Approved the MCP server "harbor" for this project, but it did not start: the environment variable HARBOR_TOKEN named in its env is not set. The platform cannot set variables for a session yet.',
+				`lines: ${plain(lines.map((line) => line.text))}`,
+			);
+			return lines[0].text;
+		});
+
+		await check("a definition that changes under its question is not started, and the new one is asked about", async () => {
+			const asked = await askAbout("move (mcp-moved)");
+			assert(asked.subject === "python3 tools/harbor_mcp.py --port old", `subject: ${asked.subject}`);
+			await harborWatch.conn.answer({ questionId: asked.id, choice: "start" });
+			const again = await waitFor("the question about the new definition", () => {
+				const last = harborWatch.questions.at(-1);
+				return last && last.id !== asked.id ? last : undefined;
+			}, 10_000);
+			assert(again.subject === "python3 tools/harbor_mcp.py --port new" && again.turn === asked.turn, `asked again: ${plain(again).slice(0, 200)}`);
+			await harborWatch.conn.answer({ questionId: again.id, choice: "start" });
+			await harborWatch.untilEnded(asked.turn);
+			const lines = linesOf(asked.turn).map((line) => line.text);
+			assert(lines.length === 2 && lines[0] === 'The definition of the MCP server "harbor" changed while it was asked about, so nothing was started. The new definition is asked about.' && lines[1].startsWith('Started the MCP server "harbor"'), `lines: ${plain(lines)}`);
+			return lines[0];
+		});
+
+		if (OWN_SERVER) {
+			await check('a server\'s question nobody answers is settled as "not now" when its time is up, and the turn goes on', async () => {
+				const asked = await askAbout("read the docs (mcp-remote)");
+				assert(asked.title === 'Connect to this project\'s MCP server "docs"?' && asked.subject === "https://docs.example.com/mcp" && asked.server?.remote === true, `asked: ${plain(asked).slice(0, 300)}`);
+				assert(asked.choices[0].label === "Connect for this project" && /^Nothing is started: Windlass reaches it at that address/.test(asked.details[0]), `asked: ${plain(asked).slice(0, 400)}`);
+				const from = harborWatch.summaries.length - 1;
+				await waitFor("the platform to settle the question", () => harborWatch.questions.at(-1) === null, QUESTION_MS + 20_000);
+				const waited = Date.now() - asked.askedAt;
+				assert(waited >= QUESTION_MS - 200 && waited < QUESTION_MS + 10_000, `the question was settled after ${waited} ms; its time was ${QUESTION_MS} ms`);
+				const ended = await harborWatch.untilEnded(asked.turn);
+				assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+				const lines = linesOf(asked.turn);
+				assert(lines.length === 1 && lines[0].level === "warn" && /^Nobody answered about the MCP server "docs" within \d+ seconds, so it stays unconnected\. Your next message asks again\.$/.test(lines[0].text), `lines: ${plain(lines.map((line) => line.text))}`);
+				assert(harborWatch.statusesFrom(from) === "waiting > running > idle", `statuses were ${harborWatch.statusesFrom(from)}`);
+				await refused(() => harborWatch.conn.answer({ questionId: asked.id, choice: "start" }), "no_question");
+				return `settled after ${waited} ms: "${lines[0].text}"`;
+			});
+		} else {
+			skip('a server\'s question nobody answers is settled as "not now" when its time is up, and the turn goes on', "needs its own server, started with a short time for questions");
+		}
+
+		await check("stop() during a server's question withdraws it without a line and ends the turn as interrupted", async () => {
+			const asked = await askAbout("read the docs (mcp-remote)");
+			await waitFor("the summary event to say waiting", () => harborWatch.summaries.at(-1)?.status === "waiting", 5_000);
+			const from = harborWatch.summaries.length - 1;
+			await harborWatch.conn.stop();
+			await waitFor("the question event to say null", () => harborWatch.questions.at(-1) === null, 10_000);
+			const ended = await harborWatch.untilEnded(asked.turn);
+			assert(ended.outcome === "interrupted", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+			assert(linesOf(asked.turn).length === 0, `lines: ${plain(linesOf(asked.turn).map((line) => line.text))}`);
+			assert(harborWatch.statusesFrom(from) === "waiting > stopping > idle", `statuses were ${harborWatch.statusesFrom(from)}`);
+			await refused(() => harborWatch.conn.answer({ questionId: asked.id, choice: "start" }), "no_question");
+			return `statuses ${harborWatch.statusesFrom(from)}`;
+		});
+
+		/** A turn in which Windlass reports the server while it runs and a tool call asks as well: returns both questions once the call's is shown. */
+		const askBoth = async (): Promise<{ server: PendingQuestion; call: PendingQuestion; from: number }> => {
+			await idle();
+			const from = harborWatch.questions.length;
+			const { turn } = await harborWatch.conn.prompt({ text: `${ASK} (mcp-late)` });
+			const call = await waitFor(
+				"the tool call's question",
+				() => {
+					const last = harborWatch.questions.at(-1);
+					return last && last.turn === turn && last.server === undefined ? last : undefined;
+				},
+				TURN_MS,
+			);
+			const server = harborWatch.questions[from];
+			assert(server?.server !== undefined && server.turn === turn, `the first question of the turn is not the server's: ${plain(harborWatch.questions.slice(from)).slice(0, 300)}`);
+			return { server, call, from };
+		};
+
+		await check("a tool call's question comes first: the server's steps aside for it and is put again after it", async () => {
+			const { server, call, from } = await askBoth();
+			assert(server.server?.holdsTurn === false && server.subject === "python3 tools/harbor_mcp.py --tide", `server: ${plain(server).slice(0, 300)}`);
+			assert(harborWatch.windlass(server.turn, "step.started").length > 0, "the question put while the turn runs came before the turn's first model call");
+			// Only the call's question is shown, and only it makes the session wait.
+			const during = await harborHandle.snapshot();
+			assert(during.question?.id === call.id && during.summary.status === "waiting", `while both are open the snapshot shows ${plain(during.question).slice(0, 120)}, ${during.summary.status}`);
+			assert(plain(harborWatch.questions.slice(from).map((question) => question?.id ?? null)) === plain([server.id, call.id]), `question events: ${plain(harborWatch.questions.slice(from).map((question) => question?.id ?? null))}`);
+			await harborWatch.conn.answer({ questionId: call.id, choice: "once" });
+			const again = await waitFor("the server's question to be put again", () => {
+				const last = harborWatch.questions.at(-1);
+				return last && last.id === server.id && harborWatch.questions.length > from + 2 ? last : undefined;
+			}, 10_000);
+			assert(again.expiresAt > server.expiresAt, "the question put again has no new time to answer in");
+			assert(plain(harborWatch.questions.slice(from).map((question) => question?.id ?? null)) === plain([server.id, call.id, null, server.id]), `question events: ${plain(harborWatch.questions.slice(from).map((question) => question?.id ?? null))}`);
+			// It does not hold the turn: the session runs under it, and the turn's end takes it away, with a line.
+			const ended = await harborWatch.untilEnded(server.turn);
+			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+			assert(harborWatch.questions.at(-1) === null, "the question outlived the turn");
+			const lines = linesOf(server.turn);
+			assert(lines.length === 1 && lines[0].level === "info" && lines[0].text === 'The turn ended before anyone answered about the MCP server "harbor". Your next message asks again.', `lines: ${plain(lines.map((line) => line.text))}`);
+			assert(lines[0].seq < ended.seq, "the line about the question comes after the turn's end");
+			await refused(() => harborWatch.conn.answer({ questionId: server.id, choice: "start" }), "no_question");
+			return `question events: server, call, null, server again; then "${lines[0].text}"`;
+		});
+
+		await check("a server's question that stands aside can still be answered, and a yes in a running turn says when the agent learns of the tools", async () => {
+			const { server, call, from } = await askBoth();
+			await harborWatch.conn.answer({ questionId: server.id, choice: "start" });
+			await waitFor("the line about the server", () => linesOf(server.turn).length > 0, 10_000);
+			const during = await harborHandle.snapshot();
+			assert(during.question?.id === call.id && during.summary.status === "waiting", `after the server's answer the snapshot shows ${plain(during.question).slice(0, 120)}, ${during.summary.status}`);
+			await harborWatch.conn.answer({ questionId: call.id, choice: "once" });
+			const ended = await harborWatch.untilEnded(server.turn);
+			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+			assert(plain(harborWatch.questions.slice(from).map((question) => question?.id ?? null)) === plain([server.id, call.id, null]), `question events: ${plain(harborWatch.questions.slice(from).map((question) => question?.id ?? null))}`);
+			const lines = linesOf(server.turn).map((line) => line.text);
+			assert(lines.length === 1 && lines[0] === 'Started the MCP server "harbor" for this project: 2 tools. The turn was already running: the agent is told of them at its next step.', `lines: ${plain(lines)}`);
+			return lines[0];
+		});
+
+		await harborWatch.conn.dispose().catch(() => undefined);
+		await userConnTwo.deleteSession(harbor.id).catch(() => undefined);
+	} else {
+		skip("the project's MCP servers", "the fake layer's switches; scripts/mcp-check.ts runs them against a real Windlass");
+	}
+
 	// --- steering a turn, stopping one call -------------------------------------------------------
 
 	// A new session is `starting` for a while: the fake layer's clone of this address takes a second
@@ -1860,6 +2077,22 @@ async function main(server: Server | null): Promise<void> {
 		for (const name of IDLE_CHECKS) skip(name, "needs its own server, restarted with short idle times");
 	}
 
+	// --- the agent's memory outlives its sandbox: a server whose sandboxes hold Windlass's sessions, and a bucket ---
+
+	if (server && FAKE) {
+		await backupChecks(server, client, uid, token, availableProfile);
+	} else {
+		for (const name of BACKUP_CHECKS) skip(name, "needs its own server with the fake layer, restarted with a stand-in for the bucket");
+	}
+
+	// --- GitHub: a server restarted with a GitHub App, and a stand-in for GitHub ---------------------------
+
+	if (server && FAKE) {
+		await githubChecks(server, client, demoSignIn, availableProfile);
+	} else {
+		for (const name of GITHUB_CHECKS) skip(name, "needs its own server with the fake layer, restarted with a stand-in for GitHub");
+	}
+
 	// --- what browsers connect with ----------------------------------------------------------------
 	// Last, so that the checks above run when they always did: several of them are about what an actor
 	// does a set time after it was last used.
@@ -2065,6 +2298,559 @@ async function idleChecks(server: Server, client: Client, uid: string, token: st
 	} finally {
 		await watch.conn.dispose().catch(() => undefined);
 		await userHandle.deleteSession(idle.id).catch(() => undefined);
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// The copy of Windlass's session in the bucket (server/src/sandbox/backup.ts)
+// ---------------------------------------------------------------------------------------------
+
+const BACKUP_CHECKS = [
+	"a turn's end copies Windlass's session to the bucket, and the timeline says nothing of it",
+	"a sandbox that is lost is replaced, and the agent's memory is restored into the new one",
+	"without a copy in the bucket the agent starts without its memory, and the timeline says so",
+	"a copy that is not the one the session saved is not unpacked: the agent starts without its memory",
+	"a turn whose copy could not be saved says nothing, and the restore says what is missing",
+	"a session whose data outgrows the limit is no longer copied, and the timeline says so once",
+	"deleting a session removes its copy from the bucket",
+];
+
+/**
+ * The fake layer with WLP_FAKE_BACKUP_DIR: its Windlass sessions live in its sandboxes, as on E2B, and
+ * a directory stands in for the bucket. The sandboxes are in the server's memory, so stopping the
+ * server loses every one of them, and the directory stays: a lost sandbox with its copy still there.
+ */
+async function backupChecks(server: Server, client: Client, uid: string, token: string, profile: string): Promise<void> {
+	const bucket = join(server.storage, "bucket");
+	const LIMIT = 1024 * 1024;
+	const env = { WLP_FAKE_BACKUP_DIR: bucket, WLP_BACKUP_MAX_BYTES: String(LIMIT), WLP_LOGIN_TTL_MS: String(loginTtlMs) };
+	const restart = async () => {
+		await server.stop();
+		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+		await server.start(env);
+	};
+	await restart();
+
+	const RESTORED = "Restored the agent's memory of the conversation into the new sandbox.";
+	const WITHOUT = "The agent's memory of the conversation went with the old sandbox, so it starts this turn without it.";
+	const userHandle = client.user.getOrCreate([uid], { params: { token } });
+	const session = await userHandle.createSession({ profile: profile as never, title: "Memory" });
+	const handle = client.agentSession.get([uid, session.id], { params: { token } });
+	const objectFile = join(bucket, "sessions", uid, `${session.id}.tgz`);
+	const object = () => (existsSync(objectFile) ? readFileSync(objectFile) : null);
+	const sha = (bytes: Buffer | null) => (bytes === null ? "none" : createHash("sha256").update(bytes).digest("hex").slice(0, 12));
+	const logged = (what: string) => server.output.split("\n").filter((line) => line.includes(`[wlp] backup.${what} session=${session.id}`));
+	type PlatformItem = Extract<TimelineItem, { kind: "platform" }>;
+	const notes = (items: TimelineItem[], turn: number) => items.filter((item): item is PlatformItem => item.kind === "platform" && item.turn === turn);
+	const seqs = (items: TimelineItem[], test: (turn: number) => boolean) => items.flatMap((item) => (item.kind === "windlass" && test(item.turn) && typeof item.event.seq === "number" ? [item.event.seq] : []));
+	/** One turn to its end, on a connection of its own: a restart drops the one before. */
+	const turn = async (text: string) => {
+		const watch = new Watch(client, uid, session.id, token);
+		try {
+			const { turn: number } = await watch.conn.prompt({ text });
+			const ended = await watch.untilEnded(number);
+			assert(ended.outcome === "succeeded", `turn ${number} ended ${ended.outcome}: ${ended.message ?? ""}`);
+			const snapshot = await handle.snapshot();
+			return { number, snapshot, notes: notes(snapshot.timeline, number), created: snapshot.timeline.some((item) => item.kind === "windlass" && item.turn === number && item.event.type === "session.created") };
+		} finally {
+			await watch.conn.dispose().catch(() => undefined);
+		}
+	};
+	let ok = true;
+	const step = async (name: string, body: () => Promise<string | undefined>) => {
+		if (!ok) {
+			skip(name, "an earlier check of the copy failed");
+			return;
+		}
+		ok = await check(name, body);
+	};
+	let windlassSession = "";
+
+	try {
+		await step(BACKUP_CHECKS[0], async () => {
+			const first = await turn("Write a short program");
+			windlassSession = first.snapshot.windlassSessionId ?? "";
+			assert(/^ses_/.test(windlassSession), `the session names no Windlass session: ${windlassSession}`);
+			const saved = object();
+			assert(saved !== null && saved.length > 0, `no object at ${objectFile}`);
+			const line = logged("saved").at(-1) ?? "";
+			assert(line.includes(`turn=${first.number} bytes=${saved.length} `), `the server logged "${line}" for an object of ${saved.length} bytes`);
+			const second = await turn("Write a short program");
+			const again = object();
+			assert(again !== null && sha(again) !== sha(saved), "the second turn did not replace the object");
+			assert(logged("saved").length === 2, `${logged("saved").length} saves were logged for two turns`);
+			const said = [...first.notes, ...second.notes].filter((item) => /memory|copy|bucket/i.test(item.text));
+			assert(said.length === 0, `the timeline speaks of the copy: ${plain(said)}`);
+			assert(second.snapshot.windlassSessionId === windlassSession && !second.created, "the second turn did not continue the Windlass session");
+			return `${saved.length} then ${again.length} bytes, one object, replaced; nothing in the timeline`;
+		});
+
+		await step(BACKUP_CHECKS[1], async () => {
+			const before = await handle.snapshot();
+			const last = Math.max(...seqs(before.timeline, () => true));
+			await restart();
+			const next = await turn("Write a short program");
+			const texts = next.notes.map((item) => item.text);
+			assert(next.notes.some((item) => item.level === "warn" && item.text.includes("no longer exists")), `no warning that the sandbox is gone: ${plain(texts)}`);
+			assert(texts.includes("Creating sandbox"), "no new sandbox was created");
+			const restored = next.notes.find((item) => item.text === RESTORED);
+			assert(restored?.level === "info" && texts.indexOf(RESTORED) > texts.indexOf("Creating sandbox"), `no line that the memory was restored, after the sandbox was created: ${plain(texts)}`);
+			assert(!texts.includes(WITHOUT), "the timeline also says the memory is gone");
+			assert(next.snapshot.windlassSessionId === windlassSession, `the Windlass session is ${next.snapshot.windlassSessionId}, was ${windlassSession}`);
+			const continued = seqs(next.snapshot.timeline, (number) => number === next.number);
+			assert(!next.created && continued.length > 0 && Math.min(...continued) === last + 1, `the turn's events start at seq ${Math.min(...continued)} after ${last}${next.created ? ", in a new session" : ""}`);
+			assert(logged("restored").length === 1, "the server logged no restore");
+			return `same Windlass session ${windlassSession}, its log goes on at seq ${last + 1}: "${RESTORED}"`;
+		});
+
+		await step(BACKUP_CHECKS[2], async () => {
+			rmSync(objectFile);
+			await restart();
+			const next = await turn("Write a short program");
+			const texts = next.notes.map((item) => item.text);
+			assert(texts.includes(WITHOUT) && !texts.some((text) => text.startsWith("Restored")), `the timeline says: ${plain(texts)}`);
+			assert(next.created && next.snapshot.windlassSessionId !== windlassSession && /^ses_/.test(next.snapshot.windlassSessionId ?? ""), `the Windlass session is ${next.snapshot.windlassSessionId}`);
+			assert(logged("restore_failed").some((line) => line.includes("the bucket has no copy")), "the server did not log why");
+			windlassSession = next.snapshot.windlassSessionId ?? "";
+			assert(object() !== null, "the new Windlass session was not copied when its turn ended");
+			return `a new Windlass session ${windlassSession}, and a copy of it: "${WITHOUT}"`;
+		});
+
+		await step(BACKUP_CHECKS[3], async () => {
+			const good = object();
+			assert(good !== null, "no object to damage");
+			const bad = Buffer.from(good);
+			bad[0] ^= 0xff;
+			writeFileSync(objectFile, bad);
+			await restart();
+			const next = await turn("Write a short program");
+			const texts = next.notes.map((item) => item.text);
+			assert(texts.includes(WITHOUT) && !texts.some((text) => text.startsWith("Restored")), `the timeline says: ${plain(texts)}`);
+			assert(next.created && next.snapshot.windlassSessionId !== windlassSession, "the damaged copy's session was continued");
+			assert(logged("restore_failed").some((line) => line.includes("not the copy this session saved")), "the server did not log why");
+			windlassSession = next.snapshot.windlassSessionId ?? "";
+			return `the same size, another hash: nothing unpacked, a new Windlass session ${windlassSession}`;
+		});
+
+		await step(BACKUP_CHECKS[4], async () => {
+			const kept = sha(object());
+			const failures = logged("save_failed").length;
+			// The sandbox is gone when this turn ends: its copy cannot be made, and the next turn needs a new sandbox.
+			const lost = await turn("Write a short program (lose-sandbox)");
+			assert(logged("save_failed").length === failures + 1, "the server logged no failed save");
+			assert(!lost.notes.some((item) => /memory|copy|bucket/i.test(item.text)), `the timeline speaks of the failed save: ${plain(lost.notes.map((item) => item.text))}`);
+			assert(sha(object()) === kept, "the earlier copy was replaced by a save that failed");
+			const next = await turn("Write a short program");
+			const line = next.notes.find((item) => item.text.startsWith("Restored"));
+			assert(line?.level === "warn" && line.text === "Restored the agent's memory of the conversation into the new sandbox, without the last turn: no copy of it could be saved.", `the timeline says: ${plain(next.notes.map((item) => item.text))}`);
+			assert(next.snapshot.windlassSessionId === windlassSession && !next.created, "the Windlass session was not continued from the earlier copy");
+			return `"${line.text}"`;
+		});
+
+		await step(BACKUP_CHECKS[5], async () => {
+			const kept = sha(object());
+			const grown = await turn("Write a short program (big-memory)");
+			const lines = (items: TimelineItem[]) => items.filter((item): item is PlatformItem => item.kind === "platform" && item.text.startsWith("The agent's memory of the conversation has grown to"));
+			const line = lines(grown.snapshot.timeline)[0];
+			assert(line?.level === "warn" && line.turn === grown.number && line.text.includes("at most 1 MB") && line.text.includes("no longer copied") && line.text.includes("will not remember the conversation from here on"), `the line is ${plain(line)}`);
+			assert(sha(object()) === kept, "an object was written for a session over the limit");
+			assert(logged("too_large").length === 1, "the server did not log the size");
+			const after = await turn("Write a short program");
+			assert(lines(after.snapshot.timeline).length === 1 && logged("too_large").length === 1 && sha(object()) === kept, "the next turn packed the session again, or said it again");
+			// The copy from before the session grew is still the one a lost sandbox is given.
+			await restart();
+			const next = await turn("Write a short program");
+			const restored = next.notes.find((item) => item.text.startsWith("Restored"));
+			assert(restored?.level === "warn" && restored.text.includes("without the last 2 turns: no copy of them could be saved"), `the timeline says: ${plain(next.notes.map((item) => item.text))}`);
+			assert(next.snapshot.windlassSessionId === windlassSession, "the Windlass session was not continued from the earlier copy");
+			assert(sha(object()) !== kept && logged("saved").some((entry) => entry.includes(`turn=${next.number} `)), "the restored session, which is small again, was not copied when its turn ended");
+			return `"${line.text}" Once; the earlier copy stayed and was restored: "${restored.text}"`;
+		});
+
+		await step(BACKUP_CHECKS[6], async () => {
+			assert(object() !== null, "no object before the delete");
+			await userHandle.deleteSession(session.id);
+			assert(object() === null, `${objectFile} is still there`);
+			assert(logged("removed").length === 1, `the server logged ${logged("removed").length} removals`);
+			return "the object is gone with the session";
+		});
+	} finally {
+		await userHandle.deleteSession(session.id).catch(() => undefined);
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// GitHub (server/src/github/): connecting, launching on a repository, the pull request
+// ---------------------------------------------------------------------------------------------
+
+const GITHUB_CHECKS = [
+	"without a GitHub App the platform says nothing of GitHub, and every GitHub action refuses",
+	"with a GitHub App the platform's information names it",
+	"connecting GitHub: the state goes to GitHub, the callback route checks it, and the ticket records the connection",
+	"a state works once, a ticket works once, and neither works for another user",
+	"an installation that is not the user's cannot be attached by naming its id",
+	"a connected user lists and searches the repositories they may read, and no other",
+	"an agent is launched on a private repository: the session records it, and the clone is the platform's, with a token for that repository alone",
+	"open pull request: the platform pushes the session's branch and opens it, with one line in the timeline",
+	"push changes goes to the same pull request, with one line in the timeline",
+	"nothing is pushed while a turn runs, or for a session with no repository of the connection",
+	"a user who may only read a repository is told so, and nothing is pushed in their name",
+	"a repository that is gone, and an app that was uninstalled, are each said in a sentence",
+	"disconnecting forgets the connection: nothing is listed, pushed or cloned any more",
+	"no token and no secret of GitHub's is in the server's output or in any timeline",
+];
+
+/**
+ * The server is restarted with a GitHub App whose GitHub is scripts/github-standin.ts. The fake sandbox
+ * layer runs no git: what is checked here is the server's side of it, through its HTTP route and its
+ * actors, as the web app uses them (the tokens it asks GitHub for, what it records, what it says).
+ * The git commands themselves, against a real remote, are scripts/github-check.ts.
+ */
+async function githubChecks(server: Server, client: Client, demoSignIn: () => Promise<AuthResult>, profile: string): Promise<void> {
+	const [off, on, connecting, once, notTheirs, listing, launching, opening, pushing, blocked, readOnly, gone, disconnecting, secrets] = GITHUB_CHECKS as [string, string, string, string, string, string, string, string, string, string, string, string, string, string];
+	const ORIGIN = "http://localhost:5173";
+	const userOf = (auth: AuthResult) => client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
+	const sessionOf = (auth: AuthResult, id: string) => client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } });
+	type Info = import("../server/src/contract.js").PlatformInfo;
+
+	const alice = await demoSignIn();
+	const bob = await demoSignIn();
+	const carol = await demoSignIn();
+
+	await check(off, async () => {
+		const info = (await (await platformInfo()).json()) as Info;
+		assert(!("github" in info), `the platform's information has ${plain(info.github)}`);
+		const message = await refused(() => userOf(alice).github(), "github_off");
+		await refused(() => userOf(alice).githubConnect({ origin: ORIGIN }), "github_off");
+		await refused(() => userOf(alice).githubRepositories(""), "github_off");
+		await refused(() => userOf(alice).createSession({ profile: profile as never, repository: { id: 1 } }), "github_off");
+		const route = await fetch(`${API}/github/callback?code=x&state=y`, { redirect: "manual" });
+		assert(route.status === 404, `the callback route answered ${route.status}`);
+		const plainSession = await userOf(alice).createSession({ profile: profile as never, title: "No GitHub" });
+		assert(plainSession.repository === undefined && plainSession.pullRequest === undefined, `a session's summary has ${plain(plainSession)}`);
+		const state = await sessionOf(alice, plainSession.id).publishState();
+		assert(state.repository === null && state.pullRequest === null, `its publish state is ${plain(state)}`);
+		await userOf(alice).deleteSession(plainSession.id);
+		assert(!server.output.includes("[wlp] github"), "the server said something of GitHub");
+		return `"${message}"; the callback route is 404`;
+	});
+
+	const standin = new GithubStandin({ callbackUrl: `${API}/github/callback`, strictBranches: false });
+	await standin.start();
+	try {
+		await server.stop();
+		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+		await server.start({ ...standin.env(), WLP_LOGIN_TTL_MS: String(loginTtlMs) });
+
+		// Who is at "GitHub": ada with two private repositories, an organization she can write to and bo can read, and mallory.
+		const ada = standin.addUser("ada");
+		standin.addUser("bo");
+		standin.addUser("mallory");
+		const adaInstallation = standin.addInstallation("ada", "User");
+		const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation: adaInstallation });
+		standin.addRepository({ owner: "ada", name: "notes", private: true, installation: adaInstallation });
+		const acme = standin.addInstallation("acme", "Organization");
+		const quay = standin.addRepository({ owner: "acme", name: "quay", private: true, installation: acme });
+		const vault = standin.addRepository({ owner: "acme", name: "vault", private: true, installation: acme });
+		quay.access.set("ada", "write");
+		quay.access.set("bo", "read");
+		vault.access.set("ada", "admin");
+		const malloryInstallation = standin.addInstallation("mallory", "User");
+		standin.addRepository({ owner: "mallory", name: "lair", private: true, installation: malloryInstallation });
+
+		/** The browser's visit to the server's callback route: where it is sent next, and what the fragment says. */
+		const visit = async (address: string): Promise<{ location: string; ticket: string | null; error: string | null }> => {
+			const response = await fetch(address, { redirect: "manual" });
+			assert(response.status === 302, `the callback route answered ${response.status}`);
+			const location = response.headers.get("location") ?? "";
+			const fragment = location.includes("#") ? location.slice(location.indexOf("#") + 1) : "";
+			return { location, ticket: fragment.startsWith("github=") ? fragment.slice(7) : null, error: fragment.startsWith("github-error=") ? fragment.slice(13) : null };
+		};
+		/** A platform user connects as a GitHub user, all the way. */
+		const connect = async (auth: AuthResult, login: string) => {
+			const { url } = await userOf(auth).githubConnect({ origin: ORIGIN });
+			const back = await visit(standin.authorize(login, url));
+			assert(back.ticket !== null, `the callback sent the browser to ${back.location.slice(0, 80)}`);
+			return userOf(auth).githubComplete(back.ticket);
+		};
+		const mintedSince = (from: number) => standin.minted.slice(from).map((entry) => `${Object.entries(entry.permissions ?? {}).map(([name, level]) => `${name}:${level}`).join(",")} @ ${entry.repositoryIds?.join(",") ?? "all"}`);
+
+		await check(on, async () => {
+			const info = (await (await platformInfo()).json()) as Info;
+			assert(plain(info.github) === plain({ slug: standin.slug, url: standin.url }), `github is ${plain(info.github)}`);
+			assert(server.output.includes(`[wlp] github: app ${standin.slug} (id ${standin.appId})`), "the server did not say at its start which GitHub App it has");
+			const status = await userOf(alice).github();
+			assert(status.connection === null, `a user who never connected has ${plain(status)}`);
+			await refused(() => userOf(alice).githubRepositories(""), "github_not_connected");
+			await refused(() => userOf(alice).githubConnect({ origin: "http://evil.example" }), "origin_not_allowed");
+			return `${info.github?.slug} at ${info.github?.url}`;
+		});
+
+		let ticket = "";
+		let callback = "";
+		await check(connecting, async () => {
+			const { url } = await userOf(alice).githubConnect({ origin: ORIGIN });
+			const address = new URL(url);
+			assert(url.startsWith(`${standin.url}/login/oauth/authorize?`) && address.searchParams.get("client_id") === standin.clientId && address.searchParams.get("code_challenge_method") === "S256", `the address is ${url.slice(0, 120)}`);
+			callback = standin.authorize("ada", url);
+			const back = await visit(callback);
+			assert(back.location.startsWith(`${ORIGIN}/#github=`) && back.ticket !== null, `the browser was sent to ${back.location.slice(0, 80)}`);
+			ticket = back.ticket;
+			// Until the web app hands the ticket in, nothing is connected.
+			assert((await userOf(alice).github()).connection === null, "the connection was recorded before the ticket was handed in");
+			const status = await userOf(alice).githubComplete(ticket);
+			const accounts = status.connection?.accounts ?? [];
+			assert(status.connection?.login === "ada", `connected as ${status.connection?.login}`);
+			assert(accounts.map((account) => `${account.login}:${account.kind}`).sort().join(",") === "acme:organization,ada:user", `accounts are ${plain(accounts)}`);
+			assert(accounts.every((account) => account.manageUrl.startsWith(standin.url)), "an account has no page at GitHub");
+			assert(plain(await userOf(alice).github()) === plain(status), "github() does not answer what githubComplete did");
+			const userTokens = [...standin.tokens.values()].filter((token) => token.kind === "user");
+			assert(userTokens.length > 0 && userTokens.every((token) => !standin.alive(token.value)), "a user access token is still alive at GitHub");
+			return `ada, for ${accounts.map((account) => account.login).join(" and ")}; ${userTokens.length} user token(s), all deleted at GitHub`;
+		});
+
+		await check(once, async () => {
+			const again = await visit(callback);
+			assert(again.error === "used" && again.ticket === null, `the same callback address again led to ${again.location}`);
+			await refused(() => userOf(alice).githubComplete(ticket), "github_ticket");
+			await refused(() => userOf(bob).githubComplete(ticket), "github_ticket");
+			// A state begun by bob, finished by a ticket handed to alice's actor: alice's actor does not take it.
+			const begun = await userOf(bob).githubConnect({ origin: ORIGIN });
+			const bobs = await visit(standin.authorize("mallory", begun.url));
+			assert(bobs.ticket !== null, "bob's own connection gave no ticket");
+			const said = await refused(() => userOf(alice).githubComplete(bobs.ticket as string), "github_ticket");
+			assert((await userOf(alice).github()).connection?.login === "ada", "alice's connection changed");
+			const forged = `${bobs.ticket.slice(0, -6)}AAAAAA`;
+			await refused(() => userOf(bob).githubComplete(forged), "github_ticket");
+			const state = new URL(begun.url).searchParams.get("state") ?? "";
+			const tampered = await visit(`${API}/github/callback?code=x&state=${encodeURIComponent(`${state.slice(0, -4)}AAAA`)}`);
+			assert(tampered.error === "state", `a changed state led to ${tampered.location}`);
+			const none = await visit(`${API}/github/callback?code=x`);
+			assert(none.error === "state", `no state led to ${none.location}`);
+			assert((await userOf(bob).github()).connection === null, "bob is connected though his ticket was never handed in by him");
+			return `the callback again: "${again.error}"; a ticket again and another user's: refused ("${said}")`;
+		});
+
+		await check(notTheirs, async () => {
+			const begun = await userOf(bob).githubConnect({ origin: ORIGIN });
+			const state = new URL(begun.url).searchParams.get("state");
+			// mallory authorizes as herself and names ada's installation.
+			const guessed = await visit(standin.installed("mallory", adaInstallation.id, state));
+			assert(guessed.error === "not_yours" && guessed.ticket === null, `it led to ${guessed.location}`);
+			const bare = await userOf(bob).githubConnect({ origin: ORIGIN });
+			const noCode = await visit(`${API}/github/callback?installation_id=${adaInstallation.id}&setup_action=install&state=${encodeURIComponent(new URL(bare.url).searchParams.get("state") ?? "")}`);
+			assert(noCode.error === "code", `an installation id with no code led to ${noCode.location}`);
+			assert((await userOf(bob).github()).connection === null, "bob has a connection");
+			assert(server.output.includes("[wlp] github.connect.not_theirs"), "the server did not log the attempt");
+			// The installation page, for an account to add: the state is one the callback takes.
+			const install = await userOf(bob).githubConnect({ origin: ORIGIN, install: true });
+			assert(install.url.startsWith(`${standin.url}/apps/${standin.slug}/installations/new?state=`), `the installation address is ${install.url.slice(0, 100)}`);
+			return `naming installation ${adaInstallation.id} as mallory: "${guessed.error}"; with no code: "${noCode.error}"`;
+		});
+
+		await check(listing, async () => {
+			const all = await userOf(alice).githubRepositories("");
+			const names = all.repositories.map((repository) => `${repository.owner}/${repository.name}`).sort();
+			assert(names.join(",") === "acme/quay,acme/vault,ada/harbor,ada/notes", `alice sees ${names.join(", ")}`);
+			const found = await userOf(alice).githubRepositories("harb");
+			assert(found.repositories.length === 1 && found.repositories[0].id === harbor.id && found.repositories[0].private && found.repositories[0].canPush, `a search found ${plain(found)}`);
+			const branches = await userOf(alice).githubBranches(harbor.id);
+			assert(branches.defaultBranch === "main" && branches.branches[0] === "main", `branches are ${plain(branches)}`);
+			// carol connects as bo, a member of acme who may read one of its two repositories.
+			const status = await connect(carol, "bo");
+			assert(status.connection?.accounts.map((account) => account.login).join(",") === "acme", `bo's accounts are ${plain(status.connection?.accounts)}`);
+			const member = await userOf(carol).githubRepositories("");
+			assert(member.repositories.map((repository) => repository.name).join(",") === "quay" && member.repositories[0].canPush === false, `bo sees ${plain(member.repositories)}`);
+			await refused(() => userOf(carol).githubBranches(vault.id), "github_denied");
+			await refused(() => userOf(carol).createSession({ profile: profile as never, repository: { id: vault.id } }), "github_denied");
+			await refused(() => userOf(carol).createSession({ profile: profile as never, repository: { id: harbor.id } }), "github_gone");
+			await refused(() => userOf(alice).createSession({ profile: profile as never, repository: { id: harbor.id }, repoUrl: "https://github.com/a/b.git" }), "bad_input");
+			return `alice: ${names.join(", ")}; bo: quay, read only; a repository he cannot read is refused`;
+		});
+
+		let sessionId = "";
+		// Assigned inside a check: the cast keeps its type from narrowing to the initial null.
+		let watch = null as Watch | null;
+		await check(launching, async () => {
+			const created = await userOf(alice).createSession({ profile: profile as never, title: "Fix the harbor light", repository: { id: harbor.id } });
+			sessionId = created.id;
+			assert(plain(created.repository) === plain({ provider: "github", id: harbor.id, owner: "ada", name: "harbor", branch: "main", private: true, url: `${standin.url}/ada/harbor` }), `the summary's repository is ${plain(created.repository)}`);
+			assert(created.repoUrl === `${standin.url}/ada/harbor.git` && created.pullRequest === null, `repoUrl ${created.repoUrl}, pull request ${plain(created.pullRequest)}`);
+			watch = new Watch(client, alice.profile.uid, sessionId, alice.token);
+			const from = standin.minted.length;
+			const { turn } = await watch.conn.prompt({ text: "Write a short program" });
+			const ended = await watch.untilEnded(turn);
+			assert(ended.outcome === "succeeded", `the turn ended ${ended.outcome}: ${ended.message ?? ""}`);
+			const cloning = watch.items.find((item) => item.kind === "platform" && item.text.startsWith("Cloning"));
+			assert(cloning?.kind === "platform" && cloning.text === "Cloning ada/harbor at main", `the timeline says ${plain(cloning)}`);
+			const minted = mintedSince(from);
+			assert(minted.includes(`metadata:read,contents:read @ ${harbor.id}`), `the tokens asked for were ${minted.join("; ")}`);
+			assert(!minted.some((entry) => entry.includes("write")), `a token for writing was asked for: ${minted.join("; ")}`);
+			const cloneToken = standin.minted.slice(from).find((entry) => entry.permissions?.contents === "read")?.token ?? "";
+			assert(cloneToken !== "" && !standin.alive(cloneToken), "the clone's token was not revoked");
+			const snapshot = await sessionOf(alice, sessionId).snapshot();
+			assert(plain(snapshot.summary.repository) === plain(created.repository), "the snapshot's summary lost the repository");
+			const listed = (await userOf(alice).listSessions()).find((session) => session.id === sessionId);
+			assert(plain(listed?.repository) === plain(created.repository), "the user's list lost the repository");
+			return `"${cloning.text}"; tokens: ${minted.join("; ")}; the clone's token revoked`;
+		});
+
+		const lines = () => (watch?.items ?? []).filter((item): item is Extract<TimelineItem, { kind: "platform" }> => item.kind === "platform").map((item) => item.text);
+		let branch = "";
+		await check(opening, async () => {
+			assert(watch, "no session");
+			const handle = sessionOf(alice, sessionId);
+			const before = await handle.publishState();
+			assert(before.blocked === null && before.changes === true && before.pullRequest === null, `the publish state is ${plain({ ...before, draft: undefined })}`);
+			assert(/^windlass\/fix-the-harbor-light-[0-9a-f]{6}$/.test(before.branch), `the branch is ${before.branch}`);
+			assert(before.draft.title === "Fix the harbor light" && before.draft.body !== "", `the draft is ${plain(before.draft)}`);
+			branch = before.branch;
+			await refused(() => handle.publish({ message: { title: "  ", body: "" } }), "bad_message");
+			const from = standin.minted.length;
+			const result = await handle.publish({ message: { title: "Fix the harbor light", body: "It was dark." } });
+			const pull = result.state.pullRequest;
+			assert(result.opened && pull?.number === 1 && pull.state === "open" && pull.branch === branch && pull.base === "main" && pull.url === `${standin.url}/ada/harbor/pull/1`, `the result is ${plain(result.state.pullRequest)}`);
+			const made = standin.pulls.at(-1);
+			assert(made?.title === "Fix the harbor light" && made.body === "It was dark." && made.head === branch && made.base === "main", `GitHub has ${plain(made)}`);
+			const minted = mintedSince(from);
+			assert(minted.includes(`metadata:read,contents:write @ ${harbor.id}`) && minted.includes(`metadata:read,pull_requests:write @ ${harbor.id}`), `the tokens asked for were ${minted.join("; ")}`);
+			const pushToken = standin.minted.slice(from).find((entry) => entry.permissions?.contents === "write")?.token ?? "";
+			assert(pushToken !== "" && !standin.alive(pushToken), "the push's token was not revoked");
+			const line = await waitFor("the timeline's line", () => lines().find((text) => text.startsWith("Opened pull request")), 5_000);
+			assert(line === `Opened pull request #1 in ada/harbor from ${branch}.`, `the timeline says "${line}"`);
+			const summary = await waitFor("the summary with the pull request", () => [...(watch?.summaries ?? [])].reverse().find((one) => one.pullRequest?.number === 1), 5_000);
+			assert(summary.pullRequest?.state === "open", "the summary's pull request is not open");
+			const listed = await waitFor("the user's list with the pull request", async () => (await userOf(alice).listSessions()).find((session) => session.id === sessionId && session.pullRequest?.number === 1), 5_000);
+			assert(listed.pullRequest?.url === pull.url, "the user's list has another address");
+			return `#${pull.number} from ${branch}; "${line}"; tokens: ${minted.join("; ")}`;
+		});
+
+		await check(pushing, async () => {
+			assert(watch, "no session");
+			const handle = sessionOf(alice, sessionId);
+			const count = standin.pulls.length;
+			const result = await handle.publish({ message: { title: "Trim the wick", body: "" } });
+			assert(!result.opened && result.state.pullRequest?.number === 1 && standin.pulls.length === count, `the result is ${plain(result.state.pullRequest)}; GitHub has ${standin.pulls.length} pull requests`);
+			const line = await waitFor("the timeline's line", () => lines().find((text) => text.startsWith("Pushed")), 5_000);
+			assert(line === `Pushed the work to ${branch}; pull request #1 is updated.`, `the timeline says "${line}"`);
+			// Merged at GitHub: the panel's read sees it, and so does everyone who watches the session.
+			(standin.pulls[0] as (typeof standin.pulls)[number]).state = "closed";
+			(standin.pulls[0] as (typeof standin.pulls)[number]).merged = true;
+			await sleep(100);
+			const merged = await waitFor("the merged state", async () => ((await handle.publishState()).pullRequest?.state === "merged" ? true : (await sleep(2_000), undefined)), 40_000, 500);
+			assert(merged, "the pull request is not seen as merged");
+			const again = await handle.publish({ message: { title: "After the merge", body: "" } });
+			assert(again.opened && again.state.pullRequest?.number === 2, `after a merge the result is ${plain(again.state.pullRequest)}`);
+			return `"${line}"; merged at GitHub is seen; the next push opened #2`;
+		});
+
+		await check(blocked, async () => {
+			assert(watch, "no session");
+			const handle = sessionOf(alice, sessionId);
+			const { turn } = await watch.conn.prompt({ text: "Fix the failing test (slow)" });
+			await waitFor("the turn to run", () => watch?.summaries.at(-1)?.status === "running", TURN_MS);
+			const state = await handle.publishState();
+			assert(state.blocked !== null && state.blocked.includes("Wait for the turn to end"), `while a turn runs the state says ${plain(state.blocked)}`);
+			const said = await refused(() => handle.publish({ message: { title: "Too early", body: "" } }), "publish_blocked");
+			await handle.stop();
+			await watch.untilEnded(turn);
+			const pasted = await userOf(alice).createSession({ profile: profile as never, title: "Pasted" });
+			await refused(() => sessionOf(alice, pasted.id).publish({ message: { title: "Nowhere", body: "" } }), "publish_blocked");
+			await userOf(alice).deleteSession(pasted.id);
+			// Another user cannot push alice's session.
+			await refused(() => client.agentSession.get([alice.profile.uid, sessionId], { params: { token: bob.token } }).publish({ message: { title: "Not mine", body: "" } }), "forbidden");
+			return `"${said}"`;
+		});
+
+		await check(readOnly, async () => {
+			const created = await userOf(carol).createSession({ profile: profile as never, title: "Look at the quay", repository: { id: quay.id } });
+			const carolWatch = new Watch(client, carol.profile.uid, created.id, carol.token);
+			try {
+				const { turn } = await carolWatch.conn.prompt({ text: "Write a short program" });
+				const ended = await carolWatch.untilEnded(turn);
+				assert(ended.outcome === "succeeded", `the turn ended ${ended.outcome}: ${ended.message ?? ""}`);
+				const from = standin.minted.length;
+				const said = await refused(() => sessionOf(carol, created.id).publish({ message: { title: "Try", body: "" } }), "github_denied");
+				assert(said === "bo can read acme/quay on GitHub but not write to it, so the platform cannot push there for you. Ask an owner of acme for write access, then push again.", `it said "${said}"`);
+				assert(!mintedSince(from).some((entry) => entry.includes("write")), `a token for writing was asked for: ${mintedSince(from).join("; ")}`);
+				assert(!standin.pulls.some((pull) => pull.repository === quay.id), "a pull request was opened");
+				return `"${said}"`;
+			} finally {
+				await carolWatch.conn.dispose().catch(() => undefined);
+				await userOf(carol).deleteSession(created.id).catch(() => undefined);
+			}
+		});
+
+		await check(gone, async () => {
+			const doomed = standin.addRepository({ owner: "ada", name: "doomed", private: true, installation: adaInstallation });
+			await userOf(alice).githubRepositories("", true);
+			const created = await userOf(alice).createSession({ profile: profile as never, title: "Doomed", repository: { id: doomed.id } });
+			const doomedWatch = new Watch(client, alice.profile.uid, created.id, alice.token);
+			try {
+				const { turn } = await doomedWatch.conn.prompt({ text: "Write a short program" });
+				await doomedWatch.untilEnded(turn);
+				standin.deleteRepository(doomed);
+				const lost = await refused(() => sessionOf(alice, created.id).publish({ message: { title: "Try", body: "" } }), "github_gone");
+				assert(lost.includes("ada/doomed") && lost.includes("no longer"), `it said "${lost}"`);
+				// The app is uninstalled from mallory's account, whom bob connected as.
+				const status = await connect(bob, "mallory");
+				assert(status.connection?.accounts.length === 1, "bob is not connected as mallory");
+				standin.uninstall(malloryInstallation);
+				const uninstalled = await refused(() => userOf(bob).githubRepositories("", true), "github_gone");
+				assert(uninstalled === "The GitHub App is no longer installed on mallory. Connect GitHub again and install it there, then try once more.", `it said "${uninstalled}"`);
+				return `"${lost}" | "${uninstalled}"`;
+			} finally {
+				await doomedWatch.conn.dispose().catch(() => undefined);
+				await userOf(alice).deleteSession(created.id).catch(() => undefined);
+			}
+		});
+
+		await check(disconnecting, async () => {
+			assert(watch, "no session");
+			const status = await userOf(alice).githubDisconnect();
+			assert(status.connection === null && (await userOf(alice).github()).connection === null, "the connection is still there");
+			await refused(() => userOf(alice).githubRepositories(""), "github_not_connected");
+			await refused(() => userOf(alice).createSession({ profile: profile as never, repository: { id: harbor.id } }), "github_not_connected");
+			const said = await refused(() => sessionOf(alice, sessionId).publish({ message: { title: "After", body: "" } }), "github_gone");
+			assert(said === "GitHub is not connected any more. Connect GitHub again from the account menu, then try once more.", `a push says "${said}"`);
+			// The session stays, with what it was launched on; and a ticket from before cannot bring the connection back.
+			const kept = (await userOf(alice).listSessions()).find((session) => session.id === sessionId);
+			assert(kept?.repository?.name === "harbor" && kept.pullRequest?.number === 2, "the session lost its repository or its pull request");
+			await refused(() => userOf(alice).githubComplete(ticket), "github_ticket");
+			// Connecting again works, and the session can push again.
+			await connect(alice, "ada");
+			const again = await sessionOf(alice, sessionId).publish({ message: { title: "Back again", body: "" } });
+			assert(again.state.pullRequest?.number === 2 && !again.opened, `after connecting again the result is ${plain(again.state.pullRequest)}`);
+			// A session of a user who disconnected before its first prompt: the clone says so.
+			const late = await userOf(alice).createSession({ profile: profile as never, title: "Too late", repository: { id: harbor.id } });
+			await userOf(alice).githubDisconnect();
+			const lateWatch = new Watch(client, alice.profile.uid, late.id, alice.token);
+			try {
+				const { turn } = await lateWatch.conn.prompt({ text: "Write a short program" });
+				const ended = await lateWatch.untilEnded(turn);
+				assert(ended.outcome === "error" && ended.message === said, `the turn ended ${ended.outcome}: ${ended.message}`);
+			} finally {
+				await lateWatch.conn.dispose().catch(() => undefined);
+				await userOf(alice).deleteSession(late.id).catch(() => undefined);
+			}
+			return `"${said}"; connecting again brings the session's pushes back`;
+		});
+
+		await check(secrets, async () => {
+			assert(watch, "no session");
+			const tokens = [...standin.tokens.keys()];
+			const texts = [server.output, JSON.stringify((await sessionOf(alice, sessionId).snapshot()).timeline), JSON.stringify(watch.items)];
+			const found = [standin.clientSecret, ...tokens].filter((secret) => texts.some((text) => text.includes(secret)));
+			assert(found.length === 0, `${found.length} of them appear: ${found.map((secret) => `${secret.slice(0, 8)}…`).join(", ")}`);
+			assert(!texts.some((text) => text.includes("PRIVATE KEY")), "the private key appears");
+			assert(tokens.length > 10, `only ${tokens.length} tokens were issued`);
+			return `${tokens.length} tokens were issued; none, nor the client secret or the private key, is in ${texts[0].length + texts[1].length} characters of log and timeline`;
+		});
+
+		await watch?.conn.dispose().catch(() => undefined);
+		if (sessionId) await userOf(alice).deleteSession(sessionId).catch(() => undefined);
+	} finally {
+		await standin.stop().catch(() => undefined);
 	}
 }
 

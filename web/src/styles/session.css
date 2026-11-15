@@ -64,6 +64,8 @@
 }
 
 .conversation {
+	/* Positioned, as the side panel is (see .panel), so nothing inside it can stretch the document. */
+	position: relative;
 	flex: 1;
 	min-width: 0;
 	overflow-y: auto;
@@ -832,13 +834,22 @@ button.output-more:hover {
 	color: var(--warn);
 }
 
-.q-subagent {
+.q-subagent,
+.q-where {
 	font-size: var(--size-small);
 	color: var(--ink-dim);
 	overflow-wrap: anywhere;
 }
-.q-subagent-key {
+.q-subagent-key,
+.q-where-key {
 	color: var(--ink-faint);
+}
+/* Where a project's server is defined: a path, in the face of the command above it. */
+.q-where {
+	margin-top: 1px;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	line-height: 1.55;
 }
 
 .q-subject {
@@ -860,6 +871,11 @@ button.output-more:hover {
 	font-size: var(--size-small);
 	line-height: 1.5;
 	color: var(--ink-dim);
+}
+
+/* A server's question says more than one line each: its sentences stand a little further apart. */
+.q-server .q-details {
+	gap: 5px;
 }
 
 .q-choices {
@@ -1204,7 +1220,15 @@ button.output-more:hover {
 
 /* ---- side panel ----------------------------------------------------------------------------- */
 
+/*
+ * Every column that scrolls is positioned, so that it is the containing block of the absolutely
+ * positioned things inside it (the `.visually-hidden` labels). Otherwise their containing block is
+ * #root: the column's overflow does not clip them, and each one left below the column's fold
+ * stretches the document, which then scrolls the top bar away and leaves empty space under the
+ * composer (one label per context bar, so the longer the session, the further).
+ */
 .panel {
+	position: relative;
 	min-width: 0;
 	min-height: 0;
 	padding: 4px 22px 32px;
@@ -1341,6 +1365,8 @@ button.output-more:hover {
 	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 .bars {
+	/* Positioned, as the scrolling columns are (see .panel), so its labels scroll and clip with it. */
+	position: relative;
 	display: grid;
 	gap: 3px;
 	max-height: 330px;
@@ -1543,6 +1569,175 @@ button.output-more:hover {
 	color: var(--ink-dim);
 }
 
+/* ---- copy controls -------------------------------------------------------------------------- */
+
+/*
+ * One control everywhere (Copy.tsx): a small icon button in the faint ink. It takes no room the
+ * conversation had: on a line that already exists it keeps within that line's height, and beside
+ * prose it sits in the margin right of the measure. It shows while its block is hovered or holds the
+ * focus; on a screen without hover it is always there, fainter.
+ */
+.copy {
+	/* Also the containing block of its announcement, which so cannot stretch the page (see .panel). */
+	position: relative;
+	display: inline-flex;
+	flex: none;
+}
+.copy-button {
+	color: var(--ink-faint);
+	opacity: 0;
+	transition:
+		opacity 120ms var(--ease),
+		color 120ms var(--ease),
+		background-color 120ms var(--ease);
+}
+.block-user:hover .copy-button,
+.block-user:focus-within .copy-button,
+.answer:hover > .copy > .copy-button,
+.answer:focus-within > .copy > .copy-button,
+.code-block:hover > .code-copy .copy-button,
+.code-block:focus-within > .code-copy .copy-button,
+.tool-part:hover .copy-button,
+.tool-part:focus-within .copy-button,
+.diff:hover > .diff-summary .copy-button,
+.diff:focus-within > .diff-summary .copy-button,
+.diff-file:hover > .diff-file-head .copy-button,
+.diff-file:focus-within > .diff-file-head .copy-button,
+.copy-button:focus-visible,
+.copy-copied > .copy-button,
+.copy-failed > .copy-button {
+	opacity: 1;
+}
+@media (hover: none) {
+	.copy-button {
+		opacity: 0.75;
+	}
+}
+.copy-copied > .copy-button,
+.copy-copied > .copy-button:hover {
+	color: var(--accent);
+}
+.copy-failed > .copy-button,
+.copy-failed > .copy-button:hover {
+	color: var(--bad);
+}
+/* A refusal, in words, above the control: it covers nothing for longer than it takes to read. */
+.copy-note {
+	position: absolute;
+	right: 0;
+	bottom: calc(100% + 4px);
+	z-index: 1;
+	padding: 2px 7px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-s);
+	background: var(--bg-raised);
+	font-family: var(--font-text);
+	font-size: 0.75rem;
+	font-weight: 550;
+	line-height: 1.4;
+	letter-spacing: 0;
+	text-transform: none;
+	white-space: nowrap;
+	color: var(--bad);
+	pointer-events: none;
+	animation: arrive 140ms var(--ease);
+}
+
+/* A prompt: at the end of its line of facts. */
+.user-foot {
+	display: flex;
+	align-items: flex-end;
+	gap: 4px;
+}
+.user-foot > .copy {
+	margin: -3px 0;
+}
+
+/*
+ * An answer: in the margin right of the measure, by its first line. Where the margin is narrower
+ * than the control (the gutter on a phone), the answer gives up the difference.
+ */
+.answer {
+	--copy-reserve: max(0px, calc(36px - var(--gutter)));
+	/* 6px from the text; where room was given up, the icon's edge on the column's (the button pads it by 5px). */
+	--copy-left: calc(100% - var(--copy-reserve) + 6px - min(5px, var(--copy-reserve)));
+	position: relative;
+	max-width: calc(74ch + var(--copy-reserve));
+	padding-right: var(--copy-reserve);
+	font-size: 0.96875rem;
+}
+.answer > .copy {
+	position: absolute;
+	top: 0;
+	left: var(--copy-left);
+}
+/*
+ * A code block in an answer: in the same margin, by its first line. Placed from the answer, with the
+ * code block left unpositioned: a positioned box changes how its text is rasterised. The font size
+ * keeps the space above the block what it was.
+ */
+.code-block {
+	font-size: var(--size-mono);
+}
+.code-copy {
+	position: absolute;
+	margin-top: 11px;
+	left: var(--copy-left);
+}
+/* Over a code block, only the code's control shows, not also the answer's above it. */
+@media (hover: hover) {
+	.answer:has(.code-block:hover) > .copy-idle > .copy-button:not(:focus-visible) {
+		opacity: 0;
+	}
+}
+/*
+ * An answer that opens with code: its first line is the code's, so the answer's control goes by its
+ * last line. One that is code and nothing else has the code's control only. One that also ends with
+ * code keeps the answer's control at the top and moves the first code's below it.
+ */
+.answer:has(> .prose > .code-block:first-child) > .copy {
+	top: auto;
+	bottom: 0;
+}
+.answer:has(> .prose > .code-block:only-child) > .copy {
+	display: none;
+}
+.answer:has(> .prose > .code-block:first-child):has(> .prose > .code-block:last-child) > .copy {
+	top: 0;
+	bottom: auto;
+}
+.answer:has(> .prose > .code-block:first-child):has(> .prose > .code-block:last-child) .code-block:first-child > .code-copy {
+	margin-top: 30px;
+}
+
+/*
+ * A call's input and output, and the diff: right after the label of what it copies (the part's
+ * title, the file's path, the figures of the whole), in room the line leaves free.
+ */
+.tool-part-head {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin-bottom: 5px;
+}
+.tool-part-head > .tool-part-title {
+	min-width: 0;
+	margin-bottom: 0;
+}
+.tool-part-head > .copy {
+	margin: -4px 0;
+}
+.diff-summary > .copy {
+	margin: -2px 0 -2px -9px;
+}
+.diff-file-head > .copy {
+	align-self: center;
+	margin: -2px auto -2px -9px;
+}
+.diff-file-head:has(> .copy) > .diff-path {
+	margin-right: 0;
+}
+
 /* ---- narrow screens: the panel goes below the main column ------------------------------------ */
 
 @media (max-width: 1020px) {
@@ -1629,6 +1824,12 @@ button.output-more:hover {
 		flex-basis: 100%;
 		padding-left: 0;
 		border-left: 0;
+	}
+	/* A server's question has no note to make room for: its two answers stay on one line. */
+	.q-server .q-decline {
+		flex-basis: auto;
+		padding-left: 12px;
+		border-left: 1px solid var(--line-strong);
 	}
 	.q-dock-wrap {
 		padding-top: 8px;

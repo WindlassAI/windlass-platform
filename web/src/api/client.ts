@@ -11,11 +11,17 @@ import type {
 	AuthResult,
 	ChatgptStatus,
 	CreateSessionInput,
+	GithubBranchList,
+	GithubRepositoryList,
+	GithubStatus,
 	LiveDelta,
 	LoginStart,
 	PendingQuestion,
 	PlatformInfo,
 	PromptInput,
+	PublishMessage,
+	PublishResult,
+	PublishState,
 	SessionSnapshot,
 	SessionSummary,
 	TimelineItem,
@@ -100,6 +106,15 @@ export interface UserApi {
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
 	renameSession(id: string, title: string): Promise<SessionSummary>;
 	deleteSession(id: string): Promise<void>;
+	/** The user's GitHub connection. Only asked where the deployment has a GitHub App (`PlatformInfo.github`). */
+	github(): Promise<GithubStatus>;
+	/** Begins connecting GitHub: the address at GitHub to send the browser to. With `install`, the app's installation page. */
+	githubConnect(origin: string, install?: boolean): Promise<{ url: string }>;
+	/** Finishes connecting with the ticket the browser came back from GitHub with. */
+	githubComplete(ticket: string): Promise<GithubStatus>;
+	githubDisconnect(): Promise<GithubStatus>;
+	githubRepositories(query: string, fresh?: boolean): Promise<GithubRepositoryList>;
+	githubBranches(repositoryId: number): Promise<GithubBranchList>;
 	/** Opens the live list of sessions. Returns the function that closes it. */
 	watch(feed: UserFeed): () => void;
 }
@@ -118,6 +133,10 @@ export interface SessionApi {
 	stop(): Promise<void>;
 	changes(): Promise<WorkspaceFile[]>;
 	diff(): Promise<string>;
+	/** What the side panel shows about the session's pull request. */
+	publishState(): Promise<PublishState>;
+	/** Commits, pushes, and opens the pull request when none is open. It can take a minute. */
+	publish(message: PublishMessage): Promise<PublishResult>;
 }
 
 export interface PlatformClient {

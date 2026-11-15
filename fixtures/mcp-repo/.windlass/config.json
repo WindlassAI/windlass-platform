@@ -1,0 +1,7 @@
+{
+  "mcp": {
+    "servers": {
+      "harbor": { "command": "python3", "args": ["tools/harbor_mcp.py"] }
+    }
+  }
+}

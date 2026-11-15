@@ -2,6 +2,10 @@
  * Server configuration, read once from the environment.
  *
  *   WLP_DEMO=1                 offer the demo sign-in (scripted model, no ChatGPT account)
+ *   WLP_ALLOWED_EMAILS, WLP_ALLOWED_USERS
+ *                              who may sign in with ChatGPT: account emails and user ids (`u_...`),
+ *                              comma-separated. Unset, both: anyone with a ChatGPT account. Asked at
+ *                              the sign-in and at every call, so a removal holds at once (access.ts)
  *   WLP_SANDBOX=docker|e2b|fake
  *                              the sandbox layer (default docker). docker: containers on this machine, for
  *                              one server. e2b: E2B microVMs, which every server of a deployment reaches
@@ -86,6 +90,61 @@
  *   WLP_E2B_WINDLASS_VERSION   the Windlass version in the template, to show it before the first sandbox
  *                              was made (default: learned from the first sandbox)
  *
+ * The bucket (read by `backupConfig` below; README, "The agent's memory outlives its sandbox"). Where
+ * Windlass's own session data lives on the sandbox's disk (E2B), a copy of it is kept in a bucket after
+ * every turn and put back into the sandbox that replaces a lost one (sandbox/backup.ts). Any store
+ * that speaks the S3 protocol will do, and changing the provider is changing these. With none of the
+ * first four set the feature is off, and a session whose sandbox is lost starts a new Windlass session,
+ * as it did before there was a bucket; with only some of them set it is off too, and the server says
+ * which are missing when it starts. They are the same on every server.
+ *
+ *   WLP_BUCKET_ENDPOINT        the store's S3 endpoint, without the bucket: for Cloudflare R2,
+ *                              https://<account id>.r2.cloudflarestorage.com
+ *   WLP_BUCKET_NAME            the bucket. Nothing else needs to be in it, and nothing else should
+ *   WLP_BUCKET_ACCESS_KEY_ID   the id of an access key that may read, write and delete objects in that
+ *                              bucket, and needs no other right
+ *   WLP_BUCKET_SECRET_ACCESS_KEY
+ *                              that key's secret. It signs requests and links and is used for nothing
+ *                              else: never logged, never in an error, a link or an answer
+ *   WLP_BUCKET_REGION          the region the signatures name (default auto, which is R2's; on AWS the
+ *                              bucket's region)
+ *   WLP_BUCKET_STYLE=path|virtual
+ *                              where the bucket's name goes in an address: in the path (default; R2,
+ *                              MinIO, AWS) or in the host name
+ *   WLP_BUCKET_PREFIX          put before every object's key, for a bucket that is shared with
+ *                              something else or between deployments (default none; letters, digits,
+ *                              `.`, `_`, `-` and `/`)
+ *   WLP_BACKUP_MAX_BYTES       the largest copy that is kept, in bytes of the compressed archive
+ *                              (default 67108864, 64 MiB). A session whose data outgrows it is no
+ *                              longer copied, and its timeline says so once
+ *   WLP_FAKE_BACKUP_DIR        fake layer only: a directory that stands in for the bucket. With it the
+ *                              fake layer's Windlass sessions live in its sandboxes, as on E2B, and
+ *                              are copied to that directory and restored from it (sandbox-fake.ts)
+ *
+ * GitHub (read by `githubConfig` below; README, "GitHub"). A GitHub App of this deployment's own lets a
+ * user connect GitHub, launch an agent on a repository the app was installed on, private ones included,
+ * and get the work back as a pull request. With none of the first five set the feature is off: the web
+ * app shows nothing of it and every session behaves as before. With only some of them set it is off
+ * too, and the server says which are missing when it starts. They are the same on every server.
+ *
+ *   WLP_GITHUB_APP_ID          the app's numeric id ("App ID" on the app's settings page): the issuer of
+ *                              the tokens the server signs to ask for installation tokens
+ *   WLP_GITHUB_APP_SLUG        the app's name as its address has it, https://github.com/apps/<slug>:
+ *                              where a user is sent to install it
+ *   WLP_GITHUB_CLIENT_ID       the app's client id ("Iv23..."): names the app when a user authorizes it
+ *   WLP_GITHUB_CLIENT_SECRET   a client secret of the app. A secret: sent to GitHub with a user's
+ *                              authorization code and with nothing else; never logged, never in an
+ *                              error or an answer
+ *   WLP_GITHUB_PRIVATE_KEY     a private key of the app, the PEM file GitHub lets you download. A
+ *                              secret: it signs the app's own tokens and never leaves the server. As
+ *                              it is, with its line breaks, or with `\n` in their place, or the whole
+ *                              file in base64 (`base64 -w0 key.pem`), which is the form to give a
+ *                              secret store that takes one line
+ *   WLP_GITHUB_API_URL         GitHub's API (default https://api.github.com). For GitHub Enterprise
+ *                              Server, https://<host>/api/v3; the checks point it at a stand-in
+ *   WLP_GITHUB_URL             GitHub itself, where users authorize and git clones from (default
+ *                              https://github.com)
+ *
  * The Rivet engine is RivetKit's to configure, from its own variables: without RIVET_ENDPOINT it starts
  * a local engine on :6420 (development), with it the server joins that engine as one of its nodes
  * (RIVET_ENDPOINT, RIVET_NAMESPACE, RIVET_TOKEN, RIVET_POOL, RIVET_NODE_VERSION; README, "Running on
@@ -97,6 +156,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type AccessRules, readAccessRules } from "./access.js";
 import { QUESTION_TIMEOUT_MS } from "./contract.js";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -127,6 +187,8 @@ export interface BrowserConnectionConfig {
 
 export interface Config {
 	demo: boolean;
+	/** Who may use the platform (access.ts). */
+	access: AccessRules;
 	sandbox: SandboxMode;
 	secret: Buffer;
 	/** False when a remote engine is configured and WLP_SECRET is not: the server refuses to start (startup.ts). */
@@ -180,6 +242,107 @@ const engine = readEngine();
 export function engineAdminToken(): string | null {
 	const token = (process.env.RIVET_ADMIN_TOKEN ?? "").trim();
 	return token === "" ? null : token;
+}
+
+/** What `backupConfig` found: the bucket's settings when all of them are there, and the size limit. */
+export interface BackupConfig {
+	/** The S3 bucket's settings (bucket/s3.ts takes them as they are); null when the feature is off. `secretAccessKey` is a secret. */
+	bucket: { endpoint: string; region: string; bucket: string; accessKeyId: string; secretAccessKey: string; style: "path" | "virtual" } | null;
+	/** WLP_BUCKET_PREFIX, ending in a slash when it is not empty. */
+	prefix: string;
+	/** WLP_BACKUP_MAX_BYTES. */
+	maxBytes: number;
+	/** The required variables that are not set while others are: the names, never a value. Empty when all or none are set. */
+	missing: string[];
+}
+
+/**
+ * The bucket the copies of Windlass's session data go to, read when it is asked for. Like the admin
+ * token it is not part of `config`: nothing that prints or passes on the configuration can carry the
+ * bucket's secret. Throws for a prefix that could not be part of an object's key.
+ */
+export function backupConfig(env: NodeJS.ProcessEnv = process.env): BackupConfig {
+	const read = (name: string) => (env[name] ?? "").trim();
+	const required = ["WLP_BUCKET_ENDPOINT", "WLP_BUCKET_NAME", "WLP_BUCKET_ACCESS_KEY_ID", "WLP_BUCKET_SECRET_ACCESS_KEY"];
+	const missing = required.filter((name) => read(name) === "");
+	const raw = Number(read("WLP_BACKUP_MAX_BYTES"));
+	const maxBytes = Number.isSafeInteger(raw) && raw > 0 ? raw : 64 * 1024 * 1024;
+	const prefix = read("WLP_BUCKET_PREFIX").replace(/^\/+|\/+$/g, "");
+	if (prefix !== "" && !/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(prefix)) throw new Error('WLP_BUCKET_PREFIX may hold letters, digits, ".", "_", "-" and "/" only');
+	const style = read("WLP_BUCKET_STYLE").toLowerCase();
+	if (style !== "" && style !== "path" && style !== "virtual") throw new Error('WLP_BUCKET_STYLE must be "path" or "virtual"');
+	const bucket =
+		missing.length > 0
+			? null
+			: {
+					endpoint: read("WLP_BUCKET_ENDPOINT"),
+					region: read("WLP_BUCKET_REGION") || "auto",
+					bucket: read("WLP_BUCKET_NAME"),
+					accessKeyId: read("WLP_BUCKET_ACCESS_KEY_ID"),
+					secretAccessKey: read("WLP_BUCKET_SECRET_ACCESS_KEY"),
+					style: style === "virtual" ? ("virtual" as const) : ("path" as const),
+				};
+	return { bucket, prefix: prefix === "" ? "" : `${prefix}/`, maxBytes, missing: missing.length === required.length ? [] : missing };
+}
+
+/** What `githubConfig` found: the GitHub App's public settings when all of it is configured. */
+export interface GithubConfig {
+	/** Null when the feature is off. Holds no secret: the client secret and the private key are read where they are used. */
+	app: { appId: string; slug: string; clientId: string; apiUrl: string; webUrl: string } | null;
+	/** The required variables that are not set while others are: the names, never a value. Empty when all or none are set. */
+	missing: string[];
+}
+
+const GITHUB_REQUIRED = ["WLP_GITHUB_APP_ID", "WLP_GITHUB_APP_SLUG", "WLP_GITHUB_CLIENT_ID", "WLP_GITHUB_CLIENT_SECRET", "WLP_GITHUB_PRIVATE_KEY"];
+
+/**
+ * The GitHub App of this deployment, read when it is asked for. Throws for a value that cannot be what
+ * it should be (an id that is not a number, an address that is not one); the message names the
+ * variable and never repeats a secret.
+ */
+export function githubConfig(env: NodeJS.ProcessEnv = process.env): GithubConfig {
+	const read = (name: string) => (env[name] ?? "").trim();
+	const missing = GITHUB_REQUIRED.filter((name) => read(name) === "");
+	if (missing.length > 0) return { app: null, missing: missing.length === GITHUB_REQUIRED.length ? [] : missing };
+	const appId = read("WLP_GITHUB_APP_ID");
+	if (!/^[0-9]{1,20}$/.test(appId)) throw new Error("WLP_GITHUB_APP_ID must be the app's numeric id");
+	const slug = read("WLP_GITHUB_APP_SLUG");
+	if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/.test(slug)) throw new Error("WLP_GITHUB_APP_SLUG must be the app's name as its address has it: letters, digits and hyphens");
+	const clientId = read("WLP_GITHUB_CLIENT_ID");
+	if (!/^[A-Za-z0-9._-]{1,100}$/.test(clientId)) throw new Error("WLP_GITHUB_CLIENT_ID is not a client id");
+	const address = (name: string, fallback: string) => {
+		const raw = read(name) || fallback;
+		let url: URL;
+		try {
+			url = new URL(raw);
+		} catch {
+			throw new Error(`${name} must be a URL`);
+		}
+		if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
+			throw new Error(`${name} must be an http or https URL with no user name, query or fragment in it`);
+		}
+		return url.toString().replace(/\/+$/, "");
+	};
+	return { app: { appId, slug, clientId, apiUrl: address("WLP_GITHUB_API_URL", "https://api.github.com"), webUrl: address("WLP_GITHUB_URL", "https://github.com") }, missing: [] };
+}
+
+/** The GitHub App's client secret, or null. Like the admin token it is not part of any configuration object. */
+export function githubClientSecret(env: NodeJS.ProcessEnv = process.env): string | null {
+	const secret = (env.WLP_GITHUB_CLIENT_SECRET ?? "").trim();
+	return secret === "" ? null : secret;
+}
+
+/**
+ * The GitHub App's private key as PEM text, or null: WLP_GITHUB_PRIVATE_KEY as it is, with `\n` for its
+ * line breaks, or in base64. Whether it is a key at all is found out by whoever signs with it
+ * (github/app.ts), which says so without repeating it.
+ */
+export function githubPrivateKey(env: NodeJS.ProcessEnv = process.env): string | null {
+	const raw = (env.WLP_GITHUB_PRIVATE_KEY ?? "").trim();
+	if (raw === "") return null;
+	if (raw.includes("-----BEGIN")) return `${raw.replace(/\\n/g, "\n").trim()}\n`;
+	const decoded = Buffer.from(raw, "base64").toString("utf8");
+	return decoded.includes("-----BEGIN") ? `${decoded.trim()}\n` : raw;
 }
 
 /** A day: the longest a Rivet Cloud cluster issues a token for. */
@@ -287,6 +450,7 @@ function readQuestionTimeout(): number {
 
 export const config: Config = {
 	demo: process.env.WLP_DEMO === "1",
+	access: readAccessRules(),
 	sandbox: readSandboxMode(),
 	secret: readSecret(),
 	secretConfigured: !engine.remote || Boolean(process.env.WLP_SECRET),

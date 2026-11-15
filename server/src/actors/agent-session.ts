@@ -15,6 +15,12 @@
  * turn, a sleep or a restart; `answer()` settles it, as does the platform when nobody answers in time.
  * `prompt()` during a turn steers it, and `stopCall()` stops one running tool call.
  *
+ * Windlass has a second question, which it does not put itself: whether to start an MCP server the
+ * project's own configuration names (server-question.ts). The sandbox layer asks Windlass what waits
+ * before the turn's prompt goes, and the question is put to the user in the same place and settled by
+ * the same `answer()`. A tool call's question comes first: a server's steps aside for it and is put
+ * again afterwards. What became of it is a line in the timeline; Windlass has no event for it.
+ *
  * A sandbox nobody uses is suspended, and after longer removed (config.idleSuspendMs, idleDestroyMs),
  * by the actor's own durable schedule (`c.schedule`): it holds while the actor sleeps and across a
  * restart, and wakes the actor when it is due. The check never touches a turn in progress or one being
@@ -32,6 +38,7 @@
  *   bad_call            `stopCall()`: its input
  *   no_turn             `stopCall()`: no turn is running
  *   sandbox_error, internal_error   a failure of the sandbox layer, with or without a sentence for the user
+ *   publish_blocked, github_gone, github_denied, publish_failed, bad_message   `publish()` (contract.ts)
  */
 
 import { randomBytes } from "node:crypto";
@@ -43,9 +50,15 @@ import {
 	type LiveDelta,
 	MAX_NOTE_CHARS,
 	MAX_PROMPT_CHARS,
+	MAX_PUBLISH_BODY_CHARS,
+	MAX_PUBLISH_TITLE_CHARS,
 	MAX_RUNNING_SESSIONS,
 	type PendingQuestion,
 	type PromptInput,
+	type PublishMessage,
+	type PublishResult,
+	type PublishState,
+	type PullRequestInfo,
 	type SandboxProfileId,
 	type SessionSnapshot,
 	type SessionStatus,
@@ -56,9 +69,13 @@ import {
 	type WindlassEvent,
 	type WorkspaceFile,
 } from "../contract.js";
+import { githubApp } from "../github/app.js";
+import { PullProblem, type StoredRepository, branchFor, cloneRepository, hasUnpushedWork, publishWork, refreshPull } from "../github/publish.js";
+import { GithubProblem, type StoredConnection } from "../github/repos.js";
 import { getLayer } from "../layer.js";
 import { EFFORTS, platformModels } from "../platform-info.js";
-import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnQuestion } from "../sandbox/api.js";
+import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnQuestion, TurnServerQuestion } from "../sandbox/api.js";
+import { SERVER_START, type ServerQuestionContext, serverApprovedNote, serverExpiredNote, serverNotNowNote, serverQuestionWords, serverUnansweredNote } from "../server-question.js";
 import { grantIsValid, type SessionCreateInput, userActor } from "./internal.js";
 
 // ---------------------------------------------------------------------------------------------
@@ -119,16 +136,38 @@ interface SessionMeta {
 	lastUsedAt?: number;
 	/** The idle check the durable schedule holds: its id, and when it fires. */
 	idleCheck?: { id: string; at: number } | null;
+	/** Set when the session was launched on a repository of the user's GitHub connection (`repoUrl` is its address). */
+	repo?: StoredRepository | null;
+	/** The branch the platform pushes the session's work to: named when it first pushes, and kept. */
+	publishBranch?: string;
+	/** The commit the platform last pushed to that branch. */
+	pushedHead?: string | null;
+	/** The session's pull request, as GitHub last described it. */
+	pull?: PullRequestInfo | null;
+	/**
+	 * The copy of Windlass's session that is kept outside the sandbox, where sessions live in the sandbox
+	 * and a bucket is configured (sandbox/backup.ts): which Windlass session it is of, the archive's size
+	 * and hash, which a restore is checked against, and the turn it was saved after. Null or absent: none.
+	 */
+	backup?: { windlassSessionId: string; size: number; sha256: string; at: number; turn: number } | null;
+	/** The last turn that may have changed Windlass's session. The copy is behind while its `turn` is lower. */
+	memoryTurn?: number;
+	/** Set once the session's data was too large to copy and the timeline said so: nothing is packed again while the limit is no higher. */
+	backupStopped?: { size: number; limit: number } | null;
+	/** Windlass's memory was restored into a new sandbox, and it has not yet been told that the workspace is a fresh one. */
+	freshWorkspace?: boolean;
 }
 
 /** A question put to the user: the copy the clients see, and the ways to settle the layer's promise. */
 interface Asked {
 	pending: PendingQuestion;
-	/** Declines it for the platform when nobody answers. */
-	timer: ReturnType<typeof setTimeout>;
+	/** Declines it for the platform when nobody answers. Unset while a server's question stands aside. */
+	timer: ReturnType<typeof setTimeout> | undefined;
 	/** Each settles the promise the layer waits on; only the first call of either does anything. */
 	answer(answer: TurnAnswer): void;
 	decline(note?: string): void;
+	/** A question about a project's server only: shows it, the first time and again after it stood aside, with a new time to answer in. */
+	put?(): void;
 }
 
 interface ActiveTurn {
@@ -142,6 +181,14 @@ interface ActiveTurn {
 	question: Asked | null;
 	/** The questions of this turn whose promise the layer may still be waiting on. */
 	unsettled: Set<Asked>;
+	/**
+	 * Questions about the project's servers that are open and not shown: one that stepped aside for a
+	 * tool call's question, or one that came while another was shown. Put again, oldest first, when
+	 * `question` is free.
+	 */
+	aside: Asked[];
+	/** True once the turn is being stopped: no question is put any more. */
+	stopping: boolean;
 	/** True once the turn is being closed: nothing of it can be steered, stopped or answered any more. */
 	closed: boolean;
 }
@@ -173,6 +220,12 @@ interface SessionVars {
 	workspace: WorkspaceCopy | null | undefined;
 	/** The tail of the queue that sets the idle check, so two of them cannot cross. */
 	arming: Promise<void>;
+	/** True while the platform commits and pushes the workspace: no turn starts under it, and no second push. */
+	publishing: boolean;
+	/** When GitHub was last asked about the session's pull request. */
+	pullCheckedAt: number;
+	/** Whether the workspace has commits GitHub lacks, as last read from the sandbox, and what it was read for. */
+	unpushed: { key: string; value: boolean | null } | null;
 }
 
 /** What the helpers below need of an actor context; every hook's and action's `c` fits. */
@@ -204,6 +257,7 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		profile: meta.profile,
 		model: meta.model,
 		repoUrl: meta.repoUrl,
+		...(meta.repo ? { repository: repositoryOf(meta.repo), pullRequest: meta.pull ?? null } : {}),
 		createdAt: meta.createdAt,
 		updatedAt: meta.updatedAt,
 		status: meta.status,
@@ -501,11 +555,6 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 			meta.sandbox = "none";
 			meta.cloned = false;
 		}
-		if (meta.windlassSessionId && layer.sandboxes.sessionsLiveInSandbox) {
-			// Windlass's own session went with the old sandbox: asking for it would only fail the turn.
-			meta.windlassSessionId = null;
-			note(c, turn, "info", "The agent's memory of the conversation went with the old sandbox, so it starts this turn without it.");
-		}
 		await dropWorkspace(c);
 		note(c, turn, "info", "Creating sandbox");
 		const id = await layer.sandboxes.create({ uid: meta.uid, sessionId: meta.sessionId, profile: meta.profile });
@@ -521,8 +570,19 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		}
 		handle = await layer.sandboxes.connect(id);
 		if (!handle) throw new TurnProblem("The new sandbox disappeared right after it was created.");
+		if (meta.windlassSessionId && layer.sandboxes.sessionsLiveInSandbox) {
+			// Windlass's own session went with the old sandbox. Its copy is put into the new one before anything
+			// else happens there; without one, asking for the session would only fail the turn.
+			if (!(await restoreBackup(c, meta, turn, handle, layer))) {
+				meta.windlassSessionId = null;
+				meta.backup = null;
+				note(c, turn, "info", "The agent's memory of the conversation went with the old sandbox, so it starts this turn without it.");
+			}
+		}
 	}
 
+	// A repository of the user's GitHub connection is cloned with a token of the platform's own (below).
+	if (meta.repo && !meta.cloned && !signal.aborted && !(await cloneConnected(c, meta, turn, handle, signal))) return handle;
 	if (meta.repoUrl && !meta.cloned && !signal.aborted) {
 		note(c, turn, "info", `Cloning ${meta.repoUrl}`);
 		const cloned = await handle.run(cloneCommand(meta.repoUrl), { timeoutMs: CLONE_TIMEOUT_MS, signal });
@@ -536,6 +596,138 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		void persist(c);
 	}
 	return handle;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The copy of Windlass's session outside the sandbox
+// ---------------------------------------------------------------------------------------------
+
+function megabytes(bytes: number): string {
+	const mb = bytes / (1024 * 1024);
+	return `${mb >= 10 ? Math.round(mb) : Math.round(mb * 10) / 10} MB`;
+}
+
+/**
+ * Puts the copy of Windlass's session into the sandbox that was just made in place of a lost one. True
+ * when the agent can go on in that session: the timeline then says so, and how far the copy reaches
+ * when it is behind. False when there is no copy of that session or it could not be restored: the
+ * caller starts a new Windlass session. It takes no abort signal: a restore that is cut off would leave
+ * a sandbox nobody restores again, and it is a matter of seconds. Never throws.
+ */
+/**
+ * Put before the user's prompt, for Windlass alone, on the first turn it takes after its memory was
+ * restored into a new sandbox. It remembers the files it made, and the new workspace has none of them:
+ * unless it is told, it acts on what is no longer there. Only then: a sandbox that was paused has its
+ * files, and a Windlass session that starts anew remembers none. The timeline keeps the prompt as the
+ * user wrote it, and has its own line about the restore.
+ */
+const FRESH_WORKSPACE =
+	"[A note from the platform, not from the user: the sandbox you were working in has been replaced by a new one. Your memory of this conversation was carried over, but the workspace was not: it is a fresh one. Files you created or changed earlier are not in it, and a repository that was cloned has been cloned again. Look at what is there before you rely on earlier work.]\n\n";
+
+async function restoreBackup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<boolean> {
+	const backups = layer.backups;
+	const saved = meta.backup;
+	const session = meta.windlassSessionId;
+	// Without a bucket nothing was ever copied, and nothing is said of it.
+	if (!backups || !session) return false;
+	if (!saved || saved.windlassSessionId !== session) {
+		console.log(`[wlp] backup.none session=${meta.sessionId} turn=${turn}: ${saved ? "the copy is of an earlier Windlass session" : "no copy of the session was saved"}`);
+		return false;
+	}
+	try {
+		const restored = await backups.restore(sandbox, { uid: meta.uid, sessionId: meta.sessionId }, saved, session);
+		if (restored.outcome !== "restored") {
+			console.warn(`[wlp] backup.restore_failed session=${meta.sessionId} turn=${turn}: ${restored.outcome === "missing" ? "the bucket has no copy of the session" : restored.reason}`);
+			return false;
+		}
+		console.log(`[wlp] backup.restored session=${meta.sessionId} turn=${turn} bytes=${saved.size} ms=${restored.ms} saved_after_turn=${saved.turn}`);
+	} catch (error) {
+		c.log.warn({ msg: "could not restore the copy of Windlass's session", session: meta.sessionId, error: describeError(error) });
+		return false;
+	}
+	// What came back was small enough to copy: it is copied again from this turn on.
+	meta.backupStopped = null;
+	meta.freshWorkspace = true;
+	// A turn whose copy could not be saved, or was too large to keep, is not in what came back.
+	const missed = (meta.memoryTurn ?? saved.turn) > saved.turn ? Math.max(1, turn - 1 - saved.turn) : 0;
+	if (missed === 0) note(c, turn, "info", "Restored the agent's memory of the conversation into the new sandbox.");
+	else note(c, turn, "warn", `Restored the agent's memory of the conversation into the new sandbox, without the last ${missed === 1 ? "turn: no copy of it" : `${missed} turns: no copy of them`} could be saved.`);
+	return true;
+}
+
+/**
+ * Copies Windlass's session out of the sandbox when a turn has ended: the turn's process is gone, so
+ * nothing has the files open. The session's record of the copy is what a later restore is checked
+ * against. A save that fails is not tried again by itself: the next turn's save copies the whole
+ * session again, and trying later would mean starting a sandbox that was suspended to cost nothing.
+ * The user is told nothing then; it matters only if the sandbox is lost before a save works, and the
+ * restore says so. A session too large to copy is said once. Never throws.
+ */
+async function saveBackup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<void> {
+	const backups = layer.backups;
+	const session = meta.windlassSessionId;
+	if (!backups || !layer.sandboxes.sessionsLiveInSandbox || !session) return;
+	// Until a copy is saved below, the one there is, if any, is behind this turn.
+	meta.memoryTurn = turn;
+	// A session that is going away needs no copy, and an actor that is stopping has no time for one.
+	if (c.vars.stopping || c.vars.destroying) return;
+	const stopped = meta.backupStopped;
+	// Windlass's log only grows: what was too large is not packed again to find that out.
+	if (stopped && backups.maxBytes <= stopped.limit) return;
+	try {
+		const saved = await backups.save(sandbox, { uid: meta.uid, sessionId: meta.sessionId });
+		if (saved.outcome === "saved") {
+			meta.backup = { windlassSessionId: session, ...saved.backup, turn };
+			meta.backupStopped = null;
+			console.log(`[wlp] backup.saved session=${meta.sessionId} turn=${turn} bytes=${saved.backup.size} ms=${saved.ms}`);
+		} else if (saved.outcome === "too_large") {
+			console.log(`[wlp] backup.too_large session=${meta.sessionId} turn=${turn} bytes=${saved.size} limit=${saved.limit}`);
+			const earlier = meta.backup?.windlassSessionId === session;
+			if (!stopped) {
+				note(
+					c,
+					turn,
+					"warn",
+					`The agent's memory of the conversation has grown to ${megabytes(saved.size)}, and the platform keeps a copy of at most ${megabytes(saved.limit)}, so it is no longer copied out of the sandbox. If this sandbox is lost, the agent ${earlier ? "will not remember the conversation from here on" : "starts without its memory of the conversation"}.`,
+				);
+			}
+			meta.backupStopped = { size: saved.size, limit: saved.limit };
+		} else if (saved.outcome === "failed") {
+			console.warn(`[wlp] backup.save_failed session=${meta.sessionId} turn=${turn}: ${saved.reason}`);
+		}
+	} catch (error) {
+		c.log.warn({ msg: "could not copy Windlass's session out of the sandbox", session: meta.sessionId, error: describeError(error) });
+	}
+}
+
+/** The sessions whose copy was removed already, so that a delete asks the bucket once. */
+const backupRemoved = new WeakSet<SessionMeta>();
+
+/**
+ * Removes the session's copy from the bucket, for a session that is deleted. Asked whether or not the
+ * session recorded a copy: a save that was cut off may have left one. Tried three times; an object
+ * that is still there after that is named in the log, for whoever looks after the bucket. Never throws.
+ */
+async function removeBackup(c: Ctx, meta: SessionMeta): Promise<void> {
+	if (backupRemoved.has(meta)) return;
+	try {
+		const layer = await getLayer();
+		if (!layer.backups || !layer.sandboxes.sessionsLiveInSandbox) return;
+		for (let attempt = 1; ; attempt += 1) {
+			try {
+				await layer.backups.remove({ uid: meta.uid, sessionId: meta.sessionId });
+				backupRemoved.add(meta);
+				meta.backup = null;
+				console.log(`[wlp] backup.removed session=${meta.sessionId}`);
+				return;
+			} catch (error) {
+				if (attempt >= 3) throw error;
+				await new Promise((resolve) => setTimeout(resolve, 1_000));
+			}
+		}
+	} catch (error) {
+		console.error(`[wlp] backup.remove_failed uid=${meta.uid} session=${meta.sessionId}: the copy of this deleted session's Windlass data may still be in the bucket (${describeError(error)})`);
+	}
 }
 
 /**
@@ -642,6 +834,209 @@ async function refreshSandbox(c: Ctx, meta: SessionMeta): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// A repository of the user's GitHub connection: its clone, and the pull request
+// ---------------------------------------------------------------------------------------------
+
+/** How long GitHub's word on the pull request's state is taken before it is asked again. */
+const PULL_FRESH_MS = 20_000;
+
+/** What clients see of the repository: all of it but the installation, which is the platform's own matter. */
+function repositoryOf(repo: StoredRepository): NonNullable<SessionSummary["repository"]> {
+	return { provider: repo.provider, id: repo.id, owner: repo.owner, name: repo.name, branch: repo.branch, private: repo.private, url: repo.url };
+}
+
+/** The user's GitHub connection as their actor has it now: asked each time, so a connection that was removed stops working at once. */
+function githubConnection(c: Ctx, meta: SessionMeta): Promise<StoredConnection | null> {
+	return userActor(c, meta.uid).internalGithubConnection();
+}
+
+/**
+ * Clones the session's repository into the sandbox that was just made, with a token GitHub issued for
+ * reading that one repository; it is given to the one `git clone` and revoked after it (github/git.ts).
+ * False when the turn was stopped meanwhile. Throws a TurnProblem that says what is in the way.
+ */
+async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal): Promise<boolean> {
+	const repo = meta.repo;
+	if (!repo) return true;
+	const app = githubApp();
+	if (!app) throw new TurnProblem(`This agent was launched on ${repo.owner}/${repo.name} through your GitHub connection, and this deployment has no GitHub App any more to clone it with.`);
+	note(c, turn, "info", `Cloning ${repo.owner}/${repo.name} at ${repo.branch}`);
+	try {
+		if (!(await cloneRepository(app, await githubConnection(c, meta), repo, sandbox, signal)) || signal.aborted) return false;
+	} catch (error) {
+		if (error instanceof GithubProblem) throw new TurnProblem(error.message);
+		throw error;
+	}
+	meta.cloned = true;
+	void persist(c);
+	return true;
+}
+
+/** Shortens `text` to about `limit` characters, at the end of a paragraph or a sentence where there is one. */
+function brief(text: string, limit: number): string {
+	const clean = text.replace(/\r/g, "").trim();
+	if (clean.length <= limit) return clean;
+	const cut = clean.slice(0, limit);
+	const paragraph = cut.lastIndexOf("\n\n");
+	const sentence = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf(".\n"));
+	if (paragraph > limit / 3) return cut.slice(0, paragraph).trim();
+	if (sentence > limit / 3) return cut.slice(0, sentence + 1).trim();
+	return `${cut.slice(0, cut.lastIndexOf(" ") > limit / 2 ? cut.lastIndexOf(" ") : limit).trim()}…`;
+}
+
+/**
+ * A message to start from. The title is the session's for the first push and the latest prompt's
+ * opening words after it; the body is the agent's last answer, kept short, or the changed files.
+ */
+async function draftMessage(c: Ctx, meta: SessionMeta, files: WorkspaceFile[] | null): Promise<PublishMessage> {
+	const rows = await serial(c, async () => {
+		await writeItems(c).catch(() => undefined);
+		return c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE kind IN ('windlass', 'user') ORDER BY seq DESC LIMIT 400");
+	}).catch(() => []);
+	let answer = "";
+	let prompt = "";
+	for (const row of rows) {
+		const item = JSON.parse(row.item) as TimelineItem;
+		if (answer === "" && item.kind === "windlass" && item.event.type === "text.ended") answer = str(item.event.data?.text).trim();
+		if (prompt === "" && item.kind === "user" && item.steer !== true) prompt = item.text;
+		if (answer !== "" && prompt !== "") break;
+	}
+	const first = !meta.pushedHead && !meta.pull;
+	const title = (first || prompt === "" ? meta.title : titleFrom(prompt)).replace(/…$/, "").trim().slice(0, MAX_PUBLISH_TITLE_CHARS);
+	let body = brief(answer, 600);
+	if (body === "" && files && files.length > 0) {
+		const listed = files.slice(0, 10).map((file) => `- ${file.path}`);
+		if (files.length > listed.length) listed.push(`- and ${files.length - listed.length} more`);
+		body = `Changed files:\n${listed.join("\n")}`;
+	}
+	return { title: title === "" ? "Changes from Windlass" : title, body };
+}
+
+/** Why nothing can be pushed right now, or null. */
+function publishBlocked(c: Ctx, meta: SessionMeta): string | null {
+	if (!githubApp()) return "This deployment has no GitHub App any more, so the platform cannot push.";
+	if (c.vars.turn || c.vars.accepting || meta.status !== "idle") return "Wait for the turn to end: the platform does not push while the agent is working.";
+	if (c.vars.publishing) return "A push is under way.";
+	if (!meta.sandboxId) return "The sandbox is created on the first prompt. Until then there is nothing to push.";
+	return null;
+}
+
+/**
+ * Whether the workspace has something GitHub does not. The files that differ from the last commit are
+ * known from the copy taken when the last turn ended. Commits of the agent's own are known to git
+ * only, which is asked when the sandbox is running anyway and never by starting one; the answer is
+ * kept until a turn or a push changes it.
+ */
+async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, files: WorkspaceFile[] | null): Promise<boolean | null> {
+	if (c.vars.turn || !meta.sandboxId) return null;
+	if (files && files.length > 0) return true;
+	const key = `${meta.turns}:${meta.pushedHead ?? ""}:${meta.sandboxId}`;
+	if (c.vars.unpushed?.key === key) return c.vars.unpushed.value;
+	let value: boolean | null = null;
+	try {
+		const { sandboxes } = await getLayer();
+		if (!c.vars.idling && (await sandboxes.state(meta.sandboxId)) === "running") {
+			const sandbox = await sandboxes.connect(meta.sandboxId);
+			if (sandbox && !c.vars.turn) value = await hasUnpushedWork(sandbox, repo.branch, meta.pushedHead ?? null);
+		}
+	} catch (error) {
+		c.log.warn({ msg: "could not read whether the workspace has commits to push", error: describeError(error) });
+	}
+	if (value !== null) c.vars.unpushed = { key, value };
+	return value;
+}
+
+async function publishStateOf(c: Ctx, meta: SessionMeta): Promise<PublishState> {
+	const repo = meta.repo;
+	if (!repo) return { repository: null, pullRequest: null, branch: "", changes: null, draft: { title: "", body: "" }, blocked: null };
+	const files = c.vars.turn ? null : ((await savedWorkspace(c))?.files ?? null);
+	const [changes, draft] = await Promise.all([unpushedWork(c, meta, repo, files), draftMessage(c, meta, files)]);
+	return { repository: repositoryOf(repo), pullRequest: meta.pull ?? null, branch: meta.publishBranch ?? branchFor(meta.title, meta.sessionId), changes, draft, blocked: publishBlocked(c, meta) };
+}
+
+/** Asks GitHub what became of the pull request, at most every few seconds; a change goes to every client with the summary. */
+async function checkPull(c: Ctx, meta: SessionMeta): Promise<void> {
+	const app = githubApp();
+	const { repo, pull } = meta;
+	if (!app || !repo || !pull || Date.now() - c.vars.pullCheckedAt < PULL_FRESH_MS) return;
+	c.vars.pullCheckedAt = Date.now();
+	const current = await refreshPull(app, await githubConnection(c, meta), repo, pull);
+	if (meta.pull !== pull || (current.state === pull.state && current.title === pull.title)) return;
+	meta.pull = current;
+	publish(c);
+	void persist(c);
+}
+
+/** A push's line in the timeline: what went where, in the words of the other platform notes. */
+function publishedLine(repo: StoredRepository, pull: PullRequestInfo, opened: boolean, files: number | null): string {
+	const what = files === null ? "the work" : files === 0 ? "the agent's commits" : files === 1 ? "1 file" : `${files} files`;
+	if (opened) return `Opened pull request #${pull.number} in ${repo.owner}/${repo.name} from ${pull.branch}${files === null ? "" : `, with ${what}`}.`;
+	return `Pushed ${what} to ${pull.branch}; pull request #${pull.number} is updated.`;
+}
+
+/** Commits, pushes and opens the pull request, for `publish()`. The caller has checked that nothing is in the way. */
+async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage): Promise<PublishResult> {
+	const app = githubApp();
+	if (!app || !meta.sandboxId) throw new UserError(publishBlocked(c, meta) ?? "There is nothing to push yet.", { code: "publish_blocked" });
+	// A suspend or removal of the idle sandbox finishes first, as before a prompt.
+	if (c.vars.idling) await c.vars.idling.catch(() => undefined);
+	const { sandboxes } = await getLayer();
+	const sandbox = meta.sandboxId ? await sandboxes.connect(meta.sandboxId) : undefined;
+	if (!sandbox) {
+		noteSandbox(c, meta, "none");
+		throw new UserError("The sandbox with this agent's files is gone, so there is nothing to push. The next prompt starts a new one from the repository.", { code: "publish_blocked" });
+	}
+	noteSandbox(c, meta, "running");
+	// Pushing uses the sandbox: the idle times count from here, and again from when it is done.
+	markUsed(c, meta);
+	const branch = meta.publishBranch ?? branchFor(meta.title, meta.sessionId);
+	meta.publishBranch = branch;
+	try {
+		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, message });
+		meta.pull = published.pull;
+		if (published.head) meta.pushedHead = published.head;
+		meta.updatedAt = Date.now();
+		c.vars.pullCheckedAt = Date.now();
+		note(c, meta.turns, "info", publishedLine(repo, published.pull, published.opened, published.committedFiles));
+		console.log(`[wlp] github.published session=${meta.sessionId} repository=${repo.id} pull=${published.pull.number} opened=${published.opened}`);
+		return { state: await afterPublish(c, meta, sandbox), opened: published.opened };
+	} catch (error) {
+		// The push went through and the pull request did not: what is at GitHub is remembered, so the next try only opens it.
+		if (error instanceof PullProblem && error.head) meta.pushedHead = error.head;
+		await afterPublish(c, meta, sandbox).catch(() => undefined);
+		if (error instanceof GithubProblem) {
+			console.warn(`[wlp] github.publish_failed session=${meta.sessionId} repository=${repo.id}: ${error.code}`);
+			throw new UserError(error.message, { code: error.code === "github_gone" || error.code === "github_denied" ? error.code : "publish_failed" });
+		}
+		throw error;
+	}
+}
+
+/** After a push, or one that failed half way: the commit changed what differs from the last commit, so the copy is taken again. */
+async function afterPublish(c: Ctx, meta: SessionMeta, sandbox: SandboxHandle): Promise<PublishState> {
+	c.vars.unpushed = null;
+	if (!c.vars.turn && !((await copyWorkspace(c, sandbox)) ?? null)) await dropWorkspace(c);
+	markUsed(c, meta);
+	publish(c);
+	await persist(c);
+	return publishStateOf(c, meta);
+}
+
+/** The message of a push as the client sent it, checked. */
+function cleanMessage(input: unknown): PublishMessage {
+	const message = (typeof input === "object" && input !== null ? (input as { message?: unknown }).message : null) as { title?: unknown; body?: unknown } | null;
+	if (typeof message !== "object" || message === null || typeof message.title !== "string" || (message.body !== undefined && message.body !== null && typeof message.body !== "string")) {
+		throw new UserError("Give the commit a title.", { code: "bad_message" });
+	}
+	const title = message.title.replace(/\s+/g, " ").trim();
+	const body = typeof message.body === "string" ? message.body.replace(/\r/g, "").trim() : "";
+	if (title === "") throw new UserError("Give the commit a title.", { code: "bad_message" });
+	if (title.length > MAX_PUBLISH_TITLE_CHARS) throw new UserError(`The title is ${title.length} characters long; the limit is ${MAX_PUBLISH_TITLE_CHARS}.`, { code: "bad_message" });
+	if (body.length > MAX_PUBLISH_BODY_CHARS) throw new UserError(`The description is ${body.length} characters long; the limit is ${MAX_PUBLISH_BODY_CHARS}.`, { code: "bad_message" });
+	return { title, body };
+}
+
+// ---------------------------------------------------------------------------------------------
 // A turn's question
 // ---------------------------------------------------------------------------------------------
 
@@ -674,6 +1069,8 @@ function takeQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn): Asked | nu
 	clearTimeout(asked.timer);
 	if (meta.status === "waiting") meta.status = "running";
 	c.broadcast("question", null);
+	// A server's question that stood aside is put again, unless the turn is on its way out.
+	if (!active.closed && !active.stopping) active.aside.shift()?.put?.();
 	return asked;
 }
 
@@ -695,7 +1092,16 @@ function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, question: Tu
 	const title = str(question?.title) || "Allow this tool call?";
 
 	if (active.closed || active.controller.signal.aborted || withdrawn.aborted) return declined();
-	if (active.question) {
+	if (active.question?.put) {
+		// A tool call's question comes first, as in Windlass's own interfaces: the call waits on it and the turn
+		// with it, while a server only stays stopped. The server's question steps aside and is put again after this one.
+		const aside = active.question;
+		clearTimeout(aside.timer);
+		aside.timer = undefined;
+		active.question = null;
+		active.aside.unshift(aside);
+		if (meta.status === "waiting") meta.status = "running";
+	} else if (active.question) {
 		// Windlass asks one question at a time, and the contract shows one. A second one is not left to hang.
 		note(c, active.number, "warn", `Windlass asked "${title}" while another question was waiting for an answer, so it was declined.`);
 		return declined("Another question was waiting for the user's answer, so the platform declined this call. Ask again if it is still needed.");
@@ -763,8 +1169,126 @@ function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, question: Tu
 	});
 }
 
+/**
+ * Where an approval of a project's server could be kept for a user beyond the sandbox Windlass keeps
+ * it in: `approved` is asked before the question is put, and a yes starts the server without asking;
+ * `remember` is told when the user approves. There is no such store yet, so nothing is recalled and
+ * nothing is kept, and every session asks where Windlass's own memory (its data directory, 30 days,
+ * exactly this definition) does not answer first. A store would be the user's, in the `user` actor,
+ * and would name the repository, the server and Windlass's fingerprint of its definition; like
+ * Windlass's, it must not outlast a change of the definition.
+ */
+const serverApprovals = {
+	async approved(_meta: SessionMeta, _question: TurnServerQuestion): Promise<boolean> {
+		return false;
+	},
+	async remember(_meta: SessionMeta, _question: TurnServerQuestion): Promise<void> {},
+};
+
+/**
+ * The layer's `onServerQuestion`: puts the question about a server the project's configuration names,
+ * and returns the promise that `answer()`, the timeout, a stop or the turn's end settles: true to
+ * start it. One asked before the prompt went (`holdsTurn`) turns the session to `waiting`, as a tool
+ * call's does; one asked while the turn runs leaves it running. While a tool call's question is shown,
+ * this one waits behind it.
+ */
+async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, context: ServerQuestionContext, given: TurnServerQuestion, withdrawn: AbortSignal): Promise<boolean> {
+	const gone = () => active.closed || active.stopping || active.controller.signal.aborted || withdrawn.aborted;
+	const argv = Array.isArray(given?.argv) ? given.argv.map(str) : null;
+	const question: TurnServerQuestion = {
+		name: str(given?.name),
+		fingerprint: str(given?.fingerprint),
+		argv,
+		url: argv === null ? str(given?.url) : null,
+		file: typeof given?.file === "string" && given.file !== "" ? given.file : null,
+		unset: Array.isArray(given?.unset) ? given.unset.map(str) : [],
+		holdsTurn: given?.holdsTurn === true,
+	};
+	if (gone()) return false;
+	if (await serverApprovals.approved(meta, question).catch(() => false)) return true;
+	if (gone()) return false;
+
+	const words = serverQuestionWords(question, context);
+	const now = Date.now();
+	return new Promise<boolean>((resolve) => {
+		let done = false;
+		let shown = false;
+		const settle = (start: boolean): void => {
+			if (done) return;
+			done = true;
+			withdrawn.removeEventListener("abort", onWithdrawn);
+			active.unsettled.delete(asked);
+			const at = active.aside.indexOf(asked);
+			if (at >= 0) active.aside.splice(at, 1);
+			clearTimeout(asked.timer);
+			resolve(start);
+		};
+		const asked: Asked = {
+			pending: {
+				id: `q_${randomBytes(8).toString("hex")}`,
+				turn: active.number,
+				messageId: "",
+				callId: "",
+				title: words.title,
+				subject: words.subject,
+				details: words.details,
+				choices: words.choices,
+				subagent: null,
+				askedAt: now,
+				expiresAt: now + config.questionTimeoutMs,
+				server: { name: question.name, file: question.file, remote: argv === null, unset: question.unset, holdsTurn: question.holdsTurn },
+			},
+			timer: undefined,
+			answer: (answer) => {
+				if (done) return;
+				const start = answer.choice === SERVER_START;
+				// A yes gets its line when Windlass has said what became of the server (`onServerApproved`).
+				if (start) void serverApprovals.remember(meta, question).catch(() => undefined);
+				else note(c, active.number, "info", serverNotNowNote(question));
+				settle(start);
+			},
+			decline: () => settle(false),
+			put: () => {
+				// Put again after it stood aside, it has the whole time to be answered in once more.
+				if (shown) asked.pending = { ...asked.pending, expiresAt: Date.now() + config.questionTimeoutMs };
+				shown = true;
+				asked.timer = setTimeout(() => {
+					// Nobody answered: "not now", and the turn goes on without the server.
+					if (active.question !== asked) return;
+					takeQuestion(c, meta, active);
+					note(c, active.number, "warn", serverExpiredNote(question, duration(config.questionTimeoutMs)));
+					publish(c);
+					void persist(c);
+					settle(false);
+				}, Math.max(0, asked.pending.expiresAt - Date.now()));
+				active.question = asked;
+				if (question.holdsTurn && meta.status === "running") meta.status = "waiting";
+				c.broadcast("question", asked.pending);
+				publish(c);
+				void persist(c);
+			},
+		};
+		// The layer withdrew the question: the turn was stopped, or ended under a question put while it ran.
+		function onWithdrawn(): void {
+			if (done) return;
+			if (!active.stopping && !active.controller.signal.aborted) note(c, active.number, "info", serverUnansweredNote(question));
+			if (active.question === asked) {
+				takeQuestion(c, meta, active);
+				publish(c);
+				void persist(c);
+			}
+			settle(false);
+		}
+		withdrawn.addEventListener("abort", onWithdrawn, { once: true });
+		active.unsettled.add(asked);
+		if (active.question) active.aside.push(asked);
+		else asked.put?.();
+	});
+}
+
 /** Stops the turn. The question it may be waiting on goes first: nobody can answer a turn that is ending. */
 function abortTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): void {
+	active.stopping = true;
 	if (takeQuestion(c, meta, active)) {
 		publish(c);
 		void persist(c);
@@ -929,7 +1453,8 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 	const turn = active.number;
 	const effort = active.effort;
 	const signal = active.controller.signal;
-	const resumed = meta.windlassSessionId;
+	let resumed = meta.windlassSessionId;
+	let layer: SandboxLayer | null = null;
 	let result: RunTurnResult | null = null;
 	let problem: string | null = null;
 	let events = 0;
@@ -944,17 +1469,23 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 
 	try {
 		await persist(c);
-		const layer = await getLayer();
+		layer = await getLayer();
 		const sandbox = await openSandbox(c, meta, turn, signal, layer);
 		used = sandbox;
+		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
+		resumed = meta.windlassSessionId;
 		if (!signal.aborted) {
 			if (meta.status === "starting") {
 				meta.status = "running";
 				publish(c);
 				void persist(c);
 			}
+			// Told once: with the first prompt Windlass takes in the new sandbox.
+			const fresh = meta.freshWorkspace === true;
+			// What the question about a project's server has to say depends on where this session runs.
+			const servers: ServerQuestionContext = { profile: layer.sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: layer.sandboxes.sessionsLiveInSandbox };
 			result = await layer.windlass.runTurn(sandbox, {
-				prompt: text,
+				prompt: fresh ? FRESH_WORKSPACE + text : text,
 				windlassSessionId: resumed ?? undefined,
 				model: meta.model,
 				effort: effort ?? undefined,
@@ -971,10 +1502,18 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				},
 				// Always given: a session is attended, by whoever has it open now or opens it in time.
 				onQuestion: (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
+				// The project's own MCP servers, which Windlass leaves stopped until the user says otherwise.
+				onServerQuestion: (question, withdrawn) => askServer(c, meta, active, servers, question, withdrawn),
+				onServerApproved: (question, outcome) => {
+					const said = serverApprovedNote(question, outcome);
+					note(c, turn, said.level, said.text);
+				},
 				onControl: (control) => {
 					if (open) active.control = control;
 				},
 			});
+			// Windlass took the prompt if it said anything at all; a turn that never reached it is told again.
+			if (fresh && events > 0) meta.freshWorkspace = false;
 		}
 	} catch (error) {
 		if (!signal.aborted) {
@@ -1039,8 +1578,11 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		// that whoever asks then gets it. Without one (the actor is stopping, or git failed) the old copy is
 		// wrong, and the next read goes to the sandbox.
 		if (used) {
+			// Windlass's session is copied out of the sandbox meanwhile, when Windlass ran: both only read.
+			const saving = result && layer ? saveBackup(c, meta, turn, used, layer) : undefined;
 			const copied = c.vars.stopping || c.vars.destroying ? null : await copyWorkspace(c, used);
 			if (!copied) await dropWorkspace(c);
+			await saving;
 		}
 
 		c.vars.pending = [];
@@ -1176,6 +1718,7 @@ export const agentSession = actor({
 				profile: input.profile,
 				model: String(input.model),
 				repoUrl: typeof input.repoUrl === "string" ? input.repoUrl : null,
+				repo: typeof input.repo === "object" && input.repo !== null ? input.repo : null,
 				createdAt: input.createdAt,
 				updatedAt: input.createdAt,
 				status: "idle",
@@ -1214,6 +1757,9 @@ export const agentSession = actor({
 			idling: null,
 			workspace: undefined,
 			arming: Promise.resolve(),
+			publishing: false,
+			pullCheckedAt: 0,
+			unpushed: null,
 		};
 	},
 
@@ -1261,6 +1807,8 @@ export const agentSession = actor({
 			meta.updatedAt = Date.now();
 			meta.lastUsedAt = meta.updatedAt;
 			meta.turnStartedAt = null;
+			// What that turn wrote to Windlass's session was not copied out of the sandbox: the copy is behind it.
+			if (meta.backup) meta.memoryTurn = turn;
 			await persist(c);
 			publish(c);
 		}
@@ -1297,14 +1845,17 @@ export const agentSession = actor({
 		if (!meta) return;
 		await stopTurn(c);
 		if (c.vars.flushTimer) clearTimeout(c.vars.flushTimer);
-		if (!meta.sandboxId) return;
-		try {
-			const { sandboxes } = await getLayer();
-			await sandboxes.destroy(meta.sandboxId);
-			console.log(`[wlp] sandbox.destroyed id=${meta.sandboxId} session=${meta.sessionId}`);
-		} catch (error) {
-			c.log.error({ msg: "could not destroy the sandbox", sandbox: meta.sandboxId, error: describeError(error) });
+		if (meta.sandboxId) {
+			try {
+				const { sandboxes } = await getLayer();
+				await sandboxes.destroy(meta.sandboxId);
+				console.log(`[wlp] sandbox.destroyed id=${meta.sandboxId} session=${meta.sessionId}`);
+			} catch (error) {
+				c.log.error({ msg: "could not destroy the sandbox", sandbox: meta.sandboxId, error: describeError(error) });
+			}
 		}
+		// After the sandbox, which is what uploads: nothing can put the copy back once it is removed.
+		await removeBackup(c, meta);
 	},
 
 	events: {
@@ -1361,6 +1912,8 @@ export const agentSession = actor({
 			}
 			// A turn in progress takes the message itself; `model` and `effort` are for a turn that starts.
 			if (c.vars.turn || c.vars.accepting) return await steerTurn(c, meta, c.vars.turn, text);
+			// The platform is committing and pushing the workspace: the agent does not start under it.
+			if (c.vars.publishing) throw new UserError("The platform is pushing this agent's work to GitHub. Send the prompt again in a moment.", { code: "turn_running" });
 
 			const effort = input.effort === undefined || input.effort === null || input.effort === "" ? null : input.effort;
 			if (effort !== null && !EFFORTS.includes(effort)) {
@@ -1412,7 +1965,7 @@ export const agentSession = actor({
 				append(c, { turn, kind: "user", text, model, effort });
 				publish(c);
 
-				const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), closed: false };
+				const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], stopping: false, closed: false };
 				c.vars.turn = active;
 				active.done = c.keepAwake(runTurn(c, meta, active, text));
 				return { turn, steered: false };
@@ -1435,6 +1988,7 @@ export const agentSession = actor({
 			const meta = liveMeta(c);
 			const turn = c.vars.turn;
 			if (!turn) return;
+			turn.stopping = true;
 			// A question the turn waits on is withdrawn with it: from here an answer finds nothing to answer.
 			const withdrawn = takeQuestion(c, meta, turn);
 			if (meta.status !== "stopping") {
@@ -1463,17 +2017,20 @@ export const agentSession = actor({
 				throw new UserError(`The note is ${note.length} characters long; the limit is ${MAX_NOTE_CHARS}.`, { code: "note_too_long" });
 			}
 			const active = c.vars.turn;
-			const asked = active?.question;
-			if (!active || !asked || asked.pending.id !== input.questionId) {
+			// A server's question that stands aside for a tool call's is still open: whoever saw it may answer it.
+			const asked = active?.question?.pending.id === input.questionId ? active.question : active?.aside.find((candidate) => candidate.pending.id === input.questionId);
+			if (!active || !asked || active.stopping || active.closed) {
 				throw new UserError("That question is not waiting for an answer any more.", { code: "no_question" });
 			}
 			const choice = asked.pending.choices.find((candidate) => candidate.id === input.choice);
 			if (!choice) {
 				throw new UserError(`That is not one of the question's answers. Choose one of: ${asked.pending.choices.map((candidate) => candidate.label).join(", ")}`, { code: "bad_choice" });
 			}
-			takeQuestion(c, meta, active);
-			publish(c);
-			void persist(c);
+			if (active.question === asked) {
+				takeQuestion(c, meta, active);
+				publish(c);
+				void persist(c);
+			}
 			asked.answer({ choice: choice.id, note: note === "" ? undefined : note });
 		},
 
@@ -1518,6 +2075,36 @@ export const agentSession = actor({
 				return "sandbox" in view ? ((await readDiff(c, view.sandbox)) ?? "") : view.diff;
 			} catch (error) {
 				throw clientError(c.log, error, "The workspace's diff could not be read.");
+			}
+		},
+
+		publishState: async (c): Promise<PublishState> => {
+			requireUser(c);
+			const meta = liveMeta(c);
+			try {
+				await checkPull(c, meta);
+				return await publishStateOf(c, meta);
+			} catch (error) {
+				throw clientError(c.log, error, "The pull request's state could not be read.");
+			}
+		},
+
+		publish: async (c, input: { message: PublishMessage }): Promise<PublishResult> => {
+			requireUser(c);
+			const meta = liveMeta(c);
+			const message = cleanMessage(input);
+			const repo = meta.repo;
+			if (!repo) throw new UserError("This agent does not work on a repository of your GitHub connection, so there is nowhere to push.", { code: "publish_blocked" });
+			const blocked = publishBlocked(c, meta);
+			if (blocked) throw new UserError(blocked, { code: "publish_blocked" });
+			// Nothing was awaited since the check: this push is the only one past it.
+			c.vars.publishing = true;
+			try {
+				return await c.keepAwake(publishSession(c, meta, repo, message));
+			} catch (error) {
+				throw clientError(c.log, error, "The work could not be pushed. Try again.");
+			} finally {
+				c.vars.publishing = false;
 			}
 		},
 
@@ -1574,6 +2161,8 @@ export const agentSession = actor({
 						c.log.error({ msg: "could not destroy the sandbox", sandbox: meta.sandboxId, error: describeError(error) });
 					}
 				}
+				// The copy of Windlass's session goes with the session, once the sandbox that uploads it is gone.
+				await removeBackup(c, meta);
 			}
 			c.destroy();
 		},

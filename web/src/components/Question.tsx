@@ -3,6 +3,14 @@
  * twice, as one question: in full in the conversation at the call it is about, and compact in a dock
  * above the composer, so that a reader scrolled elsewhere still sees it. Both read the same flow
  * (`useQuestionFlow`): one note, one answer in flight, one error, and answering either settles both.
+ *
+ * The other question is about an MCP server the project's own configuration names
+ * (`PendingQuestion.server`): whether Windlass may start it. It is the same control with what differs
+ * left out or reworded. There is no call to hang it under, so it stands at the end of its turn; it
+ * names the file that defines the server under the command; there is no note, because the answer goes
+ * to Windlass and not to the model; and the countdown says what running out means here, which is that
+ * the server stays stopped and the turn goes on. What became of it is a line of the platform's in the
+ * conversation, not a line under a call.
  */
 import { MAX_NOTE_CHARS } from "@contract";
 import type { PendingQuestion, QuestionChoice } from "@contract";
@@ -109,21 +117,35 @@ export function useInteractive(): Interactive | null {
 
 export const questionAnchor = (question: PendingQuestion) => `question-${question.id}`;
 
+/** Who asks, for a screen reader: a subagent, the agent, or (about a project's server) the platform, before the agent has it. */
+const asker = (question: PendingQuestion) => (question.server ? "The platform asks: " : question.subagent ? "A subagent asks: " : "The agent asks: ");
+
+/** What a server is left as when nobody says to start it: one that is reached at an address is not started in the first place. */
+const leftAs = (question: PendingQuestion) => (question.server?.remote ? "unconnected" : "stopped");
+
 // ---------------------------------------------------------------------------------------------
 // The question
 // ---------------------------------------------------------------------------------------------
 
-function Countdown({ expiresAt }: { expiresAt: number }) {
+function Countdown({ question }: { question: PendingQuestion }) {
 	const now = useNow(1000);
+	const expiresAt = question.expiresAt;
 	const left = expiresAt - now;
 	const soon = left < 60_000;
+	// A call nobody allows is declined. A server nobody starts only stays as it is, and the turn goes on without it.
+	const server = question.server;
+	const title = server ? `If nobody answers by ${absoluteTime(expiresAt)}, the server stays ${leftAs(question)}${server.holdsTurn ? " and the turn goes on without it" : ""}.` : `If nobody answers by ${absoluteTime(expiresAt)}, the platform declines for you.`;
 	return (
-		<p className={`q-countdown${soon ? " q-countdown-soon" : ""}`} title={`If nobody answers by ${absoluteTime(expiresAt)}, the platform declines for you.`}>
+		<p className={`q-countdown${soon ? " q-countdown-soon" : ""}`} title={title}>
 			{left <= 0 ? (
-				"Declining for you now…"
+				server ? (
+					`Leaving it ${leftAs(question)} now…`
+				) : (
+					"Declining for you now…"
+				)
 			) : (
 				<>
-					declines in <time dateTime={new Date(expiresAt).toISOString()}>{countdown(left)}</time>
+					{server ? `stays ${leftAs(question)} in` : "declines in"} <time dateTime={new Date(expiresAt).toISOString()}>{countdown(left)}</time>
 				</>
 			)}
 		</p>
@@ -191,15 +213,16 @@ export function QuestionCard({
 	const approving = question.choices.filter((choice) => choice.approve);
 	const declining = question.choices.filter((choice) => !choice.approve);
 	const showNote = noteOpen || flow.note !== "";
+	const server = question.server;
 
 	return (
-		<div className={`q ${compact ? "q-compact" : "q-full"}`} aria-labelledby={ids.title} role="group">
+		<div className={`q ${compact ? "q-compact" : "q-full"}${server ? " q-server" : ""}`} aria-labelledby={ids.title} role="group">
 			<div className="q-head">
 				<p className="q-title" id={ids.title}>
-					<span className="visually-hidden">{question.subagent ? "A subagent asks: " : "The agent asks: "}</span>
+					<span className="visually-hidden">{asker(question)}</span>
 					{question.title || "May this call run?"}
 				</p>
-				<Countdown expiresAt={question.expiresAt} />
+				<Countdown question={question} />
 			</div>
 			{question.subagent ? (
 				<p className="q-subagent">
@@ -207,9 +230,14 @@ export function QuestionCard({
 				</p>
 			) : null}
 			{question.subject && !underItsCall ? (
-				<pre className="q-subject" id={ids.subject} tabIndex={compact ? undefined : 0} aria-label="What it is about">
+				<pre className="q-subject" id={ids.subject} tabIndex={compact ? undefined : 0} aria-label={server ? (server.remote ? "The address it is reached at" : "The command that starts it") : "What it is about"}>
 					{question.subject}
 				</pre>
+			) : null}
+			{server?.file && !compact ? (
+				<p className="q-where">
+					<span className="q-where-key">defined in</span> {server.file}
+				</p>
 			) : null}
 			{!compact && question.details.length > 0 ? (
 				<div className="q-details" id={ids.details}>
@@ -228,7 +256,7 @@ export function QuestionCard({
 					{declining.map((choice) => (
 						<ChoiceButton key={choice.id} choice={choice} flow={flow} />
 					))}
-					{showNote ? (
+					{server ? null : showNote ? (
 						<DeclineNote flow={flow} id={ids.note} compact={compact} />
 					) : (
 						<button type="button" className="link q-note-open" onClick={() => setNoteOpen(true)} disabled={flow.sending !== null}>
@@ -333,16 +361,18 @@ export function QuestionDock({ flow }: { flow: QuestionFlow }) {
 	if (inlineInView) {
 		return (
 			<p className="visually-hidden" role="status">
-				The agent asks: {question.title}
+				{asker(question)}
+				{question.title}
 			</p>
 		);
 	}
 
 	return (
 		<div className="q-dock-wrap">
-			<section className="q-dock" ref={dock} tabIndex={-1} aria-label="The agent is waiting for your answer" onKeyDown={onKeyDown}>
+			<section className="q-dock" ref={dock} tabIndex={-1} aria-label={question.server && !question.server.holdsTurn ? "A question is waiting for your answer" : "The agent is waiting for your answer"} onKeyDown={onKeyDown}>
 				<p className="visually-hidden" role="status">
-					The agent asks: {question.title}
+					{asker(question)}
+					{question.title}
 				</p>
 				<QuestionCard question={question} flow={flow} compact>
 					<button

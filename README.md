@@ -387,9 +387,10 @@ E2B's SDK (`e2b` 2.63.0, loaded only by a server on E2B) needs Node 22.19 or lat
   in which file locks can hang, and Windlass keeps SQLite databases there). A session's Windlass session lives
   and ends with its sandbox, and no session sees another's files, also not the token file of the same user's
   other turn. A pause keeps it. When a sandbox is gone (killed, or lost), the session gets a new one with an
-  empty workspace, and the first prompt that names the old Windlass session ends with `session_not_found`: the
-  timeline says so, and the next prompt starts a new Windlass session. On Docker the data directory is a
-  volume of the user's and outlives a sandbox.
+  empty workspace. With a bucket configured, the copy of Windlass's session is put into the new sandbox and
+  the agent goes on where it was ("The agent's memory outlives its sandbox" below); without one it starts a
+  new Windlass session, and the timeline says so. On Docker the data directory is a volume of the user's and
+  outlives a sandbox.
 
 Using little of E2B is built in. The free Hobby plan runs on a one-time credit of $100 and allows 10 sandboxes
 at once and one hour of running without a pause; every default is well inside that.
@@ -430,6 +431,337 @@ being used (`WLP_IDLE_DESTROY_MS`) or `e2b-cleanup.ts` removes it; opening a ses
 resumes its sandbox for the length of the idle timeout; and a turn whose command stream to E2B breaks ends as
 a failed turn, though the sandbox goes on until its timeout.
 
+## The agent's memory outlives its sandbox
+
+A session has two histories. The timeline, which the user reads, is in the session's actor. What the model
+remembers of the conversation is Windlass's own session, in Windlass's data directory, which on E2B is on the
+sandbox's disk and goes with it: when an idle sandbox is removed after seven days, or when E2B loses one. With
+a bucket configured, a copy of that data is kept outside the sandbox and put back into the one that replaces
+it, so the agent continues the same Windlass session there (`session/resume`). Without a bucket nothing
+changes: the agent then starts without its memory, and the timeline says so. On Docker there is nothing to
+do, since the data directory is a volume that outlives every sandbox.
+
+- **What is copied.** Windlass keeps one SQLite database per session, in WAL mode
+  (`sessions/<id>.db`), and that file is all a `session/resume` needs, with its write-ahead log
+  (`.db-wal`) when a Windlass that was killed left one: without it the database opens and has silently lost
+  the last turn. Copied with them are the media the messages refer to (`blobs/`) and Windlass's notes
+  (`memory/`). Everything else stays in the sandbox, because only what is named is copied: the turn's access
+  token file, anything of a sign-in, the wake-ups' database (it holds webhook secrets), locks, caches, and the
+  snapshots of the workspace. `server/src/sandbox/backup.ts` has the whole list and the reasons.
+- **When.** After every turn in which Windlass ran, while the turn is being closed: its process is gone by
+  then, so nothing has the files open and a plain `tar` of them is whole. It is one object per session,
+  `sessions/<uid>/<session>.tgz`, replaced each time. A restore happens once, before the first turn in a
+  sandbox that was made in place of a lost one.
+- **The bytes never pass through a server.** The server signs a link, good for five minutes, for one
+  object and for one method, and for an upload for exactly the size the archive has. The sandbox's own
+  `curl` uses it, in a command the platform runs beside Windlass, not under it (Windlass's bubblewrap sandbox
+  gives the agent's commands no network). The link reaches the sandbox on the command's standard input and
+  is in no command line, no environment, no file and no log. The server itself sends two small requests a
+  turn: one to learn the object's size after an upload, and one to remove it when a session is deleted.
+- **The session's record.** The actor keeps the archive's size, its SHA-256, when it was saved and after
+  which turn. A restore checks the download against the size and the hash before anything is unpacked, and
+  unpacks only an archive that holds nothing but what a copy holds.
+- **What the user sees.** Nothing for a save. For a restore one line, "Restored the agent's memory of the
+  conversation into the new sandbox." When there is no copy, or it cannot be restored, the line of before:
+  "The agent's memory of the conversation went with the old sandbox, so it starts this turn without it."
+- **A save that fails is not retried by itself.** `curl` tries a transfer again twice; after that the save
+  is given up and logged (`[wlp] backup.save_failed`). The next turn's save copies the whole session again,
+  and trying in between would mean starting a sandbox that was suspended so as to cost nothing. The user is
+  told only if it comes to matter: if the sandbox is lost before a save works, the restore says "...
+  without the last turn: no copy of it could be saved."
+- **The size limit.** An archive larger than `WLP_BACKUP_MAX_BYTES` (64 MiB) is not uploaded. The timeline
+  says so once ("The agent's memory of the conversation has grown to 70 MB, and the platform keeps a copy of
+  at most 64 MB, so it is no longer copied out of the sandbox. ..."), and the last copy that fitted stays.
+- **Deleting a session deletes its object**, after its sandbox, which is what uploads. An object that could
+  not be removed is named in the log (`[wlp] backup.remove_failed uid=... session=...`).
+- **Who can read a copy.** It holds the conversation as Windlass has it: the prompts, the model's answers,
+  the tool calls and their output. It is not encrypted by the platform. Whoever holds the bucket's access key
+  can read every copy, as can the store's operator; a sandbox can reach its own session's object and no
+  other, for the minutes a link lasts. The workspace's files are not in it.
+
+The store is anything that speaks the S3 protocol; only presigned PUT and GET, HEAD and DELETE are used, so
+changing the provider is changing the settings. For Cloudflare R2: a bucket of its own, and an API token
+with "Object Read & Write" on that bucket only.
+
+| Variable | Value |
+|---|---|
+| `WLP_BUCKET_ENDPOINT` | the store's S3 endpoint without the bucket: for R2, `https://<account id>.r2.cloudflarestorage.com` |
+| `WLP_BUCKET_NAME` | the bucket |
+| `WLP_BUCKET_ACCESS_KEY_ID`, `WLP_BUCKET_SECRET_ACCESS_KEY` | an access key that may read, write and delete objects in that bucket. The second is a secret |
+| `WLP_BUCKET_REGION` | optional: the region the signatures name (default `auto`, which is R2's) |
+| `WLP_BUCKET_STYLE` | optional: `path` (default) or `virtual`, where the bucket's name goes in an address |
+| `WLP_BUCKET_PREFIX` | optional: put before every key, for a bucket that is shared |
+| `WLP_BACKUP_MAX_BYTES` | optional: the largest archive that is kept (default 67108864) |
+
+They are the same on every server. On a Rivet Cloud cluster the endpoint, the bucket's name and the two
+halves of the access key are set as secrets (`rivet cluster secret set WLP_BUCKET_ENDPOINT`, and so on, with
+a `--secret` for each on `rivet deploy`). With none of them set the feature is off; with only some, it is off
+and the server says which are missing when it starts.
+
+```sh
+cd server && npx tsx ../scripts/backup-check.ts                     # the seam and the backups: no network, no Docker
+cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/backup-check.ts --bucket --docker
+                                                                    # a real bucket, and a real Windlass in local containers
+cd server && E2B_API_KEY=e2b_... npx tsx ../scripts/e2b-backup-check.ts
+                                                                    # two E2B sandboxes, one after the other, for under half a minute
+```
+
+The last two read the bucket's settings from the variables above, or from `R2_ENDPOINT`, `R2_BUCKET`,
+`R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`; they write under a prefix of their own and remove it. Measured
+from an E2B sandbox to R2, for a session of one turn (24 kB): a save takes 1.3 seconds, a restore one.
+
+## GitHub
+
+With a GitHub App of its own, a deployment lets a user connect GitHub, launch an agent on one of their own
+repositories, private ones included, and get the work back as a pull request. Without one the web app shows
+nothing of this, and a repository is a public address pasted into the launch form, as before.
+
+- **Connecting.** "Connect GitHub" (the account menu, or the launch form) sends the browser to GitHub, where the
+  user authorizes the app; with the app installed nowhere they can reach, GitHub's installation page follows,
+  where they pick an account and its repositories. GitHub sends the browser back to `GET /github/callback` on a
+  server's own port, with a code. The server exchanges it, asks GitHub who this is and which installations of
+  the app they can reach, deletes the token it was given, and sends the browser on to the web app, which
+  hands what GitHub confirmed to the user's `user` actor. That is the connection: a GitHub login and the
+  accounts the app is installed on. Disconnecting forgets it; the app stays installed at GitHub, which is the
+  account owner's to change.
+- **No credential of the user's is kept.** Not a token, not a refresh token. What the platform does at GitHub
+  later, it does as the app's installation.
+- **Launching.** A connected user searches their repositories in the launch form and picks a branch (the
+  default one is chosen). The session records what it was launched on, and its sandbox gets a clone.
+- **A pull request.** In a session's panel, "Open pull request": the platform commits what is uncommitted with
+  a message the user reads and edits first, pushes a branch named for the session
+  (`windlass/<its title>-<the end of its id>`), and opens the pull request through GitHub's API. After that the
+  panel shows the pull request with its number and state, and "Push changes" updates the same branch. The
+  timeline gets one line for each ("Opened pull request #12 in acme/harbor from windlass/fix-the-light-3f9a2c,
+  with 3 files."). The agent takes no part: it works on the files, and its own git has nothing to push with.
+  A commit is made in the GitHub user's name (`<id>+<login>@users.noreply.github.com`); the pull request is
+  the app's.
+
+### The GitHub App
+
+Register one at GitHub (Settings, Developer settings, GitHub Apps, New GitHub App), for the address the
+platform is served at, `https://<name>.onrivet.dev` below:
+
+| Setting | Value |
+|---|---|
+| GitHub App name | any; its address `https://github.com/apps/<slug>` gives `WLP_GITHUB_APP_SLUG` |
+| Homepage URL | `https://<name>.onrivet.dev` |
+| Callback URL | `https://<name>.onrivet.dev/github/callback`, and no other |
+| Expire user authorization tokens | selected |
+| Request user authorization (OAuth) during installation | selected. GitHub then sends the browser to the callback URL after an installation too, with a code |
+| Setup URL | none. GitHub takes none while the setting above is selected |
+| Enable Device Flow | not selected |
+| Webhook | "Active" not selected: the platform listens to nothing |
+| Repository permissions | Contents: read and write. Pull requests: read and write. Metadata: read-only (GitHub adds it). Nothing else |
+| Organization and account permissions | none |
+| Where can this GitHub App be installed? | "Any account", for users other than the app's owner |
+
+Then, on the app's page: note the App ID and the Client ID, generate a client secret, and generate a private
+key (a `.pem` file is downloaded).
+
+| Variable | Effect |
+|---|---|
+| `WLP_GITHUB_APP_ID` | the App ID, a number |
+| `WLP_GITHUB_APP_SLUG` | the app's name as its address has it |
+| `WLP_GITHUB_CLIENT_ID` | the Client ID (`Iv23...`) |
+| `WLP_GITHUB_CLIENT_SECRET` | the client secret. A secret |
+| `WLP_GITHUB_PRIVATE_KEY` | the private key. A secret. The file as it is, or with `\n` for its line breaks, or in base64 (`base64 -w0 <file>.pem`), which is the form for a secret store that takes one line |
+| `WLP_GITHUB_API_URL`, `WLP_GITHUB_URL` | GitHub's API and GitHub itself (defaults `https://api.github.com`, `https://github.com`); for GitHub Enterprise Server, and for the checks' stand-in |
+
+All five of the first must be set, the same on every server. With some of them missing the feature is off and
+the server says which (`[wlp] WARNING: GitHub is off: ...`). On a Rivet Cloud cluster the two secrets are
+cluster secrets and the rest plain variables:
+
+```sh
+rivet cluster secret set WLP_GITHUB_CLIENT_SECRET
+base64 -w0 <file>.pem | rivet cluster secret set WLP_GITHUB_PRIVATE_KEY
+rivet deploy ... --secret WLP_GITHUB_CLIENT_SECRET --secret WLP_GITHUB_PRIVATE_KEY \
+  --env WLP_GITHUB_APP_ID=<id> --env WLP_GITHUB_APP_SLUG=<slug> --env WLP_GITHUB_CLIENT_ID=<client id>
+```
+
+### Whose installation it is
+
+An `installation_id` in an address proves nothing: anyone can type one, and
+[GitHub says so](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/about-the-setup-url).
+So the callback route records nothing from the address. It asks GitHub, with the token the user's own
+authorization gave it, which installations that user can reach, and an installation the address names must be
+among them.
+
+What ties a connection to a platform user is a `state` the user's actor issues and the server signs
+(`WLP_SECRET`): it names that user, is good for ten minutes, and the actor takes it off its list when the
+callback claims it, so it works once. The callback route is reached by a browser coming from GitHub, which
+carries nothing that says who is signed in to the platform, so a state alone would let someone start a
+connection for their own account and have another person finish it. The route therefore records nothing
+itself: it hands the browser a signed ticket, in the address's fragment, and only the `user` actor of the user
+the ticket names takes it, from a caller signed in as that user, once.
+
+### Who may do what
+
+GitHub lists an installation for anyone who can open one of its repositories: a member of an organization,
+or a collaborator on one repository of somebody's account, reaches an installation that covers more than they
+may see, and the platform, acting as that installation, could read all of it. So before it lists, clones or
+pushes anything for a user, the platform asks GitHub what that user may do in that repository (with the
+installation's own token; no credential of the user's is needed), and does it only when GitHub says read, or,
+to push, write. An installation on the connected user's own account is theirs, and is not asked about. The
+launch form lists only repositories its user can read; one they can read and not push to says so.
+
+### Tokens
+
+Three credentials exist, and none is stored, logged, or put in a timeline item, an event or an error:
+
+| Credential | Made | Good for | Where it goes |
+|---|---|---|---|
+| the app's JWT | signed by the server with the app's private key, for each request | nine minutes; asking GitHub for an installation token | to GitHub |
+| an installation token | by GitHub, when a step needs one, for the one repository the session works on and the permissions of that step | an hour at most; one that went into a sandbox is revoked as soon as its git command has ended | see below |
+| a user access token | by GitHub, for the code a user's authorization ended with | two questions (who is this, which installations can they reach), then it is deleted at GitHub | to GitHub |
+
+| Step | Permissions of its token | Where the token is |
+|---|---|---|
+| listing repositories, asking what a user may do | metadata: read (the installation's repositories) | the server |
+| listing branches | contents: read, metadata: read (one repository) | the server |
+| cloning | contents: read, metadata: read (one repository) | the sandbox, for one `git clone`; then revoked |
+| pushing | contents: write, metadata: read (one repository) | the sandbox, for one `git push`; then revoked |
+| the pull request | pull requests: write, metadata: read (one repository) | the server |
+
+**In a sandbox** the token is given to the one git command the platform itself runs, and to nothing else
+(`server/src/github/git.ts`):
+
+- It is written to the command's standard input. It is in no argument and no environment variable, neither on
+  the server (where Docker's would be on a `docker exec` command line) nor in the sandbox.
+- The script reads it into a shell variable that is never exported and hands it to git on a pipe. Git is told,
+  in its environment's configuration, of a credential helper that answers a request for GitHub's host by
+  reading that pipe: the pipe is empty once git has read it, and git sends the token only where GitHub asked
+  for it, as [GitHub documents it](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation):
+  the HTTP password of the user `x-access-token`.
+- That git runs with an empty environment, the system's own programs, without the system's and the user's git
+  configuration and without hooks, so nothing writes the token down: a clone's `.git/config` holds the plain
+  address, and there is no credential store, no temporary file, no remote with a token in it.
+- A push never runs in the workspace's repository, whose configuration and hooks the agent can write: a
+  remote rewritten to another host, a credential helper or a `pre-push` hook there would be handed the
+  token. The commit is made in the workspace by a command that has no token. The push runs in an empty
+  repository the script makes for it outside the workspace, which borrows the workspace's objects and nothing
+  else, and is removed afterwards.
+
+**What an agent's command can still observe.** That the platform cloned and pushed, the addresses and the
+branch names. A command the agent runs afterwards finds the token nowhere. A process the agent left running,
+as the same Unix user, while the platform's git command runs, sees that command's arguments and environment,
+which hold no token; it could take the token off the pipe in the instant before git reads it (the push then
+fails), or read git's memory where the kernel lets one process of a user trace another (Linux's
+`ptrace_scope` 0; Ubuntu's default forbids it). A push is only made between turns, so such a process is one
+the agent started earlier and left running in the background. An agent that could replace the sandbox's own
+git or shell could take the next token; in the sandbox image it cannot (it is not root, and has no
+capabilities). In each case what is taken is good for the contents of that one repository,
+for the seconds until the platform revokes it, and never for pull requests, another repository or the user's
+account. A sandbox layer that could run the platform's command as another user than the agent's, or outside the
+sandbox altogether, would close these; `SandboxHandle.run` has no such option.
+
+### When it does not work
+
+Each failure is said where the user is, in a sentence they can act on:
+
+| What happened | What the user reads |
+|---|---|
+| GitHub says the user may read the repository and not write to it | "ada can read acme/quay on GitHub but not write to it, so the platform cannot push there for you. Ask an owner of acme for write access, then push again." Nothing is committed or pushed |
+| a rule of the repository refuses the branch | "GitHub refused the push: a rule of acme/quay protects branches named like windlass/.... Let the GitHub App create such branches in the repository's branch rules, then push again." |
+| the repository is gone, or no longer in the installation | "acme/quay is no longer on GitHub, or the GitHub App can no longer see it. ..." |
+| the app was uninstalled from the account | "The GitHub App is no longer installed on acme. Connect GitHub again and install it there, then try once more." |
+| the user disconnected GitHub | "GitHub is not connected any more. Connect GitHub again from the account menu, then try once more." A session launched on a repository stays, with its timeline and its pull request |
+| the branch at GitHub has commits the workspace lacks | the push is refused rather than overwrite them, and the sentence says so |
+| the push changes a file under `.github/workflows` | GitHub refuses it for an app without the workflows permission, which this one does not ask for; the sentence says so |
+| GitHub cannot be reached | "GitHub could not be reached. Try again in a moment." |
+
+A push that went through while its pull request did not (the permission is missing, say) is remembered: the
+next "Open pull request" only opens it.
+
+### Several servers
+
+Nothing of this is on a server. A connection is in its user's actor, a state's number in the same actor, and
+the ticket carries the rest, so the visits of one connection can be served by different servers, as can a
+session's clone and its push. What a server keeps for itself, and asks for again when it is gone, is what it
+last heard of an installation's repositories (a minute) and of a user's rights in them (five minutes, for the
+launch form's list only: launching and pushing ask GitHub then and there).
+
+### Checks
+
+No check calls GitHub. `scripts/github-standin.ts` stands in for it: its API and token endpoints, its
+authorization and installation pages, and a git remote over HTTP in front of real bare repositories, with
+GitHub's refusals written from what is known of them and not copied from a run against it.
+
+```sh
+cd server && npx tsx ../scripts/github-check.ts             # the server's GitHub code and real git against the stand-in
+cd server && npx tsx ../scripts/github-check.ts --docker    # and the git commands again in a container of the sandbox image
+cd server && flock /tmp/wlp-test.lock pnpm e2e              # its last section: the route and the actors, on the fake layer
+```
+
+The web app's mock plays a deployment with a GitHub App (`?mock=1`; `&github=off` for one without), and
+`__wlpMock.mockNextGithub("list" | "connect" | "denied" | "protected" | "gone")` in the console makes its next
+call fail as GitHub can.
+
+Not checked, because there is no GitHub App yet: anything against GitHub itself. That is the exact words of
+GitHub's refusals of a push (the sentences above are chosen by them), what GitHub's installation page does
+with a `state` for an account that has the app already, and that the callback after an installation carries a
+code as documented.
+
+## A project's MCP servers
+
+A repository can name MCP servers in `.windlass/config.json`, and a session that works in a clone of it gets
+them with the rest of the project. Windlass does not start such a server by itself: opening a repository must
+not run a command the repository chose. It asks, and the platform puts that question to the session's user in
+the same place as a tool call's question, with the same control.
+
+- **When.** Before a turn's prompt goes to Windlass, the sandbox layer asks it which servers wait
+  (`_windlass/mcp`), as Windlass's own command line does before it sends a message. Each is a question: the
+  server's name, its command with every argument (or its address), the file that defines it, and two answers,
+  "Start it for this project" and "Not now". The session is `waiting` meanwhile, and the turn starts with what
+  was allowed: a server approved then runs, and is in the model's list of tools, at the turn's first model
+  call. A server Windlass reports while a turn already runs (`_windlass/mcp_changed`) is asked about without
+  holding the turn: approved, it starts at once and the model is told of its tools at its next step, and the
+  question goes with the turn if nobody answers it.
+- **A tool call's question comes first.** While one waits, a server's question steps aside, and it is put
+  again afterwards with its whole time to be answered in.
+- **What the question says.** Windlass's own explanation is that the server "runs outside the sandbox, with
+  your permissions". Here that means: it is a process in the session's sandbox machine that Windlass's sandbox
+  around commands never holds, so it has the network and can read Windlass's data directory, where the turn's
+  access token file is. The question says so for the profile the session runs in
+  (`server/src/server-question.ts`):
+
+  | Profile | The question's first sentence |
+  |---|---|
+  | commands sandboxed by Windlass | "It runs in this session's container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed." |
+  | Docker, hardened | "It runs in this session's container, as the agent's commands do here: like them, it has the network and can read Windlass's own data, including ..." |
+  | E2B before its check has passed | "It runs in this session's microVM and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has the network and can read Windlass's own data, including ..." |
+
+  A demo session is handed no access token, and its question says that instead.
+- **What follows.** One line in the timeline: "Started the MCP server "harbor" for this project: 2 tools. The
+  agent has them from this turn on.", or "Left the MCP server "harbor" stopped. If the agent tries to use it,
+  it is told that the server waits for you; your next message asks again." A question nobody answers within
+  `WLP_QUESTION_TIMEOUT_MS` is settled as "not now", says so, and the turn goes on.
+- **A variable that is not set.** Windlass fills `${NAME}` in a definition's `env` and `headers` from its own
+  environment and does not start a server that names a variable which is not set. The platform has nowhere to
+  keep such a value yet, so the question names the variable ("It will not start yet: its definition reads the
+  variable HARBOR_TOKEN, which is not set in the sandbox, ..."), and an approval ends in Windlass's own reason:
+  "Approved the MCP server "harbor" for this project, but it did not start: the environment variable
+  HARBOR_TOKEN named in its env is not set. The platform cannot set variables for a session yet."
+- **What is remembered, and where.** The platform keeps nothing. Windlass keeps an approval in its data
+  directory, for the project directory and exactly that definition, for 30 days; a changed definition is asked
+  about again. On E2B that directory is on the sandbox's disk, so an approval holds for the session's sandbox
+  and another session on the same repository asks again. On Docker it is the user's volume and every session's
+  project directory is `/workspace`, so it holds in all of that user's sessions where a server of that name is
+  defined the same. "Not now" is remembered nowhere: the next message asks again. `serverApprovals` in
+  `server/src/actors/agent-session.ts` is where a store of the platform's own would answer before the question
+  is put.
+- **Calling its tools.** Where Windlass sandboxes commands it asks before each call of an MCP tool, through the
+  question the platform already puts. In the hardened profile the first call runs unasked; what a server
+  returns is content Windlass does not trust, so from then on it asks before the commands it cannot sandbox.
+
+```sh
+cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/mcp-check.ts   # a real Windlass in local containers, and fixtures/mcp-repo
+cd server && flock /tmp/wlp-test.lock pnpm e2e                          # the session's part, on the fake layer's "(mcp...)" switches
+```
+
+The web app's mock asks the question for a prompt with the word "mcp" in it; with "variable" too, about a
+definition that cannot start; with "late" and a word about the network, while a tool call's question waits.
+
 ## Layout
 
 | Path | What it holds |
@@ -444,9 +776,13 @@ a failed turn, though the sandbox goes on until its timeout.
 | `server/src/sandbox/` | That layer on Docker: containers, volumes, running a turn, the hand-off of an access token to a turn, the demo scripts |
 | `server/src/signin/` | The ChatGPT sign-in for every layer: Windlass's sign-in commands and where they run, the encryption, and the one place per user that asks for an access token |
 | `server/src/sandbox-fake.ts` | The same interface in memory, for tests |
+| `server/src/server-question.ts` | The words of the question about a project's MCP server, for each sandbox profile, and of the timeline's lines about it |
+| `server/src/bucket/`, `server/src/sandbox/backup.ts` | The object store the copies of Windlass's session data go to (S3 protocol, and a stand-in for tests), and what is copied, saved and restored |
+| `server/src/github/` | The GitHub App: its tokens and API calls, connecting (the callback route), which repositories a user may work on, and the git commands the platform runs in a sandbox ("GitHub") |
 | `sandbox/` | The sandbox image, `build.sh`, `cleanup.sh` |
 | `web/` | The web app (Vite, React); `src/api/rivet.ts` is the real client, `src/api/connection.ts` where it gets its connection and renews its token, `src/api/mock.ts` the mock |
 | `fixtures/windlass-events/` | Recorded Windlass events, used by the fake layer, the mock and the reducer's tests |
+| `fixtures/mcp-repo/` | A small repository whose `.windlass/config.json` names an MCP server, and the server (Python, nothing else), for `scripts/mcp-check.ts` |
 | `scripts/` | `dev.sh`, `e2e.ts` (the actors), `sandbox-check.ts` (the sandbox layer), `signin-check.ts` (the sign-ins), `connection-check.ts` and `connection-e2e.ts` (what browsers connect with, and its renewal) |
 
 ## Checks
@@ -457,8 +793,11 @@ pnpm --filter @windlass-platform/web test                         # the timeline
 cd server && pnpm e2e                                             # the actors, fake sandboxes
 cd server && WLP_DEMO=1 pnpm e2e:docker                           # the actors, real containers
 cd server && npx tsx ../scripts/sandbox-check.ts                  # the sandbox layer on its own
+cd server && npx tsx ../scripts/mcp-check.ts                      # the question about a project's MCP server, against a real Windlass
 cd server && npx tsx ../scripts/signin-check.ts                   # the sign-in machinery: no server, no Docker, a stand-in for OpenAI
 cd server && npx tsx ../scripts/connection-check.ts               # the tokens browsers connect with: a stand-in for the engine
+cd server && npx tsx ../scripts/access-check.ts                   # who may sign in: the invitation list and the demo
+cd server && npx tsx ../scripts/web-files-check.ts                # the web app's files as the server serves them
 cd server && npx tsx --tsconfig ../web/tsconfig.json ../scripts/connection-e2e.ts
                                                                   # the web app's client through an engine whose tokens run out
 ```
@@ -476,6 +815,7 @@ The end-to-end scripts start their own server on ports 6420 and 6440, so stop a 
 | Variable | Effect |
 |---|---|
 | `WLP_DEMO` | `1`: offer the demo sign-in (scripted model). `scripts/dev.sh` sets it |
+| `WLP_ALLOWED_EMAILS`, `WLP_ALLOWED_USERS` | who may sign in with ChatGPT: account emails and user ids (`u_...`), comma-separated. Unset, both: anyone with a ChatGPT account. Asked at the sign-in and at every call, so a removal holds at once |
 | `WLP_SANDBOX` | `docker` (default), `e2b` ("E2B") or `fake` |
 | `WLP_SECRET` | signs tokens; when unset one is generated in `.data/secret`. Required with a remote engine (`RIVET_ENDPOINT`): the server refuses to start without it |
 | `WLP_WEB_ORIGINS` | origins the web app may connect from, comma-separated (default `localhost:5173`, `127.0.0.1:5173`) |
@@ -483,7 +823,10 @@ The end-to-end scripts start their own server on ports 6420 and 6440, so stop a 
 | `WLP_LOGIN_TTL_MS` | how long a sign-in attempt stays open (default 10 minutes) |
 | `WLP_QUESTION_TIMEOUT_MS` | how long a question waits for an answer before the platform declines it (default 10 minutes) |
 | `WLP_IDLE_SUSPEND_MS` | how long after a session's last turn ended its sandbox is suspended (default 10 minutes) |
-| `WLP_IDLE_DESTROY_MS` | how long after its last use a sandbox is removed with its files; the timeline stays (default 7 days) |
+| `WLP_IDLE_DESTROY_MS` | how long after its last use a sandbox is removed with its files; the timeline stays (default 7 days). E2B keeps a paused sandbox for as long as it is not killed and does not bill it, so a deployment there can set this to years: then a sandbox goes only with its agent |
+| `WLP_BUCKET_ENDPOINT`, `WLP_BUCKET_NAME`, `WLP_BUCKET_ACCESS_KEY_ID`, `WLP_BUCKET_SECRET_ACCESS_KEY` | the S3 bucket that keeps a copy of each agent's Windlass session where sandboxes are E2B's ("The agent's memory outlives its sandbox", which has the optional ones too). Unset: no copy is kept |
+| `WLP_BACKUP_MAX_BYTES` | the largest copy that is kept (default 64 MiB) |
+| `WLP_FAKE_BACKUP_DIR` | fake layer only: a directory that stands in for the bucket; the fake sandboxes then hold Windlass's sessions as E2B's do |
 | `WLP_HTTP_PORT` | the port of the server's own routes, `/platform/info`, `/platform/connection` and `/health` (default `PORT` when that is set, else 6440) |
 | `WLP_WEB_DIR` | the web app's built files (`web/dist`), for the server to serve on that port; unset, it serves none. `server/Dockerfile` sets it |
 | `WLP_HTTP_HOST` | the address they bind (default `127.0.0.1` with the local engine, `0.0.0.0` with a remote one) |
@@ -491,6 +834,9 @@ The end-to-end scripts start their own server on ports 6420 and 6440, so stop a 
 | `WLP_PUBLIC_ENDPOINT` | the Rivet endpoint browsers connect to, which the server tells the web app. Unset: the web app uses `VITE_WLP_ENDPOINT` |
 | `RIVET_ADMIN_TOKEN` | the engine's admin token, a secret: the server issues the short-lived tokens browsers connect with. Needs `WLP_PUBLIC_ENDPOINT`. Unset, as with the local engine: browsers are handed no token |
 | `WLP_CONNECTION_TOKEN_TTL_MS` | how long such a token lasts (default one hour; from one minute to 24 hours) |
+| `WLP_GITHUB_APP_ID`, `WLP_GITHUB_APP_SLUG`, `WLP_GITHUB_CLIENT_ID` | the deployment's GitHub App: its id, its name as its address has it, its client id ("GitHub"). With these and the two below, users can connect GitHub; with none, nothing of GitHub is offered |
+| `WLP_GITHUB_CLIENT_SECRET`, `WLP_GITHUB_PRIVATE_KEY` | the app's client secret and private key, both secrets. The key as the `.pem` file has it, with `\n` for its line breaks, or in base64 |
+| `WLP_GITHUB_API_URL`, `WLP_GITHUB_URL` | GitHub's API and GitHub itself (defaults `https://api.github.com` and `https://github.com`) |
 | `WINDLASS_BINARY` | the executable `sandbox/build.sh` puts in the image (default: the local build with `login token --valid-for`, see "Run it") |
 | `WLP_SANDBOX_IMAGE` | `sandbox/build.sh` only: another tag for the image it builds, for a throwaway image; the server always uses `windlass-platform-sandbox:latest` |
 | `VITE_WLP_ENDPOINT` | the Rivet endpoint the web app connects to when the server names none, as a development server does (default `http://localhost:6420`). A server with `WLP_PUBLIC_ENDPOINT` names its own, and this is not needed |
@@ -514,9 +860,12 @@ rebuilt, also when that Windlass is older than the codes ("What went wrong with 
   control-plane token is a fixed default. Do not expose it.
 - **ChatGPT sign-in for a hosted service needs OpenAI's agreement.** The flow used here is the one OpenAI
   documents for open-source, self-hosted apps.
-- **The hardened profile never asks.** Windlass runs there with `--approval full`, since without its own sandbox
-  every command would otherwise need an answer.
-- **Signing out only forgets the token in the browser.** The token stays valid until it expires (30 days).
+- **The hardened profile does not ask about commands.** Windlass runs there with `--approval full`, since without
+  its own sandbox every command would otherwise need an answer. Two exceptions: it asks before starting a
+  project's MCP server, and after an MCP server's first result, which it does not trust, it asks about commands
+  again ("A project's MCP servers").
+- **Signing out forgets the token in the browser only.** The token is good for 30 days, but an account taken off
+  the invitation list, or a demo user once the demo is off, is refused at every call (`server/src/access.ts`).
 - **Each demo sign-in leaves a small volume** until `sandbox/cleanup.sh` runs.
 - **A browser's connection token cannot be withdrawn.** Whoever asks a server gets one, and it is good until it
   expires, an hour by default, for creating, listing, reading and calling this deployment's actors; what an
@@ -528,8 +877,24 @@ rebuilt, also when that Windlass is older than the codes ("What went wrong with 
   token files of running turns, but a token a command already read in the hardened profile works for the rest of
   its hour.
 - **The test suites never call E2B.** They run the E2B provider on a stand-in for E2B's service. Only
-  `scripts/e2b-check.ts` runs it against the real one ("E2B"): one sandbox for under a minute.
+  `scripts/e2b-check.ts` runs it against the real one ("E2B"): one sandbox for under a minute; and
+  `scripts/e2b-backup-check.ts`, two for under half a minute.
+- **A lost sandbox's files stay lost.** What comes back is the agent's memory of the conversation, not the
+  workspace: the agent remembers files that are no longer there, and finds that out when it looks. A
+  repository the session was launched with is cloned again.
+- **A copy of an agent's memory is as private as its bucket.** It is not encrypted by the platform, and a
+  server that dies in the moment between an upload and the write of its record leaves a copy the session
+  does not recognise: a sandbox lost before the next turn's save then starts without its memory.
 - **Daytona, Firecracker and agentOS are listed, not built.** Daytona does not wait on Windlass: a session on
   another machine would be handed a short-lived access token as the other sessions are. It needs a provider in
   the sandbox layer, an image with Windlass in it and an account. Firecracker needs a host with KVM and a guest
   agent; agentOS cannot run the Windlass executable at all.
+- **A project's hooks and language servers are not asked about.** Windlass holds those back as it holds back
+  a project's MCP servers, and reports them the same way (`_windlass/hooks`, `_windlass/lsp`). The platform
+  puts only the servers' question, so a project's hooks do not run and its language servers do not start.
+- **An approval of a project's server is for its definition, not for its files.** Windlass asks again when
+  the command, its arguments or its environment change, and not when the script that command runs does. And
+  on Docker an approval holds in all of a user's sessions ("A project's MCP servers"): another repository that
+  defines a server of the same name the same way starts it unasked there.
+- **"Not now" is asked again with every message**, and a message sent while that question holds the turn is
+  refused as "still starting". There is no list of a session's servers to approve one from later.

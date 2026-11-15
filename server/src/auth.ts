@@ -8,6 +8,7 @@
  */
 
 import { UserError } from "rivetkit";
+import { mayUse } from "./access.js";
 import { config } from "./config.js";
 import type { UserProfile } from "./contract.js";
 import { SandboxUserError } from "./sandbox/api.js";
@@ -45,6 +46,11 @@ export function authenticate(key: string[], params: unknown): Caller {
 	if (!caller) throw new UserError("Your sign-in is not valid any more. Sign in again.", { code: "invalid_token" });
 	if (caller.kind === "user" && caller.profile.uid !== key[0]) {
 		throw new UserError("This belongs to another user.", { code: "forbidden" });
+	}
+	// Taken off the list, or the demo switched off, since the token was issued: said as an ended sign-in,
+	// so the web app returns to the sign-in page, where the next attempt is told why.
+	if (caller.kind === "user" && !mayUse(caller.profile, config.access)) {
+		throw new UserError("Your sign-in is not valid any more. Sign in again.", { code: "invalid_token" });
 	}
 	return caller;
 }

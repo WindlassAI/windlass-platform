@@ -12,20 +12,36 @@
  * place at a time, so one request to Windlass runs per user whichever servers ask, and a refreshed
  * sign-in is saved here before its token leaves. What leaves is sealed for the server that asked
  * (`internalAccessToken`): the engine that carries the answer does not see the token either.
+ *
+ * The user's GitHub connection is here too (README, "GitHub"): the GitHub user who connected and the
+ * installations of the deployment's GitHub App that user could reach then, as GitHub confirmed them to
+ * the server's callback route (github/connect.ts). It is one row of plain JSON: names and ids, and no
+ * credential, because there is none to keep. What the platform does at GitHub it does with a token of
+ * the installation, which any server asks for when it needs one and then drops. Beside it, the numbers
+ * of connections that were begun and not yet finished, each good once.
  */
 
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, authenticate, clientError, maySubscribe, requireService, requireUser } from "../auth.js";
+import { config } from "../config.js";
 import {
 	type ChatgptStatus,
 	type CreateSessionInput,
+	type GithubBranchList,
+	type GithubRepositoryList,
+	type GithubStatus,
 	MAX_RUNNING_SESSIONS,
 	MAX_TITLE_CHARS,
 	type SessionSummary,
 	type UserProfile,
 } from "../contract.js";
+import { githubApp, type GithubApp } from "../github/app.js";
+import { isBranchName } from "../github/git.js";
+import type { StoredRepository } from "../github/publish.js";
+import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches, listRepositories, resolveRepository } from "../github/repos.js";
+import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
 import { platformModels } from "../platform-info.js";
 import type { ChatgptAccount } from "../sandbox/api.js";
@@ -51,6 +67,8 @@ interface UserVars {
 	signIn: Promise<SignInHolder> | null;
 	/** The database as the action that is running now has it: what the holder's store reads and writes. */
 	signInDb: RawAccess | null;
+	/** The user's GitHub connection; null when there is none. */
+	github: StoredConnection | null;
 }
 
 interface SignInCtx {
@@ -153,6 +171,58 @@ async function rememberProfile(c: UserCtx, profile: UserProfile): Promise<void> 
 	);
 }
 
+// ---------------------------------------------------------------------------------------------
+// GitHub
+// ---------------------------------------------------------------------------------------------
+
+/** How many accounts one connection keeps, and how many connections may be begun and left unfinished. */
+const MAX_GITHUB_ACCOUNTS = 30;
+const MAX_GITHUB_PENDING = 20;
+
+/** The deployment's GitHub App, or a UserError: without one there is nothing to connect. */
+function requireGithub(): GithubApp {
+	const app = githubApp();
+	if (!app) throw new UserError("This deployment has no GitHub App, so GitHub cannot be connected here.", { code: "github_off" });
+	return app;
+}
+
+function requireConnection(c: { vars: UserVars }): StoredConnection {
+	if (!c.vars.github) throw new UserError("GitHub is not connected. Connect GitHub first.", { code: "github_not_connected" });
+	return c.vars.github;
+}
+
+function githubStatus(vars: UserVars): GithubStatus {
+	const stored = vars.github;
+	if (!stored) return { connection: null };
+	return {
+		connection: {
+			login: stored.user.login,
+			accounts: stored.installations.map((installation) => ({
+				installationId: installation.id,
+				login: installation.account.login,
+				kind: installation.account.type === "Organization" ? "organization" : "user",
+				manageUrl: installation.htmlUrl,
+			})),
+			connectedAt: stored.connectedAt,
+		},
+	};
+}
+
+/** A failure at GitHub as the client is told it: the sentence, under the problem's own code. */
+function githubError(log: { error: (entry: unknown) => void }, error: unknown, fallback: string): UserError {
+	if (error instanceof GithubProblem) return new UserError(error.message, { code: error.code });
+	return clientError(log, error, fallback);
+}
+
+/** Keeps the number of a connection that was begun: a state's, with the PKCE verifier its code is exchanged with. */
+async function rememberPending(c: UserCtx, nonce: string, verifier: string | null): Promise<void> {
+	const now = Date.now();
+	await c.db.execute("DELETE FROM github_nonce WHERE expires_at <= ?", now);
+	// Somebody who begins again and again leaves no more than a few behind; the oldest go first.
+	await c.db.execute("DELETE FROM github_nonce WHERE kind = 'state' AND nonce NOT IN (SELECT nonce FROM github_nonce WHERE kind = 'state' ORDER BY expires_at DESC LIMIT ?)", MAX_GITHUB_PENDING - 1);
+	await c.db.execute("INSERT INTO github_nonce (nonce, kind, verifier, expires_at) VALUES (?, 'state', ?, ?)", nonce, verifier, now + STATE_TTL_MS);
+}
+
 export function cleanTitle(title: unknown): string | null {
 	if (typeof title !== "string") return null;
 	const clean = title.replace(/\s+/g, " ").trim();
@@ -210,6 +280,24 @@ export const user = actor({
 					updated_at INTEGER NOT NULL
 				)
 			`);
+			// The GitHub connection: who connected and which installations, as JSON. No credential.
+			await db.execute(`
+				CREATE TABLE IF NOT EXISTS github (
+					id INTEGER PRIMARY KEY CHECK (id = 1),
+					connection TEXT NOT NULL,
+					updated_at INTEGER NOT NULL
+				)
+			`);
+			// Numbers used once: a state that was issued and waits for GitHub's answer (`state`, with its
+			// PKCE verifier), and a ticket that was taken (`ticket`), kept until it would have expired.
+			await db.execute(`
+				CREATE TABLE IF NOT EXISTS github_nonce (
+					nonce TEXT PRIMARY KEY,
+					kind TEXT NOT NULL,
+					verifier TEXT,
+					expires_at INTEGER NOT NULL
+				)
+			`);
 		},
 	}),
 
@@ -223,7 +311,9 @@ export const user = actor({
 		}
 		// An actor that holds a sign-in is a user's, also before that user's own token was seen here.
 		const [held] = await c.db.execute<{ id: number }>("SELECT id FROM signin WHERE id = 1");
-		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, signIn: null, signInDb: null };
+		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
+		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
+		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, signIn: null, signInDb: null, github };
 	},
 
 	events: {
@@ -290,8 +380,32 @@ export const user = actor({
 		createSession: async (c, input: CreateSessionInput): Promise<SessionSummary> => {
 			const profile = requireUser(c);
 			if (typeof input !== "object" || input === null) throw new UserError("Choose a sandbox for the agent.", { code: "bad_input" });
-			const repoUrl = cleanRepoUrl(input.repoUrl);
+			let repoUrl = cleanRepoUrl(input.repoUrl);
 			const givenTitle = input.title === undefined || input.title === null ? null : cleanTitle(input.title);
+			// A repository of the user's GitHub connection: GitHub is asked now whether this user may read it.
+			let repo: StoredRepository | null = null;
+			if (input.repository !== undefined && input.repository !== null) {
+				if (repoUrl !== null) throw new UserError("Choose a repository from GitHub or paste an address, not both.", { code: "bad_input" });
+				const { id, branch } = input.repository;
+				if (!Number.isSafeInteger(id) || id <= 0 || (branch !== undefined && branch !== null && !isBranchName(branch))) throw new UserError("Choose one of the listed repositories and one of its branches.", { code: "bad_input" });
+				const app = requireGithub();
+				try {
+					const { installation, repository } = await resolveRepository(app, requireConnection(c), id, "read");
+					repo = {
+						provider: "github",
+						id: repository.id,
+						owner: repository.owner,
+						name: repository.name,
+						branch: branch ?? repository.defaultBranch,
+						private: repository.private,
+						url: app.repositoryUrl(repository.owner, repository.name),
+						installationId: installation.id,
+					};
+					repoUrl = app.cloneUrl(repository.owner, repository.name);
+				} catch (error) {
+					throw githubError(c.log, error, "The repository could not be checked at GitHub. Try again.");
+				}
+			}
 
 			let summary: SessionSummary;
 			try {
@@ -314,6 +428,7 @@ export const user = actor({
 					profile: chosen.id,
 					model,
 					repoUrl,
+					...(repo ? { repository: { provider: repo.provider, id: repo.id, owner: repo.owner, name: repo.name, branch: repo.branch, private: repo.private, url: repo.url }, pullRequest: null } : {}),
 					createdAt: now,
 					updatedAt: now,
 					status: "idle",
@@ -327,6 +442,7 @@ export const user = actor({
 					profile: summary.profile,
 					model,
 					repoUrl,
+					repo,
 					demo: profile.demo,
 					createdAt: now,
 				});
@@ -378,6 +494,127 @@ export const user = actor({
 			}
 			await c.db.execute("DELETE FROM sessions WHERE id = ?", id);
 			broadcastSessions(c);
+		},
+
+		// --- GitHub ------------------------------------------------------------------------------
+
+		github: (c): GithubStatus => {
+			requireUser(c);
+			requireGithub();
+			return githubStatus(c.vars);
+		},
+
+		githubConnect: async (c, input: { origin: string; install?: boolean }): Promise<{ url: string }> => {
+			const profile = requireUser(c);
+			const app = requireGithub();
+			const origin = typeof input?.origin === "string" ? input.origin.replace(/\/+$/, "") : "";
+			// The browser is sent back there with the ticket: only to the web app's own address.
+			if (!config.origins.includes(origin)) throw new UserError("GitHub can only be connected from the web app's own address.", { code: "origin_not_allowed" });
+			try {
+				const nonce = newNonce();
+				// The installation page takes no PKCE challenge: the code it ends with is exchanged without a verifier.
+				if (input.install === true) {
+					await rememberPending(c, nonce, null);
+					return { url: app.installUrl(issueState(profile.uid, nonce, origin)) };
+				}
+				const { verifier, challenge } = newCodeVerifier();
+				await rememberPending(c, nonce, verifier);
+				return { url: app.authorizeUrl(issueState(profile.uid, nonce, origin), challenge) };
+			} catch (error) {
+				throw clientError(c.log, error, "Connecting GitHub could not be started. Try again.");
+			}
+		},
+
+		githubComplete: async (c, ticket: string): Promise<GithubStatus> => {
+			const profile = requireUser(c);
+			requireGithub();
+			const confirmed = verifyTicket(ticket);
+			if (!confirmed) throw new UserError("This link to connect GitHub is not valid any more. Connect GitHub again.", { code: "github_ticket" });
+			// The one check that ties the browser that came back from GitHub to the user who began.
+			if (confirmed.uid !== profile.uid) {
+				throw new UserError("This GitHub connection was started from another Windlass account, so it was not added to yours. Connect GitHub again from here.", { code: "github_ticket" });
+			}
+			try {
+				// The primary key lets one of two calls with the same ticket through.
+				await c.db.execute("INSERT INTO github_nonce (nonce, kind, verifier, expires_at) VALUES (?, 'ticket', NULL, ?)", `ticket:${confirmed.nonce}`, confirmed.exp + TICKET_TTL_MS);
+			} catch {
+				throw new UserError("This link to connect GitHub was already used. Connect GitHub again if it is not connected.", { code: "github_ticket" });
+			}
+			const connection: StoredConnection = {
+				user: { id: confirmed.user.id, login: confirmed.user.login },
+				installations: confirmed.installations.slice(0, MAX_GITHUB_ACCOUNTS).map(({ id, account, htmlUrl }) => ({ id, account: { id: account.id, login: account.login, type: account.type }, htmlUrl })),
+				connectedAt: Date.now(),
+			};
+			await c.db.execute("INSERT INTO github (id, connection, updated_at) VALUES (1, ?, ?) ON CONFLICT (id) DO UPDATE SET connection = excluded.connection, updated_at = excluded.updated_at", JSON.stringify(connection), connection.connectedAt);
+			c.vars.github = connection;
+			c.vars.reached = true;
+			console.log(`[wlp] github.connected uid=${profile.uid} github=${connection.user.login} installations=${connection.installations.map((installation) => installation.id).join(",")}`);
+			return githubStatus(c.vars);
+		},
+
+		/** Forgets the connection. The app stays installed at GitHub, which is the account owner's to change. */
+		githubDisconnect: async (c): Promise<GithubStatus> => {
+			const profile = requireUser(c);
+			requireGithub();
+			await c.db.execute("DELETE FROM github");
+			// A connection that was begun and not finished ends here too. The tickets that were taken stay
+			// on the list until they would have expired: one of them must not bring the connection back.
+			await c.db.execute("DELETE FROM github_nonce WHERE kind = 'state'");
+			if (c.vars.github) console.log(`[wlp] github.disconnected uid=${profile.uid}`);
+			c.vars.github = null;
+			return githubStatus(c.vars);
+		},
+
+		githubRepositories: async (c, query: string, fresh?: boolean): Promise<GithubRepositoryList> => {
+			requireUser(c);
+			const app = requireGithub();
+			const connection = requireConnection(c);
+			if (typeof query !== "string" || query.length > 200) throw new UserError("Search for part of a repository's name.", { code: "bad_input" });
+			try {
+				// Asked for anew: somebody who has just added a repository at GitHub wants to see it.
+				if (fresh === true) forgetGithubCaches();
+				return await listRepositories(app, connection, query);
+			} catch (error) {
+				throw githubError(c.log, error, "The repositories could not be listed. Try again.");
+			}
+		},
+
+		githubBranches: async (c, repositoryId: number): Promise<GithubBranchList> => {
+			requireUser(c);
+			const app = requireGithub();
+			const connection = requireConnection(c);
+			if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) throw new UserError("Choose one of the listed repositories.", { code: "bad_input" });
+			try {
+				return await listBranches(app, connection, repositoryId);
+			} catch (error) {
+				throw githubError(c.log, error, "The repository's branches could not be listed. Try again.");
+			}
+		},
+
+		// --- GitHub, for the servers and the sessions ---------------------------------------------
+
+		/** Takes a state's number out of the list (github/connect.ts): it is there once. Answers with its PKCE verifier. */
+		internalGithubClaim: async (c, nonce: string): Promise<{ ok: boolean; verifier: string | null }> => {
+			requireService(c);
+			if (typeof nonce !== "string" || nonce === "") return { ok: false, verifier: null };
+			const [row] = await c.db.execute<{ verifier: string | null; expires_at: number }>("SELECT verifier, expires_at FROM github_nonce WHERE nonce = ? AND kind = 'state'", nonce);
+			if (!row) return { ok: false, verifier: null };
+			await c.db.execute("DELETE FROM github_nonce WHERE nonce = ? AND kind = 'state'", nonce);
+			return row.expires_at > Date.now() ? { ok: true, verifier: row.verifier } : { ok: false, verifier: null };
+		},
+
+		/** A new state for this user, for the visit to the installation page that follows an authorization with nothing installed. */
+		internalGithubState: async (c, origin: string): Promise<{ state: string }> => {
+			requireService(c);
+			const nonce = newNonce();
+			await rememberPending(c, nonce, null);
+			return { state: issueState(c.key[0]!, nonce, String(origin)) };
+		},
+
+		/** The connection, for a session that is about to clone or push. */
+		internalGithubConnection: (c): StoredConnection | null => {
+			requireService(c);
+			return c.vars.github;
 		},
 
 		// --- the sign-in, for the servers (signin/directory.ts) -----------------------------------

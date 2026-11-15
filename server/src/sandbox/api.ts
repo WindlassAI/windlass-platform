@@ -95,7 +95,8 @@ export interface Sandboxes {
 	 * and goes when the sandbox does. False on Docker, where it is a volume of the user's that outlives
 	 * every sandbox. True on E2B: a sandbox made in place of one that is gone has no Windlass session to
 	 * continue, so a turn that names one (`RunTurnInput.windlassSessionId`) ends with `session_not_found`.
-	 * Whoever replaces a lost sandbox can read this and start a new Windlass session at once.
+	 * Whoever replaces a lost sandbox can read this and, before the turn, put the session's copy back
+	 * (`SandboxLayer.backups`) or, where there is none, start a new Windlass session at once.
 	 */
 	readonly sessionsLiveInSandbox: boolean;
 	/** Every profile, available or not, in the order the picker shows them. */
@@ -156,6 +157,49 @@ export interface TurnAnswer {
 	note?: string;
 }
 
+/**
+ * An MCP server the project's own configuration names (`.windlass/config.json` in the workspace), which
+ * Windlass does not start until the user approves exactly this definition of it: opening a repository
+ * must not run a command the repository chose (Windlass's docs/mcp.md, "A server in the project's file").
+ */
+export interface TurnServerQuestion {
+	/** The server's name in the configuration. */
+	name: string;
+	/** Windlass's mark for exactly this definition: an approval is for it, and a changed definition has another. */
+	fingerprint: string;
+	/** What approving starts: the command and each of its arguments, one string each. Null for a server reached at an address. */
+	argv: string[] | null;
+	/** The address of a server that is reached and not started. Null for a command. */
+	url: string | null;
+	/** The file that defines it, as a path in the sandbox; null when Windlass named none. */
+	file: string | null;
+	/**
+	 * The variables its definition reads (`${NAME}` in `env` or `headers`) that are not set where Windlass
+	 * runs: with any, Windlass does not start the server, approved or not. Empty when it reads none, when
+	 * all are set, and when the definition could not be read to tell.
+	 */
+	unset: string[];
+	/**
+	 * True when the question is put before the turn's prompt goes to Windlass: the turn waits for the
+	 * answer and then starts with what was allowed. False for a server Windlass reports while the turn
+	 * is already running: the turn goes on meanwhile, and the question is withdrawn when it ends.
+	 */
+	holdsTurn: boolean;
+}
+
+/** What became of a server the user said to start. */
+export type TurnServerOutcome =
+	/** It runs, with this many tools. */
+	| { state: "running"; tools: number }
+	/** Windlass took the approval and the server had not finished starting when the layer stopped waiting for it. */
+	| { state: "starting" }
+	/** Windlass took the approval and could not start the server; `reason` is Windlass's own sentence. It tries again by itself. */
+	| { state: "failed"; reason: string }
+	/** Nothing was approved: the definition had changed since the question. Windlass asks about the new one. */
+	| { state: "changed" }
+	/** The approval did not reach Windlass, or it refused the request; `reason` says why. */
+	| { state: "refused"; reason: string };
+
 /** A handle on a turn in progress. Its methods reject once the turn has ended. */
 export interface TurnControl {
 	/** Sends a message into the running turn; the model reads it at its next step. Resolves once Windlass admitted it. */
@@ -192,6 +236,21 @@ export interface RunTurnInput {
 	 * callback nobody can answer: Windlass is told so, and a call that would ask is refused at once.
 	 */
 	onQuestion?: (question: TurnQuestion, signal: AbortSignal) => Promise<TurnAnswer>;
+	/**
+	 * Called for each server the project's configuration names that waits for the user's approval, one
+	 * at a time. Resolve with true to have Windlass start it (`_windlass/mcp_approve`), with false to
+	 * leave it stopped; a rejection leaves it stopped. `signal` aborts when the question is withdrawn
+	 * (the turn was stopped, or ended): whatever the promise does afterwards is ignored.
+	 *
+	 * Windlass is asked what waits before the prompt is sent, as its own command line does, so that the
+	 * turn starts with what the user allowed (`holdsTurn`), and tells of a server that comes to wait
+	 * while the turn runs. Each definition is asked about once per turn. Windlass remembers an approval
+	 * itself, in its data directory, for 30 days; a server left stopped is asked about again by the
+	 * next turn. Without this callback nobody is asked and such a server stays stopped.
+	 */
+	onServerQuestion?: (question: TurnServerQuestion, signal: AbortSignal) => Promise<boolean>;
+	/** Called after `onServerQuestion` resolved with true, once it is known what became of the server. */
+	onServerApproved?: (question: TurnServerQuestion, outcome: TurnServerOutcome) => void;
 	/** Called once, when the turn has started and can be steered. */
 	onControl?: (control: TurnControl) => void;
 }
@@ -398,10 +457,77 @@ export interface AccessTokens {
 	current(uid: string): Promise<AccessToken>;
 }
 
+// ---------------------------------------------------------------------------------------------
+// A copy of Windlass's session data, kept outside the sandbox
+// ---------------------------------------------------------------------------------------------
+
+/** One agent session, as the copy of its Windlass data is named by. */
+export interface BackupOwner {
+	uid: string;
+	sessionId: string;
+}
+
+/** What was saved: for the session's own record, and what a restore is checked against. */
+export interface SavedBackup {
+	/** The archive's size in bytes. */
+	size: number;
+	/** The archive's SHA-256, in hex. */
+	sha256: string;
+	/** When it was saved, ms since the epoch. */
+	at: number;
+}
+
+export type BackupSaveResult =
+	| { outcome: "saved"; backup: SavedBackup; ms: number }
+	/** Windlass has no session in this sandbox yet: there is nothing to copy. */
+	| { outcome: "empty" }
+	/** The archive would be larger than `limit` bytes: nothing was saved, and an earlier copy is left as it is. */
+	| { outcome: "too_large"; size: number; limit: number }
+	/** `reason` is for a log: it holds no link and nothing the sandbox printed. An earlier copy may be left as it was or not. */
+	| { outcome: "failed"; reason: string };
+
+export type BackupRestoreResult =
+	| { outcome: "restored"; ms: number }
+	/** The store has no copy for this session. */
+	| { outcome: "missing" }
+	/** The copy could not be fetched, is not the one that was saved, or does not hold the Windlass session. `reason` is for a log. */
+	| { outcome: "failed"; reason: string };
+
+/**
+ * Where Windlass's sessions live in the sandbox (`Sandboxes.sessionsLiveInSandbox`), a copy of them
+ * can be kept outside it: one object per agent session in a bucket (server/src/bucket/), replaced
+ * after every turn and put back into the sandbox that takes the place of a lost one, so that the
+ * agent goes on in the same Windlass session there (sandbox/backup.ts says what is copied and how).
+ *
+ * The sandbox uploads and downloads by itself, through a link this layer signs for it: the bytes
+ * never pass through the server. Both calls must be made while no turn runs in the sandbox: between
+ * turns nothing has Windlass's files open, and only then is a copy of them whole.
+ */
+export interface SessionBackups {
+	/** The largest archive that is kept, in bytes. */
+	readonly maxBytes: number;
+	/** Packs Windlass's session data in the sandbox and has the sandbox upload it, replacing the session's earlier copy. Never throws. */
+	save(sandbox: SandboxHandle, owner: BackupOwner): Promise<BackupSaveResult>;
+	/**
+	 * Has a new sandbox download the session's copy and unpack it into Windlass's data directory, when
+	 * it is the copy `saved` describes (its size and hash are checked in the sandbox before anything is
+	 * unpacked) and holds `windlassSessionId`. Never throws.
+	 */
+	restore(sandbox: SandboxHandle, owner: BackupOwner, saved: SavedBackup, windlassSessionId: string): Promise<BackupRestoreResult>;
+	/** Removes the session's copy. A no-op when there is none. Throws when the store could not be told. */
+	remove(owner: BackupOwner): Promise<void>;
+}
+
 /** What `server/src/sandbox/index.ts` exports as `createSandboxLayer()`. */
 export interface SandboxLayer {
 	sandboxes: Sandboxes;
 	windlass: Windlass;
 	logins: ChatgptLogins;
 	tokens: AccessTokens;
+	/**
+	 * Null or absent where there is nothing to copy (Docker: Windlass's data is on a volume that outlives
+	 * every sandbox) or nowhere to copy it to (no bucket is configured): a session whose sandbox is lost
+	 * then starts a new Windlass session.
+	 */
+	backups?: SessionBackups | null;
 }

@@ -1,7 +1,9 @@
 /** A unified diff, readable: a header per file, numbered lines, added and removed lines coloured. */
 import { useMemo } from "react";
+import { splitDiff } from "../lib/copy";
 import { parseDiff, type DiffFile } from "../lib/diff";
 import { plural } from "../lib/format";
+import { CopyButton } from "./Copy";
 
 const STATUS_WORD: Record<DiffFile["status"], string> = { modified: "modified", added: "new file", deleted: "deleted", renamed: "renamed" };
 const SIGN = { add: "+", remove: "-", context: " ", meta: "\\" } as const;
@@ -38,6 +40,11 @@ export function DiffHunks({ file }: { file: DiffFile }) {
 
 export function DiffView({ diff }: { diff: string }) {
 	const files = useMemo(() => parseDiff(diff), [diff]);
+	// One patch per file, for its own copy control; when the cut does not match what was parsed, only the whole diff is offered.
+	const parts = useMemo(() => {
+		const split = splitDiff(diff);
+		return split.length === files.length ? split : null;
+	}, [diff, files]);
 	const added = files.reduce((sum, file) => sum + file.added, 0);
 	const removed = files.reduce((sum, file) => sum + file.removed, 0);
 
@@ -51,14 +58,17 @@ export function DiffView({ diff }: { diff: string }) {
 				<span>{plural(files.length, "file")}</span>
 				<span className="diff-added">+{added}</span>
 				<span className="diff-removed">-{removed}</span>
+				{/* With one file, its own control copies the same patch. */}
+				{files.length > 1 || parts === null ? <CopyButton text={diff} label="Copy the whole diff" /> : null}
 			</p>
-			{files.map((file) => (
+			{files.map((file, index) => (
 				<section key={file.path} className="diff-file" aria-label={file.path}>
 					<header className="diff-file-head">
 						<h3 className="diff-path">
 							{file.oldPath ? <span className="diff-old-path">{file.oldPath} → </span> : null}
 							{file.path}
 						</h3>
+						{parts?.[index] !== undefined ? <CopyButton text={parts[index]} label={`Copy the diff of ${file.path}`} /> : null}
 						<span className="diff-status">{STATUS_WORD[file.status]}</span>
 						<span className="diff-added">+{file.added}</span>
 						<span className="diff-removed">-{file.removed}</span>

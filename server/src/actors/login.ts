@@ -17,6 +17,7 @@ import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, clientError } from "../auth.js";
 import { config } from "../config.js";
 import type { AuthResult, LoginStart, UserProfile } from "../contract.js";
+import { NOT_INVITED, mayUse } from "../access.js";
 import { getLayer } from "../layer.js";
 import { uidOfAccount } from "../signin/material.js";
 import { issueUserToken } from "../tokens.js";
@@ -160,6 +161,11 @@ export const login = actor({
 					const finished = await logins.finish(attemptId, attempt.sealed, pastedUrl.trim());
 					const account = finished.account;
 					if (typeof account?.sub !== "string" || account.sub === "") throw new Error("the sign-in returned no account identifier");
+					// By invitation: an account that is not on the list gets no user, and nothing of its sign-in is kept.
+					if (!mayUse({ uid: uidOfAccount(account.sub), email: typeof account.email === "string" ? account.email : null, demo: false }, config.access)) {
+						attempt.sealed = null;
+						throw new UserError(NOT_INVITED, { code: "not_invited" });
+					}
 					// Kept before it is handed on: OpenAI takes the code in the address once, so when the user's
 					// actor cannot be reached now, the same address finishes the attempt when it is sent again.
 					attempt.sealed = finished.attempt;

@@ -11,6 +11,7 @@ import "./styles/signin.css";
 import "./styles/home.css";
 import "./styles/new-agent.css";
 import "./styles/session.css";
+import "./styles/github.css";
 import { QUESTION_TIMEOUT_MS } from "@contract";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -39,9 +40,11 @@ async function createPlatformClient(): Promise<PlatformClient> {
 	// Each implementation is its own chunk: the mock never loads RivetKit, the real client never loads the fixtures.
 	if (wantsMock()) {
 		const { createMockClient } = await import("./api/mock");
-		const client = createMockClient({ questionTimeoutMs: mockQuestionTimeout() });
+		// `?github=off` plays a deployment with no GitHub App.
+		const client = createMockClient({ questionTimeoutMs: mockQuestionTimeout(), github: new URLSearchParams(location.search).get("github") !== "off" });
 		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),
-		// `__wlpMock.mockNextAnswer("elsewhere" | "error")` (an answer that does not go through).
+		// `__wlpMock.mockNextAnswer("elsewhere" | "error")` (an answer that does not go through),
+		// `__wlpMock.mockNextGithub("list" | "connect" | "denied" | "protected" | "gone")` (GitHub refuses).
 		(window as unknown as { __wlpMock: unknown }).__wlpMock = client;
 		return client;
 	}

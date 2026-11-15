@@ -1,11 +1,14 @@
 /** The pieces of a conversation: one component per kind of block the timeline reducer produces. */
-import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { parseDiff } from "../lib/diff";
 import { absoluteTime, count, duration, percent, plural } from "../lib/format";
+import { codeText, toolCopyLabels, toolInputText, toolOutputText } from "../lib/copy";
 import { reasoningTitle, renderMarkdown } from "../lib/markdown";
 import { callKey, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlatformBlock, type ReasoningBlock, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
 import { formatInput, summarizeTool } from "../lib/toolSummary";
 import { useNow } from "../state/hooks";
+import { CopyButton, useLatest } from "./Copy";
 import { DiffHunks } from "./DiffView";
 import { AskIcon, CheckIcon, ChevronIcon, CrossIcon, InfoIcon, Mark, RefusedIcon, RingIcon, SandboxedIcon, SteerIcon, StopIcon, ThoughtIcon, WarnIcon } from "./Icons";
 import { AnswerLine, AskedLine, InlineQuestion, useInteractive } from "./Question";
@@ -15,10 +18,61 @@ import { OUTCOME_TONE, OUTCOME_WORD, OutcomeGlyph } from "./Status";
 // Prose
 // ---------------------------------------------------------------------------------------------
 
-export function Markdown({ text, streaming = false, className = "" }: { text: string; streaming?: boolean; className?: string }) {
+export function Markdown({ text, streaming = false, className = "", copyCode = false }: { text: string; streaming?: boolean; className?: string; copyCode?: boolean }) {
 	const html = useMemo(() => renderMarkdown(text), [text]);
+	const root = useRef<HTMLDivElement>(null);
 	// The HTML is sanitised by DOMPurify in renderMarkdown.
-	return <div className={`prose${streaming ? " prose-streaming" : ""}${className ? ` ${className}` : ""}`} dangerouslySetInnerHTML={{ __html: html }} />;
+	return (
+		<>
+			<div ref={root} className={`prose${streaming ? " prose-streaming" : ""}${className ? ` ${className}` : ""}`} dangerouslySetInnerHTML={{ __html: html }} />
+			{/* Not while the text streams in: the HTML is replaced with every chunk, and the last block may be half written. */}
+			{copyCode && !streaming ? <CodeCopies root={root} html={html} /> : null}
+		</>
+	);
+}
+
+/**
+ * A copy control beside each code block of rendered Markdown. The blocks are HTML, not React, so each
+ * `pre` is wrapped in a box once the HTML is in place, and the control is portalled into a slot at the
+ * start of that box. A sibling of the prose rather than part of it, so that only this re-renders when
+ * the boxes are found, never the text.
+ */
+function CodeCopies({ root, html }: { root: RefObject<HTMLDivElement | null>; html: string }) {
+	const [slots, setSlots] = useState<HTMLElement[]>([]);
+	useLayoutEffect(() => {
+		const prose = root.current;
+		if (!prose) return;
+		const found = Array.from(prose.querySelectorAll("pre"), (pre) => {
+			let box = pre.parentElement;
+			if (!box?.classList.contains("code-block")) {
+				box = document.createElement("div");
+				box.className = "code-block";
+				pre.replaceWith(box);
+				box.append(pre);
+			}
+			let slot = box.querySelector<HTMLElement>(":scope > .code-copy");
+			if (!slot) {
+				slot = document.createElement("span");
+				slot.className = "code-copy";
+				box.prepend(slot);
+			}
+			return slot;
+		});
+		setSlots(found);
+	}, [root, html]);
+	return slots.map((slot, index) =>
+		createPortal(
+			<CopyButton
+				text={() => {
+					const pre = slot.parentElement?.querySelector("pre");
+					return pre ? codeText(pre) : "";
+				}}
+				label={slots.length > 1 ? `Copy code block ${index + 1} of ${slots.length}` : "Copy this code block"}
+			/>,
+			slot,
+			String(index),
+		),
+	);
 }
 
 function UserPrompt({ block }: { block: UserBlock }) {
@@ -33,10 +87,13 @@ function UserPrompt({ block }: { block: UserBlock }) {
 						<span className="visually-hidden">You, while it worked: </span>
 						{block.text}
 					</p>
-					<p className="user-meta">
-						<span>steer</span>
-						{block.at !== null ? <time dateTime={new Date(block.at).toISOString()}>{absoluteTime(block.at)}</time> : null}
-					</p>
+					<div className="user-foot">
+						<p className="user-meta">
+							<span>steer</span>
+							{block.at !== null ? <time dateTime={new Date(block.at).toISOString()}>{absoluteTime(block.at)}</time> : null}
+						</p>
+						<CopyButton text={block.text} label="Copy this message" />
+					</div>
 				</div>
 			</div>
 		);
@@ -51,18 +108,28 @@ function UserPrompt({ block }: { block: UserBlock }) {
 					<span className="visually-hidden">You: </span>
 					{block.text}
 				</p>
-				<p className="user-meta">
-					<span>{block.model}</span>
-					{block.effort ? <span>effort {block.effort}</span> : null}
-					{block.at !== null ? <time dateTime={new Date(block.at).toISOString()}>{absoluteTime(block.at)}</time> : null}
-				</p>
+				<div className="user-foot">
+					<p className="user-meta">
+						<span>{block.model}</span>
+						{block.effort ? <span>effort {block.effort}</span> : null}
+						{block.at !== null ? <time dateTime={new Date(block.at).toISOString()}>{absoluteTime(block.at)}</time> : null}
+					</p>
+					<CopyButton text={block.text} label="Copy this prompt" />
+				</div>
 			</div>
 		</div>
 	);
 }
 
 function AssistantText({ block }: { block: TextBlock }) {
-	return <Markdown text={block.text} streaming={block.streaming} />;
+	// Read when pressed: while the answer streams, the control copies what has arrived without re-rendering with it.
+	const text = useLatest(block.text);
+	return (
+		<div className="answer">
+			<Markdown text={block.text} streaming={block.streaming} copyCode />
+			<CopyButton text={text} label="Copy this answer as Markdown" />
+		</div>
+	);
 }
 
 function Reasoning({ block }: { block: ReasoningBlock }) {
@@ -143,17 +210,28 @@ function ToolBody({ block }: { block: ToolBlock }) {
 	const input = formatInput(block);
 	const diff = typeof block.display?.diff === "string" ? parseDiff(block.display.diff) : [];
 	const output = block.output ?? block.progress;
+	// Read when pressed, so that a running call's output is copied as far as it has come.
+	const latest = useLatest(block);
+	const copyInput = useCallback(() => toolInputText(latest()), [latest]);
+	const copyOutput = useCallback(() => toolOutputText(latest()), [latest]);
+	const labels = toolCopyLabels(block);
 	return (
 		<div className="tool-body">
 			<section className="tool-part" aria-label="Input">
-				<h4 className="tool-part-title">input</h4>
+				<div className="tool-part-head">
+					<h4 className="tool-part-title">input</h4>
+					{input.trim() !== "" ? <CopyButton text={copyInput} label={labels.input} /> : null}
+				</div>
 				{input.trim() === "" ? <p className="tool-part-empty">no arguments</p> : <Output text={input} label={`Input of ${block.name}`} limit={16} />}
 			</section>
 			<section className="tool-part" aria-label="Output">
-				<h4 className="tool-part-title">
-					{block.output === null ? (block.state === "running" ? "output so far" : "output") : "output"}
-					{block.truncated ? <span className="tool-part-note">capped by Windlass: {count(block.truncated.originalLines)} lines in total</span> : null}
-				</h4>
+				<div className="tool-part-head">
+					<h4 className="tool-part-title">
+						{block.output === null ? (block.state === "running" ? "output so far" : "output") : "output"}
+						{block.truncated ? <span className="tool-part-note">capped by Windlass: {count(block.truncated.originalLines)} lines in total</span> : null}
+					</h4>
+					{diff.length > 0 || (output !== null && output !== "") ? <CopyButton text={copyOutput} label={labels.output} /> : null}
+				</div>
 				{diff.length > 0 ? (
 					<div className="tool-diff">
 						{diff.map((file) => (

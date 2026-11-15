@@ -16,9 +16,9 @@
 
 import { UserError } from "rivetkit";
 import { assertOrigin } from "./auth.js";
-import { config, engineAdminToken } from "./config.js";
+import { config, engineAdminToken, githubConfig } from "./config.js";
 import { ConnectionTokens } from "./connection-tokens.js";
-import { PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH, type PlatformConnection, type PlatformInfo } from "./contract.js";
+import { type GithubInfo, PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH, type PlatformConnection, type PlatformInfo } from "./contract.js";
 import { getLayer } from "./layer.js";
 
 /** The reasoning efforts `windlass --effort` accepts (Windlass's user guide, "Models and effort"). */
@@ -66,16 +66,31 @@ export async function platformModels(): Promise<string[]> {
 	return (await slow()).models;
 }
 
+let github: GithubInfo | null | undefined;
+
+/** What the web app is told of the deployment's GitHub App; null without one, and the web app then shows nothing of GitHub. */
+function githubInfo(): GithubInfo | null {
+	if (github === undefined) {
+		const { app } = githubConfig();
+		github = app ? { slug: app.slug, url: app.webUrl } : null;
+	}
+	return github;
+}
+
 export async function platformInfo(): Promise<PlatformInfo> {
 	const layer = await getLayer();
 	const { windlassVersion, models } = await slow();
-	return {
+	const info: PlatformInfo = {
 		demoEnabled: config.demo,
 		windlassVersion,
 		profiles: layer.sandboxes.profiles(),
 		models,
 		efforts: EFFORTS,
 	};
+	// Left out without a GitHub App: the answer is then what it was before there could be one.
+	const app = githubInfo();
+	if (app) info.github = app;
+	return info;
 }
 
 let tokens: ConnectionTokens | null | undefined;

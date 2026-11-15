@@ -11,8 +11,10 @@
  * See config.ts for the variables.
  */
 
-import { config } from "./config.js";
+import { config, githubConfig } from "./config.js";
 import { PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH } from "./contract.js";
+import { githubApp } from "./github/app.js";
+import { GITHUB_CALLBACK_PATH, githubCallbackResponse } from "./github/connect.js";
 import { getLayer } from "./layer.js";
 import { connectionTokens, platformConnectionResponse, platformInfoResponse } from "./platform-info.js";
 import { webFiles } from "./web.js";
@@ -58,6 +60,21 @@ void reportSignIns(getSignIns, config.sandbox !== "e2b");
 // An admin token the engine refuses: said now, not to the first visitor.
 void warnAboutConnectionTokens(connectionTokens());
 
+// The GitHub App, when the deployment has one: said now, with a key that does not sign or a half-set configuration.
+try {
+	const { app, missing } = githubConfig();
+	if (missing.length > 0) console.error(`[wlp] WARNING: GitHub is off: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set while the other GitHub App settings are.`);
+	else if (app) {
+		const problem = githubApp()?.keyProblem() ?? null;
+		if (problem) console.error(`[wlp] WARNING: GitHub cannot be used: ${problem}.`);
+		else console.log(`[wlp] github: app ${app.slug} (id ${app.appId}) at ${app.webUrl}; users connect through ${GITHUB_CALLBACK_PATH} on this port`);
+	}
+} catch (error) {
+	// A setting that cannot be what it should be. The message names the variable and holds no value.
+	console.error(`[wlp] the GitHub App's configuration is not usable: ${error instanceof Error ? error.message : "unknown error"}`);
+	process.exit(1);
+}
+
 // The web app, where this server serves it too (WLP_WEB_DIR): its files, and its page for every address of the app.
 const web = config.webDir ? webFiles(config.webDir) : null;
 if (config.webDir) console.log(`[wlp] web app: served from ${config.webDir}`);
@@ -66,6 +83,8 @@ async function route(request: Request): Promise<Response> {
 	const { pathname } = new URL(request.url);
 	if (pathname === PLATFORM_INFO_PATH) return platformInfoResponse(request);
 	if (pathname === PLATFORM_CONNECTION_PATH) return platformConnectionResponse(request);
+	// Where GitHub sends a user's browser back to when they connect: the GitHub App's callback URL.
+	if (pathname === GITHUB_CALLBACK_PATH) return githubCallbackResponse(request);
 	// For a load balancer or the host's health check: the node's own view of its connection to the engine.
 	if (pathname === "/health") return registry.routes.health();
 	const page = web ? await web(request) : null;

@@ -64,6 +64,8 @@ const ACTOR = { login: "login", user: "user", agentSession: "agentSession" } as 
  * is asked to, so without a limit a call to a server that is down would never settle.
  */
 const ACTION_TIMEOUT_MS = 30_000;
+/** A push commits, pushes and opens a pull request before it answers: the server gives it two minutes. */
+const PUBLISH_TIMEOUT_MS = 125_000;
 
 /** What an action of a contract interface resolves to. */
 type ResultOf<A, K extends keyof A> = A[K] extends (...args: never[]) => Promise<infer R> ? R : never;
@@ -159,7 +161,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		const abort = new AbortController();
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		// The first call of a page load is `info`: it is how the app learns the server is not there, so it waits less.
-		const limit = name === "info" ? CONNECT_PATIENCE_MS : ACTION_TIMEOUT_MS;
+		const limit = name === "info" ? CONNECT_PATIENCE_MS : name === "publish" ? PUBLISH_TIMEOUT_MS : ACTION_TIMEOUT_MS;
 		const timeout = new Promise<never>((_, reject) => {
 			timer = setTimeout(() => {
 				// While the connection is still being asked for, what is not answering is the platform's own address.
@@ -306,6 +308,12 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			createSession: (input) => act("createSession", input),
 			renameSession: (id, title) => act("renameSession", id, title),
 			deleteSession: (id) => act("deleteSession", id),
+			github: () => act("github"),
+			githubConnect: (origin, install) => act("githubConnect", { origin, install }),
+			githubComplete: (ticket) => act("githubComplete", ticket),
+			githubDisconnect: () => act("githubDisconnect"),
+			githubRepositories: (query, fresh) => act("githubRepositories", query, fresh),
+			githubBranches: (repositoryId) => act("githubBranches", repositoryId),
 			watch(feed: UserFeed) {
 				let live = false;
 				const feedConn = feedConnection(
@@ -345,6 +353,8 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			stop: () => act("stop"),
 			changes: () => act("changes"),
 			diff: () => act("diff"),
+			publishState: () => act("publishState"),
+			publish: (message) => act("publish", { message }),
 			resync() {
 				for (const reload of reloads) reload();
 			},

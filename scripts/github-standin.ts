@@ -1,0 +1,745 @@
+/**
+ * A stand-in for the parts of GitHub the platform calls, for the checks: no GitHub App exists while
+ * they run, and none may be called. One HTTP server on a loopback port that is, at once,
+ *
+ *   GitHub itself      `/login/oauth/authorize`, `/login/oauth/access_token`,
+ *                      `/apps/<slug>/installations/new`, and a git remote over smart HTTP at
+ *                      `/<owner>/<name>.git`, served by `git http-backend` from real bare repositories
+ *   GitHub's API       under `/api/v3`, as GitHub Enterprise Server has it: the installation token
+ *                      endpoints, a user's installations, an installation's repositories, a user's
+ *                      permission in a repository, branches and pull requests
+ *
+ * It checks what GitHub checks, as far as the platform depends on it: the app's JWT (RS256 against the
+ * app's public key, issuer, `exp` no more than ten minutes ahead), a code that works once and only with
+ * the client secret and the PKCE verifier, an installation token's repository and permissions on every
+ * API call and every git request, expiry and revocation. And it refuses as GitHub refuses: 404 for an
+ * installation that is gone and for a repository a token cannot see, 422 for a repository an
+ * installation does not cover, 403 with `Permission to ... denied` for a push without write access, and
+ * a `pre-receive` refusal with GH006 for a protected branch. The words of those refusals are written
+ * from GitHub's as they are known, not copied from a run against it.
+ *
+ * A browser is played by `authorize()` and `install()`: they do what the user's click at GitHub does and
+ * return the address GitHub would send the browser to.
+ */
+
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { createHash, createPublicKey, createVerify, generateKeyPairSync, randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+type Level = "admin" | "write" | "read" | "none";
+type Permissions = Record<string, "read" | "write">;
+
+export interface StandinUser {
+	id: number;
+	login: string;
+}
+
+export interface StandinInstallation {
+	id: number;
+	account: { id: number; login: string; type: "User" | "Organization" };
+	/** Ids of the repositories it covers. */
+	repositories: Set<number>;
+	suspended: boolean;
+}
+
+export interface StandinRepository {
+	id: number;
+	owner: string;
+	name: string;
+	private: boolean;
+	archived: boolean;
+	defaultBranch: string;
+	/** The bare repository on disk. */
+	path: string;
+	/** What each GitHub user may do in it, beside its owner. */
+	access: Map<string, Level>;
+	/** Branch name patterns (`*` matches anything) a push to which is refused. */
+	protectedBranches: string[];
+}
+
+export interface StandinPull {
+	number: number;
+	repository: number;
+	title: string;
+	body: string;
+	head: string;
+	base: string;
+	state: "open" | "closed";
+	merged: boolean;
+	draft: boolean;
+}
+
+interface Token {
+	kind: "installation" | "user";
+	value: string;
+	installation?: number;
+	repositories?: number[];
+	permissions?: Permissions;
+	user?: number;
+	expiresAt: number;
+	revoked: boolean;
+}
+
+export interface StandinRequest {
+	method: string;
+	path: string;
+	/** What the request authenticated with. */
+	auth: "jwt" | "installation" | "user" | "basic" | "none";
+	body: unknown;
+	status: number;
+}
+
+export interface StandinOptions {
+	/** Where "GitHub" sends a browser after an authorization or an installation: the platform's callback route. */
+	callbackUrl: string;
+	appId?: string;
+	slug?: string;
+	clientId?: string;
+	/** False for a run in which nothing is really pushed (the fake sandbox layer): a pull request's branches are then taken on trust. */
+	strictBranches?: boolean;
+	/** The address to listen on: a container reaches it at the host's, so the Docker check listens on all of them. */
+	host?: string;
+}
+
+const json = (response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) => {
+	response.writeHead(status, { "content-type": "application/json; charset=utf-8", ...headers });
+	response.end(body === null ? "" : JSON.stringify(body));
+};
+
+const readBody = (request: IncomingMessage): Promise<Buffer> =>
+	new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		request.on("data", (chunk: Buffer) => chunks.push(chunk));
+		request.on("end", () => resolve(Buffer.concat(chunks)));
+		request.on("error", reject);
+	});
+
+function git(args: string[], cwd?: string, input?: string): string {
+	return execFileSync("git", args, { cwd, input, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "Stand-in", GIT_AUTHOR_EMAIL: "standin@example.invalid", GIT_COMMITTER_NAME: "Stand-in", GIT_COMMITTER_EMAIL: "standin@example.invalid" } }).trim();
+}
+
+/** The hook of a bare repository that refuses protected branches the way GitHub's does. */
+const PRE_RECEIVE = `#!/bin/sh
+protected="$(dirname "$0")/../wlp-protected"
+[ -f "$protected" ] || exit 0
+status=0
+while read -r old new ref; do
+	branch=\${ref#refs/heads/}
+	while IFS= read -r pattern; do
+		case "$branch" in
+			$pattern)
+				echo "error: GH006: Protected branch update failed for $ref." >&2
+				echo "error: Changes must be made through a pull request." >&2
+				status=1
+				;;
+		esac
+	done < "$protected"
+done
+exit $status
+`;
+
+export class GithubStandin {
+	readonly appId: string;
+	readonly slug: string;
+	readonly clientId: string;
+	readonly clientSecret = `standin-client-secret-${randomBytes(12).toString("hex")}`;
+	/** The app's private key as GitHub hands it out (PKCS#1 PEM); the stand-in keeps the public half. */
+	readonly privateKeyPem: string;
+	private readonly publicKey;
+	readonly root = mkdtempSync(join(tmpdir(), "wlp-github-standin-"));
+	readonly users = new Map<string, StandinUser>();
+	readonly installations = new Map<number, StandinInstallation>();
+	readonly repositories = new Map<number, StandinRepository>();
+	readonly pulls: StandinPull[] = [];
+	readonly tokens = new Map<string, Token>();
+	readonly requests: StandinRequest[] = [];
+	/** What each installation token asked for, in order: the body of the request that made it. */
+	readonly minted: Array<{ installation: number; repositoryIds: number[] | null; permissions: Permissions | null; token: string }> = [];
+	/** The permissions the app was given when it was registered. */
+	appPermissions: Permissions = { metadata: "read", contents: "write", pull_requests: "write" };
+	/** Set to make every API call fail as an unreachable GitHub would. */
+	down = false;
+	private readonly codes = new Map<string, { user: number; challenge: string | null; used: boolean }>();
+	private nextId = 1000;
+	private server: Server | null = null;
+	private readonly children = new Set<ChildProcess>();
+	url = "";
+
+	constructor(private readonly options: StandinOptions) {
+		this.appId = options.appId ?? "424242";
+		this.slug = options.slug ?? "windlass-standin";
+		this.clientId = options.clientId ?? "Iv23standin0client";
+		const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+		this.privateKeyPem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
+		this.publicKey = createPublicKey(publicKey.export({ type: "spki", format: "pem" }).toString());
+	}
+
+	get apiUrl(): string {
+		return `${this.url}/api/v3`;
+	}
+
+	/** The environment a server needs to use this stand-in as its GitHub. */
+	env(): Record<string, string> {
+		return {
+			WLP_GITHUB_APP_ID: this.appId,
+			WLP_GITHUB_APP_SLUG: this.slug,
+			WLP_GITHUB_CLIENT_ID: this.clientId,
+			WLP_GITHUB_CLIENT_SECRET: this.clientSecret,
+			WLP_GITHUB_PRIVATE_KEY: Buffer.from(this.privateKeyPem, "utf8").toString("base64"),
+			WLP_GITHUB_API_URL: this.apiUrl,
+			WLP_GITHUB_URL: this.url,
+		};
+	}
+
+	async start(): Promise<void> {
+		const server = createServer((request, response) => {
+			this.handle(request, response).catch((error: unknown) => {
+				if (!response.headersSent) json(response, 500, { message: `stand-in failure: ${error instanceof Error ? error.message : String(error)}` });
+				else response.end();
+			});
+		});
+		this.server = server;
+		const host = this.options.host ?? "127.0.0.1";
+		await new Promise<void>((resolve) => server.listen(0, host, resolve));
+		const address = server.address();
+		if (typeof address !== "object" || address === null) throw new Error("the stand-in has no address");
+		this.url = `http://127.0.0.1:${address.port}`;
+	}
+
+	async stop(): Promise<void> {
+		for (const child of this.children) child.kill("SIGKILL");
+		const server = this.server;
+		this.server = null;
+		if (server) {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
+		rmSync(this.root, { recursive: true, force: true });
+	}
+
+	// ---- the world --------------------------------------------------------------------------------
+
+	addUser(login: string): StandinUser {
+		const user = { id: (this.nextId += 1), login };
+		this.users.set(login, user);
+		return user;
+	}
+
+	/** Installs the app on an account: a user's own, or an organization's. */
+	addInstallation(account: string, type: "User" | "Organization"): StandinInstallation {
+		const owner = type === "User" ? this.users.get(account) : undefined;
+		const installation: StandinInstallation = { id: (this.nextId += 1), account: { id: owner?.id ?? (this.nextId += 1), login: account, type }, repositories: new Set(), suspended: false };
+		this.installations.set(installation.id, installation);
+		return installation;
+	}
+
+	/** A repository with one commit on its default branch, covered by `installation` when one is given. */
+	addRepository(input: { owner: string; name: string; private?: boolean; installation?: StandinInstallation; files?: Record<string, string>; defaultBranch?: string }): StandinRepository {
+		const defaultBranch = input.defaultBranch ?? "main";
+		const path = join(this.root, "git", input.owner, `${input.name}.git`);
+		mkdirSync(path, { recursive: true });
+		git(["init", "--quiet", "--bare", `--initial-branch=${defaultBranch}`, path]);
+		git(["config", "http.receivepack", "true"], path);
+		writeFileSync(join(path, "hooks", "pre-receive"), PRE_RECEIVE);
+		chmodSync(join(path, "hooks", "pre-receive"), 0o755);
+		const repository: StandinRepository = { id: (this.nextId += 1), owner: input.owner, name: input.name, private: input.private ?? false, archived: false, defaultBranch, path, access: new Map(), protectedBranches: [] };
+		this.repositories.set(repository.id, repository);
+		this.commit(repository, defaultBranch, input.files ?? { "README.md": `# ${input.name}\n` }, "Initial commit");
+		input.installation?.repositories.add(repository.id);
+		return repository;
+	}
+
+	/** Adds a commit to a branch of a repository, as someone pushing to GitHub would. Returns the commit. */
+	commit(repository: StandinRepository, branch: string, files: Record<string, string>, message: string, from?: string): string {
+		const work = mkdtempSync(join(this.root, "work-"));
+		try {
+			git(["init", "--quiet", `--initial-branch=${branch}`, work]);
+			const start = from ?? branch;
+			const exists = this.branchHead(repository, start) !== null;
+			if (exists) {
+				git(["fetch", "--quiet", repository.path, `refs/heads/${start}`], work);
+				git(["reset", "--quiet", "--hard", "FETCH_HEAD"], work);
+			}
+			for (const [name, content] of Object.entries(files)) {
+				mkdirSync(join(work, name, ".."), { recursive: true });
+				writeFileSync(join(work, name), content);
+			}
+			git(["add", "-A"], work);
+			git(["commit", "--quiet", "--allow-empty", "-m", message], work);
+			// Straight into the bare repository: the hooks are for what comes over HTTP.
+			git(["push", "--quiet", "--no-verify", repository.path, `HEAD:refs/heads/${branch}`], work);
+			return git(["rev-parse", "HEAD"], work);
+		} finally {
+			rmSync(work, { recursive: true, force: true });
+		}
+	}
+
+	branchHead(repository: StandinRepository, branch: string): string | null {
+		try {
+			return git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], repository.path);
+		} catch {
+			return null;
+		}
+	}
+
+	/** A file's content on a branch, or null. */
+	fileOn(repository: StandinRepository, branch: string, path: string): string | null {
+		try {
+			return execFileSync("git", ["show", `refs/heads/${branch}:${path}`], { cwd: repository.path, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+		} catch {
+			return null;
+		}
+	}
+
+	/** The message and author of a branch's last commit. */
+	lastCommit(repository: StandinRepository, branch: string): { message: string; author: string; files: string[] } {
+		const [author = "", ...message] = git(["log", "-1", "--format=%an <%ae>%n%B", `refs/heads/${branch}`], repository.path).split("\n");
+		const files = git(["show", "--pretty=format:", "--name-only", `refs/heads/${branch}`], repository.path).split("\n").filter((line) => line !== "");
+		return { message: message.join("\n").trim(), author, files };
+	}
+
+	protect(repository: StandinRepository, patterns: string[]): void {
+		repository.protectedBranches = patterns;
+		if (patterns.length === 0) rmSync(join(repository.path, "wlp-protected"), { force: true });
+		else writeFileSync(join(repository.path, "wlp-protected"), `${patterns.join("\n")}\n`);
+	}
+
+	deleteRepository(repository: StandinRepository): void {
+		this.repositories.delete(repository.id);
+		for (const installation of this.installations.values()) installation.repositories.delete(repository.id);
+	}
+
+	uninstall(installation: StandinInstallation): void {
+		this.installations.delete(installation.id);
+	}
+
+	/** What a GitHub user may do in a repository: everything in their own, otherwise what they were granted. */
+	levelOf(repository: StandinRepository, login: string): Level {
+		if (repository.owner === login) return "admin";
+		return repository.access.get(login) ?? "none";
+	}
+
+	/** The installations a user reaches: those that cover a repository they can at least read. */
+	private installationsOf(user: StandinUser): StandinInstallation[] {
+		return [...this.installations.values()].filter(
+			(installation) => (installation.account.type === "User" && installation.account.id === user.id) || [...installation.repositories].some((id) => this.levelOf(this.repositories.get(id) as StandinRepository, user.login) !== "none"),
+		);
+	}
+
+	// ---- the browser ------------------------------------------------------------------------------
+
+	/** The address a browser at GitHub's authorization page would ask for. */
+	authorizeAddress(state: string, challenge: string | null): string {
+		const query = new URLSearchParams({ client_id: this.clientId, state });
+		if (challenge !== null) {
+			query.set("code_challenge", challenge);
+			query.set("code_challenge_method", "S256");
+		}
+		return `${this.url}/login/oauth/authorize?${query}`;
+	}
+
+	/**
+	 * The user's click on "Authorize" at `address` (what the platform sent the browser to): the address
+	 * GitHub then sends the browser to. With `deny` the user declines.
+	 */
+	authorize(login: string, address: string, options: { deny?: boolean } = {}): string {
+		const params = new URL(address).searchParams;
+		if (!address.startsWith(`${this.url}/login/oauth/authorize?`)) throw new Error(`not the authorization page: ${address}`);
+		if (params.get("client_id") !== this.clientId) throw new Error("the authorization names another client");
+		const back = new URL(this.options.callbackUrl);
+		const state = params.get("state");
+		if (state !== null) back.searchParams.set("state", state);
+		if (options.deny) {
+			back.searchParams.set("error", "access_denied");
+			return back.toString();
+		}
+		back.searchParams.set("code", this.code(login, params.get("code_challenge")));
+		return back.toString();
+	}
+
+	/**
+	 * The user's installation of the app on `account` from `address` (the installation page): makes the
+	 * installation, covering `repositories`, and returns where GitHub sends the browser. The app asks
+	 * for authorization during installation, so that address carries a code.
+	 */
+	install(login: string, address: string, account: string, type: "User" | "Organization", repositories: StandinRepository[]): string {
+		if (!address.startsWith(`${this.url}/apps/${this.slug}/installations/new`)) throw new Error(`not the installation page: ${address}`);
+		const installation = this.addInstallation(account, type);
+		for (const repository of repositories) installation.repositories.add(repository.id);
+		return this.installed(login, installation.id, new URL(address).searchParams.get("state"));
+	}
+
+	/** Where GitHub sends a browser after an installation: with a code, the installation's id and the state. */
+	installed(login: string, installationId: number | string, state: string | null): string {
+		const back = new URL(this.options.callbackUrl);
+		back.searchParams.set("code", this.code(login, null));
+		back.searchParams.set("installation_id", String(installationId));
+		back.searchParams.set("setup_action", "install");
+		if (state !== null) back.searchParams.set("state", state);
+		return back.toString();
+	}
+
+	private code(login: string, challenge: string | null): string {
+		const user = this.users.get(login);
+		if (!user) throw new Error(`no such user: ${login}`);
+		const code = randomBytes(10).toString("hex");
+		this.codes.set(code, { user: user.id, challenge, used: false });
+		return code;
+	}
+
+	// ---- tokens -----------------------------------------------------------------------------------
+
+	private verifyJwt(token: string): boolean {
+		const parts = token.split(".");
+		if (parts.length !== 3) return false;
+		try {
+			const header = JSON.parse(Buffer.from(parts[0] as string, "base64url").toString("utf8")) as { alg?: string };
+			const claims = JSON.parse(Buffer.from(parts[1] as string, "base64url").toString("utf8")) as { iss?: unknown; iat?: unknown; exp?: unknown };
+			if (header.alg !== "RS256") return false;
+			if (!createVerify("RSA-SHA256").update(`${parts[0]}.${parts[1]}`).verify(this.publicKey, Buffer.from(parts[2] as string, "base64url"))) return false;
+			const now = Math.floor(Date.now() / 1000);
+			if (String(claims.iss) !== this.appId && String(claims.iss) !== this.clientId) return false;
+			if (typeof claims.exp !== "number" || claims.exp <= now || claims.exp > now + 600) return false;
+			return typeof claims.iat === "number" && claims.iat <= now;
+		} catch {
+			return false;
+		}
+	}
+
+	private tokenOf(value: string | null): Token | null {
+		const token = value === null ? undefined : this.tokens.get(value);
+		if (!token || token.revoked || token.expiresAt <= Date.now()) return null;
+		return token;
+	}
+
+	/** Whether the token is still good, for the checks. */
+	alive(value: string): boolean {
+		return this.tokenOf(value) !== null;
+	}
+
+	private authOf(request: IncomingMessage): { kind: StandinRequest["auth"]; token: Token | null; raw: string | null; basic: [string, string] | null } {
+		const header = request.headers.authorization ?? "";
+		const bearer = /^(?:Bearer|token) (.+)$/i.exec(header)?.[1] ?? null;
+		if (bearer !== null) {
+			if (bearer.split(".").length === 3 && !bearer.startsWith("gh")) return { kind: "jwt", token: null, raw: bearer, basic: null };
+			const token = this.tokenOf(bearer);
+			return { kind: token?.kind ?? "none", token, raw: bearer, basic: null };
+		}
+		const basic = /^Basic (.+)$/i.exec(header)?.[1] ?? null;
+		if (basic !== null) {
+			const decoded = Buffer.from(basic, "base64").toString("utf8");
+			const at = decoded.indexOf(":");
+			return { kind: "basic", token: null, raw: null, basic: [decoded.slice(0, at), decoded.slice(at + 1)] };
+		}
+		return { kind: "none", token: null, raw: null, basic: null };
+	}
+
+	/** Whether an installation token may do `need` of `permission` in `repository`. */
+	private allows(token: Token, repository: StandinRepository, permission: string, need: "read" | "write"): boolean {
+		const installation = token.installation === undefined ? undefined : this.installations.get(token.installation);
+		if (!installation || installation.suspended || !installation.repositories.has(repository.id)) return false;
+		if (token.repositories && !token.repositories.includes(repository.id)) return false;
+		const has = (token.permissions ?? this.appPermissions)[permission];
+		return has === "write" || (has === "read" && need === "read");
+	}
+
+	private repositoryJson(repository: StandinRepository): Record<string, unknown> {
+		const head = this.branchHead(repository, repository.defaultBranch);
+		const pushed = head === null ? null : new Date(Number(git(["log", "-1", "--format=%ct", head], repository.path)) * 1000).toISOString();
+		return {
+			id: repository.id,
+			name: repository.name,
+			full_name: `${repository.owner}/${repository.name}`,
+			owner: { login: repository.owner },
+			private: repository.private,
+			archived: repository.archived,
+			default_branch: repository.defaultBranch,
+			pushed_at: pushed,
+			html_url: `${this.url}/${repository.owner}/${repository.name}`,
+		};
+	}
+
+	private pullJson(pull: StandinPull): Record<string, unknown> {
+		const repository = this.repositories.get(pull.repository) as StandinRepository;
+		return {
+			number: pull.number,
+			html_url: `${this.url}/${repository.owner}/${repository.name}/pull/${pull.number}`,
+			state: pull.state,
+			draft: pull.draft,
+			merged: pull.merged,
+			merged_at: pull.merged ? new Date().toISOString() : null,
+			title: pull.title,
+			body: pull.body,
+			head: { ref: pull.head },
+			base: { ref: pull.base },
+		};
+	}
+
+	private installationJson(installation: StandinInstallation): Record<string, unknown> {
+		const settings = installation.account.type === "Organization" ? `${this.url}/organizations/${installation.account.login}/settings/installations/${installation.id}` : `${this.url}/settings/installations/${installation.id}`;
+		return {
+			id: installation.id,
+			account: { id: installation.account.id, login: installation.account.login, type: installation.account.type },
+			html_url: settings,
+			target_type: installation.account.type,
+			suspended_at: installation.suspended ? new Date().toISOString() : null,
+			repository_selection: "selected",
+		};
+	}
+
+	// ---- requests ---------------------------------------------------------------------------------
+
+	private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+		const url = new URL(request.url ?? "/", this.url);
+		const path = url.pathname;
+		const gitRequest = /^\/([^/]+)\/([^/]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/.exec(path);
+		if (gitRequest) {
+			await this.git(request, response, url, gitRequest[1] as string, gitRequest[2] as string, gitRequest[3] as string);
+			return;
+		}
+
+		const raw = await readBody(request);
+		let body: unknown = null;
+		try {
+			body = raw.length > 0 ? JSON.parse(raw.toString("utf8")) : null;
+		} catch {
+			body = Object.fromEntries(new URLSearchParams(raw.toString("utf8")));
+		}
+		const auth = this.authOf(request);
+		const entry: StandinRequest = { method: request.method ?? "GET", path: path + url.search, auth: auth.kind, body, status: 0 };
+		this.requests.push(entry);
+		const answer = (status: number, payload: unknown, headers: Record<string, string> = {}) => {
+			entry.status = status;
+			json(response, status, payload, headers);
+		};
+
+		if (path === "/login/oauth/access_token" && request.method === "POST") {
+			const fields = (body ?? {}) as Record<string, string>;
+			const code = this.codes.get(String(fields.code));
+			if (fields.client_id !== this.clientId || fields.client_secret !== this.clientSecret) return answer(200, { error: "incorrect_client_credentials", error_description: "The client_id and/or client_secret passed are incorrect." });
+			const verifierOk = !code?.challenge || (typeof fields.code_verifier === "string" && createHash("sha256").update(fields.code_verifier).digest("base64url") === code.challenge);
+			if (!code || code.used || !verifierOk) return answer(200, { error: "bad_verification_code", error_description: "The code passed is incorrect or expired." });
+			code.used = true;
+			const value = `ghu_${randomBytes(18).toString("hex")}`;
+			this.tokens.set(value, { kind: "user", value, user: code.user, expiresAt: Date.now() + 8 * 3600_000, revoked: false });
+			return answer(200, { access_token: value, expires_in: 28800, refresh_token: `ghr_${randomBytes(18).toString("hex")}`, refresh_token_expires_in: 15897600, scope: "", token_type: "bearer" });
+		}
+
+		if (!path.startsWith("/api/v3/")) return answer(404, { message: "Not Found" });
+		if (this.down) return answer(503, { message: "Service unavailable" });
+		const api = path.slice("/api/v3".length);
+		const method = request.method ?? "GET";
+
+		// --- as the app ---
+		const mint = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(api);
+		if (mint && method === "POST") {
+			if (auth.kind !== "jwt" || auth.raw === null || !this.verifyJwt(auth.raw)) return answer(401, { message: "A JSON web token could not be decoded" });
+			const installation = this.installations.get(Number(mint[1]));
+			if (!installation) return answer(404, { message: "Not Found" });
+			if (installation.suspended) return answer(403, { message: "This installation has been suspended" });
+			const fields = (body ?? {}) as { repository_ids?: number[]; permissions?: Permissions };
+			const ids = Array.isArray(fields.repository_ids) ? fields.repository_ids : null;
+			if (ids?.some((id) => !installation.repositories.has(id))) return answer(422, { message: "There is at least one repository that does not exist or is not accessible to the parent installation." });
+			const rank = { read: 1, write: 2 } as const;
+			for (const [name, level] of Object.entries(fields.permissions ?? {})) {
+				const granted = this.appPermissions[name];
+				if (!granted || rank[level] > rank[granted]) return answer(422, { message: "The permissions requested are not granted to this installation." });
+			}
+			const value = `ghs_${this.appId}_${randomBytes(30).toString("base64url")}`;
+			this.tokens.set(value, { kind: "installation", value, installation: installation.id, repositories: ids ?? undefined, permissions: fields.permissions, expiresAt: Date.now() + 3600_000, revoked: false });
+			this.minted.push({ installation: installation.id, repositoryIds: ids, permissions: fields.permissions ?? null, token: value });
+			return answer(201, { token: value, expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: fields.permissions ?? this.appPermissions, repository_selection: ids ? "selected" : "all" });
+		}
+
+		const forget = /^\/applications\/([^/]+)\/token$/.exec(api);
+		if (forget && method === "DELETE") {
+			if (!auth.basic || auth.basic[0] !== this.clientId || auth.basic[1] !== this.clientSecret || forget[1] !== this.clientId) return answer(401, { message: "Bad credentials" });
+			const token = this.tokens.get(String((body as { access_token?: unknown } | null)?.access_token));
+			if (!token || token.kind !== "user") return answer(422, { message: "Validation Failed" });
+			token.revoked = true;
+			return answer(204, null);
+		}
+
+		// --- as a user ---
+		if (api === "/user" || api === "/user/installations") {
+			const user = auth.token?.kind === "user" ? [...this.users.values()].find((candidate) => candidate.id === auth.token?.user) : undefined;
+			if (!user) return answer(401, { message: "Bad credentials" });
+			if (api === "/user") return answer(200, { id: user.id, login: user.login, type: "User" });
+			const list = this.installationsOf(user);
+			return answer(200, { total_count: list.length, installations: list.map((installation) => this.installationJson(installation)) });
+		}
+
+		// --- as an installation ---
+		const token = auth.token?.kind === "installation" ? auth.token : null;
+		if (!token) return answer(401, { message: "Bad credentials" });
+		const installation = this.installations.get(token.installation as number);
+		if (!installation) return answer(401, { message: "Bad credentials" });
+
+		if (api === "/installation/token" && method === "DELETE") {
+			token.revoked = true;
+			return answer(204, null);
+		}
+
+		if (api === "/installation/repositories" && method === "GET") {
+			const page = Number(url.searchParams.get("page") ?? "1");
+			const size = Number(url.searchParams.get("per_page") ?? "30");
+			const all = [...installation.repositories].map((id) => this.repositories.get(id) as StandinRepository).filter((repository) => !token.repositories || token.repositories.includes(repository.id));
+			const slice = all.slice((page - 1) * size, page * size);
+			const link = page * size < all.length ? { link: `<${this.apiUrl}/installation/repositories?per_page=${size}&page=${page + 1}>; rel="next"` } : undefined;
+			return answer(200, { total_count: all.length, repositories: slice.map((repository) => this.repositoryJson(repository)) }, link);
+		}
+
+		const scoped = /^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/.exec(api);
+		if (scoped) {
+			const repository = [...this.repositories.values()].find((candidate) => candidate.owner.toLowerCase() === (scoped[1] as string).toLowerCase() && candidate.name.toLowerCase() === (scoped[2] as string).toLowerCase());
+			// A repository the token cannot see is not there, as far as it is told.
+			if (!repository || !this.allows(token, repository, "metadata", "read")) return answer(404, { message: "Not Found" });
+			const rest = scoped[3] ?? "";
+			const denied = () => answer(403, { message: "Resource not accessible by integration" });
+
+			if (rest === "" && method === "GET") return answer(200, this.repositoryJson(repository));
+
+			const permission = /^\/collaborators\/([^/]+)\/permission$/.exec(rest);
+			if (permission && method === "GET") {
+				const login = decodeURIComponent(permission[1] as string);
+				if (!this.users.has(login)) return answer(404, { message: "Not Found" });
+				const level = this.levelOf(repository, login);
+				return answer(200, { permission: level, role_name: level, user: { login } });
+			}
+
+			if (rest === "/branches" && method === "GET") {
+				if (!this.allows(token, repository, "contents", "read")) return denied();
+				const names = git(["for-each-ref", "--format=%(refname:short)", "refs/heads"], repository.path).split("\n").filter((name) => name !== "");
+				return answer(200, names.map((name) => ({ name, protected: false })));
+			}
+
+			if (rest === "/pulls" && method === "POST") {
+				if (!this.allows(token, repository, "pull_requests", "write")) return denied();
+				const fields = (body ?? {}) as { title?: string; body?: string; head?: string; base?: string };
+				const head = String(fields.head ?? "");
+				const base = String(fields.base ?? "");
+				if (this.options.strictBranches !== false) {
+					const headCommit = this.branchHead(repository, head);
+					const baseCommit = this.branchHead(repository, base);
+					if (headCommit === null) return answer(422, { message: "Validation Failed", errors: [{ resource: "PullRequest", field: "head", code: "invalid" }] });
+					if (baseCommit === null) return answer(422, { message: "Validation Failed", errors: [{ resource: "PullRequest", field: "base", code: "invalid" }] });
+					if (git(["rev-list", "--count", `${baseCommit}..${headCommit}`], repository.path) === "0") return answer(422, { message: "Validation Failed", errors: [{ resource: "PullRequest", code: "custom", message: `No commits between ${base} and ${head}` }] });
+				}
+				if (this.pulls.some((pull) => pull.repository === repository.id && pull.state === "open" && pull.head === head && pull.base === base)) {
+					return answer(422, { message: "Validation Failed", errors: [{ resource: "PullRequest", code: "custom", message: `A pull request already exists for ${repository.owner}:${head}.` }] });
+				}
+				const pull: StandinPull = { number: this.pulls.filter((other) => other.repository === repository.id).length + 1, repository: repository.id, title: String(fields.title ?? ""), body: String(fields.body ?? ""), head, base, state: "open", merged: false, draft: false };
+				this.pulls.push(pull);
+				return answer(201, this.pullJson(pull));
+			}
+
+			if (rest === "/pulls" && method === "GET") {
+				if (!this.allows(token, repository, "pull_requests", "read")) return denied();
+				const head = (url.searchParams.get("head") ?? "").split(":").pop() ?? "";
+				const base = url.searchParams.get("base");
+				const list = this.pulls.filter((pull) => pull.repository === repository.id && pull.state === (url.searchParams.get("state") ?? "open") && (head === "" || pull.head === head) && (base === null || pull.base === base));
+				return answer(200, list.map((pull) => this.pullJson(pull)));
+			}
+
+			const one = /^\/pulls\/(\d+)$/.exec(rest);
+			if (one && method === "GET") {
+				if (!this.allows(token, repository, "pull_requests", "read")) return denied();
+				const pull = this.pulls.find((candidate) => candidate.repository === repository.id && candidate.number === Number(one[1]));
+				return pull ? answer(200, this.pullJson(pull)) : answer(404, { message: "Not Found" });
+			}
+		}
+		return answer(404, { message: "Not Found" });
+	}
+
+	/** The git remote: smart HTTP through `git http-backend`, behind the checks GitHub makes of a token. */
+	private async git(request: IncomingMessage, response: ServerResponse, url: URL, owner: string, name: string, endpoint: string): Promise<void> {
+		const service = endpoint === "info/refs" ? (url.searchParams.get("service") ?? "") : endpoint;
+		const write = service === "git-receive-pack";
+		const repository = [...this.repositories.values()].find((candidate) => candidate.owner === owner && candidate.name === name);
+		const auth = this.authOf(request);
+		const entry: StandinRequest = { method: request.method ?? "GET", path: url.pathname + url.search, auth: auth.basic ? "basic" : "none", body: null, status: 0 };
+		this.requests.push(entry);
+		const refuse = (status: number, text: string, headers: Record<string, string> = {}) => {
+			entry.status = status;
+			request.resume();
+			response.writeHead(status, { "content-type": "text/plain; charset=utf-8", ...headers });
+			response.end(text);
+		};
+		const challenge = { "www-authenticate": 'Basic realm="GitHub"' };
+
+		const token = auth.basic && auth.basic[0] === "x-access-token" ? this.tokenOf(auth.basic[1]) : null;
+		if (auth.basic && (!token || token.kind !== "installation")) return refuse(401, "Invalid username or token. Password authentication is not supported for Git operations.\n", challenge);
+		if (!repository) return token ? refuse(404, "Repository not found.\n") : refuse(401, "Repository not found.\n", challenge);
+		if (!token) {
+			// A public repository is read by anyone; everything else asks who is there.
+			if (write || repository.private) return refuse(401, "Authentication required.\n", challenge);
+		} else {
+			if (!this.allows(token, repository, "contents", "read")) return refuse(404, "Repository not found.\n");
+			if (write && (!this.allows(token, repository, "contents", "write") || repository.archived)) return refuse(403, `Permission to ${owner}/${name}.git denied to ${this.slug}[bot].\n`);
+		}
+
+		const env: Record<string, string> = {
+			PATH: process.env.PATH ?? "/usr/bin:/bin",
+			GIT_PROJECT_ROOT: join(this.root, "git"),
+			GIT_HTTP_EXPORT_ALL: "1",
+			GIT_CONFIG_GLOBAL: "/dev/null",
+			GIT_CONFIG_NOSYSTEM: "1",
+			REQUEST_METHOD: request.method ?? "GET",
+			PATH_INFO: url.pathname,
+			QUERY_STRING: url.search.slice(1),
+			CONTENT_TYPE: String(request.headers["content-type"] ?? ""),
+			REMOTE_USER: token ? `${this.slug}[bot]` : "",
+			REMOTE_ADDR: "127.0.0.1",
+		};
+		if (request.headers["content-encoding"]) env.HTTP_CONTENT_ENCODING = String(request.headers["content-encoding"]);
+		if (request.headers["git-protocol"]) env.GIT_PROTOCOL = String(request.headers["git-protocol"]);
+		const child = spawn("git", ["http-backend"], { env, stdio: ["pipe", "pipe", "pipe"] });
+		this.children.add(child);
+		child.on("close", () => this.children.delete(child));
+		child.stdin.on("error", () => undefined);
+		request.pipe(child.stdin);
+
+		let head = Buffer.alloc(0);
+		let sent = false;
+		child.stdout.on("data", (chunk: Buffer) => {
+			if (sent) {
+				response.write(chunk);
+				return;
+			}
+			head = Buffer.concat([head, chunk]);
+			const end = head.indexOf("\r\n\r\n");
+			if (end < 0) return;
+			const headers: Record<string, string> = {};
+			let status = 200;
+			for (const line of head.subarray(0, end).toString("utf8").split("\r\n")) {
+				const at = line.indexOf(":");
+				const key = line.slice(0, at).trim().toLowerCase();
+				const value = line.slice(at + 1).trim();
+				if (key === "status") status = Number.parseInt(value, 10);
+				else if (key !== "") headers[key] = value;
+			}
+			entry.status = status;
+			sent = true;
+			response.writeHead(status, headers);
+			response.write(head.subarray(end + 4));
+		});
+		await new Promise<void>((resolve) => child.on("close", () => resolve()));
+		if (!sent) {
+			entry.status = 500;
+			response.writeHead(500);
+		}
+		response.end();
+	}
+}
+
+/** Whether this machine has what the git remote needs. */
+export function gitHttpBackendAvailable(): boolean {
+	try {
+		return existsSync(join(execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim(), "git-http-backend"));
+	} catch {
+		return false;
+	}
+}

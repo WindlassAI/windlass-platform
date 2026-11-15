@@ -33,7 +33,7 @@ export function StatusGlyph({ status, size = 16 }: { status: SessionStatus; size
 
 export function StatusBadge({ status }: { status: SessionStatus }) {
 	return (
-		<span className={`status-badge status-badge-${status}`} title={status === "waiting" ? "The agent asked a question and waits for your answer" : undefined}>
+		<span className={`status-badge status-badge-${status}`} title={status === "waiting" ? "A question waits for your answer" : undefined}>
 			<StatusGlyph status={status} size={14} />
 			{STATUS_WORD[status]}
 		</span>

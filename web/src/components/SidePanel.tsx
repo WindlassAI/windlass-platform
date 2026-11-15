@@ -1,7 +1,8 @@
 /**
  * The session's side panel, after the terminal interface's: the session's facts, where it runs,
- * token counts, one bar per model call showing how much of its input came from the cache, and the
- * files the agent changed.
+ * token counts, one bar per model call showing how much of its input came from the cache, the files
+ * the agent changed, and, for a session on a repository of the user's GitHub connection, its pull
+ * request.
  */
 import type { SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
 import { useCallback, useEffect, useState } from "react";
@@ -12,6 +13,7 @@ import { Dialog } from "./Dialog";
 import { DiffView } from "./DiffView";
 import { RefreshIcon, WarnIcon } from "./Icons";
 import { Layers, ProfileFacts } from "./Layers";
+import { PullRequestSection } from "./PullRequest";
 import { SandboxState, StatusBadge } from "./Status";
 
 function Facts({ summary, view }: { summary: SessionSummary; view: SessionView }) {
@@ -36,7 +38,16 @@ function Facts({ summary, view }: { summary: SessionSummary; view: SessionView }
 				<dd>{summary.model}</dd>
 				<dt>turns</dt>
 				<dd>{summary.turns}</dd>
-				{summary.repoUrl ? (
+				{summary.repository ? (
+					<>
+						<dt>repo</dt>
+						<dd className="kv-clip" title={`${summary.repository.owner}/${summary.repository.name}, from ${summary.repository.branch}`}>
+							{summary.repository.owner}/{summary.repository.name}
+							<span className="tone-faint"> at </span>
+							{summary.repository.branch}
+						</dd>
+					</>
+				) : summary.repoUrl ? (
 					<>
 						<dt>repo</dt>
 						<dd className="kv-clip" title={summary.repoUrl}>
@@ -191,7 +202,7 @@ function statusOf(status: string): { letter: string; word: string } {
 	return { letter, word: GIT_STATUS[letter] ?? "changed" };
 }
 
-function Changes({ sessionId, summary, turnsEnded }: { sessionId: string; summary: SessionSummary; turnsEnded: number }) {
+function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { sessionId: string; summary: SessionSummary; turnsEnded: number; reloads: number; onFiles(count: number | null): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [files, setFiles] = useState<WorkspaceFile[] | null>(null);
@@ -210,6 +221,7 @@ function Changes({ sessionId, summary, turnsEnded }: { sessionId: string; summar
 				(list) => {
 					if (!current) return;
 					setFiles(list);
+					onFiles(list.length);
 					setError(null);
 					setLoading(false);
 				},
@@ -222,13 +234,13 @@ function Changes({ sessionId, summary, turnsEnded }: { sessionId: string; summar
 		return () => {
 			current = false;
 		};
-	}, [client, auth, sessionId, explain]);
+	}, [client, auth, sessionId, explain, onFiles]);
 
-	// On open, when the sandbox first exists, and whenever a turn ends.
+	// On open, when the sandbox first exists, whenever a turn ends, and after the platform committed the work.
 	useEffect(() => {
 		if (!hasSandbox) return;
 		return load();
-	}, [load, hasSandbox, turnsEnded]);
+	}, [load, hasSandbox, turnsEnded, reloads]);
 
 	const openDiff = () => {
 		setDiff({ text: null, error: null });
@@ -312,13 +324,18 @@ function Changes({ sessionId, summary, turnsEnded }: { sessionId: string; summar
 }
 
 export function SidePanel({ sessionId, summary, profile, view, turnsEnded }: { sessionId: string; summary: SessionSummary; profile: SandboxProfile; view: SessionView; turnsEnded: number }) {
+	// How many files differ from the last commit, once the list was read; and a count that asks for it again.
+	const [files, setFiles] = useState<number | null>(null);
+	const [reloads, setReloads] = useState(0);
+	const published = useCallback(() => setReloads((value) => value + 1), []);
 	return (
 		<aside className="panel" id="details" aria-label="Session details">
 			<Facts summary={summary} view={view} />
 			<Sandbox summary={summary} profile={profile} />
 			<Tokens view={view} />
 			<CacheBars calls={view.calls} anyTurns={view.turns.length > 0} />
-			<Changes sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} />
+			<Changes sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} reloads={reloads} onFiles={setFiles} />
+			<PullRequestSection sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} files={files} onPublished={published} />
 		</aside>
 	);
 }

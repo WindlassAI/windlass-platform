@@ -13,6 +13,24 @@
  * recording, and a question nobody answers is declined by the platform after `questionTimeoutMs`.
  * A prompt sent while a turn runs steers it, and `stopCall()` stops one running call.
  *
+ * A project's MCP server: a prompt with the word "mcp" plays a repository whose `.windlass/config.json`
+ * names the server "harbor". The question about it is put before the turn's first event and holds the
+ * turn; "start" and "not now" each leave the platform's line and the turn carries on, and nobody
+ * answering is "not now". An approved definition is not asked about again in that session. With
+ * "variable" in the prompt the definition reads a variable that is not set (the question says so, and
+ * an approval ends in the line that the server did not start); with "late", Windlass reports the
+ * server while the turn runs, so with a network word as well the tool call's question arrives while
+ * the server's is open: the server's steps aside and is put again after it. The words are
+ * server/src/server-question.ts's, repeated here (Question.server.test.ts compares the two).
+ *
+ * GitHub: the deployment has a GitHub App, the signed-in ChatGPT user starts connected and the demo
+ * user does not. Connecting sends the browser to the address the real server would send it back to
+ * (`#github=<ticket>`), so the way back is the real one; whether a user is connected is kept in
+ * localStorage, since the page reloads on the way. A few seeded sessions were launched on repositories
+ * of the connection, with and without a pull request. `publish()` takes a moment, empties the list of
+ * changed files and writes the timeline's line. `mockNextGithub()` makes the next call fail as GitHub
+ * can, and `createMockClient({ github: false })` plays a deployment with no GitHub App.
+ *
  * The world is rebuilt from the token on every page load, so the seeded sessions keep their IDs
  * across a reload and sessions created by hand do not survive one.
  */
@@ -23,12 +41,23 @@ import {
 	type AuthResult,
 	type ChatgptStatus,
 	type CreateSessionInput,
+	type GithubAccount,
+	type GithubBranchList,
+	type GithubConnection,
+	type GithubRepository,
+	type GithubRepositoryList,
+	type GithubStatus,
 	type LiveDelta,
 	type LoginStart,
 	type PendingQuestion,
 	type PlatformInfo,
 	type PromptInput,
+	type PublishMessage,
+	type PublishResult,
+	type PublishState,
+	type PullRequestInfo,
 	type SandboxProfile,
+	type SessionRepository,
 	type SessionSnapshot,
 	type SessionSummary,
 	type TimelineItem,
@@ -51,7 +80,20 @@ export interface MockOptions {
 	origin?: string;
 	/** How long a question waits before the platform declines it. Shorter than the real one by default. */
 	questionTimeoutMs?: number;
+	/** False plays a deployment with no GitHub App: nothing of GitHub is offered. */
+	github?: boolean;
 }
+
+/** What the next call about GitHub fails with, for looking at each failure by hand. */
+export type MockGithubFailure =
+	/** The repositories cannot be listed. */
+	| "list"
+	/** The browser comes back from GitHub with a refusal. */
+	| "connect"
+	/** A push that GitHub refuses: no write access, a protected branch, a repository that is gone. */
+	| "denied"
+	| "protected"
+	| "gone";
 
 export interface MockClient extends PlatformClient {
 	/** Drops every live feed for `ms`, then reconnects them, as a network interruption would. */
@@ -62,6 +104,8 @@ export interface MockClient extends PlatformClient {
 	 * that never reached the server would, and leaves the question waiting.
 	 */
 	mockNextAnswer(kind: "elsewhere" | "error"): void;
+	/** Makes the next call about GitHub of that kind fail (`__wlpMock.mockNextGithub("protected")`, then push). */
+	mockNextGithub(kind: MockGithubFailure): void;
 }
 
 /** The mock's question timeout: long enough to answer, short enough to watch the platform decline. */
@@ -139,6 +183,53 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 	},
 ];
 
+// ---- GitHub ---------------------------------------------------------------------------------
+
+const GITHUB = { slug: "windlass-mock", url: "https://github.com" };
+const GITHUB_NOT_CONNECTED = "GitHub is not connected any more. Connect GitHub again from the account menu, then try once more.";
+
+const GITHUB_ACCOUNTS: GithubAccount[] = [
+	{ installationId: 61001, login: "ada", kind: "user", manageUrl: "https://github.com/settings/installations/61001" },
+	{ installationId: 61002, login: "acme", kind: "organization", manageUrl: "https://github.com/organizations/acme/settings/installations/61002" },
+];
+
+interface MockRepository extends Omit<GithubRepository, "pushedAt"> {
+	/** How long ago it was pushed to, in hours. */
+	pushedHoursAgo: number;
+	branches: string[];
+}
+
+const mockRepository = (id: number, owner: string, name: string, visibility: "private" | "public", pushedHoursAgo: number, branches: string[] = [], canPush = true): MockRepository => ({
+	id,
+	owner,
+	name,
+	private: visibility === "private",
+	defaultBranch: "main",
+	canPush,
+	pushedHoursAgo,
+	branches: ["main", ...branches],
+});
+
+const GITHUB_REPOSITORIES: MockRepository[] = [
+	mockRepository(7101, "acme", "harbor", "private", 2, ["fix/tide-tables", "release/2.4", "release/2.3"]),
+	mockRepository(7102, "ada", "tide-tables", "public", 5, ["gh-pages"]),
+	mockRepository(7103, "acme", "lighthouse-docs", "public", 26, ["next"]),
+	mockRepository(7104, "ada", "dotfiles", "private", 70),
+	mockRepository(7105, "acme", "quay", "private", 96, ["develop"], false),
+	mockRepository(7106, "acme", "signal-flags", "private", 150, ["v2"]),
+	mockRepository(7107, "ada", "windlass-notes", "private", 200),
+	mockRepository(7108, "acme", "charts", "private", 340, ["soundings"]),
+	mockRepository(7109, "acme", "harbor-infrastructure", "private", 500, ["staging", "production"]),
+	mockRepository(7110, "ada", "knots", "public", 900),
+	mockRepository(7111, "acme", "ballast", "private", 1400, [], false),
+	mockRepository(7112, "acme", "a-repository-with-a-rather-long-name-for-testing-how-it-clips", "private", 2600),
+];
+
+const sessionRepository = (owner: string, name: string, branch = "main"): SessionRepository => {
+	const found = GITHUB_REPOSITORIES.find((repository) => repository.owner === owner && repository.name === name);
+	return { provider: "github", id: found?.id ?? 0, owner, name, branch, private: found?.private ?? true, url: `${GITHUB.url}/${owner}/${name}` };
+};
+
 const MODELS = ["gpt-6.1-sol", "gpt-6-luna"];
 const EFFORTS = ["low", "medium", "high"];
 const REDIRECT_PREFIX = "http://127.0.0.1:1455/auth/callback";
@@ -156,10 +247,24 @@ interface QuestionScript {
 	subagent?: string;
 }
 
+/** A server the project's configuration names, as a prompt's words choose it. */
+interface MockServer {
+	name: string;
+	/** Stands for Windlass's mark of the definition: an approval is for it. */
+	fingerprint: string;
+	argv: string[];
+	/** Variables the definition reads that are not set in the sandbox. */
+	unset: string[];
+	/** Reported while the turn runs, instead of before its prompt goes. */
+	late: boolean;
+}
+
 interface Script {
 	/** For a turn with a question: everything up to and including its `approval.requested`. */
 	events: WindlassEvent[];
 	question?: QuestionScript;
+	/** The project's server that waits for the user's approval in this turn. */
+	server?: MockServer;
 	/** Slows the recording down (2 plays it at half speed). */
 	stretch?: number;
 	workspace?: Record<string, WorkspaceChange>;
@@ -286,6 +391,47 @@ function chooseScript(text: string, rotation: number): ScriptName {
 	return ROTATION[rotation % ROTATION.length] ?? "fix";
 }
 
+const SERVER_FILE = "/workspace/.windlass/config.json";
+
+/** The server a prompt's words say the project names: "mcp", with "variable" for one that cannot start and "late" for one reported mid-turn. */
+function chooseServer(text: string): MockServer | null {
+	const words = text.toLowerCase();
+	if (!/\bmcp\b/.test(words)) return null;
+	const unset = /\bvariables?\b/.test(words) ? ["HARBOR_TOKEN"] : [];
+	return { name: "harbor", fingerprint: unset.length > 0 ? "748df09716dce52c" : "81498df752b8ef7d", argv: ["python3", "tools/harbor_mcp.py"], unset, late: /\blate\b/.test(words) };
+}
+
+/**
+ * The question about a project's server as server/src/server-question.ts words it for a session on
+ * local Docker, where Windlass's data is the user's volume: for the two Docker profiles, a demo session
+ * or not, and a definition that reads variables which are not set.
+ */
+export function mockServerQuestion(server: Pick<MockServer, "name" | "argv" | "unset">, profile: SandboxProfile, demo: boolean): Pick<PendingQuestion, "title" | "subject" | "details" | "choices"> {
+	const data = demo ? "Windlass's own data. A demo session has no access token there." : "Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.";
+	const reach =
+		profile.approval === "full"
+			? `It runs in this session's container, as the agent's commands do here: like them, it has the network and can read ${data}`
+			: `It runs in this session's container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read ${data}`;
+	const names = server.unset.length <= 1 ? server.unset.join("") : `${server.unset.slice(0, -1).join(", ")} and ${server.unset[server.unset.length - 1]}`;
+	const missing =
+		server.unset.length === 0
+			? []
+			: [
+					server.unset.length === 1
+						? `It will not start yet: its definition reads the variable ${names}, which is not set in the sandbox, and the platform cannot set variables for a session yet.`
+						: `It will not start yet: its definition reads the variables ${names}, which are not set in the sandbox, and the platform cannot set variables for a session yet.`,
+				];
+	return {
+		title: `Start this project's MCP server "${server.name}"?`,
+		subject: server.argv.map((argument) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(argument) ? argument : `'${argument.replace(/'/g, `'\\''`)}'`)).join(" "),
+		details: [reach, "Approving starts it now and is remembered for 30 days for exactly this definition, in all your sessions: they share Windlass's data.", ...missing],
+		choices: [
+			{ id: "start", label: "Start it for this project", approve: true, remembers: "exactly this definition, for your sessions, for 30 days" },
+			{ id: "not_now", label: "Not now", approve: false, remembers: null },
+		],
+	};
+}
+
 // ---------------------------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------------------------
@@ -337,6 +483,12 @@ interface MockSession {
 	questionTimer: ReturnType<typeof setTimeout> | null;
 	/** Carries the turn on once the question is answered. */
 	resume: ((choice: string, note: string | null) => void) | null;
+	/** A server's question that stepped aside for a tool call's, with what carries on once it is answered. */
+	aside: { question: PendingQuestion; resume: (choice: string, note: string | null) => void } | null;
+	/** The definitions of project servers approved in this session: Windlass remembers them, so they are not asked about again. */
+	approvedServers: Set<string>;
+	/** True once the platform pushed the session's branch. */
+	pushed: boolean;
 }
 
 interface World {
@@ -344,6 +496,9 @@ interface World {
 	sessions: Map<string, MockSession>;
 	feeds: Set<UserFeed>;
 	rotation: number;
+	github: GithubConnection | null;
+	/** The number the next pull request gets. */
+	nextPull: number;
 }
 
 interface Step {
@@ -361,6 +516,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	const pace = options.pace ?? 1;
 	const questionTimeout = options.questionTimeoutMs ?? MOCK_QUESTION_TIMEOUT_MS;
 	let nextAnswer: "elsewhere" | "error" | null = null;
+	let nextGithub: MockGithubFailure | null = null;
+	const githubOn = options.github !== false;
 	const realNow = options.now ?? (() => Date.now());
 	const origin = options.origin ?? (typeof location === "undefined" ? "http://localhost:5173" : location.origin);
 	/** Set while history is being written in the past (the seeded sessions). */
@@ -399,11 +556,76 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0 };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41 };
+			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
+			const kept = recall(`wlp.mock.github.${uid}`);
+			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
 			worlds.set(uid, world);
 			seed(world);
 		}
 		return world;
+	}
+
+	// ---- GitHub ---------------------------------------------------------------------------------
+
+	/** What survives the reload of going to GitHub and back: nothing else of the mock does. */
+	function recall(key: string): string | null {
+		try {
+			return typeof localStorage === "undefined" ? null : localStorage.getItem(key);
+		} catch {
+			return null;
+		}
+	}
+	function keep(key: string, value: string): void {
+		try {
+			if (typeof localStorage !== "undefined") localStorage.setItem(key, value);
+		} catch {
+			// Storage is unavailable: the connection lasts until the page is reloaded.
+		}
+	}
+
+	function connectionFor(profile: UserProfile): GithubConnection {
+		const login = profile.email?.split("@")[0] || "ada";
+		return { login, accounts: GITHUB_ACCOUNTS.map((account) => (account.kind === "user" ? { ...account, login } : account)), connectedAt: now() - 9 * 24 * HOUR };
+	}
+
+	function requireGithub(world: World): GithubConnection {
+		if (!githubOn) throw new PlatformError("user", "This deployment has no GitHub App, so GitHub cannot be connected here.", { reason: "github_off" });
+		if (!world.github) throw new PlatformError("user", "GitHub is not connected. Connect GitHub first.", { reason: "github_not_connected" });
+		return world.github;
+	}
+
+	const describeRepository = ({ pushedHoursAgo, branches: _branches, ...repository }: MockRepository): GithubRepository => ({ ...repository, pushedAt: now() - pushedHoursAgo * HOUR });
+
+	const branchFor = (session: MockSession) => {
+		const words = session.summary.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/g, "");
+		return `windlass/${words || "agent"}-${session.summary.id.replace(/[^A-Za-z0-9]/g, "").slice(-6)}`;
+	};
+
+	function publishStateOf(session: MockSession): PublishState {
+		const repository = session.summary.repository ?? null;
+		if (!repository) return { repository: null, pullRequest: null, branch: "", changes: null, draft: { title: "", body: "" }, blocked: null };
+		const status = session.summary.status;
+		const answer = [...session.timeline].reverse().find((item) => item.kind === "windlass" && item.event.type === "text.ended");
+		const said = answer?.kind === "windlass" ? String((answer.event.data ?? {}).text ?? "").trim() : "";
+		const prompt = [...session.timeline].reverse().find((item) => item.kind === "user" && !item.steer);
+		const files = [...session.files.keys()].sort();
+		const body = said !== "" ? (said.length > 600 ? `${said.slice(0, 600).trim()}…` : said) : files.length > 0 ? `Changed files:\n${files.map((path) => `- ${path}`).join("\n")}` : "";
+		const title = session.pushed && prompt?.kind === "user" ? openingWords(prompt.text) : session.summary.title;
+		return {
+			repository,
+			pullRequest: session.summary.pullRequest ?? null,
+			branch: session.summary.pullRequest?.branch ?? branchFor(session),
+			changes: status !== "idle" || session.summary.sandbox === "none" ? null : session.files.size > 0,
+			draft: { title: title.replace(/…$/, ""), body },
+			blocked: !githubOn
+				? "This deployment has no GitHub App any more, so the platform cannot push."
+				: status !== "idle"
+					? "Wait for the turn to end: the platform does not push while the agent is working."
+					: session.summary.sandbox === "none"
+						? "The sandbox is created on the first prompt. Until then there is nothing to push."
+						: null,
+		};
 	}
 
 	// ---- sessions -------------------------------------------------------------------------------
@@ -419,10 +641,24 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		for (const feed of world.feeds) feed.onSessions(list);
 	}
 
-	function addSession(world: World, input: { id: string; title: string; titled: boolean; profile: SessionSummary["profile"]; model: string; repoUrl: string | null }): MockSession {
+	function addSession(world: World, input: { id: string; title: string; titled: boolean; profile: SessionSummary["profile"]; model: string; repoUrl: string | null; repository?: SessionRepository | null }): MockSession {
 		const at = now();
+		const repository = input.repository ?? null;
 		const session: MockSession = {
-			summary: { id: input.id, title: input.title, profile: input.profile, model: input.model, repoUrl: input.repoUrl, createdAt: at, updatedAt: at, status: "idle", turns: 0, lastOutcome: null, sandbox: "none" },
+			summary: {
+				id: input.id,
+				title: input.title,
+				profile: input.profile,
+				model: input.model,
+				repoUrl: repository ? `${repository.url}.git` : input.repoUrl,
+				...(repository ? { repository, pullRequest: null } : {}),
+				createdAt: at,
+				updatedAt: at,
+				status: "idle",
+				turns: 0,
+				lastOutcome: null,
+				sandbox: "none",
+			},
 			titled: input.titled,
 			windlassSessionId: null,
 			windlassSeq: 0,
@@ -436,6 +672,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			question: null,
 			questionTimer: null,
 			resume: null,
+			aside: null,
+			approvedServers: new Set(),
+			pushed: false,
 		};
 		world.sessions.set(input.id, session);
 		return session;
@@ -544,7 +783,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			steps.push({ wait: 350, run: () => store(session, { turn, kind: "platform", level: "info", text: `Creating sandbox: ${profileOf(session).name}` }) });
 			if (session.summary.repoUrl !== null) {
 				const repoUrl = session.summary.repoUrl;
-				steps.push({ wait: 900, run: () => store(session, { turn, kind: "platform", level: "info", text: `Cloning ${repoUrl}` }) });
+				const picked = session.summary.repository;
+				const what = picked ? `${picked.owner}/${picked.name} at ${picked.branch}` : repoUrl;
+				steps.push({ wait: 900, run: () => store(session, { turn, kind: "platform", level: "info", text: `Cloning ${what}` }) });
 			}
 		} else if (session.summary.sandbox === "paused") {
 			steps.push({ wait: 350, run: () => store(session, { turn, kind: "platform", level: "info", text: "Resuming the paused sandbox" }) });
@@ -566,6 +807,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 		// Windlass writes `session.created` and freezes its prompt once per session, not once per run.
 		const events = script.events.filter((event) => first || (event.type !== "session.created" && event.type !== "baseline.set"));
+		const server = script.server;
+		if (server && !server.late) {
+			// What waits is asked about before Windlass gets the prompt: the turn's events follow the answer.
+			steps.push({ wait: 500, run: () => askServer(world, session, turn, server, true, () => play(session, eventSteps(world, session, turn, events, input, script))) });
+			return steps;
+		}
 		steps.push(...eventSteps(world, session, turn, events, input, script));
 		return steps;
 	}
@@ -609,6 +856,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					if (state?.cancelled.has(key) && (event.type === "tool.progress" || event.type === "tool.settled")) return;
 					// Steered messages reach the model where a step begins.
 					if (event.type === "step.started") deliverSteers(session, turn);
+					// A server Windlass reports while the turn runs: its question does not hold the turn.
+					if (event.type === "step.started" && script.server?.late && state?.steps === 0) askServer(world, session, turn, script.server, false, null);
 					if (state?.replaceText != null && event.type === "text.delta") return;
 					const stamped = restamp(session, turn, event, input.text);
 					if (state?.replaceText != null && event.type === "text.ended") {
@@ -636,8 +885,69 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		for (const feed of session.feeds) feed.onQuestion(session.question);
 	}
 
+	/**
+	 * Puts the question about a project's server, unless this session approved that definition before.
+	 * `carryOn` plays the turn once it is settled, for a question put before the turn's events; a question
+	 * put while the turn runs has none.
+	 */
+	function askServer(world: World, session: MockSession, turn: number, server: MockServer, holdsTurn: boolean, carryOn: (() => void) | null): void {
+		if (session.approvedServers.has(server.fingerprint)) {
+			carryOn?.();
+			return;
+		}
+		const askedAt = now();
+		const question: PendingQuestion = {
+			id: `q_${hex(16)}`,
+			turn,
+			messageId: "",
+			callId: "",
+			...mockServerQuestion(server, profileOf(session), world.profile.demo),
+			subagent: null,
+			askedAt,
+			expiresAt: askedAt + questionTimeout,
+			server: { name: server.name, file: SERVER_FILE, remote: false, unset: server.unset, holdsTurn },
+		};
+		const named = `the MCP server "${server.name}"`;
+		const resume = (choice: string): void => {
+			if (choice === "start") {
+				session.approvedServers.add(server.fingerprint);
+				if (server.unset.length > 0) {
+					store(session, { turn, kind: "platform", level: "warn", text: `Approved ${named} for this project, but it did not start: the environment variable ${server.unset[0]} named in its env is not set. The platform cannot set variables for a session yet.` });
+				} else {
+					store(session, { turn, kind: "platform", level: "info", text: `Started ${named} for this project: 2 tools. ${holdsTurn ? "The agent has them from this turn on." : "The turn was already running: the agent is told of them at its next step."}` });
+				}
+			} else if (choice === "not_now") {
+				store(session, { turn, kind: "platform", level: "info", text: `Left ${named} stopped. If the agent tries to use it, it is told that the server waits for you; your next message asks again.` });
+			}
+			carryOn?.();
+		};
+		putServer(world, session, question, resume);
+	}
+
+	/** Shows a server's question, the first time and again after it stood aside, with a new time to answer in. */
+	function putServer(world: World, session: MockSession, question: PendingQuestion, resume: (choice: string, note: string | null) => void): void {
+		const shownAt = now();
+		session.question = { ...question, expiresAt: shownAt + questionTimeout };
+		session.resume = resume;
+		broadcastQuestion(session);
+		if (question.server?.holdsTurn) setSummary(world, session, { status: "waiting", updatedAt: now() });
+		session.questionTimer = later(Math.max(0, shownAt + questionTimeout - realNow()), () => {
+			if (session.question?.id !== question.id) return;
+			store(session, { turn: question.turn, kind: "platform", level: "warn", text: `Nobody answered about the MCP server "${question.server?.name ?? ""}" within ${minutes(questionTimeout)}, so it stays stopped. Your next message asks again.` });
+			settle(world, session, "expired", null);
+		});
+	}
+
 	/** The turn reached its question: it waits for an answer, or for the platform to decline. */
 	function ask(world: World, session: MockSession, turn: number, requested: WindlassEvent, input: PromptInput, script: Script, rest: QuestionScript): void {
+		// A tool call's question comes first: a server's steps aside and is put again after it.
+		if (session.question?.server && session.resume) {
+			session.aside = { question: session.question, resume: session.resume };
+			cancel(session.questionTimer);
+			session.questionTimer = null;
+			session.question = null;
+			session.resume = null;
+		}
 		const data = (requested.data ?? {}) as Record<string, unknown>;
 		const asked = (data.question ?? {}) as { title?: string; subject?: string; details?: string[]; choices?: Array<{ id: string; label: string; approve: boolean; remembers: string | null; grants?: unknown[] }> };
 		const choices = asked.choices ?? [];
@@ -694,6 +1004,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		if (!resume || !session.run) return;
 		setSummary(world, session, { status: "running", updatedAt: now() });
 		resume(choice, note);
+		const aside = session.aside;
+		if (aside && session.run && session.question === null) {
+			session.aside = null;
+			putServer(world, session, aside.question, aside.resume);
+		}
 	}
 
 	/** The question goes without an answer (or before its answer is played). */
@@ -713,6 +1028,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	): void {
 		const state = session.run;
 		if (!state) return;
+		// A server's question put while the turn ran goes with the turn; a turn that was stopped took it away without a word.
+		const unanswered = session.question?.server ?? session.aside?.question.server;
+		if (unanswered) store(session, { turn: state.turn, kind: "platform", level: "info", text: `The turn ended before anyone answered about the MCP server "${unanswered.name}". Your next message asks again.` });
+		session.aside = null;
 		withdraw(session);
 		session.run = null;
 		session.pending = [];
@@ -772,6 +1091,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		state.stopping = true;
 		cancel(state.timer);
 		// A question still waiting is withdrawn: nobody can answer it any more.
+		session.aside = null;
 		withdraw(session);
 		setSummary(world, session, { status: "stopping" });
 		const turn = state.turn;
@@ -860,9 +1180,16 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	function seed(world: World): void {
 		const start = realNow();
-		const history = (id: string, title: string, profile: SessionSummary["profile"], ago: number, turns: Array<{ text: string; script: ScriptName; effort?: string }>, extra: { repoUrl?: string; sandbox?: SessionSummary["sandbox"]; model?: string } = {}): MockSession => {
+		const history = (
+			id: string,
+			title: string,
+			profile: SessionSummary["profile"],
+			ago: number,
+			turns: Array<{ text: string; script: ScriptName; effort?: string }>,
+			extra: { repoUrl?: string; sandbox?: SessionSummary["sandbox"]; model?: string; repository?: SessionRepository; pull?: Pick<PullRequestInfo, "number" | "state"> & { hoursAgo: number; clean?: boolean } } = {},
+		): MockSession => {
 			clock = start - ago;
-			const session = addSession(world, { id, title, titled: true, profile, model: extra.model ?? (MODELS[0] as string), repoUrl: extra.repoUrl ?? null });
+			const session = addSession(world, { id, title, titled: true, profile, model: extra.model ?? (MODELS[0] as string), repoUrl: extra.repoUrl ?? null, repository: githubOn ? extra.repository : undefined });
 			let at = start - ago;
 			for (const turn of turns) {
 				const steps = plan(world, session, { text: turn.text, effort: turn.effort }, SCRIPTS[turn.script]);
@@ -872,14 +1199,24 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			clock = null;
 			if (session.pauseTimer !== null) cancel(session.pauseTimer);
 			session.summary = { ...session.summary, sandbox: extra.sandbox ?? (turns.length === 0 ? "none" : "paused") };
+			const repository = session.summary.repository;
+			if (repository && extra.pull) {
+				// Pushed earlier: the pull request is there, and what was pushed then no longer differs from the last commit.
+				const branch = branchFor(session);
+				const pushedAt = start - extra.pull.hoursAgo * HOUR;
+				session.pushed = true;
+				session.summary = { ...session.summary, pullRequest: { number: extra.pull.number, url: `${repository.url}/pull/${extra.pull.number}`, state: extra.pull.state, title, branch, base: repository.branch, pushedAt } };
+				if (extra.pull.clean) session.files.clear();
+				session.timeline.push({ seq: ++session.seq, at: pushedAt, turn: session.summary.turns, kind: "platform", level: "info", text: `Opened pull request #${extra.pull.number} in ${repository.owner}/${repository.name} from ${branch}, with 1 file.` });
+			}
 			return session;
 		};
 
 		history("scratch", "New agent", "docker-windlass-sandbox", 5 * 24 * HOUR, []).titled = false;
 		history("deps", "Upgrade the dependencies", "docker-hardened", 3 * 24 * HOUR, [{ text: "Upgrade the dependencies to their latest minor versions and crash if anything breaks.", script: "crash" }], { sandbox: "none", repoUrl: "https://github.com/acme/harbor.git" });
 		history("suite", "Run the whole test suite", "docker-windlass-sandbox", 2 * 24 * HOUR, [{ text: "Run the whole test suite and fix the failing test.", script: "cancelled", effort: "medium" }]);
-		history("changelog", "Tidy the changelog", "docker-windlass-sandbox", 26 * HOUR, [{ text: "Tidy the changelog for the release.", script: "usageLimit" }], { model: MODELS[1] });
-		history("checks", "Make add() pass its checks", "docker-windlass-sandbox", 21 * HOUR, [{ text: "Fix the failing test.", script: "checks", effort: "high" }]);
+		history("changelog", "Tidy the changelog", "docker-windlass-sandbox", 26 * HOUR, [{ text: "Tidy the changelog for the release.", script: "usageLimit" }], { model: MODELS[1], repository: sessionRepository("acme", "lighthouse-docs"), pull: { number: 7, state: "merged", hoursAgo: 25, clean: true } });
+		history("checks", "Make add() pass its checks", "docker-windlass-sandbox", 21 * HOUR, [{ text: "Fix the failing test.", script: "checks", effort: "high" }], { repository: sessionRepository("acme", "harbor", "release/2.4"), pull: { number: 38, state: "open", hoursAgo: 20 } });
 		history("unattended", "Run a command with nobody to approve it", "docker-hardened", 3 * HOUR, [{ text: "check the sandbox", script: "refused" }]);
 		history("probe", "Check what the sandbox allows", "docker-windlass-sandbox", 2 * HOUR, [{ text: "check the sandbox", script: "sandboxed" }]);
 		history(
@@ -891,7 +1228,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				{ text: "The add test is failing. Find out why and fix it.", script: "fix", effort: "low" },
 				{ text: "What is 1 + 1, to be sure?", script: "answer" },
 			],
-			{ sandbox: "running" },
+			{ sandbox: "running", repository: sessionRepository("ada", "tide-tables") },
 		);
 
 		// One agent waits on a question when the user arrives: it asked half a minute ago.
@@ -900,7 +1237,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		clock = null;
 
 		// One agent is at work when the user arrives: a second turn, a long build, played slowly.
-		const building = history("harbor-build", "Check the release build", "docker-windlass-sandbox", 6 * MINUTE, [{ text: "Fix the failing test.", script: "steps" }], { sandbox: "running", repoUrl: "https://github.com/acme/harbor.git" });
+		const building = history("harbor-build", "Check the release build", "docker-windlass-sandbox", 6 * MINUTE, [{ text: "Fix the failing test.", script: "steps" }], { sandbox: "running", repoUrl: "https://github.com/acme/harbor.git", repository: sessionRepository("acme", "harbor") });
 		play(building, plan(world, building, { text: "Run the full build and the tests, and tell me if they pass.", effort: "medium" }, { ...SCRIPTS.build, stretch: 7 }));
 	}
 
@@ -930,9 +1267,16 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (input.model !== undefined && !MODELS.includes(input.model)) throw new PlatformError("user", `There is no model called ${input.model}.`);
 				const repoUrl = input.repoUrl?.trim() || null;
 				if (repoUrl !== null && !/^https:\/\/\S+$/.test(repoUrl)) throw new PlatformError("user", "The repository must be an https address.");
+				let repository: SessionRepository | null = null;
+				if (input.repository) {
+					requireGithub(world());
+					const found = GITHUB_REPOSITORIES.find((candidate) => candidate.id === input.repository?.id);
+					if (!found) throw new PlatformError("user", "That repository is not among the ones your GitHub connection covers. Add it to the GitHub App's installation at GitHub, then choose it again.");
+					repository = sessionRepository(found.owner, found.name, input.repository.branch ?? found.defaultBranch);
+				}
 				const title = input.title?.trim() ?? "";
 				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
-				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, model: input.model ?? (MODELS[0] as string), repoUrl });
+				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, model: input.model ?? (MODELS[0] as string), repoUrl, repository });
 				setSummary(world(), session, {});
 				return session.summary;
 			},
@@ -960,6 +1304,57 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				session.feeds.clear();
 				const list = listOf(world());
 				for (const feed of world().feeds) feed.onSessions(list);
+			},
+			async github(): Promise<GithubStatus> {
+				await latency(200);
+				if (!githubOn) throw new PlatformError("user", "This deployment has no GitHub App, so GitHub cannot be connected here.", { reason: "github_off" });
+				return { connection: world().github };
+			},
+			async githubConnect(page: string): Promise<{ url: string }> {
+				await latency(420);
+				const { profile } = world();
+				if (!githubOn) throw new PlatformError("user", "This deployment has no GitHub App, so GitHub cannot be connected here.", { reason: "github_off" });
+				const failing = nextGithub === "connect";
+				if (failing) nextGithub = null;
+				// Where the real server sends the browser back to once GitHub has answered: the web app, with a ticket.
+				const mock = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("mock");
+				return { url: `${page}/${mock !== null ? `?mock=${encodeURIComponent(mock)}` : ""}#${failing ? "github-error=denied" : `github=mock.${profile.uid}`}` };
+			},
+			async githubComplete(ticket: string): Promise<GithubStatus> {
+				await latency(380);
+				const current = world();
+				if (!ticket.startsWith("mock.")) throw new PlatformError("user", "This link to connect GitHub is not valid any more. Connect GitHub again.", { reason: "github_ticket" });
+				if (ticket !== `mock.${current.profile.uid}`) throw new PlatformError("user", "This GitHub connection was started from another Windlass account, so it was not added to yours. Connect GitHub again from here.", { reason: "github_ticket" });
+				current.github = { ...connectionFor(current.profile), connectedAt: now() };
+				keep(`wlp.mock.github.${current.profile.uid}`, "1");
+				return { connection: current.github };
+			},
+			async githubDisconnect(): Promise<GithubStatus> {
+				await latency(260);
+				const current = world();
+				current.github = null;
+				keep(`wlp.mock.github.${current.profile.uid}`, "0");
+				return { connection: null };
+			},
+			async githubRepositories(query: string): Promise<GithubRepositoryList> {
+				await latency(query === "" ? 420 : 260);
+				requireGithub(world());
+				if (nextGithub === "list") {
+					nextGithub = null;
+					throw new PlatformError("user", "GitHub could not be reached. Try again in a moment.", { reason: "github_unreachable" });
+				}
+				const wanted = query.trim().toLowerCase();
+				// As the server orders them: a name that begins with what was typed first, then the most recently pushed.
+				const rank = (repository: MockRepository) => (wanted === "" || repository.name.toLowerCase().startsWith(wanted) || `${repository.owner}/${repository.name}`.toLowerCase().startsWith(wanted) ? 0 : 1);
+				const matching = GITHUB_REPOSITORIES.filter((repository) => `${repository.owner}/${repository.name}`.toLowerCase().includes(wanted)).sort((a, b) => rank(a) - rank(b) || a.pushedHoursAgo - b.pushedHoursAgo);
+				return { repositories: matching.map(describeRepository), more: false };
+			},
+			async githubBranches(repositoryId: number): Promise<GithubBranchList> {
+				await latency(320);
+				requireGithub(world());
+				const found = GITHUB_REPOSITORIES.find((repository) => repository.id === repositoryId);
+				if (!found) throw new PlatformError("user", "That repository is not among the ones your GitHub connection covers. Add it to the GitHub App's installation at GitHub, then choose it again.");
+				return { branches: found.branches, defaultBranch: found.defaultBranch, more: false };
 			},
 			watch(feed: UserFeed) {
 				let closed = false;
@@ -1050,7 +1445,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const name = chooseScript(text, world.rotation);
 				if (ROTATION[world.rotation % ROTATION.length] === name) world.rotation += 1;
 				// A second plain answer in one session uses the recording's second run.
-				const script = name === "answer" && session.windlassSessionId !== null ? SCRIPTS.answerAgain : SCRIPTS[name];
+				const recording: Script = name === "answer" && session.windlassSessionId !== null ? SCRIPTS.answerAgain : SCRIPTS[name];
+				const server = chooseServer(text);
+				const script: Script = server ? { ...recording, server } : recording;
 				const turn = session.summary.turns + 1;
 				play(session, plan(world, session, { ...input, text }, script));
 				return { turn, steered: false };
@@ -1063,6 +1460,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (forced === "error") throw new PlatformError("network", "The server did not answer, so your answer was not sent. Try again.");
 				const question = session.question;
 				if (forced === "elsewhere" && question) settle(world, session, question.choices.find((choice) => choice.approve)?.id ?? "once", null);
+				// A server's question that stands aside for a tool call's can still be answered.
+				const aside = session.aside;
+				if (aside && aside.question.id === input.questionId && aside.question.choices.some((choice) => choice.id === input.choice)) {
+					session.aside = null;
+					aside.resume(input.choice, null);
+					return;
+				}
 				if (!session.question || session.question.id !== input.questionId) {
 					throw new PlatformError("user", forced === "elsewhere" ? "This question was already answered in another tab." : "This question is no longer waiting for an answer: it was answered elsewhere, it expired, or the turn was stopped.", { reason: "no_question" });
 				}
@@ -1094,6 +1498,54 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					.map(([, change]) => change.diff)
 					.join("");
 			},
+			async publishState(): Promise<PublishState> {
+				await latency(240);
+				return publishStateOf(find().session);
+			},
+			async publish(message: PublishMessage): Promise<PublishResult> {
+				// A commit, a push and a call to GitHub: it takes a moment.
+				await latency(1700);
+				const { world, session } = find();
+				const repository = session.summary.repository;
+				if (!repository) throw new PlatformError("user", "This agent does not work on a repository of your GitHub connection, so there is nowhere to push.", { reason: "publish_blocked" });
+				const blocked = publishStateOf(session).blocked;
+				if (blocked) throw new PlatformError("user", blocked, { reason: "publish_blocked" });
+				if (message.title.trim() === "") throw new PlatformError("user", "Give the commit a title.", { reason: "bad_message" });
+				if (!world.github) throw new PlatformError("user", GITHUB_NOT_CONNECTED, { reason: "github_gone" });
+				const name = `${repository.owner}/${repository.name}`;
+				const current = session.summary.pullRequest ?? null;
+				const open = current !== null && (current.state === "open" || current.state === "draft") ? current : null;
+				const branch = current?.branch ?? branchFor(session);
+				const failure = nextGithub;
+				if (failure === "denied" || failure === "protected" || failure === "gone") {
+					nextGithub = null;
+					const sentence = {
+						denied: `${world.github.login} can read ${name} on GitHub but not write to it, so the platform cannot push there for you. Ask an owner of ${repository.owner} for write access, then push again.`,
+						protected: `GitHub refused the push: a rule of ${name} protects branches named like ${branch}. Let the GitHub App create such branches in the repository's branch rules, then push again.`,
+						gone: `${name} is no longer on GitHub, or the GitHub App can no longer see it. Check that the repository exists and that the app's installation on ${repository.owner} still includes it.`,
+					}[failure];
+					throw new PlatformError("user", sentence, { reason: failure === "gone" ? "github_gone" : "github_denied" });
+				}
+				const files = session.files.size;
+				if (files === 0) {
+					throw new PlatformError("user", open ? `There is nothing to push: ${branch} at GitHub already has everything in the workspace.` : `There is nothing to open a pull request with: the workspace has no changes and no commit that ${repository.branch} does not have.`, { reason: "publish_failed" });
+				}
+				const what = files === 1 ? "1 file" : `${files} files`;
+				let pull: PullRequestInfo;
+				if (open) {
+					pull = { ...open, pushedAt: now() };
+					store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: `Pushed ${what} to ${branch}; pull request #${open.number} is updated.` });
+				} else {
+					const number = world.nextPull++;
+					pull = { number, url: `${repository.url}/pull/${number}`, state: "open", title: message.title.trim(), branch, base: repository.branch, pushedAt: now() };
+					store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: `Opened pull request #${number} in ${name} from ${branch}, with ${what}.` });
+				}
+				// Committed: nothing differs from the last commit any more.
+				session.files.clear();
+				session.pushed = true;
+				setSummary(world, session, { pullRequest: pull, updatedAt: now() });
+				return { state: publishStateOf(session), opened: !open };
+			},
 		};
 	}
 
@@ -1102,7 +1554,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		endpoint: null,
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
-			return { demoEnabled: true, windlassVersion: "0.1.0", profiles: MOCK_PROFILES, models: MODELS, efforts: EFFORTS };
+			return { demoEnabled: true, windlassVersion: "0.1.0", profiles: MOCK_PROFILES, models: MODELS, efforts: EFFORTS, ...(githubOn ? { github: GITHUB } : {}) };
 		},
 		login: {
 			async start(): Promise<LoginStart> {
@@ -1147,6 +1599,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		},
 		mockNextAnswer(kind) {
 			nextAnswer = kind;
+		},
+		mockNextGithub(kind) {
+			nextGithub = kind;
 		},
 		simulateDrop(ms: number) {
 			for (const world of worlds.values()) {

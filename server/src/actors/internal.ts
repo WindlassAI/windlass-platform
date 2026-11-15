@@ -10,6 +10,8 @@
 
 import type { SandboxProfileId, SessionSummary } from "../contract.js";
 import { serviceParams } from "../auth.js";
+import type { StoredRepository } from "../github/publish.js";
+import type { StoredConnection } from "../github/repos.js";
 import { issueServiceToken, verifyToken } from "../tokens.js";
 
 /** What `user` passes when it creates an `agentSession`. */
@@ -21,6 +23,8 @@ export interface SessionCreateInput {
 	profile: SandboxProfileId;
 	model: string;
 	repoUrl: string | null;
+	/** Set when the session is launched on a repository of the user's GitHub connection; `repoUrl` is then its address. */
+	repo?: StoredRepository | null;
 	demo: boolean;
 	createdAt: number;
 }
@@ -30,6 +34,8 @@ export interface UserInternal {
 	internalSessionChanged(summary: SessionSummary): Promise<void>;
 	/** Counts the session as running if the user is below MAX_RUNNING_SESSIONS. */
 	internalAcquireRun(sessionId: string): Promise<{ ok: boolean; running: number; known: boolean }>;
+	/** The user's GitHub connection as it is now; null when there is none. */
+	internalGithubConnection(): Promise<StoredConnection | null>;
 }
 
 /** Actions of `agentSession` that only actors may call. */

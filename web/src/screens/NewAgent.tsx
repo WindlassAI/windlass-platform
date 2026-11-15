@@ -2,14 +2,20 @@
  * New agent: the sandbox it works in (the centrepiece: every profile as a card, with its layers
  * drawn as they nest and three plain facts), then the model, an optional repository and title, and
  * the first prompt. Creating opens the session.
+ *
+ * The repository is a pasted address, as it always was. Where the deployment has a GitHub App, a
+ * connected user picks one of their own instead, with the branch to start from, and a user who is not
+ * connected is offered to connect: that leaves the page, so what the form holds is kept and put back.
  */
 import { MAX_PROMPT_CHARS, MAX_TITLE_CHARS, type SandboxProfile, type SandboxProfileId } from "@contract";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
 import { Layers, ProfileFacts } from "../components/Layers";
+import { RepositoryPicker, type PickedRepository } from "../components/RepositoryPicker";
 import { navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
+import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 
 function ProfileCard({ profile, name, checked, onChoose }: { profile: SandboxProfile; name: string; checked: boolean; onChoose(id: SandboxProfileId): void }) {
@@ -41,27 +47,42 @@ export function NewAgent() {
 	const auth = useAuth();
 	const info = platform.info;
 	const group = useId();
-	const ids = { model: useId(), repo: useId(), title: useId(), prompt: useId(), repoNote: useId() };
+	const ids = { model: useId(), repo: useId(), repoLabel: useId(), title: useId(), prompt: useId(), repoNote: useId() };
+	const github = useGithub();
+	// What the form held before its user left to connect GitHub, once.
+	const [draft] = useState(takeLaunchDraft);
 
-	const [profile, setProfile] = useState<SandboxProfileId | null>(null);
-	const [model, setModel] = useState("");
-	const [repoUrl, setRepoUrl] = useState("");
-	const [title, setTitle] = useState("");
-	const [prompt, setPrompt] = useState("");
+	const [profile, setProfile] = useState<SandboxProfileId | null>((draft?.profile as SandboxProfileId | null | undefined) ?? null);
+	const [model, setModel] = useState(draft?.model ?? "");
+	const [repoUrl, setRepoUrl] = useState(draft?.repoUrl ?? "");
+	const [title, setTitle] = useState(draft?.title ?? "");
+	const [prompt, setPrompt] = useState(draft?.prompt ?? "");
+	const [picked, setPicked] = useState<PickedRepository | null>(null);
+	// Where the repository comes from: the user's choice once they made one, otherwise GitHub when it is connected.
+	const [chosenSource, setChosenSource] = useState<"github" | "address" | null>(draft?.repoUrl ? "address" : null);
 	const [busy, setBusy] = useState<"creating" | "prompting" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
 	// Start on the first sandbox that can be chosen and on the default model.
 	useEffect(() => {
 		if (!info) return;
-		setProfile((current) => current ?? info.profiles.find((candidate) => candidate.available)?.id ?? null);
+		setProfile((current) => (current !== null && info.profiles.some((candidate) => candidate.id === current && candidate.available) ? current : (info.profiles.find((candidate) => candidate.available)?.id ?? null)));
 		setModel((current) => current || (info.models[0] ?? ""));
 	}, [info]);
 
+	// Back from GitHub: the form opens where its user left it, at the repository.
+	const returned = github.notice?.where === "launch" || github.busy === "finishing";
+	useEffect(() => {
+		if (returned && info) document.getElementById(ids.repo)?.scrollIntoView({ block: "center" });
+	}, [returned, info, ids.repo]);
+
 	const close = () => navigate({ name: "home" });
-	const repo = repoUrl.trim();
+	const connection = github.enabled ? (github.status?.connection ?? null) : null;
+	const source = connection ? (chosenSource ?? "github") : "address";
+	const repo = source === "address" ? repoUrl.trim() : "";
 	const repoInvalid = repo !== "" && !/^https:\/\/[^\s/]+\/\S+$/.test(repo);
 	const canCreate = info !== null && profile !== null && !repoInvalid && busy === null;
+	const notice = github.notice?.where === "launch" ? github.notice : null;
 
 	const create = async (event: FormEvent) => {
 		event.preventDefault();
@@ -70,7 +91,8 @@ export function NewAgent() {
 		setBusy("creating");
 		let sessionId: string;
 		try {
-			const session = await client.user(auth).createSession({ profile, model: model || undefined, repoUrl: repo || undefined, title: title.trim() || undefined });
+			const repository = source === "github" && picked ? { id: picked.repository.id, branch: picked.branch } : undefined;
+			const session = await client.user(auth).createSession({ profile, model: model || undefined, repoUrl: repo || undefined, repository, title: title.trim() || undefined });
 			sessionId = session.id;
 		} catch (failure) {
 			setError(explain(failure));
@@ -185,25 +207,77 @@ export function NewAgent() {
 								<input id={ids.title} className="input" value={title} maxLength={MAX_TITLE_CHARS} placeholder="Named after the first prompt if left empty" onChange={(event) => setTitle(event.target.value)} />
 							</div>
 							<div className="field field-wide">
-								<label className="label" htmlFor={ids.repo}>
-									Git repository to clone <span className="label-optional">optional</span>
-								</label>
-								<input
-									id={ids.repo}
-									className={`input input-mono${repoInvalid ? " input-invalid" : ""}`}
-									type="url"
-									inputMode="url"
-									spellCheck={false}
-									autoComplete="off"
-									placeholder="https://github.com/you/project.git"
-									value={repoUrl}
-									onChange={(event) => setRepoUrl(event.target.value)}
-									aria-invalid={repoInvalid}
-									aria-describedby={ids.repoNote}
-								/>
-								<p className={`field-note${repoInvalid ? " tone-warn" : ""}`} id={ids.repoNote}>
-									{repoInvalid ? "Use the repository's https address, for example https://github.com/you/project.git." : "Cloned into the workspace when the sandbox is created. Without one the agent starts in an empty repository."}
+								<div className="gh-field-head">
+									<label className="label" id={ids.repoLabel} htmlFor={ids.repo}>
+										{github.enabled ? "Repository" : "Git repository to clone"} <span className="label-optional">optional</span>
+									</label>
+									{connection ? (
+										<button type="button" className="link gh-switch" onClick={() => setChosenSource(source === "github" ? "address" : "github")} disabled={busy !== null}>
+											{source === "github" ? "Paste an address instead" : "Choose from GitHub"}
+										</button>
+									) : null}
+								</div>
+								{source === "github" && connection ? (
+									<RepositoryPicker
+										value={picked}
+										onChange={(next) => {
+											setPicked(next);
+											github.dismiss();
+										}}
+										accounts={connection.accounts}
+										disabled={busy !== null}
+										inputId={ids.repo}
+										labelledBy={ids.repoLabel}
+										describedBy={ids.repoNote}
+									/>
+								) : (
+									<input
+										id={ids.repo}
+										className={`input input-mono${repoInvalid ? " input-invalid" : ""}`}
+										type="url"
+										inputMode="url"
+										spellCheck={false}
+										autoComplete="off"
+										placeholder="https://github.com/you/project.git"
+										value={repoUrl}
+										onChange={(event) => setRepoUrl(event.target.value)}
+										aria-invalid={repoInvalid}
+										aria-describedby={ids.repoNote}
+									/>
+								)}
+								<p className={`field-note${repoInvalid || (source === "github" && picked && !picked.repository.canPush) ? " tone-warn" : ""}`} id={ids.repoNote}>
+									{source === "github" && connection
+										? picked
+											? picked.repository.canPush
+												? `Cloned at ${picked.branch} when the sandbox is created. The work can come back as a pull request.`
+												: `You can read ${picked.repository.owner}/${picked.repository.name} on GitHub but not push to it: the agent can work on it, and no pull request can be opened.`
+											: notice?.tone === "good"
+												? `${notice.text} Choose a repository, or leave this empty to start in an empty one.`
+												: "One of your repositories at GitHub, private ones included. Without one the agent starts in an empty repository."
+										: repoInvalid
+											? "Use the repository's https address, for example https://github.com/you/project.git."
+											: "Cloned into the workspace when the sandbox is created. Without one the agent starts in an empty repository."}
 								</p>
+								{github.enabled && !connection ? (
+									// One line, whatever it says: the form below it does not move when the connection is known.
+									<p className={`field-note gh-connect-line${notice?.tone === "bad" || github.error ? " tone-bad" : ""}`} role={notice?.tone === "bad" ? "alert" : undefined}>
+										{github.busy === "finishing" ? (
+											"Finishing the GitHub connection…"
+										) : github.busy === "leaving" ? (
+											"Going to GitHub…"
+										) : github.status === null && !github.error ? (
+											"Checking the GitHub connection…"
+										) : (
+											<>
+												{notice?.tone === "bad" ? `${notice.text} ` : github.error ? `${github.error} ` : null}
+												<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { profile, model, title, prompt, repoUrl } })} disabled={busy !== null}>
+													Connect GitHub
+												</button>{" "}
+												to choose one of your own repositories, private ones included, and get the work back as a pull request.
+											</>
+										)}
+									</p>
+								) : null}
 							</div>
 							<div className="field field-wide">
 								<label className="label" htmlFor={ids.prompt}>

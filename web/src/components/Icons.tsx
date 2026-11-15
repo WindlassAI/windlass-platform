@@ -167,10 +167,63 @@ export const FileIcon = (props: IconProps) => (
 	</Svg>
 );
 
+/** Copy: a sheet with another behind it. */
+export const CopyIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<rect x="5.6" y="5.6" width="7.6" height="7.6" rx="1.4" />
+		<path d="M10.4 5.6V4.2a1.4 1.4 0 00-1.4-1.4H4.2a1.4 1.4 0 00-1.4 1.4V9a1.4 1.4 0 001.4 1.4h1.4" />
+	</Svg>
+);
+
 export const RefreshIcon = (props: IconProps) => (
 	<Svg {...props}>
 		<path d="M13 8a5 5 0 11-1.6-3.7" />
 		<path d="M13.2 2.6v2.8h-2.8" />
+	</Svg>
+);
+
+export const SearchIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<circle cx="7" cy="7" r="4.2" />
+		<path d="M10.2 10.2l3.2 3.2" />
+	</Svg>
+);
+
+/** A private repository. */
+export const LockIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<rect x="3.6" y="7.2" width="8.8" height="6" rx="1.2" />
+		<path d="M5.6 7.2V5.4a2.4 2.4 0 014.8 0v1.8" />
+	</Svg>
+);
+
+/** A branch: a line with another leaving it. */
+export const BranchIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<circle cx="4.6" cy="3.6" r="1.5" />
+		<circle cx="4.6" cy="12.4" r="1.5" />
+		<circle cx="11.4" cy="5" r="1.5" />
+		<path d="M4.6 5.1v5.8M11.4 6.5c0 2.2-1.8 2.6-3.4 2.8-1.6.2-3.4.4-3.4 1.6" />
+	</Svg>
+);
+
+/** A pull request: one line asking to join another. */
+export const PullRequestIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<circle cx="4.4" cy="3.8" r="1.5" />
+		<circle cx="4.4" cy="12.2" r="1.5" />
+		<circle cx="11.6" cy="12.2" r="1.5" />
+		<path d="M4.4 5.3v5.4M11.6 10.7V6.6a2.2 2.2 0 00-2.2-2.2H8.2M9.7 2.9L8.1 4.4l1.6 1.5" />
+	</Svg>
+);
+
+/** Merged: the line has joined. */
+export const MergedIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<circle cx="4.4" cy="3.8" r="1.5" />
+		<circle cx="4.4" cy="12.2" r="1.5" />
+		<circle cx="11.6" cy="8.6" r="1.5" />
+		<path d="M4.4 5.3v5.4M4.4 5.3c0 2.4 2.2 3.3 5.7 3.3" />
 	</Svg>
 );
 
