@@ -780,6 +780,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			const said = failure ? str(failure.message).trim().replace(/^[a-z]/, (letter) => letter.toUpperCase()) : "";
 			const reported = summary?.outcome as TurnOutcome | undefined;
 			if (failure?.reason === "auth_required") {
+				// No sign-in, one that could not be refreshed, or an access token the provider rejected: the remedy is the same.
 				outcome = "error";
 				message = "ChatGPT did not accept the saved sign-in. Sign in with ChatGPT again, then send the prompt once more.";
 				// The next prompt asks the sandbox layer about the sign-in instead of trusting an earlier answer.
@@ -791,6 +792,9 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			} else if (reported !== undefined && WINDLASS_OUTCOMES.includes(reported)) {
 				// Windlass's own outcome stands. If the turn failed, its events in the timeline say how.
 				outcome = reported;
+				// Unless the platform failed it: the turn's access token ran out and could not be replaced. Windlass's
+				// events say that in words meant for whoever hands the token in; the sandbox layer's sentence is for the user.
+				if (failure?.reason === "token_unavailable" && said) message = said;
 			} else if (failure) {
 				outcome = "error";
 				const stderr = tail(result.stderrTail ?? "");

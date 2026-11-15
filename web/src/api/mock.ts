@@ -71,27 +71,26 @@ export const MOCK_QUESTION_TIMEOUT_MS = 3 * 60_000;
 // What the mock serves
 // ---------------------------------------------------------------------------------------------
 
-const HOSTED_REASON = "A hosted VM cannot share the user's sign-in volume, so Windlass would have to accept a short-lived token handed in from outside, which it does not do yet.";
-
+/** The profiles as server/src/sandbox/profiles.ts has them, word for word (mock.test.ts compares the two). */
 export const MOCK_PROFILES: SandboxProfile[] = [
 	{
 		id: "docker-windlass-sandbox",
 		name: "Docker + Windlass sandbox",
-		summary: "A container of its own, and every command the agent runs is sandboxed again by Windlass: no network, and the sign-in is out of its reach.",
+		summary: "A container of its own, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the container.",
 		layers: ["Docker container (non-root, no capabilities, resource limits)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace, credentials hidden)"],
 		approval: "auto",
 		commandNetwork: false,
-		commandsCanReadLogin: false,
+		commandsCanReadAccessToken: false,
 		available: true,
 	},
 	{
 		id: "docker-hardened",
 		name: "Docker, hardened",
-		summary: "A container under Docker's default seccomp and AppArmor profiles; commands run directly in it, with network, and can read the sign-in kept there.",
+		summary: "A container under Docker's default seccomp and AppArmor profiles; commands run directly in it, with network, and can read the session's access token, which lasts about an hour and cannot be renewed. Your ChatGPT sign-in is never in the container.",
 		layers: ["Docker container (default seccomp and AppArmor, non-root, no capabilities, resource limits)"],
 		approval: "full",
 		commandNetwork: true,
-		commandsCanReadLogin: true,
+		commandsCanReadAccessToken: true,
 		available: true,
 	},
 	{
@@ -101,9 +100,9 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 		layers: ["E2B microVM"],
 		approval: "auto",
 		commandNetwork: true,
-		commandsCanReadLogin: false,
+		commandsCanReadAccessToken: false,
 		available: false,
-		unavailableReason: HOSTED_REASON,
+		unavailableReason: "Not built here yet: it needs an E2B provider in the sandbox layer, an E2B template with Windlass in it and an E2B account. Windlass no longer stands in the way: a session there would be handed a short-lived access token, as the Docker sessions are, and the sign-in would stay on the platform.",
 	},
 	{
 		id: "daytona",
@@ -112,9 +111,9 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 		layers: ["Daytona workspace"],
 		approval: "auto",
 		commandNetwork: true,
-		commandsCanReadLogin: false,
+		commandsCanReadAccessToken: false,
 		available: false,
-		unavailableReason: HOSTED_REASON.replace("VM", "workspace"),
+		unavailableReason: "Not built here yet: it needs a Daytona provider in the sandbox layer, a Daytona image with Windlass in it and a Daytona account. Windlass no longer stands in the way: a session there would be handed a short-lived access token, as the Docker sessions are, and the sign-in would stay on the platform.",
 	},
 	{
 		id: "firecracker",
@@ -123,9 +122,9 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 		layers: ["Firecracker microVM (KVM)"],
 		approval: "auto",
 		commandNetwork: false,
-		commandsCanReadLogin: false,
+		commandsCanReadAccessToken: false,
 		available: false,
-		unavailableReason: "It needs a host with KVM and a guest agent to run commands in the VM, and this deployment has neither.",
+		unavailableReason: "Not built here: it needs a host with KVM, a guest image with Windlass in it and a guest agent to run commands in the VM, and this deployment has none of them. A session there would be handed a short-lived access token, as the Docker sessions are.",
 	},
 	{
 		id: "agentos",
@@ -134,9 +133,9 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 		layers: ["agentOS runtime"],
 		approval: "auto",
 		commandNetwork: false,
-		commandsCanReadLogin: false,
+		commandsCanReadAccessToken: false,
 		available: false,
-		unavailableReason: "agentOS cannot run the Windlass executable, and Windlass's tools would have to work through agentOS's remote execution interface, which they do not.",
+		unavailableReason: "agentOS cannot run the Windlass executable, and Windlass's tools would have to work through agentOS's remote execution interface, which they do not. Handing a session an access token changes nothing about that.",
 	},
 ];
 

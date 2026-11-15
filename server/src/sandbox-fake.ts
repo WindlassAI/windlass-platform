@@ -21,6 +21,8 @@
  *                     `failure.reason` "engine"
  *   "(throw)"         the layer itself fails: `runTurn` rejects
  *   "(auth-fail)"     the recorded run of a refused sign-in: `failure.reason` "auth_required"
+ *   "(old-windlass)"  the image's Windlass cannot hand a token on (it has no `login token`, or not that
+ *                     command's `--valid-for`): "windlass_outdated", no events
  *   "(session-gone)"  Windlass no longer has the session to continue: "session_not_found", no events
  *   "(session-busy)"  another process holds the session: "session_in_use", no events
  *   "(exec-fail)"     the model call fails for good: outcome `failed`, "execution_failed"
@@ -36,6 +38,16 @@
  *
  * Sign-in: paste `<redirectPrefix>?code=<name>` to sign in as `<name>@example.com`; `code=refused`
  * is refused, and `code=nosignin` signs in an account whose sign-in is then missing.
+ *
+ * Access tokens: a turn without a script asks the layer's token source for its user's access token
+ * first, as the real layer does, and is handed one (a line `[wlp] token.handed` says so; the token is
+ * obviously fake and goes nowhere). A demo turn asks for none. The account's name decides the answer:
+ * `code=expired` signs in an account whose sign-in can no longer be refreshed ("auth_required": sign
+ * in again), `code=offline` one whose token cannot be had this time ("token_unavailable"). The token
+ * source fails as the real one does, by the kind of error it makes from Windlass's code: a
+ * `SandboxUserError` for a sign-in that is missing (`signed_out`) or refused (`invalid_grant`), and a
+ * `SignInRefreshError` with the code `network_error` for a sign-in service that cannot be reached.
+ * Nothing here is told by the words of a message; the switches above are this layer's own.
  */
 
 import { randomBytes } from "node:crypto";
@@ -44,6 +56,8 @@ import { join } from "node:path";
 import { FIXTURES_DIR } from "./config.js";
 import type { SandboxProfile, SandboxProfileId, WindlassEvent } from "./contract.js";
 import {
+	type AccessToken,
+	type AccessTokens,
 	type ChatgptAccount,
 	type ChatgptLogins,
 	type CreateSandboxInput,
@@ -61,6 +75,7 @@ import {
 	type TurnQuestion,
 	type Windlass,
 } from "./sandbox/api.js";
+import { NOT_SIGNED_IN, SIGN_IN_EXPIRED, SIGN_IN_UNREACHABLE, SignInRefreshError, TOKEN_VALID_FOR_MS, outdatedWindlass, tokenSourceFailure } from "./sandbox/handoff.js";
 
 const WORKSPACE = "/workspace";
 const REDIRECT_PREFIX = "http://127.0.0.1:1455/auth/callback";
@@ -76,7 +91,7 @@ const PROFILES: SandboxProfile[] = [
 		layers: ["In-memory sandbox (fake layer)", "Windlass's sandbox around each command (simulated)"],
 		approval: "auto",
 		commandNetwork: false,
-		commandsCanReadLogin: false,
+		commandsCanReadAccessToken: false,
 		available: true,
 	},
 	{
@@ -86,7 +101,7 @@ const PROFILES: SandboxProfile[] = [
 		layers: ["In-memory sandbox (fake layer)"],
 		approval: "full",
 		commandNetwork: true,
-		commandsCanReadLogin: true,
+		commandsCanReadAccessToken: true,
 		available: true,
 	},
 	...(["e2b", "daytona", "firecracker", "agentos"] as const).map(
@@ -97,7 +112,7 @@ const PROFILES: SandboxProfile[] = [
 			layers: [id],
 			approval: "auto",
 			commandNetwork: true,
-			commandsCanReadLogin: false,
+			commandsCanReadAccessToken: false,
 			available: false,
 			unavailableReason: "The fake sandbox layer only stands in for the two Docker profiles.",
 		}),
@@ -374,10 +389,15 @@ class FakeWindlass implements Windlass {
 	constructor(
 		private readonly sandboxes: FakeSandboxes,
 		private readonly eventDelayMs: number,
+		private readonly tokens: AccessTokens,
 	) {}
 
 	async version(): Promise<string | null> {
 		return "0.1.0-fake";
+	}
+
+	async problem(): Promise<string | null> {
+		return null;
 	}
 
 	async models(): Promise<string[]> {
@@ -409,6 +429,19 @@ class FakeWindlass implements Windlass {
 				stderrTail: "",
 				failure: { reason: "session_in_use", message: `Session ${id} is open in another Windlass process (pid 4242). It can be continued once that process has closed it.` },
 			};
+		}
+
+		const none = { exitCode: null, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "" };
+		if (text.includes("(old-windlass)")) return { ...none, failure: { reason: "windlass_outdated", message: outdatedWindlass("0.0.0-fake", "windlass-platform-sandbox:latest") } };
+		// A turn that is not scripted runs on its user's sign-in: it is handed that user's access token before anything starts.
+		if (input.script === undefined) {
+			const uid = this.sandboxes.all.get(sandbox.id)?.uid ?? "";
+			try {
+				const token = await this.tokens.current(uid);
+				console.log(`[wlp] token.handed sandbox=${sandbox.id} uid=${uid}: the turn was handed an access token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more`);
+			} catch (error) {
+				return { ...none, failure: tokenSourceFailure(error) };
+			}
 		}
 
 		const continued = input.windlassSessionId !== undefined;
@@ -706,7 +739,10 @@ class FakeWindlass implements Windlass {
 
 class FakeLogins implements ChatgptLogins {
 	private readonly attempts = new Map<string, ChatgptAccount | null>();
-	private readonly users = new Map<string, ChatgptAccount | null>();
+	/** The users, each with the sign-in in its (imaginary) auth volume; null for a user without one. */
+	readonly users = new Map<string, ChatgptAccount | null>();
+	/** Called when a user's sign-in was replaced or forgotten. */
+	changed: (uid: string) => void = () => {};
 
 	async start(attemptId: string): Promise<{ url: string; redirectPrefix: string }> {
 		this.attempts.set(attemptId, null);
@@ -736,6 +772,7 @@ class FakeLogins implements ChatgptLogins {
 		if (!this.attempts.has(attemptId)) throw new Error(`unknown sign-in attempt ${attemptId}`);
 		this.users.set(uid, this.attempts.get(attemptId) ?? null);
 		this.attempts.delete(attemptId);
+		this.changed(uid);
 	}
 
 	async discard(attemptId: string): Promise<void> {
@@ -748,6 +785,7 @@ class FakeLogins implements ChatgptLogins {
 
 	async logout(uid: string): Promise<void> {
 		if (this.users.has(uid)) this.users.set(uid, null);
+		this.changed(uid);
 	}
 
 	async ensureUserVolume(uid: string): Promise<void> {
@@ -755,9 +793,59 @@ class FakeLogins implements ChatgptLogins {
 	}
 }
 
+// ---------------------------------------------------------------------------------------------
+// Access tokens
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The real token source's behaviour without Windlass: one request per user at a time, and an answer
+ * reused for as long as it is good for `TOKEN_VALID_FOR_MS` (twenty minutes) more, which is what a
+ * token is asked with. A new one lasts an hour, as a refresh gives it.
+ */
+class FakeAccessTokens implements AccessTokens {
+	private readonly cache = new Map<string, AccessToken>();
+	private readonly running = new Map<string, Promise<AccessToken>>();
+	/** How many times the (imaginary) `windlass login token --json --valid-for 20m` ran. */
+	asked = 0;
+
+	constructor(private readonly logins: FakeLogins) {}
+
+	async current(uid: string): Promise<AccessToken> {
+		const cached = this.cache.get(uid);
+		if (cached !== undefined && cached.expiresAt - Date.now() > TOKEN_VALID_FOR_MS) return { ...cached };
+		let running = this.running.get(uid);
+		if (running === undefined) {
+			running = this.ask(uid).finally(() => this.running.delete(uid));
+			this.running.set(uid, running);
+		}
+		return { ...(await running) };
+	}
+
+	forget(uid: string): void {
+		this.cache.delete(uid);
+	}
+
+	private async ask(uid: string): Promise<AccessToken> {
+		// The run's number is taken before the wait: two users asked at once get two tokens.
+		const run = (this.asked += 1);
+		await delay(10);
+		const account = this.logins.users.get(uid) ?? null;
+		if (account === null) throw new SandboxUserError(NOT_SIGNED_IN);
+		if (account.sub === "fake|expired") throw new SandboxUserError(SIGN_IN_EXPIRED);
+		// As the real token source words Windlass's `network_error`: its sentence, which names the host and the reason.
+		if (account.sub === "fake|offline") throw new SignInRefreshError("could not reach the sign-in service at auth.openai.com: the fake layer has no network", SIGN_IN_UNREACHABLE);
+		const token = { accessToken: `FAKE-ACCESS-TOKEN-${run}-not-a-real-token`, expiresAt: Date.now() + 60 * 60 * 1000 };
+		this.cache.set(uid, token);
+		return token;
+	}
+}
+
 export function createFakeSandboxLayer(): SandboxLayer {
 	const raw = Number.parseInt(process.env.WLP_FAKE_DELAY_MS ?? "", 10);
 	const eventDelayMs = Number.isFinite(raw) && raw >= 0 ? raw : 15;
 	const sandboxes = new FakeSandboxes();
-	return { sandboxes, windlass: new FakeWindlass(sandboxes, eventDelayMs), logins: new FakeLogins() };
+	const logins = new FakeLogins();
+	const tokens = new FakeAccessTokens(logins);
+	logins.changed = (uid) => tokens.forget(uid);
+	return { sandboxes, windlass: new FakeWindlass(sandboxes, eventDelayMs, tokens), logins, tokens };
 }

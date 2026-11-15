@@ -312,6 +312,46 @@ describe("a step the provider failed", () => {
 		const errors = turn(view).blocks.filter((block): block is ErrorBlock => block.kind === "error");
 		expect(errors).toEqual([expect.objectContaining({ title: "The ChatGPT sign-in was not accepted", message: "Signed out: sign in again to continue.", detail: "HTTP 401" })]);
 	});
+
+	it("shows an access token the platform handed in, and Windlass could not use, in words for the reader", () => {
+		// What a `windlass acp` started with WINDLASS_ACCESS_TOKEN_FILE recorded when the token in the file ran out in the middle of a turn.
+		const file = "/home/agent/.local/share/windlass/access-token-0123456789ab.json";
+		const events: WindlassEvent[] = [
+			{ type: "execution.started", v: 1, data: { executionId: "exe_1" }, sessionId: "ses_1", seq: 1, time: 1 },
+			{ type: "step.started", v: 1, data: { messageId: "m1", model: "gpt-6.1-sol", attempt: 1 }, sessionId: "ses_1", seq: 2, time: 2 },
+			{
+				type: "step.failed",
+				v: 1,
+				data: {
+					messageId: "m1",
+					error: {
+						kind: "provider",
+						error: {
+							kind: "auth",
+							retryable: false,
+							message: `no usable access token: The access token handed in through WINDLASS_ACCESS_TOKEN_FILE expired at 2026-11-14T20:00:22.352Z (${file}). Hand in a new token: write the output of \`windlass login token\`, run where the sign-in is saved, to that file.`,
+							status: null,
+							code: null,
+							retryAfterMs: null,
+							requestId: null,
+						},
+					},
+					usage: null,
+				},
+				sessionId: "ses_1",
+				seq: 3,
+				time: 3,
+			},
+			{ type: "execution.failed", v: 1, data: { executionId: "exe_1", message: "Signed out: the access token handed in through WINDLASS_ACCESS_TOKEN_FILE was rejected or cannot be used. Hand in a new token to continue." }, sessionId: "ses_1", seq: 4, time: 4 },
+		];
+		const view = reduce(runToFeed(events, { turn: 1, afterSeq: 0, at: 1_000_000 }));
+		const errors = turn(view).blocks.filter((block): block is ErrorBlock => block.kind === "error");
+		// One error, not two, and nothing of the variable, the file or the instruction to hand in a token.
+		expect(errors).toHaveLength(1);
+		expect(errors[0]).toMatchObject({ title: "The access token of this turn could not be used", detail: null });
+		expect(errors[0]?.message).toMatch(/short-lived access token of your ChatGPT sign-in/);
+		expect(JSON.stringify(errors)).not.toMatch(/WINDLASS_ACCESS_TOKEN_FILE|access-token-|Hand in/);
+	});
 });
 
 describe("a refused call", () => {

@@ -617,10 +617,11 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			return;
 		}
 		case "execution.failed": {
-			const message = str(data.message);
+			const handedIn = aboutHandedIn(str(data.message));
+			const message = handedIn ? HANDED_IN_ERROR.message : str(data.message);
 			const said = draft.turn(turn).blocks.some((block) => block.kind === "error" && block.message === message);
 			if (said) return;
-			const title = data.cause === "approval" ? "Stopped: a call needed approval and nobody was there to give it" : "Windlass gave up on this turn";
+			const title = handedIn ? HANDED_IN_ERROR.title : data.cause === "approval" ? "Stopped: a call needed approval and nobody was there to give it" : "Windlass gave up on this turn";
 			draft.push(turn, { kind: "error", at, title, message, detail: null });
 			return;
 		}
@@ -765,12 +766,25 @@ const PROVIDER_ERROR_TITLES: Record<string, string> = {
 	context_overflow: "The conversation no longer fits the model's context",
 };
 
+/**
+ * A session's Windlass does not hold the ChatGPT sign-in: the platform hands each turn a short-lived
+ * access token in a file. When Windlass cannot use it, its own words are for whoever handed the token
+ * in (they name the variable WINDLASS_ACCESS_TOKEN_FILE and the file, and say to hand in a new token),
+ * which is the platform and not the reader. The turn's ending says what the reader can do.
+ */
+const aboutHandedIn = (message: string) => message.includes("WINDLASS_ACCESS_TOKEN_FILE");
+const HANDED_IN_ERROR = {
+	title: "The access token of this turn could not be used",
+	message: "Windlass runs on a short-lived access token of your ChatGPT sign-in, which the platform hands it. That token was rejected, or it ran out before the platform replaced it.",
+};
+
 function describeStepError(error: Record<string, unknown>): { title: string; message: string; detail: string | null } {
 	if (error.kind === "provider" && isRecord(error.error)) {
 		const provider = error.error;
 		const detail = [typeof provider.status === "number" ? `HTTP ${provider.status}` : null, typeof provider.code === "string" ? provider.code : null, typeof provider.requestId === "string" ? `request ${provider.requestId}` : null]
 			.filter((part): part is string => part !== null)
 			.join(" · ");
+		if (aboutHandedIn(str(provider.message))) return { ...HANDED_IN_ERROR, detail: detail || null };
 		return { title: PROVIDER_ERROR_TITLES[str(provider.kind)] ?? "The model call failed", message: str(provider.message) || "The provider gave no message.", detail: detail || null };
 	}
 	if (error.kind === "crashed") return { title: "Windlass was cut off", message: "The process running this step stopped before the step finished.", detail: null };

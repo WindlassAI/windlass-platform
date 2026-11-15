@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 
+/** The sandbox image the server uses. A layer made for another one (`createSandboxLayer({ image })`) is for the layer's own checks. */
 export const IMAGE = "windlass-platform-sandbox:latest";
 /** Every resource the platform creates carries `dev.windlass-platform=1`. */
 export const LABEL = "dev.windlass-platform";
@@ -92,7 +93,7 @@ export async function removeVolume(name: string): Promise<void> {
 	await docker(["volume", "rm", "-f", name], { check: true });
 }
 
-/** Flags shared by every helper container (login steps, version probe). */
+/** Flags shared by every helper container (login steps, access tokens, version probe). */
 export function helperFlags(name: string, network: "none" | "bridge"): string[] {
 	return [
 		"--rm",
@@ -119,9 +120,9 @@ export function helperFlags(name: string, network: "none" | "bridge"): string[] 
  * Runs a throwaway container to its end. On a timeout the container itself is removed too (killing the
  * local client does not stop it).
  */
-export async function runHelper(flags: string[], name: string, command: string[], options: { stdin?: string; timeoutMs?: number } = {}): Promise<DockerResult> {
+export async function runHelper(flags: string[], name: string, command: string[], options: { stdin?: string; timeoutMs?: number; image?: string } = {}): Promise<DockerResult> {
 	const timeoutMs = options.timeoutMs ?? 60_000;
-	const result = await docker(["run", ...flags, IMAGE, ...command], { stdin: options.stdin, timeoutMs });
+	const result = await docker(["run", ...flags, options.image ?? IMAGE, ...command], { stdin: options.stdin, timeoutMs });
 	if (result.timedOut) await docker(["rm", "-f", name]);
 	return result;
 }

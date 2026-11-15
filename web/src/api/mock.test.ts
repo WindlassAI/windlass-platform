@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyDelta, applyItem, fromSnapshot, toolBlocks, type SessionView } from "../lib/timeline";
 import { PlatformError, type ConnectionState, type SessionFeed } from "./client";
 import { LIVE_TYPES } from "./feed";
-import { createMockClient, type MockClient } from "./mock";
+import { PROFILES } from "../../../server/src/sandbox/profiles";
+import { createMockClient, MOCK_PROFILES, type MockClient } from "./mock";
 
 /** A feed that records what it is given and folds it, as the session screen does. */
 function recorder() {
@@ -88,6 +89,13 @@ describe("what the mock serves", () => {
 		expect(info.profiles.filter((profile) => profile.available).map((profile) => profile.id)).toEqual(["docker-windlass-sandbox", "docker-hardened"]);
 		for (const profile of info.profiles.filter((candidate) => !candidate.available)) expect(profile.unavailableReason?.length).toBeGreaterThan(40);
 		expect(info.models.length).toBeGreaterThan(0);
+	});
+
+	it("says of every profile what the server says, word for word", () => {
+		expect(MOCK_PROFILES).toEqual(PROFILES);
+		// No command reads the sign-in anywhere; the access token only where commands run outside Windlass's sandbox.
+		expect(MOCK_PROFILES.filter((profile) => profile.commandsCanReadAccessToken).map((profile) => profile.id)).toEqual(["docker-hardened"]);
+		expect(MOCK_PROFILES.every((profile) => !/sign-in volume|does not do yet/.test(`${profile.summary} ${profile.unavailableReason ?? ""}`))).toBe(true);
 	});
 
 	it("has sessions in different states, newest first, one of them at work", async () => {

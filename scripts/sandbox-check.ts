@@ -3,38 +3,97 @@
  *
  *   cd server && npx tsx ../scripts/sandbox-check.ts
  *
- * No real model is called and no real sign-in is completed. Every turn is scripted with
- * WINDLASS_ACP_SCRIPT, but one: the turn that must fail for want of a sign-in runs in a sandbox with an
- * empty data volume and no network at all, so it could reach no model even if Windlass tried. `finish`
- * is tried only with addresses Windlass rejects before any network request, and `status`/`adopt` use a
- * synthetic auth.json with obviously fake tokens. Everything created here is removed at the end, and
- * nothing this run did not create is touched.
+ * No real model is called, no real sign-in is completed, and nothing is sent to OpenAI:
+ *
+ *   - every sign-in here is a synthetic auth.json with obviously fake tokens (`FAKE-ACCESS-TOKEN-...`);
+ *   - the helper that asks Windlass for an access token has no network in this check's layers
+ *     (`tokenNetwork: "none"`), so it can send nothing: a token that has the time left the platform
+ *     asks for is printed all the same, and one that needs a refresh fails;
+ *   - where a refresh has to work, or to be refused (the section `valid-for`), the helper still has no
+ *     network: its image is a throwaway one in which a stand-in for OpenAI's token endpoint runs beside
+ *     Windlass, inside the same container, and answers the refresh with tokens that are as fake, or with
+ *     a refusal;
+ *   - every turn is scripted with WINDLASS_ACP_SCRIPT, except those of the sections `failures`,
+ *     `hand-off`, `valid-for` and `old image` that are handed a (fake) access token or must fail for want of one.
+ *     Each of those runs in a sandbox that was first cut off from every network and shown to be, so
+ *     Windlass could reach no model whatever it tried;
+ *   - `finish` is tried only with addresses Windlass rejects before any network request.
+ *
+ * What a failure of the sign-in means is checked by Windlass's code for it, never by its words: each
+ * code is produced by a real Windlass where a container can produce it (an expired token, a rejected
+ * one, a file that is missing, empty, malformed or unreadable, a sign-in service that cannot be reached
+ * or refuses), and a stand-in for the engine reports codes with words that say something else, to show
+ * that the words decide nothing (`hand-off`).
+ *
+ * Everything created here is removed at the end, and nothing this run did not create is touched. No
+ * token, fake as they are, may appear in what this check prints: its last check reads its own output.
  *
  *   WLP_CHECK_SECTIONS=image,failures   run only the sections whose names start with one of these
  *   WLP_CHECK_CLEANUP_SH=0              do not run sandbox/cleanup.sh (it removes every windlass-platform
  *                                       resource on the machine, also those of a server running beside this check)
  */
 
-import { execFileSync, spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SandboxProfileId, WindlassEvent } from "../server/src/contract.js";
-import { type RunTurnResult, type ScriptedModel, SandboxUserError, type TurnAnswer, type TurnControl, type TurnQuestion, type Windlass } from "../server/src/sandbox/api.js";
+import { type AccessToken, type AccessTokens, type RunTurnResult, type ScriptedModel, SandboxUserError, type TurnAnswer, type TurnControl, type TurnQuestion, type Windlass } from "../server/src/sandbox/api.js";
 import { AcpConnection, AcpError, LineSplitter } from "../server/src/sandbox/acp.js";
 import { DEMO_SCENARIOS, DEMO_SPARE_ANSWERS } from "../server/src/sandbox/demo.js";
-import { DATA_DIR, LABEL_ARG, PROCESS_MARK, docker, helperFlags, randomId, runHelper, tmpName } from "../server/src/sandbox/docker.js";
+import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, PROCESS_MARK, docker, helperFlags, randomId, runHelper, tmpName } from "../server/src/sandbox/docker.js";
+import { ACCESS_TOKEN_FILE_ENV, NOT_SIGNED_IN, OUTDATED_SANDBOX, SIGN_IN_EXPIRED, SignInRefreshError, TOKEN_REJECTED, TOKEN_REPLACE_LEAD_MS, TOKEN_VALID_FOR_MS, loginTokenCommand } from "../server/src/sandbox/handoff.js";
 import { createSandboxLayer } from "../server/src/sandbox/index.js";
 import type { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
+import { TOKEN_REMOVED, tokenFilePath } from "../server/src/sandbox/token-file.js";
+import { ensureAuthVolume } from "../server/src/sandbox/volumes.js";
 import { DockerWindlass } from "../server/src/sandbox/windlass.js";
+import { warnAboutWindlass } from "../server/src/startup.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const layer = createSandboxLayer();
+/** This machine's architecture as Windlass's builds name it. */
+const ARCH = process.arch === "arm64" ? "arm64" : "x64";
+/** The helper that asks Windlass for an access token gets no network here: nothing this check does can reach OpenAI. */
+const layer = createSandboxLayer({ tokenNetwork: "none" });
 const run = randomId(3);
 const uid = `chk-${run}`;
 const uid2 = `chk-${run}-b`;
 /** A user with no sign-in at all, for the turn that must fail for want of one. */
 const uid3 = `chk-${run}-n`;
+/** The users of the token source, of the old layout (two), of the hand-off (two), of the old images (two) and of `--valid-for`. */
+const uidT = `chk-${run}-t`;
+const uidM = `chk-${run}-m`;
+const uidM2 = `chk-${run}-m2`;
+const uidH = `chk-${run}-h`;
+const uidD = `chk-${run}-d`;
+const uidO = `chk-${run}-o`;
+const uidO2 = `chk-${run}-o2`;
+const uidV = `chk-${run}-v`;
+const allUids = [uid, uid2, uid3, uidT, uidM, uidM2, uidH, uidD, uidO, uidO2, uidV];
+/** Throwaway images this run built. */
+const createdImages = new Set<string>();
+
+/** The access tokens of this check's synthetic sign-ins. None may ever be printed. */
+const TOKEN_A = "FAKE-ACCESS-TOKEN-A-not-a-real-token";
+const TOKEN_B = "FAKE-ACCESS-TOKEN-B-not-a-real-token";
+const TOKEN_C = "FAKE-ACCESS-TOKEN-C-not-a-real-token";
+const SECRET = /FAKE-(ACCESS|REFRESH)-TOKEN|FAKE\.ID\.TOKEN/;
+
+/** Everything this process prints, to be read at the end; the layer's own `[wlp]` lines are kept apart as well. */
+const output: string[] = [];
+const wlpLines: string[] = [];
+for (const method of ["log", "warn", "error"] as const) {
+	const real = console[method].bind(console);
+	console[method] = (...parts: unknown[]) => {
+		const line = parts.map((part) => (typeof part === "string" ? part : String(part))).join(" ");
+		output.push(line);
+		if (line.startsWith("[wlp] ")) {
+			wlpLines.push(line);
+			real(`      ${line}`);
+		} else real(line);
+	};
+}
 const only = (process.env.WLP_CHECK_SECTIONS ?? "")
 	.split(",")
 	.map((name) => name.trim())
@@ -181,17 +240,65 @@ const summaryOf = (run: TurnRun) => run.result.summary as { outcome?: string; st
 /** The summary is the last event, and the one the result carries. */
 const endsWithSummary = (run: TurnRun) => run.events.length > 0 && run.events[run.events.length - 1]?.type === "cli.summary" && run.events[run.events.length - 1] === run.result.summary;
 const kindsOf = (events: WindlassEvent[]) => [...new Set(events.map((event) => event.type))];
+/** Whether one of this check's (fake) tokens is in what a turn gave back. */
+const leaks = (found: TurnRun) => SECRET.test(JSON.stringify(found.events)) || SECRET.test(found.result.stderrTail) || SECRET.test(JSON.stringify(found.result.failure));
+/** Why the turn's last model call failed, as Windlass names it: "transport", "auth", ... */
+const lastStepError = (found: TurnRun) => ((dataOf(ofType(found.events, "step.failed").at(-1)).error as { error?: { kind?: string } } | undefined)?.error?.kind ?? "none") as string;
+/** Windlass's code for why the turn's last model call failed (`step.failed`, `error.error.code`): "handed_in_expired", ...; "none" when it gave none. */
+const lastStepCode = (found: TurnRun) => ((dataOf(ofType(found.events, "step.failed").at(-1)).error as { error?: { code?: string | null } } | undefined)?.error?.code ?? "none") as string;
+/** After how many seconds each failed replacement of a turn's token file said it would be tried again. */
+const retryWaits = (lines: string[]) => lines.filter((line) => line.includes("token.replace_failed")).map((line) => Number(/trying again in (\d+) s/.exec(line)?.[1] ?? Number.NaN));
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const NET_PROBE = "if timeout 4 bash -c 'exec 3<>/dev/tcp/1.1.1.1/53' 2>/dev/null; then echo NET_OK; else echo NET_BLOCKED; fi";
 
-const PROBE_COMMAND = [
-	"id -un",
-	"echo probe-1 > probe.txt",
-	`if ls ${DATA_DIR} >/dev/null 2>&1; then echo DATA_DIR_READABLE; else echo DATA_DIR_HIDDEN; fi`,
-	`if cat ${DATA_DIR}/auth.json >/dev/null 2>&1; then echo LOGIN_READABLE; else echo LOGIN_HIDDEN; fi`,
-	NET_PROBE,
-].join("; ");
+const PROBE_COMMAND = ["id -un", "echo probe-1 > probe.txt", `if ls ${DATA_DIR} >/dev/null 2>&1; then echo DATA_DIR_READABLE; else echo DATA_DIR_HIDDEN; fi`, NET_PROBE].join("; ");
+
+/** What a command the agent runs can find out about the turn's access token file. It prints words, never the file. */
+const tokenProbe = (path: string) =>
+	[
+		`if cat ${path} >/dev/null 2>&1; then echo TOKEN_READABLE; else echo TOKEN_HIDDEN; fi`,
+		`if [ -n "\${${ACCESS_TOKEN_FILE_ENV}:-}" ]; then echo VARIABLE_PASSED; else echo VARIABLE_NOT_PASSED; fi`,
+	].join("; ");
+
+/** The engine of the turn running in a sandbox (`windlass acp`), and the variable that names its access token file, if it has one. */
+const ENGINE_ENV = `pid=$(pgrep -f '^windlass acp$' | head -n 1); if [ -z "$pid" ]; then echo NO_ENGINE; else echo ENGINE; tr '\\0' '\\n' < /proc/$pid/environ | grep '^${ACCESS_TOKEN_FILE_ENV}=' || echo VARIABLE_UNSET; fi`;
+
+/** Mode, owner and inode of a file, and of its content only the keys and the expiry. */
+const fileFacts = (path: string) => `stat -c '%a %U %i' ${path} && python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(",".join(sorted(v)), v["expiresAt"])' ${path}`;
+
+/** What Windlass's data directory in a sandbox holds, on one line. */
+const DATA_LS = `ls -A ${DATA_DIR} | tr '\\n' ' '`;
+
+/**
+ * Reads a file again and again for a while, as Windlass does at each model call, and counts the reads
+ * that were not the whole JSON object: a file written in place would give some.
+ */
+const READER = `
+import json, os, sys, time
+path, until = sys.argv[1], time.time() + float(sys.argv[2])
+good = bad = missing = 0
+expiries, inodes = set(), set()
+while time.time() < until:
+    try:
+        with open(path) as f:
+            text = f.read()
+            inode = os.fstat(f.fileno()).st_ino
+    except FileNotFoundError:
+        missing += 1
+        time.sleep(0.004)
+        continue
+    try:
+        value = json.loads(text)
+        assert isinstance(value["accessToken"], str) and value["accessToken"] != "" and isinstance(value["expiresAt"], int)
+        good += 1
+        expiries.add(value["expiresAt"])
+        inodes.add(inode)
+    except Exception:
+        bad += 1
+    time.sleep(0.004)
+print(json.dumps({"good": good, "bad": bad, "missing": missing, "tokens": len(expiries), "inodes": len(inodes)}))
+`;
 
 type Response = ScriptedModel["responses"][number];
 const say = (text: string): Response => [{ type: "text", text }, { type: "finish", reason: "stop" }];
@@ -244,6 +351,106 @@ while True:
     time.sleep(1)
 `;
 
+/**
+ * A stand-in for the engine whose one turn fails as it is told to: with a code on the failed model call
+ * (`step.failed`), a code on the error the prompt is answered with, both or neither, and with whatever
+ * words. It is how this check shows that the platform reads the codes and not the words.
+ */
+const CODED_ENGINE = `
+import json, sys
+plan = json.loads(sys.argv[1])
+seq = 0
+def send(message):
+    sys.stdout.write(json.dumps(message) + "\\n")
+    sys.stdout.flush()
+def event(kind, data):
+    global seq
+    seq += 1
+    send({"jsonrpc": "2.0", "method": "_windlass/event", "params": {"sessionId": "ses_coded", "event": {"type": kind, "sessionId": "ses_coded", "seq": seq, "time": 0, "v": 1, "data": data}}})
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"protocolVersion": 1, "agentCapabilities": {"_meta": {"windlass": {"notifications": ["_windlass/event"]}}}}})
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"sessionId": "ses_coded"}})
+    elif method == "session/prompt":
+        event("execution.started", {"executionId": "exe_coded"})
+        event("step.started", {"messageId": "msg_coded"})
+        event("step.failed", {"messageId": "msg_coded", "usage": None, "error": {"kind": "provider", "error": {"kind": plan["kind"], "retryable": False, "status": None, "code": plan.get("stepCode"), "retryAfterMs": None, "requestId": None, "message": plan["stepSays"]}}})
+        event("execution.failed", {"executionId": "exe_coded", "message": plan["says"]})
+        named = {"reason": plan["reason"], "message": plan["says"]}
+        if plan.get("code") is not None:
+            named["code"] = plan["code"]
+        if plan["reason"] == "execution_failed":
+            named["providerError"] = plan["kind"]
+        send({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32000 if plan["reason"] == "auth_required" else -32603, "message": plan["says"], "data": {"windlass": named}}})
+    elif "id" in message:
+        send({"jsonrpc": "2.0", "id": message["id"], "result": None})
+`;
+
+/**
+ * A stand-in for the model's endpoint that turns every access token down. It runs inside the sandbox of
+ * the one turn that needs it, which has no network: Windlass is pointed at it as its HTTPS proxy, so the
+ * model request Windlass means for api.openai.com arrives here, is answered here with a 401, and goes
+ * nowhere else. Anything that is not a POST (the list of the account's models) gets no answer at all,
+ * as without a network. Each request is noted in `log` (where it was meant for and what it asked,
+ * never a header or a body).
+ */
+const REJECTING_PROVIDER = `
+import json, os, socket, ssl, sys
+home = sys.argv[1]
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(os.path.join(home, "cert.pem"), os.path.join(home, "key.pem"))
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", 3128))
+server.listen(8)
+open(os.path.join(home, "ready"), "w").close()
+def head(stream):
+    got = b""
+    while b"\\r\\n\\r\\n" not in got:
+        chunk = stream.recv(4096)
+        if not chunk:
+            raise EOFError()
+        got += chunk
+    return got
+while True:
+    connection, _ = server.accept()
+    try:
+        target = head(connection).split(b"\\r\\n")[0].decode().rsplit(" ", 1)[0]
+        connection.sendall(b"HTTP/1.1 200 Connection established\\r\\n\\r\\n")
+        tls = context.wrap_socket(connection, server_side=True)
+        headers, _, body = head(tls).partition(b"\\r\\n\\r\\n")
+        asked = headers.split(b"\\r\\n")[0].decode().rsplit(" ", 1)[0]
+        with open(os.path.join(home, "log"), "a") as f:
+            f.write("%s | %s\\n" % (target, asked))
+        if asked.startswith("POST "):
+            lower = headers.lower()
+            length = max([int(line.split(b":")[1]) for line in lower.split(b"\\r\\n") if line.startswith(b"content-length:")] + [0])
+            chunked = b"transfer-encoding: chunked" in lower
+            while len(body) < length or (chunked and not body.endswith(b"0\\r\\n\\r\\n")):
+                more = tls.recv(65536)
+                if not more:
+                    break
+                body += more
+            answer = json.dumps({"error": {"message": "the stand-in accepts no token", "code": "token_revoked"}}).encode()
+            tls.sendall(b"HTTP/1.1 401 Unauthorized\\r\\nContent-Type: application/json\\r\\nContent-Length: %d\\r\\nConnection: close\\r\\n\\r\\n" % len(answer) + answer)
+        tls.close()
+    except Exception:
+        pass
+`;
+
+/** How the stand-in's turn fails: Windlass's reason and sentence, the failed call's kind and message, and the codes (absent: none). */
+interface CodedPlan {
+	reason: "auth_required" | "execution_failed";
+	kind: "auth" | "transport";
+	says: string;
+	stepSays: string;
+	code?: string;
+	stepCode?: string;
+}
+
 /** The kinds of events a one-shot `windlass --json` turn printed for a turn like the probe: what the layer passed on before it spoke ACP. */
 function kindsBefore(): string[] {
 	const lines = readFileSync(join(root, "fixtures/windlass-events/real-scripted-bwrap.jsonl"), "utf8").split("\n");
@@ -261,12 +468,12 @@ function turnClient(container: string): number | null {
 }
 
 /** Writes a synthetic, obviously fake auth.json into a volume. */
-async function writeFakeAuth(volume: string, account: { sub: string; email: string }, expiresAt: number): Promise<void> {
+async function writeFakeAuth(volume: string, account: { sub: string; email: string }, expiresAt: number, accessToken = TOKEN_A): Promise<void> {
 	const credentials = {
 		hostId: "urn:uuid:00000000-0000-4000-8000-00000000c0de",
 		clientId: "FAKE-client-id-for-sandbox-check",
 		account,
-		accessToken: "FAKE-ACCESS-TOKEN-not-a-real-token",
+		accessToken,
 		refreshToken: "FAKE-REFRESH-TOKEN-not-a-real-token",
 		idToken: "FAKE.ID.TOKEN",
 		scopes: ["openid", "chatgpt.tokens.use.direct"],
@@ -288,6 +495,175 @@ async function lsVolume(volume: string): Promise<string> {
 	return result.stdout.trim().split("\n").join(" ");
 }
 
+const fakeAccount = (user: string) => ({ sub: `fake-sub-${user}`, email: "check@example.invalid" });
+
+/** A synthetic sign-in in the user's auth volume, as `adopt` leaves one, with nothing kept of an earlier one. */
+async function signInFake(user: string, accessToken: string, expiresAt: number, from = layer): Promise<void> {
+	await ensureAuthVolume(user);
+	await writeFakeAuth(`wlp-auth-${user}`, fakeAccount(user), expiresAt, accessToken);
+	from.tokens.forget(user);
+}
+
+/** A user volume as the platform left it before sign-ins had a volume of their own: the sign-in, its lock, and a session log beside them. */
+async function oldLayout(user: string, accessToken: string, expiresAt: number): Promise<void> {
+	const volume = `wlp-user-${user}`;
+	await docker(["volume", "create", "--label", LABEL_ARG, "--label", `${LABEL}.uid=${user}`, volume], { check: true });
+	await writeFakeAuth(volume, fakeAccount(user), expiresAt, accessToken);
+	const helper = tmpName();
+	const result = await runHelper([...helperFlags(helper, "none"), "-v", `${volume}:${DATA_DIR}`], helper, ["sh", "-c", `: > ${DATA_DIR}/auth.lock && mkdir -p ${DATA_DIR}/sessions && echo kept > ${DATA_DIR}/sessions/ses_old.db`]);
+	if (result.code !== 0) throw new Error(`could not write the old layout: ${result.stderr}`);
+}
+
+/** The names of the volumes a container mounts, with where. */
+async function mountsOf(container: string): Promise<string> {
+	const result = await docker(["container", "inspect", "--format", "{{range .Mounts}}{{.Name}}:{{.Destination}} {{end}}", container]);
+	return result.stdout.trim();
+}
+
+/** A sandbox cut off from every network: where every turn that is handed an access token runs in this check. Null when it could not be shown to be. */
+async function offlineSandbox(user: string, profile: SandboxProfileId, sessionId: string, from = layer): Promise<DockerSandboxHandle | null> {
+	const id = await from.sandboxes.create({ uid: user, sessionId, profile });
+	createdSandboxes.add(id);
+	everySandbox.add(id);
+	const handle = (await from.sandboxes.connect(id)) as DockerSandboxHandle;
+	const cut = await docker(["network", "disconnect", "bridge", handle.container]);
+	const reach = await handle.run(NET_PROBE);
+	const networks = await docker(["container", "inspect", "--format", "{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}", handle.container]);
+	const offline = cut.code === 0 && reach.stdout.trim() === "NET_BLOCKED" && networks.stdout.trim() === "";
+	expect(`the ${profile} sandbox of ${sessionId} is cut off from every network`, offline, `${reach.stdout.trim()}, networks: ${networks.stdout.trim() || "none"}`);
+	return offline ? handle : null;
+}
+
+/** Waits until `test` holds, at most `ms`. */
+async function until(test: () => boolean, ms: number): Promise<boolean> {
+	const deadline = Date.now() + ms;
+	while (!test()) {
+		if (Date.now() > deadline) return false;
+		await wait(50);
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// A stand-in for OpenAI's token endpoint, for the checks in which a refresh has to work
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The stand-in itself. It runs inside the helper container that asks Windlass for a token, which has no
+ * network: Windlass is pointed at it as its HTTPS proxy, so the request Windlass means for
+ * auth.openai.com arrives here instead, is answered here, and goes nowhere else. The answer is what a
+ * refresh gives: a new access token and a new refresh token, both obviously fake, and how long the
+ * access token lasts, which the check says in `standin.json` beside the sign-in; or, when the check
+ * says so there, a refusal with the OAuth error code and the status it names. Each request is noted
+ * in `standin.log` there (where it was meant for and what it asked, never a token).
+ */
+const STANDIN = `
+import json, os, socket, ssl, sys
+data = sys.argv[1]
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain("/opt/standin/cert.pem", "/opt/standin/key.pem")
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", 3128))
+server.listen(8)
+open("/tmp/standin.ready", "w").close()
+def head(stream):
+    got = b""
+    while b"\\r\\n\\r\\n" not in got:
+        chunk = stream.recv(4096)
+        if not chunk:
+            raise EOFError()
+        got += chunk
+    return got
+while True:
+    connection, _ = server.accept()
+    try:
+        target = head(connection).split(b"\\r\\n")[0].decode().rsplit(" ", 1)[0]
+        connection.sendall(b"HTTP/1.1 200 Connection established\\r\\n\\r\\n")
+        tls = context.wrap_socket(connection, server_side=True)
+        headers, _, body = head(tls).partition(b"\\r\\n\\r\\n")
+        length = max([int(line.split(b":")[1]) for line in headers.split(b"\\r\\n") if line.lower().startswith(b"content-length:")] + [0])
+        while len(body) < length:
+            body += tls.recv(4096)
+        asked = headers.split(b"\\r\\n")[0].decode().rsplit(" ", 1)[0]
+        log = os.path.join(data, "standin.log")
+        number = (len(open(log).read().splitlines()) if os.path.exists(log) else 0) + 1
+        with open(log, "a") as f:
+            f.write("%s | %s | %s\\n" % (target, asked, "refresh_token" if b"grant_type=refresh_token" in body else "another grant"))
+        with open(os.path.join(data, "standin.json")) as f:
+            plan = json.load(f)
+        if "refuse" in plan:
+            status = b"%d Refused" % plan["status"]
+            answer = json.dumps({"error": plan["refuse"], "error_description": "the stand-in does not refresh this sign-in"}).encode()
+        else:
+            status = b"200 OK"
+            answer = json.dumps({"access_token": "FAKE-ACCESS-TOKEN-R%d-not-a-real-token" % number, "refresh_token": "FAKE-REFRESH-TOKEN-R%d-not-a-real-token" % number, "id_token": "FAKE.ID.TOKEN", "expires_in": plan["expiresIn"]}).encode()
+        tls.sendall(b"HTTP/1.1 " + status + b"\\r\\nContent-Type: application/json\\r\\nContent-Length: %d\\r\\nConnection: close\\r\\n\\r\\n" % len(answer) + answer)
+        tls.close()
+    except Exception:
+        pass
+`;
+
+/** `windlass` in the throwaway image: the real one, with the stand-in beside it when it is asked for a token of a sign-in that has a `standin.json`. */
+const STANDIN_WINDLASS = `#!/bin/sh
+if [ "\${1:-} \${2:-}" = "login token" ] && [ -f ${DATA_DIR}/standin.json ]; then
+  python3 -I /opt/standin/standin.py ${DATA_DIR} >/dev/null 2>&1 &
+  tries=0
+  while [ ! -f /tmp/standin.ready ] && [ "$tries" -lt 100 ]; do sleep 0.1; tries=$((tries + 1)); done
+  HTTPS_PROXY=http://127.0.0.1:3128 NODE_EXTRA_CA_CERTS=/opt/standin/cert.pem exec /usr/local/bin/windlass-real "$@"
+fi
+exec /usr/local/bin/windlass-real "$@"
+`;
+
+/** The throwaway image: the server's, its Windlass untouched but started through the wrapper, and a certificate of its own for the stand-in. */
+const STANDIN_DOCKERFILE = `FROM ${IMAGE}
+USER root
+RUN mv /usr/local/bin/windlass /usr/local/bin/windlass-real \\
+ && mkdir -p /opt/standin \\
+ && openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=auth.openai.com -addext subjectAltName=DNS:auth.openai.com \\
+      -keyout /opt/standin/key.pem -out /opt/standin/cert.pem 2>/dev/null \\
+ && chmod 644 /opt/standin/key.pem
+COPY --chmod=0755 windlass /usr/local/bin/windlass
+COPY --chmod=0644 standin.py /opt/standin/standin.py
+USER agent
+LABEL ${LABEL_ARG}
+`;
+
+/** Builds the throwaway image with the stand-in, labelled as everything of this project. Returns what went wrong, or "". */
+function buildStandInImage(tag: string): string {
+	const context = mkdtempSync(join(tmpdir(), "wlp-check-standin-"));
+	try {
+		writeFileSync(join(context, "Dockerfile"), STANDIN_DOCKERFILE);
+		writeFileSync(join(context, "windlass"), STANDIN_WINDLASS);
+		writeFileSync(join(context, "standin.py"), STANDIN);
+		const built = spawnSync("docker", ["build", "--quiet", "--network", "none", "--label", LABEL_ARG, "--tag", tag, context], { encoding: "utf8" });
+		return built.status === 0 ? "" : built.stderr.trim() || `docker build exited with ${built.status}`;
+	} finally {
+		rmSync(context, { recursive: true, force: true });
+	}
+}
+
+/** Says what the stand-in answers the next refresh of this user's sign-in with: a token that lasts this long. */
+async function standInIssues(user: string, seconds: number): Promise<void> {
+	const helper = tmpName();
+	const result = await runHelper([...helperFlags(helper, "none"), "-v", `wlp-auth-${user}:${DATA_DIR}`], helper, ["sh", "-c", `cat > ${DATA_DIR}/standin.json`], { stdin: JSON.stringify({ expiresIn: seconds }) });
+	if (result.code !== 0) throw new Error(`could not write the stand-in's plan: ${result.stderr}`);
+}
+
+/** Says that the stand-in refuses the next refreshes of this user's sign-in, with this OAuth error code and HTTP status. */
+async function standInRefuses(user: string, code: string, status: number): Promise<void> {
+	const helper = tmpName();
+	const result = await runHelper([...helperFlags(helper, "none"), "-v", `wlp-auth-${user}:${DATA_DIR}`], helper, ["sh", "-c", `cat > ${DATA_DIR}/standin.json`], { stdin: JSON.stringify({ refuse: code, status }) });
+	if (result.code !== 0) throw new Error(`could not write the stand-in's plan: ${result.stderr}`);
+}
+
+/** The requests the stand-in answered for this user's sign-in, one line each: where Windlass meant it to go and what it asked. */
+async function standInRequests(user: string): Promise<string[]> {
+	const helper = tmpName();
+	const result = await runHelper([...helperFlags(helper, "none"), "-v", `wlp-auth-${user}:${DATA_DIR}:ro`], helper, ["sh", "-c", `cat ${DATA_DIR}/standin.log 2>/dev/null || true`]);
+	return result.stdout.split("\n").filter((line) => line.trim() !== "");
+}
+
 // ---------------------------------------------------------------------------------------------
 
 async function main(): Promise<void> {
@@ -298,11 +674,18 @@ async function main(): Promise<void> {
 
 	await section("image", async () => {
 		const start = Date.now();
-		const out = execFileSync(join(root, "sandbox/build.sh"), { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-		const printed = out.split("\n").pop() ?? "";
-		expect("build.sh builds the image and prints the Windlass version", /^\d+\.\d+\.\d+/.test(printed), `${printed}, ${ms(start)}`);
+		const built = spawnSync(join(root, "sandbox/build.sh"), { encoding: "utf8" });
+		const printed = built.stdout.trim().split("\n").pop() ?? "";
+		expect("build.sh builds the image and prints the Windlass version", built.status === 0 && /^\d+\.\d+\.\d+/.test(printed), `${printed}, ${ms(start)}`);
+		const preferred = `/home/ubuntu/projects/windlass-local-builds/windlass-linux-${ARCH}`;
+		if ((process.env.WINDLASS_BINARY ?? "") !== "") info("SKIP  which binary build.sh takes by default: WINDLASS_BINARY is set");
+		else if (!existsSync(preferred)) info(`SKIP  which binary build.sh takes by default: there is none at ${preferred}`);
+		else expect("without WINDLASS_BINARY build.sh takes the local build that has `login token --valid-for`, before the older ones it knows, and has nothing to warn about", built.stderr.includes(`building ${IMAGE} with ${preferred}`) && !/WARNING/.test(built.stderr), built.stderr.trim().split("\n")[0] ?? "");
 		const version = await layer.windlass.version();
 		expect("windlass.version() reports the same version", version === printed, String(version));
+		const problem = await layer.windlass.problem();
+		expect("windlass.problem() finds nothing wrong: this Windlass can hand a session an access token that is good for a while yet (`login token --valid-for`)", problem === null, problem ?? "");
+		expect("the server would start without a warning about it", (await warnAboutWindlass(layer, () => undefined)) === null);
 		const models = await layer.windlass.models();
 		expect("windlass.models() lists models, the default first", models[0] === "gpt-6.1-sol", models.join(", "));
 		const size = await docker(["image", "inspect", "--format", "{{.Size}}", "windlass-platform-sandbox:latest"]);
@@ -385,9 +768,10 @@ async function main(): Promise<void> {
 	for (const profileId of ["docker-windlass-sandbox", "docker-hardened"] as SandboxProfileId[]) {
 		await section(`profile ${profileId}`, async () => {
 			const profile = layer.sandboxes.profile(profileId);
-			// A synthetic sign-in in the user's volume, to see whether commands can read it.
+			// The user is signed in (a synthetic sign-in): the sandbox must hold nothing of it all the same.
 			await layer.logins.ensureUserVolume(uid);
-			await writeFakeAuth(`wlp-user-${uid}`, { sub: "fake-sub-check", email: "check@example.invalid" }, Date.now() + 3600_000);
+			await signInFake(uid, TOKEN_A, Date.now() + 3600_000);
+			const askedBefore = layer.tokens.asked;
 
 			let start = Date.now();
 			const id = await layer.sandboxes.create({ uid, sessionId: `check-${profileId}`, profile: profileId });
@@ -395,7 +779,14 @@ async function main(): Promise<void> {
 			everySandbox.add(id);
 			expect("create() starts a sandbox", (await layer.sandboxes.state(id)) === "running", `id ${id}, ${ms(start)}`);
 			const handle = (await layer.sandboxes.connect(id)) as DockerSandboxHandle;
-			expect("connect() returns a handle with the profile", handle !== undefined && handle.profile === profileId && handle.cwd === "/workspace");
+			expect("connect() returns a handle with the profile and the user", handle !== undefined && handle.profile === profileId && handle.cwd === "/workspace" && handle.uid === uid);
+			const mounted = await mountsOf(handle.container);
+			const holds = (await handle.run(DATA_LS)).stdout.trim();
+			expect(
+				"the session's container mounts the user's data volume only, not the auth volume, and holds no sign-in",
+				mounted === `wlp-user-${uid}:${DATA_DIR}` && !/auth\.json|host-id|auth\.lock/.test(holds) && (await lsVolume(`wlp-auth-${uid}`)).includes("auth.json"),
+				`mounts: ${mounted}; data directory: ${holds === "" ? "empty" : holds}`,
+			);
 			const git = await handle.run("git rev-parse --is-inside-work-tree && git log --oneline | wc -l && ls -A");
 			expect("the workspace is an empty git repository", git.exitCode === 0 && git.stdout.trim() === "true\n1\n.git", JSON.stringify(git.stdout));
 
@@ -428,10 +819,7 @@ async function main(): Promise<void> {
 			const sandboxed = run1?.sandbox !== null && run1?.sandbox !== undefined;
 			expect(`commands run ${profile.approval === "auto" ? "inside" : "outside"} Windlass's sandbox (approval ${profile.approval})`, run1?.mode === profile.approval && sandboxed === (profileId === "docker-windlass-sandbox"), JSON.stringify(run1));
 			expect(`commands ${profile.commandNetwork ? "have" : "have no"} network`, out1.includes(profile.commandNetwork ? "NET_OK" : "NET_BLOCKED"));
-			expect(
-				`commands ${profile.commandsCanReadLogin ? "can" : "cannot"} read the data directory and the sign-in`,
-				profile.commandsCanReadLogin ? out1.includes("DATA_DIR_READABLE") && out1.includes("LOGIN_READABLE") : out1.includes("DATA_DIR_HIDDEN") && out1.includes("LOGIN_HIDDEN"),
-			);
+			expect(`commands ${profile.commandsCanReadAccessToken ? "can" : "cannot"} read Windlass's data directory, where a turn's access token file is`, out1.includes(profile.commandsCanReadAccessToken ? "DATA_DIR_READABLE" : "DATA_DIR_HIDDEN"));
 			expect("the command ran as the non-root user and wrote the workspace", out1.startsWith("agent\n") && (await handle.readTextFile("probe.txt")) === "probe-1\n");
 			const session = t1.result.windlassSessionId ?? undefined;
 
@@ -904,7 +1292,8 @@ async function main(): Promise<void> {
 			await layer.sandboxes.destroy(id);
 			createdSandboxes.delete(id);
 			const kept = await lsVolume(`wlp-user-${uid}`);
-			expect("the user's data volume outlives the sandbox and holds Windlass's sessions", kept.includes("sessions") && kept.includes("auth.json"), kept);
+			expect("the user's data volume outlives the sandbox and holds Windlass's sessions, no sign-in and no token file", kept.includes("sessions") && !/auth\.json|host-id|access-token/.test(kept), kept);
+			expect("none of these scripted turns asked for the user's access token", layer.tokens.asked === askedBefore, `${layer.tokens.asked - askedBefore} requests`);
 		});
 	}
 
@@ -945,7 +1334,7 @@ async function main(): Promise<void> {
 		);
 
 		// How a turn starts, with stand-ins for the engine.
-		const standIn = (command: string, startTimeoutMs?: number) => new DockerWindlass({ engineCommand: ["sh", "-c", command], startTimeoutMs });
+		const standIn = (command: string, startTimeoutMs?: number) => new DockerWindlass(layer.tokens, { engineCommand: ["sh", "-c", command], startTimeoutMs });
 		const silent = await turn(handle, "x", plainScript, { windlass: standIn("cat > /dev/null", 1500) });
 		expect("an engine that does not answer `initialize` in time is given up on", silent.result.failure?.reason === "engine" && /did not start within 1\.5 s/.test(silent.result.failure.message) && silent.durationMs < 8000, `${silent.result.failure?.message} (${silent.durationMs} ms)`);
 		const other = await turn(handle, "x", plainScript, { windlass: standIn(`read -r line; printf '%s\\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}'; cat > /dev/null`) });
@@ -966,7 +1355,7 @@ async function main(): Promise<void> {
 		// SIGINT: the abort falls back to the signals, and the turn still ends as aborted with nothing left behind.
 		{
 			const controller = new AbortController();
-			const deaf = new DockerWindlass({ engineCommand: ["python3", "-c", DEAF_ENGINE] });
+			const deaf = new DockerWindlass(layer.tokens, { engineCommand: ["python3", "-c", DEAF_ENGINE] });
 			let abortedAt = 0;
 			const pending = turn(handle, "x", plainScript, { windlass: deaf, signal: controller.signal });
 			setTimeout(() => {
@@ -983,17 +1372,18 @@ async function main(): Promise<void> {
 		}
 		expect("none of these left a process in the sandbox", (await strayProcesses(handle.container)).length === 0);
 
-		// The one unscripted turn: no sign-in, so opening the session fails. No prompt is sent, so no model is asked;
-		// and had Windlass tried, this sandbox has no network to try with.
+		// An unscripted turn of a user without a sign-in: there is no access token to hand it, so Windlass is not even
+		// started. No prompt is sent, so no model is asked; and had anything tried, this sandbox has no network to try with.
 		if (!isolated) {
 			info("SKIP  the turn without a sign-in: the sandbox is not provably cut off from the network and without a sign-in");
 		} else {
 			const noSignIn = await turn(handle, "Hello?", null);
 			expect(
-				"an unscripted turn without a sign-in fails as `auth_required` when the session is opened: no event, no prompt, no model request",
-				noSignIn.result.failure?.reason === "auth_required" && /sign/i.test(noSignIn.result.failure.message) && noSignIn.events.length === 0 && noSignIn.result.summary === null && noSignIn.result.windlassSessionId === null && noSignIn.result.exitCode === 0 && noSignIn.durationMs < 5000,
+				"an unscripted turn without a sign-in fails as `auth_required` before Windlass starts: no event, no prompt, no model request",
+				noSignIn.result.failure?.reason === "auth_required" && /Sign in with ChatGPT/.test(noSignIn.result.failure.message) && noSignIn.events.length === 0 && noSignIn.result.summary === null && noSignIn.result.windlassSessionId === null && noSignIn.result.exitCode === null && !noSignIn.result.aborted && noSignIn.durationMs < 5000,
 				`${noSignIn.result.failure?.message} (${noSignIn.durationMs} ms)`,
 			);
+			expect("it left nothing in the sandbox: no process, no token file", (await strayProcesses(handle.container)).length === 0 && !(await handle.run(DATA_LS)).stdout.includes("access-token"));
 		}
 		await layer.sandboxes.destroy(id);
 		createdSandboxes.delete(id);
@@ -1027,7 +1417,8 @@ async function main(): Promise<void> {
 		expect("status() is null for a user without a volume", (await layer.logins.status(`chk-${run}-nobody`)) === null);
 		await layer.logins.ensureUserVolume(uid2);
 		await layer.logins.ensureUserVolume(uid2);
-		expect("ensureUserVolume() creates an empty data volume (idempotent); status() is null", (await layer.logins.status(uid2)) === null && (await lsVolume(`wlp-user-${uid2}`)) === "");
+		const noAuthVolume = (await docker(["volume", "inspect", `wlp-auth-${uid2}`])).code !== 0;
+		expect("ensureUserVolume() creates an empty data volume (idempotent) and no auth volume, as for a demo user; status() is null", (await layer.logins.status(uid2)) === null && (await lsVolume(`wlp-user-${uid2}`)) === "" && noAuthVolume);
 
 		// A finished attempt, simulated: the synthetic auth.json Windlass would have saved.
 		const expiresAt = Date.now() + 3_600_000;
@@ -1036,7 +1427,12 @@ async function main(): Promise<void> {
 		createdAttempts.delete(attempt);
 		const gone = await docker(["volume", "inspect", `wlp-login-${attempt}`]);
 		const account = await layer.logins.status(uid2);
-		expect("adopt() moves the sign-in into the user's volume and removes the attempt", gone.code !== 0 && (await lsVolume(`wlp-user-${uid2}`)).split(" ").sort().join(" ") === "auth.json host-id");
+		const authLabels = await docker(["volume", "inspect", "--format", `{{index .Labels "${LABEL}"}} {{index .Labels "${LABEL}.uid"}}`, `wlp-auth-${uid2}`]);
+		expect(
+			"adopt() moves the sign-in into the user's auth volume, which carries the label, and removes the attempt; the data volume gets nothing",
+			gone.code !== 0 && (await lsVolume(`wlp-auth-${uid2}`)).split(" ").sort().join(" ") === "auth.json host-id" && (await lsVolume(`wlp-user-${uid2}`)) === "" && authLabels.stdout.trim() === `1 ${uid2}`,
+			`wlp-auth-${uid2}: ${await lsVolume(`wlp-auth-${uid2}`)}; labels: ${authLabels.stdout.trim()}`,
+		);
 		expect("status() reports sub, email and expiry only", JSON.stringify(account) === JSON.stringify({ sub: "fake-sub-123", email: "fake.user@example.invalid", accessExpiresAt: expiresAt }) && !JSON.stringify(account).includes("FAKE-"), JSON.stringify(account));
 
 		// A second sign-in replaces the first.
@@ -1048,8 +1444,51 @@ async function main(): Promise<void> {
 		createdAttempts.delete(attempt2);
 		expect("adopt() replaces an earlier sign-in", (await layer.logins.status(uid2))?.sub === "fake-sub-456");
 
+		// A token file a turn of this user would have in the data volume while it runs: logout takes it too.
+		{
+			const helper = tmpName();
+			await runHelper([...helperFlags(helper, "none"), "-v", `wlp-user-${uid2}:${DATA_DIR}`], helper, ["sh", "-c", `umask 077; echo '{}' > ${DATA_DIR}/access-token-0123456789ab.json; mkdir -p ${DATA_DIR}/sessions`]);
+		}
 		await layer.logins.logout(uid2);
-		expect("logout() forgets the sign-in", (await layer.logins.status(uid2)) === null && !(await lsVolume(`wlp-user-${uid2}`)).includes("auth.json"));
+		expect(
+			"logout() forgets the sign-in in the auth volume and removes the token files of running turns from the data volume",
+			(await layer.logins.status(uid2)) === null && !(await lsVolume(`wlp-auth-${uid2}`)).includes("auth.json") && (await lsVolume(`wlp-user-${uid2}`)) === "sessions",
+			`wlp-auth-${uid2}: ${await lsVolume(`wlp-auth-${uid2}`)}; wlp-user-${uid2}: ${await lsVolume(`wlp-user-${uid2}`)}`,
+		);
+		await layer.logins.logout(`chk-${run}-nobody`);
+		expect("logout() of a user without volumes is a no-op and makes none", (await docker(["volume", "inspect", `wlp-auth-chk-${run}-nobody`])).code !== 0 && (await docker(["volume", "inspect", `wlp-user-chk-${run}-nobody`])).code !== 0);
+
+		// The old layout: a platform that was used before sign-ins had a volume of their own.
+		const oldExpiry = Date.now() + 3_600_000;
+		await oldLayout(uidM, TOKEN_B, oldExpiry);
+		expect("a user volume of the old layout holds the sign-in beside Windlass's sessions", (await lsVolume(`wlp-user-${uidM}`)).split(" ").sort().join(" ") === "auth.json auth.lock host-id sessions");
+		const movedBefore = wlpLines.length;
+		// The first touch of this user: here, asking who is signed in.
+		const migrated = await layer.logins.status(uidM);
+		const said = wlpLines.slice(movedBefore).filter((line) => line.includes("sign-in.moved"));
+		expect(
+			"the first time such a user is touched the sign-in is moved to the auth volume: status() finds it there, the data volume keeps only the sessions",
+			migrated?.sub === `fake-sub-${uidM}` && migrated.accessExpiresAt === oldExpiry && (await lsVolume(`wlp-auth-${uidM}`)).split(" ").sort().join(" ") === "auth.json host-id" && (await lsVolume(`wlp-user-${uidM}`)) === "sessions",
+			`wlp-auth-${uidM}: ${await lsVolume(`wlp-auth-${uidM}`)}; wlp-user-${uidM}: ${await lsVolume(`wlp-user-${uidM}`)}`,
+		);
+		expect("a log line says that the sign-in was moved, once", said.length === 1 && said[0]!.includes(`uid=${uidM}`) && said[0]!.includes(`wlp-user-${uidM}`) && said[0]!.includes(`wlp-auth-${uidM}`), said.join(" | "));
+		const movedToken = await layer.tokens.current(uidM);
+		await layer.logins.status(uidM);
+		expect("the moved sign-in works: the token source returns its token; touching the user again moves nothing", movedToken.accessToken === TOKEN_B && movedToken.expiresAt === oldExpiry && wlpLines.slice(movedBefore).filter((line) => line.includes("sign-in.moved")).length === 1);
+
+		// An old sign-in left beside a newer one that is already in the auth volume: the newer one stays.
+		await oldLayout(uidM2, TOKEN_B, oldExpiry);
+		await ensureAuthVolume(uidM2);
+		await writeFakeAuth(`wlp-auth-${uidM2}`, { sub: "fake-sub-newer", email: "newer@example.invalid" }, oldExpiry + 5, TOKEN_C);
+		const staleBefore = wlpLines.length;
+		// The first touch of this one: asking for its access token.
+		const newer = await layer.tokens.current(uidM2);
+		const staleSaid = wlpLines.slice(staleBefore).filter((line) => line.includes("sign-in.moved"));
+		expect(
+			"an old sign-in beside a newer one in the auth volume is removed, not moved: the newer one's token is returned",
+			newer.accessToken === TOKEN_C && (await layer.logins.status(uidM2))?.sub === "fake-sub-newer" && (await lsVolume(`wlp-user-${uidM2}`)) === "sessions" && staleSaid.length === 1 && /already holds a newer one/.test(staleSaid[0]!),
+			staleSaid.join(" | "),
+		);
 
 		const attempt3 = `chk${run}c`;
 		createdAttempts.add(attempt3);
@@ -1061,10 +1500,984 @@ async function main(): Promise<void> {
 		expect("start() again restarts an attempt; discard() removes it and is a no-op when gone", (await docker(["volume", "inspect", `wlp-login-${attempt3}`])).code !== 0);
 	});
 
+	await section("token source", async () => {
+		const tokens = layer.tokens;
+		let asked = tokens.asked;
+		await throwsUserError("current() tells a user without any sign-in to sign in with ChatGPT", () => tokens.current(uidT), /Sign in with ChatGPT/);
+		expect("for that it does not start Windlass: there is no auth volume to ask in", tokens.asked === asked);
+		await throwsAny("current() refuses an invalid uid", () => tokens.current("../etc"));
+
+		// A synthetic sign-in whose token is new: Windlass prints it without a request, so the helper needs no network (and here has none).
+		const expiresAt = Date.now() + 3_600_000;
+		await signInFake(uidT, TOKEN_A, expiresAt);
+		asked = tokens.asked;
+		let start = Date.now();
+		const first = await tokens.current(uidT);
+		expect(
+			"current() returns the access token of the saved sign-in with its expiry, from a helper container that has no network",
+			first.accessToken === TOKEN_A && first.expiresAt === expiresAt && tokens.asked === asked + 1,
+			`a token that expires in ${Math.round((first.expiresAt - Date.now()) / 60_000)} min, ${ms(start)}, one run of \`${loginTokenCommand().join(" ")}\` with --network none`,
+		);
+		start = Date.now();
+		const again = await tokens.current(uidT);
+		first.accessToken = "changed by the caller";
+		const third = await tokens.current(uidT);
+		expect("a fresh answer is reused: Windlass is not asked again, and what a caller does to its copy changes nothing", again.accessToken === TOKEN_A && third.accessToken === TOKEN_A && third.expiresAt === expiresAt && tokens.asked === asked + 1 && Date.now() - start < 100, `two more requests, ${ms(start)}, still one run`);
+
+		// At once: one run serves them all.
+		tokens.forget(uidT);
+		asked = tokens.asked;
+		start = Date.now();
+		const many = await Promise.all(Array.from({ length: 6 }, () => tokens.current(uidT)));
+		expect("six requests at once for one user are served one at a time: by a single run of Windlass", many.every((token) => token.accessToken === TOKEN_A && token.expiresAt === expiresAt) && tokens.asked === asked + 1, `${tokens.asked - asked} run for 6 requests, ${ms(start)}`);
+		// Two users at once are two runs: the queue is per user.
+		tokens.forget(uidT);
+		tokens.forget(uidM);
+		asked = tokens.asked;
+		const [mine, theirs] = await Promise.all([tokens.current(uidT), tokens.current(uidM).then((token) => token.accessToken, (error: Error) => error.constructor.name)]);
+		expect("two users' requests do not wait for each other and never get each other's token", mine.accessToken === TOKEN_A && theirs !== TOKEN_A && tokens.asked - asked <= 2, `${tokens.asked - asked} run(s)`);
+
+		// A new sign-in: what was kept of the old one is not handed out again.
+		const attempt = `chk${run}t`;
+		createdAttempts.add(attempt);
+		await layer.logins.start(attempt);
+		await writeFakeAuth(`wlp-login-${attempt}`, fakeAccount(uidT), expiresAt + 1, TOKEN_B);
+		await layer.logins.adopt(attempt, uidT);
+		createdAttempts.delete(attempt);
+		const adopted = await tokens.current(uidT);
+		expect("after adopt() the new sign-in's token is returned, not the one that was kept", adopted.accessToken === TOKEN_B && adopted.expiresAt === expiresAt + 1);
+
+		// How much time a token must have left is the platform's to say: twenty minutes (`--valid-for 20m`). A token
+		// with more is handed out as it is and reused while it has that much: here for 7 s. After that Windlass is
+		// asked again and has to refresh, which is a request to OpenAI: this helper cannot make one.
+		const VALID_FOR_MIN = TOKEN_VALID_FOR_MS / 60_000;
+		const enough = Date.now() + TOKEN_VALID_FOR_MS + 7_000;
+		await signInFake(uidT, TOKEN_C, enough);
+		asked = tokens.asked;
+		const asIs = await tokens.current(uidT);
+		const reused = await tokens.current(uidT);
+		expect(
+			`a token with a little more than ${VALID_FOR_MIN} minutes left is handed out as it is, without a refresh (there is no network to refresh with), and reused`,
+			asIs.accessToken === TOKEN_C && asIs.expiresAt === enough && reused.expiresAt === enough && tokens.asked === asked + 1,
+			`${((asIs.expiresAt - Date.now()) / 60_000).toFixed(2)} min left, one run for two requests`,
+		);
+		await wait(enough - TOKEN_VALID_FOR_MS - Date.now() + 500);
+		const tooLittle = await tokens.current(uidT).then(
+			() => null,
+			(error: unknown) => error,
+		);
+		// What that failure is, the token source reads from Windlass's code for it, `network_error`: it is the one
+		// failure of a refresh that says nothing about the sign-in.
+		const unreachable = (error: unknown): error is SignInRefreshError => error instanceof SignInRefreshError && !(error instanceof SandboxUserError) && error.code === "network_error";
+		expect(
+			`once it has less than ${VALID_FOR_MIN} minutes left it is no longer reused: Windlass is asked again and refreshes first, and without a network that fails with Windlass's code \`network_error\`, as an error that is not the user's`,
+			unreachable(tooLittle) && /^could not reach the sign-in service at auth\.openai\.com: \S/.test(tooLittle.message) && !SECRET.test(tooLittle.message) && tokens.asked === asked + 2,
+			tooLittle instanceof Error ? `${((enough - Date.now()) / 60_000).toFixed(2)} min left: ${tooLittle.name}, code ${(tooLittle as { code?: string }).code}: ${tooLittle.message}` : "it returned a token",
+		);
+		// Twelve minutes: far from the five in which Windlass refreshes of its own accord, and still too little.
+		await signInFake(uidT, TOKEN_C, Date.now() + 12 * 60_000);
+		const due = await tokens.current(uidT).then(
+			() => null,
+			(error: unknown) => error,
+		);
+		expect(
+			`a token with 12 minutes left, more than twice Windlass's own five and less than the ${VALID_FOR_MIN} the platform asks for, is not handed out as it is: Windlass refreshes first`,
+			unreachable(due) && !SECRET.test(due.message),
+			due instanceof Error ? `${due.name}, code ${(due as { code?: string }).code}: ${due.message}` : "it returned a token",
+		);
+		expect("the failed refresh left the sign-in as it was", (await layer.logins.status(uidT))?.sub === `fake-sub-${uidT}`);
+
+		await layer.logins.logout(uidT);
+		asked = tokens.asked;
+		// The one answer of `windlass login token` that has no code: a line of its own, which is read by its words.
+		await throwsUserError("after logout() current() says to sign in with ChatGPT: Windlass reports that nobody is signed in", () => tokens.current(uidT), /^You are not signed in with ChatGPT\. Sign in with ChatGPT/);
+		expect("that answer came from Windlass (`login token --valid-for` exits 1)", tokens.asked === asked + 1);
+	});
+
+	await section("hand-off", async () => {
+		// Every turn here is handed a (fake) access token, so every one runs where there is no network.
+		await layer.logins.ensureUserVolume(uidH);
+		const boxed = await offlineSandbox(uidH, "docker-windlass-sandbox", "check-hand-off-a");
+		const direct = await offlineSandbox(uidH, "docker-hardened", "check-hand-off-b");
+		if (boxed === null || direct === null) {
+			fail("the hand-off checks", "skipped: a sandbox could not be shown to be cut off from the network");
+			return;
+		}
+		const path = tokenFilePath(boxed.id);
+		expect("the token file is one per sandbox, in Windlass's data directory", path === `${DATA_DIR}/access-token-${boxed.id}.json` && tokenFilePath(direct.id) !== path, path);
+		const status = (handle: DockerSandboxHandle) => handle.run("windlass login status", { env: { [ACCESS_TOKEN_FILE_ENV]: tokenFilePath(handle.id) } });
+
+		// ---- A: the real token source and the real engine. The sign-in's token has the twenty minutes the platform
+		// asks for, and 10 s more: it is handed to the turn as it is, and 10 s later it has too little.
+		{
+			const expiresA = Date.now() + TOKEN_VALID_FOR_MS + 10_000;
+			const expiresB = Date.now() + 3_600_000;
+			await signInFake(uidH, TOKEN_A, expiresA);
+			const lines: Array<{ at: number; line: string }> = [];
+			// Replaced 2 s after the token has less left than is asked for; a failed replacement is tried again after 3 s.
+			const windlass = new DockerWindlass(layer.tokens, { tokenFile: { leadMs: TOKEN_VALID_FOR_MS - 2_000, retryMs: 3_000, log: (line) => void (lines.push({ at: Date.now(), line }), console.log(line)) } });
+			const has = (word: string) => lines.some((entry) => entry.line.includes(word));
+			const askedBefore = layer.tokens.asked;
+			const watch = async () => {
+				const engine = (await boxed.run(ENGINE_ENV)).stdout.trim().split("\n");
+				const facts = (await boxed.run(fileFacts(path))).stdout.trim().split("\n");
+				const content = JSON.parse(await boxed.readTextFile(path)) as AccessToken;
+				const accepted = await status(boxed);
+				const holds = (await boxed.run(DATA_LS)).stdout.trim();
+				const mounted = await mountsOf(boxed.container);
+				// The first replacement is due now and fails: the token has less left than is asked for, so Windlass has to refresh, and the helper has no network.
+				const failed = await until(() => has("token.replace_failed"), 30_000);
+				// What a refresh would have saved, written by this check instead: a new token in the auth volume.
+				await writeFakeAuth(`wlp-auth-${uidH}`, fakeAccount(uidH), expiresB, TOKEN_B);
+				const replaced = await until(() => has("token.replaced"), 30_000);
+				const after = replaced ? (JSON.parse(await boxed.readTextFile(path)) as AccessToken) : null;
+				const factsAfter = (await boxed.run(fileFacts(path))).stdout.trim().split("\n");
+				const acceptedAfter = await status(boxed);
+				const leftovers = (await boxed.run(DATA_LS)).stdout.trim();
+				return { engine, facts, content, accepted, holds, mounted, failed, replaced, after, factsAfter, acceptedAfter, leftovers };
+			};
+			type Seen = Awaited<ReturnType<typeof watch>>;
+			let watching: Promise<Seen | null> | null = null;
+			let watchError = "";
+			const started = Date.now();
+			const a = await turn(boxed, "Hello?", null, {
+				windlass,
+				onEvent: (event) => {
+					// Once Windlass is at its first model call, which it cannot reach from here and tries again for half a minute.
+					if (event.type === "retry.scheduled" && watching === null)
+						watching = watch().catch((error: unknown) => {
+							watchError = error instanceof Error ? error.message : String(error);
+							return null;
+						});
+				},
+			});
+			const seen = await (watching as Promise<Seen | null> | null);
+			if (seen === null) {
+				fail("an unscripted turn with a signed-in user starts Windlass on a handed-in token", watchError !== "" ? `looking at it failed: ${watchError}` : `the turn ended before its model call was retried: ${a.result.failure?.reason} ${a.result.failure?.message}`);
+			} else {
+				expect(
+					`an unscripted turn starts \`windlass acp\` with ${ACCESS_TOKEN_FILE_ENV} naming its sandbox's token file`,
+					seen.engine[0] === "ENGINE" && seen.engine[1] === `${ACCESS_TOKEN_FILE_ENV}=${path}`,
+					seen.engine.join(" "),
+				);
+				expect(
+					"the file is the user's access token in the JSON form, readable by its owner only",
+					seen.facts[0]?.startsWith("600 agent ") === true && seen.facts[1] === `accessToken,expiresAt ${expiresA}` && seen.content.accessToken === TOKEN_A && seen.content.expiresAt === expiresA,
+					`mode, owner, inode: ${seen.facts[0]}; keys and expiry: ${seen.facts[1]}`,
+				);
+				expect(
+					"Windlass accepts it: `windlass login status` with the same variable reports the handed-in sign-in as usable, and prints no token",
+					seen.accepted.exitCode === 0 && /^signed in with the access token handed in through WINDLASS_ACCESS_TOKEN_FILE/.test(seen.accepted.stdout) && seen.accepted.stdout.includes(path) && /valid for (19|20) more minutes/.test(seen.accepted.stdout) && !SECRET.test(seen.accepted.stdout),
+					seen.accepted.stdout.trim(),
+				);
+				expect(
+					"while the turn runs the container still holds no sign-in and mounts no auth volume: the data directory has the token file and Windlass's own files",
+					seen.mounted === `wlp-user-${uidH}:${DATA_DIR}` && seen.holds.split(" ").includes(`access-token-${boxed.id}.json`) && !/auth\.json|host-id|auth\.lock|\.tmp/.test(seen.holds),
+					`mounts: ${seen.mounted}; data directory: ${seen.holds}`,
+				);
+				const failedLine = lines.find((entry) => entry.line.includes("token.replace_failed"));
+				const replacedLine = lines.find((entry) => entry.line.includes("token.replaced"));
+				const handedLine = lines.find((entry) => entry.line.includes("token.handed"));
+				expect(
+					"a replacement that fails is logged with its reason and when it is tried again, without a token",
+					seen.failed && failedLine !== undefined && failedLine.line.includes(`sandbox=${boxed.id}`) && failedLine.line.includes(`uid=${uidH}`) && failedLine.line.includes("(could not reach the sign-in service at auth.openai.com: ") && /trying again in 3 s/.test(failedLine.line) && !SECRET.test(failedLine.line),
+					failedLine?.line ?? "no such line",
+				);
+				expect(
+					"it came on schedule: 2 s after the token had less left than the platform asks for, with almost twenty minutes still to go",
+					handedLine !== undefined && failedLine !== undefined && failedLine.at >= expiresA - TOKEN_VALID_FOR_MS + 2_000 - 200 && failedLine.at < expiresA - TOKEN_VALID_FOR_MS + 2_000 + 4_000 && /lasts 11\d\d s more/.test(failedLine.line),
+					failedLine === undefined ? "" : `${failedLine.at - (expiresA - TOKEN_VALID_FOR_MS)} ms after that moment, ${failedLine.at - started} ms into the turn`,
+				);
+				expect(
+					"it is tried again, and once the sign-in has a new token the file is replaced with it, as its owner's only, and Windlass accepts that one",
+					seen.replaced && seen.after?.accessToken === TOKEN_B && seen.after.expiresAt === expiresB && seen.factsAfter[0]?.startsWith("600 agent ") === true && seen.factsAfter[0] !== seen.facts[0] && seen.acceptedAfter.exitCode === 0 && /valid for (59|60) more minutes/.test(seen.acceptedAfter.stdout) && !/\.tmp/.test(seen.leftovers),
+					`${replacedLine === undefined || failedLine === undefined ? "" : `${replacedLine.at - failedLine.at} ms after the failure; `}before: ${seen.facts[0]}; after: ${seen.factsAfter[0]}; ${seen.acceptedAfter.stdout.trim().split("\n")[2] ?? ""}`,
+				);
+			}
+			expect(
+				"the failed replacement did not end the turn: it ran until Windlass gave up on a model it cannot reach from here",
+				a.result.failure?.reason === "execution_failed" && /failed \d+ times/.test(a.result.failure.message) && lastStepError(a) === "transport" && outcomeOf(a) === "failed" && endsWithSummary(a) && a.durationMs > 20_000,
+				`${a.result.failure?.reason}: ${a.result.failure?.message} (${a.durationMs} ms, ${ofType(a.events, "retry.scheduled").length} retries)`,
+			);
+			expect("the token source ran Windlass for the turn's start, for the replacement that failed and for the one that worked, and no more often than the schedule says", layer.tokens.asked >= askedBefore + 3 && layer.tokens.asked <= askedBefore + 5, `${layer.tokens.asked - askedBefore} runs`);
+			expect("when the turn has ended the token file is gone, and no process is left", !(await boxed.run(DATA_LS)).stdout.includes("access-token") && (await strayProcesses(boxed.container)).length === 0, (await boxed.run(DATA_LS)).stdout.trim());
+			expect("no token is in the turn's events, its failure or its standard error", !leaks(a));
+		}
+
+		// ---- B: a token that lasts 12 s, replaced 6 s before it runs out. The turn goes on past the first token's expiry.
+		{
+			let calls = 0;
+			let firstExpiry = 0;
+			const short: AccessTokens = {
+				current: async () => {
+					calls += 1;
+					if (calls === 1) firstExpiry = Date.now() + 12_000;
+					return calls === 1 ? { accessToken: TOKEN_A, expiresAt: firstExpiry } : { accessToken: TOKEN_B, expiresAt: Date.now() + 3_600_000 };
+				},
+			};
+			const lines: Array<{ at: number; line: string }> = [];
+			const windlass = new DockerWindlass(short, { tokenFile: { leadMs: 6_000, retryMs: 1_000, log: (line) => void (lines.push({ at: Date.now(), line }), console.log(line)) } });
+			// Something that reads the file the way Windlass does, all through the replacement.
+			let reading: Promise<{ stdout: string }> | null = null;
+			const b = await turn(boxed, "Hello again?", null, {
+				windlass,
+				onEvent: () => {
+					reading ??= boxed.run(`python3 -I -c "$READER" ${path} 10`, { env: { READER } }).catch(() => ({ stdout: "" }));
+				},
+			});
+			const reads = JSON.parse((await (reading as Promise<{ stdout: string }> | null))?.stdout.trim() || "{}") as { good?: number; bad?: number; missing?: number; tokens?: number; inodes?: number };
+			const handed = lines.find((entry) => entry.line.includes("token.handed"));
+			const replaced = lines.filter((entry) => entry.line.includes("token.replaced"));
+			expect(
+				"a token with a short life is replaced on schedule: once, 6 s before it expires",
+				calls === 2 && replaced.length === 1 && !lines.some((entry) => entry.line.includes("replace_failed")) && replaced[0]!.at >= firstExpiry - 6_000 - 200 && replaced[0]!.at < firstExpiry - 6_000 + 2_500,
+				replaced.length === 1 && handed !== undefined ? `handed at +0 s, replaced at +${((replaced[0]!.at - handed.at) / 1000).toFixed(1)} s, ${((firstExpiry - replaced[0]!.at) / 1000).toFixed(1)} s before the first token expired` : `${replaced.length} replacements, ${calls} requests`,
+			);
+			expect(
+				"a reader never sees a half-written file: every read through the replacement is a whole token, the old one or the new one, and the new one is another file renamed into place",
+				(reads.good ?? 0) > 200 && reads.bad === 0 && reads.missing === 0 && reads.tokens === 2 && reads.inodes === 2,
+				JSON.stringify(reads),
+			);
+			const lastFailedAt = (ofType(b.events, "step.failed").at(-1)?.time as number | undefined) ?? 0;
+			expect(
+				"Windlass used the new token without a restart: its model calls after the first token's expiry fail for the network, not for the token",
+				b.result.failure?.reason === "execution_failed" && lastStepError(b) === "transport" && lastFailedAt > firstExpiry + 5_000 && ofType(b.events, "retry.scheduled").length >= 3,
+				`${b.result.failure?.reason}: ${b.result.failure?.message}; its last model call failed ${((lastFailedAt - firstExpiry) / 1000).toFixed(1)} s after the first token had expired`,
+			);
+			expect("the file is gone again and no token is in the turn's events", !(await boxed.run(DATA_LS)).stdout.includes("access-token") && !leaks(b));
+		}
+
+		// ---- B2: the layer's own schedule, nothing changed: when the token has ten minutes left.
+		{
+			let calls = 0;
+			let firstExpiry = 0;
+			const real: AccessTokens = {
+				current: async () => {
+					calls += 1;
+					if (calls === 1) firstExpiry = Date.now() + TOKEN_REPLACE_LEAD_MS + 22_000;
+					return calls === 1 ? { accessToken: TOKEN_A, expiresAt: firstExpiry } : { accessToken: TOKEN_B, expiresAt: Date.now() + 3_600_000 };
+				},
+			};
+			const lines: Array<{ at: number; line: string }> = [];
+			const b2 = await turn(boxed, "Hello, on the usual schedule?", null, { windlass: new DockerWindlass(real, { tokenFile: { log: (line) => void (lines.push({ at: Date.now(), line }), console.log(line)) } }) });
+			const replaced = lines.filter((entry) => entry.line.includes("token.replaced"));
+			expect(
+				`with the layer's own schedule a token is replaced when it has ${TOKEN_REPLACE_LEAD_MS / 60_000} minutes left, half of the ${TOKEN_VALID_FOR_MS / 60_000} a token is asked with`,
+				TOKEN_REPLACE_LEAD_MS * 2 === TOKEN_VALID_FOR_MS && calls === 2 && replaced.length === 1 && replaced[0]!.at >= firstExpiry - TOKEN_REPLACE_LEAD_MS - 200 && replaced[0]!.at < firstExpiry - TOKEN_REPLACE_LEAD_MS + 2_500 && b2.result.failure?.reason === "execution_failed" && !leaks(b2),
+				replaced.length === 1 ? `replaced ${((firstExpiry - replaced[0]!.at) / 1000).toFixed(1)} s before the token's expiry, ${((b2.durationMs - (Date.now() - replaced[0]!.at)) / 1000).toFixed(0)} s into a turn of ${(b2.durationMs / 1000).toFixed(0)} s` : `${replaced.length} replacements, ${calls} requests`,
+			);
+		}
+
+		// ---- C: the token runs out and cannot be replaced. Windlass finds that out itself; what the user is told depends on why.
+		for (const why of ["the sign-in is no longer accepted", "the token could not be had"] as const) {
+			let calls = 0;
+			let firstExpiry = 0;
+			const failing: AccessTokens = {
+				current: async () => {
+					calls += 1;
+					if (calls === 1) return { accessToken: TOKEN_A, expiresAt: (firstExpiry = Date.now() + 8_000) };
+					// As the token source throws them: for a refusal of the sign-in service (`invalid_grant`), and for one that cannot be reached (`network_error`).
+					throw why === "the sign-in is no longer accepted" ? new SandboxUserError(SIGN_IN_EXPIRED) : new SignInRefreshError("could not reach the sign-in service at auth.openai.com: this check's stand-in", "network_error");
+				},
+			};
+			const lines: string[] = [];
+			const windlass = new DockerWindlass(failing, { tokenFile: { leadMs: 4_000, retryMs: 1_000, log: (line) => void (lines.push(line), console.log(line)) } });
+			const c = await turn(boxed, "Hello once more?", null, { windlass });
+			const failures = lines.filter((line) => line.includes("token.replace_failed"));
+			const windlassSaid = String(dataOf(ofType(c.events, "execution.failed")[0]).message ?? "");
+			const expected = why === "the sign-in is no longer accepted" ? c.result.failure?.reason === "auth_required" && c.result.failure.message === SIGN_IN_EXPIRED : c.result.failure?.reason === "token_unavailable" && /could not replace it: could not reach the sign-in service/.test(c.result.failure.message) && /send the prompt again/.test(c.result.failure.message);
+			expect(
+				`when ${why}, the replacement is tried again and again while the turn goes on, and the turn ends only when Windlass finds the token expired (its code: \`handed_in_expired\`): ${why === "the sign-in is no longer accepted" ? "`auth_required`, sign in again" : "`token_unavailable`, not the user's doing"}`,
+				expected && lastStepCode(c) === "handed_in_expired" && failures.length >= 3 && calls >= failures.length + 1 && Date.now() > firstExpiry && c.durationMs > 7_000 && outcomeOf(c) === "failed" && lastStepError(c) === "auth" && windlassSaid.includes(ACCESS_TOKEN_FILE_ENV) && !c.result.failure!.message.includes(ACCESS_TOKEN_FILE_ENV) && !leaks(c),
+				`${c.result.failure?.reason}: ${c.result.failure?.message} (${failures.length} failed replacements in ${c.durationMs} ms; Windlass itself said: ${windlassSaid})`,
+			);
+			const waits = retryWaits(lines);
+			expect(
+				why === "the sign-in is no longer accepted" ? "a sign-in that is refused does not come back by asking again: each wait before the next try is twice the one before" : "a sign-in service that cannot be reached may be back at any moment: the next try comes after the same short wait every time",
+				why === "the sign-in is no longer accepted" ? waits[0] === 1 && waits[1] === 2 && waits[2] === 4 : waits.length >= 3 && waits.every((seconds) => seconds === 1),
+				`trying again in ${waits.join(", ")} s`,
+			);
+		}
+		expect("after those the sandbox holds no token file and no process", !(await boxed.run(DATA_LS)).stdout.includes("access-token") && (await strayProcesses(boxed.container)).length === 0);
+
+		// A stop while the token is still on its way (a refresh can take a while) does not wait for it, and the token
+		// that arrives afterwards is not written.
+		{
+			const slow: AccessTokens = { current: () => new Promise((resolve) => setTimeout(() => resolve({ accessToken: TOKEN_A, expiresAt: Date.now() + 3_600_000 }), 4_000)) };
+			const controller = new AbortController();
+			setTimeout(() => controller.abort(), 500);
+			const stopped = await turn(boxed, "Hello?", null, { windlass: new DockerWindlass(slow), signal: controller.signal });
+			await wait(4_500 - stopped.durationMs);
+			expect(
+				"a turn stopped while its token is being fetched ends at once as aborted, starts no engine, and the late token is never written",
+				stopped.result.aborted && stopped.result.failure === null && stopped.events.length === 0 && stopped.durationMs < 2_500 && !(await boxed.run(DATA_LS)).stdout.includes("access-token") && (await strayProcesses(boxed.container)).length === 0,
+				`ended ${stopped.durationMs} ms after it began, 3.5 s before the token arrived`,
+			);
+		}
+
+		// ---- D: what a command of the agent can do with the file, and a token the provider rejects. The layer hands the
+		// token in as for any unscripted turn; the engine's command line adds a scripted model, so that tool calls happen
+		// and no model is asked.
+		await signInFake(uidH, TOKEN_A, Date.now() + 3_600_000);
+		const scriptedOnToken = async (handle: DockerSandboxHandle, prompt: string, script: ScriptedModel, extra: TurnExtra = {}) => {
+			const file = `/tmp/.wlp-check-script-${randomId(4)}.json`;
+			await handle.writeTextFile(file, JSON.stringify(script));
+			const windlass = new DockerWindlass(layer.tokens, { engineCommand: ["sh", "-c", `WINDLASS_ACP_SCRIPT=${file} exec windlass acp`] });
+			const found = await turn(handle, prompt, null, { windlass, ...extra });
+			await handle.removeFiles([file]);
+			return found;
+		};
+		for (const handle of [boxed, direct]) {
+			const profile = layer.sandboxes.profile(handle.profile);
+			let engine: Promise<{ stdout: string }> | null = null;
+			const d = await scriptedOnToken(handle, "Can a command read the token?", { responses: [shell("tok", `${tokenProbe(tokenFilePath(handle.id))}; sleep 1`), shell("show", `cat ${tokenFilePath(handle.id)} 2>/dev/null | tr -d '\\n'; echo; echo SHOWN`), say("Done.")] }, {
+				onEvent: (event) => {
+					if (event.type === "tool.started") engine ??= handle.run(`${ENGINE_ENV}; ${fileFacts(tokenFilePath(handle.id))}`).catch(() => ({ stdout: "" }));
+				},
+			});
+			const out = outputOf(settled(d.events, "tok"));
+			const during = ((await (engine as Promise<{ stdout: string }> | null))?.stdout ?? "").trim().split("\n");
+			const sandboxed = (dataOf(started(d.events, "tok")) as { run?: { sandbox?: unknown } }).run?.sandbox != null;
+			expect(
+				`${profile.name}: a command the agent runs ${profile.commandsCanReadAccessToken ? "can" : "cannot"} read the turn's access token file, as the profile says (${sandboxed ? "sandboxed by Windlass" : "not sandboxed"})`,
+				outcomeOf(d) === "succeeded" && during[1] === `${ACCESS_TOKEN_FILE_ENV}=${tokenFilePath(handle.id)}` && during[2]?.startsWith("600 agent ") === true && out.includes(profile.commandsCanReadAccessToken ? "TOKEN_READABLE" : "TOKEN_HIDDEN") && sandboxed === !profile.commandsCanReadAccessToken && !leaks(d),
+				`the command printed: ${out.trim().split("\n").join(" | ")}; the engine had ${during[1]}; file ${during[2]}`,
+			);
+			// A command that prints the file: where it can read it, what it printed reaches the events (and so the
+			// session's timeline) only with the token taken out. Here that is the platform's doing: Windlass takes out
+			// the tokens it has read at a model call, and this turn's scripted model makes none.
+			const shown = outputOf(settled(d.events, "show"));
+			expect(
+				`${profile.name}: a command that prints the token file ${profile.commandsCanReadAccessToken ? "has the token taken out of its output before it becomes an event" : "prints nothing of it"}`,
+				shown.includes("SHOWN") && !SECRET.test(shown) && !leaks(d) && (profile.commandsCanReadAccessToken ? /expiresAt/.test(shown) && shown.includes(TOKEN_REMOVED) : !/expiresAt|accessToken/.test(shown)),
+				SECRET.test(shown) ? "the output holds the token" : `the command's output in the events: ${shown.trim().split("\n").join(" | ").slice(0, 160)}`,
+			);
+		}
+		// A token the provider rejects. The real engine and the real provider code, which gets a 401 for the token: from
+		// a stand-in for the model's endpoint that runs beside the engine, inside this sandbox, which has no network.
+		{
+			const home = `/tmp/.wlp-check-provider-${randomId(4)}`;
+			await direct.run(`mkdir -m 700 ${home}`);
+			await direct.writeTextFile(`${home}/provider.py`, REJECTING_PROVIDER);
+			const start = [
+				"set -eu",
+				`openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj /CN=api.openai.com -addext subjectAltName=DNS:api.openai.com -keyout ${home}/key.pem -out ${home}/cert.pem 2>/dev/null`,
+				`python3 -I ${home}/provider.py ${home} >/dev/null 2>&1 &`,
+				`tries=0; while [ ! -f ${home}/ready ] && [ "$tries" -lt 100 ]; do sleep 0.1; tries=$((tries + 1)); done`,
+				`HTTPS_PROXY=http://127.0.0.1:3128 NODE_EXTRA_CA_CERTS=${home}/cert.pem exec windlass acp`,
+			].join("\n");
+			const turnedDown = await turn(direct, "Hello, with a token the provider turns down?", null, { windlass: new DockerWindlass(layer.tokens, { engineCommand: ["sh", "-c", start] }) });
+			const requests = (await direct.run(`cat ${home}/log 2>/dev/null || true`)).stdout.split("\n").filter((line) => line.trim() !== "");
+			await direct.run(`rm -rf ${home}`);
+			const said = String(dataOf(ofType(turnedDown.events, "execution.failed")[0]).message ?? "");
+			expect(
+				"the model request of that turn went to the stand-in inside the sandbox, which answered it with a 401, and nowhere else",
+				requests.length >= 1 && requests.every((line) => line.startsWith("CONNECT api.openai.com:443 | ")) && requests.some((line) => / \| POST \//.test(line)),
+				[...new Set(requests)].join("; ") || "the stand-in saw no request",
+			);
+			expect(
+				"a handed-in token the provider rejects (Windlass's code: `handed_in_rejected`) ends the turn as `auth_required`, with the sentence that says to sign in with ChatGPT again instead of Windlass's about handing in a token",
+				turnedDown.result.failure?.reason === "auth_required" && turnedDown.result.failure.message === TOKEN_REJECTED && /Sign in with ChatGPT again/.test(TOKEN_REJECTED) && lastStepCode(turnedDown) === "handed_in_rejected" && lastStepError(turnedDown) === "auth" && said.includes(ACCESS_TOKEN_FILE_ENV) && outcomeOf(turnedDown) === "failed" && !leaks(turnedDown) && (await strayProcesses(direct.container)).length === 0,
+				`${turnedDown.result.failure?.reason}: ${turnedDown.result.failure?.message} (Windlass's code: ${lastStepCode(turnedDown)}; Windlass itself said: ${said})`,
+			);
+		}
+		// The same from a scripted model, which stands in for the provider as a whole. Windlass ends that turn with
+		// its sentence about the handed-in token too, but gives the failure no code (only its own provider's
+		// rejections get one), so this is told by the fallback for a failure without a code; the result is the same.
+		const rejected = await scriptedOnToken(direct, "Fail.", { responses: [[{ type: "fail", kind: "auth", message: "the scripted provider rejected the token" }]] });
+		const rejectedSaid = String(dataOf(ofType(rejected.events, "execution.failed")[0]).message ?? "");
+		expect(
+			"a scripted model's rejection on a handed-in token ends the turn the same way: `auth_required`, sign in with ChatGPT again",
+			rejected.result.failure?.reason === "auth_required" && rejected.result.failure.message === TOKEN_REJECTED && lastStepError(rejected) === "auth" && rejectedSaid.includes(ACCESS_TOKEN_FILE_ENV) && outcomeOf(rejected) === "failed",
+			`${rejected.result.failure?.message} (Windlass's code: ${lastStepCode(rejected)}; Windlass itself said: ${rejectedSaid})`,
+		);
+
+		// ---- E: the file gives no token in the middle of a turn: it is gone, emptied, holds something else, or cannot
+		// be read. Windlass says the same sentence as for any token it cannot use, and a code of its own for each; what
+		// the user is told depends on whether there still is a sign-in.
+		{
+			const spoiled: Array<{ code: string; what: string; how: () => Promise<unknown> }> = [
+				{ code: "handed_in_missing", what: "goes missing", how: () => boxed.removeFiles([path]) },
+				{ code: "handed_in_empty", what: "is emptied", how: () => boxed.run(`: > ${path}`) },
+				{ code: "handed_in_malformed", what: "holds something that is no token", how: () => boxed.run(`echo '{' > ${path}`) },
+				{ code: "handed_in_unreadable", what: "can no longer be read", how: () => boxed.run(`chmod 000 ${path}`) },
+			];
+			for (const kind of spoiled) {
+				let spoiling: Promise<unknown> | null = null;
+				const e = await turn(boxed, `Hello, with a file that ${kind.what}?`, null, {
+					onEvent: (event) => {
+						// At the first model call that could not be sent: the next one finds no token in the file.
+						if (event.type === "retry.scheduled") spoiling ??= kind.how();
+					},
+				});
+				expect(
+					`a token file that ${kind.what} while the sign-in is fine (Windlass's code: \`${kind.code}\`) ends the turn as \`token_unavailable\`: Windlass could not read it, and the user is not told to sign in`,
+					spoiling !== null && lastStepCode(e) === kind.code && e.result.failure?.reason === "token_unavailable" && /could not read the access token/.test(e.result.failure.message) && /send the prompt again/.test(e.result.failure.message) && !/sign in/i.test(e.result.failure.message) && lastStepError(e) === "auth" && outcomeOf(e) === "failed" && !leaks(e),
+					`${e.result.failure?.reason}: ${e.result.failure?.message} (the code of Windlass's failed model call: ${lastStepCode(e)})`,
+				);
+			}
+			let forgetting: Promise<unknown> | null = null;
+			const askedBefore = layer.tokens.asked;
+			const f = await turn(boxed, "Hello, while the sign-in is forgotten?", null, {
+				onEvent: (event) => {
+					if (event.type === "retry.scheduled") forgetting ??= layer.logins.logout(uidH);
+				},
+			});
+			await (forgetting as Promise<unknown> | null);
+			expect(
+				"logout() while a turn runs takes the turn's token file away (Windlass's code is `handed_in_missing` again), and the turn ends as `auth_required` with the sentence that says to sign in with ChatGPT: the token source is asked and reports no sign-in",
+				forgetting !== null && f.result.failure?.reason === "auth_required" && f.result.failure.message === NOT_SIGNED_IN && lastStepCode(f) === "handed_in_missing" && lastStepError(f) === "auth" && outcomeOf(f) === "failed" && layer.tokens.asked === askedBefore + 1 && (await layer.logins.status(uidH)) === null && !leaks(f),
+				`${f.result.failure?.reason}: ${f.result.failure?.message} (${f.durationMs} ms)`,
+			);
+			expect("after those the sandbox holds no token file and no process", !(await boxed.run(DATA_LS)).stdout.includes("access-token") && (await strayProcesses(boxed.container)).length === 0);
+			await signInFake(uidH, TOKEN_A, Date.now() + 3_600_000);
+		}
+
+		// ---- F: the codes decide, not the words. A stand-in for the engine fails its turn with a code and with words
+		// that say something else, and each time the platform follows the code. The token source is a stand-in too:
+		// it hands the turn a token that lasts an hour, and answers as said when it is asked again at the turn's end.
+		{
+			const expiredWords = `no usable access token: The access token handed in through ${ACCESS_TOKEN_FILE_ENV} expired at 2026-01-01T00:00:00.000Z (/nowhere). Hand in a new token.`;
+			const missingWords = `no usable access token: The file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/nowhere). Hand in a new token.`;
+			const providerWords = "HTTP 401: the provider's own words about a token";
+			const handInWords = `Signed out: the access token handed in through ${ACCESS_TOKEN_FILE_ENV} was rejected or cannot be used. Hand in a new token to continue.`;
+			const unreachableWords = `The model call failed 5 times: no usable access token: Could not reach the sign-in service at auth.openai.com: a stand-in, though ${ACCESS_TOKEN_FILE_ENV} is named here and the token expired at some time`;
+			const auth = { reason: "auth_required", kind: "auth", says: handInWords } as const;
+			type Later = "a token" | "no longer accepted" | "unreachable";
+			const cases: Array<{ name: string; plan: CodedPlan; later?: Later; reason: string; message: RegExp | string; asksAgain: boolean }> = [
+				{
+					name: "`handed_in_missing`, on the error alone, with words that say the token expired: the file was not delivered, `token_unavailable`",
+					plan: { ...auth, code: "handed_in_missing", stepSays: expiredWords },
+					reason: "token_unavailable",
+					message: /^Windlass could not read the access token the platform handed it.*send the prompt again/,
+					asksAgain: true,
+				},
+				{
+					name: "`handed_in_rejected`, on the failed model call alone, with words that say the file does not exist: the token is no longer good, `auth_required`",
+					plan: { ...auth, stepCode: "handed_in_rejected", stepSays: missingWords },
+					reason: "auth_required",
+					message: TOKEN_REJECTED,
+					asksAgain: false,
+				},
+				{
+					name: "`handed_in_expired` with the provider's words, while the token source has a token: the sign-in is fine and the platform was late, `token_unavailable`",
+					plan: { ...auth, code: "handed_in_expired", stepCode: "handed_in_expired", stepSays: providerWords },
+					later: "a token",
+					reason: "token_unavailable",
+					message: /ran out before the platform replaced it\. Your ChatGPT sign-in is untouched; send the prompt again/,
+					asksAgain: true,
+				},
+				{
+					name: "`handed_in_expired` while the token source says the sign-in is no longer accepted: `auth_required`, sign in again",
+					plan: { ...auth, code: "handed_in_expired", stepCode: "handed_in_expired", stepSays: missingWords },
+					later: "no longer accepted",
+					reason: "auth_required",
+					message: SIGN_IN_EXPIRED,
+					asksAgain: true,
+				},
+				{
+					name: "`handed_in_expired` while the token source cannot reach the sign-in service: `token_unavailable`, with that reason",
+					plan: { ...auth, code: "handed_in_expired", stepCode: "handed_in_expired", stepSays: expiredWords },
+					later: "unreachable",
+					reason: "token_unavailable",
+					message: /ran out and the platform could not replace it: could not reach the sign-in service.*Your ChatGPT sign-in is untouched/,
+					asksAgain: true,
+				},
+				{
+					name: "`network_error`, with words that name the variable and an expired token: a connection problem, passed on as Windlass reported it",
+					plan: { reason: "execution_failed", kind: "transport", says: unreachableWords, code: "network_error", stepCode: "network_error", stepSays: expiredWords },
+					reason: "execution_failed",
+					message: unreachableWords,
+					asksAgain: false,
+				},
+				{
+					name: "`signed_out`, which is not about a handed-in token, with words that are: left as Windlass's `auth_required`",
+					plan: { ...auth, code: "signed_out", stepCode: "signed_out", stepSays: expiredWords },
+					reason: "auth_required",
+					message: handInWords,
+					asksAgain: false,
+				},
+				{
+					name: "a `handed_in_...` code this platform does not know, with words that say the token expired: `token_unavailable`, with a sentence that claims neither a bad sign-in nor a sound one",
+					plan: { ...auth, code: "handed_in_by_a_newer_windlass", stepCode: "handed_in_by_a_newer_windlass", stepSays: expiredWords },
+					reason: "token_unavailable",
+					message: /^Windlass could not use the access token the platform handed it for this turn\. Send the prompt again; if it ends the same way, sign in with ChatGPT again\.$/,
+					asksAgain: false,
+				},
+				{
+					name: "no code at all (an older Windlass), and its words for a file that does not exist: there, and only there, the words are read, `token_unavailable`",
+					plan: { ...auth, stepSays: missingWords },
+					reason: "token_unavailable",
+					message: /^Windlass could not read the access token the platform handed it/,
+					asksAgain: true,
+				},
+				{
+					name: "no code at all, and words about the variable that no Windlass says: the same careful sentence as for an unknown code",
+					plan: { ...auth, stepSays: `no usable access token: ${ACCESS_TOKEN_FILE_ENV} is not as this check's stand-in likes it` },
+					reason: "token_unavailable",
+					message: /^Windlass could not use the access token the platform handed it for this turn\./,
+					asksAgain: false,
+				},
+			];
+			const results: boolean[] = [];
+			for (const one of cases) {
+				let calls = 0;
+				const source: AccessTokens = {
+					current: async () => {
+						calls += 1;
+						if (calls > 1 && one.later === "no longer accepted") throw new SandboxUserError(SIGN_IN_EXPIRED);
+						if (calls > 1 && one.later === "unreachable") throw new SignInRefreshError("could not reach the sign-in service at auth.openai.com: this check's stand-in", "network_error");
+						return { accessToken: TOKEN_A, expiresAt: Date.now() + 3_600_000 };
+					},
+				};
+				const coded = await turn(boxed, "x", null, { windlass: new DockerWindlass(source, { engineCommand: ["python3", "-I", "-c", CODED_ENGINE, JSON.stringify(one.plan)], tokenFile: { log: () => undefined } }) });
+				const failure = coded.result.failure;
+				const told = failure !== null && (typeof one.message === "string" ? failure.message === one.message : one.message.test(failure.message));
+				results.push(
+					expect(
+						`the engine reports ${one.name}`,
+						failure?.reason === one.reason && told && calls === (one.asksAgain ? 2 : 1) && outcomeOf(coded) === "failed" && endsWithSummary(coded) && !leaks(coded),
+						`${failure?.reason}: ${failure?.message} (the token source was asked ${calls} time${calls === 1 ? "" : "s"})`,
+					),
+				);
+			}
+			expect("after those the sandbox holds no token file and no process", results.length === cases.length && !(await boxed.run(DATA_LS)).stdout.includes("access-token") && (await strayProcesses(boxed.container)).length === 0);
+		}
+
+		// A scripted (demo) turn is handed nothing.
+		{
+			const askedBefore = layer.tokens.asked;
+			let engine: Promise<{ stdout: string }> | null = null;
+			const demo = await turn(direct, "A demo turn.", { responses: [shell("nap", "sleep 2"), say("Done.")] }, {
+				onEvent: (event) => {
+					if (event.type === "tool.started") engine ??= direct.run(`${ENGINE_ENV}; ${DATA_LS}`).catch(() => ({ stdout: "" }));
+				},
+			});
+			const during = ((await (engine as Promise<{ stdout: string }> | null))?.stdout ?? "").trim().split("\n");
+			expect(
+				"a scripted turn gets no token and no variable: its engine runs without it, no token file exists, and the token source is not asked",
+				outcomeOf(demo) === "succeeded" && during[0] === "ENGINE" && during[1] === "VARIABLE_UNSET" && !(during[2] ?? "").includes("access-token") && layer.tokens.asked === askedBefore,
+				during.join(" | "),
+			);
+		}
+
+		// A token that cannot be had when the turn starts: the turn does not start, and says that it is not the user's doing.
+		await signInFake(uidD, TOKEN_C, Date.now() + 12 * 60_000);
+		const offline = await offlineSandbox(uidD, "docker-hardened", "check-hand-off-c");
+		if (offline !== null) {
+			const none = await turn(offline, "Hello?", null);
+			expect(
+				"when the token source cannot get a token (the saved one has 12 minutes left, too little to hand to a turn, and OpenAI cannot be reached for a refresh: Windlass's `network_error`), the turn fails as `token_unavailable` before Windlass starts, and says that the sign-in service could not be reached",
+				none.result.failure?.reason === "token_unavailable" && /could not get an access token of your ChatGPT sign-in for this turn: could not reach the sign-in service at auth\.openai\.com: /.test(none.result.failure.message) && /Your sign-in is untouched; send the prompt again/.test(none.result.failure.message) && none.events.length === 0 && none.result.exitCode === null && !leaks(none) && !(await offline.run(DATA_LS)).stdout.includes("access-token"),
+				none.result.failure?.message ?? "",
+			);
+			await layer.sandboxes.destroy(offline.id);
+			createdSandboxes.delete(offline.id);
+		}
+
+		// What a turn that was cut off with its server left behind: a token file, and one half-written beside it. They are
+		// in the user's volume, which outlives the sandbox, so suspending or destroying the sandbox removes them.
+		const stale = (handle: DockerSandboxHandle) => handle.run(`umask 077; echo '{}' > ${tokenFilePath(handle.id)}; echo '{' > ${tokenFilePath(handle.id)}.tmp`);
+		await stale(direct);
+		await stale(boxed);
+		const planted = await lsVolume(`wlp-user-${uidH}`);
+		// A sandbox that does not run: the token is there, its file cannot be written. That is the sandbox's failure.
+		await layer.sandboxes.suspend(direct.id);
+		const afterSuspend = await lsVolume(`wlp-user-${uidH}`);
+		expect(
+			"suspend() removes a token file left in the user's volume for that sandbox, and no other sandbox's",
+			planted.includes(`access-token-${direct.id}.json`) && planted.includes(`access-token-${direct.id}.json.tmp`) && !afterSuspend.includes(`access-token-${direct.id}`) && afterSuspend.includes(`access-token-${boxed.id}.json`) && afterSuspend.includes(`access-token-${boxed.id}.json.tmp`),
+			`before: ${planted}; after: ${afterSuspend}`,
+		);
+		const asleep = await turn(direct, "Hello?", null);
+		expect(
+			"an unscripted turn in a sandbox that is not running fails as `engine`, not as anything about the sign-in",
+			asleep.result.failure?.reason === "engine" && /could not be started in the sandbox/.test(asleep.result.failure.message) && asleep.events.length === 0 && !leaks(asleep),
+			asleep.result.failure?.message.split("\n")[0] ?? "",
+		);
+
+		for (const handle of [boxed, direct]) {
+			await layer.sandboxes.destroy(handle.id);
+			createdSandboxes.delete(handle.id);
+		}
+		const kept = await lsVolume(`wlp-user-${uidH}`);
+		expect("destroy() removes the token file left for its sandbox too: after all of it the user's data volume holds Windlass's sessions and neither a sign-in nor a token file", kept.includes("sessions") && !/auth\.json|host-id|access-token/.test(kept), kept);
+	});
+
+	await section("valid-for", async () => {
+		// The token source as the server has it, on a throwaway image in which a refresh works without a network:
+		// what Windlass sends to OpenAI's token endpoint is answered inside the helper container (see STANDIN).
+		const tag = `windlass-platform-sandbox-standin:chk-${run}`;
+		const idOf = async (image: string) => (await docker(["image", "inspect", "--format", "{{.Id}}", image])).stdout.trim();
+		const latest = await idOf(IMAGE);
+		createdImages.add(tag);
+		const wrong = buildStandInImage(tag);
+		const standin = createSandboxLayer({ image: tag, tokenNetwork: "none" });
+		const usable = wrong === "" && (await idOf(tag)) !== "" && (await idOf(IMAGE)) === latest && (await standin.windlass.problem()) === null && (await standin.windlass.version()) === (await layer.windlass.version());
+		expect("a throwaway image is built from the server's: the same Windlass, with a stand-in for OpenAI's token endpoint beside it, so a refresh works in a helper that has no network", usable, wrong || `${tag}, Windlass ${await standin.windlass.version()}`);
+		if (!usable) return;
+		const tokens = standin.tokens;
+		const MIN = 60_000;
+		const VALID_FOR_MIN = TOKEN_VALID_FOR_MS / MIN;
+		const issued = (token: AccessToken, number: number) => token.accessToken === `FAKE-ACCESS-TOKEN-R${number}-not-a-real-token`;
+		const REFRESH = "CONNECT auth.openai.com:443 | POST /api/accounts/oauth/token | refresh_token";
+
+		// ---- 1: too little left. Twelve minutes is far from the five in which Windlass refreshes of its own accord.
+		await signInFake(uidV, TOKEN_A, Date.now() + 12 * MIN, standin);
+		await standInIssues(uidV, 3600);
+		let asked = tokens.asked;
+		let start = Date.now();
+		const refreshed = await tokens.current(uidV);
+		const took = Date.now() - start;
+		let requests = await standInRequests(uidV);
+		expect(
+			`a token with 12 minutes left, less than the ${VALID_FOR_MIN} the platform asks for, is not handed out: the sign-in is refreshed first, and the new token is handed out and saved`,
+			issued(refreshed, 1) && refreshed.expiresAt - start > 3_600_000 - 1_000 && refreshed.expiresAt - start < 3_600_000 + took && tokens.asked === asked + 1 && requests.length === 1 && (await layer.logins.status(uidV))?.accessExpiresAt === refreshed.expiresAt,
+			`one run of \`${loginTokenCommand().join(" ")}\` (${took} ms), one refresh; the token handed out lasts ${Math.round((refreshed.expiresAt - Date.now()) / MIN)} min`,
+		);
+		expect("that refresh is Windlass's own request for OpenAI's token endpoint, answered by the stand-in inside the helper, which has no network: nothing left this machine", requests[0] === REFRESH, requests.join("; "));
+
+		// ---- 2: enough left. Nothing is refreshed, though here a refresh would be answered.
+		tokens.forget(uidV);
+		asked = tokens.asked;
+		const again = await tokens.current(uidV);
+		const plenty = Date.now() + 25 * MIN;
+		await signInFake(uidV, TOKEN_B, plenty, standin);
+		const asIs = await tokens.current(uidV);
+		requests = await standInRequests(uidV);
+		expect(
+			`a token with more than ${VALID_FOR_MIN} minutes left is handed out as it is, without a refresh: the new one when Windlass is asked again, and a sign-in's own with 25 minutes left`,
+			again.accessToken === refreshed.accessToken && again.expiresAt === refreshed.expiresAt && asIs.accessToken === TOKEN_B && asIs.expiresAt === plenty && tokens.asked === asked + 2 && requests.length === 1,
+			`two more runs of Windlass, still ${requests.length} refresh`,
+		);
+
+		// ---- 3: more is asked than the service issues. The stand-in's tokens last 16 s; Windlass prints such a token
+		// all the same, exits 0 and adds one line on standard error.
+		await signInFake(uidV, TOKEN_C, Date.now() + 12 * MIN, standin);
+		await standInIssues(uidV, 16);
+		const saidFrom = wlpLines.length;
+		const said = () => wlpLines.slice(saidFrom).filter((line) => line.includes("token.short"));
+		asked = tokens.asked;
+		start = Date.now();
+		const short = await tokens.current(uidV).then(
+			(token) => token,
+			(error: unknown) => (error instanceof Error ? error : new Error(String(error))),
+		);
+		if (short instanceof Error) {
+			fail("a token that lasts less than was asked for is handed out all the same", `current() threw: ${short.message}`);
+		} else {
+			const saved = await layer.logins.status(uidV);
+			const more = await Promise.all([tokens.current(uidV), tokens.current(uidV), tokens.current(uidV)]);
+			requests = await standInRequests(uidV);
+			expect(
+				`when a refresh gives a token that lasts less than the ${VALID_FOR_MIN} minutes asked for (16 s here), that is no error: the token is handed out with its real expiry`,
+				issued(short, 2) && short.expiresAt === saved?.accessExpiresAt && short.expiresAt - start > 15_000 && short.expiresAt - start < 16_000 + 15_000 && requests.length === 2 && requests[1] === REFRESH,
+				`it expires ${((short.expiresAt - start) / 1000).toFixed(1)} s after it was asked for, as the saved sign-in says`,
+			);
+			expect(
+				"that more was asked than the service issues is logged once, without a token",
+				said().length === 1 && said()[0]!.includes(`uid=${uidV}`) && /more than the sign-in service issues/.test(said()[0]!) && /used as it is/.test(said()[0]!) && !SECRET.test(said()[0]!),
+				said().join(" | ") || "no such line",
+			);
+			expect(
+				"and nothing loops: three more requests get the same token, though it has less left than is asked for, without Windlass being run or the sign-in refreshed again",
+				more.every((token) => token.accessToken === short.accessToken && token.expiresAt === short.expiresAt) && tokens.asked === asked + 1 && requests.length === 2,
+				`${tokens.asked - asked} run, ${requests.length - 1} refresh for four requests`,
+			);
+			// It is reused until half of what it had left is gone: 8 s. Then the next is fetched, which is short too.
+			await wait(short.expiresAt - 6_000 - Date.now());
+			const next = await tokens.current(uidV);
+			await standInIssues(uidV, 3600);
+			await wait(next.expiresAt - 6_000 - Date.now());
+			const long = await tokens.current(uidV);
+			const longAgain = await tokens.current(uidV);
+			requests = await standInRequests(uidV);
+			expect(
+				"when half of what such a token had left is gone the next one is fetched, once; that it is short too is not logged again; and a token that lasts an hour is reused as usual afterwards",
+				issued(next, 3) && next.expiresAt > short.expiresAt && issued(long, 4) && long.expiresAt - Date.now() > 59 * MIN && longAgain.expiresAt === long.expiresAt && tokens.asked === asked + 3 && requests.length === 4 && said().length === 1,
+				`${tokens.asked - asked} runs and ${requests.length - 1} refreshes in ${((Date.now() - start) / 1000).toFixed(0)} s, ${said().length} line`,
+			);
+		}
+
+		// ---- 3b: the sign-in service answers the refresh with an error. What that means is read from the code
+		// Windlass passes on in the brackets of its one line, `sign-in failed: <message> (<code>)`.
+		{
+			await signInFake(uidV, TOKEN_C, Date.now() + 12 * MIN, standin);
+			await standInRefuses(uidV, "invalid_grant", 400);
+			const before = (await standInRequests(uidV)).length;
+			const refusal = await tokens.current(uidV).then(
+				() => null,
+				(error: unknown) => error,
+			);
+			expect(
+				"a refresh the sign-in service refuses with `invalid_grant` is the user's to mend: the sign-in is no longer accepted, sign in with ChatGPT again",
+				refusal instanceof SandboxUserError && refusal.message === SIGN_IN_EXPIRED && (await standInRequests(uidV)).length === before + 1,
+				refusal instanceof Error ? `${refusal.name}: ${refusal.message}` : "it returned a token",
+			);
+			await standInRefuses(uidV, "server_error", 503);
+			const unwell = await tokens.current(uidV).then(
+				() => null,
+				(error: unknown) => error,
+			);
+			expect(
+				"an error of the sign-in service that is no refusal (`server_error`, HTTP 503) is not the user's doing: it is passed on with its code, and nothing says to sign in",
+				unwell instanceof SignInRefreshError && !(unwell instanceof SandboxUserError) && unwell.code === "server_error" && /^the sign-in could not be refreshed: .* \(server_error\)$/.test(unwell.message) && !/sign in/i.test(unwell.message) && !SECRET.test(unwell.message) && (await standInRequests(uidV)).length === before + 2,
+				unwell instanceof Error ? `${unwell.name}, code ${(unwell as { code?: string }).code}: ${unwell.message}` : "it returned a token",
+			);
+			expect("neither answer changed the saved sign-in", (await layer.logins.status(uidV))?.sub === `fake-sub-${uidV}`);
+		}
+
+		// ---- 4: a turn. The real token source, the real engine, the layer's own token file; only the moment of the
+		// replacement is moved, from ten minutes before the token's expiry to two seconds after the token has less
+		// than twenty minutes left, so that it comes within the turn. It is nowhere near a five-minute window.
+		await layer.logins.ensureUserVolume(uidV);
+		const box = await offlineSandbox(uidV, "docker-windlass-sandbox", "check-valid-for");
+		if (box === null) {
+			fail("the turns of the valid-for checks", "skipped: the sandbox could not be shown to be cut off from the network");
+		} else {
+			const path = tokenFilePath(box.id);
+			{
+				const expiresA = Date.now() + TOKEN_VALID_FOR_MS + 10_000;
+				await signInFake(uidV, TOKEN_A, expiresA, standin);
+				await standInIssues(uidV, 3600);
+				const requestsBefore = (await standInRequests(uidV)).length;
+				asked = tokens.asked;
+				const lines: Array<{ at: number; line: string }> = [];
+				const windlass = new DockerWindlass(tokens, { tokenFile: { leadMs: TOKEN_VALID_FOR_MS - 2_000, retryMs: 3_000, log: (line) => void (lines.push({ at: Date.now(), line }), console.log(line)) } });
+				const look = async () => {
+					const replaced = await until(() => lines.some((entry) => entry.line.includes("token.replaced")), 30_000);
+					const content = JSON.parse(await box.readTextFile(path)) as AccessToken;
+					const accepted = await box.run("windlass login status", { env: { [ACCESS_TOKEN_FILE_ENV]: path } });
+					return { replaced, expiresAt: content.expiresAt, issued: /^FAKE-ACCESS-TOKEN-R\d+-not-a-real-token$/.test(content.accessToken), accepted: accepted.exitCode === 0 && /valid for (59|60) more minutes/.test(accepted.stdout) && !SECRET.test(accepted.stdout) };
+				};
+				let looking: Promise<Awaited<ReturnType<typeof look>> | null> | null = null;
+				const v = await turn(box, "Hello?", null, {
+					windlass,
+					onEvent: (event) => {
+						if (event.type === "retry.scheduled") looking ??= look().catch(() => null);
+					},
+				});
+				const seen = await (looking as Promise<Awaited<ReturnType<typeof look>> | null> | null);
+				const handed = lines.find((entry) => entry.line.includes("token.handed"));
+				const replaced = lines.filter((entry) => entry.line.includes("token.replaced"));
+				requests = await standInRequests(uidV);
+				expect(
+					`a turn is handed the sign-in's own token when it has ${VALID_FOR_MIN} minutes left and a little more: nothing is refreshed for the turn's start`,
+					handed !== undefined && /lasts 12\d\d s more/.test(handed.line) && !SECRET.test(handed.line),
+					handed?.line.replace(/^.*?: /, "") ?? "no such line",
+				);
+				const due = expiresA - TOKEN_VALID_FOR_MS + 2_000;
+				expect(
+					"the file is replaced on schedule, by a refresh, while the token in it still had almost twenty minutes: the replacement does not have to fall in the last five minutes of a token, or in any window",
+					replaced.length === 1 && replaced[0]!.at >= due - 200 && replaced[0]!.at < due + 8_000 && expiresA - replaced[0]!.at > 19 * MIN && /lasts 3[56]\d\d s more/.test(replaced[0]!.line) && requests.length === requestsBefore + 1 && requests.at(-1) === REFRESH && !lines.some((entry) => entry.line.includes("replace_failed")),
+					replaced.length === 1 ? `replaced ${replaced[0]!.at - due} ms after it was due, ${((expiresA - replaced[0]!.at) / MIN).toFixed(1)} min before the old token's expiry; ${requests.length - requestsBefore} refresh` : `${replaced.length} replacements, ${requests.length - requestsBefore} refreshes`,
+				);
+				expect(
+					"the file then holds the new token, good for an hour, and Windlass in the sandbox accepts it",
+					seen !== null && seen.replaced && seen.issued && replaced.length === 1 && Math.abs(seen.expiresAt - (replaced[0]!.at + 3_600_000)) < 10_000 && seen.accepted,
+					seen === null ? "the turn ended before it could be looked at" : `expires ${Math.round((seen.expiresAt - replaced[0]!.at) / MIN)} min after the replacement`,
+				);
+				expect(
+					"the token source ran Windlass twice for it, at the turn's start and for the replacement, and the turn went on until Windlass gave up on a model it cannot reach from here",
+					tokens.asked === asked + 2 && v.result.failure?.reason === "execution_failed" && lastStepError(v) === "transport" && outcomeOf(v) === "failed" && !leaks(v) && !(await box.run(DATA_LS)).stdout.includes("access-token"),
+					`${tokens.asked - asked} runs; ${v.result.failure?.reason}: ${v.result.failure?.message} (${v.durationMs} ms)`,
+				);
+			}
+
+			// ---- 5: a turn on tokens that last less than is asked for (24 s). The layer's own schedule; only the least
+			// time between two replacements is shortened, from 20 s to 1 s, so that it does not hide what the schedule does.
+			{
+				await signInFake(uidV, TOKEN_C, Date.now() + 12 * MIN, standin);
+				await standInIssues(uidV, 24);
+				const requestsBefore = (await standInRequests(uidV)).length;
+				const saidBefore = wlpLines.length;
+				let calls = 0;
+				const counting: AccessTokens = {
+					current: (user) => {
+						calls += 1;
+						return tokens.current(user);
+					},
+				};
+				const lines: Array<{ at: number; line: string }> = [];
+				const windlass = new DockerWindlass(counting, { tokenFile: { retryMs: 1_000, log: (line) => void (lines.push({ at: Date.now(), line }), console.log(line)) } });
+				const w = await turn(box, "Hello, on tokens that do not last?", null, { windlass });
+				// A request that was on its way when the turn ended has its answer by now.
+				await wait(4_000);
+				requests = await standInRequests(uidV);
+				const written = lines.filter((entry) => entry.line.includes("token.handed") || entry.line.includes("token.replaced"));
+				const replaced = written.slice(1);
+				// When each token expires, from what its own line says, and how much the one before it had left then.
+				const expiry = written.map((entry) => entry.at + Number(/lasts (\d+) s more/.exec(entry.line)?.[1] ?? Number.NaN) * 1000);
+				const leftThen = replaced.map((entry, index) => (expiry[index]! - entry.at) / 1000);
+				const shortSaid = wlpLines.slice(saidBefore).filter((line) => line.includes("token.short"));
+				expect(
+					"a turn is handed such a token as it is, and the file is not replaced at once and again and again: each replacement comes when about half of what the token had left is gone",
+					written.length >= 3 && written.length <= 5 && written[0]!.line.includes("token.handed") && /lasts 2[0-4] s more/.test(written[0]!.line) && leftThen.every((left) => left > 5 && left < 12.5) && !lines.some((entry) => entry.line.includes("replace_failed")),
+					`handed a token that lasts ${/lasts (\d+) s/.exec(written[0]?.line ?? "")?.[1]} s; replaced ${replaced.length} times, when the token in the file had ${leftThen.map((left) => left.toFixed(1)).join(", ")} s left`,
+				);
+				expect(
+					"the token source is asked once for the start and once per replacement, each of them a refresh, and says once that the tokens are shorter than asked",
+					calls >= written.length && calls <= written.length + 1 && requests.length - requestsBefore >= written.length && requests.length - requestsBefore <= calls && shortSaid.length === 1 && !SECRET.test(shortSaid.join(" ")),
+					`${calls} requests to the token source, ${requests.length - requestsBefore} refreshes, ${shortSaid.length} line \`token.short\` in a turn of ${(w.durationMs / 1000).toFixed(0)} s`,
+				);
+				expect(
+					"the turn never ran out of a token: it ended because Windlass cannot reach a model from here, not for its sign-in",
+					w.result.failure?.reason === "execution_failed" && lastStepError(w) === "transport" && !ofType(w.events, "step.failed").some((event) => (dataOf(event).error as { error?: { kind?: string } } | undefined)?.error?.kind === "auth") && !leaks(w) && !(await box.run(DATA_LS)).stdout.includes("access-token"),
+					`${w.result.failure?.reason}: ${w.result.failure?.message}`,
+				);
+			}
+			// ---- 6: a turn whose sign-in is refused while it runs. The real token source and the real engine, on a
+			// token that lasts 16 s; from the turn's first event on, the stand-in refuses every refresh with
+			// `invalid_grant`. The replacements fail as the sign-in's own failure and back off, the token runs out,
+			// Windlass says so with its code, and the user is told to sign in again.
+			{
+				await signInFake(uidV, TOKEN_C, Date.now() + 12 * MIN, standin);
+				await standInIssues(uidV, 16);
+				const lines: string[] = [];
+				const windlass = new DockerWindlass(tokens, { tokenFile: { retryMs: 1_000, log: (line) => void (lines.push(line), console.log(line)) } });
+				let refusing: Promise<void> | null = null;
+				const r = await turn(box, "Hello, on a sign-in that is then refused?", null, {
+					windlass,
+					onEvent: () => {
+						refusing ??= standInRefuses(uidV, "invalid_grant", 400).catch(() => undefined);
+					},
+				});
+				await (refusing as Promise<void> | null);
+				const failed = lines.filter((line) => line.includes("token.replace_failed"));
+				const waits = retryWaits(lines);
+				expect(
+					"when the sign-in service refuses to refresh the sign-in (`invalid_grant`) while a turn runs, each failed replacement says that the sign-in is no longer accepted, and the next try waits twice as long as the one before",
+					failed.length >= 2 && failed.every((line) => line.includes("no longer accepted") && !SECRET.test(line)) && waits[0] === 1 && waits[1] === 2 && (waits.length < 3 || waits[2] === 4),
+					`${failed.length} failed replacements, trying again in ${waits.join(", ")} s`,
+				);
+				expect(
+					"the turn ends when Windlass finds the token expired (its code: `handed_in_expired`), as `auth_required` with the sentence that says to sign in with ChatGPT again",
+					r.result.failure?.reason === "auth_required" && r.result.failure.message === SIGN_IN_EXPIRED && lastStepCode(r) === "handed_in_expired" && lastStepError(r) === "auth" && outcomeOf(r) === "failed" && !leaks(r) && !(await box.run(DATA_LS)).stdout.includes("access-token"),
+					`${r.result.failure?.reason}: ${r.result.failure?.message} (${r.durationMs} ms)`,
+				);
+			}
+			await layer.sandboxes.destroy(box.id);
+			createdSandboxes.delete(box.id);
+		}
+		const removed = await removeImage(tag);
+		createdImages.delete(tag);
+		expect("the throwaway image is removed again, and the server's image was never replaced", removed && (await idOf(tag)) === "" && (await idOf(IMAGE)) === latest, `${IMAGE} is still ${latest.slice(7, 19)}`);
+	});
+
+	await section("old image", async () => {
+		// Two kinds of Windlass that are too old for the hand-off, each built into a throwaway image of its own.
+		const kinds = [
+			{ what: "no `login token`", binary: `/home/ubuntu/projects/light-harness/dist/windlass-linux-${ARCH}`, tag: `windlass-platform-sandbox-old:chk-${run}`, user: uidO, sessionId: "check-old-image", lack: "has no `windlass login token`", refusal: /unknown login command|unknown option --json/, reads: false },
+			{ what: "`login token` but not `--valid-for`", binary: `/home/ubuntu/projects/wt-windlass-token-handoff/dist/windlass-linux-${ARCH}`, tag: `windlass-platform-sandbox-mid:chk-${run}`, user: uidO2, sessionId: "check-mid-image", lack: "has `windlass login token` but not its `--valid-for` option", refusal: /unknown option --valid-for/, reads: true },
+		];
+		const idOf = async (image: string) => (await docker(["image", "inspect", "--format", "{{.Id}}", image])).stdout.trim();
+		for (const kind of kinds) {
+			const { tag } = kind;
+			if (!existsSync(kind.binary)) {
+				info(`SKIP  an image whose Windlass has ${kind.what}: there is no such build at ${kind.binary}`);
+				continue;
+			}
+			const latest = await idOf(IMAGE);
+			createdImages.add(tag);
+			const built = spawnSync(join(root, "sandbox/build.sh"), { env: { ...process.env, WLP_SANDBOX_IMAGE: tag, WINDLASS_BINARY: kind.binary }, encoding: "utf8" });
+			const version = built.stdout.trim().split("\n").pop() ?? "";
+			expect(
+				`build.sh builds a Windlass with ${kind.what} into a throwaway image of its own, and warns that it cannot hand a session a token, with what it lacks and what is needed`,
+				built.status === 0 && built.stderr.includes(`WARNING: this Windlass ${kind.lack}`) && /Rebuild from a newer Windlass, one with\s+build\.sh:\s+`windlass login token --valid-for`/.test(built.stderr) && (await idOf(tag)) !== "" && (await idOf(IMAGE)) === latest,
+				`${tag}, Windlass ${version}`,
+			);
+			// What that Windlass says to the command with and without the option, where nobody is signed in.
+			const [plainName, optionName] = [tmpName(), tmpName()];
+			const plain = await runHelper(helperFlags(plainName, "none"), plainName, ["windlass", "login", "token", "--json"], { image: tag });
+			const option = await runHelper(helperFlags(optionName, "none"), optionName, loginTokenCommand(), { image: tag });
+			expect(
+				kind.reads ? "that Windlass does have `login token` (exit code 1: nobody is signed in) and refuses its `--valid-for` (exit code 2)" : "that Windlass refuses `login token` itself, with or without the option (exit code 2)",
+				plain.code === (kind.reads ? 1 : 2) && option.code === 2 && kind.refusal.test(option.stderr),
+				`without the option: exit ${plain.code}; with it: exit ${option.code}, ${option.stderr.trim().split("\n")[0]}`,
+			);
+			const old = createSandboxLayer({ image: tag, tokenNetwork: "none" });
+			const problem = await old.windlass.problem();
+			expect(
+				"windlass.problem() says what that image lacks and what to do: rebuild it from a Windlass with `login token --valid-for`",
+				problem !== null && problem.includes(tag) && problem.includes(version) && problem.includes(kind.lack) && /Rebuild the image from a newer Windlass, one with `windlass login token --valid-for` \(`windlass login --help` lists it\).*WINDLASS_BINARY=.* sandbox\/build\.sh/.test(problem),
+				problem ?? "null",
+			);
+			const lines: string[] = [];
+			const warned = await warnAboutWindlass(old, (line) => lines.push(line));
+			expect("at start-up the server prints that sentence as a warning", warned === `[wlp] WARNING: ${problem}` && lines.length === 1 && lines[0] === warned, warned?.slice(0, 110) ?? "nothing");
+
+			await signInFake(kind.user, TOKEN_A, Date.now() + 3_600_000);
+			const refused = await old.tokens.current(kind.user).then(
+				() => null,
+				(error: unknown) => error,
+			);
+			expect("its token source fails with the same sentence, and not as the user's doing", refused instanceof Error && !(refused instanceof SandboxUserError) && refused.message === problem && old.tokens.asked === 1);
+			const handle = await offlineSandbox(kind.user, "docker-hardened", kind.sessionId, old);
+			if (handle !== null) {
+				const image = await docker(["container", "inspect", "--format", "{{.Config.Image}}", handle.container]);
+				const failed = await turn(handle, "Hello?", null, { windlass: old.windlass });
+				expect(
+					"a turn on a ChatGPT sign-in fails in that image as `windlass_outdated`, with the same sentence, before Windlass starts and without a token being asked for",
+					image.stdout.trim() === tag && failed.result.failure?.reason === "windlass_outdated" && failed.result.failure.message === problem && failed.events.length === 0 && failed.result.exitCode === null && !failed.result.aborted && old.tokens.asked === 1,
+					`${failed.result.failure?.reason}: ${failed.result.failure?.message.slice(0, 130)}…`,
+				);
+				const demo = await turn(handle, "A demo turn.", plainScript, { windlass: old.windlass });
+				expect("a scripted (demo) turn still works in it", outcomeOf(demo) === "succeeded" && demo.result.failure === null, `${demo.durationMs} ms`);
+				// The image was rebuilt since, but this sandbox was made before: the server's layer, the old container.
+				layer.tokens.forget(kind.user);
+				const askedBefore = layer.tokens.asked;
+				if (!kind.reads) {
+					const behind = await turn(handle, "Hello?", null);
+					const behindAgain = await turn(handle, "Hello?", null);
+					expect(
+						"a sandbox left over from that image, once the image is new: a turn on a ChatGPT sign-in fails as `windlass_outdated` and asks for a new agent, and no token is fetched for it or written into it",
+						behind.result.failure?.reason === "windlass_outdated" && behind.result.failure.message === OUTDATED_SANDBOX && /Start a new agent/.test(OUTDATED_SANDBOX) && behindAgain.result.failure?.message === OUTDATED_SANDBOX && behind.events.length === 0 && layer.tokens.asked === askedBefore && !(await handle.run(DATA_LS)).stdout.includes("access-token"),
+						`${behind.result.failure?.reason}: ${behind.result.failure?.message}`,
+					);
+				} else {
+					// Its own Windlass only has to read the token, which this one does: the option is needed where tokens are fetched.
+					const handedFrom = wlpLines.length;
+					const controller = new AbortController();
+					const fine = await turn(handle, "Hello?", null, {
+						signal: controller.signal,
+						onEvent: (event) => {
+							if (event.type === "step.started") controller.abort();
+						},
+					});
+					const handed = wlpLines.slice(handedFrom).filter((line) => line.includes("token.handed") && line.includes(`sandbox=${handle.id}`));
+					expect(
+						"a sandbox left over from that image, once the image is new, is not behind: its Windlass reads a handed-in token, so the turn is handed one and its engine starts (the turn is stopped at its first model call)",
+						handed.length === 1 && fine.result.failure === null && fine.result.aborted && ofType(fine.events, "execution.started").length === 1 && layer.tokens.asked === askedBefore + 1 && !leaks(fine) && !(await handle.run(DATA_LS)).stdout.includes("access-token"),
+						`${fine.events.length} events, ${fine.result.aborted ? "stopped" : `ended: ${fine.result.failure?.reason}`}`,
+					);
+					// That Windlass gives its failures no code. For it alone the platform still reads the words, and tells the
+					// user the same as with a Windlass that has codes.
+					let removing: Promise<unknown> | null = null;
+					const wordy = await turn(handle, "Hello, with a file that goes missing?", null, {
+						onEvent: (event) => {
+							if (event.type === "retry.scheduled") removing ??= handle.removeFiles([tokenFilePath(handle.id)]);
+						},
+					});
+					expect(
+						"that older Windlass reports a token file that went missing without any code, and there the platform falls back on its words: the turn ends as `token_unavailable`, as it does with a Windlass that gives the code",
+						removing !== null && lastStepCode(wordy) === "none" && lastStepError(wordy) === "auth" && wordy.result.failure?.reason === "token_unavailable" && /^Windlass could not read the access token the platform handed it/.test(wordy.result.failure.message) && !/sign in/i.test(wordy.result.failure.message) && !leaks(wordy) && !(await handle.run(DATA_LS)).stdout.includes("access-token"),
+						`${wordy.result.failure?.reason}: ${wordy.result.failure?.message} (the code of its failed model call: ${lastStepCode(wordy)})`,
+					);
+				}
+				await old.sandboxes.destroy(handle.id);
+				createdSandboxes.delete(handle.id);
+			}
+			const removed = await removeImage(tag);
+			createdImages.delete(tag);
+			expect("the throwaway image is removed again, and the server's image was never replaced", removed && (await idOf(tag)) === "" && (await idOf(IMAGE)) === latest, `${IMAGE} is still ${latest.slice(7, 19)}`);
+		}
+	});
+
 	await section("cleanup", async () => {
 		for (const id of createdSandboxes) await layer.sandboxes.destroy(id);
 		for (const attempt of createdAttempts) await layer.logins.discard(attempt);
-		for (const volume of [`wlp-user-${uid}`, `wlp-user-${uid2}`, `wlp-user-${uid3}`]) await docker(["volume", "rm", "-f", volume]);
+		for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}`, `wlp-auth-${user}`]);
+		for (const image of createdImages) await removeImage(image);
 		const now = await listOurs();
 		// What this run made: its sandboxes, the volumes named after it, and the helper containers of this process.
 		const mine = [...now.containers, ...now.volumes].filter((name) => name.includes(run) || name.startsWith(`wlp-tmp-${PROCESS_MARK}-`) || [...everySandbox].some((id) => name === `wlp-session-${id}`));
@@ -1082,24 +2495,38 @@ async function main(): Promise<void> {
 			info(`SKIP  running cleanup.sh: other windlass-platform resources exist (${[...others.containers, ...others.volumes].join(", ")})`);
 		} else {
 			const decoyVolume = `wlp-decoy-${run}`; // a wlp- name without the label: must survive
-			const labelledVolume = `wlp-user-chk-${run}-c`;
 			await docker(["volume", "create", decoyVolume], { check: true });
-			await docker(["volume", "create", "--label", LABEL_ARG, labelledVolume], { check: true });
+			for (const labelledVolume of [`wlp-user-chk-${run}-c`, `wlp-auth-chk-${run}-c`]) await docker(["volume", "create", "--label", LABEL_ARG, labelledVolume], { check: true });
 			await docker(["run", "-d", "--name", `wlp-session-${randomId(6)}`, "--label", LABEL_ARG, "windlass-platform-sandbox:latest"], { check: true });
 			const out = execFileSync(join(root, "sandbox/cleanup.sh"), ["--keep-image"], { encoding: "utf8" });
 			info(out.trim().split("\n").join(" | "));
 			const after = await listOurs();
 			const decoy = await docker(["volume", "inspect", decoyVolume]);
-			expect("cleanup.sh removes every labelled container and volume", after.containers.length === 0 && after.volumes.length === 0);
+			expect("cleanup.sh removes every labelled container and volume, auth volumes included", after.containers.length === 0 && after.volumes.length === 0);
 			expect("cleanup.sh leaves a wlp- volume without the label alone", decoy.code === 0);
 			await docker(["volume", "rm", decoyVolume]);
 		}
 		expect("containers and volumes of other projects are untouched", (await listOthers()) === othersBefore);
 		const image = await docker(["image", "inspect", "windlass-platform-sandbox:latest"]);
 		expect("the image stays for the server", image.code === 0);
+		const images = await docker(["images", "--format", "{{.Repository}}:{{.Tag}}", "--filter", `label=${LABEL_ARG}`]);
+		const extra = images.stdout.split("\n").filter((name) => name.includes(`chk-${run}`));
+		expect("no throwaway image of this run is left", extra.length === 0, extra.join(", "));
+		// The layer's own lines and everything printed above: fake as this check's tokens are, none may be in there.
+		const leaked = output.filter((line) => SECRET.test(line));
+		expect("no token is in anything this check printed or the layer logged", leaked.length === 0, `${output.length} lines read, ${wlpLines.length} of them the layer's own${leaked.length === 0 ? "" : `; ${leaked.length} with a token`}`);
 	});
 
 	console.log(`\n${failures === 0 ? "ALL PASSED" : "FAILED"}: ${passes} passed, ${failures} failed`);
+}
+
+/** Removes an image this run built: only one that carries the label and is not the server's. */
+async function removeImage(tag: string): Promise<boolean> {
+	if (tag === IMAGE || !tag.includes(`chk-${run}`)) return false;
+	const label = await docker(["image", "inspect", "--format", `{{index .Config.Labels "${LABEL}"}}`, tag]);
+	if (label.code !== 0) return true;
+	if (label.stdout.trim() !== "1") return false;
+	return (await docker(["rmi", tag])).code === 0;
 }
 
 async function emergencyCleanup(): Promise<void> {
@@ -1107,7 +2534,8 @@ async function emergencyCleanup(): Promise<void> {
 	for (const attempt of createdAttempts) await docker(["volume", "rm", "-f", `wlp-login-${attempt}`]).catch(() => undefined);
 	const tmp = await docker(["ps", "-aq", "--filter", `label=${LABEL_ARG}`, "--filter", `name=^wlp-tmp-${PROCESS_MARK}-`]);
 	if (tmp.stdout.trim() !== "") await docker(["rm", "-f", ...tmp.stdout.trim().split("\n")]);
-	await docker(["volume", "rm", "-f", `wlp-user-${uid}`, `wlp-user-${uid2}`, `wlp-user-${uid3}`]).catch(() => undefined);
+	for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}`, `wlp-auth-${user}`]).catch(() => undefined);
+	for (const image of createdImages) await removeImage(image).catch(() => undefined);
 }
 
 /**

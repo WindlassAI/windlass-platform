@@ -44,7 +44,10 @@ export function Layers({ profile, compact = false }: { profile: Pick<SandboxProf
 	);
 }
 
-/** The three plain facts of a profile. */
+/**
+ * The three plain facts of a profile. The ChatGPT sign-in is in no sandbox; what a profile decides is
+ * whether the agent's commands can read the short-lived access token a turn is handed.
+ */
 export function ProfileFacts({ profile }: { profile: SandboxProfile }) {
 	return (
 		<ul className="facts">
@@ -61,7 +64,12 @@ export function ProfileFacts({ profile }: { profile: SandboxProfile }) {
 			</li>
 			<li>
 				<span className="fact-key">sign-in</span>
-				<span className={`fact-value${profile.commandsCanReadLogin ? " fact-open" : ""}`}>{profile.commandsCanReadLogin ? "commands can read your ChatGPT sign-in" : "commands cannot read your ChatGPT sign-in"}</span>
+				<span className="fact-value">
+					your ChatGPT sign-in is never in the sandbox
+					<span className={`fact-gloss${profile.commandsCanReadAccessToken ? " fact-open" : ""}`}>
+						{profile.commandsCanReadAccessToken ? "commands can read the session's access token: it lasts about an hour and cannot be renewed" : "commands cannot read the session's access token either"}
+					</span>
+				</span>
 			</li>
 		</ul>
 	);

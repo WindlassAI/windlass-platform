@@ -41,8 +41,13 @@ export interface SandboxProfile {
 	approval: "auto" | "full";
 	/** Whether commands the agent runs can reach the network. */
 	commandNetwork: boolean;
-	/** Whether commands the agent runs can read the user's ChatGPT sign-in. */
-	commandsCanReadLogin: boolean;
+	/**
+	 * Whether commands the agent runs can read the session's access token: the short-lived token of the
+	 * user's ChatGPT sign-in that each turn is handed. It lasts about an hour, and whoever reads it
+	 * cannot renew it. The sign-in itself, which is what renews tokens, is never in a sandbox: no
+	 * command can read it in any profile.
+	 */
+	commandsCanReadAccessToken: boolean;
 	available: boolean;
 	/** Why it cannot be chosen yet. Set when `available` is false. */
 	unavailableReason?: string;
@@ -55,7 +60,7 @@ export interface SandboxProfile {
 export interface PlatformInfo {
 	/** True when the server runs with WLP_DEMO=1: the demo sign-in is offered and its model is scripted. */
 	demoEnabled: boolean;
-	/** The Windlass version inside the sandbox image, e.g. "0.1.0". */
+	/** The Windlass version inside the sandbox image, e.g. "0.1.1+0f5192c3ea". */
 	windlassVersion: string | null;
 	profiles: SandboxProfile[];
 	/** Models a session may be started with; the first is the default. */
@@ -165,7 +170,7 @@ export interface CreateSessionInput {
 export interface ChatgptStatus {
 	connected: boolean;
 	email: string | null;
-	/** When the saved access token expires (it refreshes itself on use), ms since the epoch. */
+	/** When the saved sign-in's access token expires, ms since the epoch. The platform refreshes it when a turn needs a token within twenty minutes of that, or after. */
 	accessExpiresAt: number | null;
 }
 

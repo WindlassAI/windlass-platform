@@ -18,6 +18,12 @@ export class AcpError extends Error {
 		readonly reason: string | null,
 		/** `data.windlass.holderPid` of a `session_in_use` error. */
 		readonly holderPid: number | null = null,
+		/**
+		 * Windlass's stable code for what failed (`data.windlass.code`), when it gave one: a sign-in's
+		 * (`handed_in_expired`, `signed_out`, ...), `network_error`, or a provider's own for its answer.
+		 * It says which failure this is; the message is for reading only.
+		 */
+		readonly failureCode: string | null = null,
 	) {
 		super(message);
 		this.name = "AcpError";
@@ -155,10 +161,10 @@ export class AcpConnection {
 		const error = (typeof raw === "object" && raw !== null ? raw : {}) as { code?: unknown; message?: unknown; data?: unknown };
 		const code = typeof error.code === "number" ? error.code : 0;
 		const data = typeof error.data === "object" && error.data !== null ? (error.data as Record<string, unknown>)[this.namespace] : undefined;
-		const named = (typeof data === "object" && data !== null ? data : {}) as { reason?: unknown; message?: unknown; holderPid?: unknown };
+		const named = (typeof data === "object" && data !== null ? data : {}) as { reason?: unknown; message?: unknown; holderPid?: unknown; code?: unknown };
 		// The engine's own sentence when it gave one; the protocol's message otherwise.
 		const message = typeof named.message === "string" && named.message !== "" ? named.message : typeof error.message === "string" && error.message !== "" ? error.message : `${method} failed`;
-		return new AcpError(message, code, typeof named.reason === "string" ? named.reason : null, typeof named.holderPid === "number" ? named.holderPid : null);
+		return new AcpError(message, code, typeof named.reason === "string" ? named.reason : null, typeof named.holderPid === "number" ? named.holderPid : null, typeof named.code === "string" && named.code !== "" ? named.code : null);
 	}
 }
 

@@ -3,15 +3,18 @@
  *
  *   start   `windlass login start --no-browser` in a fresh volume wlp-login-<attemptId>
  *   finish  `windlass login finish`, the pasted address on stdin (never on a command line)
- *   adopt   auth.json and host-id copied into wlp-user-<uid>, the attempt volume removed
+ *   adopt   auth.json and host-id copied into wlp-auth-<uid>, the attempt volume removed
+ *   logout  `windlass login logout` on wlp-auth-<uid>
  *
- * The account is read from auth.json inside a container that prints only `sub`, `email` and
- * `expiresAt`: tokens never leave the volume.
+ * The sign-in lives in the user's auth volume, which only these helpers and the token source
+ * (tokens.ts) mount; a session's container never does. The account is read from auth.json inside a
+ * container that prints only `sub`, `email` and `expiresAt`: tokens leave the volume only through
+ * `windlass login token` (tokens.ts).
  */
 
 import { type ChatgptAccount, type ChatgptLogins, SandboxUserError } from "./api.js";
 import { DATA_DIR, LABEL, helperFlags, removeVolume, runHelper, tmpName, volumeExists } from "./docker.js";
-import { assertName, ensureDataVolume, ensureUserVolume, loginVolume, userVolume } from "./volumes.js";
+import { TOKEN_FILE_PREFIX, assertName, authVolume, ensureAuthVolume, ensureDataVolume, ensureUserVolume, loginVolume, migrateSignIn, userVolume } from "./volumes.js";
 
 const READ_ACCOUNT = `
 import json, sys
@@ -53,22 +56,34 @@ const FRIENDLY: Record<string, string> = {
 	registration_incomplete: "OpenAI did not finish registering this app for your account. Start the sign-in again.",
 };
 
-async function readAccount(volume: string): Promise<ChatgptAccount | null> {
+async function readAccount(volume: string, image?: string): Promise<ChatgptAccount | null> {
 	const helper = tmpName();
-	const result = await runHelper([...helperFlags(helper, "none"), "-v", `${volume}:${DATA_DIR}:ro`], helper, ["python3", "-I", "-c", READ_ACCOUNT, `${DATA_DIR}/auth.json`], { timeoutMs: 60_000 });
+	const result = await runHelper([...helperFlags(helper, "none"), "-v", `${volume}:${DATA_DIR}:ro`], helper, ["python3", "-I", "-c", READ_ACCOUNT, `${DATA_DIR}/auth.json`], { timeoutMs: 60_000, image });
 	if (result.code !== 0) throw new Error(`could not read the sign-in: ${result.stderr.trim()}`);
 	const parsed = JSON.parse(result.stdout.trim()) as ChatgptAccount | null;
 	return parsed;
 }
 
+export interface DockerChatgptLoginsOptions {
+	image?: string;
+	/** Called when a user's saved sign-in was replaced or forgotten: the token source drops what it kept of the old one. */
+	changed?: (uid: string) => void;
+}
+
 export class DockerChatgptLogins implements ChatgptLogins {
+	private readonly image: string | undefined;
+
+	constructor(private readonly options: DockerChatgptLoginsOptions = {}) {
+		this.image = options.image;
+	}
+
 	async start(attemptId: string): Promise<{ url: string; redirectPrefix: string }> {
 		const volume = loginVolume(attemptId);
 		await removeVolume(volume); // calling it again restarts the attempt
-		await ensureDataVolume(volume, { [`${LABEL}.login`]: attemptId });
+		await ensureDataVolume(volume, { [`${LABEL}.login`]: attemptId }, this.image);
 		const helper = tmpName();
 		// `login start` makes no network request: it saves the PKCE state and prints the address.
-		const result = await runHelper([...helperFlags(helper, "none"), "-v", `${volume}:${DATA_DIR}`], helper, ["windlass", "login", "start", "--no-browser"], { timeoutMs: 60_000 });
+		const result = await runHelper([...helperFlags(helper, "none"), "-v", `${volume}:${DATA_DIR}`], helper, ["windlass", "login", "start", "--no-browser"], { timeoutMs: 60_000, image: this.image });
 		const url = result.stdout
 			.split("\n")
 			.map((line) => line.trim())
@@ -87,27 +102,34 @@ export class DockerChatgptLogins implements ChatgptLogins {
 		const pasted = checkPasted(pastedUrl);
 		const helper = tmpName();
 		// The token exchange needs the network. The address goes in on stdin, one line.
-		const result = await runHelper([...helperFlags(helper, "bridge"), "-v", `${volume}:${DATA_DIR}`], helper, ["windlass", "login", "finish"], { stdin: `${pasted}\n`, timeoutMs: 90_000 });
+		const result = await runHelper([...helperFlags(helper, "bridge"), "-v", `${volume}:${DATA_DIR}`], helper, ["windlass", "login", "finish"], { stdin: `${pasted}\n`, timeoutMs: 90_000, image: this.image });
 		if (result.timedOut) throw new SandboxUserError("OpenAI did not answer in time. Try again.");
 		if (result.code !== 0) {
 			const match = /sign-in failed: ([\s\S]*?) \(([A-Za-z0-9_]+)\)\s*$/.exec(result.stderr.trim());
 			if (match) throw new SandboxUserError(FRIENDLY[match[2]!] ?? match[1]!);
 			throw new SandboxUserError(`The sign-in could not be finished: ${result.stderr.trim().replace(/^windlass: /, "") || `exit ${result.code}`}`);
 		}
-		const account = await readAccount(volume);
+		const account = await readAccount(volume, this.image);
 		if (account === null) throw new Error("windlass login finish succeeded but left no sign-in");
 		return account;
 	}
 
 	async adopt(attemptId: string, uid: string): Promise<void> {
 		const from = loginVolume(attemptId);
-		const to = userVolume(uid);
+		const to = authVolume(uid);
 		if (!(await volumeExists(from))) throw new SandboxUserError("This sign-in attempt is unknown or has expired. Start the sign-in again.");
-		await ensureUserVolume(uid);
+		// The data volume of the user's sessions, with nothing of an old sign-in left in it, and the volume the sign-in goes to.
+		await ensureUserVolume(uid, this.image);
+		const created = await ensureAuthVolume(uid, this.image);
 		const helper = tmpName();
-		const result = await runHelper([...helperFlags(helper, "none"), "-v", `${to}:${DATA_DIR}`, "-v", `${from}:/mnt/login:ro`], helper, ["sh", "-c", ADOPT], { timeoutMs: 60_000 });
-		if (result.code === 3) throw new SandboxUserError("This sign-in is not finished yet.");
-		if (result.code !== 0) throw new Error(`could not save the sign-in: ${result.stderr.trim()}`);
+		const result = await runHelper([...helperFlags(helper, "none"), "-v", `${to}:${DATA_DIR}`, "-v", `${from}:/mnt/login:ro`], helper, ["sh", "-c", ADOPT], { timeoutMs: 60_000, image: this.image });
+		if (result.code !== 0) {
+			// Nothing was adopted: a user who had no auth volume is left without one.
+			if (created) await removeVolume(to).catch(() => undefined);
+			if (result.code === 3) throw new SandboxUserError("This sign-in is not finished yet.");
+			throw new Error(`could not save the sign-in: ${result.stderr.trim()}`);
+		}
+		this.options.changed?.(uid);
 		await removeVolume(from);
 	}
 
@@ -116,22 +138,36 @@ export class DockerChatgptLogins implements ChatgptLogins {
 	}
 
 	async status(uid: string): Promise<ChatgptAccount | null> {
-		const volume = userVolume(uid);
+		const volume = authVolume(uid);
+		await migrateSignIn(uid, this.image);
 		if (!(await volumeExists(volume))) return null;
-		return readAccount(volume);
+		return readAccount(volume, this.image);
 	}
 
 	async logout(uid: string): Promise<void> {
-		const volume = userVolume(uid);
-		if (!(await volumeExists(volume))) return;
-		const helper = tmpName();
-		const result = await runHelper([...helperFlags(helper, "none"), "-v", `${volume}:${DATA_DIR}`], helper, ["windlass", "login", "logout"], { timeoutMs: 60_000 });
-		if (result.code !== 0) throw new Error(`windlass login logout failed: ${result.stderr.trim()}`);
+		const volume = authVolume(uid);
+		await migrateSignIn(uid, this.image);
+		try {
+			if (await volumeExists(volume)) {
+				const helper = tmpName();
+				const result = await runHelper([...helperFlags(helper, "none"), "-v", `${volume}:${DATA_DIR}`], helper, ["windlass", "login", "logout"], { timeoutMs: 60_000, image: this.image });
+				if (result.code !== 0) throw new Error(`windlass login logout failed: ${result.stderr.trim()}`);
+			}
+		} finally {
+			this.options.changed?.(uid);
+		}
+		// The tokens handed to turns that still run: their files go, so Windlass has none at its next model call.
+		const sessions = userVolume(uid);
+		if (await volumeExists(sessions)) {
+			const helper = tmpName();
+			const result = await runHelper([...helperFlags(helper, "none"), "-v", `${sessions}:${DATA_DIR}`], helper, ["sh", "-c", `rm -f -- ${DATA_DIR}/${TOKEN_FILE_PREFIX}*`], { timeoutMs: 60_000, image: this.image });
+			if (result.code !== 0) throw new Error(`could not remove the access tokens handed to running turns: ${result.stderr.trim()}`);
+		}
 	}
 
 	async ensureUserVolume(uid: string): Promise<void> {
 		assertName(uid, "user id");
-		await ensureUserVolume(uid);
+		await ensureUserVolume(uid, this.image);
 	}
 }
 

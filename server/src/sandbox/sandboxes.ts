@@ -16,6 +16,7 @@ import type { SandboxProfile, SandboxProfileId } from "../contract.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type SandboxHandle, SandboxUserError, type Sandboxes } from "./api.js";
 import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, WORKSPACE, docker, randomId } from "./docker.js";
 import { COMMON_RUN_FLAGS, PROFILES, PROFILE_RUN_FLAGS, findProfile } from "./profiles.js";
+import { tokenFilePath } from "./token-file.js";
 import { assertName, ensureUserVolume, userVolume } from "./volumes.js";
 
 const SANDBOX_ID = /^[a-f0-9]{12}$/;
@@ -81,6 +82,8 @@ export class DockerSandboxHandle implements SandboxHandle {
 	constructor(
 		readonly id: string,
 		readonly profile: SandboxProfileId,
+		/** The user whose data volume the container mounts, from the container's label. */
+		readonly uid: string,
 	) {}
 
 	get container(): string {
@@ -286,20 +289,40 @@ export class DockerSandboxHandle implements SandboxHandle {
 		});
 		if (result.code !== 0) throw new Error(`cannot write ${path}: ${result.stderr.trim()}`);
 	}
+
+	/**
+	 * Writes a file that only its owner can read (0600), whole: the content goes to a file beside it
+	 * (`<path>.tmp`), which is then renamed into place, so whoever reads `path` sees the old content or
+	 * the new and never a part of either. The content is passed on standard input, never on a command
+	 * line. One write of a path at a time.
+	 */
+	async writeSecretFile(path: string, content: string): Promise<void> {
+		const script = 'set -eu; umask 077; tmp="$1.tmp"; trap \'rm -f -- "$tmp"\' EXIT; cat > "$tmp"; mv -f -- "$tmp" "$1"';
+		const result = await docker(["exec", "-i", this.container, "sh", "-c", script, "sh", path], { stdin: content, timeoutMs: 30_000 });
+		// What `sh` says about a failure names the path, never the content.
+		if (result.code !== 0) throw new Error(`cannot write ${path}: ${result.timedOut ? "timed out" : result.stderr.trim() || `exit ${result.code}`}`);
+	}
+
+	/** Removes files. A no-op for those that are gone, and when the container is. */
+	async removeFiles(paths: string[]): Promise<void> {
+		if (paths.length === 0) return;
+		await docker(["exec", this.container, "rm", "-f", "--", ...paths], { timeoutMs: 10_000 }).catch(() => undefined);
+	}
 }
 
 interface Inspected {
 	status: string;
 	profile: SandboxProfileId;
+	uid: string;
 }
 
 async function inspect(id: string): Promise<Inspected | null> {
 	if (!SANDBOX_ID.test(id)) return null;
-	const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{index .Config.Labels "${LABEL}.profile"}}`, containerName(id)]);
+	const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{index .Config.Labels "${LABEL}.profile"}}|{{index .Config.Labels "${LABEL}.uid"}}`, containerName(id)]);
 	if (result.code !== 0) return null;
-	const [status = "", ours = "", profile = ""] = result.stdout.trim().split("|");
+	const [status = "", ours = "", profile = "", uid = ""] = result.stdout.trim().split("|");
 	if (ours !== "1") return null;
-	return { status, profile: profile as SandboxProfileId };
+	return { status, profile: profile as SandboxProfileId, uid };
 }
 
 function stateOf(status: string): "none" | "running" | "paused" {
@@ -308,7 +331,23 @@ function stateOf(status: string): "none" | "running" | "paused" {
 	return "none";
 }
 
+/**
+ * Removes the sandbox's access token file from the user's data volume, which outlives the container. A
+ * turn removes its own when it ends; this is for one that was cut off with its server, or by the stop
+ * that follows. The container must be running; a failure is nobody's (the token expires within the hour).
+ */
+async function forgetTokenFile(id: string): Promise<void> {
+	const path = tokenFilePath(id);
+	await docker(["exec", containerName(id), "rm", "-f", "--", path, `${path}.tmp`], { timeoutMs: 10_000 }).catch(() => undefined);
+}
+
 export class DockerSandboxes implements Sandboxes {
+	private readonly image: string;
+
+	constructor(options: { image?: string } = {}) {
+		this.image = options.image ?? IMAGE;
+	}
+
 	profiles(): SandboxProfile[] {
 		return PROFILES.map((profile) => ({ ...profile, layers: [...profile.layers] }));
 	}
@@ -323,7 +362,8 @@ export class DockerSandboxes implements Sandboxes {
 		const profile = findProfile(input.profile);
 		const flags = PROFILE_RUN_FLAGS[input.profile];
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
-		await ensureUserVolume(input.uid);
+		// The user's data volume, and only that one: the volume with the sign-in (wlp-auth-<uid>) is never mounted here.
+		await ensureUserVolume(input.uid, this.image);
 		const id = randomId(6);
 		const name = containerName(id);
 		const result = await docker(
@@ -346,14 +386,14 @@ export class DockerSandboxes implements Sandboxes {
 				...flags,
 				"-v",
 				`${userVolume(input.uid)}:${DATA_DIR}`,
-				IMAGE,
+				this.image,
 			],
 			{ timeoutMs: 120_000 },
 		);
 		if (result.code !== 0) {
 			await docker(["rm", "-f", name]);
 			const message = result.stderr.trim();
-			if (/No such image|pull access denied|not found/i.test(message)) throw new Error(`the sandbox image ${IMAGE} is missing; run sandbox/build.sh (${message})`);
+			if (/No such image|pull access denied|not found/i.test(message)) throw new Error(`the sandbox image ${this.image} is missing; run sandbox/build.sh (${message})`);
 			throw new Error(`could not create the sandbox: ${message}`);
 		}
 		const init = await docker(["exec", "-w", WORKSPACE, name, "sh", "-c", 'git init -q && git commit -q --allow-empty -m "Empty workspace"'], { timeoutMs: 60_000 });
@@ -372,7 +412,7 @@ export class DockerSandboxes implements Sandboxes {
 			const started = await docker(["start", containerName(id)], { timeoutMs: 60_000 });
 			if (started.code !== 0) throw new Error(`could not start the sandbox: ${started.stderr.trim()}`);
 		}
-		return new DockerSandboxHandle(id, found.profile);
+		return new DockerSandboxHandle(id, found.profile, found.uid);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {
@@ -383,6 +423,7 @@ export class DockerSandboxes implements Sandboxes {
 	async suspend(id: string): Promise<void> {
 		const found = await inspect(id);
 		if (found === null || found.status !== "running") return;
+		await forgetTokenFile(id);
 		// SIGTERM to the container's init, SIGKILL after 5 s. A turn still running is cut off: stop it first.
 		await docker(["stop", "-t", "5", containerName(id)], { timeoutMs: 60_000 });
 	}
@@ -390,6 +431,7 @@ export class DockerSandboxes implements Sandboxes {
 	async destroy(id: string): Promise<void> {
 		const found = await inspect(id);
 		if (found === null) return;
+		if (found.status === "running") await forgetTokenFile(id);
 		await docker(["rm", "-f", "-v", containerName(id)], { timeoutMs: 60_000, check: true });
 	}
 }

@@ -286,6 +286,12 @@ async function forceSleep(sid: string): Promise<void> {
 /** The demo users this run signed in. With the Docker layer each has a data volume, removed at the end. */
 const demoUids: string[] = [];
 
+/** The auth volumes of this run's demo users. There should be none: a demo user has no sign-in to keep. */
+function demoAuthVolumes(): string[] {
+	const existing = execFileSync("docker", ["volume", "ls", "-q", "--filter", "label=dev.windlass-platform=1"], { encoding: "utf8" }).split("\n");
+	return demoUids.map((uid) => `wlp-auth-${uid}`).filter((name) => existing.includes(name));
+}
+
 /** Removes this run's volumes, and only those: other work may be using the same Docker. */
 function removeDemoVolumes(): string[] {
 	const failures: string[] = [];
@@ -1369,6 +1375,8 @@ async function main(server: Server | null): Promise<void> {
 			assert(thrown.outcome === "error" && thrown.exitCode === null && thrown.message?.startsWith("The sandbox failed"), `throw: ${plain(thrown)}`);
 			const signedOut = await run("please (auth-fail)");
 			assert(signedOut.outcome === "error" && /sign in with chatgpt again/i.test(signedOut.message ?? ""), `auth-fail: ${plain(signedOut)}`);
+			const outdated = await run("please (old-windlass)");
+			assert(outdated.outcome === "error" && /has no `windlass login token`/.test(outdated.message ?? "") && /Rebuild the image from a newer Windlass.*sandbox\/build\.sh/.test(outdated.message ?? ""), `old-windlass: ${plain(outdated)}`);
 			const failed = await run("please (exec-fail)");
 			assert(failed.outcome === "failed" && failed.message === null && failed.steps === 1, `exec-fail: ${plain(failed)}`);
 			assert(scratchWatch.windlass(failed.turn, "execution.failed").some((item) => String(item.event.data?.message).includes("failed 4 times")), "the failed turn's events do not say how it failed");
@@ -1387,7 +1395,7 @@ async function main(server: Server | null): Promise<void> {
 			assert(scratchWatch.items.filter((item) => item.kind === "platform" && item.text.startsWith("Cloning")).length === 1, "the repository was cloned more than once");
 			dense(scratchWatch.items);
 			assert(scratch.model === models.at(-1) && scratch.repoUrl === "https://example.com/org/project.git", "the session's model or repository is off");
-			return `crash: "${crashed.message?.split("\n")[0]}"; throw: "${thrown.message}"; auth-fail: "${signedOut.message}"; exec-fail: failed, the events say how; session-busy: "${busy.message}"; session-gone: "${gone.message?.split("\n").join(" / ")}"; then succeeded in a new Windlass session`;
+			return `crash: "${crashed.message?.split("\n")[0]}"; throw: "${thrown.message}"; auth-fail: "${signedOut.message}"; old-windlass: "${outdated.message?.slice(0, 96)}…"; exec-fail: failed, the events say how; session-busy: "${busy.message}"; session-gone: "${gone.message?.split("\n").join(" / ")}"; then succeeded in a new Windlass session`;
 		});
 		await scratchWatch.conn.dispose();
 		await userConnTwo.deleteSession(scratch.id);
@@ -1412,6 +1420,52 @@ async function main(server: Server | null): Promise<void> {
 	// --- ChatGPT sign-in --------------------------------------------------------------------------
 
 	if (FAKE) {
+		await check("the fake layer's token source: no token without a sign-in, one request per user at a time, a fresh answer reused, a new sign-in's token after adopt", async () => {
+			// The layer itself, beside the server's: what the actors' turns ask before they start.
+			const { createFakeSandboxLayer } = await import("../server/src/sandbox-fake.js");
+			const { SandboxUserError } = await import("../server/src/sandbox/api.js");
+			const { SignInRefreshError } = await import("../server/src/sandbox/handoff.js");
+			const fake = createFakeSandboxLayer();
+			const signIn = async (uid: string, code: string) => {
+				const id = attempt();
+				const started = await fake.logins.start(id);
+				await fake.logins.finish(id, `${started.redirectPrefix}?code=${code}`);
+				await fake.logins.adopt(id, uid);
+			};
+			const refusal = async (uid: string) =>
+				fake.tokens.current(uid).then(
+					() => null,
+					(error: unknown) => error,
+				);
+			await fake.logins.ensureUserVolume("u_demo");
+			const none = await refusal("u_demo");
+			assert(none instanceof SandboxUserError && /Sign in with ChatGPT/.test(none.message), `a user without a sign-in: ${plain(none instanceof Error ? none.message : none)}`);
+			await signIn("u_ann", "ann");
+			await signIn("u_ben", "ben");
+			const at = Date.now();
+			const [many, other] = await Promise.all([Promise.all(Array.from({ length: 6 }, () => fake.tokens.current("u_ann"))), fake.tokens.current("u_ben")]);
+			const first = many[0]!;
+			assert(many.every((token) => token.accessToken === first.accessToken && token.expiresAt === first.expiresAt), "six requests at once for one user got different answers");
+			assert(other.accessToken !== first.accessToken, "two users were given the same token");
+			assert(first.expiresAt - at > 55 * 60_000, "the token does not last about an hour");
+			first.accessToken = "changed by the caller";
+			const again = await fake.tokens.current("u_ann");
+			assert(again.accessToken === many[1]!.accessToken, "a fresh answer was not reused");
+			await signIn("u_ann", "ann2");
+			const adopted = await fake.tokens.current("u_ann");
+			assert(adopted.accessToken !== again.accessToken, "after a new sign-in the old one's token was handed out again");
+			await fake.logins.logout("u_ann");
+			const out = await refusal("u_ann");
+			assert(out instanceof SandboxUserError && /Sign in with ChatGPT/.test(out.message), "after logout a token was still handed out");
+			const expired = await refusal(await signIn("u_cat", "expired").then(() => "u_cat"));
+			assert(expired instanceof SandboxUserError && /Sign in with ChatGPT again/.test(expired.message), "a sign-in that is no longer accepted is not the user's to renew");
+			const offline = await refusal(await signIn("u_dan", "offline").then(() => "u_dan"));
+			assert(offline instanceof Error && !(offline instanceof SandboxUserError), "a token that cannot be had this time was reported as the user's doing");
+			assert(offline instanceof SignInRefreshError && offline.code === "network_error", "a sign-in service that cannot be reached is not told by Windlass's code for it, `network_error`");
+			for (const said of [none, out, expired, offline]) assert(!/FAKE-ACCESS-TOKEN/.test(String((said as Error).message)), "an error message contains a token");
+			return `not signed in: "${(none as Error).message}"; 6 requests at once: one answer; reused; replaced by adopt; gone after logout; expired: SandboxUserError; offline: ${(offline as Error).name} (${(offline as { code?: string }).code})`;
+		});
+
 		await check("ChatGPT sign-in: start, finish, token, and the actor goes away", async () => {
 			const id = attempt();
 			const handle = client.login.getOrCreate([id]);
@@ -1451,7 +1505,7 @@ async function main(server: Server | null): Promise<void> {
 			return `uid ${result.profile.uid}; refusals: "${wrong}" / "${refusedByOpenAi}" / "${internal}"`;
 		});
 
-		await check("a user without a ChatGPT sign-in is told to sign in; with one, turns run unscripted", async () => {
+		await check("a user without a ChatGPT sign-in is told to sign in; with one, turns run unscripted on an access token handed to them", async () => {
 			const signIn = async (code: string) => {
 				const handle = client.login.getOrCreate([attempt()]);
 				const started = await handle.start();
@@ -1474,13 +1528,58 @@ async function main(server: Server | null): Promise<void> {
 			await bobWatch.conn.prompt({ text: "hello there" });
 			const ended = await bobWatch.untilEnded(1);
 			assert(ended.outcome === "succeeded", `a signed-in user's turn ended ${ended.outcome}`);
+			await bobWatch.conn.prompt({ text: "and once more" });
+			assert((await bobWatch.untilEnded(2)).outcome === "succeeded", "a signed-in user's second turn did not succeed");
 			await bobWatch.conn.dispose();
 			await bobUser.deleteSession(session.id);
-			return `refusal: "${message}"`;
+			let handed = "the server's output is not at hand";
+			if (server) {
+				// The layer says when it hands a turn a token, and never the token.
+				const lines = server.output.split("\n").filter((line) => line.includes("[wlp] token.handed"));
+				const bobs = lines.filter((line) => line.includes(`uid=${bob.profile.uid}:`));
+				assert(bobs.length === 2, `the signed-in user's two turns were handed a token ${bobs.length} times`);
+				assert(!lines.some((line) => demoUids.some((demo) => line.includes(`uid=${demo}:`))), "a demo user's scripted turn was handed an access token");
+				assert(!/FAKE-ACCESS-TOKEN/.test(server.output), "an access token is in the server's output");
+				handed = `each of the signed-in user's 2 turns was handed a token, none of the ${demoUids.length} demo users' turns was`;
+			}
+			return `refusal: "${message}"; ${handed}`;
+		});
+
+		await check("a sign-in that is no longer accepted, or whose token cannot be had, ends the turn with what to do", async () => {
+			const turnOf = async (code: string) => {
+				const handle = client.login.getOrCreate([attempt()]);
+				const started = await handle.start();
+				const auth = await handle.finish(`${started.redirectPrefix}?code=${code}`);
+				const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
+				// The sign-in is there, so the prompt is taken: only asking for its token shows what state it is in.
+				assert((await user.chatgpt()).connected === true, `the ${code} user is not reported as connected`);
+				const session = await user.createSession({ profile: availableProfile as never });
+				const watch = new Watch(client, auth.profile.uid, session.id, auth.token);
+				try {
+					await watch.conn.prompt({ text: "hello" });
+					const first = await watch.untilEnded(1);
+					assert(watch.items.filter((item) => item.kind === "windlass").length === 0, `the ${code} user's turn has Windlass events`);
+					// The session is usable afterwards, and the next prompt is taken and answered the same way.
+					await watch.conn.prompt({ text: "hello again" });
+					const second = await watch.untilEnded(2);
+					assert(second.outcome === first.outcome && second.message === first.message, `the ${code} user's second turn ended differently: ${plain(second)}`);
+					assert((await watch.conn.snapshot()).summary.status === "idle", `the ${code} user's session is not idle`);
+					return first;
+				} finally {
+					await watch.conn.dispose().catch(() => undefined);
+					await user.deleteSession(session.id).catch(() => undefined);
+				}
+			};
+			const expired = await turnOf("expired");
+			assert(expired.outcome === "error" && /sign in with chatgpt again/i.test(expired.message ?? ""), `expired: ${plain(expired)}`);
+			const offline = await turnOf("offline");
+			assert(offline.outcome === "error" && /could not get an access token/.test(offline.message ?? "") && /send the prompt again/.test(offline.message ?? "") && !/sign in with chatgpt again/i.test(offline.message ?? ""), `offline: ${plain(offline)}`);
+			return `expired: "${expired.message}"; offline: "${offline.message}"`;
 		});
 	} else {
 		skip("ChatGPT sign-in: start, finish, token, and the actor goes away", "a real sign-in is never completed by this script; run in fake mode");
-		skip("a user without a ChatGPT sign-in is told to sign in; with one, turns run unscripted", "needs a signed-in account; run in fake mode");
+		skip("a user without a ChatGPT sign-in is told to sign in; with one, turns run unscripted on an access token handed to them", "needs a signed-in account; run in fake mode, or scripts/sandbox-check.ts for the real hand-off");
+		skip("a sign-in that is no longer accepted, or whose token cannot be had, ends the turn with what to do", "needs a signed-in account; run in fake mode");
 	}
 
 	if (server && loginTtlMs === SHORT_LOGIN_TTL_MS) {
@@ -1590,9 +1689,20 @@ try {
 			const left = sandboxContainers().filter((name) => made.includes(name));
 			if (left.length > 0) fail("no sandbox containers left behind", left.join(", "));
 			else pass("no sandbox containers left behind", `${made.length} created and removed`);
+			const withAuth = demoAuthVolumes();
+			if (withAuth.length > 0) fail("no demo user was given an auth volume", withAuth.join(", "));
+			else pass("no demo user was given an auth volume", `${demoUids.length} demo users, each with a data volume only`);
+			for (const name of withAuth) execFileSync("docker", ["volume", "rm", name], { stdio: "pipe" });
 			const stuck = removeDemoVolumes();
 			if (stuck.length > 0) fail("the demo users' data volumes are removed", stuck.join("; "));
 			else pass("the demo users' data volumes are removed", `${demoUids.length} demo users`);
+			// Demo turns are scripted: none is handed an access token, and the image's Windlass is one that could hand one on.
+			const handed = server.output.split("\n").filter((line) => line.includes("[wlp] token.handed")).length;
+			const warned = server.output.split("\n").find((line) => line.includes("[wlp] WARNING"));
+			if (handed > 0) fail("no scripted turn was handed an access token", `${handed} were`);
+			else pass("no scripted turn was handed an access token");
+			if (warned) fail("the server started without a warning about the image's Windlass", warned);
+			else pass("the server started without a warning about the image's Windlass");
 		}
 	}
 }

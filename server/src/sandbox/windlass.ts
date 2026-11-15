@@ -1,10 +1,25 @@
 /**
  * Running Windlass in a sandbox. One turn is one process that speaks the Agent Client Protocol:
  *
- *   docker exec -i -w /workspace -e WINDLASS_WAKE=off -e WINDLASS_ACP_LOG=warn [-e WINDLASS_ACP_SCRIPT=<file>] \
+ *   docker exec -i -w /workspace -e WINDLASS_WAKE=off -e WINDLASS_ACP_LOG=warn \
+ *     -e WINDLASS_ACP_SCRIPT=/tmp/.wlp-script-<random>.json                                        a scripted (demo) turn
+ *     -e WINDLASS_ACCESS_TOKEN_FILE=/home/agent/.local/share/windlass/access-token-<id>.json       any other turn
  *     wlp-session-<id> wlp-run exec <tag> windlass acp
  *
- * driven over its stdin and stdout as the `windlass` command line drives its own engine (Windlass's
+ * A turn that is not scripted runs on its user's ChatGPT sign-in, which is never in the sandbox: the
+ * turn is handed the user's current access token in that file (token-file.ts says where, how and for
+ * how long), written before the process starts with
+ *
+ *   docker exec -i wlp-session-<id> sh -c 'set -eu; umask 077; tmp="$1.tmp"; trap ... EXIT; cat > "$tmp"; mv -f -- "$tmp" "$1"' sh <file>
+ *
+ * (the token on standard input), replaced the same way when the token in it has ten minutes left, and
+ * removed when the turn ends. A scripted turn gets no token and no such variable. Before the first
+ * unscripted turn in a sandbox, `docker exec -e WINDLASS_ACCESS_TOKEN_FILE=/nonexistent/wlp-probe
+ * wlp-session-<id> windlass login status` asks its Windlass whether it reads a handed-in token at all,
+ * and before every one the image's Windlass is looked at: tokens are fetched with it, so it must have
+ * `windlass login token --valid-for` (`sandboxProblem`).
+ *
+ * The process is driven over its stdin and stdout as the `windlass` command line drives its own engine (Windlass's
  * docs/acp.md, "The command line is an ACP client"):
  *
  *   initialize                         every engine event is asked for as `_windlass/event`, no standard updates
@@ -20,15 +35,25 @@
  *
  * No prompt text is ever on a command line. The process lives for one turn, so nothing has to be kept
  * between turns and a server that restarts loses nothing but the turn it was running.
+ *
+ * When a turn fails, what the failure means is read from the stable code Windlass gives it, not from
+ * the words of its message: the code on the error the engine answered with (`data.windlass.code`,
+ * Windlass's docs/acp.md, "Errors") and, where there is no such error, the one on the provider error of
+ * the model call that failed (`step.failed`, `error.error.code`). `Turn.told` turns the codes about a
+ * handed-in token into what the user should read (handoff.ts has the mapping); every other failure
+ * stays as Windlass reported it.
  */
 
 import type { WindlassEvent } from "../contract.js";
-import type { RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnControl, TurnQuestion, Windlass } from "./api.js";
+import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnControl, TurnQuestion, Windlass } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
-import { IMAGE, WORKSPACE, docker, helperFlags, randomId, runHelper, tmpName } from "./docker.js";
+import { IMAGE, WORKSPACE, docker, randomId } from "./docker.js";
+import { ACCESS_TOKEN_FILE_ENV, type Failure, OUTDATED_SANDBOX, WindlassOutdatedError, handedInFailure, handedInProblem, handedInProblemInWords, outdatedWindlass, tokenRanOut, tokenSourceFailure } from "./handoff.js";
 import { findProfile } from "./profiles.js";
 import { DockerSandboxHandle, type ProcessEnd, type SandboxProcess } from "./sandboxes.js";
+import { TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
+import { probeImage } from "./tokens.js";
 
 /** Windlass's own default first. `--models` needs a signed-in account, so this list stands in. */
 export const BUILTIN_MODELS = ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"];
@@ -74,29 +99,37 @@ function within<T>(promise: Promise<T>, ms: number): Promise<boolean> {
 }
 
 export interface DockerWindlassOptions {
+	/** The image whose Windlass `version()` and `problem()` are about. Default the server's. */
+	image?: string;
 	/** The command that serves ACP on stdio inside the sandbox. Default `windlass acp`; another one stands in for it in the layer's own checks. */
 	engineCommand?: string[];
 	/** How long the engine may take to answer `initialize`. Default `START_TIMEOUT_MS`. */
 	startTimeoutMs?: number;
+	/** The schedule of a turn's access token file and where its log lines go; the layer's own checks shorten the one and read the other. */
+	tokenFile?: TokenFileOptions;
 }
 
 export class DockerWindlass implements Windlass {
-	private versionCache: { imageId: string; version: string } | null = null;
+	private readonly image: string;
+	/** Whether the Windlass in a sandbox reads a handed-in token, asked once per sandbox: a container's binary does not change. */
+	private readonly takesToken = new Map<string, boolean>();
 
-	constructor(private readonly options: DockerWindlassOptions = {}) {}
+	/** `tokens`: where a turn that is not scripted gets its user's access token. */
+	constructor(
+		private readonly tokens: AccessTokens,
+		private readonly options: DockerWindlassOptions = {},
+	) {
+		this.image = options.image ?? IMAGE;
+	}
 
 	async version(): Promise<string | null> {
-		const image = await docker(["image", "inspect", "--format", "{{.Id}}", IMAGE]);
-		if (image.code !== 0) return null;
-		const imageId = image.stdout.trim();
-		if (this.versionCache?.imageId === imageId) return this.versionCache.version;
-		const helper = tmpName();
-		const result = await runHelper(helperFlags(helper, "none"), helper, ["windlass", "--version"], { timeoutMs: 60_000 });
-		// "Windlass 0.1.0 (linux-arm64)"
-		const match = /^\S+\s+(\S+)/.exec(result.stdout.trim());
-		if (result.code !== 0 || match === null) return null;
-		this.versionCache = { imageId, version: match[1]! };
-		return match[1]!;
+		return (await probeImage(this.image))?.version ?? null;
+	}
+
+	async problem(): Promise<string | null> {
+		const found = await probeImage(this.image);
+		if (found === null) return `The sandbox image ${this.image} is missing, so no agent can run. Build it: sandbox/build.sh`;
+		return found.lacks === null ? null : outdatedWindlass(found.version, this.image, found.lacks);
 	}
 
 	async models(): Promise<string[]> {
@@ -111,11 +144,41 @@ export class DockerWindlass implements Windlass {
 		if (!(sandbox instanceof DockerSandboxHandle)) throw new Error("runTurn needs a sandbox from this layer's connect()");
 		if (input.windlassSessionId !== undefined && !SESSION_ID.test(input.windlassSessionId)) throw new Error(`invalid Windlass session id: ${input.windlassSessionId}`);
 		if (input.signal?.aborted) return { exitCode: null, aborted: true, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: null };
-		return new Turn(sandbox, input, this.options).run();
+		return new Turn(sandbox, input, this.options, this.tokens, () => this.sandboxProblem(sandbox)).run();
+	}
+
+	/**
+	 * Why a turn in this sandbox cannot run on a handed-in token, or null. Two Windlasses have to be new
+	 * enough, and they need different things:
+	 *
+	 *   the sandbox's own  reads the token: it must know WINDLASS_ACCESS_TOKEN_FILE. A sandbox made before
+	 *                      the image was rebuilt keeps its older Windlass, which may ignore the variable and
+	 *                      look for a sign-in that sandboxes no longer hold. It is asked about a file that
+	 *                      does not exist: a Windlass that knows the variable names it in its answer, and
+	 *                      none reads or writes anything for it. Asked once per sandbox. (This reads
+	 *                      what a Windlass can do, not what a failure means, and from its words because
+	 *                      the Windlasses to be told apart are older than the codes: one that reads a
+	 *                      handed-in token and reports no code is not behind.)
+	 *   the image's        fetches the token: it must have `windlass login token` and its `--valid-for`
+	 *                      (`probeImage`, once per image id). Without them no token can be had for any
+	 *                      sandbox, so that is said first, and no token is asked for.
+	 */
+	private async sandboxProblem(sandbox: DockerSandboxHandle): Promise<string | null> {
+		let takes = this.takesToken.get(sandbox.id);
+		if (takes === undefined) {
+			const asked = await docker(["exec", "-e", `${ACCESS_TOKEN_FILE_ENV}=/nonexistent/wlp-probe`, sandbox.container, "windlass", "login", "status"], { timeoutMs: 20_000 }).catch(() => null);
+			// An answer of Windlass's (exit 0 or 1, with text). Anything else is the sandbox not running: the turn finds that out itself.
+			if (asked === null || (asked.code !== 0 && asked.code !== 1) || asked.stdout.trim() === "") return null;
+			takes = asked.stdout.includes(ACCESS_TOKEN_FILE_ENV);
+			this.takesToken.set(sandbox.id, takes);
+		}
+		// With an image that is too old, the remedy is to rebuild it, whatever this sandbox's own Windlass can do; otherwise only this sandbox can be behind.
+		const image = await probeImage(this.image).catch(() => null);
+		if (image !== null && image.lacks !== null) return outdatedWindlass(image.version, this.image, image.lacks);
+		return takes ? null : OUTDATED_SANDBOX;
 	}
 }
 
-type Failure = { reason: string; message: string };
 type Outcome = "succeeded" | "unresolved" | "failed" | "stopped" | "interrupted";
 
 interface Usage {
@@ -267,11 +330,27 @@ class Turn {
 	/** One question at a time: the next waits for the one before it. */
 	private questionLine: Promise<void> = Promise.resolve();
 
+	/** The access token file of a turn that is not scripted. */
+	private readonly tokenFile: TokenFile | null;
+	/** Windlass's code for `failure`, when the error it came from carried one (`data.windlass.code`). */
+	private failureCode: string | null = null;
+	/**
+	 * The provider error of the model call the turn is at, when that call failed: Windlass's code for it
+	 * (`error.error.code`), and its message when the call failed for the sign-in, which is only read
+	 * should Windlass give no code anywhere. Null once the next call starts.
+	 */
+	private stepFailure: { code: string | null; authMessage: string | null } | null = null;
+
 	constructor(
 		private readonly sandbox: DockerSandboxHandle,
 		private readonly input: RunTurnInput,
 		private readonly options: DockerWindlassOptions,
+		private readonly tokens: AccessTokens,
+		/** Why a turn in this sandbox cannot run on a handed-in token (its own Windlass reads none, or the image's cannot fetch one), or null. */
+		private readonly sandboxProblem: () => Promise<string | null>,
 	) {
+		// A scripted turn calls no model: it is handed no token.
+		this.tokenFile = input.script === undefined ? new TokenFile(sandbox, tokens, options.tokenFile) : null;
 		this.approval = findProfile(sandbox.profile).approval;
 		this.peer = new AcpConnection((line) => this.process?.write(`${line}\n`) ?? false, { notification: (method, params) => this.notification(method, params), request: (method, params) => this.request(method, params) }, NS);
 	}
@@ -279,10 +358,17 @@ class Turn {
 	async run(): Promise<RunTurnResult> {
 		const { sandbox, input } = this;
 		const scriptPath = input.script === undefined ? null : `/tmp/.wlp-script-${randomId(6)}.json`;
+		const tokenFile = this.tokenFile;
+		// What the turn leaves in the sandbox besides its processes.
+		const files = [...(scriptPath === null ? [] : [scriptPath]), ...(tokenFile === null ? [] : tokenFile.files)];
 		const onAbort = () => this.abort();
 		try {
-			if (await this.prepare(scriptPath)) {
-				const lines = new LineSplitter((line) => this.peer.receive(line));
+			// From the start: getting the token can take a while (a refresh), and a stop must not wait for it.
+			input.signal?.addEventListener("abort", onAbort, { once: true });
+			if (input.signal?.aborted) this.abort();
+			if ((await this.prepare(scriptPath)) && !this.abortRequested) {
+				// A token a command printed is taken out before the message is read: it reaches no event.
+				const lines = new LineSplitter((line) => this.peer.receive(tokenFile === null ? line : tokenFile.scrub(line)));
 				const run = sandbox.start(this.options.engineCommand ?? ["windlass", "acp"], {
 					env: {
 						// A server that lives for one turn must not start other sessions' wake-up turns, as the command line's one-prompt runs do not.
@@ -290,6 +376,8 @@ class Turn {
 						// Only warnings and errors on stderr: that is what `stderrTail` is for.
 						WINDLASS_ACP_LOG: "warn",
 						...(scriptPath === null ? {} : { WINDLASS_ACP_SCRIPT: scriptPath }),
+						// The file Windlass reads its access token from at every model call; it never looks for a saved sign-in then.
+						...(tokenFile === null ? {} : { [ACCESS_TOKEN_FILE_ENV]: tokenFile.path }),
 					},
 					onStdout: (chunk) => lines.push(chunk),
 					onStderr: (chunk) => (this.stderr = (this.stderr + chunk).slice(-STDERR_KEPT)),
@@ -302,8 +390,6 @@ class Turn {
 					this.resolveInterrupted();
 					this.finish();
 				});
-				input.signal?.addEventListener("abort", onAbort, { once: true });
-				if (input.signal?.aborted) this.abort();
 
 				await this.converse();
 				await this.end();
@@ -313,14 +399,16 @@ class Turn {
 			clearTimeout(this.cancelTimer);
 			clearTimeout(this.followUpTimer);
 			const run = this.process;
+			if (run !== null && !run.hasEnded) await this.stopProcess(true);
+			// No more replacements, and none in the middle of being written, before the token file is removed.
+			await tokenFile?.stop();
 			if (run !== null) {
 				// Whatever happened above, nothing of the turn stays behind in the sandbox. A process that ended on its own
 				// after an orderly close has nothing left to wait for; one whose client was cut off may still be shutting down inside.
-				if (!run.hasEnded) await this.stopProcess(true);
-				const left = await sandbox.sweep(run.tag, { waitMs: this.orderly() ? 0 : WINDING_DOWN_MS, files: scriptPath === null ? [] : [scriptPath] }).catch(() => 0);
+				const left = await sandbox.sweep(run.tag, { waitMs: this.orderly() ? 0 : WINDING_DOWN_MS, files }).catch(() => 0);
 				if (left > 0) this.notes.push(`[platform] ${left} process(es) of the turn could not be stopped`);
-			} else if (scriptPath !== null) {
-				await docker(["exec", sandbox.container, "rm", "-f", scriptPath], { timeoutMs: 10_000 }).catch(() => undefined);
+			} else {
+				await sandbox.removeFiles(files);
 			}
 		}
 
@@ -337,23 +425,76 @@ class Turn {
 			timedOut: false,
 			windlassSessionId: this.sessionSeen,
 			summary: this.summary,
-			stderrTail: stderrTail.slice(-STDERR_TAIL),
-			failure: aborted ? null : this.failure,
+			stderrTail: (tokenFile === null ? stderrTail : tokenFile.scrub(stderrTail)).slice(-STDERR_TAIL),
+			failure: aborted ? null : await this.told(this.failure),
 		};
+	}
+
+	/**
+	 * The failure as the user should read it. Windlass's refusal of a handed-in token is an
+	 * `auth_required` (or the failure of an execution a late message started) whose sentence is for
+	 * whoever handed the token in: it names the variable and says to hand in a new one. What that means
+	 * for the user depends on what Windlass found in the file, which its code says, and on why the
+	 * platform left the file so.
+	 *
+	 * The code is the one on the error the engine answered with and, where there is no such error (the
+	 * execution a late message started), the one on the provider error of the model call that failed;
+	 * Windlass gives both the same. A code that is not about a handed-in token (`network_error`, a
+	 * provider's own) leaves the failure as Windlass reported it: a connection problem stays one. Only a
+	 * failure without any code is read by its words (`handedInProblemInWords` says which Windlass gives none).
+	 */
+	private async told(failure: Failure | null): Promise<Failure | null> {
+		const tokenFile = this.tokenFile;
+		if (failure === null || tokenFile === null) return failure;
+		const code = this.failureCode ?? this.stepFailure?.code ?? null;
+		const wordy = failure.reason === "auth_required" || failure.reason === "execution_failed";
+		const problem = code !== null ? handedInProblem(code) : wordy ? handedInProblemInWords(failure.message, this.stepFailure?.authMessage ?? null) : null;
+		if (problem === null) return failure;
+		let state = tokenFile.state;
+		if (state.problem === null && (problem === "undelivered" || tokenRanOut(problem, state))) {
+			// The file gave no token, or the token in it ran out, though no replacement of this turn's had failed.
+			// Whether that is the user's sign-in is the token source's to say, so it is asked now: forgetting a
+			// sign-in (`logout`) removes the token files of running turns, and then it reports that there is none;
+			// when it has a token, or cannot get one for another reason, the platform was the one that fell short.
+			const problemNow = await this.tokens.current(this.sandbox.uid).then(
+				() => null,
+				(error: unknown) => error,
+			);
+			state = { ...state, problem: problemNow };
+		}
+		return handedInFailure(problem, state);
 	}
 
 	/** What has to be so before the engine starts. False, with `failure` set, when the sandbox cannot be used. */
 	private async prepare(scriptPath: string | null): Promise<boolean> {
-		try {
-			// One turn at a time per sandbox: a Windlass still running here is left over from a turn whose server or
-			// client went away, and it would hold the session ("in use by another windlass process").
-			const [leftovers] = await Promise.all([this.sandbox.stopLeftovers("windlass"), scriptPath === null ? undefined : this.sandbox.writeTextFile(scriptPath, JSON.stringify(this.input.script))]);
-			if (leftovers > 0) this.notes.push(`[platform] stopped ${leftovers} Windlass run(s) left over in this sandbox before starting the turn`);
-			return true;
-		} catch (error) {
-			this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${error instanceof Error ? error.message : String(error)}` };
+		// One turn at a time per sandbox: a Windlass still running here is left over from a turn whose server or
+		// client went away, and it would hold the session ("in use by another windlass process").
+		const [leftovers, script, token] = await Promise.allSettled([
+			this.sandbox.stopLeftovers("windlass"),
+			scriptPath === null ? undefined : this.sandbox.writeTextFile(scriptPath, JSON.stringify(this.input.script)),
+			// The user's access token, in its file before the engine looks for it. An abort does not wait for it.
+			this.tokenFile === null ? undefined : this.unlessAborted(this.handIn(this.tokenFile)),
+		]);
+		// The sandbox itself does not work (it is not running, a file cannot be written): that is not about anyone's sign-in.
+		const broken = leftovers.status === "rejected" ? leftovers.reason : script.status === "rejected" ? script.reason : token.status === "rejected" && token.reason instanceof TokenFileError ? token.reason : null;
+		if (broken !== null) {
+			this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${broken instanceof Error ? broken.message : String(broken)}` };
 			return false;
 		}
+		if (leftovers.status === "fulfilled" && leftovers.value > 0) this.notes.push(`[platform] stopped ${leftovers.value} Windlass run(s) left over in this sandbox before starting the turn`);
+		if (token.status === "rejected") {
+			// No sign-in, one that is no longer accepted, a Windlass too old for the hand-off, or a token that could not be had this time.
+			this.failure = tokenSourceFailure(token.reason);
+			return false;
+		}
+		return true;
+	}
+
+	/** Hands the turn its user's access token, unless this sandbox's Windlass would not read it or the image's cannot fetch it: then no token is asked for at all. */
+	private async handIn(tokenFile: TokenFile): Promise<void> {
+		const problem = await this.sandboxProblem();
+		if (problem !== null) throw new WindlassOutdatedError(problem);
+		await tokenFile.start();
 	}
 
 	private get startTimeoutMs(): number {
@@ -393,7 +534,7 @@ class Turn {
 			const opened = await this.unlessAborted(this.open());
 			if (opened === "aborted" || this.abortRequested) return;
 		} catch (error) {
-			this.failure = this.failureOf(error);
+			this.refused(error);
 			return;
 		}
 
@@ -408,7 +549,7 @@ class Turn {
 			},
 			(error: unknown) => {
 				// A connection that ended is told by the process's end; a session closed under the prompt is this turn's own doing.
-				if (!(error instanceof AcpError && (error.reason === "closed" || error.code === -32800))) this.failure ??= this.failureOf(error, "execution_failed");
+				if (!(error instanceof AcpError && (error.reason === "closed" || error.code === -32800))) this.refused(error, "execution_failed");
 				this.promptSettled = true;
 				this.check();
 			},
@@ -526,6 +667,15 @@ class Turn {
 		if ((event.type === "inbox.delivered" || event.type === "inbox.cancelled") && typeof data.messageId === "string") {
 			this.delivered.add(data.messageId);
 			this.undelivered.delete(data.messageId);
+		}
+		// Why the model call the turn is at failed, as Windlass names it: a code, when it has one.
+		if (event.type === "step.started") this.stepFailure = null;
+		if (event.type === "step.failed") {
+			const provider = (data.error as { error?: { kind?: unknown; code?: unknown; message?: unknown } } | undefined)?.error;
+			this.stepFailure =
+				typeof provider !== "object" || provider === null
+					? null
+					: { code: typeof provider.code === "string" && provider.code !== "" ? provider.code : null, authMessage: provider.kind === "auth" && typeof provider.message === "string" ? provider.message : null };
 		}
 		// The engine has withdrawn what was pending: a question may be answered `cancelled` now.
 		if (event.type === "execution.interrupt_requested") this.resolveInterrupted();
@@ -717,6 +867,13 @@ class Turn {
 	}
 
 	// ---- failures ----
+
+	/** Makes a refusal of the engine the turn's failure, unless it has one, and keeps Windlass's code for it when the error carries one. */
+	private refused(error: unknown, fallback = "engine"): void {
+		if (this.failure !== null) return;
+		this.failure = this.failureOf(error, fallback);
+		this.failureCode = error instanceof AcpError ? error.failureCode : null;
+	}
 
 	/** A refusal of the engine as `RunTurnResult.failure`: Windlass's reason and its own sentence. */
 	private failureOf(error: unknown, fallback = "engine"): Failure {
