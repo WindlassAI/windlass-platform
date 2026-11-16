@@ -18,25 +18,41 @@
  *     is certain all the same.
  *   - A demo session is handed no access token, so there is none to read.
  *
- * What is remembered is Windlass's own doing: an approval is a file in its data directory, for the
- * project directory and for exactly this definition, good for 30 days. Where that directory is on the
- * sandbox's disk (E2B: `Sandboxes.sessionsLiveInSandbox`), it holds for this session's sandbox. On
- * Docker the directory is the user's volume and every session's project directory is /workspace, so it
- * holds for every session of the user in which a server of that name has exactly that definition.
+ * An approval is remembered twice. Windlass keeps one in its data directory, for the project
+ * directory and for exactly this definition, good for 30 days. And the platform keeps one of its own
+ * for the user, for the session's project (its repository; the session itself when it has none) and
+ * exactly this definition, for the same 30 days (server-approvals.ts), and answers from it before the
+ * question is put. What that comes to depends on where Windlass's data is:
+ *
+ *   - On the sandbox's own disk (E2B: `Sandboxes.sessionsLiveInSandbox`), Windlass's record reaches no
+ *     further than the sandbox, so the platform's is what the user's other sessions on the repository,
+ *     and a sandbox that replaces this one, go by. Forgetting the platform's record holds for those;
+ *     a sandbox the server already started in keeps Windlass's record and starts it still.
+ *   - On Docker the directory is the user's volume and every session's project directory is
+ *     /workspace, so Windlass's record alone starts the server in every session of the user in which
+ *     a server of that name has exactly that definition, whatever its repository. The platform's
+ *     record is kept there too and changes nothing until Windlass's has run out.
+ *
+ * Either record is of the definition: the command and its arguments, or the address. Neither is of
+ * the files the command runs, which a later commit can change without a new question; the question
+ * says so in a sentence.
  *
  * web/src/api/mock.ts repeats these texts for the web app's mock.
  */
 
 import type { QuestionChoice, SandboxProfile } from "./contract.js";
 import type { TurnServerOutcome, TurnServerQuestion } from "./sandbox/api.js";
+import type { ApprovalProject } from "./server-approvals.js";
 
 export interface ServerQuestionContext {
 	/** The profile the session's sandbox was made with. */
 	profile: SandboxProfile;
 	/** A demo session: its turns are handed no access token. */
 	demo: boolean;
-	/** `Sandboxes.sessionsLiveInSandbox`: Windlass's data directory, and with it an approval, is on this sandbox's own disk. */
+	/** `Sandboxes.sessionsLiveInSandbox`: Windlass's data directory, and with it Windlass's own record of an approval, is on this sandbox's own disk. */
 	dataInSandbox: boolean;
+	/** What the platform remembers an approval for: the session's repository, or the session itself. */
+	project: Pick<ApprovalProject, "kind" | "label">;
 }
 
 export const SERVER_START = "start";
@@ -57,7 +73,7 @@ function machine(profile: SandboxProfile): string {
 }
 
 /** Where the server runs and what it can reach there, for this profile. One sentence. */
-function reach(question: TurnServerQuestion, context: ServerQuestionContext): string {
+function reach(question: Pick<TurnServerQuestion, "argv">, context: ServerQuestionContext): string {
 	const { profile, demo } = context;
 	const where = machine(profile);
 	if (question.argv === null) {
@@ -82,12 +98,33 @@ function reach(question: TurnServerQuestion, context: ServerQuestionContext): st
 		: `It runs in this session's ${where} and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has the network and can read ${data}.`;
 }
 
-/** What approving does and where it is remembered. One sentence. */
-function approving(question: TurnServerQuestion, context: ServerQuestionContext): string {
-	const does = question.argv === null ? "Approving lets Windlass connect to it now" : "Approving starts it now";
-	return context.dataInSandbox
-		? `${does} and is remembered for 30 days for exactly this definition, in this session's sandbox only: another session asks again.`
-		: `${does} and is remembered for 30 days for exactly this definition, in all your sessions: they share Windlass's data.`;
+/**
+ * What approving does, how far it is remembered, and where it is taken back. One sentence. `when` is
+ * "next" for an approval given in the session's panel while no question is open: no Windlass runs
+ * between turns, so the server starts with the next one.
+ */
+function approving(question: Pick<TurnServerQuestion, "argv">, context: ServerQuestionContext, when: "now" | "next" = "now"): string {
+	const remote = question.argv === null;
+	const does = when === "next" ? (remote ? "Approving lets Windlass connect to it from this session's next turn" : "Approving starts it with this session's next turn") : remote ? "Approving lets Windlass connect to it now" : "Approving starts it now";
+	// Windlass's own record, in the data all of the user's sessions share, reaches further than the platform's.
+	if (!context.dataInSandbox) return `${does} and is remembered for 30 days for exactly this definition, in all your sessions: they share Windlass's data.`;
+	if (context.project.kind === "session") {
+		return `${does} and is remembered for 30 days for exactly this definition, for this session, which has no repository: a sandbox that replaces this one ${remote ? "connects" : "starts it"} without asking, until you forget the approval in the session's panel.`;
+	}
+	return `${does} and is remembered for 30 days for exactly this definition: your sessions on ${context.project.label} then ${remote ? "connect" : "start it"} without asking, until you forget the approval in a session's panel.`;
+}
+
+/** What an approval is of, and so what it does not cover. One sentence. */
+function covers(question: Pick<TurnServerQuestion, "argv">): string {
+	return question.argv === null
+		? "It is an approval of this address, not of what answers there."
+		: "It is an approval of this command, not of the files it runs: a later commit can change those without a new question.";
+}
+
+/** How far the choice to approve is remembered, as the choice says it. */
+function remembered(context: ServerQuestionContext): string {
+	if (!context.dataInSandbox) return "exactly this definition, for your sessions, for 30 days";
+	return context.project.kind === "session" ? "exactly this definition, for this session, for 30 days" : `exactly this definition, for your sessions on ${context.project.label}, for 30 days`;
 }
 
 /** Why it does not start whatever the answer: a variable its definition reads is not set, and the platform has nowhere to keep one. */
@@ -107,16 +144,29 @@ export function serverQuestionWords(question: TurnServerQuestion, context: Serve
 	return {
 		title: remote ? `Connect to this project's MCP server "${question.name}"?` : `Start this project's MCP server "${question.name}"?`,
 		subject: question.argv === null ? (question.url ?? "") : commandLine(question.argv),
-		details: [reach(question, context), approving(question, context), ...(unset === null ? [] : [unset])],
+		details: [reach(question, context), approving(question, context), covers(question), ...(unset === null ? [] : [unset])],
 		choices: [
 			{
 				id: SERVER_START,
 				label: remote ? "Connect for this project" : "Start it for this project",
 				approve: true,
-				remembers: context.dataInSandbox ? "exactly this definition, in this session's sandbox, for 30 days" : "exactly this definition, for your sessions, for 30 days",
+				remembers: remembered(context),
 			},
 			{ id: SERVER_NOT_NOW, label: "Not now", approve: false, remembers: null },
 		],
+	};
+}
+
+/**
+ * The same question for a server that waits, as the session's panel puts it before it takes an
+ * approval while no question is open: what the server can reach, what approving does then, and what
+ * the approval is of. The panel shows the command and the file beside it.
+ */
+export function serverPanelWords(server: { name: string; remote: boolean }, context: ServerQuestionContext): { title: string; details: string[] } {
+	const question = { argv: server.remote ? null : [] };
+	return {
+		title: server.remote ? `Connect to this project's MCP server "${server.name}"?` : `Start this project's MCP server "${server.name}"?`,
+		details: [reach(question, context), approving(question, context, "next"), covers(question)],
 	};
 }
 
@@ -153,6 +203,54 @@ export function serverApprovedNote(question: TurnServerQuestion, outcome: TurnSe
 		case "refused":
 			return { level: "warn", text: `Windlass did not take the approval of ${named(question)}: ${reason(outcome.reason)}. Your next message asks again.` };
 	}
+}
+
+/**
+ * The line for a server the platform had Windlass start without putting the question, because the
+ * user's approval of exactly this definition for this project is remembered. `ago` says when they
+ * approved, as "3 days ago".
+ */
+export function serverRecalledNote(question: TurnServerQuestion, outcome: TurnServerOutcome, ago: string): { level: Level; text: string } {
+	const remote = question.argv === null;
+	const because = `because you approved it for this project ${ago}`;
+	switch (outcome.state) {
+		case "running": {
+			const tools = outcome.tools === 1 ? "1 tool" : outcome.tools === 0 ? "no tools" : `${outcome.tools} tools`;
+			const began = remote ? `Connected to ${named(question)} ${because}: ${tools}.` : `Started ${named(question)} ${because}: ${tools}.`;
+			if (outcome.tools === 0) return { level: "info", text: began };
+			return { level: "info", text: question.holdsTurn ? `${began} The agent has them from this turn on.` : `${began} The turn was already running: the agent is told of them at its next step.` };
+		}
+		case "starting":
+			return { level: "info", text: `The MCP server "${question.name}" is starting ${because}; the agent is told of its tools once it runs.` };
+		case "failed":
+			return {
+				level: "warn",
+				text: `You approved ${named(question)} for this project ${ago}, but it did not start: ${reason(outcome.reason)}. ${question.unset.length > 0 ? "The platform cannot set variables for a session yet." : "Windlass tries again by itself."}`,
+			};
+		case "changed":
+			return { level: "warn", text: `The definition of ${named(question)} changed as it was being started, so nothing was started. The new definition is asked about.` };
+		case "refused":
+			return { level: "warn", text: `Windlass did not take your earlier approval of ${named(question)}: ${reason(outcome.reason)}. Your next message tries again.` };
+	}
+}
+
+/** What forgetting a remembered approval does where the session runs, and what it leaves: for the panel, under the list. */
+export function forgettingWords(context: Pick<ServerQuestionContext, "dataInSandbox">): string {
+	return context.dataInSandbox
+		? "Forgetting holds for the next session or sandbox. Where the server already started, Windlass's own record still starts it, and a running one is not stopped."
+		: "Forgetting holds once Windlass's own record has run out, 30 days after the server was last approved: all your sessions share that record here. A running server is not stopped.";
+}
+
+/** The line for an approval given in the session's panel while no question about the server was open. */
+export function serverPanelApprovedNote(server: { name: string; remote: boolean }): string {
+	return `Approved ${named(server)} for this project in the session's panel. ${server.remote ? "Windlass connects to it" : "It starts"} with the next turn.`;
+}
+
+/** The line for an approval the user took back in the session's panel. */
+export function serverForgottenNote(server: { name: string }, context: Pick<ServerQuestionContext, "dataInSandbox">): string {
+	return context.dataInSandbox
+		? `Forgot your approval of ${named(server)} for this project. The next session or sandbox asks again; where it already started, Windlass's own record still starts it.`
+		: `Forgot your approval of ${named(server)} for this project. Windlass's own record, which all your sessions share here, still starts it until 30 days after it was last approved.`;
 }
 
 /** The line for "not now". The model is not told by itself: Windlass says it when the model tries the server. */

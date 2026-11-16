@@ -44,7 +44,8 @@ async function createPlatformClient(): Promise<PlatformClient> {
 		const client = createMockClient({ questionTimeoutMs: mockQuestionTimeout(), github: new URLSearchParams(location.search).get("github") !== "off" });
 		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),
 		// `__wlpMock.mockNextAnswer("elsewhere" | "error")` (an answer that does not go through),
-		// `__wlpMock.mockNextGithub("list" | "connect" | "denied" | "protected" | "gone")` (GitHub refuses).
+		// `__wlpMock.mockNextGithub("list" | "connect" | "denied" | "protected" | "gone")` (GitHub refuses),
+		// `__wlpMock.mockNextServers("list" | "approve" | "forget" | "slow")` (the panel's MCP servers).
 		(window as unknown as { __wlpMock: unknown }).__wlpMock = client;
 		return client;
 	}

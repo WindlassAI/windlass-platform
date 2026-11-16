@@ -23,6 +23,15 @@
  * the server's is open: the server's steps aside and is put again after it. The words are
  * server/src/server-question.ts's, repeated here (Question.server.test.ts compares the two).
  *
+ * An approval is remembered for the user and the session's project (its repository, or the session
+ * itself), as the server remembers it, and here the mock plays the deployment and not local Docker,
+ * whose profiles it lists: Windlass's own record stays in the sandbox it was made in, so a second
+ * session on the same repository is spared the question by the platform's record, with the line that
+ * says so. The panel's list comes from `servers()`, and `approveServer()` and `forgetServer()` change
+ * the record. Two seeded sessions on acme/harbor share one approval, and one of them shows every
+ * state: a server that runs, one that waits and one that could not start. `mockNextServers()` makes
+ * the next of those calls fail.
+ *
  * GitHub: the deployment has a GitHub App, the signed-in ChatGPT user starts connected and the demo
  * user does not. Connecting sends the browser to the address the real server would send it back to
  * (`#github=<ticket>`), so the way back is the real one; whether a user is connected is kept in
@@ -58,6 +67,8 @@ import {
 	type PullRequestInfo,
 	type SandboxProfile,
 	type SessionRepository,
+	type SessionServer,
+	type SessionServers,
 	type SessionSnapshot,
 	type SessionSummary,
 	type TimelineItem,
@@ -106,6 +117,12 @@ export interface MockClient extends PlatformClient {
 	mockNextAnswer(kind: "elsewhere" | "error"): void;
 	/** Makes the next call about GitHub of that kind fail (`__wlpMock.mockNextGithub("protected")`, then push). */
 	mockNextGithub(kind: MockGithubFailure): void;
+	/**
+	 * Makes the next call about a project's MCP servers fail, for looking at the panel's errors by hand:
+	 * "list" the reading of the list, "approve" and "forget" the action (`__wlpMock.mockNextServers("forget")`,
+	 * then Forget). "slow" makes every one of these calls take ten seconds, for the next ten seconds.
+	 */
+	mockNextServers(kind: "list" | "approve" | "forget" | "slow"): void;
 }
 
 /** The mock's question timeout: long enough to answer, short enough to watch the platform decline. */
@@ -392,6 +409,8 @@ function chooseScript(text: string, rotation: number): ScriptName {
 }
 
 const SERVER_FILE = "/workspace/.windlass/config.json";
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 
 /** The server a prompt's words say the project names: "mcp", with "variable" for one that cannot start and "late" for one reported mid-turn. */
 function chooseServer(text: string): MockServer | null {
@@ -401,17 +420,46 @@ function chooseServer(text: string): MockServer | null {
 	return { name: "harbor", fingerprint: unset.length > 0 ? "748df09716dce52c" : "81498df752b8ef7d", argv: ["python3", "tools/harbor_mcp.py"], unset, late: /\blate\b/.test(words) };
 }
 
-/**
- * The question about a project's server as server/src/server-question.ts words it for a session on
- * local Docker, where Windlass's data is the user's volume: for the two Docker profiles, a demo session
- * or not, and a definition that reads variables which are not set.
- */
-export function mockServerQuestion(server: Pick<MockServer, "name" | "argv" | "unset">, profile: SandboxProfile, demo: boolean): Pick<PendingQuestion, "title" | "subject" | "details" | "choices"> {
+/** What an approval is remembered for, as server/src/server-approvals.ts names it: the session's repository, or the session itself. */
+export interface MockProject {
+	key: string;
+	kind: SessionServers["project"]["kind"];
+	label: string;
+}
+
+export function mockProject(summary: Pick<SessionSummary, "id" | "repoUrl" | "repository">): MockProject {
+	if (summary.repository) return { key: `github:${summary.repository.id}`, kind: "github", label: `${summary.repository.owner}/${summary.repository.name}` };
+	if (summary.repoUrl) return { key: `address:${summary.repoUrl}`, kind: "address", label: summary.repoUrl.replace(/^https:\/\//, "").replace(/\/$/, "") };
+	return { key: `session:${summary.id}`, kind: "session", label: "this session" };
+}
+
+/** Where the server runs and what it can reach, for the two Docker profiles and a demo session or not. */
+function mockReach(profile: SandboxProfile, demo: boolean): string {
 	const data = demo ? "Windlass's own data. A demo session has no access token there." : "Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.";
-	const reach =
-		profile.approval === "full"
-			? `It runs in this session's container, as the agent's commands do here: like them, it has the network and can read ${data}`
-			: `It runs in this session's container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read ${data}`;
+	return profile.approval === "full"
+		? `It runs in this session's container, as the agent's commands do here: like them, it has the network and can read ${data}`
+		: `It runs in this session's container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read ${data}`;
+}
+
+/** What approving does and how far it is remembered, where Windlass's own record stays in the sandbox. */
+function mockApproving(project: MockProject, when: "now" | "next", remote = false): string {
+	const does = when === "next" ? (remote ? "Approving lets Windlass connect to it from this session's next turn" : "Approving starts it with this session's next turn") : remote ? "Approving lets Windlass connect to it now" : "Approving starts it now";
+	return project.kind === "session"
+		? `${does} and is remembered for 30 days for exactly this definition, for this session, which has no repository: a sandbox that replaces this one ${remote ? "connects" : "starts it"} without asking, until you forget the approval in the session's panel.`
+		: `${does} and is remembered for 30 days for exactly this definition: your sessions on ${project.label} then ${remote ? "connect" : "start it"} without asking, until you forget the approval in a session's panel.`;
+}
+
+const MOCK_COVERS = "It is an approval of this command, not of the files it runs: a later commit can change those without a new question.";
+
+const commandLine = (argv: readonly string[]) => argv.map((argument) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(argument) ? argument : `'${argument.replace(/'/g, `'\\''`)}'`)).join(" ");
+
+/**
+ * The question about a project's server as server/src/server-question.ts words it where Windlass's
+ * data is the sandbox's own, so that what is remembered beyond it is the platform's record: for the
+ * two Docker profiles, a demo session or not, a definition that reads variables which are not set,
+ * and a project that is a repository or the session itself.
+ */
+export function mockServerQuestion(server: Pick<MockServer, "name" | "argv" | "unset">, profile: SandboxProfile, demo: boolean, project: MockProject): Pick<PendingQuestion, "title" | "subject" | "details" | "choices"> {
 	const names = server.unset.length <= 1 ? server.unset.join("") : `${server.unset.slice(0, -1).join(", ")} and ${server.unset[server.unset.length - 1]}`;
 	const missing =
 		server.unset.length === 0
@@ -423,14 +471,54 @@ export function mockServerQuestion(server: Pick<MockServer, "name" | "argv" | "u
 				];
 	return {
 		title: `Start this project's MCP server "${server.name}"?`,
-		subject: server.argv.map((argument) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(argument) ? argument : `'${argument.replace(/'/g, `'\\''`)}'`)).join(" "),
-		details: [reach, "Approving starts it now and is remembered for 30 days for exactly this definition, in all your sessions: they share Windlass's data.", ...missing],
+		subject: commandLine(server.argv),
+		details: [mockReach(profile, demo), mockApproving(project, "now"), MOCK_COVERS, ...missing],
 		choices: [
-			{ id: "start", label: "Start it for this project", approve: true, remembers: "exactly this definition, for your sessions, for 30 days" },
+			{ id: "start", label: "Start it for this project", approve: true, remembers: project.kind === "session" ? "exactly this definition, for this session, for 30 days" : `exactly this definition, for your sessions on ${project.label}, for 30 days` },
 			{ id: "not_now", label: "Not now", approve: false, remembers: null },
 		],
 	};
 }
+
+/** The same question as the panel puts it before an approval between turns (the server's `serverPanelWords`). */
+export function mockPanelWords(server: Pick<SessionServer, "name" | "remote">, profile: SandboxProfile, demo: boolean, project: MockProject): NonNullable<SessionServer["asks"]> {
+	if (server.remote) {
+		return {
+			title: `Connect to this project's MCP server "${server.name}"?`,
+			details: [
+				"Nothing is started: Windlass reaches it at that address from this session's container, outside its sandbox around commands, and what the agent sends it leaves the container.",
+				mockApproving(project, "next", true),
+				"It is an approval of this address, not of what answers there.",
+			],
+		};
+	}
+	return { title: `Start this project's MCP server "${server.name}"?`, details: [mockReach(profile, demo), mockApproving(project, "next"), MOCK_COVERS] };
+}
+
+/** What forgetting does and leaves, as the server says it where Windlass's own record stays in the sandbox. */
+export const MOCK_FORGETTING = "Forgetting holds for the next session or sandbox. Where the server already started, Windlass's own record still starts it, and a running one is not stopped.";
+
+/** How long ago, as the server's lines say it: "a moment ago", "5 minutes ago", "3 days ago". */
+function agoWords(ms: number): string {
+	if (ms < 60_000) return "a moment ago";
+	const plural = (value: number, unit: string) => (value === 1 ? `1 ${unit}` : `${value} ${unit}s`);
+	if (ms >= 2 * 24 * HOUR || (ms >= 24 * HOUR && ms % (24 * HOUR) === 0)) return `${plural(Math.round(ms / (24 * HOUR)), "day")} ago`;
+	if (ms >= 2 * HOUR || (ms >= HOUR && ms % HOUR === 0)) return `${plural(Math.round(ms / HOUR), "hour")} ago`;
+	return `${plural(Math.round(ms / MINUTE), "minute")} ago`;
+}
+
+/** A server of a session's project as the session last heard of it: `SessionServer` without what the user's record adds. */
+type MockKnown = Omit<SessionServer, "approval" | "earlier" | "asks">;
+
+interface MockApproval {
+	project: string;
+	name: string;
+	fingerprint: string;
+	approvedAt: number;
+	expiresAt: number;
+}
+
+const APPROVAL_MS = 30 * 24 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------------------------
 // State
@@ -485,8 +573,10 @@ interface MockSession {
 	resume: ((choice: string, note: string | null) => void) | null;
 	/** A server's question that stepped aside for a tool call's, with what carries on once it is answered. */
 	aside: { question: PendingQuestion; resume: (choice: string, note: string | null) => void } | null;
-	/** The definitions of project servers approved in this session: Windlass remembers them, so they are not asked about again. */
-	approvedServers: Set<string>;
+	/** The definitions of project servers started in this session's sandbox: Windlass keeps its own record there, so it starts them again unasked. */
+	startedServers: Set<string>;
+	/** The project's servers as the session last heard of them, for its panel. */
+	servers: MockKnown[];
 	/** True once the platform pushed the session's branch. */
 	pushed: boolean;
 }
@@ -499,6 +589,8 @@ interface World {
 	github: GithubConnection | null;
 	/** The number the next pull request gets. */
 	nextPull: number;
+	/** The user's remembered approvals of projects' servers. */
+	approvals: MockApproval[];
 }
 
 interface Step {
@@ -509,14 +601,15 @@ interface Step {
 	settles?: string;
 }
 
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-
 export function createMockClient(options: MockOptions = {}): MockClient {
 	const pace = options.pace ?? 1;
 	const questionTimeout = options.questionTimeoutMs ?? MOCK_QUESTION_TIMEOUT_MS;
 	let nextAnswer: "elsewhere" | "error" | null = null;
 	let nextGithub: MockGithubFailure | null = null;
+	let nextServers: "list" | "approve" | "forget" | null = null;
+	/** Until when the calls about a project's servers are slow. */
+	let slowServersUntil = 0;
+	const serversLatency = (ms: number) => latency(realNow() < slowServersUntil ? 10_000 : ms);
 	const githubOn = options.github !== false;
 	const realNow = options.now ?? (() => Date.now());
 	const origin = options.origin ?? (typeof location === "undefined" ? "http://localhost:5173" : location.origin);
@@ -556,7 +649,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41 };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [] };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -673,7 +766,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			questionTimer: null,
 			resume: null,
 			aside: null,
-			approvedServers: new Set(),
+			startedServers: new Set(),
+			servers: [],
 			pushed: false,
 		};
 		world.sessions.set(input.id, session);
@@ -885,37 +979,118 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		for (const feed of session.feeds) feed.onQuestion(session.question);
 	}
 
+	// ---- a project's MCP servers ------------------------------------------------------------------
+
+	/** The user's approval of exactly this definition for the session's project, when one is remembered and has not run out. */
+	function approvalOf(world: World, session: MockSession, name: string, fingerprint: string | null): MockApproval | null {
+		const project = mockProject(session.summary).key;
+		return world.approvals.find((approval) => approval.project === project && approval.name === name && approval.fingerprint === fingerprint && approval.expiresAt > now()) ?? null;
+	}
+
+	/** Tells the session's clients that what it knows of its project's servers, or of their approvals, changed. */
+	function serversChanged(world: World, session: MockSession): void {
+		const changedAt = Math.max(now(), (session.summary.servers?.changedAt ?? 0) + 1);
+		setSummary(world, session, { servers: session.servers.length === 0 ? undefined : { count: session.servers.length, changedAt } });
+	}
+
+	/** Keeps what Windlass says of one server of the project. */
+	function know(world: World, session: MockSession, server: MockKnown): void {
+		const at = session.servers.findIndex((known) => known.name === server.name);
+		if (at >= 0) session.servers[at] = server;
+		else session.servers.push(server);
+		serversChanged(world, session);
+	}
+
+	/** What Windlass makes of a definition it may start. */
+	function startedAs(server: MockServer): MockKnown {
+		const failed = server.unset.length > 0;
+		return {
+			name: server.name,
+			subject: commandLine(server.argv),
+			remote: false,
+			file: SERVER_FILE,
+			state: failed ? "failed" : "running",
+			tools: failed ? null : 2,
+			reason: failed ? `the environment variable ${server.unset[0]} named in its env is not set` : null,
+			fingerprint: server.fingerprint,
+			at: now(),
+		};
+	}
+
+	function remember(world: World, session: MockSession, name: string, fingerprint: string): void {
+		const project = mockProject(session.summary).key;
+		world.approvals = world.approvals.filter((approval) => !(approval.project === project && approval.name === name && approval.fingerprint === fingerprint));
+		world.approvals.push({ project, name, fingerprint, approvedAt: now(), expiresAt: now() + APPROVAL_MS });
+	}
+
+	/** The session's servers as its panel shows them (the server's `serversView`). */
+	function serversOf(world: World, session: MockSession): SessionServers {
+		const project = mockProject(session.summary);
+		const mine = world.approvals.filter((approval) => approval.project === project.key && approval.expiresAt > now()).sort((a, b) => b.approvedAt - a.approvedAt);
+		const times = (approval: MockApproval | null) => (approval === null ? null : { approvedAt: approval.approvedAt, expiresAt: approval.expiresAt });
+		return {
+			project: { kind: project.kind, label: project.label },
+			servers: session.servers.map((server) => {
+				const named = mine.filter((approval) => approval.name === server.name);
+				const approval = (server.fingerprint === null ? named[0] : named.find((one) => one.fingerprint === server.fingerprint)) ?? null;
+				const earlier = approval === null ? (named[0] ?? null) : null;
+				const waits = server.state === "waiting" && server.fingerprint !== null && approval === null;
+				return { ...server, approval: times(approval), ...(earlier === null ? {} : { earlier: times(earlier) }), ...(waits ? { asks: mockPanelWords(server, profileOf(session), world.profile.demo, project) } : {}) };
+			}),
+			forgetting: MOCK_FORGETTING,
+		};
+	}
+
 	/**
-	 * Puts the question about a project's server, unless this session approved that definition before.
-	 * `carryOn` plays the turn once it is settled, for a question put before the turn's events; a question
-	 * put while the turn runs has none.
+	 * Puts the question about a project's server, unless Windlass's own record in this session's sandbox
+	 * starts it, or the user's approval of exactly this definition is remembered for the project: then
+	 * it starts without the question, and the line says why. `carryOn` plays the turn once it is settled,
+	 * for a question put before the turn's events; a question put while the turn runs has none.
 	 */
 	function askServer(world: World, session: MockSession, turn: number, server: MockServer, holdsTurn: boolean, carryOn: (() => void) | null): void {
-		if (session.approvedServers.has(server.fingerprint)) {
+		const named = `the MCP server "${server.name}"`;
+		const agentHas = holdsTurn ? "The agent has them from this turn on." : "The turn was already running: the agent is told of them at its next step.";
+		if (session.startedServers.has(server.fingerprint)) {
+			know(world, session, startedAs(server));
 			carryOn?.();
 			return;
 		}
+		const remembered = approvalOf(world, session, server.name, server.fingerprint);
+		if (remembered) {
+			session.startedServers.add(server.fingerprint);
+			const ago = agoWords(now() - remembered.approvedAt);
+			if (server.unset.length > 0) {
+				store(session, { turn, kind: "platform", level: "warn", text: `You approved ${named} for this project ${ago}, but it did not start: the environment variable ${server.unset[0]} named in its env is not set. The platform cannot set variables for a session yet.` });
+			} else {
+				store(session, { turn, kind: "platform", level: "info", text: `Started ${named} because you approved it for this project ${ago}: 2 tools. ${agentHas}` });
+			}
+			know(world, session, startedAs(server));
+			carryOn?.();
+			return;
+		}
+		know(world, session, { ...startedAs(server), state: "waiting", tools: null, reason: null });
 		const askedAt = now();
 		const question: PendingQuestion = {
 			id: `q_${hex(16)}`,
 			turn,
 			messageId: "",
 			callId: "",
-			...mockServerQuestion(server, profileOf(session), world.profile.demo),
+			...mockServerQuestion(server, profileOf(session), world.profile.demo, mockProject(session.summary)),
 			subagent: null,
 			askedAt,
 			expiresAt: askedAt + questionTimeout,
 			server: { name: server.name, file: SERVER_FILE, remote: false, unset: server.unset, holdsTurn },
 		};
-		const named = `the MCP server "${server.name}"`;
 		const resume = (choice: string): void => {
 			if (choice === "start") {
-				session.approvedServers.add(server.fingerprint);
+				session.startedServers.add(server.fingerprint);
+				remember(world, session, server.name, server.fingerprint);
 				if (server.unset.length > 0) {
 					store(session, { turn, kind: "platform", level: "warn", text: `Approved ${named} for this project, but it did not start: the environment variable ${server.unset[0]} named in its env is not set. The platform cannot set variables for a session yet.` });
 				} else {
-					store(session, { turn, kind: "platform", level: "info", text: `Started ${named} for this project: 2 tools. ${holdsTurn ? "The agent has them from this turn on." : "The turn was already running: the agent is told of them at its next step."}` });
+					store(session, { turn, kind: "platform", level: "info", text: `Started ${named} for this project: 2 tools. ${agentHas}` });
 				}
+				know(world, session, startedAs(server));
 			} else if (choice === "not_now") {
 				store(session, { turn, kind: "platform", level: "info", text: `Left ${named} stopped. If the agent tries to use it, it is told that the server waits for you; your next message asks again.` });
 			}
@@ -1239,6 +1414,40 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		// One agent is at work when the user arrives: a second turn, a long build, played slowly.
 		const building = history("harbor-build", "Check the release build", "docker-windlass-sandbox", 6 * MINUTE, [{ text: "Fix the failing test.", script: "steps" }], { sandbox: "running", repoUrl: "https://github.com/acme/harbor.git", repository: sessionRepository("acme", "harbor") });
 		play(building, plan(world, building, { text: "Run the full build and the tests, and tell me if they pass.", effort: "medium" }, { ...SCRIPTS.build, stretch: 7 }));
+
+		// acme/harbor names MCP servers. The user approved "harbor" three days ago in one session, so the other
+		// started it unasked; "docs" was left for later, and "tracker" was approved and could not start.
+		const checks = world.sessions.get("checks");
+		if (checks) {
+			const project = mockProject(checks.summary).key;
+			const approvedAt = start - 3 * 24 * HOUR - 40 * MINUTE;
+			const harbor: MockKnown = { name: "harbor", subject: "python3 tools/harbor_mcp.py", remote: false, file: SERVER_FILE, state: "running", tools: 2, reason: null, fingerprint: "81498df752b8ef7d", at: start - 21 * HOUR };
+			world.approvals.push({ project, name: "harbor", fingerprint: "81498df752b8ef7d", approvedAt, expiresAt: approvedAt + APPROVAL_MS });
+			world.approvals.push({ project, name: "tracker", fingerprint: "c07b1e5a94d3f268", approvedAt: start - 21 * HOUR, expiresAt: start - 21 * HOUR + APPROVAL_MS });
+			checks.startedServers.add("81498df752b8ef7d");
+			checks.servers = [
+				harbor,
+				{ name: "docs", subject: "https://docs.acme.example/mcp", remote: true, file: SERVER_FILE, state: "waiting", tools: null, reason: null, fingerprint: "e4d1a80c93f6b275", at: start - 21 * HOUR },
+				{
+					name: "tracker",
+					subject: "npx -y @acme/tracker-mcp --stdio --project 'Harbor 2.4'",
+					remote: false,
+					file: SERVER_FILE,
+					state: "failed",
+					tools: null,
+					reason: "the environment variable TRACKER_TOKEN named in its env is not set",
+					fingerprint: "c07b1e5a94d3f268",
+					at: start - 21 * HOUR,
+				},
+			];
+			checks.summary = { ...checks.summary, servers: { count: checks.servers.length, changedAt: start - 21 * HOUR } };
+			// Launched on the same repository through the connection: the same project, and so the same approval.
+			if (mockProject(building.summary).key === project) {
+				building.startedServers.add("81498df752b8ef7d");
+				building.servers = [{ ...harbor, at: start - 6 * MINUTE }];
+				building.summary = { ...building.summary, servers: { count: 1, changedAt: start - 6 * MINUTE } };
+			}
+		}
 	}
 
 	// ---- the interface --------------------------------------------------------------------------
@@ -1502,6 +1711,53 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(240);
 				return publishStateOf(find().session);
 			},
+			async servers(): Promise<SessionServers> {
+				const forced = nextServers === "list";
+				if (forced) nextServers = null;
+				await serversLatency(180);
+				if (forced) throw new PlatformError("network", "The server did not answer, so the project's MCP servers could not be read. Try again.");
+				const { world, session } = find();
+				return serversOf(world, session);
+			},
+			async approveServer(name: string, fingerprint: string): Promise<SessionServers> {
+				const forced = nextServers === "approve";
+				if (forced) nextServers = null;
+				await serversLatency(260);
+				if (forced) throw new PlatformError("user", "The approval could not be remembered. Try again.");
+				const { world, session } = find();
+				const server = session.servers.find((known) => known.name === name);
+				if (!server) throw new PlatformError("user", "This session's project no longer names an MCP server of that name.", { reason: "server_gone" });
+				if (server.state !== "waiting" || server.fingerprint !== fingerprint) {
+					throw new PlatformError("user", `The MCP server "${name}" no longer waits with the definition shown here. Read the list again and look at it once more.`, { reason: "server_changed" });
+				}
+				// A question about it is open: this answers it, and the server starts now.
+				const aside = session.aside;
+				if (session.question?.server?.name === name) settle(world, session, "start", null);
+				else if (aside?.question.server?.name === name) {
+					session.aside = null;
+					aside.resume("start", null);
+				} else {
+					remember(world, session, name, fingerprint);
+					store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: `Approved the MCP server "${name}" for this project in the session's panel. ${server.remote ? "Windlass connects to it" : "It starts"} with the next turn.` });
+					serversChanged(world, session);
+				}
+				return serversOf(world, session);
+			},
+			async forgetServer(name: string): Promise<SessionServers> {
+				const forced = nextServers === "forget";
+				if (forced) nextServers = null;
+				await serversLatency(220);
+				if (forced) throw new PlatformError("user", "The approval could not be forgotten. Try again.");
+				const { world, session } = find();
+				const project = mockProject(session.summary).key;
+				const kept = world.approvals.filter((approval) => !(approval.project === project && approval.name === name));
+				if (kept.length < world.approvals.length) {
+					world.approvals = kept;
+					store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: `Forgot your approval of the MCP server "${name}" for this project. The next session or sandbox asks again; where it already started, Windlass's own record still starts it.` });
+					serversChanged(world, session);
+				}
+				return serversOf(world, session);
+			},
 			async publish(message: PublishMessage): Promise<PublishResult> {
 				// A commit, a push and a call to GitHub: it takes a moment.
 				await latency(1700);
@@ -1602,6 +1858,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		},
 		mockNextGithub(kind) {
 			nextGithub = kind;
+		},
+		mockNextServers(kind) {
+			if (kind === "slow") slowServersUntil = realNow() + 10_000;
+			else nextServers = kind;
 		},
 		simulateDrop(ms: number) {
 			for (const world of worlds.values()) {

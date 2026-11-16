@@ -355,6 +355,9 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			diff: () => act("diff"),
 			publishState: () => act("publishState"),
 			publish: (message) => act("publish", { message }),
+			servers: () => act("servers"),
+			approveServer: (name, fingerprint) => act("approveServer", { name, fingerprint }),
+			forgetServer: (name) => act("forgetServer", { name }),
 			resync() {
 				for (const reload of reloads) reload();
 			},

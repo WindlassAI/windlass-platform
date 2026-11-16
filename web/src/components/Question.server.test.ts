@@ -9,9 +9,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PROFILES, e2bProfile } from "../../../server/src/sandbox/profiles";
 import type { TurnServerQuestion } from "../../../server/src/sandbox/api";
-import { serverApprovedNote, serverExpiredNote, serverNotNowNote, serverQuestionWords, serverUnansweredNote } from "../../../server/src/server-question";
+import { projectOf } from "../../../server/src/server-approvals";
+import { forgettingWords, serverApprovedNote, serverExpiredNote, serverForgottenNote, serverNotNowNote, serverPanelApprovedNote, serverPanelWords, serverQuestionWords, serverRecalledNote, serverUnansweredNote } from "../../../server/src/server-question";
 import type { SessionFeed } from "../api/client";
-import { createMockClient, MOCK_PROFILES, mockServerQuestion, type MockClient } from "../api/mock";
+import { createMockClient, MOCK_FORGETTING, MOCK_PROFILES, mockPanelWords, mockProject, mockServerQuestion, type MockClient } from "../api/mock";
 import { applyItem, emptyView, type SessionView, type TurnView } from "../lib/timeline";
 import { Turn } from "./Blocks";
 import { InteractiveProvider, QuestionCard, QuestionDock, type QuestionFlow } from "./Question";
@@ -19,6 +20,11 @@ import { InteractiveProvider, QuestionCard, QuestionDock, type QuestionFlow } fr
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const profile = (id: string): SandboxProfile => PROFILES.find((candidate) => candidate.id === id) as SandboxProfile;
+/** What an approval is remembered for: a repository of the GitHub connection, a pasted address, and a session that has neither. */
+const repo = projectOf({ sessionId: "s_1", repoUrl: "https://github.com/acme/harbor.git", repo: { id: 7101, owner: "acme", name: "harbor" } });
+const pasted = projectOf({ sessionId: "s_1", repoUrl: "https://example.com/acme/harbor.git" });
+const own = projectOf({ sessionId: "s_1", repoUrl: null });
+const COVERS = "It is an approval of this command, not of the files it runs: a later commit can change those without a new question.";
 const harbor = (extra: Partial<TurnServerQuestion> = {}): TurnServerQuestion => ({ name: "harbor", fingerprint: "81498df752b8ef7d", argv: ["python3", "tools/harbor_mcp.py"], url: null, file: "/workspace/.windlass/config.json", unset: [], holdsTurn: true, ...extra });
 
 // ---------------------------------------------------------------------------------------------
@@ -27,12 +33,14 @@ const harbor = (extra: Partial<TurnServerQuestion> = {}): TurnServerQuestion => 
 
 describe("the question's words", () => {
 	it("say what the server can do that the agent's commands cannot, where Windlass sandboxes commands", () => {
-		const words = serverQuestionWords(harbor(), { profile: profile("docker-windlass-sandbox"), demo: false, dataInSandbox: false });
+		const words = serverQuestionWords(harbor(), { profile: profile("docker-windlass-sandbox"), demo: false, dataInSandbox: false, project: repo });
 		expect(words.title).toBe('Start this project\'s MCP server "harbor"?');
 		expect(words.subject).toBe("python3 tools/harbor_mcp.py");
+		// On Docker Windlass's own record is in the data all of the user's sessions share: it reaches further than the repository.
 		expect(words.details).toEqual([
 			"It runs in this session's container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.",
 			"Approving starts it now and is remembered for 30 days for exactly this definition, in all your sessions: they share Windlass's data.",
+			COVERS,
 		]);
 		expect(words.choices).toEqual([
 			{ id: "start", label: "Start it for this project", approve: true, remembers: "exactly this definition, for your sessions, for 30 days" },
@@ -41,28 +49,65 @@ describe("the question's words", () => {
 	});
 
 	it("say that it has what the agent's commands have, where they run directly in the container", () => {
-		const words = serverQuestionWords(harbor(), { profile: profile("docker-hardened"), demo: false, dataInSandbox: false });
+		const words = serverQuestionWords(harbor(), { profile: profile("docker-hardened"), demo: false, dataInSandbox: false, project: own });
 		expect(words.details[0]).toBe("It runs in this session's container, as the agent's commands do here: like them, it has the network and can read Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.");
 	});
 
 	it("promise nothing of commands on E2B before its check has passed, and are certain of the server", () => {
-		const words = serverQuestionWords(harbor(), { profile: e2bProfile({ windlassSandbox: false }), demo: false, dataInSandbox: true });
+		const words = serverQuestionWords(harbor(), { profile: e2bProfile({ windlassSandbox: false }), demo: false, dataInSandbox: true, project: repo });
 		expect(words.details).toEqual([
 			"It runs in this session's microVM and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has the network and can read Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.",
-			"Approving starts it now and is remembered for 30 days for exactly this definition, in this session's sandbox only: another session asks again.",
+			"Approving starts it now and is remembered for 30 days for exactly this definition: your sessions on acme/harbor then start it without asking, until you forget the approval in a session's panel.",
+			COVERS,
 		]);
-		expect(words.choices[0]?.remembers).toBe("exactly this definition, in this session's sandbox, for 30 days");
+		expect(words.choices[0]?.remembers).toBe("exactly this definition, for your sessions on acme/harbor, for 30 days");
+	});
+
+	it("say how far an approval is remembered where Windlass's data is the sandbox's own: the repository, its address, or the session", () => {
+		const context = { profile: e2bProfile({ windlassSandbox: true }), demo: false, dataInSandbox: true };
+		const byAddress = serverQuestionWords(harbor(), { ...context, project: pasted });
+		expect(byAddress.details[1]).toBe("Approving starts it now and is remembered for 30 days for exactly this definition: your sessions on example.com/acme/harbor.git then start it without asking, until you forget the approval in a session's panel.");
+		expect(byAddress.choices[0]?.remembers).toBe("exactly this definition, for your sessions on example.com/acme/harbor.git, for 30 days");
+		const alone = serverQuestionWords(harbor(), { ...context, project: own });
+		expect(alone.details[1]).toBe(
+			"Approving starts it now and is remembered for 30 days for exactly this definition, for this session, which has no repository: a sandbox that replaces this one starts it without asking, until you forget the approval in the session's panel.",
+		);
+		expect(alone.choices[0]?.remembers).toBe("exactly this definition, for this session, for 30 days");
+		expect(alone.details[2]).toBe(COVERS);
+	});
+
+	it("word the question for the panel, where an approval starts the server with the next turn", () => {
+		const context = { profile: e2bProfile({ windlassSandbox: true }), demo: false, dataInSandbox: true, project: repo };
+		expect(serverPanelWords({ name: "harbor", remote: false }, context)).toEqual({
+			title: 'Start this project\'s MCP server "harbor"?',
+			details: [
+				"It runs in this session's microVM, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.",
+				"Approving starts it with this session's next turn and is remembered for 30 days for exactly this definition: your sessions on acme/harbor then start it without asking, until you forget the approval in a session's panel.",
+				COVERS,
+			],
+		});
+		expect(serverPanelWords({ name: "docs", remote: true }, { ...context, project: own })).toEqual({
+			title: 'Connect to this project\'s MCP server "docs"?',
+			details: [
+				"Nothing is started: Windlass reaches it at that address from this session's microVM, outside its sandbox around commands, and what the agent sends it leaves the microVM.",
+				"Approving lets Windlass connect to it from this session's next turn and is remembered for 30 days for exactly this definition, for this session, which has no repository: a sandbox that replaces this one connects without asking, until you forget the approval in the session's panel.",
+				"It is an approval of this address, not of what answers there.",
+			],
+		});
+		expect(serverPanelWords({ name: "harbor", remote: false }, { ...context, profile: profile("docker-hardened"), dataInSandbox: false }).details[1]).toBe(
+			"Approving starts it with this session's next turn and is remembered for 30 days for exactly this definition, in all your sessions: they share Windlass's data.",
+		);
 	});
 
 	it("say the same as the first Docker profile on E2B where Windlass's sandbox is promised, of a microVM", () => {
-		const words = serverQuestionWords(harbor(), { profile: e2bProfile({ windlassSandbox: true }), demo: false, dataInSandbox: true });
+		const words = serverQuestionWords(harbor(), { profile: e2bProfile({ windlassSandbox: true }), demo: false, dataInSandbox: true, project: repo });
 		expect(words.details[0]).toBe(
 			"It runs in this session's microVM, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.",
 		);
 	});
 
 	it("claim no access token for a demo session, which is handed none", () => {
-		const context = { demo: true, dataInSandbox: false };
+		const context = { demo: true, dataInSandbox: false, project: repo };
 		expect(serverQuestionWords(harbor(), { ...context, profile: profile("docker-windlass-sandbox") }).details[0]).toBe(
 			"It runs in this session's container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data. A demo session has no access token there.",
 		);
@@ -73,20 +118,21 @@ describe("the question's words", () => {
 	});
 
 	it("name the variables that are not set, and quote an argument that is not plain text", () => {
-		const one = serverQuestionWords(harbor({ unset: ["HARBOR_TOKEN"], argv: ["bash", "-c", "tracker serve --port 80"] }), { profile: profile("docker-windlass-sandbox"), demo: false, dataInSandbox: false });
+		const one = serverQuestionWords(harbor({ unset: ["HARBOR_TOKEN"], argv: ["bash", "-c", "tracker serve --port 80"] }), { profile: profile("docker-windlass-sandbox"), demo: false, dataInSandbox: false, project: repo });
 		expect(one.subject).toBe("bash -c 'tracker serve --port 80'");
-		expect(one.details[2]).toBe("It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set in the sandbox, and the platform cannot set variables for a session yet.");
-		const three = serverQuestionWords(harbor({ unset: ["A", "B", "C"] }), { profile: profile("docker-hardened"), demo: false, dataInSandbox: false });
-		expect(three.details[2]).toBe("It will not start yet: its definition reads the variables A, B and C, which are not set in the sandbox, and the platform cannot set variables for a session yet.");
+		expect(one.details[3]).toBe("It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set in the sandbox, and the platform cannot set variables for a session yet.");
+		const three = serverQuestionWords(harbor({ unset: ["A", "B", "C"] }), { profile: profile("docker-hardened"), demo: false, dataInSandbox: false, project: repo });
+		expect(three.details[3]).toBe("It will not start yet: its definition reads the variables A, B and C, which are not set in the sandbox, and the platform cannot set variables for a session yet.");
 	});
 
 	it("word a server that is reached at an address as one that is not started", () => {
-		const words = serverQuestionWords(harbor({ name: "docs", argv: null, url: "https://docs.example.com/mcp", unset: ["DOCS_TOKEN"] }), { profile: profile("docker-windlass-sandbox"), demo: false, dataInSandbox: true });
+		const words = serverQuestionWords(harbor({ name: "docs", argv: null, url: "https://docs.example.com/mcp", unset: ["DOCS_TOKEN"] }), { profile: profile("docker-windlass-sandbox"), demo: false, dataInSandbox: true, project: repo });
 		expect(words.title).toBe('Connect to this project\'s MCP server "docs"?');
 		expect(words.subject).toBe("https://docs.example.com/mcp");
 		expect(words.details).toEqual([
 			"Nothing is started: Windlass reaches it at that address from this session's container, outside its sandbox around commands, and what the agent sends it leaves the container.",
-			"Approving lets Windlass connect to it now and is remembered for 30 days for exactly this definition, in this session's sandbox only: another session asks again.",
+			"Approving lets Windlass connect to it now and is remembered for 30 days for exactly this definition: your sessions on acme/harbor then connect without asking, until you forget the approval in a session's panel.",
+			"It is an approval of this address, not of what answers there.",
 			"It cannot be reached yet: its definition reads the variable DOCS_TOKEN, which is not set in the sandbox, and the platform cannot set variables for a session yet.",
 		]);
 		expect(words.choices[0]?.label).toBe("Connect for this project");
@@ -110,16 +156,56 @@ describe("the question's words", () => {
 		expect(serverUnansweredNote(harbor())).toBe('The turn ended before anyone answered about the MCP server "harbor". Your next message asks again.');
 	});
 
-	it("are repeated by the mock word for word, for the profiles and sessions it plays", () => {
-		for (const id of ["docker-windlass-sandbox", "docker-hardened"]) {
-			const mine = MOCK_PROFILES.find((candidate) => candidate.id === id) as SandboxProfile;
-			for (const demo of [true, false]) {
-				for (const unset of [[], ["HARBOR_TOKEN"], ["A", "B"]]) {
-					const server = harbor({ unset, argv: ["python3", "tools/harbor_mcp.py", "it's here"] });
-					expect(mockServerQuestion({ name: server.name, argv: server.argv as string[], unset }, mine, demo)).toEqual(serverQuestionWords(server, { profile: profile(id), demo, dataInSandbox: false }));
+	it("give a server started from the user's record one plain line that says why nobody was asked, and when they approved", () => {
+		expect(serverRecalledNote(harbor(), { state: "running", tools: 2 }, "3 days ago")).toEqual({ level: "info", text: 'Started the MCP server "harbor" because you approved it for this project 3 days ago: 2 tools. The agent has them from this turn on.' });
+		expect(serverRecalledNote(harbor({ holdsTurn: false }), { state: "running", tools: 1 }, "a moment ago").text).toBe(
+			'Started the MCP server "harbor" because you approved it for this project a moment ago: 1 tool. The turn was already running: the agent is told of them at its next step.',
+		);
+		expect(serverRecalledNote(harbor(), { state: "running", tools: 0 }, "2 hours ago").text).toBe('Started the MCP server "harbor" because you approved it for this project 2 hours ago: no tools.');
+		expect(serverRecalledNote(harbor({ name: "docs", argv: null, url: "https://docs.example.com/mcp" }), { state: "running", tools: 4 }, "3 days ago").text).toBe(
+			'Connected to the MCP server "docs" because you approved it for this project 3 days ago: 4 tools. The agent has them from this turn on.',
+		);
+		expect(serverRecalledNote(harbor(), { state: "starting" }, "3 days ago").text).toBe('The MCP server "harbor" is starting because you approved it for this project 3 days ago; the agent is told of its tools once it runs.');
+		expect(serverRecalledNote(harbor({ unset: ["HARBOR_TOKEN"] }), { state: "failed", reason: "the environment variable HARBOR_TOKEN named in its env is not set" }, "3 days ago")).toEqual({
+			level: "warn",
+			text: 'You approved the MCP server "harbor" for this project 3 days ago, but it did not start: the environment variable HARBOR_TOKEN named in its env is not set. The platform cannot set variables for a session yet.',
+		});
+		expect(serverRecalledNote(harbor(), { state: "failed", reason: "the server process exited with code 1." }, "3 days ago").text).toBe('You approved the MCP server "harbor" for this project 3 days ago, but it did not start: the server process exited with code 1. Windlass tries again by itself.');
+		expect(serverRecalledNote(harbor(), { state: "changed" }, "3 days ago").text).toBe('The definition of the MCP server "harbor" changed as it was being started, so nothing was started. The new definition is asked about.');
+		expect(serverRecalledNote(harbor(), { state: "refused", reason: "the engine did not answer" }, "3 days ago").text).toBe('Windlass did not take your earlier approval of the MCP server "harbor": the engine did not answer. Your next message tries again.');
+	});
+
+	it("say what the panel did, and what forgetting leaves, for each place Windlass keeps its own record", () => {
+		expect(serverPanelApprovedNote({ name: "harbor", remote: false })).toBe('Approved the MCP server "harbor" for this project in the session\'s panel. It starts with the next turn.');
+		expect(serverPanelApprovedNote({ name: "docs", remote: true })).toBe('Approved the MCP server "docs" for this project in the session\'s panel. Windlass connects to it with the next turn.');
+		expect(serverForgottenNote({ name: "harbor" }, { dataInSandbox: true })).toBe('Forgot your approval of the MCP server "harbor" for this project. The next session or sandbox asks again; where it already started, Windlass\'s own record still starts it.');
+		expect(serverForgottenNote({ name: "harbor" }, { dataInSandbox: false })).toBe('Forgot your approval of the MCP server "harbor" for this project. Windlass\'s own record, which all your sessions share here, still starts it until 30 days after it was last approved.');
+		expect(forgettingWords({ dataInSandbox: true })).toBe("Forgetting holds for the next session or sandbox. Where the server already started, Windlass's own record still starts it, and a running one is not stopped.");
+		expect(forgettingWords({ dataInSandbox: false })).toBe("Forgetting holds once Windlass's own record has run out, 30 days after the server was last approved: all your sessions share that record here. A running server is not stopped.");
+	});
+
+	it("are repeated by the mock word for word, for the profiles, sessions and projects it plays", () => {
+		// The mock plays a deployment whose sandboxes keep Windlass's data to themselves, on the profiles of local Docker.
+		const projects = [
+			{ mine: mockProject({ id: "s_1", repoUrl: "https://github.com/acme/harbor.git", repository: { provider: "github", id: 7101, owner: "acme", name: "harbor", branch: "main", private: true, url: "https://github.com/acme/harbor" } }), theirs: repo },
+			{ mine: mockProject({ id: "s_1", repoUrl: "https://example.com/acme/harbor.git" }), theirs: pasted },
+			{ mine: mockProject({ id: "s_1", repoUrl: null }), theirs: own },
+		];
+		for (const { mine: project, theirs } of projects) {
+			expect(project).toEqual(theirs);
+			for (const id of ["docker-windlass-sandbox", "docker-hardened"]) {
+				const mine = MOCK_PROFILES.find((candidate) => candidate.id === id) as SandboxProfile;
+				for (const demo of [true, false]) {
+					const context = { profile: profile(id), demo, dataInSandbox: true, project: theirs };
+					for (const unset of [[], ["HARBOR_TOKEN"], ["A", "B"]]) {
+						const server = harbor({ unset, argv: ["python3", "tools/harbor_mcp.py", "it's here"] });
+						expect(mockServerQuestion({ name: server.name, argv: server.argv as string[], unset }, mine, demo, project)).toEqual(serverQuestionWords(server, context));
+					}
+					for (const remote of [false, true]) expect(mockPanelWords({ name: "harbor", remote }, mine, demo, project)).toEqual(serverPanelWords({ name: "harbor", remote }, context));
 				}
 			}
 		}
+		expect(MOCK_FORGETTING).toBe(forgettingWords({ dataInSandbox: true }));
 	});
 });
 
@@ -242,7 +328,7 @@ describe("the mock's server question", () => {
 		await until(() => record.question !== null);
 		const question = record.question as PendingQuestion;
 		expect(question.server?.unset).toEqual(["HARBOR_TOKEN"]);
-		expect(question.details[2]).toBe("It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set in the sandbox, and the platform cannot set variables for a session yet.");
+		expect(question.details[3]).toBe("It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set in the sandbox, and the platform cannot set variables for a session yet.");
 		await after(400, api.answer({ questionId: question.id, choice: "start" }));
 		expect(lines()).toEqual(['Approved the MCP server "harbor" for this project, but it did not start: the environment variable HARBOR_TOKEN named in its env is not set. The platform cannot set variables for a session yet.']);
 	});
@@ -301,7 +387,7 @@ describe("the question control", () => {
 	});
 
 	const now = Date.parse("2026-11-15T12:00:00Z");
-	const words = serverQuestionWords(harbor(), { profile: profile("docker-windlass-sandbox"), demo: false, dataInSandbox: false });
+	const words = serverQuestionWords(harbor(), { profile: profile("docker-windlass-sandbox"), demo: false, dataInSandbox: false, project: repo });
 	const about = (server: Partial<NonNullable<PendingQuestion["server"]>> = {}): PendingQuestion => ({
 		id: "q_1",
 		turn: 1,

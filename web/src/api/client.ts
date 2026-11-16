@@ -22,6 +22,7 @@ import type {
 	PublishMessage,
 	PublishResult,
 	PublishState,
+	SessionServers,
 	SessionSnapshot,
 	SessionSummary,
 	TimelineItem,
@@ -137,6 +138,12 @@ export interface SessionApi {
 	publishState(): Promise<PublishState>;
 	/** Commits, pushes, and opens the pull request when none is open. It can take a minute. */
 	publish(message: PublishMessage): Promise<PublishResult>;
+	/** The MCP servers the session's project names, each as the session last heard of it, with the remembered approval where there is one. */
+	servers(): Promise<SessionServers>;
+	/** Approves a server that waits, by the fingerprint `servers()` gave. Throws with reason `server_changed` when it no longer waits with that definition. */
+	approveServer(name: string, fingerprint: string): Promise<SessionServers>;
+	/** Forgets the remembered approvals of that server for the session's project. */
+	forgetServer(name: string): Promise<SessionServers>;
 }
 
 export interface PlatformClient {

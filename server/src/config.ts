@@ -160,6 +160,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type AccessRules, readAccessRules } from "./access.js";
 import { QUESTION_TIMEOUT_MS } from "./contract.js";
+import { APPROVAL_TTL_MS } from "./server-approvals.js";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const DATA_DIR = join(REPO_ROOT, ".data");
@@ -207,6 +208,8 @@ export interface Config {
 	storagePath: string;
 	loginTtlMs: number;
 	questionTimeoutMs: number;
+	/** How long an approval of a project's MCP server is remembered for its user: Windlass's own 30 days, or less. */
+	serverApprovalTtlMs: number;
 }
 
 function readSandboxMode(): SandboxMode {
@@ -483,4 +486,6 @@ export const config: Config = {
 	storagePath: readStoragePath(),
 	loginTtlMs: readLoginTtl(),
 	questionTimeoutMs: readQuestionTimeout(),
+	// Never longer than Windlass keeps its own record: a shorter time is for the checks.
+	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
 };

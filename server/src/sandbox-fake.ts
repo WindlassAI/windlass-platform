@@ -48,7 +48,9 @@
  *
  * An approval is remembered as Windlass remembers it: for exactly that definition, where its data is
  * (per sandbox with WLP_FAKE_BACKUP_DIR, as on E2B; otherwise per user, as on Docker's volume). A
- * server left stopped is asked about again by the next turn that names it.
+ * server left stopped is asked about again by the next turn that names it. What the turn's project
+ * names is reported through `onServers` as the real layer reports it: before the first question, and
+ * again whenever a server starts or fails.
  *
  * A repository address that contains "slow-clone" takes a second and a half to clone, which holds a
  * turn in `starting`; one that contains "fail-clone" fails.
@@ -110,6 +112,7 @@ import {
 	type TurnAnswer,
 	type TurnControl,
 	type TurnQuestion,
+	type TurnServer,
 	type TurnServerQuestion,
 	type Windlass,
 } from "./sandbox/api.js";
@@ -825,10 +828,38 @@ class FakeWindlass implements Windlass {
 		 * Puts the question about one server, unless Windlass remembers an approval of exactly this
 		 * definition, and plays what Windlass makes of a yes.
 		 */
+		/** The project's servers as this turn's Windlass has them, by name: what `onServers` is told. */
+		const told = new Map<string, TurnServer>();
+		const say = (): void => {
+			try {
+				input.onServers?.([...told.values()]);
+			} catch {
+				// A listener's failure must not stop the turn.
+			}
+		};
+		/** What Windlass says of a server: that it waits, or what became of one it may start. */
+		const describe = (server: FakeServer, waits: boolean): void => {
+			const state: TurnServer["state"] = waits ? "waiting" : server.unset.length > 0 ? "failed" : "running";
+			told.set(server.name, {
+				name: server.name,
+				state,
+				argv: server.argv,
+				url: server.url,
+				file: SERVER_FILE,
+				tools: state === "running" ? 2 : null,
+				error: state === "failed" ? `the environment variable ${server.unset[0]} named in its env is not set` : null,
+				fingerprint: waits ? server.fingerprint : null,
+			});
+		};
+		const keyOf = (server: FakeServer) => `${server.name}:${server.fingerprint}`;
 		const askServer = async (server: FakeServer, holdsTurn: boolean): Promise<void> => {
 			const approved = this.sandboxes.approvalsOf(sandbox.id);
-			const key = `${server.name}:${server.fingerprint}`;
-			if (approved.has(key) || !input.onServerQuestion || signal?.aborted || ended) return;
+			const key = keyOf(server);
+			// Windlass's own record starts the server, and nobody is asked.
+			describe(server, !approved.has(key));
+			say();
+			if (approved.has(key)) return;
+			if (!input.onServerQuestion || signal?.aborted || ended) return;
 			const question: TurnServerQuestion = { name: server.name, fingerprint: server.fingerprint, argv: server.argv, url: server.url, file: SERVER_FILE, unset: server.unset, holdsTurn };
 			const asking = new AbortController();
 			const withdrawn = new Promise<null>((resolve) => asking.signal.addEventListener("abort", () => resolve(null), { once: true }));
@@ -849,6 +880,8 @@ class FakeWindlass implements Windlass {
 					return;
 				}
 				approved.add(key);
+				describe(server, false);
+				say();
 				input.onServerApproved?.(question, server.unset.length > 0 ? { state: "failed", reason: `the environment variable ${server.unset[0]} named in its env is not set` } : { state: "running", tools: 2 });
 			} finally {
 				signal?.removeEventListener("abort", stop);
@@ -859,6 +892,9 @@ class FakeWindlass implements Windlass {
 		let lateAsked = false;
 
 		try {
+			// What the project names is said in one answer, as Windlass gives it: also that it names nothing.
+			for (const server of servers) if (!server.late) describe(server, !this.sandboxes.approvalsOf(sandbox.id).has(keyOf(server)));
+			say();
 			// What waits is asked about before Windlass gets the prompt: nothing of the turn has happened yet.
 			for (const server of servers) if (!server.late) await askServer(server, true);
 			if (signal?.aborted) return { exitCode: null, aborted: true, timedOut: false, windlassSessionId: continued ? sessionId : null, summary: null, stderrTail: "", failure: null };

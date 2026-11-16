@@ -1273,6 +1273,10 @@ button.output-more:hover {
 	font-size: var(--size-small);
 	color: var(--ink-dim);
 }
+/* A line that says something failed keeps its tone: the line's own colour would win otherwise. */
+.panel-empty.tone-bad {
+	color: var(--bad);
+}
 .panel-empty + .bars {
 	margin-top: 8px;
 }
@@ -1450,6 +1454,169 @@ button.output-more:hover {
 	white-space: nowrap;
 	direction: rtl;
 	text-align: left;
+}
+
+/* ---- the project's MCP servers, in the panel ----------------------------------------------------- */
+
+.server-lede {
+	margin-bottom: 12px;
+	overflow-wrap: anywhere;
+}
+.server-error {
+	margin-bottom: 10px;
+}
+.servers {
+	display: grid;
+	gap: 14px;
+}
+.server {
+	min-width: 0;
+}
+.server-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 0 12px;
+}
+.server-name {
+	min-width: 0;
+	font-weight: 700;
+	color: var(--ink);
+	overflow-wrap: anywhere;
+}
+/* The state, as the sandbox's is said in its title: a dot and a few words. */
+.server-state {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 6px;
+	font-size: var(--size-mono-small);
+	color: var(--ink-dim);
+	white-space: nowrap;
+}
+.server-dot {
+	flex: none;
+	align-self: center;
+	width: 7px;
+	height: 7px;
+	border: 1.5px solid var(--ink-faint);
+	border-radius: 50%;
+}
+.server-state-on .server-dot {
+	border-color: var(--accent);
+	background: var(--accent);
+}
+/* Waiting on the user: the calm hue, as everywhere a question waits. */
+.server-state-ask {
+	color: var(--info);
+}
+.server-state-ask .server-dot {
+	border-color: var(--info);
+}
+.server-state-bad {
+	color: var(--bad);
+}
+.server-state-bad .server-dot {
+	border-color: var(--bad);
+	background: var(--bad);
+}
+.server-state-off {
+	color: var(--ink-faint);
+}
+.server-fact {
+	color: var(--ink-faint);
+}
+/* The command, to its last character: it is what an approval is of. */
+.server-subject {
+	margin-top: 2px;
+	font-size: var(--size-mono-small);
+	line-height: 1.55;
+	color: var(--ink-dim);
+	overflow-wrap: anywhere;
+}
+.server-reason {
+	margin-top: 3px;
+	font-family: var(--font-text);
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+	overflow-wrap: anywhere;
+}
+/* One line whatever it holds, a sentence or a button, so that approving and forgetting move nothing. */
+.server-foot {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0 12px;
+	min-height: 30px;
+	margin-top: 3px;
+	font-size: var(--size-mono-small);
+}
+.server-foot + .server-foot {
+	margin-top: 0;
+}
+.server-held {
+	color: var(--ink-dim);
+}
+.server-held time {
+	color: var(--ink);
+	white-space: nowrap;
+}
+.server-held-none {
+	color: var(--ink-faint);
+}
+/* Quiet, as the panel is: it is there for whoever looks for it. */
+.server-forget {
+	font-weight: 400;
+	color: var(--ink-dim);
+	white-space: nowrap;
+}
+.server-forget:hover:not(:disabled) {
+	color: var(--ink);
+}
+.server-failure {
+	margin-top: 2px;
+}
+.server-note {
+	margin-top: 14px;
+}
+
+/* The dialog is opened from the panel, which is set in the monospace face: its sentences are not. */
+.server-ask {
+	display: grid;
+	gap: 10px;
+	font-family: var(--font-text);
+	font-size: var(--size-text);
+}
+.server-ask-subject {
+	padding: 10px 12px;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-m);
+	background: var(--bg-sunk);
+	font-family: var(--font-mono);
+	font-size: var(--size-mono);
+	line-height: 1.55;
+	color: var(--ink);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	max-height: 9.4em;
+	overflow: auto;
+}
+.server-ask-where {
+	margin-top: -4px;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-dim);
+	overflow-wrap: anywhere;
+}
+.server-ask-key {
+	color: var(--ink-faint);
+}
+.server-ask-details {
+	display: grid;
+	gap: 8px;
+	font-size: 0.875rem;
+	line-height: 1.5;
+	color: var(--ink-dim);
 }
 
 /* ---- diff ----------------------------------------------------------------------------------- */

@@ -1369,8 +1369,9 @@ async function main(server: Server | null): Promise<void> {
 			assert(plain(asked.choices.map((choice) => [choice.id, choice.label, choice.approve])) === plain([["start", "Start it for this project", true], ["not_now", "Not now", false]]), `choices: ${plain(asked.choices)}`);
 			assert(asked.choices[0].remembers?.includes("30 days") && asked.choices[1].remembers === null, `remembers: ${plain(asked.choices.map((choice) => choice.remembers))}`);
 			// The fake profile is the one whose commands Windlass sandboxes: the question says what the server can do that they cannot.
-			assert(asked.details.length === 2 && /outside Windlass's sandbox around commands: unlike the agent's commands, it has the network/.test(asked.details[0]), `details: ${plain(asked.details)}`);
+			assert(asked.details.length === 3 && /outside Windlass's sandbox around commands: unlike the agent's commands, it has the network/.test(asked.details[0]), `details: ${plain(asked.details)}`);
 			assert(/remembered for 30 days for exactly this definition/.test(asked.details[1]), `details: ${plain(asked.details)}`);
+			assert(asked.details[2] === "It is an approval of this command, not of the files it runs: a later commit can change those without a new question.", `details: ${plain(asked.details)}`);
 			if (OWN_SERVER) assert(asked.expiresAt - asked.askedAt === QUESTION_MS, `the question expires after ${asked.expiresAt - asked.askedAt} ms`);
 			assert(harborWatch.items.every((item) => item.turn !== asked.turn || item.kind !== "windlass"), "Windlass had events of the turn before the question was answered");
 			const snapshot = await harborHandle.snapshot();
@@ -1424,7 +1425,7 @@ async function main(server: Server | null): Promise<void> {
 		await check("a definition that reads a variable which is not set says so, in the question and after an approval", async () => {
 			const asked = await askAbout("try (mcp-env)");
 			assert(plain(asked.server?.unset) === plain(["HARBOR_TOKEN"]), `unset: ${plain(asked.server?.unset)}`);
-			assert(asked.details.length === 3 && asked.details[2] === "It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set in the sandbox, and the platform cannot set variables for a session yet.", `details: ${plain(asked.details)}`);
+			assert(asked.details.length === 4 && asked.details[3] === "It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set in the sandbox, and the platform cannot set variables for a session yet.", `details: ${plain(asked.details)}`);
 			await harborWatch.conn.answer({ questionId: asked.id, choice: "start" });
 			const ended = await harborWatch.untilEnded(asked.turn);
 			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
@@ -2091,6 +2092,15 @@ async function main(server: Server | null): Promise<void> {
 		await githubChecks(server, client, demoSignIn, availableProfile);
 	} else {
 		for (const name of GITHUB_CHECKS) skip(name, "needs its own server with the fake layer, restarted with a stand-in for GitHub");
+	}
+
+	// --- the user's remembered approvals of projects' MCP servers: sandboxes that keep Windlass's data to themselves ---
+	// After the GitHub checks, whose first one is about a server that never had a GitHub App.
+
+	if (server && FAKE) {
+		await serverApprovalChecks(server, client, demoSignIn, availableProfile);
+	} else {
+		for (const name of SERVER_APPROVAL_CHECKS) skip(name, "needs its own server with the fake layer, restarted with sandboxes that keep Windlass's data and with a stand-in for GitHub");
 	}
 
 	// --- what browsers connect with ----------------------------------------------------------------
@@ -2850,6 +2860,367 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 		await watch?.conn.dispose().catch(() => undefined);
 		if (sessionId) await userOf(alice).deleteSession(sessionId).catch(() => undefined);
 	} finally {
+		await standin.stop().catch(() => undefined);
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// The user's remembered approvals of projects' MCP servers (server/src/server-approvals.ts)
+// ---------------------------------------------------------------------------------------------
+
+const SERVER_APPROVAL_CHECKS = [
+	"a session whose project names no server has no list of servers",
+	"the first session on a repository is asked, and its panel lists the server: waiting, then running, with the approval and until when",
+	"a second session on the same repository is not asked: the server starts, and one line says why",
+	"a later turn in the same sandbox says nothing, and a sandbox that replaces a lost one is not asked",
+	"a changed definition, another user, and another repository that names the server the same way are each asked",
+	'"not now" is not remembered, and the panel approves the server that waits: it starts with the next turn, unasked',
+	"the panel's approval answers a question that is open, and refuses a definition that is not the one shown",
+	"forgetting holds for the next session: it is asked, and the sandbox the server started in is not",
+	"a session with no repository is its own project, and one launched through the GitHub connection is known by the repository's id",
+	"what is remembered is with the user, not with a server: it holds across a restart, and for no other user",
+	"an approval past its time is asked about again, and the panel no longer lists it",
+];
+
+/**
+ * The fake layer with WLP_FAKE_BACKUP_DIR, so that its Windlass remembers an approval in the sandbox
+ * it was given in and nowhere else, as Windlass does on E2B: what a second session or a new sandbox
+ * is spared is then the platform's doing. GitHub is the stand-in, for a session whose project is a
+ * repository of the connection. The sandboxes are in the server's memory, so a restart loses them all.
+ */
+async function serverApprovalChecks(server: Server, client: Client, demoSignIn: () => Promise<AuthResult>, profile: string): Promise<void> {
+	const [none, first, second, replaced, asked, notNow, open, forgetting, projects, restart, expiry] = SERVER_APPROVAL_CHECKS as [string, string, string, string, string, string, string, string, string, string, string];
+	type Servers = import("../server/src/contract.js").SessionServers;
+	const DAYS_30 = 30 * 24 * 60 * 60 * 1000;
+	const ORIGIN = "http://localhost:5173";
+	const HARBOR = "python3 tools/harbor_mcp.py";
+	const REPO = "https://example.com/acme/harbor.git";
+	const standin = new GithubStandin({ callbackUrl: `${API}/github/callback`, strictBranches: false });
+	await standin.start();
+	const env = { ...standin.env(), WLP_FAKE_BACKUP_DIR: join(server.storage, "bucket-approvals"), WLP_LOGIN_TTL_MS: String(loginTtlMs) };
+	const restartWith = async (extra: Record<string, string> = {}) => {
+		await server.stop();
+		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+		await server.start({ ...env, ...extra });
+	};
+
+	const userOf = (auth: AuthResult) => client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
+	interface Opened {
+		id: string;
+		auth: AuthResult;
+		watch: Watch;
+		servers(): Promise<Servers>;
+	}
+	const opened: Opened[] = [];
+	const watchOf = (auth: AuthResult, id: string): Opened => {
+		const handle = client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } });
+		const session: Opened = { id, auth, watch: new Watch(client, auth.profile.uid, id, auth.token), servers: () => handle.servers() };
+		opened.push(session);
+		return session;
+	};
+	const launch = async (auth: AuthResult, input: { repoUrl?: string; repository?: { id: number } } = {}): Promise<Opened> => {
+		const created = await userOf(auth).createSession({ profile: profile as never, title: "Servers", ...input });
+		const session = watchOf(auth, created.id);
+		await session.watch.conn.snapshot();
+		return session;
+	};
+	/** Starts a turn and waits for the question about a server, or for the turn's end without one. */
+	const begin = async (session: Opened, text: string): Promise<{ turn: number; asked: PendingQuestion | null; from: number }> => {
+		const { watch } = session;
+		await waitFor("the session to be idle", () => watch.summaries.length === 0 || watch.summaries.at(-1)?.status === "idle", TURN_MS);
+		const from = watch.summaries.length;
+		const questions = watch.questions.length;
+		const { turn } = await watch.conn.prompt({ text });
+		const got = await waitFor("a question about a server, or the turn's end", () => watch.questions.slice(questions).find((question) => question !== null && question.turn === turn) ?? (watch.ended(turn) ? "ended" : undefined), TURN_MS);
+		return { turn, asked: got === "ended" ? null : got, from };
+	};
+	const finish = async (session: Opened, turn: number) => {
+		const ended = await session.watch.untilEnded(turn);
+		assert(ended.outcome === "succeeded", `turn ${turn} ended ${ended.outcome}: ${ended.message ?? ""}`);
+	};
+	/** A turn that must not ask: to its end. Returns the platform's lines about servers. */
+	const unasked = async (session: Opened, text: string): Promise<string[]> => {
+		const { turn, asked, from } = await begin(session, text);
+		assert(asked === null, `the session was asked: ${plain(asked).slice(0, 200)}`);
+		await finish(session, turn);
+		assert(!session.watch.summaries.slice(from).some((summary) => summary.status === "waiting"), "the session waited on a question");
+		return linesOf(session, turn);
+	};
+	/** A turn that must ask: answers, and runs to its end. */
+	const answered = async (session: Opened, text: string, choice: "start" | "not_now"): Promise<{ turn: number; asked: PendingQuestion; lines: string[] }> => {
+		const { turn, asked } = await begin(session, text);
+		assert(asked?.server !== undefined, "the session was not asked about a server");
+		await session.watch.conn.answer({ questionId: asked.id, choice });
+		await finish(session, turn);
+		return { turn, asked, lines: linesOf(session, turn) };
+	};
+	const linesOf = (session: Opened, turn: number) => session.watch.items.flatMap((item) => (item.kind === "platform" && item.turn === turn && item.text.includes("MCP server") ? [item.text] : []));
+	const STARTED = 'Started the MCP server "harbor" for this project: 2 tools. The agent has them from this turn on.';
+	/** The line of a server started from the user's record. When they approved is said as "a moment ago", or in minutes once this run has taken that long. */
+	const RECALLED = /^Started the MCP server "harbor" because you approved it for this project (a moment|1 minute|\d+ minutes) ago: 2 tools\. The agent has them from this turn on\.$/;
+	const recalled = (lines: string[]) => lines.length === 1 && RECALLED.test(lines[0] ?? "");
+	const FORGETTING = "Forgetting holds for the next session or sandbox. Where the server already started, Windlass's own record still starts it, and a running one is not stopped.";
+
+	let ok = true;
+	const step = async (name: string, body: () => Promise<string | undefined>) => {
+		if (!ok) {
+			skip(name, "an earlier check of the remembered approvals failed");
+			return;
+		}
+		ok = await check(name, body);
+	};
+
+	try {
+		await restartWith();
+		const ada = await demoSignIn();
+		const bo = await demoSignIn();
+		let one: Opened | null = null;
+		let two: Opened | null = null;
+		let print = "";
+		let approvedAt = 0;
+
+		await step(none, async () => {
+			const session = await launch(ada, { repoUrl: "https://example.com/acme/nothing.git" });
+			const { turn } = await session.watch.conn.prompt({ text: "Write a short program" });
+			await finish(session, turn);
+			const snapshot = await session.watch.conn.snapshot();
+			assert(snapshot.summary.servers === undefined, `the summary has ${plain(snapshot.summary.servers)}`);
+			const listed = await session.servers();
+			assert(listed.servers.length === 0 && plain(listed.project) === plain({ kind: "address", label: "example.com/acme/nothing.git" }), `servers() is ${plain(listed)}`);
+			await userOf(ada).deleteSession(session.id);
+			return "no servers in its summary, and an empty list";
+		});
+
+		await step(first, async () => {
+			one = await launch(ada, { repoUrl: REPO });
+			const { turn, asked } = await begin(one, "say hello (mcp)");
+			assert(asked?.server?.name === "harbor" && asked.subject === HARBOR, `asked: ${plain(asked).slice(0, 200)}`);
+			// Where Windlass's data is the sandbox's own, the question says how far the platform remembers the answer.
+			assert(asked.details.length === 3, `details: ${plain(asked.details)}`);
+			assert(
+				asked.details[1] === "Approving starts it now and is remembered for 30 days for exactly this definition: your sessions on example.com/acme/harbor.git then start it without asking, until you forget the approval in a session's panel.",
+				`details: ${plain(asked.details)}`,
+			);
+			assert(asked.details[2] === "It is an approval of this command, not of the files it runs: a later commit can change those without a new question.", `details: ${plain(asked.details)}`);
+			assert(asked.choices[0].remembers === "exactly this definition, for your sessions on example.com/acme/harbor.git, for 30 days", `remembers: ${asked.choices[0].remembers}`);
+			const waiting = await one.servers();
+			const before = waiting.servers[0];
+			assert(waiting.servers.length === 1 && before.name === "harbor" && before.state === "waiting" && before.subject === HARBOR && before.remote === false && before.file === "/workspace/.windlass/config.json", `while it waits: ${plain(waiting.servers)}`);
+			assert(/^[0-9a-f]{16}$/.test(before.fingerprint ?? "") && before.approval === null && before.tools === null && before.reason === null, `while it waits: ${plain(before)}`);
+			assert(plain(waiting.project) === plain({ kind: "address", label: "example.com/acme/harbor.git" }) && waiting.forgetting === FORGETTING, `project ${plain(waiting.project)}; "${waiting.forgetting}"`);
+			print = before.fingerprint ?? "";
+			const told = one.watch.summaries.at(-1)?.servers;
+			assert(told?.count === 1 && told.changedAt > 0, `the summary's servers are ${plain(told)}`);
+			const at = Date.now();
+			await one.watch.conn.answer({ questionId: asked.id, choice: "start" });
+			await finish(one, turn);
+			assert(plain(linesOf(one, turn)) === plain([STARTED]), `lines: ${plain(linesOf(one, turn))}`);
+			const listed = await waitFor("the approval to be remembered", async () => ((await (one as Opened).servers()).servers[0]?.approval ? (one as Opened).servers() : undefined), 10_000, 100);
+			const server = listed.servers[0];
+			assert(server.state === "running" && server.tools === 2 && server.fingerprint === print, `after the approval: ${plain(server)}`);
+			assert(server.approval !== null && server.approval.approvedAt >= at && server.approval.approvedAt <= Date.now() && server.approval.expiresAt - server.approval.approvedAt === DAYS_30, `the approval is ${plain(server.approval)}`);
+			approvedAt = server.approval.approvedAt;
+			const after = one.watch.summaries.at(-1)?.servers;
+			assert(after !== undefined && after.changedAt > told.changedAt, `the summary's servers did not change: ${plain(told)} then ${plain(after)}`);
+			const mine = (await userOf(ada).listSessions()).find((summary) => summary.id === (one as Opened).id);
+			assert(mine?.servers?.count === 1, `the user's list has ${plain(mine?.servers)}`);
+			return `"${asked.details[1]}" Then running with 2 tools, approved until ${new Date(server.approval.expiresAt).toISOString()}`;
+		});
+
+		await step(second, async () => {
+			two = await launch(ada, { repoUrl: REPO });
+			const lines = await unasked(two, "say hello (mcp)");
+			assert(recalled(lines) && lines[0].includes("a moment ago"), `lines: ${plain(lines)}`);
+			const listed = await two.servers();
+			const server = listed.servers[0];
+			assert(listed.servers.length === 1 && server.state === "running" && server.tools === 2 && server.fingerprint === print, `its panel lists ${plain(listed.servers)}`);
+			// Using the approval does not renew it.
+			assert(server.approval?.approvedAt === approvedAt, `the approval is ${plain(server.approval)}, given at ${approvedAt}`);
+			assert(!server.subject.includes("--") && two.watch.questions.length === 0, "a question event arrived");
+			return lines[0];
+		});
+
+		await step(replaced, async () => {
+			assert(one, "no first session");
+			const same = await unasked(one, "once more (mcp)");
+			assert(same.length === 0, `a turn in the sandbox the server was approved in says ${plain(same)}`);
+			// The sandbox is gone when this turn ends, as if E2B had lost it.
+			const lost = await unasked(one, "and again (mcp) (lose-sandbox)");
+			assert(lost.length === 0, `lines: ${plain(lost)}`);
+			const { turn, asked } = await begin(one, "where were we (mcp)");
+			assert(asked === null, `the replaced sandbox asked: ${plain(asked).slice(0, 200)}`);
+			await finish(one, turn);
+			const texts = one.watch.items.flatMap((item) => (item.kind === "platform" && item.turn === turn ? [item.text] : []));
+			assert(texts.includes("Creating sandbox"), `no new sandbox was made: ${plain(texts)}`);
+			assert(recalled(linesOf(one, turn)), `lines: ${plain(linesOf(one, turn))}`);
+			return `nothing said in the same sandbox; in the one that replaced it: "${linesOf(one, turn)[0]}"`;
+		});
+
+		await step(asked, async () => {
+			assert(two, "no second session");
+			const changed = await answered(two, "and now (mcp-changed)", "not_now");
+			assert(changed.asked.subject === `${HARBOR} --berths 12`, `asked about ${changed.asked.subject}`);
+			const theirs = await launch(bo, { repoUrl: REPO });
+			const other = await answered(theirs, "say hello (mcp)", "not_now");
+			assert(other.asked.subject === HARBOR, `another user was asked about ${other.asked.subject}`);
+			const elsewhere = await launch(ada, { repoUrl: "https://example.com/acme/lighthouse.git" });
+			const same = await answered(elsewhere, "say hello (mcp)", "not_now");
+			const listed = await elsewhere.servers();
+			assert(same.asked.subject === HARBOR && listed.servers[0]?.fingerprint === print && listed.servers[0].approval === null && listed.servers[0].state === "waiting", `another repository: ${plain(listed.servers)}`);
+			await userOf(ada).deleteSession(elsewhere.id);
+			return `asked about ${changed.asked.subject}; another user asked; another repository with the same definition (${print}) asked`;
+		});
+
+		let theirs: Opened | null = null;
+		await step(notNow, async () => {
+			theirs = opened.find((session) => session.auth === bo) ?? null;
+			assert(theirs, "no session of the other user");
+			const waiting = (await theirs.servers()).servers[0];
+			assert(waiting?.state === "waiting" && waiting.approval === null && waiting.fingerprint === print, `after "not now": ${plain(waiting)}`);
+			const again = await answered(theirs, "try again (mcp)", "not_now");
+			assert(again.lines.length === 1 && again.lines[0].startsWith('Left the MCP server "harbor" stopped.'), `lines: ${plain(again.lines)}`);
+			const items = theirs.watch.items.length;
+			const approved = await theirs.watch.conn.approveServer({ name: "harbor", fingerprint: print });
+			assert(approved.servers[0]?.state === "waiting" && approved.servers[0].approval !== null && approved.servers[0].approval.expiresAt - approved.servers[0].approval.approvedAt === DAYS_30, `after the panel's approval: ${plain(approved.servers)}`);
+			const line = await waitFor("the line about the panel's approval", () => theirs?.watch.items.slice(items).find((item) => item.kind === "platform"), 5_000);
+			assert(line.kind === "platform" && line.level === "info" && line.text === 'Approved the MCP server "harbor" for this project in the session\'s panel. It starts with the next turn.', `the line is ${plain(line)}`);
+			const lines = await unasked(theirs, "and now (mcp)");
+			assert(recalled(lines), `lines: ${plain(lines)}`);
+			assert((await theirs.servers()).servers[0]?.state === "running", "the server does not run");
+			return `"${line.text}" Then: "${lines[0]}"`;
+		});
+
+		await step(open, async () => {
+			const session = await launch(bo, { repoUrl: "https://example.com/acme/pier.git" });
+			const { turn, asked } = await begin(session, "say hello (mcp)");
+			assert(asked?.server !== undefined, "the session was not asked");
+			await refused(() => session.watch.conn.approveServer({ name: "harbor", fingerprint: "0000000000000000" }), "server_changed");
+			await refused(() => session.watch.conn.approveServer({ name: "tracker", fingerprint: print }), "server_gone");
+			await refused(() => session.watch.conn.approveServer({ name: "harbor" } as never), "bad_server");
+			await refused(() => session.watch.conn.forgetServer({} as never), "bad_server");
+			assert((await session.watch.conn.snapshot()).question?.id === asked.id, "a refused approval settled the question");
+			await session.watch.conn.approveServer({ name: "harbor", fingerprint: print });
+			await waitFor("the question event to say null", () => session.watch.questions.at(-1) === null, 5_000);
+			await finish(session, turn);
+			assert(plain(linesOf(session, turn)) === plain([STARTED]), `lines: ${plain(linesOf(session, turn))}`);
+			const listed = await waitFor("the approval to be remembered", async () => ((await session.servers()).servers[0]?.approval ? session.servers() : undefined), 10_000, 100);
+			assert(listed.servers[0].state === "running" && listed.servers[0].tools === 2, `its panel lists ${plain(listed.servers)}`);
+			await refused(() => session.watch.conn.approveServer({ name: "harbor", fingerprint: print }), "server_changed");
+			await refused(() => session.watch.conn.answer({ questionId: asked.id, choice: "start" }), "no_question");
+			await userOf(bo).deleteSession(session.id);
+			return `the open question was answered from the panel: "${STARTED}"; another definition, an unknown server and a server that runs are refused`;
+		});
+
+		await step(forgetting, async () => {
+			assert(one && two, "no sessions");
+			// This session's workspace has the changed definition, which waits: the approval it lists is of the earlier one.
+			const before = (await two.servers()).servers[0];
+			assert(before?.state === "waiting" && before.fingerprint !== print && before.approval === null && before.earlier?.approvedAt === approvedAt, `before forgetting: ${plain(before)}`);
+			assert((await one.servers()).servers[0]?.approval?.approvedAt === approvedAt, "the first session does not list the approval");
+			const items = two.watch.items.length;
+			const forgotten = await two.watch.conn.forgetServer({ name: "harbor" });
+			assert(forgotten.servers[0]?.approval === null && forgotten.servers[0].earlier === undefined, `after forgetting: ${plain(forgotten.servers)}`);
+			const line = await waitFor("the line about forgetting", () => two?.watch.items.slice(items).find((item) => item.kind === "platform"), 5_000);
+			assert(line.kind === "platform" && line.text === 'Forgot your approval of the MCP server "harbor" for this project. The next session or sandbox asks again; where it already started, Windlass\'s own record still starts it.', `the line is ${plain(line)}`);
+			// The first session of the same project sees it gone as well: the record is the user's, not a session's.
+			assert((await one.servers()).servers[0]?.approval === null, "the other session on the repository still lists the approval");
+			const count = two.watch.items.length;
+			const nothing = await two.watch.conn.forgetServer({ name: "harbor" });
+			assert(nothing.servers[0]?.approval === null && two.watch.items.length === count, "forgetting what is not remembered said something");
+			const next = await launch(ada, { repoUrl: REPO });
+			const again = await answered(next, "say hello (mcp)", "not_now");
+			assert(again.asked.subject === HARBOR, `the next session was asked about ${again.asked.subject}`);
+			// The sandbox of the first session started the server already: its Windlass goes on starting it.
+			const still = await unasked(one, "still here (mcp)");
+			assert(still.length === 0 && (await one.servers()).servers[0]?.state === "running", `the sandbox the server started in: ${plain(still)}`);
+			// Bo's own approval of the same repository is untouched.
+			assert(theirs && (await theirs.servers()).servers[0]?.approval !== null, "another user's approval went with it");
+			await userOf(ada).deleteSession(next.id);
+			return `"${line.text}" The next session was asked; the first one's sandbox was not`;
+		});
+
+		let alone: Opened | null = null;
+		let onGithub: Opened | null = null;
+		await step(projects, async () => {
+			alone = await launch(ada);
+			const mine = await answered(alone, "say hello (mcp)", "start");
+			assert(mine.asked.details[1] === "Approving starts it now and is remembered for 30 days for exactly this definition, for this session, which has no repository: a sandbox that replaces this one starts it without asking, until you forget the approval in the session's panel.", `details: ${plain(mine.asked.details)}`);
+			assert(mine.asked.choices[0].remembers === "exactly this definition, for this session, for 30 days", `remembers: ${mine.asked.choices[0].remembers}`);
+			const listed = await waitFor("the approval to be remembered", async () => ((await (alone as Opened).servers()).servers[0]?.approval ? (alone as Opened).servers() : undefined), 10_000, 100);
+			assert(plain(listed.project) === plain({ kind: "session", label: "this session" }), `project: ${plain(listed.project)}`);
+			const another = await launch(ada);
+			const asked = await answered(another, "say hello (mcp)", "not_now");
+			assert(asked.asked.subject === HARBOR, "another session without a repository was not asked");
+			await userOf(ada).deleteSession(another.id);
+
+			// A repository of the GitHub connection: ada at GitHub has harbor, and connects.
+			standin.addUser("ada");
+			const installation = standin.addInstallation("ada", "User");
+			const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation });
+			const { url } = await userOf(ada).githubConnect({ origin: ORIGIN });
+			const back = await fetch(standin.authorize("ada", url), { redirect: "manual" });
+			const location = back.headers.get("location") ?? "";
+			assert(back.status === 302 && location.includes("#github="), `the callback sent the browser to ${location.slice(0, 80)}`);
+			await userOf(ada).githubComplete(location.slice(location.indexOf("#github=") + 8));
+			onGithub = await launch(ada, { repository: { id: harbor.id } });
+			const github = await answered(onGithub, "say hello (mcp)", "start");
+			assert(github.asked.details[1].includes("your sessions on ada/harbor then start it without asking"), `details: ${plain(github.asked.details)}`);
+			assert(plain((await onGithub.servers()).project) === plain({ kind: "github", label: "ada/harbor" }), "the project is not the repository");
+			const again = await launch(ada, { repository: { id: harbor.id } });
+			const lines = await unasked(again, "say hello (mcp)");
+			assert(recalled(lines), `a second session on the GitHub repository: ${plain(lines)}`);
+			// The same repository by its address is another project: it was not launched through the connection.
+			const byAddress = await launch(ada, { repoUrl: "https://github.example/ada/harbor.git" });
+			const pasted = await answered(byAddress, "say hello (mcp)", "not_now");
+			assert(pasted.asked.subject === HARBOR, "the pasted address was not asked");
+			await userOf(ada).deleteSession(again.id);
+			await userOf(ada).deleteSession(byAddress.id);
+			return `"this session" is asked once and another session without a repository again; ada/harbor (GitHub id ${harbor.id}) is asked once, and its pasted address again`;
+		});
+
+		await step(restart, async () => {
+			assert(one && alone && onGithub && theirs, "no sessions");
+			for (const session of opened) await session.watch.conn.dispose().catch(() => undefined);
+			await restartWith();
+			// Every sandbox went with the server: each session gets a new one, and its Windlass asks about the server.
+			const github = watchOf(ada, onGithub.id);
+			const mine = watchOf(ada, alone.id);
+			const bos = watchOf(bo, theirs.id);
+			const forgotten = watchOf(ada, one.id);
+			for (const session of [github, mine, bos]) {
+				const lines = await unasked(session, "after the restart (mcp)");
+				assert(recalled(lines), `session ${session.id} after the restart: ${plain(lines)}`);
+			}
+			// What ada forgot stays forgotten, in the session the server once started in too: its sandbox is new.
+			const again = await answered(forgotten, "after the restart (mcp)", "not_now");
+			assert(again.asked.subject === HARBOR, "the forgotten approval came back");
+			assert(server.output.includes(`[wlp] server.approval_remembered uid=${ada.profile.uid} `) && server.output.includes(`[wlp] server.approval_forgotten uid=${ada.profile.uid} `), "the server did not log what it remembered and forgot");
+			return "three sessions of two users were not asked in their new sandboxes; the forgotten one was";
+		});
+
+		await step(expiry, async () => {
+			const TTL = 10_000;
+			for (const session of opened) await session.watch.conn.dispose().catch(() => undefined);
+			await restartWith({ WLP_SERVER_APPROVAL_TTL_MS: String(TTL) });
+			const cy = await demoSignIn();
+			const begun = await launch(cy, { repoUrl: REPO });
+			const approved = await answered(begun, "say hello (mcp)", "start");
+			assert(plain(approved.lines) === plain([STARTED]), `lines: ${plain(approved.lines)}`);
+			const listed = await waitFor("the approval to be remembered", async () => ((await begun.servers()).servers[0]?.approval ? begun.servers() : undefined), 10_000, 100);
+			const approval = listed.servers[0].approval;
+			assert(approval !== null && approval.expiresAt - approval.approvedAt === TTL, `the approval is ${plain(approval)}`);
+			const soon = await launch(cy, { repoUrl: REPO });
+			const lines = await unasked(soon, "say hello (mcp)");
+			assert(recalled(lines) && Date.now() < approval.expiresAt, `within its time: ${plain(lines)}, ${approval.expiresAt - Date.now()} ms left`);
+			await sleep(Math.max(0, approval.expiresAt - Date.now()) + 300);
+			const late = await launch(cy, { repoUrl: REPO });
+			const again = await answered(late, "say hello (mcp)", "not_now");
+			assert(again.asked.subject === HARBOR, "past its time the approval still answered");
+			assert((await begun.servers()).servers[0]?.approval === null, "the panel still lists an approval that has run out");
+			return `within ${TTL / 1000} seconds a second session was not asked; after them a third was, and the first one's panel lists no approval`;
+		});
+	} finally {
+		for (const session of opened) await session.watch.conn.dispose().catch(() => undefined);
 		await standin.stop().catch(() => undefined);
 	}
 }

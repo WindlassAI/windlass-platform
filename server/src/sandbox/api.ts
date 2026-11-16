@@ -187,6 +187,32 @@ export interface TurnServerQuestion {
 	holdsTurn: boolean;
 }
 
+/**
+ * A server the project's configuration names, as Windlass describes it at one moment of a turn
+ * (`_windlass/mcp`, `_windlass/mcp_changed`). A server the project's file leaves out (`enabled: false`)
+ * is not among them, and neither is one that only the user's own configuration defines.
+ */
+export interface TurnServer {
+	name: string;
+	/**
+	 * "waiting": not started, it waits for the user's approval. "starting", "running", "failed": what
+	 * became of one that may start. "stopped": anything else Windlass says of it.
+	 */
+	state: "running" | "starting" | "waiting" | "failed" | "stopped";
+	/** The command and each of its arguments; null for a server reached at an address. */
+	argv: string[] | null;
+	/** The address of a server that is reached and not started; null for a command. */
+	url: string | null;
+	/** The file that defines it, as a path in the sandbox; null when Windlass named none. */
+	file: string | null;
+	/** How many tools it offers, once it runs. */
+	tools: number | null;
+	/** Why it could not start, in Windlass's words. */
+	error: string | null;
+	/** Windlass's mark for the definition, which it gives only while the server waits; null otherwise. */
+	fingerprint: string | null;
+}
+
 /** What became of a server the user said to start. */
 export type TurnServerOutcome =
 	/** It runs, with this many tools. */
@@ -245,12 +271,21 @@ export interface RunTurnInput {
 	 * Windlass is asked what waits before the prompt is sent, as its own command line does, so that the
 	 * turn starts with what the user allowed (`holdsTurn`), and tells of a server that comes to wait
 	 * while the turn runs. Each definition is asked about once per turn. Windlass remembers an approval
-	 * itself, in its data directory, for 30 days; a server left stopped is asked about again by the
-	 * next turn. Without this callback nobody is asked and such a server stays stopped.
+	 * itself, in its data directory, for 30 days, and does not report a server it may start by that
+	 * record as waiting; a server left stopped is asked about again by the next turn. Whoever is asked
+	 * may answer from a record of their own without putting the question to anyone (the session does,
+	 * server-approvals.ts). Without this callback nobody is asked and such a server stays stopped.
 	 */
 	onServerQuestion?: (question: TurnServerQuestion, signal: AbortSignal) => Promise<boolean>;
 	/** Called after `onServerQuestion` resolved with true, once it is known what became of the server. */
 	onServerApproved?: (question: TurnServerQuestion, outcome: TurnServerOutcome) => void;
+	/**
+	 * Called with the project's servers each time Windlass says what they are: with its answer about
+	 * what waits, before the prompt goes, and whenever one starts, fails or comes to wait while the
+	 * turn runs. It is the whole list each time, and comes before the question about a server in it
+	 * that waits. Nothing is said when the turn ends: a server lives with the turn's Windlass process.
+	 */
+	onServers?: (servers: TurnServer[]) => void;
 	/** Called once, when the turn has started and can be steered. */
 	onControl?: (control: TurnControl) => void;
 }

@@ -58,7 +58,8 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
                            │
                            ├─ login         [attemptId]         one sign-in attempt
                            ├─ user          [uid]               profile, the index of sessions, the ChatGPT
-                           │                                    sign-in (encrypted) and its access tokens
+                           │                                    sign-in (encrypted) and its access tokens,
+                           │                                    approvals of projects' MCP servers
                            └─ agentSession  [uid, sessionId]    timeline in SQLite, one sandbox
                                                │
                                                ▼
@@ -754,14 +755,55 @@ the same place as a tool call's question, with the same control.
   variable HARBOR_TOKEN, which is not set in the sandbox, ..."), and an approval ends in Windlass's own reason:
   "Approved the MCP server "harbor" for this project, but it did not start: the environment variable
   HARBOR_TOKEN named in its env is not set. The platform cannot set variables for a session yet."
-- **What is remembered, and where.** The platform keeps nothing. Windlass keeps an approval in its data
-  directory, for the project directory and exactly that definition, for 30 days; a changed definition is asked
-  about again. On E2B that directory is on the sandbox's disk, so an approval holds for the session's sandbox
-  and another session on the same repository asks again. On Docker it is the user's volume and every session's
-  project directory is `/workspace`, so it holds in all of that user's sessions where a server of that name is
-  defined the same. "Not now" is remembered nowhere: the next message asks again. `serverApprovals` in
-  `server/src/actors/agent-session.ts` is where a store of the platform's own would answer before the question
-  is put.
+- **What is remembered, and where.** Windlass keeps an approval in its data directory, for the project
+  directory and exactly that definition, for 30 days. On E2B that directory is on the sandbox's disk, so by
+  itself an approval would hold for one sandbox: every new session on the repository would ask again, and so
+  would a session whose sandbox was replaced, in the middle of a conversation the server was approved in. So
+  the platform keeps a record of its own (`server/src/server-approvals.ts`), in the user's `user` actor, which
+  every session of that user reaches from whichever server it runs on:
+
+  | What | Value |
+  |---|---|
+  | whose | the user's: one table in their `user` actor, plain rows, no credential |
+  | the project | the GitHub repository, by GitHub's id for it (a rename keeps it), when the session was launched on one through the GitHub connection; the pasted address, exactly as it is stored, when it was launched on one; the session itself when it has no repository |
+  | the server | its name, and Windlass's fingerprint of its definition: a changed definition is asked about again |
+  | until | 30 days after the user approved, the time Windlass keeps its own. Using the record does not renew it; approving again does |
+  | when it is written | when the user says yes and Windlass took the approval. "Not now" is remembered nowhere: the next message asks again |
+
+  The same repository launched once through the connection and once by a pasted address is two projects, and is
+  asked about twice. A session with no repository is its own project: its record spares it the question in a
+  sandbox that replaces its own, and goes when the session is deleted.
+- **A remembered approval starts the server without the question.** When Windlass reports a server that waits
+  and the user's record has exactly that definition for the session's project, the session has Windlass
+  approve it (`_windlass/mcp_approve`) before the prompt goes, as an answered question would, and nobody is
+  asked. The timeline gets one line: "Started the MCP server "harbor" because you approved it for this project
+  3 days ago: 2 tools. The agent has them from this turn on." From then on Windlass's own record in that
+  sandbox starts the server, and later turns say nothing. If the user's actor does not answer within ten
+  seconds, the question is put, which is never wrong.
+- **Seeing an approval, and taking it back.** A session whose project names servers has a section "MCP servers"
+  in its side panel: each server with its command or address in full, its state as the session last heard of
+  it from Windlass (it runs and with how many tools, it waits for approval, it could not start and why), and,
+  where an approval is remembered, until when, with "Forget". Forgetting removes the user's record of that
+  server for the project, whatever its definition was, and the timeline says so. It holds for the next session
+  and the next sandbox. It does not reach Windlass's own record: a sandbox the server already started in goes
+  on starting it, and a server that is running is not stopped (Windlass's protocol has an approval and no
+  withdrawal, and nothing that stops a server: `_windlass/mcp`, `_windlass/mcp_approve` and
+  `_windlass/mcp_changed` are all it has). The section says this under the list. A session whose project names
+  no server has no such section.
+- **Approving from the panel.** A server that waits because the user said "not now" has "Approve…" there. The
+  dialog shows the command and the file and says what the question says. Windlass itself takes an approval at
+  any time a session is open, with or without a turn (`approveMcpServer` in its
+  `packages/core/src/engine/engine.ts`, reached by `_windlass/mcp_approve`); but the platform runs one Windlass
+  process per turn, and a server lives with the process that started it, so between turns there is nothing to
+  start a server in. The approval is therefore recorded, and the server starts with the next turn, unasked:
+  "Approved the MCP server "harbor" for this project in the session's panel. It starts with the next turn."
+  While the question about that definition is open in a running turn, the panel's approval answers it, and
+  the server starts at once. An approval is of the definition the panel showed: if the session has since seen
+  another, it is refused and the list is to be read again.
+- **Docker.** There Windlass's data is the user's volume and every session's project directory is `/workspace`,
+  so Windlass's own record starts the server in all of that user's sessions where a server of that name is
+  defined the same, whatever their repository, and the platform's record changes nothing until Windlass's has
+  run out. The question and the panel say so there ("in all your sessions: they share Windlass's data").
 - **Calling its tools.** Where Windlass sandboxes commands it asks before each call of an MCP tool, through the
   question the platform already puts. In the hardened profile the first call runs unasked; what a server
   returns is content Windlass does not trust, so from then on it asks before the commands it cannot sandbox.
@@ -771,8 +813,18 @@ cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/mcp-check.ts   # a real
 cd server && flock /tmp/wlp-test.lock pnpm e2e                          # the session's part, on the fake layer's "(mcp...)" switches
 ```
 
+`mcp-check.ts` also runs the platform's record against a real Windlass, with one Docker user per sandbox so
+that each sandbox keeps Windlass's data to itself as a microVM does: a second session on a repository and a
+replaced sandbox are not asked and the server runs; a changed definition, another user, another repository
+that names the server the same way, the session after forgetting, and an approval past its 30 days are asked.
+The end-to-end test does the same through the actors on the fake layer, with the panel's actions.
+
 The web app's mock asks the question for a prompt with the word "mcp" in it; with "variable" too, about a
 definition that cannot start; with "late" and a word about the network, while a tool call's question waits.
+It remembers an approval for the session's project as the deployment does, and two of its seeded sessions
+(`/agents/checks`, `/agents/harbor-build`) show the panel's section with every state of a server.
+`__wlpMock.mockNextServers("list" | "approve" | "forget" | "slow")` in the console makes its next call fail,
+or makes those calls slow for ten seconds.
 
 ## Layout
 
@@ -789,6 +841,7 @@ definition that cannot start; with "late" and a word about the network, while a 
 | `server/src/signin/` | The ChatGPT sign-in for every layer: Windlass's sign-in commands and where they run, the encryption, and the one place per user that asks for an access token |
 | `server/src/sandbox-fake.ts` | The same interface in memory, for tests |
 | `server/src/server-question.ts` | The words of the question about a project's MCP server, for each sandbox profile, and of the timeline's lines about it |
+| `server/src/server-approvals.ts` | The user's remembered approvals of projects' MCP servers: what a project is, the record itself, and what a session keeps of its project's servers for its side panel |
 | `server/src/bucket/`, `server/src/sandbox/backup.ts` | The object store the copies of Windlass's session data go to (S3 protocol, and a stand-in for tests), and what is copied, saved and restored |
 | `server/src/github/` | The GitHub App: its tokens and API calls, connecting (the callback route), which repositories a user may work on, and the git commands the platform runs in a sandbox ("GitHub") |
 | `sandbox/` | The sandbox image, `build.sh`, `cleanup.sh` |
@@ -834,6 +887,7 @@ The end-to-end scripts start their own server on ports 6420 and 6440, so stop a 
 | `WLP_TURN_TIMEOUT_MS` | how long one turn may run (default 45 minutes). The durations that keep its access token fresh are constants and hold for a turn of any length |
 | `WLP_LOGIN_TTL_MS` | how long a sign-in attempt stays open (default 10 minutes) |
 | `WLP_QUESTION_TIMEOUT_MS` | how long a question waits for an answer before the platform declines it (default 10 minutes) |
+| `WLP_SERVER_APPROVAL_TTL_MS` | how long an approval of a project's MCP server is remembered for its user (default and most: 30 days, which is how long Windlass keeps its own). A shorter time is for the checks |
 | `WLP_IDLE_SUSPEND_MS` | how long after a session's last turn ended its sandbox is suspended (default 10 minutes) |
 | `WLP_IDLE_DESTROY_MS` | how long after its last use a sandbox is removed with its files; the timeline stays (default 7 days). E2B keeps a paused sandbox for as long as it is not killed and does not bill it, so a deployment there can set this to years: then a sandbox goes only with its agent |
 | `WLP_BUCKET_ENDPOINT`, `WLP_BUCKET_NAME`, `WLP_BUCKET_ACCESS_KEY_ID`, `WLP_BUCKET_SECRET_ACCESS_KEY` | the S3 bucket that keeps a copy of each agent's Windlass session where sandboxes are E2B's ("The agent's memory outlives its sandbox", which has the optional ones too). Unset: no copy is kept |
@@ -905,8 +959,23 @@ rebuilt, also when that Windlass is older than the codes ("What went wrong with 
   a project's MCP servers, and reports them the same way (`_windlass/hooks`, `_windlass/lsp`). The platform
   puts only the servers' question, so a project's hooks do not run and its language servers do not start.
 - **An approval of a project's server is for its definition, not for its files.** Windlass asks again when
-  the command, its arguments or its environment change, and not when the script that command runs does. And
-  on Docker an approval holds in all of a user's sessions ("A project's MCP servers"): another repository that
-  defines a server of the same name the same way starts it unasked there.
-- **"Not now" is asked again with every message**, and a message sent while that question holds the turn is
-  refused as "still starting". There is no list of a session's servers to approve one from later.
+  the command, its arguments or its environment change, and not when the script that command runs does: that
+  is Windlass's own rule. With the platform's record it reaches further than one sandbox: after a commit that
+  changes the script and not the definition, the server starts without a question in every session of that
+  user on that repository, new ones included, until the approval is forgotten or 30 days old. The question
+  says so where the user approves. And on Docker Windlass's own record holds in all of a user's sessions
+  ("A project's MCP servers"): another repository that defines a server of the same name the same way starts
+  it unasked there.
+- **Forgetting an approval does not reach where the server already started.** Windlass keeps its own record
+  in each sandbox the server started in, for 30 days from that start, and has no way to take one back or to
+  stop a server. So forgetting holds for the next session and the next sandbox; a sandbox that already
+  started the server goes on starting it, and for that reason may do so past the day the panel names. On
+  Docker that record is shared by all of a user's sessions, and forgetting changes nothing until it has run
+  out. Removing a session's sandbox is what ends it sooner.
+- **An approval given in the panel starts nothing by itself.** No Windlass runs between turns, so the server
+  starts with the session's next turn. "Not now" is asked again with every message that starts a turn, and a
+  message sent while that question holds the turn is refused as "still starting".
+- **The panel lists what the session last heard.** A server's state is what Windlass said in the session's
+  last turn, not a reading of the sandbox now, and a definition that changed in the repository since is
+  seen when the next turn starts. A server Windlass started from its own record is listed without the
+  fingerprint of its definition, so the approval shown for it is the newest one of its name.

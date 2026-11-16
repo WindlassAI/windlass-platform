@@ -155,7 +155,7 @@ export function Session({ sessionId, state }: { sessionId: string; state: Return
 					Session details, tokens and changes
 				</a>
 			</div>
-			<SidePanel sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} />
+			<SidePanel sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
 		</main>
 	);
 }

@@ -12,6 +12,7 @@ import type { SandboxProfileId, SessionSummary } from "../contract.js";
 import { serviceParams } from "../auth.js";
 import type { StoredRepository } from "../github/publish.js";
 import type { StoredConnection } from "../github/repos.js";
+import type { ServerApproval } from "../server-approvals.js";
 import { issueServiceToken, verifyToken } from "../tokens.js";
 
 /** What `user` passes when it creates an `agentSession`. */
@@ -36,6 +37,12 @@ export interface UserInternal {
 	internalAcquireRun(sessionId: string): Promise<{ ok: boolean; running: number; known: boolean }>;
 	/** The user's GitHub connection as it is now; null when there is none. */
 	internalGithubConnection(): Promise<StoredConnection | null>;
+	/** The user's remembered approvals of a project's MCP servers that have not run out, the newest first (server-approvals.ts). */
+	internalServerApprovals(project: string): Promise<ServerApproval[]>;
+	/** Remembers that the user approved exactly this definition of a server for a project, from now. Answers with the project's approvals. */
+	internalServerApprove(input: { project: string; label: string; name: string; fingerprint: string }): Promise<ServerApproval[]>;
+	/** Forgets the user's approvals of that server for a project. Answers with how many there were, and the project's approvals that are left. */
+	internalServerForget(input: { project: string; name: string }): Promise<{ forgotten: number; approvals: ServerApproval[] }>;
 }
 
 /** Actions of `agentSession` that only actors may call. */

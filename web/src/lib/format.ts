@@ -54,6 +54,11 @@ export function absoluteTime(at: number): string {
 	return new Date(at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+/** A day without its time: "16 Dec 2026". */
+export function day(at: number): string {
+	return new Date(at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
 /** "9:41" left of a countdown, or "0:00". */
 export function countdown(ms: number): string {
 	const total = Math.max(0, Math.ceil(ms / 1000));

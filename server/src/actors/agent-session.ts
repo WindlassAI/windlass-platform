@@ -21,6 +21,13 @@
  * the same `answer()`. A tool call's question comes first: a server's steps aside for it and is put
  * again afterwards. What became of it is a line in the timeline; Windlass has no event for it.
  *
+ * An approval is remembered for the user beyond the sandbox Windlass keeps it in (server-approvals.ts):
+ * the user's `user` actor holds it, for the session's project and exactly that definition. Before a
+ * server's question is put, the session asks there, and a remembered approval starts the server
+ * without the question, with one line that says so. What Windlass says of the project's servers is
+ * kept with the session (`meta.servers`), for the side panel, where an approval is seen, given and
+ * taken back (`servers`, `approveServer`, `forgetServer`).
+ *
  * A sandbox nobody uses is suspended, and after longer removed (config.idleSuspendMs, idleDestroyMs),
  * by the actor's own durable schedule (`c.schedule`): it holds while the actor sleeps and across a
  * restart, and wakes the actor when it is due. The check never touches a turn in progress or one being
@@ -39,6 +46,8 @@
  *   no_turn             `stopCall()`: no turn is running
  *   sandbox_error, internal_error   a failure of the sandbox layer, with or without a sentence for the user
  *   publish_blocked, github_gone, github_denied, publish_failed, bad_message   `publish()` (contract.ts)
+ *   bad_server          `approveServer()`, `forgetServer()`: their input
+ *   server_gone, server_changed   `approveServer()`: the session knows no such server, or it does not wait with that definition
  */
 
 import { randomBytes } from "node:crypto";
@@ -60,6 +69,7 @@ import {
 	type PublishState,
 	type PullRequestInfo,
 	type SandboxProfileId,
+	type SessionServers,
 	type SessionSnapshot,
 	type SessionStatus,
 	type SessionSummary,
@@ -74,8 +84,22 @@ import { PullProblem, type StoredRepository, branchFor, cloneRepository, hasUnpu
 import { GithubProblem, type StoredConnection } from "../github/repos.js";
 import { getLayer } from "../layer.js";
 import { EFFORTS, platformModels } from "../platform-info.js";
-import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnQuestion, TurnServerQuestion } from "../sandbox/api.js";
-import { SERVER_START, type ServerQuestionContext, serverApprovedNote, serverExpiredNote, serverNotNowNote, serverQuestionWords, serverUnansweredNote } from "../server-question.js";
+import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
+import { type KnownServer, type ServerApproval, knownServers, projectOf, sameServers, serversView } from "../server-approvals.js";
+import {
+	SERVER_START,
+	type ServerQuestionContext,
+	forgettingWords,
+	serverApprovedNote,
+	serverExpiredNote,
+	serverForgottenNote,
+	serverNotNowNote,
+	serverPanelApprovedNote,
+	serverPanelWords,
+	serverQuestionWords,
+	serverRecalledNote,
+	serverUnansweredNote,
+} from "../server-question.js";
 import { grantIsValid, type SessionCreateInput, userActor } from "./internal.js";
 
 // ---------------------------------------------------------------------------------------------
@@ -100,6 +124,8 @@ const SIGNED_IN_FRESH_MS = 5 * 60 * 1000;
 const STOP_WAIT_MS = 12_000;
 /** How long the end of a turn, or shutdown, waits for the `user` actor to take the new summary. */
 const REPORT_WAIT_MS = 5_000;
+/** How long a turn waits for the `user` actor to say whether a server's approval is remembered, before it asks the user instead. */
+const RECALL_WAIT_MS = 10_000;
 
 const DELTA_TYPES = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]);
 const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "failed", "stopped", "interrupted"];
@@ -156,6 +182,13 @@ interface SessionMeta {
 	backupStopped?: { size: number; limit: number } | null;
 	/** Windlass's memory was restored into a new sandbox, and it has not yet been told that the workspace is a fresh one. */
 	freshWorkspace?: boolean;
+	/**
+	 * The MCP servers the project's configuration names, as Windlass last described them to a turn of this
+	 * session (server-approvals.ts). Absent or empty: it named none, or no turn has asked yet.
+	 */
+	servers?: KnownServer[];
+	/** When `servers`, or what is remembered of their approvals through this session, last changed. */
+	serversChangedAt?: number;
 }
 
 /** A question put to the user: the copy the clients see, and the ways to settle the layer's promise. */
@@ -168,6 +201,8 @@ interface Asked {
 	decline(note?: string): void;
 	/** A question about a project's server only: shows it, the first time and again after it stood aside, with a new time to answer in. */
 	put?(): void;
+	/** A question about a project's server only: the definition it is about. */
+	server?: { name: string; fingerprint: string };
 }
 
 interface ActiveTurn {
@@ -187,6 +222,11 @@ interface ActiveTurn {
 	 * `question` is free.
 	 */
 	aside: Asked[];
+	/**
+	 * The definitions (`<name>:<fingerprint>`) this turn had Windlass start from the user's remembered
+	 * approval, without putting the question, each with that approval: the line about it says so.
+	 */
+	recalled: Map<string, ServerApproval>;
 	/** True once the turn is being stopped: no question is put any more. */
 	stopping: boolean;
 	/** True once the turn is being closed: nothing of it can be steered, stopped or answered any more. */
@@ -264,6 +304,7 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		turns: meta.turns,
 		lastOutcome: meta.lastOutcome,
 		sandbox: meta.sandbox,
+		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt ?? meta.updatedAt } } : {}),
 	};
 }
 
@@ -1183,27 +1224,88 @@ function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, question: Tu
 }
 
 /**
- * Where an approval of a project's server could be kept for a user beyond the sandbox Windlass keeps
- * it in: `approved` is asked before the question is put, and a yes starts the server without asking;
- * `remember` is told when the user approves. There is no such store yet, so nothing is recalled and
- * nothing is kept, and every session asks where Windlass's own memory (its data directory, 30 days,
- * exactly this definition) does not answer first. A store would be the user's, in the `user` actor,
- * and would name the repository, the server and Windlass's fingerprint of its definition; like
- * Windlass's, it must not outlast a change of the definition.
+ * The user's approvals of projects' servers, kept beyond the sandbox Windlass keeps its own in: they
+ * are in the user's `user` actor (server-approvals.ts), which every session of the user reaches from
+ * whichever server it runs on. `approved` is asked before the question is put, and an approval of
+ * exactly that definition for this session's project starts the server without asking; `remember` is
+ * told when the user approves and Windlass took it. Like Windlass's own record, it does not outlast a
+ * change of the definition, and it runs out 30 days after the user approved.
  */
 const serverApprovals = {
-	async approved(_meta: SessionMeta, _question: TurnServerQuestion): Promise<boolean> {
-		return false;
+	/** The approvals remembered for this session's project that have not run out, the newest first. */
+	of(c: Ctx, meta: SessionMeta): Promise<ServerApproval[]> {
+		return userActor(c, meta.uid).internalServerApprovals(projectOf(meta).key);
 	},
-	async remember(_meta: SessionMeta, _question: TurnServerQuestion): Promise<void> {},
+	async approved(c: Ctx, meta: SessionMeta, question: Pick<TurnServerQuestion, "name" | "fingerprint">): Promise<ServerApproval | null> {
+		if (question.name === "" || question.fingerprint === "") return null;
+		const approvals = await serverApprovals.of(c, meta);
+		return approvals.find((approval) => approval.name === question.name && approval.fingerprint === question.fingerprint) ?? null;
+	},
+	async remember(c: Ctx, meta: SessionMeta, question: Pick<TurnServerQuestion, "name" | "fingerprint">): Promise<void> {
+		const project = projectOf(meta);
+		await userActor(c, meta.uid).internalServerApprove({ project: project.key, label: project.label, name: question.name, fingerprint: question.fingerprint });
+	},
+	async forget(c: Ctx, meta: SessionMeta, name: string): Promise<number> {
+		return (await userActor(c, meta.uid).internalServerForget({ project: projectOf(meta).key, name })).forgotten;
+	},
 };
+
+const serverKey = (question: Pick<TurnServerQuestion, "name" | "fingerprint">) => `${question.name}:${question.fingerprint}`;
+
+/** `promise`'s value, or null when it fails or takes longer than `ms`. */
+function orNull<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	return Promise.race([promise.catch(() => null), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), ms)))]).finally(() => clearTimeout(timer));
+}
+
+/** Says that what the session knows of its project's servers, or of their approvals, changed: clients ask `servers()` again. */
+function serversChanged(c: Ctx, meta: SessionMeta): void {
+	meta.serversChangedAt = Math.max(Date.now(), (meta.serversChangedAt ?? 0) + 1);
+	publish(c);
+	void persist(c);
+}
+
+/** The layer's `onServers`: keeps what Windlass says of the project's servers, for the side panel. */
+function knowServers(c: Ctx, meta: SessionMeta, said: TurnServer[]): void {
+	const known = meta.servers ?? [];
+	const next = knownServers(known, Array.isArray(said) ? said : [], Date.now());
+	if (sameServers(known, next)) return;
+	meta.servers = next;
+	serversChanged(c, meta);
+}
+
+/** Keeps the user's yes for the session's project. A failure costs one more question in another session, and is logged. */
+function rememberServer(c: Ctx, meta: SessionMeta, question: Pick<TurnServerQuestion, "name" | "fingerprint">): Promise<void> {
+	const work = serverApprovals.remember(c, meta, question).then(
+		() => serversChanged(c, meta),
+		(error: unknown) => c.log.warn({ msg: "could not remember the approval of a project's MCP server", session: meta.sessionId, server: question.name, error: describeError(error) }),
+	);
+	return c.vars.stopping ? work : c.keepAwake(work);
+}
+
+/** When the user approved, in the words of a line: "3 days ago". */
+function ago(ms: number): string {
+	return ms < 60_000 ? "a moment ago" : `${duration(ms)} ago`;
+}
+
+/** The session's servers as the side panel shows them: what the session kept, and what the user's record says of each. */
+async function sessionServers(c: Ctx, meta: SessionMeta): Promise<SessionServers> {
+	const known = meta.servers ?? [];
+	const { sandboxes } = await getLayer();
+	// A session whose project names no server asks nobody.
+	const approvals = known.length === 0 ? [] : await serverApprovals.of(c, meta);
+	const project = projectOf(meta);
+	const context: ServerQuestionContext = { profile: sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: sandboxes.sessionsLiveInSandbox, project };
+	return serversView(project, known, approvals, forgettingWords(context), (server) => serverPanelWords(server, context));
+}
 
 /**
  * The layer's `onServerQuestion`: puts the question about a server the project's configuration names,
  * and returns the promise that `answer()`, the timeout, a stop or the turn's end settles: true to
  * start it. One asked before the prompt went (`holdsTurn`) turns the session to `waiting`, as a tool
  * call's does; one asked while the turn runs leaves it running. While a tool call's question is shown,
- * this one waits behind it.
+ * this one waits behind it. Where the user's approval of exactly this definition is remembered for the
+ * session's project, nothing is put: the answer is yes, and the turn's line says why.
  */
 async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, context: ServerQuestionContext, given: TurnServerQuestion, withdrawn: AbortSignal): Promise<boolean> {
 	const gone = () => active.closed || active.stopping || active.controller.signal.aborted || withdrawn.aborted;
@@ -1218,8 +1320,13 @@ async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, context:
 		holdsTurn: given?.holdsTurn === true,
 	};
 	if (gone()) return false;
-	if (await serverApprovals.approved(meta, question).catch(() => false)) return true;
+	// The user's own record first. Should it not answer in time, the user is asked, which is never wrong.
+	const recalled = await orNull(serverApprovals.approved(c, meta, question), RECALL_WAIT_MS);
 	if (gone()) return false;
+	if (recalled) {
+		active.recalled.set(serverKey(question), recalled);
+		return true;
+	}
 
 	const words = serverQuestionWords(question, context);
 	const now = Date.now();
@@ -1252,12 +1359,12 @@ async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, context:
 				server: { name: question.name, file: question.file, remote: argv === null, unset: question.unset, holdsTurn: question.holdsTurn },
 			},
 			timer: undefined,
+			server: { name: question.name, fingerprint: question.fingerprint },
 			answer: (answer) => {
 				if (done) return;
 				const start = answer.choice === SERVER_START;
-				// A yes gets its line when Windlass has said what became of the server (`onServerApproved`).
-				if (start) void serverApprovals.remember(meta, question).catch(() => undefined);
-				else note(c, active.number, "info", serverNotNowNote(question));
+				// A yes gets its line, and is remembered, when Windlass has said what became of the server (`onServerApproved`).
+				if (!start) note(c, active.number, "info", serverNotNowNote(question));
 				settle(start);
 			},
 			decline: () => settle(false),
@@ -1496,7 +1603,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			// Told once: with the first prompt Windlass takes in the new sandbox.
 			const fresh = meta.freshWorkspace === true;
 			// What the question about a project's server has to say depends on where this session runs.
-			const servers: ServerQuestionContext = { profile: layer.sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: layer.sandboxes.sessionsLiveInSandbox };
+			const servers: ServerQuestionContext = { profile: layer.sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: layer.sandboxes.sessionsLiveInSandbox, project: projectOf(meta) };
 			result = await layer.windlass.runTurn(sandbox, {
 				prompt: fresh ? FRESH_WORKSPACE + text : text,
 				windlassSessionId: resumed ?? undefined,
@@ -1518,8 +1625,16 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				// The project's own MCP servers, which Windlass leaves stopped until the user says otherwise.
 				onServerQuestion: (question, withdrawn) => askServer(c, meta, active, servers, question, withdrawn),
 				onServerApproved: (question, outcome) => {
-					const said = serverApprovedNote(question, outcome);
+					const named = { name: str(question?.name), fingerprint: str(question?.fingerprint) };
+					const recalled = active.recalled.get(serverKey(named));
+					const said = recalled ? serverRecalledNote(question, outcome, ago(Date.now() - recalled.approvedAt)) : serverApprovedNote(question, outcome);
 					note(c, turn, said.level, said.text);
+					// The user's yes is kept once Windlass took it: a definition that had changed, or an approval that
+					// never reached Windlass, is not one. Using a remembered approval does not renew it.
+					if (!recalled && (outcome.state === "running" || outcome.state === "starting" || outcome.state === "failed")) void rememberServer(c, meta, named);
+				},
+				onServers: (said) => {
+					if (open) knowServers(c, meta, said);
 				},
 				onControl: (control) => {
 					if (open) active.control = control;
@@ -1978,7 +2093,7 @@ export const agentSession = actor({
 				append(c, { turn, kind: "user", text, model, effort });
 				publish(c);
 
-				const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], stopping: false, closed: false };
+				const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false };
 				c.vars.turn = active;
 				active.done = c.keepAwake(runTurn(c, meta, active, text));
 				return { turn, steered: false };
@@ -2118,6 +2233,71 @@ export const agentSession = actor({
 				throw clientError(c.log, error, "The work could not be pushed. Try again.");
 			} finally {
 				c.vars.publishing = false;
+			}
+		},
+
+		servers: async (c): Promise<SessionServers> => {
+			requireUser(c);
+			const meta = liveMeta(c);
+			try {
+				return await sessionServers(c, meta);
+			} catch (error) {
+				throw clientError(c.log, error, "The project's MCP servers could not be read.");
+			}
+		},
+
+		approveServer: async (c, input: { name: string; fingerprint: string }): Promise<SessionServers> => {
+			requireUser(c);
+			const meta = liveMeta(c);
+			if (typeof input !== "object" || input === null || typeof input.name !== "string" || input.name === "" || typeof input.fingerprint !== "string" || input.fingerprint === "") {
+				throw new UserError("Say which server to approve, and which definition of it.", { code: "bad_server" });
+			}
+			const server = (meta.servers ?? []).find((candidate) => candidate.name === input.name);
+			if (!server) throw new UserError("This session's project no longer names an MCP server of that name.", { code: "server_gone" });
+			// The approval is of the definition the user was shown: one the session has since seen change, start or go is not it.
+			if (server.state !== "waiting" || server.fingerprint !== input.fingerprint) {
+				throw new UserError(`The MCP server "${server.name}" no longer waits with the definition shown here. Read the list again and look at it once more.`, { code: "server_changed" });
+			}
+			try {
+				const active = c.vars.turn;
+				// A question about exactly this definition is open: this answers it, and the server starts now.
+				const asked = active && !active.stopping && !active.closed ? [active.question, ...active.aside].find((candidate) => candidate?.server?.name === server.name && candidate.server.fingerprint === input.fingerprint) : undefined;
+				if (active && asked) {
+					if (active.question === asked) {
+						takeQuestion(c, meta, active);
+						publish(c);
+						void persist(c);
+					}
+					asked.answer({ choice: SERVER_START });
+				} else {
+					// No Windlass runs between turns, and one that runs has asked about this definition already: the
+					// approval is kept, and the next turn's Windlass is told of it before its prompt goes.
+					await serverApprovals.remember(c, meta, { name: server.name, fingerprint: input.fingerprint });
+					note(c, meta.turns, "info", serverPanelApprovedNote(server));
+					serversChanged(c, meta);
+				}
+				return await sessionServers(c, meta);
+			} catch (error) {
+				throw clientError(c.log, error, "The approval could not be remembered. Try again.");
+			}
+		},
+
+		forgetServer: async (c, input: { name: string }): Promise<SessionServers> => {
+			requireUser(c);
+			const meta = liveMeta(c);
+			if (typeof input !== "object" || input === null || typeof input.name !== "string" || input.name === "" || input.name.length > 200) {
+				throw new UserError("Say which server's approval to forget.", { code: "bad_server" });
+			}
+			try {
+				const forgotten = await serverApprovals.forget(c, meta, input.name);
+				if (forgotten > 0) {
+					const { sandboxes } = await getLayer();
+					note(c, meta.turns, "info", serverForgottenNote({ name: input.name }, { dataInSandbox: sandboxes.sessionsLiveInSandbox }));
+					serversChanged(c, meta);
+				}
+				return await sessionServers(c, meta);
+			} catch (error) {
+				throw clientError(c.log, error, "The approval could not be forgotten. Try again.");
 			}
 		},
 

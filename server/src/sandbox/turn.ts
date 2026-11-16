@@ -49,7 +49,9 @@
  * user allowed. A server approved then is running, and in the model's list of tools, at the turn's
  * first step. One that Windlass reports later (`_windlass/mcp_changed`) is asked about while the turn
  * runs: approved, it starts at once, its tools can be called at once, and the model is told of them at
- * its next step. The approval itself is Windlass's to remember, in its data directory in the sandbox.
+ * its next step. Windlass remembers the approval itself, in its data directory in the sandbox, and
+ * from then on starts the server without reporting it as waiting. What it says of the project's
+ * servers at each of these moments is handed on as it comes (`onServers`), for whoever shows them.
  *
  * When a turn fails, what the failure means is read from the stable code Windlass gives it, not from
  * the words of its message: the code on the error the engine answered with (`data.windlass.code`,
@@ -60,7 +62,7 @@
  */
 
 import type { WindlassEvent } from "../contract.js";
-import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnControl, TurnQuestion, TurnServerOutcome, TurnServerQuestion, Windlass } from "./api.js";
+import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnControl, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, Windlass } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
 import { ACCESS_TOKEN_FILE_ENV, type Failure, OUTDATED_SANDBOX, WindlassOutdatedError, handedInFailure, handedInProblem, handedInProblemInWords, tokenRanOut, tokenSourceFailure } from "./handoff.js";
@@ -814,7 +816,7 @@ class Turn {
 	 * cannot say leaves the turn as it was before the platform asked: such servers stay stopped.
 	 */
 	private async askAboutServers(): Promise<void> {
-		if (this.input.onServerQuestion === undefined) return;
+		if (this.input.onServerQuestion === undefined && this.input.onServers === undefined) return;
 		try {
 			this.serversSaid(await this.peer.request(EXT.mcp, { sessionId: this.session }, { timeoutMs: SERVERS_TIMEOUT_MS }));
 		} catch (error) {
@@ -839,7 +841,13 @@ class Turn {
 		if (servers === null) return;
 		this.servers = servers;
 		for (const wake of [...this.serverWaiters]) wake();
-		if (this.input.onServerQuestion === undefined || this.over) return;
+		if (this.over) return;
+		try {
+			this.input.onServers?.(servers.flatMap(describeServer));
+		} catch {
+			// A listener's failure must not stop the turn.
+		}
+		if (this.input.onServerQuestion === undefined) return;
 		for (const server of servers) {
 			if (server.state !== "awaiting_approval" || server.fingerprint === null) continue;
 			const key = `${server.name}:${server.fingerprint}`;
@@ -1171,6 +1179,19 @@ interface ServerState {
 	file: string | null;
 	/** Of the definition that waits (`question.fingerprint`); null when none does. */
 	fingerprint: string | null;
+	/** "user": only the user's own configuration defines it. "project": the project's file names or changes it. Null when Windlass did not say. */
+	origin: string | null;
+}
+
+/**
+ * A server as the layer's callers are told of it (`RunTurnInput.onServers`): the project's own only.
+ * One the project's file switches off is left out, as Windlass leaves it out, and one that only a
+ * configuration file of the sandbox's user defines is not the project's to list.
+ */
+function describeServer(server: ServerState): TurnServer[] {
+	if (server.origin === "user" || server.state === "disabled") return [];
+	const state = server.state === "awaiting_approval" ? "waiting" : server.state === "running" || server.state === "starting" || server.state === "failed" ? server.state : "stopped";
+	return [{ name: server.name, state, argv: server.argv, url: server.argv === null ? server.target : null, file: server.file, tools: server.tools, error: server.error, fingerprint: server.fingerprint }];
 }
 
 /** The servers in an answer to `_windlass/mcp` or `_windlass/mcp_approve`, or in `_windlass/mcp_changed`; null when it has none. */
@@ -1178,7 +1199,7 @@ function serversOf(raw: unknown): ServerState[] | null {
 	const servers = (raw as { servers?: unknown } | null | undefined)?.servers;
 	if (!Array.isArray(servers)) return null;
 	return servers.flatMap((item: unknown) => {
-		const server = item as { name?: unknown; state?: unknown; argv?: unknown; target?: unknown; tools?: unknown; error?: unknown; file?: unknown; question?: { fingerprint?: unknown } | null };
+		const server = item as { name?: unknown; state?: unknown; argv?: unknown; target?: unknown; tools?: unknown; error?: unknown; file?: unknown; origin?: unknown; question?: { fingerprint?: unknown } | null };
 		if (typeof server?.name !== "string" || typeof server.state !== "string") return [];
 		return [
 			{
@@ -1190,6 +1211,7 @@ function serversOf(raw: unknown): ServerState[] | null {
 				error: typeof server.error === "string" && server.error !== "" ? server.error : null,
 				file: typeof server.file === "string" && server.file !== "" ? server.file : null,
 				fingerprint: typeof server.question?.fingerprint === "string" && server.question.fingerprint !== "" ? server.question.fingerprint : null,
+				origin: typeof server.origin === "string" ? server.origin : null,
 			},
 		];
 	});

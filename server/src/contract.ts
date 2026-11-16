@@ -208,6 +208,13 @@ export interface SessionSummary {
 	lastOutcome: TurnOutcome | null;
 	/** Whether the sandbox exists and whether it is running or paused. */
 	sandbox: "none" | "running" | "paused";
+	/**
+	 * Set once Windlass has told the session of MCP servers its project's configuration names: how many,
+	 * and when what the session knows of them last changed (a server started, failed, came to wait, an
+	 * approval was remembered or forgotten here). A client asks `servers()` again when `changedAt` moves.
+	 * Absent for a session whose project names none.
+	 */
+	servers?: { count: number; changedAt: number };
 }
 
 export interface CreateSessionInput {
@@ -539,6 +546,69 @@ export interface QuestionServer {
 	holdsTurn: boolean;
 }
 
+/** How a session last knew a server of its project. A server lives with the Windlass process of a turn: between turns none runs. */
+export type SessionServerState =
+	/** Windlass started it (or reaches it). It starts again with each turn while an approval of it holds. */
+	| "running"
+	/** Approved, and it had not finished starting when the session last heard. */
+	| "starting"
+	/** Not started: it waits for the user's approval of exactly this definition. */
+	| "waiting"
+	/** Approved, and it could not start; `reason` says why. */
+	| "failed"
+	| "stopped";
+
+/** An MCP server the configuration of a session's project names, as the session last heard of it from Windlass. */
+export interface SessionServer {
+	name: string;
+	/** What approving starts, as a question shows it: the command with its arguments, or the address it is reached at. */
+	subject: string;
+	/** True when it is reached at an address and nothing is started. */
+	remote: boolean;
+	/** The file that defines it, as a path in the sandbox; null when Windlass named none. */
+	file: string | null;
+	state: SessionServerState;
+	/** How many tools it offers, once it runs. */
+	tools: number | null;
+	/** Why it could not start, in Windlass's own words. */
+	reason: string | null;
+	/**
+	 * Windlass's mark for the definition the session last saw wait for approval, which is what
+	 * `approveServer` takes. Null when the session never saw the server wait: Windlass started it from a
+	 * record of its own.
+	 */
+	fingerprint: string | null;
+	/** When the session last heard something new of it, ms since the epoch. */
+	at: number;
+	/** The user's remembered approval of this definition for the session's project: when they approved, and until when it holds. */
+	approval: { approvedAt: number; expiresAt: number } | null;
+	/**
+	 * Set when `approval` is null and the user's newest remembered approval of a server of this name for
+	 * the project is of another definition: the definition changed since they approved, which is why it
+	 * is asked about again. `forgetServer` forgets that one too.
+	 */
+	earlier?: { approvedAt: number; expiresAt: number } | null;
+	/**
+	 * Set for a server that waits and has no remembered approval: the question about it as the panel
+	 * puts it before `approveServer`, in the words of the question a turn would put (`PendingQuestion`),
+	 * for an approval given between turns.
+	 */
+	asks?: { title: string; details: string[] };
+}
+
+/** What the side panel shows of the MCP servers a session's project names. */
+export interface SessionServers {
+	/**
+	 * What an approval is remembered for: the session's repository ("github": `label` is "owner/name";
+	 * "address": the pasted address without its scheme), or, for a session with no repository, the
+	 * session itself.
+	 */
+	project: { kind: "github" | "address" | "session"; label: string };
+	servers: SessionServer[];
+	/** What forgetting an approval does and does not do where this session runs, in a sentence or two. */
+	forgetting: string;
+}
+
 export interface SessionSnapshot {
 	summary: SessionSummary;
 	profile: SandboxProfile;
@@ -612,6 +682,26 @@ export interface AgentSessionActions {
 	 * write access, a protected branch) or `publish_failed`.
 	 */
 	publish(input: { message: PublishMessage }): Promise<PublishResult>;
+	/**
+	 * The MCP servers the session's project names, each as the session last heard of it, with the
+	 * user's remembered approval where there is one. Never starts a sandbox: it reads what the session
+	 * kept and asks the user's own record.
+	 */
+	servers(): Promise<SessionServers>;
+	/**
+	 * Approves a server that waits, by the fingerprint `servers()` gave for it, and remembers that for
+	 * the session's project. While a question about that definition is open, this answers it and the
+	 * server starts at once; otherwise nothing runs to start it in, and it starts with the next turn,
+	 * unasked. Throws a UserError with code `server_gone` when the session knows no such server, and
+	 * `server_changed` when it does not wait with that fingerprint (any more).
+	 */
+	approveServer(input: { name: string; fingerprint: string }): Promise<SessionServers>;
+	/**
+	 * Forgets the user's remembered approvals of that server for the session's project. It holds for
+	 * the next session and the next sandbox (`SessionServers.forgetting` says what stays); no server is
+	 * stopped. Resolves when nothing was remembered, too.
+	 */
+	forgetServer(input: { name: string }): Promise<SessionServers>;
 }
 
 export interface AgentSessionEvents {

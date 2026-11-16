@@ -19,6 +19,12 @@
  * credential, because there is none to keep. What the platform does at GitHub it does with a token of
  * the installation, which any server asks for when it needs one and then drops. Beside it, the numbers
  * of connections that were begun and not yet finished, each good once.
+ *
+ * And the user's approvals of MCP servers that projects name (server-approvals.ts), one row each: the
+ * project, the server's name, Windlass's fingerprint of its definition, when the user approved and
+ * until when that holds. The user's sessions are actors of their own, on whichever servers, and each
+ * asks here before it puts the question; no session and no server keeps a copy. The rows are plain:
+ * they name repositories and servers, and hold no credential.
  */
 
 import { randomBytes } from "node:crypto";
@@ -45,6 +51,7 @@ import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, ver
 import { getLayer } from "../layer.js";
 import { platformModels } from "../platform-info.js";
 import type { ChatgptAccount } from "../sandbox/api.js";
+import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../signin/directory.js";
 import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
 import { getSignIns } from "../signin/index.js";
@@ -67,6 +74,8 @@ interface UserVars {
 	signIn: Promise<SignInHolder> | null;
 	/** The database as the action that is running now has it: what the holder's store reads and writes. */
 	signInDb: RawAccess | null;
+	/** The user's remembered approvals of projects' MCP servers, as the table has them. */
+	approvals: ApprovalBook;
 	/** The user's GitHub connection; null when there is none. */
 	github: StoredConnection | null;
 }
@@ -223,6 +232,49 @@ async function rememberPending(c: UserCtx, nonce: string, verifier: string | nul
 	await c.db.execute("INSERT INTO github_nonce (nonce, kind, verifier, expires_at) VALUES (?, 'state', ?, ?)", nonce, verifier, now + STATE_TTL_MS);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Approvals of projects' MCP servers
+// ---------------------------------------------------------------------------------------------
+
+type ApprovalRow = { project: string; label: string; name: string; fingerprint: string; approved_at: number; expires_at: number };
+
+async function readApprovals(db: RawAccess): Promise<ServerApproval[]> {
+	const rows = await db.execute<ApprovalRow>("SELECT project, label, name, fingerprint, approved_at, expires_at FROM server_approval");
+	return rows.map((row) => ({ project: row.project, label: row.label, name: row.name, fingerprint: row.fingerprint, approvedAt: row.approved_at, expiresAt: row.expires_at }));
+}
+
+/**
+ * Makes a change to the book and to the table. The book changes first, in one step, so two calls
+ * cannot both decide from the same rows; if the table cannot be written, the book is read from it
+ * again and the call fails: what is remembered is what is stored.
+ */
+async function changeApprovals(c: UserCtx, change: (book: ApprovalBook) => BookChange): Promise<BookChange> {
+	const done = change(c.vars.approvals);
+	try {
+		for (const row of done.removed) await c.db.execute("DELETE FROM server_approval WHERE project = ? AND name = ? AND fingerprint = ?", row.project, row.name, row.fingerprint);
+		for (const row of done.added) {
+			await c.db.execute(
+				"INSERT OR REPLACE INTO server_approval (project, label, name, fingerprint, approved_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+				row.project,
+				row.label,
+				row.name,
+				row.fingerprint,
+				row.approvedAt,
+				row.expiresAt,
+			);
+		}
+	} catch (error) {
+		c.vars.approvals = new ApprovalBook(await readApprovals(c.db).catch(() => []), config.serverApprovalTtlMs);
+		throw error;
+	}
+	return done;
+}
+
+/** A project's key and a server's name or fingerprint, as a session hands them over: text of a sane length, or nothing. */
+function approvalText(value: unknown, max: number): string {
+	return typeof value === "string" && value.length <= max ? value : "";
+}
+
 export function cleanTitle(title: unknown): string | null {
 	if (typeof title !== "string") return null;
 	const clean = title.replace(/\s+/g, " ").trim();
@@ -298,6 +350,19 @@ export const user = actor({
 					expires_at INTEGER NOT NULL
 				)
 			`);
+			// The approvals of MCP servers that projects name (server-approvals.ts): one per project, server and
+			// definition, good until `expires_at`. `label` is the project in words, for a reader of the table.
+			await db.execute(`
+				CREATE TABLE IF NOT EXISTS server_approval (
+					project TEXT NOT NULL,
+					name TEXT NOT NULL,
+					fingerprint TEXT NOT NULL,
+					label TEXT NOT NULL,
+					approved_at INTEGER NOT NULL,
+					expires_at INTEGER NOT NULL,
+					PRIMARY KEY (project, name, fingerprint)
+				)
+			`);
 		},
 	}),
 
@@ -313,7 +378,8 @@ export const user = actor({
 		const [held] = await c.db.execute<{ id: number }>("SELECT id FROM signin WHERE id = 1");
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
-		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, signIn: null, signInDb: null, github };
+		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
+		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, signIn: null, signInDb: null, approvals, github };
 	},
 
 	events: {
@@ -493,6 +559,8 @@ export const user = actor({
 				}
 			}
 			await c.db.execute("DELETE FROM sessions WHERE id = ?", id);
+			// A session with no repository was its own project: what was approved for it goes with it.
+			await changeApprovals(c, (book) => book.forgetProject(sessionProjectKey(id))).catch((error) => c.log.warn({ msg: "could not forget the deleted session's approvals of MCP servers", session: id, error: String(error) }));
 			broadcastSessions(c);
 		},
 
@@ -615,6 +683,43 @@ export const user = actor({
 		internalGithubConnection: (c): StoredConnection | null => {
 			requireService(c);
 			return c.vars.github;
+		},
+
+		// --- approvals of projects' MCP servers, for the user's sessions (server-approvals.ts) -----
+
+		internalServerApprovals: async (c, project: string): Promise<ServerApproval[]> => {
+			requireService(c);
+			const now = Date.now();
+			// What has run out is dropped when somebody looks: nothing is scheduled for it.
+			await changeApprovals(c, (book) => book.prune(now));
+			return c.vars.approvals.of(approvalText(project, 600), now);
+		},
+
+		internalServerApprove: async (c, input: { project: string; label: string; name: string; fingerprint: string }): Promise<ServerApproval[]> => {
+			requireService(c);
+			const project = approvalText(input?.project, 600);
+			const name = approvalText(input?.name, 200);
+			const fingerprint = approvalText(input?.fingerprint, 200);
+			if (project === "" || name === "" || fingerprint === "") throw new UserError("That approval names no project, server or definition.", { code: "bad_input" });
+			const now = Date.now();
+			await changeApprovals(c, (book) => {
+				const pruned = book.prune(now);
+				const approved = book.approve({ project, label: approvalText(input.label, 600), name, fingerprint }, now);
+				return { added: approved.added, removed: [...pruned.removed, ...approved.removed] };
+			});
+			console.log(`[wlp] server.approval_remembered uid=${c.key[0]} project=${project} server=${name}`);
+			return c.vars.approvals.of(project, now);
+		},
+
+		internalServerForget: async (c, input: { project: string; name: string }): Promise<{ forgotten: number; approvals: ServerApproval[] }> => {
+			requireService(c);
+			const project = approvalText(input?.project, 600);
+			const name = approvalText(input?.name, 200);
+			const now = Date.now();
+			const done = await changeApprovals(c, (book) => book.forget(project, name));
+			const forgotten = done.removed.filter((row) => row.expiresAt > now).length;
+			if (done.removed.length > 0) console.log(`[wlp] server.approval_forgotten uid=${c.key[0]} project=${project} server=${name}`);
+			return { forgotten, approvals: c.vars.approvals.of(project, now) };
 		},
 
 		// --- the sign-in, for the servers (signin/directory.ts) -----------------------------------

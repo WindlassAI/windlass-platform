@@ -20,6 +20,13 @@
  *   - that a definition which reads a variable that is not set is named in the question, and reported
  *     with Windlass's own sentence when it is approved all the same;
  *   - where an approval is remembered on Docker (the user's data volume, so the user's other sessions);
+ *   - what the layer says of the project's servers as a turn goes (`onServers`), which is what a
+ *     session's panel lists;
+ *   - and the platform's own memory of an approval (server/src/server-approvals.ts), where each sandbox
+ *     keeps Windlass's data to itself as on E2B: a second session on the same repository and a sandbox
+ *     that replaces one are not asked and the server runs; a changed definition, another user, another
+ *     repository that names the server the same way, the next session after forgetting, and an
+ *     approval past its 30 days are asked;
  *   - that a turn stopped under the question ends without having started;
  *   - and, with a stand-in for the engine, what the layer does with a server reported while the turn
  *     runs, beside a tool call's question, and with a definition that changes under its question.
@@ -34,13 +41,14 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SandboxProfileId, WindlassEvent } from "../server/src/contract.js";
-import type { RunTurnResult, ScriptedModel, TurnQuestion, TurnServerOutcome, TurnServerQuestion, Windlass } from "../server/src/sandbox/api.js";
+import type { RunTurnResult, ScriptedModel, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, Windlass } from "../server/src/sandbox/api.js";
 import { DATA_DIR, IMAGE, LABEL_ARG, docker, randomId } from "../server/src/sandbox/docker.js";
 import { createSandboxLayer } from "../server/src/sandbox/index.js";
 import type { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { variablesRead } from "../server/src/sandbox/turn.js";
 import { DockerWindlass } from "../server/src/sandbox/windlass.js";
-import { serverApprovedNote, serverNotNowNote, serverQuestionWords } from "../server/src/server-question.js";
+import { APPROVAL_TTL_MS, ApprovalBook, type ApprovalProject, type ServerApproval, knownServers, projectOf, serversView } from "../server/src/server-approvals.js";
+import { forgettingWords, serverApprovedNote, serverForgottenNote, serverNotNowNote, serverPanelWords, serverQuestionWords, serverRecalledNote } from "../server/src/server-question.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = join(root, "fixtures/mcp-repo");
@@ -49,6 +57,8 @@ const run = randomId(3);
 const uid = `mcp-${run}`;
 const uidOther = `mcp-${run}-b`;
 const created = new Set<string>();
+/** Every Docker user a sandbox was made for: each has a data volume to remove. */
+const users = new Set<string>([uid, uidOther]);
 let failures = 0;
 let passes = 0;
 
@@ -84,6 +94,7 @@ function fixtureFiles(directory = FIXTURE): Array<{ path: string; content: strin
 
 /** A sandbox whose workspace holds the fixture repository. */
 async function sandbox(user: string, profile: SandboxProfileId, sessionId: string): Promise<DockerSandboxHandle> {
+	users.add(user);
 	await layer.logins.ensureUserVolume(user);
 	const id = await layer.sandboxes.create({ uid: user, sessionId, profile });
 	created.add(id);
@@ -122,6 +133,8 @@ interface TurnRun {
 	asked: Asked[];
 	outcomes: Array<{ question: TurnServerQuestion; outcome: TurnServerOutcome }>;
 	toolQuestions: TurnQuestion[];
+	/** What the layer said of the project's servers, each time it said it. */
+	servers: TurnServer[][];
 }
 interface TurnOptions {
 	windlassSessionId?: string;
@@ -140,6 +153,7 @@ async function turn(handle: DockerSandboxHandle, prompt: string, script: Scripte
 	const asked: Asked[] = [];
 	const outcomes: TurnRun["outcomes"] = options.outcomes ?? [];
 	const toolQuestions: TurnQuestion[] = [];
+	const servers: TurnServer[][] = [];
 	const answerServer = options.server;
 	const result = await (options.windlass ?? layer.windlass).runTurn(handle, {
 		prompt,
@@ -159,8 +173,9 @@ async function turn(handle: DockerSandboxHandle, prompt: string, script: Scripte
 						return answerServer(question, signal);
 					},
 		onServerApproved: (question, outcome) => outcomes.push({ question, outcome }),
+		onServers: (list) => servers.push(list),
 	});
-	return { result, events, asked, outcomes, toolQuestions };
+	return { result, events, asked, outcomes, toolQuestions, servers };
 }
 
 const dataOf = (event: WindlassEvent | undefined) => (event?.data ?? {}) as Record<string, unknown>;
@@ -264,7 +279,7 @@ async function main(): Promise<void> {
 	let sessionId: string | undefined;
 	let approvedPrint = "";
 	const strict = layer.sandboxes.profile("docker-windlass-sandbox");
-	const context = { profile: strict, demo: true, dataInSandbox: layer.sandboxes.sessionsLiveInSandbox };
+	const context = { profile: strict, demo: true, dataInSandbox: layer.sandboxes.sessionsLiveInSandbox, project: projectOf({ sessionId: "mcp-strict", repoUrl: null }) };
 
 	await section("docker-windlass-sandbox: the question, and both answers", async () => {
 		const handle = await sandbox(uid, "docker-windlass-sandbox", "mcp-strict");
@@ -286,6 +301,12 @@ async function main(): Promise<void> {
 		);
 		expect("it is put before the prompt goes: Windlass has not begun the turn, and the turn waits for the answer", first.question.holdsTurn === true && !first.executionBegan, `${first.eventsBefore} event(s) before it, none of an execution`);
 		expect("no variable is reported for a definition that reads none", first.question.unset.length === 0);
+		const waits = declined.servers[0]?.[0];
+		expect(
+			"the layer says what the project names before the question is put: the server waits, with the fingerprint of its definition",
+			declined.servers.length >= 1 && declined.servers[0]?.length === 1 && waits?.name === "harbor" && waits.state === "waiting" && waits.fingerprint === first.question.fingerprint && JSON.stringify(waits.argv) === JSON.stringify(first.question.argv) && waits.file === first.question.file,
+			JSON.stringify(declined.servers[0]),
+		);
 		const words = serverQuestionWords(first.question, context);
 		info(`the question as a demo session on this profile reads it: ${words.title}`);
 		info(`  ${words.subject}`);
@@ -305,6 +326,11 @@ async function main(): Promise<void> {
 		expect("the model's first request of that turn has the server's tools", told !== null && told.includes("harbor (2 tools)") && told.includes("- berth:"), told?.split("\n").slice(-4, -1).join(" | ") ?? "no list of tools before the first model call");
 		expect("the model calls a tool of the server in that turn", outcomeOf(approved) === "succeeded" && mcpOutcome(approved, "a1") === "result" && outputOf(approved, "a1").includes("Berth 4 is free for Ada."), outputOf(approved, "a1").split("\n").at(-1));
 		expect("in this profile Windlass asks before each call of an MCP tool, through the question the platform already puts", approved.toolQuestions.length === 1 && approved.toolQuestions[0]?.title === "Allow the MCP tool harbor/berth?", approved.toolQuestions[0]?.title);
+		const ran = approved.servers.at(-1)?.[0];
+		expect("and the layer says so when the server runs: its state, its tools, and no fingerprint any more", approved.servers[0]?.[0]?.state === "waiting" && ran?.state === "running" && ran.tools === 2 && ran.fingerprint === null, approved.servers.map((list) => list.map((server) => server.state).join(",")).join(" > "));
+		// What a session keeps of that for its panel: the fingerprint the server waited with stays with it while its command does.
+		const kept = approved.servers.reduce((known, list) => knownServers(known, list, Date.now()), knownServers([], declined.servers.at(-1) ?? [], Date.now()));
+		expect("a session that folds these keeps the definition the server was approved with", kept.length === 1 && kept[0]?.state === "running" && kept[0].tools === 2 && kept[0].fingerprint === first.question.fingerprint && kept[0].subject === "python3 tools/harbor_mcp.py", JSON.stringify(kept));
 		approvedPrint = first.question.fingerprint;
 
 		// A later message: not asked again, and the tool is there.
@@ -316,6 +342,7 @@ async function main(): Promise<void> {
 			{ windlassSessionId: sessionId, server: () => true },
 		);
 		expect("a later message does not ask again: Windlass remembers the approval", later.asked.length === 0 && later.outcomes.length === 0);
+		expect("and the layer says the server runs, though nobody was asked", later.servers.length >= 1 && later.servers.at(-1)?.[0]?.state === "running" && later.servers.every((list) => list.every((server) => server.fingerprint === null)), later.servers.map((list) => list.map((server) => server.state).join(",")).join(" > "));
 		expect("and the model calls the server's tool in it", outcomeOf(later) === "succeeded" && mcpOutcome(later, "l1") === "result", outputOf(later, "l1").split("\n").slice(1).join(" | "));
 		const reach = outputOf(later, "l1");
 		const command = outputOf(later, "l2");
@@ -375,6 +402,160 @@ async function main(): Promise<void> {
 		expect("and another user's session is asked", other.asked.length === 1 && mcpOutcome(other, "x1") === "refused");
 	});
 
+	await section("the platform's own memory of an approval, where each sandbox keeps Windlass's data to itself (as on E2B)", async () => {
+		// On Docker Windlass's data is a volume of the sandbox's user, which is what makes its own record reach
+		// every session there. A Docker user per sandbox gives each a data directory of its own, as a microVM has,
+		// so that what is seen here is the platform's memory and not Windlass's.
+		let disks = 0;
+		const disk = (sessionId: string) => sandbox(`mcp-${run}-d${(disks += 1)}`, "docker-windlass-sandbox", sessionId);
+		/** The platform's users, each with the book their `user` actor keeps (server-approvals.ts). */
+		const books = new Map<string, ApprovalBook>();
+		const bookOf = (user: string) => books.get(user) ?? (books.set(user, new ApprovalBook()), books.get(user) as ApprovalBook);
+		/** The platform's clock, which a check moves. */
+		let now = Date.now();
+		const DAY = 24 * 60 * 60 * 1000;
+		interface Remembered extends TurnRun {
+			/** The definitions Windlass reported as waiting, the ones put to the user, and the ones answered from the book. */
+			reported: TurnServerQuestion[];
+			put: TurnServerQuestion[];
+			recalled: ServerApproval[];
+			/** The timeline's lines about servers, as the session writes them. */
+			lines: string[];
+		}
+		/**
+		 * One turn as the session actor runs it (actors/agent-session.ts, `askServer` and `onServerApproved`):
+		 * the user's book is asked before the question is put, an approval of exactly this definition for the
+		 * project answers it, and the user's own yes is kept once Windlass took it.
+		 */
+		const remembering = async (user: string, project: ApprovalProject, handle: DockerSandboxHandle, prompt: string, script: ScriptedModel, answer: boolean, windlassSessionId?: string): Promise<Remembered> => {
+			const book = bookOf(user);
+			const reported: TurnServerQuestion[] = [];
+			const put: TurnServerQuestion[] = [];
+			const recalled = new Map<string, ServerApproval>();
+			const found = await turn(handle, prompt, script, {
+				windlassSessionId,
+				server: (question) => {
+					reported.push(question);
+					const approval = book.find(project.key, question.name, question.fingerprint, now);
+					if (approval) {
+						recalled.set(`${question.name}:${question.fingerprint}`, approval);
+						return true;
+					}
+					put.push(question);
+					return answer;
+				},
+			});
+			const lines: string[] = [];
+			for (const { question, outcome } of found.outcomes) {
+				const approval = recalled.get(`${question.name}:${question.fingerprint}`);
+				if (approval) {
+					const days = Math.round((now - approval.approvedAt) / DAY);
+					lines.push(serverRecalledNote(question, outcome, now - approval.approvedAt < 60_000 ? "a moment ago" : days === 1 ? "1 day ago" : `${days} days ago`).text);
+				} else {
+					lines.push(serverApprovedNote(question, outcome).text);
+					if (outcome.state === "running" || outcome.state === "starting" || outcome.state === "failed") book.approve({ project: project.key, label: project.label, name: question.name, fingerprint: question.fingerprint }, now);
+				}
+			}
+			return { ...found, reported, put, recalled: [...recalled.values()], lines };
+		};
+		const berth = (callId: string, ship: string) => scripted(mcp(callId, "berth", { ship }), say("Berth 4."));
+		/** Windlass's own record in a sandbox: how many files of its approvals name the server. */
+		const ownRecords = async (handle: DockerSandboxHandle) => (await handle.run(`grep -l 'mcp-server:harbor:' ${DATA_DIR}/approvals/*.json 2>/dev/null | wc -l`)).stdout.trim();
+
+		// The projects: a repository of the GitHub connection is known by GitHub's id, a pasted one by its address, and a session without one is its own.
+		const harborRepo = projectOf({ sessionId: "s-1", repoUrl: "https://github.com/acme/harbor.git", repo: { id: 7101, owner: "acme", name: "harbor" } });
+		const renamed = projectOf({ sessionId: "s-9", repoUrl: "https://github.com/acme/quay.git", repo: { id: 7101, owner: "acme", name: "quay" } });
+		const lighthouse = projectOf({ sessionId: "s-5", repoUrl: "https://github.com/acme/lighthouse.git", repo: { id: 7102, owner: "acme", name: "lighthouse" } });
+		const pasted = projectOf({ sessionId: "s-6", repoUrl: "https://example.com/acme/harbor.git" });
+		const alone = projectOf({ sessionId: "s-7", repoUrl: null });
+		expect(
+			"a project is the GitHub repository by its id (a rename keeps it), the pasted address, or the session itself",
+			harborRepo.key === "github:7101" && renamed.key === harborRepo.key && renamed.label === "acme/quay" && lighthouse.key === "github:7102" && pasted.key === "address:https://example.com/acme/harbor.git" && pasted.label === "example.com/acme/harbor.git" && alone.key === "session:s-7" && projectOf({ sessionId: "s-8", repoUrl: null }).key !== alone.key,
+			[harborRepo, renamed, lighthouse, pasted, alone].map((project) => `${project.key} ("${project.label}")`).join(", "),
+		);
+
+		// The first session of ada on acme/harbor: asked, and her yes is remembered.
+		const first = await disk("s-1");
+		const asked = await remembering("ada", harborRepo, first, "Which berth is free for Ada?", berth("p1", "Ada"), true);
+		const print = asked.put[0]?.fingerprint ?? "";
+		expect("the first session on a repository is asked, and the yes starts the server", asked.put.length === 1 && asked.recalled.length === 0 && asked.outcomes[0]?.outcome.state === "running" && mcpOutcome(asked, "p1") === "result", asked.lines.join(" | "));
+		const record = bookOf("ada").find(harborRepo.key, "harbor", print, now);
+		expect("the platform remembers it for that user, repository and definition, for 30 days", record !== null && record.expiresAt - record.approvedAt === APPROVAL_TTL_MS && bookOf("ada").all().length === 1, JSON.stringify(record));
+		const words = serverQuestionWords(asked.put[0] as TurnServerQuestion, { profile: strict, demo: false, dataInSandbox: true, project: harborRepo });
+		info("the question as a session whose sandbox keeps Windlass's data to itself reads it:");
+		for (const detail of words.details) info(`  ${detail}`);
+
+		// A second session on the same repository, in a sandbox of its own.
+		const second = await disk("s-2");
+		expect("a new sandbox has no record of Windlass's own", (await ownRecords(second)) === "0", `${await ownRecords(second)} file(s)`);
+		now += 3 * DAY;
+		const again = await remembering("ada", harborRepo, second, "Which berth is free for Bea?", berth("p2", "Bea"), false);
+		expect(
+			"a second session on the same repository is not asked: Windlass reports the server as waiting, and the platform approves it from the user's record",
+			again.reported.length === 1 && again.reported[0]?.fingerprint === print && again.put.length === 0 && again.recalled.length === 1 && again.reported[0]?.holdsTurn === true && !again.asked[0]?.executionBegan,
+			`${again.reported.length} reported, ${again.put.length} put to the user`,
+		);
+		const told = toolsBeforeFirstStep(again);
+		expect("and the server runs: the model's first request has its tools, and it calls one", again.outcomes[0]?.outcome.state === "running" && told !== null && told.includes("harbor (2 tools)") && mcpOutcome(again, "p2") === "result" && outputOf(again, "p2").includes("Berth 4 is free for Bea."), outputOf(again, "p2").split("\n").at(-1));
+		expect("the timeline's line says why nobody was asked, and when the user approved", again.lines.length === 1 && again.lines[0] === 'Started the MCP server "harbor" because you approved it for this project 3 days ago: 2 tools. The agent has them from this turn on.', again.lines[0]);
+		expect("using the record does not renew it", bookOf("ada").find(harborRepo.key, "harbor", print, now)?.approvedAt === record?.approvedAt);
+		const panel = serversView(harborRepo, again.servers.reduce((known, list) => knownServers(known, list, now), knownServers([], [], now)), bookOf("ada").of(harborRepo.key, now), forgettingWords({ dataInSandbox: true }), (server) => serverPanelWords(server, { profile: strict, demo: false, dataInSandbox: true, project: harborRepo }));
+		expect(
+			"what that session's panel lists: the server, running with its tools, and the approval with the day it runs out",
+			panel.servers.length === 1 && panel.servers[0]?.state === "running" && panel.servers[0].tools === 2 && panel.servers[0].approval?.expiresAt === record?.expiresAt && panel.project.label === "acme/harbor",
+			JSON.stringify(panel.servers[0]),
+		);
+
+		// The first session's sandbox is lost and replaced: a new disk, the same session.
+		await layer.sandboxes.destroy(first.id);
+		created.delete(first.id);
+		const replaced = await disk("s-1");
+		const after = await remembering("ada", harborRepo, replaced, "Which berth is free for Cy?", berth("p3", "Cy"), false);
+		expect("a sandbox that replaces a lost one is not asked, in the middle of the conversation the server was approved in", after.reported.length === 1 && after.put.length === 0 && after.outcomes[0]?.outcome.state === "running" && mcpOutcome(after, "p3") === "result", after.lines.join(" | "));
+
+		// A changed definition in the second session.
+		await define(second, { command: "python3", args: ["tools/harbor_mcp.py", "--berths", "12"] });
+		const changed = await remembering("ada", harborRepo, second, "Which berth is free for Dee?", berth("p4", "Dee"), false, again.result.windlassSessionId ?? undefined);
+		expect("a changed definition is asked about: the record is of the definition that was approved", changed.put.length === 1 && changed.put[0]?.fingerprint !== print && changed.recalled.length === 0 && mcpOutcome(changed, "p4") === "refused", `fingerprint ${changed.put[0]?.fingerprint}, approved ${print}`);
+
+		// Another user on the same repository.
+		const theirs = await disk("s-3");
+		const other = await remembering("bo", harborRepo, theirs, "Which berth is free for Eli?", berth("p5", "Eli"), false);
+		expect("another user on the same repository is asked", other.put.length === 1 && other.put[0]?.fingerprint === print && other.recalled.length === 0 && mcpOutcome(other, "p5") === "refused");
+
+		// Another repository that names the server the same way.
+		const elsewhere = await disk("s-5");
+		const same = await remembering("ada", lighthouse, elsewhere, "Which berth is free for Fay?", berth("p6", "Fay"), false);
+		expect("another repository that names a server the same way is asked: the same name and the same definition, in another project", same.put.length === 1 && same.put[0]?.fingerprint === print && same.recalled.length === 0 && mcpOutcome(same, "p6") === "refused", `fingerprint ${same.put[0]?.fingerprint}`);
+
+		// One day short of 30, and past them.
+		now = (record?.approvedAt ?? now) + APPROVAL_TTL_MS - 60_000;
+		const late = await disk("s-10");
+		const lastDay = await remembering("ada", harborRepo, late, "Which berth is free for Gus?", berth("p7", "Gus"), false);
+		expect("a minute before its 30 days are over the approval still answers", lastDay.put.length === 0 && lastDay.recalled.length === 1 && mcpOutcome(lastDay, "p7") === "result", lastDay.lines[0]);
+		now += 2 * 60_000;
+		const past = await disk("s-11");
+		const expired = await remembering("ada", harborRepo, past, "Which berth is free for Hal?", berth("p8", "Hal"), false);
+		expect("an approval past its 30 days is asked about again", expired.put.length === 1 && expired.recalled.length === 0 && mcpOutcome(expired, "p8") === "refused" && bookOf("ada").of(harborRepo.key, now).length === 0);
+
+		// Forgetting, with an approval that holds.
+		const renewed = await remembering("ada", harborRepo, past, "Which berth is free for Ida?", berth("p9", "Ida"), true, expired.result.windlassSessionId ?? undefined);
+		expect("approving again remembers it from then", renewed.put.length === 1 && renewed.outcomes[0]?.outcome.state === "running" && bookOf("ada").find(harborRepo.key, "harbor", print, now)?.approvedAt === now);
+		const forgotten = bookOf("ada").forget(harborRepo.key, "harbor");
+		expect("forgetting removes the user's record of that server for the project", forgotten.removed.length === 1 && bookOf("ada").of(harborRepo.key, now).length === 0);
+		info(`the timeline's line: ${serverForgottenNote({ name: "harbor" }, { dataInSandbox: true })}`);
+		info(`the panel's note: ${forgettingWords({ dataInSandbox: true })}`);
+		const next = await disk("s-12");
+		const afresh = await remembering("ada", harborRepo, next, "Which berth is free for Jo?", berth("p10", "Jo"), false);
+		expect("after forgetting, the next session is asked", afresh.put.length === 1 && afresh.recalled.length === 0 && mcpOutcome(afresh, "p10") === "refused");
+		const still = await remembering("ada", harborRepo, past, "Which berth is free for Kit?", berth("p11", "Kit"), false, expired.result.windlassSessionId ?? undefined);
+		expect(
+			"and a sandbox the server already started in still starts it, from Windlass's own record: forgetting is for the next session or sandbox",
+			still.reported.length === 0 && mcpOutcome(still, "p11") === "result" && (await ownRecords(past)) === "1",
+			`${still.reported.length} reported as waiting; ${await ownRecords(past)} record of Windlass's own in that sandbox`,
+		);
+	});
+
 	await section("docker-hardened: the same question where commands are not sandboxed", async () => {
 		const handle = await sandbox(uidOther, "docker-hardened", "mcp-hardened");
 		const found = await turn(
@@ -385,7 +566,7 @@ async function main(): Promise<void> {
 		);
 		const asked = found.asked[0]?.question;
 		expect("the question is put before the prompt here too, and approving starts the server", found.asked.length === 1 && asked?.holdsTurn === true && found.outcomes[0]?.outcome.state === "running", JSON.stringify(found.outcomes[0]?.outcome));
-		if (asked) for (const detail of serverQuestionWords(asked, { profile: layer.sandboxes.profile("docker-hardened"), demo: true, dataInSandbox: false }).details) info(`  ${detail}`);
+		if (asked) for (const detail of serverQuestionWords(asked, { profile: layer.sandboxes.profile("docker-hardened"), demo: true, dataInSandbox: false, project: projectOf({ sessionId: "mcp-hardened", repoUrl: null }) }).details) info(`  ${detail}`);
 		expect("Windlass runs the first MCP call without asking in this profile", found.toolQuestions.every((question) => question.callId !== "h1") && mcpOutcome(found, "h1") === "result");
 		// What the server returned is content Windlass does not control: from there on it asks before a command it cannot sandbox, in this profile too.
 		const afterwards = found.toolQuestions.find((question) => question.callId === "h2");
@@ -463,7 +644,7 @@ async function main(): Promise<void> {
 
 	await section("cleanup", async () => {
 		for (const id of created) await layer.sandboxes.destroy(id);
-		for (const user of [uid, uidOther]) await docker(["volume", "rm", "-f", `wlp-user-${user}`, `wlp-auth-${user}`]);
+		for (const user of users) await docker(["volume", "rm", "-f", `wlp-user-${user}`, `wlp-auth-${user}`]);
 		const containers = await docker(["ps", "-a", "--filter", `label=${LABEL_ARG}`, "--format", "{{.Names}}"]);
 		const volumes = await docker(["volume", "ls", "--filter", `label=${LABEL_ARG}`, "--format", "{{.Name}}"]);
 		const mine = [...containers.stdout.split("\n"), ...volumes.stdout.split("\n")].filter((name) => name.includes(run) || [...created].some((id) => name === `wlp-session-${id}`));
