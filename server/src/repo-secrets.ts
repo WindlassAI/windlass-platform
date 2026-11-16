@@ -12,21 +12,31 @@
  * (`setupProjectOf`, setup-command.ts): a session on a pasted address or with no repository has none.
  *
  * Who gets them. The setup command gets every secret. Beyond that a secret has a scope, and what the
- * scope can be made to mean is decided by Windlass, which has one rule for its environment
- * (packages/core/src/sandbox/policy.ts and mcp/config.ts in its source):
+ * scope can be made to mean is decided by Windlass, which hands on its own environment by a rule
+ * (packages/core/src/sandbox/policy.ts, command.ts and mcp/config.ts in its source):
  *
  *   an MCP server      gets the variables its definition names (`${NAME}`), from Windlass's own environment
  *   a sandboxed command gets every variable of Windlass's environment except those whose names look
- *                      like credentials (`looksLikeCredential` below repeats that rule); there is no
- *                      setting that lets one through or holds another back
+ *                      like credentials (`looksLikeCredential` below repeats that rule)
  *   an unsandboxed command (approval "full" until untrusted content is in the conversation, and any
  *                      command where Windlass's sandbox does not work) gets all of them
  *
- * So a variable is in Windlass's environment or it is not, and once it is there only its name keeps
- * it from a command. `secretReach` works out what each scope comes to, and `windlassEnvironment`
- * hands Windlass only what keeps the scope true: a secret that is for the setup command and MCP
- * servers goes to Windlass only where commands are sandboxed and its name is one Windlass keeps from
- * them. Where that cannot be had, MCP servers do not get the secret, and the interface says so.
+ * A Windlass that takes the two lists of names (`withholdEnv`, `passEnv` in a session's metadata, its
+ * docs/safety.md, "A command's environment") lets whoever opens the session correct the rule by name:
+ * a variable in `withholdEnv` is given to no command and still to an MCP server, and a credential-looking
+ * one in `passEnv` is given to sandboxed commands too. With them a scope is exact where Windlass
+ * sandboxes every command: a secret for the setup command and MCP servers is handed to Windlass and
+ * named in `withholdEnv`, and one for the agent's commands as well is named in `passEnv` when its name
+ * would keep it from them. Where commands run without Windlass's sandbox, a withheld variable is not
+ * given to a command and can still be read by it, from Windlass's own process, so withholding is not
+ * relied on there: a secret that is not for the agent's commands stays out of Windlass's
+ * environment, MCP servers go without it, and the interface says so.
+ *
+ * A sandbox keeps the Windlass of the image it was made from, and an older one has the rule and no
+ * lists: once a variable is in its environment, only its name keeps it from a command. Which of the
+ * two a sandbox has is asked of it (`Windlass.features`, sandbox/api.ts), and `secretReach` and
+ * `windlassEnvironment` are told: for a Windlass without the lists they hand over and say what the
+ * rule alone allows.
  *
  * Redaction. Every saved value of a session's repository is taken out of what the sandbox layer hands
  * on: a turn's events, a setup run's output, error text. `SecretRedactor` does it by value, also for
@@ -138,9 +148,12 @@ export function cleanSecretScope(raw: unknown): SecretScope {
 
 /**
  * Windlass's `isCredentialName` (packages/core/src/sandbox/policy.ts), repeated: the names it keeps
- * from the commands it sandboxes. The platform has to know the answer before Windlass is started,
- * and Windlass has no way to be asked, so the lists are copied. They must change when Windlass's do:
- * a name this says Windlass withholds, and Windlass does not, would reach the agent's commands.
+ * from the commands it sandboxes unless it is told otherwise. The platform has to know the answer
+ * before Windlass is started: with a Windlass that takes the lists it decides which names go into
+ * `passEnv`, and with one that does not it decides what a secret reaches at all. So the lists are
+ * copied, and must change when Windlass's do: a name this takes to be passed on, and Windlass
+ * withholds, would not reach the agent's commands though its scope says so; and with a Windlass
+ * without the lists, a name this says it withholds, and it does not, would reach them.
  */
 const CREDENTIAL_WORDS = ["TOKEN", "KEY", "SECRET", "PASSWORD", "PASSWD", "PASSPHRASE", "CREDENTIAL", "PRIVATE", "COOKIE"];
 const CREDENTIAL_SEGMENTS = ["AUTH", "PAT"];
@@ -202,15 +215,39 @@ export function looksLikeCredential(name: string): boolean {
  */
 export type CommandSandbox = "windlass" | "none" | "unknown";
 
-export function commandSandbox(profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">): CommandSandbox {
+/** The fields of a profile that say it. */
+type Promises = Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">;
+
+export function commandSandbox(profile: Promises): CommandSandbox {
 	if (profile.approval === "full") return "none";
 	return !profile.commandNetwork && !profile.commandsCanReadAccessToken ? "windlass" : "unknown";
 }
 
 const LOOKS = "a name that looks like a credential (it contains TOKEN, KEY, SECRET or PASSWORD, for example)";
 
-/** What a secret of this name and scope reaches in a sandbox of `profile`, and the sentence that says so when it is less than the scope. */
-export function secretReach(name: string, scope: SecretScope, profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">): SecretReach {
+/**
+ * What a secret of this name and scope reaches in a sandbox of `profile`, and the sentence that says
+ * so when it is less than the scope. `lists`: whether the sandbox's Windlass takes `withholdEnv` and
+ * `passEnv` (`WindlassFeatures.envLists`). With them only one thing is left that a scope cannot have:
+ * a secret for MCP servers and not for commands, where commands are not held in Windlass's sandbox.
+ */
+export function secretReach(name: string, scope: SecretScope, profile: Promises, lists: boolean): SecretReach {
+	if (!lists) return reachByName(name, scope, profile);
+	if (scope === "agent") return { servers: true, commands: "yes", note: null };
+	const sandbox = commandSandbox(profile);
+	if (sandbox === "windlass") return { servers: true, commands: "no", note: null };
+	return {
+		servers: false,
+		commands: "no",
+		note:
+			sandbox === "none"
+				? "MCP servers are not given it in this sandbox: the agent's commands run there without Windlass's sandbox, where a command can read whatever Windlass was handed for an MCP server from Windlass's own process. Only the setup command gets it."
+				: "MCP servers are not given it in this sandbox: it has not been established that Windlass can sandbox the agent's commands there, and a command it cannot sandbox can read whatever Windlass was handed for an MCP server from Windlass's own process. Only the setup command gets it.",
+	};
+}
+
+/** `secretReach` for a Windlass without the lists: a variable it has is kept from a command by its name alone, and only from one it sandboxes. */
+function reachByName(name: string, scope: SecretScope, profile: Promises): SecretReach {
 	const sandbox = commandSandbox(profile);
 	const withheld = looksLikeCredential(name);
 	if (scope === "setup") {
@@ -251,15 +288,16 @@ export function secretReach(name: string, scope: SecretScope, profile: Pick<Sand
 
 /**
  * A repository's secrets as a client is sent them: the name, the scope, when each last changed, and
- * what it reaches in a sandbox of `profile`. Each entry is made here from those fields and no other,
- * so whatever else a row holds, the value included, is not in the answer.
+ * what it reaches in a sandbox of `profile` whose Windlass takes the lists or not (`lists`). Each
+ * entry is made here from those fields and no other, so whatever else a row holds, the value
+ * included, is not in the answer.
  */
-export function listedSecrets(rows: ReadonlyArray<{ name: string; scope: string; updated_at: number }>, profile: SandboxProfile): RepositorySecrets {
+export function listedSecrets(rows: ReadonlyArray<{ name: string; scope: string; updated_at: number }>, profile: SandboxProfile, lists: boolean): RepositorySecrets {
 	return {
 		profile: profile.id,
 		secrets: rows.map((row) => {
 			const scope: SecretScope = row.scope === "agent" ? "agent" : "setup";
-			return { name: String(row.name), scope, updatedAt: Number(row.updated_at), reach: secretReach(String(row.name), scope, profile) };
+			return { name: String(row.name), scope, updatedAt: Number(row.updated_at), reach: secretReach(String(row.name), scope, profile, lists) };
 		}),
 	};
 }
@@ -276,12 +314,32 @@ export function setupEnvironment(secrets: readonly OpenedSecret[]): Record<strin
 	return Object.fromEntries(secrets.map((secret) => [secret.name, secret.value]));
 }
 
+/** What Windlass is handed of a repository's secrets for one turn, and told about them when its session is opened. */
+export interface WindlassSecrets {
+	/** What is put into Windlass's own environment: the secrets that reach MCP servers (`secretReach`). */
+	env: Record<string, string>;
+	/** Of those, the names no command the agent runs is to be given. Empty for a Windlass without the lists. */
+	withholdEnv: string[];
+	/** Of those, the credential-looking names that sandboxed commands are to be given all the same. Empty for a Windlass without the lists. */
+	passEnv: string[];
+}
+
 /**
- * What is put into Windlass's own environment in a sandbox of `profile`: the secrets that reach MCP
- * servers there (`secretReach`). Whatever is in it, a command Windlass does not sandbox can read.
+ * What a turn's Windlass gets in a sandbox of `profile`. For a Windlass that takes the lists
+ * (`lists`), every secret in its environment that is not for the agent's commands is named in
+ * `withholdEnv`, whatever its name, and such a secret is in its environment only where commands are
+ * held in its sandbox, which is where withholding cannot be got around; a secret for the agent's
+ * commands that Windlass would keep from sandboxed ones by its name is named in `passEnv`. For a
+ * Windlass without them both are empty and the environment holds what its rule alone keeps to the
+ * scope: whatever is in it, a command that Windlass does not sandbox can read.
  */
-export function windlassEnvironment(secrets: readonly OpenedSecret[], profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">): Record<string, string> {
-	return Object.fromEntries(secrets.filter((secret) => secretReach(secret.name, secret.scope, profile).servers).map((secret) => [secret.name, secret.value]));
+export function windlassEnvironment(secrets: readonly OpenedSecret[], profile: Promises, lists: boolean): WindlassSecrets {
+	const handed = secrets.filter((secret) => secretReach(secret.name, secret.scope, profile, lists).servers);
+	return {
+		env: Object.fromEntries(handed.map((secret) => [secret.name, secret.value])),
+		withholdEnv: lists ? handed.filter((secret) => secret.scope === "setup").map((secret) => secret.name) : [],
+		passEnv: lists ? handed.filter((secret) => secret.scope === "agent" && looksLikeCredential(secret.name)).map((secret) => secret.name) : [],
+	};
 }
 
 /**
@@ -289,10 +347,10 @@ export function windlassEnvironment(secrets: readonly OpenedSecret[], profile: P
  * about that server: the sentence of `secretReach`. Null for a name that is not a saved secret, and
  * for one Windlass was handed.
  */
-export function withheldFromServers(name: string, secrets: readonly Pick<OpenedSecret, "name" | "scope">[], profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">): string | null {
+export function withheldFromServers(name: string, secrets: readonly Pick<OpenedSecret, "name" | "scope">[], profile: Promises, lists: boolean): string | null {
 	const secret = secrets.find((item) => item.name === name);
 	if (!secret) return null;
-	const reach = secretReach(secret.name, secret.scope, profile);
+	const reach = secretReach(secret.name, secret.scope, profile, lists);
 	return reach.servers ? null : reach.note;
 }
 

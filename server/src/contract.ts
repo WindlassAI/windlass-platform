@@ -210,6 +210,13 @@ export interface SessionSummary {
 	/** Whether the sandbox exists and whether it is running or paused. */
 	sandbox: "none" | "running" | "paused";
 	/**
+	 * Whether the Windlass in the session's sandbox can be told by name which variables its commands
+	 * get, which is what makes a secret's scope exact (`SecretReach`), as it said when a turn last
+	 * asked it. A sandbox keeps the Windlass of the image it was made from. Absent while the session
+	 * has no sandbox, and for a sandbox that no turn has asked.
+	 */
+	envLists?: boolean;
+	/**
 	 * Set once Windlass has told the session of MCP servers its project's configuration names: how many,
 	 * and when what the session knows of them last changed (a server started, failed, came to wait, an
 	 * approval was remembered or forgotten here). A client asks `servers()` again when `changedAt` moves.
@@ -380,25 +387,29 @@ export interface RepositorySetup {
  *   "setup"   the MCP servers the repository names, and not the commands the agent runs
  *   "agent"   the MCP servers, and the commands the agent runs as well
  *
- * What Windlass lets each of them have depends on the session's sandbox and on the secret's name;
- * `SecretReach` says what a scope comes to there.
+ * Where Windlass sandboxes the agent's commands, that is what each of them gets. Where it does not,
+ * and in a sandbox whose Windlass is an older one, a scope can come to less; `SecretReach` says what.
  */
 export type SecretScope = "setup" | "agent";
 
 /**
  * What a secret reaches in a session whose sandbox has a given profile. Windlass decides what its
- * commands and the MCP servers see, and has one rule for it: a command it sandboxes gets every
- * variable of Windlass's own environment except those whose names look like credentials, a command it
- * does not sandbox gets all of them, and an MCP server gets the variables its definition names from
- * that same environment. So a secret can be kept from commands only by its name or by staying out of
- * Windlass's environment altogether, and the platform hands Windlass only what keeps the scope true.
+ * commands and the MCP servers see: an MCP server gets the variables its definition names from
+ * Windlass's own environment, and a command gets that environment by a rule (a command Windlass
+ * sandboxes: every variable except those whose names look like credentials; one it does not sandbox:
+ * all of them), which whoever opens the session corrects by name. Where commands are sandboxed that
+ * makes a scope exact. Where they are not, a variable withheld from a command can still be read by
+ * it, so a secret that is not for the commands stays out of Windlass's environment and MCP servers
+ * go without it. A sandbox made from an older image has a Windlass that takes no names: there a
+ * secret is kept from commands only by its name or by staying out of Windlass's environment.
  */
 export interface SecretReach {
 	/** Whether the MCP servers the repository names can be given it (`${NAME}` in their definitions). */
 	servers: boolean;
 	/**
 	 * Whether the commands the agent runs get it: "yes", "no", or "unsandboxed": only the commands
-	 * Windlass runs without its own sandbox, which in that profile is not all of them at all times.
+	 * Windlass runs without its own sandbox, which in that profile is not all of them at all times
+	 * (an older Windlass, and a name that looks like a credential).
 	 */
 	commands: "yes" | "no" | "unsandboxed";
 	/** Set when that is less than the scope says, or needs a word: a sentence fit to show under the secret. */
@@ -412,7 +423,7 @@ export interface RepositorySecret {
 	scope: SecretScope;
 	/** When its value or scope was last changed, ms since the epoch. */
 	updatedAt: number;
-	/** What it reaches in a sandbox of the profile the list was asked for. */
+	/** What it reaches in the sandbox the list was asked for: its profile, and the Windlass in it. */
 	reach: SecretReach;
 }
 
@@ -460,9 +471,12 @@ export interface UserActions {
 	saveRepositorySetup(input: { repositoryId: number; command: string }): Promise<RepositorySetup>;
 	/**
 	 * The names, scopes and times of the secrets the user saved for a repository, and what each reaches
-	 * in a sandbox of `profile`. No value: a saved value is never sent to a client. Asks GitHub nothing.
+	 * in a sandbox of `profile`. With `sessionId`, one of the user's sessions on that repository, it is
+	 * said for that session's sandbox, whose Windlass may be an older one (`SessionSummary.envLists`);
+	 * without, for a sandbox made now. No value: a saved value is never sent to a client. Asks GitHub
+	 * nothing. `sessionId` means the same in the two actions below, which answer with the list.
 	 */
-	repositorySecrets(input: { repositoryId: number; profile: SandboxProfileId }): Promise<RepositorySecrets>;
+	repositorySecrets(input: { repositoryId: number; profile: SandboxProfileId; sessionId?: string }): Promise<RepositorySecrets>;
 	/**
 	 * Saves a secret of a repository. With `value`: a new secret, or a new value for the one of that
 	 * name. Without: only the scope of the one of that name is changed. It reaches a setup command in
@@ -470,9 +484,9 @@ export interface UserActions {
 	 * code `bad_secret` for a name or value that cannot be saved, `too_many_secrets` at
 	 * MAX_SECRETS_PER_REPOSITORY, and `secret_not_found` for a scope change of a name that is not saved.
 	 */
-	saveRepositorySecret(input: { repositoryId: number; profile: SandboxProfileId; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
+	saveRepositorySecret(input: { repositoryId: number; profile: SandboxProfileId; sessionId?: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
 	/** Deletes a secret of a repository. A sandbox whose setup command already had it keeps what that command made of it. */
-	deleteRepositorySecret(input: { repositoryId: number; profile: SandboxProfileId; name: string }): Promise<RepositorySecrets>;
+	deleteRepositorySecret(input: { repositoryId: number; profile: SandboxProfileId; sessionId?: string; name: string }): Promise<RepositorySecrets>;
 	listSessions(): Promise<SessionSummary[]>;
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
 	renameSession(id: string, title: string): Promise<SessionSummary>;

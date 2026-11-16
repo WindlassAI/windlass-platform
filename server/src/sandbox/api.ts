@@ -242,7 +242,27 @@ export type TurnServerOutcome =
 /** What a turn is handed of its repository's secrets: see `RunTurnInput.secrets`. */
 export interface TurnSecrets {
 	env: Record<string, string>;
+	/** Names in `env` that no command the agent runs is to be given (Windlass's `withholdEnv`). */
+	withholdEnv?: string[];
+	/** Names in `env` that look like credentials and that sandboxed commands are to be given all the same (Windlass's `passEnv`). */
+	passEnv?: string[];
 	redactor: Redactor;
+}
+
+/**
+ * What the Windlass in a sandbox can be told when a session is opened, beyond what every Windlass the
+ * platform runs takes. A sandbox keeps the Windlass of the image it was made from, so one made before
+ * the image was rebuilt may lack either.
+ */
+export interface WindlassFeatures {
+	/** It takes `sandboxHome`: sandboxed commands can be given a home of the session's own. */
+	sessionHome: boolean;
+	/**
+	 * It takes `withholdEnv` and `passEnv`: which of its environment's variables the commands it runs
+	 * get can be said by name. Without them a command gets what Windlass's rule gives it, by the
+	 * variable's name alone (repo-secrets.ts).
+	 */
+	envLists: boolean;
 }
 
 /** A handle on a turn in progress. Its methods reject once the turn has ended. */
@@ -270,7 +290,11 @@ export interface RunTurnInput {
 	 * The secrets of the session's repository for this turn (repo-secrets.ts). `env` is put into
 	 * Windlass's own environment, by `ExecOptions.secretEnv`'s way: Windlass fills `${NAME}` in the
 	 * definitions of the project's MCP servers from it, and passes it on to the commands it runs by
-	 * its own rule, so the caller hands over only what may go there. `redactor` knows every saved
+	 * its own rule, so the caller hands over only what may go there. `withholdEnv` and `passEnv`
+	 * correct that rule by name, for a Windlass that takes them (`Windlass.features` says whether
+	 * this sandbox's does, and the caller asks before it decides what to hand over): they are said
+	 * when the session is opened. A turn that names a variable to withhold and finds a Windlass
+	 * that would not withhold it opens no session and fails. `redactor` knows every saved
 	 * value of the repository, also those Windlass is not handed (the setup command had them, and may
 	 * have left them in a file): each is taken out of everything the turn hands back, which is every
 	 * event, question, description of a server, `stderrTail` and `failure`. A value that streaming
@@ -415,6 +439,14 @@ export interface Windlass {
 	 * Windlass ends the turn, and `failure` says what that means for the user: see `RunTurnResult.failure`.
 	 */
 	runTurn(sandbox: SandboxHandle, input: RunTurnInput): Promise<RunTurnResult>;
+	/**
+	 * What the Windlass in this sandbox can be told when a session is opened. It is asked of the
+	 * sandbox's own Windlass, once per sandbox, by starting it for a moment and reading what it says of
+	 * itself (the keys of a session's metadata it lists in its answer to `initialize`): its version
+	 * does not tell. Neither feature, and nothing remembered, when the sandbox did not answer: what is
+	 * handed over and said is then what an older Windlass would be handed and told.
+	 */
+	features(sandbox: SandboxHandle): Promise<WindlassFeatures>;
 	/**
 	 * A scripted model for a demo turn: a short, varied scenario of real tool calls (write a file, run
 	 * it, read it back, fix something) that suits the prompt's words where it can. `turn` starts at 1.

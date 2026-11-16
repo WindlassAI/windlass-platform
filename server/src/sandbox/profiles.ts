@@ -50,7 +50,7 @@ export const PROFILES: SandboxProfile[] = [
 		summary: "A container of its own, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the container.",
 		layers: [
 			"Docker container (non-root, no capabilities, resource limits)",
-			"Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace, credentials hidden)",
+			"Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)",
 		],
 		approval: "auto",
 		commandNetwork: false,
@@ -141,7 +141,7 @@ export function e2bProfile(options: { windlassSandbox: boolean }): SandboxProfil
 			name: "E2B + Windlass sandbox",
 			summary:
 				"A microVM of its own, hosted by E2B, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the microVM.",
-			layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace, credentials hidden)"],
+			layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)"],
 			approval: "auto",
 			commandNetwork: false,
 			commandsCanReadAccessToken: false,
@@ -171,14 +171,16 @@ export function e2bProfile(options: { windlassSandbox: boolean }): SandboxProfil
  * One thing "full" keeps: Windlass's taint rule (`taint: "enforce"`, its default). Once something from
  * the web or an MCP server is in the conversation, it treats commands as under "auto" again: they run
  * in its bubblewrap sandbox, which works in the template, and network or a write outside the workspace
- * asks first. The summary says so.
+ * asks first. Such a command gets a home of the session's own (turn.ts, `SANDBOX_HOME`): the microVM's
+ * home as the commands before it left it, read-only, and what it adds kept beside it for the session.
+ * The summary says so.
  */
 export function e2bOpenProfile(options: { offered: true } | { offered: false; reason: string }): SandboxProfile {
 	return {
 		id: "e2b-open",
 		name: "E2B, microVM only",
 		summary:
-			"A microVM of its own, hosted by E2B, and no sandbox inside it: the agent's commands run directly in the microVM without asking first, can reach any host on the network, can write outside the workspace, the home directory included, and can read the session's access token, which lasts about an hour and cannot be renewed. Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace. Your ChatGPT sign-in is never in the microVM.",
+			"A microVM of its own, hosted by E2B, and no sandbox inside it: the agent's commands run directly in the microVM without asking first, can reach any host on the network, can write outside the workspace, the home directory included, and can read the session's access token, which lasts about an hour and cannot be renewed. Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace; what is in the home directory by then is read-only for them, and what they add there is kept apart for the session. Your ChatGPT sign-in is never in the microVM.",
 		layers: ["E2B microVM (Firecracker, hosted by E2B; commands run in it directly, as a non-root user)"],
 		approval: "full",
 		commandNetwork: true,

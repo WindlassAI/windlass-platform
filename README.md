@@ -17,9 +17,12 @@ token to another Windlass and be asked for one that is good for a while yet: one
 `windlass login token --valid-for <duration>` and `WINDLASS_ACCESS_TOKEN_FILE` (`windlass login --help` lists
 `--valid-for` under `login token`). The version number does not tell: both the builds that have the option and
 the ones before it call themselves 0.1.1. Until a release has it, that is a local build of Windlass with the
-option (`windlass --version` prints `0.1.1+739e1cbc09` for the one this was tested with, which also names every
+option (`windlass --version` prints `0.1.1+a9c3601d40` for the one this was tested with, which also names every
 failure of a sign-in by a stable code; `0.1.1+dca57b2627` has `login token` without `--valid-for` and is too
-old).
+old). That build has two more things the platform uses where a sandbox's Windlass has them, and does without
+where it has not: a home of the session's own for sandboxed commands ("Sandboxes" below), and two lists that
+say by name which variables a command gets ("A repository's secrets"). `0.1.1+739e1cbc09` has the option and
+neither of those.
 
 ```sh
 pnpm install
@@ -164,6 +167,42 @@ prints the token as it is, the platform takes it out of the turn's events, so it
 Bubblewrap only starts in a container run with `seccomp=unconfined`, `apparmor=unconfined` and
 `systempaths=unconfined`, so the first profile trades Docker's own filters for Windlass's sandbox. Containers
 share the host's kernel either way: for users you do not trust, the outer layer should be a virtual machine.
+
+**A home for sandboxed commands.** In Windlass's sandbox the home directory is read-only, and many tools write
+there without being told to: `astro build` makes `~/.config/astro`, npm and uv keep caches there. So the
+platform opens every session with `"sandboxHome": "session"` (Windlass's docs/safety.md, "The session's home";
+`SANDBOX_HOME` in `server/src/sandbox/turn.ts`): a sandboxed command then finds, at `/home/agent`, a home of
+the session's own. What the sandbox's home holds is in it, read-only; what a command makes beside that, and
+beside what is in `~/.config`, `~/.cache`, `~/.local/share` and `~/.local/state`, is kept for the session's
+later commands, in `/tmp/windlass-<uid>/<Windlass session>.home` in the sandbox, and the sandbox's real home
+is never written. It is said in every profile, because it applies to the commands Windlass sandboxes and to
+no other:
+
+| Profile | What it does there |
+|---|---|
+| `docker-windlass-sandbox`, E2B with its sandbox promised | every command is sandboxed, and gets the session's home |
+| E2B before its check | the same where bubblewrap works in the microVM; where it does not, nothing is sandboxed and nothing changes |
+| `e2b-open` | commands run directly in the microVM, with its real home, until content from the web or an MCP server is in the conversation. From then on Windlass sandboxes them, and without this a tool that wrote under the home until then would find it read-only. What is in the home by then stays read-only, a directory as a whole: a tool whose cache directory an earlier command already made there cannot add to it |
+| `docker-hardened` | nothing: bubblewrap does not start there, so no command is sandboxed, and Windlass says nothing of it to the model or the user |
+
+The setting is not stored with a session: it is sent with every `session/new` and `session/resume`, to a
+Windlass that lists it among what it takes (below). The session's home lives and goes with the sandbox, and
+is not in the copy of the agent's memory. A sandbox's files outside the workspace were never part of
+"Changes" or of a push, and these are not either. The image still keeps the package managers' caches under
+`/tmp/.cache` (`sandbox/Dockerfile`): a repository's setup command runs outside Windlass's sandbox, and a
+cache it made in the real home would be a directory that is read-only as a whole for the commands after it.
+
+**Sandboxes that keep an older Windlass.** A sandbox keeps the Windlass of the image it was made from: a
+container from before the image was rebuilt, a paused E2B sandbox from before the template was. An older
+Windlass does not refuse a key of a session's metadata it does not know; it leaves it unread, which for a
+list of variables to withhold would mean that the agent's commands get them. So nothing is assumed. Every
+Windlass lists the keys it takes in its answer to `initialize` (`agentCapabilities._meta.windlass.openMeta`),
+and the platform goes by that list: a key is sent only to an engine that names it, and a turn that was
+handed a variable to withhold fails before a session is opened should its engine not name `withholdEnv`.
+What a turn's Windlass is handed has to be decided before it starts, so the first turn in a sandbox on a
+server starts an engine there for that question alone (`Windlass.features`), and the answer is kept for that
+sandbox. With an older Windlass a session works as it did: its commands find the home
+read-only, and its repository's secrets reach what Windlass's rule alone allows ("A repository's secrets").
 
 ## Sign-ins
 
@@ -392,7 +431,9 @@ E2B's SDK (`e2b` 2.63.0, loaded only by a server on E2B) needs Node 22.19 or lat
   can read the session's access token, which is in a file in the microVM while a turn runs (the sign-in is
   never in the microVM, in this profile too). One thing stays: once something from the web or an MCP server is
   in the conversation, Windlass's taint rule sandboxes commands again and asks before network or a write
-  outside the workspace. The user chooses per session; the E2B profile above stays the picker's default. A
+  outside the workspace. A sandboxed command then finds a home of the session's own ("Sandboxes" above): what
+  the commands before it left in the home is read-only there, and what it adds is kept apart for the session.
+  The user chooses per session; the E2B profile above stays the picker's default. A
   sandbox's profile is in its metadata (`wlp_profile`), so every server runs a session's Windlass the same way;
   sessions launched with `e2b-open` keep it after the flag is turned off, and only new ones are refused.
 - **A turn** is the same process as in a container, `wlp-run exec <tag> windlass acp`, started through E2B's
@@ -731,8 +772,8 @@ code as documented.
 ## A repository's setup command
 
 Where Windlass sandboxes the agent's commands, a command has no network unless the user approves it, and
-writes only in the workspace and in `/tmp`. Installing a project's dependencies inside a turn then means
-questions and tools that fail. So a user can save one shell command per repository of their GitHub
+writes only in the workspace, in `/tmp` and in a home of the session's own. Installing a project's
+dependencies inside a turn then means questions. So a user can save one shell command per repository of their GitHub
 connection, `npm ci` say, and the platform runs it for them: once in each new sandbox of a session on that
 repository, after the clone and before the agent's first turn there. The agent starts with the dependencies
 in place, and its own commands stay sandboxed.
@@ -813,36 +854,64 @@ never shown again once it is saved.
   (the default) is for the MCP servers the repository names, which read it as `${NAME}`, and not for the
   commands the agent runs; "Also the agent's commands" is for those commands too. The second is a choice the
   interface explains: whatever the agent's commands can read, a manipulated agent could send out once a
-  command has network access, and whatever a command prints goes to the model.
-- **What a scope comes to is decided by Windlass.** It has one rule and no setting for it
-  (`packages/core/src/sandbox/policy.ts`, `mcp/config.ts`, `tools/shell.ts` in its source): an MCP server gets
-  the variables its definition names from Windlass's own environment; a command Windlass sandboxes gets every
-  variable of that environment except those whose names look like credentials (a name that contains `TOKEN`,
-  `KEY`, `SECRET`, `PASSWORD`, ..., or begins with `AWS_`, `OPENAI_`, ..., or is `DATABASE_URL`, ...); a
-  command it does not sandbox gets all of them. So once a variable is in Windlass's environment, only its
-  name keeps it from a command, and the platform hands Windlass only what keeps the scope true:
+  command has network access, and whatever a command prints goes to the model. The first keeps a value from
+  the agent's commands, not from the model: what an MCP server's tool returns goes to the model, and a
+  server that returns the value has shown it.
+- **What a scope comes to is decided by Windlass, and the platform tells it by name.** Windlass hands its own
+  environment on by a rule (`packages/core/src/sandbox/policy.ts`, `command.ts`, `mcp/config.ts` in its
+  source): an MCP server gets the variables its definition names; a command Windlass sandboxes gets every
+  variable except those whose names look like credentials (a name that contains `TOKEN`, `KEY`, `SECRET`,
+  `PASSWORD`, ..., or begins with `AWS_`, `OPENAI_`, ..., or is `DATABASE_URL`, ...); a command it does not
+  sandbox gets all of them. Whoever opens a session corrects the rule with two lists of names (its
+  docs/safety.md, "A command's environment"): a variable in `withholdEnv` is given to no command the agent
+  runs and still to an MCP server, and a credential-looking one in `passEnv` is given to sandboxed commands
+  all the same. The platform hands Windlass a secret in its environment and says both lists with every
+  `session/new` and `session/resume` (they hold names, never a value, and are not stored with a session):
+  every secret that is for the setup command and MCP servers is named in `withholdEnv`, whatever its name,
+  and a secret for the agent's commands whose name looks like a credential is named in `passEnv`
+  (`windlassEnvironment`, `server/src/repo-secrets.ts`). Where Windlass sandboxes every command that makes
+  a scope exact: a command is not given a withheld variable, and it cannot read it from Windlass's process
+  either, since it sees no process but its own.
+- **Where commands are not sandboxed, withholding is not relied on.** A command that runs without
+  Windlass's sandbox is not given a withheld variable either, but it runs as Windlass's user and can read
+  Windlass's environment from `/proc`. So where commands run that way, or may, a secret that is not for the
+  agent's commands stays out of Windlass's environment altogether, and MCP servers go without it:
 
   | The secret | Commands sandboxed by Windlass (`docker-windlass-sandbox`, E2B with its sandbox promised) | Commands not sandboxed (`docker-hardened`, `e2b-open`), or nothing promised (E2B before its check) |
+  |---|---|---|
+  | setup and MCP servers, any name (`NPM_TOKEN`, `SENTRY_DSN`) | setup command, MCP servers | setup command only |
+  | also the agent's commands, any name (`PREVIEW_HOST`, `DEPLOY_KEY`) | setup command, MCP servers, commands | setup command, MCP servers, commands, also the ones Windlass sandboxes again once content from the web or an MCP server is in the conversation |
+
+  Where a secret reaches less than its scope says, the list says so under it, for the sandbox of the
+  session (or the one chosen in the launch form), with the reason (`secretReach`). One promise is not made:
+  where commands are not held in Windlass's sandbox, an MCP server is given nothing they are not meant to
+  have.
+- **A sandbox that keeps an older Windlass** ("Sandboxes that keep an older Windlass") has the rule and no
+  lists, so there a variable in Windlass's environment is kept from a command by its name alone, and the
+  platform hands Windlass only what keeps the scope true by that:
+
+  | The secret | Commands sandboxed by Windlass | Commands not sandboxed, or nothing promised |
   |---|---|---|
   | setup and MCP servers, a name Windlass withholds (`NPM_TOKEN`, `DATABASE_URL`) | setup command, MCP servers | setup command only |
   | setup and MCP servers, any other name (`SENTRY_DSN`) | setup command only | setup command only |
   | also the agent's commands, a name Windlass passes on (`PREVIEW_HOST`) | setup command, MCP servers, commands | setup command, MCP servers, commands |
   | also the agent's commands, a name Windlass withholds (`DEPLOY_KEY`) | setup command, MCP servers; **not** commands | setup command, MCP servers, and the commands Windlass runs without its sandbox |
 
-  Where a secret reaches less than its scope says, the list says so under it, for the sandbox of the session
-  (or the one chosen in the launch form), with the reason (`secretReach`). Three promises cannot be kept with
-  the Windlass that exists, and are not made: an MCP server cannot be given a variable whose name Windlass
-  would pass on to sandboxed commands without the commands getting it too; where commands are not sandboxed,
-  an MCP server cannot be given anything they do not get; and a sandboxed command cannot be given a variable
-  whose name looks like a credential. In approval `full`, once content from the web or an MCP server is in the
-  conversation, Windlass sandboxes commands again where it can (not in `docker-hardened`, where bubblewrap
-  does not start: there it asks before each command and runs it as before).
-- **The copy of Windlass's rule.** The platform has to know which names Windlass withholds before Windlass is
-  started, and Windlass cannot be asked, so its lists are repeated in `looksLikeCredential`. They must change
-  when Windlass's do: with a name the platform takes to be withheld and Windlass passes on, a secret for
-  setup and MCP servers would reach the agent's commands. `scripts/secrets-check.ts` holds the copy against
-  Windlass's source when that is beside this repository. A sandbox keeps the Windlass of the image it was
-  made from.
+  The list is said for the sandbox it is asked about. A session records what its sandbox's Windlass
+  answered when a turn last asked it (`SessionSummary.envLists`), and its panel's list goes by that: a
+  session whose sandbox has the older Windlass reads the sentences of this second table, and a sandbox
+  that replaces it gets the first. A sandbox no turn has asked was made before the platform asked, and is
+  taken to have the older one until its next turn. The launch form's list, and that of a session with no
+  sandbox yet, is said for a sandbox made now, from an image with a Windlass that has the lists ("Run it");
+  where the image's own is older, a session's list says so from its first turn.
+- **The copy of Windlass's credential names.** Which names Windlass keeps from sandboxed commands has to be
+  known before Windlass is started: it decides what goes into `passEnv`, and with an older Windlass what
+  a secret reaches at all. Windlass cannot be asked, so its lists are repeated in `looksLikeCredential`.
+  They must change when Windlass's do: with a name the platform takes to be passed on and Windlass
+  withholds, a secret for the agent's commands would not reach them; and in a sandbox with an older
+  Windlass, with a name the platform takes to be withheld and that Windlass passes on, a secret for setup
+  and MCP servers would reach the agent's commands. `scripts/secrets-check.ts` holds the copy against
+  Windlass's source when that is beside this repository.
 - **When a change takes effect.** A session reads its repository's secrets from the user's actor when a turn
   starts. Windlass is started for each turn, so MCP servers and the agent's commands have a new, replaced or
   deleted secret from the session's next turn; a turn that is running keeps what it started with. The setup
@@ -886,8 +955,10 @@ never shown again once it is saved.
 cd server && npx tsx ../scripts/secrets-check.ts    # the rules on their own: names, limits, scopes, sealing, the list, redaction
 ```
 
-The web app's mock has three secrets saved for acme/harbor (`?mock=1`), one of each kind the list has a
-sentence for; it keeps no value at all.
+The web app's mock has four secrets saved for acme/harbor (`?mock=1`), each scope under a name that looks
+like a credential and under one that does not; it keeps no value at all. One of its seeded sessions on that
+repository (`/agents/checks`) has a sandbox with the older Windlass, and its panel shows the sentences of the
+second table.
 
 ## A project's MCP servers
 
@@ -931,7 +1002,8 @@ the same place as a tool call's question, with the same control.
   will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs.
   Save a secret named HARBOR_TOKEN for acme/harbor, under Secrets in this session's panel: it is handed over
   from the next turn."), or, where a secret of that name is saved and the session's sandbox keeps it from MCP
-  servers, why. An approval of such a server ends in Windlass's own reason and the same sentence.
+  servers (commands are not held in Windlass's sandbox there, or its Windlass is an older one), why. An
+  approval of such a server ends in Windlass's own reason and the same sentence.
 - **What is remembered, and where.** Windlass keeps an approval in its data directory, for the project
   directory and exactly that definition, for 30 days. On E2B that directory is on the sandbox's disk, so by
   itself an approval would hold for one sandbox: every new session on the repository would ask again, and so
@@ -1101,7 +1173,8 @@ A platform that was used before sign-ins were kept in the users' actors still ha
 image: its files and its timeline are there, and demo agents go on working, but its Windlass cannot run on a
 handed-in token, so a prompt on a ChatGPT sign-in ends by saying so and asking for a new agent. An agent whose
 sandbox was made from an image whose Windlass does read a handed-in token goes on working after the image is
-rebuilt, also when that Windlass is older than the codes ("What went wrong with a token" above).
+rebuilt, also when that Windlass is older than the codes ("What went wrong with a token" above), and when it
+is older than the session's home and the lists of variable names ("Sandboxes that keep an older Windlass").
 
 ## Limits
 
@@ -1138,13 +1211,20 @@ rebuilt, also when that Windlass is older than the codes ("What went wrong with 
   another machine would be handed a short-lived access token as the other sessions are. It needs a provider in
   the sandbox layer, an image with Windlass in it and an account. Firecracker needs a host with KVM and a guest
   agent; agentOS cannot run the Windlass executable at all.
-- **A secret's scope is as narrow as Windlass's one rule allows, and no narrower.** Windlass has no setting
-  for which variables a command gets, so three things cannot be had ("A repository's secrets"): an MCP
-  server's variable under a name that does not look like a credential, kept from sandboxed commands; an MCP
-  server's variable kept from commands that are not sandboxed; and a credential-named variable for a
-  sandboxed command. What Windlass would need: a list of names kept from every command (its `EnvPolicy`
-  has `names` for it) and a list of credential-named ones let through (`keep`), settable by whoever starts
-  it and never by a project's file; or an environment for MCP servers that is separate from its own.
+- **An MCP server's secret cannot be kept from commands that are not sandboxed.** Where commands run
+  without Windlass's sandbox (`docker-hardened`, `e2b-open`), and where it is not established that they
+  are sandboxed (E2B before its check), a secret for "setup and MCP servers" is not handed to Windlass, so
+  the repository's MCP servers go without it ("A repository's secrets"). Windlass would not give a command
+  the variable there, but a command of the same user reads it from Windlass's process. What would close
+  it: MCP servers started with an environment that is not Windlass's own, or as another user.
+- **A sandbox keeps the Windlass it was made with.** A session whose sandbox was made from an older image
+  has a read-only home for its sandboxed commands and the narrower secret scopes of an older Windlass,
+  until its sandbox is replaced: removed for not being used, or lost. Nothing in the platform replaces a
+  sandbox for its Windlass.
+- **The launch form's list of secrets is said for the image the platform is built for.** A server does not
+  look at the Windlass of its image or template for it (on E2B that would mean starting a sandbox), so
+  with an older Windlass there the launch form's sentences are the newer one's, and a session's own list
+  corrects them from its first turn.
 - **A server that Windlass starts from its own record says nothing of secrets.** When a variable such a
   server reads is not set, no question is put, so the sentence about what would set it is not said: the
   panel lists the server as one that could not start, with Windlass's reason, which names the variable.

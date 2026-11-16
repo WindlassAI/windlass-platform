@@ -115,6 +115,7 @@ import {
 	type TurnServer,
 	type TurnServerQuestion,
 	type Windlass,
+	type WindlassFeatures,
 } from "./sandbox/api.js";
 import { BACKUP_ENV, SandboxSessionBackups } from "./sandbox/backup.js";
 import { NOT_SIGNED_IN, SIGN_IN_EXPIRED, SIGN_IN_UNREACHABLE, SignInRefreshError, TOKEN_VALID_FOR_MS, outdatedWindlass, tokenSourceFailure } from "./sandbox/handoff.js";
@@ -563,6 +564,10 @@ class FakeWindlass implements Windlass {
 
 	async models(): Promise<string[]> {
 		return FAKE_MODELS;
+	}
+
+	async features(): Promise<WindlassFeatures> {
+		return { sessionHome: true, envLists: true };
 	}
 
 	demoScript(prompt: string, turn: number): ScriptedModel {

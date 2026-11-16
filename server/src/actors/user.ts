@@ -360,9 +360,23 @@ async function secretProfile(id: unknown): Promise<SandboxProfile> {
  * A repository's secrets as a client may see them: name, scope, when each was last changed, and what
  * it reaches in a sandbox of `profile`. The value's column is not read, so no value can be in the answer.
  */
-async function listSecrets(db: RawAccess, project: string, profile: SandboxProfile): Promise<RepositorySecrets> {
+async function listSecrets(db: RawAccess, project: string, profile: SandboxProfile, lists: boolean): Promise<RepositorySecrets> {
 	const rows = await db.execute<{ name: string; scope: string; updated_at: number }>("SELECT name, scope, updated_at FROM repo_secret WHERE project = ? ORDER BY name", project);
-	return listedSecrets(rows, profile);
+	return listedSecrets(rows, profile, lists);
+}
+
+/**
+ * Whether the list is said for a Windlass that can be told by name which variables its commands get
+ * (repo-secrets.ts). For a session of the user's on that repository it is what the session's sandbox
+ * said when a turn last asked (`SessionSummary.envLists`). A sandbox nobody has asked was made before
+ * the platform asked, so it is taken to have the older Windlass until its next turn asks. Without a
+ * session, and for one that has no sandbox yet, it is said for a sandbox made now, from an image
+ * with the Windlass this platform is built for (README, "Run it").
+ */
+function secretLists(vars: UserVars, repositoryId: number, sessionId: unknown): boolean {
+	const session = typeof sessionId === "string" ? vars.sessions.get(sessionId) : undefined;
+	if (session === undefined || session.repository?.id !== repositoryId || session.sandbox === "none") return true;
+	return session.envLists === true;
 }
 
 /**
@@ -861,18 +875,18 @@ export const user = actor({
 
 		// --- secrets of repositories (repo-secrets.ts) ----------------------------------------------
 
-		repositorySecrets: async (c, input: { repositoryId: number; profile: string }): Promise<RepositorySecrets> => {
+		repositorySecrets: async (c, input: { repositoryId: number; profile: string; sessionId?: string }): Promise<RepositorySecrets> => {
 			requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const profile = await secretProfile(input?.profile);
 			try {
-				return await listSecrets(c.db, project, profile);
+				return await listSecrets(c.db, project, profile, secretLists(c.vars, input.repositoryId, input.sessionId));
 			} catch (error) {
 				throw clientError(c.log, error, "The repository's secrets could not be read. Try again.");
 			}
 		},
 
-		saveRepositorySecret: async (c, input: { repositoryId: number; profile: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets> => {
+		saveRepositorySecret: async (c, input: { repositoryId: number; profile: string; sessionId?: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets> => {
 			const user = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const profile = await secretProfile(input?.profile);
@@ -881,13 +895,13 @@ export const user = actor({
 			const value = input?.value === undefined || input?.value === null ? undefined : secretInput(() => cleanSecretValue(input.value));
 			try {
 				await saveSecret(c, user.uid, project, repositoryLabel(c.vars, input.repositoryId), name, value, scope);
-				return await listSecrets(c.db, project, profile);
+				return await listSecrets(c.db, project, profile, secretLists(c.vars, input.repositoryId, input.sessionId));
 			} catch (error) {
 				throw clientError(c.log, error, "The secret could not be saved. Try again.");
 			}
 		},
 
-		deleteRepositorySecret: async (c, input: { repositoryId: number; profile: string; name: string }): Promise<RepositorySecrets> => {
+		deleteRepositorySecret: async (c, input: { repositoryId: number; profile: string; sessionId?: string; name: string }): Promise<RepositorySecrets> => {
 			const user = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const profile = await secretProfile(input?.profile);
@@ -895,7 +909,7 @@ export const user = actor({
 			try {
 				await c.db.execute("DELETE FROM repo_secret WHERE project = ? AND name = ?", project, name);
 				console.log(`[wlp] secret.deleted uid=${user.uid} project=${project} name=${name.replace(/[^A-Za-z0-9_]/g, "?")}`);
-				return await listSecrets(c.db, project, profile);
+				return await listSecrets(c.db, project, profile, secretLists(c.vars, input.repositoryId, input.sessionId));
 			} catch (error) {
 				throw clientError(c.log, error, "The secret could not be deleted. Try again.");
 			}

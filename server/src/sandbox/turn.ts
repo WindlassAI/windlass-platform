@@ -26,14 +26,27 @@
  * those meant for Windlass go into the process's environment without being on a command line
  * (`StartOptions.secretEnv`), and every saved value is taken out of whatever the engine sends before
  * any of it is looked at (`AcpConnection`'s `clean`), out of the pieces of streaming text a value is
- * split over (`streamed`), and out of the end of standard error and a failure's sentence.
+ * split over (`streamed`), and out of the end of standard error and a failure's sentence. Which of
+ * them no command may get, and which credential-looking ones sandboxed commands get all the same, is
+ * said by name when the session is opened (`withholdEnv`, `passEnv`).
+ *
+ * A sandbox keeps the Windlass of the image it was made from, so what a session can be opened with is
+ * asked of the engine and never assumed. Every Windlass lists the keys of a session's metadata it
+ * takes in its answer to `initialize` (`agentCapabilities._meta.windlass.openMeta`), and one that
+ * does not know a key does not refuse it: it leaves it unread. A key is therefore sent only to an
+ * engine that lists it, and a turn that was handed a variable to withhold fails, before a session is
+ * opened, on an engine that does not list `withholdEnv`: left unread, the variable would reach the
+ * agent's commands. What a turn is handed is decided before its engine starts, so a caller asks first
+ * (`SandboxWindlass.features`: an engine started for that question alone, once per sandbox).
  *
  * The process is driven over its stdin and stdout as the `windlass` command line drives its own engine (Windlass's
  * docs/acp.md, "The command line is an ACP client"):
  *
  *   initialize                         every engine event is asked for as `_windlass/event`, no standard updates
  *   session/new | _windlass/resolve + session/resume
- *                                      model, effort, the profile's approval mode, whether anyone can answer
+ *                                      model, effort, the profile's approval mode, whether anyone can answer,
+ *                                      and where the engine takes them: a home of the session's own for
+ *                                      sandboxed commands, and the two lists of variable names
  *   _windlass/mcp                      the servers the project's configuration names that wait for approval,
  *                                      each put to `onServerQuestion` before the prompt goes
  *     -> _windlass/mcp_approve         a server the user said to start; it starts at once
@@ -69,7 +82,7 @@
 
 import type { WindlassEvent } from "../contract.js";
 import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
-import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnControl, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, Windlass } from "./api.js";
+import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnControl, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, Windlass, WindlassFeatures } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
 import { ACCESS_TOKEN_FILE_ENV, type Failure, OUTDATED_SANDBOX, WindlassOutdatedError, handedInFailure, handedInProblem, handedInProblemInWords, tokenRanOut, tokenSourceFailure } from "./handoff.js";
@@ -91,6 +104,28 @@ const EXT = {
 	mcpApprove: `_${NS}/mcp_approve`,
 };
 const PROTOCOL_VERSION = 1;
+/** What `initialize` is sent with: every engine event is asked for as `_windlass/event`, and no standard updates. */
+const INITIALIZE = { protocolVersion: PROTOCOL_VERSION, clientInfo: { name: "windlass-platform", title: "Windlass Platform", version: "0" }, clientCapabilities: { _meta: { [NS]: { events: true, updates: false } } } };
+
+/**
+ * What a session's sandboxed commands find at the home directory's path: a home of the session's own
+ * (Windlass's docs/safety.md, "The session's home"), in which the home's entries are read-only and
+ * what a command makes beside them is kept for the session. Tools that write under the home without
+ * being told to (a build tool's settings, a package manager's cache) then work in Windlass's
+ * sandbox. The home in a sandbox is nobody's to keep, which is what the setting is for.
+ *
+ * It is said in every profile, since it applies to the commands Windlass sandboxes and to no other:
+ *
+ *   approval "auto"   every command is sandboxed where bubblewrap works (the profiles that promise
+ *                     Windlass's sandbox, and E2B before its check where the probe passes)
+ *   approval "full"   commands run directly in the sandbox machine, with its real home, until content
+ *                     from the web or an MCP server is in the conversation. From then on Windlass
+ *                     sandboxes them again where it can (`e2b-open`), and a tool that wrote under
+ *                     the home until then would fail on a read-only one
+ *   no bubblewrap     (`docker-hardened`, and E2B where the probe fails) Windlass sandboxes nothing,
+ *                     so no command gets the home, and the model and the user are told nothing of it
+ */
+const SANDBOX_HOME = "session";
 
 const SESSION_ID = /^ses_[A-Za-z0-9]{1,64}$/;
 const STDERR_TAIL = 4000;
@@ -165,12 +200,27 @@ export class SandboxWindlass implements Windlass {
 	/** Whether the Windlass in a sandbox reads a handed-in token, asked once per sandbox: a sandbox's binary does not change. */
 	private readonly takesToken = new Map<string, boolean>();
 
+	/** What the Windlass in a sandbox said it can be told when a session is opened, asked once per sandbox for the same reason. */
+	private readonly told = new Map<string, WindlassFeatures>();
+
 	/** `tokens`: where a turn that is not scripted gets its user's access token. */
 	constructor(
 		private readonly tokens: AccessTokens,
 		private readonly host: WindlassHost,
 		private readonly options: TurnOptions = {},
 	) {}
+
+	async features(sandbox: SandboxHandle): Promise<WindlassFeatures> {
+		if (!isTurnSandbox(sandbox)) throw new Error("features needs a sandbox from this layer's connect()");
+		const known = this.told.get(sandbox.id);
+		if (known !== undefined) return known;
+		const keys = await openKeysOf(sandbox, this.options);
+		// No answer (the sandbox is not running, the engine did not start) is not remembered: the turn finds that out itself.
+		if (keys === null) return { sessionHome: false, envLists: false };
+		const found = { sessionHome: keys.includes("sandboxHome"), envLists: keys.includes("withholdEnv") && keys.includes("passEnv") };
+		this.told.set(sandbox.id, found);
+		return found;
+	}
 
 	version(): Promise<string | null> {
 		return this.host.version();
@@ -394,6 +444,8 @@ class Turn {
 	private engineSecrets = new Set<string>();
 	/** Takes the repository's saved secrets out of what the engine sends (`RunTurnInput.secrets`). */
 	private readonly redactor: Redactor;
+	/** The keys of a session's metadata this engine takes, as its answer to `initialize` lists them. */
+	private openKeys: string[] = [];
 	/** The end of a piece of streaming text that may be the beginning of a saved value, per stream, until the next piece shows whether it is. */
 	private readonly heldBack = new Map<string, string>();
 
@@ -602,17 +654,21 @@ class Turn {
 	private async converse(): Promise<void> {
 		const { input, peer } = this;
 		try {
-			const init = await this.unlessAborted(
-				peer.request<{ agentCapabilities?: { _meta?: Record<string, unknown> } }>(
-					"initialize",
-					{ protocolVersion: PROTOCOL_VERSION, clientInfo: { name: "windlass-platform", title: "Windlass Platform", version: "0" }, clientCapabilities: { _meta: { [NS]: { events: true, updates: false } } } },
-					{ timeoutMs: this.startTimeoutMs },
-				),
-			);
+			const init = await this.unlessAborted(peer.request<Initialized>("initialize", INITIALIZE, { timeoutMs: this.startTimeoutMs }));
 			if (init === "aborted") return;
 			const offered = init.agentCapabilities?._meta?.[NS] as { notifications?: unknown } | undefined;
 			if (!Array.isArray(offered?.notifications) || !offered.notifications.includes(EXT.event)) {
 				this.failure = { reason: "engine", message: `the engine process does not send Windlass's events (${EXT.event}); it may be another version` };
+				return;
+			}
+			this.openKeys = openKeysIn(init);
+			// An engine that does not take the list leaves it unread, and its commands would get what its environment holds.
+			const withheld = input.secrets?.withholdEnv ?? [];
+			if (withheld.length > 0 && !this.openKeys.includes("withholdEnv")) {
+				this.failure = {
+					reason: "engine",
+					message: `the Windlass in this sandbox was handed ${withheld.length === 1 ? "a variable" : `${withheld.length} variables`} that no command of the agent may get, and it cannot be told which (it takes no withholdEnv); no session was opened`,
+				};
 				return;
 			}
 		} catch (error) {
@@ -668,6 +724,11 @@ class Turn {
 			// Whether anyone can answer a question. Without someone, a call that would ask is refused at once and the model is told.
 			attended: input.onQuestion !== undefined,
 			unattended: "deny",
+			// Neither of these is stored with the session: they are said each time it is opened, to an engine that takes them.
+			...(this.openKeys.includes("sandboxHome") ? { sandboxHome: SANDBOX_HOME } : {}),
+			...(input.secrets !== undefined && this.openKeys.includes("withholdEnv") && this.openKeys.includes("passEnv")
+				? { withholdEnv: [...(input.secrets.withholdEnv ?? [])], passEnv: [...(input.secrets.passEnv ?? [])] }
+				: {}),
 		};
 		if (input.windlassSessionId === undefined) {
 			const made = await peer.request<{ sessionId?: unknown }>("session/new", { cwd: this.sandbox.cwd, mcpServers: [], _meta: { [NS]: meta } }, { timeoutMs: OPEN_TIMEOUT_MS });
@@ -1199,6 +1260,42 @@ class Turn {
 	private lastWords(): string {
 		const said = lastWords(this.stderr);
 		return said === null ? "" : ` (${said})`;
+	}
+}
+
+type Initialized = { agentCapabilities?: { _meta?: Record<string, unknown> } };
+
+/** The keys of `_meta.windlass` an engine reads when a session is opened, from its answer to `initialize`; none when it lists none. */
+function openKeysIn(init: Initialized): string[] {
+	const listed = (init.agentCapabilities?._meta?.[NS] as { openMeta?: unknown } | undefined)?.openMeta;
+	return Array.isArray(listed) ? listed.filter((key): key is string => typeof key === "string") : [];
+}
+
+/**
+ * The same keys for the Windlass of a sandbox, before any turn: an engine is started there, asked
+ * `initialize` and nothing else, and let go again. It is handed nothing (no token, no script, no
+ * secret) and opens no session. Its standard input stays open until it has answered: an engine whose
+ * client is gone shuts down without answering. Null when it gave no answer.
+ */
+async function openKeysOf(sandbox: TurnSandbox, options: TurnOptions): Promise<string[] | null> {
+	const lines = new LineSplitter((line) => peer.receive(line));
+	const run = sandbox.start(options.engineCommand ?? ["windlass", "acp"], { env: { WINDLASS_WAKE: "off", WINDLASS_ACP_LOG: "warn" }, onStdout: (chunk) => lines.push(chunk) });
+	const peer: AcpConnection = new AcpConnection((line) => run.write(`${line}\n`), { notification: () => undefined, request: (method) => Promise.reject(new MethodNotFound(method)) }, NS);
+	void run.ended.then((end) => {
+		lines.flush();
+		peer.end(end.error !== null ? end.error.message : `the engine process ${describeEnd(end)}`);
+	});
+	try {
+		return openKeysIn(await peer.request<Initialized>("initialize", INITIALIZE, { timeoutMs: options.startTimeoutMs ?? START_TIMEOUT_MS }));
+	} catch {
+		return null;
+	} finally {
+		run.closeStdin();
+		if (!(await within(run.ended, EXIT_WAIT_MS))) {
+			await run.signal("KILL", "all");
+			if (!(await within(run.ended, 3000))) run.killClient();
+		}
+		await sandbox.sweep(run.tag, { waitMs: 0 }).catch(() => 0);
 	}
 }
 

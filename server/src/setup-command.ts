@@ -3,8 +3,8 @@
  * kept, and what the agent is told when it did not finish.
  *
  * On a deployment where Windlass sandboxes the agent's commands, a command has no network unless the
- * user approves it and writes only in the workspace and in /tmp, so installing a project's
- * dependencies inside a turn means questions and tools that fail. A setup command is run by the
+ * user approves it and writes only in the workspace, in /tmp and in a home of the session's own, so
+ * installing a project's dependencies inside a turn means questions. A setup command is run by the
  * platform instead: once in each new sandbox of a session, after the repository is cloned and before
  * the agent's first turn there, outside that command sandbox and with the sandbox's network. The agent
  * then starts with the dependencies in place, and its own commands stay sandboxed.

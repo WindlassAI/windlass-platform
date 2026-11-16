@@ -41,7 +41,9 @@
  * own environment. The platform puts a repository's saved secrets there (repo-secrets.ts), so the
  * question says which of them approving hands to the server, or sends to its address; and for a
  * variable that is not set it says what would set it: saving a secret of that name, or, where one is
- * saved and this sandbox keeps it from MCP servers, why.
+ * saved and this sandbox keeps it from MCP servers, why. That is so where the agent's commands are
+ * not held in Windlass's sandbox, for a secret that is not for them, and in a sandbox whose Windlass
+ * is an older one, by the secret's name as well.
  *
  * web/src/api/mock.ts repeats these texts for the web app's mock.
  */
@@ -66,6 +68,12 @@ export interface ServerQuestionContext {
 	 * connection, which can have none. Absent where it is not known (the panel's words need none).
 	 */
 	secrets?: Array<{ name: string; scope: SecretScope }> | null;
+	/**
+	 * `WindlassFeatures.envLists` of the session's sandbox: whether its Windlass can be told by name
+	 * which variables its commands get, on which what a saved secret reaches depends. Absent where
+	 * `secrets` is, and read as an older Windlass then.
+	 */
+	envLists?: boolean;
 }
 
 export const SERVER_START = "start";
@@ -145,12 +153,12 @@ function remembered(context: ServerQuestionContext): string {
  * saving a secret of its name for the repository; one that is saved and still not set is one this
  * sandbox keeps from MCP servers, and the sentence of `secretReach` says why.
  */
-export function unsetRemedy(unset: readonly string[], context: Pick<ServerQuestionContext, "profile" | "project" | "secrets">): string {
+export function unsetRemedy(unset: readonly string[], context: Pick<ServerQuestionContext, "profile" | "project" | "secrets" | "envLists">): string {
 	if (unset.length === 0) return "";
 	if (context.secrets === null) return "A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.";
 	if (context.secrets === undefined) return "A variable is set by saving a secret of that name for the repository, under Secrets in the session's panel.";
 	const kept = unset.flatMap((name) => {
-		const why = withheldFromServers(name, context.secrets ?? [], context.profile);
+		const why = withheldFromServers(name, context.secrets ?? [], context.profile, context.envLists === true);
 		return why === null ? [] : [{ name, why }];
 	});
 	const absent = unset.filter((name) => !kept.some((item) => item.name === name));

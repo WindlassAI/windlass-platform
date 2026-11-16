@@ -205,13 +205,31 @@ describe("the question's words", () => {
 		expect(forgettingWords({ dataInSandbox: false })).toBe("Forgetting holds once Windlass's own record has run out, 30 days after the server was last approved: all your sessions share that record here. A running server is not stopped.");
 	});
 
-	it("has the mock say what a secret reaches word for word as the server does, for every kind of sandbox", () => {
+	it("has the mock say what a secret reaches word for word as the server does, for every kind of sandbox and either Windlass in it", () => {
 		const kinds = [profile("docker-windlass-sandbox"), profile("docker-hardened"), e2bProfile({ windlassSandbox: false }), e2bProfile({ windlassSandbox: true })];
 		for (const kind of kinds) {
-			for (const name of ["NPM_TOKEN", "DATABASE_URL", "SENTRY_DSN", "PREVIEW_HOST", "AWS_REGION", "GH_PAT", "AUTHOR", "netrc"]) {
-				for (const scope of ["setup", "agent"] as const) expect(mockSecretReach(name, scope, kind)).toEqual(secretReach(name, scope, kind));
+			for (const name of ["NPM_TOKEN", "DATABASE_URL", "SENTRY_DSN", "PREVIEW_HOST", "DEPLOY_KEY", "AWS_REGION", "GH_PAT", "AUTHOR", "netrc"]) {
+				for (const scope of ["setup", "agent"] as const) {
+					for (const lists of [true, false]) expect(mockSecretReach(name, scope, kind, lists)).toEqual(secretReach(name, scope, kind, lists));
+				}
 			}
 		}
+	});
+
+	it("has the mock list a repository's secrets for the sandbox it is asked about: a session's own, with the Windlass it has, or one made now", async () => {
+		const client = createMockClient({ pace: 0, origin: "http://localhost:5173" });
+		const user = client.user({ token: "mock:chatgpt:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } });
+		const sentences = (list: { secrets: Array<{ name: string; reach: { note: string | null } }> }) => Object.fromEntries(list.secrets.map((secret) => [secret.name, secret.reach.note !== null]));
+		// The launch form, and a session whose sandbox has the Windlass that takes the lists: nothing to say where commands are sandboxed.
+		expect(sentences(await user.repositorySecrets(7101, "docker-windlass-sandbox"))).toEqual({ DEPLOY_KEY: false, NPM_TOKEN: false, PREVIEW_HOST: false, SENTRY_DSN: false });
+		expect(sentences(await user.repositorySecrets(7101, "docker-windlass-sandbox", "harbor-build"))).toEqual({ DEPLOY_KEY: false, NPM_TOKEN: false, PREVIEW_HOST: false, SENTRY_DSN: false });
+		// A session whose sandbox keeps the older Windlass: the two that its one rule cannot keep to their scope.
+		expect(sentences(await user.repositorySecrets(7101, "docker-windlass-sandbox", "checks"))).toEqual({ DEPLOY_KEY: true, NPM_TOKEN: false, PREVIEW_HOST: false, SENTRY_DSN: true });
+		// Where commands are not sandboxed, a secret that is not for them stays out of Windlass with either.
+		expect(sentences(await user.repositorySecrets(7101, "docker-hardened"))).toEqual({ DEPLOY_KEY: false, NPM_TOKEN: true, PREVIEW_HOST: false, SENTRY_DSN: true });
+		// A session on another repository says nothing about this one's sandbox.
+		expect(sentences(await user.repositorySecrets(7101, "docker-windlass-sandbox", "add-test"))).toEqual({ DEPLOY_KEY: false, NPM_TOKEN: false, PREVIEW_HOST: false, SENTRY_DSN: false });
+		client.dispose();
 	});
 
 	it("are repeated by the mock word for word, for the profiles, sessions and projects it plays", () => {

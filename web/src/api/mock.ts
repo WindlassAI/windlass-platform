@@ -150,7 +150,7 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 		id: "docker-windlass-sandbox",
 		name: "Docker + Windlass sandbox",
 		summary: "A container of its own, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the container.",
-		layers: ["Docker container (non-root, no capabilities, resource limits)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace, credentials hidden)"],
+		layers: ["Docker container (non-root, no capabilities, resource limits)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)"],
 		approval: "auto",
 		commandNetwork: false,
 		commandsCanReadAccessToken: false,
@@ -180,7 +180,7 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 	{
 		id: "e2b-open",
 		name: "E2B, microVM only",
-		summary: "A microVM of its own, hosted by E2B, and no sandbox inside it: the agent's commands run directly in the microVM without asking first, can reach any host on the network, can write outside the workspace, the home directory included, and can read the session's access token, which lasts about an hour and cannot be renewed. Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace. Your ChatGPT sign-in is never in the microVM.",
+		summary: "A microVM of its own, hosted by E2B, and no sandbox inside it: the agent's commands run directly in the microVM without asking first, can reach any host on the network, can write outside the workspace, the home directory included, and can read the session's access token, which lasts about an hour and cannot be renewed. Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace; what is in the home directory by then is read-only for them, and what they add there is kept apart for the session. Your ChatGPT sign-in is never in the microVM.",
 		layers: ["E2B microVM (Firecracker, hosted by E2B; commands run in it directly, as a non-root user)"],
 		approval: "full",
 		commandNetwork: true,
@@ -234,7 +234,7 @@ export const MOCK_E2B_PROFILES: SandboxProfile[] = MOCK_PROFILES.map((profile): 
 			name: "E2B + Windlass sandbox",
 			summary:
 				"A microVM of its own, hosted by E2B, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the microVM.",
-			layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace, credentials hidden)"],
+			layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)"],
 			approval: "auto",
 			commandNetwork: false,
 			commandsCanReadAccessToken: false,
@@ -526,9 +526,21 @@ function mockLooksLikeCredential(name: string): boolean {
 	return upper.split("_").some((segment) => segment === "AUTH" || segment === "PAT");
 }
 
-/** What a secret reaches in a sandbox of `profile`, word for word as server/src/repo-secrets.ts says it (`secretReach`). */
-export function mockSecretReach(name: string, scope: SecretScope, profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">): SecretReach {
+/** What a secret reaches in a sandbox of `profile`, word for word as server/src/repo-secrets.ts says it (`secretReach`), for a Windlass that takes the lists of variable names (`lists`) and for an older one. */
+export function mockSecretReach(name: string, scope: SecretScope, profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">, lists: boolean): SecretReach {
 	const sandbox = profile.approval === "full" ? "none" : !profile.commandNetwork && !profile.commandsCanReadAccessToken ? "windlass" : "unknown";
+	if (lists) {
+		if (scope === "agent") return { servers: true, commands: "yes", note: null };
+		if (sandbox === "windlass") return { servers: true, commands: "no", note: null };
+		return {
+			servers: false,
+			commands: "no",
+			note:
+				sandbox === "none"
+					? "MCP servers are not given it in this sandbox: the agent's commands run there without Windlass's sandbox, where a command can read whatever Windlass was handed for an MCP server from Windlass's own process. Only the setup command gets it."
+					: "MCP servers are not given it in this sandbox: it has not been established that Windlass can sandbox the agent's commands there, and a command it cannot sandbox can read whatever Windlass was handed for an MCP server from Windlass's own process. Only the setup command gets it.",
+		};
+	}
 	const withheld = mockLooksLikeCredential(name);
 	const looks = "a name that looks like a credential (it contains TOKEN, KEY, SECRET or PASSWORD, for example)";
 	if (scope === "setup") {
@@ -1050,7 +1062,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			wait: 700,
 			run: () => {
 				if (first && script.platformFailure === undefined) session.windlassSessionId = `ses_${hex(24)}`;
-				setSummary(world, session, { status: "running", sandbox: "running" });
+				// A sandbox made now has the Windlass that takes the lists; one that was there keeps what it said.
+				setSummary(world, session, { status: "running", sandbox: "running", envLists: session.summary.envLists ?? true });
 			},
 		});
 
@@ -1523,7 +1536,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			profile: SessionSummary["profile"],
 			ago: number,
 			turns: Array<{ text: string; script: ScriptName; effort?: string }>,
-			extra: { repoUrl?: string; sandbox?: SessionSummary["sandbox"]; model?: string; repository?: SessionRepository; pull?: Pick<PullRequestInfo, "number" | "state"> & { hoursAgo: number; clean?: boolean } } = {},
+			extra: { repoUrl?: string; sandbox?: SessionSummary["sandbox"]; model?: string; repository?: SessionRepository; pull?: Pick<PullRequestInfo, "number" | "state"> & { hoursAgo: number; clean?: boolean }; olderWindlass?: boolean } = {},
 		): MockSession => {
 			clock = start - ago;
 			const session = addSession(world, { id, title, titled: true, profile, model: extra.model ?? (MODELS[0] as string), repoUrl: extra.repoUrl ?? null, repository: githubOn ? extra.repository : undefined });
@@ -1535,7 +1548,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			}
 			clock = null;
 			if (session.pauseTimer !== null) cancel(session.pauseTimer);
-			session.summary = { ...session.summary, sandbox: extra.sandbox ?? (turns.length === 0 ? "none" : "paused") };
+			const sandbox = extra.sandbox ?? (turns.length === 0 ? "none" : "paused");
+			// A sandbox a turn ran in has said which Windlass it has; one with no sandbox has nothing to say it.
+			const { envLists: _, ...summary } = session.summary;
+			session.summary = { ...summary, sandbox, ...(sandbox === "none" ? {} : { envLists: extra.olderWindlass !== true }) };
 			const repository = session.summary.repository;
 			if (repository && extra.pull) {
 				// Pushed earlier: the pull request is there, and what was pushed then no longer differs from the last commit.
@@ -1553,7 +1569,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		history("deps", "Upgrade the dependencies", "docker-hardened", 3 * 24 * HOUR, [{ text: "Upgrade the dependencies to their latest minor versions and crash if anything breaks.", script: "crash" }], { sandbox: "none", repoUrl: "https://github.com/acme/harbor.git" });
 		history("suite", "Run the whole test suite", "docker-windlass-sandbox", 2 * 24 * HOUR, [{ text: "Run the whole test suite and fix the failing test.", script: "cancelled", effort: "medium" }]);
 		history("changelog", "Tidy the changelog", "docker-windlass-sandbox", 26 * HOUR, [{ text: "Tidy the changelog for the release.", script: "usageLimit" }], { model: MODELS[1], repository: sessionRepository("acme", "lighthouse-docs"), pull: { number: 7, state: "merged", hoursAgo: 25, clean: true } });
-		history("checks", "Make add() pass its checks", "docker-windlass-sandbox", 21 * HOUR, [{ text: "Fix the failing test.", script: "checks", effort: "high" }], { repository: sessionRepository("acme", "harbor", "release/2.4"), pull: { number: 38, state: "open", hoursAgo: 20 } });
+		// Its sandbox was made before the image was rebuilt and keeps the older Windlass: the list of its repository's secrets says what that one allows.
+		history("checks", "Make add() pass its checks", "docker-windlass-sandbox", 21 * HOUR, [{ text: "Fix the failing test.", script: "checks", effort: "high" }], {
+			repository: sessionRepository("acme", "harbor", "release/2.4"),
+			pull: { number: 38, state: "open", hoursAgo: 20 },
+			olderWindlass: true,
+		});
 		history("unattended", "Run a command with nobody to approve it", "docker-hardened", 3 * HOUR, [{ text: "check the sandbox", script: "refused" }]);
 		history("probe", "Check what the sandbox allows", "docker-windlass-sandbox", 2 * HOUR, [{ text: "check the sandbox", script: "sandboxed" }]);
 		history(
@@ -1579,12 +1600,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 		// The user saved a setup command for acme/harbor some days ago: the launch form and the panel show it.
 		world.setups.set(7101, { command: "npm ci", updatedAt: start - 3 * 24 * HOUR - 50 * MINUTE });
-		// And three secrets, one of each kind the list has a sentence for where Windlass sandboxes commands.
+		// And four secrets: each scope under a name that looks like a credential and under one that does not, which is what an older Windlass goes by.
 		world.secrets.set(
 			7101,
 			new Map([
 				["NPM_TOKEN", { scope: "setup" as const, updatedAt: start - 3 * 24 * HOUR - 48 * MINUTE }],
 				["SENTRY_DSN", { scope: "setup" as const, updatedAt: start - 26 * HOUR }],
+				["DEPLOY_KEY", { scope: "agent" as const, updatedAt: start - 5 * HOUR }],
 				["PREVIEW_HOST", { scope: "agent" as const, updatedAt: start - 40 * MINUTE }],
 			]),
 		);
@@ -1641,11 +1663,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	// ---- secrets of repositories ------------------------------------------------------------------
 
-	function secretsOf(world: World, repositoryId: number, profileId: SandboxProfileId): RepositorySecrets {
+	/** As the server says it (server/src/actors/user.ts, `secretLists`): for a session's sandbox what its Windlass said, the older one for a sandbox nobody asked, and a sandbox made now otherwise. */
+	function secretsOf(world: World, repositoryId: number, profileId: SandboxProfileId, sessionId?: string): RepositorySecrets {
 		const profile = profiles.find((item) => item.id === profileId);
 		if (!profile) throw new PlatformError("user", "Choose one of the listed sandboxes.", { reason: "bad_input" });
+		const session = sessionId === undefined ? undefined : world.sessions.get(sessionId)?.summary;
+		const lists = session === undefined || session.repository?.id !== repositoryId || session.sandbox === "none" ? true : session.envLists === true;
 		const saved = [...(world.secrets.get(repositoryId) ?? new Map<string, { scope: SecretScope; updatedAt: number }>()).entries()].sort(([a], [b]) => (a < b ? -1 : 1));
-		return { profile: profile.id, secrets: saved.map(([name, secret]) => ({ name, scope: secret.scope, updatedAt: secret.updatedAt, reach: mockSecretReach(name, secret.scope, profile) })) };
+		return { profile: profile.id, secrets: saved.map(([name, secret]) => ({ name, scope: secret.scope, updatedAt: secret.updatedAt, reach: mockSecretReach(name, secret.scope, profile, lists) })) };
 	}
 
 	/** Saves as the server does (server/src/repo-secrets.ts): the same refusals in the same words. The value is looked at and dropped. */
@@ -1749,19 +1774,19 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(320);
 				return saveSetup(world(), repositoryId, command);
 			},
-			async repositorySecrets(repositoryId: number, profile: SandboxProfileId): Promise<RepositorySecrets> {
+			async repositorySecrets(repositoryId: number, profile: SandboxProfileId, sessionId?: string): Promise<RepositorySecrets> {
 				await latency(200);
-				return secretsOf(world(), repositoryId, profile);
+				return secretsOf(world(), repositoryId, profile, sessionId);
 			},
-			async saveRepositorySecret(repositoryId: number, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets> {
+			async saveRepositorySecret(repositoryId: number, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }, sessionId?: string): Promise<RepositorySecrets> {
 				await latency(340);
 				saveSecret(world(), repositoryId, secret);
-				return secretsOf(world(), repositoryId, profile);
+				return secretsOf(world(), repositoryId, profile, sessionId);
 			},
-			async deleteRepositorySecret(repositoryId: number, profile: SandboxProfileId, name: string): Promise<RepositorySecrets> {
+			async deleteRepositorySecret(repositoryId: number, profile: SandboxProfileId, name: string, sessionId?: string): Promise<RepositorySecrets> {
 				await latency(280);
 				world().secrets.get(repositoryId)?.delete(name);
-				return secretsOf(world(), repositoryId, profile);
+				return secretsOf(world(), repositoryId, profile, sessionId);
 			},
 			async githubConnect(page: string): Promise<{ url: string }> {
 				await latency(420);

@@ -7,7 +7,8 @@
  * A secret is a named value the platform hands to the repository's agents as an environment
  * variable. Its value goes to the server when it is saved and is never sent back: the list has
  * names, scopes and dates, and the value's field is empty whenever it is shown. What a secret reaches
- * depends on the sandbox as well as on its scope, so the list is asked for one sandbox profile and
+ * depends on the sandbox as well as on its scope, so the list is asked for one sandbox (a profile,
+ * and in a session's panel that session's own sandbox, whose Windlass may be an older one) and
  * carries, for each secret, the server's sentence about what is less than the scope says there.
  */
 import {
@@ -21,7 +22,7 @@ import {
 	type SecretScope,
 	type SessionSummary,
 } from "@contract";
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { absoluteTime, count, day } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
@@ -59,21 +60,33 @@ interface SecretsState {
 	set(list: RepositorySecrets): void;
 }
 
-/** The secrets of a repository as a sandbox of `profile` gets them: read when either changes. */
-function useRepositorySecrets(repositoryId: number | null, profile: SandboxProfileId | null): SecretsState {
+/**
+ * The secrets of a repository as a sandbox of `profile` gets them: read when either changes. With
+ * `session` it is that session's sandbox, and the list is read again when what is known of it
+ * changes: a sandbox is made or removed, or a turn has asked its Windlass what it can be told.
+ */
+function useRepositorySecrets(repositoryId: number | null, profile: SandboxProfileId | null, session?: Pick<SessionSummary, "id" | "sandbox" | "envLists">): SecretsState {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [list, setList] = useState<RepositorySecrets | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const sessionId = session?.id;
+	const sandbox = session === undefined ? "" : `${session.sandbox === "none" ? "none" : "made"}:${session.envLists ?? ""}`;
+	/** What the list on show was asked for, the session's sandbox aside. */
+	const shown = useRef("");
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `sandbox` is not read here; it is what the server's answer depends on
 	useEffect(() => {
-		setList(null);
+		// The same list said for a sandbox that changed stays on show until its new sentences are there: a dialog open over it is not closed.
+		const asked = `${repositoryId}:${profile}:${sessionId ?? ""}`;
+		if (shown.current !== asked) setList(null);
+		shown.current = asked;
 		setError(null);
 		if (repositoryId === null || profile === null) return;
 		let current = true;
 		client
 			.user(auth)
-			.repositorySecrets(repositoryId, profile)
+			.repositorySecrets(repositoryId, profile, sessionId)
 			.then(
 				(next) => {
 					if (current) setList(next);
@@ -85,7 +98,7 @@ function useRepositorySecrets(repositoryId: number | null, profile: SandboxProfi
 		return () => {
 			current = false;
 		};
-	}, [client, auth, explain, repositoryId, profile]);
+	}, [client, auth, explain, repositoryId, profile, sessionId, sandbox]);
 
 	const set = useCallback((next: RepositorySecrets) => {
 		setList(next);
@@ -136,6 +149,8 @@ interface SecretsDialogProps {
 	/** The repository in words. */
 	repository: string;
 	profile: SandboxProfileId;
+	/** The session whose sandbox the list is said for; absent in the launch form. */
+	sessionId?: string;
 	secrets: RepositorySecret[];
 	/** Where it starts. From the list, a finished form goes back to the list; otherwise it closes the dialog. */
 	start: DialogView;
@@ -144,7 +159,7 @@ interface SecretsDialogProps {
 	onClose(): void;
 }
 
-function SecretsDialog({ repositoryId, repository, profile, secrets, start, workspace, onSaved, onClose }: SecretsDialogProps) {
+function SecretsDialog({ repositoryId, repository, profile, sessionId, secrets, start, workspace, onSaved, onClose }: SecretsDialogProps) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const ids = { name: useId(), value: useId(), nameNote: useId(), valueNote: useId(), scope: useId() };
@@ -201,7 +216,7 @@ function SecretsDialog({ repositoryId, repository, profile, secrets, start, work
 		setBusy("saving");
 		setError(null);
 		try {
-			done(await client.user(auth).saveRepositorySecret(repositoryId, profile, { name: editing ? editing.name : name, scope, ...(value === "" ? {} : { value }) }));
+			done(await client.user(auth).saveRepositorySecret(repositoryId, profile, { name: editing ? editing.name : name, scope, ...(value === "" ? {} : { value }) }, sessionId));
 		} catch (failure) {
 			setError(explain(failure));
 		} finally {
@@ -213,7 +228,7 @@ function SecretsDialog({ repositoryId, repository, profile, secrets, start, work
 		setBusy("deleting");
 		setError(null);
 		try {
-			done(await client.user(auth).deleteRepositorySecret(repositoryId, profile, editing.name));
+			done(await client.user(auth).deleteRepositorySecret(repositoryId, profile, editing.name, sessionId));
 		} catch (failure) {
 			setError(explain(failure));
 			setConfirming(false);
@@ -372,7 +387,7 @@ function SecretsDialog({ repositoryId, repository, profile, secrets, start, work
 						</label>
 					))}
 					<p className="field-note" id={ids.scope}>
-						What a choice comes to also depends on the agent's sandbox and on the name. Where a secret reaches less than chosen here, the list says so under it.
+						What a choice comes to also depends on the agent's sandbox. Where a secret reaches less than chosen here, the list says so under it.
 					</p>
 				</fieldset>
 				<p className="secret-about">{REMOVED}</p>
@@ -392,7 +407,7 @@ function SecretsDialog({ repositoryId, repository, profile, secrets, start, work
 export function SecretsSection({ summary }: { summary: SessionSummary }) {
 	const repository = summary.repository ?? null;
 	const repositoryId = repository?.id ?? null;
-	const { list, error, set } = useRepositorySecrets(repositoryId, repositoryId === null ? null : summary.profile);
+	const { list, error, set } = useRepositorySecrets(repositoryId, repositoryId === null ? null : summary.profile, summary);
 	const [open, setOpen] = useState<DialogView | null>(null);
 	if (!repository || repositoryId === null) return null;
 	const name = `${repository.owner}/${repository.name}`;
@@ -428,6 +443,7 @@ export function SecretsSection({ summary }: { summary: SessionSummary }) {
 							repositoryId={repositoryId}
 							repository={name}
 							profile={summary.profile}
+							sessionId={summary.id}
 							secrets={list.secrets}
 							start={open}
 							workspace={summary.sandbox === "none" ? "none" : "made"}

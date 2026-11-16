@@ -126,12 +126,13 @@ export interface UserApi {
 	saveRepositorySetup(repositoryId: number, command: string): Promise<RepositorySetup>;
 	/**
 	 * The secrets saved for a repository, without their values, and what each reaches in a sandbox of
-	 * `profile`. A value is sent to the server when it is saved and never comes back.
+	 * `profile`: the sandbox of the session `sessionId` names, whose Windlass may be an older one, or
+	 * without it a sandbox made now. A value is sent to the server when it is saved and never comes back.
 	 */
-	repositorySecrets(repositoryId: number, profile: SandboxProfileId): Promise<RepositorySecrets>;
+	repositorySecrets(repositoryId: number, profile: SandboxProfileId, sessionId?: string): Promise<RepositorySecrets>;
 	/** Saves a secret: with `value` a new one or a new value, without it only the scope. Throws with reason `bad_secret`, `too_many_secrets` or `secret_not_found`. */
-	saveRepositorySecret(repositoryId: number, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
-	deleteRepositorySecret(repositoryId: number, profile: SandboxProfileId, name: string): Promise<RepositorySecrets>;
+	saveRepositorySecret(repositoryId: number, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }, sessionId?: string): Promise<RepositorySecrets>;
+	deleteRepositorySecret(repositoryId: number, profile: SandboxProfileId, name: string, sessionId?: string): Promise<RepositorySecrets>;
 	/** Opens the live list of sessions. Returns the function that closes it. */
 	watch(feed: UserFeed): () => void;
 }

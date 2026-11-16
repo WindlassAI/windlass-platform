@@ -713,6 +713,12 @@ if (withDocker) {
 			const log = await handle.run("git log --oneline | wc -l; git status --short | wc -l; whoami; pwd; echo $LANG $NO_COLOR");
 			expect("a new sandbox has an empty git repository in /workspace, and commands run as agent with the image's environment", log.exitCode === 0 && log.stdout.trim().split(/\s+/).join(" ") === "1 0 agent /workspace C.UTF-8 1", log.stdout.trim());
 			expect("the Windlass version is known once a sandbox was made", version !== null && /^\d+\.\d+\.\d+/.test(version), String(version));
+			const features = await layer.windlass.features(handle);
+			expect(
+				"the sandbox's Windlass says what a session can be opened with (the image's has the session's home and the lists of variable names), and the engine started to ask it is gone",
+				features.sessionHome && features.envLists && (await stray(container)).length === 0,
+				`${JSON.stringify(features)}; ${(await stray(container)).join(" ; ")}`,
+			);
 
 			const odd = ["a b", "it's", "$HOME", 'x"y', "`uname`", "", "é✓", "a\nb", "*", "~", "; echo no"];
 			const echoed = await handle.exec(["printf", "[%s]", ...odd]);

@@ -48,10 +48,13 @@ RUN set -eu; cd /tmp; \
 # A non-root user. The data directory exists in the image owned by `agent`, so an empty named volume
 # mounted there takes that ownership.
 #
-# Windlass's command sandbox lets a command write only in the workspace and in /tmp, and the package
-# managers keep their caches in the home directory: there npm and uv fail, pip goes without a cache and
-# pnpm puts its store into the project. So each is told, in its own configuration file, to keep its
-# cache under /tmp/.cache, which a command can write with the sandbox and without it.
+# Windlass's command sandbox lets a command write in the workspace and in /tmp, and under the home
+# directory only what is not there yet (a home of the session's own; with an older Windlass, nothing).
+# The package managers keep their caches in the home directory: in a read-only one npm and uv fail, pip
+# goes without a cache and pnpm puts its store into the project, and a cache that a command outside the
+# sandbox made there (the repository's setup command) is read-only for the sandboxed ones. So each is
+# told, in its own configuration file, to keep its cache under /tmp/.cache, which a command can write
+# with the sandbox and without it.
 RUN useradd --create-home --uid 1000 --shell /bin/bash agent \
  && mkdir -p /workspace /home/agent/.local/share/windlass /home/agent/.config/pnpm /etc/uv /usr/local/etc \
  && chmod 700 /home/agent/.local/share/windlass \

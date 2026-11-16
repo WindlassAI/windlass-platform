@@ -177,6 +177,12 @@ interface SessionMeta {
 	/** The sandbox this session was given, kept when it turns out to be gone so the next turn can say so. */
 	sandboxId: string | null;
 	sandbox: "none" | "running" | "paused";
+	/**
+	 * `WindlassFeatures.envLists` of the current sandbox, as its Windlass said when a turn last asked
+	 * it: what the list of the repository's secrets is said for (`SessionSummary.envLists`). Null or
+	 * absent: no turn has asked this sandbox.
+	 */
+	envLists?: boolean | null;
 	/** Whether `repoUrl` has been cloned into the current sandbox. */
 	cloned: boolean;
 	windlassSessionId: string | null;
@@ -354,6 +360,7 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		turns: meta.turns,
 		lastOutcome: meta.lastOutcome,
 		sandbox: meta.sandbox,
+		...(meta.sandbox !== "none" && typeof meta.envLists === "boolean" ? { envLists: meta.envLists } : {}),
 		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt ?? meta.updatedAt } } : {}),
 	};
 }
@@ -651,7 +658,8 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 			meta.sandbox = "none";
 			meta.cloned = false;
 		}
-		// What is known of a setup run was the old sandbox's.
+		// What is known of a setup run, and of the Windlass that was asked, was the old sandbox's.
+		meta.envLists = null;
 		meta.setupDue = null;
 		meta.setupRunning = null;
 		meta.setupUnfinished = null;
@@ -1814,10 +1822,24 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			// What the question about a project's server has to say depends on where this session runs.
 			const profile = layer.sandboxes.profile(meta.profile);
 			const held = active.secrets;
-			const servers: ServerQuestionContext = { profile, demo: meta.demo, dataInSandbox: layer.sandboxes.sessionsLiveInSandbox, project: projectOf(meta), secrets: held === null ? null : held.opened.map(({ name, scope }) => ({ name, scope })) };
+			// A sandbox keeps the Windlass it was made with: what a secret's scope comes to here depends on which one that is.
+			const { envLists } = await layer.windlass.features(sandbox);
+			if (meta.envLists !== envLists) {
+				meta.envLists = envLists;
+				publish(c);
+				void persist(c);
+			}
+			const servers: ServerQuestionContext = {
+				profile,
+				demo: meta.demo,
+				dataInSandbox: layer.sandboxes.sessionsLiveInSandbox,
+				project: projectOf(meta),
+				secrets: held === null ? null : held.opened.map(({ name, scope }) => ({ name, scope })),
+				envLists,
+			};
 			result = await layer.windlass.runTurn(sandbox, {
-				// Windlass gets the secrets that keep to their scope in this sandbox; every saved value is taken out of what it says.
-				secrets: held === null ? undefined : { env: windlassEnvironment(held.opened, profile), redactor: held.redactor },
+				// Windlass gets the secrets that keep to their scope in this sandbox, with the names its commands are and are not to have; every saved value is taken out of what it says.
+				secrets: held === null ? undefined : { ...windlassEnvironment(held.opened, profile, envLists), redactor: held.redactor },
 				prompt: `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${text}`,
 				windlassSessionId: resumed ?? undefined,
 				model: meta.model,
