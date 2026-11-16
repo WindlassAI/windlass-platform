@@ -75,47 +75,37 @@ function CodeCopies({ root, html }: { root: RefObject<HTMLDivElement | null>; ht
 	);
 }
 
+/**
+ * What the user sent: their side of the exchange, so it sits apart from the agent's work, on the
+ * right, in a box of the composer's material (it is what was typed there). Its facts and its copy
+ * control hang under it, on the same right edge. A steer is the user's too, and stays lighter than
+ * the prompt that started the turn: smaller, in the dim ink, and dashed, as the composer is while a
+ * turn runs.
+ */
 function UserPrompt({ block }: { block: UserBlock }) {
-	if (block.steer) {
-		return (
-			<div className="user user-steer">
-				<span className="user-caret" aria-hidden="true">
-					<SteerIcon size={14} />
-				</span>
-				<div className="user-body">
-					<p className="user-text">
-						<span className="visually-hidden">You, while it worked: </span>
-						{block.text}
-					</p>
-					<div className="user-foot">
-						<p className="user-meta">
-							<span>steer</span>
-							{block.at !== null ? <time dateTime={new Date(block.at).toISOString()}>{absoluteTime(block.at)}</time> : null}
-						</p>
-						<CopyButton text={block.text} label="Copy this message" />
-					</div>
-				</div>
-			</div>
-		);
-	}
+	const steer = block.steer;
 	return (
-		<div className="user">
-			<span className="user-caret" aria-hidden="true">
-				<ChevronIcon size={15} />
-			</span>
-			<div className="user-body">
-				<p className="user-text">
-					<span className="visually-hidden">You: </span>
-					{block.text}
+		<div className={`user${steer ? " user-steer" : ""}`}>
+			<p className="user-text">
+				<span className="visually-hidden">{steer ? "You, while it worked: " : "You: "}</span>
+				{block.text}
+			</p>
+			<div className="user-foot">
+				<p className="user-meta">
+					{steer ? (
+						<span className="user-steer-word">
+							<SteerIcon size={12} />
+							steer
+						</span>
+					) : (
+						<>
+							<span>{block.model}</span>
+							{block.effort ? <span>effort {block.effort}</span> : null}
+						</>
+					)}
+					{block.at !== null ? <time dateTime={new Date(block.at).toISOString()}>{absoluteTime(block.at)}</time> : null}
 				</p>
-				<div className="user-foot">
-					<p className="user-meta">
-						<span>{block.model}</span>
-						{block.effort ? <span>effort {block.effort}</span> : null}
-						{block.at !== null ? <time dateTime={new Date(block.at).toISOString()}>{absoluteTime(block.at)}</time> : null}
-					</p>
-					<CopyButton text={block.text} label="Copy this prompt" />
-				</div>
+				<CopyButton text={block.text} label={steer ? "Copy this message" : "Copy this prompt"} />
 			</div>
 		</div>
 	);

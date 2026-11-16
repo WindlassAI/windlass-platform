@@ -148,7 +148,7 @@
 }
 .block-user {
 	margin-top: 0;
-	margin-bottom: 16px;
+	margin-bottom: 20px;
 }
 .block-tool + .block-text,
 .block-checks + .block-text,
@@ -156,29 +156,34 @@
 	margin-top: 14px;
 }
 
-/* The user's prompt. */
+/*
+ * What the user sent, on the right: the other side of the exchange. No wider than a comfortable
+ * line, and only as wide as its text, so a word is a small box at the edge and a long prompt a
+ * column beside the agent's. The box is the composer's (raised, rounded, ruled), quieter.
+ */
 .user {
 	display: grid;
-	grid-template-columns: 16px minmax(0, 1fr);
-	gap: 8px;
-}
-.user-caret {
-	display: grid;
-	place-items: center;
-	height: 1.6rem;
-	color: var(--accent);
+	justify-items: end;
+	gap: 5px;
+	width: fit-content;
+	max-width: min(60ch, 82%);
+	margin-left: auto;
 }
 .user-text {
-	font-size: 1.0625rem;
-	font-weight: 620;
-	line-height: 1.6rem;
+	padding: 9px 14px 10px;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-l);
+	background: var(--bg-raised);
+	font-size: 0.96875rem;
+	font-weight: 480;
+	line-height: 1.55;
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 }
 .user-meta {
 	display: flex;
 	flex-wrap: wrap;
-	margin-top: 2px;
+	justify-content: flex-end;
 	font-family: var(--font-mono);
 	font-size: var(--size-mono-small);
 	color: var(--ink-faint);
@@ -189,22 +194,26 @@
 	margin: 0 0.6em;
 }
 
-/* A message sent while the turn ran: lighter than the prompt that started it. */
+/* A message sent while the turn ran: lighter than the prompt that started it, dashed as the composer was. */
 .block-steer {
-	margin: 12px 0;
-}
-.user-steer .user-caret {
-	height: 1.45rem;
-	color: var(--ink-faint);
+	margin: 16px 0;
 }
 .user-steer .user-text {
+	padding: 6px 12px 7px;
+	border-style: dashed;
+	border-color: var(--line-strong);
+	background: none;
 	font-size: 0.9375rem;
-	font-weight: 500;
-	line-height: 1.45rem;
+	font-weight: 450;
 	color: var(--ink-dim);
 }
-.user-steer .user-meta > :first-child {
+.user-steer-word {
+	display: inline-flex;
+	align-items: center;
 	color: var(--ink-dim);
+}
+.user-steer-word > svg {
+	margin-right: 5px;
 }
 
 /* Windlass's sentence about untrusted content: once, quietly. */
@@ -1758,8 +1767,8 @@ button.output-more:hover {
 		color 120ms var(--ease),
 		background-color 120ms var(--ease);
 }
-.block-user:hover .copy-button,
-.block-user:focus-within .copy-button,
+.user:hover .copy-button,
+.user:focus-within .copy-button,
 .answer:hover > .copy > .copy-button,
 .answer:focus-within > .copy > .copy-button,
 .code-block:hover > .code-copy .copy-button,
@@ -1810,14 +1819,15 @@ button.output-more:hover {
 	animation: arrive 140ms var(--ease);
 }
 
-/* A prompt: at the end of its line of facts. */
+/* A prompt: before its line of facts, so that the facts keep the box's right edge while it is hidden. */
 .user-foot {
 	display: flex;
-	align-items: flex-end;
-	gap: 4px;
+	flex-direction: row-reverse;
+	align-items: center;
+	gap: 8px;
 }
 .user-foot > .copy {
-	margin: -3px 0;
+	margin: -4px 0;
 }
 
 /*
@@ -2016,7 +2026,7 @@ button.output-more:hover {
 	.composer-steer-hint kbd {
 		display: none;
 	}
-	.user-text {
-		font-size: 1rem;
+	.user {
+		max-width: 88%;
 	}
 }
