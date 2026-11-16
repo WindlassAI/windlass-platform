@@ -25,6 +25,7 @@ export type SandboxProfileId =
 	| "docker-windlass-sandbox"
 	| "docker-hardened"
 	| "e2b"
+	| "e2b-open"
 	| "daytona"
 	| "firecracker"
 	| "agentos";
@@ -230,6 +231,11 @@ export interface CreateSessionInput {
 	 * and the branch to start from (default: the repository's default branch). Not together with `repoUrl`.
 	 */
 	repository?: { id: number; branch?: string };
+	/**
+	 * With `repository`: the setup command to save for that repository before the session is made
+	 * (`RepositorySetup`), in place of what was saved; "" saves none. Left out, what is saved stays.
+	 */
+	setupCommand?: string;
 }
 
 export interface ChatgptStatus {
@@ -351,6 +357,22 @@ export interface PublishResult {
 	opened: boolean;
 }
 
+/**
+ * A repository's setup command: a shell command its user saved for a repository of their GitHub
+ * connection. The platform runs it once in each new sandbox of a session on that repository, after
+ * the clone and before the agent's first turn there: in the repository's directory, as the sandbox's
+ * user, with the sandbox's network, and outside the sandbox Windlass puts around the agent's own
+ * commands. It is the user's and nobody else's: nothing in a repository can set or change it.
+ */
+export interface RepositorySetup {
+	/** The command as it is saved; "" when none is. */
+	command: string;
+	/** When it was last saved, ms since the epoch; null when none is saved. */
+	updatedAt: number | null;
+	/** How long a run may take before the platform stops it. */
+	timeoutMs: number;
+}
+
 export interface UserActions {
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
@@ -378,6 +400,14 @@ export interface UserActions {
 	 */
 	githubRepositories(query: string, fresh?: boolean): Promise<GithubRepositoryList>;
 	githubBranches(repositoryId: number): Promise<GithubBranchList>;
+	/** The setup command the user saved for a repository, by GitHub's id for it. Asks GitHub nothing. */
+	repositorySetup(repositoryId: number): Promise<RepositorySetup>;
+	/**
+	 * Saves the user's setup command for a repository; "" saves none. It runs in sandboxes made from then
+	 * on: a sandbox that has its clone already is not set up again. Throws a UserError with code
+	 * `bad_setup_command` for one longer than MAX_SETUP_COMMAND_CHARS or with a character a shell cannot take.
+	 */
+	saveRepositorySetup(input: { repositoryId: number; command: string }): Promise<RepositorySetup>;
 	listSessions(): Promise<SessionSummary[]>;
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
 	renameSession(id: string, title: string): Promise<SessionSummary>;
@@ -455,6 +485,36 @@ export type TimelineItem =
 	  }
 	/** A durable Windlass event, or one of the stored ephemeral ones (`notice`, `workspace.changes`, `cli.summary`). */
 	| { seq: number; at: number; turn: number; kind: "windlass"; event: WindlassEvent }
+	/**
+	 * A run of the repository's setup command (`RepositorySetup`) in the session's new sandbox. Two items
+	 * with one `id`: the first when it starts (`state: "started"`), the second when it has ended. What it
+	 * prints in between is not stored: it arrives as `setup.output` deltas (`LiveDelta`), and the ending
+	 * item carries the end of it. A run with no ending item was cut off with its server.
+	 */
+	| {
+			seq: number;
+			at: number;
+			turn: number;
+			kind: "setup";
+			id: string;
+			/** The command as it was run. */
+			command: string;
+			/**
+			 * "started", or how it ended: "succeeded" (exit code 0), "failed" (another exit code, or it could
+			 * not be run), "timed_out" (stopped by the platform at `limitMs`), "stopped" (the turn was stopped).
+			 */
+			state: "started" | "succeeded" | "failed" | "timed_out" | "stopped";
+			/** Null while it runs, and when it was killed. */
+			exitCode: number | null;
+			/** Null while it runs. */
+			durationMs: number | null;
+			/** How long it may run. */
+			limitMs: number;
+			/** On the ending item: the end of what it printed, standard output and standard error as they came, at most SETUP_OUTPUT_CHARS. */
+			output: string;
+			/** True when it printed more than `output` holds. */
+			truncated: boolean;
+	  }
 	| {
 			seq: number;
 			at: number;
@@ -472,7 +532,12 @@ export type TimelineItem =
 			message: string | null;
 	  };
 
-/** Streaming output that is broadcast but never stored: `text.delta`, `reasoning.delta`, `tool.input.delta`, `tool.progress`. */
+/**
+ * Streaming output that is broadcast but never stored: `text.delta`, `reasoning.delta`, `tool.input.delta`,
+ * `tool.progress`. And one event of the platform's own, in the same shape: `{ type: "setup.output", id, text }`,
+ * what a run of the repository's setup command printed since the delta before it (`id` is the run's,
+ * as on its `setup` items; `text` is to be appended, and a reader keeps the end of it).
+ */
 export interface LiveDelta {
 	turn: number;
 	event: WindlassEvent;
@@ -741,6 +806,10 @@ export const MAX_PUBLISH_BODY_CHARS = 4_000;
 export const MAX_TITLE_CHARS = 80;
 /** The note sent with an answer to a question. */
 export const MAX_NOTE_CHARS = 2_000;
+/** A repository's setup command. */
+export const MAX_SETUP_COMMAND_CHARS = 2_000;
+/** How much of a setup run's output is kept, and shown while it runs: the end of it. */
+export const SETUP_OUTPUT_CHARS = 32_000;
 /** How long a question waits for an answer before the platform declines it. */
 export const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
 /** Sessions of one user that may run a turn at the same time. */

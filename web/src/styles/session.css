@@ -151,6 +151,7 @@
 	margin-bottom: 20px;
 }
 .block-tool + .block-text,
+.block-setup + .block-text,
 .block-checks + .block-text,
 .block-reasoning + .block-text {
 	margin-top: 14px;
@@ -1587,6 +1588,20 @@ button.output-more:hover {
 }
 .server-note {
 	margin-top: 14px;
+}
+
+/* The repository's setup command in the panel: the field, its one control, and what it does. */
+.panel .setup-input {
+	font-size: var(--size-mono-small);
+}
+.setup-actions {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-top: 8px;
+}
+.setup-note {
+	margin-top: 10px;
 }
 
 /* The dialog is opened from the panel, which is set in the monospace face: its sentences are not. */

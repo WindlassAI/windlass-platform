@@ -1,7 +1,7 @@
 /**
  * The mock `PlatformClient`: the whole backend in memory, with no network.
  *
- * It serves a user with a handful of sessions in different states, the six sandbox profiles, and
+ * It serves a user with a handful of sessions in different states, the seven sandbox profiles, and
  * plays the recorded `windlass --json` runs in fixtures/windlass-events/ as turns with their real
  * timing. Events are split the way contract.ts describes: durable events and `notice`,
  * `workspace.changes`, `cli.summary` are stored as timeline items; `text.delta`, `reasoning.delta`,
@@ -46,6 +46,7 @@
 import {
 	MAX_PROMPT_CHARS,
 	MAX_RUNNING_SESSIONS,
+	MAX_SETUP_COMMAND_CHARS,
 	MAX_TITLE_CHARS,
 	type AuthResult,
 	type ChatgptStatus,
@@ -65,6 +66,7 @@ import {
 	type PublishResult,
 	type PublishState,
 	type PullRequestInfo,
+	type RepositorySetup,
 	type SandboxProfile,
 	type SessionRepository,
 	type SessionServer,
@@ -93,6 +95,8 @@ export interface MockOptions {
 	questionTimeoutMs?: number;
 	/** False plays a deployment with no GitHub App: nothing of GitHub is offered. */
 	github?: boolean;
+	/** "e2b" plays a deployment on E2B that offers both of its profiles (`MOCK_E2B_PROFILES`). */
+	sandbox?: "docker" | "e2b";
 }
 
 /** What the next call about GitHub fails with, for looking at each failure by hand. */
@@ -166,6 +170,17 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 		unavailableReason: "This server runs its sandboxes on local Docker. E2B is built: a server started with WLP_SANDBOX=e2b, an E2B API key and the E2B template (README, \"E2B\") offers it in place of the Docker profiles, and says there what it promises.",
 	},
 	{
+		id: "e2b-open",
+		name: "E2B, microVM only",
+		summary: "A microVM of its own, hosted by E2B, and no sandbox inside it: the agent's commands run directly in the microVM without asking first, can reach any host on the network, can write outside the workspace, the home directory included, and can read the session's access token, which lasts about an hour and cannot be renewed. Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace. Your ChatGPT sign-in is never in the microVM.",
+		layers: ["E2B microVM (Firecracker, hosted by E2B; commands run in it directly, as a non-root user)"],
+		approval: "full",
+		commandNetwork: true,
+		commandsCanReadAccessToken: true,
+		available: false,
+		unavailableReason: "This server runs its sandboxes on local Docker; a server on E2B offers it where its operator sets WLP_E2B_OPEN_PROFILE=1.",
+	},
+	{
 		id: "daytona",
 		name: "Daytona",
 		summary: "A workspace hosted by Daytona.",
@@ -199,6 +214,35 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 		unavailableReason: "agentOS cannot run the Windlass executable, and Windlass's tools would have to work through agentOS's remote execution interface, which they do not. Handing a session an access token changes nothing about that.",
 	},
 ];
+
+/**
+ * The profiles as a server on E2B lists them with WLP_E2B_WINDLASS_SANDBOX=1 and WLP_E2B_OPEN_PROFILE=1,
+ * word for word (`?sandbox=e2b`; mock.test.ts compares them with `profilesFor`).
+ */
+export const MOCK_E2B_PROFILES: SandboxProfile[] = MOCK_PROFILES.map((profile): SandboxProfile => {
+	if (profile.id === "e2b") {
+		return {
+			id: "e2b",
+			name: "E2B + Windlass sandbox",
+			summary:
+				"A microVM of its own, hosted by E2B, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the microVM.",
+			layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace, credentials hidden)"],
+			approval: "auto",
+			commandNetwork: false,
+			commandsCanReadAccessToken: false,
+			available: true,
+		};
+	}
+	if (profile.id === "e2b-open") {
+		const { unavailableReason: _, ...rest } = profile;
+		return { ...rest, layers: [...profile.layers], available: true };
+	}
+	if (profile.id.startsWith("docker-")) {
+		const { unavailableReason: _, ...rest } = profile;
+		return { ...rest, layers: [...profile.layers], available: false, unavailableReason: "This deployment runs its sandboxes on E2B, so that every server machine can reach them; a local Docker container is out of reach of the other machines." };
+	}
+	return { ...profile, layers: [...profile.layers] };
+});
 
 // ---- GitHub ---------------------------------------------------------------------------------
 
@@ -519,6 +563,8 @@ interface MockApproval {
 }
 
 const APPROVAL_MS = 30 * 24 * 60 * 60 * 1000;
+/** How long the mock says a repository's setup command may run. */
+const MOCK_SETUP_LIMIT_MS = 10 * MINUTE;
 
 // ---------------------------------------------------------------------------------------------
 // State
@@ -591,6 +637,8 @@ interface World {
 	nextPull: number;
 	/** The user's remembered approvals of projects' servers. */
 	approvals: MockApproval[];
+	/** The setup commands the user saved, by GitHub's id for the repository. */
+	setups: Map<number, { command: string; updatedAt: number }>;
 }
 
 interface Step {
@@ -611,6 +659,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	let slowServersUntil = 0;
 	const serversLatency = (ms: number) => latency(realNow() < slowServersUntil ? 10_000 : ms);
 	const githubOn = options.github !== false;
+	const profiles = options.sandbox === "e2b" ? MOCK_E2B_PROFILES : MOCK_PROFILES;
 	const realNow = options.now ?? (() => Date.now());
 	const origin = options.origin ?? (typeof location === "undefined" ? "http://localhost:5173" : location.origin);
 	/** Set while history is being written in the past (the seeded sessions). */
@@ -649,7 +698,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [] };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map() };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -723,7 +772,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	// ---- sessions -------------------------------------------------------------------------------
 
-	const profileOf = (session: MockSession): SandboxProfile => MOCK_PROFILES.find((profile) => profile.id === session.summary.profile) ?? (MOCK_PROFILES[0] as SandboxProfile);
+	const profileOf = (session: MockSession): SandboxProfile => profiles.find((profile) => profile.id === session.summary.profile) ?? (MOCK_PROFILES[0] as SandboxProfile);
 
 	const listOf = (world: World): SessionSummary[] => [...world.sessions.values()].map((session) => session.summary).sort((a, b) => b.createdAt - a.createdAt);
 
@@ -855,6 +904,45 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		return copy;
 	}
 
+	/**
+	 * The repository's setup command in the new sandbox: its starting item, what it prints, its ending
+	 * item. A command with the word "fail" in it ends with exit code 1, so both endings can be looked at.
+	 */
+	function setupSteps(session: MockSession, turn: number, command: string): Step[] {
+		const id = `su_${hex(6)}`;
+		const fails = /\bfail/.test(command);
+		const lines = fails ? ["npm warn deprecated glob@7.2.3", "npm error code E404", "npm error 404 Not Found - GET https://registry.npmjs.org/@acme%2fcharts", "npm error A complete log of this run can be found in: /tmp/.cache/npm/_logs/debug-0.log"] : ["added 412 packages in 9s", "", "61 packages are looking for funding", "  run `npm fund` for details"];
+		const item = { turn, kind: "setup" as const, id, command, limitMs: MOCK_SETUP_LIMIT_MS };
+		let startedAt = 0;
+		const steps: Step[] = [
+			{
+				wait: 500,
+				run: () => {
+					startedAt = now();
+					store(session, { ...item, state: "started", exitCode: null, durationMs: null, output: "", truncated: false });
+				},
+			},
+		];
+		for (const line of lines) {
+			steps.push({
+				wait: 700,
+				run: () => {
+					const delta: LiveDelta = { turn, event: { type: "setup.output", id, text: `${line}\n` } };
+					session.pending.push(delta);
+					for (const feed of session.feeds) feed.onDelta(delta);
+				},
+			});
+		}
+		steps.push({
+			wait: 600,
+			run: () => {
+				session.pending = session.pending.filter((delta) => !(delta.event.type === "setup.output" && delta.event.id === id));
+				store(session, { ...item, state: fails ? "failed" : "succeeded", exitCode: fails ? 1 : 0, durationMs: Math.max(0, now() - startedAt), output: `${lines.join("\n")}\n`, truncated: false });
+			},
+		});
+		return steps;
+	}
+
 	/** Everything a turn does, as timed steps. The same plan is run at once for history and on timers for a live turn. */
 	function plan(world: World, session: MockSession, input: PromptInput, script: Script): Step[] {
 		const turn = session.summary.turns + 1;
@@ -880,6 +968,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const picked = session.summary.repository;
 				const what = picked ? `${picked.owner}/${picked.name} at ${picked.branch}` : repoUrl;
 				steps.push({ wait: 900, run: () => store(session, { turn, kind: "platform", level: "info", text: `Cloning ${what}` }) });
+				const setup = picked ? world.setups.get(picked.id) : undefined;
+				if (setup) steps.push(...setupSteps(session, turn, setup.command));
 			}
 		} else if (session.summary.sandbox === "paused") {
 			steps.push({ wait: 350, run: () => store(session, { turn, kind: "platform", level: "info", text: "Resuming the paused sandbox" }) });
@@ -1415,6 +1505,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const building = history("harbor-build", "Check the release build", "docker-windlass-sandbox", 6 * MINUTE, [{ text: "Fix the failing test.", script: "steps" }], { sandbox: "running", repoUrl: "https://github.com/acme/harbor.git", repository: sessionRepository("acme", "harbor") });
 		play(building, plan(world, building, { text: "Run the full build and the tests, and tell me if they pass.", effort: "medium" }, { ...SCRIPTS.build, stretch: 7 }));
 
+		// The user saved a setup command for acme/harbor some days ago: the launch form and the panel show it.
+		world.setups.set(7101, { command: "npm ci", updatedAt: start - 3 * 24 * HOUR - 50 * MINUTE });
+
 		// acme/harbor names MCP servers. The user approved "harbor" three days ago in one session, so the other
 		// started it unasked; "docs" was left for later, and "tracker" was approved and could not start.
 		const checks = world.sessions.get("checks");
@@ -1450,6 +1543,21 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 	}
 
+	// ---- setup commands of repositories -----------------------------------------------------------
+
+	function setupOf(world: World, repositoryId: number): RepositorySetup {
+		const saved = world.setups.get(repositoryId);
+		return { command: saved?.command ?? "", updatedAt: saved?.updatedAt ?? null, timeoutMs: MOCK_SETUP_LIMIT_MS };
+	}
+
+	function saveSetup(world: World, repositoryId: number, raw: string): RepositorySetup {
+		const command = raw.replace(/\r\n?/g, "\n").trim();
+		if (command.length > MAX_SETUP_COMMAND_CHARS) throw new PlatformError("user", `The setup command is ${command.length} characters long; the limit is ${MAX_SETUP_COMMAND_CHARS}. Put a longer one in a script in the repository and run that.`, { reason: "bad_setup_command" });
+		if (command === "") world.setups.delete(repositoryId);
+		else world.setups.set(repositoryId, { command, updatedAt: now() });
+		return setupOf(world, repositoryId);
+	}
+
 	// ---- the interface --------------------------------------------------------------------------
 
 	function userApi(auth: AuthResult): UserApi {
@@ -1470,7 +1578,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			},
 			async createSession(input: CreateSessionInput) {
 				await latency(260);
-				const profile = MOCK_PROFILES.find((candidate) => candidate.id === input.profile);
+				const profile = profiles.find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
 				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());
 				if (input.model !== undefined && !MODELS.includes(input.model)) throw new PlatformError("user", `There is no model called ${input.model}.`);
@@ -1485,6 +1593,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				}
 				const title = input.title?.trim() ?? "";
 				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
+				if (repository && input.setupCommand !== undefined) saveSetup(world(), repository.id, input.setupCommand);
 				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, model: input.model ?? (MODELS[0] as string), repoUrl, repository });
 				setSummary(world(), session, {});
 				return session.summary;
@@ -1518,6 +1627,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(200);
 				if (!githubOn) throw new PlatformError("user", "This deployment has no GitHub App, so GitHub cannot be connected here.", { reason: "github_off" });
 				return { connection: world().github };
+			},
+			async repositorySetup(repositoryId: number): Promise<RepositorySetup> {
+				await latency(180);
+				return setupOf(world(), repositoryId);
+			},
+			async saveRepositorySetup(repositoryId: number, command: string): Promise<RepositorySetup> {
+				await latency(320);
+				return saveSetup(world(), repositoryId, command);
 			},
 			async githubConnect(page: string): Promise<{ url: string }> {
 				await latency(420);
@@ -1810,7 +1927,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		endpoint: null,
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
-			return { demoEnabled: true, windlassVersion: "0.1.0", profiles: MOCK_PROFILES, models: MODELS, efforts: EFFORTS, ...(githubOn ? { github: GITHUB } : {}) };
+			return { demoEnabled: true, windlassVersion: "0.1.0", profiles, models: MODELS, efforts: EFFORTS, ...(githubOn ? { github: GITHUB } : {}) };
 		},
 		login: {
 			async start(): Promise<LoginStart> {

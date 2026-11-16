@@ -20,6 +20,7 @@ import { randomBytes } from "node:crypto";
 import { createClient } from "rivetkit/client";
 import { isActorGone } from "../actors/internal.js";
 import { serviceParams } from "../auth.js";
+import { ownEngineEndpoint } from "../config.js";
 import { type AccessToken, type ChatgptAccount, SandboxUserError } from "../sandbox/api.js";
 import { NOT_SIGNED_IN, SignInRefreshError, WindlassOutdatedError } from "../sandbox/handoff.js";
 import type { SignInCommands } from "./commands.js";
@@ -98,7 +99,7 @@ export class ActorSignInDirectory implements SignInDirectory {
 	 * RIVET_ENDPOINT (RIVET_ENGINE), RIVET_NAMESPACE and RIVET_TOKEN, and the local engine without them.
 	 */
 	private actors(): ActorClient {
-		this.client ??= createClient({ endpoint: process.env.RIVET_ENGINE || process.env.RIVET_ENDPOINT || "http://127.0.0.1:6420" }) as unknown as ActorClient;
+		this.client ??= createClient({ endpoint: ownEngineEndpoint() }) as unknown as ActorClient;
 		return this.client;
 	}
 

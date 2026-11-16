@@ -40,8 +40,9 @@ async function createPlatformClient(): Promise<PlatformClient> {
 	// Each implementation is its own chunk: the mock never loads RivetKit, the real client never loads the fixtures.
 	if (wantsMock()) {
 		const { createMockClient } = await import("./api/mock");
-		// `?github=off` plays a deployment with no GitHub App.
-		const client = createMockClient({ questionTimeoutMs: mockQuestionTimeout(), github: new URLSearchParams(location.search).get("github") !== "off" });
+		// `?github=off` plays a deployment with no GitHub App, `?sandbox=e2b` one on E2B.
+		const params = new URLSearchParams(location.search);
+		const client = createMockClient({ questionTimeoutMs: mockQuestionTimeout(), github: params.get("github") !== "off", sandbox: params.get("sandbox") === "e2b" ? "e2b" : "docker" });
 		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),
 		// `__wlpMock.mockNextAnswer("elsewhere" | "error")` (an answer that does not go through),
 		// `__wlpMock.mockNextGithub("list" | "connect" | "denied" | "protected" | "gone")` (GitHub refuses),

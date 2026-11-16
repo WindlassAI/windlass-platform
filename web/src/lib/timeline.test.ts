@@ -671,6 +671,32 @@ describe("a call the user stopped", () => {
 	});
 });
 
+describe("a run of the repository's setup command", () => {
+	const item = { turn: 1, kind: "setup" as const, id: "su_1", command: "npm ci", limitMs: 600_000 };
+	const started: TimelineItem = { ...item, seq: 1, at: 1_000, state: "started", exitCode: null, durationMs: null, output: "", truncated: false };
+	const printed = (text: string): LiveDelta => ({ turn: 1, event: { type: "setup.output", id: "su_1", text } });
+	const running = [printed("added 3 packages\n"), printed("done\n")].reduce(applyDelta, applyItem(emptyView(), started));
+	const block = (view: SessionView) => view.turns[0]?.blocks.filter((one) => one.kind === "setup") ?? [];
+
+	it("is one block that shows what it printed while it runs", () => {
+		expect(block(running)).toHaveLength(1);
+		expect(block(running)[0]).toMatchObject({ state: "running", command: "npm ci", output: "added 3 packages\ndone\n", truncated: false });
+	});
+
+	it("ends as its ending item says, with the output that item kept", () => {
+		const ended = applyItem(running, { ...item, seq: 2, at: 3_000, state: "failed", exitCode: 3, durationMs: 2_000, output: "npm error\n", truncated: true });
+		expect(block(ended)).toHaveLength(1);
+		expect(block(ended)[0]).toMatchObject({ state: "failed", exitCode: 3, durationMs: 2_000, output: "npm error\n", truncated: true });
+		// Output that arrives late adds nothing to a run that has ended.
+		expect(block(applyDelta(ended, printed("late\n")))[0]).toMatchObject({ output: "npm error\n" });
+	});
+
+	it("that has no ending item when its turn ends was cut off", () => {
+		const ended = applyItem(running, { seq: 2, at: 3_000, turn: 1, kind: "turn.ended", outcome: "interrupted", exitCode: null, steps: null, durationMs: 2_000, usage: null, cachedShare: null, message: null });
+		expect(block(ended)[0]).toMatchObject({ state: "cut_off" });
+	});
+});
+
 function contentText(fields: Record<string, unknown>): string {
 	const content = fields.content;
 	return Array.isArray(content) ? content.map((part: { text?: string }) => part.text ?? "").join("") : "";

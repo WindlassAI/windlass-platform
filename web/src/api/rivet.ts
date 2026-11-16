@@ -314,6 +314,8 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			githubDisconnect: () => act("githubDisconnect"),
 			githubRepositories: (query, fresh) => act("githubRepositories", query, fresh),
 			githubBranches: (repositoryId) => act("githubBranches", repositoryId),
+			repositorySetup: (repositoryId) => act("repositorySetup", repositoryId),
+			saveRepositorySetup: (repositoryId, command) => act("saveRepositorySetup", { repositoryId, command }),
 			watch(feed: UserFeed) {
 				let live = false;
 				const feedConn = feedConnection(

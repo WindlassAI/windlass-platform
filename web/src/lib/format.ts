@@ -14,6 +14,14 @@ export function duration(ms: number): string {
 }
 
 /** 45879 → "45,879". */
+/** A length of time in words, for a sentence: "10 minutes", "45 seconds", "1 hour". */
+export function spelledDuration(ms: number): string {
+	const of = (value: number, unit: string) => `${value} ${unit}${value === 1 ? "" : "s"}`;
+	if (ms < 60_000) return of(Math.max(1, Math.round(ms / 1000)), "second");
+	if (ms < 3_600_000 || ms % 3_600_000 !== 0) return of(Math.round(ms / 60_000), "minute");
+	return of(ms / 3_600_000, "hour");
+}
+
 export function count(value: number): string {
 	return value.toLocaleString("en-US");
 }

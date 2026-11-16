@@ -28,6 +28,13 @@
  * kept with the session (`meta.servers`), for the side panel, where an approval is seen, given and
  * taken back (`servers`, `approveServer`, `forgetServer`).
  *
+ * A session on a repository of the user's GitHub connection runs that repository's setup command, when
+ * the user saved one (setup-command.ts): once in each new sandbox, after the clone and before Windlass
+ * is started there. The session reads the command from the user's `user` actor at that moment and
+ * from nowhere else, runs it through the sandbox layer (sandbox/setup.ts), and keeps the run in the
+ * timeline: an item when it starts, its output as deltas, an item when it has ended. A run that did
+ * not succeed does not fail the turn; the agent is told of it once, before its next prompt.
+ *
  * A sandbox nobody uses is suspended, and after longer removed (config.idleSuspendMs, idleDestroyMs),
  * by the actor's own durable schedule (`c.schedule`): it holds while the actor sleeps and across a
  * restart, and wakes the actor when it is due. The check never touches a turn in progress or one being
@@ -73,6 +80,7 @@ import {
 	type SessionSnapshot,
 	type SessionStatus,
 	type SessionSummary,
+	SETUP_OUTPUT_CHARS,
 	type TimelineItem,
 	type TurnOutcome,
 	type TurnUsage,
@@ -85,6 +93,7 @@ import { GithubProblem, type StoredConnection } from "../github/repos.js";
 import { getLayer } from "../layer.js";
 import { EFFORTS, platformModels } from "../platform-info.js";
 import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
+import { runSetupCommand, stopLeftoverSetup } from "../sandbox/setup.js";
 import { type KnownServer, type ServerApproval, knownServers, projectOf, sameServers, serversView } from "../server-approvals.js";
 import {
 	SERVER_START,
@@ -100,6 +109,7 @@ import {
 	serverRecalledNote,
 	serverUnansweredNote,
 } from "../server-question.js";
+import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf } from "../setup-command.js";
 import { grantIsValid, type SessionCreateInput, userActor } from "./internal.js";
 
 // ---------------------------------------------------------------------------------------------
@@ -126,6 +136,10 @@ const STOP_WAIT_MS = 12_000;
 const REPORT_WAIT_MS = 5_000;
 /** How long a turn waits for the `user` actor to say whether a server's approval is remembered, before it asks the user instead. */
 const RECALL_WAIT_MS = 10_000;
+
+/** How long a setup run's output gathers before it is sent on, and how much of it makes it go at once. */
+const SETUP_FLUSH_MS = 120;
+const SETUP_FLUSH_CHARS = 8_000;
 
 const DELTA_TYPES = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]);
 const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "failed", "stopped", "interrupted"];
@@ -191,6 +205,16 @@ interface SessionMeta {
 	servers?: KnownServer[];
 	/** When `servers`, or what is remembered of their approvals through this session, last changed. */
 	serversChangedAt?: number;
+	/**
+	 * Set when the repository was cloned into the current sandbox and its setup command has not been run
+	 * there: the clone's directory, relative to the workspace. Sessions cloned before there were setup
+	 * commands have none: a sandbox the agent has worked in is not set up after the fact.
+	 */
+	setupDue?: string | null;
+	/** The setup run in progress, as its starting item has it. Still set when the actor wakes: the run was cut off with its server. */
+	setupRunning?: { id: string; command: string; limitMs: number } | null;
+	/** A setup run in the current sandbox that did not succeed, of which the agent has not been told yet. */
+	setupUnfinished?: UnfinishedSetup | null;
 }
 
 /** A question put to the user: the copy the clients see, and the ways to settle the layer's promise. */
@@ -287,6 +311,7 @@ type NewItem =
 	| Omit<Extract<TimelineItem, { kind: "user" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "platform" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "windlass" }>, "seq" | "at">
+	| Omit<Extract<TimelineItem, { kind: "setup" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "turn.ended" }>, "seq" | "at">;
 
 /** A failure of a turn whose message is fit to show as it is. */
@@ -598,6 +623,10 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 			meta.sandbox = "none";
 			meta.cloned = false;
 		}
+		// What is known of a setup run was the old sandbox's.
+		meta.setupDue = null;
+		meta.setupRunning = null;
+		meta.setupUnfinished = null;
 		await dropWorkspace(c);
 		note(c, turn, "info", "Creating sandbox");
 		const id = await layer.sandboxes.create({ uid: meta.uid, sessionId: meta.sessionId, profile: meta.profile });
@@ -626,6 +655,10 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 
 	// A repository of the user's GitHub connection is cloned with a token of the platform's own (below).
 	if (meta.repo && !meta.cloned && !signal.aborted && !(await cloneConnected(c, meta, turn, handle, signal))) return handle;
+	// What a setup run that was cut off with its server left running is not the agent's to find at work.
+	if (meta.setupUnfinished?.state === "interrupted" && !signal.aborted) await stopLeftoverSetup(handle);
+	// The repository's setup command, once in this sandbox, before Windlass is started in it.
+	if (meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted) await runSetup(c, meta, turn, handle, signal);
 	if (meta.repoUrl && !meta.cloned && !signal.aborted) {
 		note(c, turn, "info", `Cloning ${meta.repoUrl}`);
 		const cloned = await handle.run(cloneCommand(meta.repoUrl), { timeoutMs: CLONE_TIMEOUT_MS, signal });
@@ -918,6 +951,8 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 			note(c, turn, "warn", `${work} is no longer at GitHub, so the workspace starts from ${repo.branch} again. Work that was only on that branch is not in it.`);
 		}
 		c.vars.unpushed = null;
+		// The new clone has not been set up: the repository's setup command is due, where the clone is.
+		meta.setupDue = /^(?!\.\.$)[A-Za-z0-9._-]+$/.test(cloned.directory) ? cloned.directory : ".";
 	} catch (error) {
 		if (error instanceof GithubProblem) throw new TurnProblem(error.message);
 		throw error;
@@ -925,6 +960,87 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 	meta.cloned = true;
 	void persist(c);
 	return true;
+}
+
+/** One piece of a setup run's output, to connected clients and to those that connect while it runs. */
+function setupOutput(c: Ctx, turn: number, id: string, text: string): void {
+	const delta: LiveDelta = { turn, event: { type: "setup.output", id, text: text.length > SETUP_OUTPUT_CHARS ? text.slice(-SETUP_OUTPUT_CHARS) : text } };
+	c.broadcast("delta", delta);
+	// Kept as one delta per run, the end of the output so far: a client that connects late shows what the others do.
+	const last = c.vars.pending.at(-1);
+	if (last && last.event.type === "setup.output" && last.event.id === id) {
+		const joined = `${str(last.event.text)}${text}`;
+		c.vars.pending[c.vars.pending.length - 1] = { turn, event: { type: "setup.output", id, text: joined.length > SETUP_OUTPUT_CHARS ? joined.slice(-SETUP_OUTPUT_CHARS) : joined } };
+	} else {
+		keepDelta(c.vars, delta);
+	}
+}
+
+/**
+ * Runs the setup command the user saved for the session's repository, in the sandbox that was just
+ * cloned into. It is read from the user's `user` actor here, each time: that is the only place a
+ * setup command comes from. Whatever becomes of the run, the turn goes on: a run that did not succeed
+ * is in the timeline, and is told to the agent with its next prompt (`meta.setupUnfinished`). It is
+ * marked as done for this sandbox before it starts, so a server that stops under it does not make
+ * the next turn run it a second time. Never throws.
+ */
+async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal): Promise<void> {
+	const project = setupProjectOf(meta);
+	const directory = meta.setupDue;
+	if (!project || typeof directory !== "string") return;
+	const saved = await orNull(userActor(c, meta.uid).internalSetupCommand(project.key), RECALL_WAIT_MS);
+	if (signal.aborted) return;
+	if (saved === null) {
+		// It stays due: the agent starts without it this once, and the next turn asks again.
+		note(c, turn, "warn", `The setup command for ${project.label} could not be read, so it has not run in this sandbox. The next turn tries again.`);
+		return;
+	}
+	meta.setupDue = null;
+	const command = typeof saved.command === "string" ? saved.command.trim() : "";
+	if (command === "") {
+		void persist(c);
+		return;
+	}
+
+	const id = `su_${randomBytes(6).toString("hex")}`;
+	const limitMs = config.setupTimeoutMs;
+	meta.setupRunning = { id, command, limitMs };
+	append(c, { turn, kind: "setup", id, command, state: "started", exitCode: null, durationMs: null, limitMs, output: "", truncated: false });
+	await persist(c);
+
+	const tail = new OutputTail();
+	let waiting = "";
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const flush = () => {
+		clearTimeout(timer);
+		timer = undefined;
+		if (waiting === "") return;
+		const text = waiting;
+		waiting = "";
+		setupOutput(c, turn, id, text);
+	};
+	const result = await runSetupCommand(sandbox, {
+		command,
+		cwd: directory === "." ? sandbox.cwd : `${sandbox.cwd}/${directory}`,
+		timeoutMs: limitMs,
+		signal,
+		onOutput: (text) => {
+			tail.push(text);
+			waiting += text;
+			if (waiting.length >= SETUP_FLUSH_CHARS) flush();
+			else timer ??= setTimeout(flush, SETUP_FLUSH_MS);
+		},
+	});
+	clearTimeout(timer);
+	const output = tail.text;
+	// The ending item carries the output: the deltas that built it up are not needed any more.
+	c.vars.pending = c.vars.pending.filter((delta) => !(delta.event.type === "setup.output" && delta.event.id === id));
+	meta.setupRunning = null;
+	append(c, { turn, kind: "setup", id, command, state: result.state, exitCode: result.exitCode, durationMs: result.durationMs, limitMs, output, truncated: tail.truncated });
+	if (result.problem !== null) note(c, turn, "warn", `The setup command for ${project.label} could not be run. ${result.problem}`);
+	meta.setupUnfinished = result.state === "succeeded" ? null : { command, state: result.state, exitCode: result.exitCode, limitMs, output: lastLines(result.problem === null ? output : `${output}\n${result.problem}`) };
+	console.log(`[wlp] setup.ran session=${meta.sessionId} sandbox=${sandbox.id} project=${project.key} state=${result.state} exit=${result.exitCode ?? "none"} ms=${result.durationMs}`);
+	await persist(c);
 }
 
 /** Shortens `text` to about `limit` characters, at the end of a paragraph or a sentence where there is one. */
@@ -1506,6 +1622,8 @@ async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 				meta.sandboxId = null;
 				meta.sandbox = "none";
 				meta.cloned = false;
+				meta.setupDue = null;
+				meta.setupUnfinished = null;
 				await dropWorkspace(c);
 				note(c, meta.turns, "info", `Removed the sandbox and its files after ${duration(config.idleDestroyMs)} without use; the next prompt starts a new one.`);
 			} else {
@@ -1611,10 +1729,12 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			}
 			// Told once: with the first prompt Windlass takes in the new sandbox.
 			const fresh = meta.freshWorkspace === true;
+			// And once: that the repository's setup command did not succeed in this sandbox.
+			const unfinished = meta.setupUnfinished ?? null;
 			// What the question about a project's server has to say depends on where this session runs.
 			const servers: ServerQuestionContext = { profile: layer.sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: layer.sandboxes.sessionsLiveInSandbox, project: projectOf(meta) };
 			result = await layer.windlass.runTurn(sandbox, {
-				prompt: fresh ? FRESH_WORKSPACE + text : text,
+				prompt: `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${text}`,
 				windlassSessionId: resumed ?? undefined,
 				model: meta.model,
 				effort: effort ?? undefined,
@@ -1651,6 +1771,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			});
 			// Windlass took the prompt if it said anything at all; a turn that never reached it is told again.
 			if (fresh && events > 0) meta.freshWorkspace = false;
+			if (unfinished && events > 0 && meta.setupUnfinished === unfinished) meta.setupUnfinished = null;
 		}
 	} catch (error) {
 		if (!signal.aborted) {
@@ -1949,9 +2070,12 @@ export const agentSession = actor({
 			meta.turnStartedAt = null;
 			// What that turn wrote to Windlass's session was not copied out of the sandbox: the copy is behind it.
 			if (meta.backup) meta.memoryTurn = turn;
+			// A setup run that was going then has no ending item, and is not run again: the agent is told.
+			if (meta.setupRunning) meta.setupUnfinished = { command: meta.setupRunning.command, state: "interrupted", exitCode: null, limitMs: meta.setupRunning.limitMs, output: "" };
 			await persist(c);
 			publish(c);
 		}
+		meta.setupRunning = null;
 		// The sandbox may have been paused, removed or left running while the actor was away. A session
 		// from before the idle checks, or one whose check was lost, gets one here.
 		void c.keepAwake(refreshSandbox(c, meta).then(() => armIdle(c, meta)));

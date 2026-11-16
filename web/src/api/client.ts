@@ -22,6 +22,7 @@ import type {
 	PublishMessage,
 	PublishResult,
 	PublishState,
+	RepositorySetup,
 	SessionServers,
 	SessionSnapshot,
 	SessionSummary,
@@ -116,6 +117,10 @@ export interface UserApi {
 	githubDisconnect(): Promise<GithubStatus>;
 	githubRepositories(query: string, fresh?: boolean): Promise<GithubRepositoryList>;
 	githubBranches(repositoryId: number): Promise<GithubBranchList>;
+	/** The setup command the user saved for a repository of their GitHub connection; `command` is "" when there is none. */
+	repositorySetup(repositoryId: number): Promise<RepositorySetup>;
+	/** Saves it, or none with "". Throws with reason `bad_setup_command` for one that is too long. */
+	saveRepositorySetup(repositoryId: number, command: string): Promise<RepositorySetup>;
 	/** Opens the live list of sessions. Returns the function that closes it. */
 	watch(feed: UserFeed): () => void;
 }

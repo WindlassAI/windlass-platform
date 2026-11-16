@@ -6,6 +6,8 @@
  * The repository is a pasted address, as it always was. Where the deployment has a GitHub App, a
  * connected user picks one of their own instead, with the branch to start from, and a user who is not
  * connected is offered to connect: that leaves the page, so what the form holds is kept and put back.
+ * A repository picked that way has a setup command, the user's own: the field shows what is saved for
+ * it, and what it holds is saved with the launch (components/SetupCommand.tsx).
  */
 import { MAX_PROMPT_CHARS, MAX_TITLE_CHARS, type SandboxProfile, type SandboxProfileId } from "@contract";
 import { useEffect, useId, useState, type FormEvent } from "react";
@@ -13,6 +15,7 @@ import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
 import { Layers, ProfileFacts } from "../components/Layers";
 import { RepositoryPicker, type PickedRepository } from "../components/RepositoryPicker";
+import { SetupField, useSetupDraft } from "../components/SetupCommand";
 import { navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { takeLaunchDraft, useGithub } from "../state/github";
@@ -83,6 +86,8 @@ export function NewAgent() {
 	const repoInvalid = repo !== "" && !/^https:\/\/[^\s/]+\/\S+$/.test(repo);
 	const canCreate = info !== null && profile !== null && !repoInvalid && busy === null;
 	const notice = github.notice?.where === "launch" ? github.notice : null;
+	const chosen = source === "github" && picked ? picked : null;
+	const setup = useSetupDraft(chosen?.repository.id ?? null);
 
 	const create = async (event: FormEvent) => {
 		event.preventDefault();
@@ -91,8 +96,8 @@ export function NewAgent() {
 		setBusy("creating");
 		let sessionId: string;
 		try {
-			const repository = source === "github" && picked ? { id: picked.repository.id, branch: picked.branch } : undefined;
-			const session = await client.user(auth).createSession({ profile, model: model || undefined, repoUrl: repo || undefined, repository, title: title.trim() || undefined });
+			const repository = chosen ? { id: chosen.repository.id, branch: chosen.branch } : undefined;
+			const session = await client.user(auth).createSession({ profile, model: model || undefined, repoUrl: repo || undefined, repository, setupCommand: repository ? setup.toSave : undefined, title: title.trim() || undefined });
 			sessionId = session.id;
 		} catch (failure) {
 			setError(explain(failure));
@@ -279,6 +284,7 @@ export function NewAgent() {
 									</p>
 								) : null}
 							</div>
+							{chosen ? <SetupField setup={setup} repository={`${chosen.repository.owner}/${chosen.repository.name}`} disabled={busy !== null} /> : null}
 							<div className="field field-wide">
 								<label className="label" htmlFor={ids.prompt}>
 									First prompt <span className="label-optional">optional</span>

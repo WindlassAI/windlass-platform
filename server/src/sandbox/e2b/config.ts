@@ -41,6 +41,8 @@ export interface E2bConfig {
 	pause: boolean;
 	/** WLP_E2B_WINDLASS_SANDBOX: promise Windlass's own sandbox, and hold every new sandbox to it. */
 	windlassSandbox: boolean;
+	/** WLP_E2B_OPEN_PROFILE: offer the profile in which the microVM is the only isolation (`e2b-open`). */
+	openProfile: boolean;
 	/** WLP_E2B_WINDLASS_VERSION: the Windlass in the template, when the owner wants it shown before the first sandbox was made. */
 	windlassVersion: string | null;
 }
@@ -93,6 +95,7 @@ export function readE2bSettings(env: NodeJS.ProcessEnv = process.env): E2bSettin
 		turnLimitMs: Number.isFinite(turnLimit) && turnLimit > 0 ? turnLimit : DEFAULT_TURN_LIMIT_MS,
 		pause: flag(env, "WLP_E2B_PAUSE", true),
 		windlassSandbox: flag(env, "WLP_E2B_WINDLASS_SANDBOX", false),
+		openProfile: flag(env, "WLP_E2B_OPEN_PROFILE", false),
 		windlassVersion: version === "" ? null : version,
 	};
 }

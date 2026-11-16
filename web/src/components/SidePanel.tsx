@@ -1,8 +1,9 @@
 /**
  * The session's side panel, after the terminal interface's: the session's facts, where it runs,
  * token counts, one bar per model call showing how much of its input came from the cache, the files
- * the agent changed, for a session on a repository of the user's GitHub connection its pull request,
- * and, where the project names MCP servers, those and the user's approvals of them.
+ * the agent changed, for a session on a repository of the user's GitHub connection its pull request
+ * and that repository's setup command, and, where the project names MCP servers, those and the user's
+ * approvals of them.
  */
 import type { PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
 import { useCallback, useEffect, useState } from "react";
@@ -15,6 +16,7 @@ import { RefreshIcon, WarnIcon } from "./Icons";
 import { Layers, ProfileFacts } from "./Layers";
 import { PullRequestSection } from "./PullRequest";
 import { ServersSection } from "./Servers";
+import { SetupSection } from "./SetupCommand";
 import { SandboxState, StatusBadge } from "./Status";
 
 function Facts({ summary, view }: { summary: SessionSummary; view: SessionView }) {
@@ -337,6 +339,7 @@ export function SidePanel({ sessionId, summary, profile, view, turnsEnded, quest
 			<CacheBars calls={view.calls} anyTurns={view.turns.length > 0} />
 			<Changes sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} reloads={reloads} onFiles={setFiles} />
 			<PullRequestSection sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} files={files} onPublished={published} />
+			<SetupSection summary={summary} />
 			{/* Last: it is there only where the project names a server, and so its arrival moves no other section. */}
 			<ServersSection sessionId={sessionId} summary={summary} question={question} />
 		</aside>

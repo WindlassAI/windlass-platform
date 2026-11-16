@@ -90,7 +90,7 @@ async function main(): Promise<number> {
 	const limitMs = Number.isFinite(asked) && asked >= 60_000 ? Math.min(asked, MAX_LIMIT_MS) : MAX_LIMIT_MS;
 	// A label no other sandbox has: everything this run makes, and nothing else, is found by it.
 	const deployment = `check-${randomId(4)}`;
-	const settings = { ...readE2bSettings(), deployment, maxRunning: 1, pause: true, windlassSandbox: false };
+	const settings = { ...readE2bSettings(), deployment, maxRunning: 1, pause: true, windlassSandbox: false, openProfile: false };
 	console.log(`e2b-check: template "${settings.template}", deployment label "${deployment}", time limit ${Math.round(limitMs / 1000)} s.`);
 	console.log(`e2b-check: should this process be killed, its sandbox is paused by its own timeout within ${Math.round(settings.turnLeaseMs / 1000)} s; remove it with: npx tsx ../scripts/e2b-cleanup.ts --deployment ${deployment} --kill`);
 

@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyDelta, applyItem, fromSnapshot, toolBlocks, type SessionView } from "../lib/timeline";
 import { PlatformError, type ConnectionState, type SessionFeed } from "./client";
 import { LIVE_TYPES } from "./feed";
-import { PROFILES } from "../../../server/src/sandbox/profiles";
-import { createMockClient, MOCK_PROFILES, type MockClient } from "./mock";
+import { PROFILES, profilesFor } from "../../../server/src/sandbox/profiles";
+import { createMockClient, MOCK_E2B_PROFILES, MOCK_PROFILES, type MockClient } from "./mock";
 
 /** A feed that records what it is given and folds it, as the session screen does. */
 function recorder() {
@@ -82,10 +82,10 @@ async function freshSession(profile: "docker-windlass-sandbox" | "docker-hardene
 }
 
 describe("what the mock serves", () => {
-	it("lists six sandbox profiles: two available, four not, each with its reason", async () => {
+	it("lists seven sandbox profiles: two available, five not, each with its reason", async () => {
 		const info = await after(500, client.info());
 		expect(info.demoEnabled).toBe(true);
-		expect(info.profiles).toHaveLength(6);
+		expect(info.profiles).toHaveLength(7);
 		expect(info.profiles.filter((profile) => profile.available).map((profile) => profile.id)).toEqual(["docker-windlass-sandbox", "docker-hardened"]);
 		for (const profile of info.profiles.filter((candidate) => !candidate.available)) expect(profile.unavailableReason?.length).toBeGreaterThan(40);
 		expect(info.models.length).toBeGreaterThan(0);
@@ -93,8 +93,9 @@ describe("what the mock serves", () => {
 
 	it("says of every profile what the server says, word for word", () => {
 		expect(MOCK_PROFILES).toEqual(PROFILES);
+		expect(MOCK_E2B_PROFILES).toEqual(profilesFor("e2b", { windlassSandbox: true, openProfile: true }));
 		// No command reads the sign-in anywhere; the access token only where commands run outside Windlass's sandbox.
-		expect(MOCK_PROFILES.filter((profile) => profile.commandsCanReadAccessToken).map((profile) => profile.id)).toEqual(["docker-hardened"]);
+		expect(MOCK_PROFILES.filter((profile) => profile.commandsCanReadAccessToken).map((profile) => profile.id)).toEqual(["docker-hardened", "e2b-open"]);
 		expect(MOCK_PROFILES.every((profile) => !/sign-in volume|does not do yet/.test(`${profile.summary} ${profile.unavailableReason ?? ""}`))).toBe(true);
 	});
 

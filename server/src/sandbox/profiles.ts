@@ -6,7 +6,8 @@
  * run directly in the container. web/src/api/mock.ts repeats these texts for the web app's mock.
  *
  * `PROFILES` is the list of a server on local Docker; `profilesFor` gives the list of either kind of
- * server, and `e2bProfile` says what the E2B profile promises and why.
+ * server, `e2bProfile` says what the E2B profile promises and why, and `e2bOpenProfile` what the
+ * profile does in which the microVM is the only isolation.
  */
 
 import type { SandboxProfile, SandboxProfileId } from "../contract.js";
@@ -78,6 +79,7 @@ export const PROFILES: SandboxProfile[] = [
 		available: false,
 		unavailableReason: "This server runs its sandboxes on local Docker. E2B is built: a server started with WLP_SANDBOX=e2b, an E2B API key and the E2B template (README, \"E2B\") offers it in place of the Docker profiles, and says there what it promises.",
 	},
+	e2bOpenProfile({ offered: false, reason: "This server runs its sandboxes on local Docker; a server on E2B offers it where its operator sets WLP_E2B_OPEN_PROFILE=1." }),
 	{
 		id: "daytona",
 		name: "Daytona",
@@ -160,13 +162,43 @@ export function e2bProfile(options: { windlassSandbox: boolean }): SandboxProfil
 }
 
 /**
+ * `e2b-open`: an E2B microVM and nothing inside it. Windlass runs with approval "full", which sandboxes
+ * no command and asks nothing (its approval/decide.ts), so a command has the microVM's network, a
+ * writable home directory and the turn's access token file. Its fields are the same whether or not it
+ * is offered: they say what a session launched with it gets, also after an operator stopped offering
+ * it to new sessions.
+ *
+ * One thing "full" keeps: Windlass's taint rule (`taint: "enforce"`, its default). Once something from
+ * the web or an MCP server is in the conversation, it treats commands as under "auto" again: they run
+ * in its bubblewrap sandbox, which works in the template, and network or a write outside the workspace
+ * asks first. The summary says so.
+ */
+export function e2bOpenProfile(options: { offered: true } | { offered: false; reason: string }): SandboxProfile {
+	return {
+		id: "e2b-open",
+		name: "E2B, microVM only",
+		summary:
+			"A microVM of its own, hosted by E2B, and no sandbox inside it: the agent's commands run directly in the microVM without asking first, can reach any host on the network, can write outside the workspace, the home directory included, and can read the session's access token, which lasts about an hour and cannot be renewed. Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace. Your ChatGPT sign-in is never in the microVM.",
+		layers: ["E2B microVM (Firecracker, hosted by E2B; commands run in it directly, as a non-root user)"],
+		approval: "full",
+		commandNetwork: true,
+		commandsCanReadAccessToken: true,
+		...(options.offered ? { available: true } : { available: false, unavailableReason: options.reason }),
+	};
+}
+
+/** What a server on E2B says of `e2b-open` when WLP_E2B_OPEN_PROFILE is not set. */
+export const OPEN_PROFILE_NOT_OFFERED = "This deployment does not offer it: its operator has not set WLP_E2B_OPEN_PROFILE=1.";
+
+/**
  * Every profile, in the picker's order, as a server of this kind offers them. A deployment has one
  * provider: a server on Docker cannot reach E2B, and one on E2B makes no local containers, since a
  * container on one server machine is out of reach of the others.
  */
-export function profilesFor(provider: "docker" | "e2b", e2b: { windlassSandbox: boolean } = { windlassSandbox: false }): SandboxProfile[] {
+export function profilesFor(provider: "docker" | "e2b", e2b: { windlassSandbox: boolean; openProfile: boolean } = { windlassSandbox: false, openProfile: false }): SandboxProfile[] {
 	return PROFILES.map((profile): SandboxProfile => {
 		if (provider === "e2b" && profile.id === "e2b") return e2bProfile(e2b);
+		if (provider === "e2b" && profile.id === "e2b-open") return e2bOpenProfile(e2b.openProfile ? { offered: true } : { offered: false, reason: OPEN_PROFILE_NOT_OFFERED });
 		if (provider === "e2b" && PROFILE_RUN_FLAGS[profile.id] !== undefined) {
 			const { unavailableReason: _, ...rest } = profile;
 			return { ...rest, layers: [...profile.layers], available: false, unavailableReason: "This deployment runs its sandboxes on E2B, so that every server machine can reach them; a local Docker container is out of reach of the other machines." };

@@ -2,10 +2,10 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { parseDiff } from "../lib/diff";
-import { absoluteTime, count, duration, percent, plural } from "../lib/format";
+import { absoluteTime, count, duration, percent, plural, spelledDuration } from "../lib/format";
 import { codeText, toolCopyLabels, toolInputText, toolOutputText } from "../lib/copy";
 import { reasoningTitle, renderMarkdown } from "../lib/markdown";
-import { callKey, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlatformBlock, type ReasoningBlock, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
+import { callKey, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
 import { formatInput, summarizeTool } from "../lib/toolSummary";
 import { useNow } from "../state/hooks";
 import { CopyButton, useLatest } from "./Copy";
@@ -369,6 +369,95 @@ const ToolRow = memo(function ToolRow({ block }: { block: ToolBlock }) {
 });
 
 // ---------------------------------------------------------------------------------------------
+// The repository's setup command
+// ---------------------------------------------------------------------------------------------
+
+/** What the platform kept of a run's output, with the line ends a terminal would have drawn made plain. */
+function setupOutput(block: SetupBlock): string {
+	return block.output.replace(/\r\n?/g, "\n");
+}
+
+/** What is said under a run that did not succeed: what became of it, and that the turn goes on. */
+function setupSaid(block: SetupBlock): string | null {
+	switch (block.state) {
+		case "failed":
+			return "The setup command failed. The turn goes on, and the agent is told.";
+		case "timed_out":
+			return `The setup command was stopped after ${spelledDuration(block.limitMs)}, the time it may take. The turn goes on, and the agent is told.`;
+		case "stopped":
+			return "Stopped with the turn. It is not run again in this sandbox, and the agent is told with the next prompt.";
+		case "cut_off":
+			return "The server stopped while it ran. It is not run again in this sandbox, and the agent is told with the next prompt.";
+		default:
+			return null;
+	}
+}
+
+/**
+ * A run of the repository's setup command: a row like a tool call's, since it is a command and its
+ * output, named for what it is. The platform ran it, before the agent started in the sandbox.
+ */
+const SetupRow = memo(function SetupRow({ block }: { block: SetupBlock }) {
+	const [open, setOpen] = useState(false);
+	const running = block.state === "running";
+	const now = useNow(1000, running);
+	const elapsed = running && block.at !== null ? Math.max(0, now - block.at) : null;
+	const output = setupOutput(block);
+	const latest = useLatest(block);
+	const copyOutput = useCallback(() => setupOutput(latest()), [latest]);
+	const ended = block.state === "succeeded" ? "done" : running ? "running" : "failed";
+	const halted = block.state === "timed_out" || block.state === "stopped" || block.state === "cut_off";
+	const word = running ? "running" : block.state === "failed" ? (block.exitCode === null ? "failed" : null) : block.state === "timed_out" ? "time limit" : block.state === "stopped" ? "stopped" : block.state === "cut_off" ? "cut off" : null;
+	const said = setupSaid(block);
+	// Under the row, without opening it: output as it arrives, and the end of what a run that did not succeed printed.
+	const preview = open || block.state === "succeeded" ? [] : output.split("\n").filter((line) => line.trim() !== "").slice(-PREVIEW_LINES);
+	return (
+		<div className={`tool tool-${ended}${halted ? " tool-interrupted" : ""}`}>
+			<button type="button" className="line-button tool-row" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+				<span className="line-glyph">
+					{running ? <Mark size={15} turning className="tone-accent" /> : block.state === "succeeded" ? <CheckIcon size={14} className="tone-accent settle" /> : halted ? <StopIcon size={14} className="tone-warn settle" /> : <CrossIcon size={14} className="tone-bad settle" />}
+				</span>
+				<span className="tool-name">setup</span>
+				<span className="tool-target">{block.command.split("\n", 1)[0]}</span>
+				<span className="tool-facts">
+					{block.state === "failed" && block.exitCode !== null ? <span className="tone-bad">exit {block.exitCode}</span> : null}
+					{word ? <span className={`tool-state tool-state-${ended}`}>{word}</span> : null}
+					{elapsed !== null ? <span>{duration(Math.max(1000, Math.floor(elapsed / 1000) * 1000))}</span> : block.durationMs !== null ? <span>{duration(block.durationMs)}</span> : null}
+				</span>
+				<ChevronIcon size={12} className={`line-chevron${open ? " line-chevron-open" : ""}`} />
+			</button>
+			{said ? <p className="tool-refusal">{said}</p> : null}
+			{preview.length > 0 ? (
+				<pre className="tool-preview" aria-hidden={running ? undefined : true}>
+					{preview.join("\n")}
+				</pre>
+			) : null}
+			{open ? (
+				<div className="tool-body">
+					<section className="tool-part" aria-label="Command">
+						<div className="tool-part-head">
+							<h4 className="tool-part-title">setup command, run before the agent started</h4>
+							<CopyButton text={block.command} label="Copy the setup command" />
+						</div>
+						<Output text={block.command} label="The setup command" limit={16} />
+					</section>
+					<section className="tool-part" aria-label="Output">
+						<div className="tool-part-head">
+							<h4 className="tool-part-title">
+								{running ? "output so far" : "output"}
+								{block.truncated ? <span className="tool-part-note">only the end of it is kept</span> : null}
+							</h4>
+							{output !== "" ? <CopyButton text={copyOutput} label="Copy the setup command's output" /> : null}
+						</div>
+						{output === "" ? <p className="tool-part-empty">{running ? "nothing yet" : "no output"}</p> : <Output text={output} tail label="Output of the setup command" />}
+					</section>
+				</div>
+			) : null}
+		</div>
+	);
+});
+
+// ---------------------------------------------------------------------------------------------
 // Checks, notices, errors, system lines
 // ---------------------------------------------------------------------------------------------
 
@@ -578,6 +667,8 @@ function renderBlock(block: Block): ReactNode {
 			return <ToolRow block={block} />;
 		case "checks":
 			return <Checks block={block} />;
+		case "setup":
+			return <SetupRow block={block} />;
 		case "notice":
 			return <Notice block={block} />;
 		case "error":

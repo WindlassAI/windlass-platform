@@ -35,7 +35,7 @@
 import { createClient } from "rivetkit/client";
 import { isActorGone } from "../actors/internal.js";
 import { serviceParams } from "../auth.js";
-import { config } from "../config.js";
+import { config, ownEngineEndpoint } from "../config.js";
 import { GithubApp, GithubError, githubApp } from "./app.js";
 import { type ConfirmedConnection, issueTicket, verifyState } from "./state.js";
 
@@ -76,7 +76,7 @@ let client: { user: { get(key: string[], options: { params: unknown }): unknown 
 
 /** The user's actor, through a client of this server's own engine, as signin/directory.ts reaches it. */
 function userActor(uid: string): UserGithubActions {
-	client ??= createClient({ endpoint: process.env.RIVET_ENGINE || process.env.RIVET_ENDPOINT || "http://127.0.0.1:6420" }) as unknown as NonNullable<typeof client>;
+	client ??= createClient({ endpoint: ownEngineEndpoint() }) as unknown as NonNullable<typeof client>;
 	return client.user.get([uid], { params: serviceParams() }) as UserGithubActions;
 }
 

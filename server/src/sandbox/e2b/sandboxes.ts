@@ -142,9 +142,17 @@ export interface E2bSandboxesOptions {
 	onVersion?: (version: string) => void;
 }
 
+/** The profiles a sandbox on E2B can be made with. */
+const E2B_PROFILES: readonly SandboxProfileId[] = ["e2b", "e2b-open"];
+
+/** The profile a sandbox was made with, from its metadata. Sandboxes made before there was a second profile are all `e2b`. */
+export function sandboxProfile(metadata: Record<string, string>): SandboxProfileId {
+	const named = metadata[META.profile];
+	return E2B_PROFILES.find((id) => id === named) ?? "e2b";
+}
+
 export class E2bSandboxHandle implements TurnSandbox {
 	readonly cwd = WORKSPACE;
-	readonly profile: SandboxProfileId = "e2b";
 
 	constructor(
 		private readonly owner: E2bSandboxes,
@@ -152,6 +160,7 @@ export class E2bSandboxHandle implements TurnSandbox {
 		public connection: E2bConnection,
 		readonly id: string,
 		readonly uid: string,
+		readonly profile: SandboxProfileId,
 		readonly approval: "auto" | "full",
 	) {
 		markTurnSandbox(this);
@@ -478,7 +487,7 @@ export class E2bSandboxes implements Sandboxes {
 	async create(input: CreateSandboxInput): Promise<string> {
 		if (typeof input.uid !== "string" || !NAME.test(input.uid)) throw new Error('invalid user id: it must be 1 to 64 letters, digits, "_" or "-", starting with a letter or digit');
 		const profile = this.profile(input.profile);
-		if (!profile.available) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
+		if (!profile.available || !E2B_PROFILES.includes(profile.id)) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
 		await this.assertRoom();
 		let connection: E2bConnection;
 		try {
@@ -506,15 +515,15 @@ export class E2bSandboxes implements Sandboxes {
 			this.log(`[wlp] e2b.cap_reached deployment=${this.settings.deployment}: ${running.length} sandboxes ran at once where ${this.settings.maxRunning} may; the newest (id=${id}) was removed again`);
 			throw new SandboxUserError(capReached(this.settings.maxRunning));
 		}
-		const handle = new E2bSandboxHandle(this, connection, id, input.uid, profile.approval);
+		const handle = new E2bSandboxHandle(this, connection, id, input.uid, profile.id, profile.approval);
 		try {
 			const init = await handle.exec(["sh", "-c", 'git init -q && git commit -q --allow-empty -m "Empty workspace" && windlass --version'], { timeoutMs: 60_000 });
 			if (init.exitCode !== 0) throw new Error(`could not set up the workspace: ${(init.stderr.trim() || init.stdout.trim() || `exit ${init.exitCode}`).slice(-500)}`);
 			// "Windlass 0.1.1+0f5192c3ea (linux-x64)"
 			const version = /^\S+\s+(\S+)/.exec(init.stdout.trim().split("\n").pop() ?? "")?.[1];
 			if (version !== undefined) this.options.onVersion?.(version);
-			if (this.settings.windlassSandbox) {
-				// The profile promises Windlass's sandbox, so a sandbox in which it cannot work is not handed out.
+			if (profile.id === "e2b" && this.settings.windlassSandbox) {
+				// The profile promises Windlass's sandbox, so a sandbox in which it cannot work is not handed out. `e2b-open` promises none.
 				const probe = await handle.ask(BWRAP_PROBE, { timeoutMs: 20_000 });
 				if (probe === null || probe.code !== 0) throw new Error(`bubblewrap does not work in this sandbox, so Windlass could not sandbox commands in it as WLP_E2B_WINDLASS_SANDBOX=1 promises (${probe === null ? "the probe could not be run" : probe.stderr.trim().slice(-300) || `exit ${probe.code}`}). Unset it, or rebuild the template`);
 			}
@@ -545,7 +554,9 @@ export class E2bSandboxes implements Sandboxes {
 		if (connection === undefined) return undefined;
 		const now = this.now();
 		const known = this.remember(info);
-		const handle = new E2bSandboxHandle(this, connection, id, known.uid, this.profile("e2b").approval);
+		// The profile the sandbox was made with, as E2B keeps it: whichever server connects runs Windlass the same way.
+		const made = sandboxProfile(info.metadata);
+		const handle = new E2bSandboxHandle(this, connection, id, known.uid, made, this.profile(made).approval);
 		if (paused) {
 			const running = await this.running().catch(() => null);
 			if (running !== null && running.length > this.settings.maxRunning) {
@@ -583,7 +594,8 @@ export class E2bSandboxes implements Sandboxes {
 		const connection = await this.client.connect(id, this.settings.idleTimeoutMs).catch(() => undefined);
 		if (connection !== undefined) {
 			const path = tokenFilePath(id);
-			await new E2bSandboxHandle(this, connection, id, info.metadata[META.uid] ?? "", "auto").removeFiles([path, `${path}.tmp`]);
+			const made = sandboxProfile(info.metadata);
+			await new E2bSandboxHandle(this, connection, id, info.metadata[META.uid] ?? "", made, this.profile(made).approval).removeFiles([path, `${path}.tmp`]);
 		}
 		for (let attempt = 1; ; attempt += 1) {
 			try {
@@ -680,7 +692,8 @@ export class E2bSandboxes implements Sandboxes {
 				const connection = await this.client.connect(info.sandboxId, this.settings.idleTimeoutMs);
 				if (connection === undefined) return;
 				const path = tokenFilePath(info.sandboxId);
-				await new E2bSandboxHandle(this, connection, info.sandboxId, uid, "auto").removeFiles([path, `${path}.tmp`]);
+				const made = sandboxProfile(info.metadata);
+				await new E2bSandboxHandle(this, connection, info.sandboxId, uid, made, this.profile(made).approval).removeFiles([path, `${path}.tmp`]);
 			}),
 		);
 	}

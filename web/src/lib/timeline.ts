@@ -10,10 +10,12 @@
  *   deltas built, so nothing is ever shown twice.
  * - A tool call is keyed by (messageId, callId): providers reuse call IDs from one step to the next.
  * - `tool.progress` replaces the previous progress text of its call; it is not appended.
+ * - A run of the repository's setup command is two stored items with one id, and between them the
+ *   platform's `setup.output` deltas, each appended; the ending item's output replaces what they built.
  *
  * Nothing here touches the DOM, the clock or the network.
  */
-import type { LiveDelta, SessionSnapshot, TimelineItem, TurnOutcome, TurnUsage, WindlassEvent } from "@contract";
+import { SETUP_OUTPUT_CHARS, type LiveDelta, type SessionSnapshot, type TimelineItem, type TurnOutcome, type TurnUsage, type WindlassEvent } from "@contract";
 
 // ---------------------------------------------------------------------------------------------
 // The view
@@ -179,7 +181,24 @@ export interface NoteBlock extends BlockBase {
 	text: string;
 }
 
-export type Block = UserBlock | PlatformBlock | ReasoningBlock | TextBlock | ToolBlock | ChecksBlock | NoticeBlock | ErrorBlock | NoteBlock;
+/** A run of the repository's setup command in the session's new sandbox, by the platform and before the agent started there. */
+export interface SetupBlock extends BlockBase {
+	kind: "setup";
+	setupId: string;
+	command: string;
+	/** "cut_off": the turn ended and nothing said how the run did; the server stopped under it. */
+	state: "running" | "succeeded" | "failed" | "timed_out" | "stopped" | "cut_off";
+	exitCode: number | null;
+	durationMs: number | null;
+	/** How long it may run before the platform stops it. */
+	limitMs: number;
+	/** What it printed: so far while it runs, then the end of it as the platform kept it. */
+	output: string;
+	/** True when it printed more than `output` holds. */
+	truncated: boolean;
+}
+
+export type Block = UserBlock | PlatformBlock | ReasoningBlock | TextBlock | ToolBlock | ChecksBlock | NoticeBlock | ErrorBlock | NoteBlock | SetupBlock;
 
 export interface TurnEnd {
 	at: number;
@@ -278,6 +297,17 @@ export function applyItem(view: SessionView, item: TimelineItem): SessionView {
 		case "windlass":
 			applyEvent(draft, item.turn, item.event, typeof item.event.time === "number" ? item.event.time : item.at);
 			break;
+		case "setup": {
+			const running = draft.find(item.turn, isSetup(item.id));
+			if (item.state === "started") {
+				if (!running) draft.push(item.turn, { kind: "setup", at: item.at, setupId: item.id, command: item.command, state: "running", exitCode: null, durationMs: null, limitMs: item.limitMs, output: "", truncated: false });
+				break;
+			}
+			const ended = { state: item.state, exitCode: item.exitCode, durationMs: item.durationMs, output: item.output, truncated: item.truncated };
+			if (running) draft.replace(item.turn, running, ended);
+			else draft.push(item.turn, { kind: "setup", at: item.at, setupId: item.id, command: item.command, limitMs: item.limitMs, ...ended });
+			break;
+		}
 		case "turn.ended":
 			endTurn(draft, item);
 			break;
@@ -394,6 +424,7 @@ const isStreamingText = (messageId: string) => (block: Block): block is TextBloc
 const isStreamingReasoning = (messageId: string) => (block: Block): block is ReasoningBlock => block.kind === "reasoning" && block.messageId === messageId && block.streaming;
 const isCall = (messageId: string, callId: string) => (block: Block): block is ToolBlock => block.kind === "tool" && block.messageId === messageId && block.callId === callId;
 const isChecksRun = (run: number) => (block: Block): block is ChecksBlock => block.kind === "checks" && block.run === run;
+const isSetup = (id: string) => (block: Block): block is SetupBlock => block.kind === "setup" && block.setupId === id;
 
 function newTool(messageId: string, callId: string, name: string, at: number | null): NewBlock<ToolBlock> {
 	return {
@@ -465,6 +496,16 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 		case "tool.progress": {
 			const call = draft.find(turn, isCall(str(data.messageId), str(data.callId)));
 			if (call && call.output === null) draft.replace(turn, call, { progress: str(data.text) });
+			return;
+		}
+		// The platform's own: what a run of the repository's setup command printed since the delta before.
+		case "setup.output": {
+			const run = draft.find(turn, isSetup(str(data.id)));
+			// One that arrives after the run's ending item has nothing to add: that item carries the output.
+			if (!run || run.state !== "running") return;
+			const output = run.output + str(data.text);
+			const over = output.length > SETUP_OUTPUT_CHARS;
+			draft.replace(turn, run, { output: over ? output.slice(-SETUP_OUTPUT_CHARS) : output, truncated: run.truncated || over });
 			return;
 		}
 
@@ -726,6 +767,7 @@ function endTurn(draft: Draft, item: Extract<TimelineItem, { kind: "turn.ended" 
 			return { ...block, state: "failed", interrupted: true, stopRequested: false, progress: null, output: block.output ?? block.progress };
 		}
 		if (block.kind === "checks" && block.state === "running") return { ...block, state: "error", message: "The checks did not finish." };
+		if (block.kind === "setup" && block.state === "running") return { ...block, state: "cut_off" };
 		return block;
 	});
 	draft.patchTurn(item.turn, {

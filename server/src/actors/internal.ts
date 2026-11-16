@@ -8,7 +8,7 @@
  * signin/directory.ts makes them with a client of its own.
  */
 
-import type { SandboxProfileId, SessionSummary } from "../contract.js";
+import type { RepositorySetup, SandboxProfileId, SessionSummary } from "../contract.js";
 import { serviceParams } from "../auth.js";
 import type { StoredRepository } from "../github/publish.js";
 import type { StoredConnection } from "../github/repos.js";
@@ -43,6 +43,8 @@ export interface UserInternal {
 	internalServerApprove(input: { project: string; label: string; name: string; fingerprint: string }): Promise<ServerApproval[]>;
 	/** Forgets the user's approvals of that server for a project. Answers with how many there were, and the project's approvals that are left. */
 	internalServerForget(input: { project: string; name: string }): Promise<{ forgotten: number; approvals: ServerApproval[] }>;
+	/** The setup command the user saved for a repository, by its key (setup-command.ts); `command` is "" when there is none. */
+	internalSetupCommand(project: string): Promise<RepositorySetup>;
 }
 
 /** Actions of `agentSession` that only actors may call. */

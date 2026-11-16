@@ -102,6 +102,8 @@ const PLAIN_START = `PATH=${SYSTEM_PATH}\nexport PATH GIT_TERMINAL_PROMPT=0`;
  * too (it fetches every branch), so the workspace is put on it, as GitHub has it now: `wlp:work <commit>`.
  * `wlp:nowork` when GitHub no longer has the branch (deleted, say, after its pull request was merged):
  * the workspace then stays on `branch`. That step needs no token and gets none.
+ *
+ * `wlp:dir <directory>` says where the clone is, relative to the workspace: "." or `directory`.
  */
 export function cloneScript(url: string, branch: string, directory: string, work?: string): string {
 	const lines = [
@@ -115,6 +117,7 @@ export function cloneScript(url: string, branch: string, directory: string, work
 		`	target=${shellQuote(directory)}`,
 		"fi",
 		`wlp_git clone --quiet --branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`,
+		`echo "wlp:dir $target"`,
 	];
 	if (work !== undefined && work !== branch) {
 		const remote = shellQuote(`refs/remotes/origin/${work}`);

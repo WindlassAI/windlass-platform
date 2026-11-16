@@ -25,6 +25,9 @@
  *   WLP_QUESTION_TIMEOUT_MS    how long a turn's question waits for an answer before the platform
  *                              declines it (default QUESTION_TIMEOUT_MS, ten minutes); shortened by tests
  *   WLP_TURN_TIMEOUT_MS        how long one turn may run (default 45 minutes); read in agent-session.ts
+ *   WLP_SETUP_TIMEOUT_MS       how long a repository's setup command may run in a new sandbox before the
+ *                              platform stops it (default 600000, ten minutes; at most the time a turn
+ *                              may take, since it runs inside one). The same on every server
  *   WLP_IDLE_SUSPEND_MS        how long after its last turn ended a session's sandbox is suspended
  *                              (default 10 minutes)
  *   WLP_IDLE_DESTROY_MS        how long after its last use a session's sandbox is removed with its
@@ -87,6 +90,11 @@
  *                              commands, the access token out of their reach) and remove any new
  *                              sandbox in which bubblewrap does not work. Only once scripts/e2b-check.ts
  *                              has shown that it does (default 0: nothing is promised of it)
+ *   WLP_E2B_OPEN_PROFILE=1     also offer "E2B, microVM only" (`e2b-open`): Windlass sandboxes no
+ *                              command and runs with --approval full, so commands have the microVM's
+ *                              network, a writable home directory and the turn's access token, and
+ *                              nothing asks first. Users choose it per session; the E2B profile stays
+ *                              the default (default 0: listed, not offered)
  *   WLP_E2B_WINDLASS_VERSION   the Windlass version in the template, to show it before the first sandbox
  *                              was made (default: learned from the first sandbox)
  *
@@ -210,6 +218,8 @@ export interface Config {
 	questionTimeoutMs: number;
 	/** How long an approval of a project's MCP server is remembered for its user: Windlass's own 30 days, or less. */
 	serverApprovalTtlMs: number;
+	/** How long a repository's setup command may run before the platform stops it. */
+	setupTimeoutMs: number;
 }
 
 function readSandboxMode(): SandboxMode {
@@ -239,6 +249,18 @@ function readEngine(): EngineConfig {
 }
 
 const engine = readEngine();
+
+/**
+ * Where this server's own clients find the engine (signin/directory.ts, github/connect.ts): the one
+ * RIVET_ENDPOINT names, and otherwise the local engine RivetKit starts, on its own port or on the one
+ * RivetKit's RIVET_RUN_ENGINE_PORT moves it to, as a second development server on one machine needs.
+ */
+export function ownEngineEndpoint(): string {
+	const named = process.env.RIVET_ENGINE || process.env.RIVET_ENDPOINT;
+	if (named) return named;
+	const port = Number(process.env.RIVET_RUN_ENGINE_PORT);
+	return `http://127.0.0.1:${Number.isInteger(port) && port > 0 && port < 65_536 ? port : 6420}`;
+}
 
 /**
  * The engine's admin token, or null. It is not part of `config`, so that nothing that prints or passes
@@ -488,4 +510,5 @@ export const config: Config = {
 	questionTimeoutMs: readQuestionTimeout(),
 	// Never longer than Windlass keeps its own record: a shorter time is for the checks.
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
+	setupTimeoutMs: readDuration("WLP_SETUP_TIMEOUT_MS", 10 * 60 * 1000, 1_000),
 };

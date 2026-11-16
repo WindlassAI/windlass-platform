@@ -706,6 +706,7 @@ async function main(server: Server | null): Promise<void> {
 	await check("createSession refuses bad input", async () => {
 		await refused(() => userConn.createSession({ profile: "nope" as never }), "bad_profile");
 		await refused(() => userConn.createSession({ profile: "e2b" }), "profile_unavailable");
+		await refused(() => userConn.createSession({ profile: "e2b-open" }), "profile_unavailable");
 		await refused(() => userConn.createSession({ profile: availableProfile as never, model: "gpt-nope" }), "bad_model");
 		for (const repoUrl of ["https://user:secret@github.com/a/b.git", "https://token@github.com/a/b.git", "http://github.com/a/b.git", "git@github.com:a/b.git", "https://github.com/a/b.git; rm -rf /", "--upload-pack=x"]) {
 			await refused(() => userConn.createSession({ profile: availableProfile as never, repoUrl }), "bad_repo_url");

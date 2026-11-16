@@ -69,7 +69,7 @@ function list(items: readonly string[]): string {
 
 /** What the sandbox machine is called in the profile's own texts. */
 function machine(profile: SandboxProfile): string {
-	return profile.id === "e2b" ? "microVM" : profile.id.startsWith("docker") ? "container" : "sandbox";
+	return profile.id.startsWith("e2b") ? "microVM" : profile.id.startsWith("docker") ? "container" : "sandbox";
 }
 
 /** Where the server runs and what it can reach there, for this profile. One sentence. */

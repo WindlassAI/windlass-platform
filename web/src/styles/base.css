@@ -395,6 +395,10 @@ strong {
 	min-height: 96px;
 	resize: vertical;
 }
+/* A repository's setup command: a line or two of shell. */
+.setup-input {
+	min-height: 58px;
+}
 
 .select {
 	appearance: none;

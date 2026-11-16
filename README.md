@@ -59,7 +59,8 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
                            ├─ login         [attemptId]         one sign-in attempt
                            ├─ user          [uid]               profile, the index of sessions, the ChatGPT
                            │                                    sign-in (encrypted) and its access tokens,
-                           │                                    approvals of projects' MCP servers
+                           │                                    approvals of projects' MCP servers,
+                           │                                    setup commands of repositories
                            └─ agentSession  [uid, sessionId]    timeline in SQLite, one sandbox
                                                │
                                                ▼
@@ -360,7 +361,7 @@ and the web app is then built with its address in `VITE_WLP_ENDPOINT`.
 
 With `WLP_SANDBOX=e2b` a session's sandbox is a microVM at [E2B](https://e2b.dev) instead of a container on the
 server's machine, so any server of a deployment reaches any session's sandbox. A deployment has one provider:
-a server on E2B offers the E2B profile and no Docker profile. Nothing of this has run against E2B yet: there
+a server on E2B offers the E2B profiles and no Docker profile. Nothing of this has run against E2B yet: there
 was no account when it was written, and `scripts/e2b-check.ts` is what tries it.
 
 ```sh
@@ -382,6 +383,17 @@ E2B's SDK (`e2b` 2.63.0, loaded only by a server on E2B) needs Node 22.19 or lat
   passes it sandboxes commands, where it fails it asks before every command. The check prints which (`ANSWER:`).
   If bubblewrap works, `WLP_E2B_WINDLASS_SANDBOX=1` makes the profile promise what the first Docker profile
   promises, and every new sandbox is held to it: one in which the probe fails is removed and not handed out.
+- **A second profile: E2B, microVM only** (`e2b-open`), offered only where the servers run with
+  `WLP_E2B_OPEN_PROFILE=1`; without it the picker lists it as not available, and a server refuses to launch a
+  session with it whatever the browser sends. Windlass runs with `--approval full` and sandboxes no command:
+  commands run directly in the microVM, with its network and a writable home directory (package installs,
+  tools that write `~/.config`), and nothing asks first. What that gives up: a command can reach any host, and
+  can read the session's access token, which is in a file in the microVM while a turn runs (the sign-in is
+  never in the microVM, in this profile too). One thing stays: once something from the web or an MCP server is
+  in the conversation, Windlass's taint rule sandboxes commands again and asks before network or a write
+  outside the workspace. The user chooses per session; the E2B profile above stays the picker's default. A
+  sandbox's profile is in its metadata (`wlp_profile`), so every server runs a session's Windlass the same way;
+  sessions launched with `e2b-open` keep it after the flag is turned off, and only new ones are refused.
 - **A turn** is the same process as in a container, `wlp-run exec <tag> windlass acp`, started through E2B's
   command API; the access token file is written the same way, the token on the command's standard input.
 - **Windlass's data directory is on the microVM's own disk**, not on a volume (E2B's volumes are a private beta
@@ -715,6 +727,61 @@ GitHub's refusals of a push (the sentences above are chosen by them), what GitHu
 with a `state` for an account that has the app already, and that the callback after an installation carries a
 code as documented.
 
+## A repository's setup command
+
+Where Windlass sandboxes the agent's commands, a command has no network unless the user approves it, and
+writes only in the workspace and in `/tmp`. Installing a project's dependencies inside a turn then means
+questions and tools that fail. So a user can save one shell command per repository of their GitHub
+connection, `npm ci` say, and the platform runs it for them: once in each new sandbox of a session on that
+repository, after the clone and before the agent's first turn there. The agent starts with the dependencies
+in place, and its own commands stay sandboxed.
+
+- **Whose it is.** The user's, and nothing else's. It is saved in their `user` actor, one row per repository
+  (GitHub's id for it, so a rename keeps it), and a session reads it from there at the moment its sandbox is
+  new. It is never read from the repository: it runs with the network and outside Windlass's sandbox, so a
+  command taken from a repository's content would let a repository run code unasked. Nothing in a clone
+  (`package.json` scripts, a `setup.sh`, `.windlass/`) is looked at for it. A session on a pasted address or
+  with no repository has no setup.
+- **Where the user sets it.** In the launch form, once a repository is chosen: the field shows what is saved
+  for that repository, and what it holds is saved with the launch. And in a session's side panel, under
+  "Setup command". A change is for the sandboxes made after it: one that has its clone is not set up again,
+  and the panel says so. At most 2,000 characters; an empty one is none.
+- **How it runs** (`server/src/sandbox/setup.ts`). `bash -c` with the command, as the sandbox's user
+  `agent`, in the clone's directory, with the sandbox's own network, through the same seam as every other
+  command the platform runs, so on Docker and on E2B alike. It is started under `wlp-run`, so a stop reaches
+  every process it started. On E2B the sandbox is held for as long as it runs. Its standard error is joined
+  to its standard output inside the sandbox, so its lines arrive in the order they were printed. It may take
+  `WLP_SETUP_TIMEOUT_MS` (ten minutes), after which it is stopped.
+- **Once per sandbox, not once per turn.** The clone marks the setup as due; the session marks it as done
+  before the command starts, so a server that stops under it does not make the next turn run it twice. A
+  sandbox made in place of a lost one is cloned into again and set up again.
+- **What the user sees.** The run is in the session's timeline, where the clone's line is: the command, what
+  it prints as it arrives, how it ended and how long it took. It is one item when it starts and one when it
+  has ended (`kind: "setup"`), with `setup.output` deltas in between on the feed the model's streaming text
+  uses; the ending item keeps the last 32,000 characters. The session's Stop stops it, and the turn with it.
+- **If it does not succeed** (another exit code than 0, the time limit, a stop, a server that stopped under
+  it), the session goes on: the turn is not failed for it. The agent is told once, before the next prompt
+  Windlass takes, as it is told of a fresh workspace: the platform's note, the command, how it ended, and
+  the last twenty lines of what it printed. The timeline keeps the prompt as the user wrote it.
+- **No credential is handed to it.** The token a clone used was given to that one `git clone` on its
+  standard input and revoked when it ended, before the setup starts. A turn's ChatGPT access token file is
+  written when a turn starts Windlass, which is after the setup, and removed when that turn ends; a new
+  sandbox has had no turn. What the command can read is what the sandbox's user can: on E2B Windlass's data
+  directory is the sandbox's own and holds no token then. On Docker that directory is the user's volume,
+  shared by the user's sessions, so while another session of the same user runs a turn, its token file is
+  there, as a command in the hardened profile can read it.
+- **It is not a place for a secret.** The command is shown in the timeline and, when it fails, given to the
+  agent with its output.
+- **What it leaves in the workspace is the workspace's.** Files it makes that the repository does not ignore
+  are listed under "Changes" and go into a push like any others.
+
+```sh
+cd server && npx tsx ../scripts/setup-check.ts    # its rules on their own: what it is saved for, the limits, what is kept, what the agent is told
+```
+
+The web app's mock has a setup command saved for acme/harbor (`?mock=1`); a command with the word "fail" in
+it ends with exit code 1 there.
+
 ## A project's MCP servers
 
 A repository can name MCP servers in `.windlass/config.json`, and a session that works in a clone of it gets
@@ -842,6 +909,7 @@ or makes those calls slow for ten seconds.
 | `server/src/sandbox-fake.ts` | The same interface in memory, for tests |
 | `server/src/server-question.ts` | The words of the question about a project's MCP server, for each sandbox profile, and of the timeline's lines about it |
 | `server/src/server-approvals.ts` | The user's remembered approvals of projects' MCP servers: what a project is, the record itself, and what a session keeps of its project's servers for its side panel |
+| `server/src/setup-command.ts`, `server/src/sandbox/setup.ts` | A repository's setup command: what it is saved for, its limits, what is kept of a run's output and what the agent is told; and the run itself in a sandbox |
 | `server/src/bucket/`, `server/src/sandbox/backup.ts` | The object store the copies of Windlass's session data go to (S3 protocol, and a stand-in for tests), and what is copied, saved and restored |
 | `server/src/github/` | The GitHub App: its tokens and API calls, connecting (the callback route), which repositories a user may work on, and the git commands the platform runs in a sandbox ("GitHub") |
 | `sandbox/` | The sandbox image, `build.sh`, `cleanup.sh` |
@@ -859,6 +927,7 @@ cd server && pnpm e2e                                             # the actors, 
 cd server && WLP_DEMO=1 pnpm e2e:docker                           # the actors, real containers
 cd server && npx tsx ../scripts/sandbox-check.ts                  # the sandbox layer on its own
 cd server && npx tsx ../scripts/mcp-check.ts                      # the question about a project's MCP server, against a real Windlass
+cd server && npx tsx ../scripts/setup-check.ts                    # a repository's setup command: its rules, no server and no Docker
 cd server && npx tsx ../scripts/signin-check.ts                   # the sign-in machinery: no server, no Docker, a stand-in for OpenAI
 cd server && npx tsx ../scripts/connection-check.ts               # the tokens browsers connect with: a stand-in for the engine
 cd server && npx tsx ../scripts/access-check.ts                   # who may sign in: the invitation list and the demo
@@ -888,6 +957,7 @@ The end-to-end scripts start their own server on ports 6420 and 6440, so stop a 
 | `WLP_LOGIN_TTL_MS` | how long a sign-in attempt stays open (default 10 minutes) |
 | `WLP_QUESTION_TIMEOUT_MS` | how long a question waits for an answer before the platform declines it (default 10 minutes) |
 | `WLP_SERVER_APPROVAL_TTL_MS` | how long an approval of a project's MCP server is remembered for its user (default and most: 30 days, which is how long Windlass keeps its own). A shorter time is for the checks |
+| `WLP_SETUP_TIMEOUT_MS` | how long a repository's setup command may run in a new sandbox before the platform stops it (default 10 minutes); the same on every server |
 | `WLP_IDLE_SUSPEND_MS` | how long after a session's last turn ended its sandbox is suspended (default 10 minutes) |
 | `WLP_IDLE_DESTROY_MS` | how long after its last use a sandbox is removed with its files; the timeline stays (default 7 days). E2B keeps a paused sandbox for as long as it is not killed and does not bill it, so a deployment there can set this to years: then a sandbox goes only with its agent |
 | `WLP_BUCKET_ENDPOINT`, `WLP_BUCKET_NAME`, `WLP_BUCKET_ACCESS_KEY_ID`, `WLP_BUCKET_SECRET_ACCESS_KEY` | the S3 bucket that keeps a copy of each agent's Windlass session where sandboxes are E2B's ("The agent's memory outlives its sandbox", which has the optional ones too). Unset: no copy is kept |
@@ -897,6 +967,7 @@ The end-to-end scripts start their own server on ports 6420 and 6440, so stop a 
 | `WLP_WEB_DIR` | the web app's built files (`web/dist`), for the server to serve on that port; unset, it serves none. `server/Dockerfile` sets it |
 | `WLP_HTTP_HOST` | the address they bind (default `127.0.0.1` with the local engine, `0.0.0.0` with a remote one) |
 | `RIVET_ENDPOINT`, `RIVET_NAMESPACE`, `RIVET_TOKEN`, `RIVET_POOL`, `RIVET_NODE_VERSION` | RivetKit's own: the engine to join instead of starting a local one ("Running on several servers") |
+| `RIVET_RUN_ENGINE_PORT` | RivetKit's own: the port of the local engine it starts (default 6420), for a second development server on one machine. The engine also binds the port after it and the tenth after it; the web app is then built with `VITE_WLP_ENDPOINT` naming it |
 | `WLP_PUBLIC_ENDPOINT` | the Rivet endpoint browsers connect to, which the server tells the web app. Unset: the web app uses `VITE_WLP_ENDPOINT` |
 | `RIVET_ADMIN_TOKEN` | the engine's admin token, a secret: the server issues the short-lived tokens browsers connect with. Needs `WLP_PUBLIC_ENDPOINT`. Unset, as with the local engine: browsers are handed no token |
 | `WLP_CONNECTION_TOKEN_TTL_MS` | how long such a token lasts (default one hour; from one minute to 24 hours) |

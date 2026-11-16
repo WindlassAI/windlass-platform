@@ -1,0 +1,108 @@
+/**
+ * Running a repository's setup command in a session's sandbox (setup-command.ts says what it is and
+ * whose). It is the platform that runs it, beside Windlass and not under it, so Windlass's sandbox
+ * around the agent's commands does not hold it: it has the sandbox's own network and writes where the
+ * sandbox's user may write.
+ *
+ * It goes through the provider's seam (provider.ts), so it is the same on Docker and on E2B:
+ *
+ *   as        the sandbox's user, `agent`: what it installs is the agent's to change
+ *   where     the directory the repository was cloned into
+ *   how       `bash -c <command>` under wlp-run (`SandboxHandle.run`), its standard input empty: every
+ *             process it starts carries the run's tag, so a stop (the turn's, or the time limit) reaches
+ *             all of them, SIGTERM first and SIGKILL after two seconds, and what is left is swept.
+ *             Its standard error goes where its standard output goes, inside the sandbox, so what it
+ *             prints arrives in the order it was printed: an error after the line it belongs to
+ *   held      `TurnSandbox.holdForTurn` for as long as it runs: on E2B the sandbox's own timeout would
+ *             otherwise pause it in the middle of an install
+ *   with      the sandbox's environment and WLP_SETUP=1, by which what a run left behind is found
+ *             again (`stopLeftoverSetup`). No credential is handed to it: the token a
+ *             clone used was given to that one git command and revoked when it ended (github/git.ts),
+ *             and a turn's access token file is written when a turn starts Windlass, which is after
+ *             this, and removed when that turn ends (token-file.ts)
+ *
+ * What it can still read is what the sandbox's user can: Windlass's data directory. On E2B that is
+ * the sandbox's own and holds no token while no turn runs in it. On Docker it is the user's volume,
+ * shared by that user's sessions, so a turn of another session of the same user that runs at that
+ * moment has its token file there: the user's own token, good for an hour, as a command in the
+ * hardened profile can read it.
+ */
+
+import type { SandboxHandle } from "./api.js";
+import { isTurnSandbox } from "./provider.js";
+
+export interface SetupRun {
+	command: string;
+	/** The directory to run in: the clone's. */
+	cwd: string;
+	/** After this long the command is stopped. */
+	timeoutMs: number;
+	/** The turn's: aborting stops the command and everything it started. */
+	signal?: AbortSignal;
+	/** What it prints, standard output and standard error as they arrive. */
+	onOutput?: (text: string) => void;
+}
+
+export interface SetupResult {
+	/** "failed" is any exit code but 0, and a command that could not be run. */
+	state: "succeeded" | "failed" | "timed_out" | "stopped";
+	/** Null when it was killed or could not be run. */
+	exitCode: number | null;
+	durationMs: number;
+	/** Set when the sandbox could not run it at all: a sentence for the timeline. */
+	problem: string | null;
+}
+
+/** In the environment of a setup run and of everything it starts: how what a run left behind is found. */
+const MARK = "WLP_SETUP";
+
+/** Kills every process that carries the mark, but the shell that looks. */
+const STOP_LEFTOVERS = [
+	"for env in /proc/[0-9]*/environ; do",
+	"	pid=${env#/proc/}; pid=${pid%/environ}",
+	'	[ "$pid" = "$$" ] && continue',
+	`	if tr '\\0' '\\n' < "$env" 2>/dev/null | grep -qx '${MARK}=1'; then kill -s KILL "$pid" 2>/dev/null || true; fi`,
+	"done",
+].join("\n");
+
+/**
+ * Stops what a setup run left running in the sandbox: one whose server stopped under it, so that
+ * nobody was there to stop it. Never throws.
+ */
+export async function stopLeftoverSetup(sandbox: SandboxHandle): Promise<void> {
+	await sandbox.run(STOP_LEFTOVERS, { timeoutMs: 15_000 }).catch(() => undefined);
+}
+
+/** Runs the command to its end, its time limit or a stop. Never throws. */
+export async function runSetupCommand(sandbox: SandboxHandle, run: SetupRun): Promise<SetupResult> {
+	const began = Date.now();
+	const failed = (problem: string): SetupResult => ({ state: "failed", exitCode: null, durationMs: Date.now() - began, problem });
+	if (run.signal?.aborted) return { state: "stopped", exitCode: null, durationMs: 0, problem: null };
+	let release: (() => Promise<void>) | null = null;
+	try {
+		// The layer's own sandboxes are held; another one (the tests' in-memory layer) has nothing that stops by itself.
+		if (isTurnSandbox(sandbox)) release = await sandbox.holdForTurn();
+	} catch (error) {
+		return failed(`The sandbox could not be kept running for it: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	try {
+		const emit = (text: string) => {
+			try {
+				run.onOutput?.(text);
+			} catch {
+				// A listener's failure must not stop the command's output from being read.
+			}
+		};
+		// On the command's own first line, so that a line number bash names is the command's.
+		const result = await sandbox.run(`exec 2>&1; ${run.command}`, { cwd: run.cwd, env: { [MARK]: "1" }, timeoutMs: run.timeoutMs, signal: run.signal, onStdout: emit, onStderr: emit });
+		const durationMs = Date.now() - began;
+		// A stop that came while it was ending on its own counts as the stop: the turn is going away either way.
+		if (result.aborted || run.signal?.aborted) return { state: "stopped", exitCode: null, durationMs, problem: null };
+		if (result.timedOut) return { state: "timed_out", exitCode: null, durationMs, problem: null };
+		return { state: result.exitCode === 0 ? "succeeded" : "failed", exitCode: result.exitCode, durationMs, problem: null };
+	} catch (error) {
+		return failed(`The sandbox could not run it: ${error instanceof Error ? error.message : String(error)}`);
+	} finally {
+		await release?.().catch(() => undefined);
+	}
+}

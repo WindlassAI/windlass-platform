@@ -149,7 +149,7 @@ const PROFILES: SandboxProfile[] = [
 		commandsCanReadAccessToken: true,
 		available: true,
 	},
-	...(["e2b", "daytona", "firecracker", "agentos"] as const).map(
+	...(["e2b", "e2b-open", "daytona", "firecracker", "agentos"] as const).map(
 		(id): SandboxProfile => ({
 			id,
 			name: id,

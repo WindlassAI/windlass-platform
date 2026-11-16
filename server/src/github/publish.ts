@@ -88,6 +88,8 @@ export interface Cloned {
 	work: string | null;
 	/** The session's branch was asked for and GitHub no longer has it. */
 	workGone: boolean;
+	/** Where the clone is, relative to the workspace: "." unless the workspace already held something. */
+	directory: string;
 }
 
 /**
@@ -114,7 +116,7 @@ export async function cloneRepository(app: GithubApp, connection: StoredConnecti
 	}
 	if (outcome.failure === "aborted") return false;
 	if (!outcome.ok) throw gitProblem(outcome, "clone", name, account, repository.branch);
-	return { work: outcome.marks.get("work") || null, workGone: outcome.marks.has("nowork") };
+	return { work: outcome.marks.get("work") || null, workGone: outcome.marks.has("nowork"), directory: outcome.marks.get("dir") || "." };
 }
 
 // ---------------------------------------------------------------------------------------------

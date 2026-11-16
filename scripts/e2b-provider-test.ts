@@ -35,9 +35,9 @@ import { DEFAULT_MAX_RUNNING, type E2bSettings, HOBBY_MAX_RUNNING, readE2bConfig
 import { FakeE2b, type FakeMachine, ScriptedMachine } from "../server/src/sandbox/e2b/fake.js";
 import { createE2bSandboxLayer } from "../server/src/sandbox/e2b/index.js";
 import { describeUsage, estimatedCostUsd } from "../server/src/sandbox/e2b/pricing.js";
-import { ACCOUNT_LIMIT, E2bSandboxHandle, E2bSandboxes, META, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
+import { ACCOUNT_LIMIT, BWRAP_PROBE, E2bSandboxHandle, E2bSandboxes, META, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
 import { describeTemplate } from "../server/src/sandbox/e2b/template.js";
-import { PROFILES, PROFILE_RUN_FLAGS, e2bProfile, profilesFor } from "../server/src/sandbox/profiles.js";
+import { OPEN_PROFILE_NOT_OFFERED, PROFILES, PROFILE_RUN_FLAGS, e2bProfile, profilesFor } from "../server/src/sandbox/profiles.js";
 import { DATA_DIR, isTurnSandbox, randomId, shellQuote } from "../server/src/sandbox/provider.js";
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
 
@@ -88,6 +88,7 @@ const SETTINGS: E2bSettings = {
 	turnLimitMs: 45 * MINUTE,
 	pause: true,
 	windlassSandbox: false,
+	openProfile: false,
 	windlassVersion: null,
 };
 
@@ -128,6 +129,16 @@ await section("profiles", async () => {
 	const onE2b = profilesFor("e2b");
 	const e2b = onE2b.find((profile) => profile.id === "e2b");
 	expect("a server on E2B offers the E2B profile and no other", onE2b.filter((profile) => profile.available).map((profile) => profile.id).join() === "e2b" && onE2b.length === PROFILES.length);
+	const notOffered = onE2b.find((profile) => profile.id === "e2b-open");
+	expect("without WLP_E2B_OPEN_PROFILE=1 the microVM-only profile is listed, with why it cannot be chosen", notOffered?.available === false && notOffered.unavailableReason === OPEN_PROFILE_NOT_OFFERED);
+	const both = profilesFor("e2b", { windlassSandbox: true, openProfile: true });
+	const open = both.find((profile) => profile.id === "e2b-open");
+	expect("with it, both E2B profiles are offered, the one with Windlass's sandbox first (the picker's default)", both.filter((profile) => profile.available).map((profile) => profile.id).join() === "e2b,e2b-open");
+	expect(
+		"the microVM-only profile says what it gives up: network, the access token, no questions",
+		open?.approval === "full" && open.commandNetwork && open.commandsCanReadAccessToken && open.layers.length === 1 && /any host on the network/.test(open.summary) && /access token/.test(open.summary) && /without asking/.test(open.summary) && /never in the microVM/.test(open.summary),
+		open?.summary,
+	);
 	expect(
 		"what it promises holds with or without bubblewrap: Windlass asks or sandboxes, and commands are not said to be without network or token",
 		e2b?.approval === "auto" && e2b.commandNetwork === true && e2b.commandsCanReadAccessToken === true && /not been established/.test(e2b.summary) && /never in the microVM/.test(e2b.summary),
@@ -136,11 +147,13 @@ await section("profiles", async () => {
 	expect("the Docker profiles say why they cannot be chosen there", onE2b.filter((profile) => profile.id.startsWith("docker-")).every((profile) => !profile.available && /E2B/.test(profile.unavailableReason ?? "")));
 	const onDocker = profilesFor("docker");
 	expect("a server on Docker lists E2B as unavailable, with what would offer it", JSON.stringify(onDocker) === JSON.stringify(PROFILES) && onDocker.find((profile) => profile.id === "e2b")?.available === false && /WLP_SANDBOX=e2b/.test(onDocker.find((profile) => profile.id === "e2b")?.unavailableReason ?? ""));
+	expect("and the microVM-only profile too", onDocker.find((profile) => profile.id === "e2b-open")?.available === false && /WLP_E2B_OPEN_PROFILE=1/.test(onDocker.find((profile) => profile.id === "e2b-open")?.unavailableReason ?? ""));
 	const strong = e2bProfile({ windlassSandbox: true });
 	expect("with WLP_E2B_WINDLASS_SANDBOX=1 the stronger promise is made", strong.available && strong.approval === "auto" && !strong.commandNetwork && !strong.commandsCanReadAccessToken && strong.layers.length === 2);
 	const mock = readFileSync(join(root, "web/src/api/mock.ts"), "utf8");
 	const listed = PROFILES.find((profile) => profile.id === "e2b");
 	expect("web/src/api/mock.ts repeats the E2B profile's texts", listed !== undefined && mock.includes(JSON.stringify(listed.unavailableReason)) && mock.includes(JSON.stringify(listed.summary)));
+	expect("and the microVM-only profile's", open !== undefined && mock.includes(JSON.stringify(open.name)) && mock.includes(JSON.stringify(open.summary)) && mock.includes(JSON.stringify(open.layers[0])));
 	const { sandboxes } = world();
 	expect("the provider answers profiles() and profile() from the same list", JSON.stringify(sandboxes.profiles()) === JSON.stringify(onE2b) && sandboxes.profile("e2b").available && sandboxes.sessionsLiveInSandbox === true);
 });
@@ -176,6 +189,30 @@ await section("create", async () => {
 	let why = "";
 	await broken.make().catch((error: unknown) => (why = error instanceof Error ? error.message : String(error)));
 	expect("a sandbox whose workspace cannot be set up is removed again", /could not set up the workspace: fatal: not a git repository/.test(why) && broken.fake.sandboxes.size === 0 && callsOf(broken.fake, "kill").length === 1, why);
+});
+
+await section("a profile per session", async () => {
+	const notOffered = world({ windlassSandbox: true });
+	const refused = await userError(() => notOffered.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b-open" }));
+	expect("a server without WLP_E2B_OPEN_PROFILE=1 refuses to make a microVM-only sandbox, and asks E2B nothing", refused !== null && refused.includes(OPEN_PROFILE_NOT_OFFERED) && callsOf(notOffered.fake, "create").length === 0, refused ?? "did not throw");
+
+	const w = world({ windlassSandbox: true, openProfile: true });
+	const strict = await w.make("u1", "s-strict");
+	const open = await w.sandboxes.create({ uid: "u1", sessionId: "s-open", profile: "e2b-open" });
+	const probed = (id: string) => (w.machines.get(id)?.commands ?? []).some((entry) => entry.command === BWRAP_PROBE.map(shellQuote).join(" "));
+	expect("each sandbox carries the profile it was made with", w.fake.sandboxes.get(strict)?.metadata[META.profile] === "e2b" && w.fake.sandboxes.get(open)?.metadata[META.profile] === "e2b-open");
+	expect("only the profile that promises Windlass's sandbox holds a new sandbox to bubblewrap's probe", probed(strict) && !probed(open));
+	// Another server, which made neither: what it knows of a sandbox's profile is what E2B keeps.
+	const other = new E2bSandboxes(w.fake, { ...SETTINGS, windlassSandbox: true, openProfile: true }, { log: () => undefined, now: () => w.clock.now, sleep: async () => {} });
+	const a = (await other.connect(strict)) as E2bSandboxHandle;
+	const b = (await other.connect(open)) as E2bSandboxHandle;
+	expect("Windlass runs with --approval auto in the one and full in the other, on any server", a.profile === "e2b" && a.approval === "auto" && b.profile === "e2b-open" && b.approval === "full", `${a.profile} ${a.approval}, ${b.profile} ${b.approval}`);
+	const withdrawn = new E2bSandboxes(w.fake, { ...SETTINGS, windlassSandbox: true }, { log: () => undefined, now: () => w.clock.now, sleep: async () => {} });
+	const kept = (await withdrawn.connect(open)) as E2bSandboxHandle;
+	expect("a session made with it keeps it after the operator stops offering it to new ones", kept.profile === "e2b-open" && kept.approval === "full");
+	w.fake.sandboxes.get(strict)!.metadata = Object.fromEntries(Object.entries(w.fake.sandboxes.get(strict)!.metadata).filter(([key]) => key !== META.profile));
+	const old = (await other.connect(strict)) as E2bSandboxHandle;
+	expect("a sandbox that names no profile is an E2B one, as every sandbox was before there were two", old.profile === "e2b" && old.approval === "auto");
 });
 
 await section("the cap", async () => {

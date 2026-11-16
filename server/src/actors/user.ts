@@ -25,6 +25,11 @@
  * until when that holds. The user's sessions are actors of their own, on whichever servers, and each
  * asks here before it puts the question; no session and no server keeps a copy. The rows are plain:
  * they name repositories and servers, and hold no credential.
+ *
+ * And the setup commands the user saved for repositories of their GitHub connection (setup-command.ts),
+ * one row per repository: the command a session runs once in each new sandbox, after the clone. A
+ * session reads it here when its sandbox is new, so what is saved holds for every session of the user
+ * on whichever server; nothing but the user's own calls writes a row.
  */
 
 import { randomBytes } from "node:crypto";
@@ -40,6 +45,7 @@ import {
 	type GithubStatus,
 	MAX_RUNNING_SESSIONS,
 	MAX_TITLE_CHARS,
+	type RepositorySetup,
 	type SessionSummary,
 	type UserProfile,
 } from "../contract.js";
@@ -52,6 +58,7 @@ import { getLayer } from "../layer.js";
 import { platformModels } from "../platform-info.js";
 import type { ChatgptAccount } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
+import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../signin/directory.js";
 import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
 import { getSignIns } from "../signin/index.js";
@@ -275,6 +282,53 @@ function approvalText(value: unknown, max: number): string {
 	return typeof value === "string" && value.length <= max ? value : "";
 }
 
+// ---------------------------------------------------------------------------------------------
+// Setup commands of repositories
+// ---------------------------------------------------------------------------------------------
+
+/** The setup command saved for a project (setup-command.ts, `SetupProject.key`); none when there is no row. */
+async function readSetup(db: RawAccess, project: string): Promise<RepositorySetup> {
+	const [row] = await db.execute<{ command: string; updated_at: number }>("SELECT command, updated_at FROM setup_command WHERE project = ?", project);
+	return { command: row?.command ?? "", updatedAt: row?.updated_at ?? null, timeoutMs: config.setupTimeoutMs };
+}
+
+/** Saves a command that was cleaned already, in place of the project's earlier one; "" removes the row. */
+async function saveSetup(c: UserCtx, uid: string, project: string, label: string, command: string): Promise<RepositorySetup> {
+	if (command === "") {
+		await c.db.execute("DELETE FROM setup_command WHERE project = ?", project);
+	} else {
+		await c.db.execute(
+			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = excluded.label, command = excluded.command, updated_at = excluded.updated_at",
+			project,
+			label,
+			command,
+			Date.now(),
+		);
+		// Somebody who saves for one repository after another leaves no more than this many rows.
+		await c.db.execute("DELETE FROM setup_command WHERE project NOT IN (SELECT project FROM setup_command ORDER BY updated_at DESC LIMIT ?)", MAX_SETUP_COMMANDS);
+	}
+	// The command is the user's text and may hold what they would not want in a log: only its length is said.
+	console.log(`[wlp] setup.saved uid=${uid} project=${project} chars=${command.length}`);
+	return readSetup(c.db, project);
+}
+
+/** A setup command as a client sent it, cleaned, or the UserError that says what is wrong with it. */
+function setupCommandOf(raw: unknown): string {
+	try {
+		return cleanSetupCommand(raw);
+	} catch (error) {
+		if (error instanceof SetupCommandProblem) throw new UserError(error.message, { code: "bad_setup_command" });
+		throw error;
+	}
+}
+
+/** The key a repository's setup command is saved under, from GitHub's id as a client sent it. */
+function setupKeyOf(repositoryId: unknown): string {
+	const key = setupProjectKey(repositoryId);
+	if (key === null) throw new UserError("Choose one of the listed repositories.", { code: "bad_input" });
+	return key;
+}
+
 export function cleanTitle(title: unknown): string | null {
 	if (typeof title !== "string") return null;
 	const clean = title.replace(/\s+/g, " ").trim();
@@ -363,6 +417,16 @@ export const user = actor({
 					PRIMARY KEY (project, name, fingerprint)
 				)
 			`);
+			// The setup commands of repositories (setup-command.ts): one per repository of the GitHub connection,
+			// `project` being "github:<GitHub's id>". `label` is the repository in words, for a reader of the table.
+			await db.execute(`
+				CREATE TABLE IF NOT EXISTS setup_command (
+					project TEXT PRIMARY KEY,
+					label TEXT NOT NULL,
+					command TEXT NOT NULL,
+					updated_at INTEGER NOT NULL
+				)
+			`);
 		},
 	}),
 
@@ -448,6 +512,11 @@ export const user = actor({
 			if (typeof input !== "object" || input === null) throw new UserError("Choose a sandbox for the agent.", { code: "bad_input" });
 			let repoUrl = cleanRepoUrl(input.repoUrl);
 			const givenTitle = input.title === undefined || input.title === null ? null : cleanTitle(input.title);
+			// A setup command is saved for a repository of the GitHub connection, and is checked before GitHub is asked anything.
+			const setupCommand = input.setupCommand === undefined || input.setupCommand === null ? null : setupCommandOf(input.setupCommand);
+			if (setupCommand !== null && (input.repository === undefined || input.repository === null)) {
+				throw new UserError("A setup command is saved for a repository of your GitHub connection. Choose one, or leave the setup command out.", { code: "bad_input" });
+			}
 			// A repository of the user's GitHub connection: GitHub is asked now whether this user may read it.
 			let repo: StoredRepository | null = null;
 			if (input.repository !== undefined && input.repository !== null) {
@@ -486,6 +555,9 @@ export const user = actor({
 				if (typeof model !== "string" || !models.includes(model)) {
 					throw new UserError(`That model is not offered. Choose one of: ${models.join(", ")}`, { code: "bad_model" });
 				}
+
+				// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
+				if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
 
 				const now = Date.now();
 				summary = {
@@ -657,6 +729,37 @@ export const user = actor({
 			} catch (error) {
 				throw githubError(c.log, error, "The repository's branches could not be listed. Try again.");
 			}
+		},
+
+		// --- setup commands of repositories (setup-command.ts) --------------------------------------
+
+		repositorySetup: async (c, repositoryId: number): Promise<RepositorySetup> => {
+			requireUser(c);
+			const project = setupKeyOf(repositoryId);
+			try {
+				return await readSetup(c.db, project);
+			} catch (error) {
+				throw clientError(c.log, error, "The repository's setup command could not be read. Try again.");
+			}
+		},
+
+		saveRepositorySetup: async (c, input: { repositoryId: number; command: string }): Promise<RepositorySetup> => {
+			const profile = requireUser(c);
+			const project = setupKeyOf(input?.repositoryId);
+			const command = setupCommandOf(input?.command);
+			// The repository in words, for a reader of the table: as one of the user's sessions on it has it.
+			const known = [...c.vars.sessions.values()].find((session) => session.repository?.id === input.repositoryId)?.repository;
+			try {
+				return await saveSetup(c, profile.uid, project, known ? `${known.owner}/${known.name}` : "", command);
+			} catch (error) {
+				throw clientError(c.log, error, "The setup command could not be saved. Try again.");
+			}
+		},
+
+		/** The setup command of a session's repository, for that session when its sandbox is new. */
+		internalSetupCommand: async (c, project: string): Promise<RepositorySetup> => {
+			requireService(c);
+			return readSetup(c.db, approvalText(project, 600));
 		},
 
 		// --- GitHub, for the servers and the sessions ---------------------------------------------
