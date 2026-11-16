@@ -618,6 +618,10 @@ export class GithubStandin {
 
 			if (rest === "/pulls" && method === "POST") {
 				if (!this.allows(token, repository, "pull_requests", "write")) return denied();
+				// As GitHub does: a token that may write pull requests but cannot read the repository's contents sees no branch.
+				if (!this.allows(token, repository, "contents", "read")) {
+					return answer(422, { message: "Validation Failed", errors: [{ resource: "PullRequest", code: "custom", message: "not all refs are readable" }] });
+				}
 				const fields = (body ?? {}) as { title?: string; body?: string; head?: string; base?: string };
 				const head = String(fields.head ?? "");
 				const base = String(fields.base ?? "");

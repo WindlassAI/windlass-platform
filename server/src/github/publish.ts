@@ -211,7 +211,9 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 
 	const now = Date.now();
 	try {
-		return await app.withToken(installation.id, { repositoryId: repository.id, permissions: { metadata: "read", pull_requests: "write" } }, async (token): Promise<Published> => {
+		// Contents too, to read: GitHub opens no pull request for a token that cannot see the two branches
+		// ("not all refs are readable"), whatever it may do with pull requests.
+		return await app.withToken(installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read", pull_requests: "write" } }, async (token): Promise<Published> => {
 			const { owner, name: repo } = resolved.repository;
 			if (open) {
 				// It may have been merged or closed at GitHub since: then the push went to a branch with no pull request.
@@ -229,6 +231,10 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 				}
 				if (error instanceof GithubError && error.status === 422 && /no commits between/i.test(error.said)) {
 					throw new GithubProblem("github_failed", `GitHub opened no pull request: ${branch} has no commit that ${repository.branch} does not have.`);
+				}
+				// Any other refusal of the pull request itself is GitHub's to explain: the token and the repository were fine.
+				if (error instanceof GithubError && error.status === 422) {
+					throw new GithubProblem("github_failed", `The work is on ${branch} at GitHub, but GitHub opened no pull request${error.said ? `: ${error.said}` : ""}.`);
 				}
 				if (error instanceof GithubError && error.status === 403) {
 					throw new GithubProblem("github_denied", `The work is on ${branch} at GitHub, but the GitHub App may not open pull requests in ${name}. Its installation on ${account} needs the permission "Pull requests: read and write"; then choose "Open pull request" again.`);

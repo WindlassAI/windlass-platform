@@ -2713,7 +2713,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			const made = standin.pulls.at(-1);
 			assert(made?.title === "Fix the harbor light" && made.body === "It was dark." && made.head === branch && made.base === "main", `GitHub has ${plain(made)}`);
 			const minted = mintedSince(from);
-			assert(minted.includes(`metadata:read,contents:write @ ${harbor.id}`) && minted.includes(`metadata:read,pull_requests:write @ ${harbor.id}`), `the tokens asked for were ${minted.join("; ")}`);
+			assert(minted.includes(`metadata:read,contents:write @ ${harbor.id}`) && minted.includes(`metadata:read,contents:read,pull_requests:write @ ${harbor.id}`), `the tokens asked for were ${minted.join("; ")}`);
 			const pushToken = standin.minted.slice(from).find((entry) => entry.permissions?.contents === "write")?.token ?? "";
 			assert(pushToken !== "" && !standin.alive(pushToken), "the push's token was not revoked");
 			const line = await waitFor("the timeline's line", () => lines().find((text) => text.startsWith("Opened pull request")), 5_000);

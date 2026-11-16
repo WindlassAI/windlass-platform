@@ -625,7 +625,7 @@ Three credentials exist, and none is stored, logged, or put in a timeline item, 
 | listing branches | contents: read, metadata: read (one repository) | the server |
 | cloning | contents: read, metadata: read (one repository) | the sandbox, for one `git clone`; then revoked |
 | pushing | contents: write, metadata: read (one repository) | the sandbox, for one `git push`; then revoked |
-| the pull request | pull requests: write, metadata: read (one repository) | the server |
+| the pull request | pull requests: write, contents: read, metadata: read (one repository). Contents, because GitHub opens no pull request for a token that cannot read the two branches | the server |
 
 **In a sandbox** the token is given to the one git command the platform itself runs, and to nothing else
 (`server/src/github/git.ts`):

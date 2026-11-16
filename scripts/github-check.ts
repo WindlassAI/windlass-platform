@@ -559,8 +559,8 @@ await section("publish: a pull request is opened, then the same branch is update
 	expect("the branch at GitHub has the commit, with that message, in the GitHub user's name", commit.message === "Fix the failing add test\n\nadd() subtracted. It adds now." && commit.author === `ada <${ada.id}+ada@users.noreply.github.com>` && commit.files.sort().join(",") === "CHANGES.md,src/add.ts" && first.committedFiles === 2 && first.head === standin.branchHead(harbor, BRANCH), `${commit.author}; ${commit.files.join(", ")}`);
 	expect("the base branch is untouched", standin.fileOn(harbor, "main", "src/add.ts")?.includes("a - b") === true && standin.fileOn(harbor, BRANCH, "src/add.ts")?.includes("a + b") === true);
 	expect(
-		"three tokens: the user's permission (metadata), the push (contents: write), the pull request (pull requests: write), each for this repository",
-		mintedSince(from).join("; ") === [`metadata:read @ all`, `metadata:read,contents:write @ ${harbor.id}`, `metadata:read,pull_requests:write @ ${harbor.id}`].join("; ") || mintedSince(from).slice(-2).join("; ") === [`metadata:read,contents:write @ ${harbor.id}`, `metadata:read,pull_requests:write @ ${harbor.id}`].join("; "),
+		"three tokens: the user's permission (metadata), the push (contents: write), the pull request (pull requests: write, contents: read), each for this repository",
+		mintedSince(from).join("; ") === [`metadata:read @ all`, `metadata:read,contents:write @ ${harbor.id}`, `metadata:read,contents:read,pull_requests:write @ ${harbor.id}`].join("; ") || mintedSince(from).slice(-2).join("; ") === [`metadata:read,contents:write @ ${harbor.id}`, `metadata:read,contents:read,pull_requests:write @ ${harbor.id}`].join("; "),
 		mintedSince(from).join("; "),
 	);
 	const pushToken = standin.minted.slice(from).find((entry) => entry.permissions?.contents === "write")?.token ?? "";
