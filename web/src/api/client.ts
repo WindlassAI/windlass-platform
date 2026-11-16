@@ -155,6 +155,8 @@ export interface SessionApi {
 	publishState(): Promise<PublishState>;
 	/** Commits, pushes, and opens the pull request when none is open. It can take a minute. */
 	publish(message: PublishMessage): Promise<PublishResult>;
+	/** Sets whether the agent may have the platform publish without the user being asked each time (`SessionSummary.publishUnasked`). */
+	setPublishUnasked(unasked: boolean): Promise<SessionSummary>;
 	/** The MCP servers the session's project names, each as the session last heard of it, with the remembered approval where there is one. */
 	servers(): Promise<SessionServers>;
 	/** Approves a server that waits, by the fingerprint `servers()` gave. Throws with reason `server_changed` when it no longer waits with that definition. */

@@ -11,6 +11,12 @@
  * to Windlass and not to the model; and the countdown says what running out means here, which is that
  * the server stays stopped and the turn goes on. What became of it is a line of the platform's in the
  * conversation, not a line under a call.
+ *
+ * A third is the platform's own about a request of the agent's to publish the session's work
+ * (`PendingQuestion.publish`): the same control again, with what would be published in the subject's
+ * place, each part named: the branch, the commit's message, the pull request's title and description.
+ * It is declined like a call's, with a note for the agent, and it stands at the end of its turn: the
+ * call it belongs to is not waiting on Windlass, whose own question the platform answered itself.
  */
 import { MAX_NOTE_CHARS } from "@contract";
 import type { PendingQuestion, QuestionChoice } from "@contract";
@@ -214,9 +220,10 @@ export function QuestionCard({
 	const declining = question.choices.filter((choice) => !choice.approve);
 	const showNote = noteOpen || flow.note !== "";
 	const server = question.server;
+	const publishing = question.publish;
 
 	return (
-		<div className={`q ${compact ? "q-compact" : "q-full"}${server ? " q-server" : ""}`} aria-labelledby={ids.title} role="group">
+		<div className={`q ${compact ? "q-compact" : "q-full"}${server || publishing ? " q-server" : ""}`} aria-labelledby={ids.title} role="group">
 			<div className="q-head">
 				<p className="q-title" id={ids.title}>
 					<span className="visually-hidden">{asker(question)}</span>
@@ -229,7 +236,27 @@ export function QuestionCard({
 					<span className="q-subagent-key">asked by a subagent working on</span> {question.subagent}
 				</p>
 			) : null}
-			{question.subject && !underItsCall ? (
+			{publishing && !compact ? (
+				<dl className="q-publish" aria-label="What would be published">
+					<dt>repository</dt>
+					<dd>{publishing.repository}</dd>
+					<dt>branch</dt>
+					<dd>
+						{publishing.branch}
+						<span aria-hidden="true"> → </span>
+						<span className="visually-hidden"> into </span>
+						{publishing.base}
+					</dd>
+					<dt>commit</dt>
+					<dd tabIndex={0}>{publishing.commit}</dd>
+					<dt>{publishing.pullRequest === null ? "pull request" : `pull request #${publishing.pullRequest}`}</dt>
+					<dd>{publishing.title}</dd>
+					<dt>description</dt>
+					<dd tabIndex={0} className={publishing.description === "" ? "q-publish-none" : undefined}>
+						{publishing.description === "" ? "none" : publishing.description}
+					</dd>
+				</dl>
+			) : question.subject && !underItsCall ? (
 				<pre className="q-subject" id={ids.subject} tabIndex={compact ? undefined : 0} aria-label={server ? (server.remote ? "The address it is reached at" : "The command that starts it") : "What it is about"}>
 					{question.subject}
 				</pre>

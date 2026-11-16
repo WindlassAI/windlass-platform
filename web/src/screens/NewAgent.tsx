@@ -6,6 +6,8 @@
  * The repository is a pasted address, as it always was. Where the deployment has a GitHub App, a
  * connected user picks one of their own instead, with the branch to start from, and a user who is not
  * connected is offered to connect: that leaves the page, so what the form holds is kept and put back.
+ * A repository picked that way can be published to: whether the agent may do that without asking is
+ * chosen here for the session (it can be changed in the session's panel).
  * A repository picked that way has a setup command, the user's own: the field shows what is saved for
  * it, and what it holds is saved with the launch (components/SetupCommand.tsx).
  */
@@ -16,6 +18,7 @@ import { WarnIcon } from "../components/Icons";
 import { Layers, ProfileFacts } from "../components/Layers";
 import { RepositoryPicker, type PickedRepository } from "../components/RepositoryPicker";
 import { SecretsField } from "../components/Secrets";
+import { PublishUnaskedCheck, publishAlwaysAsked } from "../components/PullRequest";
 import { SetupField, useSetupDraft } from "../components/SetupCommand";
 import { navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
@@ -62,6 +65,8 @@ export function NewAgent() {
 	const [title, setTitle] = useState(draft?.title ?? "");
 	const [prompt, setPrompt] = useState(draft?.prompt ?? "");
 	const [picked, setPicked] = useState<PickedRepository | null>(null);
+	// Whether the agent may publish without asking: off unless its user says otherwise.
+	const [publishUnasked, setPublishUnasked] = useState(false);
 	// Where the repository comes from: the user's choice once they made one, otherwise GitHub when it is connected.
 	const [chosenSource, setChosenSource] = useState<"github" | "address" | null>(draft?.repoUrl ? "address" : null);
 	const [busy, setBusy] = useState<"creating" | "prompting" | null>(null);
@@ -89,6 +94,7 @@ export function NewAgent() {
 	const notice = github.notice?.where === "launch" ? github.notice : null;
 	const chosen = source === "github" && picked ? picked : null;
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
+	const chosenProfile = info?.profiles.find((candidate) => candidate.id === profile) ?? null;
 
 	const create = async (event: FormEvent) => {
 		event.preventDefault();
@@ -98,7 +104,15 @@ export function NewAgent() {
 		let sessionId: string;
 		try {
 			const repository = chosen ? { id: chosen.repository.id, branch: chosen.branch } : undefined;
-			const session = await client.user(auth).createSession({ profile, model: model || undefined, repoUrl: repo || undefined, repository, setupCommand: repository ? setup.toSave : undefined, title: title.trim() || undefined });
+			const session = await client.user(auth).createSession({
+				profile,
+				model: model || undefined,
+				repoUrl: repo || undefined,
+				repository,
+				setupCommand: repository ? setup.toSave : undefined,
+				publishUnasked: repository && chosen?.repository.canPush && chosenProfile !== null && publishAlwaysAsked(chosenProfile) === null ? publishUnasked : undefined,
+				title: title.trim() || undefined,
+			});
 			sessionId = session.id;
 		} catch (failure) {
 			setError(explain(failure));
@@ -287,6 +301,11 @@ export function NewAgent() {
 							</div>
 							{chosen ? <SetupField setup={setup} repository={`${chosen.repository.owner}/${chosen.repository.name}`} disabled={busy !== null} /> : null}
 							{chosen ? <SecretsField repositoryId={chosen.repository.id} repository={`${chosen.repository.owner}/${chosen.repository.name}`} profile={profile} disabled={busy !== null} /> : null}
+							{chosen?.repository.canPush ? (
+								<div className="field field-wide">
+									<PublishUnaskedCheck checked={publishUnasked} disabled={busy !== null} onChange={setPublishUnasked} profile={chosenProfile} />
+								</div>
+							) : null}
 							<div className="field field-wide">
 								<label className="label" htmlFor={ids.prompt}>
 									First prompt <span className="label-optional">optional</span>

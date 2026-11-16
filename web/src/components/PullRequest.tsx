@@ -3,14 +3,87 @@
  * user's GitHub connection, "Open pull request", and once there is one, the pull request with its
  * number and state, and "Push changes". The platform commits, pushes and opens it; the dialog is where
  * the user reads and edits the message first.
+ *
+ * The agent can ask the platform for the same (the question about that is Question.tsx's). Whether it
+ * is asked about each time is the session's own setting, which stands here under the push's button
+ * and, for a session that is being launched, in the launch form: one check box and one sentence.
  */
-import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, type PublishState, type PullRequestInfo, type SessionSummary } from "@contract";
+import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, type PublishState, type PullRequestInfo, type SandboxProfile, type SessionSummary } from "@contract";
 import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
 import { relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { Dialog } from "./Dialog";
 import { BranchIcon, CrossIcon, ExternalIcon, LockIcon, MergedIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "./Icons";
+
+/** What letting the agent publish without asking means, in one sentence: the launch form and the panel say the same. */
+const PUBLISH_UNASKED_MEANS = "The agent may have the platform commit and push this session's work to the session's own branch and open or update its pull request, without you being asked each time.";
+
+/**
+ * Why the setting cannot be on in a sandbox of `profile`, or null where it can: only where Windlass
+ * sandboxes every command the agent runs. Elsewhere a command could ask in the agent's name, so the
+ * server asks about every request and refuses the setting (`publishUnaskedProblem` there).
+ */
+export function publishAlwaysAsked(profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">): string | null {
+	if (profile.approval === "full") return "In this sandbox the agent's commands run outside Windlass's sandbox, and one of them could ask in the agent's name.";
+	if (profile.commandNetwork || profile.commandsCanReadAccessToken) return "In this sandbox it is not established that Windlass's sandbox holds the agent's commands, and one of them could then ask in the agent's name.";
+	return null;
+}
+
+/** The setting itself: on or off, with its sentence. Where it cannot be on, what holds instead stands in its place, with why. */
+export function PublishUnaskedCheck({ checked, disabled, onChange, profile }: { checked: boolean; disabled: boolean; onChange(checked: boolean): void; profile: SandboxProfile | null }) {
+	const asked = profile === null ? null : publishAlwaysAsked(profile);
+	if (asked !== null) {
+		return (
+			<p className="check-text">
+				<span className="check-name">You are asked each time the agent wants to publish</span>
+				<span className="check-means">{asked}</span>
+			</p>
+		);
+	}
+	return (
+		<label className={`check${checked ? " check-on" : ""}`}>
+			<input className="check-input" type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
+			<span className="check-box" aria-hidden="true" />
+			<span className="check-text">
+				<span className="check-name">Let the agent publish without asking</span>
+				<span className="check-means">{PUBLISH_UNASKED_MEANS}</span>
+			</span>
+		</label>
+	);
+}
+
+/** The setting of a session that exists: changed at once, and the session's summary says what it is. */
+function AgentPublishing({ sessionId, summary, profile }: { sessionId: string; summary: SessionSummary; profile: SandboxProfile }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const set = (unasked: boolean) => {
+		setBusy(true);
+		setError(null);
+		client
+			.session(auth, sessionId)
+			.setPublishUnasked(unasked)
+			.then(
+				() => setBusy(false),
+				(failure: unknown) => {
+					setError(explain(failure));
+					setBusy(false);
+				},
+			);
+	};
+	return (
+		<div className="gh-agent">
+			<PublishUnaskedCheck checked={summary.publishUnasked === true} disabled={busy} onChange={set} profile={profile} />
+			{error ? (
+				<p className="panel-empty tone-bad" role="alert">
+					<WarnIcon size={13} /> {error}
+				</p>
+			) : null}
+		</div>
+	);
+}
 
 const STATE_WORD: Record<PullRequestInfo["state"], string> = { open: "open", draft: "draft", merged: "merged", closed: "closed" };
 
@@ -108,7 +181,7 @@ function PublishDialog({ sessionId, state, files, onClose, onDone }: { sessionId
 					{opening
 						? `The platform commits ${what} with this message, pushes the branch, and opens the pull request under the same title and description.`
 						: `The platform commits ${what} with this message and pushes it to pull request #${state.pullRequest?.number}.`}{" "}
-					The agent takes no part: its sandbox is never given your GitHub access.
+					The agent's sandbox is never given your GitHub access.
 				</p>
 				{error ? (
 					<p className="callout callout-bad" role="alert">
@@ -121,7 +194,7 @@ function PublishDialog({ sessionId, state, files, onClose, onDone }: { sessionId
 	);
 }
 
-export function PullRequestSection({ sessionId, summary, turnsEnded, files, onPublished }: { sessionId: string; summary: SessionSummary; turnsEnded: number; files: number | null; onPublished(): void }) {
+export function PullRequestSection({ sessionId, summary, profile, turnsEnded, files, onPublished }: { sessionId: string; summary: SessionSummary; profile: SandboxProfile; turnsEnded: number; files: number | null; onPublished(): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const now = useNow(60_000);
@@ -226,6 +299,7 @@ export function PullRequestSection({ sessionId, summary, turnsEnded, files, onPu
 					</button>
 				</>
 			)}
+			<AgentPublishing sessionId={sessionId} summary={summary} profile={profile} />
 			{dialog && state ? (
 				<PublishDialog
 					sessionId={sessionId}

@@ -69,7 +69,8 @@ import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches,
 import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
 import { platformModels } from "../platform-info.js";
-import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, listedSecrets, sealSecret } from "../repo-secrets.js";
+import { publishUnaskedProblem } from "../agent-publish.js";
+import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, sealSecret } from "../repo-secrets.js";
 import type { ChatgptAccount } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
@@ -628,6 +629,10 @@ export const user = actor({
 			if (setupCommand !== null && (input.repository === undefined || input.repository === null)) {
 				throw new UserError("A setup command is saved for a repository of your GitHub connection. Choose one, or leave the setup command out.", { code: "bad_input" });
 			}
+			if (input.publishUnasked !== undefined && input.publishUnasked !== null && typeof input.publishUnasked !== "boolean") throw new UserError("Say yes or no to letting the agent publish without asking.", { code: "bad_input" });
+			if (input.publishUnasked === true && (input.repository === undefined || input.repository === null)) {
+				throw new UserError("An agent can publish only to a repository of your GitHub connection. Choose one, or leave that setting off.", { code: "bad_input" });
+			}
 			// A repository of the user's GitHub connection: GitHub is asked now whether this user may read it.
 			let repo: StoredRepository | null = null;
 			if (input.repository !== undefined && input.repository !== null) {
@@ -661,6 +666,9 @@ export const user = actor({
 				if (!chosen.available) {
 					throw new UserError(`${chosen.name} cannot be chosen yet. ${chosen.unavailableReason ?? ""}`.trim(), { code: "profile_unavailable" });
 				}
+				// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
+				const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
+				if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
 				const models = await platformModels();
 				const model = input.model === undefined || input.model === null || input.model === "" ? models[0] : input.model;
 				if (typeof model !== "string" || !models.includes(model)) {
@@ -677,7 +685,7 @@ export const user = actor({
 					profile: chosen.id,
 					model,
 					repoUrl,
-					...(repo ? { repository: { provider: repo.provider, id: repo.id, owner: repo.owner, name: repo.name, branch: repo.branch, private: repo.private, url: repo.url }, pullRequest: null } : {}),
+					...(repo ? { repository: { provider: repo.provider, id: repo.id, owner: repo.owner, name: repo.name, branch: repo.branch, private: repo.private, url: repo.url }, pullRequest: null, publishUnasked: input.publishUnasked === true } : {}),
 					createdAt: now,
 					updatedAt: now,
 					status: "idle",
@@ -692,6 +700,7 @@ export const user = actor({
 					model,
 					repoUrl,
 					repo,
+					publishUnasked: repo !== null && input.publishUnasked === true,
 					demo: profile.demo,
 					createdAt: now,
 				});

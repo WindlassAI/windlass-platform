@@ -49,6 +49,14 @@
  * restart, and wakes the actor when it is due. The check never touches a turn in progress or one being
  * accepted, and a prompt waits for a suspend or removal under way, then resumes or recreates the sandbox.
  *
+ * The agent can ask the platform to publish the session's work (agent-publish.ts): a tool the sandbox
+ * layer offers it for a turn of a session on a repository of the GitHub connection. A request is
+ * the engine's report of a call of that tool. The session checks what it holds, asks the user in the
+ * place of a tool call's question unless the session lets the agent publish unasked
+ * (`meta.publishUnasked`: chosen at launch, changed in the panel, turned on by "Allow for this
+ * session"), publishes exactly as `publish()` does, to the session's branch and pull request and
+ * nowhere else, and resolves with what the agent is told. What became of it is a line in the timeline.
+ *
  * Codes of the UserErrors the contract's actions throw, besides those of auth.ts:
  *   session_not_found   the session was deleted, or never properly created
  *   empty_prompt, prompt_too_long, bad_effort, bad_model   `prompt()`: its input
@@ -62,12 +70,28 @@
  *   no_turn             `stopCall()`: no turn is running
  *   sandbox_error, internal_error   a failure of the sandbox layer, with or without a sentence for the user
  *   publish_blocked, github_gone, github_denied, publish_failed, bad_message   `publish()` (contract.ts)
+ *   bad_input           `setPublishUnasked()`: its input (`publish_blocked` for a session without a connected repository)
  *   bad_server          `approveServer()`, `forgetServer()`: their input
  *   server_gone, server_changed   `approveServer()`: the session knows no such server, or it does not wait with that definition
  */
 
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
+import {
+	PUBLISH_DENY,
+	PUBLISH_HANDED_OVER,
+	PUBLISH_SESSION,
+	PUBLISH_WITHDRAWN,
+	type PublishAllowed,
+	publishAllowedWords,
+	publishDeclined,
+	publishFailed,
+	publishQuestionWords,
+	publishRequest,
+	publishUnanswered,
+	publishUnaskedProblem,
+	publishedForAgent,
+} from "../agent-publish.js";
 import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, maySubscribe, requireService, requireUser } from "../auth.js";
 import { config } from "../config.js";
@@ -97,13 +121,13 @@ import {
 	type WorkspaceFile,
 } from "../contract.js";
 import { githubApp } from "../github/app.js";
-import { PullProblem, type StoredRepository, branchFor, cloneRepository, hasUnpushedWork, publishWork, refreshPull } from "../github/publish.js";
+import { PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, hasUnpushedWork, publishWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, type StoredConnection } from "../github/repos.js";
 import { getLayer } from "../layer.js";
 import { EFFORTS, platformModels } from "../platform-info.js";
-import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
+import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { runSetupCommand, stopLeftoverSetup } from "../sandbox/setup.js";
-import { NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, openSecret, setupEnvironment, windlassEnvironment } from "../repo-secrets.js";
+import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, commandSandbox, openSecret, setupEnvironment, windlassEnvironment } from "../repo-secrets.js";
 import { type KnownServer, type ServerApproval, knownServers, projectOf, sameServers, serversView } from "../server-approvals.js";
 import {
 	SERVER_START,
@@ -205,6 +229,11 @@ interface SessionMeta {
 	/** The session's pull request, as GitHub last described it. */
 	pull?: PullRequestInfo | null;
 	/**
+	 * Whether the agent may have the platform publish without the user being asked each time
+	 * (`SessionSummary.publishUnasked`). Absent or false: each request is put to the user.
+	 */
+	publishUnasked?: boolean;
+	/**
 	 * The copy of Windlass's session that is kept outside the sandbox, where sessions live in the sandbox
 	 * and a bucket is configured (sandbox/backup.ts): which Windlass session it is of, the archive's size
 	 * and hash, which a restore is checked against, and the turn it was saved after. Null or absent: none.
@@ -249,6 +278,15 @@ interface Asked {
 	server?: { name: string; fingerprint: string };
 }
 
+/** How a question about a request of the agent's to publish ended. */
+type PublishAnswer =
+	| { kind: "allowed"; how: "once" | "session" }
+	/** `note` is what the user wrote for the agent. */
+	| { kind: "declined"; note?: string }
+	| { kind: "expired" }
+	/** The call or the turn ended before anyone answered. */
+	| { kind: "withdrawn" };
+
 interface ActiveTurn {
 	number: number;
 	effort: string | null;
@@ -280,6 +318,10 @@ interface ActiveTurn {
 	 * else: not in `meta`, not in SQLite. Null until they were read, and for a session that has none.
 	 */
 	secrets: HeldSecrets | null;
+	/** The calls of this turn by which the agent asked the platform to publish (`<message>\n<call>`). */
+	publishCalls: Set<string>;
+	/** The requests to publish that are being handled: the turn does not close under a push. */
+	publishes: Set<Promise<string>>;
 }
 
 /** A repository's secrets as a turn holds them: the values, and what takes them out of text. */
@@ -353,7 +395,7 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		profile: meta.profile,
 		model: meta.model,
 		repoUrl: meta.repoUrl,
-		...(meta.repo ? { repository: repositoryOf(meta.repo), pullRequest: meta.pull ?? null } : {}),
+		...(meta.repo ? { repository: repositoryOf(meta.repo), pullRequest: meta.pull ?? null, publishUnasked: meta.publishUnasked === true } : {}),
 		createdAt: meta.createdAt,
 		updatedAt: meta.updatedAt,
 		status: meta.status,
@@ -456,7 +498,7 @@ function note(
 	turn: number,
 	level: "info" | "warn" | "error",
 	text: string,
-	mark: { code: "question_expired"; call: { messageId: string; callId: string } } | null = null,
+	mark: { code: "question_expired" | "question_allowed"; call: { messageId: string; callId: string } } | null = null,
 ): void {
 	append(c, { turn, kind: "platform", level, text, ...(mark ?? {}) });
 }
@@ -1617,6 +1659,181 @@ async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, context:
 	});
 }
 
+// ---------------------------------------------------------------------------------------------
+// The agent asks the platform to publish
+// ---------------------------------------------------------------------------------------------
+
+const callKey = (call: { messageId: unknown; callId: unknown }) => `${str(call.messageId)}\n${str(call.callId)}`;
+
+/** A push's line for a request of the agent's, which may also have given an open pull request another title and description. */
+function agentPublishedLine(repo: StoredRepository, published: Published): string {
+	const { pull } = published;
+	if (!published.pushed && published.retitled) return `Gave pull request #${pull.number} the title and description the agent wrote; there was nothing new to push.`;
+	const line = publishedLine(repo, pull, published.opened, published.committedFiles);
+	return published.retitled ? `${line.replace(/\.$/, "")}, with the title and description the agent wrote.` : line;
+}
+
+/**
+ * Puts the question about a request of the agent's to publish, and resolves with how it ended. It
+ * stands where a tool call's question stands and is settled by the same `answer()`; like a server's
+ * question it waits behind a question that is showing and steps aside for a tool call's. Nobody
+ * answering in time declines it, as with a tool call's question: the turn does not wait for ever.
+ */
+function askPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, request: TurnPublishRequest, words: ReturnType<typeof publishQuestionWords>, withdrawn: AbortSignal): Promise<PublishAnswer> {
+	const gone = () => active.closed || active.stopping || active.controller.signal.aborted || withdrawn.aborted;
+	if (gone()) return Promise.resolve({ kind: "withdrawn" });
+	const now = Date.now();
+	return new Promise<PublishAnswer>((resolve) => {
+		let done = false;
+		let shown = false;
+		const settle = (answer: PublishAnswer): void => {
+			if (done) return;
+			done = true;
+			withdrawn.removeEventListener("abort", onWithdrawn);
+			active.unsettled.delete(asked);
+			const at = active.aside.indexOf(asked);
+			if (at >= 0) active.aside.splice(at, 1);
+			clearTimeout(asked.timer);
+			resolve(answer);
+		};
+		const asked: Asked = {
+			pending: {
+				id: `q_${randomBytes(8).toString("hex")}`,
+				turn: active.number,
+				messageId: request.messageId,
+				callId: request.callId,
+				title: words.title,
+				subject: words.subject,
+				details: words.details,
+				choices: words.choices,
+				subagent: null,
+				askedAt: now,
+				expiresAt: now + config.questionTimeoutMs,
+				publish: words.publish,
+			},
+			timer: undefined,
+			answer: (answer) => settle(answer.choice === PUBLISH_DENY ? { kind: "declined", note: answer.note } : { kind: "allowed", how: answer.choice === PUBLISH_SESSION ? "session" : "once" }),
+			decline: () => settle({ kind: "withdrawn" }),
+			put: () => {
+				// Put again after it stood aside, it has the whole time to be answered in once more.
+				if (shown) asked.pending = { ...asked.pending, expiresAt: Date.now() + config.questionTimeoutMs };
+				shown = true;
+				asked.timer = setTimeout(() => {
+					if (active.question !== asked) return;
+					takeQuestion(c, meta, active);
+					publish(c);
+					void persist(c);
+					settle({ kind: "expired" });
+				}, Math.max(0, asked.pending.expiresAt - Date.now()));
+				active.question = asked;
+				if (meta.status === "running") meta.status = "waiting";
+				c.broadcast("question", asked.pending);
+				publish(c);
+				void persist(c);
+			},
+		};
+		// The call ended, or the turn did: nobody waits for the answer.
+		function onWithdrawn(): void {
+			if (done) return;
+			if (active.question === asked) {
+				takeQuestion(c, meta, active);
+				publish(c);
+				void persist(c);
+			}
+			settle({ kind: "withdrawn" });
+		}
+		withdrawn.addEventListener("abort", onWithdrawn, { once: true });
+		active.unsettled.add(asked);
+		if (active.question) active.aside.push(asked);
+		else asked.put?.();
+	});
+}
+
+/**
+ * The layer's `onPublish`: a request of the agent's that the platform publish the session's work.
+ * Resolves with what the agent is told. What the request holds is the model's text: it is checked
+ * and the repository's saved secrets are taken out before anyone is shown it or GitHub gets it
+ * (agent-publish.ts). It goes to the session's branch and the session's pull request, by the same
+ * `publishWork` a push from the panel uses, so what that refuses is refused here. Unless the
+ * session lets the agent publish unasked, the user is asked first; and always where the profile
+ * does not hold the agent's commands in Windlass's sandbox (`commands`), since a request there may
+ * be a command's. Never rejects.
+ */
+async function agentPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, commands: CommandSandbox, request: TurnPublishRequest, withdrawn: AbortSignal): Promise<string> {
+	const turn = active.number;
+	active.publishCalls.add(callKey(request));
+	const repo = meta.repo;
+	const app = githubApp();
+	if (!repo || !app) return "Not published. This session has no repository of the user's GitHub connection to publish to.";
+	const branch = meta.publishBranch ?? branchFor(meta.title, meta.sessionId);
+	const checked = publishRequest(request.arguments, { branch, base: repo.branch }, active.secrets?.redactor ?? NO_REDACTION);
+	if (!checked.ok) {
+		note(c, turn, "warn", checked.said);
+		return checked.told;
+	}
+	// One at a time, as from the panel: a second request meanwhile is told to wait for the first.
+	if (c.vars.publishing) {
+		note(c, turn, "info", "The agent asked to publish while an earlier request of its was still being handled, so this one was refused.");
+		return "Not published. An earlier request to publish is still being handled. Wait for its result before you ask again.";
+	}
+	c.vars.publishing = true;
+	try {
+		let allowed: PublishAllowed = "unasked";
+		if (meta.publishUnasked !== true || commands !== "windlass") {
+			const open = meta.pull && (meta.pull.state === "open" || meta.pull.state === "draft") ? meta.pull : null;
+			const words = publishQuestionWords({ repository: `${repo.owner}/${repo.name}`, branch, base: repo.branch, message: checked.message, open, sandbox: commands });
+			const answer = await askPublish(c, meta, active, request, words, withdrawn);
+			if (answer.kind === "withdrawn") return PUBLISH_WITHDRAWN;
+			if (answer.kind === "expired") {
+				const unanswered = publishUnanswered(words.title, duration(config.questionTimeoutMs));
+				note(c, turn, "warn", unanswered.said);
+				return unanswered.told;
+			}
+			if (answer.kind === "declined") {
+				const declined = publishDeclined(answer.note);
+				note(c, turn, "info", declined.said);
+				return declined.told;
+			}
+			allowed = answer.how;
+			if (answer.how === "session" && commands === "windlass") {
+				meta.publishUnasked = true;
+				publish(c);
+				void persist(c);
+			}
+		}
+
+		meta.publishBranch = branch;
+		try {
+			const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, message: checked.message, retitle: true });
+			meta.pull = published.pull;
+			if (published.head) meta.pushedHead = published.head;
+			meta.updatedAt = Date.now();
+			c.vars.pullCheckedAt = Date.now();
+			note(c, turn, "info", `${publishAllowedWords(allowed)} ${agentPublishedLine(repo, published)} ${published.pull.url}`);
+			console.log(`[wlp] github.published session=${meta.sessionId} repository=${repo.id} pull=${published.pull.number} opened=${published.opened} by=agent asked=${allowed !== "unasked"}`);
+			return publishedForAgent({ repository: `${repo.owner}/${repo.name}`, pull: published.pull, opened: published.opened, pushed: published.pushed, retitled: published.retitled, files: published.committedFiles });
+		} catch (error) {
+			// The push went through and the pull request did not: what is at GitHub is remembered, as after a push from the panel.
+			if (error instanceof PullProblem && error.head) meta.pushedHead = error.head;
+			if (!(error instanceof GithubProblem)) c.log.error({ msg: "could not publish for the agent", session: meta.sessionId, turn, error: describeError(error) });
+			else console.warn(`[wlp] github.publish_failed session=${meta.sessionId} repository=${repo.id}: ${error.code} by=agent`);
+			const failed = publishFailed(allowed, error instanceof GithubProblem ? error.message : "The platform could not push the work. Try again.");
+			note(c, turn, "warn", failed.said);
+			return failed.told;
+		} finally {
+			// The commit changed what differs from the last commit, and what GitHub lacks: both are read again when the turn ends.
+			c.vars.unpushed = null;
+			publish(c);
+			await persist(c);
+		}
+	} catch (error) {
+		c.log.error({ msg: "could not handle the agent's request to publish", session: meta.sessionId, turn, error: describeError(error) });
+		return "Not published. The platform could not handle the request. Tell the user; do not try another way to publish.";
+	} finally {
+		c.vars.publishing = false;
+	}
+}
+
 /** Stops the turn. The question it may be waiting on goes first: nobody can answer a turn that is ending. */
 function abortTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): void {
 	active.stopping = true;
@@ -1851,10 +2068,23 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 					events += 1;
 					try {
 						onWindlassEvent(c, meta, turn, event);
+						// Windlass's own question about the tool that hands a request to publish over: the layer answers it, and the timeline says who did.
+						const call = { messageId: event.data?.messageId, callId: event.data?.callId };
+						if (event.type === "approval.requested" && active.publishCalls.has(callKey(call))) note(c, turn, "info", PUBLISH_HANDED_OVER, { code: "question_allowed", call: { messageId: str(call.messageId), callId: str(call.callId) } });
 					} catch (error) {
 						c.log.error({ msg: "could not record a Windlass event", error: describeError(error) });
 					}
 				},
+				// The agent may ask the platform to publish where there is a repository to publish to and an app to do it with.
+				onPublish:
+					meta.repo && githubApp()
+						? (request, withdrawn) => {
+								const work = agentPublish(c, meta, active, sandbox, commandSandbox(profile), request, withdrawn);
+								active.publishes.add(work);
+								void work.finally(() => active.publishes.delete(work));
+								return work;
+							}
+						: undefined,
 				// Always given: a session is attended, by whoever has it open now or opens it in time.
 				onQuestion: (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 				// The project's own MCP servers, which Windlass leaves stopped until the user says otherwise.
@@ -1893,6 +2123,8 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 	clearTimeout(limit);
 	// From here on the turn takes no message, no answer and no stop of a call, and has no question.
 	sealTurn(c, meta, active);
+	// A push for the agent that was under way when the turn ended is finished first: the turn does not close under it.
+	if (active.publishes.size > 0) await Promise.allSettled([...active.publishes]);
 
 	try {
 		const summary = result?.summary ?? null;
@@ -2089,6 +2321,7 @@ export const agentSession = actor({
 				model: String(input.model),
 				repoUrl: typeof input.repoUrl === "string" ? input.repoUrl : null,
 				repo: typeof input.repo === "object" && input.repo !== null ? input.repo : null,
+				publishUnasked: typeof input.repo === "object" && input.repo !== null && input.publishUnasked === true,
 				createdAt: input.createdAt,
 				updatedAt: input.createdAt,
 				status: "idle",
@@ -2338,7 +2571,7 @@ export const agentSession = actor({
 				append(c, { turn, kind: "user", text, model, effort });
 				publish(c);
 
-				const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null };
+				const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, publishCalls: new Set(), publishes: new Set() };
 				c.vars.turn = active;
 				active.done = c.keepAwake(runTurn(c, meta, active, text));
 				return { turn, steered: false };
@@ -2479,6 +2712,32 @@ export const agentSession = actor({
 			} finally {
 				c.vars.publishing = false;
 			}
+		},
+
+		setPublishUnasked: async (c, input: { unasked: boolean }): Promise<SessionSummary> => {
+			requireUser(c);
+			const meta = liveMeta(c);
+			if (typeof input !== "object" || input === null || typeof input.unasked !== "boolean") throw new UserError("Say whether the agent may publish without asking.", { code: "bad_input" });
+			if (!meta.repo) throw new UserError("This agent does not work on a repository of your GitHub connection, so it has nowhere to publish to.", { code: "publish_blocked" });
+			if (input.unasked) {
+				const { sandboxes } = await getLayer();
+				const problem = publishUnaskedProblem(commandSandbox(sandboxes.profile(meta.profile)));
+				if (problem !== null) throw new UserError(problem, { code: "publish_blocked" });
+			}
+			const active = c.vars.turn;
+			// A request that is being asked about is allowed by turning this on, as by its own "Allow for this session".
+			const asked = input.unasked && active && !active.stopping && !active.closed ? [active.question, ...active.aside].find((candidate) => candidate?.pending.publish !== undefined) : undefined;
+			if (active && asked) {
+				if (active.question === asked) takeQuestion(c, meta, active);
+				meta.publishUnasked = true;
+				asked.answer({ choice: PUBLISH_SESSION });
+			} else if ((meta.publishUnasked === true) !== input.unasked) {
+				meta.publishUnasked = input.unasked;
+				note(c, meta.turns, "info", input.unasked ? "You let the agent publish this session's work without asking, in the session's panel." : "You turned off publishing without asking in the session's panel: the agent's next request to publish is put to you.");
+			}
+			publish(c);
+			await persist(c);
+			return summaryOf(meta);
 		},
 
 		servers: async (c): Promise<SessionServers> => {

@@ -124,6 +124,8 @@ export interface Pull {
 	url: string;
 	state: "open" | "draft" | "merged" | "closed";
 	title: string;
+	/** Its description, as GitHub has it; "" when it has none. */
+	body: string;
 	head: string;
 	base: string;
 }
@@ -131,7 +133,7 @@ export interface Pull {
 type Auth = { bearer: string } | { basic: string } | null;
 
 interface Call {
-	method?: "GET" | "POST" | "DELETE";
+	method?: "GET" | "POST" | "PATCH" | "DELETE";
 	path: string;
 	query?: Record<string, string | number>;
 	body?: unknown;
@@ -442,7 +444,7 @@ export class GithubApp {
 		if (number === 0) return null;
 		const merged = fields.merged === true || (fields.merged_at !== null && fields.merged_at !== undefined);
 		const state = merged ? "merged" : text(fields.state) === "closed" ? "closed" : fields.draft === true ? "draft" : "open";
-		return { number, url: text(fields.html_url), state, title: text(fields.title), head: text(record(fields.head).ref), base: text(record(fields.base).ref) };
+		return { number, url: text(fields.html_url), state, title: text(fields.title), body: text(fields.body), head: text(record(fields.head).ref), base: text(record(fields.base).ref) };
 	}
 
 	async createPull(token: string, owner: string, name: string, input: { title: string; body: string; head: string; base: string }): Promise<Pull> {
@@ -456,6 +458,14 @@ export class GithubApp {
 		const answer = await this.call({ path: `/repos/${owner}/${name}/pulls/${number}`, auth: { bearer: token }, what: `read pull request #${number} of ${owner}/${name}` });
 		const pull = this.pullOf(answer.body);
 		if (!pull) throw new GithubError(answer.status, "the answer describes no pull request", `could not read pull request #${number} of ${owner}/${name}`);
+		return pull;
+	}
+
+	/** Gives an open pull request another title and description. */
+	async updatePull(token: string, owner: string, name: string, number: number, input: { title: string; body: string }): Promise<Pull> {
+		const answer = await this.call({ method: "PATCH", path: `/repos/${owner}/${name}/pulls/${number}`, body: input, auth: { bearer: token }, what: `update pull request #${number} of ${owner}/${name}` });
+		const pull = this.pullOf(answer.body);
+		if (!pull) throw new GithubError(answer.status, "the answer describes no pull request", `could not update pull request #${number} of ${owner}/${name}`);
 		return pull;
 	}
 

@@ -595,6 +595,27 @@ describe("a question that was declined with a note (acp-approval-denied)", () =>
 	});
 });
 
+describe("a question the platform allowed itself", () => {
+	const PLATFORM = "The platform allowed this itself: the tool only hands the agent's request to the platform, which decides it.";
+	const feed = insertBefore(feedOf("acp-approval-approved"), isEvent("approval.answered"), {
+		at: 2,
+		turn: 1,
+		kind: "platform",
+		level: "info",
+		text: PLATFORM,
+		code: "question_allowed",
+		call: { messageId: "msg_ccc3d07ef64d513915fcbeb9", callId: "c1" },
+	});
+	const view = reduce(feed);
+
+	it("reads as the platform's answer, said once, with the call, and the call runs", () => {
+		const [call] = toolBlocks(turn(view));
+		expect(call).toMatchObject({ state: "done", answer: { choice: "once", approve: true, by: "platform", platformText: PLATFORM } });
+		expect(turn(view).blocks.some((block) => block.kind === "platform")).toBe(false);
+		expect(turn(view).platformAnswer).toBeNull();
+	});
+});
+
 describe("a question the platform declined because nobody answered", () => {
 	const PLATFORM = "Nobody answered within 10 minutes, so the platform declined the call.";
 	const feed = withEvent(
@@ -616,7 +637,7 @@ describe("a question the platform declined because nobody answered", () => {
 		const [call] = toolBlocks(turn(view));
 		expect(call).toMatchObject({ state: "refused", answer: { choice: "deny", approve: false, note: null, by: "platform", platformText: PLATFORM } });
 		expect(turn(view).blocks.some((block) => block.kind === "platform")).toBe(false);
-		expect(turn(view).platformDecline).toBeNull();
+		expect(turn(view).platformAnswer).toBeNull();
 	});
 
 	it("leaves the platform's other lines alone", () => {

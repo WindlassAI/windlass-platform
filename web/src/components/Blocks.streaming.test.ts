@@ -30,7 +30,7 @@ const turnOf = (text: string, streaming: boolean): TurnView => ({
 	changedFiles: null,
 	usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
 	end: null,
-	platformDecline: null,
+	platformAnswer: null,
 });
 
 describe("an answer that streams", () => {

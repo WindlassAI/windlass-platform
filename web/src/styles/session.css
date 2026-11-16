@@ -874,6 +874,31 @@ button.output-more:hover {
 	overflow: auto;
 }
 
+/* What a request of the agent's to publish would do: each part under its name, in the face of a command's subject. */
+.q-publish {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 1px 14px;
+	margin-top: 3px;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	line-height: 1.55;
+}
+.q-publish dt {
+	color: var(--ink-faint);
+}
+.q-publish dd {
+	margin: 0;
+	color: var(--ink-dim);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	max-height: 7.8em;
+	overflow: auto;
+}
+.q-publish .q-publish-none {
+	color: var(--ink-faint);
+}
+
 .q-details {
 	display: grid;
 	gap: 2px;

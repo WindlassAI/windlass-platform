@@ -55,9 +55,9 @@ export interface ToolAnswer {
 	choice: string;
 	approve: boolean;
 	note: string | null;
-	/** "platform": nobody answered in time and the platform declined on the user's behalf. */
+	/** "platform": nobody answered in time and the platform declined on the user's behalf, or the platform allowed a question that was its own to answer. */
 	by: "user" | "platform";
-	/** The platform's own line about it, when it declined. */
+	/** The platform's own line about it, when it answered. */
 	platformText: string | null;
 	/** What the choice remembers, from the question's choices; null when nothing. */
 	remembers: string | null;
@@ -225,10 +225,11 @@ export interface TurnView {
 	usage: TurnUsage;
 	end: TurnEnd | null;
 	/**
-	 * The platform said it declined a question nobody answered, and the call's `approval.answered` has
-	 * not arrived yet: the key of that call and the platform's words.
+	 * The platform said it answered a call's question itself (it declined one nobody answered, or
+	 * allowed the one about the tool that hands a request to publish over), and the call's
+	 * `approval.answered` has not arrived yet: the key of that call and the platform's words.
 	 */
-	platformDecline: { key: string; text: string } | null;
+	platformAnswer: { key: string; text: string } | null;
 }
 
 /** One model call, for the cache-per-call chart. */
@@ -288,9 +289,9 @@ export function applyItem(view: SessionView, item: TimelineItem): SessionView {
 			draft.push(item.turn, { kind: "user", at: item.at, text: item.text, model: item.model, effort: item.effort, steer: item.steer === true });
 			break;
 		case "platform": {
-			// The platform declining a question nobody answered is told once, with the call's answer. Its
+			// The platform answering a call's question itself is told once, with the call's answer. Its
 			// line carries a code and names the call, so nothing rests on its wording.
-			if (item.code === "question_expired" && item.call) draft.patchTurn(item.turn, { platformDecline: { key: callKey(item.call), text: item.text } });
+			if ((item.code === "question_expired" || item.code === "question_allowed") && item.call) draft.patchTurn(item.turn, { platformAnswer: { key: callKey(item.call), text: item.text } });
 			else draft.push(item.turn, { kind: "platform", at: item.at, level: item.level, text: item.text });
 			break;
 		}
@@ -380,7 +381,7 @@ class Draft {
 	turn(number: number): TurnView {
 		const found = this.view.turns.find((turn) => turn.turn === number);
 		if (found) return found;
-		const created: TurnView = { turn: number, blocks: [], steps: 0, interruptRequested: false, verification: null, changedFiles: null, usage: ZERO_USAGE, end: null, platformDecline: null };
+		const created: TurnView = { turn: number, blocks: [], steps: 0, interruptRequested: false, verification: null, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null };
 		const turns = [...this.view.turns, created].sort((a, b) => a.turn - b.turn);
 		this.view = { ...this.view, turns };
 		return created;
@@ -557,9 +558,9 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			if (!call) return;
 			const approve = data.approve === true;
 			const choice = str(data.choice);
-			const pending = draft.turn(turn).platformDecline;
-			const byPlatform = !approve && pending !== null && pending.key === callKey(call);
-			if (pending !== null && pending.key === callKey(call)) draft.patchTurn(turn, { platformDecline: null });
+			const pending = draft.turn(turn).platformAnswer;
+			const byPlatform = pending !== null && pending.key === callKey(call);
+			if (pending !== null && pending.key === callKey(call)) draft.patchTurn(turn, { platformAnswer: null });
 			const note = typeof data.note === "string" && data.note.trim() !== "" ? data.note.trim() : null;
 			const answer: ToolAnswer = {
 				choice,
@@ -771,7 +772,7 @@ function endTurn(draft: Draft, item: Extract<TimelineItem, { kind: "turn.ended" 
 		return block;
 	});
 	draft.patchTurn(item.turn, {
-		platformDecline: null,
+		platformAnswer: null,
 		end: {
 			at: item.at,
 			outcome: item.outcome,

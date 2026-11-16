@@ -420,6 +420,13 @@
 .gh-pull-note {
 	margin-bottom: 10px;
 }
+/* Whether the agent may publish unasked: under the push's own button, in the panel's text size. */
+.gh-agent {
+	margin-top: 14px;
+}
+.gh-agent .panel-empty {
+	margin-top: 6px;
+}
 
 /* ---- the dialog a push is confirmed in ------------------------------------------------------------- */
 

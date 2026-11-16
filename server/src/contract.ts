@@ -201,6 +201,17 @@ export interface SessionSummary {
 	repository?: SessionRepository | null;
 	/** The pull request the platform opened for the session's work, once there is one. */
 	pullRequest?: PullRequestInfo | null;
+	/**
+	 * For a session with `repository`: whether the agent may have the platform publish the session's
+	 * work without the user being asked each time. False: every request of the agent's is put to the
+	 * user as a question (`PendingQuestion.publish`). It is the session's own setting: chosen when it is
+	 * launched, changed in its side panel (`setPublishUnasked`), and turned on by answering such a
+	 * question with "Allow for this session". It can be on only in a profile where Windlass sandboxes
+	 * every command the agent runs (`approval` "auto", and neither `commandNetwork` nor
+	 * `commandsCanReadAccessToken`): elsewhere a command could ask in the agent's name, so every request
+	 * is asked about, and the question does not offer "session".
+	 */
+	publishUnasked?: boolean;
 	createdAt: number;
 	/** Last prompt or turn end. */
 	updatedAt: number;
@@ -243,6 +254,8 @@ export interface CreateSessionInput {
 	 * (`RepositorySetup`), in place of what was saved; "" saves none. Left out, what is saved stays.
 	 */
 	setupCommand?: string;
+	/** With `repository`: `SessionSummary.publishUnasked` to start with. Left out: the agent's requests to publish are asked about. Refused (`bad_input`) for a profile it cannot be on in. */
+	publishUnasked?: boolean;
 }
 
 export interface ChatgptStatus {
@@ -338,6 +351,11 @@ export interface PullRequestInfo {
 export interface PublishMessage {
 	title: string;
 	body: string;
+	/**
+	 * The commit's whole message, when it is not the title and the body: a request of the agent's names
+	 * the commit's message apart from the pull request's title and description. `publish()` takes none.
+	 */
+	commit?: string;
 }
 
 /** What the side panel shows about getting a session's work out. */
@@ -558,8 +576,11 @@ export type TimelineItem =
 			 * Set on the line that says the platform declined a question because nobody answered in time
 			 * ("question_expired"), with the call the question was about. Windlass's own `approval.answered`
 			 * for that call follows, with choice "deny": this is how a client tells it from the user's choice.
+			 * "question_allowed" is the same for a question the platform allowed itself, which is Windlass's
+			 * question about the tool that hands the agent's request to publish to the platform: the
+			 * `approval.answered` that follows has choice "once", and nobody was asked.
 			 */
-			code?: "question_expired";
+			code?: "question_expired" | "question_allowed";
 			call?: { messageId: string; callId: string };
 	  }
 	/** A durable Windlass event, or one of the stored ephemeral ones (`notice`, `workspace.changes`, `cli.summary`). */
@@ -671,6 +692,32 @@ export interface PendingQuestion {
 	 * with a new `expiresAt`. `answer()` takes its id while it stands aside too.
 	 */
 	server?: QuestionServer;
+	/**
+	 * Set when the question is the platform's own about a request of the agent's to publish the
+	 * session's work: what would be committed, pushed and opened. `messageId` and `callId` name the
+	 * agent's call, `subject` is the pull request's title, `details` are the platform's sentences
+	 * about what allowing means, and the choices are "once", "session" (which turns
+	 * `SessionSummary.publishUnasked` on) and "deny", whose note goes to the agent. Nothing of it is in
+	 * Windlass's events: what became of it is a `platform` item, and the call's own result.
+	 */
+	publish?: QuestionPublish;
+}
+
+/** What a request of the agent's to publish would do, as the question about it shows it. */
+export interface QuestionPublish {
+	/** "owner/name". */
+	repository: string;
+	/** The session's branch, which the work goes to. */
+	branch: string;
+	/** The branch the pull request asks to be merged into. */
+	base: string;
+	/** The whole message of the commit the platform makes of what is uncommitted. */
+	commit: string;
+	/** The pull request's title and description, as the agent wrote them; the description may be "". */
+	title: string;
+	description: string;
+	/** The session's pull request when it is open: the push goes to it, and it is given the title and description. Null: one is opened. */
+	pullRequest: number | null;
 }
 
 /** The MCP server a question is about. */
@@ -826,6 +873,14 @@ export interface AgentSessionActions {
 	 * write access, a protected branch) or `publish_failed`.
 	 */
 	publish(input: { message: PublishMessage }): Promise<PublishResult>;
+	/**
+	 * Sets `SessionSummary.publishUnasked`: whether the agent may have the platform publish the session's
+	 * work without the user being asked each time. Takes effect at once, also for a request that is
+	 * being asked about (turning it on allows that one). Throws a UserError with code `publish_blocked`
+	 * for a session that does not work on a repository of the user's GitHub connection, and for turning
+	 * it on in a profile whose commands are not held in Windlass's sandbox, with the sentence that says why.
+	 */
+	setPublishUnasked(input: { unasked: boolean }): Promise<SessionSummary>;
 	/**
 	 * The MCP servers the session's project names, each as the session last heard of it, with the
 	 * user's remembered approval where there is one. Never starts a sandbox: it reads what the session

@@ -137,12 +137,22 @@ export interface PublishInput {
 	/** The commit the platform last pushed to the branch, if it pushed before. */
 	pushed: string | null;
 	message: PublishMessage;
+	/**
+	 * The request is the agent's (agent-publish.ts), which writes the pull request's title and description:
+	 * a pull request that is open already is given them too, where they differ from what it has, and
+	 * a request with nothing to push may still do that.
+	 */
+	retitle?: boolean;
 }
 
 export interface Published {
 	pull: PullRequestInfo;
 	/** True when this run opened the pull request. */
 	opened: boolean;
+	/** True when this run pushed something to the branch. */
+	pushed: boolean;
+	/** True when this run gave a pull request that was open already another title or description. */
+	retitled: boolean;
 	/** The branch's commit at GitHub now, when git said which. */
 	head: string | null;
 	/** How many files the platform's commit holds; 0 when the agent had committed everything itself; null when git did not say. */
@@ -166,6 +176,8 @@ function infoOf(pull: Pull, pushedAt: number): PullRequestInfo {
 const isOpen = (pull: PullRequestInfo | null): pull is PullRequestInfo => pull !== null && (pull.state === "open" || pull.state === "draft");
 
 function commitMessage(message: PublishMessage): string {
+	const own = message.commit?.trim() ?? "";
+	if (own !== "") return own;
 	const body = message.body.trim();
 	return body === "" ? message.title.trim() : `${message.title.trim()}\n\n${body}`;
 }
@@ -191,7 +203,8 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 	if (committed.marks.has("norepo")) throw new GithubProblem("github_failed", "The workspace is not a git repository any more, so there is nothing to push.");
 	const nothingNew = committed.marks.has("nothing");
 	const open = isOpen(input.pull) ? input.pull : null;
-	if (nothingNew && open) throw new GithubProblem("github_failed", `There is nothing to push: ${branch} at GitHub already has everything in the workspace.`);
+	const nothingToPush = () => new GithubProblem("github_failed", `There is nothing to push: ${branch} at GitHub already has everything in the workspace.`);
+	if (nothingNew && open && !input.retitle) throw nothingToPush();
 	// Nothing new, and nothing of this session at GitHub to ask a pull request for.
 	if (nothingNew && input.pushed === null) throw new GithubProblem("github_failed", `There is nothing to open a pull request with: the workspace has no changes and no commit that ${repository.branch} does not have.`);
 
@@ -221,6 +234,9 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 	}
 
 	const now = Date.now();
+	const pushed = !nothingNew;
+	const title = input.message.title.trim();
+	const body = input.message.body.trim();
 	try {
 		// Contents too, to read: GitHub opens no pull request for a token that cannot see the two branches
 		// ("not all refs are readable"), whatever it may do with pull requests.
@@ -229,16 +245,27 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 			if (open) {
 				// It may have been merged or closed at GitHub since: then the push went to a branch with no pull request.
 				const current = await app.pull(token, owner, repo, open.number).catch(() => null);
-				if (current && (current.state === "open" || current.state === "draft")) return { pull: infoOf(current, now), opened: false, head, committedFiles };
+				if (current && (current.state === "open" || current.state === "draft")) {
+					// When nothing was pushed, the pull request keeps the time of its last push.
+					const at = pushed ? now : open.pushedAt;
+					if (input.retitle && (current.title !== title || current.body.trim() !== body)) {
+						const updated = await app.updatePull(token, owner, repo, current.number, { title, body });
+						return { pull: infoOf(updated, at), opened: false, pushed, retitled: true, head, committedFiles };
+					}
+					if (!pushed) throw nothingToPush();
+					return { pull: infoOf(current, at), opened: false, pushed, retitled: false, head, committedFiles };
+				}
+				// Nothing was pushed, and the pull request it was for is no longer open: refused, as without the agent.
+				if (!pushed) throw nothingToPush();
 			}
 			try {
-				const created = await app.createPull(token, owner, repo, { title: input.message.title.trim(), body: input.message.body.trim(), head: branch, base: repository.branch });
-				return { pull: infoOf(created, now), opened: true, head, committedFiles };
+				const created = await app.createPull(token, owner, repo, { title, body, head: branch, base: repository.branch });
+				return { pull: infoOf(created, now), opened: true, pushed, retitled: false, head, committedFiles };
 			} catch (error) {
 				// One pull request per pair of branches: one that is open already is the session's.
 				if (error instanceof GithubError && error.status === 422 && /already exists/i.test(error.said)) {
 					const existing = await app.openPull(token, owner, repo, branch, repository.branch);
-					if (existing) return { pull: infoOf(existing, now), opened: false, head, committedFiles };
+					if (existing) return { pull: infoOf(existing, now), opened: false, pushed, retitled: false, head, committedFiles };
 				}
 				if (error instanceof GithubError && error.status === 422 && /no commits between/i.test(error.said)) {
 					throw new GithubProblem("github_failed", `GitHub opened no pull request: ${branch} has no commit that ${repository.branch} does not have.`);

@@ -654,6 +654,15 @@ export class GithubStandin {
 				const pull = this.pulls.find((candidate) => candidate.repository === repository.id && candidate.number === Number(one[1]));
 				return pull ? answer(200, this.pullJson(pull)) : answer(404, { message: "Not Found" });
 			}
+			if (one && method === "PATCH") {
+				if (!this.allows(token, repository, "pull_requests", "write")) return denied();
+				const pull = this.pulls.find((candidate) => candidate.repository === repository.id && candidate.number === Number(one[1]));
+				if (!pull) return answer(404, { message: "Not Found" });
+				const fields = (body ?? {}) as { title?: unknown; body?: unknown };
+				if (typeof fields.title === "string") pull.title = fields.title;
+				if (typeof fields.body === "string") pull.body = fields.body;
+				return answer(200, this.pullJson(pull));
+			}
 		}
 		return answer(404, { message: "Not Found" });
 	}

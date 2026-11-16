@@ -600,6 +600,92 @@ await section("publish: a pull request is opened, then the same branch is update
 });
 
 // ---------------------------------------------------------------------------------------------
+// The agent asks the platform to publish (server/src/agent-publish.ts)
+// ---------------------------------------------------------------------------------------------
+
+await section("the agent asks: what a request may hold, and what becomes of an open pull request", async () => {
+	const asks = await import("../server/src/agent-publish.js");
+	const { SecretRedactor, NO_REDACTION } = await import("../server/src/repo-secrets.js");
+	const where = { branch: "windlass/agent-asks-00aabb", base: "main" };
+
+	// What Windlass reports of a call, and what the tool's server says of it.
+	const input = JSON.stringify({ server: asks.PUBLISH_SERVER, tool: asks.PUBLISH_TOOL, arguments: { title: "T" } });
+	expect(
+		"a call of the tool is told from any other by the engine's event",
+		asks.publishArguments("mcp_call", input)?.title === "T" &&
+			asks.publishArguments("mcp_call", JSON.stringify({ server: asks.PUBLISH_SERVER, tool: `${asks.PUBLISH_SERVER}/${asks.PUBLISH_TOOL}` })) !== null &&
+			asks.publishArguments("mcp_call", JSON.stringify({ server: "harbor", tool: asks.PUBLISH_TOOL, arguments: {} })) === null &&
+			asks.publishArguments("shell", input) === null &&
+			asks.publishArguments("mcp_call", "not json") === null,
+	);
+	expect("the server's name for a call is read from its progress, and only a name it could have made", asks.publishRequestId("windlass_platform/publish: 0/1 handed to the platform as request 0123456789abcdef01234567") === "0123456789abcdef01234567" && asks.publishRequestId("request ../../etc/passwd") === null && asks.publishRequestId(undefined) === null);
+
+	// Windlass's configuration file in the sandbox: the server goes in beside what is there, and out again.
+	const definition = asks.publishServerDefinition(10 * 60_000);
+	const alone = asks.withPublishServer(null, definition);
+	const beside = asks.withPublishServer(JSON.stringify({ approval: { untrustedPaths: ["**"] }, mcp: { servers: { tracker: { command: "tracker-mcp" } } } }), definition);
+	expect("the tool's server is written into a configuration file that is not there, and beside what one holds", alone !== null && Object.keys(JSON.parse(alone).mcp.servers).join() === asks.PUBLISH_SERVER && beside !== null && Object.keys(JSON.parse(beside).mcp.servers).join() === `tracker,${asks.PUBLISH_SERVER}` && JSON.parse(beside).approval.untrustedPaths[0] === "**");
+	expect("its results are marked as the platform's own, and a call may wait for the user's answer and the push", definition.untrusted === false && definition.timeoutSeconds === 900 && definition.command === "python3");
+	expect("a file that is not Windlass's configuration is left alone", asks.withPublishServer("{ not json", definition) === null && asks.withPublishServer("[]", definition) === null && asks.withPublishServer(JSON.stringify({ mcp: { servers: [] } }), definition) === null);
+	expect(
+		"taken out again, a file that held nothing else goes, and one that held more keeps it",
+		asks.withoutPublishServer(alone as string) === null && JSON.stringify(JSON.parse(asks.withoutPublishServer(beside as string) as string)) === JSON.stringify({ approval: { untrustedPaths: ["**"] }, mcp: { servers: { tracker: { command: "tracker-mcp" } } } }) && asks.withoutPublishServer("{}") === undefined && asks.withoutPublishServer("{ not json") === undefined,
+	);
+
+	// What a request may hold.
+	const fine = asks.publishRequest({ title: "  Fix   the\tlight ", description: "It was off.\r\n\r\nNow it is on.\u001b[31m", commit_message: undefined }, where, NO_REDACTION);
+	expect("a request's text is tidied, and the commit's message is the title when none is given", fine.ok && fine.message.title === "Fix the light" && fine.message.body === "It was off.\n\nNow it is on.[31m" && fine.message.commit === "Fix the light", JSON.stringify(fine));
+	const secret = 'line one\nline "two" of the key';
+	const redactor = new SecretRedactor([{ name: "DEPLOY_KEY", value: secret }]);
+	const leaked = asks.publishRequest({ title: "Use the key", description: `The key is ${secret}.`, commit_message: `Add ${secret}` }, where, redactor);
+	expect("a saved secret is taken out of the title, the description and the commit's message, also one with line breaks and quotes", leaked.ok && !JSON.stringify(leaked).includes("line one") && leaked.message.body === "The key is [secret:DEPLOY_KEY]." && leaked.message.commit === "Add [secret:DEPLOY_KEY]", JSON.stringify(leaked));
+	const refusals = [
+		asks.publishRequest({ title: "x", branch: "main" }, where, NO_REDACTION),
+		asks.publishRequest({ title: "x", branch: "feature/other" }, where, NO_REDACTION),
+		asks.publishRequest({ title: "x", head: "main" }, where, NO_REDACTION),
+		asks.publishRequest({ title: "x", base: "release" }, where, NO_REDACTION),
+		asks.publishRequest({ title: "x".repeat(121) }, where, NO_REDACTION),
+		asks.publishRequest({ title: "x", description: "y".repeat(4001) }, where, NO_REDACTION),
+		asks.publishRequest({ title: "x", commit_message: "z".repeat(4001) }, where, NO_REDACTION),
+		asks.publishRequest({ title: "   " }, where, NO_REDACTION),
+		asks.publishRequest({}, where, NO_REDACTION),
+		asks.publishRequest({ title: ["x"] }, where, NO_REDACTION),
+		asks.publishRequest({ title: "x", description: { text: "y" } }, where, NO_REDACTION),
+	];
+	expect("another branch, the default branch, another base, text past its limit, no title and what is not text are refused, each with a sentence for the agent", refusals.every((refusal) => !refusal.ok && refusal.told.startsWith("Not published. ") && refusal.said.endsWith("so nothing was published.")), refusals.map((refusal) => (refusal.ok ? "accepted" : refusal.told.slice(15, 60))).join(" | "));
+	expect("the session's own branch and base, named, are accepted", asks.publishRequest({ title: "x", branch: where.branch, base: "main" }, where, NO_REDACTION).ok);
+	const message = { title: "T", body: "", commit: "T" };
+	expect(
+		"where commands are not held in Windlass's sandbox the question cannot be answered for the session, and says why",
+		asks.publishQuestionWords({ repository: "ada/harbor", branch: where.branch, base: "main", message, open: null, sandbox: "windlass" }).choices.map((choice) => choice.id).join() === "once,session,deny" &&
+			asks.publishQuestionWords({ repository: "ada/harbor", branch: where.branch, base: "main", message, open: null, sandbox: "none" }).choices.map((choice) => choice.id).join() === "once,deny" &&
+			asks.publishQuestionWords({ repository: "ada/harbor", branch: where.branch, base: "main", message, open: null, sandbox: "unknown" }).details.some((detail) => detail.includes("could have asked this in the agent's name")) &&
+			asks.publishUnaskedProblem("windlass") === null &&
+			asks.publishUnaskedProblem("none") !== null &&
+			asks.publishUnaskedProblem("unknown") !== null,
+	);
+
+	// The same `publishWork`, with the agent's commit message and with an open pull request given its title and description.
+	const sandbox = localSandbox("asks");
+	const repository = stored(harbor, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const pullsBefore = standin.pulls.length;
+	writeFileSync(join(sandbox.cwd, "ASKED.md"), "- one\n");
+	const base = { app, connection: adaConnection, repository, sandbox, sessionId: "s_agentasks0000aabb", branch: where.branch, retitle: true };
+	const first = await publish.publishWork({ ...base, pull: null, pushed: null, message: { title: "Ask to publish", body: "First description.", commit: "The commit's own message" } });
+	expect("the pull request is opened with the agent's title and description, and the commit has the commit's message", first.opened && first.pushed && !first.retitled && standin.pulls.length === pullsBefore + 1 && standin.pulls.at(-1)?.title === "Ask to publish" && standin.pulls.at(-1)?.body === "First description." && standin.lastCommit(harbor, where.branch).message === "The commit's own message");
+	writeFileSync(join(sandbox.cwd, "ASKED.md"), "- one\n- two\n");
+	const second = await publish.publishWork({ ...base, pull: first.pull, pushed: first.head, message: { title: "Ask to publish, again", body: "Second description.", commit: "Two" } });
+	expect("a second request pushes to the same pull request and gives it the new title and description", !second.opened && second.pushed && second.retitled && second.pull.number === first.pull.number && second.pull.title === "Ask to publish, again" && standin.pulls.length === pullsBefore + 1 && standin.pulls.at(-1)?.body === "Second description.");
+	const same = await problem(() => publish.publishWork({ ...base, pull: second.pull, pushed: second.head, message: { title: "Ask to publish, again", body: "Second description.", commit: "x" } }));
+	expect("with nothing new to push and nothing new to say, it is refused as from the panel", same?.message === `There is nothing to push: ${where.branch} at GitHub already has everything in the workspace.`, same?.message);
+	const words = await publish.publishWork({ ...base, pull: second.pull, pushed: second.head, message: { title: "Ask to publish, again", body: "Third description.", commit: "x" } });
+	expect("with nothing new to push, a new description alone is given to the pull request, and nothing is pushed", !words.opened && !words.pushed && words.retitled && standin.pulls.at(-1)?.body === "Third description." && standin.branchHead(harbor, where.branch) === second.head && words.pull.pushedAt === second.pull.pushedAt);
+	const panel = await problem(() => publish.publishWork({ ...base, retitle: false, pull: words.pull, pushed: second.head, message: { title: "Other words", body: "From the panel." } }));
+	expect("a push from the panel leaves an open pull request's title and description as they are", panel?.message.startsWith("There is nothing to push") === true && standin.pulls.at(-1)?.title === "Ask to publish, again");
+});
+
+// ---------------------------------------------------------------------------------------------
 // Failures
 // ---------------------------------------------------------------------------------------------
 

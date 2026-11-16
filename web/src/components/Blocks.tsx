@@ -579,13 +579,28 @@ function ErrorLine({ block }: { block: ErrorBlock }) {
 	);
 }
 
+/** A line of the platform's with the addresses in it as links: a pull request's, after a push. */
+function withLinks(text: string): ReactNode {
+	const parts = text.split(/(https?:\/\/[^\s"<>]+[^\s"<>.,;:!?)])/);
+	if (parts.length === 1) return text;
+	return parts.map((part, index) =>
+		index % 2 === 1 ? (
+			<a key={index} href={part} target="_blank" rel="noreferrer">
+				{part}
+			</a>
+		) : (
+			part
+		),
+	);
+}
+
 function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
 	const tone = block.kind === "platform" ? (block.level === "error" ? "bad" : block.level === "warn" ? "warn" : "dim") : block.tone;
 	return (
 		<p className={`system tone-${tone}`}>
 			<span className="system-rule" aria-hidden="true" />
 			<span className="system-source">{block.kind === "platform" ? "platform" : "windlass"}</span>
-			<span className="system-text">{block.text}</span>
+			<span className="system-text">{block.kind === "platform" ? withLinks(block.text) : block.text}</span>
 		</p>
 	);
 }

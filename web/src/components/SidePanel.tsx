@@ -339,7 +339,7 @@ export function SidePanel({ sessionId, summary, profile, view, turnsEnded, quest
 			<Tokens view={view} />
 			<CacheBars calls={view.calls} anyTurns={view.turns.length > 0} />
 			<Changes sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} reloads={reloads} onFiles={setFiles} />
-			<PullRequestSection sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} files={files} onPublished={published} />
+			<PullRequestSection sessionId={sessionId} summary={summary} profile={profile} turnsEnded={turnsEnded} files={files} onPublished={published} />
 			<SetupSection summary={summary} />
 			<SecretsSection summary={summary} />
 			{/* Last: it is there only where the project names a server, and so its arrival moves no other section. */}

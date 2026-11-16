@@ -867,7 +867,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		for (const feed of world.feeds) feed.onSessions(list);
 	}
 
-	function addSession(world: World, input: { id: string; title: string; titled: boolean; profile: SessionSummary["profile"]; model: string; repoUrl: string | null; repository?: SessionRepository | null }): MockSession {
+	function addSession(world: World, input: { id: string; title: string; titled: boolean; profile: SessionSummary["profile"]; model: string; repoUrl: string | null; repository?: SessionRepository | null; publishUnasked?: boolean }): MockSession {
 		const at = now();
 		const repository = input.repository ?? null;
 		const session: MockSession = {
@@ -877,7 +877,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				profile: input.profile,
 				model: input.model,
 				repoUrl: repository ? `${repository.url}.git` : input.repoUrl,
-				...(repository ? { repository, pullRequest: null } : {}),
+				...(repository ? { repository, pullRequest: null, publishUnasked: input.publishUnasked === true } : {}),
 				createdAt: at,
 				updatedAt: at,
 				status: "idle",
@@ -1732,7 +1732,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const title = input.title?.trim() ?? "";
 				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
 				if (repository && input.setupCommand !== undefined) saveSetup(world(), repository.id, input.setupCommand);
-				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, model: input.model ?? (MODELS[0] as string), repoUrl, repository });
+				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, model: input.model ?? (MODELS[0] as string), repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
 				setSummary(world(), session, {});
 				return session.summary;
 			},
@@ -2070,6 +2070,21 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				session.pushed = true;
 				setSummary(world, session, { pullRequest: pull, updatedAt: now() });
 				return { state: publishStateOf(session), opened: !open };
+			},
+			async setPublishUnasked(unasked: boolean): Promise<SessionSummary> {
+				await latency();
+				const { world, session } = find();
+				if (!session.summary.repository) throw new PlatformError("user", "This agent does not work on a repository of your GitHub connection, so it has nowhere to publish to.", { reason: "publish_blocked" });
+				if ((session.summary.publishUnasked === true) !== unasked) {
+					store(session, {
+						turn: session.summary.turns,
+						kind: "platform",
+						level: "info",
+						text: unasked ? "You let the agent publish this session's work without asking, in the session's panel." : "You turned off publishing without asking in the session's panel: the agent's next request to publish is put to you.",
+					});
+					setSummary(world, session, { publishUnasked: unasked });
+				}
+				return session.summary;
 			},
 		};
 	}

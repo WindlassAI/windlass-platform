@@ -265,6 +265,21 @@ export interface WindlassFeatures {
 	envLists: boolean;
 }
 
+/**
+ * A request of the agent's that the platform publish the session's work (agent-publish.ts): a call of
+ * the tool the layer offered for this turn, as Windlass's engine reported it in the turn's events.
+ */
+export interface TurnPublishRequest {
+	/** The call, as `tool.called` names it. */
+	messageId: string;
+	callId: string;
+	/**
+	 * The tool's arguments as the model wrote them: of any type and any length, and to be trusted with
+	 * nothing. The turn's saved secrets were taken out of the event they came in.
+	 */
+	arguments: Record<string, unknown>;
+}
+
 /** A handle on a turn in progress. Its methods reject once the turn has ended. */
 export interface TurnControl {
 	/** Sends a message into the running turn; the model reads it at its next step. Resolves once Windlass admitted it. */
@@ -343,6 +358,26 @@ export interface RunTurnInput {
 	onServers?: (servers: TurnServer[]) => void;
 	/** Called once, when the turn has started and can be steered. */
 	onControl?: (control: TurnControl) => void;
+	/**
+	 * Given for a turn whose agent may ask the platform to publish the session's work. The layer then
+	 * offers the model a tool for it (agent-publish.ts says how, and what is trusted of it), for this
+	 * turn only: without this callback the agent is told of no such tool. It is called for each call
+	 * of the tool the engine reports, after that call's `tool.called` was handed to `onEvent`, and
+	 * resolves with what the agent is to be told, in full: the layer makes it the call's result. The
+	 * call waits for it, and with it the turn. `signal` aborts when the call ended before the answer
+	 * (it was stopped, or the turn was): what the promise does afterwards is ignored, and a rejection
+	 * tells the agent that the request could not be handled.
+	 *
+	 * Windlass asks before a call of an MCP tool where it sandboxes commands, and anywhere once
+	 * content it does not trust is in the conversation. For this tool the layer answers that question
+	 * itself, with "once", and `onQuestion` never sees it: the call does nothing in the sandbox but
+	 * wait, and whether anything is published is this callback's to decide.
+	 *
+	 * Not offered, and never called, where the sandbox's Windlass cannot say which servers a session
+	 * has (`_windlass/mcp`), where its own configuration file there cannot be read as one, and for a
+	 * project whose own configuration names a server by the tool's server's name.
+	 */
+	onPublish?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 }
 
 export interface RunTurnResult {

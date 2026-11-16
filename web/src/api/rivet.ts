@@ -360,6 +360,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			diff: () => act("diff"),
 			publishState: () => act("publishState"),
 			publish: (message) => act("publish", { message }),
+			setPublishUnasked: (unasked) => act("setPublishUnasked", { unasked }),
 			servers: () => act("servers"),
 			approveServer: (name, fingerprint) => act("approveServer", { name, fingerprint }),
 			forgetServer: (name) => act("forgetServer", { name }),

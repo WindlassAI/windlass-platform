@@ -26,6 +26,8 @@ export interface SessionCreateInput {
 	repoUrl: string | null;
 	/** Set when the session is launched on a repository of the user's GitHub connection; `repoUrl` is then its address. */
 	repo?: StoredRepository | null;
+	/** With `repo`: whether the agent may have the platform publish without the user being asked each time. */
+	publishUnasked?: boolean;
 	demo: boolean;
 	createdAt: number;
 }
