@@ -58,6 +58,12 @@ export class AcpConnection {
 		private readonly handlers: AcpHandlers,
 		/** The key Windlass's extensions live under in `_meta` and in an error's `data`. */
 		private readonly namespace: string,
+		/**
+		 * Applied to everything the agent sends before anyone sees it: a notification's or a request's
+		 * `params`, and a response's `result` and `error`. The turn takes the repository's saved secrets
+		 * out there (repo-secrets.ts). A message's `method` and `id` are never passed through it.
+		 */
+		private readonly clean: <T>(value: T) => T = (value) => value,
 	) {}
 
 	get closed(): boolean {
@@ -99,7 +105,8 @@ export class AcpConnection {
 			return this.keep(line);
 		}
 		if (typeof message !== "object" || message === null || Array.isArray(message)) return this.keep(line);
-		const { id, method, params, result, error } = message as { id?: unknown; method?: unknown; params?: unknown; result?: unknown; error?: unknown };
+		const { id, method } = message as { id?: unknown; method?: unknown };
+		const { params, result, error } = this.clean(message as { params?: unknown; result?: unknown; error?: unknown });
 		if (typeof method === "string") {
 			const given = (typeof params === "object" && params !== null ? params : {}) as Record<string, unknown>;
 			if (id === undefined || id === null) {

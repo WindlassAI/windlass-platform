@@ -1426,7 +1426,7 @@ async function main(server: Server | null): Promise<void> {
 		await check("a definition that reads a variable which is not set says so, in the question and after an approval", async () => {
 			const asked = await askAbout("try (mcp-env)");
 			assert(plain(asked.server?.unset) === plain(["HARBOR_TOKEN"]), `unset: ${plain(asked.server?.unset)}`);
-			assert(asked.details.length === 4 && asked.details[3] === "It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set in the sandbox, and the platform cannot set variables for a session yet.", `details: ${plain(asked.details)}`);
+			assert(asked.details.length === 4 && asked.details[3] === "It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.", `details: ${plain(asked.details)}`);
 			await harborWatch.conn.answer({ questionId: asked.id, choice: "start" });
 			const ended = await harborWatch.untilEnded(asked.turn);
 			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
@@ -1434,7 +1434,7 @@ async function main(server: Server | null): Promise<void> {
 			assert(
 				lines.length === 1 &&
 					lines[0].level === "warn" &&
-					lines[0].text === 'Approved the MCP server "harbor" for this project, but it did not start: the environment variable HARBOR_TOKEN named in its env is not set. The platform cannot set variables for a session yet.',
+					lines[0].text === 'Approved the MCP server "harbor" for this project, but it did not start: the environment variable HARBOR_TOKEN named in its env is not set. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.',
 				`lines: ${plain(lines.map((line) => line.text))}`,
 			);
 			return lines[0].text;

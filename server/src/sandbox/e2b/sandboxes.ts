@@ -65,6 +65,7 @@ import {
 	type StartOptions,
 	type TurnSandbox,
 	WORKSPACE,
+	assertEnvNames,
 	markTurnSandbox,
 	randomId,
 	shellQuote,
@@ -173,7 +174,10 @@ export class E2bSandboxHandle implements TurnSandbox {
 	/** Starts argv (no shell of ours: each argument is quoted for E2B's) under wlp-run and leaves its standard input open. */
 	start(argv: string[], options: StartOptions = {}): SandboxProcess {
 		const tag = `r${randomId(6)}`;
-		for (const key of Object.keys(options.env ?? {})) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`invalid environment variable name: ${key}`);
+		assertEnvNames(options.env);
+		assertEnvNames(options.secretEnv);
+		// Both kinds go in the request that starts the command (`envs`), never in the command's text.
+		const envs = options.secretEnv === undefined ? options.env : { ...options.secretEnv, ...options.env };
 		const command = ["wlp-run", "exec", tag, ...argv].map(shellQuote).join(" ");
 		const emit = (handler: ((chunk: string) => void) | undefined, text: string) => {
 			if (text === "" || handler === undefined) return;
@@ -188,7 +192,7 @@ export class E2bSandboxHandle implements TurnSandbox {
 		let stdinOpen = true;
 		/** A write failed: nothing more is sent, also not what was queued behind it. */
 		let broken = false;
-		const started = this.connection.start(command, { cwd: options.cwd ?? this.cwd, envs: options.env, stdin: true, onStdout: (text) => emit(options.onStdout, text), onStderr: (text) => emit(options.onStderr, text) });
+		const started = this.connection.start(command, { cwd: options.cwd ?? this.cwd, envs, stdin: true, onStdout: (text) => emit(options.onStdout, text), onStderr: (text) => emit(options.onStderr, text) });
 		// Each `sendStdin` is a request of its own, so they go one after the other: what is written arrives in the order it was written.
 		let queue: Promise<void> = started.then(
 			(command) => {
@@ -257,6 +261,7 @@ export class E2bSandboxHandle implements TurnSandbox {
 		const run = this.start(argv, {
 			cwd: options.cwd,
 			env: options.env,
+			secretEnv: options.secretEnv,
 			onStdout: (text) => {
 				if (stdout.length < STDOUT_CAP) stdout += text.slice(0, STDOUT_CAP - stdout.length);
 				options.onStdout?.(text);

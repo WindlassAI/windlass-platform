@@ -13,11 +13,13 @@
  *   user      a user's sign-in, in that user's `user` actor
  *   attempt   a sign-in attempt between its start and its finish, in its `login` actor
  *   transit   an access token on its way from the `user` actor to the server that asked for it
+ *   secret    the value of a repository's secret, in its user's `user` actor (repo-secrets.ts)
  *
  * What a blob is for and whose it is are authenticated with it (GCM's additional data: the purpose
- * and a subject, which is the uid, the attempt id, or the uid and the asking server's nonce). A blob
- * opens only as what it was sealed as: one user's sign-in put in another user's actor does not open
- * there, nor does an attempt's material as a sign-in, nor an answer to another request.
+ * and a subject, which is the uid, the attempt id, the uid and the asking server's nonce, or the uid
+ * with a secret's repository and name). A blob opens only as what it was sealed as: one user's
+ * sign-in put in another user's actor does not open there, nor does an attempt's material as a
+ * sign-in, nor an answer to another request, nor one secret's value as another's.
  *
  * The key id is a few bytes derived from the same secret under another label. It says which secret a
  * blob was sealed with, so that a server whose secret differs from the others' can say that, instead
@@ -30,7 +32,7 @@
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
 import { signInKeySecret } from "../config.js";
 
-export type SealPurpose = "user" | "attempt" | "transit";
+export type SealPurpose = "user" | "attempt" | "transit" | "secret";
 
 const VERSION = "wlps1";
 const LABEL = "windlass-platform sign-in v1";

@@ -46,7 +46,11 @@
 import {
 	MAX_PROMPT_CHARS,
 	MAX_RUNNING_SESSIONS,
+	MAX_SECRET_NAME_CHARS,
+	MAX_SECRET_VALUE_BYTES,
+	MAX_SECRETS_PER_REPOSITORY,
 	MAX_SETUP_COMMAND_CHARS,
+	MIN_SECRET_VALUE_CHARS,
 	MAX_TITLE_CHARS,
 	type AuthResult,
 	type ChatgptStatus,
@@ -66,8 +70,12 @@ import {
 	type PublishResult,
 	type PublishState,
 	type PullRequestInfo,
+	type RepositorySecrets,
 	type RepositorySetup,
 	type SandboxProfile,
+	type SandboxProfileId,
+	type SecretReach,
+	type SecretScope,
 	type SessionRepository,
 	type SessionServer,
 	type SessionServers,
@@ -497,6 +505,68 @@ const MOCK_COVERS = "It is an approval of this command, not of the files it runs
 
 const commandLine = (argv: readonly string[]) => argv.map((argument) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(argument) ? argument : `'${argument.replace(/'/g, `'\\''`)}'`)).join(" ");
 
+/** What would set a variable a definition reads, as server/src/server-question.ts says it of a variable no secret is saved for. */
+function mockUnsetRemedy(unset: readonly string[], project: MockProject): string {
+	if (project.kind !== "github") return "A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.";
+	const names = unset.length <= 1 ? unset.join("") : `${unset.slice(0, -1).join(", ")} and ${unset[unset.length - 1]}`;
+	return unset.length === 1
+		? `Save a secret named ${names} for ${project.label}, under Secrets in this session's panel: it is handed over from the next turn.`
+		: `Save secrets named ${names} for ${project.label}, under Secrets in this session's panel: they are handed over from the next turn.`;
+}
+
+/** The names the server refuses for a secret (server/src/repo-secrets.ts, `isReservedName`). */
+const MOCK_RESERVED = /^(?:(?:WLP|WINDLASS|LD|XDG|BUN|NODE|DOCKER|E2B|LC|BASH)_.*|PATH|HOME|USER|LOGNAME|SHELL|PWD|OLDPWD|TMPDIR|TMP|TEMP|LANG|LANGUAGE|TZ|TERM|HOSTNAME|IFS|ENV|SHLVL|_|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|PAGER|GIT_PAGER|GIT_TERMINAL_PROMPT)$/i;
+
+/** Windlass's rule for the names it keeps from the commands it sandboxes, as server/src/repo-secrets.ts repeats it (`looksLikeCredential`). */
+function mockLooksLikeCredential(name: string): boolean {
+	const upper = name.toUpperCase();
+	if (["DATABASE_URL", "KUBECONFIG", "DOCKER_HOST", "DOCKER_CONFIG", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS", "NETRC"].includes(upper)) return true;
+	if (/^(?:AWS|AZURE|ARM|GOOGLE|GCLOUD|GCP|CLOUDSDK|OCI|DIGITALOCEAN|HCLOUD|LINODE|VAULT|OPENAI|ANTHROPIC|CLAUDE|GEMINI|MISTRAL|GROQ|COHERE|OPENROUTER|HF|HUGGINGFACE|HUGGING_FACE|XAI|DEEPSEEK|TOGETHER|FIREWORKS|REPLICATE|PERPLEXITY|VOYAGE|LANGCHAIN|LANGSMITH)_/.test(upper)) return true;
+	if (/TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASSPHRASE|CREDENTIAL|PRIVATE|COOKIE/.test(upper)) return true;
+	return upper.split("_").some((segment) => segment === "AUTH" || segment === "PAT");
+}
+
+/** What a secret reaches in a sandbox of `profile`, word for word as server/src/repo-secrets.ts says it (`secretReach`). */
+export function mockSecretReach(name: string, scope: SecretScope, profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">): SecretReach {
+	const sandbox = profile.approval === "full" ? "none" : !profile.commandNetwork && !profile.commandsCanReadAccessToken ? "windlass" : "unknown";
+	const withheld = mockLooksLikeCredential(name);
+	const looks = "a name that looks like a credential (it contains TOKEN, KEY, SECRET or PASSWORD, for example)";
+	if (scope === "setup") {
+		if (sandbox === "windlass") {
+			if (withheld) return { servers: true, commands: "no", note: null };
+			return {
+				servers: false,
+				commands: "no",
+				note: `MCP servers are not given it in this sandbox. Windlass passes every variable it has on to the agent's commands unless it has ${looks}, so with this name an MCP server could only have it if the commands had it too. Only the setup command gets it.`,
+			};
+		}
+		return {
+			servers: false,
+			commands: "no",
+			note:
+				sandbox === "none"
+					? "MCP servers are not given it in this sandbox: the agent's commands run there without Windlass's sandbox, and would get every variable an MCP server can be given. Only the setup command gets it."
+					: "MCP servers are not given it in this sandbox: it has not been established that Windlass can sandbox the agent's commands there, and a command it cannot sandbox gets every variable an MCP server can be given. Only the setup command gets it.",
+		};
+	}
+	if (!withheld) return { servers: true, commands: "yes", note: null };
+	if (sandbox === "windlass") {
+		return {
+			servers: true,
+			commands: "no",
+			note: `The agent's commands do not get it in this sandbox: Windlass keeps a variable with ${looks} from the commands it sandboxes, and has no setting that lets one through. The setup command and MCP servers get it.`,
+		};
+	}
+	return {
+		servers: true,
+		commands: "unsandboxed",
+		note:
+			sandbox === "none"
+				? "The agent's commands get it while Windlass runs them without its sandbox. Once content from the web or an MCP server is in the conversation, Windlass sandboxes commands again where it can, and it keeps a variable whose name looks like a credential from the commands it sandboxes."
+				: "The agent's commands get it only where Windlass cannot sandbox them: it keeps a variable whose name looks like a credential from the commands it sandboxes.",
+	};
+}
+
 /**
  * The question about a project's server as server/src/server-question.ts words it where Windlass's
  * data is the sandbox's own, so that what is remembered beyond it is the platform's record: for the
@@ -510,8 +580,8 @@ export function mockServerQuestion(server: Pick<MockServer, "name" | "argv" | "u
 			? []
 			: [
 					server.unset.length === 1
-						? `It will not start yet: its definition reads the variable ${names}, which is not set in the sandbox, and the platform cannot set variables for a session yet.`
-						: `It will not start yet: its definition reads the variables ${names}, which are not set in the sandbox, and the platform cannot set variables for a session yet.`,
+						? `It will not start yet: its definition reads the variable ${names}, which is not set where Windlass runs. ${mockUnsetRemedy(server.unset, project)}`
+						: `It will not start yet: its definition reads the variables ${names}, which are not set where Windlass runs. ${mockUnsetRemedy(server.unset, project)}`,
 				];
 	return {
 		title: `Start this project's MCP server "${server.name}"?`,
@@ -639,6 +709,8 @@ interface World {
 	approvals: MockApproval[];
 	/** The setup commands the user saved, by GitHub's id for the repository. */
 	setups: Map<number, { command: string; updatedAt: number }>;
+	/** The secrets the user saved, by repository and name. A value is not kept at all: nothing here could show one. */
+	secrets: Map<number, Map<string, { scope: SecretScope; updatedAt: number }>>;
 }
 
 interface Step {
@@ -698,7 +770,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map() };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), secrets: new Map() };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -1150,7 +1222,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			session.startedServers.add(server.fingerprint);
 			const ago = agoWords(now() - remembered.approvedAt);
 			if (server.unset.length > 0) {
-				store(session, { turn, kind: "platform", level: "warn", text: `You approved ${named} for this project ${ago}, but it did not start: the environment variable ${server.unset[0]} named in its env is not set. The platform cannot set variables for a session yet.` });
+				store(session, { turn, kind: "platform", level: "warn", text: `You approved ${named} for this project ${ago}, but it did not start: the environment variable ${server.unset[0]} named in its env is not set. ${mockUnsetRemedy(server.unset, mockProject(session.summary))}` });
 			} else {
 				store(session, { turn, kind: "platform", level: "info", text: `Started ${named} because you approved it for this project ${ago}: 2 tools. ${agentHas}` });
 			}
@@ -1176,7 +1248,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				session.startedServers.add(server.fingerprint);
 				remember(world, session, server.name, server.fingerprint);
 				if (server.unset.length > 0) {
-					store(session, { turn, kind: "platform", level: "warn", text: `Approved ${named} for this project, but it did not start: the environment variable ${server.unset[0]} named in its env is not set. The platform cannot set variables for a session yet.` });
+					store(session, { turn, kind: "platform", level: "warn", text: `Approved ${named} for this project, but it did not start: the environment variable ${server.unset[0]} named in its env is not set. ${mockUnsetRemedy(server.unset, mockProject(session.summary))}` });
 				} else {
 					store(session, { turn, kind: "platform", level: "info", text: `Started ${named} for this project: 2 tools. ${agentHas}` });
 				}
@@ -1507,6 +1579,15 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 		// The user saved a setup command for acme/harbor some days ago: the launch form and the panel show it.
 		world.setups.set(7101, { command: "npm ci", updatedAt: start - 3 * 24 * HOUR - 50 * MINUTE });
+		// And three secrets, one of each kind the list has a sentence for where Windlass sandboxes commands.
+		world.secrets.set(
+			7101,
+			new Map([
+				["NPM_TOKEN", { scope: "setup" as const, updatedAt: start - 3 * 24 * HOUR - 48 * MINUTE }],
+				["SENTRY_DSN", { scope: "setup" as const, updatedAt: start - 26 * HOUR }],
+				["PREVIEW_HOST", { scope: "agent" as const, updatedAt: start - 40 * MINUTE }],
+			]),
+		);
 
 		// acme/harbor names MCP servers. The user approved "harbor" three days ago in one session, so the other
 		// started it unasked; "docs" was left for later, and "tracker" was approved and could not start.
@@ -1556,6 +1637,38 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		if (command === "") world.setups.delete(repositoryId);
 		else world.setups.set(repositoryId, { command, updatedAt: now() });
 		return setupOf(world, repositoryId);
+	}
+
+	// ---- secrets of repositories ------------------------------------------------------------------
+
+	function secretsOf(world: World, repositoryId: number, profileId: SandboxProfileId): RepositorySecrets {
+		const profile = profiles.find((item) => item.id === profileId);
+		if (!profile) throw new PlatformError("user", "Choose one of the listed sandboxes.", { reason: "bad_input" });
+		const saved = [...(world.secrets.get(repositoryId) ?? new Map<string, { scope: SecretScope; updatedAt: number }>()).entries()].sort(([a], [b]) => (a < b ? -1 : 1));
+		return { profile: profile.id, secrets: saved.map(([name, secret]) => ({ name, scope: secret.scope, updatedAt: secret.updatedAt, reach: mockSecretReach(name, secret.scope, profile) })) };
+	}
+
+	/** Saves as the server does (server/src/repo-secrets.ts): the same refusals in the same words. The value is looked at and dropped. */
+	function saveSecret(world: World, repositoryId: number, secret: { name: string; value?: string; scope: SecretScope }): void {
+		const bad = (message: string) => new PlatformError("user", message, { reason: "bad_secret" });
+		const { name, scope } = secret;
+		if (typeof name !== "string" || name === "") throw bad("A secret needs a name.");
+		if (name.length > MAX_SECRET_NAME_CHARS) throw bad(`A secret's name can be at most ${MAX_SECRET_NAME_CHARS} characters long.`);
+		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw bad("A secret's name is an environment variable's: letters, digits and underscores, not starting with a digit.");
+		if (MOCK_RESERVED.test(name)) throw bad(`${name} cannot be a secret's name: the sandbox or Windlass relies on a variable of that name.`);
+		if (scope !== "setup" && scope !== "agent") throw bad("A secret is for the setup command and MCP servers, or for the agent's commands as well.");
+		const saved = world.secrets.get(repositoryId) ?? new Map<string, { scope: SecretScope; updatedAt: number }>();
+		if (secret.value === undefined) {
+			if (!saved.has(name)) throw new PlatformError("user", `No secret named ${name} is saved for this repository.`, { reason: "secret_not_found" });
+		} else {
+			const value = secret.value.replace(/\r\n?/g, "\n");
+			if (value.trim().length < MIN_SECRET_VALUE_CHARS) throw bad(`A secret's value must be at least ${MIN_SECRET_VALUE_CHARS} characters long: a shorter one could not be taken out of what the platform shows.`);
+			const bytes = new TextEncoder().encode(value).length;
+			if (bytes > MAX_SECRET_VALUE_BYTES) throw bad(`A secret's value can be at most ${MAX_SECRET_VALUE_BYTES.toLocaleString("en-US")} bytes long; this one is ${bytes.toLocaleString("en-US")}.`);
+			if (!saved.has(name) && saved.size >= MAX_SECRETS_PER_REPOSITORY) throw new PlatformError("user", `A repository can have at most ${MAX_SECRETS_PER_REPOSITORY} secrets. Delete one first.`, { reason: "too_many_secrets" });
+		}
+		saved.set(name, { scope, updatedAt: now() });
+		world.secrets.set(repositoryId, saved);
 	}
 
 	// ---- the interface --------------------------------------------------------------------------
@@ -1635,6 +1748,20 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			async saveRepositorySetup(repositoryId: number, command: string): Promise<RepositorySetup> {
 				await latency(320);
 				return saveSetup(world(), repositoryId, command);
+			},
+			async repositorySecrets(repositoryId: number, profile: SandboxProfileId): Promise<RepositorySecrets> {
+				await latency(200);
+				return secretsOf(world(), repositoryId, profile);
+			},
+			async saveRepositorySecret(repositoryId: number, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets> {
+				await latency(340);
+				saveSecret(world(), repositoryId, secret);
+				return secretsOf(world(), repositoryId, profile);
+			},
+			async deleteRepositorySecret(repositoryId: number, profile: SandboxProfileId, name: string): Promise<RepositorySecrets> {
+				await latency(280);
+				world().secrets.get(repositoryId)?.delete(name);
+				return secretsOf(world(), repositoryId, profile);
 			},
 			async githubConnect(page: string): Promise<{ url: string }> {
 				await latency(420);

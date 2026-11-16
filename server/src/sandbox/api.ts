@@ -34,6 +34,7 @@
  */
 
 import type { SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
+import type { Redactor } from "../repo-secrets.js";
 
 // ---------------------------------------------------------------------------------------------
 // Sandboxes
@@ -43,6 +44,13 @@ export interface ExecOptions {
 	/** Defaults to the sandbox's workspace. */
 	cwd?: string;
 	env?: Record<string, string>;
+	/**
+	 * More of the command's environment, whose values are secrets: they reach the command as `env` does
+	 * and are on no command line on the way, neither on the server nor in the sandbox. On Docker, where
+	 * `env` is written into the arguments of `docker exec`, these are only named there and taken from
+	 * the client's own environment; on E2B both go in the request that starts the command.
+	 */
+	secretEnv?: Record<string, string>;
 	/** Written to the command's standard input, which is then closed. Without it, stdin is empty. */
 	stdin?: string;
 	timeoutMs?: number;
@@ -180,6 +188,11 @@ export interface TurnServerQuestion {
 	 */
 	unset: string[];
 	/**
+	 * Of the variables its definition reads, those the turn was handed as secrets (`RunTurnInput.secrets`):
+	 * approving gives the server their values, or sends them to its address. Absent or empty when it reads none.
+	 */
+	secrets?: string[];
+	/**
 	 * True when the question is put before the turn's prompt goes to Windlass: the turn waits for the
 	 * answer and then starts with what was allowed. False for a server Windlass reports while the turn
 	 * is already running: the turn goes on meanwhile, and the question is withdrawn when it ends.
@@ -226,6 +239,12 @@ export type TurnServerOutcome =
 	/** The approval did not reach Windlass, or it refused the request; `reason` says why. */
 	| { state: "refused"; reason: string };
 
+/** What a turn is handed of its repository's secrets: see `RunTurnInput.secrets`. */
+export interface TurnSecrets {
+	env: Record<string, string>;
+	redactor: Redactor;
+}
+
 /** A handle on a turn in progress. Its methods reject once the turn has ended. */
 export interface TurnControl {
 	/** Sends a message into the running turn; the model reads it at its next step. Resolves once Windlass admitted it. */
@@ -247,6 +266,18 @@ export interface RunTurnInput {
 	 */
 	script?: ScriptedModel;
 	signal?: AbortSignal;
+	/**
+	 * The secrets of the session's repository for this turn (repo-secrets.ts). `env` is put into
+	 * Windlass's own environment, by `ExecOptions.secretEnv`'s way: Windlass fills `${NAME}` in the
+	 * definitions of the project's MCP servers from it, and passes it on to the commands it runs by
+	 * its own rule, so the caller hands over only what may go there. `redactor` knows every saved
+	 * value of the repository, also those Windlass is not handed (the setup command had them, and may
+	 * have left them in a file): each is taken out of everything the turn hands back, which is every
+	 * event, question, description of a server, `stderrTail` and `failure`. A value that streaming
+	 * output splits over two pieces is held back until it is whole. Nothing of this is kept by the
+	 * layer when the turn has ended.
+	 */
+	secrets?: TurnSecrets;
 	/**
 	 * Every event of the turn, in order: Windlass's own events exactly as `windlass --json` prints them,
 	 * and after the last of them one `cli.summary`-shaped event the layer makes itself (`type`,

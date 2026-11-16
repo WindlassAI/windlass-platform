@@ -22,6 +22,12 @@
  * While a turn runs, the sandbox is held (`TurnSandbox.holdForTurn`): a provider whose sandboxes stop by
  * themselves when nobody vouches for them keeps this one running until the turn has ended.
  *
+ * A turn of a session on a repository with saved secrets is handed them (`RunTurnInput.secrets`):
+ * those meant for Windlass go into the process's environment without being on a command line
+ * (`StartOptions.secretEnv`), and every saved value is taken out of whatever the engine sends before
+ * any of it is looked at (`AcpConnection`'s `clean`), out of the pieces of streaming text a value is
+ * split over (`streamed`), and out of the end of standard error and a failure's sentence.
+ *
  * The process is driven over its stdin and stdout as the `windlass` command line drives its own engine (Windlass's
  * docs/acp.md, "The command line is an ACP client"):
  *
@@ -62,6 +68,7 @@
  */
 
 import type { WindlassEvent } from "../contract.js";
+import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
 import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnControl, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, Windlass } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
@@ -117,6 +124,9 @@ const SERVERS_TIMEOUT_MS = 20_000;
 const SERVER_START_WAIT_MS = 5000;
 /** How long reading a server's definition, and asking which variables are set, may take. */
 const DEFINITION_TIMEOUT_MS = 10_000;
+
+/** The events whose text arrives in pieces, as the session passes them on to browsers while a turn runs. */
+const STREAMED = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]);
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -380,6 +390,12 @@ class Turn {
 	private readonly serverWaiters = new Set<() => void>();
 	/** What the engine was started with, for asking the sandbox what the engine can see. */
 	private engineEnv: Record<string, string> = {};
+	/** The names of the secrets the engine was started with: its environment has them, and their values are not kept here. */
+	private engineSecrets = new Set<string>();
+	/** Takes the repository's saved secrets out of what the engine sends (`RunTurnInput.secrets`). */
+	private readonly redactor: Redactor;
+	/** The end of a piece of streaming text that may be the beginning of a saved value, per stream, until the next piece shows whether it is. */
+	private readonly heldBack = new Map<string, string>();
 
 	/** The access token file of a turn that is not scripted. */
 	private readonly tokenFile: TokenFile | null;
@@ -403,7 +419,13 @@ class Turn {
 		// A scripted turn calls no model: it is handed no token.
 		this.tokenFile = input.script === undefined ? new TokenFile(sandbox, tokens, options.tokenFile) : null;
 		this.approval = sandbox.approval;
-		this.peer = new AcpConnection((line) => this.process?.write(`${line}\n`) ?? false, { notification: (method, params) => this.notification(method, params), request: (method, params) => this.request(method, params) }, NS);
+		this.redactor = input.secrets?.redactor ?? NO_REDACTION;
+		this.peer = new AcpConnection(
+			(line) => this.process?.write(`${line}\n`) ?? false,
+			{ notification: (method, params) => this.notification(method, params), request: (method, params) => this.request(method, params) },
+			NS,
+			(value) => this.redactor.deep(value),
+		);
 	}
 
 	async run(): Promise<RunTurnResult> {
@@ -436,13 +458,17 @@ class Turn {
 					// The file Windlass reads its access token from at every model call; it never looks for a saved sign-in then.
 					...(tokenFile === null ? {} : { [ACCESS_TOKEN_FILE_ENV]: tokenFile.path }),
 				};
+				// The repository's secrets that Windlass may have, for the MCP servers that name them: never one of the turn's own variables.
+				const secretEnv = Object.fromEntries(Object.entries(input.secrets?.env ?? {}).filter(([name]) => !(name in env)));
 				const run = sandbox.start(this.options.engineCommand ?? ["windlass", "acp"], {
 					env,
+					secretEnv,
 					onStdout: (chunk) => lines.push(chunk),
 					onStderr: (chunk) => (this.stderr = (this.stderr + chunk).slice(-STDERR_KEPT)),
 				});
 				this.process = run;
 				this.engineEnv = { ...env, WLP_RUN_TAG: run.tag };
+				this.engineSecrets = new Set(Object.keys(secretEnv));
 				void run.ended.then((end) => {
 					lines.flush();
 					this.processEnd = end;
@@ -479,6 +505,7 @@ class Turn {
 		const aborted = this.abortRequested && !(ownEnding && !this.forced);
 		const said = [...this.notes, this.stderr.trimEnd()];
 		if (this.peer.notJson.length > 0) said.push(`[stdout, not protocol messages]\n${this.peer.notJson.join("\n")}`);
+		const scrub = (text: string) => this.redactor.text(tokenFile === null ? text : tokenFile.scrub(text));
 		const stderrTail = said.filter((part) => part !== "").join("\n");
 		// A failure's sentence may quote the engine's last words: what the engine printed is scrubbed there as it is in the tail.
 		const failure = aborted ? null : await this.told(this.failure);
@@ -488,8 +515,8 @@ class Turn {
 			timedOut: false,
 			windlassSessionId: this.sessionSeen,
 			summary: this.summary,
-			stderrTail: (tokenFile === null ? stderrTail : tokenFile.scrub(stderrTail)).slice(-STDERR_TAIL),
-			failure: failure === null || tokenFile === null ? failure : { reason: failure.reason, message: tokenFile.scrub(failure.message) },
+			stderrTail: scrub(stderrTail).slice(-STDERR_TAIL),
+			failure: failure === null ? failure : { reason: failure.reason, message: scrub(failure.message) },
 		};
 	}
 
@@ -750,12 +777,42 @@ class Turn {
 		}
 		// The engine has withdrawn what was pending: a question may be answered `cancelled` now.
 		if (event.type === "execution.interrupt_requested") this.resolveInterrupted();
+		const out = this.streamed(event);
 		try {
-			this.input.onEvent(event);
+			if (out !== null) this.input.onEvent(out);
 		} catch {
 			// A listener's failure must not stop the turn.
 		}
 		this.check();
+	}
+
+	/**
+	 * The event as it is handed on. Every saved value that is whole in it was taken out when it arrived.
+	 * Streaming text comes in pieces, and a value can be split over two: the end of a piece that may be
+	 * the beginning of a value is held back and put before the next piece of the same stream, where it
+	 * is replaced when it turns out to be one. Null when all of a piece is held back. The durable event
+	 * that follows a stream carries its whole text, so what is still held back then is dropped.
+	 */
+	private streamed(event: WindlassEvent): WindlassEvent | null {
+		const redactor = this.redactor;
+		if (!redactor.active) return event;
+		const field = event.type === "tool.input.delta" ? "input" : "text";
+		const piece = STREAMED.has(event.type) ? event[field] : undefined;
+		if (typeof piece === "string") {
+			const key = `${typeof event.messageId === "string" ? event.messageId : ""}\n${typeof event.callId === "string" ? event.callId : ""}\n${event.type}`;
+			const whole = redactor.text((this.heldBack.get(key) ?? "") + piece);
+			const held = redactor.held(whole);
+			if (held === 0) this.heldBack.delete(key);
+			else this.heldBack.set(key, whole.slice(whole.length - held));
+			if (held === whole.length) return null;
+			return { ...event, [field]: held === 0 ? whole : whole.slice(0, whole.length - held) };
+		}
+		const data = (typeof event.data === "object" && event.data !== null ? event.data : {}) as { messageId?: unknown; callId?: unknown };
+		if (typeof data.messageId === "string" && this.heldBack.size > 0) {
+			const streams = `${data.messageId}\n${typeof data.callId === "string" ? data.callId : ""}\n`;
+			for (const key of [...this.heldBack.keys()]) if (key.startsWith(streams)) this.heldBack.delete(key);
+		}
+		return event;
 	}
 
 	private async request(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -866,16 +923,17 @@ class Turn {
 		const withdrawn = new Promise<null>((resolve) => controller.signal.addEventListener("abort", () => resolve(null), { once: true }));
 		this.serverQuestions.add(controller);
 		try {
-			const unset = await Promise.race([this.unsetVariables(server), withdrawn]);
+			const reads = await Promise.race([this.variablesOf(server), withdrawn]);
 			// Meanwhile the turn may have ended, or the definition changed: then this one is no longer the question.
-			if (unset === null || gone() || !this.stillWaits(server)) return;
+			if (reads === null || gone() || !this.stillWaits(server)) return;
 			const question: TurnServerQuestion = {
 				name: server.name,
 				fingerprint: server.fingerprint ?? "",
 				argv: server.argv,
 				url: server.argv === null ? server.target : null,
 				file: server.file,
-				unset,
+				unset: reads.unset,
+				secrets: reads.secrets,
 				holdsTurn: !this.promptSent,
 			};
 			const start = await Promise.race([
@@ -939,26 +997,31 @@ class Turn {
 	}
 
 	/**
-	 * The variables a server's definition reads that are not set where the engine runs. Windlass puts
-	 * `${NAME}` in a definition's `env` and `headers` in place from its own environment when the server
-	 * starts, and does not start a server that names one that is not set. Which names a definition reads
-	 * is in the file Windlass says defines it, and whether each is set is asked of the sandbox with the
-	 * engine's own environment, so the user can be told before they answer. Empty when the file cannot
-	 * be read as Windlass reads it: the server's failure then says it, in Windlass's words.
+	 * The variables a server's definition reads: those that are not set where the engine runs, and those
+	 * the engine was handed as secrets of the repository. Windlass puts `${NAME}` in a definition's `env`
+	 * and `headers` in place from its own environment when the server starts, and does not start a
+	 * server that names one that is not set. Which names a definition reads is in the file Windlass says
+	 * defines it. Whether each is set is known for what the engine was started with, and asked of the
+	 * sandbox for the rest (its own environment; no value is sent along to ask), so the user can be
+	 * told before they answer. Both empty when the file cannot be read as Windlass reads it: the
+	 * server's failure then says it, in Windlass's words.
 	 */
-	private async unsetVariables(server: ServerState): Promise<string[]> {
+	private async variablesOf(server: ServerState): Promise<{ unset: string[]; secrets: string[] }> {
+		const none = { unset: [], secrets: [] };
 		try {
-			if (server.file === null || !server.file.startsWith("/")) return [];
+			if (server.file === null || !server.file.startsWith("/")) return none;
 			const file = await this.sandbox.ask(["cat", "--", server.file], { timeoutMs: DEFINITION_TIMEOUT_MS });
-			if (file === null || file.code !== 0) return [];
+			if (file === null || file.code !== 0) return none;
 			const names = variablesRead(file.stdout, server.name);
-			if (names.length === 0) return [];
-			const said = await this.sandbox.ask(["sh", "-c", 'for name in "$@"; do printenv "$name" >/dev/null || echo "$name"; done', "sh", ...names], { env: this.engineEnv, timeoutMs: DEFINITION_TIMEOUT_MS });
-			if (said === null || said.code !== 0) return [];
+			const secrets = names.filter((name) => this.engineSecrets.has(name));
+			const others = names.filter((name) => !this.engineSecrets.has(name) && !(name in this.engineEnv));
+			if (others.length === 0) return { unset: [], secrets };
+			const said = await this.sandbox.ask(["sh", "-c", 'for name in "$@"; do printenv "$name" >/dev/null || echo "$name"; done', "sh", ...others], { timeoutMs: DEFINITION_TIMEOUT_MS });
+			if (said === null || said.code !== 0) return { unset: [], secrets };
 			const unset = new Set(said.stdout.split("\n").map((line) => line.trim()));
-			return names.filter((name) => unset.has(name));
+			return { unset: others.filter((name) => unset.has(name)), secrets };
 		} catch {
-			return [];
+			return none;
 		}
 	}
 

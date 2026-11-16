@@ -16,6 +16,7 @@ import { RefreshIcon, WarnIcon } from "./Icons";
 import { Layers, ProfileFacts } from "./Layers";
 import { PullRequestSection } from "./PullRequest";
 import { ServersSection } from "./Servers";
+import { SecretsSection } from "./Secrets";
 import { SetupSection } from "./SetupCommand";
 import { SandboxState, StatusBadge } from "./Status";
 
@@ -340,6 +341,7 @@ export function SidePanel({ sessionId, summary, profile, view, turnsEnded, quest
 			<Changes sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} reloads={reloads} onFiles={setFiles} />
 			<PullRequestSection sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} files={files} onPublished={published} />
 			<SetupSection summary={summary} />
+			<SecretsSection summary={summary} />
 			{/* Last: it is there only where the project names a server, and so its arrival moves no other section. */}
 			<ServersSection sessionId={sessionId} summary={summary} question={question} />
 		</aside>

@@ -38,6 +38,8 @@ export interface InternalExecResult extends ExecResult {
 export interface StartOptions {
 	cwd?: string;
 	env?: Record<string, string>;
+	/** `ExecOptions.secretEnv`: environment whose values are on no command line. A name that is also in `env` keeps `env`'s value. */
+	secretEnv?: Record<string, string>;
 	onStdout?: (chunk: string) => void;
 	onStderr?: (chunk: string) => void;
 }
@@ -93,7 +95,8 @@ export interface TurnSandbox extends SandboxHandle {
 	start(argv: string[], options?: StartOptions): SandboxProcess;
 	/**
 	 * Runs a short program (no shell, no standard input, not under wlp-run) to its end and returns what it
-	 * said; null when it could not be run at all (the sandbox is not running).
+	 * said; null when it could not be run at all (the sandbox is not running). `env` may be written into
+	 * a command line (Docker's): it is for names and paths, never for a secret.
 	 */
 	ask(argv: string[], options?: { env?: Record<string, string>; timeoutMs?: number }): Promise<Answer | null>;
 	/**
@@ -132,6 +135,13 @@ export function markTurnSandbox(handle: object): void {
 /** Whether a handle the actors passed back came from a provider of this layer. */
 export function isTurnSandbox(handle: SandboxHandle): handle is TurnSandbox {
 	return (handle as unknown as Record<symbol, unknown>)[TURN_SANDBOX] === true;
+}
+
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Throws for a name that is not an environment variable's: one with `=` in it would be read as a name and a value. */
+export function assertEnvNames(env: Record<string, string> | undefined): void {
+	for (const key of Object.keys(env ?? {})) if (!ENV_NAME.test(key)) throw new Error(`invalid environment variable name: ${key}`);
 }
 
 /** One argument of a command line, quoted for a POSIX shell: for providers whose command API takes a string. */

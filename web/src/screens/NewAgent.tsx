@@ -15,6 +15,7 @@ import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
 import { Layers, ProfileFacts } from "../components/Layers";
 import { RepositoryPicker, type PickedRepository } from "../components/RepositoryPicker";
+import { SecretsField } from "../components/Secrets";
 import { SetupField, useSetupDraft } from "../components/SetupCommand";
 import { navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
@@ -285,6 +286,7 @@ export function NewAgent() {
 								) : null}
 							</div>
 							{chosen ? <SetupField setup={setup} repository={`${chosen.repository.owner}/${chosen.repository.name}`} disabled={busy !== null} /> : null}
+							{chosen ? <SecretsField repositoryId={chosen.repository.id} repository={`${chosen.repository.owner}/${chosen.repository.name}`} profile={profile} disabled={busy !== null} /> : null}
 							<div className="field field-wide">
 								<label className="label" htmlFor={ids.prompt}>
 									First prompt <span className="label-optional">optional</span>

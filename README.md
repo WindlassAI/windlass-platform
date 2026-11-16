@@ -60,7 +60,8 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
                            ├─ user          [uid]               profile, the index of sessions, the ChatGPT
                            │                                    sign-in (encrypted) and its access tokens,
                            │                                    approvals of projects' MCP servers,
-                           │                                    setup commands of repositories
+                           │                                    setup commands of repositories, and
+                           │                                    their secrets (encrypted)
                            └─ agentSession  [uid, sessionId]    timeline in SQLite, one sandbox
                                                │
                                                ▼
@@ -763,7 +764,8 @@ in place, and its own commands stay sandboxed.
   it), the session goes on: the turn is not failed for it. The agent is told once, before the next prompt
   Windlass takes, as it is told of a fresh workspace: the platform's note, the command, how it ended, and
   the last twenty lines of what it printed. The timeline keeps the prompt as the user wrote it.
-- **No credential is handed to it.** The token a clone used was given to that one `git clone` on its
+- **No credential of the platform's is handed to it.** What it is handed is what the user saved for the
+  repository as secrets ("A repository's secrets"). The token a clone used was given to that one `git clone` on its
   standard input and revoked when it ended, before the setup starts. A turn's ChatGPT access token file is
   written when a turn starts Windlass, which is after the setup, and removed when that turn ends; a new
   sandbox has had no turn. What the command can read is what the sandbox's user can: on E2B Windlass's data
@@ -771,7 +773,8 @@ in place, and its own commands stay sandboxed.
   shared by the user's sessions, so while another session of the same user runs a turn, its token file is
   there, as a command in the hardened profile can read it.
 - **It is not a place for a secret.** The command is shown in the timeline and, when it fails, given to the
-  agent with its output.
+  agent with its output. A value the command needs is saved as a secret of the repository and read from its
+  variable (`$NPM_TOKEN`); what the command prints of it is shown without it.
 - **What it leaves in the workspace is the workspace's.** Files it makes that the repository does not ignore
   are listed under "Changes" and go into a push like any others.
 
@@ -781,6 +784,110 @@ cd server && npx tsx ../scripts/setup-check.ts    # its rules on their own: what
 
 The web app's mock has a setup command saved for acme/harbor (`?mock=1`); a command with the word "fail" in
 it ends with exit code 1 there.
+
+## A repository's secrets
+
+A project needs values that must not be in its repository: a registry's token for `npm ci`, the key of an
+API an MCP server calls, a database address. A user saves them for a repository of their GitHub connection,
+each under the name of an environment variable, and the platform hands them to that repository's sessions as
+environment variables. A value is never written into the repository or the workspace by the platform, and
+never shown again once it is saved.
+
+- **Whose they are, and where.** The user's, in their `user` actor, one row per repository (GitHub's id, as for
+  the setup command) and name: the name, a scope, when it last changed, and the value, encrypted
+  (`server/src/signin/seal.ts`, AES-256-GCM under a key derived from `WLP_SIGNIN_KEY` or `WLP_SECRET` for this
+  purpose alone, and bound to the user, the repository and the name: a value put into another row does not
+  open). "Sign-ins" says what that encryption protects against and what not; the same holds here. A session
+  on a pasted address or with no repository has no secrets.
+- **Write-only.** The value goes from the browser to the user's actor once, when it is saved. No action sends
+  one back: the list has names, scopes, dates and what each secret reaches, and the query behind it does not
+  read the value's column. A value can be replaced or deleted.
+- **What may be saved.** A name is an environment variable's (letters, digits, underscores, not starting with
+  a digit, at most 64 characters) and none the sandbox, Windlass or the platform's own commands rely on:
+  `WLP_*`, `WINDLASS_*`, `PATH`, `HOME`, `LD_*`, `XDG_*` (where Windlass keeps its data), `BUN_*` and `NODE_*`
+  (the Windlass executable is a Bun program), `BASH_*`, `ENV`, `IFS`, `DOCKER_*`, `E2B_*`, the locale and
+  proxy variables, and a few more (`isReservedName`, `server/src/repo-secrets.ts`). A value has 8 characters
+  or more, since a shorter one could not be taken out of what is shown without taking ordinary words with
+  it, and at most 16,384 bytes; it may have several lines. A repository can have 50 secrets, a user 2,000.
+- **Two scopes.** Every secret goes to the repository's setup command. Beyond that, "Setup and MCP servers"
+  (the default) is for the MCP servers the repository names, which read it as `${NAME}`, and not for the
+  commands the agent runs; "Also the agent's commands" is for those commands too. The second is a choice the
+  interface explains: whatever the agent's commands can read, a manipulated agent could send out once a
+  command has network access, and whatever a command prints goes to the model.
+- **What a scope comes to is decided by Windlass.** It has one rule and no setting for it
+  (`packages/core/src/sandbox/policy.ts`, `mcp/config.ts`, `tools/shell.ts` in its source): an MCP server gets
+  the variables its definition names from Windlass's own environment; a command Windlass sandboxes gets every
+  variable of that environment except those whose names look like credentials (a name that contains `TOKEN`,
+  `KEY`, `SECRET`, `PASSWORD`, ..., or begins with `AWS_`, `OPENAI_`, ..., or is `DATABASE_URL`, ...); a
+  command it does not sandbox gets all of them. So once a variable is in Windlass's environment, only its
+  name keeps it from a command, and the platform hands Windlass only what keeps the scope true:
+
+  | The secret | Commands sandboxed by Windlass (`docker-windlass-sandbox`, E2B with its sandbox promised) | Commands not sandboxed (`docker-hardened`, `e2b-open`), or nothing promised (E2B before its check) |
+  |---|---|---|
+  | setup and MCP servers, a name Windlass withholds (`NPM_TOKEN`, `DATABASE_URL`) | setup command, MCP servers | setup command only |
+  | setup and MCP servers, any other name (`SENTRY_DSN`) | setup command only | setup command only |
+  | also the agent's commands, a name Windlass passes on (`PREVIEW_HOST`) | setup command, MCP servers, commands | setup command, MCP servers, commands |
+  | also the agent's commands, a name Windlass withholds (`DEPLOY_KEY`) | setup command, MCP servers; **not** commands | setup command, MCP servers, and the commands Windlass runs without its sandbox |
+
+  Where a secret reaches less than its scope says, the list says so under it, for the sandbox of the session
+  (or the one chosen in the launch form), with the reason (`secretReach`). Three promises cannot be kept with
+  the Windlass that exists, and are not made: an MCP server cannot be given a variable whose name Windlass
+  would pass on to sandboxed commands without the commands getting it too; where commands are not sandboxed,
+  an MCP server cannot be given anything they do not get; and a sandboxed command cannot be given a variable
+  whose name looks like a credential. In approval `full`, once content from the web or an MCP server is in the
+  conversation, Windlass sandboxes commands again where it can (not in `docker-hardened`, where bubblewrap
+  does not start: there it asks before each command and runs it as before).
+- **The copy of Windlass's rule.** The platform has to know which names Windlass withholds before Windlass is
+  started, and Windlass cannot be asked, so its lists are repeated in `looksLikeCredential`. They must change
+  when Windlass's do: with a name the platform takes to be withheld and Windlass passes on, a secret for
+  setup and MCP servers would reach the agent's commands. `scripts/secrets-check.ts` holds the copy against
+  Windlass's source when that is beside this repository. A sandbox keeps the Windlass of the image it was
+  made from.
+- **When a change takes effect.** A session reads its repository's secrets from the user's actor when a turn
+  starts. Windlass is started for each turn, so MCP servers and the agent's commands have a new, replaced or
+  deleted secret from the session's next turn; a turn that is running keeps what it started with. The setup
+  command runs once in each new sandbox, so it gets a change in the sandboxes made after it. Deleting a
+  secret takes nothing back that a setup command already made of it in a workspace.
+- **In the sandbox.** A value reaches a process in its environment and is on no command line: not the
+  server's (on Docker a variable would otherwise be an argument of `docker exec -e NAME=value`, readable by
+  anyone on the machine who lists processes; a secret is only named there, `-e NAME`, and the `docker` client
+  takes the value from its own environment), and not in the sandbox. On E2B it goes in the request that
+  starts the command. The session's actor holds the values in memory for one turn, on the turn's own
+  record, and never in its stored state. Whoever can read a process's environment in the sandbox can read
+  what that process was handed: where commands run directly in the sandbox machine that is every command of
+  the agent, for Windlass and the MCP servers it started; where Windlass sandboxes commands, they see no
+  other process.
+- **What is shown.** Every saved value of the session's repository is taken out of what leaves the sandbox
+  layer, and replaced by `[secret:NAME]`: the setup command's output as it streams and in its timeline item,
+  every event of a turn (tool output, the model's text, a question, the description of a project's server),
+  the end of standard error and the sentence of a failure, the note the agent is given about a setup that
+  failed, and the server's log lines that quote any of these. A value split over two pieces of streaming
+  output is held back until it is whole. The session's actor does it once more for every item a turn adds to
+  the timeline, whoever wrote it, and for the workspace's diff, since a setup command may write a value to a
+  file. Windlass has a redaction of its own for the values of its credential-named variables
+  (`[REDACTED:env]`), which comes first where it applies. Not found: a value a program changed before
+  printing it (base64, a part of it), and a value of a secret that was deleted or replaced since.
+- **What the platform does not keep a value from.** A process that was handed it. A setup command can write
+  a secret into a file of the workspace (a `.npmrc`), where the agent's commands read it and a push publishes
+  it; an MCP server can send it anywhere. And a secret for the agent's commands that a command prints is in
+  Windlass's own record of the conversation, in the sandbox and in its copy in the bucket, and goes to the
+  model, unless its name is one Windlass redacts.
+- **Who may read them.** The value's only reader is a session of the same user, for its own repository:
+  `internalSessionSecrets` takes a service token made for exactly that user and session, and looks the
+  session's repository up in the user actor's own index instead of taking it from the call. The answer is
+  the sealed values; the server that runs the turn opens them. Another user who can open the same repository
+  has secrets of their own for it, and sees and is handed none of these.
+- **Where the user manages them.** In a session's side panel, under "Secrets", beside the setup command, and
+  in the launch form once a repository is chosen ("Manage…"): add, replace a value, change a scope, delete.
+  The value's field is a password field and is empty whenever it is shown; a value of several lines goes into
+  a field that hides it the same way.
+
+```sh
+cd server && npx tsx ../scripts/secrets-check.ts    # the rules on their own: names, limits, scopes, sealing, the list, redaction
+```
+
+The web app's mock has three secrets saved for acme/harbor (`?mock=1`), one of each kind the list has a
+sentence for; it keeps no value at all.
 
 ## A project's MCP servers
 
@@ -816,12 +923,15 @@ the same place as a tool call's question, with the same control.
   agent has them from this turn on.", or "Left the MCP server "harbor" stopped. If the agent tries to use it,
   it is told that the server waits for you; your next message asks again." A question nobody answers within
   `WLP_QUESTION_TIMEOUT_MS` is settled as "not now", says so, and the turn goes on.
-- **A variable that is not set.** Windlass fills `${NAME}` in a definition's `env` and `headers` from its own
-  environment and does not start a server that names a variable which is not set. The platform has nowhere to
-  keep such a value yet, so the question names the variable ("It will not start yet: its definition reads the
-  variable HARBOR_TOKEN, which is not set in the sandbox, ..."), and an approval ends in Windlass's own reason:
-  "Approved the MCP server "harbor" for this project, but it did not start: the environment variable
-  HARBOR_TOKEN named in its env is not set. The platform cannot set variables for a session yet."
+- **Variables.** Windlass fills `${NAME}` in a definition's `env` and `headers` from its own environment and
+  does not start a server that names a variable which is not set. A repository's secrets are what sets one
+  ("A repository's secrets"). The question says which saved secrets approving hands over ("Its definition
+  reads the secret HARBOR_TOKEN saved for this repository: approving gives its value to the server.", or
+  "... sends its value to that address."). For a variable that is not set it says what would set it ("It
+  will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs.
+  Save a secret named HARBOR_TOKEN for acme/harbor, under Secrets in this session's panel: it is handed over
+  from the next turn."), or, where a secret of that name is saved and the session's sandbox keeps it from MCP
+  servers, why. An approval of such a server ends in Windlass's own reason and the same sentence.
 - **What is remembered, and where.** Windlass keeps an approval in its data directory, for the project
   directory and exactly that definition, for 30 days. On E2B that directory is on the sandbox's disk, so by
   itself an approval would hold for one sandbox: every new session on the repository would ask again, and so
@@ -910,6 +1020,7 @@ or makes those calls slow for ten seconds.
 | `server/src/server-question.ts` | The words of the question about a project's MCP server, for each sandbox profile, and of the timeline's lines about it |
 | `server/src/server-approvals.ts` | The user's remembered approvals of projects' MCP servers: what a project is, the record itself, and what a session keeps of its project's servers for its side panel |
 | `server/src/setup-command.ts`, `server/src/sandbox/setup.ts` | A repository's setup command: what it is saved for, its limits, what is kept of a run's output and what the agent is told; and the run itself in a sandbox |
+| `server/src/repo-secrets.ts` | A repository's secrets: what may be saved, what a scope comes to in each kind of sandbox, the sealing, and taking saved values out of text |
 | `server/src/bucket/`, `server/src/sandbox/backup.ts` | The object store the copies of Windlass's session data go to (S3 protocol, and a stand-in for tests), and what is copied, saved and restored |
 | `server/src/github/` | The GitHub App: its tokens and API calls, connecting (the callback route), which repositories a user may work on, and the git commands the platform runs in a sandbox ("GitHub") |
 | `sandbox/` | The sandbox image, `build.sh`, `cleanup.sh` |
@@ -928,6 +1039,7 @@ cd server && WLP_DEMO=1 pnpm e2e:docker                           # the actors, 
 cd server && npx tsx ../scripts/sandbox-check.ts                  # the sandbox layer on its own
 cd server && npx tsx ../scripts/mcp-check.ts                      # the question about a project's MCP server, against a real Windlass
 cd server && npx tsx ../scripts/setup-check.ts                    # a repository's setup command: its rules, no server and no Docker
+cd server && npx tsx ../scripts/secrets-check.ts                  # a repository's secrets: its rules, no server and no Docker
 cd server && npx tsx ../scripts/signin-check.ts                   # the sign-in machinery: no server, no Docker, a stand-in for OpenAI
 cd server && npx tsx ../scripts/connection-check.ts               # the tokens browsers connect with: a stand-in for the engine
 cd server && npx tsx ../scripts/access-check.ts                   # who may sign in: the invitation list and the demo
@@ -1026,6 +1138,16 @@ rebuilt, also when that Windlass is older than the codes ("What went wrong with 
   another machine would be handed a short-lived access token as the other sessions are. It needs a provider in
   the sandbox layer, an image with Windlass in it and an account. Firecracker needs a host with KVM and a guest
   agent; agentOS cannot run the Windlass executable at all.
+- **A secret's scope is as narrow as Windlass's one rule allows, and no narrower.** Windlass has no setting
+  for which variables a command gets, so three things cannot be had ("A repository's secrets"): an MCP
+  server's variable under a name that does not look like a credential, kept from sandboxed commands; an MCP
+  server's variable kept from commands that are not sandboxed; and a credential-named variable for a
+  sandboxed command. What Windlass would need: a list of names kept from every command (its `EnvPolicy`
+  has `names` for it) and a list of credential-named ones let through (`keep`), settable by whoever starts
+  it and never by a project's file; or an environment for MCP servers that is separate from its own.
+- **A server that Windlass starts from its own record says nothing of secrets.** When a variable such a
+  server reads is not set, no question is put, so the sentence about what would set it is not said: the
+  panel lists the server as one that could not start, with Windlass's reason, which names the variable.
 - **A project's hooks and language servers are not asked about.** Windlass holds those back as it holds back
   a project's MCP servers, and reports them the same way (`_windlass/hooks`, `_windlass/lsp`). The platform
   puts only the servers' question, so a project's hooks do not run and its language servers do not start.

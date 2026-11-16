@@ -35,6 +35,15 @@
  * timeline: an item when it starts, its output as deltas, an item when it has ended. A run that did
  * not succeed does not fail the turn; the agent is told of it once, before its next prompt.
  *
+ * Such a session is also handed the secrets the user saved for the repository (repo-secrets.ts). A
+ * turn reads them from the user's `user` actor when it starts, sealed, opens them here, and holds the
+ * values on its own record in memory (`ActiveTurn.secrets`): they go when the turn does, and are
+ * never part of `meta`, the timeline or a log. The setup command gets all of them, Windlass those
+ * the session's sandbox lets it keep to their scope, and every value is taken out of what the turn
+ * leaves behind: the sandbox layer does it for what Windlass and the setup command say, and `append`
+ * does it once more for every item the turn adds to the timeline, whoever wrote it. The copy of the
+ * workspace's diff is treated the same, since a setup command may have written a value to a file.
+ *
  * A sandbox nobody uses is suspended, and after longer removed (config.idleSuspendMs, idleDestroyMs),
  * by the actor's own durable schedule (`c.schedule`): it holds while the actor sleeps and across a
  * restart, and wakes the actor when it is due. The check never touches a turn in progress or one being
@@ -94,6 +103,7 @@ import { getLayer } from "../layer.js";
 import { EFFORTS, platformModels } from "../platform-info.js";
 import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { runSetupCommand, stopLeftoverSetup } from "../sandbox/setup.js";
+import { NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, openSecret, setupEnvironment, windlassEnvironment } from "../repo-secrets.js";
 import { type KnownServer, type ServerApproval, knownServers, projectOf, sameServers, serversView } from "../server-approvals.js";
 import {
 	SERVER_START,
@@ -108,9 +118,11 @@ import {
 	serverQuestionWords,
 	serverRecalledNote,
 	serverUnansweredNote,
+	unsetRemedy,
 } from "../server-question.js";
 import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf } from "../setup-command.js";
-import { grantIsValid, type SessionCreateInput, userActor } from "./internal.js";
+import { serverSealer } from "../signin/seal.js";
+import { grantIsValid, secretsActor, type SessionCreateInput, userActor } from "./internal.js";
 
 // ---------------------------------------------------------------------------------------------
 // Limits
@@ -257,6 +269,17 @@ interface ActiveTurn {
 	stopping: boolean;
 	/** True once the turn is being closed: nothing of it can be steered, stopped or answered any more. */
 	closed: boolean;
+	/**
+	 * The secrets of the session's repository, with their values, for this turn. Held here and nowhere
+	 * else: not in `meta`, not in SQLite. Null until they were read, and for a session that has none.
+	 */
+	secrets: HeldSecrets | null;
+}
+
+/** A repository's secrets as a turn holds them: the values, and what takes them out of text. */
+interface HeldSecrets {
+	opened: OpenedSecret[];
+	redactor: Redactor;
 }
 
 interface SessionVars {
@@ -406,9 +429,14 @@ function scheduleWrite(c: Ctx): void {
 	}, FLUSH_DELAY_MS);
 }
 
-/** Adds an item to the timeline: numbers it, announces it, and queues it for SQLite. Synchronous. */
+/**
+ * Adds an item to the timeline: numbers it, announces it, and queues it for SQLite. Synchronous. While
+ * a turn holds its repository's secrets, their values are taken out of every text of the item first,
+ * whatever wrote it: nothing a turn adds to the timeline carries one.
+ */
 function append(c: Ctx, item: NewItem): TimelineItem {
-	const full = { ...item, seq: c.vars.nextSeq, at: Date.now() } as TimelineItem;
+	const redactor = c.vars.turn?.secrets?.redactor;
+	const full = { ...(redactor ? redactor.deep(item) : item), seq: c.vars.nextSeq, at: Date.now() } as TimelineItem;
 	c.vars.nextSeq += 1;
 	c.vars.unwritten.push(full);
 	c.broadcast("item", full);
@@ -612,7 +640,7 @@ function tail(text: string, lines = 6, chars = 800): string {
 }
 
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
-async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer): Promise<SandboxHandle> {
+async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer, secrets: HeldSecrets | null): Promise<SandboxHandle> {
 	let handle = meta.sandboxId ? await layer.sandboxes.connect(meta.sandboxId) : undefined;
 	if (handle) {
 		if (meta.sandbox === "paused") note(c, turn, "info", "Resuming sandbox");
@@ -658,7 +686,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	// What a setup run that was cut off with its server left running is not the agent's to find at work.
 	if (meta.setupUnfinished?.state === "interrupted" && !signal.aborted) await stopLeftoverSetup(handle);
 	// The repository's setup command, once in this sandbox, before Windlass is started in it.
-	if (meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted) await runSetup(c, meta, turn, handle, signal);
+	if (meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted) await runSetup(c, meta, turn, handle, signal, secrets);
 	if (meta.repoUrl && !meta.cloned && !signal.aborted) {
 		note(c, turn, "info", `Cloning ${meta.repoUrl}`);
 		const cloned = await handle.run(cloneCommand(meta.repoUrl), { timeoutMs: CLONE_TIMEOUT_MS, signal });
@@ -832,21 +860,28 @@ async function readFiles(c: Ctx, sandbox: SandboxHandle): Promise<WorkspaceFile[
 	return parseStatus(status.stdout);
 }
 
-/** Null when git could not say. */
-async function readDiff(c: Ctx, sandbox: SandboxHandle): Promise<string | null> {
+/**
+ * Null when git could not say. A file may hold the value of one of the repository's secrets (a setup
+ * command that wrote a registry's token into a configuration file): the diff is shown and stored
+ * without it. The file itself has it, and so does a push of it.
+ */
+async function readDiff(c: Ctx, meta: SessionMeta, sandbox: SandboxHandle): Promise<string | null> {
+	const redactor = await sessionRedactor(c, meta);
 	const diff = await sandbox.run(DIFF_COMMAND, { timeoutMs: GIT_TIMEOUT_MS });
 	if (diff.exitCode !== 0 && diff.stdout === "") {
-		c.log.warn({ msg: "git diff failed in the sandbox", exitCode: diff.exitCode, stderr: tail(diff.stderr, 3, 300) });
+		c.log.warn({ msg: "git diff failed in the sandbox", exitCode: diff.exitCode, stderr: redactor.text(tail(diff.stderr, 3, 300)) });
 		return null;
 	}
-	return diff.stdout.length > MAX_DIFF_CHARS ? diff.stdout.slice(0, MAX_DIFF_CHARS) : diff.stdout;
+	// Cut after the values are out: a cut through one would leave its beginning.
+	const text = redactor.text(diff.stdout);
+	return text.length > MAX_DIFF_CHARS ? text.slice(0, MAX_DIFF_CHARS) : text;
 }
 
 /** Reads the workspace from a running sandbox and keeps the copy. Null, and no copy kept, when it could not be read. Never throws. */
-async function copyWorkspace(c: Ctx, sandbox: SandboxHandle): Promise<WorkspaceCopy | null> {
+async function copyWorkspace(c: Ctx, meta: SessionMeta, sandbox: SandboxHandle): Promise<WorkspaceCopy | null> {
 	try {
 		const files = await readFiles(c, sandbox);
-		const diff = files === null ? null : await readDiff(c, sandbox);
+		const diff = files === null ? null : await readDiff(c, meta, sandbox);
 		if (files === null || diff === null) return null;
 		const copy: WorkspaceCopy = { files, diff };
 		await c.db.execute("INSERT OR REPLACE INTO workspace (id, files, diff) VALUES (1, ?, ?)", JSON.stringify(files), diff);
@@ -895,7 +930,7 @@ async function workspaceView(c: Ctx, meta: SessionMeta): Promise<WorkspaceCopy |
 	noteSandbox(c, meta, "running");
 	if (c.vars.turn) return { sandbox };
 	markUsed(c, meta);
-	return (await copyWorkspace(c, sandbox)) ?? { sandbox };
+	return (await copyWorkspace(c, meta, sandbox)) ?? { sandbox };
 }
 
 /** Asks the sandbox layer what state the sandbox is really in. */
@@ -917,6 +952,44 @@ async function refreshSandbox(c: Ctx, meta: SessionMeta): Promise<void> {
 const PULL_FRESH_MS = 20_000;
 
 /** What clients see of the repository: all of it but the installation, which is the platform's own matter. */
+/**
+ * The secrets the user saved for the session's repository, read from their `user` actor and opened
+ * here: for one turn, or for one reading of the workspace. Null for a session that is not on a
+ * repository of the GitHub connection: it has none. The caller's token names this user and this
+ * session, and the actor answers with the secrets of the repository it knows the session to be on.
+ * Throws a TurnProblem when they cannot be read: with values it does not know, the platform could
+ * hand nothing over and take nothing out of what it shows, so nothing is started.
+ */
+async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Promise<HeldSecrets | null> {
+	const project = setupProjectOf(meta);
+	if (!project) return null;
+	const sealed = await orNull(secretsActor(c, meta.uid, meta.sessionId).internalSessionSecrets(meta.sessionId), RECALL_WAIT_MS);
+	if (sealed === null) throw new TurnProblem(`The secrets saved for ${project.label} could not be read. Nothing was started, because without them the platform could not take their values out of what it shows. Try again.`);
+	const opened: OpenedSecret[] = [];
+	const closed: string[] = [];
+	if (sealed.project === project.key) {
+		const sealer = serverSealer();
+		for (const secret of sealed.secrets) {
+			try {
+				opened.push({ name: secret.name, scope: secret.scope, value: openSecret(sealer, meta.uid, project.key, secret.name, secret.sealed) });
+			} catch {
+				closed.push(secret.name);
+			}
+		}
+	}
+	if (closed.length > 0) {
+		console.error(`[wlp] secret.unreadable uid=${meta.uid} session=${meta.sessionId} project=${project.key} names=${closed.join(",")}: sealed with another key than this server's, or changed in storage`);
+		if (turn !== null) note(c, turn, "warn", `${closed.length === 1 ? `The secret ${closed[0]}` : `The secrets ${closed.join(", ")}`} saved for ${project.label} could not be opened by this server, so ${closed.length === 1 ? "it is" : "they are"} not handed over. Save ${closed.length === 1 ? "it" : "them"} again under Secrets in the session's panel.`);
+	}
+	return { opened, redactor: new SecretRedactor(opened) };
+}
+
+/** What takes the repository's saved values out of text now: the running turn's, or one read for this once. */
+async function sessionRedactor(c: Ctx, meta: SessionMeta): Promise<Redactor> {
+	const held = c.vars.turn?.secrets ?? (await readSecrets(c, meta, null));
+	return held?.redactor ?? NO_REDACTION;
+}
+
 function repositoryOf(repo: StoredRepository): NonNullable<SessionSummary["repository"]> {
 	return { provider: repo.provider, id: repo.id, owner: repo.owner, name: repo.name, branch: repo.branch, private: repo.private, url: repo.url };
 }
@@ -984,7 +1057,7 @@ function setupOutput(c: Ctx, turn: number, id: string, text: string): void {
  * marked as done for this sandbox before it starts, so a server that stops under it does not make
  * the next turn run it a second time. Never throws.
  */
-async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal): Promise<void> {
+async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal, secrets: HeldSecrets | null): Promise<void> {
 	const project = setupProjectOf(meta);
 	const directory = meta.setupDue;
 	if (!project || typeof directory !== "string") return;
@@ -1002,6 +1075,8 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 		return;
 	}
 
+	const handed = secrets?.opened ?? [];
+	if (handed.length > 0) note(c, turn, "info", `The setup command is handed ${handed.length === 1 ? "the secret" : `the ${handed.length} secrets`} saved for ${project.label}, as environment variables: ${handed.map((secret) => secret.name).join(", ")}.`);
 	const id = `su_${randomBytes(6).toString("hex")}`;
 	const limitMs = config.setupTimeoutMs;
 	meta.setupRunning = { id, command, limitMs };
@@ -1024,6 +1099,8 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 		cwd: directory === "." ? sandbox.cwd : `${sandbox.cwd}/${directory}`,
 		timeoutMs: limitMs,
 		signal,
+		secretEnv: setupEnvironment(handed),
+		redactor: secrets?.redactor,
 		onOutput: (text) => {
 			tail.push(text);
 			waiting += text;
@@ -1194,7 +1271,7 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 /** After a push, or one that failed half way: the commit changed what differs from the last commit, so the copy is taken again. */
 async function afterPublish(c: Ctx, meta: SessionMeta, sandbox: SandboxHandle): Promise<PublishState> {
 	c.vars.unpushed = null;
-	if (!c.vars.turn && !((await copyWorkspace(c, sandbox)) ?? null)) await dropWorkspace(c);
+	if (!c.vars.turn && !((await copyWorkspace(c, meta, sandbox)) ?? null)) await dropWorkspace(c);
 	markUsed(c, meta);
 	publish(c);
 	await persist(c);
@@ -1442,6 +1519,7 @@ async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, context:
 		url: argv === null ? str(given?.url) : null,
 		file: typeof given?.file === "string" && given.file !== "" ? given.file : null,
 		unset: Array.isArray(given?.unset) ? given.unset.map(str) : [],
+		secrets: Array.isArray(given?.secrets) ? given.secrets.map(str) : [],
 		holdsTurn: given?.holdsTurn === true,
 	};
 	if (gone()) return false;
@@ -1717,7 +1795,9 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 	try {
 		await persist(c);
 		layer = await getLayer();
-		const sandbox = await openSandbox(c, meta, turn, signal, layer);
+		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
+		active.secrets = await readSecrets(c, meta, turn);
+		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
 		used = sandbox;
 		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
 		resumed = meta.windlassSessionId;
@@ -1732,8 +1812,12 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			// And once: that the repository's setup command did not succeed in this sandbox.
 			const unfinished = meta.setupUnfinished ?? null;
 			// What the question about a project's server has to say depends on where this session runs.
-			const servers: ServerQuestionContext = { profile: layer.sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: layer.sandboxes.sessionsLiveInSandbox, project: projectOf(meta) };
+			const profile = layer.sandboxes.profile(meta.profile);
+			const held = active.secrets;
+			const servers: ServerQuestionContext = { profile, demo: meta.demo, dataInSandbox: layer.sandboxes.sessionsLiveInSandbox, project: projectOf(meta), secrets: held === null ? null : held.opened.map(({ name, scope }) => ({ name, scope })) };
 			result = await layer.windlass.runTurn(sandbox, {
+				// Windlass gets the secrets that keep to their scope in this sandbox; every saved value is taken out of what it says.
+				secrets: held === null ? undefined : { env: windlassEnvironment(held.opened, profile), redactor: held.redactor },
 				prompt: `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${text}`,
 				windlassSessionId: resumed ?? undefined,
 				model: meta.model,
@@ -1756,7 +1840,8 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				onServerApproved: (question, outcome) => {
 					const named = { name: str(question?.name), fingerprint: str(question?.fingerprint) };
 					const recalled = active.recalled.get(serverKey(named));
-					const said = recalled ? serverRecalledNote(question, outcome, ago(Date.now() - recalled.approvedAt)) : serverApprovedNote(question, outcome);
+					const remedy = unsetRemedy(Array.isArray(question?.unset) ? question.unset.map(str) : [], servers);
+					const said = recalled ? serverRecalledNote(question, outcome, ago(Date.now() - recalled.approvedAt), remedy) : serverApprovedNote(question, outcome, remedy);
 					note(c, turn, said.level, said.text);
 					// The user's yes is kept once Windlass took it: a definition that had changed, or an approval that
 					// never reached Windlass, is not one. Using a remembered approval does not renew it.
@@ -1775,9 +1860,11 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		}
 	} catch (error) {
 		if (!signal.aborted) {
-			problem = error instanceof TurnProblem || isSandboxUserError(error) ? error.message : `The sandbox failed: ${describeError(error)}`;
-			if (error instanceof TurnProblem) c.log.warn({ msg: "turn failed", session: meta.sessionId, turn, error: error.message });
-			else c.log.error({ msg: "turn failed", session: meta.sessionId, turn, error: error instanceof Error ? (error.stack ?? error.message) : String(error) });
+			// An error's text is the sandbox's or the provider's: the repository's saved values are taken out of it before it is logged or shown.
+			const clean = (text: string) => active.secrets?.redactor.text(text) ?? text;
+			problem = clean(error instanceof TurnProblem || isSandboxUserError(error) ? error.message : `The sandbox failed: ${describeError(error)}`);
+			if (error instanceof TurnProblem) c.log.warn({ msg: "turn failed", session: meta.sessionId, turn, error: clean(error.message) });
+			else c.log.error({ msg: "turn failed", session: meta.sessionId, turn, error: clean(error instanceof Error ? (error.stack ?? error.message) : String(error)) });
 		}
 	}
 	open = false;
@@ -1838,7 +1925,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		if (used) {
 			// Windlass's session is copied out of the sandbox meanwhile, when Windlass ran: both only read.
 			const saving = result && layer ? saveBackup(c, meta, turn, used, layer) : undefined;
-			const copied = c.vars.stopping || c.vars.destroying ? null : await copyWorkspace(c, used);
+			const copied = c.vars.stopping || c.vars.destroying ? null : await copyWorkspace(c, meta, used);
 			if (!copied) await dropWorkspace(c);
 			await saving;
 		}
@@ -2229,7 +2316,7 @@ export const agentSession = actor({
 				append(c, { turn, kind: "user", text, model, effort });
 				publish(c);
 
-				const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false };
+				const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null };
 				c.vars.turn = active;
 				active.done = c.keepAwake(runTurn(c, meta, active, text));
 				return { turn, steered: false };
@@ -2336,7 +2423,7 @@ export const agentSession = actor({
 			try {
 				const view = await workspaceView(c, meta);
 				if (view === null) return "";
-				return "sandbox" in view ? ((await readDiff(c, view.sandbox)) ?? "") : view.diff;
+				return "sandbox" in view ? ((await readDiff(c, meta, view.sandbox)) ?? "") : view.diff;
 			} catch (error) {
 				throw clientError(c.log, error, "The workspace's diff could not be read.");
 			}

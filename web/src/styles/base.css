@@ -416,6 +416,183 @@ strong {
 	color: var(--ink-dim);
 }
 
+/* ---- a repository's secrets ----------------------------------------------------------------- */
+
+/* The list: a name, who gets it, when it changed, and a sentence where it reaches less than its scope. */
+.secrets {
+	display: grid;
+	gap: 14px;
+}
+.secret {
+	min-width: 0;
+}
+.secret-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 0 12px;
+	font-family: var(--font-mono);
+}
+.secret-name {
+	min-width: 0;
+	font-size: var(--size-mono);
+	font-weight: 700;
+	color: var(--ink);
+	overflow-wrap: anywhere;
+}
+.secret-scope {
+	font-size: var(--size-mono-small);
+	color: var(--ink-dim);
+}
+.secret-foot {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0 12px;
+	min-height: 28px;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+}
+.secret-when time {
+	color: var(--ink-dim);
+	white-space: nowrap;
+}
+.secret-change {
+	font-weight: 400;
+	color: var(--ink-dim);
+	white-space: nowrap;
+}
+.secret-change:hover:not(:disabled) {
+	color: var(--ink);
+}
+.secret-note {
+	margin-top: 2px;
+	font-family: var(--font-text);
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+	overflow-wrap: anywhere;
+}
+
+/* The dialog: the list, or one secret's form. */
+.secret-dialog {
+	display: grid;
+	gap: 16px;
+	font-family: var(--font-text);
+	font-size: var(--size-text);
+}
+.secret-about {
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.secret-about + .secret-about {
+	margin-top: -8px;
+}
+/* A value of several lines, hidden as the field of one line hides its own. */
+.secret-lines {
+	min-height: 96px;
+	-webkit-text-security: disc;
+}
+.secret-scopes {
+	display: grid;
+	gap: 8px;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+.secret-scopes > .label {
+	padding: 0;
+}
+.secret-choice {
+	position: relative;
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	padding: 11px 12px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-m);
+	background: var(--bg);
+	cursor: pointer;
+	transition:
+		border-color 140ms var(--ease),
+		background-color 140ms var(--ease);
+}
+.secret-choice:hover {
+	border-color: var(--ink-faint);
+}
+.secret-choice-chosen,
+.secret-choice-chosen:hover {
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 5%, var(--bg));
+}
+.secret-choice:has(.secret-radio:focus-visible) {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+.secret-radio {
+	position: absolute;
+	opacity: 0;
+	pointer-events: none;
+}
+.secret-pick {
+	flex: none;
+	width: 16px;
+	height: 16px;
+	margin-top: 2px;
+	border: 1.5px solid var(--ink-faint);
+	border-radius: 50%;
+}
+.secret-choice-chosen .secret-pick {
+	border-color: var(--accent);
+	box-shadow: inset 0 0 0 3.5px var(--bg), inset 0 0 0 10px var(--accent);
+}
+.secret-choice-text {
+	display: grid;
+	gap: 3px;
+	min-width: 0;
+}
+.secret-choice-name {
+	font-size: 0.9375rem;
+	font-weight: 600;
+	color: var(--ink);
+}
+.secret-choice-means {
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+/* The footer while a deletion is confirmed: the question on the left, as a dialog's error is. */
+.secret-confirm {
+	color: var(--ink);
+}
+.secret-delete {
+	margin-right: auto;
+}
+
+/* The launch form's field: the names that are saved, and the way to the dialog. */
+.secret-field {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	min-height: 38px;
+	padding: 4px 4px 4px 11px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-m);
+	background: var(--bg-sunk);
+}
+.secret-field-names {
+	min-width: 0;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono);
+	color: var(--ink-dim);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /* ---- callouts and chips --------------------------------------------------------------------- */
 
 .callout {

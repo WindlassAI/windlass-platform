@@ -30,12 +30,21 @@
  * one row per repository: the command a session runs once in each new sandbox, after the clone. A
  * session reads it here when its sandbox is new, so what is saved holds for every session of the user
  * on whichever server; nothing but the user's own calls writes a row.
+ *
+ * And the secrets the user saved for those repositories (repo-secrets.ts), one row per repository and
+ * name: the name, the scope, when it was last changed, and the value, sealed like the sign-in with a
+ * key of its own purpose and bound to this user, that repository and that name. A value comes in
+ * from the user's browser once and is never sent back to one: the listing reads no value at all.
+ * The one caller that is handed the sealed values is a session of this user, for the repository
+ * this actor's own index says that session is on (`internalSessionSecrets`); it opens them on the
+ * server that runs its turn. Whoever holds this storage and not the servers' secret reads which
+ * repositories have secrets, their names, scopes and times, and how long each value is.
  */
 
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
-import { assertOrigin, authenticate, clientError, maySubscribe, requireService, requireUser } from "../auth.js";
+import { assertOrigin, authenticate, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { config } from "../config.js";
 import {
 	type ChatgptStatus,
@@ -45,7 +54,11 @@ import {
 	type GithubStatus,
 	MAX_RUNNING_SESSIONS,
 	MAX_TITLE_CHARS,
+	MAX_SECRETS_PER_REPOSITORY,
+	type RepositorySecrets,
 	type RepositorySetup,
+	type SandboxProfile,
+	type SecretScope,
 	type SessionSummary,
 	type UserProfile,
 } from "../contract.js";
@@ -56,14 +69,16 @@ import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches,
 import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
 import { platformModels } from "../platform-info.js";
+import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, listedSecrets, sealSecret } from "../repo-secrets.js";
 import type { ChatgptAccount } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../signin/directory.js";
 import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
 import { getSignIns } from "../signin/index.js";
+import { serverSealer } from "../signin/seal.js";
 import { uidOfAccount } from "../signin/material.js";
-import { createSessionActor, isActorGone, sessionActor } from "./internal.js";
+import { type SealedSecrets, createSessionActor, isActorGone, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
 const MAX_REPO_URL_CHARS = 300;
@@ -329,6 +344,75 @@ function setupKeyOf(repositoryId: unknown): string {
 	return key;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Secrets of repositories
+// ---------------------------------------------------------------------------------------------
+
+/** The profile a list of secrets is asked for, as this deployment's sandbox layer describes it. */
+async function secretProfile(id: unknown): Promise<SandboxProfile> {
+	const { sandboxes } = await getLayer();
+	const profile = sandboxes.profiles().find((item) => item.id === id);
+	if (!profile) throw new UserError("Choose one of the listed sandboxes.", { code: "bad_input" });
+	return profile;
+}
+
+/**
+ * A repository's secrets as a client may see them: name, scope, when each was last changed, and what
+ * it reaches in a sandbox of `profile`. The value's column is not read, so no value can be in the answer.
+ */
+async function listSecrets(db: RawAccess, project: string, profile: SandboxProfile): Promise<RepositorySecrets> {
+	const rows = await db.execute<{ name: string; scope: string; updated_at: number }>("SELECT name, scope, updated_at FROM repo_secret WHERE project = ? ORDER BY name", project);
+	return listedSecrets(rows, profile);
+}
+
+/**
+ * Saves a secret whose name, value and scope were cleaned already. With a value: a new secret, or a
+ * new value for the one of that name, sealed for this user, repository and name before it is stored.
+ * Without: the scope of the one of that name.
+ */
+async function saveSecret(c: UserCtx, uid: string, project: string, label: string, name: string, value: string | undefined, scope: SecretScope): Promise<void> {
+	const [found] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ? AND name = ?", project, name);
+	const exists = (found?.n ?? 0) > 0;
+	if (value === undefined) {
+		if (!exists) throw new UserError(`No secret named ${name} is saved for this repository.`, { code: "secret_not_found" });
+		await c.db.execute("UPDATE repo_secret SET scope = ?, updated_at = ? WHERE project = ? AND name = ?", scope, Date.now(), project, name);
+	} else {
+		if (!exists) {
+			const [here] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ?", project);
+			if ((here?.n ?? 0) >= MAX_SECRETS_PER_REPOSITORY) throw new UserError(`A repository can have at most ${MAX_SECRETS_PER_REPOSITORY} secrets. Delete one first.`, { code: "too_many_secrets" });
+			const [all] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret");
+			if ((all?.n ?? 0) >= MAX_SECRETS_PER_USER) throw new UserError(`You have ${MAX_SECRETS_PER_USER.toLocaleString("en-US")} secrets saved over all your repositories, which is the limit. Delete one first.`, { code: "too_many_secrets" });
+		}
+		await c.db.execute(
+			"INSERT INTO repo_secret (project, name, label, scope, sealed, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (project, name) DO UPDATE SET label = excluded.label, scope = excluded.scope, sealed = excluded.sealed, updated_at = excluded.updated_at",
+			project,
+			name,
+			label,
+			scope,
+			sealSecret(serverSealer(), uid, project, name, value),
+			Date.now(),
+		);
+	}
+	// The name, never anything of the value: not its length either.
+	console.log(`[wlp] secret.saved uid=${uid} project=${project} name=${name} scope=${scope} value=${value === undefined ? "kept" : exists ? "replaced" : "new"}`);
+}
+
+/** What a client sent about a secret, cleaned, or the UserError that says what is wrong with it. */
+function secretInput<T>(clean: () => T): T {
+	try {
+		return clean();
+	} catch (error) {
+		if (error instanceof SecretProblem) throw new UserError(error.message, { code: "bad_secret" });
+		throw error;
+	}
+}
+
+/** The repository in words, for a reader of the table: as one of the user's sessions on it has it. */
+function repositoryLabel(vars: UserVars, repositoryId: unknown): string {
+	const known = [...vars.sessions.values()].find((session) => session.repository?.id === repositoryId)?.repository;
+	return known ? `${known.owner}/${known.name}` : "";
+}
+
 export function cleanTitle(title: unknown): string | null {
 	if (typeof title !== "string") return null;
 	const clean = title.replace(/\s+/g, " ").trim();
@@ -425,6 +509,19 @@ export const user = actor({
 					label TEXT NOT NULL,
 					command TEXT NOT NULL,
 					updated_at INTEGER NOT NULL
+				)
+			`);
+			// The secrets of repositories (repo-secrets.ts): one per repository and name, `project` as above.
+			// `sealed` is the value, encrypted for this user, repository and name; nothing else here is secret.
+			await db.execute(`
+				CREATE TABLE IF NOT EXISTS repo_secret (
+					project TEXT NOT NULL,
+					name TEXT NOT NULL,
+					label TEXT NOT NULL,
+					scope TEXT NOT NULL,
+					sealed TEXT NOT NULL,
+					updated_at INTEGER NOT NULL,
+					PRIMARY KEY (project, name)
 				)
 			`);
 		},
@@ -760,6 +857,64 @@ export const user = actor({
 		internalSetupCommand: async (c, project: string): Promise<RepositorySetup> => {
 			requireService(c);
 			return readSetup(c.db, approvalText(project, 600));
+		},
+
+		// --- secrets of repositories (repo-secrets.ts) ----------------------------------------------
+
+		repositorySecrets: async (c, input: { repositoryId: number; profile: string }): Promise<RepositorySecrets> => {
+			requireUser(c);
+			const project = setupKeyOf(input?.repositoryId);
+			const profile = await secretProfile(input?.profile);
+			try {
+				return await listSecrets(c.db, project, profile);
+			} catch (error) {
+				throw clientError(c.log, error, "The repository's secrets could not be read. Try again.");
+			}
+		},
+
+		saveRepositorySecret: async (c, input: { repositoryId: number; profile: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets> => {
+			const user = requireUser(c);
+			const project = setupKeyOf(input?.repositoryId);
+			const profile = await secretProfile(input?.profile);
+			const name = secretInput(() => cleanSecretName(input?.name));
+			const scope = secretInput(() => cleanSecretScope(input?.scope));
+			const value = input?.value === undefined || input?.value === null ? undefined : secretInput(() => cleanSecretValue(input.value));
+			try {
+				await saveSecret(c, user.uid, project, repositoryLabel(c.vars, input.repositoryId), name, value, scope);
+				return await listSecrets(c.db, project, profile);
+			} catch (error) {
+				throw clientError(c.log, error, "The secret could not be saved. Try again.");
+			}
+		},
+
+		deleteRepositorySecret: async (c, input: { repositoryId: number; profile: string; name: string }): Promise<RepositorySecrets> => {
+			const user = requireUser(c);
+			const project = setupKeyOf(input?.repositoryId);
+			const profile = await secretProfile(input?.profile);
+			const name = approvalText(input?.name, 200);
+			try {
+				await c.db.execute("DELETE FROM repo_secret WHERE project = ? AND name = ?", project, name);
+				console.log(`[wlp] secret.deleted uid=${user.uid} project=${project} name=${name.replace(/[^A-Za-z0-9_]/g, "?")}`);
+				return await listSecrets(c.db, project, profile);
+			} catch (error) {
+				throw clientError(c.log, error, "The secret could not be deleted. Try again.");
+			}
+		},
+
+		/**
+		 * The secrets of a session's repository, each value still sealed, for that session's turn. The caller
+		 * must hold a service token made for exactly this user and session (`secretsCaller`), and which
+		 * repository it is is read from this actor's own index of the user's sessions, not from the call:
+		 * a session is handed the secrets of the repository it was launched on and of no other, and a
+		 * session this user does not have is handed none.
+		 */
+		internalSessionSecrets: async (c, sessionId: string): Promise<SealedSecrets> => {
+			const id = approvalText(sessionId, 200);
+			requireServiceFor(c, secretsCaller(c.key[0]!, id));
+			const project = setupProjectKey(c.vars.sessions.get(id)?.repository?.id);
+			if (project === null) return { project: null, secrets: [] };
+			const rows = await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project);
+			return { project, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })) };
 		},
 
 		// --- GitHub, for the servers and the sessions ---------------------------------------------

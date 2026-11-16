@@ -316,6 +316,9 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			githubBranches: (repositoryId) => act("githubBranches", repositoryId),
 			repositorySetup: (repositoryId) => act("repositorySetup", repositoryId),
 			saveRepositorySetup: (repositoryId, command) => act("saveRepositorySetup", { repositoryId, command }),
+			repositorySecrets: (repositoryId, profile) => act("repositorySecrets", { repositoryId, profile }),
+			saveRepositorySecret: (repositoryId, profile, secret) => act("saveRepositorySecret", { repositoryId, profile, ...secret }),
+			deleteRepositorySecret: (repositoryId, profile, name) => act("deleteRepositorySecret", { repositoryId, profile, name }),
 			watch(feed: UserFeed) {
 				let live = false;
 				const feedConn = feedConnection(

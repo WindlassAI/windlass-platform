@@ -16,10 +16,14 @@
  *   held      `TurnSandbox.holdForTurn` for as long as it runs: on E2B the sandbox's own timeout would
  *             otherwise pause it in the middle of an install
  *   with      the sandbox's environment and WLP_SETUP=1, by which what a run left behind is found
- *             again (`stopLeftoverSetup`). No credential is handed to it: the token a
- *             clone used was given to that one git command and revoked when it ended (github/git.ts),
- *             and a turn's access token file is written when a turn starts Windlass, which is after
- *             this, and removed when that turn ends (token-file.ts)
+ *             again (`stopLeftoverSetup`), and the secrets the user saved for the repository
+ *             (repo-secrets.ts), each as a variable of its name: in the command's environment and on
+ *             no command line (`ExecOptions.secretEnv`). No credential of the platform's is handed
+ *             to it: the token a clone used was given to that one git command and revoked when it
+ *             ended (github/git.ts), and a turn's access token file is written when a turn starts
+ *             Windlass, which is after this, and removed when that turn ends (token-file.ts)
+ *   output    every saved value of the repository is taken out of what the command prints before
+ *             it is handed on, also one that arrives in two pieces (`RedactingStream`)
  *
  * What it can still read is what the sandbox's user can: Windlass's data directory. On E2B that is
  * the sandbox's own and holds no token while no turn runs in it. On Docker it is the user's volume,
@@ -28,6 +32,7 @@
  * hardened profile can read it.
  */
 
+import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
 import type { SandboxHandle } from "./api.js";
 import { isTurnSandbox } from "./provider.js";
 
@@ -39,7 +44,11 @@ export interface SetupRun {
 	timeoutMs: number;
 	/** The turn's: aborting stops the command and everything it started. */
 	signal?: AbortSignal;
-	/** What it prints, standard output and standard error as they arrive. */
+	/** The repository's secrets, each under its name: added to the command's environment. */
+	secretEnv?: Record<string, string>;
+	/** Takes the repository's saved values out of what the command prints and of `problem`. */
+	redactor?: Redactor;
+	/** What it prints, standard output and standard error as they arrive, without those values. */
 	onOutput?: (text: string) => void;
 }
 
@@ -76,7 +85,8 @@ export async function stopLeftoverSetup(sandbox: SandboxHandle): Promise<void> {
 /** Runs the command to its end, its time limit or a stop. Never throws. */
 export async function runSetupCommand(sandbox: SandboxHandle, run: SetupRun): Promise<SetupResult> {
 	const began = Date.now();
-	const failed = (problem: string): SetupResult => ({ state: "failed", exitCode: null, durationMs: Date.now() - began, problem });
+	const redactor = run.redactor ?? NO_REDACTION;
+	const failed = (problem: string): SetupResult => ({ state: "failed", exitCode: null, durationMs: Date.now() - began, problem: redactor.text(problem) });
 	if (run.signal?.aborted) return { state: "stopped", exitCode: null, durationMs: 0, problem: null };
 	let release: (() => Promise<void>) | null = null;
 	try {
@@ -86,15 +96,21 @@ export async function runSetupCommand(sandbox: SandboxHandle, run: SetupRun): Pr
 		return failed(`The sandbox could not be kept running for it: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	try {
-		const emit = (text: string) => {
+		const hand = (text: string) => {
+			if (text === "") return;
 			try {
 				run.onOutput?.(text);
 			} catch {
 				// A listener's failure must not stop the command's output from being read.
 			}
 		};
+		// One stream: the command's standard error is joined to its standard output inside the sandbox.
+		const stream = new RedactingStream(redactor);
+		const emit = (text: string) => hand(stream.push(text));
 		// On the command's own first line, so that a line number bash names is the command's.
-		const result = await sandbox.run(`exec 2>&1; ${run.command}`, { cwd: run.cwd, env: { [MARK]: "1" }, timeoutMs: run.timeoutMs, signal: run.signal, onStdout: emit, onStderr: emit });
+		const result = await sandbox
+			.run(`exec 2>&1; ${run.command}`, { cwd: run.cwd, env: { [MARK]: "1" }, secretEnv: run.secretEnv, timeoutMs: run.timeoutMs, signal: run.signal, onStdout: emit, onStderr: emit })
+			.finally(() => hand(stream.flush()));
 		const durationMs = Date.now() - began;
 		// A stop that came while it was ending on its own counts as the stop: the turn is going away either way.
 		if (result.aborted || run.signal?.aborted) return { state: "stopped", exitCode: null, durationMs, problem: null };

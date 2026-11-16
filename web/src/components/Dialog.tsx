@@ -43,7 +43,9 @@ export function Dialog({ title, lede, onClose, size = "medium", children, footer
 			tabIndex={-1}
 			aria-labelledby={titleId}
 			onCancel={(event) => {
-				// Escape: close through React so the route and state follow.
+				// Escape: close through React so the route and state follow. A dialog opened from inside this one is
+				// its child to React wherever it is in the page, and its Escape arrives here too: that one is not ours.
+				if (event.target !== ref.current) return;
 				event.preventDefault();
 				if (dismissable) onClose();
 			}}

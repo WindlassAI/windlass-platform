@@ -8,6 +8,14 @@
  *
  * `exec` runs a command to its end; `start` leaves its standard input open, for the program a turn
  * talks to (`windlass acp`, see windlass.ts).
+ *
+ * Environment. What a program is given in `env` is written into the arguments of `docker exec`
+ * (`-e NAME=value`), where anyone on the server's machine who lists processes reads it: it is for
+ * names and paths. A secret goes in `secretEnv`: `docker exec -e NAME`, without a value, has the
+ * client take the value from its own environment, so the value is in the environment of that one
+ * `docker` process (readable by the server's own Unix user and by root, as the server's memory is)
+ * and in no argument. The Docker daemon is sent the value in the request that starts the program; a
+ * daemon run with debug logging writes such requests to its log.
  */
 
 import { spawn } from "node:child_process";
@@ -16,7 +24,7 @@ import type { SandboxProfile, SandboxProfileId } from "../contract.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type SandboxHandle, SandboxUserError, type Sandboxes } from "./api.js";
 import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, WORKSPACE, docker, randomId } from "./docker.js";
 import { COMMON_RUN_FLAGS, PROFILE_RUN_FLAGS, findProfile, profilesFor } from "./profiles.js";
-import { type Answer, type InternalExecResult, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, markTurnSandbox } from "./provider.js";
+import { type Answer, type InternalExecResult, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, markTurnSandbox } from "./provider.js";
 import { tokenFilePath } from "./token-file.js";
 import { assertName, ensureUserVolume, userVolume } from "./volumes.js";
 
@@ -25,6 +33,13 @@ const STDOUT_CAP = 4 * 1024 * 1024;
 const STDERR_CAP = 256 * 1024;
 
 export const containerName = (id: string) => `wlp-session-${id}`;
+
+/**
+ * Variables the `docker` client reads for itself, or that decide which `docker` is run and what it
+ * loads. A secret is handed over through the client's environment, so one of these names would change
+ * what the client does; the names a secret may have leave them out already (repo-secrets.ts).
+ */
+const CLIENT_READS = /^(DOCKER_.*|PATH|HOME|LD_.*|XDG_.*|HTTPS?_PROXY|ALL_PROXY|NO_PROXY)$/i;
 
 export type { InternalExecResult, ProcessEnd, SandboxProcess, StartOptions } from "./provider.js";
 
@@ -61,12 +76,14 @@ export class DockerSandboxHandle implements TurnSandbox {
 	/** Starts argv (no shell) under wlp-run and leaves its standard input open. */
 	start(argv: string[], options: StartOptions = {}): SandboxProcess {
 		const tag = `r${randomId(6)}`;
-		const env = Object.entries(options.env ?? {}).flatMap(([key, value]) => {
-			if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`invalid environment variable name: ${key}`);
-			return ["-e", `${key}=${value}`];
-		});
-		const args = ["exec", "-i", "-w", options.cwd ?? this.cwd, ...env, this.container, "wlp-run", "exec", tag, ...argv];
-		const child = spawn("docker", args, { stdio: ["pipe", "pipe", "pipe"] });
+		assertEnvNames(options.env);
+		assertEnvNames(options.secretEnv);
+		const env = Object.entries(options.env ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
+		// Named only: the client takes each value from its own environment, which is the server's with these added.
+		const secret = Object.entries(options.secretEnv ?? {}).filter(([key]) => options.env?.[key] === undefined);
+		for (const [key] of secret) if (CLIENT_READS.test(key)) throw new Error(`the variable ${key} cannot be handed to a program in the sandbox: the docker client reads it itself`);
+		const args = ["exec", "-i", "-w", options.cwd ?? this.cwd, ...env, ...secret.flatMap(([key]) => ["-e", key]), this.container, "wlp-run", "exec", tag, ...argv];
+		const child = spawn("docker", args, { stdio: ["pipe", "pipe", "pipe"], ...(secret.length === 0 ? {} : { env: { ...process.env, ...Object.fromEntries(secret) } }) });
 		const out = new StringDecoder("utf8");
 		const err = new StringDecoder("utf8");
 		let hasEnded = false;
@@ -145,6 +162,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 		const run = this.start(argv, {
 			cwd: options.cwd,
 			env: options.env,
+			secretEnv: options.secretEnv,
 			onStdout: (text) => {
 				if (stdout.length < STDOUT_CAP) stdout += text.slice(0, STDOUT_CAP - stdout.length);
 				options.onStdout?.(text);

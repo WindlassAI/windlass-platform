@@ -73,6 +73,15 @@ export function requireService(c: HasCaller): void {
 	if (caller.kind !== "service") throw new UserError("This action is internal.", { code: "forbidden" });
 }
 
+/**
+ * For an action that one caller alone may call: the service token was made for exactly this purpose
+ * (`issueServiceToken(subject)`), so a token made for another call, or for another user's session, is refused.
+ */
+export function requireServiceFor(c: HasCaller, subject: string): void {
+	const caller = callerOf(c);
+	if (caller.kind !== "service" || caller.subject !== subject) throw new UserError("This action is internal.", { code: "forbidden" });
+}
+
 /** For `canSubscribe`: true only for the actor's own user. */
 export function maySubscribe(c: HasCaller): boolean {
 	try {

@@ -37,10 +37,17 @@
  * the files the command runs, which a later commit can change without a new question; the question
  * says so in a sentence.
  *
+ * A definition can read variables (`${NAME}` in its `env` or `headers`), which Windlass fills from its
+ * own environment. The platform puts a repository's saved secrets there (repo-secrets.ts), so the
+ * question says which of them approving hands to the server, or sends to its address; and for a
+ * variable that is not set it says what would set it: saving a secret of that name, or, where one is
+ * saved and this sandbox keeps it from MCP servers, why.
+ *
  * web/src/api/mock.ts repeats these texts for the web app's mock.
  */
 
-import type { QuestionChoice, SandboxProfile } from "./contract.js";
+import type { QuestionChoice, SandboxProfile, SecretScope } from "./contract.js";
+import { withheldFromServers } from "./repo-secrets.js";
 import type { TurnServerOutcome, TurnServerQuestion } from "./sandbox/api.js";
 import type { ApprovalProject } from "./server-approvals.js";
 
@@ -53,6 +60,12 @@ export interface ServerQuestionContext {
 	dataInSandbox: boolean;
 	/** What the platform remembers an approval for: the session's repository, or the session itself. */
 	project: Pick<ApprovalProject, "kind" | "label">;
+	/**
+	 * The secrets saved for the session's repository, without their values: for saying what would set a
+	 * variable a definition reads. Null for a session that is not on a repository of the GitHub
+	 * connection, which can have none. Absent where it is not known (the panel's words need none).
+	 */
+	secrets?: Array<{ name: string; scope: SecretScope }> | null;
 }
 
 export const SERVER_START = "start";
@@ -127,24 +140,61 @@ function remembered(context: ServerQuestionContext): string {
 	return context.project.kind === "session" ? "exactly this definition, for this session, for 30 days" : `exactly this definition, for your sessions on ${context.project.label}, for 30 days`;
 }
 
-/** Why it does not start whatever the answer: a variable its definition reads is not set, and the platform has nowhere to keep one. */
-function missing(question: TurnServerQuestion): string | null {
+/**
+ * What would set the variables a definition reads and Windlass does not have. A variable is set by
+ * saving a secret of its name for the repository; one that is saved and still not set is one this
+ * sandbox keeps from MCP servers, and the sentence of `secretReach` says why.
+ */
+export function unsetRemedy(unset: readonly string[], context: Pick<ServerQuestionContext, "profile" | "project" | "secrets">): string {
+	if (unset.length === 0) return "";
+	if (context.secrets === null) return "A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.";
+	if (context.secrets === undefined) return "A variable is set by saving a secret of that name for the repository, under Secrets in the session's panel.";
+	const kept = unset.flatMap((name) => {
+		const why = withheldFromServers(name, context.secrets ?? [], context.profile);
+		return why === null ? [] : [{ name, why }];
+	});
+	const absent = unset.filter((name) => !kept.some((item) => item.name === name));
+	const parts: string[] = [];
+	if (absent.length > 0) {
+		parts.push(
+			absent.length === 1
+				? `Save a secret named ${absent[0]} for ${context.project.label}, under Secrets in this session's panel: it is handed over from the next turn.`
+				: `Save secrets named ${list(absent)} for ${context.project.label}, under Secrets in this session's panel: they are handed over from the next turn.`,
+		);
+	}
+	for (const { name, why } of kept) parts.push(`A secret named ${name} is saved for ${context.project.label}. ${why}`);
+	return parts.join(" ");
+}
+
+/** Why it does not start whatever the answer: a variable its definition reads is not set, and what would set it. */
+function missing(question: TurnServerQuestion, context: ServerQuestionContext): string | null {
 	if (question.unset.length === 0) return null;
 	const names = list(question.unset);
 	const start = question.argv === null ? "It cannot be reached yet" : "It will not start yet";
-	return question.unset.length === 1
-		? `${start}: its definition reads the variable ${names}, which is not set in the sandbox, and the platform cannot set variables for a session yet.`
-		: `${start}: its definition reads the variables ${names}, which are not set in the sandbox, and the platform cannot set variables for a session yet.`;
+	const reads = question.unset.length === 1 ? `its definition reads the variable ${names}, which is not set where Windlass runs` : `its definition reads the variables ${names}, which are not set where Windlass runs`;
+	return `${start}: ${reads}. ${unsetRemedy(question.unset, context)}`;
+}
+
+/** Which of the repository's secrets approving hands over: a server reads only the variables its definition names. */
+function handsOver(question: TurnServerQuestion): string | null {
+	const names = question.secrets ?? [];
+	if (names.length === 0) return null;
+	const one = names.length === 1;
+	const what = one ? `the secret ${names[0]}` : `the secrets ${list(names)}`;
+	return question.argv === null
+		? `Its definition reads ${what} saved for this repository: approving sends ${one ? "its value" : "their values"} to that address.`
+		: `Its definition reads ${what} saved for this repository: approving gives ${one ? "its value" : "their values"} to the server.`;
 }
 
 /** The question as the clients show it: `PendingQuestion`'s title, subject, details and choices. */
 export function serverQuestionWords(question: TurnServerQuestion, context: ServerQuestionContext): { title: string; subject: string; details: string[]; choices: QuestionChoice[] } {
 	const remote = question.argv === null;
-	const unset = missing(question);
+	const unset = missing(question, context);
+	const handed = handsOver(question);
 	return {
 		title: remote ? `Connect to this project's MCP server "${question.name}"?` : `Start this project's MCP server "${question.name}"?`,
 		subject: question.argv === null ? (question.url ?? "") : commandLine(question.argv),
-		details: [reach(question, context), approving(question, context), covers(question), ...(unset === null ? [] : [unset])],
+		details: [reach(question, context), approving(question, context), covers(question), ...(handed === null ? [] : [handed]), ...(unset === null ? [] : [unset])],
 		choices: [
 			{
 				id: SERVER_START,
@@ -179,8 +229,8 @@ function reason(text: string): string {
 	return text.trim().replace(/\s*\n\s*/g, " ").replace(/\.$/, "");
 }
 
-/** The line for a server the user said to start, from what Windlass made of it. */
-export function serverApprovedNote(question: TurnServerQuestion, outcome: TurnServerOutcome): { level: Level; text: string } {
+/** The line for a server the user said to start, from what Windlass made of it. `remedy` is `unsetRemedy`'s sentence, for one that reads a variable that is not set. */
+export function serverApprovedNote(question: TurnServerQuestion, outcome: TurnServerOutcome, remedy = ""): { level: Level; text: string } {
 	const remote = question.argv === null;
 	switch (outcome.state) {
 		case "running": {
@@ -196,7 +246,7 @@ export function serverApprovedNote(question: TurnServerQuestion, outcome: TurnSe
 		case "failed":
 			return {
 				level: "warn",
-				text: `Approved ${named(question)} for this project, but it did not start: ${reason(outcome.reason)}. ${question.unset.length > 0 ? "The platform cannot set variables for a session yet." : "Windlass tries again by itself."}`,
+				text: `Approved ${named(question)} for this project, but it did not start: ${reason(outcome.reason)}. ${question.unset.length > 0 && remedy !== "" ? remedy : "Windlass tries again by itself."}`,
 			};
 		case "changed":
 			return { level: "warn", text: `The definition of ${named(question)} changed while it was asked about, so nothing was started. The new definition is asked about.` };
@@ -210,7 +260,7 @@ export function serverApprovedNote(question: TurnServerQuestion, outcome: TurnSe
  * user's approval of exactly this definition for this project is remembered. `ago` says when they
  * approved, as "3 days ago".
  */
-export function serverRecalledNote(question: TurnServerQuestion, outcome: TurnServerOutcome, ago: string): { level: Level; text: string } {
+export function serverRecalledNote(question: TurnServerQuestion, outcome: TurnServerOutcome, ago: string, remedy = ""): { level: Level; text: string } {
 	const remote = question.argv === null;
 	const because = `because you approved it for this project ${ago}`;
 	switch (outcome.state) {
@@ -225,7 +275,7 @@ export function serverRecalledNote(question: TurnServerQuestion, outcome: TurnSe
 		case "failed":
 			return {
 				level: "warn",
-				text: `You approved ${named(question)} for this project ${ago}, but it did not start: ${reason(outcome.reason)}. ${question.unset.length > 0 ? "The platform cannot set variables for a session yet." : "Windlass tries again by itself."}`,
+				text: `You approved ${named(question)} for this project ${ago}, but it did not start: ${reason(outcome.reason)}. ${question.unset.length > 0 && remedy !== "" ? remedy : "Windlass tries again by itself."}`,
 			};
 		case "changed":
 			return { level: "warn", text: `The definition of ${named(question)} changed as it was being started, so nothing was started. The new definition is asked about.` };

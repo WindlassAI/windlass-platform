@@ -1604,6 +1604,27 @@ button.output-more:hover {
 	margin-top: 10px;
 }
 
+/* A repository's secrets in the panel, set as its other lists are. */
+.panel .secret-name {
+	font-size: inherit;
+}
+/* In the section's title, set as the title is not: a quiet word, as "Change…" is under each secret. */
+.secret-add {
+	font-weight: 400;
+	letter-spacing: 0;
+	text-transform: none;
+	color: var(--ink-dim);
+}
+.secret-add:hover:not(:disabled) {
+	color: var(--ink);
+}
+.secret-lede {
+	margin-bottom: 12px;
+}
+.secret-applies {
+	margin-top: 12px;
+}
+
 /* The dialog is opened from the panel, which is set in the monospace face: its sentences are not. */
 .server-ask {
 	display: grid;

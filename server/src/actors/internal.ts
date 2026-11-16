@@ -8,7 +8,7 @@
  * signin/directory.ts makes them with a client of its own.
  */
 
-import type { RepositorySetup, SandboxProfileId, SessionSummary } from "../contract.js";
+import type { RepositorySetup, SandboxProfileId, SecretScope, SessionSummary } from "../contract.js";
 import { serviceParams } from "../auth.js";
 import type { StoredRepository } from "../github/publish.js";
 import type { StoredConnection } from "../github/repos.js";
@@ -47,6 +47,18 @@ export interface UserInternal {
 	internalSetupCommand(project: string): Promise<RepositorySetup>;
 }
 
+/** A repository's secrets on their way to a session: each value as the `user` actor stores it, sealed (repo-secrets.ts). */
+export interface SealedSecrets {
+	/** What the secrets are saved for; null when the session has no repository of the GitHub connection. */
+	project: string | null;
+	secrets: Array<{ name: string; scope: SecretScope; sealed: string }>;
+}
+
+/** Actions of `user` that only one session may call, with a token made for it (`secretsActor`). */
+export interface UserSecretsInternal {
+	internalSessionSecrets(sessionId: string): Promise<SealedSecrets>;
+}
+
 /** Actions of `agentSession` that only actors may call. */
 export interface SessionInternal {
 	internalSummary(): Promise<SessionSummary>;
@@ -81,6 +93,19 @@ export function sessionActor(c: HasClient, uid: string, sessionId: string): Sess
 
 export function userActor(c: HasClient, uid: string): UserInternal {
 	return c.client().user.get([uid], { params: serviceParams() }) as UserInternal;
+}
+
+/** What the service token of a session that asks for its repository's secrets is made for. */
+export function secretsCaller(uid: string, sessionId: string): string {
+	return `secrets:${uid}/${sessionId}`;
+}
+
+/**
+ * The `user` actor as a session reaches it for its repository's secrets: with a token that names this
+ * user and this session, which is the only one `internalSessionSecrets` takes.
+ */
+export function secretsActor(c: HasClient, uid: string, sessionId: string): UserSecretsInternal {
+	return c.client().user.get([uid], { params: { token: issueServiceToken(secretsCaller(uid, sessionId)) } }) as UserSecretsInternal;
 }
 
 /** Whether a call failed because the actor it was meant for does not exist (any more). */

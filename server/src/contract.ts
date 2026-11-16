@@ -373,6 +373,56 @@ export interface RepositorySetup {
 	timeoutMs: number;
 }
 
+/**
+ * Who a repository's secret is handed to (README, "A repository's secrets"). Every secret goes to the
+ * repository's setup command. Beyond that:
+ *
+ *   "setup"   the MCP servers the repository names, and not the commands the agent runs
+ *   "agent"   the MCP servers, and the commands the agent runs as well
+ *
+ * What Windlass lets each of them have depends on the session's sandbox and on the secret's name;
+ * `SecretReach` says what a scope comes to there.
+ */
+export type SecretScope = "setup" | "agent";
+
+/**
+ * What a secret reaches in a session whose sandbox has a given profile. Windlass decides what its
+ * commands and the MCP servers see, and has one rule for it: a command it sandboxes gets every
+ * variable of Windlass's own environment except those whose names look like credentials, a command it
+ * does not sandbox gets all of them, and an MCP server gets the variables its definition names from
+ * that same environment. So a secret can be kept from commands only by its name or by staying out of
+ * Windlass's environment altogether, and the platform hands Windlass only what keeps the scope true.
+ */
+export interface SecretReach {
+	/** Whether the MCP servers the repository names can be given it (`${NAME}` in their definitions). */
+	servers: boolean;
+	/**
+	 * Whether the commands the agent runs get it: "yes", "no", or "unsandboxed": only the commands
+	 * Windlass runs without its own sandbox, which in that profile is not all of them at all times.
+	 */
+	commands: "yes" | "no" | "unsandboxed";
+	/** Set when that is less than the scope says, or needs a word: a sentence fit to show under the secret. */
+	note: string | null;
+}
+
+/** A secret as it is listed: never with its value, which is not sent to a client once it is saved. */
+export interface RepositorySecret {
+	/** The environment variable it is handed over as. */
+	name: string;
+	scope: SecretScope;
+	/** When its value or scope was last changed, ms since the epoch. */
+	updatedAt: number;
+	/** What it reaches in a sandbox of the profile the list was asked for. */
+	reach: SecretReach;
+}
+
+/** The secrets a user saved for one repository of their GitHub connection, by name. */
+export interface RepositorySecrets {
+	secrets: RepositorySecret[];
+	/** The profile `reach` is said for. */
+	profile: SandboxProfileId;
+}
+
 export interface UserActions {
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
@@ -408,6 +458,21 @@ export interface UserActions {
 	 * `bad_setup_command` for one longer than MAX_SETUP_COMMAND_CHARS or with a character a shell cannot take.
 	 */
 	saveRepositorySetup(input: { repositoryId: number; command: string }): Promise<RepositorySetup>;
+	/**
+	 * The names, scopes and times of the secrets the user saved for a repository, and what each reaches
+	 * in a sandbox of `profile`. No value: a saved value is never sent to a client. Asks GitHub nothing.
+	 */
+	repositorySecrets(input: { repositoryId: number; profile: SandboxProfileId }): Promise<RepositorySecrets>;
+	/**
+	 * Saves a secret of a repository. With `value`: a new secret, or a new value for the one of that
+	 * name. Without: only the scope of the one of that name is changed. It reaches a setup command in
+	 * sandboxes made from then on, and Windlass from each session's next turn. Throws a UserError with
+	 * code `bad_secret` for a name or value that cannot be saved, `too_many_secrets` at
+	 * MAX_SECRETS_PER_REPOSITORY, and `secret_not_found` for a scope change of a name that is not saved.
+	 */
+	saveRepositorySecret(input: { repositoryId: number; profile: SandboxProfileId; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
+	/** Deletes a secret of a repository. A sandbox whose setup command already had it keeps what that command made of it. */
+	deleteRepositorySecret(input: { repositoryId: number; profile: SandboxProfileId; name: string }): Promise<RepositorySecrets>;
 	listSessions(): Promise<SessionSummary[]>;
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
 	renameSession(id: string, title: string): Promise<SessionSummary>;
@@ -810,6 +875,13 @@ export const MAX_NOTE_CHARS = 2_000;
 export const MAX_SETUP_COMMAND_CHARS = 2_000;
 /** How much of a setup run's output is kept, and shown while it runs: the end of it. */
 export const SETUP_OUTPUT_CHARS = 32_000;
+/** A repository's secrets: how many one repository may have, and what a name and a value may be. */
+export const MAX_SECRETS_PER_REPOSITORY = 50;
+export const MAX_SECRET_NAME_CHARS = 64;
+/** A shorter value could not be taken out of what is shown without taking ordinary words with it. */
+export const MIN_SECRET_VALUE_CHARS = 8;
+/** In bytes of UTF-8: every secret of a repository is in the environment of one process. */
+export const MAX_SECRET_VALUE_BYTES = 16_384;
 /** How long a question waits for an answer before the platform declines it. */
 export const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
 /** Sessions of one user that may run a turn at the same time. */

@@ -22,7 +22,10 @@ import type {
 	PublishMessage,
 	PublishResult,
 	PublishState,
+	RepositorySecrets,
 	RepositorySetup,
+	SandboxProfileId,
+	SecretScope,
 	SessionServers,
 	SessionSnapshot,
 	SessionSummary,
@@ -121,6 +124,14 @@ export interface UserApi {
 	repositorySetup(repositoryId: number): Promise<RepositorySetup>;
 	/** Saves it, or none with "". Throws with reason `bad_setup_command` for one that is too long. */
 	saveRepositorySetup(repositoryId: number, command: string): Promise<RepositorySetup>;
+	/**
+	 * The secrets saved for a repository, without their values, and what each reaches in a sandbox of
+	 * `profile`. A value is sent to the server when it is saved and never comes back.
+	 */
+	repositorySecrets(repositoryId: number, profile: SandboxProfileId): Promise<RepositorySecrets>;
+	/** Saves a secret: with `value` a new one or a new value, without it only the scope. Throws with reason `bad_secret`, `too_many_secrets` or `secret_not_found`. */
+	saveRepositorySecret(repositoryId: number, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
+	deleteRepositorySecret(repositoryId: number, profile: SandboxProfileId, name: string): Promise<RepositorySecrets>;
 	/** Opens the live list of sessions. Returns the function that closes it. */
 	watch(feed: UserFeed): () => void;
 }
