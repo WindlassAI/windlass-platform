@@ -82,12 +82,21 @@ function gitProblem(outcome: GitOutcome, what: "clone" | "push", repository: str
 	}
 }
 
+/** How a clone ended, for a session that had pushed work before: where the workspace is now. */
+export interface Cloned {
+	/** The commit of the session's branch the workspace was put on; null when it is on the base branch. */
+	work: string | null;
+	/** The session's branch was asked for and GitHub no longer has it. */
+	workGone: boolean;
+}
+
 /**
  * Clones the session's repository into its new sandbox. Resolves with `false` when it was aborted,
  * and throws GithubProblem when it could not be done. The token is good for reading this one
- * repository, and is revoked when the clone has ended.
+ * repository, and is revoked when the clone has ended. `work` names the branch the session's work was
+ * pushed to, for a sandbox made in place of a lost one: the workspace is put on it (github/git.ts).
  */
-export async function cloneRepository(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, sandbox: SandboxHandle, signal?: AbortSignal): Promise<boolean> {
+export async function cloneRepository(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, sandbox: SandboxHandle, signal?: AbortSignal, work?: string): Promise<Cloned | false> {
 	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
 	const resolved = await resolveRepository(app, connection, repository.id, "read");
 	const name = fullName(resolved.repository);
@@ -97,7 +106,7 @@ export async function cloneRepository(app: GithubApp, connection: StoredConnecti
 		outcome = await app.withToken(
 			resolved.installation.id,
 			{ repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } },
-			(token) => cloneWithToken(sandbox, token, { url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), branch: repository.branch, directory: resolved.repository.name, signal }),
+			(token) => cloneWithToken(sandbox, token, { url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), branch: repository.branch, directory: resolved.repository.name, work, signal }),
 			{ revokeAfter: true },
 		);
 	} catch (error) {
@@ -105,7 +114,7 @@ export async function cloneRepository(app: GithubApp, connection: StoredConnecti
 	}
 	if (outcome.failure === "aborted") return false;
 	if (!outcome.ok) throw gitProblem(outcome, "clone", name, account, repository.branch);
-	return true;
+	return { work: outcome.marks.get("work") || null, workGone: outcome.marks.has("nowork") };
 }
 
 // ---------------------------------------------------------------------------------------------

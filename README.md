@@ -659,6 +659,14 @@ for the seconds until the platform revokes it, and never for pull requests, anot
 account. A sandbox layer that could run the platform's command as another user than the agent's, or outside the
 sandbox altogether, would close these; `SandboxHandle.run` has no such option.
 
+### When a sandbox is replaced
+
+A sandbox made in place of a lost one has a fresh workspace. Where the session's work was pushed, the clone puts
+the workspace on the session's branch as GitHub has it now, not on the branch the session started from: what was
+pushed is back, with anything pushed to that branch since, and what was only in the old sandbox is not. If GitHub
+no longer has the branch (deleted after a merge, say), the workspace starts from the base branch again and the
+timeline says so. The agent is told with its next prompt that the workspace is a fresh one.
+
 ### When it does not work
 
 Each failure is said where the user is, in a sentence they can act on:

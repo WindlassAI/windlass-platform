@@ -837,6 +837,61 @@ await section("docker: the same git commands in a container of the sandbox image
 });
 
 // ---------------------------------------------------------------------------------------------
+// A sandbox made in place of a lost one
+// ---------------------------------------------------------------------------------------------
+
+await section("a replaced sandbox: the workspace goes back on the session's branch", async () => {
+	const repository = stored(harbor, adaInstallation);
+	const session = "s_feedfacefeedface";
+	const branch = publish.branchFor("Keep what was pushed", session);
+	const lost = localSandbox("lost");
+	await publish.cloneRepository(app, adaConnection, repository, lost);
+	writeFileSync(join(lost.cwd, "KEPT.md"), "pushed before the sandbox was lost\n");
+	const input = { app, connection: adaConnection, repository, sessionId: session, branch };
+	const pushed = await publish.publishWork({ ...input, sandbox: lost, pull: null, pushed: null, message: { title: "Keep what was pushed", body: "" } });
+	writeFileSync(join(lost.cwd, "LOST.md"), "never pushed\n");
+
+	const replaced = localSandbox("replaced");
+	const cloned = await publish.cloneRepository(app, adaConnection, repository, replaced, undefined, branch);
+	const seen = await replaced.run("git symbolic-ref --short HEAD; git rev-parse HEAD; ls; cat .git/config");
+	expect(
+		"the clone puts the new workspace on the session's branch, at the commit GitHub has",
+		cloned !== false && cloned.work === pushed.head && cloned.work === standin.branchHead(harbor, branch) && !cloned.workGone && seen.stdout.startsWith(`${branch}\n${pushed.head}\n`),
+		seen.stdout.slice(0, 160),
+	);
+	expect("what was pushed is in it, and what was not is not", seen.stdout.includes("KEPT.md") && !seen.stdout.includes("LOST.md"));
+	expect("the repository's configuration holds no token", !/x-access-token|ghs_|gh[a-z]_/.test(seen.stdout));
+	expect("nothing in it is something GitHub lacks", cloned !== false && (await publish.hasUnpushedWork(replaced, "main", cloned.work)) === false);
+
+	writeFileSync(join(replaced.cwd, "AFTER.md"), "written in the new sandbox\n");
+	const next = await publish.publishWork({ ...input, sandbox: replaced, pull: pushed.pull, pushed: cloned ? cloned.work : null, message: { title: "After the replacement", body: "" } });
+	expect(
+		"a push from the new sandbox goes on top of what was there, to the same pull request",
+		!next.opened && next.pull.number === pushed.pull.number && standin.lastCommit(harbor, branch).message.startsWith("After the replacement") && standin.fileOn(harbor, branch, "KEPT.md") !== null && standin.fileOn(harbor, branch, "AFTER.md") !== null,
+	);
+
+	// A branch someone else pushed to since: the workspace has their commit, and the next push starts from it.
+	const other = localSandbox("someone-else");
+	await publish.cloneRepository(app, adaConnection, repository, other, undefined, branch);
+	writeFileSync(join(other.cwd, "THEIRS.md"), "pushed by someone else\n");
+	const theirs = await publish.publishWork({ ...input, sandbox: other, pull: next.pull, pushed: next.head, message: { title: "Someone else's commit", body: "" } });
+	const later = localSandbox("replaced-later");
+	const caught = await publish.cloneRepository(app, adaConnection, repository, later, undefined, branch);
+	expect("a commit pushed to the branch since is in the workspace, and is what the session counts as pushed", caught !== false && caught.work === theirs.head && existsSync(join(later.cwd, "THEIRS.md")));
+
+	// The branch deleted at GitHub, as after a merge.
+	execFileSync("git", ["update-ref", "-d", `refs/heads/${branch}`], { cwd: harbor.path });
+	const after = localSandbox("replaced-gone");
+	const gone = await publish.cloneRepository(app, adaConnection, repository, after, undefined, branch);
+	const where = await after.run("git symbolic-ref --short HEAD; ls");
+	expect("when GitHub no longer has the branch, the workspace stays on the branch the session started from, and the clone says so", gone !== false && gone.work === null && gone.workGone && where.stdout.startsWith("main\n") && !where.stdout.includes("KEPT.md"), where.stdout.slice(0, 120));
+
+	const plain = localSandbox("replaced-first");
+	const first = await publish.cloneRepository(app, adaConnection, repository, plain);
+	expect("a session that never pushed is cloned as before", first !== false && first.work === null && !first.workGone);
+});
+
+// ---------------------------------------------------------------------------------------------
 
 await section("secrets: nothing that was printed or thrown holds one", async () => {
 	const tokens = [...standin.tokens.keys()];

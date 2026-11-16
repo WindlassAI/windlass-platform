@@ -622,7 +622,7 @@ function megabytes(bytes: number): string {
  * user wrote it, and has its own line about the restore.
  */
 const FRESH_WORKSPACE =
-	"[A note from the platform, not from the user: the sandbox you were working in has been replaced by a new one. Your memory of this conversation was carried over, but the workspace was not: it is a fresh one. Files you created or changed earlier are not in it, and a repository that was cloned has been cloned again. Look at what is there before you rely on earlier work.]\n\n";
+	"[A note from the platform, not from the user: the sandbox you were working in has been replaced by a new one. Your memory of this conversation was carried over, but the workspace was not: it is a fresh one. A repository that was cloned has been cloned again, with whatever of your work had been pushed to its branch; anything else you created or changed earlier is not in it. Look at what is there before you rely on earlier work.]\n\n";
 
 async function restoreBackup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<boolean> {
 	const backups = layer.backups;
@@ -860,9 +860,21 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 	if (!repo) return true;
 	const app = githubApp();
 	if (!app) throw new TurnProblem(`This agent was launched on ${repo.owner}/${repo.name} through your GitHub connection, and this deployment has no GitHub App any more to clone it with.`);
-	note(c, turn, "info", `Cloning ${repo.owner}/${repo.name} at ${repo.branch}`);
+	// A sandbox made in place of a lost one: what the platform pushed is all that is left of the work, so
+	// the workspace goes back on the session's branch as GitHub has it, and not on the branch it started from.
+	const work = meta.pushedHead && meta.publishBranch ? meta.publishBranch : undefined;
+	note(c, turn, "info", `Cloning ${repo.owner}/${repo.name} at ${work ?? repo.branch}`);
 	try {
-		if (!(await cloneRepository(app, await githubConnection(c, meta), repo, sandbox, signal)) || signal.aborted) return false;
+		const cloned = await cloneRepository(app, await githubConnection(c, meta), repo, sandbox, signal, work);
+		if (!cloned || signal.aborted) return false;
+		if (cloned.work) {
+			// Whatever was pushed to the branch since, by anyone, is in the workspace now: it is what the next push starts from.
+			meta.pushedHead = cloned.work;
+		} else if (cloned.workGone) {
+			meta.pushedHead = null;
+			note(c, turn, "warn", `${work} is no longer at GitHub, so the workspace starts from ${repo.branch} again. Work that was only on that branch is not in it.`);
+		}
+		c.vars.unpushed = null;
 	} catch (error) {
 		if (error instanceof GithubProblem) throw new TurnProblem(error.message);
 		throw error;
@@ -901,7 +913,8 @@ async function draftMessage(c: Ctx, meta: SessionMeta, files: WorkspaceFile[] | 
 		if (prompt === "" && item.kind === "user" && item.steer !== true) prompt = item.text;
 		if (answer !== "" && prompt !== "") break;
 	}
-	const first = !meta.pushedHead && !meta.pull;
+	// Until there is a pull request the title is the session's: a push whose pull request GitHub refused is no reason for another.
+	const first = !meta.pull;
 	const title = (first || prompt === "" ? meta.title : titleFrom(prompt)).replace(/…$/, "").trim().slice(0, MAX_PUBLISH_TITLE_CHARS);
 	let body = brief(answer, 600);
 	if (body === "" && files && files.length > 0) {

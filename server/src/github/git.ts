@@ -96,19 +96,40 @@ const PLAIN_START = `PATH=${SYSTEM_PATH}\nexport PATH GIT_TERMINAL_PROMPT=0`;
 /**
  * Clones `url` at `branch` into the workspace, as the plain clone of a pasted address does: a new
  * sandbox's workspace holds an empty repository and nothing else, which the clone replaces.
+ *
+ * With `work`, the branch the platform pushed the session's work to: the clone is of a sandbox made in
+ * place of a lost one, and what was pushed is all that is left of the work. The clone has that branch
+ * too (it fetches every branch), so the workspace is put on it, as GitHub has it now: `wlp:work <commit>`.
+ * `wlp:nowork` when GitHub no longer has the branch (deleted, say, after its pull request was merged):
+ * the workspace then stays on `branch`. That step needs no token and gets none.
  */
-export function cloneScript(url: string, branch: string, directory: string): string {
-	return [
+export function cloneScript(url: string, branch: string, directory: string, work?: string): string {
+	const lines = [
 		"set -eu",
 		READ_TOKEN,
 		tokenGit(hostOf(url)),
 		`if [ -z "$(ls -A | grep -v '^\\.git$' || true)" ]; then`,
 		"	rm -rf .git",
-		`	wlp_git clone --quiet --branch ${shellQuote(branch)} -- ${shellQuote(url)} .`,
+		"	target=.",
 		"else",
-		`	wlp_git clone --quiet --branch ${shellQuote(branch)} -- ${shellQuote(url)} ${shellQuote(directory)}`,
+		`	target=${shellQuote(directory)}`,
 		"fi",
-	].join("\n");
+		`wlp_git clone --quiet --branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`,
+	];
+	if (work !== undefined && work !== branch) {
+		const remote = shellQuote(`refs/remotes/origin/${work}`);
+		lines.push(
+			"WLP_T=",
+			PLAIN_GIT,
+			`if plain_git -C "$target" rev-parse -q --verify ${shellQuote(`refs/remotes/origin/${work}^{commit}`)} >/dev/null 2>&1; then`,
+			`	plain_git -C "$target" -c core.hooksPath=/dev/null checkout --quiet -B ${shellQuote(work)} ${remote}`,
+			`	echo "wlp:work $(plain_git -C "$target" rev-parse HEAD)"`,
+			"else",
+			`	echo "wlp:nowork"`,
+			"fi",
+		);
+	}
+	return lines.join("\n");
 }
 
 /** Where the commit step leaves the push step two lines: the commit to push, and the workspace's object directory. */
@@ -291,8 +312,8 @@ async function run(sandbox: SandboxHandle, script: string, options: { stdin: str
 }
 
 /** Clones with `token`, which is given to the command on its standard input and to nothing else. */
-export function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; signal?: AbortSignal }): Promise<GitOutcome> {
-	return run(sandbox, cloneScript(input.url, input.branch, input.directory), { stdin: `${token}\n`, timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
+export function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; signal?: AbortSignal }): Promise<GitOutcome> {
+	return run(sandbox, cloneScript(input.url, input.branch, input.directory, input.work), { stdin: `${token}\n`, timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
 }
 
 /** Commits the workspace's changes on the session's branch. `message` is the commit's whole message. */
