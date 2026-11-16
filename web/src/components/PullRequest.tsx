@@ -27,7 +27,9 @@ function PullState({ state }: { state: PullRequestInfo["state"] }) {
 const isOpen = (pull: PullRequestInfo | null): boolean => pull !== null && (pull.state === "open" || pull.state === "draft");
 
 /** The line above the action: what pushing would do now, or why there is nothing to push. */
-function situation(pull: PullRequestInfo | null, branch: string, nothing: boolean): string {
+function situation(pull: PullRequestInfo | null, branch: string, nothing: boolean, unknown: boolean): string {
+	// A paused sandbox is not started to be asked: saying that it has changes would be a guess.
+	if (pull && isOpen(pull) && unknown) return "Whether the workspace has more than the branch is not known while its sandbox is paused.";
 	if (pull && isOpen(pull)) return nothing ? "Everything in the workspace is on the branch." : "The workspace has changes that are not on the branch.";
 	if (pull) return nothing ? `#${pull.number} is ${STATE_WORD[pull.state]}, and nothing has changed since.` : `#${pull.number} is ${STATE_WORD[pull.state]}. New work goes into a new pull request.`;
 	return nothing ? "Nothing to push yet: no file differs from the last commit." : `The work goes to ${branch}.`;
@@ -169,6 +171,7 @@ export function PullRequestSection({ sessionId, summary, turnsEnded, files, onPu
 	// With files that differ there is something to push, whatever git has yet to be asked.
 	const changes = files !== null && files > 0 && idle ? true : (state?.changes ?? null);
 	const nothing = blocked === null && changes === false;
+	const unknown = blocked === null && changes === null;
 
 	return (
 		<section className="panel-section" aria-labelledby="panel-pull">
@@ -217,7 +220,7 @@ export function PullRequestSection({ sessionId, summary, turnsEnded, files, onPu
 				</p>
 			) : (
 				<>
-					<p className="panel-empty gh-pull-note">{blocked ?? situation(pull, state.branch, nothing)}</p>
+					<p className="panel-empty gh-pull-note">{blocked ?? situation(pull, state.branch, nothing, unknown)}</p>
 					<button type="button" className="button button-outline button-small" onClick={() => setDialog(true)} disabled={blocked !== null || nothing}>
 						{action}
 					</button>

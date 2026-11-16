@@ -168,6 +168,8 @@ interface SessionMeta {
 	publishBranch?: string;
 	/** The commit the platform last pushed to that branch. */
 	pushedHead?: string | null;
+	/** Whether the workspace had commits GitHub lacks when it was last asked, and what that answer was for (`unpushedWork`). */
+	unpushed?: { key: string; value: boolean } | null;
 	/** The session's pull request, as GitHub last described it. */
 	pull?: PullRequestInfo | null;
 	/**
@@ -986,6 +988,9 @@ async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, f
 	if (files && files.length > 0) return true;
 	const key = `${meta.turns}:${meta.pushedHead ?? ""}:${meta.sandboxId}`;
 	if (c.vars.unpushed?.key === key) return c.vars.unpushed.value;
+	// Only a turn or a push changes the answer, and the key names both: what was found while the sandbox
+	// ran still holds while it is paused, so a paused sandbox is not started to be asked again.
+	if (meta.unpushed?.key === key) return meta.unpushed.value;
 	let value: boolean | null = null;
 	try {
 		const { sandboxes } = await getLayer();
@@ -996,7 +1001,11 @@ async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, f
 	} catch (error) {
 		c.log.warn({ msg: "could not read whether the workspace has commits to push", error: describeError(error) });
 	}
-	if (value !== null) c.vars.unpushed = { key, value };
+	if (value !== null) {
+		c.vars.unpushed = { key, value };
+		meta.unpushed = { key, value };
+		void persist(c);
+	}
 	return value;
 }
 
@@ -1733,6 +1742,9 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		c.vars.turn = null;
 		publish(c);
 		if (outcome === "error") await refreshSandbox(c, meta);
+		// Asked now, while the sandbox still runs: the side panel then knows whether GitHub lacks anything
+		// without starting a sandbox that has been paused since.
+		if (meta.repo && used) await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null);
 		await persist(c);
 		await within(c.vars.reporting, REPORT_WAIT_MS);
 	} catch (error) {
