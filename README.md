@@ -63,8 +63,8 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
                            ├─ user          [uid]               profile, the index of sessions, the ChatGPT
                            │                                    sign-in (encrypted) and its access tokens,
                            │                                    approvals of projects' MCP servers,
-                           │                                    setup commands of repositories, and
-                           │                                    their secrets (encrypted)
+                           │                                    setup commands of repositories, their
+                           │                                    secrets (encrypted) and their defaults
                            └─ agentSession  [uid, sessionId]    timeline in SQLite, one sandbox
                                                │
                                                ▼
@@ -1183,6 +1183,69 @@ It remembers an approval for the session's project as the deployment does, and t
 `__wlpMock.mockNextServers("list" | "approve" | "forget" | "slow")` in the console makes its next call fail,
 or makes those calls slow for ten seconds.
 
+## A repository's page
+
+A connected GitHub repository is the project: there is no separate object for one. What the platform keeps
+for a repository is kept in its user's `user` actor under GitHub's id for the repository, which a rename
+does not change, in a table for each kind of thing: the setup command, the secrets, the remembered approvals
+of its MCP servers, and the defaults for new sessions. Nothing is made for a repository until its user saves
+something, and nothing is left once they have deleted it.
+
+- **The list of agents is grouped** (`web/src/lib/repositories.ts`, `web/src/screens/Home.tsx`). Sessions
+  stand under the repository they were launched on, the repository that was used last first, and the name
+  leads to the repository's page. Sessions on no repository of the GitHub connection, a pasted address
+  included, are a group of their own, last; a list with no such repository in it has no headings and reads
+  as it always did. Within a group the session used last comes first. A group shows six sessions where
+  there are several groups and twenty where there is one, then a line that says how many more there are
+  and unfolds them; a session that is working or waits on its user is never among the hidden ones, and a
+  fold that would hide one or two is not made. All of it is worked out in the browser from the summaries
+  the `user` actor already broadcasts: drawing the list asks nothing of GitHub, of a sandbox provider or of
+  a session.
+- **The page** (`/repositories/<GitHub's id>`, `web/src/screens/Repository.tsx`) gathers the repository's
+  sessions; the pull requests they opened that are still open, as each session's summary last had them
+  (GitHub is not asked for a list, so one merged or closed at GitHub stays until its session's panel next
+  reads it); the defaults for new sessions; the setup command and the secrets, in the same components a
+  session's panel has (`SetupEditor`, `SecretsBlock`); the remembered approvals of its MCP servers, each
+  with when it was given, until when it holds, and "Forget"; and one control that deletes everything saved
+  for the repository at once. "New agent" opens the launch form with the repository chosen
+  (`/repositories/<id>/new`).
+- **Two questions, asked apart.** What is saved (`repository`) is the actor's own and answers at once,
+  whoever can or cannot reach the repository at GitHub. Whether a session can still be launched on it
+  (`githubRepository`) is GitHub's to say. So the page of a repository its user lost access to, or whose
+  GitHub connection is gone, still opens, shows what is saved and lets it be changed or deleted, and says in
+  one sentence that it cannot be used for new agents, with "New agent" off. When GitHub cannot be asked at
+  all, the page says that nothing is known either way and offers to ask again. When GitHub does answer, what
+  is saved is relabelled with the repository's current name, so the page can still name it later. A save
+  for a repository that neither a session nor an earlier save names asks GitHub for the name once, for four
+  seconds at most, and saves without one when GitHub does not say.
+- **Defaults for new sessions** (`server/src/repository-defaults.ts`): a sandbox profile and a model. The
+  launch form has no reasoning effort, so there is none to default. They are checked against what the
+  deployment offers when they are saved and do nothing on the server afterwards: the launch form reads them
+  when that repository is picked, starts from them, and says so beside the repository, since the sandbox is
+  chosen further up. A choice made in the form comes first and holds for that session only. A default that
+  names a sandbox or a model the deployment no longer offers is left out, and both the page and the form
+  say so. Whether the agent may publish without asking is the session's own setting and is not among them.
+- **Saves that run together.** The actor's actions interleave wherever one of them waits. A save of the
+  defaults names the fields it changes and writes those columns in one statement, without reading the row
+  first, so a save of the sandbox and a save of the model that run together both stay, and neither undoes
+  a setup command or a secret saved meanwhile, which are other tables. Forgetting an approval goes through
+  the approvals' own book, as a session's does.
+- **Repositories with nothing but saved settings.** A repository with something saved and no session is
+  not in any group, so the list of agents names those under the groups (`savedRepositories`), each a link
+  to its page: nothing else leads there, and it is where a secret for a repository that was never launched
+  on, or that is gone, is deleted.
+- **Secrets stay write-only.** The page's own actions read no value: `repository` counts the secrets, and
+  the list is the one a session's panel has.
+
+```sh
+cd server && npx tsx ../scripts/repository-check.ts   # the defaults' rules, and saves that interleave, against a SQLite database of its own
+```
+
+The web app's mock (`?mock=1`) has defaults saved for acme/harbor (`/repositories/7101`), a default model
+that is no longer offered for ada/tide-tables (`/repositories/7102`), a secret and no agent for acme/quay,
+and a repository the connection no longer covers with a setup command, a secret and an approval still saved
+(`/repositories/7190`).
+
 ## Usage and limits
 
 A sandbox costs money while it runs, so two things are limited for each user, and a page shows where they
@@ -1306,6 +1369,7 @@ used up and an account with no place left.
 | `server/src/server-approvals.ts` | The user's remembered approvals of projects' MCP servers: what a project is, the record itself, and what a session keeps of its project's servers for its side panel |
 | `server/src/usage.ts` | A user's sandbox time and kept sandboxes: what is counted, the two limits, the book the `user` actor decides with, and the words of a refusal ("Usage and limits") |
 | `server/src/setup-command.ts`, `server/src/sandbox/setup.ts` | A repository's setup command: what it is saved for, its limits, what is kept of a run's output and what the agent is told; and the run itself in a sandbox |
+| `server/src/repository-defaults.ts` | A repository's defaults for new sessions: what may be saved, and how a save writes only the fields it names ("A repository's page") |
 | `server/src/agent-publish.ts` | The agent asking the platform to publish: the tool and its server, what a request may hold, and the words of the question, of the timeline's lines and of what the agent is told |
 | `server/src/repo-secrets.ts` | A repository's secrets: what may be saved, what a scope comes to in each kind of sandbox, the sealing, and taking saved values out of text |
 | `server/src/bucket/`, `server/src/sandbox/backup.ts` | The object store the copies of Windlass's session data go to (S3 protocol, and a stand-in for tests), and what is copied, saved and restored |
@@ -1328,6 +1392,7 @@ cd server && npx tsx ../scripts/mcp-check.ts                      # the question
 cd server && npx tsx ../scripts/setup-check.ts                    # a repository's setup command: its rules, no server and no Docker
 cd server && npx tsx ../scripts/usage-check.ts                    # sandbox time and kept sandboxes: their rules, no server and no Docker
 cd server && npx tsx ../scripts/secrets-check.ts                  # a repository's secrets: its rules, no server and no Docker
+cd server && npx tsx ../scripts/repository-check.ts               # a repository's defaults: its rules and saves that interleave, no server and no Docker
 cd server && npx tsx ../scripts/signin-check.ts                   # the sign-in machinery: no server, no Docker, a stand-in for OpenAI
 cd server && npx tsx ../scripts/connection-check.ts               # the tokens browsers connect with: a stand-in for the engine
 cd server && npx tsx ../scripts/access-check.ts                   # who may sign in: the invitation list and the demo

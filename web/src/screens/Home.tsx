@@ -1,192 +1,76 @@
-/** Agents: the user's sessions, newest first and live, with rename, delete and a way to launch one. */
-import { MAX_RUNNING_SESSIONS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type SessionSummary, type UsageNumbers } from "@contract";
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Dialog } from "../components/Dialog";
-import { Mark, PencilIcon, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
-import { OutcomeWord, SandboxState, StatusBadge, StatusGlyph } from "../components/Status";
-import { absoluteTime, count, localTime, plural, relativeTime, sandboxTime } from "../lib/format";
+/**
+ * Agents: the user's sessions, live, with rename, delete and a way to launch one. They stand under the
+ * repository they were launched on, the repository that was used last first, and each repository's
+ * name leads to its page; the agents on no repository of the GitHub connection come last. A list with
+ * no such repository in it is shown as it always was, without a heading.
+ *
+ * Under the groups, the repositories something is saved for that have no agent: their pages are
+ * where what was saved is changed or deleted, and nothing else leads there.
+ */
+import { MAX_RUNNING_SESSIONS, USAGE_LOW_SHARE, type SavedRepository, type UsageNumbers } from "@contract";
+import { useEffect, useId, useState } from "react";
+import { AgentList } from "../components/Agents";
+import { Mark, PlusIcon, WarnIcon } from "../components/Icons";
+import { count, localTime, plural, sandboxTime } from "../lib/format";
+import { NO_REPOSITORY, groupSessions, shownLimit, type SessionGroup } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { allowanceState, useAllowance, useChatgpt, useNow, useSessions } from "../state/hooks";
 
-function repoName(url: string): string {
-	return url.replace(/^https:\/\//, "").replace(/\.git$/, "");
-}
-
-function SessionRow({ session, profileName, now, onDelete }: { session: SessionSummary; profileName: string; now: number; onDelete(session: SessionSummary): void }) {
-	const { client, explain } = useApp();
-	const auth = useAuth();
-	const [renaming, setRenaming] = useState(false);
-	const [title, setTitle] = useState(session.title);
-	const [saving, setSaving] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const input = useRef<HTMLInputElement>(null);
-	const renameButton = useRef<HTMLButtonElement>(null);
-
-	useEffect(() => {
-		if (renaming) input.current?.select();
-	}, [renaming]);
-
-	const closeRename = () => {
-		setRenaming(false);
-		setError(null);
-		requestAnimationFrame(() => renameButton.current?.focus());
-	};
-
-	const save = async (event: FormEvent) => {
-		event.preventDefault();
-		const next = title.trim();
-		if (next === "" || next === session.title) return closeRename();
-		setSaving(true);
-		try {
-			await client.user(auth).renameSession(session.id, next);
-			closeRename();
-		} catch (failure) {
-			setError(explain(failure));
-		} finally {
-			setSaving(false);
-		}
-	};
-
-	const active = session.status !== "idle";
-	const waiting = session.status === "waiting";
+/** One repository's agents under its name, or the agents on none. `headed` is false for a list that has only the latter. */
+function Group({ group, limit, headed, now }: { group: SessionGroup; limit: number; headed: boolean; now: number }) {
+	const heading = useId();
+	const repository = group.repository;
+	const name = repository ? `${repository.owner}/${repository.name}` : "No connected repository";
 	return (
-		<li className={`agent-row${active ? " agent-row-active" : ""}${waiting ? " agent-row-waiting" : ""}`} data-status={session.status}>
-			<span className="agent-glyph">
-				<StatusGlyph status={session.status} />
-			</span>
-			<div className="agent-main">
-				{renaming ? (
-					<form className="agent-rename" onSubmit={save}>
-						<label className="visually-hidden" htmlFor={`rename-${session.id}`}>
-							New title for {session.title}
-						</label>
-						<input
-							ref={input}
-							id={`rename-${session.id}`}
-							className="input"
-							value={title}
-							maxLength={MAX_TITLE_CHARS}
-							onChange={(event) => setTitle(event.target.value)}
-							onKeyDown={(event) => {
-								if (event.key === "Escape") {
-									event.preventDefault();
-									setTitle(session.title);
-									closeRename();
-								}
-							}}
-							disabled={saving}
-						/>
-						<button type="submit" className="button button-primary button-small" disabled={saving || title.trim() === ""}>
-							{saving ? "Saving…" : "Save"}
-						</button>
-						<button
-							type="button"
-							className="button button-quiet button-small"
-							onClick={() => {
-								setTitle(session.title);
-								closeRename();
-							}}
-							disabled={saving}
-						>
-							Cancel
-						</button>
-						{error ? (
-							<p className="field-note tone-bad" role="alert">
-								{error}
-							</p>
-						) : null}
-					</form>
-				) : (
-					<a className="agent-title" {...linkProps({ name: "session", id: session.id })}>
-						{session.title}
-						{waiting ? <span className="visually-hidden"> (waiting for your answer)</span> : null}
-					</a>
-				)}
-				<p className="agent-meta">
-					<span>{profileName}</span>
-					<span>{session.model}</span>
-					<span>{session.turns === 0 ? "no turns" : plural(session.turns, "turn")}</span>
-					{session.repoUrl ? <span className="agent-repo">{repoName(session.repoUrl)}</span> : null}
-				</p>
-			</div>
-			<div className="agent-state">
-				{active ? <StatusBadge status={session.status} /> : <OutcomeWord outcome={session.lastOutcome} />}
-				<SandboxState state={session.sandbox} />
-			</div>
-			<time className="agent-time" dateTime={new Date(session.updatedAt).toISOString()} title={absoluteTime(session.updatedAt)}>
-				{relativeTime(session.updatedAt, now)}
-			</time>
-			<div className="agent-actions">
-				<button
-					ref={renameButton}
-					type="button"
-					className="icon-button"
-					aria-label={`Rename ${session.title}`}
-					title="Rename"
-					onClick={() => {
-						setTitle(session.title);
-						setRenaming(true);
-					}}
-				>
-					<PencilIcon />
-				</button>
-				<button type="button" className="icon-button icon-button-danger" aria-label={`Delete ${session.title}`} title="Delete" onClick={() => onDelete(session)}>
-					<TrashIcon />
-				</button>
-			</div>
-		</li>
-	);
-}
-
-function DeleteDialog({ session, onClose }: { session: SessionSummary; onClose(): void }) {
-	const { client, explain } = useApp();
-	const auth = useAuth();
-	const [busy, setBusy] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-
-	const remove = async () => {
-		setBusy(true);
-		setError(null);
-		try {
-			await client.user(auth).deleteSession(session.id);
-			onClose();
-		} catch (failure) {
-			setError(explain(failure));
-			setBusy(false);
-		}
-	};
-
-	return (
-		<Dialog
-			title="Delete this agent?"
-			size="small"
-			onClose={onClose}
-			dismissable={!busy}
-			footer={
-				<>
-					<button type="button" className="button button-quiet" onClick={onClose} disabled={busy}>
-						Keep it
-					</button>
-					<button type="button" className="button button-danger" onClick={remove} disabled={busy}>
-						{busy ? "Deleting…" : "Delete agent"}
-					</button>
-				</>
-			}
-		>
-			<p>
-				<strong>{session.title}</strong> will be removed with its conversation and its sandbox, including every file in the workspace. This cannot be undone.
-			</p>
-			{session.status !== "idle" ? <p className="tone-warn">It is working right now; deleting it stops the turn.</p> : null}
-			{error ? (
-				<p className="callout callout-bad" role="alert">
-					<WarnIcon />
-					<span>{error}</span>
-				</p>
+		<section className="agent-group" aria-labelledby={headed ? heading : undefined} aria-label={headed ? undefined : "Your agents"}>
+			{headed ? (
+				<h2 className="agent-group-head" id={heading}>
+					{repository ? (
+						<a className="agent-group-name" {...linkProps({ name: "repository", id: repository.id })} title={`What is saved for ${name}, and its pull requests`}>
+							<span className="agent-group-owner">{repository.owner}/</span>
+							{repository.name}
+						</a>
+					) : (
+						<span className="agent-group-name">{name}</span>
+					)}
+					<span className="agent-group-count">
+						{plural(group.sessions.length, "agent")}
+						{group.working > 0 ? ` · ${group.working} working` : ""}
+					</span>
+				</h2>
 			) : null}
-		</Dialog>
+			<AgentList sessions={group.sessions} limit={limit} foldKey={`home:${group.key}`} label={repository ? `Your agents on ${name}, the most recently used first` : "Your agents on no connected repository, the most recently used first"} grouped={repository !== null} now={now} />
+		</section>
 	);
 }
+
+/** The repositories something is saved for and no agent is on: asked when the screen opens and when an agent is added or deleted. */
+function useSavedWithoutAgents(sessions: ReturnType<typeof useSessions>["sessions"]): SavedRepository[] {
+	const { client } = useApp();
+	const auth = useAuth();
+	const [saved, setSaved] = useState<SavedRepository[]>([]);
+	const known = sessions?.length ?? -1;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `known` is not read here; a change of it is when to ask again
+	useEffect(() => {
+		let current = true;
+		client
+			.user(auth)
+			.savedRepositories()
+			.then(
+				(list) => current && setSaved(list),
+				// The list of agents does not depend on it: without it, the line is left out.
+				() => current && setSaved([]),
+			);
+		return () => {
+			current = false;
+		};
+	}, [client, auth, known]);
+	if (sessions === null) return [];
+	const used = new Set(sessions.map((session) => session.repository?.id));
+	return saved.filter((repository) => !used.has(repository.id));
+}
+
 
 function AccountLine() {
 	const auth = useAuth();
@@ -241,15 +125,14 @@ function UsageLine({ numbers }: { numbers: UsageNumbers | null }) {
 }
 
 export function Home() {
-	const { platform } = useApp();
 	const { sessions, connection, error } = useSessions();
 	const now = useNow(15_000);
-	const [deleting, setDeleting] = useState<SessionSummary | null>(null);
 	const working = sessions?.filter((session) => session.status !== "idle").length ?? 0;
 	// Asked again when an agent starts or stops working, and when one is added or deleted.
 	const usage = useAllowance(`${working}:${sessions?.length ?? 0}`);
 
-	const profileName = (id: string) => platform.info?.profiles.find((profile) => profile.id === id)?.name ?? id;
+	const groups = sessions === null ? [] : groupSessions(sessions);
+	const saved = useSavedWithoutAgents(sessions);
 	const waiting = sessions?.filter((session) => session.status === "waiting").length ?? 0;
 	const launch = () => navigate({ name: "new" });
 
@@ -310,14 +193,19 @@ export function Home() {
 					</button>
 				</div>
 			) : (
-				<ul className="agents" aria-label="Your agents, newest first">
-					{sessions.map((session) => (
-						<SessionRow key={session.id} session={session} profileName={profileName(session.profile)} now={now} onDelete={setDeleting} />
-					))}
-				</ul>
+				groups.map((group) => <Group key={group.key} group={group} limit={shownLimit(groups.length)} headed={groups.length > 1 || group.key !== NO_REPOSITORY} now={now} />)
 			)}
 
-			{deleting ? <DeleteDialog session={deleting} onClose={() => setDeleting(null)} /> : null}
+			{saved.length > 0 ? (
+				<p className="home-saved">
+					<span>Saved settings for repositories with no agent:</span>
+					{saved.map((repository) => (
+						<a key={repository.id} className="link" {...linkProps({ name: "repository", id: repository.id })}>
+							{repository.name ?? `repository ${repository.id}`}
+						</a>
+					))}
+				</p>
+			) : null}
 		</main>
 	);
 }

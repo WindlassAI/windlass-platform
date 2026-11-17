@@ -1,0 +1,257 @@
+/*
+ * A repository as a place: the names the list of agents is grouped under, and a repository's own
+ * page. The page's sections are set as the usage page's are (usage.css), and what it shows of the
+ * setup command, the secrets and the MCP servers is set as a session's panel sets them (base.css,
+ * session.css), wider.
+ */
+
+/* ---- the list of agents, grouped ---------------------------------------------------------------- */
+
+.agent-group {
+	margin-top: 26px;
+}
+/* The first group sits under the head's double rule as the ungrouped list does. */
+.home-head + .agent-group,
+.home-head ~ .callout + .agent-group {
+	margin-top: 18px;
+}
+.agent-group-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 2px 16px;
+	padding: 0 8px 7px 12px;
+	border-bottom: 1px solid var(--line-strong);
+	font-family: var(--font-mono);
+	font-size: var(--size-mono);
+	font-weight: 400;
+}
+.agent-group-name {
+	min-width: 0;
+	font-weight: 700;
+	color: var(--ink);
+	text-decoration: none;
+	overflow-wrap: anywhere;
+}
+a.agent-group-name:hover {
+	color: var(--accent-strong);
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: 3px;
+}
+.agent-group-owner {
+	font-weight: 400;
+	color: var(--ink-dim);
+}
+a.agent-group-name:hover .agent-group-owner {
+	color: inherit;
+}
+.agent-group-count {
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+	white-space: nowrap;
+}
+
+/* What a folded list leaves out, in numbers, and the way to it. */
+.agents-fold {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 2px 12px;
+	padding: 9px 8px 0 50px;
+	font-size: var(--size-small);
+	color: var(--ink-faint);
+}
+.agents-fold .link {
+	font-weight: 400;
+	color: var(--ink-dim);
+}
+.agents-fold .link:hover {
+	color: var(--ink);
+}
+
+/* The repositories with something saved and no agent: a line under the list. */
+.home-saved {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 14px;
+	margin-top: 34px;
+	padding: 12px 8px 0 12px;
+	border-top: 1px solid var(--line);
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.home-saved .link {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	font-weight: 400;
+	color: var(--ink);
+	overflow-wrap: anywhere;
+}
+.home-saved .link:hover {
+	color: var(--accent-strong);
+}
+
+/* ---- a repository's page ------------------------------------------------------------------------ */
+
+.repo-head {
+	min-width: 0;
+	flex: 1 1 320px;
+}
+.repo-name {
+	overflow-wrap: anywhere;
+}
+.repo-facts {
+	gap: 4px 16px;
+}
+.repo-fact,
+.repo-link {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+}
+.repo-link {
+	font-weight: 600;
+	color: var(--ink);
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: 3px;
+}
+.repo-link:hover {
+	color: var(--accent-strong);
+}
+.repo > .callout {
+	margin-top: 16px;
+}
+
+/* The agents: the list of the home screen, under the section's own rule. */
+.repo-agents {
+	margin-top: 12px;
+	border-top: 1px solid var(--line);
+}
+
+.repo-pulls {
+	margin-top: 12px;
+	border-top: 1px solid var(--line);
+}
+.repo-pull {
+	display: grid;
+	grid-template-columns: 76px minmax(0, 1fr);
+	align-items: baseline;
+	column-gap: 16px;
+	padding: 11px 8px 11px 12px;
+	border-bottom: 1px solid var(--line);
+	font-size: var(--size-mono-small);
+}
+.repo-pull .gh-pull-state {
+	font-family: var(--font-mono);
+}
+.repo-pull-main {
+	min-width: 0;
+}
+.repo-pull-title {
+	font-size: var(--size-text);
+	font-weight: 600;
+	text-decoration: none;
+	overflow-wrap: anywhere;
+}
+.repo-pull-title:hover {
+	color: var(--accent-strong);
+}
+.repo-pull-title svg {
+	margin-left: 6px;
+	color: var(--ink-faint);
+}
+.repo-pull-number {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono);
+	font-weight: 400;
+	color: var(--ink-dim);
+}
+.repo-pull-agent {
+	color: var(--ink);
+	text-decoration: underline;
+	text-decoration-color: var(--line-strong);
+	text-underline-offset: 3px;
+}
+.repo-pull-agent:hover {
+	color: var(--accent-strong);
+}
+
+/* What is saved is a column of fields, not a table: it keeps a readable measure on a wide page. */
+.repo-fields,
+.repo-saved > *,
+.repo-forget {
+	max-width: 660px;
+}
+.repo-saved > .input,
+.repo-saved > .secrets,
+.repo-saved > .servers,
+.repo-saved > .panel-empty:first-of-type {
+	margin-top: 12px;
+}
+.repo-saved .usage-empty {
+	max-width: none;
+}
+/* One line under the two fields, there whether or not it says something: saving moves nothing. */
+.repo-said {
+	min-height: 1.5em;
+	margin-top: 4px;
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.repo-forget {
+	margin-top: 12px;
+}
+/* "Add…" in a section's title, set as the title is not. */
+.usage-title .secret-add {
+	margin-left: auto;
+	font-family: var(--font-text);
+	font-size: var(--size-small);
+}
+.repo-approvals .server-foot {
+	justify-content: space-between;
+}
+.repo-approvals .server-state time {
+	color: var(--ink);
+}
+
+/* A session's panel names its repository: the name leads to the repository's page. */
+.kv-link {
+	color: inherit;
+	text-decoration: underline;
+	text-decoration-color: var(--line-strong);
+	text-underline-offset: 3px;
+}
+.kv-link:hover {
+	color: var(--accent-strong);
+}
+
+/* The launch form's word on a repository's defaults: sentences under the repository, no field of its own. */
+.new-agent-defaults {
+	margin-top: -8px;
+}
+.new-agent-defaults .field-note:first-child {
+	margin-top: 0;
+}
+
+@media (max-width: 760px) {
+	.agent-group-head {
+		padding-left: 4px;
+		padding-right: 4px;
+	}
+	.agents-fold {
+		padding-left: 44px;
+	}
+	.home-saved {
+		padding-left: 4px;
+		padding-right: 4px;
+	}
+	.repo-pull {
+		grid-template-columns: minmax(0, 1fr);
+		row-gap: 4px;
+		padding-left: 4px;
+		padding-right: 4px;
+	}
+}

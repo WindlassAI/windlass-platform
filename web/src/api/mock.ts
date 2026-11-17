@@ -80,10 +80,14 @@ import {
 	type PublishResult,
 	type PublishState,
 	type PullRequestInfo,
+	type RepositoryApproval,
+	type RepositoryDefaults,
 	type RepositorySecrets,
 	type RepositorySetup,
+	type RepositoryView,
 	type SandboxProfile,
 	type SandboxProfileId,
+	type SavedRepository,
 	type SecretReach,
 	type SecretScope,
 	type SessionRepository,
@@ -797,6 +801,10 @@ interface World {
 	setups: Map<number, { command: string; updatedAt: number }>;
 	/** The secrets the user saved, by repository and name. A value is not kept at all: nothing here could show one. */
 	secrets: Map<number, Map<string, { scope: SecretScope; updatedAt: number }>>;
+	/** What new agents on a repository start with, where the user said so, by GitHub's id for it. */
+	defaults: Map<number, { profile: SandboxProfileId | null; model: string | null; updatedAt: number }>;
+	/** What a repository was called when something was last saved for it or GitHub was last asked: what names one that has no session. */
+	names: Map<number, string>;
 	/** The seconds of sandbox time counted today, by session: the seeded ones, and what the turns played here ran. */
 	spent: Map<string, number>;
 }
@@ -859,7 +867,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), secrets: new Map(), spent: new Map(Object.entries(MOCK_SPENT)) };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), secrets: new Map(), defaults: new Map(), names: new Map(), spent: new Map(Object.entries(MOCK_SPENT)) };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -1759,6 +1767,21 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			]),
 		);
 
+		if (githubOn) {
+			// New agents on acme/harbor start in the hardened container, on the second model: the launch form shows both once it is picked.
+			world.defaults.set(7101, { profile: "docker-hardened", model: MODELS[1] as string, updatedAt: start - 2 * 24 * HOUR });
+			// ada/tide-tables has a default model this deployment stopped offering: its page says so, and the launch form leaves it out.
+			world.defaults.set(7102, { profile: null, model: "gpt-5.5-terra", updatedAt: start - 40 * 24 * HOUR });
+			// acme/quay has a secret and no agent: the list of agents names it under the groups.
+			world.secrets.set(7105, new Map([["QUAY_TOKEN", { scope: "setup" as const, updatedAt: start - 6 * 24 * HOUR }]]));
+			world.names.set(7105, "acme/quay");
+			// acme/old-pier is no longer among the repositories the connection covers. What was saved for it is still there.
+			world.setups.set(7190, { command: "make deps", updatedAt: start - 60 * 24 * HOUR });
+			world.secrets.set(7190, new Map([["PIER_KEY", { scope: "agent" as const, updatedAt: start - 60 * 24 * HOUR }]]));
+			world.approvals.push({ project: "github:7190", name: "tides", fingerprint: "5b0c6a19d2e7f384", approvedAt: start - 12 * 24 * HOUR, expiresAt: start - 12 * 24 * HOUR + APPROVAL_MS });
+			world.names.set(7190, "acme/old-pier");
+		}
+
 		// acme/harbor names MCP servers. The user approved "harbor" three days ago in one session, so the other
 		// started it unasked; "docs" was left for later, and "tracker" was approved and could not start.
 		const checks = world.sessions.get("checks");
@@ -1844,6 +1867,65 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		world.secrets.set(repositoryId, saved);
 	}
 
+	// ---- a repository's page ---------------------------------------------------------------------
+
+	/** As the server names a repository without asking GitHub: by the newest session on it, then by what was noted when something was saved. */
+	function repositoryNameOf(world: World, repositoryId: number): string | null {
+		const newest = listOf(world).find((summary) => summary.repository?.id === repositoryId)?.repository;
+		return newest ? `${newest.owner}/${newest.name}` : (world.names.get(repositoryId) ?? null);
+	}
+
+	/** As the server does when something is saved for a repository nothing names yet: GitHub is asked what it is called, where the connection covers it. */
+	function nameAtSave(world: World, repositoryId: number): void {
+		if (repositoryNameOf(world, repositoryId) !== null || !githubOn || !world.github) return;
+		const found = GITHUB_REPOSITORIES.find((repository) => repository.id === repositoryId);
+		if (found) world.names.set(repositoryId, `${found.owner}/${found.name}`);
+	}
+
+	function defaultsOf(world: World, repositoryId: number): RepositoryDefaults {
+		const saved = world.defaults.get(repositoryId);
+		return { profile: saved?.profile ?? null, model: saved?.model ?? null, updatedAt: saved?.updatedAt ?? null };
+	}
+
+	function repositoryViewOf(world: World, repositoryId: number): RepositoryView {
+		const approvals = new Map<string, RepositoryApproval>();
+		const mine = world.approvals.filter((approval) => approval.project === `github:${repositoryId}` && approval.expiresAt > now()).sort((a, b) => b.approvedAt - a.approvedAt);
+		for (const approval of mine) {
+			const listed = approvals.get(approval.name);
+			if (listed) listed.definitions += 1;
+			else approvals.set(approval.name, { name: approval.name, approvedAt: approval.approvedAt, expiresAt: approval.expiresAt, definitions: 1 });
+		}
+		return {
+			id: repositoryId,
+			name: repositoryNameOf(world, repositoryId),
+			defaults: defaultsOf(world, repositoryId),
+			approvals: [...approvals.values()],
+			forgetting: MOCK_FORGETTING,
+			saved: { setup: world.setups.has(repositoryId), secrets: world.secrets.get(repositoryId)?.size ?? 0 },
+		};
+	}
+
+	/** Saves as the server does (server/src/repository-defaults.ts): the same refusals in the same words, and only the fields that are named. */
+	function saveDefaults(world: World, repositoryId: number, change: { profile?: SandboxProfileId | null; model?: string | null }): RepositoryDefaults {
+		const saved = world.defaults.get(repositoryId) ?? { profile: null, model: null, updatedAt: 0 };
+		const next = { ...saved };
+		if (change.profile !== undefined) {
+			const chosen = change.profile === null ? null : profiles.find((profile) => profile.id === change.profile);
+			if (chosen === undefined) throw new PlatformError("user", "Choose one of the listed sandboxes.", { reason: "bad_input" });
+			if (chosen !== null && !chosen.available) throw new PlatformError("user", `${chosen.name} cannot be chosen yet. ${chosen.unavailableReason ?? ""}`.trim(), { reason: "bad_input" });
+			next.profile = chosen?.id ?? null;
+		}
+		if (change.model !== undefined) {
+			if (change.model !== null && !MODELS.includes(change.model)) throw new PlatformError("user", `That model is not offered. Choose one of: ${MODELS.join(", ")}`, { reason: "bad_model" });
+			next.model = change.model;
+		}
+		if (change.profile !== undefined || change.model !== undefined) {
+			if (next.profile === null && next.model === null) world.defaults.delete(repositoryId);
+			else world.defaults.set(repositoryId, { ...next, updatedAt: now() });
+		}
+		return defaultsOf(world, repositoryId);
+	}
+
 	// ---- the interface --------------------------------------------------------------------------
 
 	function userApi(auth: AuthResult): UserApi {
@@ -1920,6 +2002,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			},
 			async saveRepositorySetup(repositoryId: number, command: string): Promise<RepositorySetup> {
 				await latency(320);
+				nameAtSave(world(), repositoryId);
 				return saveSetup(world(), repositoryId, command);
 			},
 			async repositorySecrets(repositoryId: number, profile: SandboxProfileId, sessionId?: string): Promise<RepositorySecrets> {
@@ -1928,13 +2011,72 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			},
 			async saveRepositorySecret(repositoryId: number, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }, sessionId?: string): Promise<RepositorySecrets> {
 				await latency(340);
+				nameAtSave(world(), repositoryId);
 				saveSecret(world(), repositoryId, secret);
 				return secretsOf(world(), repositoryId, profile, sessionId);
 			},
 			async deleteRepositorySecret(repositoryId: number, profile: SandboxProfileId, name: string, sessionId?: string): Promise<RepositorySecrets> {
 				await latency(280);
 				world().secrets.get(repositoryId)?.delete(name);
+				if (world().secrets.get(repositoryId)?.size === 0) world().secrets.delete(repositoryId);
 				return secretsOf(world(), repositoryId, profile, sessionId);
+			},
+			async repository(repositoryId: number): Promise<RepositoryView> {
+				await latency(180);
+				return repositoryViewOf(world(), repositoryId);
+			},
+			async githubRepository(repositoryId: number): Promise<GithubRepository> {
+				await latency(380);
+				requireGithub(world());
+				if (nextGithub === "list") {
+					nextGithub = null;
+					throw new PlatformError("user", "GitHub could not be reached. Try again in a moment.", { reason: "github_unreachable" });
+				}
+				const found = nextGithub === "gone" ? undefined : GITHUB_REPOSITORIES.find((repository) => repository.id === repositoryId);
+				if (nextGithub === "gone") nextGithub = null;
+				if (!found) throw new PlatformError("user", "That repository is not among the ones your GitHub connection covers. Add it to the GitHub App's installation at GitHub, then choose it again.", { reason: "github_gone" });
+				// GitHub said what it is called now: what is saved for it goes by that name.
+				world().names.set(repositoryId, `${found.owner}/${found.name}`);
+				return describeRepository(found);
+			},
+			async saveRepositoryDefaults(repositoryId: number, change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults> {
+				await latency(300);
+				nameAtSave(world(), repositoryId);
+				return saveDefaults(world(), repositoryId, change);
+			},
+			async forgetRepositoryApproval(repositoryId: number, name: string): Promise<RepositoryView> {
+				await serversLatency(360);
+				if (nextServers === "forget") {
+					nextServers = null;
+					throw new PlatformError("user", "The approval could not be forgotten. Try again.");
+				}
+				const current = world();
+				current.approvals = current.approvals.filter((approval) => !(approval.project === `github:${repositoryId}` && approval.name === name));
+				return repositoryViewOf(current, repositoryId);
+			},
+			async forgetRepository(repositoryId: number): Promise<RepositoryView> {
+				await latency(420);
+				const current = world();
+				current.secrets.delete(repositoryId);
+				current.setups.delete(repositoryId);
+				current.defaults.delete(repositoryId);
+				current.approvals = current.approvals.filter((approval) => approval.project !== `github:${repositoryId}`);
+				current.names.delete(repositoryId);
+				return repositoryViewOf(current, repositoryId);
+			},
+			async savedRepositories(): Promise<SavedRepository[]> {
+				await latency(200);
+				const current = world();
+				// A deployment that never had a GitHub App has nothing saved for a repository.
+				if (!githubOn) return [];
+				const ids = new Set<number>([...current.setups.keys(), ...current.secrets.keys(), ...current.defaults.keys()]);
+				for (const approval of current.approvals) {
+					const id = /^github:([1-9][0-9]*)$/.exec(approval.project)?.[1];
+					if (id !== undefined && approval.expiresAt > now()) ids.add(Number(id));
+				}
+				return [...ids]
+					.map((id) => ({ id, name: repositoryNameOf(current, id) }))
+					.sort((a, b) => Number(a.name === null) - Number(b.name === null) || (a.name ?? "").localeCompare(b.name ?? "") || a.id - b.id);
 			},
 			async githubConnect(page: string): Promise<{ url: string }> {
 				await latency(420);

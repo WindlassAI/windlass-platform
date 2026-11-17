@@ -454,6 +454,63 @@ export interface RepositorySecrets {
 	profile: SandboxProfileId;
 }
 
+// --- A repository's page ---------------------------------------------------------------------
+
+/**
+ * What a new session on a repository starts with, where its user said so (README, "A repository's
+ * page"): the launch form starts from them when that repository is picked, and its user can still
+ * choose otherwise for one session. Kept as they were saved: a default may come to name a sandbox or a
+ * model this deployment no longer offers, and such a one is not used.
+ */
+export interface RepositoryDefaults {
+	/** The sandbox profile, by its id; null when none is saved. */
+	profile: SandboxProfileId | null;
+	/** The model; null when none is saved. */
+	model: string | null;
+	/** When either was last saved, ms since the epoch; null when neither is. */
+	updatedAt: number | null;
+}
+
+/** The user's remembered approval of an MCP server a repository names, as the repository's page lists it. */
+export interface RepositoryApproval {
+	/** The server's name in the repository's configuration. */
+	name: string;
+	/** When the user last approved a definition of it, and until when that approval holds, ms since the epoch. */
+	approvedAt: number;
+	expiresAt: number;
+	/** How many definitions of it are approved: more than one when its definition changed and was approved again. Forgetting forgets them all. */
+	definitions: number;
+}
+
+/**
+ * What the user's actor keeps for one repository of a GitHub connection, by GitHub's id for it: what
+ * the repository's page shows beside the setup command and the secrets, which are read by their own
+ * actions. Nothing here is asked of GitHub, and nothing here is a secret's value.
+ */
+export interface RepositoryView {
+	/** GitHub's id for the repository. */
+	id: number;
+	/**
+	 * "owner/name" as the user's sessions on it, or what was saved for it, last had it; null when
+	 * nothing names it. GitHub is not asked: `githubRepository` says what it is called now.
+	 */
+	name: string | null;
+	defaults: RepositoryDefaults;
+	/** The remembered approvals that have not run out, the newest first. */
+	approvals: RepositoryApproval[];
+	/** What forgetting an approval does and does not do on this deployment, in a sentence or two. */
+	forgetting: string;
+	/** What else is saved for it: whether a setup command is, and how many secrets. */
+	saved: { setup: boolean; secrets: number };
+}
+
+/** A repository the user's actor keeps something for: a setup command, a secret, a default or a remembered approval. */
+export interface SavedRepository {
+	id: number;
+	/** As `RepositoryView.name`. */
+	name: string | null;
+}
+
 // --- Usage -----------------------------------------------------------------------------------
 
 /**
@@ -605,6 +662,37 @@ export interface UserActions {
 	saveRepositorySecret(input: { repositoryId: number; profile: SandboxProfileId; sessionId?: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
 	/** Deletes a secret of a repository. A sandbox whose setup command already had it keeps what that command made of it. */
 	deleteRepositorySecret(input: { repositoryId: number; profile: SandboxProfileId; sessionId?: string; name: string }): Promise<RepositorySecrets>;
+	/**
+	 * What is kept for a repository, by GitHub's id for it: the defaults for new sessions and the
+	 * remembered approvals of its MCP servers. Asks GitHub nothing, and answers for a repository the
+	 * user can no longer reach, too: what was saved stays until its user deletes it.
+	 */
+	repository(repositoryId: number): Promise<RepositoryView>;
+	/**
+	 * The repository as GitHub has it now, when the user's connection covers it and the connected user
+	 * may read it: what a new session can be launched on. Throws a UserError that says what is in the
+	 * way: `github_off`, `github_not_connected`, `github_gone` or `github_denied` when it cannot be used
+	 * for new sessions, `github_unreachable` or `github_failed` when GitHub could not be asked.
+	 */
+	githubRepository(repositoryId: number): Promise<GithubRepository>;
+	/**
+	 * Saves what new sessions on a repository start with. A field that is left out stays as it is;
+	 * null saves none for it. Throws a UserError with code `bad_input` for a sandbox this deployment
+	 * does not offer or cannot run, and `bad_model` for a model it does not offer.
+	 */
+	saveRepositoryDefaults(input: { repositoryId: number; profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
+	/**
+	 * Forgets the user's remembered approvals of that MCP server for a repository, whatever its
+	 * definition was (`RepositoryView.forgetting` says what stays). Resolves when nothing was remembered, too.
+	 */
+	forgetRepositoryApproval(input: { repositoryId: number; name: string }): Promise<RepositoryView>;
+	/**
+	 * Deletes everything kept for a repository: its setup command, its secrets, its defaults and the
+	 * remembered approvals. The user's sessions on it stay, and their next sandbox is made without them.
+	 */
+	forgetRepository(repositoryId: number): Promise<RepositoryView>;
+	/** The repositories something is kept for, by name. Asks GitHub nothing. */
+	savedRepositories(): Promise<SavedRepository[]>;
 	listSessions(): Promise<SessionSummary[]>;
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
 	renameSession(id: string, title: string): Promise<SessionSummary>;
@@ -1072,6 +1160,8 @@ export const MAX_SECRET_NAME_CHARS = 64;
 export const MIN_SECRET_VALUE_CHARS = 8;
 /** In bytes of UTF-8: every secret of a repository is in the environment of one process. */
 export const MAX_SECRET_VALUE_BYTES = 16_384;
+/** How many repositories one user may have defaults for; the ones saved longest ago go first. */
+export const MAX_REPOSITORY_DEFAULTS = 500;
 /** How long a question waits for an answer before the platform declines it. */
 export const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
 /** Sessions of one user that may run a turn at the same time. */

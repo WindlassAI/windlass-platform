@@ -1,7 +1,8 @@
 /**
  * A repository's setup command, where its user sets it: a field of the launch form, shown once a
  * repository of the GitHub connection is chosen, filled with what is saved for that repository and
- * saved with the launch; and a section of a session's side panel, where it is read and changed.
+ * saved with the launch; and a section of a session's side panel and of the repository's own page,
+ * where it is read and changed (`SetupEditor`, the same in both).
  *
  * The command is the user's own, kept for the repository and not for one session: every agent they
  * launch on it runs it once, in each new workspace, before the agent starts there. A workspace that
@@ -115,13 +116,15 @@ export function SetupField({ setup, repository, disabled }: { setup: SetupDraft;
 	);
 }
 
-/** The side panel's section, for a session on a repository of the GitHub connection. */
-export function SetupSection({ summary }: { summary: SessionSummary }) {
+/**
+ * The command of one repository, read and changed in place: the field, its one control, and what it
+ * does. `labelledBy` is the heading it stands under; `applies` says what a change means where it is
+ * shown; `onSaved` hears of a save.
+ */
+export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved }: { repositoryId: number; name: string; labelledBy: string; applies: string; onSaved?(): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const ids = { title: useId(), input: useId(), note: useId() };
-	const repository = summary.repository ?? null;
-	const repositoryId = repository?.id ?? null;
+	const ids = { input: useId(), note: useId() };
 	const [saved, setSaved] = useState<{ command: string; limitMs: number } | null>(null);
 	const [text, setText] = useState("");
 	const [error, setError] = useState<string | null>(null);
@@ -130,7 +133,6 @@ export function SetupSection({ summary }: { summary: SessionSummary }) {
 	const [done, setDone] = useState(false);
 
 	useEffect(() => {
-		if (repositoryId === null) return;
 		let current = true;
 		setSaved(null);
 		setError(null);
@@ -152,8 +154,6 @@ export function SetupSection({ summary }: { summary: SessionSummary }) {
 		};
 	}, [client, auth, explain, repositoryId]);
 
-	if (!repository || repositoryId === null) return null;
-	const name = `${repository.owner}/${repository.name}`;
 	const changed = saved !== null && clean(text) !== saved.command;
 
 	const save = async () => {
@@ -165,6 +165,7 @@ export function SetupSection({ summary }: { summary: SessionSummary }) {
 			setSaved({ command: setup.command, limitMs: setup.timeoutMs });
 			setText(setup.command);
 			setDone(true);
+			onSaved?.();
 		} catch (failure) {
 			setError(explain(failure));
 		} finally {
@@ -173,10 +174,7 @@ export function SetupSection({ summary }: { summary: SessionSummary }) {
 	};
 
 	return (
-		<section className="panel-section" aria-labelledby={ids.title}>
-			<h2 className="panel-title" id={ids.title}>
-				Setup command
-			</h2>
+		<>
 			{saved === null ? (
 				error ? null : (
 					<p className="panel-empty" aria-busy="true">
@@ -201,7 +199,7 @@ export function SetupSection({ summary }: { summary: SessionSummary }) {
 							setDone(false);
 						}}
 						disabled={saving}
-						aria-labelledby={ids.title}
+						aria-labelledby={labelledBy}
 						aria-describedby={ids.note}
 					/>
 					<p className="setup-actions">
@@ -215,8 +213,7 @@ export function SetupSection({ summary }: { summary: SessionSummary }) {
 						) : null}
 					</p>
 					<p className="panel-empty setup-note" id={ids.note}>
-						{howItRuns(`when a workspace is created for ${name}`, saved.limitMs)}{" "}
-						{summary.sandbox === "none" ? "This agent's workspace is created with its first prompt." : "A change applies to workspaces created after it: this agent's current one is not set up again."}
+						{howItRuns(`when a workspace is created for ${name}`, saved.limitMs)} {applies}
 					</p>
 				</>
 			)}
@@ -225,6 +222,26 @@ export function SetupSection({ summary }: { summary: SessionSummary }) {
 					<WarnIcon size={13} /> {error}
 				</p>
 			) : null}
+		</>
+	);
+}
+
+/** The side panel's section, for a session on a repository of the GitHub connection. */
+export function SetupSection({ summary }: { summary: SessionSummary }) {
+	const title = useId();
+	const repository = summary.repository ?? null;
+	if (!repository) return null;
+	return (
+		<section className="panel-section" aria-labelledby={title}>
+			<h2 className="panel-title" id={title}>
+				Setup command
+			</h2>
+			<SetupEditor
+				repositoryId={repository.id}
+				name={`${repository.owner}/${repository.name}`}
+				labelledBy={title}
+				applies={summary.sandbox === "none" ? "This agent's workspace is created with its first prompt." : "A change applies to workspaces created after it: this agent's current one is not set up again."}
+			/>
 		</section>
 	);
 }

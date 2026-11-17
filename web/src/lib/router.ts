@@ -1,12 +1,16 @@
 /**
  * Routing by URL with the History API: sign-in, home, the new-agent dialog over home, the usage page,
- * a session by its ID. A reload stays on the same screen; `?mock=1` is carried from one address to the next.
+ * a session by its ID, and a repository's page by GitHub's id for it, with the new-agent dialog over
+ * that page too. A reload stays on the same screen; `?mock=1` is carried from one address to the next.
  */
 import { useSyncExternalStore } from "react";
 
 export type Route =
 	| { name: "home" }
-	| { name: "new" }
+	/** The launch form. With `repository`, GitHub's id for one, it opens over that repository's page with it chosen. */
+	| { name: "new"; repository?: number }
+	/** What is kept for one repository of the user's GitHub connection, and the agents on it. */
+	| { name: "repository"; id: number }
 	/** The user's sandbox time and kept sandboxes. */
 	| { name: "usage" }
 	| { name: "signin" }
@@ -22,6 +26,8 @@ export function parseRoute(pathname: string): Route {
 	if (path === "/usage") return { name: "usage" };
 	if (path === "/signin") return { name: "signin" };
 	if (path === "/mock/authorize") return { name: "mock-authorize" };
+	const repository = /^\/repositories\/([1-9][0-9]{0,15})(\/new)?$/.exec(path);
+	if (repository?.[1]) return repository[2] ? { name: "new", repository: Number(repository[1]) } : { name: "repository", id: Number(repository[1]) };
 	const session = /^\/agents\/([^/]+)$/.exec(path);
 	if (session?.[1]) return { name: "session", id: decodeURIComponent(session[1]) };
 	return { name: "notfound" };
@@ -32,7 +38,9 @@ function pathOf(route: Route): string {
 		case "home":
 			return "/";
 		case "new":
-			return "/new";
+			return route.repository === undefined ? "/new" : `/repositories/${route.repository}/new`;
+		case "repository":
+			return `/repositories/${route.id}`;
 		case "usage":
 			return "/usage";
 		case "signin":

@@ -12,6 +12,7 @@ import type {
 	ChatgptStatus,
 	CreateSessionInput,
 	GithubBranchList,
+	GithubRepository,
 	GithubRepositoryList,
 	GithubStatus,
 	LiveDelta,
@@ -22,9 +23,12 @@ import type {
 	PublishMessage,
 	PublishResult,
 	PublishState,
+	RepositoryDefaults,
 	RepositorySecrets,
 	RepositorySetup,
+	RepositoryView,
 	SandboxProfileId,
+	SavedRepository,
 	SecretScope,
 	SessionServers,
 	SessionSnapshot,
@@ -139,6 +143,22 @@ export interface UserApi {
 	/** Saves a secret: with `value` a new one or a new value, without it only the scope. Throws with reason `bad_secret`, `too_many_secrets` or `secret_not_found`. */
 	saveRepositorySecret(repositoryId: number, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }, sessionId?: string): Promise<RepositorySecrets>;
 	deleteRepositorySecret(repositoryId: number, profile: SandboxProfileId, name: string, sessionId?: string): Promise<RepositorySecrets>;
+	/** What is kept for a repository beside its setup command and its secrets: the defaults for new agents and the remembered approvals of its MCP servers. Asks GitHub nothing. */
+	repository(repositoryId: number): Promise<RepositoryView>;
+	/**
+	 * The repository as GitHub has it now: what a new agent can be launched on. Throws with reason `github_off`,
+	 * `github_not_connected`, `github_gone` or `github_denied` when it cannot be used for new agents, and
+	 * `github_unreachable` or `github_failed` when GitHub could not be asked.
+	 */
+	githubRepository(repositoryId: number): Promise<GithubRepository>;
+	/** Saves what new agents on a repository start with: a field left out stays, null saves none. Throws with reason `bad_input` or `bad_model` for what the deployment does not offer. */
+	saveRepositoryDefaults(repositoryId: number, change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
+	/** Forgets the remembered approvals of that MCP server for a repository. */
+	forgetRepositoryApproval(repositoryId: number, name: string): Promise<RepositoryView>;
+	/** Deletes everything kept for a repository: setup command, secrets, defaults and remembered approvals. The agents on it stay. */
+	forgetRepository(repositoryId: number): Promise<RepositoryView>;
+	/** The repositories something is kept for. Asks GitHub nothing. */
+	savedRepositories(): Promise<SavedRepository[]>;
 	/** Today's sandbox time against the allowance, and how many sandboxes the user keeps of how many they may. */
 	allowance(): Promise<UsageNumbers>;
 	/** The usage page: the numbers, today by agent, the kept sandboxes, the last two weeks and what a second is estimated to cost. */

@@ -13,6 +13,7 @@ import "./styles/new-agent.css";
 import "./styles/session.css";
 import "./styles/github.css";
 import "./styles/usage.css";
+import "./styles/repository.css";
 import { QUESTION_TIMEOUT_MS } from "@contract";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";

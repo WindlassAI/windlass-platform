@@ -40,6 +40,11 @@
  * server that runs its turn. Whoever holds this storage and not the servers' secret reads which
  * repositories have secrets, their names, scopes and times, and how long each value is.
  *
+ * And what new sessions on those repositories start with, where the user said so
+ * (repository-defaults.ts), one row per repository: a sandbox profile and a model. A repository is not
+ * an object here: it is the key those four tables share, GitHub's id for it, and its page
+ * (`repository`) is what they hold under that key, beside the user's sessions on it.
+ *
  * And the deleted sessions whose copy of Windlass's data the bucket still holds (`backup_removal`),
  * one row each: a session that could not remove its copy as it was deleted hands it here, and this
  * actor, which outlives its sessions, tries again on its durable schedule, further apart each time.
@@ -60,15 +65,20 @@ import {
 	type ChatgptStatus,
 	type CreateSessionInput,
 	type GithubBranchList,
+	type GithubRepository,
 	type GithubRepositoryList,
 	type GithubStatus,
 	type KeptSandbox,
 	MAX_RUNNING_SESSIONS,
 	MAX_TITLE_CHARS,
 	MAX_SECRETS_PER_REPOSITORY,
+	type RepositoryApproval,
+	type RepositoryDefaults,
 	type RepositorySecrets,
 	type RepositorySetup,
+	type RepositoryView,
 	type SandboxProfile,
+	type SavedRepository,
 	type SecretScope,
 	type SessionSummary,
 	USAGE_HISTORY_DAYS,
@@ -85,8 +95,10 @@ import { getLayer } from "../layer.js";
 import { platformModels } from "../platform-info.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, sealSecret } from "../repo-secrets.js";
+import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
 import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
+import { forgettingWords } from "../server-question.js";
 import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../signin/directory.js";
 import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
@@ -357,7 +369,7 @@ async function saveSetup(c: UserCtx, uid: string, project: string, label: string
 		await c.db.execute("DELETE FROM setup_command WHERE project = ?", project);
 	} else {
 		await c.db.execute(
-			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = excluded.label, command = excluded.command, updated_at = excluded.updated_at",
+			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, command = excluded.command, updated_at = excluded.updated_at",
 			project,
 			label,
 			command,
@@ -442,7 +454,7 @@ async function saveSecret(c: UserCtx, uid: string, project: string, label: strin
 			if ((all?.n ?? 0) >= MAX_SECRETS_PER_USER) throw new UserError(`You have ${MAX_SECRETS_PER_USER.toLocaleString("en-US")} secrets saved over all your repositories, which is the limit. Delete one first.`, { code: "too_many_secrets" });
 		}
 		await c.db.execute(
-			"INSERT INTO repo_secret (project, name, label, scope, sealed, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (project, name) DO UPDATE SET label = excluded.label, scope = excluded.scope, sealed = excluded.sealed, updated_at = excluded.updated_at",
+			"INSERT INTO repo_secret (project, name, label, scope, sealed, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (project, name) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, scope = excluded.scope, sealed = excluded.sealed, updated_at = excluded.updated_at",
 			project,
 			name,
 			label,
@@ -465,11 +477,92 @@ function secretInput<T>(clean: () => T): T {
 	}
 }
 
-/** The repository in words, for a reader of the table: as one of the user's sessions on it has it. */
+/** The repository in words, for a reader of the table: as the newest of the user's sessions on it has it. */
 function repositoryLabel(vars: UserVars, repositoryId: unknown): string {
-	const known = [...vars.sessions.values()].find((session) => session.repository?.id === repositoryId)?.repository;
+	let newest: SessionSummary | null = null;
+	for (const session of vars.sessions.values()) if (session.repository?.id === repositoryId && (newest === null || session.createdAt > newest.createdAt)) newest = session;
+	const known = newest?.repository;
 	return known ? `${known.owner}/${known.name}` : "";
 }
+
+// ---------------------------------------------------------------------------------------------
+// A repository's page: what the tables above hold under one repository's key
+// ---------------------------------------------------------------------------------------------
+
+/** How many repositories `savedRepositories` names. */
+const MAX_SAVED_REPOSITORIES = 500;
+
+/** GitHub's id for the repository a key names; null for the key of a pasted address or of a session. */
+function repositoryIdOf(project: string): number | null {
+	const id = /^github:([1-9][0-9]{0,15})$/.exec(project)?.[1];
+	return id === undefined ? null : Number(id);
+}
+
+/**
+ * "owner/name" of a repository without asking GitHub: as the newest session on it has it, and with no
+ * session, as it was called when something was last saved for it. "" when nothing names it.
+ */
+async function repositoryName(c: UserCtx, repositoryId: number, project: string): Promise<string> {
+	const known = repositoryLabel(c.vars, repositoryId);
+	if (known !== "") return known;
+	const [row] = await c.db.execute<{ label: string }>(
+		"SELECT label FROM (SELECT label, updated_at FROM repository_defaults WHERE project = ? UNION ALL SELECT label, updated_at FROM setup_command WHERE project = ? UNION ALL SELECT label, updated_at FROM repo_secret WHERE project = ?) WHERE label != '' ORDER BY updated_at DESC LIMIT 1",
+		project,
+		project,
+		project,
+	);
+	return row?.label ?? c.vars.approvals.of(project, Date.now()).find((approval) => approval.label !== "")?.label ?? "";
+}
+
+/** How long a save waits for GitHub to say what a repository is called, when nothing here does. */
+const NAMING_MS = 4_000;
+
+/**
+ * The repository in words, for a row that is about to be saved. Where neither a session nor an earlier
+ * row names it, GitHub is asked once, for a few seconds at most: somebody who saves a secret in the
+ * launch form and never launches would otherwise leave a row no page could name. Never throws: a
+ * repository GitHub does not name now is saved for all the same, without a name.
+ */
+async function labelFor(c: UserCtx, repositoryId: number, project: string): Promise<string> {
+	const known = await repositoryName(c, repositoryId, project);
+	const app = githubApp();
+	const connection = c.vars.github;
+	if (known !== "" || !app || !connection) return known;
+	try {
+		const { described } = await resolveRepository(app, connection, repositoryId, "read", Date.now() + NAMING_MS);
+		return `${described.owner}/${described.name}`;
+	} catch {
+		return "";
+	}
+}
+
+/** What is kept for a repository beside its setup command and its secrets, which have their own actions. No value of a secret is read. */
+async function repositoryView(c: UserCtx, repositoryId: number, project: string): Promise<RepositoryView> {
+	const defaults = await readDefaults(c.db, project);
+	const [setup] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM setup_command WHERE project = ?", project);
+	const [secrets] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ?", project);
+	const name = await repositoryName(c, repositoryId, project);
+	const { sandboxes } = await getLayer();
+	// The book is read last and in one step: what is listed is what is remembered when the answer is made.
+	const approvals = new Map<string, RepositoryApproval>();
+	for (const approval of c.vars.approvals.of(project, Date.now())) {
+		const listed = approvals.get(approval.name);
+		// The newest comes first: its times are the ones shown, and an older definition is counted.
+		if (listed) listed.definitions += 1;
+		else approvals.set(approval.name, { name: approval.name, approvedAt: approval.approvedAt, expiresAt: approval.expiresAt, definitions: 1 });
+	}
+	return {
+		id: repositoryId,
+		name: name === "" ? null : name,
+		defaults,
+		approvals: [...approvals.values()],
+		forgetting: forgettingWords({ dataInSandbox: sandboxes.sessionsLiveInSandbox }),
+		saved: { setup: (setup?.n ?? 0) > 0, secrets: secrets?.n ?? 0 },
+	};
+}
+
+/** A name a client sent, for a log line: what is printable of it. */
+const logged = (text: string) => text.replace(/[^\x21-\x7e]/g, "?");
 
 // ---------------------------------------------------------------------------------------------
 // Sandbox time and kept sandboxes (usage.ts)
@@ -714,6 +807,8 @@ export const user = actor({
 					PRIMARY KEY (project, name)
 				)
 			`);
+			// What new sessions on a repository start with (repository-defaults.ts): one row per repository, `project` as above.
+			await db.execute(DEFAULTS_TABLE);
 			// The deleted sessions whose copy in the bucket is still to be removed: how often this actor
 			// tried, when it tries next, and the schedule that is to do it.
 			await db.execute(`
@@ -1150,10 +1245,8 @@ export const user = actor({
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const command = setupCommandOf(input?.command);
-			// The repository in words, for a reader of the table: as one of the user's sessions on it has it.
-			const known = [...c.vars.sessions.values()].find((session) => session.repository?.id === input.repositoryId)?.repository;
 			try {
-				return await saveSetup(c, profile.uid, project, known ? `${known.owner}/${known.name}` : "", command);
+				return await saveSetup(c, profile.uid, project, await labelFor(c, input.repositoryId, project), command);
 			} catch (error) {
 				throw clientError(c.log, error, "The setup command could not be saved. Try again.");
 			}
@@ -1186,7 +1279,7 @@ export const user = actor({
 			const scope = secretInput(() => cleanSecretScope(input?.scope));
 			const value = input?.value === undefined || input?.value === null ? undefined : secretInput(() => cleanSecretValue(input.value));
 			try {
-				await saveSecret(c, user.uid, project, repositoryLabel(c.vars, input.repositoryId), name, value, scope);
+				await saveSecret(c, user.uid, project, await labelFor(c, input.repositoryId, project), name, value, scope);
 				return await listSecrets(c.db, project, profile, secretLists(c.vars, input.repositoryId, input.sessionId));
 			} catch (error) {
 				throw clientError(c.log, error, "The secret could not be saved. Try again.");
@@ -1221,6 +1314,113 @@ export const user = actor({
 			if (project === null) return { project: null, secrets: [] };
 			const rows = await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project);
 			return { project, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })) };
+		},
+
+		// --- a repository's page ----------------------------------------------------------------------
+
+		repository: async (c, repositoryId: number): Promise<RepositoryView> => {
+			requireUser(c);
+			const project = setupKeyOf(repositoryId);
+			try {
+				return await repositoryView(c, repositoryId, project);
+			} catch (error) {
+				throw clientError(c.log, error, "What is saved for the repository could not be read. Try again.");
+			}
+		},
+
+		/** Asks GitHub whether the user's connection still reaches the repository, and what it is called now. */
+		githubRepository: async (c, repositoryId: number): Promise<GithubRepository> => {
+			requireUser(c);
+			const project = setupKeyOf(repositoryId);
+			const app = requireGithub();
+			const connection = requireConnection(c);
+			let found: GithubRepository;
+			try {
+				found = (await resolveRepository(app, connection, repositoryId, "read")).described;
+			} catch (error) {
+				throw githubError(c.log, error, "The repository could not be checked at GitHub. Try again.");
+			}
+			// What is saved for it is named as GitHub names it now: its page then says the name without asking, also once GitHub no longer answers for it.
+			const name = `${found.owner}/${found.name}`;
+			try {
+				for (const table of ["setup_command", "repo_secret", "repository_defaults"]) await c.db.execute(`UPDATE ${table} SET label = ? WHERE project = ? AND label != ?`, name, project, name);
+			} catch (error) {
+				c.log.warn({ msg: "could not note what a repository is called now", project, error: String(error) });
+			}
+			return found;
+		},
+
+		saveRepositoryDefaults: async (c, input: { repositoryId: number; profile?: string | null; model?: string | null }): Promise<RepositoryDefaults> => {
+			const profile = requireUser(c);
+			const project = setupKeyOf(input?.repositoryId);
+			let change: DefaultsChange;
+			try {
+				const { sandboxes } = await getLayer();
+				change = cleanDefaults(input, sandboxes.profiles(), await platformModels());
+			} catch (error) {
+				if (error instanceof DefaultsProblem) throw new UserError(error.message, { code: error.code });
+				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
+			}
+			try {
+				const saved = await saveDefaults(c.db, project, await labelFor(c, input.repositoryId, project), change, Date.now());
+				console.log(`[wlp] defaults.saved uid=${profile.uid} project=${project}${change.profile === undefined ? "" : ` profile=${change.profile ?? "none"}`}${change.model === undefined ? "" : ` model=${change.model ?? "none"}`}`);
+				return saved;
+			} catch (error) {
+				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
+			}
+		},
+
+		forgetRepositoryApproval: async (c, input: { repositoryId: number; name: string }): Promise<RepositoryView> => {
+			const profile = requireUser(c);
+			const project = setupKeyOf(input?.repositoryId);
+			const name = approvalText(input?.name, 200);
+			try {
+				const done = await changeApprovals(c, (book) => book.forget(project, name));
+				if (done.removed.length > 0) console.log(`[wlp] server.approval_forgotten uid=${profile.uid} project=${project} server=${logged(name)}`);
+				return await repositoryView(c, input.repositoryId, project);
+			} catch (error) {
+				throw clientError(c.log, error, "The approval could not be forgotten. Try again.");
+			}
+		},
+
+		forgetRepository: async (c, repositoryId: number): Promise<RepositoryView> => {
+			const profile = requireUser(c);
+			const project = setupKeyOf(repositoryId);
+			try {
+				// The secrets first: if anything after them fails, what is left holds no value.
+				await c.db.execute("DELETE FROM repo_secret WHERE project = ?", project);
+				await c.db.execute("DELETE FROM setup_command WHERE project = ?", project);
+				await c.db.execute("DELETE FROM repository_defaults WHERE project = ?", project);
+				const done = await changeApprovals(c, (book) => book.forgetProject(project));
+				console.log(`[wlp] repository.forgotten uid=${profile.uid} project=${project} approvals=${done.removed.length}`);
+				return await repositoryView(c, repositoryId, project);
+			} catch (error) {
+				throw clientError(c.log, error, "What is saved for the repository could not be deleted. Try again.");
+			}
+		},
+
+		savedRepositories: async (c): Promise<SavedRepository[]> => {
+			requireUser(c);
+			try {
+				const rows = await c.db.execute<{ project: string; label: string }>(
+					"SELECT project, MAX(label) AS label FROM (SELECT project, label FROM setup_command UNION ALL SELECT project, label FROM repo_secret UNION ALL SELECT project, label FROM repository_defaults) GROUP BY project",
+				);
+				const now = Date.now();
+				const found = new Map<number, string>();
+				const note = (project: string, label: string) => {
+					const id = repositoryIdOf(project);
+					if (id !== null && (found.get(id) ?? "") === "") found.set(id, label);
+				};
+				for (const row of rows) note(row.project, row.label);
+				for (const approval of c.vars.approvals.all()) if (approval.expiresAt > now) note(approval.project, approval.label);
+				return [...found]
+					.map(([id, label]) => ({ id, name: repositoryLabel(c.vars, id) || label || null }))
+					// By name, and those nothing names after them.
+					.sort((a, b) => Number(a.name === null) - Number(b.name === null) || (a.name ?? "").localeCompare(b.name ?? "") || a.id - b.id)
+					.slice(0, MAX_SAVED_REPOSITORIES);
+			} catch (error) {
+				throw clientError(c.log, error, "The repositories something is saved for could not be listed. Try again.");
+			}
 		},
 
 		// --- GitHub, for the servers and the sessions ---------------------------------------------

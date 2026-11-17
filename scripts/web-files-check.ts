@@ -23,6 +23,8 @@ const HTML = "200 text/html; charset=utf-8 no-cache";
 const cases: Array<[method: string, address: string, want: string]> = [
 	["GET", "/", HTML],
 	["GET", "/agents/s_123", HTML],
+	["GET", "/repositories/7101", HTML],
+	["GET", "/repositories/7101/new", HTML],
 	["GET", "/assets", HTML],
 	["GET", "/assets/app-abc123.js", "200 text/javascript; charset=utf-8 public, max-age=31536000, immutable"],
 	["HEAD", "/assets/app-abc123.js", "200 text/javascript; charset=utf-8 public, max-age=31536000, immutable"],

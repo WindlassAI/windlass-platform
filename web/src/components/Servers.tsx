@@ -9,10 +9,15 @@
  *
  * The section is there only for a session whose project names a server (`SessionSummary.servers`),
  * and it is the panel's last, so that its arrival moves nothing above it.
+ *
+ * A repository's own page lists the same record from the other side (`RepositoryApprovals`): every
+ * approval the user's actor remembers for the repository, whichever session it was given in, with
+ * its age, until when it holds, and the way to forget it. What a server is and whether it runs is a
+ * session's to know, so that list has neither.
  */
-import type { PendingQuestion, SessionServer, SessionServers, SessionSummary } from "@contract";
+import type { PendingQuestion, RepositoryApproval, RepositoryView, SessionServer, SessionServers, SessionSummary } from "@contract";
 import { useCallback, useEffect, useId, useState } from "react";
-import { absoluteTime, day } from "../lib/format";
+import { absoluteTime, day, plural, relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
 import { RefreshIcon, WarnIcon } from "./Icons";
@@ -313,5 +318,77 @@ export function ServersSection({ sessionId, summary, question }: { sessionId: st
 				/>
 			) : null}
 		</section>
+	);
+}
+
+/** How long ago an approval was given, in words: "today", "yesterday", "12 days ago". */
+function approvedAgo(at: number, now: number): string {
+	const days = Math.floor(Math.max(0, now - at) / 86_400_000);
+	return days === 0 ? relativeTime(at, now) : days === 1 ? "yesterday" : `${days} days ago`;
+}
+
+/**
+ * The approvals of MCP servers the user's actor remembers for one repository, on that repository's
+ * page. `onChanged` is handed the page as it is after an approval was forgotten.
+ */
+export function RepositoryApprovals({ repositoryId, name, approvals, forgetting, now, onChanged }: { repositoryId: number; name: string; approvals: RepositoryApproval[]; forgetting: string; now: number; onChanged(view: RepositoryView): void }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [acting, setActing] = useState<string | null>(null);
+	const [failure, setFailure] = useState<{ name: string; message: string } | null>(null);
+	/** True once one was forgotten here: the note about what forgetting leaves stays while the page is open. */
+	const [forgot, setForgot] = useState(false);
+
+	const forget = async (server: string) => {
+		if (acting !== null) return;
+		setActing(server);
+		setFailure(null);
+		try {
+			onChanged(await client.user(auth).forgetRepositoryApproval(repositoryId, server));
+			setForgot(true);
+		} catch (failed) {
+			setFailure({ name: server, message: explain(failed) });
+		} finally {
+			setActing(null);
+		}
+	};
+
+	return (
+		<>
+			{approvals.length === 0 ? (
+				<p className="usage-empty">No approval of an MCP server is remembered for {name}. An agent asks before it starts a server the repository names.</p>
+			) : (
+				<ul className="servers repo-approvals" aria-label={`The approvals of MCP servers remembered for ${name}`}>
+					{approvals.map((approval) => (
+						<li key={approval.name} className="server">
+							<p className="server-head">
+								<span className="server-name">{approval.name}</span>
+								<span className="server-state">
+									approved{" "}
+									<time dateTime={new Date(approval.approvedAt).toISOString()} title={absoluteTime(approval.approvedAt)}>
+										{approvedAgo(approval.approvedAt, now)}
+									</time>
+								</span>
+							</p>
+							<p className="server-foot">
+								<span className="server-held">
+									holds until <Until at={approval.expiresAt} />
+									{approval.definitions > 1 ? ` · ${plural(approval.definitions, "definition")} of it approved` : ""}
+								</span>
+								<button type="button" className="link server-forget" onClick={() => void forget(approval.name)} disabled={acting !== null} aria-label={`Forget the approval of the MCP server ${approval.name}`}>
+									{acting === approval.name ? "Forgetting…" : "Forget"}
+								</button>
+							</p>
+							{failure?.name === approval.name ? (
+								<p className="panel-empty tone-bad server-failure" role="alert">
+									<WarnIcon size={13} /> {failure.message}
+								</p>
+							) : null}
+						</li>
+					))}
+				</ul>
+			)}
+			{approvals.length > 0 || forgot ? <p className="usage-note">{forgetting}</p> : null}
+		</>
 	);
 }

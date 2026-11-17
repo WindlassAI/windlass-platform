@@ -1,7 +1,7 @@
 /**
- * A repository's secrets, where their user manages them: a section of a session's side panel, beside
- * the setup command, and a field of the launch form once a repository of the GitHub connection is
- * chosen. Both open the same dialog, in which a secret is added, its value replaced, its scope
+ * A repository's secrets, where their user manages them: a section of a session's side panel and of
+ * the repository's own page, beside the setup command (`SecretsBlock`, the same in both), and a field
+ * of the launch form once a repository of the GitHub connection is chosen. All open the same dialog, in which a secret is added, its value replaced, its scope
  * changed, or it is deleted.
  *
  * A secret is a named value the platform hands to the repository's agents as an environment
@@ -22,7 +22,7 @@ import {
 	type SecretScope,
 	type SessionSummary,
 } from "@contract";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { absoluteTime, count, day } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
@@ -403,22 +403,44 @@ function SecretsDialog({ repositoryId, repository, profile, sessionId, secrets, 
 	);
 }
 
-/** The side panel's section, for a session on a repository of the GitHub connection. */
-export function SecretsSection({ summary }: { summary: SessionSummary }) {
-	const repository = summary.repository ?? null;
-	const repositoryId = repository?.id ?? null;
-	const { list, error, set } = useRepositorySecrets(repositoryId, repositoryId === null ? null : summary.profile, summary);
+/**
+ * The secrets of one repository, listed and changed in place, as a sandbox of `profile` gets them.
+ * With `session`, one of the user's on that repository, the list is said for that session's own
+ * sandbox and the sentences about when a change applies are about that agent; without, for a sandbox
+ * made now. `title` draws the heading the list stands under, around the control that adds a secret.
+ * `onChanged` hears of every save and delete.
+ */
+export function SecretsBlock({
+	repositoryId,
+	name,
+	profile,
+	session,
+	title,
+	onChanged,
+}: {
+	repositoryId: number;
+	/** The repository in words. */
+	name: string;
+	profile: SandboxProfileId | null;
+	session?: SessionSummary;
+	title(add: ReactNode): ReactNode;
+	onChanged?(): void;
+}) {
+	const secrets = useRepositorySecrets(repositoryId, profile, session);
+	const { list, error } = secrets;
 	const [open, setOpen] = useState<DialogView | null>(null);
-	if (!repository || repositoryId === null) return null;
-	const name = `${repository.owner}/${repository.name}`;
+	const workspace = session === undefined ? null : session.sandbox === "none" ? "none" : "made";
+	const set = (next: RepositorySecrets) => {
+		secrets.set(next);
+		onChanged?.();
+	};
 	return (
-		<section className="panel-section" aria-labelledby="panel-secrets">
-			<h2 className="panel-title" id="panel-secrets">
-				Secrets
+		<>
+			{title(
 				<button type="button" className="link secret-add" onClick={() => setOpen("add")} disabled={list === null} aria-label={`Add a secret for ${name}`}>
 					Add…
-				</button>
-			</h2>
+				</button>,
+			)}
 			{list === null ? (
 				error ? null : (
 					<p className="panel-empty" aria-busy="true">
@@ -429,7 +451,7 @@ export function SecretsSection({ summary }: { summary: SessionSummary }) {
 				<>
 					{list.secrets.length > 0 ? <p className="panel-empty secret-lede">Environment variables for {name}'s agents. A saved value is not shown again.</p> : null}
 					<SecretList secrets={list.secrets} repository={name} onChange={(chosen) => setOpen({ name: chosen })} />
-					<p className="panel-empty secret-applies">{applies(summary.sandbox === "none" ? "none" : "made")}</p>
+					<p className="panel-empty secret-applies">{applies(workspace)}</p>
 				</>
 			)}
 			{error ? (
@@ -437,22 +459,31 @@ export function SecretsSection({ summary }: { summary: SessionSummary }) {
 					<WarnIcon size={13} /> {error}
 				</p>
 			) : null}
-			{open !== null && list !== null
-				? createPortal(
-						<SecretsDialog
-							repositoryId={repositoryId}
-							repository={name}
-							profile={summary.profile}
-							sessionId={summary.id}
-							secrets={list.secrets}
-							start={open}
-							workspace={summary.sandbox === "none" ? "none" : "made"}
-							onSaved={set}
-							onClose={() => setOpen(null)}
-						/>,
-						document.body,
-					)
+			{open !== null && list !== null && profile !== null
+				? createPortal(<SecretsDialog repositoryId={repositoryId} repository={name} profile={profile} sessionId={session?.id} secrets={list.secrets} start={open} workspace={workspace} onSaved={set} onClose={() => setOpen(null)} />, document.body)
 				: null}
+		</>
+	);
+}
+
+/** The side panel's section, for a session on a repository of the GitHub connection. */
+export function SecretsSection({ summary }: { summary: SessionSummary }) {
+	const repository = summary.repository ?? null;
+	if (!repository) return null;
+	return (
+		<section className="panel-section" aria-labelledby="panel-secrets">
+			<SecretsBlock
+				repositoryId={repository.id}
+				name={`${repository.owner}/${repository.name}`}
+				profile={summary.profile}
+				session={summary}
+				title={(add) => (
+					<h2 className="panel-title" id="panel-secrets">
+						Secrets
+						{add}
+					</h2>
+				)}
+			/>
 		</section>
 	);
 }

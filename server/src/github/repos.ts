@@ -236,10 +236,11 @@ export interface ResolvedRepository {
 
 /**
  * The repository with this id, if the connection covers it and the connected user may do `need` there,
- * asked of GitHub now. Throws GithubProblem with a sentence that says what is in the way.
+ * asked of GitHub now. Throws GithubProblem with a sentence that says what is in the way. With
+ * `deadline`, ms since the epoch, every call to GitHub gets what is left until then.
  */
-export async function resolveRepository(app: GithubApp, connection: StoredConnection, repositoryId: number, need: "read" | "write"): Promise<ResolvedRepository> {
-	const tokens = new ReadTokens(app);
+export async function resolveRepository(app: GithubApp, connection: StoredConnection, repositoryId: number, need: "read" | "write", deadline?: number): Promise<ResolvedRepository> {
+	const tokens = new ReadTokens(app, deadline);
 	let found: { installation: StoredInstallation; repository: Repository } | null = null;
 	let firstProblem: GithubProblem | null = null;
 	for (const installation of connection.installations) {

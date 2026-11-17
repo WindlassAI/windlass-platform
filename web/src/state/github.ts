@@ -86,7 +86,7 @@ function take<T>(storageKey: string): T | null {
 	}
 }
 
-/** What the launch form held when its user left for GitHub. */
+/** What the launch form held when its user left for GitHub. `profile` and `model` are the user's own choices there: null and "" where they made none. */
 export interface LaunchDraft {
 	profile: string | null;
 	model: string;
@@ -147,7 +147,7 @@ function completeGithubReturn(client: PlatformClient, auth: AuthResult, explain:
 	const from = take<Return>(RETURN_KEY);
 	const where = from?.where === "launch" ? "launch" : "menu";
 	const route: Route | null = from && typeof from.path === "string" ? parseRoute(from.path) : null;
-	if (route && (route.name === "new" || route.name === "session" || route.name === "home")) navigate(route, { replace: true });
+	if (route && (route.name === "new" || route.name === "session" || route.name === "home" || route.name === "repository")) navigate(route, { replace: true });
 	use(client, auth);
 	if ("error" in back) {
 		// Nothing was connected; what the connection is now is still to be asked.

@@ -2506,6 +2506,7 @@ const GITHUB_CHECKS = [
 	"an installation that is not the user's cannot be attached by naming its id",
 	"a connected user lists and searches the repositories they may read, and no other",
 	"an agent is launched on a private repository: the session records it, and the clone is the platform's, with a token for that repository alone",
+	"a repository's page: what is saved for it by GitHub's id, defaults saved field by field and at once, what GitHub says of it now, and all of it deleted in one step",
 	"open pull request: the platform pushes the session's branch and opens it, with one line in the timeline",
 	"push changes goes to the same pull request, with one line in the timeline",
 	"nothing is pushed while a turn runs, or for a session with no repository of the connection",
@@ -2522,7 +2523,7 @@ const GITHUB_CHECKS = [
  * The git commands themselves, against a real remote, are scripts/github-check.ts.
  */
 async function githubChecks(server: Server, client: Client, demoSignIn: () => Promise<AuthResult>, profile: string): Promise<void> {
-	const [off, on, connecting, once, notTheirs, listing, launching, opening, pushing, blocked, readOnly, gone, disconnecting, secrets] = GITHUB_CHECKS as [string, string, string, string, string, string, string, string, string, string, string, string, string, string];
+	const [off, on, connecting, once, notTheirs, listing, launching, page, opening, pushing, blocked, readOnly, gone, disconnecting, secrets] = GITHUB_CHECKS as [string, string, string, string, string, string, string, string, string, string, string, string, string, string, string];
 	const ORIGIN = "http://localhost:5173";
 	const userOf = (auth: AuthResult) => client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 	const sessionOf = (auth: AuthResult, id: string) => client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } });
@@ -2710,6 +2711,65 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			return `"${cloning.text}"; tokens: ${minted.join("; ")}; the clone's token revoked`;
 		});
 
+		await check(page, async () => {
+			const user = userOf(alice);
+			const info = (await (await platformInfo()).json()) as Info;
+			const [model, other] = [info.models[0], info.models[1] ?? info.models[0]];
+			const unavailable = info.profiles.find((candidate) => !candidate.available);
+			const NONE = { profile: null, model: null, updatedAt: null };
+
+			// Nothing is kept until something is saved: the page is there all the same, named after the agent on it.
+			const empty = await user.repository(harbor.id);
+			assert(plain(empty.defaults) === plain(NONE) && empty.name === "ada/harbor" && empty.approvals.length === 0 && plain(empty.saved) === plain({ setup: false, secrets: 0 }), `before anything was saved: ${plain(empty)}`);
+			assert((await user.savedRepositories()).length === 0, "a repository is listed as having something saved");
+			for (const id of [0, -1, 1.5, "7", null]) await refused(() => user.repository(id as never), "bad_input");
+
+			// One field at a time, each leaving the other; and two saves at once, of which neither is lost.
+			const first = await user.saveRepositoryDefaults({ repositoryId: harbor.id, model: other });
+			assert(first.profile === null && first.model === other && typeof first.updatedAt === "number", `after saving a model: ${plain(first)}`);
+			const second = await user.saveRepositoryDefaults({ repositoryId: harbor.id, profile: profile as never });
+			assert(second.profile === profile && second.model === other, `after saving a sandbox: ${plain(second)}`);
+			for (let round = 0; round < 12; round += 1) {
+				await user.saveRepositoryDefaults({ repositoryId: harbor.id, profile: null, model: null });
+				const secret = `wlpcheck_${randomBytes(12).toString("hex")}`;
+				await Promise.all([
+					user.saveRepositoryDefaults({ repositoryId: harbor.id, profile: profile as never }),
+					user.saveRepositoryDefaults({ repositoryId: harbor.id, model }),
+					user.saveRepositorySetup({ repositoryId: harbor.id, command: `echo ${round}` }),
+					user.saveRepositorySecret({ repositoryId: harbor.id, profile: profile as never, name: "CHECK_TOKEN", value: secret, scope: "setup" }),
+				]);
+				const now = await user.repository(harbor.id);
+				assert(now.defaults.profile === profile && now.defaults.model === model && now.saved.setup && now.saved.secrets === 1, `round ${round}: four saves at once left ${plain(now)}`);
+				assert((await user.repositorySetup(harbor.id)).command === `echo ${round}`, `round ${round}: the setup command was lost`);
+				// Nothing of the page carries a secret's value.
+				assert(!plain(now).includes(secret) && !plain(await user.savedRepositories()).includes(secret), "the page carries a secret's value");
+			}
+
+			// What the deployment does not offer is refused, and what was saved stays.
+			await refused(() => user.saveRepositoryDefaults({ repositoryId: harbor.id, model: "no-such-model" }), "bad_model");
+			await refused(() => user.saveRepositoryDefaults({ repositoryId: harbor.id, profile: "no-such-sandbox" as never }), "bad_input");
+			if (unavailable) await refused(() => user.saveRepositoryDefaults({ repositoryId: harbor.id, profile: unavailable.id }), "bad_input");
+			assert(plain((await user.repository(harbor.id)).defaults.model) === plain(model), "a refused save changed what was saved");
+			assert(plain(await user.savedRepositories()) === plain([{ id: harbor.id, name: "ada/harbor" }]), `the repositories with something saved: ${plain(await user.savedRepositories())}`);
+
+			// GitHub says what it is now; one the connection does not cover, and one this user may not read, are refused in a sentence.
+			const described = await user.githubRepository(harbor.id);
+			assert(described.id === harbor.id && described.owner === "ada" && described.name === "harbor" && described.private && described.canPush && described.defaultBranch === "main", `GitHub's word on it: ${plain(described)}`);
+			await refused(() => user.githubRepository(999_999_999), "github_gone");
+			await refused(() => userOf(carol).githubRepository(vault.id), "github_denied");
+			// Its page opens for somebody who cannot reach it, with nothing of anybody else's on it.
+			const carols = await userOf(carol).repository(harbor.id);
+			assert(plain(carols.defaults) === plain(NONE) && carols.name === null && plain(carols.saved) === plain({ setup: false, secrets: 0 }), `another user's page of the same repository: ${plain(carols)}`);
+
+			// All of it goes in one step, and the agent stays.
+			const cleared = await user.forgetRepository(harbor.id);
+			assert(plain(cleared.defaults) === plain(NONE) && plain(cleared.saved) === plain({ setup: false, secrets: 0 }) && cleared.approvals.length === 0, `after deleting what was saved: ${plain(cleared)}`);
+			assert((await user.repositorySetup(harbor.id)).command === "" && (await user.repositorySecrets({ repositoryId: harbor.id, profile: profile as never })).secrets.length === 0, "a setup command or a secret is still there");
+			assert((await user.savedRepositories()).length === 0 && (await user.listSessions()).some((session) => session.id === sessionId), "the list still names it, or the agent went with it");
+			assert(server.output.includes(`[wlp] defaults.saved uid=${alice.profile.uid} project=github:${harbor.id}`) && server.output.includes(`[wlp] repository.forgotten uid=${alice.profile.uid} project=github:${harbor.id}`), "the server did not log the saves and the deletion");
+			return `12 rounds of four saves at once kept all four; refused: an unknown model and sandbox${unavailable ? `, ${unavailable.id}` : ""}; GitHub: ada/harbor, gone, denied`;
+		});
+
 		const lines = () => (watch?.items ?? []).filter((item): item is Extract<TimelineItem, { kind: "platform" }> => item.kind === "platform").map((item) => item.text);
 		let branch = "";
 		await check(opening, async () => {
@@ -2885,6 +2945,7 @@ const SERVER_APPROVAL_CHECKS = [
 	"a session with no repository is its own project, and one launched through the GitHub connection is known by the repository's id",
 	"what is remembered is with the user, not with a server: it holds across a restart, and for no other user",
 	"an approval past its time is asked about again, and the panel no longer lists it",
+	"the repository's page lists the approval with its times, for its user alone, and forgetting it there has the next session asked",
 ];
 
 /**
@@ -2894,7 +2955,7 @@ const SERVER_APPROVAL_CHECKS = [
  * repository of the connection. The sandboxes are in the server's memory, so a restart loses them all.
  */
 async function serverApprovalChecks(server: Server, client: Client, demoSignIn: () => Promise<AuthResult>, profile: string): Promise<void> {
-	const [none, first, second, replaced, asked, notNow, open, forgetting, projects, restart, expiry] = SERVER_APPROVAL_CHECKS as [string, string, string, string, string, string, string, string, string, string, string];
+	const [none, first, second, replaced, asked, notNow, open, forgetting, projects, restart, expiry, page] = SERVER_APPROVAL_CHECKS as [string, string, string, string, string, string, string, string, string, string, string, string];
 	type Servers = import("../server/src/contract.js").SessionServers;
 	const DAYS_30 = 30 * 24 * 60 * 60 * 1000;
 	const ORIGIN = "http://localhost:5173";
@@ -3223,6 +3284,27 @@ async function serverApprovalChecks(server: Server, client: Client, demoSignIn: 
 			assert(again.asked.subject === HARBOR, "past its time the approval still answered");
 			assert((await begun.servers()).servers[0]?.approval === null, "the panel still lists an approval that has run out");
 			return `within ${TTL / 1000} seconds a second session was not asked; after them a third was, and the first one's panel lists no approval`;
+		});
+
+		await step(page, async () => {
+			assert(onGithub, "no session on the repository");
+			const github = onGithub;
+			const repositoryId = (await userOf(ada).listSessions()).find((session) => session.id === github.id)?.repository?.id;
+			assert(repositoryId, "the session lost its repository");
+			const view = await userOf(ada).repository(repositoryId);
+			const [approval] = view.approvals;
+			assert(view.name === "ada/harbor" && view.approvals.length === 1 && approval.name === "harbor" && approval.definitions === 1 && approval.expiresAt - approval.approvedAt === DAYS_30, `the page lists ${plain(view.approvals)} for ${view.name}`);
+			assert(view.forgetting === FORGETTING, `it says of forgetting: "${view.forgetting}"`);
+			assert(plain(await userOf(ada).savedRepositories()) === plain([{ id: repositoryId, name: "ada/harbor" }]), `the repositories with something saved: ${plain(await userOf(ada).savedRepositories())}`);
+			// Another user's page of the same repository has none of it, and cannot forget it.
+			assert((await userOf(bo).forgetRepositoryApproval({ repositoryId, name: "harbor" })).approvals.length === 0 && (await userOf(ada).repository(repositoryId)).approvals.length === 1, "another user saw or forgot the approval");
+			const after = await userOf(ada).forgetRepositoryApproval({ repositoryId, name: "harbor" });
+			assert(after.approvals.length === 0 && (await userOf(ada).savedRepositories()).length === 0, `after forgetting: ${plain(after.approvals)}`);
+			assert((await github.servers()).servers[0]?.approval === null, "the session's panel still lists the approval");
+			const fresh = await launch(ada, { repository: { id: repositoryId } });
+			const again = await answered(fresh, "say hello (mcp)", "not_now");
+			assert(again.asked.subject === HARBOR, "the next session on the repository was not asked");
+			return `ada/harbor: "harbor", good for 30 days; forgotten on the page, and the next session was asked`;
 		});
 	} finally {
 		for (const session of opened) await session.watch.conn.dispose().catch(() => undefined);

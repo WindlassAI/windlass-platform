@@ -8,6 +8,7 @@
 import type { PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
 import { useCallback, useEffect, useState } from "react";
 import { absoluteTime, compact, count, percent, plural, shortId } from "../lib/format";
+import { linkProps } from "../lib/router";
 import { cachedShare, lastTurn, sessionUsage, turnUsage, type ModelCall, type SessionView } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
@@ -46,7 +47,9 @@ function Facts({ summary, view }: { summary: SessionSummary; view: SessionView }
 					<>
 						<dt>repo</dt>
 						<dd className="kv-clip" title={`${summary.repository.owner}/${summary.repository.name}, from ${summary.repository.branch}`}>
-							{summary.repository.owner}/{summary.repository.name}
+							<a className="kv-link" {...linkProps({ name: "repository", id: summary.repository.id })} title={`What is saved for ${summary.repository.owner}/${summary.repository.name}, and its other agents`}>
+								{summary.repository.owner}/{summary.repository.name}
+							</a>
 							<span className="tone-faint"> at </span>
 							{summary.repository.branch}
 						</dd>

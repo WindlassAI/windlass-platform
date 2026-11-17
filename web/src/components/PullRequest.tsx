@@ -87,7 +87,7 @@ function AgentPublishing({ sessionId, summary, profile }: { sessionId: string; s
 
 const STATE_WORD: Record<PullRequestInfo["state"], string> = { open: "open", draft: "draft", merged: "merged", closed: "closed" };
 
-function PullState({ state }: { state: PullRequestInfo["state"] }) {
+export function PullState({ state }: { state: PullRequestInfo["state"] }) {
 	return (
 		<span className={`gh-pull-state gh-pull-state-${state}`}>
 			{state === "merged" ? <MergedIcon size={13} /> : state === "closed" ? <CrossIcon size={13} /> : <PullRequestIcon size={13} />}

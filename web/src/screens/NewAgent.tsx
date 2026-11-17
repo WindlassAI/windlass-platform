@@ -11,12 +11,17 @@
  * A repository picked that way has a setup command, the user's own: the field shows what is saved for
  * it, and what it holds is saved with the launch (components/SetupCommand.tsx).
  *
+ * A repository picked that way can also have defaults, saved on its page: the sandbox and the model
+ * the form starts from once it is picked. A choice the user makes in the form itself comes first and
+ * is for this agent only; a default that names a sandbox or a model the deployment no longer offers is
+ * left out, and the form says so. Opened from a repository's page, the form has that repository chosen.
+ *
  * An agent can always be created; what a limit refuses is its first prompt, which starts a sandbox.
  * So the form says beforehand when the day's sandbox time is used up or the user keeps as many
  * sandboxes as they may, and a prompt that is refused all the same goes with the user to the agent's
  * screen, where the composer keeps it and says why.
  */
-import { MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type SandboxProfile, type SandboxProfileId, type UsageNumbers } from "@contract";
+import { MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type UsageNumbers } from "@contract";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
@@ -27,6 +32,7 @@ import { PublishUnaskedCheck, publishAlwaysAsked } from "../components/PullReque
 import { SetupField, useSetupDraft } from "../components/SetupCommand";
 import { isLimitRefusal } from "../api/errors";
 import { localTime, sandboxTime } from "../lib/format";
+import { startingChoices, startingModel, startingProfile, type StartingChoices } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { allowanceState, useAllowance } from "../state/hooks";
@@ -57,6 +63,61 @@ function ProfileCard({ profile, name, checked, onChoose }: { profile: SandboxPro
 	);
 }
 
+/**
+ * What the chosen repository's defaults did to the form, said beside the repository: the sandbox is
+ * chosen further up, so a change of it there would otherwise go unseen. `used` says which defaults the
+ * form stands on now; a default the user chose over can be taken back with one press.
+ */
+function DefaultsNote({
+	repository,
+	defaults,
+	used,
+	profileName,
+	error,
+	disabled,
+	onUseDefaults,
+}: {
+	repository: string;
+	defaults: StartingChoices;
+	used: { profile: boolean; model: boolean };
+	profileName: string | null;
+	error: string | null;
+	disabled: boolean;
+	onUseDefaults(): void;
+}) {
+	const applied = [used.profile && profileName ? `in ${profileName}` : null, used.model && defaults.model ? `on ${defaults.model}` : null].filter((part) => part !== null);
+	const passed = [defaults.profile !== null && !used.profile ? `sandbox (${profileName ?? defaults.profile})` : null, defaults.model !== null && !used.model ? `model (${defaults.model})` : null].filter((part) => part !== null);
+	const ignored = [defaults.ignored.profile, defaults.ignored.model].filter((part) => part !== null);
+	if (applied.length === 0 && passed.length === 0 && ignored.length === 0 && error === null) return null;
+	return (
+		<div className="field field-wide new-agent-defaults" role="status">
+			{applied.length > 0 ? (
+				<p className="field-note">
+					This agent starts {applied.join(" and ")}: the {applied.length === 1 ? "default" : "defaults"} saved for {repository}. Choose otherwise above and it holds for this agent only.
+				</p>
+			) : null}
+			{passed.length > 0 ? (
+				<p className="field-note">
+					{repository} has a default {passed.join(" and a default ")}; this agent uses what you chose instead.{" "}
+					<button type="button" className="link" onClick={onUseDefaults} disabled={disabled}>
+						Use the {passed.length === 1 ? "default" : "defaults"}
+					</button>
+				</p>
+			) : null}
+			{ignored.map((sentence) => (
+				<p key={sentence} className="field-note tone-warn">
+					{sentence} Change it on the repository's page.
+				</p>
+			))}
+			{error !== null ? (
+				<p className="field-note tone-warn">
+					The defaults saved for {repository} could not be read, so this form starts from the deployment's: {error}
+				</p>
+			) : null}
+		</div>
+	);
+}
+
 /** What launching runs into now, before anything is sent: `warn` when the agent could not start at all. */
 function launchLimit(numbers: UsageNumbers | null): { text: string; warn: boolean } | null {
 	if (numbers === null) return null;
@@ -69,7 +130,33 @@ function launchLimit(numbers: UsageNumbers | null): { text: string; warn: boolea
 	return null;
 }
 
-export function NewAgent() {
+/** What is saved as the defaults of the repository that is chosen: read when the choice changes. `defaults` is null while it is read and when it could not be. */
+function useDefaults(repositoryId: number | null): { defaults: RepositoryDefaults | null; reading: boolean; error: string | null } {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [state, setState] = useState<{ repositoryId: number | null; defaults: RepositoryDefaults | null; error: string | null }>({ repositoryId: null, defaults: null, error: null });
+	useEffect(() => {
+		setState({ repositoryId, defaults: null, error: null });
+		if (repositoryId === null) return;
+		let current = true;
+		client
+			.user(auth)
+			.repository(repositoryId)
+			.then(
+				(view) => current && setState({ repositoryId, defaults: view.defaults, error: null }),
+				(failure: unknown) => current && setState({ repositoryId, defaults: null, error: explain(failure) }),
+			);
+		return () => {
+			current = false;
+		};
+	}, [client, auth, explain, repositoryId]);
+	// What was read for another repository is not this one's.
+	const mine = state.repositoryId === repositoryId;
+	return { defaults: mine ? state.defaults : null, reading: repositoryId !== null && (!mine || (state.defaults === null && state.error === null)), error: mine ? state.error : null };
+}
+
+/** `repositoryId`: GitHub's id for the repository the form opens with, when it was opened from that repository's page. */
+export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 	const { client, platform, explain } = useApp();
 	const auth = useAuth();
 	const info = platform.info;
@@ -80,12 +167,15 @@ export function NewAgent() {
 	// What the form held before its user left to connect GitHub, once.
 	const [draft] = useState(takeLaunchDraft);
 
-	const [profile, setProfile] = useState<SandboxProfileId | null>((draft?.profile as SandboxProfileId | null | undefined) ?? null);
-	const [model, setModel] = useState(draft?.model ?? "");
+	// The user's own choices in this form: none until they make one, so that a repository's defaults can stand in.
+	const [profileChoice, setProfile] = useState<SandboxProfileId | null>((draft?.profile as SandboxProfileId | null | undefined) ?? null);
+	const [modelChoice, setModel] = useState(draft?.model ?? "");
 	const [repoUrl, setRepoUrl] = useState(draft?.repoUrl ?? "");
 	const [title, setTitle] = useState(draft?.title ?? "");
 	const [prompt, setPrompt] = useState(draft?.prompt ?? "");
 	const [picked, setPicked] = useState<PickedRepository | null>(null);
+	// The repository the form was opened with, while GitHub is asked for it, and why it could not be chosen.
+	const [opening, setOpening] = useState<{ reading: boolean; error: string | null }>({ reading: repositoryId !== undefined, error: null });
 	// Whether the agent may publish without asking: off unless its user says otherwise.
 	const [publishUnasked, setPublishUnasked] = useState(false);
 	// Where the repository comes from: the user's choice once they made one, otherwise GitHub when it is connected.
@@ -93,27 +183,56 @@ export function NewAgent() {
 	const [busy, setBusy] = useState<"creating" | "prompting" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
-	// Start on the first sandbox that can be chosen and on the default model.
-	useEffect(() => {
-		if (!info) return;
-		setProfile((current) => (current !== null && info.profiles.some((candidate) => candidate.id === current && candidate.available) ? current : (info.profiles.find((candidate) => candidate.available)?.id ?? null)));
-		setModel((current) => current || (info.models[0] ?? ""));
-	}, [info]);
-
 	// Back from GitHub: the form opens where its user left it, at the repository.
 	const returned = github.notice?.where === "launch" || github.busy === "finishing";
 	useEffect(() => {
 		if (returned && info) document.getElementById(ids.repo)?.scrollIntoView({ block: "center" });
 	}, [returned, info, ids.repo]);
 
-	const close = () => navigate({ name: "home" });
+	const close = () => navigate(repositoryId === undefined ? { name: "home" } : { name: "repository", id: repositoryId });
 	const connection = github.enabled ? (github.status?.connection ?? null) : null;
+	const connected = connection !== null;
+
+	// Opened from a repository's page: GitHub says what that repository is now, and it is chosen.
+	const knowsConnection = !github.enabled || github.status !== null || github.error !== null;
+	useEffect(() => {
+		if (repositoryId === undefined || !knowsConnection) return;
+		if (!connected) {
+			setOpening({ reading: false, error: github.enabled ? "GitHub is not connected, so the repository this was opened for cannot be chosen." : null });
+			return;
+		}
+		let current = true;
+		setOpening({ reading: true, error: null });
+		client
+			.user(auth)
+			.githubRepository(repositoryId)
+			.then(
+				(repository) => {
+					if (!current) return;
+					// A choice the user made while GitHub was asked stays.
+					setPicked((now) => now ?? { repository, branch: repository.defaultBranch });
+					setOpening({ reading: false, error: null });
+				},
+				(failure: unknown) => current && setOpening({ reading: false, error: explain(failure) }),
+			);
+		return () => {
+			current = false;
+		};
+	}, [client, auth, explain, repositoryId, connected, knowsConnection, github.enabled]);
+
 	const source = connection ? (chosenSource ?? "github") : "address";
 	const repo = source === "address" ? repoUrl.trim() : "";
 	const repoInvalid = repo !== "" && !/^https:\/\/[^\s/]+\/\S+$/.test(repo);
-	const canCreate = info !== null && profile !== null && !repoInvalid && busy === null;
 	const notice = github.notice?.where === "launch" ? github.notice : null;
 	const chosen = source === "github" && picked ? picked : null;
+	// What the chosen repository's page says new agents on it start with, held against what this deployment offers.
+	const saved = useDefaults(chosen?.repository.id ?? null);
+	const defaults = startingChoices(saved.defaults, info);
+	const profile = startingProfile(profileChoice, defaults, info);
+	const model = startingModel(modelChoice, defaults, info);
+	const fromDefaults = { profile: defaults.profile !== null && profile === defaults.profile, model: defaults.model !== null && model === defaults.model };
+	// The defaults are read before the agent is created, so that it is not launched on other ones a moment too early.
+	const canCreate = info !== null && profile !== null && !repoInvalid && busy === null && !saved.reading && !(opening.reading && source === "github" && picked === null);
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 	const chosenProfile = info?.profiles.find((candidate) => candidate.id === profile) ?? null;
 
@@ -310,6 +429,15 @@ export function NewAgent() {
 											? "Use the repository's https address, for example https://github.com/you/project.git."
 											: "Cloned into the workspace when the sandbox is created. Without one the agent starts in an empty repository."}
 								</p>
+								{opening.error !== null && picked === null ? (
+									<p className="field-note tone-warn" role="status">
+										{opening.error} Choose another repository, or launch without one.
+									</p>
+								) : opening.reading && picked === null && source === "github" ? (
+									<p className="field-note" aria-busy="true">
+										Asking GitHub for the repository this form was opened for…
+									</p>
+								) : null}
 								{github.enabled && !connection ? (
 									// One line, whatever it says: the form below it does not move when the connection is known.
 									<p className={`field-note gh-connect-line${notice?.tone === "bad" || github.error ? " tone-bad" : ""}`} role={notice?.tone === "bad" ? "alert" : undefined}>
@@ -322,7 +450,7 @@ export function NewAgent() {
 										) : (
 											<>
 												{notice?.tone === "bad" ? `${notice.text} ` : github.error ? `${github.error} ` : null}
-												<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { profile, model, title, prompt, repoUrl } })} disabled={busy !== null}>
+												<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { profile: profileChoice, model: modelChoice, title, prompt, repoUrl } })} disabled={busy !== null}>
 													Connect GitHub
 												</button>{" "}
 												to choose one of your own repositories, private ones included, and get the work back as a pull request.
@@ -331,6 +459,20 @@ export function NewAgent() {
 									</p>
 								) : null}
 							</div>
+							{chosen ? (
+								<DefaultsNote
+									repository={`${chosen.repository.owner}/${chosen.repository.name}`}
+									defaults={defaults}
+									used={fromDefaults}
+									profileName={info.profiles.find((candidate) => candidate.id === defaults.profile)?.name ?? null}
+									error={saved.error}
+									disabled={busy !== null}
+									onUseDefaults={() => {
+										setProfile(null);
+										setModel("");
+									}}
+								/>
+							) : null}
 							{chosen ? <SetupField setup={setup} repository={`${chosen.repository.owner}/${chosen.repository.name}`} disabled={busy !== null} /> : null}
 							{chosen ? <SecretsField repositoryId={chosen.repository.id} repository={`${chosen.repository.owner}/${chosen.repository.name}`} profile={profile} disabled={busy !== null} /> : null}
 							{chosen?.repository.canPush ? (
