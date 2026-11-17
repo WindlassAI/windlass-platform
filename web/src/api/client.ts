@@ -30,6 +30,8 @@ import type {
 	SessionSnapshot,
 	SessionSummary,
 	TimelineItem,
+	UsageNumbers,
+	UsageView,
 	UserProfile,
 	WorkspaceFile,
 } from "@contract";
@@ -51,9 +53,11 @@ export type PlatformErrorCode =
 /**
  * Codes the server gives a UserError that the screens act on (contract.ts): `no_question` from
  * `answer()` (that question is no longer pending), `turn_running` from `prompt()` (a turn that is
- * starting or stopping cannot take a message).
+ * starting or stopping cannot take a message), and the two limits a user can run into, which the
+ * screens answer with the way to the usage page: `allowance_used` (too little of the day's sandbox
+ * time is left) and `too_many_sandboxes` (the user keeps as many sandboxes as they may).
  */
-export type PlatformErrorReason = "no_question" | "turn_running" | (string & {});
+export type PlatformErrorReason = "no_question" | "turn_running" | "allowance_used" | "too_many_sandboxes" | (string & {});
 
 export class PlatformError extends Error {
 	readonly code: PlatformErrorCode;
@@ -90,6 +94,8 @@ export type ConnectionState =
 export interface UserFeed {
 	/** The full list, newest first: once when the feed opens, then after every change and reconnect. */
 	onSessions(sessions: SessionSummary[]): void;
+	/** Today's sandbox time and the count of kept sandboxes, whenever either changes. */
+	onUsage?(numbers: UsageNumbers): void;
 	onConnection?(state: ConnectionState, error?: PlatformError): void;
 }
 
@@ -133,6 +139,12 @@ export interface UserApi {
 	/** Saves a secret: with `value` a new one or a new value, without it only the scope. Throws with reason `bad_secret`, `too_many_secrets` or `secret_not_found`. */
 	saveRepositorySecret(repositoryId: number, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }, sessionId?: string): Promise<RepositorySecrets>;
 	deleteRepositorySecret(repositoryId: number, profile: SandboxProfileId, name: string, sessionId?: string): Promise<RepositorySecrets>;
+	/** Today's sandbox time against the allowance, and how many sandboxes the user keeps of how many they may. */
+	allowance(): Promise<UsageNumbers>;
+	/** The usage page: the numbers, today by agent, the kept sandboxes, the last two weeks and what a second is estimated to cost. */
+	usage(): Promise<UsageView>;
+	/** Frees one agent's sandbox to make room: its workspace files go, the agent and its conversation stay. Throws with reason `sandbox_busy` while it works. */
+	freeSandbox(sessionId: string): Promise<UsageView>;
 	/** Opens the live list of sessions. Returns the function that closes it. */
 	watch(feed: UserFeed): () => void;
 }

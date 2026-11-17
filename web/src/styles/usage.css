@@ -1,0 +1,326 @@
+/* Usage: the day's sandbox time, the sandboxes kept, and two weeks of days. Ruled like the list of agents; every number in the mono face, right-aligned, so columns line up. */
+
+.usage-section {
+	margin-top: 36px;
+}
+.usage-title {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+	font-family: var(--font-display);
+	font-size: 1.5rem;
+	font-weight: 450;
+	line-height: 1.2;
+}
+.usage-count {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono);
+	color: var(--ink-dim);
+	font-variant-numeric: tabular-nums;
+}
+.usage-lede,
+.usage-note,
+.usage-empty {
+	max-width: 74ch;
+	margin-top: 6px;
+	font-size: var(--size-small);
+	line-height: 1.5;
+	color: var(--ink-dim);
+}
+.usage-note {
+	margin-top: 10px;
+}
+.usage-empty {
+	padding: 14px 0;
+	border-bottom: 1px solid var(--line);
+}
+.usage-loading {
+	display: grid;
+	gap: 10px;
+	margin-top: 36px;
+}
+
+/* The day at a glance: one figure, and one bar under it. */
+.usage-figure {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 8px;
+	margin-top: 14px;
+	color: var(--ink-dim);
+}
+.usage-figure strong {
+	font-family: var(--font-display);
+	font-size: clamp(1.75rem, 1.3rem + 1.6vw, 2.375rem);
+	font-weight: 450;
+	line-height: 1.1;
+	color: var(--ink);
+	font-variant-numeric: tabular-nums;
+}
+.usage-figure-left {
+	margin-left: auto;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono);
+}
+
+.usage-meter {
+	display: flex;
+	gap: 2px;
+	height: 6px;
+	margin-top: 10px;
+	border-radius: 3px;
+	background: var(--bg-sunk);
+	box-shadow: inset 0 0 0 1px var(--line);
+	overflow: hidden;
+}
+.usage-meter-used {
+	background: var(--accent);
+}
+/* What running sandboxes hold: the same hue, lighter, since it is not counted yet. */
+.usage-meter-held {
+	background: color-mix(in srgb, var(--accent) 45%, var(--bg-sunk));
+}
+
+.usage-facts {
+	margin-top: 14px;
+	border-top: 1px solid var(--line);
+}
+.usage-facts > div {
+	display: grid;
+	grid-template-columns: 96px 132px minmax(0, 1fr);
+	align-items: baseline;
+	column-gap: 16px;
+	padding: 9px 8px 9px 12px;
+	border-bottom: 1px solid var(--line);
+}
+.usage-facts dt {
+	font-size: var(--size-small);
+	font-weight: 600;
+}
+.usage-gloss {
+	font-size: var(--size-small);
+	line-height: 1.45;
+	color: var(--ink-dim);
+}
+
+.usage-number {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono);
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+	white-space: nowrap;
+}
+
+.usage-table {
+	width: 100%;
+	margin-top: 12px;
+	border-collapse: collapse;
+	border-top: 1px solid var(--line);
+}
+.usage-table th,
+.usage-table td {
+	padding: 9px 8px;
+	border-bottom: 1px solid var(--line);
+	vertical-align: baseline;
+}
+.usage-table th:first-child {
+	padding-left: 12px;
+}
+.usage-table thead th {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	font-weight: 400;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--ink-faint);
+}
+.usage-table th {
+	text-align: left;
+	font-weight: 400;
+}
+.usage-table th.usage-number {
+	text-align: right;
+}
+.usage-table tbody th {
+	font-size: var(--size-text);
+	overflow-wrap: anywhere;
+}
+.usage-table tfoot th,
+.usage-table tfoot td {
+	border-bottom: 0;
+	border-top: 1px solid var(--line-strong);
+	font-weight: 600;
+}
+.usage-table td.usage-number {
+	width: 1%;
+	padding-left: 20px;
+}
+.usage-agent {
+	font-weight: 600;
+	text-decoration: none;
+}
+.usage-agent:hover {
+	color: var(--accent-strong);
+}
+.usage-mark {
+	color: var(--warn);
+}
+
+/* The days: a thin bar per day, drawn against the allowance. */
+.usage-history tbody th {
+	width: 1%;
+	white-space: nowrap;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono);
+}
+.usage-day-note {
+	margin-left: 10px;
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+}
+.usage-day-today .usage-day-note {
+	color: var(--accent);
+}
+.usage-bar-cell {
+	min-width: 80px;
+	vertical-align: middle;
+}
+.usage-bar {
+	display: block;
+	height: 4px;
+	border-radius: 0 2px 2px 0;
+	background: var(--ink-faint);
+}
+.usage-day-today .usage-bar {
+	background: var(--accent);
+}
+
+.usage-kept {
+	margin-top: 12px;
+	border-top: 1px solid var(--line);
+}
+.usage-kept-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 132px auto;
+	align-items: center;
+	column-gap: 16px;
+	padding: 11px 8px 11px 12px;
+	border-bottom: 1px solid var(--line);
+}
+.usage-kept-main {
+	min-width: 0;
+}
+.usage-kept-title {
+	display: block;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.usage-kept-row .button {
+	min-width: 76px;
+}
+
+/* What goes and what stays, in the dialog that frees a sandbox. */
+.usage-ledger {
+	display: grid;
+	grid-template-columns: 44px minmax(0, 1fr);
+	gap: 8px 12px;
+	margin: 14px 0;
+	padding: 12px 0;
+	border-top: 1px solid var(--line);
+	border-bottom: 1px solid var(--line);
+	font-size: var(--size-small);
+	line-height: 1.5;
+}
+.usage-ledger dt {
+	grid-column: 1;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--ink-faint);
+	padding-top: 2px;
+}
+.usage-ledger dd {
+	grid-column: 2;
+}
+
+/* The home screen's line about the day, and the composer's. */
+.home-usage {
+	margin-top: 6px;
+}
+.home-usage strong {
+	font-variant-numeric: tabular-nums;
+}
+.composer-allowance {
+	color: var(--ink-dim);
+}
+.composer-allowance svg {
+	color: var(--warn);
+}
+.composer-error .link {
+	white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+	/* What each agent's sandbox holds is in the day's figures above; a narrow table leaves it out. */
+	.usage-wide {
+		display: none;
+	}
+	.usage-facts > div {
+		grid-template-columns: 72px minmax(0, 1fr);
+		row-gap: 2px;
+		padding-left: 4px;
+		padding-right: 4px;
+	}
+	.usage-facts .usage-number {
+		text-align: left;
+	}
+	.usage-facts .usage-gloss {
+		grid-column: 2;
+	}
+	.usage-figure-left {
+		margin-left: 0;
+		flex-basis: 100%;
+	}
+	.usage-table th:first-child {
+		padding-left: 4px;
+	}
+	.usage-table th,
+	.usage-table td {
+		padding-left: 4px;
+		padding-right: 4px;
+	}
+	.usage-table td.usage-number {
+		padding-left: 12px;
+	}
+	.usage-bar-cell {
+		min-width: 28px;
+	}
+	.usage-day-note {
+		display: block;
+		margin-left: 0;
+	}
+	.usage-kept-row {
+		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-areas:
+			"main free"
+			"state free";
+		row-gap: 6px;
+		padding-left: 4px;
+		padding-right: 4px;
+	}
+	.usage-kept-main {
+		grid-area: main;
+	}
+	.usage-kept-title {
+		white-space: normal;
+	}
+	.usage-kept-row .sandbox-state {
+		grid-area: state;
+	}
+	.usage-kept-row .button {
+		grid-area: free;
+		align-self: center;
+	}
+}

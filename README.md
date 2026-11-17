@@ -89,6 +89,14 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
   stopped without ending the turn.
 - **Sleep.** With no browser connected and no turn running, the actor sleeps after 30 seconds and stops its
   container. The next prompt, or opening the session, starts it again with its files intact.
+- **When a server stops.** On SIGTERM (a deploy) RivetKit puts every actor to sleep and exits after 20
+  seconds, done or not, so a session's sleep fits in 16: a turn that runs is stopped and closed in the
+  timeline (at most 10 seconds), the timeline and the session are saved, the sandbox is suspended (at most 4),
+  then the idle check is set and the user's list told (at most 2), and it is saved again. The waits and the
+  rule they must keep are in `server/src/actors/agent-session.ts` (`SHUTDOWN_GRACE_MS`), and the server does
+  not start when they add up to more. A suspend that takes longer goes on without the session: on E2B the
+  sandbox pauses at its own timeout (`WLP_E2B_IDLE_TIMEOUT_MS`, or `WLP_E2B_TURN_LEASE_MS` when a turn was
+  running), on Docker the container stops as it was asked to, and the next check or prompt sees that.
 - **Idle sandboxes.** A sandbox costs money while it runs, whether or not a browser is open. Ten minutes after a
   session's last turn ended (`WLP_IDLE_SUSPEND_MS`) the session suspends its sandbox, and after seven days
   without use (`WLP_IDLE_DESTROY_MS`) it removes it with its files. The timeline stays, and gets one line for
@@ -201,7 +209,7 @@ and the platform goes by that list: a key is sent only to an engine that names i
 handed a variable to withhold fails before a session is opened should its engine not name `withholdEnv`.
 What a turn's Windlass is handed has to be decided before it starts, so the first turn in a sandbox on a
 server starts an engine there for that question alone (`Windlass.features`), and the answer is kept for that
-sandbox. With an older Windlass a session works as it did: its commands find the home
+sandbox (for the 500 sandboxes the server used last; one it forgot is asked again). With an older Windlass a session works as it did: its commands find the home
 read-only, and its repository's secrets reach what Windlass's rule alone allows ("A repository's secrets").
 
 ## Sign-ins
@@ -330,6 +338,7 @@ What every server needs, the same on all of them:
 | `WLP_WINDLASS_BIN` | a Windlass executable on the server, for the sign-in commands ("Sign-ins"). `server/Dockerfile` puts one at `/usr/local/bin/windlass` and sets this |
 | `WLP_SIGNIN_KEY` | optional; when set, the same on every server: what the key that encrypts sign-ins is derived from, in place of `WLP_SECRET` |
 | `WLP_DEMO`, `WLP_TURN_TIMEOUT_MS`, `WLP_QUESTION_TIMEOUT_MS`, `WLP_IDLE_SUSPEND_MS`, `WLP_IDLE_DESTROY_MS` | the same values everywhere: a session's limits are applied by whichever server holds its actor |
+| `WLP_DAILY_SANDBOX_SECONDS`, `WLP_MAX_KEPT_SANDBOXES`, `WLP_USAGE_HOLD_SECONDS` | the same values everywhere: a user's limits are applied by whichever server holds their `user` actor ("Usage and limits") |
 | `WLP_HTTP_PORT` or `PORT` | the port the load balancer sends `/platform/info` to |
 
 **What browsers connect with.** An engine that is shared is one that checks who connects. A Rivet Cloud
@@ -527,8 +536,12 @@ do, since the data directory is a volume that outlives every sandbox.
 - **The size limit.** An archive larger than `WLP_BACKUP_MAX_BYTES` (64 MiB) is not uploaded. The timeline
   says so once ("The agent's memory of the conversation has grown to 70 MB, and the platform keeps a copy of
   at most 64 MB, so it is no longer copied out of the sandbox. ..."), and the last copy that fitted stays.
-- **Deleting a session deletes its object**, after its sandbox, which is what uploads. An object that could
-  not be removed is named in the log (`[wlp] backup.remove_failed uid=... session=...`).
+- **Deleting a session deletes its object**, after its sandbox, which is what uploads. The session tries
+  three times; an object that is still there then is handed to the user's `user` actor
+  (`[wlp] backup.remove_deferred`), which outlives the session and tries again on its durable schedule, 1,
+  2, 4, ... 128 minutes apart: eight more tries over about four hours and a quarter, across restarts. An
+  object the store no longer has counts as removed. After the last try the object is named in the log
+  (`[wlp] backup.remove_failed uid=... session=... object=...`), for whoever looks after the bucket.
 - **Who can read a copy.** It holds the conversation as Windlass has it: the prompts, the model's answers,
   the tool calls and their output. It is not encrypted by the platform. Whoever holds the bucket's access key
   can read every copy, as can the store's operator; a sandbox can reach its own session's object and no
@@ -664,6 +677,10 @@ pushes anything for a user, the platform asks GitHub what that user may do in th
 installation's own token; no credential of the user's is needed), and does it only when GitHub says read, or,
 to push, write. An installation on the connected user's own account is theirs, and is not asked about. The
 launch form lists only repositories its user can read; one they can read and not push to says so.
+
+A list has 20 seconds for all its calls to GitHub together, each call getting what is left. When they run
+out, the list is what was found by then and says that GitHub was slow and some repositories may be
+missing; when nothing was found, the form says that GitHub could not be reached.
 
 ### Tokens
 
@@ -1166,6 +1183,111 @@ It remembers an approval for the session's project as the deployment does, and t
 `__wlpMock.mockNextServers("list" | "approve" | "forget" | "slow")` in the console makes its next call fail,
 or makes those calls slow for ten seconds.
 
+## Usage and limits
+
+A sandbox costs money while it runs, so two things are limited for each user, and a page shows where they
+stand (`server/src/usage.ts` has the rules, with no actor in it):
+
+| Limit | Setting | Default |
+|---|---|---|
+| Sandbox time a user's sandboxes may run in one UTC day, all of them together | `WLP_DAILY_SANDBOX_SECONDS` | 7200, two hours |
+| Sandboxes a user may keep at the same time, running or paused | `WLP_MAX_KEPT_SANDBOXES` | 5 |
+
+Either takes `unlimited`. The time is counted and shown with or without a limit.
+
+- **What is counted.** The time a session's sandbox runs: from the moment the session has it created or
+  resumed, for a turn, a clone, a setup command, a push, or to read the workspace's changes, until it is
+  suspended, removed, or stops by itself. So a turn counts with the time the sandbox goes on running after
+  it: on E2B until its idle timeout pauses it (`WLP_E2B_IDLE_TIMEOUT_MS`, two minutes), on Docker until the
+  session suspends it (`WLP_IDLE_SUSPEND_MS`, or the session going to sleep). A paused sandbox counts no
+  time. It counts as one of the sandboxes its user keeps.
+- **One place decides.** The user's `user` actor, which every server reaches and which does one thing at a
+  time. A count kept on a server would be a limit per server.
+- **A ledger.** Every second counted is in an entry in that actor's storage: which session, which hold, how
+  many seconds, when, and a note where a count is not simply what was reported. A day's total is the sum of
+  its entries. Nothing is ever changed in an entry; a correction is another entry. Each is also a line in
+  the server's log (`[wlp] usage.counted uid=... session=... hold=... kind=used seconds=182`), to hold
+  against the provider's bill.
+- **Reserve, then settle.** A session does not ask whether time is left and report afterwards: two that
+  asked together would both be told yes. Before its sandbox runs it takes a hold, five minutes of the day's
+  allowance (`WLP_USAGE_HOLD_SECONDS`) or what is left of it, which counts as used for everyone else from
+  that moment. While the sandbox runs, the session trades the hold for the next one when it is over,
+  reporting what the first really ran, in one step. When the sandbox stops, the session reports what ran of
+  the last hold, and the rest of it is free again. A hold never reaches past midnight UTC: the one after it
+  is the new day's.
+- **A hold nobody settles** runs out by itself four minutes after the time it was for, and is counted in
+  full (an entry of the kind `unreported`): the server its session was on died, the sandbox ran for some
+  part of the hold, and nobody measured which. A session whose server shut down in order stops its sandbox
+  and reports; when the report does not get through in the two seconds a shutdown leaves, the session
+  keeps it and sends it when it is next awake, and the difference is given back (`corrected`).
+- **At the allowance.** A new turn is refused before a sandbox is created or started, with the code
+  `allowance_used` and a sentence that says what was used, what the allowance is and when it is whole
+  again: "Today's 2 h of sandbox time is used up, so nothing was started. The allowance is whole again at
+  00:00 UTC, in 5 h 12 min." Less than half a minute left is too little to start with, and is said so.
+  Reading a session's changes, or pushing from the panel, when that would start a paused sandbox, is
+  refused the same way. A turn that is running when the allowance gives no more is stopped at the end of
+  the hold it has, never in the middle of one: the timeline gets a line ("Today's 2 h of sandbox time is
+  used up, so this turn was stopped at the end of the time it held. The sandbox is suspended with its files
+  as they are, ..."), Windlass is asked to stop as by the Stop button, the turn ends as interrupted, and the
+  sandbox is suspended, which settles its time. What it ran while stopping is counted, and the entry says
+  how far past the hold that was. A sandbox that runs with no turn in it is suspended when its hold cannot
+  be renewed, with a line of its own.
+- **When the user's actor does not answer.** A new turn is refused (`usage_unavailable`): nothing is
+  started on a count nobody could check. A turn that is running goes on and the session asks again every
+  fifteen seconds; if that never works, the hold it has is counted in full when it runs out.
+- **Kept sandboxes.** A session that needs a sandbox it does not have is given a place with its first
+  hold, in the same step, or is refused both (`too_many_sandboxes`: "You keep 5 sandboxes, the most an
+  account may have, and this agent needs one of its own. Free one on the Usage page, ..."). The place is
+  given back when the sandbox is removed: after `WLP_IDLE_DESTROY_MS` without use, with its agent, or by
+  the user. The platform removes none to make room by itself, because a sandbox's workspace files go with
+  it. An agent can always be created; what is refused is its first prompt.
+- **The count is held against what exists.** A sandbox that was never made, or one removed at the provider,
+  would leave a place taken for good. So before a place is given or refused, and when the usage page is
+  opened, the actor asks the provider for the user's sandboxes (Docker: by the containers' labels; E2B: by
+  the metadata `wlp_uid`) and corrects the count: a place with no sandbox behind it is dropped, unless it
+  is younger than five minutes and its sandbox may still be being made, and a sandbox nobody claimed is
+  counted, also past the cap, since it exists. A correction is logged (`[wlp] usage.kept_corrected`): it
+  means something made or removed a sandbox without the actor being told. This is apart from the
+  deployment's own cap on sandboxes running at once (`WLP_E2B_MAX_RUNNING`), which stays as it was.
+- **The usage page** (`/usage`, from the line under the account on the home screen): today's sandbox time
+  against the allowance, with what is counted, what running sandboxes hold and what is left, and when the
+  day ends in the viewer's own time zone; today by agent; the sandboxes kept, each with "Free…", which
+  says what goes with the sandbox (the workspace's files that are not on GitHub) and what stays (the agent,
+  its conversation and, where the deployment keeps it outside the sandbox, the agent's own memory) before
+  it removes it; and the last 14 days. A sandbox left behind by an agent that no longer exists is listed
+  and can be freed too. The agent whose sandbox was freed gets a new one with its next prompt, and is told
+  that its workspace is a new one.
+- **Before the limit.** The home screen has the day's numbers in one line. A session says so above its
+  composer when less than a fifth of the allowance is left, and the launch form when the day is used up or
+  no place is left.
+- **The estimated cost** is the counted seconds times the provider's published price for the size of the
+  deployment's sandboxes (`server/src/sandbox/e2b/pricing.ts`), and is labelled as an estimate with that
+  price. On Docker nothing is billed by the second and nothing is estimated.
+
+Where the count and E2B's bill can differ:
+
+| What | The count is |
+|---|---|
+| The session measures by its server's clock, from before it asks for a sandbox to be created or resumed until after the pause is confirmed | a second or two over per stretch |
+| E2B pauses an unused sandbox at its own timeout; the session counts to the moment that timeout was due | over or under by the seconds E2B takes |
+| A server dies under a running sandbox: the hold is counted in full, while the sandbox ran for a part of it and then for up to `WLP_E2B_TURN_LEASE_MS` more | over by at most a hold, or under by at most the lease |
+| The user's actor cannot be reached while a sandbox runs past its hold | under by the time past the hold |
+| A sandbox E2B starts and the platform discards at once (the deployment's cap, a failed set-up) | over: the seconds until the refusal are counted |
+| Sandboxes the platform's own checks start, and a template build | not counted: they are no user's |
+| The price: one figure per second, for the size E2B last reported | an estimate either way |
+
+On Docker a container that goes on running after its server died is not counted from the moment its hold
+runs out until the session wakes, takes a new hold and suspends it. Nothing is billed there.
+
+```sh
+cd server && npx tsx ../scripts/usage-check.ts    # the rules on their own: holds, the day, reports, kept sandboxes, the count against the provider
+```
+
+The web app's mock plays a deployment with the default allowance and room for twenty sandboxes
+(`?mock=1`), with a day's history that has one day at the limit; `&usage=low`, `&usage=used` and
+`&usage=full`, or `__wlpMock.mockUsage(...)` in the console, play a day with little left, a day that is
+used up and an account with no place left.
+
 ## Layout
 
 | Path | What it holds |
@@ -1182,6 +1304,7 @@ or makes those calls slow for ten seconds.
 | `server/src/sandbox-fake.ts` | The same interface in memory, for tests |
 | `server/src/server-question.ts` | The words of the question about a project's MCP server, for each sandbox profile, and of the timeline's lines about it |
 | `server/src/server-approvals.ts` | The user's remembered approvals of projects' MCP servers: what a project is, the record itself, and what a session keeps of its project's servers for its side panel |
+| `server/src/usage.ts` | A user's sandbox time and kept sandboxes: what is counted, the two limits, the book the `user` actor decides with, and the words of a refusal ("Usage and limits") |
 | `server/src/setup-command.ts`, `server/src/sandbox/setup.ts` | A repository's setup command: what it is saved for, its limits, what is kept of a run's output and what the agent is told; and the run itself in a sandbox |
 | `server/src/agent-publish.ts` | The agent asking the platform to publish: the tool and its server, what a request may hold, and the words of the question, of the timeline's lines and of what the agent is told |
 | `server/src/repo-secrets.ts` | A repository's secrets: what may be saved, what a scope comes to in each kind of sandbox, the sealing, and taking saved values out of text |
@@ -1203,6 +1326,7 @@ cd server && WLP_DEMO=1 pnpm e2e:docker                           # the actors, 
 cd server && npx tsx ../scripts/sandbox-check.ts                  # the sandbox layer on its own
 cd server && npx tsx ../scripts/mcp-check.ts                      # the question about a project's MCP server, against a real Windlass
 cd server && npx tsx ../scripts/setup-check.ts                    # a repository's setup command: its rules, no server and no Docker
+cd server && npx tsx ../scripts/usage-check.ts                    # sandbox time and kept sandboxes: their rules, no server and no Docker
 cd server && npx tsx ../scripts/secrets-check.ts                  # a repository's secrets: its rules, no server and no Docker
 cd server && npx tsx ../scripts/signin-check.ts                   # the sign-in machinery: no server, no Docker, a stand-in for OpenAI
 cd server && npx tsx ../scripts/connection-check.ts               # the tokens browsers connect with: a stand-in for the engine
@@ -1236,6 +1360,9 @@ The end-to-end scripts start their own server on ports 6420 and 6440, so stop a 
 | `WLP_SETUP_TIMEOUT_MS` | how long a repository's setup command may run in a new sandbox before the platform stops it (default 10 minutes); the same on every server |
 | `WLP_IDLE_SUSPEND_MS` | how long after a session's last turn ended its sandbox is suspended (default 10 minutes) |
 | `WLP_IDLE_DESTROY_MS` | how long after its last use a sandbox is removed with its files; the timeline stays (default 7 days). E2B keeps a paused sandbox for as long as it is not killed and does not bill it, so a deployment there can set this to years: then a sandbox goes only with its agent |
+| `WLP_DAILY_SANDBOX_SECONDS` | how many seconds a user's sandboxes may run in one UTC day, all of them together (default 7200, two hours; at least 60), or `unlimited` ("Usage and limits") |
+| `WLP_MAX_KEPT_SANDBOXES` | how many sandboxes a user may keep at the same time, running or paused (default 5), or `unlimited` |
+| `WLP_USAGE_HOLD_SECONDS` | how much of the day's allowance a running sandbox reserves at a time, and so how often its session reports (default 300, from 5 to 3600). A shorter time is for the checks |
 | `WLP_BUCKET_ENDPOINT`, `WLP_BUCKET_NAME`, `WLP_BUCKET_ACCESS_KEY_ID`, `WLP_BUCKET_SECRET_ACCESS_KEY` | the S3 bucket that keeps a copy of each agent's Windlass session where sandboxes are E2B's ("The agent's memory outlives its sandbox", which has the optional ones too). Unset: no copy is kept |
 | `WLP_BACKUP_MAX_BYTES` | the largest copy that is kept (default 64 MiB) |
 | `WLP_FAKE_BACKUP_DIR` | fake layer only: a directory that stands in for the bucket; the fake sandboxes then hold Windlass's sessions as E2B's do |
@@ -1255,6 +1382,10 @@ The end-to-end scripts start their own server on ports 6420 and 6440, so stop a 
 | `VITE_WLP_ENDPOINT` | the Rivet endpoint the web app connects to when the server names none, as a development server does (default `http://localhost:6420`). A server with `WLP_PUBLIC_ENDPOINT` names its own, and this is not needed |
 | `VITE_WLP_API` | where the web app asks for `/platform/info` and `/platform/connection` (default: the endpoint's host on port 6440 when the endpoint is on 6420, else `http://localhost:6440`) |
 | `VITE_WLP_MOCK` | `1`: the web app runs on its mock, with no server |
+
+A duration (`WLP_..._MS`) that is set and is not a number of milliseconds the platform can use stops the
+server when it starts, with one line that names the variable (`[wlp] WLP_IDLE_SUSPEND_MS must be a number
+of milliseconds of at least 1000, or not set for its default.`). One that is not set takes its default.
 
 Actor data is in `.data/.rivetkit`; stop the server and remove that directory to start from nothing.
 `sandbox/cleanup.sh --keep-image` removes every container and volume this project made, sign-ins of the first
@@ -1281,6 +1412,23 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
 - **Signing out forgets the token in the browser only.** The token is good for 30 days, but an account taken off
   the invitation list, or a demo user once the demo is off, is refused at every call (`server/src/access.ts`).
 - **Each demo sign-in leaves a small volume** until `sandbox/cleanup.sh` runs.
+- **A user's limits are per account, and the demo makes accounts.** Every demo sign-in is a user of its
+  own, with a day's allowance and five places of its own, so where the demo is on, the two limits bound
+  what one account uses and not what a visitor does. What bounds that is the deployment's own cap on
+  sandboxes running at once (`WLP_E2B_MAX_RUNNING`).
+- **Sandbox time is counted, not billed.** The count is the session's own measurement, and differs from
+  the provider's bill by seconds in ordinary use and by up to a hold when a server dies ("Usage and
+  limits" has the cases). Nothing compares the two by itself: the log has one line per entry, and E2B's
+  usage page has what was billed.
+- **A day's allowance at the time it was used is not kept.** The history marks a day as at the limit by
+  today's allowance, so after the setting changes an earlier day may be marked that was not at its limit
+  then, or not marked that was.
+- **A server that stops can leave a sandbox running for a few minutes.** A session has 4 of the shutdown's
+  20 seconds to suspend its sandbox ("When a server stops"); one that takes longer is paused by E2B at its
+  own timeout, at most three minutes later, and billed until then (about $0.003 at the default size). A
+  turn that does not close itself in 10 seconds is ended as interrupted when the session next wakes.
+- **A deleted session's copy can outlive it.** When the bucket refuses its removal for about four hours, the
+  platform gives up and names the object in the log; removing it is then the bucket's keeper's to do.
 - **A browser's connection token cannot be withdrawn.** Whoever asks a server gets one, and it is good until it
   expires, an hour by default, for creating, listing, reading and calling this deployment's actors; what an
   actor then does for its caller is decided by the platform's own sign-in, as before. RivetKit's client puts

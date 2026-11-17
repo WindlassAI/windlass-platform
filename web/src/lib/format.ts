@@ -77,3 +77,40 @@ export function countdown(ms: number): string {
 export function shortId(id: string, head = 12, tail = 6): string {
 	return id.length <= head + tail + 1 ? id : `${id.slice(0, head)}…${id.slice(-tail)}`;
 }
+
+/**
+ * A length of sandbox time, in the words the server's own sentences use (server/src/usage.ts,
+ * `spellSeconds`): "2 h", "1 h 50 min", "12 min", "4 min 5 s", "45 s".
+ */
+export function sandboxTime(total: number): string {
+	const seconds = Math.max(0, Math.round(total));
+	const hours = Math.floor(seconds / 3600);
+	const minutes = Math.floor((seconds % 3600) / 60);
+	const rest = seconds % 60;
+	if (hours > 0) return minutes === 0 ? `${hours} h` : `${hours} h ${minutes} min`;
+	if (minutes >= 10 || (minutes > 0 && rest === 0)) return `${minutes} min`;
+	if (minutes > 0) return `${minutes} min ${rest} s`;
+	return `${seconds} s`;
+}
+
+/** A length of sandbox time for a column of them, where they must line up: "1:13:05", "0:04:05". */
+export function sandboxClock(total: number): string {
+	const seconds = Math.max(0, Math.round(total));
+	const pad = (value: number) => String(value).padStart(2, "0");
+	return `${Math.floor(seconds / 3600)}:${pad(Math.floor((seconds % 3600) / 60))}:${pad(seconds % 60)}`;
+}
+
+/** An estimated cost in US dollars: four decimals below a dollar, since a turn costs a fraction of a cent. */
+export function usd(amount: number): string {
+	return `$${amount.toFixed(amount < 1 ? 4 : 2)}`;
+}
+
+/** A time of day in the viewer's own time zone, with the zone's name: "05:30 GMT+5:30". */
+export function localTime(at: number): string {
+	return new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+}
+
+/** A UTC day ("2026-11-17") as a row's label: "Tue 17 Nov". */
+export function utcDay(day: string): string {
+	return new Date(`${day}T00:00:00Z`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+}

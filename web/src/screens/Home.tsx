@@ -1,13 +1,13 @@
 /** Agents: the user's sessions, newest first and live, with rename, delete and a way to launch one. */
-import { MAX_RUNNING_SESSIONS, MAX_TITLE_CHARS, type SessionSummary } from "@contract";
+import { MAX_RUNNING_SESSIONS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Dialog } from "../components/Dialog";
 import { Mark, PencilIcon, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
 import { OutcomeWord, SandboxState, StatusBadge, StatusGlyph } from "../components/Status";
-import { absoluteTime, plural, relativeTime } from "../lib/format";
+import { absoluteTime, count, localTime, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { useChatgpt, useNow, useSessions } from "../state/hooks";
+import { allowanceState, useAllowance, useChatgpt, useNow, useSessions } from "../state/hooks";
 
 function repoName(url: string): string {
 	return url.replace(/^https:\/\//, "").replace(/\.git$/, "");
@@ -210,14 +210,46 @@ function AccountLine() {
 	);
 }
 
+/** The day's sandbox time and the sandboxes kept, in one line, with the way to the usage page. */
+function UsageLine({ numbers }: { numbers: UsageNumbers | null }) {
+	if (numbers === null) return null;
+	const { allowanceSeconds, leftSeconds, sandboxes } = numbers;
+	const spent = numbers.usedSeconds + numbers.heldSeconds;
+	const state = allowanceState(numbers, USAGE_LOW_SHARE);
+	const full = sandboxes.limit !== null && sandboxes.kept >= sandboxes.limit;
+	return (
+		<p className="home-account home-usage">
+			<span>
+				Sandbox time today: <strong>{sandboxTime(spent)}</strong>
+				{allowanceSeconds === null ? null : ` of ${sandboxTime(allowanceSeconds)}`}
+			</span>
+			{state !== "plenty" && leftSeconds !== null ? <span className="tone-warn">{state === "used" ? `used up until ${localTime(numbers.resetsAt)}` : `${sandboxTime(leftSeconds)} left`}</span> : null}
+			<span className="home-account-sep" aria-hidden="true">
+				·
+			</span>
+			<span className={full ? "tone-warn" : undefined}>
+				{sandboxes.limit === null ? plural(sandboxes.kept, "sandbox kept", "sandboxes kept") : `${count(sandboxes.kept)} of ${count(sandboxes.limit)} sandboxes kept`}
+			</span>
+			<span className="home-account-sep" aria-hidden="true">
+				·
+			</span>
+			<a className="link" {...linkProps({ name: "usage" })}>
+				Usage
+			</a>
+		</p>
+	);
+}
+
 export function Home() {
 	const { platform } = useApp();
 	const { sessions, connection, error } = useSessions();
 	const now = useNow(15_000);
 	const [deleting, setDeleting] = useState<SessionSummary | null>(null);
+	const working = sessions?.filter((session) => session.status !== "idle").length ?? 0;
+	// Asked again when an agent starts or stops working, and when one is added or deleted.
+	const usage = useAllowance(`${working}:${sessions?.length ?? 0}`);
 
 	const profileName = (id: string) => platform.info?.profiles.find((profile) => profile.id === id)?.name ?? id;
-	const working = sessions?.filter((session) => session.status !== "idle").length ?? 0;
 	const waiting = sessions?.filter((session) => session.status === "waiting").length ?? 0;
 	const launch = () => navigate({ name: "new" });
 
@@ -231,6 +263,7 @@ export function Home() {
 					</p>
 					<h1 className="display">Agents</h1>
 					<AccountLine />
+					<UsageLine numbers={usage} />
 				</div>
 				<button type="button" className="button button-primary button-large" onClick={launch}>
 					<PlusIcon />

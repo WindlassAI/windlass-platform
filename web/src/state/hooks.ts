@@ -1,4 +1,4 @@
-import type { ChatgptStatus, SessionSummary } from "@contract";
+import type { ChatgptStatus, SessionSummary, UsageNumbers } from "@contract";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ConnectionState, PlatformError } from "../api/client";
 import { useApp, useAuth } from "./app";
@@ -75,4 +75,52 @@ export function useSession(sessionId: string): SessionState {
 		if (state.error) explain(state.error);
 	}, [state.error, explain]);
 	return state;
+}
+
+/** How often the numbers are asked for again while they are shown: a running sandbox moves them. */
+const ALLOWANCE_EVERY_MS = 60_000;
+
+/**
+ * Today's sandbox time and the count of kept sandboxes: asked when the screen opens, every minute
+ * after that, and whenever `key` changes (a turn ended, a prompt was refused). Null until they are
+ * known and when they cannot be read: the screens then say nothing rather than something stale.
+ */
+export function useAllowance(key: unknown = 0): UsageNumbers | null {
+	const { client } = useApp();
+	const auth = useAuth();
+	const [numbers, setNumbers] = useState<UsageNumbers | null>(null);
+	useEffect(() => {
+		let current = true;
+		const read = () => {
+			client
+				.user(auth)
+				.allowance()
+				.then(
+					(value) => current && setNumbers(value),
+					() => current && setNumbers(null),
+				);
+		};
+		read();
+		const timer = setInterval(read, ALLOWANCE_EVERY_MS);
+		return () => {
+			current = false;
+			clearInterval(timer);
+		};
+	}, [client, auth, key]);
+	return numbers;
+}
+
+/** What is left of today's allowance for a new turn, as the screens say it. */
+export type AllowanceState =
+	/** No limit, or enough left to say nothing. */
+	| "plenty"
+	/** Less than USAGE_LOW_SHARE of the allowance is left. */
+	| "low"
+	/** Too little is left for a turn to start. */
+	| "used";
+
+export function allowanceState(numbers: UsageNumbers | null, lowShare: number): AllowanceState {
+	if (numbers === null || numbers.allowanceSeconds === null || numbers.leftSeconds === null) return "plenty";
+	if (numbers.leftSeconds < numbers.startSeconds) return "used";
+	return numbers.leftSeconds < numbers.allowanceSeconds * lowShare ? "low" : "plenty";
 }

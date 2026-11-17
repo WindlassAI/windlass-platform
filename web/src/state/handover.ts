@@ -5,6 +5,8 @@
 export interface Handover {
 	text: string;
 	error: string;
+	/** True when one of the user's limits refused it: the composer then points to the usage page. */
+	limit?: boolean;
 }
 
 const waiting = new Map<string, Handover>();

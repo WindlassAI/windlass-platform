@@ -37,6 +37,7 @@ import {
 	type SessionSnapshot,
 	type SessionSummary,
 	type TimelineItem,
+	type UsageNumbers,
 	type UserActions,
 	type UserEvents,
 } from "@contract";
@@ -319,6 +320,9 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			repositorySecrets: (repositoryId, profile, sessionId) => act("repositorySecrets", { repositoryId, profile, sessionId }),
 			saveRepositorySecret: (repositoryId, profile, secret, sessionId) => act("saveRepositorySecret", { repositoryId, profile, sessionId, ...secret }),
 			deleteRepositorySecret: (repositoryId, profile, name, sessionId) => act("deleteRepositorySecret", { repositoryId, profile, sessionId, name }),
+			allowance: () => act("allowance"),
+			usage: () => act("usage"),
+			freeSandbox: (sessionId) => act("freeSandbox", sessionId),
 			watch(feed: UserFeed) {
 				let live = false;
 				const feedConn = feedConnection(
@@ -339,6 +343,9 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 					(conn) => [
 						conn.on("sessions" satisfies keyof UserEvents, (sessions: SessionSummary[]) => {
 							if (live) feed.onSessions(sessions);
+						}),
+						conn.on("usage" satisfies keyof UserEvents, (numbers: UsageNumbers) => {
+							if (live) feed.onUsage?.(numbers);
 						}),
 					],
 				);

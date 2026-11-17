@@ -7,6 +7,18 @@ import { PlatformError } from "./client";
 /** Error codes a server might use for a refused token. rivet.ts, ASSUMPTION 5. */
 const UNAUTHORIZED_CODES = new Set(["unauthorized", "unauthenticated", "forbidden", "invalid_token", "token_expired", "bad_token", "auth"]);
 
+/**
+ * The codes of the two limits a user can run into (server/src/usage.ts): too little of the day's
+ * sandbox time is left for a turn to start, and the agent needs a sandbox while its user keeps as many
+ * as they may. The server's sentence says which and what to do; the screens add the way to the usage page.
+ */
+const LIMIT_CODES = new Set(["allowance_used", "too_many_sandboxes"]);
+
+/** Whether something thrown at the interface is a refusal by one of the user's limits. */
+export function isLimitRefusal(error: unknown): boolean {
+	return error instanceof PlatformError && error.reason !== null && LIMIT_CODES.has(error.reason);
+}
+
 /** Structural, like `RivetError.isRivetError`: an error decoded from the wire need not be an instance. */
 export function isRivetError(error: unknown): error is { group: string; code: string; message: string } {
 	return typeof error === "object" && error !== null && "group" in error && typeof error.group === "string" && "code" in error && typeof error.code === "string" && "message" in error && typeof error.message === "string";

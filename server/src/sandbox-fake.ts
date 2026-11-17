@@ -102,6 +102,7 @@ import {
 	type CreateSandboxInput,
 	type ExecOptions,
 	type ExecResult,
+	type ListedSandbox,
 	type RunTurnInput,
 	type RunTurnResult,
 	type SandboxHandle,
@@ -327,6 +328,8 @@ class FakeSandboxes implements Sandboxes {
 	readonly all = new Map<string, FakeSandbox>();
 	/** As on Docker, the fake Windlass sessions are not tied to a sandbox; with a stand-in for the bucket they are, as on E2B. */
 	readonly sessionsLiveInSandbox: boolean;
+	/** Nothing stops a fake sandbox but the session that has it, and none is billed. */
+	readonly idleStopMs = null;
 	/** The Windlass sessions where they outlive sandboxes: all in one place, as on a volume. */
 	private readonly shared = new Map<string, FakeSession>();
 	/** The definitions of project servers Windlass was told to start, by where its data directory is. */
@@ -376,6 +379,14 @@ class FakeSandboxes implements Sandboxes {
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {
 		return this.all.get(id)?.state ?? "none";
+	}
+
+	price(): null {
+		return null;
+	}
+
+	async list(uid: string): Promise<ListedSandbox[]> {
+		return [...this.all.values()].filter((sandbox) => sandbox.uid === uid).map((sandbox) => ({ id: sandbox.id, sessionId: sandbox.sessionId, state: sandbox.state }));
 	}
 
 	async suspend(id: string): Promise<void> {

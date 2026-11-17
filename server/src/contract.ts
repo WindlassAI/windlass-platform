@@ -308,6 +308,8 @@ export interface GithubRepositoryList {
 	repositories: GithubRepository[];
 	/** True when more match than are listed: a longer search finds them. */
 	more: boolean;
+	/** True when GitHub was too slow for every account to be listed and every repository checked in the time a list has: some may be missing. */
+	incomplete: boolean;
 }
 
 export interface GithubBranchList {
@@ -452,6 +454,104 @@ export interface RepositorySecrets {
 	profile: SandboxProfileId;
 }
 
+// --- Usage -----------------------------------------------------------------------------------
+
+/**
+ * A user's sandbox time today and the sandboxes they keep, in numbers (README, "Usage and limits").
+ *
+ * Sandbox time is the time a session's sandbox runs: from when it is created or resumed, for a turn or
+ * to read the workspace, until it is suspended, removed or stops by itself. A sandbox that is paused
+ * uses none. A day is a UTC day. While a sandbox runs, its session holds a few minutes of the day's
+ * allowance at a time, and what it does not use of a hold comes back when the sandbox stops.
+ */
+export interface UsageNumbers {
+	/** The server's clock when this was read, ms since the epoch. */
+	at: number;
+	/** The UTC day the numbers are for, "2026-11-17". */
+	day: string;
+	/** When that day ends and the allowance is whole again: the next midnight UTC, ms since the epoch. */
+	resetsAt: number;
+	/** The sandbox time a user may use in one day, in seconds; null when the deployment sets no limit. */
+	allowanceSeconds: number | null;
+	/** Seconds counted today: what sandboxes that have stopped ran. */
+	usedSeconds: number;
+	/** Seconds held by sandboxes that run now. They count as used until each sandbox stops and its real time is counted. */
+	heldSeconds: number;
+	/** What is left of today's allowance for a turn that starts now, never below 0; null without a limit. */
+	leftSeconds: number | null;
+	/** The least that must be left for a turn to start, or for a paused sandbox to be started to read its workspace. */
+	startSeconds: number;
+	/** How many sandboxes the user keeps, running or paused, and the most they may keep; `limit` is null without one. */
+	sandboxes: { kept: number; limit: number | null };
+}
+
+/** One agent's sandbox time today. */
+export interface UsageSession {
+	sessionId: string;
+	/** Null for an agent that was deleted since. */
+	title: string | null;
+	/** Seconds counted today for this agent's sandbox. */
+	seconds: number;
+	/**
+	 * Of `seconds`, what was counted in full because the agent never reported how long its sandbox
+	 * really ran: the server it was on stopped under it. It ran that long at most.
+	 */
+	unreportedSeconds: number;
+	/** Seconds its sandbox holds now; 0 when it does not run. */
+	heldSeconds: number;
+}
+
+/** One UTC day of the history. */
+export interface UsageDay {
+	/** "2026-11-17". */
+	day: string;
+	seconds: number;
+}
+
+/** A sandbox the user keeps: it exists for one of their agents, running or paused. */
+export interface KeptSandbox {
+	/** The agent it was made for: what `freeSandbox` takes. */
+	sessionId: string;
+	/** Null when that agent no longer exists and its sandbox was left behind. */
+	title: string | null;
+	/** "starting": the agent was given the place and its sandbox is being made. */
+	state: "running" | "paused" | "starting";
+	/** When the agent was last prompted or its last turn ended, ms since the epoch; null without the agent. */
+	usedAt: number | null;
+	/** True while the agent works: its sandbox cannot be freed until the turn has ended or is stopped. */
+	busy: boolean;
+	/** "owner/name" of the repository the agent was launched on through the GitHub connection, when it was. */
+	repository: string | null;
+	/** Whether the platform has pushed work of this agent to GitHub: that much is cloned again into a new sandbox. */
+	pushed: boolean;
+}
+
+/** What a second of a running sandbox is estimated to cost. */
+export interface UsagePrice {
+	/** US dollars per second. */
+	usdPerSecond: number;
+	/** What that price is of, for a sentence: "1 vCPU and 1,024 MiB of memory at E2B's published prices". */
+	basis: string;
+}
+
+/** What the usage page shows. */
+export interface UsageView extends UsageNumbers {
+	/** Today's sandbox time by agent, the most first; an agent whose sandbox runs now is among them. */
+	today: UsageSession[];
+	/** The last USAGE_HISTORY_DAYS days, the oldest first and today last. */
+	days: UsageDay[];
+	/** The sandboxes the user keeps, as the provider lists them, the most recently used first. */
+	kept: KeptSandbox[];
+	/** Null where running a sandbox is not billed by the second (local Docker): no cost is estimated then. */
+	price: UsagePrice | null;
+	/**
+	 * What becomes of an agent's memory of its conversation when its sandbox is freed. "kept": it is
+	 * stored outside the sandbox. "copied": a copy is saved after every turn and put into the next
+	 * sandbox. "lost": it is in the sandbox only, and the agent starts without it.
+	 */
+	memory: "kept" | "copied" | "lost";
+}
+
 export interface UserActions {
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
@@ -510,11 +610,28 @@ export interface UserActions {
 	renameSession(id: string, title: string): Promise<SessionSummary>;
 	/** Destroys the session's actor and its sandbox. */
 	deleteSession(id: string): Promise<void>;
+	/** Today's sandbox time and the count of kept sandboxes, as the user's actor has them. Asks no provider. */
+	allowance(): Promise<UsageNumbers>;
+	/**
+	 * The usage page: today's sandbox time against the allowance, by agent, the kept sandboxes, the last
+	 * two weeks and what a second is estimated to cost. The count of kept sandboxes is first held
+	 * against the provider's own list of the user's sandboxes, so what is shown is what exists.
+	 */
+	usage(): Promise<UsageView>;
+	/**
+	 * Removes the sandbox of one of the user's agents, to make room for another: the files in its
+	 * workspace go with it, and the agent and its conversation stay (`UsageView.memory` says what
+	 * becomes of the agent's own memory). The agent's next prompt starts a new sandbox. Throws a
+	 * UserError with code `sandbox_busy` while the agent works. Answers with the page as it is then.
+	 */
+	freeSandbox(sessionId: string): Promise<UsageView>;
 }
 
 export interface UserEvents {
 	/** The full list, newest first, after any change to it. */
 	sessions: SessionSummary[];
+	/** Today's numbers, after sandbox time was held or counted, or a sandbox was kept or freed. */
+	usage: UsageNumbers;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -841,6 +958,10 @@ export interface AgentSessionActions {
 	 * the model reads it at its next step, and `steered` is true (`model` and `effort` are ignored
 	 * then). Throws a UserError when the text is empty, when the user must sign in to ChatGPT first,
 	 * or when a running turn cannot take the message (code `turn_running`: it is starting or stopping).
+	 * A turn that would start is also held to its user's two limits (`UsageNumbers`), before a sandbox is
+	 * created or started: code `allowance_used` when too little of the day's sandbox time is left, and
+	 * `too_many_sandboxes` when the session needs a sandbox and its user keeps as many as they may. Each
+	 * comes with a sentence that says what was used, what the limit is, and what to do or when it resets.
 	 */
 	prompt(input: PromptInput): Promise<{ turn: number; steered: boolean }>;
 	/**
@@ -955,3 +1076,7 @@ export const MAX_SECRET_VALUE_BYTES = 16_384;
 export const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
 /** Sessions of one user that may run a turn at the same time. */
 export const MAX_RUNNING_SESSIONS = 3;
+/** How many days of sandbox time the usage page lists, today included. */
+export const USAGE_HISTORY_DAYS = 14;
+/** The share of the day's allowance below which a session says how little is left. */
+export const USAGE_LOW_SHARE = 0.2;

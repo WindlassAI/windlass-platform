@@ -280,6 +280,25 @@ await section("only this deployment's sandboxes", async () => {
 	expect("an id that cannot be E2B's is not sent to E2B", !w.fake.calls.some((call) => call.includes("../etc")));
 });
 
+await section("what the usage meter reads", async () => {
+	const w = world({ maxRunning: 5 });
+	const mine = await w.make("u1", "s1");
+	const paused = await w.make("u1", "s2");
+	await w.sandboxes.suspend(paused);
+	await w.make("u2", "s3");
+	await w.fake.plant({ [META.deployment]: "another", [META.uid]: "u1", [META.session]: "elsewhere" });
+	const listed = await w.sandboxes.list("u1");
+	expect(
+		"a user's sandboxes are listed with their sessions, running and paused, and nobody else's",
+		listed.length === 2 && listed.some((sandbox) => sandbox.id === mine && sandbox.sessionId === "s1" && sandbox.state === "running") && listed.some((sandbox) => sandbox.id === paused && sandbox.sessionId === "s2" && sandbox.state === "paused"),
+		JSON.stringify(listed),
+	);
+	expect("a user id that cannot be one lists nothing", (await w.sandboxes.list("../u1")).length === 0);
+	expect("an unused sandbox stops by itself after the idle timeout", w.sandboxes.idleStopMs === SETTINGS.idleTimeoutMs);
+	const price = w.sandboxes.price();
+	expect("a second is priced for the size E2B said the sandboxes have", Math.abs(price.usdPerSecond - 0.0000185) < 1e-9 && price.basis === "1 vCPU and 1,024 MiB of memory at E2B's published prices", JSON.stringify(price));
+});
+
 await section("the dead-man switch", async () => {
 	// Real time here: the keepalive is a timer. A lease of 3 s is set again every second.
 	const w = world({ turnLeaseMs: 3_000, idleTimeoutMs: 30_000 });

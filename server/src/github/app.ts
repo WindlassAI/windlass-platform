@@ -144,6 +144,8 @@ interface Call {
 	web?: boolean;
 	/** Credentials that must not appear in an error, beside the ones in `auth`. */
 	secrets?: string[];
+	/** When the work the call is part of must be over (ms since the epoch): the call gets what is left of it, at most its own limit. */
+	deadline?: number;
 }
 
 const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {});
@@ -234,11 +236,13 @@ export class GithubApp {
 		}
 		if (call.body !== undefined) headers["content-type"] = "application/json";
 
+		const limit = call.deadline === undefined ? REQUEST_TIMEOUT_MS : Math.min(REQUEST_TIMEOUT_MS, call.deadline - Date.now());
+		if (limit <= 0) throw new GithubError(0, "no time was left for it", `could not ${call.what}`);
 		let response: Response;
 		try {
-			response = await fetch(url, { method: call.method ?? "GET", headers, body: call.body === undefined ? undefined : JSON.stringify(call.body), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), redirect: "follow" });
+			response = await fetch(url, { method: call.method ?? "GET", headers, body: call.body === undefined ? undefined : JSON.stringify(call.body), signal: AbortSignal.timeout(limit), redirect: "follow" });
 		} catch (error) {
-			const why = error instanceof Error && error.name === "TimeoutError" ? `no answer within ${REQUEST_TIMEOUT_MS / 1000} seconds` : "the request did not get through";
+			const why = error instanceof Error && error.name === "TimeoutError" ? `no answer within ${Math.ceil(limit / 1000)} seconds` : "the request did not get through";
 			throw new GithubError(0, why, `could not ${call.what}`);
 		}
 		const raw = await response.text().catch(() => "");
@@ -275,10 +279,10 @@ export class GithubApp {
 	// ---- installation tokens ------------------------------------------------------------------
 
 	/** Asks GitHub for a token of one installation, restricted to `scope`. Throws GithubError: 404 when the installation is gone, 422 when it does not cover the repository or the permission. */
-	async installationToken(installationId: number, scope: TokenScope): Promise<InstallationToken> {
+	async installationToken(installationId: number, scope: TokenScope, deadline?: number): Promise<InstallationToken> {
 		const body: Record<string, unknown> = { permissions: scope.permissions };
 		if (scope.repositoryId !== undefined) body.repository_ids = [scope.repositoryId];
-		const answer = await this.call({ method: "POST", path: `/app/installations/${installationId}/access_tokens`, body, auth: { bearer: this.jwt() }, what: "get a token for the installation" });
+		const answer = await this.call({ method: "POST", path: `/app/installations/${installationId}/access_tokens`, body, auth: { bearer: this.jwt() }, what: "get a token for the installation", deadline });
 		const fields = record(answer.body);
 		const token = text(fields.token);
 		const expiresAt = Date.parse(text(fields.expires_at));
@@ -388,16 +392,16 @@ export class GithubApp {
 	}
 
 	/** Every repository the token's installation covers (the first thousand). */
-	async installationRepositories(token: string): Promise<{ repositories: Repository[]; truncated: boolean }> {
-		const { items, truncated } = await this.pages({ path: "/installation/repositories", auth: { bearer: token }, what: "list the installation's repositories" }, (body) => {
+	async installationRepositories(token: string, deadline?: number): Promise<{ repositories: Repository[]; truncated: boolean }> {
+		const { items, truncated } = await this.pages({ path: "/installation/repositories", auth: { bearer: token }, what: "list the installation's repositories", deadline }, (body) => {
 			const list = record(body).repositories;
 			return Array.isArray(list) ? list : [];
 		});
 		return { repositories: items.map((item) => this.repositoryOf(item)).filter((item): item is Repository => item !== null), truncated };
 	}
 
-	async repository(token: string, owner: string, name: string): Promise<Repository> {
-		const answer = await this.call({ path: `/repos/${owner}/${name}`, auth: { bearer: token }, what: `read ${owner}/${name}` });
+	async repository(token: string, owner: string, name: string, deadline?: number): Promise<Repository> {
+		const answer = await this.call({ path: `/repos/${owner}/${name}`, auth: { bearer: token }, what: `read ${owner}/${name}`, deadline });
 		const found = this.repositoryOf(answer.body);
 		if (!found) throw new GithubError(answer.status, "the answer describes no repository", `could not read ${owner}/${name}`);
 		return found;
@@ -422,9 +426,9 @@ export class GithubApp {
 	 * repository's, a team's, the organization's): "admin", "write", "read" or "none". A user GitHub
 	 * does not know there is "none".
 	 */
-	async permission(token: string, owner: string, name: string, login: string): Promise<"admin" | "write" | "read" | "none"> {
+	async permission(token: string, owner: string, name: string, login: string, deadline?: number): Promise<"admin" | "write" | "read" | "none"> {
 		try {
-			const answer = await this.call({ path: `/repos/${owner}/${name}/collaborators/${encodeURIComponent(login)}/permission`, auth: { bearer: token }, what: `read what ${login} may do in ${owner}/${name}` });
+			const answer = await this.call({ path: `/repos/${owner}/${name}/collaborators/${encodeURIComponent(login)}/permission`, auth: { bearer: token }, what: `read what ${login} may do in ${owner}/${name}`, deadline });
 			const level = text(record(answer.body).permission);
 			return level === "admin" || level === "write" || level === "read" ? level : "none";
 		} catch (error) {
@@ -432,7 +436,7 @@ export class GithubApp {
 		}
 		// Not found: the user is not one GitHub knows in this repository, or the repository is not there.
 		// Asking for the repository tells which; if it is gone, that is the failure.
-		await this.repository(token, owner, name);
+		await this.repository(token, owner, name, deadline);
 		return "none";
 	}
 

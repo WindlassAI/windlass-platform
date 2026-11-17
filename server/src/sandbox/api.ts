@@ -97,7 +97,40 @@ export interface CreateSandboxInput {
 	profile: SandboxProfileId;
 }
 
+/** A sandbox as its provider lists it for a user. */
+export interface ListedSandbox {
+	id: string;
+	/** The session it was made for, as `CreateSandboxInput.sessionId` named it. */
+	sessionId: string;
+	state: "running" | "paused";
+}
+
+/** What a second of a running sandbox costs, by an estimate. */
+export interface SandboxPrice {
+	/** US dollars per second. */
+	usdPerSecond: number;
+	/** What the price is of, for a sentence: "1 vCPU and 1,024 MiB of memory at E2B's published prices". */
+	basis: string;
+}
+
 export interface Sandboxes {
+	/**
+	 * How long a sandbox goes on running by itself after it was last connected to, while no turn and no
+	 * long command runs in it, before the provider stops it: on E2B the sandbox's own idle timeout.
+	 * Null where a sandbox runs until it is suspended (Docker). The usage meter reads it to know until
+	 * when a sandbox it finds stopped can have run (usage.ts, `stoppedBy`).
+	 */
+	readonly idleStopMs: number | null;
+	/**
+	 * What a second of a running sandbox is estimated to cost at the provider, for the usage page. Null
+	 * where running one is not billed by the second (Docker).
+	 */
+	price(): SandboxPrice | null;
+	/**
+	 * The user's sandboxes as the provider has them now, running and paused, whichever server made
+	 * them: what the count of the sandboxes a user keeps is held against (usage.ts, `reconcile`).
+	 */
+	list(uid: string): Promise<ListedSandbox[]>;
 	/**
 	 * Whether Windlass's data directory, and with it Windlass's own sessions, is on the sandbox's own disk
 	 * and goes when the sandbox does. False on Docker, where it is a volume of the user's that outlives
@@ -649,6 +682,8 @@ export interface SessionBackups {
 	restore(sandbox: SandboxHandle, owner: BackupOwner, saved: SavedBackup, windlassSessionId: string): Promise<BackupRestoreResult>;
 	/** Removes the session's copy. A no-op when there is none. Throws when the store could not be told. */
 	remove(owner: BackupOwner): Promise<void>;
+	/** The name of the session's object in the bucket, for a log. */
+	keyOf(owner: BackupOwner): string;
 }
 
 /** What `server/src/sandbox/index.ts` exports as `createSandboxLayer()`. */

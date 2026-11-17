@@ -1,4 +1,5 @@
 /** One agent: the conversation and composer in the main column, the session's facts beside it. */
+import { USAGE_LOW_SHARE, type SessionSummary, type UsageNumbers } from "@contract";
 import { useCallback, useMemo, useState } from "react";
 import { Composer } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
@@ -6,11 +7,12 @@ import { ArrowLeftIcon, Mark, WarnIcon } from "../components/Icons";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
 import { SidePanel } from "../components/SidePanel";
 import { StatusBadge } from "../components/Status";
+import { localTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import type { ToolBlock } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { takeHandover } from "../state/handover";
-import { useSession } from "../state/hooks";
+import { allowanceState, useAllowance, type useSession } from "../state/hooks";
 
 /** What the top bar shows for a session: the way back, its title and state. */
 export function SessionCrumb({ title, status }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null }) {
@@ -35,12 +37,31 @@ export function SessionCrumb({ title, status }: { title: string | null; status: 
 	);
 }
 
+/** What the composer says about the user's limits before a prompt runs into one; null while there is nothing to say. */
+function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): string | null {
+	if (numbers === null) return null;
+	const left = allowanceState(numbers, USAGE_LOW_SHARE);
+	const resets = localTime(numbers.resetsAt);
+	if (left === "used") {
+		return summary.status === "idle"
+			? `Today's sandbox time is used up, so a turn cannot start before ${resets}.`
+			: "Today's sandbox time is nearly used up: this turn is stopped when the time it holds is over, with its files kept.";
+	}
+	if (left === "low" && numbers.leftSeconds !== null) return `${sandboxTime(numbers.leftSeconds)} of today's sandbox time is left. A turn that runs longer is stopped; the allowance is whole again at ${resets}.`;
+	const { kept, limit } = numbers.sandboxes;
+	if (summary.sandbox === "none" && limit !== null && kept >= limit) return `You keep ${limit} sandboxes, the most an account may have, so this agent cannot start until one is freed.`;
+	return null;
+}
+
 export function Session({ sessionId, state }: { sessionId: string; state: ReturnType<typeof useSession> }) {
 	const { client, platform, explain } = useApp();
 	const auth = useAuth();
 	const api = useMemo(() => client.session(auth, sessionId), [client, auth, sessionId]);
 	const handover = useMemo(() => takeHandover(sessionId), [sessionId]);
 	const [suggestion, setSuggestion] = useState<{ key: number; text: string } | null>(null);
+	// Asked again when a turn starts or ends, and when a prompt was refused: each moves what is left of the day.
+	const [refusals, setRefusals] = useState(0);
+	const allowance = useAllowance(`${state.turnsEnded}:${state.summary?.status ?? ""}:${refusals}`);
 	const online = state.connection === "connected";
 	const flow = useQuestionFlow(api, state.phase === "ready" ? state.question : null, explain);
 	const stopCall = useCallback(
@@ -134,10 +155,12 @@ export function Session({ sessionId, state }: { sessionId: string; state: Return
 					model={summary.model}
 					initial={handover}
 					suggestion={suggestion}
+					limitNote={limitNote(allowance, summary)}
 					onSend={async (input) => {
 						try {
 							await api.prompt(input);
 						} catch (failure) {
+							setRefusals((value) => value + 1);
 							// `explain` signs out on a refused token; the composer reads the rest itself (`turn_running`).
 							explain(failure);
 							throw failure;

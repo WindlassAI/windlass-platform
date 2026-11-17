@@ -39,6 +39,16 @@
  * this actor's own index says that session is on (`internalSessionSecrets`); it opens them on the
  * server that runs its turn. Whoever holds this storage and not the servers' secret reads which
  * repositories have secrets, their names, scopes and times, and how long each value is.
+ *
+ * And the deleted sessions whose copy of Windlass's data the bucket still holds (`backup_removal`),
+ * one row each: a session that could not remove its copy as it was deleted hands it here, and this
+ * actor, which outlives its sessions, tries again on its durable schedule, further apart each time.
+ *
+ * And the user's sandbox time and the sandboxes they keep (usage.ts): a ledger of the seconds their
+ * sessions' sandboxes ran, one entry per hold that was closed; the holds of sandboxes that run now;
+ * and one row per session that has a place among the kept sandboxes. A `UsageBook` holds the same in
+ * memory, and every decision about a limit is one synchronous step on it: the user's sessions are on
+ * whichever servers, and each takes its hold and its place here, so no server counts for itself.
  */
 
 import { randomBytes } from "node:crypto";
@@ -52,6 +62,7 @@ import {
 	type GithubBranchList,
 	type GithubRepositoryList,
 	type GithubStatus,
+	type KeptSandbox,
 	MAX_RUNNING_SESSIONS,
 	MAX_TITLE_CHARS,
 	MAX_SECRETS_PER_REPOSITORY,
@@ -60,6 +71,9 @@ import {
 	type SandboxProfile,
 	type SecretScope,
 	type SessionSummary,
+	USAGE_HISTORY_DAYS,
+	type UsageNumbers,
+	type UsageView,
 	type UserProfile,
 } from "../contract.js";
 import { githubApp, type GithubApp } from "../github/app.js";
@@ -71,7 +85,7 @@ import { getLayer } from "../layer.js";
 import { platformModels } from "../platform-info.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, sealSecret } from "../repo-secrets.js";
-import type { ChatgptAccount } from "../sandbox/api.js";
+import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../signin/directory.js";
@@ -79,10 +93,20 @@ import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
 import { getSignIns } from "../signin/index.js";
 import { serverSealer } from "../signin/seal.js";
 import { uidOfAccount } from "../signin/material.js";
-import { type SealedSecrets, createSessionActor, isActorGone, secretsCaller, sessionActor } from "./internal.js";
+import { USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, isEmptyChange } from "../usage.js";
+import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
 const MAX_REPO_URL_CHARS = 300;
+/**
+ * How often a deleted session's copy is tried again, and how long before the first try: each wait is
+ * twice the one before, so the tries come 1, 2, 4, ... 128 minutes apart, the last about four hours
+ * and a quarter after the session was deleted.
+ */
+const BACKUP_REMOVE_TRIES = 8;
+const BACKUP_REMOVE_FIRST_MS = 60_000;
+/** A try this far past its time when the actor wakes lost its schedule, and is set again. */
+const BACKUP_REMOVE_LATE_MS = 10 * 60_000;
 
 interface ConnParams {
 	token?: string;
@@ -101,6 +125,10 @@ interface UserVars {
 	approvals: ApprovalBook;
 	/** The user's GitHub connection; null when there is none. */
 	github: StoredConnection | null;
+	/** The user's sandbox time and kept sandboxes, as the tables have them. */
+	usage: UsageBook;
+	/** The user's sandboxes as the provider last listed them, and when; null until it was asked. */
+	listed: { at: number; sandboxes: ListedSandbox[] } | null;
 }
 
 interface SignInCtx {
@@ -187,6 +215,21 @@ async function storeSession(c: UserCtx, summary: SessionSummary): Promise<void> 
 		summary.createdAt,
 		JSON.stringify(summary),
 	);
+}
+
+interface BackupRemovalCtx {
+	db: RawAccess;
+	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string> };
+}
+
+/**
+ * Sets the next try at removing a deleted session's copy, after `tries` of this actor's own. The
+ * schedule is set before the row names it: a firing that the row does not name does nothing.
+ */
+async function armBackupRemoval(c: BackupRemovalCtx, session: string, tries: number): Promise<void> {
+	const at = Date.now() + BACKUP_REMOVE_FIRST_MS * 2 ** tries;
+	const id = await c.schedule.at(at, "internalRemoveBackup", session);
+	await c.db.execute("INSERT OR REPLACE INTO backup_removal (session, tries, due_at, schedule_id) VALUES (?, ?, ?, ?)", session, tries, at, id);
 }
 
 /** Keeps the profile of the newest valid token: the email can change between sign-ins. */
@@ -428,6 +471,138 @@ function repositoryLabel(vars: UserVars, repositoryId: unknown): string {
 	return known ? `${known.owner}/${known.name}` : "";
 }
 
+// ---------------------------------------------------------------------------------------------
+// Sandbox time and kept sandboxes (usage.ts)
+// ---------------------------------------------------------------------------------------------
+
+/** How long the provider's list of the user's sandboxes is taken as it was read before it is asked for again. */
+const KEPT_FRESH_MS = 30_000;
+
+interface UsageCtx extends UserCtx {
+	key: string[];
+	log: { warn(entry: unknown): void };
+}
+
+type UsageEntryRow = { day: number; session: string; hold: string; kind: string; seconds: number; at: number; note: string | null };
+type UsageHoldRow = { id: string; session: string; day: number; seconds: number; started_at: number; expires_at: number };
+
+/** The book as the tables have it: the open holds, the places, and the entries of the days the usage page shows. */
+async function readUsage(db: RawAccess): Promise<UsageBook> {
+	const today = dayOf(Date.now());
+	// A hold whose entry was written and whose own row was then not removed, because the server stopped in between, is closed.
+	await db.execute("DELETE FROM usage_hold WHERE id IN (SELECT hold FROM usage_entry)");
+	await db.execute("DELETE FROM usage_entry WHERE day < ?", today - USAGE_KEPT_DAYS);
+	const entries = await db.execute<UsageEntryRow>("SELECT day, session, hold, kind, seconds, at, note FROM usage_entry WHERE day > ? ORDER BY id", today - USAGE_HISTORY_DAYS);
+	const holds = await db.execute<UsageHoldRow>("SELECT id, session, day, seconds, started_at, expires_at FROM usage_hold");
+	const kept = await db.execute<{ session: string; since: number }>("SELECT session, since FROM kept_sandbox");
+	return new UsageBook(config.usage, {
+		entries: entries.map((row) => ({ day: row.day, session: row.session, hold: row.hold, kind: row.kind === "unreported" || row.kind === "corrected" ? row.kind : "used", seconds: row.seconds, at: row.at, note: row.note })),
+		holds: holds.map((row) => ({ id: row.id, session: row.session, day: row.day, seconds: row.seconds, startedAt: row.started_at, expiresAt: row.expires_at })),
+		kept,
+	});
+}
+
+/**
+ * Makes a step in the book and writes what it did to the tables before the caller answers. The book
+ * changes first, in one synchronous step, so two calls cannot both decide from the same numbers; if
+ * the tables cannot be written, the book is read from them again and the call fails: what is counted
+ * is what is stored. An entry is written before its hold's row is removed, and a hold is closed once
+ * (an entry's `hold` is unique), so a server that stops in between counts nothing twice.
+ */
+async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step: (book: UsageBook) => T): Promise<T> {
+	const done = step(c.vars.usage);
+	const { change } = done;
+	if (isEmptyChange(change)) return done;
+	try {
+		for (const entry of change.entries) {
+			await c.db.execute("INSERT OR IGNORE INTO usage_entry (day, session, hold, kind, seconds, at, note) VALUES (?, ?, ?, ?, ?, ?, ?)", entry.day, entry.session, entry.hold, entry.kind, entry.seconds, entry.at, entry.note);
+		}
+		for (const id of change.closed) await c.db.execute("DELETE FROM usage_hold WHERE id = ?", id);
+		for (const hold of change.opened) {
+			await c.db.execute("INSERT OR REPLACE INTO usage_hold (session, id, day, seconds, started_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)", hold.session, hold.id, hold.day, hold.seconds, hold.startedAt, hold.expiresAt);
+		}
+		for (const session of change.released) await c.db.execute("DELETE FROM kept_sandbox WHERE session = ?", session);
+		for (const claim of change.kept) await c.db.execute("INSERT OR REPLACE INTO kept_sandbox (session, since) VALUES (?, ?)", claim.session, claim.since);
+	} catch (error) {
+		c.vars.usage = await readUsage(c.db).catch(() => c.vars.usage);
+		throw error;
+	}
+	// One line per entry: what was counted, for whoever reads the log beside the provider's bill.
+	for (const entry of change.entries) {
+		console.log(`[wlp] usage.counted uid=${c.key[0]} session=${entry.session} hold=${entry.hold} kind=${entry.kind} seconds=${entry.seconds}${entry.note === null ? "" : `: ${entry.note}`}`);
+	}
+	c.broadcast("usage", c.vars.usage.numbers(Date.now()));
+	return done;
+}
+
+/** Counts the holds that ran out, so that what is read next has them as entries. */
+function sweepUsage(c: UsageCtx, now: number): Promise<{ change: UsageChange }> {
+	return changeUsage(c, (book) => ({ change: book.sweep(now) }));
+}
+
+/**
+ * Holds the count of kept sandboxes against the provider's own list of the user's sandboxes (usage.ts,
+ * `reconcile`): at most once in KEPT_FRESH_MS, unless `force`. Never throws: when the provider cannot
+ * be asked, the count stays as it is.
+ */
+async function reconcileKept(c: UsageCtx, force = false): Promise<void> {
+	if (!force && c.vars.listed !== null && Date.now() - c.vars.listed.at < KEPT_FRESH_MS) return;
+	try {
+		const { sandboxes } = await getLayer();
+		const listed = await sandboxes.list(c.key[0]!);
+		const now = Date.now();
+		c.vars.listed = { at: now, sandboxes: listed };
+		const done = await changeUsage(c, (book) =>
+			book.reconcile(
+				now,
+				listed.map((sandbox) => sandbox.sessionId).filter((session) => session !== ""),
+			),
+		);
+		// A count that was wrong means a sandbox was made or removed without this actor being told: worth a look.
+		if (done.added.length > 0 || done.dropped.length > 0) {
+			console.warn(`[wlp] usage.kept_corrected uid=${c.key[0]}: counted ${done.added.length} sandbox(es) nobody had claimed (${done.added.join(",") || "none"}) and dropped ${done.dropped.length} place(s) with no sandbox behind them (${done.dropped.join(",") || "none"}); ${c.vars.usage.kept().length} kept now`);
+		}
+	} catch (error) {
+		c.log.warn({ msg: "could not hold the count of kept sandboxes against the provider's list", error: String(error) });
+	}
+}
+
+/** The usage page: the numbers, today by agent, the kept sandboxes as the provider lists them, the history and the price. */
+async function usageView(c: UsageCtx): Promise<UsageView> {
+	const layer = await getLayer();
+	await reconcileKept(c);
+	const now = Date.now();
+	await sweepUsage(c, now);
+	const book = c.vars.usage;
+	const listed = new Map<string, ListedSandbox>();
+	// A session with more than one sandbox at the provider is shown as running when any of them is.
+	for (const sandbox of c.vars.listed?.sandboxes ?? []) if (sandbox.state === "running" || !listed.has(sandbox.sessionId)) listed.set(sandbox.sessionId, sandbox);
+	const kept: KeptSandbox[] = book
+		.kept()
+		.map((claim) => {
+			const session = c.vars.sessions.get(claim.session);
+			return {
+				sessionId: claim.session,
+				title: session?.title ?? null,
+				state: listed.get(claim.session)?.state ?? (session && session.sandbox !== "none" ? session.sandbox : ("starting" as const)),
+				usedAt: session?.updatedAt ?? null,
+				busy: session !== undefined && session.status !== "idle",
+				repository: session?.repository ? `${session.repository.owner}/${session.repository.name}` : null,
+				pushed: Boolean(session?.pullRequest),
+			};
+		})
+		.sort((a, b) => (b.usedAt ?? 0) - (a.usedAt ?? 0) || (a.sessionId < b.sessionId ? -1 : 1));
+	return {
+		...book.numbers(now),
+		today: book.today(now).map((row) => ({ ...row, title: c.vars.sessions.get(row.sessionId)?.title ?? null })),
+		days: book.days(now),
+		kept,
+		price: layer.sandboxes.price(),
+		// Where Windlass's data is on the sandbox's own disk, the agent's memory goes with it unless a copy is kept in a bucket.
+		memory: layer.sandboxes.sessionsLiveInSandbox ? (layer.backups ? "copied" : "lost") : "kept",
+	};
+}
+
 export function cleanTitle(title: unknown): string | null {
 	if (typeof title !== "string") return null;
 	const clean = title.replace(/\s+/g, " ").trim();
@@ -539,6 +714,45 @@ export const user = actor({
 					PRIMARY KEY (project, name)
 				)
 			`);
+			// The deleted sessions whose copy in the bucket is still to be removed: how often this actor
+			// tried, when it tries next, and the schedule that is to do it.
+			await db.execute(`
+				CREATE TABLE IF NOT EXISTS backup_removal (
+					session TEXT PRIMARY KEY,
+					tries INTEGER NOT NULL,
+					due_at INTEGER NOT NULL,
+					schedule_id TEXT NOT NULL
+				)
+			`);
+			// The ledger of sandbox time (usage.ts): one row per hold that was closed, with the seconds counted
+			// for it and the UTC day they count against. Rows are added and never changed; `hold` is unique, so a
+			// hold is counted once. `note` says why a count is not simply what the session reported.
+			await db.execute(`
+				CREATE TABLE IF NOT EXISTS usage_entry (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					day INTEGER NOT NULL,
+					session TEXT NOT NULL,
+					hold TEXT NOT NULL UNIQUE,
+					kind TEXT NOT NULL,
+					seconds INTEGER NOT NULL,
+					at INTEGER NOT NULL,
+					note TEXT
+				)
+			`);
+			await db.execute("CREATE INDEX IF NOT EXISTS usage_entry_day ON usage_entry (day)");
+			// The holds of sandboxes that run now, one per session, each counted in full at `expires_at` unless settled before.
+			await db.execute(`
+				CREATE TABLE IF NOT EXISTS usage_hold (
+					session TEXT PRIMARY KEY,
+					id TEXT NOT NULL,
+					day INTEGER NOT NULL,
+					seconds INTEGER NOT NULL,
+					started_at INTEGER NOT NULL,
+					expires_at INTEGER NOT NULL
+				)
+			`);
+			// The sessions that have a place among the sandboxes the user keeps.
+			await db.execute("CREATE TABLE IF NOT EXISTS kept_sandbox (session TEXT PRIMARY KEY, since INTEGER NOT NULL)");
 		},
 	}),
 
@@ -555,11 +769,12 @@ export const user = actor({
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, signIn: null, signInDb: null, approvals, github };
+		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, signIn: null, signInDb: null, approvals, github, usage: await readUsage(c.db), listed: null };
 	},
 
 	events: {
 		sessions: event<SessionSummary[]>({ canSubscribe: (c) => maySubscribe(c) }),
+		usage: event<UsageNumbers>({ canSubscribe: (c) => maySubscribe(c) }),
 	},
 
 	onBeforeConnect: (c, params: ConnParams | undefined) => {
@@ -578,6 +793,16 @@ export const user = actor({
 	onConnect: async (c, conn) => {
 		const caller = authenticate(c.key, conn.params);
 		if (caller.kind === "user") await rememberProfile(c, caller.profile);
+	},
+
+	onWake: async (c) => {
+		// A try whose next schedule was set and not stored, because the server stopped in between, is set again.
+		try {
+			const late = await c.db.execute<{ session: string; tries: number }>("SELECT session, tries FROM backup_removal WHERE due_at < ?", Date.now() - BACKUP_REMOVE_LATE_MS);
+			for (const { session, tries } of late) await armBackupRemoval(c, session, tries);
+		} catch (error) {
+			c.log.warn({ msg: "could not set the removal of deleted sessions' copies again", error: String(error) });
+		}
 	},
 
 	actions: {
@@ -754,6 +979,64 @@ export const user = actor({
 			// A session with no repository was its own project: what was approved for it goes with it.
 			await changeApprovals(c, (book) => book.forgetProject(sessionProjectKey(id))).catch((error) => c.log.warn({ msg: "could not forget the deleted session's approvals of MCP servers", session: id, error: String(error) }));
 			broadcastSessions(c);
+		},
+
+		// --- sandbox time and kept sandboxes (usage.ts) ---------------------------------------------
+
+		allowance: async (c): Promise<UsageNumbers> => {
+			requireUser(c);
+			try {
+				const now = Date.now();
+				await sweepUsage(c, now);
+				return c.vars.usage.numbers(now);
+			} catch (error) {
+				throw clientError(c.log, error, "Your sandbox time could not be read. Try again.");
+			}
+		},
+
+		usage: async (c): Promise<UsageView> => {
+			requireUser(c);
+			try {
+				return await usageView(c);
+			} catch (error) {
+				throw clientError(c.log, error, "Your usage could not be read. Try again.");
+			}
+		},
+
+		/**
+		 * Removes the sandbox of one of the user's agents to make room. The agent does it itself where it
+		 * is there, so its timeline says so and nothing is removed under a turn. What the provider then
+		 * still lists for that agent is removed here: a sandbox the agent no longer knows of, or one that
+		 * an agent which was deleted left behind.
+		 */
+		freeSandbox: async (c, sessionId: string): Promise<UsageView> => {
+			const profile = requireUser(c);
+			const id = approvalText(sessionId, 200);
+			if (id === "") throw new UserError("Say which agent's sandbox to free.", { code: "bad_input" });
+			try {
+				if (c.vars.sessions.has(id)) {
+					await sessionActor(c, profile.uid, id)
+						.internalFreeSandbox()
+						.catch((error: unknown) => {
+							if (isActorGone(error)) return;
+							// What the session itself refused (it is working) is said in its words.
+							const { group, code, message } = (typeof error === "object" && error !== null ? error : {}) as { group?: unknown; code?: unknown; message?: unknown };
+							if (group === "user" && typeof message === "string") throw new UserError(message, { code: typeof code === "string" ? code : "sandbox_busy" });
+							throw error;
+						});
+				}
+				const { sandboxes } = await getLayer();
+				for (const left of await sandboxes.list(profile.uid)) {
+					if (left.sessionId !== id) continue;
+					await sandboxes.destroy(left.id);
+					console.log(`[wlp] sandbox.freed id=${left.id} uid=${profile.uid} session=${id}: it was left at the provider without its agent`);
+				}
+				await changeUsage(c, (book) => ({ change: book.release(id) }));
+				c.vars.listed = null;
+				return await usageView(c);
+			} catch (error) {
+				throw clientError(c.log, error, "The sandbox could not be freed. Try again.");
+			}
 		},
 
 		// --- GitHub ------------------------------------------------------------------------------
@@ -1051,6 +1334,36 @@ export const user = actor({
 			}
 		},
 
+		// --- called by the actor's own schedule only ------------------------------------------------
+
+		internalRemoveBackup: async (c, sessionId: string): Promise<void> => {
+			// RivetKit sets `scheduledFire` on the context of a call its schedule makes; a client cannot.
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			const [row] = await c.db.execute<{ tries: number; schedule_id: string }>("SELECT tries, schedule_id FROM backup_removal WHERE session = ?", sessionId);
+			// Done already, or a firing that a later schedule took the place of.
+			if (!row || row.schedule_id !== c.scheduledFire.id) return;
+			const owner = { uid: c.key[0]!, sessionId };
+			const tries = row.tries + 1;
+			let object = `sessions/${owner.uid}/${sessionId}.tgz`;
+			try {
+				const { backups } = await getLayer();
+				if (!backups) throw new Error("the server has no bucket configured");
+				object = backups.keyOf(owner);
+				// An object that is gone already counts as removed: the store answers a delete of it as done.
+				await backups.remove(owner);
+				await c.db.execute("DELETE FROM backup_removal WHERE session = ?", sessionId);
+				console.log(`[wlp] backup.removed session=${sessionId} tries=${tries}`);
+			} catch (error) {
+				if (tries < BACKUP_REMOVE_TRIES) {
+					console.warn(`[wlp] backup.remove_retry uid=${owner.uid} session=${sessionId} try=${tries}: ${String(error)}`);
+					await armBackupRemoval(c, sessionId, tries);
+					return;
+				}
+				await c.db.execute("DELETE FROM backup_removal WHERE session = ?", sessionId);
+				console.error(`[wlp] backup.remove_failed uid=${owner.uid} session=${sessionId} object=${object}: gave up after ${tries} tries; the copy of this deleted session's Windlass data may still be in the bucket (${String(error)})`);
+			}
+		},
+
 		// --- called by `agentSession` only -------------------------------------------------------
 
 		internalSessionChanged: async (c, summary: SessionSummary): Promise<void> => {
@@ -1059,6 +1372,16 @@ export const user = actor({
 			c.vars.sessions.set(summary.id, summary);
 			await c.db.execute("UPDATE sessions SET summary = ? WHERE id = ?", JSON.stringify(summary), summary.id);
 			broadcastSessions(c);
+		},
+
+		/** A deleted session's copy that the session could not remove: it is tried again from here. */
+		internalRemoveBackupLater: async (c, sessionId: string): Promise<void> => {
+			requireService(c);
+			if (typeof sessionId !== "string" || sessionId === "") throw new UserError("A session id is needed.", { code: "bad_request" });
+			const [pending] = await c.db.execute<{ session: string }>("SELECT session FROM backup_removal WHERE session = ?", sessionId);
+			if (pending) return;
+			await armBackupRemoval(c, sessionId, 0);
+			console.log(`[wlp] backup.remove_deferred uid=${c.key[0]} session=${sessionId}: tried again in ${BACKUP_REMOVE_FIRST_MS / 1000} s`);
 		},
 
 		internalAcquireRun: async (c, sessionId: string): Promise<{ ok: boolean; running: number; known: boolean }> => {
@@ -1097,6 +1420,48 @@ export const user = actor({
 			await storeSession(c, claimed);
 			broadcastSessions(c);
 			return { ok: true, running: running + 1, known: true };
+		},
+
+		// --- sandbox time and kept sandboxes, for the user's sessions (usage.ts) --------------------
+
+		/**
+		 * A session's sandbox is about to run, or goes on running: takes a hold of the day's allowance for
+		 * it, and a place among the kept sandboxes when the session has none (`UsageBook.reserve`). Before
+		 * a place is given or refused, the count is held against the provider's list, so that nobody is
+		 * kept out by a count that is wrong. From there the count, the claim and the hold are one step.
+		 */
+		internalReserve: async (c, input: ReserveRequest): Promise<ReserveAnswer> => {
+			requireService(c);
+			const id = approvalText(input?.id, 64);
+			const session = approvalText(input?.sessionId, 200);
+			if (id === "" || session === "") throw new UserError("A hold needs an id and a session.", { code: "bad_input" });
+			const settle = typeof input.settle?.hold === "string" && typeof input.settle.seconds === "number" ? { hold: input.settle.hold, seconds: input.settle.seconds } : undefined;
+			const keep = input.keep === true;
+			// A session that is being deleted is given nothing new.
+			if (!c.vars.sessions.has(session)) return { ok: false, reason: "gone", numbers: c.vars.usage.numbers(Date.now()) };
+			if (keep) await reconcileKept(c, c.vars.usage.atCap(session));
+
+			const now = Date.now();
+			const done = await changeUsage(c, (book) => book.reserve(now, { id, session, keep, fresh: input.fresh === true, settle }));
+			const numbers = c.vars.usage.numbers(now);
+			if (!done.ok) {
+				console.log(`[wlp] usage.refused uid=${c.key[0]} session=${session} limit=${done.reason} used=${numbers.usedSeconds} held=${numbers.heldSeconds} allowance=${numbers.allowanceSeconds ?? "none"} kept=${numbers.sandboxes.kept} of ${numbers.sandboxes.limit ?? "any"}`);
+				return { ok: false, reason: done.reason, numbers };
+			}
+			return { ok: true, hold: { id: done.hold.id, seconds: done.hold.seconds }, numbers };
+		},
+
+		internalSettle: async (c, input: { sessionId: string; hold: string; seconds: number }): Promise<{ known: boolean }> => {
+			requireService(c);
+			const session = approvalText(input?.sessionId, 200);
+			const hold = approvalText(input?.hold, 64);
+			const done = await changeUsage(c, (book) => book.settle(Date.now(), { session, hold, seconds: typeof input?.seconds === "number" ? input.seconds : Number.NaN }));
+			return { known: done.known };
+		},
+
+		internalRelease: async (c, sessionId: string): Promise<void> => {
+			requireService(c);
+			await changeUsage(c, (book) => ({ change: book.release(approvalText(sessionId, 200)) }));
 		},
 	},
 });

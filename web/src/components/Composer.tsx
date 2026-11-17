@@ -2,12 +2,16 @@
  * The composer: Enter sends, Shift-Enter makes a new line. While a turn runs (or waits on a question)
  * what is sent steers that turn, and Stop sits beside Send. While the sandbox starts or the turn stops
  * it cannot send and says why. The model and effort for the next turn sit beside it; they do not
- * apply to a steer, so they are off while a turn runs.
+ * apply to a steer, so they are off while a turn runs. A prompt that one of the user's limits refused
+ * keeps its text and points to the usage page, and a quiet line above the field says beforehand when
+ * little of the day's sandbox time is left.
  */
 import { MAX_PROMPT_CHARS, type SessionStatus } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { errorMessage, hasReason } from "../api/client";
+import { isLimitRefusal } from "../api/errors";
 import { count } from "../lib/format";
+import { linkProps } from "../lib/router";
 import { ChevronIcon, SendIcon, SteerIcon, StopIcon, WarnIcon } from "./Icons";
 
 export interface ComposerProps {
@@ -20,8 +24,10 @@ export interface ComposerProps {
 	/** Rejects with what the client threw: a `turn_running` refusal is shown briefly and the text kept. */
 	onSend(input: { text: string; model?: string; effort?: string }): Promise<void>;
 	onStop(): Promise<void>;
-	/** Text to start with, and why it is there (a prompt that could not be sent earlier). */
-	initial?: { text: string; error: string } | null;
+	/** Text to start with, and why it is there (a prompt that could not be sent earlier); `limit` when one of the user's limits refused it. */
+	initial?: { text: string; error: string; limit?: boolean } | null;
+	/** What there is to say about the user's limits before anything is sent: little sandbox time left, none, or no room for a sandbox. */
+	limitNote?: string | null;
 	/** Text put in from outside (a suggested prompt); `key` changes to apply it again. */
 	suggestion?: { key: number; text: string } | null;
 }
@@ -35,9 +41,20 @@ const REASON: Partial<Record<SessionStatus, string>> = {
 /** How long a refusal to take a steer stays. */
 const TRANSIENT_MS = 6000;
 
-export function Composer({ status, online, models, efforts, model, onSend, onStop, initial, suggestion }: ComposerProps) {
+/** The way to the usage page, after a sentence about a limit. */
+function UsageLink() {
+	return (
+		<a className="link" {...linkProps({ name: "usage" })}>
+			Usage
+		</a>
+	);
+}
+
+export function Composer({ status, online, models, efforts, model, onSend, onStop, initial, suggestion, limitNote }: ComposerProps) {
 	const [text, setText] = useState(initial?.text ?? "");
 	const [error, setError] = useState<string | null>(initial?.error ?? null);
+	/** Whether `error` is a refusal by one of the user's limits. */
+	const [limited, setLimited] = useState(initial?.limit === true);
 	/** A refusal that clears itself: the turn could not take the message just now. */
 	const [notice, setNotice] = useState<string | null>(null);
 	const [chosenModel, setChosenModel] = useState<string | null>(null);
@@ -96,7 +113,10 @@ export function Composer({ status, online, models, efforts, model, onSend, onSto
 			setText("");
 		} catch (failure) {
 			if (hasReason(failure, "turn_running")) setNotice(errorMessage(failure));
-			else setError(failure instanceof Error ? errorMessage(failure) : "The message could not be sent.");
+			else {
+				setError(failure instanceof Error ? errorMessage(failure) : "The message could not be sent.");
+				setLimited(isLimitRefusal(failure));
+			}
 		} finally {
 			setSending(false);
 		}
@@ -130,12 +150,28 @@ export function Composer({ status, online, models, efforts, model, onSend, onSto
 			{error ? (
 				<p className="composer-error" role="alert">
 					<WarnIcon size={14} />
-					<span>{error}</span>
+					<span>
+						{error}
+						{limited ? (
+							<>
+								{" "}
+								{text.trim() === "" ? null : "Your message is still here. "}
+								<UsageLink />
+							</>
+						) : null}
+					</span>
 				</p>
 			) : notice ? (
 				<p className="composer-error composer-notice" role="status">
 					<WarnIcon size={14} />
 					<span>{notice} Your message is still here.</span>
+				</p>
+			) : limitNote ? (
+				<p className="composer-error composer-allowance" role="status">
+					<WarnIcon size={14} />
+					<span>
+						{limitNote} <UsageLink />
+					</span>
 				</p>
 			) : null}
 			<div className="composer-box">

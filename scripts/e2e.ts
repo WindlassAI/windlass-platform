@@ -173,6 +173,10 @@ class Server {
 			RIVETKIT_STORAGE_PATH: this.storage,
 			WLP_FAKE_DELAY_MS: process.env.WLP_FAKE_DELAY_MS ?? "15",
 			WLP_QUESTION_TIMEOUT_MS: String(QUESTION_MS),
+			// One demo user keeps more sandboxes here, and runs them for longer, than an account may: the
+			// two limits have a check of their own (usage-check.ts).
+			WLP_DAILY_SANDBOX_SECONDS: "unlimited",
+			WLP_MAX_KEPT_SANDBOXES: "unlimited",
 			...extraEnv,
 		};
 		// The local engine asks browsers for no token. An admin token in the shell this is run from is some

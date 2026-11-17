@@ -24,7 +24,7 @@
  *                              shortened by tests
  *   WLP_QUESTION_TIMEOUT_MS    how long a turn's question waits for an answer before the platform
  *                              declines it (default QUESTION_TIMEOUT_MS, ten minutes); shortened by tests
- *   WLP_TURN_TIMEOUT_MS        how long one turn may run (default 45 minutes); read in agent-session.ts
+ *   WLP_TURN_TIMEOUT_MS        how long one turn may run (default 45 minutes)
  *   WLP_SETUP_TIMEOUT_MS       how long a repository's setup command may run in a new sandbox before the
  *                              platform stops it (default 600000, ten minutes; at most the time a turn
  *                              may take, since it runs inside one). The same on every server
@@ -32,6 +32,15 @@
  *                              (default 10 minutes)
  *   WLP_IDLE_DESTROY_MS        how long after its last use a session's sandbox is removed with its
  *                              files (default 7 days); the timeline stays
+ *   WLP_DAILY_SANDBOX_SECONDS  how many seconds a user's sandboxes may run in one UTC day, all of them
+ *                              together (default 7200, two hours; at least 60). `unlimited` sets no
+ *                              limit: the time is counted and shown all the same (usage.ts). The same
+ *                              on every server, like the two below
+ *   WLP_MAX_KEPT_SANDBOXES     how many sandboxes a user may keep at the same time, running or paused
+ *                              (default 5; at least 1). `unlimited` sets no limit
+ *   WLP_USAGE_HOLD_SECONDS     how much of the day's allowance a running sandbox reserves at a time,
+ *                              and so how often its session reports to the user's actor (default 300,
+ *                              five minutes; from 5 to 3600). Shortened by the checks
  *   WLP_HTTP_PORT, PORT        where the platform's HTTP routes listen (`/platform/info`, `/health`);
  *                              WLP_HTTP_PORT first, then PORT, which Rivet Cloud sets on its nodes
  *                              (default 6440)
@@ -169,6 +178,7 @@ import { fileURLToPath } from "node:url";
 import { type AccessRules, readAccessRules } from "./access.js";
 import { QUESTION_TIMEOUT_MS } from "./contract.js";
 import { APPROVAL_TTL_MS } from "./server-approvals.js";
+import { DEFAULT_DAILY_SECONDS, DEFAULT_HOLD_SECONDS, DEFAULT_MAX_KEPT, type UsageLimits } from "./usage.js";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const DATA_DIR = join(REPO_ROOT, ".data");
@@ -204,6 +214,8 @@ export interface Config {
 	secret: Buffer;
 	/** False when a remote engine is configured and WLP_SECRET is not: the server refuses to start (startup.ts). */
 	secretConfigured: boolean;
+	/** The settings that are set to something that cannot be used, each in words that do not repeat its value: the server refuses to start (startup.ts). */
+	unusable: string[];
 	engine: EngineConfig;
 	browsers: BrowserConnectionConfig;
 	httpPort: number;
@@ -220,6 +232,10 @@ export interface Config {
 	serverApprovalTtlMs: number;
 	/** How long a repository's setup command may run before the platform stops it. */
 	setupTimeoutMs: number;
+	/** How long one turn may run before the platform stops it (WLP_TURN_TIMEOUT_MS). */
+	turnTimeoutMs: number;
+	/** A user's daily allowance of sandbox time, the cap on the sandboxes they keep, and the size of a hold (usage.ts). */
+	usage: UsageLimits;
 }
 
 function readSandboxMode(): SandboxMode {
@@ -406,8 +422,7 @@ function readBrowsers(): BrowserConnectionConfig {
 		if (url.username !== "" || url.password !== "") throw new Error("WLP_PUBLIC_ENDPOINT must not carry a namespace or a token: browsers are handed both by the server");
 		endpoint = url.toString().replace(/\/+$/, "");
 	}
-	const ttl = Number(process.env.WLP_CONNECTION_TOKEN_TTL_MS);
-	const tokenTtlMs = Number.isFinite(ttl) && ttl >= 60_000 ? Math.min(Math.floor(ttl), MAX_CONNECTION_TOKEN_TTL_MS) : 60 * 60 * 1000;
+	const tokenTtlMs = Math.min(readDuration("WLP_CONNECTION_TOKEN_TTL_MS", 60 * 60 * 1000, 60_000), MAX_CONNECTION_TOKEN_TTL_MS);
 	return { endpoint, tokens: engineAdminToken() !== null, tokenTtlMs };
 }
 
@@ -472,9 +487,16 @@ function readHttpPort(): number {
 	return 6440;
 }
 
+const unusable: string[] = [];
+
+/** A number of milliseconds of at least `min`; `fallback` when the variable is not set. One set to anything else is unusable. */
 function readDuration(name: string, fallback: number, min: number): number {
-	const raw = Number(process.env[name]);
-	return Number.isFinite(raw) && raw >= min ? Math.floor(raw) : fallback;
+	const text = process.env[name];
+	if (text === undefined || text.trim() === "") return fallback;
+	const raw = Number(text);
+	if (Number.isFinite(raw) && raw >= min) return Math.floor(raw);
+	unusable.push(`${name} must be a number of milliseconds of at least ${min}, or not set for its default`);
+	return fallback;
 }
 
 const idleSuspendMs = readDuration("WLP_IDLE_SUSPEND_MS", 10 * 60 * 1000, 1_000);
@@ -482,13 +504,22 @@ const idleSuspendMs = readDuration("WLP_IDLE_SUSPEND_MS", 10 * 60 * 1000, 1_000)
 const idleDestroyMs = Math.max(idleSuspendMs, readDuration("WLP_IDLE_DESTROY_MS", 7 * 24 * 60 * 60 * 1000, 1_000));
 
 function readLoginTtl(): number {
-	const raw = Number.parseInt(process.env.WLP_LOGIN_TTL_MS ?? "", 10);
-	return Number.isFinite(raw) && raw >= 1_000 ? raw : 10 * 60 * 1000;
+	return readDuration("WLP_LOGIN_TTL_MS", 10 * 60 * 1000, 1_000);
 }
 
 function readQuestionTimeout(): number {
-	const raw = Number.parseInt(process.env.WLP_QUESTION_TIMEOUT_MS ?? "", 10);
-	return Number.isFinite(raw) && raw >= 100 ? raw : QUESTION_TIMEOUT_MS;
+	return readDuration("WLP_QUESTION_TIMEOUT_MS", QUESTION_TIMEOUT_MS, 100);
+}
+
+/** A whole number from `min` to `max`, or `unlimited` (null) where the setting can mean no limit; `fallback` when it is not set. Anything else is unusable. */
+function readCount(name: string, fallback: number, min: number, max: number, unlimited: boolean): number | null {
+	const text = (process.env[name] ?? "").trim();
+	if (text === "") return fallback;
+	if (unlimited && text.toLowerCase() === "unlimited") return null;
+	const raw = Number(text);
+	if (Number.isInteger(raw) && raw >= min && raw <= max) return raw;
+	unusable.push(`${name} must be a whole number from ${min} to ${max}${unlimited ? ', or "unlimited"' : ""}, or not set for its default`);
+	return fallback;
 }
 
 export const config: Config = {
@@ -497,6 +528,7 @@ export const config: Config = {
 	sandbox: readSandboxMode(),
 	secret: readSecret(),
 	secretConfigured: !engine.remote || Boolean(process.env.WLP_SECRET),
+	unusable,
 	engine,
 	browsers: readBrowsers(),
 	httpPort: readHttpPort(),
@@ -511,4 +543,10 @@ export const config: Config = {
 	// Never longer than Windlass keeps its own record: a shorter time is for the checks.
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
 	setupTimeoutMs: readDuration("WLP_SETUP_TIMEOUT_MS", 10 * 60 * 1000, 1_000),
+	turnTimeoutMs: readDuration("WLP_TURN_TIMEOUT_MS", 45 * 60 * 1000, 1_000),
+	usage: {
+		dailySeconds: readCount("WLP_DAILY_SANDBOX_SECONDS", DEFAULT_DAILY_SECONDS, 60, 86_400, true),
+		maxKept: readCount("WLP_MAX_KEPT_SANDBOXES", DEFAULT_MAX_KEPT, 1, 1_000, true),
+		holdSeconds: readCount("WLP_USAGE_HOLD_SECONDS", DEFAULT_HOLD_SECONDS, 5, 3_600, false) ?? DEFAULT_HOLD_SECONDS,
+	},
 };

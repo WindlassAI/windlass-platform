@@ -21,7 +21,7 @@
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { SandboxProfile, SandboxProfileId } from "../contract.js";
-import { type CreateSandboxInput, type ExecOptions, type ExecResult, type SandboxHandle, SandboxUserError, type Sandboxes } from "./api.js";
+import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "./api.js";
 import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, WORKSPACE, docker, randomId } from "./docker.js";
 import { COMMON_RUN_FLAGS, PROFILE_RUN_FLAGS, findProfile, profilesFor } from "./profiles.js";
 import { type Answer, type InternalExecResult, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, markTurnSandbox } from "./provider.js";
@@ -342,6 +342,27 @@ export class DockerSandboxes implements Sandboxes {
 
 	/** The data directory is a volume of the user's (wlp-user-<uid>): it outlives every sandbox. */
 	readonly sessionsLiveInSandbox = false;
+	/** A container runs until it is stopped. */
+	readonly idleStopMs = null;
+
+	/** A container on the server's own machine is not billed by the second. */
+	price(): SandboxPrice | null {
+		return null;
+	}
+
+	/** The user's containers, by the labels each was made with. */
+	async list(uid: string): Promise<ListedSandbox[]> {
+		assertName(uid, "user id");
+		const result = await docker(["ps", "-a", "--no-trunc", "--filter", `label=${LABEL_ARG}`, "--filter", `label=${LABEL}.uid=${uid}`, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}`], { timeoutMs: 30_000, check: true });
+		const found: ListedSandbox[] = [];
+		for (const line of result.stdout.split("\n")) {
+			const [name = "", status = "", sessionId = ""] = line.trim().split("|");
+			const id = name.startsWith("wlp-session-") ? name.slice("wlp-session-".length) : "";
+			const state = stateOf(status);
+			if (SANDBOX_ID.test(id) && state !== "none") found.push({ id, sessionId, state });
+		}
+		return found;
+	}
 
 	profiles(): SandboxProfile[] {
 		return profilesFor("docker");

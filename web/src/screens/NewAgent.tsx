@@ -10,8 +10,13 @@
  * chosen here for the session (it can be changed in the session's panel).
  * A repository picked that way has a setup command, the user's own: the field shows what is saved for
  * it, and what it holds is saved with the launch (components/SetupCommand.tsx).
+ *
+ * An agent can always be created; what a limit refuses is its first prompt, which starts a sandbox.
+ * So the form says beforehand when the day's sandbox time is used up or the user keeps as many
+ * sandboxes as they may, and a prompt that is refused all the same goes with the user to the agent's
+ * screen, where the composer keeps it and says why.
  */
-import { MAX_PROMPT_CHARS, MAX_TITLE_CHARS, type SandboxProfile, type SandboxProfileId } from "@contract";
+import { MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type SandboxProfile, type SandboxProfileId, type UsageNumbers } from "@contract";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
@@ -20,8 +25,11 @@ import { RepositoryPicker, type PickedRepository } from "../components/Repositor
 import { SecretsField } from "../components/Secrets";
 import { PublishUnaskedCheck, publishAlwaysAsked } from "../components/PullRequest";
 import { SetupField, useSetupDraft } from "../components/SetupCommand";
-import { navigate } from "../lib/router";
+import { isLimitRefusal } from "../api/errors";
+import { localTime, sandboxTime } from "../lib/format";
+import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
+import { allowanceState, useAllowance } from "../state/hooks";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 
@@ -49,6 +57,18 @@ function ProfileCard({ profile, name, checked, onChoose }: { profile: SandboxPro
 	);
 }
 
+/** What launching runs into now, before anything is sent: `warn` when the agent could not start at all. */
+function launchLimit(numbers: UsageNumbers | null): { text: string; warn: boolean } | null {
+	if (numbers === null) return null;
+	const left = allowanceState(numbers, USAGE_LOW_SHARE);
+	const resets = localTime(numbers.resetsAt);
+	if (left === "used") return { warn: true, text: `Today's sandbox time is used up. An agent launched now is created, and cannot start working before ${resets}, when the allowance is whole again.` };
+	const { kept, limit } = numbers.sandboxes;
+	if (limit !== null && kept >= limit) return { warn: true, text: `You keep ${limit} sandboxes, the most an account may have. An agent launched now is created, and cannot start working until you free a sandbox.` };
+	if (left === "low" && numbers.leftSeconds !== null) return { warn: false, text: `${sandboxTime(numbers.leftSeconds)} of today's sandbox time is left. A turn that runs longer is stopped, with its files kept; the allowance is whole again at ${resets}.` };
+	return null;
+}
+
 export function NewAgent() {
 	const { client, platform, explain } = useApp();
 	const auth = useAuth();
@@ -56,6 +76,7 @@ export function NewAgent() {
 	const group = useId();
 	const ids = { model: useId(), repo: useId(), repoLabel: useId(), title: useId(), prompt: useId(), repoNote: useId() };
 	const github = useGithub();
+	const limit = launchLimit(useAllowance());
 	// What the form held before its user left to connect GitHub, once.
 	const [draft] = useState(takeLaunchDraft);
 
@@ -126,7 +147,7 @@ export function NewAgent() {
 				await client.session(auth, sessionId).prompt({ text });
 			} catch (failure) {
 				// The agent exists; its screen shows why the prompt was not accepted, with the text kept.
-				handOver(sessionId, { text, error: explain(failure) });
+				handOver(sessionId, { text, error: explain(failure), limit: isLimitRefusal(failure) });
 			}
 		}
 		navigate({ name: "session", id: sessionId });
@@ -174,6 +195,17 @@ export function NewAgent() {
 				</div>
 			) : (
 				<form id="new-agent" className="new-agent" onSubmit={create} noValidate>
+					{limit ? (
+						<p className={`callout ${limit.warn ? "callout-warn" : "callout-info"}`} role="status">
+							<WarnIcon />
+							<span>
+								{limit.text}{" "}
+								<a className="link" {...linkProps({ name: "usage" })}>
+									Usage
+								</a>
+							</span>
+						</p>
+					) : null}
 					<fieldset className="new-agent-section">
 						<legend className="section-title">
 							<span className="section-number">1</span> Sandbox

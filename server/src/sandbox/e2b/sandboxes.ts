@@ -51,7 +51,7 @@
  */
 
 import type { SandboxProfile, SandboxProfileId } from "../../contract.js";
-import { type CreateSandboxInput, type ExecOptions, type ExecResult, type SandboxHandle, SandboxUserError, type Sandboxes } from "../api.js";
+import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "../api.js";
 import { profilesFor } from "../profiles.js";
 import {
 	type Answer,
@@ -72,8 +72,8 @@ import {
 } from "../provider.js";
 import { tokenFilePath } from "../token-file.js";
 import { E2bBusyError, type E2bClient, type E2bCommand, type E2bConnection, E2bLimitError, type E2bSandboxInfo } from "./client.js";
-import type { E2bSettings } from "./config.js";
-import { describeUsage } from "./pricing.js";
+import { DEFAULT_CPU_COUNT, DEFAULT_MEMORY_MB, type E2bSettings } from "./config.js";
+import { describeUsage, pricePerSecond } from "./pricing.js";
 
 /** The metadata keys of a sandbox of the platform. */
 export const META = { deployment: "wlp_deployment", uid: "wlp_uid", session: "wlp_session", profile: "wlp_profile" } as const;
@@ -461,6 +461,10 @@ export class E2bSandboxHandle implements TurnSandbox {
 export class E2bSandboxes implements Sandboxes {
 	/** Windlass's data directory is on the sandbox's own disk. */
 	readonly sessionsLiveInSandbox = true;
+	/** A sandbox nobody uses is paused by E2B when its idle timeout runs out ("The dead-man switch"). */
+	readonly idleStopMs: number;
+	/** The size E2B last said a sandbox of this deployment has; until one was seen, the size the template is built with. */
+	private size = { cpuCount: DEFAULT_CPU_COUNT, memoryMB: DEFAULT_MEMORY_MB };
 	private readonly known = new Map<string, Known>();
 	/** How long a command outside a turn may run before the sandbox is vouched for as for a turn (`E2bSandboxHandle.exec`). */
 	readonly holdCommandsAfterMs: number;
@@ -477,6 +481,20 @@ export class E2bSandboxes implements Sandboxes {
 		this.now = options.now ?? Date.now;
 		this.sleep = options.sleep ?? realSleep;
 		this.holdCommandsAfterMs = Math.floor(settings.idleTimeoutMs / 3);
+		this.idleStopMs = settings.idleTimeoutMs;
+	}
+
+	/** By E2B's published prices for the size of the deployment's sandboxes (pricing.ts): an estimate. */
+	price(): SandboxPrice {
+		return pricePerSecond(this.size.cpuCount, this.size.memoryMB);
+	}
+
+	/** The user's sandboxes of this deployment, by E2B's own list: running and paused. */
+	async list(uid: string): Promise<ListedSandbox[]> {
+		if (!NAME.test(uid)) return [];
+		const found = await this.client.list({ metadata: { [META.deployment]: this.settings.deployment, [META.uid]: uid } });
+		// The filter is E2B's; a sandbox is only taken for this user's when its own metadata says so too.
+		return found.filter((info) => info.metadata[META.deployment] === this.settings.deployment && info.metadata[META.uid] === uid).map((info) => ({ id: info.sandboxId, sessionId: info.metadata[META.session] ?? "", state: info.state }));
 	}
 
 	profiles(): SandboxProfile[] {
@@ -537,6 +555,7 @@ export class E2bSandboxes implements Sandboxes {
 			throw error;
 		}
 		const info = await this.client.info(id).catch(() => undefined);
+		if (info !== undefined && info.cpuCount > 0 && info.memoryMB > 0) this.size = { cpuCount: info.cpuCount, memoryMB: info.memoryMB };
 		this.known.set(id, { uid: input.uid, session: input.sessionId, cpuCount: info?.cpuCount ?? 0, memoryMB: info?.memoryMB ?? 0, runningSince: began, deadline: began + this.settings.idleTimeoutMs, holds: 0, keepalive: undefined });
 		this.log(`[wlp] e2b.sandbox.created id=${id} uid=${input.uid} session=${input.sessionId} template=${this.settings.template}${running === null ? "" : `: ${running.length} of at most ${this.settings.maxRunning} running`}`);
 		return id;
@@ -739,6 +758,7 @@ export class E2bSandboxes implements Sandboxes {
 		}
 		if (info.cpuCount > 0) known.cpuCount = info.cpuCount;
 		if (info.memoryMB > 0) known.memoryMB = info.memoryMB;
+		if (info.cpuCount > 0 && info.memoryMB > 0) this.size = { cpuCount: info.cpuCount, memoryMB: info.memoryMB };
 		return known;
 	}
 

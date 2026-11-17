@@ -35,7 +35,10 @@ interface Attempt {
 	expiresAt: number;
 	/** The attempt's sign-in material, sealed for this attempt: pending after `start`, finished until the user's actor has it. Null otherwise. */
 	sealed: string | null;
-	/** The pending `expire` schedule, cancelled when the attempt is restarted. */
+	/**
+	 * The `expire` schedule that ends the attempt. A new one is set and stored before the one it
+	 * replaces is cancelled, so the attempt always has one; a firing of another does nothing.
+	 */
 	scheduleId: string | null;
 	/** Set when an attempt that held material was emptied because it expired: said when the actor goes. */
 	discarded?: boolean;
@@ -132,12 +135,14 @@ export const login = actor({
 					// Calling it again restarts the attempt: what was pending is replaced.
 					const { url, redirectPrefix, attempt: sealed } = await logins.start(attemptId);
 
-					if (attempt.scheduleId) await c.schedule.cancel(attempt.scheduleId);
+					const replaced = attempt.scheduleId;
+					const scheduleId = await c.schedule.after(ATTEMPT_TTL_MS + 1_000, "expire");
 					attempt.sealed = sealed;
 					attempt.state = "started";
 					attempt.expiresAt = Date.now() + ATTEMPT_TTL_MS;
-					attempt.scheduleId = await c.schedule.after(ATTEMPT_TTL_MS + 1_000, "expire");
+					attempt.scheduleId = scheduleId;
 					await save(c);
+					if (replaced) await c.schedule.cancel(replaced).catch(() => false);
 					return { url, redirectPrefix, expiresAt: attempt.expiresAt };
 				} catch (error) {
 					throw clientError(c.log, error, "The sign-in could not be started. Try again.");
@@ -177,10 +182,11 @@ export const login = actor({
 
 					const profile: UserProfile = { uid, email: typeof account.email === "string" ? account.email : null, demo: false };
 					const token = issueUserToken(profile);
-					attempt.state = "done";
-					if (attempt.scheduleId) await c.schedule.cancel(attempt.scheduleId);
+					const replaced = attempt.scheduleId;
 					attempt.scheduleId = await c.schedule.after(CLEANUP_DELAY_MS, "expire");
+					attempt.state = "done";
 					await save(c);
+					if (replaced) await c.schedule.cancel(replaced).catch(() => false);
 					return { token, profile };
 				} catch (error) {
 					await save(c).catch(() => undefined);
@@ -200,10 +206,11 @@ export const login = actor({
 
 					const profile: UserProfile = { uid, email: null, demo: true };
 					const token = issueUserToken(profile);
-					attempt.state = "done";
-					if (attempt.scheduleId) await c.schedule.cancel(attempt.scheduleId);
+					const replaced = attempt.scheduleId;
 					attempt.scheduleId = await c.schedule.after(CLEANUP_DELAY_MS, "expire");
+					attempt.state = "done";
 					await save(c);
+					if (replaced) await c.schedule.cancel(replaced).catch(() => false);
 					return { token, profile };
 				} catch (error) {
 					throw clientError(c.log, error, "The demo sign-in failed. Try again.");
@@ -214,14 +221,17 @@ export const login = actor({
 		expire: async (c): Promise<void> => {
 			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
 			const attempt = c.vars.attempt;
+			// A schedule that a later one took the place of, and whose cancel did not reach it: the later one will come.
+			if (attempt.scheduleId !== null && attempt.scheduleId !== c.scheduledFire.id) return;
 			// A step is talking to the sandbox layer right now: let it end before the attempt is removed.
 			if (c.vars.busy) {
-				attempt.scheduleId = await c.schedule.after(5_000, "expire");
+				const later = await c.schedule.after(5_000, "expire");
+				// A step that set a schedule of its own meanwhile keeps it, and this one does nothing when it comes.
+				if (attempt.scheduleId !== c.scheduledFire.id) return;
+				attempt.scheduleId = later;
 				await save(c);
 				return;
 			}
-			// A schedule left over from before a restart of the attempt: the newer one will come.
-			if (attempt.state === "started" && Date.now() < attempt.expiresAt) return;
 			// What the attempt held goes before the actor does, whatever becomes of a destroyed actor's storage.
 			if (attempt.sealed !== null) {
 				attempt.sealed = null;

@@ -1,12 +1,14 @@
 /**
- * Routing by URL with the History API: sign-in, home, the new-agent dialog over home, a session by
- * its ID. A reload stays on the same screen; `?mock=1` is carried from one address to the next.
+ * Routing by URL with the History API: sign-in, home, the new-agent dialog over home, the usage page,
+ * a session by its ID. A reload stays on the same screen; `?mock=1` is carried from one address to the next.
  */
 import { useSyncExternalStore } from "react";
 
 export type Route =
 	| { name: "home" }
 	| { name: "new" }
+	/** The user's sandbox time and kept sandboxes. */
+	| { name: "usage" }
 	| { name: "signin" }
 	| { name: "session"; id: string }
 	/** The mock's stand-in for OpenAI's sign-in page. */
@@ -17,6 +19,7 @@ export function parseRoute(pathname: string): Route {
 	const path = pathname.replace(/\/+$/, "") || "/";
 	if (path === "/") return { name: "home" };
 	if (path === "/new") return { name: "new" };
+	if (path === "/usage") return { name: "usage" };
 	if (path === "/signin") return { name: "signin" };
 	if (path === "/mock/authorize") return { name: "mock-authorize" };
 	const session = /^\/agents\/([^/]+)$/.exec(path);
@@ -30,6 +33,8 @@ function pathOf(route: Route): string {
 			return "/";
 		case "new":
 			return "/new";
+		case "usage":
+			return "/usage";
 		case "signin":
 			return "/signin";
 		case "session":

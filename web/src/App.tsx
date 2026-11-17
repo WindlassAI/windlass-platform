@@ -8,6 +8,7 @@ import { Home } from "./screens/Home";
 import { NewAgent } from "./screens/NewAgent";
 import { Session, SessionCrumb } from "./screens/Session";
 import { MockAuthorize, SignIn } from "./screens/SignIn";
+import { Usage, UsageCrumb } from "./screens/Usage";
 import { useApp } from "./state/app";
 import { useSession } from "./state/hooks";
 
@@ -46,14 +47,14 @@ export function App() {
 	const { auth, client } = useApp();
 	const [theme, toggleTheme] = useTheme();
 
-	const needsAuth = route.name === "home" || route.name === "new" || route.name === "session";
+	const needsAuth = route.name === "home" || route.name === "new" || route.name === "usage" || route.name === "session";
 	useEffect(() => {
 		if (needsAuth && !auth) navigate({ name: "signin" }, { replace: true });
 		if (route.name === "signin" && auth) navigate({ name: "home" }, { replace: true });
 	}, [needsAuth, auth, route.name]);
 
 	useEffect(() => {
-		if (route.name !== "session") document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" ? "Not found · Windlass" : "Agents · Windlass";
+		if (route.name !== "session") document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : "Agents · Windlass";
 	}, [route.name]);
 
 	if (route.name === "mock-authorize" && client.kind === "mock") return <MockAuthorize />;
@@ -81,6 +82,17 @@ export function App() {
 	}
 
 	if (route.name === "session") return <SessionRoute key={route.id} sessionId={route.id} theme={theme} onToggleTheme={toggleTheme} />;
+
+	if (route.name === "usage") {
+		return (
+			<div className="app">
+				<TopBar theme={theme} onToggleTheme={toggleTheme}>
+					<UsageCrumb />
+				</TopBar>
+				<Usage />
+			</div>
+		);
+	}
 
 	return (
 		<div className="app">

@@ -4,7 +4,7 @@
  */
 
 import { setup } from "rivetkit";
-import { agentSession } from "./actors/agent-session.js";
+import { agentSession, SHUTDOWN_GRACE_MS } from "./actors/agent-session.js";
 import { login } from "./actors/login.js";
 import { user } from "./actors/user.js";
 
@@ -16,8 +16,9 @@ export const registry = setup({
 	// RivetKit's own "Services" host is not used here. Left on, it is one more process, and one that
 	// survives a killed server and then keeps the next start from coming up.
 	startServices: false,
-	// On SIGINT/SIGTERM, give sessions time to close a running turn and pause their sandboxes.
-	shutdown: { gracePeriodMs: 20_000 },
+	// On SIGINT/SIGTERM, give sessions time to close a running turn and pause their sandboxes. What a
+	// session does in that time is counted against it where it is defined.
+	shutdown: { gracePeriodMs: SHUTDOWN_GRACE_MS },
 });
 
 export type Registry = typeof registry;

@@ -40,6 +40,16 @@
  * changed files and writes the timeline's line. `mockNextGithub()` makes the next call fail as GitHub
  * can, and `createMockClient({ github: false })` plays a deployment with no GitHub App.
  *
+ * Usage: the deployment gives each user two hours of sandbox time a day and lets them keep twenty
+ * sandboxes (the real default is five; the seeded sessions keep eight, and agents launched by hand need room). Today's time is made up for
+ * the seeded sessions, a turn played here adds what it ran, and the last two weeks are a fixed
+ * history with one day at the limit. Every sandbox that runs holds five minutes of the day. The
+ * prices are E2B's, since the mock plays a deployment there. `mockUsage("low" | "used" | "full")`,
+ * or `&usage=...` in the address, plays a day with little left, a day that is used up (a prompt is
+ * refused as the server refuses it), and an account that keeps as many sandboxes as it may (a new
+ * agent's first prompt is refused); `freeSandbox()` removes one. The sentences are
+ * server/src/usage.ts's, repeated here (mock.usage.test.ts compares the two).
+ *
  * The world is rebuilt from the token on every page load, so the seeded sessions keep their IDs
  * across a reload and sessions created by hand do not survive one.
  */
@@ -84,6 +94,8 @@ import {
 	type TimelineItem,
 	type TurnOutcome,
 	type TurnUsage,
+	type UsageNumbers,
+	type UsageView,
 	type UserProfile,
 	type WindlassEvent,
 	type WorkspaceFile,
@@ -105,7 +117,16 @@ export interface MockOptions {
 	github?: boolean;
 	/** "e2b" plays a deployment on E2B that offers both of its profiles (`MOCK_E2B_PROFILES`). */
 	sandbox?: "docker" | "e2b";
+	/** How the user's day stands when the page loads (`MockUsageState`). Default "plenty". */
+	usage?: MockUsageState;
 }
+
+/**
+ * A day of sandbox time, for looking at each state by hand: "plenty" left, "low" (under a fifth of
+ * the allowance is left, which a session says), "used" (nothing is left, and a prompt is refused), and
+ * "full" (the user keeps as many sandboxes as they may, and an agent without one is refused its first prompt).
+ */
+export type MockUsageState = "plenty" | "low" | "used" | "full";
 
 /** What the next call about GitHub fails with, for looking at each failure by hand. */
 export type MockGithubFailure =
@@ -135,7 +156,60 @@ export interface MockClient extends PlatformClient {
 	 * then Forget). "slow" makes every one of these calls take ten seconds, for the next ten seconds.
 	 */
 	mockNextServers(kind: "list" | "approve" | "forget" | "slow"): void;
+	/** Sets how the user's day of sandbox time stands (`__wlpMock.mockUsage("used")`, then send a prompt). */
+	mockUsage(state: MockUsageState): void;
 }
+
+/** The mock deployment's limits: the allowance is the real default, the cap is above it so that the seeded sessions fit. */
+export const MOCK_ALLOWANCE_SECONDS = 2 * 60 * 60;
+export const MOCK_MAX_KEPT = 20;
+const MOCK_HOLD_SECONDS = 5 * 60;
+const MOCK_START_SECONDS = 30;
+/** E2B's published price for the size the platform's template has. */
+const MOCK_PRICE = { usdPerSecond: 0.0000185, basis: "1 vCPU and 1,024 MiB of memory at E2B's published prices" };
+/** The thirteen days before today, the oldest first, in seconds: one of them at the limit. */
+const MOCK_HISTORY = [0, 3_120, 5_460, 1_890, 0, 0, 4_410, 7_200, 2_280, 6_630, 960, 0, 3_870];
+/** What the seeded sessions' sandboxes ran today, by session id; "probe" lost five minutes to a server that stopped under it. */
+const MOCK_SPENT: Record<string, number> = { "add-test": 1_140, headers: 420, "harbor-build": 240, probe: 480, unattended: 360 };
+const MOCK_UNREPORTED: Record<string, number> = { probe: 300 };
+
+/** server/src/usage.ts, `spellSeconds`. */
+function spellSeconds(total: number): string {
+	const seconds = Math.max(0, Math.round(total));
+	const hours = Math.floor(seconds / 3600);
+	const whole = Math.floor((seconds % 3600) / 60);
+	const rest = seconds % 60;
+	if (hours > 0) return whole === 0 ? `${hours} h` : `${hours} h ${whole} min`;
+	if (whole >= 10 || (whole > 0 && rest === 0)) return `${whole} min`;
+	if (whole > 0) return `${whole} min ${rest} s`;
+	return `${seconds} s`;
+}
+
+const resetWords = (numbers: UsageNumbers) => `The allowance is whole again at 00:00 UTC, in ${spellSeconds(Math.max(60, Math.ceil((numbers.resetsAt - numbers.at) / 60_000) * 60))}.`;
+
+/** server/src/usage.ts, `allowanceRefusal`. */
+export function mockAllowanceRefusal(numbers: UsageNumbers): string {
+	const allowance = spellSeconds(numbers.allowanceSeconds ?? 0);
+	const used = spellSeconds(numbers.usedSeconds);
+	const held = numbers.heldSeconds > 0 ? spellSeconds(numbers.heldSeconds) : null;
+	const left = numbers.leftSeconds ?? 0;
+	let said: string;
+	if (left > 0) said = `Only ${spellSeconds(left)} of today's ${allowance} of sandbox time is left (${used} used${held === null ? "" : `, ${held} held for sandboxes that are running now`}), which is too little to start with, so nothing was started.`;
+	else if (held === null) said = `Today's ${allowance} of sandbox time is used up, so nothing was started.`;
+	else said = `Today's ${allowance} of sandbox time is all used or held: ${used} used, and ${held} held for sandboxes that are running now. Nothing was started.`;
+	if (held !== null) said += " What a running sandbox does not use of its hold is free again when it stops.";
+	return `${said} ${resetWords(numbers)}`;
+}
+
+/** server/src/usage.ts, `sandboxRefusal`. */
+export function mockSandboxRefusal(numbers: UsageNumbers): string {
+	const limit = numbers.sandboxes.limit ?? numbers.sandboxes.kept;
+	return `You keep ${limit} ${limit === 1 ? "sandbox" : "sandboxes"}, the most an account may have, and this agent needs one of its own. Free one on the Usage page, which says what goes with it, or delete an agent you no longer need. Then send this again.`;
+}
+
+/** server/src/usage.ts, `freedNote`, for a deployment that keeps a copy of the agent's memory. */
+export const MOCK_FREED_NOTE =
+	"You freed this agent's sandbox on the Usage page: the files in its workspace are gone. The conversation stays, and the next prompt starts a new sandbox. The agent keeps its memory of the conversation, and is told that the workspace is a new one.";
 
 /** The mock's question timeout: long enough to answer, short enough to watch the platform decline. */
 export const MOCK_QUESTION_TIMEOUT_MS = 3 * 60_000;
@@ -723,6 +797,8 @@ interface World {
 	setups: Map<number, { command: string; updatedAt: number }>;
 	/** The secrets the user saved, by repository and name. A value is not kept at all: nothing here could show one. */
 	secrets: Map<number, Map<string, { scope: SecretScope; updatedAt: number }>>;
+	/** The seconds of sandbox time counted today, by session: the seeded ones, and what the turns played here ran. */
+	spent: Map<string, number>;
 }
 
 interface Step {
@@ -743,6 +819,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	let slowServersUntil = 0;
 	const serversLatency = (ms: number) => latency(realNow() < slowServersUntil ? 10_000 : ms);
 	const githubOn = options.github !== false;
+	let usageState: MockUsageState = options.usage ?? "plenty";
 	const profiles = options.sandbox === "e2b" ? MOCK_E2B_PROFILES : MOCK_PROFILES;
 	const realNow = options.now ?? (() => Date.now());
 	const origin = options.origin ?? (typeof location === "undefined" ? "http://localhost:5173" : location.origin);
@@ -782,7 +859,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), secrets: new Map() };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), secrets: new Map(), spent: new Map(Object.entries(MOCK_SPENT)) };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -865,6 +942,75 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		for (const feed of session.feeds) feed.onSummary(session.summary);
 		const list = listOf(world);
 		for (const feed of world.feeds) feed.onSessions(list);
+		// A sandbox that starts or stops changes what is held and kept.
+		if (clock === null && (patch.sandbox !== undefined || patch.status !== undefined)) for (const feed of world.feeds) feed.onUsage?.(usageNumbers(world));
+	}
+
+	// ---- sandbox time and kept sandboxes --------------------------------------------------------
+
+	/** What the day's state adds to the seeded time, so that "low" leaves fourteen minutes and "used" nothing. */
+	function usageOffset(world: World, held: number): number {
+		if (usageState !== "low" && usageState !== "used") return 0;
+		let spent = 0;
+		for (const seconds of world.spent.values()) spent += seconds;
+		return Math.max(0, MOCK_ALLOWANCE_SECONDS - held - spent - (usageState === "low" ? 14 * 60 : 0));
+	}
+
+	const runningSandboxes = (world: World) => [...world.sessions.values()].filter((session) => session.summary.sandbox === "running");
+	const keptSandboxes = (world: World) => [...world.sessions.values()].filter((session) => session.summary.sandbox !== "none");
+
+	function usageNumbers(world: World): UsageNumbers {
+		const at = realNow();
+		const held = runningSandboxes(world).length * MOCK_HOLD_SECONDS;
+		let used = usageOffset(world, held);
+		for (const seconds of world.spent.values()) used += seconds;
+		const day = Math.floor(at / 86_400_000);
+		return {
+			at,
+			day: new Date(day * 86_400_000).toISOString().slice(0, 10),
+			resetsAt: (day + 1) * 86_400_000,
+			allowanceSeconds: MOCK_ALLOWANCE_SECONDS,
+			usedSeconds: used,
+			heldSeconds: held,
+			leftSeconds: Math.max(0, MOCK_ALLOWANCE_SECONDS - used - held),
+			startSeconds: MOCK_START_SECONDS,
+			sandboxes: { kept: keptSandboxes(world).length, limit: usageState === "full" ? Math.min(MOCK_MAX_KEPT, keptSandboxes(world).length) : MOCK_MAX_KEPT },
+		};
+	}
+
+	function usageView(world: World): UsageView {
+		const numbers = usageNumbers(world);
+		const offset = usageOffset(world, numbers.heldSeconds);
+		const today = [...world.sessions.values()]
+			.map((session) => ({
+				sessionId: session.summary.id,
+				title: session.summary.title,
+				// What the day's state adds is the busiest agent's.
+				seconds: (world.spent.get(session.summary.id) ?? 0) + (session.summary.id === "add-test" ? offset : 0),
+				unreportedSeconds: MOCK_UNREPORTED[session.summary.id] ?? 0,
+				heldSeconds: session.summary.sandbox === "running" ? MOCK_HOLD_SECONDS : 0,
+			}))
+			.filter((row) => row.seconds > 0 || row.heldSeconds > 0)
+			.sort((a, b) => b.seconds + b.heldSeconds - (a.seconds + a.heldSeconds));
+		const firstDay = Math.floor(numbers.at / 86_400_000) - MOCK_HISTORY.length;
+		return {
+			...numbers,
+			today,
+			days: [...MOCK_HISTORY.map((seconds, index) => ({ day: new Date((firstDay + index) * 86_400_000).toISOString().slice(0, 10), seconds })), { day: numbers.day, seconds: numbers.usedSeconds }],
+			kept: keptSandboxes(world)
+				.map((session) => ({
+					sessionId: session.summary.id,
+					title: session.summary.title,
+					state: session.summary.sandbox === "running" ? ("running" as const) : ("paused" as const),
+					usedAt: session.summary.updatedAt,
+					busy: session.summary.status !== "idle",
+					repository: session.summary.repository ? `${session.summary.repository.owner}/${session.summary.repository.name}` : null,
+					pushed: session.pushed,
+				}))
+				.sort((a, b) => b.usedAt - a.usedAt),
+			price: MOCK_PRICE,
+			memory: "copied",
+		};
 	}
 
 	function addSession(world: World, input: { id: string; title: string; titled: boolean; profile: SessionSummary["profile"]; model: string; repoUrl: string | null; repository?: SessionRepository | null; publishUnasked?: boolean }): MockSession {
@@ -1396,6 +1542,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			cachedShare: end.cachedShare,
 			message: end.message,
 		});
+		// What the turn's sandbox ran is counted for the day.
+		if (clock === null) world.spent.set(session.summary.id, (world.spent.get(session.summary.id) ?? 0) + Math.max(1, Math.round((now() - state.startedAt) / 1000)));
 		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: end.outcome, updatedAt: now() });
 		// An idle sandbox is suspended after a while, and the timeline says so as the server's does; its files stay.
 		if (clock === null) {
@@ -1825,7 +1973,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				// As the server orders them: a name that begins with what was typed first, then the most recently pushed.
 				const rank = (repository: MockRepository) => (wanted === "" || repository.name.toLowerCase().startsWith(wanted) || `${repository.owner}/${repository.name}`.toLowerCase().startsWith(wanted) ? 0 : 1);
 				const matching = GITHUB_REPOSITORIES.filter((repository) => `${repository.owner}/${repository.name}`.toLowerCase().includes(wanted)).sort((a, b) => rank(a) - rank(b) || a.pushedHoursAgo - b.pushedHoursAgo);
-				return { repositories: matching.map(describeRepository), more: false };
+				return { repositories: matching.map(describeRepository), more: false, incomplete: false };
 			},
 			async githubBranches(repositoryId: number): Promise<GithubBranchList> {
 				await latency(320);
@@ -1833,6 +1981,28 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const found = GITHUB_REPOSITORIES.find((repository) => repository.id === repositoryId);
 				if (!found) throw new PlatformError("user", "That repository is not among the ones your GitHub connection covers. Add it to the GitHub App's installation at GitHub, then choose it again.");
 				return { branches: found.branches, defaultBranch: found.defaultBranch, more: false };
+			},
+			async allowance(): Promise<UsageNumbers> {
+				await latency(160);
+				return usageNumbers(world());
+			},
+			async usage(): Promise<UsageView> {
+				await latency(320);
+				return usageView(world());
+			},
+			async freeSandbox(sessionId: string): Promise<UsageView> {
+				await latency(700);
+				const session = world().sessions.get(sessionId);
+				if (!session || session.summary.sandbox === "none") return usageView(world());
+				if (session.summary.status !== "idle") throw new PlatformError("user", `${session.summary.title} is working. Stop its turn first, then free its sandbox.`, { reason: "sandbox_busy" });
+				cancel(session.pauseTimer);
+				session.pauseTimer = null;
+				session.files.clear();
+				store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: MOCK_FREED_NOTE });
+				const { envLists: _, ...summary } = session.summary;
+				session.summary = summary;
+				setSummary(world(), session, { sandbox: "none" });
+				return usageView(world());
 			},
 			watch(feed: UserFeed) {
 				let closed = false;
@@ -1920,6 +2090,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle").length;
 				if (running >= MAX_RUNNING_SESSIONS) throw new PlatformError("user", `${MAX_RUNNING_SESSIONS} of your agents are already working. Wait for one to finish, or stop one.`);
 				if (input.model !== undefined && !MODELS.includes(input.model)) throw new PlatformError("user", `There is no model called ${input.model}.`);
+				// The user's two limits, as the server holds a prompt to them: time for the sandbox to run on, and a place for one the agent does not have.
+				const numbers = usageNumbers(world);
+				if ((numbers.leftSeconds ?? 0) < numbers.startSeconds) throw new PlatformError("user", mockAllowanceRefusal(numbers), { reason: "allowance_used" });
+				if (session.summary.sandbox === "none" && numbers.sandboxes.limit !== null && numbers.sandboxes.kept >= numbers.sandboxes.limit) throw new PlatformError("user", mockSandboxRefusal(numbers), { reason: "too_many_sandboxes" });
 				const name = chooseScript(text, world.rotation);
 				if (ROTATION[world.rotation % ROTATION.length] === name) world.rotation += 1;
 				// A second plain answer in one session uses the recording's second run.
@@ -2146,6 +2320,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		mockNextServers(kind) {
 			if (kind === "slow") slowServersUntil = realNow() + 10_000;
 			else nextServers = kind;
+		},
+		mockUsage(state) {
+			usageState = state;
+			for (const world of worlds.values()) for (const feed of world.feeds) feed.onUsage?.(usageNumbers(world));
 		},
 		simulateDrop(ms: number) {
 			for (const world of worlds.values()) {

@@ -419,10 +419,10 @@ async function main(): Promise<void> {
 		reset();
 		const engineConfig = { remote: true, endpoint: "http://internal.example:6420", namespace: "default", pool: "default" };
 		const browsers = (endpoint: string | null, withTokens: boolean) => ({ endpoint, tokens: withTokens, tokenTtlMs: HOUR });
-		const missing = startupProblem({ engine: engineConfig, secretConfigured: true, browsers: browsers(null, true) });
+		const missing = startupProblem({ engine: engineConfig, secretConfigured: true, unusable: [], browsers: browsers(null, true) });
 		expect("an admin token without the engine's address for browsers: the server refuses to start, in one sentence", missing !== null && missing.startsWith("[wlp] WLP_PUBLIC_ENDPOINT is not set:") && !missing.includes("\n"), missing ?? "");
-		expect("with both, and with neither, it starts", startupProblem({ engine: engineConfig, secretConfigured: true, browsers: browsers("https://engine.example", true) }) === null && startupProblem({ engine: { ...engineConfig, remote: false, endpoint: null }, secretConfigured: true, browsers: browsers(null, false) }) === null);
-		expect("an address without an admin token is an engine that asks for none: it starts", startupProblem({ engine: engineConfig, secretConfigured: true, browsers: browsers("https://engine.example", false) }) === null);
+		expect("with both, and with neither, it starts", startupProblem({ engine: engineConfig, secretConfigured: true, unusable: [], browsers: browsers("https://engine.example", true) }) === null && startupProblem({ engine: { ...engineConfig, remote: false, endpoint: null }, secretConfigured: true, unusable: [], browsers: browsers(null, false) }) === null);
+		expect("an address without an admin token is an engine that asks for none: it starts", startupProblem({ engine: engineConfig, secretConfigured: true, unusable: [], browsers: browsers("https://engine.example", false) }) === null);
 
 		const printed: string[] = [];
 		expect("no admin token: nothing is asked and nothing is said", (await warnAboutConnectionTokens(null, (line) => printed.push(line))) === null && printed.length === 0);

@@ -39,7 +39,8 @@ interface Found {
  */
 export function webFiles(directory: string): (request: Request) => Promise<Response | null> {
 	const root = resolve(directory);
-	// The files of an image never change while it runs, so each is read once.
+	// The files of an image never change while it runs, so each is read once. A path that names no file
+	// is not kept: anyone may ask for any number of them, and the files there are cannot grow.
 	const read = new Map<string, Promise<Found | null>>();
 
 	const file = (path: string): Promise<Found | null> => {
@@ -54,6 +55,9 @@ export function webFiles(directory: string): (request: Request) => Promise<Respo
 				}
 			})();
 			read.set(path, found);
+			void found.then((result) => {
+				if (result === null) read.delete(path);
+			});
 		}
 		return found;
 	};

@@ -12,6 +12,7 @@ import "./styles/home.css";
 import "./styles/new-agent.css";
 import "./styles/session.css";
 import "./styles/github.css";
+import "./styles/usage.css";
 import { QUESTION_TIMEOUT_MS } from "@contract";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -40,13 +41,21 @@ async function createPlatformClient(): Promise<PlatformClient> {
 	// Each implementation is its own chunk: the mock never loads RivetKit, the real client never loads the fixtures.
 	if (wantsMock()) {
 		const { createMockClient } = await import("./api/mock");
-		// `?github=off` plays a deployment with no GitHub App, `?sandbox=e2b` one on E2B.
+		// `?github=off` plays a deployment with no GitHub App, `?sandbox=e2b` one on E2B, and
+		// `?usage=low|used|full` a day with little sandbox time left, one that is used up, and an account at its cap of sandboxes.
 		const params = new URLSearchParams(location.search);
-		const client = createMockClient({ questionTimeoutMs: mockQuestionTimeout(), github: params.get("github") !== "off", sandbox: params.get("sandbox") === "e2b" ? "e2b" : "docker" });
+		const usage = params.get("usage");
+		const client = createMockClient({
+			questionTimeoutMs: mockQuestionTimeout(),
+			github: params.get("github") !== "off",
+			sandbox: params.get("sandbox") === "e2b" ? "e2b" : "docker",
+			usage: usage === "low" || usage === "used" || usage === "full" ? usage : undefined,
+		});
 		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),
 		// `__wlpMock.mockNextAnswer("elsewhere" | "error")` (an answer that does not go through),
 		// `__wlpMock.mockNextGithub("list" | "connect" | "denied" | "protected" | "gone")` (GitHub refuses),
-		// `__wlpMock.mockNextServers("list" | "approve" | "forget" | "slow")` (the panel's MCP servers).
+		// `__wlpMock.mockNextServers("list" | "approve" | "forget" | "slow")` (the panel's MCP servers),
+		// `__wlpMock.mockUsage("plenty" | "low" | "used" | "full")` (the day's sandbox time and the cap on sandboxes).
 		(window as unknown as { __wlpMock: unknown }).__wlpMock = client;
 		return client;
 	}

@@ -210,6 +210,22 @@ export interface WindlassHost {
 	tokenSourceProblem(): Promise<string | null>;
 }
 
+/**
+ * How many sandboxes' answers a server keeps; the one used longest ago goes first. A sandbox may be
+ * removed by any server, so nothing here hears of it: what is forgotten costs one question asked again.
+ */
+const KNOWN_SANDBOXES = 500;
+
+/** Keeps `value` for `id` as the most recently used, and lets the least recently used go beyond KNOWN_SANDBOXES. */
+function keep<V>(known: Map<string, V>, id: string, value: V): void {
+	known.delete(id);
+	known.set(id, value);
+	for (const oldest of known.keys()) {
+		if (known.size <= KNOWN_SANDBOXES) break;
+		known.delete(oldest);
+	}
+}
+
 /** `Windlass` on any provider's sandboxes. A provider passes its `WindlassHost` (windlass.ts for Docker, e2b/windlass.ts for E2B). */
 export class SandboxWindlass implements Windlass {
 	/** Whether the Windlass in a sandbox reads a handed-in token, asked once per sandbox: a sandbox's binary does not change. */
@@ -228,12 +244,15 @@ export class SandboxWindlass implements Windlass {
 	async features(sandbox: SandboxHandle): Promise<WindlassFeatures> {
 		if (!isTurnSandbox(sandbox)) throw new Error("features needs a sandbox from this layer's connect()");
 		const known = this.told.get(sandbox.id);
-		if (known !== undefined) return known;
+		if (known !== undefined) {
+			keep(this.told, sandbox.id, known);
+			return known;
+		}
 		const keys = await openKeysOf(sandbox, this.options);
 		// No answer (the sandbox is not running, the engine did not start) is not remembered: the turn finds that out itself.
 		if (keys === null) return { sessionHome: false, envLists: false };
 		const found = { sessionHome: keys.includes("sandboxHome"), envLists: keys.includes("withholdEnv") && keys.includes("passEnv") };
-		this.told.set(sandbox.id, found);
+		keep(this.told, sandbox.id, found);
 		return found;
 	}
 
@@ -284,8 +303,8 @@ export class SandboxWindlass implements Windlass {
 			// An answer of Windlass's (exit 0 or 1, with text). Anything else is the sandbox not running: the turn finds that out itself.
 			if (asked === null || (asked.code !== 0 && asked.code !== 1) || asked.stdout.trim() === "") return null;
 			takes = asked.stdout.includes(ACCESS_TOKEN_FILE_ENV);
-			this.takesToken.set(sandbox.id, takes);
 		}
+		keep(this.takesToken, sandbox.id, takes);
 		// With an image that is too old, the remedy is to rebuild it, whatever this sandbox's own Windlass can do; otherwise only this sandbox can be behind.
 		const source = await this.host.tokenSourceProblem().catch(() => null);
 		if (source !== null) return source;

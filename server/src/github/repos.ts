@@ -49,6 +49,11 @@ const PERMISSION_FRESH_MS = 5 * 60_000;
 const LIST_SIZE = 30;
 const LIST_CHECKS = 90;
 const CHECKS_AT_ONCE = 8;
+/**
+ * How long one list may take, all its calls to GitHub together: each call gets what is left of it. What
+ * was found by then is the answer, marked `incomplete`; with nothing found it fails as GitHub not answering.
+ */
+const LIST_DEADLINE_MS = 20_000;
 
 type Level = "admin" | "write" | "read" | "none";
 
@@ -96,12 +101,15 @@ export function problemOf(error: unknown, account: string, repository?: string):
 class ReadTokens {
 	private readonly issued = new Map<number, Promise<string>>();
 
-	constructor(private readonly app: GithubApp) {}
+	constructor(
+		private readonly app: GithubApp,
+		readonly deadline?: number,
+	) {}
 
 	of(installation: StoredInstallation): Promise<string> {
 		let token = this.issued.get(installation.id);
 		if (!token) {
-			token = this.app.installationToken(installation.id, { permissions: { metadata: "read" } }).then((issued) => issued.token);
+			token = this.app.installationToken(installation.id, { permissions: { metadata: "read" } }, this.deadline).then((issued) => issued.token);
 			this.issued.set(installation.id, token);
 		}
 		return token;
@@ -115,7 +123,7 @@ async function installationList(app: GithubApp, tokens: ReadTokens, installation
 	if (!pending) {
 		pending = tokens
 			.of(installation)
-			.then((token) => app.installationRepositories(token))
+			.then((token) => app.installationRepositories(token, tokens.deadline))
 			.then((found) => {
 				const listed: Listed = { at: Date.now(), ...found };
 				lists.set(installation.id, listed);
@@ -135,7 +143,7 @@ const allows = (level: Level, need: "read" | "write") => (need === "read" ? leve
 /** What the connected user may do in a repository, asked of GitHub now. */
 async function levelOf(app: GithubApp, tokens: ReadTokens, connection: StoredConnection, installation: StoredInstallation, repository: Repository): Promise<Level> {
 	if (ownAccount(connection, installation)) return "admin";
-	const level = await app.permission(await tokens.of(installation), repository.owner, repository.name, connection.user.login);
+	const level = await app.permission(await tokens.of(installation), repository.owner, repository.name, connection.user.login, tokens.deadline);
 	permissions.set(`${connection.user.id}:${repository.id}`, { at: Date.now(), level });
 	return level;
 }
@@ -155,12 +163,15 @@ function described(repository: Repository, level: Level): GithubRepository {
 /**
  * The repositories of the connection whose `owner/name` contains `query`, the most recently pushed
  * first, and only those the connected user may read. Throws GithubProblem when nothing can be listed.
+ * `incomplete` when the list's time ran out before every account was listed and every repository checked.
  */
-export async function listRepositories(app: GithubApp, connection: StoredConnection, query: string): Promise<{ repositories: GithubRepository[]; more: boolean }> {
+export async function listRepositories(app: GithubApp, connection: StoredConnection, query: string): Promise<{ repositories: GithubRepository[]; more: boolean; incomplete: boolean }> {
 	const wanted = query.trim().toLowerCase();
-	const tokens = new ReadTokens(app);
+	const deadline = Date.now() + LIST_DEADLINE_MS;
+	const tokens = new ReadTokens(app, deadline);
 	const found: Array<{ installation: StoredInstallation; repository: Repository }> = [];
 	let truncated = false;
+	let incomplete = false;
 	let firstProblem: GithubProblem | null = null;
 	await Promise.all(
 		connection.installations.map(async (installation) => {
@@ -171,6 +182,7 @@ export async function listRepositories(app: GithubApp, connection: StoredConnect
 			} catch (error) {
 				// One account whose installation is gone does not hide the others.
 				firstProblem ??= problemOf(error, installation.account.login);
+				if (Date.now() >= deadline) incomplete = true;
 				console.error(`[wlp] github.list.failed installation=${installation.id}: ${error instanceof Error ? error.message : "unknown error"}`);
 			}
 		}),
@@ -187,6 +199,10 @@ export async function listRepositories(app: GithubApp, connection: StoredConnect
 	let checked = 0;
 	let index = 0;
 	while (index < matching.length && shown.length < LIST_SIZE && checked < LIST_CHECKS) {
+		if (Date.now() >= deadline) {
+			incomplete = true;
+			break;
+		}
 		const batch = matching.slice(index, index + CHECKS_AT_ONCE);
 		index += batch.length;
 		const levels = await Promise.all(
@@ -199,6 +215,7 @@ export async function listRepositories(app: GithubApp, connection: StoredConnect
 					return await levelOf(app, tokens, connection, installation, repository);
 				} catch (error) {
 					console.error(`[wlp] github.permission.failed repository=${repository.id}: ${error instanceof Error ? error.message : "unknown error"}`);
+					if (Date.now() >= deadline) incomplete = true;
 					return "none";
 				}
 			}),
@@ -208,7 +225,7 @@ export async function listRepositories(app: GithubApp, connection: StoredConnect
 			if (allows(level, "read") && shown.length < LIST_SIZE) shown.push(described(repository, level));
 		});
 	}
-	return { repositories: shown, more: truncated || index < matching.length };
+	return { repositories: shown, more: truncated || index < matching.length, incomplete };
 }
 
 export interface ResolvedRepository {

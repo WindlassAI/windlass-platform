@@ -255,7 +255,13 @@ export function RepositoryPicker({
 											</li>
 										))
 									) : options.length === 0 ? (
-										<li className="gh-pop-state">{found.query === "" ? "The GitHub App can see no repository yet. Choose which ones it may see at GitHub, then reload this list." : `No repository matches “${found.query}”.`}</li>
+										<li className="gh-pop-state">
+											{found.list.incomplete
+												? "GitHub did not answer in time, so no repository could be listed. Reload to ask again."
+												: found.query === ""
+													? "The GitHub App can see no repository yet. Choose which ones it may see at GitHub, then reload this list."
+													: `No repository matches “${found.query}”.`}
+										</li>
 									) : (
 										options.map((repository, index) => (
 											<li
@@ -279,7 +285,11 @@ export function RepositoryPicker({
 								</ul>
 								<div className="gh-pop-foot">
 									<p className="gh-pop-foot-text">
-										{found.list?.more ? "More match. Type more of the name. " : null}
+										{found.list?.incomplete
+											? "GitHub was slow to answer, so not every repository could be looked at and some may be missing here. Reload to ask again. "
+											: found.list?.more
+												? "More match. Type more of the name. "
+												: null}
 										Not listed? Give the app access at GitHub:{" "}
 										{accounts.map((account) => (
 											<a key={account.installationId} className="gh-pop-link" href={account.manageUrl} target="_blank" rel="noreferrer">
