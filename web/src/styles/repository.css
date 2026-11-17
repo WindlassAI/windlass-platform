@@ -101,6 +101,11 @@ a.agent-group-name:hover .agent-group-owner {
 }
 .repo-name {
 	overflow-wrap: anywhere;
+	text-wrap: wrap;
+}
+/* The owner is said, and the repository is what the page is about. */
+.repo-name-owner {
+	color: var(--ink-dim);
 }
 .repo-facts {
 	gap: 4px 16px;

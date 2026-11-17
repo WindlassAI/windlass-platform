@@ -464,7 +464,16 @@ export function Repository({ page }: { page: RepositoryPage }) {
 						repository
 						{sessions === null ? "" : ` · ${plural(sessions.length, "agent")}${working > 0 ? ` · ${working} working` : ""}`}
 					</p>
-					<h1 className="display repo-name">{name}</h1>
+					<h1 className="display display-small repo-name">
+						{page.name !== null && page.name.includes("/") ? (
+							<>
+								<span className="repo-name-owner">{page.name.slice(0, page.name.indexOf("/") + 1)}</span>
+								{page.name.slice(page.name.indexOf("/") + 1)}
+							</>
+						) : (
+							name
+						)}
+					</h1>
 					{page.name === null && view !== null ? <p className="home-account">Nothing here says what it is called: no agent of yours is on it, and GitHub was not heard on it. {page.id} is GitHub's number for it.</p> : null}
 					<AccessLine page={page} github={github} />
 				</div>
