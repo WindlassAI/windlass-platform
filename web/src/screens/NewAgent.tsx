@@ -1,7 +1,8 @@
 /**
- * New agent: the sandbox it works in (the centrepiece: every profile as a card, with its layers
- * drawn as they nest and three plain facts), then the model, an optional repository and title, and
- * the first prompt. Creating opens the session.
+ * New agent: what it should do first, then an optional repository, the model and a title, and last
+ * the sandbox it works in. The sandbox is one line that names the choice and its three plain facts;
+ * every profile as a card, with its layers drawn as they nest, opens from that line. Creating opens
+ * the session.
  *
  * The repository is a pasted address, as it always was. Where the deployment has a GitHub App, a
  * connected user picks one of their own instead, with the branch to start from, and a user who is not
@@ -63,9 +64,23 @@ function ProfileCard({ profile, name, checked, onChoose }: { profile: SandboxPro
 	);
 }
 
+/** The chosen sandbox in one line: its name and the three facts of `ProfileFacts`, each in a few words. What is open is said in the warning tone. */
+function ChosenSandbox({ profile }: { profile: SandboxProfile }) {
+	return (
+		<span className="sandbox-chosen-text">
+			<span className="sandbox-chosen-name">{profile.name}</span>
+			<span className="sandbox-chosen-facts">
+				<span className={profile.approval === "full" ? "fact-open" : undefined}>{profile.approval === "auto" ? "runs what the sandbox contains, refuses the rest" : "runs every call without asking"}</span>
+				<span className={profile.commandNetwork ? "fact-open" : undefined}>{profile.commandNetwork ? "commands can reach the network" : "commands have no network"}</span>
+				<span className={profile.commandsCanReadAccessToken ? "fact-open" : undefined}>{profile.commandsCanReadAccessToken ? "commands can read the session's access token" : "commands cannot read the session's access token"}</span>
+			</span>
+		</span>
+	);
+}
+
 /**
  * What the chosen repository's defaults did to the form, said beside the repository: the sandbox is
- * chosen further up, so a change of it there would otherwise go unseen. `used` says which defaults the
+ * chosen further down and folded, so a change of it there would otherwise go unseen. `used` says which defaults the
  * form stands on now; a default the user chose over can be taken back with one press.
  */
 function DefaultsNote({
@@ -93,7 +108,7 @@ function DefaultsNote({
 		<div className="field field-wide new-agent-defaults" role="status">
 			{applied.length > 0 ? (
 				<p className="field-note">
-					This agent starts {applied.join(" and ")}: the {applied.length === 1 ? "default" : "defaults"} saved for {repository}. Choose otherwise above and it holds for this agent only.
+					This agent starts {applied.join(" and ")}: the {applied.length === 1 ? "default" : "defaults"} saved for {repository}. Choose otherwise in this form and it holds for this agent only.
 				</p>
 			) : null}
 			{passed.length > 0 ? (
@@ -161,7 +176,7 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 	const auth = useAuth();
 	const info = platform.info;
 	const group = useId();
-	const ids = { model: useId(), repo: useId(), repoLabel: useId(), title: useId(), prompt: useId(), repoNote: useId() };
+	const ids = { model: useId(), repo: useId(), repoLabel: useId(), title: useId(), prompt: useId(), repoNote: useId(), profiles: useId() };
 	const github = useGithub();
 	const limit = launchLimit(useAllowance());
 	// What the form held before its user left to connect GitHub, once.
@@ -180,6 +195,8 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 	const [publishUnasked, setPublishUnasked] = useState(false);
 	// Where the repository comes from: the user's choice once they made one, otherwise GitHub when it is connected.
 	const [chosenSource, setChosenSource] = useState<"github" | "address" | null>(draft?.repoUrl ? "address" : null);
+	// The sandboxes as cards: folded until their user asks for them, so the task comes first.
+	const [profilesOpen, setProfilesOpen] = useState(false);
 	const [busy, setBusy] = useState<"creating" | "prompting" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
@@ -278,7 +295,7 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 	return (
 		<Dialog
 			title="Launch an agent"
-			lede="Choose where it works first. Everything else can wait."
+			lede="Say what it should do. Everything else can wait."
 			size="large"
 			onClose={close}
 			dismissable={busy === null}
@@ -325,167 +342,167 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 							</span>
 						</p>
 					) : null}
-					<fieldset className="new-agent-section">
-						<legend className="section-title">
-							<span className="section-number">1</span> Sandbox
-						</legend>
-						<p className="section-text">Where the agent's files live and its commands run. The boxes show what isolates it, outermost first.</p>
+					<div className="field-grid">
+						<div className="field field-wide">
+							<label className="label" htmlFor={ids.prompt}>
+								First prompt <span className="label-optional">optional</span>
+							</label>
+							<textarea id={ids.prompt} className="input textarea" rows={5} data-autofocus maxLength={MAX_PROMPT_CHARS} placeholder="What should it do? Leave empty to create the agent and write to it later." value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+						</div>
+						<div className="field field-wide">
+							<div className="gh-field-head">
+								<label className="label" id={ids.repoLabel} htmlFor={ids.repo}>
+									{github.enabled ? "Repository" : "Git repository to clone"} <span className="label-optional">optional</span>
+								</label>
+								{connection ? (
+									<button type="button" className="link gh-switch" onClick={() => setChosenSource(source === "github" ? "address" : "github")} disabled={busy !== null}>
+										{source === "github" ? "Paste an address instead" : "Choose from GitHub"}
+									</button>
+								) : null}
+							</div>
+							{source === "github" && connection ? (
+								<RepositoryPicker
+									value={picked}
+									onChange={(next) => {
+										setPicked(next);
+										github.dismiss();
+									}}
+									accounts={connection.accounts}
+									disabled={busy !== null}
+									inputId={ids.repo}
+									labelledBy={ids.repoLabel}
+									describedBy={ids.repoNote}
+								/>
+							) : (
+								<input
+									id={ids.repo}
+									className={`input input-mono${repoInvalid ? " input-invalid" : ""}`}
+									type="url"
+									inputMode="url"
+									spellCheck={false}
+									autoComplete="off"
+									placeholder="https://github.com/you/project.git"
+									value={repoUrl}
+									onChange={(event) => setRepoUrl(event.target.value)}
+									aria-invalid={repoInvalid}
+									aria-describedby={ids.repoNote}
+								/>
+							)}
+							<p className={`field-note${repoInvalid || (source === "github" && picked && !picked.repository.canPush) ? " tone-warn" : ""}`} id={ids.repoNote}>
+								{source === "github" && connection
+									? picked
+										? picked.repository.canPush
+											? `Cloned at ${picked.branch} when the sandbox is created. The work can come back as a pull request.`
+											: `You can read ${picked.repository.owner}/${picked.repository.name} on GitHub but not push to it: the agent can work on it, and no pull request can be opened.`
+										: notice?.tone === "good"
+											? `${notice.text} Choose a repository, or leave this empty to start in an empty one.`
+											: "One of your repositories at GitHub, private ones included. Without one the agent starts in an empty repository."
+									: repoInvalid
+										? "Use the repository's https address, for example https://github.com/you/project.git."
+										: "Cloned into the workspace when the sandbox is created. Without one the agent starts in an empty repository."}
+							</p>
+							{opening.error !== null && picked === null ? (
+								<p className="field-note tone-warn" role="status">
+									{opening.error} Choose another repository, or launch without one.
+								</p>
+							) : opening.reading && picked === null && source === "github" ? (
+								<p className="field-note" aria-busy="true">
+									Asking GitHub for the repository this form was opened for…
+								</p>
+							) : null}
+							{github.enabled && !connection ? (
+								// One line, whatever it says: the form below it does not move when the connection is known.
+								<p className={`field-note gh-connect-line${notice?.tone === "bad" || github.error ? " tone-bad" : ""}`} role={notice?.tone === "bad" ? "alert" : undefined}>
+									{github.busy === "finishing" ? (
+										"Finishing the GitHub connection…"
+									) : github.busy === "leaving" ? (
+										"Going to GitHub…"
+									) : github.status === null && !github.error ? (
+										"Checking the GitHub connection…"
+									) : (
+										<>
+											{notice?.tone === "bad" ? `${notice.text} ` : github.error ? `${github.error} ` : null}
+											<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { profile: profileChoice, model: modelChoice, title, prompt, repoUrl } })} disabled={busy !== null}>
+												Connect GitHub
+											</button>{" "}
+											to choose one of your own repositories, private ones included, and get the work back as a pull request.
+										</>
+									)}
+								</p>
+							) : null}
+						</div>
+						{chosen ? (
+							<DefaultsNote
+								repository={`${chosen.repository.owner}/${chosen.repository.name}`}
+								defaults={defaults}
+								used={fromDefaults}
+								profileName={info.profiles.find((candidate) => candidate.id === defaults.profile)?.name ?? null}
+								error={saved.error}
+								disabled={busy !== null}
+								onUseDefaults={() => {
+									setProfile(null);
+									setModel("");
+								}}
+							/>
+						) : null}
+						{chosen ? <SetupField setup={setup} repository={`${chosen.repository.owner}/${chosen.repository.name}`} disabled={busy !== null} /> : null}
+						{chosen ? <SecretsField repositoryId={chosen.repository.id} repository={`${chosen.repository.owner}/${chosen.repository.name}`} profile={profile} disabled={busy !== null} /> : null}
+						{chosen?.repository.canPush ? (
+							<div className="field field-wide">
+								<PublishUnaskedCheck checked={publishUnasked} disabled={busy !== null} onChange={setPublishUnasked} profile={chosenProfile} />
+							</div>
+						) : null}
+						<div className="field">
+							<label className="label" htmlFor={ids.model}>
+								Model
+							</label>
+							<select id={ids.model} className="select" value={model} onChange={(event) => setModel(event.target.value)}>
+								{info.models.map((name, index) => (
+									<option key={name} value={name}>
+										{name}
+										{index === 0 ? " (default)" : ""}
+									</option>
+								))}
+							</select>
+						</div>
+						<div className="field">
+							<label className="label" htmlFor={ids.title}>
+								Title <span className="label-optional">optional</span>
+							</label>
+							<input id={ids.title} className="input" value={title} maxLength={MAX_TITLE_CHARS} placeholder="Named after the first prompt if left empty" onChange={(event) => setTitle(event.target.value)} />
+						</div>
+					</div>
+					<fieldset className="new-agent-section sandbox-pick">
+						<legend className="label">Sandbox</legend>
 						{available.length === 0 ? (
 							<p className="callout callout-warn">
 								<WarnIcon />
 								<span>This deployment has no sandbox that can be used right now.</span>
 							</p>
 						) : null}
-						<div className="profiles">
-							{available.map((candidate) => (
-								<ProfileCard key={candidate.id} profile={candidate} name={group} checked={profile === candidate.id} onChoose={setProfile} />
-							))}
+						<div className="sandbox-chosen">
+							{chosenProfile ? <ChosenSandbox profile={chosenProfile} /> : <span className="sandbox-chosen-text">None chosen</span>}
+							<button type="button" className="link" aria-expanded={profilesOpen} aria-controls={ids.profiles} onClick={() => setProfilesOpen((open) => !open)}>
+								{profilesOpen ? "Hide" : available.length > 1 ? "Change" : "Details"}
+							</button>
 						</div>
-						{unavailable.length > 0 ? (
-							<>
-								<p className="profiles-divider">Listed, but not usable on this deployment</p>
-								<div className="profiles profiles-unavailable">
-									{unavailable.map((candidate) => (
-										<ProfileCard key={candidate.id} profile={candidate} name={group} checked={false} onChoose={setProfile} />
-									))}
-								</div>
-							</>
-						) : null}
-					</fieldset>
-
-					<fieldset className="new-agent-section">
-						<legend className="section-title">
-							<span className="section-number">2</span> Task
-						</legend>
-						<div className="field-grid">
-							<div className="field">
-								<label className="label" htmlFor={ids.model}>
-									Model
-								</label>
-								<select id={ids.model} className="select" value={model} onChange={(event) => setModel(event.target.value)}>
-									{info.models.map((name, index) => (
-										<option key={name} value={name}>
-											{name}
-											{index === 0 ? " (default)" : ""}
-										</option>
-									))}
-								</select>
+						<div id={ids.profiles} className="sandbox-cards" hidden={!profilesOpen}>
+							<p className="section-text">Where the agent's files live and its commands run. The boxes show what isolates it, outermost first.</p>
+							<div className="profiles">
+								{available.map((candidate) => (
+									<ProfileCard key={candidate.id} profile={candidate} name={group} checked={profile === candidate.id} onChoose={setProfile} />
+								))}
 							</div>
-							<div className="field">
-								<label className="label" htmlFor={ids.title}>
-									Title <span className="label-optional">optional</span>
-								</label>
-								<input id={ids.title} className="input" value={title} maxLength={MAX_TITLE_CHARS} placeholder="Named after the first prompt if left empty" onChange={(event) => setTitle(event.target.value)} />
-							</div>
-							<div className="field field-wide">
-								<div className="gh-field-head">
-									<label className="label" id={ids.repoLabel} htmlFor={ids.repo}>
-										{github.enabled ? "Repository" : "Git repository to clone"} <span className="label-optional">optional</span>
-									</label>
-									{connection ? (
-										<button type="button" className="link gh-switch" onClick={() => setChosenSource(source === "github" ? "address" : "github")} disabled={busy !== null}>
-											{source === "github" ? "Paste an address instead" : "Choose from GitHub"}
-										</button>
-									) : null}
-								</div>
-								{source === "github" && connection ? (
-									<RepositoryPicker
-										value={picked}
-										onChange={(next) => {
-											setPicked(next);
-											github.dismiss();
-										}}
-										accounts={connection.accounts}
-										disabled={busy !== null}
-										inputId={ids.repo}
-										labelledBy={ids.repoLabel}
-										describedBy={ids.repoNote}
-									/>
-								) : (
-									<input
-										id={ids.repo}
-										className={`input input-mono${repoInvalid ? " input-invalid" : ""}`}
-										type="url"
-										inputMode="url"
-										spellCheck={false}
-										autoComplete="off"
-										placeholder="https://github.com/you/project.git"
-										value={repoUrl}
-										onChange={(event) => setRepoUrl(event.target.value)}
-										aria-invalid={repoInvalid}
-										aria-describedby={ids.repoNote}
-									/>
-								)}
-								<p className={`field-note${repoInvalid || (source === "github" && picked && !picked.repository.canPush) ? " tone-warn" : ""}`} id={ids.repoNote}>
-									{source === "github" && connection
-										? picked
-											? picked.repository.canPush
-												? `Cloned at ${picked.branch} when the sandbox is created. The work can come back as a pull request.`
-												: `You can read ${picked.repository.owner}/${picked.repository.name} on GitHub but not push to it: the agent can work on it, and no pull request can be opened.`
-											: notice?.tone === "good"
-												? `${notice.text} Choose a repository, or leave this empty to start in an empty one.`
-												: "One of your repositories at GitHub, private ones included. Without one the agent starts in an empty repository."
-										: repoInvalid
-											? "Use the repository's https address, for example https://github.com/you/project.git."
-											: "Cloned into the workspace when the sandbox is created. Without one the agent starts in an empty repository."}
-								</p>
-								{opening.error !== null && picked === null ? (
-									<p className="field-note tone-warn" role="status">
-										{opening.error} Choose another repository, or launch without one.
-									</p>
-								) : opening.reading && picked === null && source === "github" ? (
-									<p className="field-note" aria-busy="true">
-										Asking GitHub for the repository this form was opened for…
-									</p>
-								) : null}
-								{github.enabled && !connection ? (
-									// One line, whatever it says: the form below it does not move when the connection is known.
-									<p className={`field-note gh-connect-line${notice?.tone === "bad" || github.error ? " tone-bad" : ""}`} role={notice?.tone === "bad" ? "alert" : undefined}>
-										{github.busy === "finishing" ? (
-											"Finishing the GitHub connection…"
-										) : github.busy === "leaving" ? (
-											"Going to GitHub…"
-										) : github.status === null && !github.error ? (
-											"Checking the GitHub connection…"
-										) : (
-											<>
-												{notice?.tone === "bad" ? `${notice.text} ` : github.error ? `${github.error} ` : null}
-												<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { profile: profileChoice, model: modelChoice, title, prompt, repoUrl } })} disabled={busy !== null}>
-													Connect GitHub
-												</button>{" "}
-												to choose one of your own repositories, private ones included, and get the work back as a pull request.
-											</>
-										)}
-									</p>
-								) : null}
-							</div>
-							{chosen ? (
-								<DefaultsNote
-									repository={`${chosen.repository.owner}/${chosen.repository.name}`}
-									defaults={defaults}
-									used={fromDefaults}
-									profileName={info.profiles.find((candidate) => candidate.id === defaults.profile)?.name ?? null}
-									error={saved.error}
-									disabled={busy !== null}
-									onUseDefaults={() => {
-										setProfile(null);
-										setModel("");
-									}}
-								/>
+							{unavailable.length > 0 ? (
+								<>
+									<p className="profiles-divider">Listed, but not usable on this deployment</p>
+									<div className="profiles profiles-unavailable">
+										{unavailable.map((candidate) => (
+											<ProfileCard key={candidate.id} profile={candidate} name={group} checked={false} onChoose={setProfile} />
+										))}
+									</div>
+								</>
 							) : null}
-							{chosen ? <SetupField setup={setup} repository={`${chosen.repository.owner}/${chosen.repository.name}`} disabled={busy !== null} /> : null}
-							{chosen ? <SecretsField repositoryId={chosen.repository.id} repository={`${chosen.repository.owner}/${chosen.repository.name}`} profile={profile} disabled={busy !== null} /> : null}
-							{chosen?.repository.canPush ? (
-								<div className="field field-wide">
-									<PublishUnaskedCheck checked={publishUnasked} disabled={busy !== null} onChange={setPublishUnasked} profile={chosenProfile} />
-								</div>
-							) : null}
-							<div className="field field-wide">
-								<label className="label" htmlFor={ids.prompt}>
-									First prompt <span className="label-optional">optional</span>
-								</label>
-								<textarea id={ids.prompt} className="input textarea" rows={4} maxLength={MAX_PROMPT_CHARS} placeholder="What should it do? Leave empty to create the agent and write to it later." value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-							</div>
 						</div>
 					</fieldset>
 				</form>

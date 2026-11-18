@@ -1,4 +1,4 @@
-/* New agent: the sandbox picker first and largest, the task after it. */
+/* New agent: the task first, the sandbox last as one line with its cards folded behind it. */
 
 .new-agent {
 	display: grid;
@@ -12,31 +12,54 @@
 	border: 0;
 }
 
-.section-title {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	padding: 0;
-	font-family: var(--font-mono);
-	font-size: var(--size-mono);
-	font-weight: 700;
-	letter-spacing: 0.06em;
-	text-transform: uppercase;
-}
-.section-number {
-	display: inline-grid;
-	place-items: center;
-	width: 20px;
-	height: 20px;
-	border: 1px solid var(--line-strong);
-	border-radius: 50%;
-	font-size: 0.6875rem;
-	color: var(--ink-dim);
-}
 .section-text {
-	margin: 6px 0 14px;
+	margin: 14px 0;
 	font-size: var(--size-small);
 	color: var(--ink-dim);
+}
+
+/* The chosen sandbox, said in one line; the cards open under it. */
+.sandbox-pick > legend {
+	padding: 0;
+}
+.sandbox-chosen {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 16px;
+	margin-top: 6px;
+	padding: 10px 12px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-m, 8px);
+	background: var(--bg);
+}
+.sandbox-chosen-text {
+	display: grid;
+	gap: 3px;
+	min-width: 0;
+}
+.sandbox-chosen-name {
+	font-weight: 600;
+}
+.sandbox-chosen-facts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0 8px;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	line-height: 1.5;
+	color: var(--ink-dim);
+}
+.sandbox-chosen-facts > span + span::before {
+	content: "·";
+	margin-right: 8px;
+	color: var(--ink-faint);
+}
+.sandbox-chosen .link {
+	flex: none;
+}
+.sandbox-cards[hidden] {
+	display: none;
 }
 
 .profiles {
@@ -164,7 +187,6 @@
 	display: grid;
 	grid-template-columns: repeat(2, minmax(0, 1fr));
 	gap: 16px;
-	margin-top: 14px;
 }
 .field {
 	min-width: 0;
@@ -179,5 +201,12 @@
 	}
 	.profile {
 		padding: 14px;
+	}
+	/* One fact a line: a row that wraps would begin its lines with the dot between facts. */
+	.sandbox-chosen-facts {
+		flex-direction: column;
+	}
+	.sandbox-chosen-facts > span + span::before {
+		content: none;
 	}
 }

@@ -27,8 +27,9 @@ export function Dialog({ title, lede, onClose, size = "medium", children, footer
 		if (!dialog) return;
 		const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 		if (!dialog.open) dialog.showModal();
-		// Focus starts on the dialog itself rather than on its close button: Tab then reaches the first control.
-		dialog.focus();
+		// Focus starts on the control the dialog marks as where its user begins (`data-autofocus`), or on the
+		// dialog itself rather than on its close button: Tab then reaches the first control.
+		(dialog.querySelector<HTMLElement>("[data-autofocus]") ?? dialog).focus();
 		return () => {
 			if (dialog.open) dialog.close();
 			// React has already taken the dialog out of the page, so the browser does not hand focus back by itself.

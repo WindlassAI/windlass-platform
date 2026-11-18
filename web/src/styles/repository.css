@@ -260,3 +260,8 @@ a.agent-group-name:hover .agent-group-owner {
 		padding-right: 4px;
 	}
 }
+
+/* The grid has no margin of its own: here it follows a paragraph. */
+.repo-fields {
+	margin-top: 14px;
+}
