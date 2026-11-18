@@ -13,9 +13,10 @@
  *   long, slow, build, progress, wait
  *                   one command that prints for a while: the turn to steer, or to stop one call of
  *
- * A turn that is handed checks (`RunTurnInput.checks`) ends with one run of them, as Windlass's gate
- * would report it: a check whose command has the word "fail" in it fails, and the turn ends
- * `unresolved`; any other passes.
+ * A turn that is handed checks (`RunTurnInput.checks`) ends with one run of them, as the gate of a
+ * Windlass that takes them as required checks would report it: each is the session's and required,
+ * a check whose command has the word "fail" in it fails, with the end of its output in the evidence,
+ * and the turn ends `unresolved`; any other passes.
  *
  * Switches in the prompt reach every other ending:
  *
@@ -592,7 +593,7 @@ class FakeWindlass implements Windlass {
 	}
 
 	async features(): Promise<WindlassFeatures> {
-		return { sessionHome: true, envLists: true };
+		return { sessionHome: true, envLists: true, requiredChecks: true };
 	}
 
 	demoScript(prompt: string, turn: number): ScriptedModel {
@@ -1037,7 +1038,7 @@ class FakeWindlass implements Windlass {
 			let failure: RunTurnResult["failure"] = null;
 			if (text.includes("(auth-fail)")) failure = { reason: "auth_required", message: "Signed out: sign in again to continue." };
 			else if (finished() === "failed") failure = { reason: "execution_failed", message: EXEC_FAIL_MESSAGE };
-			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure, checks: { handed: true, project: null } };
+			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure, checks: { required: true, handed: true, project: null } };
 		} finally {
 			ended = true;
 			session.seq = seq;
@@ -1049,7 +1050,10 @@ class FakeWindlass implements Windlass {
 /** A check as the fake Windlass "ran" it: one whose command has the word "fail" in it fails with exit code 1, any other passes. */
 function fakeCheck(check: RepositoryCheck): Record<string, unknown> {
 	const fails = /\bfail/.test(check.command);
-	return { name: check.name, command: check.command, status: fails ? "failed" : "passed", exitCode: fails ? 1 : 0, signal: null, durationMs: 40, files: [], fingerprint: "fake", reusedFromSeq: null, outputPath: null, outputBytes: 0, outputLines: 0 };
+	const printed = fails ? `${check.name}: 1 failed\n` : `${check.name}: ok\n`;
+	// As a Windlass with required checks records one the client named: whose it is, and the end of the output of one that failed or whose entry asks.
+	const outputTail = fails || check.showOutput === true ? { text: printed, truncated: false } : null;
+	return { name: check.name, command: check.command, status: fails ? "failed" : "passed", exitCode: fails ? 1 : 0, signal: null, durationMs: 40, files: [], fingerprint: "fake", reusedFromSeq: null, outputPath: null, outputBytes: printed.length, outputLines: 1, origin: "session", required: true, outputTail };
 }
 
 // ---------------------------------------------------------------------------------------------

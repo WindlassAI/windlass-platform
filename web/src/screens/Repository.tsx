@@ -29,7 +29,7 @@ import { RepositoryApprovals } from "../components/Servers";
 import { SetupEditor } from "../components/SetupCommand";
 import type { ConnectionState } from "../api/client";
 import { absoluteTime, plural, relativeTime } from "../lib/format";
-import { LONE_GROUP_SHOWN, layerChoices, openPulls, repositoryName, sessionsOn, startingChoices } from "../lib/repositories";
+import { LONE_GROUP_SHOWN, checksStanding, layerChoices, openPulls, repositoryName, sessionsOn, startingChoices } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useGithub, type Github } from "../state/github";
@@ -480,7 +480,7 @@ export function Repository({ page }: { page: RepositoryPage }) {
 							Checks
 							{view.saved.checks > 0 ? <span className="usage-count">{view.saved.checks}</span> : null}
 						</h2>
-						<ChecksEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.checks} onSaved={page.reload} />
+						<ChecksEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.checks} standing={checksStanding(sessions ?? [])} onSaved={page.reload} />
 					</section>
 
 					<section className="usage-section repo-saved" aria-labelledby="repo-secrets">

@@ -2,7 +2,7 @@
 import type { Verified, VerifiedCheck } from "@contract";
 import { describe, expect, it } from "vitest";
 import { applyItem, emptyView } from "./timeline";
-import { checkLine, gateWord, ranEarlier, runCount, unresolvedLine, unrunLine } from "./verified";
+import { checkLine, gateWord, overruledLine, ranEarlier, runCount, unresolvedLine, unrunLine } from "./verified";
 
 const check = (fields: Partial<VerifiedCheck> = {}): VerifiedCheck => ({ name: "test", command: "npm test", whose: "user", status: "passed", exitCode: 0, durationMs: 4200, sentBack: 0, ...fields });
 const verified = (fields: Partial<Verified> = {}): Verified => ({ turn: 3, state: "passed", run: { turn: 3, at: 0, checks: [check()] }, unrun: [], replaced: false, changedAfter: false, ...fields });
@@ -20,6 +20,15 @@ describe("a turn's checks, in words", () => {
 		const replaced = verified({ replaced: true, run: { turn: 3, at: 0, checks: [check({ name: "smoke", command: "true", whose: "repository" })] }, unrun: [{ name: "test", command: "npm test" }] });
 		expect(checkLine(replaced.run?.checks[0] as VerifiedCheck)).toContain("the repository's file");
 		expect(unrunLine(replaced)).toBe("test: the repository's .windlass/config.json names checks of its own, which Windlass follows in place of yours");
+	});
+
+	it("says of a check of yours that it is required where Windlass ran it as one, and whom the repository's own settings held for", () => {
+		const both = verified({ overruled: true, run: { turn: 3, at: 0, checks: [check({ required: true }), check({ name: "smoke", command: "true", whose: "repository" })] } });
+		expect(both.run?.checks.map(checkLine)).toEqual(["passed in 4.2s (yours, required)", "passed in 4.2s (the repository's file)"]);
+		expect(checkLine(check({ required: true, status: "failed", exitCode: 1, sentBack: 2 }))).toBe("failed, exit 1 after 4.2s (yours, required, sent back twice)");
+		expect(unrunLine(both)).toBeNull();
+		expect(overruledLine(both)).toBe("the repository's .windlass/config.json says something about checks too: that holds for its own checks, and can neither replace your required checks nor switch them off");
+		expect(overruledLine(verified())).toBeNull();
 	});
 
 	it("has a word for every way the gate ends without a check, and none where the turn's own outcome says it", () => {

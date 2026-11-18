@@ -22,7 +22,8 @@ and `WINDLASS_ACCESS_TOKEN_FILE`), it names every failure of a sign-in by a stab
 account's models on such a token, one JSON object on a line (`windlass --models --json`; "Models"). 0.2.0 also has two
 things the platform uses where a sandbox's Windlass has them, and does without where it has not: a home of the
 session's own for sandboxed commands ("Sandboxes" below), and two lists that say by name which variables a
-command gets ("A repository's secrets"). The local builds before the release all call themselves 0.1.1:
+command gets ("A repository's secrets"). A third such thing is in no release yet: required checks, which a
+repository's own file cannot replace ("A repository's checks"); with 0.2.0 the platform does without them. The local builds before the release all call themselves 0.1.1:
 `0.1.1+a9c3601d40` is the same code as 0.2.0, `0.1.1+739e1cbc09` has the token option and neither of the two
 later things, and `0.1.1+dca57b2627` has `login token` without `--valid-for` and is too old.
 
@@ -218,6 +219,8 @@ What a turn's Windlass is handed has to be decided before it starts, so the firs
 server starts an engine there for that question alone (`Windlass.features`), and the answer is kept for that
 sandbox (for the 500 sandboxes the server used last; one it forgot is asked again). With an older Windlass a session works as it did: its commands find the home
 read-only, and its repository's secrets reach what Windlass's rule alone allows ("A repository's secrets").
+The same list says whether a Windlass takes its user's checks as required checks (`requiredChecks`), and
+one that does not is handed them as before ("A repository's checks").
 
 ## Sign-ins
 
@@ -1020,53 +1023,98 @@ session on it.
   with no repository has none of the user's.
 - **What one is.** A name and a command, and what Windlass's own configuration takes besides, within its
   limits: how long it may run (1 to 3,600 seconds; Windlass's default is 120) and glob patterns of changed
-  files that make it run (none: any change does). And one setting of the platform's, which Windlass is not
-  told: that the end of the check's output goes into a pull request's description also when it passed. A
-  repository can have 20 checks. What is saved is what Windlass reads: a name it would refuse, two checks
-  of one name, or a pattern that starts with `!` is refused when it is saved, because Windlass fails a turn
-  whose configuration it cannot read.
+  files that make it run (none: any change does). And one setting of the platform's: that the end of the
+  check's output goes into a pull request's description also when it passed. A repository can have 20
+  checks. What is saved is what Windlass reads: a name it would refuse, two checks of one name, or a
+  pattern that starts with `!` is refused when it is saved, because Windlass fails a turn whose checks it
+  cannot read.
 - **Where the user sets them.** On the repository's page, under the setup command. The list is saved
   whole, by one statement that reads nothing first, so of two saves that run together one stays as it was
   sent, and neither undoes a setup command or a secret saved meanwhile.
-- **How they reach Windlass.** A session reads them from the user's actor when a turn starts, with its
-  repository's secrets, and the sandbox layer writes them into Windlass's own configuration file in the
-  sandbox (`~/.config/windlass/config.json`) as its `checks`, in the step that writes the user's MCP
-  servers there and by the same code (`server/src/windlass-config.ts`, `server/src/sandbox/turn.ts`); they
-  are taken out again when the turn has ended. `checks` and `verify` in that file are the platform's alone:
-  what a command left under them goes, so that what Windlass holds to be its user's checks is what the user
-  saved, and its own defaults decide what is done with them. A change is for each session's next turn.
-- **What a repository's own file does to them.** Windlass reads the repository's `.windlass/config.json`
+- **Two kinds of Windlass.** What a repository's own `.windlass/config.json` can do to the user's checks
+  depends on the Windlass in the session's sandbox. One with *required checks* (its docs/safety.md,
+  "Required checks"; in no release yet) runs them whatever that file says. The released 0.2.0 has none:
+  there a repository's list stands in for the user's. A sandbox keeps the Windlass it was made with, so
+  the platform asks each sandbox's Windlass, with the question it asks already ("Sandboxes that keep an
+  older Windlass": `requiredChecks` among the keys it lists), and each turn goes by the Windlass it runs
+  on. The session's summary carries the answer (`SessionSummary.requiredChecks`), and the repository's
+  page says under the checks which of the two holds in the sandboxes of the user's agents on it, as far
+  as they have said. A session made under 0.2.0 carries on in a sandbox with the newer Windlass. The
+  other way about it does not: once the newer Windlass has recorded a run of checks in a session, 0.2.0
+  refuses to open it (the record has fields 0.2.0 does not know), and a turn in a sandbox made from an
+  older image ends with Windlass's "Internal error". So an image is not to be rebuilt from an older
+  Windlass while such sessions are in use.
+- **With required checks: named when the session is opened.** A session reads the checks from the user's
+  actor when a turn starts, with its repository's secrets, and the sandbox layer names them to Windlass in
+  the metadata it opens the session with (`_meta.windlass.requiredChecks` on `session/new` and
+  `session/resume`, `server/src/sandbox/turn.ts`), with `outputTail: "always"` on a check whose output
+  is to be shown also when it passes. Windlass keeps them with the session for as long as its process
+  has it open and stores them nowhere, so they are said at every open, which for the platform is every
+  turn: a change is for each session's next turn. Windlass offers a second place for such checks,
+  `requiredChecks` in its user's own configuration file. The platform does not use it, because that file
+  is in the sandbox: where commands are not sandboxed (`docker-hardened`, `e2b-open`) a command of the
+  agent's can write it, and a check that a turn can remove before the next verifies nothing. What is
+  named at the open is held by Windlass's process and comes from the platform's process each time; no
+  file in the sandbox has it. It also needs no file a Windlass without the key would refuse to read,
+  and its record tells the two apart: a check the platform named has the origin `session`, one from
+  that file `user`.
+  - They run before the repository's own checks, which run too, and gate the turn: a failing one sends
+    the agent back, three times at most, whatever the repository's file says about `checks` (an empty
+    list too) or `verify` (`mode` `off` or `report`, `maxRounds`). A check of the repository's with the
+    name of one of the user's is not run: under that name the user's runs.
+  - A turn keeps the checks it started with. A repository's file the agent writes or changes during a
+    turn changes nothing for the user's checks, in that turn or the next; the pull request says that
+    the file changed ("What is looked for in the changes").
+  - They run in the session's working directory, which is the workspace, the repository's root, and
+    their file patterns are relative to it. A `.windlass/config.json` further down in the repository
+    does not move them.
+  - Where commands are sandboxed and no sandbox can run, a required check cannot be run either.
+    Windlass records it as one that could not be started and ends the turn as unresolved, with the
+    agent sent back meanwhile; the platform then says that nothing was verified, and lists the check.
+  - A subagent's turn runs no check; the session's own turn, which the platform sees end, runs them
+    over everything the subagent changed in the workspace.
+  - `checks`, `requiredChecks` and `verify` in Windlass's own configuration file in the sandbox are
+    still the platform's alone, and it still takes out what a command left under them before every
+    open: the number of times the agent is sent back is that file's to say.
+- **Without them: written into Windlass's own file.** The sandbox layer writes the checks into Windlass's
+  own configuration file in the sandbox (`~/.config/windlass/config.json`) as its `checks`, in the step
+  that writes the user's MCP servers there and by the same code (`server/src/windlass-config.ts`); they
+  are taken out again when the turn has ended. Windlass reads the repository's `.windlass/config.json`
   too, and follows it before its user's file, key by key: a `checks` list there stands in for the user's
   whole, an empty one too, and `verify.mode` there can turn the gate off or make it report without sending
-  the agent back. Windlass reads both files when a turn starts and not again in it. This was tried against
-  the released Windlass 0.2.0 (`scripts/verified-check.ts --docker`):
+  the agent back. Windlass reads both files when a turn starts and not again in it.
 
-  | The repository's `.windlass/config.json` | What Windlass 0.2.0 does |
-  |---|---|
-  | is not there, or says nothing of checks | runs the user's checks |
-  | names `checks` | runs those, and none of the user's: a turn can end as done without one of the user's checks having run |
-  | names `checks: []` | runs nothing, and reports that no checks are configured |
-  | sets `verify.mode` to `off` | runs nothing, and reports that no checks are configured |
-  | is written or changed by the agent during a turn | changes nothing in that turn; from the next turn on it is followed as above |
+  | The repository's `.windlass/config.json` | Windlass 0.2.0 | A Windlass with required checks |
+  |---|---|---|
+  | is not there, or says nothing of checks | runs the user's checks | runs the user's checks |
+  | names `checks` | runs those, and none of the user's: a turn can end as done without one of the user's checks having run | runs the user's, then those |
+  | names `checks: []` | runs nothing, and reports that no checks are configured | runs the user's |
+  | sets `verify.mode` to `off` | runs nothing, and reports that no checks are configured | runs the user's, and none of the repository's own |
+  | is written or changed by the agent during a turn | changes nothing in that turn; from the next turn on it is followed as above | changes nothing for the user's checks, in that turn or later |
+  | cannot run checks: commands are sandboxed and there is no sandbox | runs nothing, says so, and calls the turn done | records the user's checks as not started, and ends the turn as unresolved |
 
-  Windlass 0.2.0 has nothing that makes a user's checks hold against that file, and its record of a run
-  does not say which file a check came from. The platform does not rewrite a repository's file. It says
-  whose checks ran, and for that the sandbox layer reads the repository's file when it writes its own, in
-  the same step, and hands on what it holds about checks (`projectChecks`). A check is presented as the
-  user's only when both hold: the repository's file named no list when the turn started, and the check's
-  name and command are those of a check the platform handed over. Anything else is presented as the
-  repository's. "What Windlass would need" below says what would make the user's checks hold.
+  Both columns were tried against the real thing, the released 0.2.0 and a build of the branch with
+  required checks (`scripts/verified-check.ts --docker`). 0.2.0's record of a run does not say which file
+  a check came from. The platform does not rewrite a repository's file. It says whose checks ran, and for
+  that the sandbox layer reads the repository's file when it writes its own, in the same step, and hands
+  on what it holds about checks (`projectChecks`). On 0.2.0 a check is presented as the user's only when
+  both hold: the repository's file named no list when the turn started, and the check's name and command
+  are those of a check the platform handed over. Anything else is presented as the repository's.
 - **Where commands are not sandboxed.** In `docker-hardened` Windlass runs checks as it runs the agent's
   commands there, without its sandbox. A command of the agent's can write Windlass's own configuration
-  file there; the next turn writes the user's checks over it before Windlass reads it.
+  file there; the next turn takes out what it left about checks before Windlass reads it, and with
+  required checks the user's are not in that file at all. A command there can still reach Windlass's
+  process itself, as it can the engine's connection to the platform ("What it cannot say" below).
 
 ```sh
 cd server && npx tsx ../scripts/verified-check.ts                                   # the rules on their own: what may be saved, the configuration file, a turn's events, the section
-cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/verified-check.ts --docker # and what the image's Windlass does with a user's checks and a repository's own
+cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/verified-check.ts --docker # and what a real Windlass does with a user's checks and a repository's own: the image's, and a build with required checks where this machine has one
 ```
 
 The web app's mock has two checks saved for acme/harbor (`?mock=1`, `/repositories/7101`), one of them with
-file patterns that the mock's turns never match.
+file patterns that the mock's turns never match. Its sandboxes have a Windlass with required checks, except
+the one of "Make add() pass its checks", which keeps an older one; the fake sandbox layer's Windlass has them
+too.
 
 ## What a pull request shows was verified
 
@@ -1080,11 +1128,14 @@ the agent wrote, and writes it again with every later push (`server/src/verified
 
 ### What was verified
 
-The check that applied passed when the agent's turn 1 ended.
+The 2 checks that applied passed when the agent's turn 1 ended.
 
-- **test** (`node test/add.test.js`), ada's check: passed in 73 ms after the agent was sent back once.
+- **test** (`node test/add.test.js`), ada's required check: passed in 73 ms after the agent was sent back once.
+- **smoke** (`node scripts/smoke.js`), from the repository's `.windlass/config.json`: passed in 41 ms.
 
 Did not run: **docs** (`test -f docs/index.md`). No changed file matches its patterns.
+
+The repository's `.windlass/config.json` says something about checks too. That holds for the repository's own checks: ada's checks are required, and that file can neither replace them nor switch them off.
 
 To look at:
 
@@ -1098,10 +1149,16 @@ To look at:
 - **What it says.** How the gate ended in the session's last turn, in one sentence. Each check of the
   session's last run of checks: its name, its command, whose it is (the user's, by their GitHub login, or
   "from the repository's `.windlass/config.json`"), how it ended, how long it took, and how many times in
-  that turn the agent was sent back with it failing. The user's checks that did not run, with the reason:
-  no changed file matched their patterns, or the repository's file named a list of its own. The end of a
-  check's output, folded, for one that did not pass and for one whose user asked (1,500 characters, of six
-  checks at most). And when nothing was verified, one plain sentence: "Nothing was verified: no checks are
+  that turn the agent was sent back with it failing. A check of the user's that Windlass ran as a
+  required check is "ada's required check"; on a Windlass without required checks it is "ada's check",
+  as the example above would then have it, without the repository's own beside it. The user's checks
+  that did not run, with the reason: no changed file matched their patterns, or, on a Windlass without
+  required checks, the repository's file named a list of its own ("The repository's
+  `.windlass/config.json` names checks of its own, and Windlass follows a repository's list in place of
+  ada's checks."). Where the user's checks were required ones and the repository's file said something
+  about checks or verification, one sentence says whom that held for. The end of a check's output,
+  folded, for one that did not pass and for one whose user asked (1,500 characters, of six checks at
+  most). And when nothing was verified, one plain sentence: "Nothing was verified: no checks are
   set for this repository.", or which file turned verification off, or that the turn was stopped before
   its checks had run. There is no badge and no tick in it, and it ends by saying that it is not a review.
 - **Where the facts come from.** Windlass's own events of the turn, each decision on a field of them and
@@ -1111,6 +1168,17 @@ To look at:
   was let end with a check failing; `snapshot.taken` names each state of the workspace. The session's
   actor keeps what they come to (`Verified`) on the item that ends the turn, and in its own state for the
   next push. A turn in which no check ran keeps what the last run found, with the turn it was in.
+- **One record, two sources.** Three of those facts have another source on a Windlass with required
+  checks, and which source a turn's record is made from is decided in one place, on one field
+  (`VerificationLog.verified`, on `TurnChecks.required`: what the turn's own Windlass said it takes).
+
+  | The fact | With required checks | Without |
+  |---|---|---|
+  | Whose a check is | the evidence's `origin`: `session` is a check the platform named for the user, anything else is not the user's | worked out from the two files, as Windlass merges them ("A repository's checks") |
+  | Whether it is required | the evidence's `required` | never |
+  | The end of its output | the evidence's `outputTail`, which Windlass keeps for a check that did not pass and for one whose entry asks, redacted | read from the file in the sandbox that the evidence names, when the turn has ended |
+
+  Everything after that is the same code: the record, the section, the session's screen.
 - **What is looked for in the changes.** Once the work is committed, the platform reads it against the
   branch it started from, in the sandbox (`git diff` from the merge base, with no program of the
   repository's choosing), and lists what a reviewer would want to look at, as observations
@@ -1134,7 +1202,9 @@ To look at:
 - **Nothing a redactor would hide.** The section leaves through both existing redactions: the saved
   secrets of the session's repository and account are taken out by value, and whatever is shaped like a
   credential by the GitHub layer's own (`server/src/github/redact.ts`). A check's output was redacted by
-  Windlass before it was kept, and is again when the platform reads it.
+  Windlass before it was kept, in its record as in its file (`[REDACTED:openai-key]` and the like stand
+  where a credential was), and the saved secrets are taken out of either on the way: out of every event
+  of the engine's as it arrives, and out of a file when the platform reads it.
 - **A push the agent asked for is made before its turn's checks run.** The gate runs when a turn ends,
   and the agent asks the platform to publish during it. The section then says so first ("This was pushed
   while the agent's turn 3 was still running: what that turn changed had not been checked yet."), with
@@ -1142,22 +1212,25 @@ To look at:
   lacks, the platform writes the section again, without a push, and the timeline says so. When the turn
   changed files after the push, the description stays as it is until the next push.
 - **In the session.** The turn's closing line in the timeline has the same facts for that turn: the
-  checks with how each ended, whose it is and how often the agent was sent back, the user's checks that
-  did not run and why, and that files changed after the checks last ran. The line of a push says what the
+  checks with how each ended, whose it is ("yours", "yours, required", "the repository's file") and how
+  often the agent was sent back, the user's checks that did not run and why, whom the repository's own
+  settings held for, and that files changed after the checks last ran. The line of a push says what the
   description reports, in a few words, and the repository's page lists them beside each open pull request
   (`PullRequestInfo.verified`): "2 checks passed", "1 of 2 checks failing", "nothing verified",
   "1 check passed (the repository's own)", with "1 thing to look at" where the section lists some.
 - **What it cannot say.** That the checks are good ones. That a check which passed tested what changed.
-  What the repository's file did in a turn the platform could not read it in. And where commands are not
+  On a Windlass without required checks, what the repository's file did in a turn the platform could
+  not read it in. And where commands are not
   sandboxed, a command can write on the engine's connection to the platform ("The agent asks to
   publish"), so an agent that set out to could forge the events themselves; in the profiles where
   Windlass sandboxes every command it cannot.
 
-**What Windlass would need.** Three things would make this stronger, none of them in 0.2.0: checks that
-whoever starts the harness names and a project's file cannot replace or switch off, as `withholdEnv` is
-(a project's list added to them, as a project's hooks are added to its user's); the file each check came
-from in a run's evidence, as `_windlass/mcp` says for a server; and the end of a failing check's output in
-the evidence itself, where today there is the path of a file in the sandbox.
+**What a required check does not promise** (Windlass's docs/safety.md has the whole of it). Its command is
+the user's; what the command runs is the repository's: `npm test` runs the script `package.json` names and
+the tests the agent can edit, which is what the flags above look at. It runs only for a turn that changed a
+file its patterns cover. The agent may say that it cannot make one pass, or be sent back as often as a
+turn allows: the turn then ends as unresolved, never as done, and the section says so. And in the profiles
+where commands are not sandboxed, the paragraph above about forged events holds for required checks too.
 
 ## A repository's secrets
 
@@ -1786,7 +1859,7 @@ used up and an account with no place left.
 | `server/src/usage.ts` | A user's sandbox time and kept sandboxes: what is counted, the two limits, the book the `user` actor decides with, and the words of a refusal ("Usage and limits") |
 | `server/src/setup-command.ts`, `server/src/sandbox/setup.ts` | A repository's setup command: what it is saved for, its limits, what is kept of a run's output and what the agent is told; and the run itself in a sandbox |
 | `server/src/repository-defaults.ts` | A repository's defaults for new sessions: what may be saved, and how a save writes only the fields it names ("A repository's page") |
-| `server/src/repository-checks.ts` | A repository's checks: what may be saved, the list as Windlass takes it, and how it is stored whole ("A repository's checks") |
+| `server/src/repository-checks.ts` | A repository's checks: what may be saved, the list as Windlass takes it (as required checks, or as its own file's), and how it is stored whole ("A repository's checks") |
 | `server/src/verified.ts` | What a session's work was verified with: what a turn's events come to, what is looked for in the work's changes, and the section of a pull request's description ("What a pull request shows was verified") |
 | `server/src/account-models.ts` | The models a user may choose ("Models"): the list of their ChatGPT plan as the `user` actor keeps it, when Windlass is asked again, the stand-in, and how a model and an effort are held against the list |
 | `server/src/account-defaults.ts`, `server/src/personal-servers.ts`, `server/src/account-secrets.ts` | What a user keeps for their account ("Account settings"): the defaults for new sessions; their own MCP servers, what a name and a definition may be and how many are kept; and the secrets those read, whom they reach and how they give way to a repository's |
@@ -1946,12 +2019,15 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   publish"), so a task that is to publish while its user is away needs a profile whose commands Windlass
   sandboxes. What would close it: an engine that runs as another user than its commands, or one whose
   connection a command cannot write to.
-- **A repository's own file can replace a user's checks, and the platform can only say so.** Windlass
-  0.2.0 follows `checks` and `verify` in a repository's `.windlass/config.json` before its user's, and an
-  agent can write that file: from the turn after, its list runs in place of the user's, or nothing does.
-  The pull request then says that the checks that ran were the repository's, that the user's did not
-  run, and that the check configuration changed in this work; nothing stops the turn from being called
-  done ("A repository's checks"). And the observations about a work's changes are a short list of
+- **With the released Windlass, a repository's own file can replace a user's checks, and the platform
+  can only say so.** Windlass 0.2.0 follows `checks` and `verify` in a repository's
+  `.windlass/config.json` before its user's, and an agent can write that file: from the turn after, its
+  list runs in place of the user's, or nothing does. The pull request then says that the checks that
+  ran were the repository's, that the user's did not run, and that the check configuration changed in
+  this work; nothing stops the turn from being called done. In a sandbox whose Windlass has required
+  checks the user's run whatever that file says ("A repository's checks"); that Windlass is not
+  released, so an image has it only when it was built from such a build
+  (`WINDLASS_BINARY=... sandbox/build.sh`). And the observations about a work's changes are a short list of
   patterns: they miss a test deleted from inside its file and a check weakened in a way the list does
   not name, and they have not been run on a large repository.
 - **A pull request's section is as old as the last push.** It is written when the platform pushes, and

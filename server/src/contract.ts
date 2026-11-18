@@ -256,6 +256,12 @@ export interface SessionSummary {
 	 */
 	envLists?: boolean;
 	/**
+	 * Whether the Windlass in the session's sandbox takes its user's checks as required checks, which
+	 * a repository's own file can neither replace nor switch off (README, "A repository's checks"),
+	 * as it said when a turn last asked it. Absent as `envLists` is.
+	 */
+	requiredChecks?: boolean;
+	/**
 	 * Set once Windlass has told the session of MCP servers: those its project's configuration names,
 	 * and its user's own (`PersonalServer`). How many, and when what the session knows of them last
 	 * changed (a server started, failed, came to wait, an approval was remembered or forgotten here). A
@@ -450,7 +456,11 @@ export interface RepositoryCheck {
 	timeoutSeconds?: number;
 	/** Glob patterns of changed files that make it run; absent: any change does. */
 	when?: string[];
-	/** True: the end of what it printed goes into a pull request's description also when it passed. The platform's own field: Windlass is not told. */
+	/**
+	 * True: the end of what it printed goes into a pull request's description also when it passed. The
+	 * platform's own field. A Windlass that takes required checks is told as `outputTail: "always"`
+	 * and keeps that end itself; for any other the platform reads it from the sandbox.
+	 */
 	showOutput?: boolean;
 }
 
@@ -472,9 +482,12 @@ export interface VerifiedCheck {
 	/**
 	 * "user": one of the checks the session's user saved for the repository, handed to Windlass for
 	 * that turn. "repository": from the repository's own `.windlass/config.json`, which Windlass
-	 * follows in place of the user's list whenever it names one.
+	 * runs besides the user's where those are required checks, and in place of them where they are
+	 * not, whenever it names a list.
 	 */
 	whose: "user" | "repository";
+	/** True when Windlass ran it as a required check: the repository's file could neither replace it nor switch it off. Only a check of the user's is one. */
+	required?: boolean;
 	status: CheckStatus;
 	exitCode: number | null;
 	durationMs: number;
@@ -482,7 +495,7 @@ export interface VerifiedCheck {
 	sentBack: number;
 	/** True when Windlass did not run it again in that run: it had passed earlier in the session, and no file it covers changed since. */
 	carried?: boolean;
-	/** The end of what it printed, at most CHECK_OUTPUT_CHARS: kept for one that did not pass, and for one whose user asked (`RepositoryCheck.showOutput`). */
+	/** The end of what it printed, at most CHECK_OUTPUT_CHARS: kept for one that did not pass, and for one whose user asked (`RepositoryCheck.showOutput`; of the repository's own, its file's `outputTail`). */
 	output?: string;
 }
 
@@ -498,7 +511,8 @@ export interface VerifiedCheck {
  *   none_set        no check is set, neither by the user nor by the repository's file
  *   off             the repository's file turns verification off
  *   emptied         the repository's file names an empty list, which stands in for the user's
- *   no_sandbox      Windlass could not run checks in this sandbox, and said so
+ *   no_sandbox      Windlass could not run checks in this sandbox, and said so; required checks
+ *                   are then in `run`, each as one that could not be started
  *   not_handed      the platform could not write the user's checks where Windlass reads them
  *   not_in_force    the user has checks, Windlass reported none in force, and nothing says why
  *   stopped         the turn was stopped, or cut off, before the gate decided
@@ -513,8 +527,10 @@ export interface Verified {
 	run: { turn: number; at: number; checks: VerifiedCheck[] } | null;
 	/** The user's checks, as saved when `turn` started, that are not among `run`'s. */
 	unrun: Array<{ name: string; command: string }>;
-	/** True when the repository's file named a list of its own in `turn`, so the user's did not apply. */
+	/** True when the repository's file named a list of its own in `turn`, so the user's did not apply. Never where the user's were required checks. */
 	replaced: boolean;
+	/** True when the user's checks were required ones in `turn` and the repository's file said something about checks or verification: that held for the repository's own checks, and not for the user's. */
+	overruled?: boolean;
 	/** True when Windlass recorded another state of the workspace after `run` finished than the one the checks ran on. */
 	changedAfter: boolean;
 }

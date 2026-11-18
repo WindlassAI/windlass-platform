@@ -1,7 +1,7 @@
 /** How the list of agents is grouped and folded, which pull requests a repository's page lists, and what a new agent on a repository starts with. */
 import { describe, expect, it } from "vitest";
 import type { ModelList, PlatformInfo, SandboxProfile, SessionRepository, SessionSummary } from "@contract";
-import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, foldGroup, groupSessions, layerChoices, openPulls, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile } from "./repositories";
+import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, checksStanding, foldGroup, groupSessions, layerChoices, openPulls, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile } from "./repositories";
 
 const repository = (id: number, owner: string, name: string, branch = "main"): SessionRepository => ({ provider: "github", id, owner, name, branch, private: true, url: `https://github.com/${owner}/${name}` });
 const harbor = repository(7101, "acme", "harbor");
@@ -98,6 +98,15 @@ describe("a repository's page", () => {
 	it("lists the pull requests of its agents that are open or drafts, the most recently pushed first", () => {
 		expect(openPulls(sessions, 7101).map(({ pull: one, session: by }) => `${one.number}:${by.id}`)).toEqual(["41:c", "38:a"]);
 		expect(openPulls(sessions, 7102).map(({ pull: one }) => one.number)).toEqual([3]);
+	});
+
+	it("says what a repository's own file can do to the checks from what each agent's sandbox said, and nothing where none has", () => {
+		const asked = (requiredChecks: boolean | undefined, sandbox: "none" | "running" | "paused" = "paused") => session({ repository: harbor, sandbox, ...(requiredChecks === undefined ? {} : { requiredChecks }) });
+		expect(checksStanding([])).toBeNull();
+		expect(checksStanding([asked(undefined), asked(true, "none")])).toBeNull();
+		expect(checksStanding([asked(true), asked(undefined), asked(true, "running")])).toBe("required");
+		expect(checksStanding([asked(false)])).toBe("replaceable");
+		expect(checksStanding([asked(false), asked(true)])).toBe("mixed");
 	});
 });
 

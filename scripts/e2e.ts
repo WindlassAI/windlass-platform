@@ -2877,15 +2877,17 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			assert(saved.checks.length === 2 && (await user.repository(harbor.id)).saved.checks === 2 && (await userOf(carol).repositoryChecks(harbor.id)).checks.length === 0, `saved: ${plain(saved)}`);
 
 			// The session is handed them with its next turn, and the turn's closing item says what they came to and whose they are.
+			// The fake layer's Windlass takes them as required checks, and the session's summary says so once a turn has asked it.
 			const first = await watch.conn.prompt({ text: "Write a short program" });
 			const ended = await watch.untilEnded(first.turn);
-			const ran = ended.verified?.run?.checks.map((one) => `${one.name}:${one.whose}:${one.status}:${one.sentBack}`).join(",");
-			assert(ended.outcome === "succeeded" && ended.verified?.state === "passed" && ended.verified.run?.turn === first.turn && ran === "test:user:passed:0,lint:user:passed:0" && ended.verified.unrun.length === 0 && !ended.verified.replaced, `the turn ended ${ended.outcome} with ${plain(ended.verified)}`);
+			const ran = ended.verified?.run?.checks.map((one) => `${one.name}:${one.whose}:${one.required === true ? "required" : "replaceable"}:${one.status}:${one.sentBack}`).join(",");
+			assert(ended.outcome === "succeeded" && ended.verified?.state === "passed" && ended.verified.run?.turn === first.turn && ran === "test:user:required:passed:0,lint:user:required:passed:0" && ended.verified.unrun.length === 0 && !ended.verified.replaced, `the turn ended ${ended.outcome} with ${plain(ended.verified)}`);
+			assert((await user.listSessions()).find((one) => one.id === sessionId)?.requiredChecks === true, "the session's summary does not say that its sandbox's Windlass takes required checks");
 			assert(watch.windlass(first.turn, "checks.finished").length === 1, "the timeline has no run of checks");
 			const pushed = await handle.publish({ message: { title: "With its checks", body: "" } });
 			const described = standin.pulls.at(-1)?.body ?? "";
 			assert(pushed.state.pullRequest?.verified === "2 checks passed", `the pull request says "${pushed.state.pullRequest?.verified}"`);
-			assert(described.includes(`The 2 checks that applied passed when the agent's turn ${first.turn} ended.`) && described.includes("- **test** (`npm test`), ada's check: passed in 40 ms.") && described.includes("- **lint** (`npm run lint`), ada's check: passed in 40 ms."), `the description is ${plain(described)}`);
+			assert(described.includes(`The 2 checks that applied passed when the agent's turn ${first.turn} ended.`) && described.includes("- **test** (`npm test`), ada's required check: passed in 40 ms.") && described.includes("- **lint** (`npm run lint`), ada's required check: passed in 40 ms."), `the description is ${plain(described)}`);
 			assert(!described.includes("Nothing was verified") && described.split("### What was verified").length === 2, "the description kept the section of the push before it");
 
 			// A check that fails: the turn ends with it unresolved, and the next push says that instead.
@@ -2895,7 +2897,9 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			assert(failing.outcome === "unresolved" && failing.verified?.state === "unresolved" && failing.verified.unresolved?.reason === "max_rounds" && failing.verified.run?.checks[0]?.status === "failed", `the turn ended ${failing.outcome} with ${plain(failing.verified)}`);
 			const again = await handle.publish({ message: { title: "With a check failing", body: "" } });
 			const now = standin.pulls.at(-1)?.body ?? "";
-			assert(again.state.pullRequest?.verified === "1 of 1 check failing" && now.includes(`The agent's turn ${second.turn} ended with a check still failing: the agent had been sent back as often as a turn allows.`) && now.includes("- **test** (`npm run fail`), ada's check: failed with exit code 1 after 40 ms."), `the description is ${plain(now)}`);
+			assert(again.state.pullRequest?.verified === "1 of 1 check failing" && now.includes(`The agent's turn ${second.turn} ended with a check still failing: the agent had been sent back as often as a turn allows.`) && now.includes("- **test** (`npm run fail`), ada's required check: failed with exit code 1 after 40 ms."), `the description is ${plain(now)}`);
+			// The end of what the failing check printed is the one Windlass's record of the run carried.
+			assert(failing.verified.run?.checks[0]?.output === "test: 1 failed" && now.includes("<summary>The end of what test printed</summary>\n\n```text\ntest: 1 failed\n```"), `the description is ${plain(now)}`);
 			assert(!now.includes("npm run lint") && now.split("### What was verified").length === 2 && !/[✓✅]/.test(now), "the description kept the section of the push before it");
 			const line = lines().filter((text) => text.startsWith("Pushed")).at(-1);
 			assert(line?.endsWith("Its description reports: 1 of 1 check failing.") === true, `the timeline says "${line}"`);

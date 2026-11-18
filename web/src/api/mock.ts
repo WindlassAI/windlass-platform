@@ -1401,8 +1401,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			wait: 700,
 			run: () => {
 				if (first && script.platformFailure === undefined) session.windlassSessionId = `ses_${hex(24)}`;
-				// A sandbox made now has the Windlass that takes the lists; one that was there keeps what it said.
-				setSummary(world, session, { status: "running", sandbox: "running", envLists: session.summary.envLists ?? true });
+				// A sandbox made now has the Windlass that takes the lists and required checks; one that was there keeps what it said.
+				setSummary(world, session, { status: "running", sandbox: "running", envLists: session.summary.envLists ?? true, requiredChecks: session.summary.requiredChecks ?? true });
 				// Windlass starts the user's own MCP servers with the turn, as they are saved now.
 				if (script.platformFailure === undefined) knowPersonal(world, session);
 			},
@@ -1719,7 +1719,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	 * What the session's work rests on after a turn, as the server would say it of a turn like the
 	 * mock's: the checks saved for the session's repository that have no file patterns ran and passed
 	 * when the turn ended as done; the ones with patterns did not apply; a turn that was stopped or
-	 * failed ran none, and what an earlier turn's checks came to stands.
+	 * failed ran none, and what an earlier turn's checks came to stands. They ran as required checks
+	 * unless the session's sandbox has the older Windlass.
 	 */
 	function verifiedAfter(world: World, session: MockSession, turn: number, outcome: TurnOutcome): Verified {
 		const saved = world.checks.get(session.summary.repository?.id ?? -1)?.checks ?? [];
@@ -1736,7 +1737,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			turn,
 			state: failing ? "unresolved" : "passed",
 			...(failing ? { unresolved: { reason: "max_rounds" as const, said: null } } : {}),
-			run: { turn, at: now(), checks: ran.map((check, index) => ({ name: check.name, command: check.command, whose: "user" as const, status: failing && index === 0 ? ("failed" as const) : ("passed" as const), exitCode: failing && index === 0 ? 1 : 0, durationMs: 4200 + index * 1900, sentBack: index === 0 ? (failing ? Math.max(reports, 3) : reports) : 0 })) },
+			run: { turn, at: now(), checks: ran.map((check, index) => ({ name: check.name, command: check.command, whose: "user" as const, ...(session.summary.requiredChecks === false ? {} : { required: true }), status: failing && index === 0 ? ("failed" as const) : ("passed" as const), exitCode: failing && index === 0 ? 1 : 0, durationMs: 4200 + index * 1900, sentBack: index === 0 ? (failing ? Math.max(reports, 3) : reports) : 0 })) },
 			unrun: saved.filter((check) => check.when !== undefined).map(({ name, command }) => ({ name, command })),
 			replaced: false,
 			changedAfter: false,
@@ -1935,6 +1936,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			clock = start - ago;
 			const session = addSession(world, { id, title, titled: true, profile, model: extra.model ?? (MODELS[0] as string), repoUrl: extra.repoUrl ?? null, repository: githubOn ? extra.repository : undefined });
 			let at = start - ago;
+			// Said before its turns play: each of them ran on that Windlass.
+			if (extra.olderWindlass) session.summary = { ...session.summary, envLists: false, requiredChecks: false };
 			for (const turn of turns) {
 				const steps = plan(world, session, { text: turn.text, effort: turn.effort }, SCRIPTS[turn.script]);
 				playInstantly(steps, at);
@@ -1944,8 +1947,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			if (session.pauseTimer !== null) cancel(session.pauseTimer);
 			const sandbox = extra.sandbox ?? (turns.length === 0 ? "none" : "paused");
 			// A sandbox a turn ran in has said which Windlass it has; one with no sandbox has nothing to say it.
-			const { envLists: _, ...summary } = session.summary;
-			session.summary = { ...summary, sandbox, ...(sandbox === "none" ? {} : { envLists: extra.olderWindlass !== true }) };
+			const { envLists: _, requiredChecks: __, ...summary } = session.summary;
+			session.summary = { ...summary, sandbox, ...(sandbox === "none" ? {} : { envLists: extra.olderWindlass !== true, requiredChecks: extra.olderWindlass !== true }) };
 			const repository = session.summary.repository;
 			if (repository && extra.pull) {
 				// Pushed earlier: the pull request is there, and what was pushed then no longer differs from the last commit.
@@ -2638,7 +2641,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				session.pauseTimer = null;
 				session.files.clear();
 				store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: MOCK_FREED_NOTE });
-				const { envLists: _, ...summary } = session.summary;
+				const { envLists: _, requiredChecks: __, ...summary } = session.summary;
 				session.summary = summary;
 				setSummary(world(), session, { sandbox: "none" });
 				return usageView(world());

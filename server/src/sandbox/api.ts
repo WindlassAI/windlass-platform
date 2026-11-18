@@ -321,6 +321,13 @@ export interface WindlassFeatures {
 	 * variable's name alone (repo-secrets.ts).
 	 */
 	envLists: boolean;
+	/**
+	 * It takes `requiredChecks`: the user's checks can be named when a session is opened, as checks
+	 * the repository's own file can neither replace nor switch off, and its record of a run says
+	 * whose each check is and carries the end of its output. Without it the user's checks go into
+	 * its own configuration file, where a repository's list stands in for them (windlass-config.ts).
+	 */
+	requiredChecks: boolean;
 }
 
 /**
@@ -388,11 +395,13 @@ export interface RunTurnInput {
 	 */
 	servers?: TurnPersonalServer[];
 	/**
-	 * The checks the session's user saved for its repository (repository-checks.ts), for this turn:
-	 * the layer writes them into Windlass's own configuration file in the sandbox, with the servers
-	 * and by the same step, as the `checks` Windlass runs before it lets the turn end. The
-	 * repository's own `.windlass/config.json` is not touched, and Windlass follows it first:
-	 * `RunTurnResult.checks` says what it held.
+	 * The checks the session's user saved for its repository (repository-checks.ts), for this turn.
+	 * An engine that takes required checks is told them when the session is opened, each time it is
+	 * opened: it runs them before it lets the turn end, whatever the repository's own
+	 * `.windlass/config.json` says. For any other the layer writes them into Windlass's own
+	 * configuration file in the sandbox, with the servers and by the same step, as its `checks`,
+	 * and Windlass follows the repository's file first. That file is never touched, and
+	 * `RunTurnResult.checks` says which of the two it was and what the file held.
 	 */
 	checks?: RepositoryCheck[];
 	/**
@@ -476,7 +485,14 @@ export interface RunTurnInput {
 
 /** What a turn's Windlass had for checks when its session was opened, as far as the layer saw. */
 export interface TurnChecks {
-	/** True when the user's checks (`RunTurnInput.checks`, an empty list too) are what Windlass's own configuration file held then. False when the file could not be read or written. */
+	/**
+	 * True when the turn's engine took the user's checks as required checks, named when its session
+	 * was opened: its record of a run then says whose each check is, whether it is required, and
+	 * carries the end of its output. False for an engine that takes none: the checks went into its
+	 * own configuration file, and its record says none of that.
+	 */
+	required: boolean;
+	/** True when the user's checks (`RunTurnInput.checks`, an empty list too) are what Windlass was given: always where `required`, and otherwise when its own configuration file held them then. False when that file could not be read or written. */
 	handed: boolean;
 	/** What the repository's own configuration file said about checks then (windlass-config.ts, `projectChecks`); null when it is not there or says nothing. */
 	project: ProjectChecks | null;
@@ -580,7 +596,7 @@ export interface Windlass {
 	 * What the Windlass in this sandbox can be told when a session is opened. It is asked of the
 	 * sandbox's own Windlass, once per sandbox, by starting it for a moment and reading what it says of
 	 * itself (the keys of a session's metadata it lists in its answer to `initialize`): its version
-	 * does not tell. Neither feature, and nothing remembered, when the sandbox did not answer: what is
+	 * does not tell. No feature, and nothing remembered, when the sandbox did not answer: what is
 	 * handed over and said is then what an older Windlass would be handed and told.
 	 */
 	features(sandbox: SandboxHandle): Promise<WindlassFeatures>;

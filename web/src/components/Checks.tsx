@@ -5,7 +5,8 @@
  * A check is a command that tells whether the code is right. Windlass runs the list before it calls
  * a turn done, in the agent's sandbox, and sends the agent back with what fails. They are the
  * user's own, kept for the repository and handed to every agent on it; nothing in the repository
- * sets them. The list is saved whole, by one control.
+ * sets them, and whether its own file can replace them depends on the Windlass in a sandbox. The
+ * list is saved whole, by one control.
  */
 import { MAX_CHECKS_PER_REPOSITORY, MAX_CHECK_NAME_CHARS, MAX_CHECK_TIMEOUT_SECONDS, MAX_SETUP_COMMAND_CHARS, type RepositoryCheck } from "@contract";
 import { useEffect, useId, useState } from "react";
@@ -48,17 +49,29 @@ export function checksOf(drafts: readonly CheckDraft[]): RepositoryCheck[] {
 		});
 }
 
-/** What it is, whose it is, and what a repository's own file does to it: the same wherever the list is shown. */
+/** What it is and whose it is: the same wherever the list is shown. */
 export const CHECKS_ABOUT =
 	"Windlass runs these before it calls a turn done, in the agent's own sandbox, and sends the agent back with what fails, three times at most. A pull request the platform opens says which ran and how each ended.";
-export const CHECKS_WHOSE =
-	"They are yours: nothing in the repository sets them. If the repository's own .windlass/config.json names checks or turns verification off, Windlass follows that file instead, and the pull request says so.";
+const CHECKS_YOURS = "They are yours: nothing in the repository sets them.";
+
+/**
+ * And what a repository's own file does to it, which depends on the Windlass in a sandbox: said for
+ * the sandboxes of the user's agents on the repository, as far as they have said (`checksStanding`).
+ */
+export function checksWhose(standing: "required" | "replaceable" | "mixed" | null): string {
+	const file = "the repository's own .windlass/config.json";
+	if (standing === "required") return `${CHECKS_YOURS} In your agents' sandboxes on it, ${file} cannot replace these or switch them off: checks it names run besides them, and the pull request says whose each is.`;
+	if (standing === "replaceable") return `${CHECKS_YOURS} In your agents' sandboxes on it, a repository's own checks run in their place: if ${file} names checks or turns verification off, Windlass follows that file instead, and the pull request says so.`;
+	if (standing === "mixed") return `${CHECKS_YOURS} Some of your agents on it work in a sandbox with an older Windlass, where a repository's own checks run in their place; in the others ${file} cannot replace these. The pull request says which ran and whose each is.`;
+	return `${CHECKS_YOURS} Whether ${file} can replace them depends on the Windlass in an agent's sandbox, which says so with the agent's first turn; the pull request says which checks ran and whose each is.`;
+}
 
 /**
  * The checks of one repository, read and changed in place. `labelledBy` is the heading it stands
- * under; `onSaved` hears of a save.
+ * under; `standing` is what a repository's own file can do to them in the sandboxes of the user's
+ * agents on it; `onSaved` hears of a save.
  */
-export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repositoryId: number; name: string; labelledBy: string; onSaved?(): void }) {
+export function ChecksEditor({ repositoryId, name, labelledBy, standing, onSaved }: { repositoryId: number; name: string; labelledBy: string; standing: "required" | "replaceable" | "mixed" | null; onSaved?(): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const note = useId();
@@ -239,7 +252,7 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 			<p className="panel-empty setup-note" id={note}>
 				{CHECKS_ABOUT} File patterns are globs, separated by commas (<code>src/**, test/**</code>).
 			</p>
-			<p className="panel-empty setup-note">{CHECKS_WHOSE}</p>
+			<p className="panel-empty setup-note">{checksWhose(standing)}</p>
 		</>
 	);
 }

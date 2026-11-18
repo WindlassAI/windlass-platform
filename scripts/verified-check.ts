@@ -7,14 +7,24 @@
  *   cd server && npx tsx ../scripts/verified-check.ts
  *   cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/verified-check.ts --docker
  *
- * With --docker it also asks the Windlass of the sandbox image what it does with a user's checks and
- * a repository's own: real turns in local containers, with a scripted model and no sign-in. That is
- * what the platform's account of "whose check ran" rests on, so it is held to here: a list in the
- * repository's `.windlass/config.json` stands in for the user's whole, `verify.mode` there turns the
- * gate off, and a file the agent writes during a turn counts from the next turn on.
+ * With --docker it also asks a real Windlass what it does with a user's checks and a repository's
+ * own: real turns in local containers, with a scripted model and no sign-in. That is what the
+ * platform's account of "whose check ran" rests on, so it is held to here, for both kinds of
+ * Windlass, each asked what it takes and held to what follows from its answer:
+ *
+ *   without required checks (the released 0.2.0)   a list in the repository's `.windlass/config.json`
+ *       stands in for the user's whole, `verify.mode` there turns the gate off, a file the agent
+ *       writes during a turn counts from the next turn on, and a check's output is in a file
+ *   with them                                       the user's checks run whatever that file says,
+ *       in that turn and the next, the repository's own run besides them, and the evidence says
+ *       whose each is, whether it is required, and carries the redacted end of an output
+ *
+ * The same cases run against the server's image and, where a build of Windlass's branch with
+ * required checks is on this machine (`BRANCH_BINARY`), against a throwaway image made from it.
  */
 
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -50,6 +60,7 @@ expect("a name is what Windlass takes for one, and no two are alike", refused([{
 expect("a command is needed, a time limit is 1 to 3600 seconds, and a pattern cannot start with \"!\"", refused([{ name: "a", command: " " }]) !== null && refused([{ ...TEST, timeoutSeconds: 3601 }]) !== null && refused([{ ...TEST, timeoutSeconds: 1.5 }]) !== null && refused([{ ...TEST, when: ["!src/**"] }]) !== null);
 expect("no pattern is no condition, and a list has its limit", cleanChecks([{ ...TEST, when: [" ", ""] }])[0]?.when === undefined && refused(Array.from({ length: MAX_CHECKS_PER_REPOSITORY + 1 }, (_, index) => ({ name: `c${index}`, command: "true" }))) !== null && refused("npm test") !== null);
 expect("Windlass is handed its own fields and no other: it refuses a file with a key it does not know", plain(windlassChecks([{ ...TYPES, showOutput: true }])) === plain([{ name: "types", command: "npm run typecheck", timeoutSeconds: 300, when: ["src/**"] }]));
+expect("as required checks they are the same list, and a check whose output is to be shown also when it passes says so in Windlass's own field", plain(windlassChecks([TEST, { ...TYPES, showOutput: true }], true)) === plain([{ name: "test", command: "npm test" }, { name: "types", command: "npm run typecheck", timeoutSeconds: 300, when: ["src/**"], outputTail: "always" }]));
 
 // ---- storage: a table of its own beside the ones a user's record has -------------------------------
 
@@ -91,6 +102,8 @@ expect("whatever else the file holds is kept", config.model === "gpt-6-luna" && 
 const withdrawn = platformConfig(written?.config ?? null, written?.written ?? null, []);
 expect("with none to hand over, the file has no checks, and a file that held nothing else is removed", !("checks" in JSON.parse(withdrawn?.config ?? "{}")) && platformConfig(JSON.stringify({ checks: [{ name: "a", command: "b" }] }), null, [])?.config === null);
 expect("a file that is not Windlass's is left alone", platformConfig("not json", null, [], windlassChecks([TEST])) === null);
+const strays = platformConfig(JSON.stringify({ model: "gpt-6-luna", checks: [{ name: "left", command: "true" }], requiredChecks: [{ name: "planted", command: "true" }], verify: { maxRounds: 1 } }), null, []);
+expect("where the checks are named when the session is opened the file gets none, and required checks or a verify setting a command left there go too", strays?.config === `${JSON.stringify({ model: "gpt-6-luna" }, null, 2)}\n` && strays.changed);
 expect(
 	"what a repository's own file says about checks is read, and nothing else of it",
 	plain(projectChecks(JSON.stringify({ checks: [{ name: "smoke", command: "true" }], mcp: {} }))) === plain({ checks: 1, verify: null }) &&
@@ -120,7 +133,10 @@ const log = (events: WindlassEvent[]) => {
 	for (const one of events) made.note(one);
 	return made;
 };
-const HANDED: TurnChecks = { handed: true, project: null };
+/** A turn on a Windlass without required checks: the user's list was written into its own file. */
+const HANDED: TurnChecks = { required: false, handed: true, project: null };
+/** A turn on a Windlass with them: the list was named when the session was opened, and the evidence says whose each check is. */
+const REQUIRED: TurnChecks = { required: true, handed: true, project: null };
 const failing = evidence(["test", "npm test", "failed"]);
 const passing = evidence(["test", "npm test", "passed"]);
 
@@ -135,19 +151,19 @@ expect("each time the harness appends its report, the agent was sent back: twice
 expect("a check of the user's that is not among the ones that ran is listed as one that did not", plain(twice.unrun) === plain([{ name: "types", command: "npm run typecheck" }]) && !twice.replaced);
 
 const others = evidence(["test", "true", "passed"], ["smoke", "true", "passed"]);
-const replaced = log([...ran("w1", others), succeeded({ status: "passed", evidence: others })]).verified(1, [TEST], { handed: true, project: { checks: 2, verify: null } }, null);
+const replaced = log([...ran("w1", others), succeeded({ status: "passed", evidence: others })]).verified(1, [TEST], { ...HANDED, project: { checks: 2, verify: null } }, null);
 expect("when the repository's file names a list, no check that ran is the user's, whatever it is called", replaced.replaced && replaced.run?.checks.every((check) => check.whose === "repository") === true && plain(replaced.unrun) === plain([{ name: "test", command: "npm test" }]));
 const renamed = log([...ran("w1", others), succeeded({ status: "passed", evidence: others })]).verified(1, [TEST], HANDED, null);
-expect("a check under the user's name with another command is not the user's either, nor is any check when the list was not handed over", renamed.run?.checks.every((check) => check.whose === "repository") === true && log([...ran("w1", passing), succeeded({ status: "passed", evidence: passing })]).verified(1, [TEST], { handed: false, project: null }, null).run?.checks[0]?.whose === "repository");
+expect("a check under the user's name with another command is not the user's either, nor is any check when the list was not handed over", renamed.run?.checks.every((check) => check.whose === "repository") === true && log([...ran("w1", passing), succeeded({ status: "passed", evidence: passing })]).verified(1, [TEST], { ...HANDED, handed: false }, null).run?.checks[0]?.whose === "repository");
 
 const none = (handed: TurnChecks | undefined, own: RepositoryCheck[], extra: WindlassEvent[] = []) => log([...extra, succeeded({ status: "not_configured" })]).verified(1, own, handed, null).state;
 expect(
 	"when Windlass says no checks were in force, the reason is the one a field gives",
 	none(HANDED, []) === "none_set" &&
-		none({ handed: true, project: { checks: null, verify: "off" } }, [TEST]) === "off" &&
-		none({ handed: true, project: { checks: 0, verify: null } }, [TEST]) === "emptied" &&
+		none({ ...HANDED, project: { checks: null, verify: "off" } }, [TEST]) === "off" &&
+		none({ ...HANDED, project: { checks: 0, verify: null } }, [TEST]) === "emptied" &&
 		none(HANDED, [TEST], [{ type: "notice", kind: "checks_not_run", message: "..." }]) === "no_sandbox" &&
-		none({ handed: false, project: null }, [TEST]) === "not_handed" &&
+		none({ ...HANDED, handed: false }, [TEST]) === "not_handed" &&
 		none(HANDED, [TEST]) === "not_in_force",
 );
 
@@ -159,7 +175,7 @@ expect("a turn stopped after its checks ran and before they ran again: the resul
 
 const before = log([...ran("w1", passing), succeeded({ status: "passed", evidence: passing })]).verified(1, [TEST], HANDED, null);
 const answered = log([snapshot("w1", "delivery"), succeeded({ status: "not_needed" })]).verified(2, [TEST], HANDED, before);
-const edited = log([snapshot("w1", "delivery"), snapshot("w5", "step_end"), succeeded({ status: "not_configured" })]).verified(3, [TEST], { handed: true, project: { checks: null, verify: "off" } }, answered);
+const edited = log([snapshot("w1", "delivery"), snapshot("w5", "step_end"), succeeded({ status: "not_configured" })]).verified(3, [TEST], { ...HANDED, project: { checks: null, verify: "off" } }, answered);
 expect("a turn that ran no check keeps what the last run found, with the turn it was in", answered.state === "not_needed" && answered.run?.turn === 1 && !answered.changedAfter && answered.unrun.length === 0);
 expect("and a later turn that changed files without a check says that files changed after the checks last ran", edited.state === "off" && edited.run?.turn === 1 && edited.changedAfter);
 const cut = log([snapshot("w1", "delivery"), snapshot("w9", "step_end")]).cutOff(4, before);
@@ -168,13 +184,41 @@ expect("a turn cut off with its server keeps nothing of its own, and says the sa
 const wanted = log([...ran("w1", evidence(["test", "npm test", "failed"], ["lint", "npm run lint", "passed", { outputBytes: 40 }], ["docs", "x", "passed", { outputBytes: 40, outputPath: "/etc/passwd" }]))]);
 expect(
 	"output is read for a check that did not pass and for one whose user asked, and only from a file Windlass names as it names them",
-	plain(wanted.outputs([{ name: "lint", command: "npm run lint", showOutput: true }, { name: "docs", command: "x", showOutput: true }]).map((output) => output.name)) === plain(["test", "lint"]) &&
+	plain(wanted.outputs([{ name: "lint", command: "npm run lint", showOutput: true }, { name: "docs", command: "x", showOutput: true }], HANDED).map((output) => output.name)) === plain(["test", "lint"]) &&
 		isCheckOutputPath("/home/agent/.local/share/windlass/spill/checks/ses_1/check-test-e3b0c44298fc1c149afbf4c8996fb924.log") &&
 		!isCheckOutputPath("/tmp/x/../../etc/check-test-e3b0c44298fc1c149afbf4c8996fb924.log") &&
 		!isCheckOutputPath("check-test-e3b0c44298fc1c149afbf4c8996fb924.log") &&
 		!isCheckOutputPath("/home/agent/.local/share/windlass/access-token-1.json"),
 );
 expect("the end of an output is kept, cut at a line", outputTail(`${"x".repeat(4000)}\nlast line\n`) === "last line" && outputTail(`${"line\n".repeat(1000)}`).length <= CHECK_OUTPUT_CHARS && outputTail("a\r\nb\u0007\n") === "a\nb");
+
+// ---- the same, on a Windlass that takes the user's checks as required ones ---------------------------
+
+/** A check as such a Windlass records it: who named it, whether it is required, and the end of what it printed where it keeps that. */
+const named = (origin: string, required: boolean, printed: string | null = null): Data => ({ origin, required, outputTail: printed === null ? null : { text: printed, truncated: false } });
+const alone = evidence(["test", "npm test", "passed", named("session", true)]);
+const mineAlone = log([...ran("w1", alone), succeeded({ status: "passed", evidence: alone })]).verified(1, [TEST], REQUIRED, null);
+expect("the user's check alone: it is the user's because the evidence says the session's opener named it, and it is required", plain(mineAlone.run?.checks.map((check) => [check.name, check.whose, check.required])) === plain([["test", "user", true]]) && !mineAlone.replaced && mineAlone.overruled === undefined && mineAlone.unrun.length === 0, plain(mineAlone));
+const besides = evidence(["test", "npm test", "passed", named("session", true)], ["smoke", "true", "passed", named("project", false)]);
+const both = log([...ran("w1", besides), succeeded({ status: "passed", evidence: besides })]).verified(1, [TEST], { ...REQUIRED, project: { checks: 1, verify: null } }, null);
+expect("the repository's file names a check of its own: both ran, each is whose the evidence says, and the file replaced nothing", plain(both.run?.checks.map((check) => [check.name, check.whose, check.required ?? false])) === plain([["test", "user", true], ["smoke", "repository", false]]) && !both.replaced && both.overruled === true && both.unrun.length === 0, plain(both));
+const switchedOff = log([...ran("w1", alone), succeeded({ status: "passed", evidence: alone })]).verified(1, [TEST], { ...REQUIRED, project: { checks: 0, verify: "off" } }, null);
+expect("the repository's file names an empty list and turns verification off: the user's check ran all the same, and the record says the file had a say that did not hold for it", switchedOff.state === "passed" && switchedOff.run?.checks[0]?.required === true && !switchedOff.replaced && switchedOff.overruled === true);
+const impostors = evidence(["test", "npm test", "passed", named("project", false)], ["lint", "npm run lint", "passed", named("user", true)], ["types", "npm run typecheck", "passed"]);
+const notMine = log([...ran("w1", impostors), succeeded({ status: "passed", evidence: impostors })]).verified(1, [TEST, TYPES, { name: "lint", command: "npm run lint" }], REQUIRED, null);
+expect("a check is the user's by that field alone: one under a saved name and command that the repository's file, Windlass's own file or nobody is said to have named is not, and is not called required", notMine.run?.checks.every((check) => check.whose === "repository" && check.required === undefined) === true && notMine.unrun.length === 3, plain(notMine));
+expect("and the other way about: on a Windlass without required checks such fields decide nothing", log([...ran("w1", alone), succeeded({ status: "passed", evidence: alone })]).verified(1, [TEST], { ...HANDED, project: { checks: 1, verify: null } }, null).run?.checks[0]?.whose === "repository");
+const printed = evidence(["test", "npm test", "failed", named("session", true, "not ok 1 - adds\ntoken [REDACTED:github-token]\n")], ["lint", "npm run lint", "passed", named("session", true, "lint: clean\n")], ["docs", "x", "passed", named("session", true)]);
+const kept = log([...ran("w1", printed), report(), succeeded({ status: "unresolved", reason: "max_rounds", failing: ["test"], acknowledgement: null, evidence: printed })]);
+const tails = kept.verified(1, [TEST, { name: "lint", command: "npm run lint", showOutput: true }, { name: "docs", command: "x" }], REQUIRED, null);
+expect(
+	"the end of an output is the evidence's own, as Windlass redacted it: of the check that failed and of the one whose entry asked, and no file in the sandbox is read for it",
+	plain(tails.run?.checks.map((check) => check.output ?? null)) === plain(["not ok 1 - adds\ntoken [REDACTED:github-token]", "lint: clean", null]) && kept.outputs([TEST], REQUIRED).length === 0 && kept.outputs([TEST], HANDED).length === 1 && kept.verified(1, [TEST], HANDED, null).run?.checks[0]?.output === undefined,
+	plain(tails.run),
+);
+const notStarted = evidence(["test", "npm test", "could_not_start", { ...named("session", true), exitCode: null, durationMs: 0, startError: "the checks run only in the sandbox in this mode, and the sandbox is unavailable (bwrap: not found)" }]);
+const blocked = log([{ type: "notice", kind: "checks_not_run", message: "..." }, ...ran("w1", notStarted), report(), report(), report(), succeeded({ status: "unresolved", reason: "max_rounds", failing: ["test"], acknowledgement: null, evidence: notStarted })]).verified(1, [TEST], REQUIRED, null);
+expect("where no sandbox can run a required check it is recorded as not started and the turn ends with it failing: the platform says that nothing was verified, with the check", blocked.state === "no_sandbox" && plain(blocked.run?.checks.map((check) => [check.whose, check.required, check.status, check.sentBack])) === plain([["user", true, "could_not_start", 3]]) && verifiedWords(blocked, [], null) === "nothing verified", plain(blocked));
 
 // ---- what is looked for in the work's changes --------------------------------------------------------
 
@@ -237,6 +281,24 @@ const nothing = verifiedSection({ verified: log([succeeded({ status: "not_config
 expect("when nothing was verified it says so in one plain sentence", nothing.split("\n\n").slice(2, -2).join("|") === "Nothing was verified: no checks are set for this repository.", nothing);
 const theirs = verifiedSection({ verified: replaced, flags: [], during: null, login: "ada" });
 expect("a check from the repository's file is said to be that, and the user's are said not to have run because of it", theirs.includes("from the repository's `.windlass/config.json`: passed") && !theirs.includes("ada's check:") && theirs.includes("names checks of its own, and Windlass follows a repository's list in place of ada's checks."), theirs);
+const mineSection = verifiedSection({ verified: mineAlone, flags: [], during: null, login: "ada" });
+expect("a required check of the user's is said to be both, and where the repository's file had no say nothing more is said of it", mineSection.includes("- **test** (`npm test`), ada's required check: passed in 4.2 s.") && !mineSection.includes(".windlass/config.json"), mineSection);
+const bothSection = verifiedSection({ verified: both, flags: [], during: null, login: "ada" });
+expect(
+	"with required checks a user's check and the repository's own both ran, each labelled, and the section says whom the repository's settings held for and no longer that the user's did not run",
+	bothSection.includes("The 2 checks that applied passed") &&
+		bothSection.includes("- **test** (`npm test`), ada's required check: passed in 4.2 s.") &&
+		bothSection.includes("- **smoke** (`true`), from the repository's `.windlass/config.json`: passed in 4.2 s.") &&
+		bothSection.includes("\n\nThe repository's `.windlass/config.json` says something about checks too. That holds for the repository's own checks: ada's checks are required, and that file can neither replace them nor switch them off.\n\n") &&
+		!bothSection.includes("Did not run") &&
+		!bothSection.includes("names checks of its own") &&
+		verifiedWords(both, [], null) === "2 checks passed",
+	bothSection,
+);
+const tailSection = verifiedSection({ verified: tails, flags: [], during: null, login: "ada" });
+expect("the output the evidence carried is folded under its check, with what Windlass put in a secret's place", tailSection.includes("<summary>The end of what test printed</summary>\n\n```text\nnot ok 1 - adds\ntoken [REDACTED:github-token]\n```") && tailSection.includes("<summary>The end of what lint printed</summary>") && !tailSection.includes("what docs printed"), tailSection);
+const blockedSection = verifiedSection({ verified: blocked, flags: [], during: null, login: "ada" });
+expect("a required check that no sandbox could run is listed as not started, under the sentence that nothing was verified", blockedSection.includes("Nothing was verified in the agent's turn 1: Windlass could not run checks in this session's sandbox.") && blockedSection.includes("ada's required check: could not be started"), blockedSection);
 const early = verifiedSection({ verified: before, flags: null, during: 2, login: "ada" });
 expect("a push made while a turn runs says that the turn's changes were not checked, and one whose changes could not be read says that", early.includes("This was pushed while the agent's turn 2 was still running") && early.includes("Before it: The check that applied passed") && early.includes("could not read the changes"));
 expect("a few words for a list", verifiedWords(twice, [], null) === "1 check passed" && verifiedWords(replaced, [], null) === "2 checks passed (the repository's own)" && verifiedWords(unresolved, [{ kind: "tests_removed", where: ["a"] }], null) === "1 of 1 check failing, 1 thing to look at" && verifiedWords(null, [], null) === "nothing verified" && verifiedWords(before, [], 2) === "pushed before the turn's checks ran");
@@ -253,71 +315,134 @@ const secret = "hunter2-very-secret";
 const sealed = evidenceSection({ verified: withOutputs(twice, new Map([["test", `token ${secret} ghs_${"a".repeat(36)}`]])), during: null, checks: [TEST], redact: (text) => text.split(secret).join("[secret:NPM_TOKEN]") }, null, "ada");
 expect("the section leaves through both redactions: a saved secret by value, and anything shaped like a credential", !sealed.section.includes(secret) && sealed.section.includes("[secret:NPM_TOKEN]") && !/ghs_a{10}/.test(sealed.section) && sealed.words === "1 check passed");
 
-// ---- with --docker: what the image's Windlass does with a user's checks and a repository's own ------
+// ---- with --docker: what a real Windlass does with a user's checks and a repository's own -----------
 
 if (process.argv.includes("--docker")) {
-	const { LABEL_ARG, docker, randomId } = await import("../server/src/sandbox/docker.js");
+	const { IMAGE, LABEL, LABEL_ARG, docker, randomId } = await import("../server/src/sandbox/docker.js");
 	const { createSandboxLayer } = await import("../server/src/sandbox/index.js");
+	type Layer = ReturnType<typeof createSandboxLayer>;
 	type Handle = import("../server/src/sandbox/sandboxes.js").DockerSandboxHandle;
-	const layer = createSandboxLayer({ signIns: "memory", tokenNetwork: "none" });
+	const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 	const run = randomId(3);
-	const created: string[] = [];
-	const users: string[] = [];
+	/** A build of Windlass's branch with required checks, where this machine has one: the second Windlass the cases run against until the server's image has them itself. */
+	const BRANCH_BINARY = `/home/ubuntu/projects/windlass-local-builds/checks-branch/windlass-linux-${process.arch === "arm64" ? "arm64" : "x64"}`;
 	type Item = Record<string, unknown>;
 	const call = (callId: string, name: string, input: Record<string, unknown>): Item[] => [{ type: "tool_call", callId, name, input }, { type: "finish", reason: "tool_calls" }];
 	const say = (words: string): Item[] => [{ type: "text", text: words }, { type: "finish", reason: "stop" }];
 	const scripted = (...responses: Item[][]) => ({ responses: [...responses, say("Nothing more."), say("Nothing more."), say("Nothing more.")] });
 	const write = (callId: string, content: string, path = "app.txt") => call(callId, "write", { path, content });
+	/** Made up, and shaped like a GitHub token: what Windlass's own redaction takes out of a check's output. */
+	const TOKEN = `ghp_${"R3quiredCh3cksMadeUpT0ken".padEnd(36, "x")}`;
 	const OWN_CHECK: RepositoryCheck = { name: "test", command: "sh test.sh" };
+	const SWITCHED_OFF = { checks: [], verify: { mode: "off" } };
+	const facts = (verified: Verified) => plain(verified.run?.checks.map((check) => [check.name, check.command, check.whose, check.required ?? false, check.status, check.sentBack]) ?? null);
 
-	async function sandbox(name: string, project?: unknown): Promise<Handle> {
-		const user = `verified-${run}-${name}`;
-		users.push(user);
-		await layer.logins.ensureUserVolume(user);
-		const id = await layer.sandboxes.create({ uid: user, sessionId: `s-${name}`, profile: "docker-windlass-sandbox" });
-		created.push(id);
-		const handle = (await layer.sandboxes.connect(id)) as Handle;
-		await handle.writeTextFile("/workspace/test.sh", 'grep -q fixed app.txt || { echo "app.txt is not fixed"; exit 1; }\n');
-		await handle.writeTextFile("/workspace/app.txt", "broken\n");
-		if (project !== undefined) await handle.writeTextFile("/workspace/.windlass/config.json", JSON.stringify(project));
-		return handle;
+	/** The cases, against the Windlass of one image: what it says it takes decides what is expected of it. */
+	async function cases(layer: Layer, image: string): Promise<void> {
+		const created: string[] = [];
+		const users: string[] = [];
+		async function sandbox(name: string, project?: unknown): Promise<Handle> {
+			const user = `verified-${run}-${name}-${users.length}`;
+			users.push(user);
+			await layer.logins.ensureUserVolume(user);
+			const id = await layer.sandboxes.create({ uid: user, sessionId: `s-${name}`, profile: "docker-windlass-sandbox" });
+			created.push(id);
+			const handle = (await layer.sandboxes.connect(id)) as Handle;
+			await handle.writeTextFile("/workspace/test.sh", `grep -q fixed app.txt || { echo "app.txt is not fixed"; echo "token ${TOKEN}"; exit 1; }\necho "app.txt is fixed"\n`);
+			await handle.writeTextFile("/workspace/app.txt", "broken\n");
+			if (project !== undefined) await handle.writeTextFile("/workspace/.windlass/config.json", JSON.stringify(project));
+			return handle;
+		}
+		async function turn(handle: Handle, script: ReturnType<typeof scripted>, checks: RepositoryCheck[], windlassSessionId?: string) {
+			const made = new VerificationLog();
+			const events: WindlassEvent[] = [];
+			const result = await layer.windlass.runTurn(handle, { prompt: "go", script, checks, windlassSessionId, onEvent: (one) => (events.push(one), made.note(one)), onQuestion: async () => ({ choice: "once" }) });
+			return { result, log: made, events, verified: made.verified(1, checks, result.checks, null) };
+		}
+		const fixes = () => scripted(write("c1", "still broken\n"), say("Done."), write("c2", "fixed\n"), say("Fixed."));
+
+		try {
+			const a = await sandbox("a");
+			const { requiredChecks: required } = await layer.windlass.features(a);
+			console.log(`\nwith the Windlass of ${image} (${(await layer.windlass.version()) ?? "unknown version"}), which ${required ? "takes" : "does not take"} required checks:`);
+			const expectAs = (what: string, ok: boolean, detail = "") => expect(`${required ? "[required]" : "[replaceable]"} ${what}`, ok, detail);
+
+			// (a) The user's check alone.
+			const fixed = await turn(a, fixes(), [{ ...OWN_CHECK, showOutput: true }]);
+			expectAs(
+				`the user's check runs before the turn ends; it fails, the agent is sent back, and it passes${required ? ": the evidence says it is the session's and required" : ", handed over in Windlass's own file"}`,
+				fixed.verified.state === "passed" && facts(fixed.verified) === plain([["test", "sh test.sh", "user", required, "passed", 1]]),
+				plain(fixed.verified),
+			);
+			expectAs(`the layer says ${required ? "that the checks were named as required ones" : "that it wrote the checks into Windlass's file"}, and that the repository's file names none`, plain(fixed.result.checks) === plain({ required, handed: true, project: null }), plain(fixed.result.checks));
+			const left = await a.run("cat /home/agent/.config/windlass/config.json 2>/dev/null || echo none");
+			expectAs("Windlass's own file in the sandbox holds no check when the turn has ended", left.stdout.trim() === "none", left.stdout.trim());
+			const shown = fixed.verified.run?.checks[0]?.output;
+			const paths = fixed.log.outputs([{ ...OWN_CHECK, showOutput: true }], fixed.result.checks);
+			if (required) expectAs("the end of the passing check's output is in the evidence because its entry asks for it, and no file is to be read", shown === "app.txt is fixed" && paths.length === 0, `${plain(shown)} ${plain(paths)}`);
+			else expectAs("the passing check's output is in the file its evidence names, which the platform reads because the user asked", shown === undefined && paths.length === 1 && (await a.run(`tail -c 400 -- '${paths[0]?.path}'`)).stdout.trim() === "app.txt is fixed", `${plain(shown)} ${plain(paths)}`);
+
+			// (b) The repository's file names a check of its own.
+			const b = await sandbox("b", { checks: [{ name: "smoke", command: "true" }] });
+			const theirs = await turn(b, fixes(), [OWN_CHECK]);
+			if (required) expectAs("a list in the repository's .windlass/config.json runs besides the user's check, after it: both ran, each is whose the evidence says, and the user's sent the agent back", theirs.verified.state === "passed" && facts(theirs.verified) === plain([["test", "sh test.sh", "user", true, "passed", 1], ["smoke", "true", "repository", false, "passed", 0]]) && !theirs.verified.replaced && theirs.verified.overruled === true && theirs.verified.unrun.length === 0, plain(theirs.verified));
+			else expectAs("a list in the repository's .windlass/config.json stands in for the user's whole: its check runs, the user's does not, and the turn is called done", facts(theirs.verified) === plain([["smoke", "true", "repository", false, "passed", 0]]) && theirs.verified.replaced && plain(theirs.verified.unrun.map((check) => check.name)) === plain(["test"]), plain(theirs.verified));
+
+			// (c) The repository's file names an empty list and turns verification off.
+			const c = await sandbox("c", SWITCHED_OFF);
+			const off = await turn(c, fixes(), [OWN_CHECK]);
+			if (required) expectAs("checks: [] and verify.mode off in the repository's file change nothing for the user's check: it runs, sends the agent back, and passes", off.verified.state === "passed" && facts(off.verified) === plain([["test", "sh test.sh", "user", true, "passed", 1]]) && off.verified.overruled === true, plain(off.verified));
+			else expectAs("checks: [] and verify.mode off in the repository's file turn the gate off for the user's checks, and the platform says which file did", off.verified.state === "off" && off.verified.run === null, plain(off.verified));
+
+			// (d) The agent writes the repository's file during a turn, then a second turn.
+			const d = await sandbox("d");
+			const during = await turn(d, scripted(write("c1", JSON.stringify({ checks: [{ name: "test", command: "true" }], verify: { mode: "off" } }), ".windlass/config.json"), write("c2", "still broken\n"), say("Done."), say("Giving up."), say("Giving up."), say("Giving up.")), [OWN_CHECK]);
+			expectAs("a repository's file the agent writes during a turn changes nothing in that turn: the user's check still runs, and fails", during.verified.state === "unresolved" && facts(during.verified) === plain([["test", "sh test.sh", "user", required, "failed", 3]]) && during.verified.unresolved?.reason === "max_rounds", plain(during.verified));
+			const after = await turn(d, scripted(write("c3", "broken again\n"), say("Done."), write("c4", "fixed\n"), say("Fixed.")), [OWN_CHECK], during.result.windlassSessionId ?? undefined);
+			if (required) expectAs("nor in the next: the user's check runs and gates, and the repository's check of its name is not run in its place", after.verified.state === "passed" && facts(after.verified) === plain([["test", "sh test.sh", "user", true, "passed", 1]]) && !after.verified.replaced && after.verified.overruled === true, plain(after.verified));
+			else expectAs("from the next turn on it does: nothing runs, and the platform says that the file turned verification off", after.verified.state === "off" && after.verified.run === null && after.verified.replaced, plain(after.verified));
+
+			// (e) What the failing check printed, and a secret-looking value in it.
+			const failingOutput = during.verified.run?.checks[0]?.output;
+			const files = during.log.outputs([OWN_CHECK], during.result.checks);
+			const everything = plain(during.events);
+			if (required) expectAs("the end of the failing check's output is in the evidence, with the secret-looking value redacted by Windlass, and no file is to be read", failingOutput !== undefined && failingOutput.startsWith("app.txt is not fixed\ntoken ") && !failingOutput.includes(TOKEN) && files.length === 0, `${plain(failingOutput)} ${plain(files)}`);
+			else {
+				const read = files[0] ? await d.run(`tail -c 400 -- '${files[0].path}'`) : null;
+				expectAs("the output of the failing check is in the file its evidence names, redacted by Windlass before it was kept", failingOutput === undefined && read !== null && read.stdout.startsWith("app.txt is not fixed\ntoken ") && !read.stdout.includes(TOKEN), `${plain(files)} ${read?.stdout}`);
+			}
+			expectAs("and that value is in no event of the turn", !everything.includes(TOKEN) && everything.includes("app.txt is not fixed"));
+
+			// Where commands are sandboxed and no sandbox can run: bubblewrap is taken away in this container.
+			const f = await sandbox("f");
+			const gone = await docker(["exec", "-u", "0", f.container, "sh", "-c", 'mv "$(command -v bwrap)" /root/bwrap.off']);
+			const noSandbox = await turn(f, scripted(write("c1", "fixed\n"), say("Done."), say("Giving up."), say("Giving up."), say("Giving up.")), [OWN_CHECK]);
+			if (required) expectAs("where no sandbox can run, the user's required check is recorded as not started and the turn ends with it failing: nothing was verified, and the check is listed", gone.code === 0 && noSandbox.verified.state === "no_sandbox" && plain(noSandbox.verified.run?.checks.map((check) => [check.whose, check.required, check.status])) === plain([["user", true, "could_not_start"]]), plain(noSandbox.verified));
+			else expectAs("where no sandbox can run, the checks are passed over and the turn is called done: the platform says that nothing was verified", gone.code === 0 && noSandbox.verified.state === "no_sandbox" && noSandbox.verified.run === null, plain(noSandbox.verified));
+		} finally {
+			for (const id of created) await layer.sandboxes.destroy(id).catch(() => undefined);
+			for (const user of users) await docker(["volume", "rm", "-f", `wlp-user-${user}`, `wlp-auth-${user}`]).catch(() => undefined);
+			const remaining = await docker(["ps", "-a", "--filter", `label=${LABEL_ARG}`, "--format", "{{.Names}}"]);
+			expect("every container of these cases is removed", !created.some((id) => remaining.stdout.includes(id)));
+		}
 	}
-	async function turn(handle: Handle, script: ReturnType<typeof scripted>, checks: RepositoryCheck[], windlassSessionId?: string) {
-		const made = new VerificationLog();
-		const result = await layer.windlass.runTurn(handle, { prompt: "go", script, checks, windlassSessionId, onEvent: (one) => made.note(one), onQuestion: async () => ({ choice: "once" }) });
-		return { result, log: made, verified: made.verified(1, checks, result.checks, null) };
-	}
 
-	try {
-		console.log(`\nwith the Windlass of the sandbox image (${(await layer.windlass.version()) ?? "unknown version"}):`);
-		const a = await sandbox("a");
-		const fixed = await turn(a, scripted(write("c1", "still broken\n"), say("Done."), write("c2", "fixed\n"), say("Fixed.")), [OWN_CHECK]);
-		expect("the user's check, handed over in Windlass's own file, runs before the turn ends; it fails, the agent is sent back, and it passes", fixed.verified.state === "passed" && plain(fixed.verified.run?.checks.map((check) => [check.name, check.command, check.whose, check.status, check.sentBack])) === plain([["test", "sh test.sh", "user", "passed", 1]]), plain(fixed.verified));
-		expect("the layer says that it handed the checks over and that the repository's file names none", plain(fixed.result.checks) === plain({ handed: true, project: null }));
-		const left = await a.run("cat /home/agent/.config/windlass/config.json 2>/dev/null || echo none");
-		expect("and takes them out of Windlass's file again when the turn has ended", left.stdout.trim() === "none", left.stdout.trim());
+	await cases(createSandboxLayer({ signIns: "memory", tokenNetwork: "none" }), IMAGE);
 
-		const b = await sandbox("b", { checks: [{ name: "smoke", command: "true" }] });
-		const theirsRan = await turn(b, scripted(write("c1", "still broken\n"), say("Done.")), [OWN_CHECK]);
-		expect("a list in the repository's .windlass/config.json stands in for the user's whole: its check runs, the user's does not, and the turn is called done", plain(theirsRan.verified.run?.checks.map((check) => [check.name, check.whose, check.status])) === plain([["smoke", "repository", "passed"]]) && theirsRan.verified.replaced && plain(theirsRan.verified.unrun.map((check) => check.name)) === plain(["test"]), plain(theirsRan.verified));
-
-		const c = await sandbox("c", { verify: { mode: "off" } });
-		const off = await turn(c, scripted(write("c1", "still broken\n"), say("Done.")), [OWN_CHECK]);
-		expect("verify.mode off in the repository's file turns the gate off for the user's checks, and the platform says which file did", off.verified.state === "off" && off.verified.run === null, plain(off.verified));
-
-		const d = await sandbox("d");
-		const during = await turn(d, scripted(write("c1", JSON.stringify({ checks: [{ name: "test", command: "true" }] }), ".windlass/config.json"), write("c2", "still broken\n"), say("Done."), say("Giving up."), say("Giving up."), say("Giving up.")), [OWN_CHECK]);
-		expect("a repository's file the agent writes during a turn changes nothing in that turn: the user's check still runs, and fails", during.verified.state === "unresolved" && during.verified.run?.checks[0]?.whose === "user" && during.verified.run.checks[0].status === "failed" && during.verified.unresolved?.reason === "max_rounds", plain(during.verified));
-		const outputs = during.log.outputs([OWN_CHECK]);
-		const printed = outputs[0] ? await d.run(`tail -c 400 -- '${outputs[0].path}'`) : null;
-		expect("the output of the failing check is in the file its evidence names", printed?.stdout.trim() === "app.txt is not fixed", `${plain(outputs)} ${printed?.stdout}`);
-		const after = await turn(d, scripted(write("c3", "broken again\n"), say("Done.")), [OWN_CHECK], during.result.windlassSessionId ?? undefined);
-		expect("from the next turn on it does: the check that runs has the user's name and another command, and is not presented as the user's", after.verified.state === "passed" && after.verified.replaced && plain(after.verified.run?.checks.map((check) => [check.name, check.command, check.whose])) === plain([["test", "true", "repository"]]), plain(after.verified));
-	} finally {
-		for (const id of created) await layer.sandboxes.destroy(id).catch(() => undefined);
-		for (const user of users) await docker(["volume", "rm", "-f", `wlp-user-${user}`, `wlp-auth-${user}`]).catch(() => undefined);
-		const remaining = await docker(["ps", "-a", "--filter", `label=${LABEL_ARG}`, "--format", "{{.Names}}"]);
-		expect("every container of this check is removed", !created.some((id) => remaining.stdout.includes(id)));
+	if (!existsSync(BRANCH_BINARY)) console.log(`\nSKIP  the same cases against a Windlass with required checks: there is no such build at ${BRANCH_BINARY}`);
+	else {
+		const tag = `windlass-platform-sandbox-checks:chk-${run}`;
+		const idOf = async (image: string) => (await docker(["image", "inspect", "--format", "{{.Id}}", image])).stdout.trim();
+		const latest = await idOf(IMAGE);
+		const built = spawnSync(join(root, "sandbox/build.sh"), { env: { ...process.env, WLP_SANDBOX_IMAGE: tag, WINDLASS_BINARY: BRANCH_BINARY }, encoding: "utf8" });
+		expect("build.sh builds that Windlass into a throwaway image of its own", built.status === 0 && (await idOf(tag)) !== "" && (await idOf(IMAGE)) === latest, built.stderr.trim().split("\n").pop());
+		try {
+			if (built.status === 0) await cases(createSandboxLayer({ image: tag, signIns: "memory", tokenNetwork: "none" }), tag);
+		} finally {
+			const label = await docker(["image", "inspect", "--format", `{{index .Config.Labels "${LABEL}"}}`, tag]);
+			if (label.code === 0 && label.stdout.trim() === "1") await docker(["rmi", tag]);
+			expect("the throwaway image is removed again, and the server's image was never replaced", (await idOf(tag)) === "" && (await idOf(IMAGE)) === latest);
+		}
 	}
 }
 

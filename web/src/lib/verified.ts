@@ -48,7 +48,7 @@ export function checkLine(check: VerifiedCheck): string {
 						: check.exitCode === null
 							? "failed"
 							: `failed, exit ${check.exitCode}`;
-	const whose = check.whose === "user" ? "yours" : "the repository's file";
+	const whose = check.whose === "user" ? (check.required ? "yours, required" : "yours") : "the repository's file";
 	if (check.carried) return `${how} earlier, not run again (${whose})`;
 	return `${how} ${check.status === "passed" ? "in" : "after"} ${duration(check.durationMs)} (${whose}${check.sentBack > 0 ? `, sent back ${times(check.sentBack)}` : ""})`;
 }
@@ -71,6 +71,11 @@ export function unrunLine(verified: Verified): string | null {
 	if (verified.state === "not_needed") return `${names}: the turn changed nothing ${many ? "they cover" : "it covers"}`;
 	if (verified.state === "stopped" || verified.state === "failed") return `${names}: the turn ended before ${many ? "they" : "it"} ran`;
 	return names;
+}
+
+/** Where your checks were required ones and the repository's file had a say about checks: whom that held for; null otherwise. */
+export function overruledLine(verified: Verified): string | null {
+	return verified.overruled ? "the repository's .windlass/config.json says something about checks too: that holds for its own checks, and can neither replace your required checks nor switch them off" : null;
 }
 
 /** Where the checks that are listed ran in an earlier turn than the one that ended: which. */

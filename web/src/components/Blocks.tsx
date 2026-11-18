@@ -8,7 +8,7 @@ import { codeText, toolCopyLabels, toolInputText, toolOutputText } from "../lib/
 import { reasoningTitle, renderMarkdown } from "../lib/markdown";
 import { callKey, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
 import { formatInput, summarizeTool } from "../lib/toolSummary";
-import { checkLine, gateWord, ranEarlier, unresolvedLine, unrunLine } from "../lib/verified";
+import { checkLine, gateWord, overruledLine, ranEarlier, unresolvedLine, unrunLine } from "../lib/verified";
 import { useNow } from "../state/hooks";
 import { CopyButton, useLatest } from "./Copy";
 import { DiffHunks } from "./DiffView";
@@ -621,7 +621,7 @@ const VERIFICATION_WORD: Record<string, string> = {
 /**
  * Under a turn's closing line: what its work rests on, as the platform recorded it from Windlass's
  * checks. Each check of the last run with how it ended and whose it is, the user's checks that did
- * not run and why, and whether files changed after. The same facts a pull request's description is
+ * not run and why, whom the repository's own settings held for, and whether files changed after. The same facts a pull request's description is
  * given. Nothing is drawn for a turn that had no checks and none before it.
  */
 function VerifiedLines({ verified }: { verified: Verified }) {
@@ -629,6 +629,7 @@ function VerifiedLines({ verified }: { verified: Verified }) {
 	const earlier = ranEarlier(verified);
 	const unresolved = unresolvedLine(verified);
 	const unrun = unrunLine(verified);
+	const overruled = overruledLine(verified);
 	return (
 		<>
 			{checks.length > 0 ? (
@@ -650,6 +651,11 @@ function VerifiedLines({ verified }: { verified: Verified }) {
 				<p className="turn-end-line turn-end-sub">
 					<span>did not run</span>
 					<span>{unrun}</span>
+				</p>
+			) : null}
+			{overruled ? (
+				<p className="turn-end-line turn-end-sub">
+					<span>{overruled}</span>
 				</p>
 			) : null}
 			{verified.changedAfter ? (

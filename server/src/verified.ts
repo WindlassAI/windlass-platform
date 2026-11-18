@@ -11,7 +11,9 @@
  * the `origin` of a message the harness appended, a snapshot's id. No sentence of Windlass's is read.
  *
  *   checks.finished        the evidence of one run: each check's name, command, status, exit code,
- *                          duration, and the file its output is kept in
+ *                          duration, and the file its output is kept in; from a Windlass with
+ *                          required checks also whose it is (`origin`), whether it is required,
+ *                          and the end of its output (`outputTail`)
  *   synthetic.appended     with `origin: "check_report"`: the agent was sent back with what failed
  *   snapshot.taken         the workspace's state by id: the one the checks ran on, and every later one
  *   tool.started           a call's `effect`, where no snapshot says whether files changed
@@ -19,13 +21,26 @@
  *   execution.failed, execution.interrupted
  *   notice                 with `kind: "checks_not_run"`: Windlass could not run checks in the sandbox
  *
- * Whose a check is. Windlass takes checks from its user's own configuration file, where the platform
- * writes the list the session's user saved (repository-checks.ts), and from the repository's
- * `.windlass/config.json`, whose list stands in for the user's whole. Its evidence does not say which
- * file a check came from. So a check counts as the user's only when both hold: the repository's file
- * named no list when the turn started (the sandbox layer read it then, `TurnChecks`), and the check's
- * name and command are those of a check the platform handed over. Anything else is the
- * repository's: a check is never presented as the user's when it may not be.
+ * Whose a check is, and where each fact about one is from, depends on the Windlass the turn ran on,
+ * and is decided in one place (`VerificationLog.verified`, on `TurnChecks.required`):
+ *
+ *   with required checks   the platform names the user's checks when it opens the session
+ *                          (sandbox/turn.ts). They run before the repository's own, which run too,
+ *                          and Windlass's evidence says of each check who named it. The user's are
+ *                          the ones whose `origin` is "session": named by the process that opened
+ *                          the session, which is the platform, for the user. Whether one is
+ *                          required and the end of its output are the evidence's as well.
+ *   without                the platform writes the user's list into Windlass's own configuration
+ *                          file, and the repository's `.windlass/config.json` stands in for it
+ *                          whole when it names one. The evidence does not say which file a check
+ *                          came from. So a check counts as the user's only when both hold: the
+ *                          repository's file named no list when the turn started (the sandbox layer
+ *                          read it then, `TurnChecks.project`), and the check's name and command are
+ *                          those of a check the platform handed over. The end of an output is read
+ *                          from the file the evidence names (`outputs`).
+ *
+ * Either way anything else is the repository's: a check is never presented as the user's when it
+ * may not be.
  *
  * This file has no actor, no sandbox and no GitHub in it: the session's actor feeds it events and
  * stores what it answers, github/publish.ts puts the section into a pull request, and
@@ -54,6 +69,12 @@ interface RanCheck {
 	carried: boolean;
 	outputPath: string | null;
 	outputBytes: number;
+	/** Who named it, where the evidence says (`origin`): "session" is whoever opened the session, which is the platform, for the user. */
+	origin: string;
+	/** The evidence says it is a required check. */
+	required: boolean;
+	/** The end of its output as the evidence carries it (`outputTail.text`), "" where it carries none. */
+	tail: string;
 }
 
 /**
@@ -110,6 +131,9 @@ export class VerificationLog {
 							carried: typeof check.reusedFromSeq === "number",
 							outputPath: typeof check.outputPath === "string" ? check.outputPath : null,
 							outputBytes: typeof check.outputBytes === "number" ? check.outputBytes : 0,
+							origin: text(check.origin),
+							required: check.required === true,
+							tail: isRecord(check.outputTail) ? text(check.outputTail.text) : "",
 						},
 					];
 				});
@@ -154,17 +178,26 @@ export class VerificationLog {
 	 * turn ended before it got that far), and `previous` what the session's work rested on before.
 	 * A turn in which no run of checks finished keeps the earlier run, and says whether the
 	 * workspace changed since.
+	 *
+	 * Where the facts about a check are from is decided here, on one field: `handed.required`, which
+	 * says that the turn's Windlass took the user's checks as required ones. Then the evidence says
+	 * whose a check is, whether it is required and what it printed, and the repository's file
+	 * replaces nothing. Otherwise the platform works out whose a check is from the two files, as
+	 * Windlass merges them, and reads what it printed from the sandbox afterwards (`outputs`).
 	 */
 	verified(turn: number, saved: readonly RepositoryCheck[], handed: TurnChecks | undefined, previous: Verified | null): Verified {
 		const project = handed?.project ?? null;
-		const replaced = project !== null && project.checks !== null;
-		const mine = (check: { name: string; command: string }) => !replaced && handed?.handed === true && saved.some((own) => own.name === check.name && own.command === check.command);
+		const told = evidenceTells(handed);
+		const replaced = !told && project !== null && project.checks !== null;
+		const mine = told ? (check: RanCheck) => check.origin === "session" : (check: RanCheck) => !replaced && handed?.handed === true && saved.some((own) => own.name === check.name && own.command === check.command);
 		const verification = this.ending?.kind === "succeeded" ? this.ending.verification : null;
 		const status = text(verification?.status);
 
 		let state: Verified["state"];
 		if (this.ending?.kind === "failed") state = "failed";
 		else if (this.ending?.kind !== "succeeded") state = "stopped";
+		// Required checks that no sandbox could run are in the run as not started, and the turn ends with them failing: nothing was verified.
+		else if (status === "unresolved" && this.noSandbox) state = "no_sandbox";
 		else if (status === "passed" || status === "unresolved" || status === "not_needed") state = status;
 		else if (saved.length === 0 && !(project !== null && (project.checks ?? 0) > 0)) state = "none_set";
 		else if (project?.verify === "off") state = "off";
@@ -184,6 +217,7 @@ export class VerificationLog {
 								name: check.name,
 								command: check.command,
 								whose: mine(check) ? "user" : "repository",
+								...(told && check.required && mine(check) ? { required: true } : {}),
 								status: check.status,
 								exitCode: check.exitCode,
 								durationMs: check.durationMs,
@@ -192,17 +226,23 @@ export class VerificationLog {
 							}),
 						),
 					};
+		// What the evidence carries of a check's output: Windlass kept it for one that did not pass, and for one whose entry asks.
+		const tails = new Map((told ? (this.run?.checks ?? []) : []).map((check): [string, string] => [check.name, outputTail(check.tail)]).filter(([, kept]) => kept !== "").slice(0, OUTPUTS_SHOWN));
 		const reason = text(verification?.reason);
 		const acknowledgement = isRecord(verification?.acknowledgement) ? text(verification.acknowledgement.reason) : "";
-		return {
-			turn,
-			state,
-			...(state === "unresolved" && (reason === "acknowledged" || reason === "max_rounds" || reason === "report_mode") ? { unresolved: { reason, said: reason === "acknowledged" && acknowledgement !== "" ? acknowledgement.slice(0, 400) : null } } : {}),
-			run,
-			unrun: saved.filter((own) => !(run?.checks ?? []).some((check) => check.whose === "user" && check.name === own.name && check.command === own.command)).map(({ name, command }) => ({ name, command })),
-			replaced,
-			changedAfter: this.run === null ? previous !== null && previous.run !== null && (previous.changedAfter || this.changed) : this.changed,
-		};
+		return withOutputs(
+			{
+				turn,
+				state,
+				...(state === "unresolved" && (reason === "acknowledged" || reason === "max_rounds" || reason === "report_mode") ? { unresolved: { reason, said: reason === "acknowledged" && acknowledgement !== "" ? acknowledgement.slice(0, 400) : null } } : {}),
+				run,
+				unrun: saved.filter((own) => !(run?.checks ?? []).some((check) => check.whose === "user" && check.name === own.name && check.command === own.command)).map(({ name, command }) => ({ name, command })),
+				replaced,
+				...(told && saved.length > 0 && project !== null && (project.checks !== null || project.verify !== null) ? { overruled: true } : {}),
+				changedAfter: this.run === null ? previous !== null && previous.run !== null && (previous.changedAfter || this.changed) : this.changed,
+			},
+			tails,
+		);
 	}
 
 	/**
@@ -212,21 +252,26 @@ export class VerificationLog {
 	 */
 	cutOff(turn: number, previous: Verified | null): Verified {
 		const changed = this.firstSnapshot !== null ? this.lastSnapshot !== this.firstSnapshot : this.effects;
-		return { turn, state: "stopped", run: previous?.run ?? null, unrun: previous?.unrun ?? [], replaced: previous?.replaced ?? false, changedAfter: previous !== null && previous.run !== null && (previous.changedAfter || changed) };
+		return { turn, state: "stopped", run: previous?.run ?? null, unrun: previous?.unrun ?? [], replaced: previous?.replaced ?? false, ...(previous?.overruled ? { overruled: true } : {}), changedAfter: previous !== null && previous.run !== null && (previous.changedAfter || changed) };
 	}
 
 	/**
 	 * The files Windlass kept the output of the turn's last run in, for the checks whose output is
 	 * to be shown: one that did not pass, and one whose user asked. Only a path that is Windlass's
-	 * own name for such a file is handed on: an event is not trusted to name any other.
+	 * own name for such a file is handed on: an event is not trusted to name any other. None where
+	 * the evidence carries the end of an output itself: `verified` has taken it from there.
 	 */
-	outputs(saved: readonly RepositoryCheck[]): Array<{ name: string; path: string }> {
+	outputs(saved: readonly RepositoryCheck[], handed: TurnChecks | undefined): Array<{ name: string; path: string }> {
+		if (evidenceTells(handed)) return [];
 		return (this.run?.checks ?? []).flatMap((check) => {
 			const wanted = check.status !== "passed" || saved.some((own) => own.name === check.name && own.command === check.command && own.showOutput === true);
 			return wanted && !check.carried && check.outputBytes > 0 && check.outputPath !== null && isCheckOutputPath(check.outputPath) ? [{ name: check.name, path: check.outputPath }] : [];
 		}).slice(0, OUTPUTS_SHOWN);
 	}
 }
+
+/** Whether a turn's Windlass took the user's checks as required ones, so that its evidence says whose each check is and carries the end of its output. */
+const evidenceTells = (handed: TurnChecks | undefined) => handed?.required === true;
 
 /** Windlass's name for the file it keeps a check's output in: `check-<name>-<32 hex digits>.log`, somewhere absolute, with no way up in the path. */
 export function isCheckOutputPath(path: string): boolean {
@@ -523,6 +568,11 @@ export function verifiedHeadline(verified: Verified, owner: string): string {
 	}
 }
 
+/** For a turn whose user's checks were required ones while the repository's file had a say about checks: whom that held for, in a sentence. */
+export function overruledWords(owner: string): string {
+	return `The repository's \`.windlass/config.json\` says something about checks too. That holds for the repository's own checks: ${owner} checks are required, and that file can neither replace them nor switch them off.`;
+}
+
 /** Why the user's checks in `unrun` did not run, in a sentence; "" where the headline already says it. */
 export function unrunReason(verified: Verified, owner: string): string {
 	if (verified.replaced) return `The repository's \`.windlass/config.json\` names checks of its own, and Windlass follows a repository's list in place of ${owner} checks.`;
@@ -604,7 +654,8 @@ export interface SectionInput {
 /**
  * The section of a pull request's description that says what the work was verified with: how the
  * gate ended, each check that ran with whose it is and how it went, the user's checks that did not
- * run and why, the observations, and the output that was kept, folded. Plain sentences and no mark
+ * run and why, whom the repository's own settings held for where the user's checks are required
+ * ones, the observations, and the output that was kept, folded. Plain sentences and no mark
  * of approval: it reports what ran. The caller takes saved secrets out of it (`Redactor`).
  */
 export function verifiedSection(input: SectionInput): string {
@@ -619,13 +670,14 @@ export function verifiedSection(input: SectionInput): string {
 		const earlier = run !== null && run.turn !== verified.turn;
 		parts.push(during !== null ? `Before it: ${verifiedHeadline(verified, owner)}` : verifiedHeadline(verified, owner));
 		if (run !== null && run.checks.length > 0) {
-			const list = run.checks.map((check) => `- **${inert(check.name)}** (${code(check.command)}), ${check.whose === "user" ? `${owner} check` : "from the repository's `.windlass/config.json`"}: ${checkWords(check)}.`).join("\n");
+			const list = run.checks.map((check) => `- **${inert(check.name)}** (${code(check.command)}), ${check.whose === "user" ? `${owner} ${check.required ? "required check" : "check"}` : "from the repository's `.windlass/config.json`"}: ${checkWords(check)}.`).join("\n");
 			parts.push(earlier ? `Checks last ran when turn ${run.turn} ended:\n\n${list}` : list);
 		}
 		if (verified.unrun.length > 0) {
 			const reason = unrunReason(verified, owner);
 			parts.push(`Did not run: ${verified.unrun.map((check) => `**${inert(check.name)}** (${code(check.command)})`).join(", ")}.${reason === "" ? "" : ` ${reason}`}`);
 		}
+		if (verified.overruled) parts.push(overruledWords(owner));
 	}
 	const seen = [
 		...(verified?.changedAfter ? ["- Files changed after the checks last ran, so the results above are of an earlier state of the work."] : []),

@@ -46,7 +46,8 @@
  *   session/new | _windlass/resolve + session/resume
  *                                      model, effort, the profile's approval mode, whether anyone can answer,
  *                                      and where the engine takes them: a home of the session's own for
- *                                      sandboxed commands, and the two lists of variable names
+ *                                      sandboxed commands, the two lists of variable names, and the
+ *                                      user's checks as required checks
  *   _windlass/mcp                      the servers the project's configuration names that wait for approval,
  *                                      each put to `onServerQuestion` before the prompt goes
  *     -> _windlass/mcp_approve         a server the user said to start; it starts at once
@@ -81,11 +82,16 @@
  * is taken out first, by the layer's own list of what it wrote: a sandbox that exists has the user's
  * servers as they are now from its next turn, and a deleted one does not go on starting.
  *
- * The checks the session's user saved for its repository (`RunTurnInput.checks`) go into that file in
- * the same step, as Windlass's own `checks`, and come out with the servers. The repository's own
- * `.windlass/config.json` is read then too, and never written: Windlass follows it before its user's
- * file and does not say so, and `RunTurnResult.checks` hands on what it held on the matter, so
- * that whoever reports a turn's checks can say whose they were.
+ * The checks the session's user saved for its repository (`RunTurnInput.checks`) are named to an
+ * engine that takes them when its session is opened, as its required checks (`requiredChecks`, among
+ * the keys it lists): they are then held by the engine's process, which no file in the sandbox
+ * reaches, they run whatever the repository's own `.windlass/config.json` says, and the engine's
+ * record says whose each check is. They are not stored with a session, so they are said at every
+ * open. To an engine that does not list the key they go as before: into that file in the same step
+ * as the servers, as Windlass's own `checks`, and out again with them. The repository's own file is
+ * read then too, and never written: such an engine follows it before its user's file and does not
+ * say so. `RunTurnResult.checks` says which way the checks went and what the repository's file held
+ * on the matter, so that whoever reports a turn's checks knows where each fact about them is from.
  *
  * A turn whose agent may ask the platform to publish the session's work (`RunTurnInput.onPublish`) is
  * offered a tool for it (agent-publish.ts): the tool's server is written into that file under the
@@ -274,8 +280,8 @@ export class SandboxWindlass implements Windlass {
 		}
 		const keys = await openKeysOf(sandbox, this.options);
 		// No answer (the sandbox is not running, the engine did not start) is not remembered: the turn finds that out itself.
-		if (keys === null) return { sessionHome: false, envLists: false };
-		const found = { sessionHome: keys.includes("sandboxHome"), envLists: keys.includes("withholdEnv") && keys.includes("passEnv") };
+		if (keys === null) return { sessionHome: false, envLists: false, requiredChecks: false };
+		const found = { sessionHome: keys.includes("sandboxHome"), envLists: keys.includes("withholdEnv") && keys.includes("passEnv"), requiredChecks: keys.includes("requiredChecks") };
 		keep(this.told, sandbox.id, found);
 		return found;
 	}
@@ -812,11 +818,13 @@ class Turn {
 			// Whether anyone can answer a question. Without someone, a call that would ask is refused at once and the model is told.
 			attended: input.onQuestion !== undefined,
 			unattended: "deny",
-			// Neither of these is stored with the session: they are said each time it is opened, to an engine that takes them.
+			// None of these is stored with the session: they are said each time it is opened, to an engine that takes them.
 			...(this.openKeys.includes("sandboxHome") ? { sandboxHome: SANDBOX_HOME } : {}),
 			...(input.secrets !== undefined && this.openKeys.includes("withholdEnv") && this.openKeys.includes("passEnv")
 				? { withholdEnv: [...(input.secrets.withholdEnv ?? [])], passEnv: [...(input.secrets.passEnv ?? [])] }
 				: {}),
+			// The user's checks, an empty list too: what the engine holds for the session is then what the user has saved now.
+			...(this.openKeys.includes("requiredChecks") ? { requiredChecks: windlassChecks(input.checks ?? [], true) } : {}),
 		};
 		if (input.windlassSessionId === undefined) {
 			const made = await peer.request<{ sessionId?: unknown }>("session/new", { cwd: this.sandbox.cwd, mcpServers: [], _meta: { [NS]: meta } }, { timeoutMs: OPEN_TIMEOUT_MS });
@@ -980,24 +988,26 @@ class Turn {
 	 * an earlier turn left there is taken out in the same step, so the file is read on every turn,
 	 * also one that has nothing to write. The tool is offered only to an engine that can say whose a
 	 * server is (`_windlass/mcp`), and a file that is there and is not one Windlass reads is left as
-	 * it is. `checks` says afterwards whether the user's checks are in the file, and what the
-	 * project's own file held. Never throws.
+	 * it is. An engine that takes required checks is told the user's when its session is opened
+	 * (`open`), and the file gets none. `checks` says afterwards which way they went, whether the
+	 * engine has them, and what the project's own file held. Never throws.
 	 */
 	private async writeServers(): Promise<void> {
 		const publish = this.input.onPublish !== undefined && this.methods.includes(EXT.mcp);
 		// The platform's own name is not a user's to have, whatever was saved.
 		const personal: ConfigServer[] = (this.input.servers ?? []).filter((server) => !isReservedServerName(server.name)).map(({ name, definition }) => ({ name, definition }));
-		const checks = windlassChecks(this.input.checks ?? []);
+		const required = this.openKeys.includes("requiredChecks");
+		const checks = required ? [] : windlassChecks(this.input.checks ?? []);
 		const missed = [...(personal.length > 0 ? ["your own MCP servers were not started"] : []), ...(publish ? ["the agent was not offered the tool to publish"] : []), ...(checks.length > 0 ? ["your checks were not handed to Windlass"] : [])].join(" and ");
-		// Until the file holds them, a turn with checks to hand over has not handed them over.
-		this.checks = { handed: checks.length === 0, project: null };
+		// Until the file holds them, a turn with checks to write there has not handed them over.
+		this.checks = { required, handed: checks.length === 0, project: null };
 		try {
 			const had = await this.readConfiguration();
 			if (had === null) {
 				if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be read, so ${missed}`);
 				return;
 			}
-			this.checks = { handed: checks.length === 0, project: projectChecks(had.project) };
+			this.checks = { ...this.checks, project: projectChecks(had.project) };
 			// The platform's own server last: nothing written before it can stand in its place.
 			const next = platformConfig(had.config, had.written, [...personal, ...(publish ? [{ name: PUBLISH_SERVER, definition: publishServerDefinition(config.questionTimeoutMs) }] : [])], checks);
 			if (next === null) {

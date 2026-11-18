@@ -259,6 +259,8 @@ interface SessionMeta {
 	 * absent: no turn has asked this sandbox.
 	 */
 	envLists?: boolean | null;
+	/** `WindlassFeatures.requiredChecks` of the current sandbox, asked and kept as `envLists` is (`SessionSummary.requiredChecks`). */
+	requiredChecks?: boolean | null;
 	/**
 	 * Why the session's sandbox hands the account's secrets to no MCP server, or to some only, as its
 	 * last turn found it (account-secrets.ts, `accountSecretsNote`); null where it hands them all over.
@@ -494,6 +496,7 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		lastOutcome: meta.lastOutcome,
 		sandbox: meta.sandbox,
 		...(meta.sandbox !== "none" && typeof meta.envLists === "boolean" ? { envLists: meta.envLists } : {}),
+		...(meta.sandbox !== "none" && typeof meta.requiredChecks === "boolean" ? { requiredChecks: meta.requiredChecks } : {}),
 		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt ?? meta.updatedAt } } : {}),
 	};
 }
@@ -795,6 +798,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		}
 		// What is known of a setup run, and of the Windlass that was asked, was the old sandbox's.
 		meta.envLists = null;
+		meta.requiredChecks = null;
 		meta.accountSecrets = null;
 		meta.setupDue = null;
 		meta.setupRunning = null;
@@ -1425,7 +1429,8 @@ const verifiedLine = (pull: PullRequestInfo) => (pull.verified ? ` Its descripti
 const CHECK_OUTPUT_READ_BYTES = 4 * CHECK_OUTPUT_CHARS;
 
 /**
- * The end of what the checks of a turn's last run printed, read from the files Windlass keeps their
+ * The end of what the checks of a turn's last run printed, for a Windlass whose record of a run has
+ * no more of it than a path: read from the files Windlass keeps their
  * output in, each by the path its evidence names (`VerificationLog.outputs` hands on only a path
  * that is Windlass's own name for such a file). The saved secrets are taken out before anything is
  * kept. Never throws: a file that cannot be read leaves its check without output.
@@ -2533,10 +2538,11 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			// What the question about a project's server has to say depends on where this session runs.
 			const profile = layer.sandboxes.profile(meta.profile);
 			const held = active.secrets;
-			// A sandbox keeps the Windlass it was made with: what a secret's scope comes to here depends on which one that is.
-			const { envLists } = await layer.windlass.features(sandbox);
-			if (meta.envLists !== envLists) {
+			// A sandbox keeps the Windlass it was made with: what a secret's scope comes to here, and what a repository's own file can do to the user's checks, depend on which one that is.
+			const { envLists, requiredChecks } = await layer.windlass.features(sandbox);
+			if (meta.envLists !== envLists || meta.requiredChecks !== requiredChecks) {
 				meta.envLists = envLists;
+				meta.requiredChecks = requiredChecks;
 				publish(c);
 				void persist(c);
 			}
@@ -2557,7 +2563,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				secrets: { ...turnEnvironment(held.opened, held.account, profile, envLists), redactor: held.redactor },
 				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
 				servers: held.servers,
-				// The checks the user saved for the repository: Windlass runs them before it calls the turn done.
+				// The checks the user saved for the repository: Windlass runs them before it calls the turn done, as required checks where it takes them.
 				checks: held.checks,
 				// Windlass's question about a tool of one whose tools run without asking: the layer answers it, and the timeline says for whom and why.
 				onUnasked: (call) => {
@@ -2695,7 +2701,8 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		const saved = active.secrets?.checks ?? [];
 		let verified = active.checks.verified(turn, saved, result?.checks, meta.verified ?? null);
 		if (outcome === "error" && verified.state === "stopped") verified = { ...verified, state: "failed" };
-		if (used && active.secrets && !c.vars.stopping && !c.vars.destroying) verified = withOutputs(verified, await readCheckOutputs(c, used, active.checks.outputs(saved), active.secrets.redactor));
+		// The end of what the checks printed is in Windlass's record where it keeps it there, and `verified` has it; where it keeps only files in the sandbox, they are read.
+		if (used && active.secrets && !c.vars.stopping && !c.vars.destroying) verified = withOutputs(verified, await readCheckOutputs(c, used, active.checks.outputs(saved, result?.checks), active.secrets.redactor));
 		meta.verified = verified;
 
 		c.vars.pending = [];
