@@ -23,7 +23,7 @@ import { evidenceSection } from "../server/src/github/publish.js";
 import { CHECKS_TABLE, type ChecksDb, ChecksProblem, cleanChecks, readChecks, saveChecks, windlassChecks } from "../server/src/repository-checks.js";
 import { DEFAULTS_TABLE } from "../server/src/repository-defaults.js";
 import type { TurnChecks } from "../server/src/sandbox/api.js";
-import { VerificationLog, type WorkDiff, isCheckOutputPath, isTestPath, outputTail, verifiedSection, verifiedWords, withOutputs, withVerifiedSection, workFlags } from "../server/src/verified.js";
+import { VerificationLog, type WorkDiff, checkScripts, isCheckOutputPath, isTestPath, outputTail, verifiedSection, verifiedWords, withOutputs, withVerifiedSection, workFlags } from "../server/src/verified.js";
 import { platformConfig, projectChecks } from "../server/src/windlass-config.js";
 
 let failed = 0;
@@ -206,6 +206,15 @@ expect(
 	kinds(workFlags(diff([{ status: "M", path: "package.json" }], "", { packageJson: { before: scripts("node --test"), after: scripts("node --test test/fast") } }), [TEST])) === "checks_changed:package.json" &&
 		kinds(workFlags(diff([{ status: "M", path: "package.json" }], "", { packageJson: { before: scripts("node --test"), after: JSON.stringify({ scripts: { test: "node --test", build: "tsc -b" } }) } }), [TEST])) === "" &&
 		kinds(workFlags(diff([{ status: "M", path: "scripts/check.sh" }], patchOf("scripts/check.sh", ["echo checking"])), [{ name: "all", command: "sh ./scripts/check.sh --fast" }])) === "checks_changed:scripts/check.sh",
+);
+expect(
+	"a script is what a command runs: by itself, through a shell, or as an interpreter's program; a file the command only names, and a test's file, are not",
+	kinds(workFlags(diff([{ status: "M", path: "tools/check.py" }], patchOf("tools/check.py", ["print('ok')"])), [{ name: "all", command: "CI=1 python3 tools/check.py && echo done" }])) === "checks_changed:tools/check.py" &&
+		kinds(workFlags(diff([{ status: "M", path: "tools/check.ts" }], patchOf("tools/check.ts", ["console.log('ok')"])), [{ name: "all", command: "deno run tools/check.ts" }])) === "checks_changed:tools/check.ts" &&
+		kinds(workFlags(diff([{ status: "M", path: "src/slugify.js" }], patchOf("src/slugify.js", ["export const a = 1;"])), [{ name: "syntax", command: "node --check src/slugify.js" }])) === "" &&
+		kinds(workFlags(diff([{ status: "M", path: "test/add.test.js" }], patchOf("test/add.test.js", ["test('more', () => {});"])), [{ name: "test", command: "node test/add.test.js" }])) === "" &&
+		kinds(workFlags(diff([{ status: "M", path: "src/a.js" }], patchOf("src/a.js", ["export const a = 1;"])), [{ name: "lint", command: "eslint src/a.js" }])) === "" &&
+		checkScripts("npm test").length === 0,
 );
 expect(
 	"a check that came to ignore an exit status: in the script it runs, in the file it names, in the repository's own list; one that always did is not this work's",

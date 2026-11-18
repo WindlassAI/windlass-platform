@@ -350,11 +350,15 @@ const FLAG_PATHS = 5;
  *   tests_skipped    a test's file gained more markers that skip or disable a test than it lost
  *                    (`it.skip`, `xit(`, `@pytest.mark.skip`, `@Disabled`, `#[ignore]`, `t.Skip(`, ...)
  *   checks_changed   the repository's `.windlass/config.json` says something else about `checks` or
- *                    `verify` than before; or a file a check's command names was changed; or the
- *                    `package.json` script a check's command runs was
- *   exit_ignored     one of those (a check's command in the repository's file, the script, the
- *                    file a command names) came to ignore an exit status: `|| true`, `|| :`,
- *                    `|| exit 0`, a closing `; true` or `; exit 0`, `set +e`
+ *                    `verify` than before; or a script a check's command runs was changed
+ *                    (`checkScripts`); or the `package.json` script a check's command runs was
+ *   exit_ignored     one of those (a check's command in the repository's file, the script) came to
+ *                    ignore an exit status: `|| true`, `|| :`, `|| exit 0`, a closing `; true` or
+ *                    `; exit 0`, `set +e`
+ *
+ * A file a command merely names is not a script it runs: `node --check src/a.js` checks that file,
+ * and a test's file run as the check (`node test/a.test.js`) is the work under test, which changes in
+ * ordinary work and has the two flags above. Flagging those would put the line on most pull requests.
  */
 export function workFlags(diff: WorkDiff, checks: ReadonlyArray<{ name: string; command: string }>): VerifiedFlag[] {
 	const lines = changedLines(diff.patch);
@@ -395,9 +399,8 @@ export function workFlags(diff: WorkDiff, checks: ReadonlyArray<{ name: string; 
 		return isRecord(found) ? found : {};
 	};
 	for (const check of checks) {
-		for (const token of check.command.split(/[\s;&|()<>]+/)) {
-			const path = token.replace(/^['"]|['"]$/g, "").replace(/^\.\//, "");
-			if (path === "" || path === CONFIG || !touched.has(path)) continue;
+		for (const path of checkScripts(check.command)) {
+			if (path === CONFIG || !touched.has(path) || isTestPath(path)) continue;
 			changed.push(path);
 			const own = lines.get(path);
 			if (own && ignores(own.added) > ignores(own.removed)) ignored.push(path);
@@ -413,6 +416,38 @@ export function workFlags(diff: WorkDiff, checks: ReadonlyArray<{ name: string; 
 	flag("checks_changed", changed);
 	flag("exit_ignored", ignored);
 	return flags;
+}
+
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "source", "."]);
+const INTERPRETERS = new Set(["node", "bun", "deno", "tsx", "ts-node", "python", "python3", "ruby", "perl", "php"]);
+
+/**
+ * The scripts a check's command runs, as paths in the repository: a file run by itself
+ * (`scripts/check.sh --fast`), one handed to a shell (`sh ./scripts/check.sh`), and one handed to an
+ * interpreter as the program (`python3 tools/check.py`, `deno run tools/check.ts`). An interpreter
+ * given an option first is not counted: with `--check`, `--test`, `-e` or `-m` the file after it is
+ * something else than the program. Each part of a command joined by `&&`, `||`, `;`, `|` or a new
+ * line is looked at by itself, after any `NAME=value` in front of it.
+ */
+export function checkScripts(command: string): string[] {
+	const clean = (token: string | undefined) => (token ?? "").replace(/^['"]|['"]$/g, "").replace(/^\.\//, "");
+	const found: string[] = [];
+	for (const part of command.split(/&&|\|\||[;|\n()]/)) {
+		const words = part.trim().split(/\s+/).filter((word) => word !== "");
+		while (words.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]!)) words.shift();
+		const first = clean(words[0]);
+		if (first === "") continue;
+		if (SHELLS.has(first)) {
+			const script = clean(words.slice(1).find((word) => !word.startsWith("-")));
+			if (script !== "") found.push(script);
+		} else if (INTERPRETERS.has(first)) {
+			const next = first === "deno" && words[1] === "run" ? words[2] : words[1];
+			if (next !== undefined && !next.startsWith("-")) found.push(clean(next));
+		} else if (first.includes("/") || /\.[A-Za-z0-9]+$/.test(first)) {
+			found.push(first);
+		}
+	}
+	return found;
 }
 
 // ---------------------------------------------------------------------------------------------
