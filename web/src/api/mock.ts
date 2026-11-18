@@ -70,8 +70,14 @@ import {
 	MAX_SERVER_DEFINITION_BYTES,
 	MAX_SERVER_NAME_CHARS,
 	MAX_SETUP_COMMAND_CHARS,
+	MAX_CHECKS_PER_REPOSITORY,
+	MAX_CHECK_NAME_CHARS,
+	MAX_CHECK_TIMEOUT_SECONDS,
 	MIN_SECRET_VALUE_CHARS,
 	MAX_TITLE_CHARS,
+	type RepositoryCheck,
+	type RepositoryChecks,
+	type Verified,
 	type AccountDefaults,
 	type AccountSecrets,
 	type AccountSettings,
@@ -953,6 +959,8 @@ interface MockSession {
 	servers: MockKnown[];
 	/** True once the platform pushed the session's branch. */
 	pushed: boolean;
+	/** What the session's work rests on since its last turn ended, as the server keeps it (`Verified`). */
+	verified: Verified | null;
 }
 
 interface World {
@@ -967,6 +975,8 @@ interface World {
 	approvals: MockApproval[];
 	/** The setup commands the user saved, by GitHub's id for the repository. */
 	setups: Map<number, { command: string; updatedAt: number }>;
+	/** The checks the user saved for a repository, by GitHub's id for it. */
+	checks: Map<number, { checks: RepositoryCheck[]; updatedAt: number }>;
 	/** The secrets the user saved, by repository and name. A value is not kept at all: nothing here could show one. */
 	secrets: Map<number, Map<string, { scope: SecretScope; updatedAt: number }>>;
 	/** What new agents on a repository start with, where the user said so, by GitHub's id for it. */
@@ -1041,7 +1051,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), secrets: new Map(), defaults: new Map(), names: new Map(), account: { defaults: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)) };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), names: new Map(), account: { defaults: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)) };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -1230,6 +1240,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			startedServers: new Set(),
 			servers: [],
 			pushed: false,
+			verified: null,
 		};
 		world.sessions.set(input.id, session);
 		return session;
@@ -1704,6 +1715,53 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		broadcastQuestion(session);
 	}
 
+	/**
+	 * What the session's work rests on after a turn, as the server would say it of a turn like the
+	 * mock's: the checks saved for the session's repository that have no file patterns ran and passed
+	 * when the turn ended as done; the ones with patterns did not apply; a turn that was stopped or
+	 * failed ran none, and what an earlier turn's checks came to stands.
+	 */
+	function verifiedAfter(world: World, session: MockSession, turn: number, outcome: TurnOutcome): Verified {
+		const saved = world.checks.get(session.summary.repository?.id ?? -1)?.checks ?? [];
+		const before = session.verified;
+		const ran = saved.filter((check) => check.when === undefined);
+		const none = { unrun: saved.map(({ name, command }) => ({ name, command })), replaced: false, changedAfter: before?.run != null };
+		if (outcome !== "succeeded" && outcome !== "unresolved") return { turn, state: outcome === "interrupted" || outcome === "stopped" ? "stopped" : "failed", run: before?.run ?? null, ...none };
+		if (saved.length === 0) return { turn, state: "none_set", run: before?.run ?? null, ...none };
+		if (ran.length === 0) return { turn, state: "not_needed", run: before?.run ?? null, ...none, changedAfter: before?.changedAfter ?? false };
+		const failing = outcome === "unresolved";
+		// A turn whose script shows the agent being sent back with a failing check says how often, as the server counts it: by the harness's own reports.
+		const reports = session.timeline.filter((item) => item.kind === "windlass" && item.turn === turn && item.event.type === "synthetic.appended" && item.event.data?.origin === "check_report").length;
+		return {
+			turn,
+			state: failing ? "unresolved" : "passed",
+			...(failing ? { unresolved: { reason: "max_rounds" as const, said: null } } : {}),
+			run: { turn, at: now(), checks: ran.map((check, index) => ({ name: check.name, command: check.command, whose: "user" as const, status: failing && index === 0 ? ("failed" as const) : ("passed" as const), exitCode: failing && index === 0 ? 1 : 0, durationMs: 4200 + index * 1900, sentBack: index === 0 ? (failing ? Math.max(reports, 3) : reports) : 0 })) },
+			unrun: saved.filter((check) => check.when !== undefined).map(({ name, command }) => ({ name, command })),
+			replaced: false,
+			changedAfter: false,
+		};
+	}
+
+	/** What a pull request's description says was verified, in the server's few words (server/src/verified.ts, `verifiedWords`). */
+	function verifiedWords(verified: Verified | null): string {
+		const here = verified !== null && verified.run !== null && verified.run.turn === verified.turn ? verified.run.checks : [];
+		const count = `${here.length} ${here.length === 1 ? "check" : "checks"}`;
+		const base =
+			verified === null
+				? "nothing verified"
+				: verified.state === "passed"
+					? `${count} passed`
+					: verified.state === "unresolved"
+						? `${here.filter((check) => check.status !== "passed").length} of ${count} failing`
+						: verified.state === "not_needed"
+							? "no check was needed"
+							: verified.state === "stopped" || verified.state === "failed"
+								? "checks did not run"
+								: "nothing verified";
+		return verified?.changedAfter ? `${base}, 1 thing to look at` : base;
+	}
+
 	function finish(
 		world: World,
 		session: MockSession,
@@ -1728,6 +1786,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			usage: end.usage,
 			cachedShare: end.cachedShare,
 			message: end.message,
+			verified: (session.verified = verifiedAfter(world, session, state.turn, end.outcome)),
 		});
 		// What the turn's sandbox ran is counted for the day.
 		if (clock === null) world.spent.set(session.summary.id, (world.spent.get(session.summary.id) ?? 0) + Math.max(1, Math.round((now() - state.startedAt) / 1000)));
@@ -1893,13 +1952,23 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const branch = branchFor(session);
 				const pushedAt = start - extra.pull.hoursAgo * HOUR;
 				session.pushed = true;
-				session.summary = { ...session.summary, pullRequest: { number: extra.pull.number, url: `${repository.url}/pull/${extra.pull.number}`, state: extra.pull.state, title, branch, base: repository.branch, pushedAt } };
+				const verified = verifiedWords(session.verified);
+				session.summary = { ...session.summary, pullRequest: { number: extra.pull.number, url: `${repository.url}/pull/${extra.pull.number}`, state: extra.pull.state, title, branch, base: repository.branch, pushedAt, verified } };
 				if (extra.pull.clean) session.files.clear();
-				session.timeline.push({ seq: ++session.seq, at: pushedAt, turn: session.summary.turns, kind: "platform", level: "info", text: `Opened pull request #${extra.pull.number} in ${repository.owner}/${repository.name} from ${branch}, with 1 file.` });
+				session.timeline.push({ seq: ++session.seq, at: pushedAt, turn: session.summary.turns, kind: "platform", level: "info", text: `Opened pull request #${extra.pull.number} in ${repository.owner}/${repository.name} from ${branch}, with 1 file. Its description reports: ${verified}.` });
 			}
 			return session;
 		};
 
+		// Checks are saved for acme/harbor, before its agents' turns are played: each turn's closing item says what they came to. One of them
+		// has file patterns, and so does not apply to what the mock's turns change.
+		world.checks.set(7101, {
+			checks: [
+				{ name: "test", command: "npm test" },
+				{ name: "types", command: "npm run typecheck", when: ["src/**/*.ts"], timeoutSeconds: 300 },
+			],
+			updatedAt: start - 3 * 24 * HOUR - 40 * MINUTE,
+		});
 		history("scratch", "New agent", "docker-windlass-sandbox", 5 * 24 * HOUR, []).titled = false;
 		history("deps", "Upgrade the dependencies", "docker-hardened", 3 * 24 * HOUR, [{ text: "Upgrade the dependencies to their latest minor versions and crash if anything breaks.", script: "crash" }], { sandbox: "none", repoUrl: "https://github.com/acme/harbor.git" });
 		history("suite", "Run the whole test suite", "docker-windlass-sandbox", 2 * 24 * HOUR, [{ text: "Run the whole test suite and fix the failing test.", script: "cancelled", effort: "medium" }]);
@@ -2027,6 +2096,41 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		return setupOf(world, repositoryId);
 	}
 
+	// ---- checks of repositories -------------------------------------------------------------------
+
+	function checksOf(world: World, repositoryId: number): RepositoryChecks {
+		const saved = world.checks.get(repositoryId);
+		return { checks: saved?.checks ?? [], updatedAt: saved?.updatedAt ?? null };
+	}
+
+	/** Saves as the server does (server/src/repository-checks.ts): the same refusals in the same words, and the list whole. */
+	function saveChecks(world: World, repositoryId: number, raw: RepositoryCheck[]): RepositoryChecks {
+		const refuse = (message: string): never => {
+			throw new PlatformError("user", message, { reason: "bad_checks" });
+		};
+		if (raw.length > MAX_CHECKS_PER_REPOSITORY) refuse(`A repository can have ${MAX_CHECKS_PER_REPOSITORY} checks; this list has ${raw.length}.`);
+		const checks: RepositoryCheck[] = [];
+		for (const [index, input] of raw.entries()) {
+			const name = input.name.trim();
+			const which = name === "" ? `Check ${index + 1}` : `The check "${name.slice(0, MAX_CHECK_NAME_CHARS)}"`;
+			if (name === "") refuse(`${which} needs a name.`);
+			if (name.length > MAX_CHECK_NAME_CHARS || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name)) refuse(`${which} needs a name of letters, digits, "_", "." and "-" that starts with a letter or a digit, at most ${MAX_CHECK_NAME_CHARS} characters.`);
+			if (checks.some((check) => check.name === name)) refuse(`Two checks are named "${name}". Give each its own name.`);
+			const command = input.command.replace(/\r\n?/g, "\n").trim();
+			if (command === "") refuse(`${which} needs a command.`);
+			if (command.length > MAX_SETUP_COMMAND_CHARS) refuse(`${which} has a command of ${command.length} characters; the limit is ${MAX_SETUP_COMMAND_CHARS}. Put a longer one in a script in the repository and run that.`);
+			const seconds = input.timeoutSeconds;
+			if (seconds !== undefined && (!Number.isInteger(seconds) || seconds < 1 || seconds > MAX_CHECK_TIMEOUT_SECONDS)) refuse(`${which} may run for 1 to ${MAX_CHECK_TIMEOUT_SECONDS} seconds.`);
+			const when = (input.when ?? []).map((pattern) => pattern.trim()).filter((pattern) => pattern !== "");
+			const negated = when.find((pattern) => pattern.startsWith("!"));
+			if (negated !== undefined) refuse(`${which} has the file pattern "${negated}": a pattern cannot start with "!".`);
+			checks.push({ name, command, ...(seconds === undefined ? {} : { timeoutSeconds: seconds }), ...(when.length === 0 ? {} : { when }), ...(input.showOutput === true ? { showOutput: true } : {}) });
+		}
+		if (checks.length === 0) world.checks.delete(repositoryId);
+		else world.checks.set(repositoryId, { checks, updatedAt: now() });
+		return checksOf(world, repositoryId);
+	}
+
 	// ---- secrets of repositories ------------------------------------------------------------------
 
 	/** As the server says it (server/src/actors/user.ts, `secretLists`): for a session's sandbox what its Windlass said, the older one for a sandbox nobody asked, and a sandbox made now otherwise. */
@@ -2108,7 +2212,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			defaults: defaultsOf(world, repositoryId),
 			approvals: [...approvals.values()],
 			forgetting: MOCK_FORGETTING,
-			saved: { setup: world.setups.has(repositoryId), secrets: world.secrets.get(repositoryId)?.size ?? 0 },
+			saved: { setup: world.setups.has(repositoryId), secrets: world.secrets.get(repositoryId)?.size ?? 0, checks: world.checks.get(repositoryId)?.checks.length ?? 0 },
 		};
 	}
 
@@ -2331,6 +2435,15 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				nameAtSave(world(), repositoryId);
 				return saveSetup(world(), repositoryId, command);
 			},
+			async repositoryChecks(repositoryId: number): Promise<RepositoryChecks> {
+				await latency(180);
+				return checksOf(world(), repositoryId);
+			},
+			async saveRepositoryChecks(repositoryId: number, checks: RepositoryCheck[]): Promise<RepositoryChecks> {
+				await latency(320);
+				nameAtSave(world(), repositoryId);
+				return saveChecks(world(), repositoryId, checks);
+			},
 			async repositorySecrets(repositoryId: number, profile: SandboxProfileId, sessionId?: string): Promise<RepositorySecrets> {
 				await latency(200);
 				return secretsOf(world(), repositoryId, profile, sessionId);
@@ -2385,6 +2498,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const current = world();
 				current.secrets.delete(repositoryId);
 				current.setups.delete(repositoryId);
+				current.checks.delete(repositoryId);
 				current.defaults.delete(repositoryId);
 				current.approvals = current.approvals.filter((approval) => approval.project !== `github:${repositoryId}`);
 				current.names.delete(repositoryId);
@@ -2452,7 +2566,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const current = world();
 				// A deployment that never had a GitHub App has nothing saved for a repository.
 				if (!githubOn) return [];
-				const ids = new Set<number>([...current.setups.keys(), ...current.secrets.keys(), ...current.defaults.keys()]);
+				const ids = new Set<number>([...current.setups.keys(), ...current.checks.keys(), ...current.secrets.keys(), ...current.defaults.keys()]);
 				for (const approval of current.approvals) {
 					const id = /^github:([1-9][0-9]*)$/.exec(approval.project)?.[1];
 					if (id !== undefined && approval.expiresAt > now()) ids.add(Number(id));
@@ -2762,13 +2876,15 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				}
 				const what = files === 1 ? "1 file" : `${files} files`;
 				let pull: PullRequestInfo;
+				// The description's section is written with every push: what it says in a few words is kept with the pull request.
+				const verified = verifiedWords(session.verified);
 				if (open) {
-					pull = { ...open, pushedAt: now() };
-					store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: `Pushed ${what} to ${branch}; pull request #${open.number} is updated.` });
+					pull = { ...open, pushedAt: now(), verified };
+					store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: `Pushed ${what} to ${branch}; pull request #${open.number} is updated. Its description reports: ${verified}.` });
 				} else {
 					const number = world.nextPull++;
-					pull = { number, url: `${repository.url}/pull/${number}`, state: "open", title: message.title.trim(), branch, base: repository.branch, pushedAt: now() };
-					store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: `Opened pull request #${number} in ${name} from ${branch}, with ${what}.` });
+					pull = { number, url: `${repository.url}/pull/${number}`, state: "open", title: message.title.trim(), branch, base: repository.branch, pushedAt: now(), verified };
+					store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: `Opened pull request #${number} in ${name} from ${branch}, with ${what}. Its description reports: ${verified}.` });
 				}
 				// Committed: nothing differs from the last commit any more.
 				session.files.clear();

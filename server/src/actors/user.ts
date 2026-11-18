@@ -31,6 +31,10 @@
  * session reads it here when its sandbox is new, so what is saved holds for every session of the user
  * on whichever server; nothing but the user's own calls writes a row.
  *
+ * And the checks the user saved for those repositories (repository-checks.ts), one row per repository
+ * with the whole list: the commands Windlass runs before it calls a turn done. A session is handed
+ * them with its repository's secrets when a turn starts, and no file of a repository is read for them.
+ *
  * And the secrets the user saved for those repositories (repo-secrets.ts), one row per repository and
  * name: the name, the scope, when it was last changed, and the value, sealed like the sign-in with a
  * key of its own purpose and bound to this user, that repository and that name. A value comes in
@@ -42,7 +46,7 @@
  *
  * And what new sessions on those repositories start with, where the user said so
  * (repository-defaults.ts), one row per repository: a sandbox profile and a model. A repository is not
- * an object here: it is the key those four tables share, GitHub's id for it, and its page
+ * an object here: it is the key those five tables share, GitHub's id for it, and its page
  * (`repository`) is what they hold under that key, beside the user's sessions on it.
  *
  * And what the user keeps for their account, whatever the repository (README, "Account settings"):
@@ -93,6 +97,8 @@ import {
 	type ModelList,
 	MAX_SECRETS_PER_REPOSITORY,
 	type RepositoryApproval,
+	type RepositoryCheck,
+	type RepositoryChecks,
 	type RepositoryDefaults,
 	type RepositorySecrets,
 	type RepositorySetup,
@@ -122,6 +128,7 @@ import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, re
 import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { forgettingWords, personalServerReach } from "../server-question.js";
+import { CHECKS_TABLE, ChecksProblem, cleanChecks, readChecks, saveChecks } from "../repository-checks.js";
 import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../signin/directory.js";
 import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
@@ -567,7 +574,8 @@ async function repositoryName(c: UserCtx, repositoryId: number, project: string)
 	const known = repositoryLabel(c.vars, repositoryId);
 	if (known !== "") return known;
 	const [row] = await c.db.execute<{ label: string }>(
-		"SELECT label FROM (SELECT label, updated_at FROM repository_defaults WHERE project = ? UNION ALL SELECT label, updated_at FROM setup_command WHERE project = ? UNION ALL SELECT label, updated_at FROM repo_secret WHERE project = ?) WHERE label != '' ORDER BY updated_at DESC LIMIT 1",
+		"SELECT label FROM (SELECT label, updated_at FROM repository_defaults WHERE project = ? UNION ALL SELECT label, updated_at FROM setup_command WHERE project = ? UNION ALL SELECT label, updated_at FROM repository_checks WHERE project = ? UNION ALL SELECT label, updated_at FROM repo_secret WHERE project = ?) WHERE label != '' ORDER BY updated_at DESC LIMIT 1",
+		project,
 		project,
 		project,
 		project,
@@ -602,6 +610,7 @@ async function repositoryView(c: UserCtx, repositoryId: number, project: string)
 	const defaults = await readDefaults(c.db, project);
 	const [setup] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM setup_command WHERE project = ?", project);
 	const [secrets] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ?", project);
+	const { checks } = await readChecks(c.db, project);
 	const name = await repositoryName(c, repositoryId, project);
 	const { sandboxes } = await getLayer();
 	// The book is read last and in one step: what is listed is what is remembered when the answer is made.
@@ -618,7 +627,7 @@ async function repositoryView(c: UserCtx, repositoryId: number, project: string)
 		defaults,
 		approvals: [...approvals.values()],
 		forgetting: forgettingWords({ dataInSandbox: sandboxes.sessionsLiveInSandbox }),
-		saved: { setup: (setup?.n ?? 0) > 0, secrets: secrets?.n ?? 0 },
+		saved: { setup: (setup?.n ?? 0) > 0, secrets: secrets?.n ?? 0, checks: checks.length },
 	};
 }
 
@@ -909,6 +918,8 @@ export const user = actor({
 			`);
 			// What new sessions on a repository start with (repository-defaults.ts): one row per repository, `project` as above.
 			await db.execute(DEFAULTS_TABLE);
+			// The checks of repositories (repository-checks.ts): one row per repository, `project` as above, the list as JSON.
+			await db.execute(CHECKS_TABLE);
 			// What the user keeps for their account: the defaults for new sessions (account-defaults.ts), their own MCP
 			// servers (personal-servers.ts) and the secrets those read (account-secrets.ts), each value sealed.
 			await db.execute(ACCOUNT_DEFAULTS_TABLE);
@@ -1374,6 +1385,39 @@ export const user = actor({
 			}
 		},
 
+		// --- checks of repositories (repository-checks.ts) -------------------------------------------
+
+		repositoryChecks: async (c, repositoryId: number): Promise<RepositoryChecks> => {
+			requireUser(c);
+			const project = setupKeyOf(repositoryId);
+			try {
+				return await readChecks(c.db, project);
+			} catch (error) {
+				throw clientError(c.log, error, "The repository's checks could not be read. Try again.");
+			}
+		},
+
+		saveRepositoryChecks: async (c, input: { repositoryId: number; checks: RepositoryCheck[] }): Promise<RepositoryChecks> => {
+			const profile = requireUser(c);
+			const project = setupKeyOf(input?.repositoryId);
+			let checks: RepositoryCheck[];
+			try {
+				checks = cleanChecks(input?.checks);
+			} catch (error) {
+				if (error instanceof ChecksProblem) throw new UserError(error.message, { code: "bad_checks" });
+				throw error;
+			}
+			try {
+				// The list is written whole, in one statement: of two saves that run together, one stays as it was sent.
+				const saved = await saveChecks(c.db, project, await labelFor(c, input.repositoryId, project), checks, Date.now());
+				// A command is the user's text and may hold what they would not want in a log: only how many there are is said.
+				console.log(`[wlp] checks.saved uid=${profile.uid} project=${project} checks=${checks.length}`);
+				return saved;
+			} catch (error) {
+				throw clientError(c.log, error, "The checks could not be saved. Try again.");
+			}
+		},
+
 		/** The setup command of a session's repository, for that session when its sandbox is new. */
 		internalSetupCommand: async (c, project: string): Promise<RepositorySetup> => {
 			requireService(c);
@@ -1435,16 +1479,17 @@ export const user = actor({
 			requireServiceFor(c, secretsCaller(c.key[0]!, id));
 			// A session this user does not have is handed nothing, of the account's either.
 			const session = c.vars.sessions.get(id);
-			if (!session) return { project: null, secrets: [], account: { secrets: [], servers: [] } };
+			if (!session) return { project: null, secrets: [], checks: [], account: { secrets: [], servers: [] } };
 			const kept = await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name");
 			const account = {
 				secrets: kept.map((row) => ({ name: row.name, scope: row.scope === "agent" ? ("agent" as const) : ("setup" as const), sealed: row.sealed })),
 				servers: (await readServers(c.db)).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
 			};
 			const project = setupProjectKey(session.repository?.id);
-			if (project === null) return { project: null, secrets: [], account };
+			if (project === null) return { project: null, secrets: [], checks: [], account };
 			const rows = await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project);
-			return { project, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), account };
+			const { checks } = await readChecks(c.db, project);
+			return { project, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
 		// --- a repository's page ----------------------------------------------------------------------
@@ -1474,7 +1519,7 @@ export const user = actor({
 			// What is saved for it is named as GitHub names it now: its page then says the name without asking, also once GitHub no longer answers for it.
 			const name = `${found.owner}/${found.name}`;
 			try {
-				for (const table of ["setup_command", "repo_secret", "repository_defaults"]) await c.db.execute(`UPDATE ${table} SET label = ? WHERE project = ? AND label != ?`, name, project, name);
+				for (const table of ["setup_command", "repository_checks", "repo_secret", "repository_defaults"]) await c.db.execute(`UPDATE ${table} SET label = ? WHERE project = ? AND label != ?`, name, project, name);
 			} catch (error) {
 				c.log.warn({ msg: "could not note what a repository is called now", project, error: String(error) });
 			}
@@ -1521,6 +1566,7 @@ export const user = actor({
 				// The secrets first: if anything after them fails, what is left holds no value.
 				await c.db.execute("DELETE FROM repo_secret WHERE project = ?", project);
 				await c.db.execute("DELETE FROM setup_command WHERE project = ?", project);
+				await c.db.execute("DELETE FROM repository_checks WHERE project = ?", project);
 				await c.db.execute("DELETE FROM repository_defaults WHERE project = ?", project);
 				const done = await changeApprovals(c, (book) => book.forgetProject(project));
 				console.log(`[wlp] repository.forgotten uid=${profile.uid} project=${project} approvals=${done.removed.length}`);
@@ -1534,7 +1580,7 @@ export const user = actor({
 			requireUser(c);
 			try {
 				const rows = await c.db.execute<{ project: string; label: string }>(
-					"SELECT project, MAX(label) AS label FROM (SELECT project, label FROM setup_command UNION ALL SELECT project, label FROM repo_secret UNION ALL SELECT project, label FROM repository_defaults) GROUP BY project",
+					"SELECT project, MAX(label) AS label FROM (SELECT project, label FROM setup_command UNION ALL SELECT project, label FROM repository_checks UNION ALL SELECT project, label FROM repo_secret UNION ALL SELECT project, label FROM repository_defaults) GROUP BY project",
 				);
 				const now = Date.now();
 				const found = new Map<number, string>();

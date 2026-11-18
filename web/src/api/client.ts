@@ -27,6 +27,8 @@ import type {
 	PublishMessage,
 	PublishResult,
 	PublishState,
+	RepositoryCheck,
+	RepositoryChecks,
 	RepositoryDefaults,
 	RepositorySecrets,
 	RepositorySetup,
@@ -140,6 +142,10 @@ export interface UserApi {
 	repositorySetup(repositoryId: number): Promise<RepositorySetup>;
 	/** Saves it, or none with "". Throws with reason `bad_setup_command` for one that is too long. */
 	saveRepositorySetup(repositoryId: number, command: string): Promise<RepositorySetup>;
+	/** The checks the user saved for a repository of their GitHub connection, in the order they run. */
+	repositoryChecks(repositoryId: number): Promise<RepositoryChecks>;
+	/** Saves the list whole, or none with an empty one. Throws with reason `bad_checks` for a list that cannot be saved. */
+	saveRepositoryChecks(repositoryId: number, checks: RepositoryCheck[]): Promise<RepositoryChecks>;
 	/**
 	 * The secrets saved for a repository, without their values, and what each reaches in a sandbox of
 	 * `profile`: the sandbox of the session `sessionId` names, whose Windlass may be an older one, or
@@ -161,7 +167,7 @@ export interface UserApi {
 	saveRepositoryDefaults(repositoryId: number, change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
 	/** Forgets the remembered approvals of that MCP server for a repository. */
 	forgetRepositoryApproval(repositoryId: number, name: string): Promise<RepositoryView>;
-	/** Deletes everything kept for a repository: setup command, secrets, defaults and remembered approvals. The agents on it stay. */
+	/** Deletes everything kept for a repository: setup command, checks, secrets, defaults and remembered approvals. The agents on it stay. */
 	forgetRepository(repositoryId: number): Promise<RepositoryView>;
 	/** The repositories something is kept for. Asks GitHub nothing. */
 	savedRepositories(): Promise<SavedRepository[]>;

@@ -192,6 +192,10 @@ const standin = new GithubStandin({ callbackUrl: "http://platform.invalid/github
 await standin.start();
 const settings = { appId: standin.appId, slug: standin.slug, clientId: standin.clientId, apiUrl: standin.apiUrl, webUrl: standin.url };
 const app = new GithubApp(settings, { clientSecret: () => standin.clientSecret, privateKey: () => standin.privateKeyPem });
+/** What a pull request's description is given by these checks: a session whose work nothing verified (scripts/verified-check.ts has the section itself). */
+const NOTHING_VERIFIED: import("../server/src/github/publish.js").PublishEvidence = { verified: null, during: null, checks: [], redact: (text: string) => text };
+/** A description without the section the platform keeps at its end. */
+const own = (body: string | undefined) => (body ?? "").split("<!-- windlass-platform:verified -->")[0]?.trim();
 
 // Who is at "GitHub": ada with a repository of her own, an organization with two, and two of its members.
 const ada = standin.addUser("ada");
@@ -549,12 +553,12 @@ await section("publish: a pull request is opened, then the same branch is update
 	expect("with changed files, it says there is", (await publish.hasUnpushedWork(sandbox, "main", null)) === true);
 
 	const from = standin.minted.length;
-	const input = { app, connection: adaConnection, repository, sandbox, sessionId: "s_0123456789abcdef", branch: BRANCH };
+	const input = { evidence: NOTHING_VERIFIED, app, connection: adaConnection, repository, sandbox, sessionId: "s_0123456789abcdef", branch: BRANCH };
 	const first = await publish.publishWork({ ...input, pull: null, pushed: null, message: { title: "Fix the failing add test", body: "add() subtracted. It adds now." } });
 	const tokens = tokensSince(from);
 	expect("the pull request is opened", first.opened && first.pull.number === 1 && first.pull.state === "open" && first.pull.branch === BRANCH && first.pull.base === "main" && first.pull.url === `${standin.url}/ada/harbor/pull/1`, JSON.stringify(first.pull));
 	const made = standin.pulls.at(-1);
-	expect("at GitHub it has the title and the description the user gave", made?.title === "Fix the failing add test" && made.body === "add() subtracted. It adds now." && made.head === BRANCH && made.base === "main");
+	expect("at GitHub it has the title and the description the user gave", made?.title === "Fix the failing add test" && own(made.body) === "add() subtracted. It adds now." && made.body.endsWith("<!-- /windlass-platform:verified -->") && made.head === BRANCH && made.base === "main");
 	const commit = standin.lastCommit(harbor, BRANCH);
 	expect("the branch at GitHub has the commit, with that message, in the GitHub user's name", commit.message === "Fix the failing add test\n\nadd() subtracted. It adds now." && commit.author === `ada <${ada.id}+ada@users.noreply.github.com>` && commit.files.sort().join(",") === "CHANGES.md,src/add.ts" && first.committedFiles === 2 && first.head === standin.branchHead(harbor, BRANCH), `${commit.author}; ${commit.files.join(", ")}`);
 	expect("the base branch is untouched", standin.fileOn(harbor, "main", "src/add.ts")?.includes("a - b") === true && standin.fileOn(harbor, BRANCH, "src/add.ts")?.includes("a + b") === true);
@@ -680,16 +684,16 @@ await section("the agent asks: what a request may hold, and what becomes of an o
 	await publish.cloneRepository(app, adaConnection, repository, sandbox);
 	const pullsBefore = standin.pulls.length;
 	writeFileSync(join(sandbox.cwd, "ASKED.md"), "- one\n");
-	const base = { app, connection: adaConnection, repository, sandbox, sessionId: "s_agentasks0000aabb", branch: where.branch, retitle: true };
+	const base = { evidence: NOTHING_VERIFIED, app, connection: adaConnection, repository, sandbox, sessionId: "s_agentasks0000aabb", branch: where.branch, retitle: true };
 	const first = await publish.publishWork({ ...base, pull: null, pushed: null, message: { title: "Ask to publish", body: "First description.", commit: "The commit's own message" } });
-	expect("the pull request is opened with the agent's title and description, and the commit has the commit's message", first.opened && first.pushed && !first.retitled && standin.pulls.length === pullsBefore + 1 && standin.pulls.at(-1)?.title === "Ask to publish" && standin.pulls.at(-1)?.body === "First description." && standin.lastCommit(harbor, where.branch).message === "The commit's own message");
+	expect("the pull request is opened with the agent's title and description, and the commit has the commit's message", first.opened && first.pushed && !first.retitled && standin.pulls.length === pullsBefore + 1 && standin.pulls.at(-1)?.title === "Ask to publish" && own(standin.pulls.at(-1)?.body) === "First description." && standin.lastCommit(harbor, where.branch).message === "The commit's own message");
 	writeFileSync(join(sandbox.cwd, "ASKED.md"), "- one\n- two\n");
 	const second = await publish.publishWork({ ...base, pull: first.pull, pushed: first.head, message: { title: "Ask to publish, again", body: "Second description.", commit: "Two" } });
-	expect("a second request pushes to the same pull request and gives it the new title and description", !second.opened && second.pushed && second.retitled && second.pull.number === first.pull.number && second.pull.title === "Ask to publish, again" && standin.pulls.length === pullsBefore + 1 && standin.pulls.at(-1)?.body === "Second description.");
+	expect("a second request pushes to the same pull request and gives it the new title and description", !second.opened && second.pushed && second.retitled && second.pull.number === first.pull.number && second.pull.title === "Ask to publish, again" && standin.pulls.length === pullsBefore + 1 && own(standin.pulls.at(-1)?.body) === "Second description.");
 	const same = await problem(() => publish.publishWork({ ...base, pull: second.pull, pushed: second.head, message: { title: "Ask to publish, again", body: "Second description.", commit: "x" } }));
 	expect("with nothing new to push and nothing new to say, it is refused as from the panel", same?.message === `There is nothing to push: ${where.branch} at GitHub already has everything in the workspace.`, same?.message);
 	const words = await publish.publishWork({ ...base, pull: second.pull, pushed: second.head, message: { title: "Ask to publish, again", body: "Third description.", commit: "x" } });
-	expect("with nothing new to push, a new description alone is given to the pull request, and nothing is pushed", !words.opened && !words.pushed && words.retitled && standin.pulls.at(-1)?.body === "Third description." && standin.branchHead(harbor, where.branch) === second.head && words.pull.pushedAt === second.pull.pushedAt);
+	expect("with nothing new to push, a new description alone is given to the pull request, and nothing is pushed", !words.opened && !words.pushed && words.retitled && own(standin.pulls.at(-1)?.body) === "Third description." && standin.branchHead(harbor, where.branch) === second.head && words.pull.pushedAt === second.pull.pushedAt);
 	const panel = await problem(() => publish.publishWork({ ...base, retitle: false, pull: words.pull, pushed: second.head, message: { title: "Other words", body: "From the panel." } }));
 	expect("a push from the panel leaves an open pull request's title and description as they are", panel?.message.startsWith("There is nothing to push") === true && standin.pulls.at(-1)?.title === "Ask to publish, again");
 });
@@ -704,7 +708,7 @@ await section("failures: each is said in a sentence the user can act on", async 
 		const sandbox = localSandbox(name);
 		await publish.cloneRepository(app, connection, stored(repository, installation), sandbox);
 		writeFileSync(join(sandbox.cwd, "work.txt"), `${name}\n`);
-		return { app, connection, repository: stored(repository, installation), sandbox, sessionId: `s_${name}`, branch: `windlass/${name}-000000`, pull: null, pushed: null, message };
+		return { evidence: NOTHING_VERIFIED, app, connection, repository: stored(repository, installation), sandbox, sessionId: `s_${name}`, branch: `windlass/${name}-000000`, pull: null, pushed: null, message };
 	};
 
 	// No write access: bo may read acme/quay.
@@ -792,7 +796,7 @@ await section("failures: each is said in a sentence the user can act on", async 
 	// Nothing to push at all.
 	const idle = localSandbox("idle");
 	await publish.cloneRepository(app, adaConnection, stored(harbor, adaInstallation), idle);
-	const empty = await problem(() => publish.publishWork({ app, connection: adaConnection, repository: stored(harbor, adaInstallation), sandbox: idle, sessionId: "s_idle", branch: "windlass/idle-000000", pull: null, pushed: null, message }));
+	const empty = await problem(() => publish.publishWork({ evidence: NOTHING_VERIFIED, app, connection: adaConnection, repository: stored(harbor, adaInstallation), sandbox: idle, sessionId: "s_idle", branch: "windlass/idle-000000", pull: null, pushed: null, message }));
 	expect("nothing to open a pull request with", empty?.message === "There is nothing to open a pull request with: the workspace has no changes and no commit that main does not have.", empty?.message);
 });
 
@@ -850,7 +854,7 @@ await section("hostile: a workspace set up to catch the token catches nothing", 
 	const branch = "windlass/hostile-000000";
 	let outcome: Awaited<ReturnType<typeof publish.publishWork>> | null = null;
 	try {
-		outcome = await publish.publishWork({ app, connection: adaConnection, repository, sandbox, sessionId: "s_hostile", branch, pull: null, pushed: null, message: { title: "Pushed from a hostile workspace", body: "" } });
+		outcome = await publish.publishWork({ evidence: NOTHING_VERIFIED, app, connection: adaConnection, repository, sandbox, sessionId: "s_hostile", branch, pull: null, pushed: null, message: { title: "Pushed from a hostile workspace", body: "" } });
 	} finally {
 		watcher.kill("SIGKILL");
 		await new Promise((resolve) => setTimeout(resolve, 200));
@@ -911,7 +915,7 @@ await section("docker: the same git commands in a container of the sandbox image
 		expect("the private repository is cloned inside the container", cloned && listing.stdout.includes("README.md") && listing.stdout.includes(`url = ${standin.url}/ada/harbor.git`), listing.stdout.split("\n").slice(0, 4).join(", "));
 		await sandbox.run("echo container >> CHANGES.md");
 		const branch = "windlass/container-000000";
-		const published = await publish.publishWork({ app: inside, connection: adaConnection, repository, sandbox, sessionId: "s_container", branch, pull: null, pushed: null, message: { title: "Pushed from the sandbox image", body: "" } });
+		const published = await publish.publishWork({ evidence: NOTHING_VERIFIED, app: inside, connection: adaConnection, repository, sandbox, sessionId: "s_container", branch, pull: null, pushed: null, message: { title: "Pushed from the sandbox image", body: "" } });
 		expect("and the work is pushed from it and the pull request opened", published.opened && standin.fileOn(harbor, branch, "CHANGES.md")?.includes("container") === true);
 		const tokens = tokensSince(from);
 		const used = tokens.filter((token) => stdins.includes(`${token}\n`));
@@ -942,7 +946,7 @@ await section("a replaced sandbox: the workspace goes back on the session's bran
 	const lost = localSandbox("lost");
 	await publish.cloneRepository(app, adaConnection, repository, lost);
 	writeFileSync(join(lost.cwd, "KEPT.md"), "pushed before the sandbox was lost\n");
-	const input = { app, connection: adaConnection, repository, sessionId: session, branch };
+	const input = { evidence: NOTHING_VERIFIED, app, connection: adaConnection, repository, sessionId: session, branch };
 	const pushed = await publish.publishWork({ ...input, sandbox: lost, pull: null, pushed: null, message: { title: "Keep what was pushed", body: "" } });
 	writeFileSync(join(lost.cwd, "LOST.md"), "never pushed\n");
 

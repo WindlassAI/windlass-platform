@@ -13,6 +13,10 @@
  *   long, slow, build, progress, wait
  *                   one command that prints for a while: the turn to steer, or to stop one call of
  *
+ * A turn that is handed checks (`RunTurnInput.checks`) ends with one run of them, as Windlass's gate
+ * would report it: a check whose command has the word "fail" in it fails, and the turn ends
+ * `unresolved`; any other passes.
+ *
  * Switches in the prompt reach every other ending:
  *
  *   "(slow)"          twenty times the delay between events, long enough to stop a turn or a call
@@ -97,7 +101,7 @@ import { join } from "node:path";
 import { StandInObjectStore } from "./bucket/stand-in.js";
 import type { ListedModels } from "./account-models.js";
 import { FIXTURES_DIR, backupConfig } from "./config.js";
-import type { SandboxProfile, SandboxProfileId, WindlassEvent } from "./contract.js";
+import type { RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "./contract.js";
 import { definitionReads, isReservedServerName } from "./personal-servers.js";
 import { WINDLASS_CONFIG_FILE } from "./windlass-config.js";
 import {
@@ -649,6 +653,7 @@ class FakeWindlass implements Windlass {
 		const approval = !text.includes("(auth-fail)") && APPROVAL_WORDS.test(text) ? approvalScenario() : null;
 		const signal = input.signal;
 		const startedAt = Date.now();
+		const handed = input.checks ?? [];
 
 		let seq = session.seq;
 		let emitted = 0;
@@ -722,6 +727,8 @@ class FakeWindlass implements Windlass {
 					break;
 				default:
 					outcome = TERMINAL.get(event.type) ?? outcome;
+					// Done with checks still failing is an outcome of its own, as the command line's summary has it.
+					if (event.type === "execution.succeeded" && (data.verification as { status?: unknown } | undefined)?.status === "unresolved") outcome = "unresolved";
 			}
 			emitted += 1;
 			input.onEvent(event);
@@ -947,9 +954,18 @@ class FakeWindlass implements Windlass {
 			input.onControl?.(control);
 			let queue = [...(approval ? approval.approved : fixture(fixtureFor(text, turn)))];
 			while (queue.length > 0) {
-				const recorded = queue.shift() as WindlassEvent;
+				let recorded = queue.shift() as WindlassEvent;
 				// The recordings made with `windlass --json` end with the command line's own summary line.
 				if (recorded.type === "cli.summary") continue;
+				// The checks the turn was handed, as Windlass would run them before it lets the turn end: one run, and the gate's verdict on it.
+				if (recorded.type === "execution.succeeded" && handed.length > 0) {
+					const evidence = { run: 1, afterSeq: seq, changedFiles: [`notes/turn-${turn}.md`], checks: handed.map((check) => fakeCheck(check)) };
+					const failing = evidence.checks.filter((check) => check.status !== "passed").map((check) => check.name);
+					emit({ type: "checks.started", v: 1, data: { run: 1, checks: handed.map((check) => check.name) }, seq: 0, time: 0 });
+					emit({ type: "checks.finished", v: 1, data: { run: 1, evidence }, seq: 0, time: 0 });
+					const verification = failing.length === 0 ? { status: "passed", evidence } : { status: "unresolved", reason: "max_rounds", failing, acknowledgement: null, evidence };
+					recorded = { ...recorded, data: { ...dataOf(recorded), verification } };
+				}
 				if (continued && (recorded.type === "session.created" || recorded.type === "baseline.set")) continue;
 				if (signal?.aborted) break;
 				if (emitted >= crashAfter) {
@@ -1021,13 +1037,19 @@ class FakeWindlass implements Windlass {
 			let failure: RunTurnResult["failure"] = null;
 			if (text.includes("(auth-fail)")) failure = { reason: "auth_required", message: "Signed out: sign in again to continue." };
 			else if (finished() === "failed") failure = { reason: "execution_failed", message: EXEC_FAIL_MESSAGE };
-			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure };
+			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure, checks: { handed: true, project: null } };
 		} finally {
 			ended = true;
 			session.seq = seq;
 			for (const asking of serverQuestions) asking.abort();
 		}
 	}
+}
+
+/** A check as the fake Windlass "ran" it: one whose command has the word "fail" in it fails with exit code 1, any other passes. */
+function fakeCheck(check: RepositoryCheck): Record<string, unknown> {
+	const fails = /\bfail/.test(check.command);
+	return { name: check.name, command: check.command, status: fails ? "failed" : "passed", exitCode: fails ? 1 : 0, signal: null, durationMs: 40, files: [], fingerprint: "fake", reusedFromSeq: null, outputPath: null, outputBytes: 0, outputLines: 0 };
 }
 
 // ---------------------------------------------------------------------------------------------

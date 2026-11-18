@@ -33,8 +33,9 @@
  * The Docker layer takes one into the user's actor the first time that user is touched, and removes it.)
  */
 
-import type { SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
+import type { RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
 import type { Redactor } from "../repo-secrets.js";
+import type { ProjectChecks } from "../windlass-config.js";
 
 // ---------------------------------------------------------------------------------------------
 // Sandboxes
@@ -387,6 +388,14 @@ export interface RunTurnInput {
 	 */
 	servers?: TurnPersonalServer[];
 	/**
+	 * The checks the session's user saved for its repository (repository-checks.ts), for this turn:
+	 * the layer writes them into Windlass's own configuration file in the sandbox, with the servers
+	 * and by the same step, as the `checks` Windlass runs before it lets the turn end. The
+	 * repository's own `.windlass/config.json` is not touched, and Windlass follows it first:
+	 * `RunTurnResult.checks` says what it held.
+	 */
+	checks?: RepositoryCheck[];
+	/**
 	 * Called when the layer has answered Windlass's question about a tool call itself, with "once",
 	 * because the call is of a tool of one of the user's own servers whose tools run without asking
 	 * (`TurnPersonalServer.unasked`): `onQuestion` never sees that question. It comes after the
@@ -465,6 +474,14 @@ export interface RunTurnInput {
 	onPublish?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 }
 
+/** What a turn's Windlass had for checks when its session was opened, as far as the layer saw. */
+export interface TurnChecks {
+	/** True when the user's checks (`RunTurnInput.checks`, an empty list too) are what Windlass's own configuration file held then. False when the file could not be read or written. */
+	handed: boolean;
+	/** What the repository's own configuration file said about checks then (windlass-config.ts, `projectChecks`); null when it is not there or says nothing. */
+	project: ProjectChecks | null;
+}
+
 export interface RunTurnResult {
 	/** The exit code of the Windlass process that served the turn: 0 after any orderly end, whatever the turn's outcome; null when it was killed. */
 	exitCode: number | null;
@@ -509,6 +526,8 @@ export interface RunTurnResult {
 	 * Null otherwise, and null when `aborted` is true.
 	 */
 	failure: { reason: string; message: string } | null;
+	/** What Windlass had for checks in this turn. Absent when the turn ended before its configuration was dealt with. */
+	checks?: TurnChecks;
 }
 
 /** `{ "responses": [[item, ...], ...] }`: one list per model call. */

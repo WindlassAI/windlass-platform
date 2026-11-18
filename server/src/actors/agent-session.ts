@@ -108,6 +108,7 @@ import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, maySubscribe, requireService, requireUser } from "../auth.js";
 import { config } from "../config.js";
 import {
+	CHECK_OUTPUT_CHARS,
 	type LiveDelta,
 	MAX_NOTE_CHARS,
 	MAX_PROMPT_CHARS,
@@ -120,6 +121,7 @@ import {
 	type PublishResult,
 	type PublishState,
 	type PullRequestInfo,
+	type RepositoryCheck,
 	type SandboxProfileId,
 	type SessionServers,
 	type SessionSnapshot,
@@ -130,11 +132,12 @@ import {
 	type TurnOutcome,
 	type TurnUsage,
 	type UsageNumbers,
+	type Verified,
 	type WindlassEvent,
 	type WorkspaceFile,
 } from "../contract.js";
 import { githubApp } from "../github/app.js";
-import { PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, hasUnpushedWork, publishWork, refreshPull } from "../github/publish.js";
+import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, publishWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, type StoredConnection } from "../github/repos.js";
 import { getLayer } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, standInModels } from "../account-models.js";
@@ -160,6 +163,7 @@ import {
 	unsetRemedy,
 } from "../server-question.js";
 import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf } from "../setup-command.js";
+import { VerificationLog, outputTail, withOutputs } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, USAGE_UNAVAILABLE, allowanceRefusal, freedNote, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { grantIsValid, type ReserveAnswer, secretsActor, type SessionCreateInput, userActor } from "./internal.js";
@@ -282,6 +286,8 @@ interface SessionMeta {
 	unpushed?: { key: string; value: boolean } | null;
 	/** The session's pull request, as GitHub last described it. */
 	pull?: PullRequestInfo | null;
+	/** What the session's work rests on since its last turn ended (verified.ts): what a pull request's description is given. */
+	verified?: Verified | null;
 	/**
 	 * Whether the agent may have the platform publish without the user being asked each time
 	 * (`SessionSummary.publishUnasked`). Absent or false: each request is put to the user.
@@ -380,6 +386,10 @@ interface ActiveTurn {
 	 * Null until they were read.
 	 */
 	secrets: HeldSecrets | null;
+	/** What Windlass's events say of this turn's checks (verified.ts). */
+	checks: VerificationLog;
+	/** True once the platform published for the agent in this turn: what it pushed had not been through the turn's checks. */
+	published?: boolean;
 	/** The calls of this turn by which the agent asked the platform to publish (`<message>\n<call>`). */
 	publishCalls: Set<string>;
 	/** The requests to publish that are being handled: the turn does not close under a push. */
@@ -400,6 +410,8 @@ interface HeldSecrets {
 	account: OpenedAccountSecret[];
 	/** The user's own MCP servers, as Windlass's configuration takes them. */
 	servers: TurnPersonalServer[];
+	/** The checks the user saved for the session's repository (repository-checks.ts); none for a session that is not on one. */
+	checks: RepositoryCheck[];
 	redactor: Redactor;
 }
 
@@ -1098,9 +1110,9 @@ const PULL_FRESH_MS = 20_000;
 /** What clients see of the repository: all of it but the installation, which is the platform's own matter. */
 /**
  * What the session's user saved that a turn needs, read from their `user` actor and opened here, for
- * one turn or for one reading of the workspace: the secrets of the session's repository (none for a
- * session that is not on a repository of the GitHub connection), the secrets of the account, and the
- * user's own MCP servers. The caller's token names this user and this session, and the actor answers
+ * one turn or for one reading of the workspace: the secrets of the session's repository and its
+ * checks (none for a session that is not on a repository of the GitHub connection), the secrets of
+ * the account, and the user's own MCP servers. The caller's token names this user and this session, and the actor answers
  * with the secrets of the repository it knows the session to be on. Throws a TurnProblem when they
  * cannot be read: with values it does not know, the platform could hand nothing over and take
  * nothing out of what it shows, so nothing is started.
@@ -1141,7 +1153,13 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 		if (turn !== null) note(c, turn, "warn", `${shut.length === 1 ? `Your account's secret ${shut[0]}` : `Your account's secrets ${shut.join(", ")}`} could not be opened by this server, so ${shut.length === 1 ? "it is" : "they are"} not handed over. Save ${shut.length === 1 ? "it" : "them"} again in your settings.`);
 	}
 	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
-	return { opened, account, servers: (sealed.account?.servers ?? []).map(({ name, definition, unasked }) => ({ name, definition, unasked })), redactor: new SecretRedactor([...opened, ...account]) };
+	return {
+		opened,
+		account,
+		servers: (sealed.account?.servers ?? []).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
+		checks: project && sealed.project === project.key ? (sealed.checks ?? []) : [],
+		redactor: new SecretRedactor([...opened, ...account]),
+	};
 }
 
 /** What takes the saved values of the repository and of the account out of text now: the running turn's, or one read for this once. */
@@ -1390,6 +1408,46 @@ function publishedLine(repo: StoredRepository, pull: PullRequestInfo, opened: bo
 	return `Pushed ${what} to ${pull.branch}; pull request #${pull.number} is updated.`;
 }
 
+/**
+ * What a pull request's description is to say was verified (verified.ts): what the session's work
+ * rests on since its last turn ended, and the user's checks as they are saved now. `during` names
+ * the turn that is running, for a push the agent asked for: its checks have not run.
+ */
+async function evidenceOf(c: Ctx, meta: SessionMeta, during: number | null): Promise<PublishEvidence> {
+	const held = c.vars.turn?.secrets ?? (await readSecrets(c, meta, null));
+	return { verified: meta.verified ?? null, during, checks: held.checks, redact: (text) => held.redactor.text(text) };
+}
+
+/** After a push's line in the timeline: what the pull request's description now says was verified, in its few words. */
+const verifiedLine = (pull: PullRequestInfo) => (pull.verified ? ` Its description reports: ${pull.verified}.` : "");
+
+/** How much of a check's output is read from its file: more than is kept, so that the end can be cut at a line. */
+const CHECK_OUTPUT_READ_BYTES = 4 * CHECK_OUTPUT_CHARS;
+
+/**
+ * The end of what the checks of a turn's last run printed, read from the files Windlass keeps their
+ * output in, each by the path its evidence names (`VerificationLog.outputs` hands on only a path
+ * that is Windlass's own name for such a file). The saved secrets are taken out before anything is
+ * kept. Never throws: a file that cannot be read leaves its check without output.
+ */
+async function readCheckOutputs(c: Ctx, sandbox: SandboxHandle, outputs: Array<{ name: string; path: string }>, redactor: Redactor): Promise<Map<string, string>> {
+	const read = new Map<string, string>();
+	if (outputs.length === 0) return read;
+	const mark = `wlp-${randomBytes(9).toString("hex")}`;
+	try {
+		const said = await sandbox.run(`for file in ${outputs.map((output) => shellQuote(output.path)).join(" ")}; do tail -c ${CHECK_OUTPUT_READ_BYTES} -- "$file" 2>/dev/null || true; printf '\\n%s\\n' ${shellQuote(mark)}; done`, { timeoutMs: GIT_TIMEOUT_MS });
+		const parts = said.stdout.split(`\n${mark}\n`);
+		if (said.exitCode !== 0 || parts.length !== outputs.length + 1) return read;
+		for (const [index, output] of outputs.entries()) {
+			const kept = outputTail(redactor.text(parts[index] as string));
+			if (kept !== "") read.set(output.name, kept);
+		}
+	} catch (error) {
+		c.log.warn({ msg: "could not read the output of the turn's checks", error: describeError(error) });
+	}
+	return read;
+}
+
 /** Commits, pushes and opens the pull request, for `publish()`. The caller has checked that nothing is in the way. */
 async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage): Promise<PublishResult> {
 	const app = githubApp();
@@ -1410,12 +1468,12 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 	const branch = meta.publishBranch ?? branchFor(meta.title, meta.sessionId);
 	meta.publishBranch = branch;
 	try {
-		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, message });
+		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, message, evidence: await evidenceOf(c, meta, null) });
 		meta.pull = published.pull;
 		if (published.head) meta.pushedHead = published.head;
 		meta.updatedAt = Date.now();
 		c.vars.pullCheckedAt = Date.now();
-		note(c, meta.turns, "info", publishedLine(repo, published.pull, published.opened, published.committedFiles));
+		note(c, meta.turns, "info", `${publishedLine(repo, published.pull, published.opened, published.committedFiles)}${verifiedLine(published.pull)}`);
 		console.log(`[wlp] github.published session=${meta.sessionId} repository=${repo.id} pull=${published.pull.number} opened=${published.opened}`);
 		return { state: await afterPublish(c, meta, sandbox), opened: published.opened };
 	} catch (error) {
@@ -1918,11 +1976,13 @@ async function agentPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandb
 
 		meta.publishBranch = branch;
 		try {
-			const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, message: checked.message, retitle: true });
+			const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, message: checked.message, retitle: true, evidence: await evidenceOf(c, meta, turn) });
 			meta.pull = published.pull;
 			if (published.head) meta.pushedHead = published.head;
 			meta.updatedAt = Date.now();
 			c.vars.pullCheckedAt = Date.now();
+			// What went out had not been through this turn's checks: the description is written again when the turn has ended.
+			active.published = true;
 			note(c, turn, "info", `${publishAllowedWords(allowed)} ${agentPublishedLine(repo, published)} ${published.pull.url}`);
 			console.log(`[wlp] github.published session=${meta.sessionId} repository=${repo.id} pull=${published.pull.number} opened=${published.opened} by=agent asked=${allowed !== "unasked"}`);
 			return publishedForAgent({ repository: `${repo.owner}/${repo.name}`, pull: published.pull, opened: published.opened, pushed: published.pushed, retitled: published.retitled, files: published.committedFiles });
@@ -2497,6 +2557,8 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				secrets: { ...turnEnvironment(held.opened, held.account, profile, envLists), redactor: held.redactor },
 				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
 				servers: held.servers,
+				// The checks the user saved for the repository: Windlass runs them before it calls the turn done.
+				checks: held.checks,
 				// Windlass's question about a tool of one whose tools run without asking: the layer answers it, and the timeline says for whom and why.
 				onUnasked: (call) => {
 					if (open) note(c, turn, "info", unaskedNote(str(call.server)), { code: "question_allowed", call: { messageId: str(call.messageId), callId: str(call.callId) } });
@@ -2511,6 +2573,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 					if (!open) return;
 					events += 1;
 					try {
+						active.checks.note(event);
 						onWindlassEvent(c, meta, turn, event);
 						// Windlass's own question about the tool that hands a request to publish over: the layer answers it, and the timeline says who did.
 						const call = { messageId: event.data?.messageId, callId: event.data?.callId };
@@ -2628,6 +2691,13 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			await saving;
 		}
 
+		// What the session's work rests on now, from what Windlass recorded of this turn's checks; a turn the platform could not run failed before any.
+		const saved = active.secrets?.checks ?? [];
+		let verified = active.checks.verified(turn, saved, result?.checks, meta.verified ?? null);
+		if (outcome === "error" && verified.state === "stopped") verified = { ...verified, state: "failed" };
+		if (used && active.secrets && !c.vars.stopping && !c.vars.destroying) verified = withOutputs(verified, await readCheckOutputs(c, used, active.checks.outputs(saved), active.secrets.redactor));
+		meta.verified = verified;
+
 		c.vars.pending = [];
 		append(c, {
 			turn,
@@ -2639,6 +2709,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			usage: usageOf(summary?.usage),
 			cachedShare: typeof summary?.cachedShare === "number" ? summary.cachedShare : null,
 			message,
+			verified,
 		});
 		meta.status = "idle";
 		meta.lastOutcome = outcome;
@@ -2650,7 +2721,9 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		if (outcome === "error") await refreshSandbox(c, meta);
 		// Asked now, while the sandbox still runs: the side panel then knows whether GitHub lacks anything
 		// without starting a sandbox that has been paused since.
-		if (meta.repo && used) await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null);
+		const unpushed = meta.repo && used ? await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null) : null;
+		// The agent had the platform publish in this turn, before the turn's checks ran, and nothing changed since: the pull request's description is told what they came to.
+		if (active.published && unpushed === false && used) await describeAfterTurn(c, meta, used, turn);
 		await persist(c);
 		await within(c.vars.reporting, REPORT_WAIT_MS);
 	} catch (error) {
@@ -2667,6 +2740,27 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 	await meterAfterTurn(c, meta, active);
 	// The idle times count from here.
 	await armIdle(c, meta);
+}
+
+/**
+ * Writes what a turn's checks came to into the description of the session's pull request, for a
+ * turn in which the platform published for the agent: what went out then had not been checked,
+ * and said so. Only where the workspace holds nothing GitHub lacks, so that what is said is said
+ * of what the pull request shows. Never throws.
+ */
+async function describeAfterTurn(c: Ctx, meta: SessionMeta, sandbox: SandboxHandle, turn: number): Promise<void> {
+	const app = githubApp();
+	const { repo, pull } = meta;
+	if (!app || !repo || !pull) return;
+	try {
+		const described = await describePull({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, pull, evidence: await evidenceOf(c, meta, null) });
+		if (described === null || meta.pull !== pull) return;
+		meta.pull = described;
+		note(c, turn, "info", `The description of pull request #${described.number} now says what this turn's checks came to: ${described.verified}.`);
+		publish(c);
+	} catch (error) {
+		c.log.warn({ msg: "could not write what the turn's checks came to into the pull request", session: meta.sessionId, error: describeError(error) });
+	}
 }
 
 /** Waits for `promise`, but no longer than `ms`. Never rejects. */
@@ -2842,6 +2936,13 @@ export const agentSession = actor({
 			// The process that ran this turn is gone, and the turn with it; so is a question it was waiting on.
 			const turn = meta.turns;
 			note(c, turn, "warn", "The server stopped while this turn was running, so the turn was cut short.");
+			// What the turn recorded before it was cut off says whether it changed the workspace after the checks last ran.
+			const cut = new VerificationLog();
+			for (const row of await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE turn = ? AND kind = 'windlass' ORDER BY seq", turn)) {
+				const item = JSON.parse(row.item) as TimelineItem;
+				if (item.kind === "windlass") cut.note(item.event);
+			}
+			meta.verified = cut.cutOff(turn, meta.verified ?? null);
 			append(c, {
 				turn,
 				kind: "turn.ended",
@@ -2852,6 +2953,7 @@ export const agentSession = actor({
 				usage: null,
 				cachedShare: null,
 				message: null,
+				verified: meta.verified,
 			});
 			meta.status = "idle";
 			meta.lastOutcome = "interrupted";
@@ -3043,7 +3145,7 @@ export const agentSession = actor({
 				append(c, { turn, kind: "user", text, model, effort });
 				publish(c);
 
-				const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, publishCalls: new Set(), publishes: new Set() };
+				const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishCalls: new Set(), publishes: new Set() };
 				c.vars.turn = active;
 				active.done = c.keepAwake(runTurn(c, meta, active, text));
 				return { turn, steered: false };

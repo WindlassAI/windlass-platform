@@ -81,6 +81,12 @@
  * is taken out first, by the layer's own list of what it wrote: a sandbox that exists has the user's
  * servers as they are now from its next turn, and a deleted one does not go on starting.
  *
+ * The checks the session's user saved for its repository (`RunTurnInput.checks`) go into that file in
+ * the same step, as Windlass's own `checks`, and come out with the servers. The repository's own
+ * `.windlass/config.json` is read then too, and never written: Windlass follows it before its user's
+ * file and does not say so, and `RunTurnResult.checks` hands on what it held on the matter, so
+ * that whoever reports a turn's checks can say whose they were.
+ *
  * A turn whose agent may ask the platform to publish the session's work (`RunTurnInput.onPublish`) is
  * offered a tool for it (agent-publish.ts): the tool's server is written into that file under the
  * platform's own name, after the user's servers, none of which may have that name.
@@ -113,8 +119,9 @@ import { config } from "../config.js";
 import type { WindlassEvent } from "../contract.js";
 import { isReservedServerName } from "../personal-servers.js";
 import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
-import { type ConfigServer, PLATFORM_SERVERS_FILE, WINDLASS_CONFIG_FILE, platformConfig } from "../windlass-config.js";
-import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass, WindlassFeatures } from "./api.js";
+import { windlassChecks } from "../repository-checks.js";
+import { type ConfigServer, PLATFORM_SERVERS_FILE, WINDLASS_CONFIG_FILE, platformConfig, projectChecks } from "../windlass-config.js";
+import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnChecks, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass, WindlassFeatures } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
 import { ACCESS_TOKEN_FILE_ENV, type Failure, OUTDATED_SANDBOX, WindlassOutdatedError, handedInFailure, handedInProblem, handedInProblemInWords, tokenRanOut, tokenSourceFailure } from "./handoff.js";
@@ -508,8 +515,10 @@ class Turn {
 	private methods: string[] = [];
 	/** True while the server of the tool to publish is in Windlass's configuration in the sandbox, put there by this turn. */
 	private publishOffered = false;
-	/** True while this turn has servers of its own in that file: they are taken out when it ends. */
+	/** True while this turn has servers or checks of its own in that file: they are taken out when it ends. */
 	private configWritten = false;
+	/** What Windlass had for checks when its session was opened; null until the file was dealt with. */
+	private checks: TurnChecks | null = null;
 	/** The names of the user's own servers this turn wrote there: what `onServers` is told of beside the project's. */
 	private personal = new Set<string>();
 	/** Of those, the ones whose tools run without asking. */
@@ -643,6 +652,7 @@ class Turn {
 			summary: this.summary,
 			stderrTail: scrub(stderrTail).slice(-STDERR_TAIL),
 			failure: failure === null ? failure : { reason: failure.reason, message: scrub(failure.message) },
+			...(this.checks === null ? {} : { checks: this.checks }),
 		};
 	}
 
@@ -930,18 +940,19 @@ class Turn {
 	// ---- the servers the platform hands the engine: the user's own, and the tool to publish ----
 
 	/**
-	 * Windlass's configuration file in the sandbox and the layer's list of what it wrote there, in one
-	 * question: each as it is, null for one that is not there. Null when the sandbox did not answer,
-	 * or the configuration file is something the platform does not replace (a directory, a file it
-	 * cannot read).
+	 * Windlass's configuration file in the sandbox, the layer's list of what it wrote there, and the
+	 * configuration file of the project the session works in, in one question: each as it is, null
+	 * for one that is not there. Null when the sandbox did not answer, or Windlass's own file is
+	 * something the platform does not replace (a directory, a file it cannot read).
 	 */
-	private async readConfiguration(): Promise<{ config: string | null; written: string | null } | null> {
+	private async readConfiguration(): Promise<{ config: string | null; written: string | null; project: string | null } | null> {
 		const mark = `wlp-${randomId(12)}`;
-		const script = 'for file in "$1" "$2"; do if [ ! -e "$file" ]; then echo absent; elif [ -f "$file" ] && [ -r "$file" ]; then echo file; cat -- "$file"; else echo other; fi; printf "\\n%s\\n" "$3"; done';
-		const said = await this.sandbox.ask(["sh", "-c", script, "sh", WINDLASS_CONFIG_FILE, PLATFORM_SERVERS_FILE, mark], { timeoutMs: DEFINITION_TIMEOUT_MS });
+		const script = 'mark=$1; shift; for file in "$@"; do if [ ! -e "$file" ]; then echo absent; elif [ -f "$file" ] && [ -r "$file" ]; then echo file; cat -- "$file"; else echo other; fi; printf "\\n%s\\n" "$mark"; done';
+		// The session's directory is the workspace, which is where Windlass looks for a project's file first.
+		const said = await this.sandbox.ask(["sh", "-c", script, "sh", mark, WINDLASS_CONFIG_FILE, PLATFORM_SERVERS_FILE, `${this.sandbox.cwd}/.windlass/config.json`], { timeoutMs: DEFINITION_TIMEOUT_MS });
 		if (said === null || said.code !== 0) return null;
 		const parts = said.stdout.split(`\n${mark}\n`);
-		if (parts.length < 3) return null;
+		if (parts.length < 4) return null;
 		const read = (part: string): string | null | undefined => {
 			const end = part.indexOf("\n");
 			const kind = end === -1 ? part : part.slice(0, end);
@@ -949,8 +960,8 @@ class Turn {
 		};
 		const config = read(parts[0] as string);
 		if (config === undefined) return null;
-		// A list that is not a file counts as none: only what it names is ever taken out.
-		return { config, written: read(parts[1] as string) ?? null };
+		// A list that is not a file counts as none: only what it names is ever taken out. So does a project's file that is not one.
+		return { config, written: read(parts[1] as string) ?? null, project: read(parts[2] as string) ?? null };
 	}
 
 	/** Makes the file and the list in the sandbox what `next` says. The list first: it may name more than the file holds, never less. */
@@ -964,42 +975,49 @@ class Turn {
 	}
 
 	/**
-	 * Puts this turn's servers into Windlass's configuration file in the sandbox: the user's own, and
-	 * the server of the tool to publish. What an earlier turn left there is taken out in the same
-	 * step, so the file is read on every turn, also one that has nothing to write. The tool is offered
-	 * only to an engine that can say whose a server is (`_windlass/mcp`), and a file that is there and
-	 * is not one Windlass reads is left as it is. Never throws.
+	 * Puts what this turn hands Windlass into its configuration file in the sandbox: the user's own
+	 * servers, the server of the tool to publish, and the checks of the session's repository. What
+	 * an earlier turn left there is taken out in the same step, so the file is read on every turn,
+	 * also one that has nothing to write. The tool is offered only to an engine that can say whose a
+	 * server is (`_windlass/mcp`), and a file that is there and is not one Windlass reads is left as
+	 * it is. `checks` says afterwards whether the user's checks are in the file, and what the
+	 * project's own file held. Never throws.
 	 */
 	private async writeServers(): Promise<void> {
 		const publish = this.input.onPublish !== undefined && this.methods.includes(EXT.mcp);
 		// The platform's own name is not a user's to have, whatever was saved.
 		const personal: ConfigServer[] = (this.input.servers ?? []).filter((server) => !isReservedServerName(server.name)).map(({ name, definition }) => ({ name, definition }));
-		const what = personal.length === 0 ? "the agent was not offered the tool to publish" : publish ? "your own MCP servers were not started and the agent was not offered the tool to publish" : "your own MCP servers were not started";
+		const checks = windlassChecks(this.input.checks ?? []);
+		const missed = [...(personal.length > 0 ? ["your own MCP servers were not started"] : []), ...(publish ? ["the agent was not offered the tool to publish"] : []), ...(checks.length > 0 ? ["your checks were not handed to Windlass"] : [])].join(" and ");
+		// Until the file holds them, a turn with checks to hand over has not handed them over.
+		this.checks = { handed: checks.length === 0, project: null };
 		try {
 			const had = await this.readConfiguration();
 			if (had === null) {
-				if (publish || personal.length > 0) this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be read, so ${what}`);
+				if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be read, so ${missed}`);
 				return;
 			}
+			this.checks = { handed: checks.length === 0, project: projectChecks(had.project) };
 			// The platform's own server last: nothing written before it can stand in its place.
-			const next = platformConfig(had.config, had.written, [...personal, ...(publish ? [{ name: PUBLISH_SERVER, definition: publishServerDefinition(config.questionTimeoutMs) }] : [])]);
+			const next = platformConfig(had.config, had.written, [...personal, ...(publish ? [{ name: PUBLISH_SERVER, definition: publishServerDefinition(config.questionTimeoutMs) }] : [])], checks);
 			if (next === null) {
-				if (publish || personal.length > 0) this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be read as one, so ${what}`);
+				if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be read as one, so ${missed}`);
 				return;
 			}
 			// An answer left by a turn that was cut off is nobody's any more.
 			if (publish) await this.sandbox.ask(["rm", "-rf", "--", PUBLISH_STATE_DIR], { timeoutMs: DEFINITION_TIMEOUT_MS });
 			await this.storeConfiguration(next, had);
-			this.configWritten = next.written !== null;
+			this.configWritten = next.written !== null || checks.length > 0;
+			this.checks = { ...this.checks, handed: true };
 			this.publishOffered = publish;
 			this.personal = new Set(personal.map((server) => server.name));
 			this.unasked = new Set((this.input.servers ?? []).filter((server) => server.unasked === true && this.personal.has(server.name)).map((server) => server.name));
 		} catch (error) {
-			if (publish || personal.length > 0) this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be written (${error instanceof Error ? error.message : String(error)}), so ${what}`);
+			if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be written (${error instanceof Error ? error.message : String(error)}), so ${missed}`);
 		}
 	}
 
-	/** Takes this turn's servers out of Windlass's configuration file again, and removes what the tool to publish waited for. Never throws. */
+	/** Takes this turn's servers and checks out of Windlass's configuration file again, and removes what the tool to publish waited for. Never throws. */
 	private async withdrawServers(): Promise<void> {
 		if (!this.configWritten) return;
 		this.configWritten = false;

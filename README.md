@@ -67,7 +67,8 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
                            │                                    the models of the ChatGPT plan,
                            │                                    approvals of projects' MCP servers,
                            │                                    setup commands of repositories, their
-                           │                                    secrets (encrypted) and their defaults,
+                           │                                    checks, their secrets (encrypted) and
+                           │                                    their defaults,
                            │                                    and the account's own: defaults, MCP
                            │                                    servers and their secrets (encrypted)
                            └─ agentSession  [uid, sessionId]    timeline in SQLite, one sandbox
@@ -667,6 +668,9 @@ nothing of this, and a repository is a public address pasted into the launch for
   timeline gets one line for each ("Opened pull request #12 in acme/harbor from windlass/fix-the-light-3f9a2c,
   with 3 files."). The agent's own git has nothing to push with, in any case: what it can do is ask the
   platform for the same ("The agent asks to publish").
+  The pull request's description ends with a section the platform writes, and writes again with every
+  push: which checks ran before the agent's turn was called done, whose they are, how each ended, and
+  what in the changes is worth a look ("What a pull request shows was verified").
   A commit is made in the GitHub user's name (`<id>+<login>@users.noreply.github.com`); the pull request is
   the app's.
 
@@ -1000,6 +1004,161 @@ cd server && npx tsx ../scripts/setup-check.ts    # its rules on their own: what
 The web app's mock has a setup command saved for acme/harbor (`?mock=1`); a command with the word "fail" in
 it ends with exit code 1 there.
 
+## A repository's checks
+
+A check is a command that tells whether the code is right: `npm test`, `cargo clippy`. Windlass has a
+verification gate for them: before it calls a turn done it runs the checks that apply to what the turn
+changed, in the agent's own sandbox, and when one fails it shows the agent what failed and sends it back,
+three times at most (`checks` and `verify` in its configuration, its docs/user-guide.md, "Verification
+checks"). With no check set the gate runs nothing and every turn ends "no checks configured". So a user
+saves checks for a repository of their GitHub connection, and the platform hands them to Windlass for every
+session on it.
+
+- **Whose they are.** The user's, kept in their `user` actor, one row per repository (GitHub's id, as for
+  the setup command) with the whole list (`server/src/repository-checks.ts`). They are never read from the
+  repository: a file there is something an agent can edit during a turn. A session on a pasted address or
+  with no repository has none of the user's.
+- **What one is.** A name and a command, and what Windlass's own configuration takes besides, within its
+  limits: how long it may run (1 to 3,600 seconds; Windlass's default is 120) and glob patterns of changed
+  files that make it run (none: any change does). And one setting of the platform's, which Windlass is not
+  told: that the end of the check's output goes into a pull request's description also when it passed. A
+  repository can have 20 checks. What is saved is what Windlass reads: a name it would refuse, two checks
+  of one name, or a pattern that starts with `!` is refused when it is saved, because Windlass fails a turn
+  whose configuration it cannot read.
+- **Where the user sets them.** On the repository's page, under the setup command. The list is saved
+  whole, by one statement that reads nothing first, so of two saves that run together one stays as it was
+  sent, and neither undoes a setup command or a secret saved meanwhile.
+- **How they reach Windlass.** A session reads them from the user's actor when a turn starts, with its
+  repository's secrets, and the sandbox layer writes them into Windlass's own configuration file in the
+  sandbox (`~/.config/windlass/config.json`) as its `checks`, in the step that writes the user's MCP
+  servers there and by the same code (`server/src/windlass-config.ts`, `server/src/sandbox/turn.ts`); they
+  are taken out again when the turn has ended. `checks` and `verify` in that file are the platform's alone:
+  what a command left under them goes, so that what Windlass holds to be its user's checks is what the user
+  saved, and its own defaults decide what is done with them. A change is for each session's next turn.
+- **What a repository's own file does to them.** Windlass reads the repository's `.windlass/config.json`
+  too, and follows it before its user's file, key by key: a `checks` list there stands in for the user's
+  whole, an empty one too, and `verify.mode` there can turn the gate off or make it report without sending
+  the agent back. Windlass reads both files when a turn starts and not again in it. This was tried against
+  the released Windlass 0.2.0 (`scripts/verified-check.ts --docker`):
+
+  | The repository's `.windlass/config.json` | What Windlass 0.2.0 does |
+  |---|---|
+  | is not there, or says nothing of checks | runs the user's checks |
+  | names `checks` | runs those, and none of the user's: a turn can end as done without one of the user's checks having run |
+  | names `checks: []` | runs nothing, and reports that no checks are configured |
+  | sets `verify.mode` to `off` | runs nothing, and reports that no checks are configured |
+  | is written or changed by the agent during a turn | changes nothing in that turn; from the next turn on it is followed as above |
+
+  Windlass 0.2.0 has nothing that makes a user's checks hold against that file, and its record of a run
+  does not say which file a check came from. The platform does not rewrite a repository's file. It says
+  whose checks ran, and for that the sandbox layer reads the repository's file when it writes its own, in
+  the same step, and hands on what it holds about checks (`projectChecks`). A check is presented as the
+  user's only when both hold: the repository's file named no list when the turn started, and the check's
+  name and command are those of a check the platform handed over. Anything else is presented as the
+  repository's. "What Windlass would need" below says what would make the user's checks hold.
+- **Where commands are not sandboxed.** In `docker-hardened` Windlass runs checks as it runs the agent's
+  commands there, without its sandbox. A command of the agent's can write Windlass's own configuration
+  file there; the next turn writes the user's checks over it before Windlass reads it.
+
+```sh
+cd server && npx tsx ../scripts/verified-check.ts                                   # the rules on their own: what may be saved, the configuration file, a turn's events, the section
+cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/verified-check.ts --docker # and what the image's Windlass does with a user's checks and a repository's own
+```
+
+The web app's mock has two checks saved for acme/harbor (`?mock=1`, `/repositories/7101`), one of them with
+file patterns that the mock's turns never match.
+
+## What a pull request shows was verified
+
+A pull request an agent opens says what the agent claims. So the platform adds, to the description of every
+pull request it opens, a section that says what was checked, from what Windlass recorded and not from what
+the agent wrote, and writes it again with every later push (`server/src/verified.ts`,
+`server/src/github/publish.ts`):
+
+```markdown
+<!-- windlass-platform:verified -->
+
+### What was verified
+
+The check that applied passed when the agent's turn 1 ended.
+
+- **test** (`node test/add.test.js`), ada's check: passed in 73 ms after the agent was sent back once.
+
+Did not run: **docs** (`test -f docs/index.md`). No changed file matches its patterns.
+
+To look at:
+
+- Test files were deleted or renamed away: `test/sub.test.js`.
+
+<sub>Written by Windlass Platform from what Windlass recorded of the session's checks, and replaced each time the platform pushes. It says what ran; it is not a review.</sub>
+
+<!-- /windlass-platform:verified -->
+```
+
+- **What it says.** How the gate ended in the session's last turn, in one sentence. Each check of the
+  session's last run of checks: its name, its command, whose it is (the user's, by their GitHub login, or
+  "from the repository's `.windlass/config.json`"), how it ended, how long it took, and how many times in
+  that turn the agent was sent back with it failing. The user's checks that did not run, with the reason:
+  no changed file matched their patterns, or the repository's file named a list of its own. The end of a
+  check's output, folded, for one that did not pass and for one whose user asked (1,500 characters, of six
+  checks at most). And when nothing was verified, one plain sentence: "Nothing was verified: no checks are
+  set for this repository.", or which file turned verification off, or that the turn was stopped before
+  its checks had run. There is no badge and no tick in it, and it ends by saying that it is not a review.
+- **Where the facts come from.** Windlass's own events of the turn, each decision on a field of them and
+  none on a sentence: `checks.finished` has the evidence of a run (each check's name, command, status,
+  exit code, duration and the file its output is kept in); a message the harness appends with the origin
+  `check_report` is the agent being sent back; `execution.succeeded` has how the gate ended and why a turn
+  was let end with a check failing; `snapshot.taken` names each state of the workspace. The session's
+  actor keeps what they come to (`Verified`) on the item that ends the turn, and in its own state for the
+  next push. A turn in which no check ran keeps what the last run found, with the turn it was in.
+- **What is looked for in the changes.** Once the work is committed, the platform reads it against the
+  branch it started from, in the sandbox (`git diff` from the merge base, with no program of the
+  repository's choosing), and lists what a reviewer would want to look at, as observations
+  (`workFlags`). The list is short on purpose:
+
+  | It says | When |
+  |---|---|
+  | Test files were deleted or renamed away | a file that is a test's was deleted, or renamed to a path that is not a test's. A test's file is one named like a test (`*.test.*`, `*.spec.*`, `*_test.go`, `test_*.py`, `*_spec.rb`, `*Test.java`, ...), or code in a directory `test`, `tests`, `__tests__`, `spec` or `e2e` that is not under `fixtures`, `helpers`, `mocks`, `data` and the like. A test renamed to another test's path is not listed |
+  | Tests were newly skipped or disabled | a test's file gained more of these than it lost: `it.skip`, `test.skip`, `describe.skip`, `.todo`, `xit(`, `xdescribe(`, `@pytest.mark.skip`, `skipif`, `xfail`, `@unittest.skip`, `pytest.skip(`, `@Disabled`, `@Ignore`, `#[ignore]`, `t.Skip(`. A marker that was there before and still is, and a marker in other code, are not listed. A test that was commented out or deleted from its file is not seen |
+  | What the checks run was changed in this work | the repository's `.windlass/config.json` says something else about `checks` or `verify` than on the base branch; or a file that a check's command names was changed; or the `package.json` script that a check's command runs through `npm`, `pnpm`, `yarn` or `bun run` was changed. The checks are the user's and the ones that ran |
+  | A check's command came to ignore an exit status | one of those three (a command in the repository's own list, the script, the file a command names) has more of `\|\| true`, `\|\| :`, `\|\| exit 0`, a closing `; true` or `; exit 0`, or `set +e` than before. A user's own command that always had one is not this work's, and is not listed |
+  | Files changed after the checks last ran | Windlass recorded another state of the workspace after the last run of checks than the one they ran on: a turn stopped between a failing run and the next, or a later turn that changed files and ran no check. Where Windlass took no snapshots, that a call which can change files started after the run |
+
+  When git could not be asked, the section says that nothing was looked for.
+- **Replaceable by the platform alone.** The section stands between two comment lines, at the end of the
+  description. With every push the platform takes the description as it is at GitHub, removes whatever
+  stands between such lines and any stray one, and puts the new section at the end: text a user wrote or
+  edited at GitHub stays, and a section an agent wrote into its own description, lines and all, does not.
+  Text that goes into the section cannot close it early: the lines' name is taken out of commands and
+  output, and output is fenced by more backticks than it holds.
+- **Nothing a redactor would hide.** The section leaves through both existing redactions: the saved
+  secrets of the session's repository and account are taken out by value, and whatever is shaped like a
+  credential by the GitHub layer's own (`server/src/github/redact.ts`). A check's output was redacted by
+  Windlass before it was kept, and is again when the platform reads it.
+- **A push the agent asked for is made before its turn's checks run.** The gate runs when a turn ends,
+  and the agent asks the platform to publish during it. The section then says so first ("This was pushed
+  while the agent's turn 3 was still running: what that turn changed had not been checked yet."), with
+  what earlier turns found after it. When that turn has ended and the workspace holds nothing GitHub
+  lacks, the platform writes the section again, without a push, and the timeline says so. When the turn
+  changed files after the push, the description stays as it is until the next push.
+- **In the session.** The turn's closing line in the timeline has the same facts for that turn: the
+  checks with how each ended, whose it is and how often the agent was sent back, the user's checks that
+  did not run and why, and that files changed after the checks last ran. The line of a push says what the
+  description reports, in a few words, and the repository's page lists them beside each open pull request
+  (`PullRequestInfo.verified`): "2 checks passed", "1 of 2 checks failing", "nothing verified",
+  "1 check passed (the repository's own)", with "1 thing to look at" where the section lists some.
+- **What it cannot say.** That the checks are good ones. That a check which passed tested what changed.
+  What the repository's file did in a turn the platform could not read it in. And where commands are not
+  sandboxed, a command can write on the engine's connection to the platform ("The agent asks to
+  publish"), so an agent that set out to could forge the events themselves; in the profiles where
+  Windlass sandboxes every command it cannot.
+
+**What Windlass would need.** Three things would make this stronger, none of them in 0.2.0: checks that
+whoever starts the harness names and a project's file cannot replace or switch off, as `withholdEnv` is
+(a project's list added to them, as a project's hooks are added to its user's); the file each check came
+from in a run's evidence, as `_windlass/mcp` says for a server; and the end of a failing check's output in
+the evidence itself, where today there is the path of a file in the sandbox.
+
 ## A repository's secrets
 
 A project needs values that must not be in its repository: a registry's token for `npm ci`, the key of an
@@ -1259,8 +1418,8 @@ or makes those calls slow for ten seconds.
 
 A connected GitHub repository is the project: there is no separate object for one. What the platform keeps
 for a repository is kept in its user's `user` actor under GitHub's id for the repository, which a rename
-does not change, in a table for each kind of thing: the setup command, the secrets, the remembered approvals
-of its MCP servers, and the defaults for new sessions. Nothing is made for a repository until its user saves
+does not change, in a table for each kind of thing: the setup command, the checks, the secrets, the
+remembered approvals of its MCP servers, and the defaults for new sessions. Nothing is made for a repository until its user saves
 something, and nothing is left once they have deleted it.
 
 - **The list of agents is grouped** (`web/src/lib/repositories.ts`, `web/src/screens/Home.tsx`). Sessions
@@ -1276,8 +1435,9 @@ something, and nothing is left once they have deleted it.
 - **The page** (`/repositories/<GitHub's id>`, `web/src/screens/Repository.tsx`) gathers the repository's
   sessions; the pull requests they opened that are still open, as each session's summary last had them
   (GitHub is not asked for a list, so one merged or closed at GitHub stays until its session's panel next
-  reads it); the defaults for new sessions; the setup command and the secrets, in the same components a
-  session's panel has (`SetupEditor`, `SecretsBlock`); the remembered approvals of its MCP servers, each
+  reads it), each with what its description says was verified, in a few words; the defaults for new
+  sessions; the setup command and the secrets, in the same components a session's panel has
+  (`SetupEditor`, `SecretsBlock`); the checks ("A repository's checks"; `ChecksEditor`); the remembered approvals of its MCP servers, each
   with when it was given, until when it holds, and "Forget"; and one control that deletes everything saved
   for the repository at once. "New agent" opens the launch form with the repository chosen
   (`/repositories/<id>/new`).
@@ -1626,9 +1786,11 @@ used up and an account with no place left.
 | `server/src/usage.ts` | A user's sandbox time and kept sandboxes: what is counted, the two limits, the book the `user` actor decides with, and the words of a refusal ("Usage and limits") |
 | `server/src/setup-command.ts`, `server/src/sandbox/setup.ts` | A repository's setup command: what it is saved for, its limits, what is kept of a run's output and what the agent is told; and the run itself in a sandbox |
 | `server/src/repository-defaults.ts` | A repository's defaults for new sessions: what may be saved, and how a save writes only the fields it names ("A repository's page") |
+| `server/src/repository-checks.ts` | A repository's checks: what may be saved, the list as Windlass takes it, and how it is stored whole ("A repository's checks") |
+| `server/src/verified.ts` | What a session's work was verified with: what a turn's events come to, what is looked for in the work's changes, and the section of a pull request's description ("What a pull request shows was verified") |
 | `server/src/account-models.ts` | The models a user may choose ("Models"): the list of their ChatGPT plan as the `user` actor keeps it, when Windlass is asked again, the stand-in, and how a model and an effort are held against the list |
 | `server/src/account-defaults.ts`, `server/src/personal-servers.ts`, `server/src/account-secrets.ts` | What a user keeps for their account ("Account settings"): the defaults for new sessions; their own MCP servers, what a name and a definition may be and how many are kept; and the secrets those read, whom they reach and how they give way to a repository's |
-| `server/src/windlass-config.ts` | Windlass's own configuration file in a sandbox: the servers the platform writes into it for a turn, the user's own and the tool to publish, and how they are taken out again |
+| `server/src/windlass-config.ts` | Windlass's own configuration file in a sandbox: what the platform writes into it for a turn (the user's own MCP servers, the tool to publish, the repository's checks), how it is taken out again, and what a repository's own file says about checks |
 | `server/src/agent-publish.ts` | The agent asking the platform to publish: the tool and its server, what a request may hold, and the words of the question, of the timeline's lines and of what the agent is told |
 | `server/src/repo-secrets.ts` | A repository's secrets: what may be saved, what a scope comes to in each kind of sandbox, the sealing, and taking saved values out of text |
 | `server/src/bucket/`, `server/src/sandbox/backup.ts` | The object store the copies of Windlass's session data go to (S3 protocol, and a stand-in for tests), and what is copied, saved and restored |
@@ -1652,6 +1814,7 @@ cd server && npx tsx ../scripts/setup-check.ts                    # a repository
 cd server && npx tsx ../scripts/usage-check.ts                    # sandbox time and kept sandboxes: their rules, no server and no Docker
 cd server && npx tsx ../scripts/secrets-check.ts                  # a repository's secrets: its rules, no server and no Docker
 cd server && npx tsx ../scripts/repository-check.ts               # a repository's defaults: its rules and saves that interleave, no server and no Docker
+cd server && npx tsx ../scripts/verified-check.ts                 # a repository's checks and what a pull request says was verified: the rules, no server and no Docker (--docker: a real Windlass)
 cd server && npx tsx ../scripts/account-check.ts                  # the account's settings: defaults, own MCP servers and their secrets, no server and no Docker
 cd server && npx tsx ../scripts/models-check.ts                   # a user's models: the list's rules, and the real `windlass --models` against a stand-in for the provider
 cd server && npx tsx ../scripts/signin-check.ts                   # the sign-in machinery: no server, no Docker, a stand-in for OpenAI
@@ -1783,8 +1946,19 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   publish"), so a task that is to publish while its user is away needs a profile whose commands Windlass
   sandboxes. What would close it: an engine that runs as another user than its commands, or one whose
   connection a command cannot write to.
+- **A repository's own file can replace a user's checks, and the platform can only say so.** Windlass
+  0.2.0 follows `checks` and `verify` in a repository's `.windlass/config.json` before its user's, and an
+  agent can write that file: from the turn after, its list runs in place of the user's, or nothing does.
+  The pull request then says that the checks that ran were the repository's, that the user's did not
+  run, and that the check configuration changed in this work; nothing stops the turn from being called
+  done ("A repository's checks"). And the observations about a work's changes are a short list of
+  patterns: they miss a test deleted from inside its file and a check weakened in a way the list does
+  not name, and they have not been run on a large repository.
+- **A pull request's section is as old as the last push.** It is written when the platform pushes, and
+  once more after a turn in which the agent published. A turn that changes files and is not pushed
+  leaves the description saying what was true of what is at GitHub.
 - **What a turn wrote into Windlass's configuration can outlast it until the next turn.** The tool to
-  publish and the user's own MCP servers are written into Windlass's configuration file in the sandbox
+  publish, the repository's checks and the user's own MCP servers are written into Windlass's configuration file in the sandbox
   for a turn and removed when the turn ends; a server that dies in between leaves them there. The
   session's next turn takes them out before it writes its own, by the platform's list of what it wrote.
   Nothing reads the file in between: no Windlass runs between turns.

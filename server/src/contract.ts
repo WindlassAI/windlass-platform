@@ -375,6 +375,13 @@ export interface PullRequestInfo {
 	base: string;
 	/** When the platform last pushed to it, ms since the epoch. */
 	pushedAt: number;
+	/**
+	 * What the section the platform keeps in its description said when it was last written, in a few
+	 * words (`Verified`; README, "What a pull request shows was verified"): "2 checks passed",
+	 * "1 of 2 checks failing", "nothing verified", with "1 thing to look at" where the section lists
+	 * observations. Absent for a pull request from before the section.
+	 */
+	verified?: string;
 }
 
 /** The message of the commit the platform makes, and of the pull request when it opens one. */
@@ -426,6 +433,108 @@ export interface RepositorySetup {
 	updatedAt: number | null;
 	/** How long a run may take before the platform stops it. */
 	timeoutMs: number;
+}
+
+/**
+ * One of the checks a user saved for a repository of their GitHub connection: a command that tells
+ * whether the code is right, which Windlass runs before it calls a turn done and sends the agent back
+ * with when it fails (README, "A repository's checks"). The first four fields are Windlass's own
+ * (`checks[]` in its configuration), with its limits.
+ */
+export interface RepositoryCheck {
+	/** Letters, digits, "_", "." and "-", starting with a letter or digit; no two of a list alike. */
+	name: string;
+	/** Run with `bash -c` in the repository's directory. */
+	command: string;
+	/** How long it may run, 1 to MAX_CHECK_TIMEOUT_SECONDS; absent: Windlass's own default (120). */
+	timeoutSeconds?: number;
+	/** Glob patterns of changed files that make it run; absent: any change does. */
+	when?: string[];
+	/** True: the end of what it printed goes into a pull request's description also when it passed. The platform's own field: Windlass is not told. */
+	showOutput?: boolean;
+}
+
+/** `repositoryChecks`, and what saving answers with. */
+export interface RepositoryChecks {
+	/** In the order they run. */
+	checks: RepositoryCheck[];
+	/** When the list was last saved, ms since the epoch; null when none is saved. */
+	updatedAt: number | null;
+}
+
+/** How one check ended, in Windlass's words (`CheckEvidence.status`). */
+export type CheckStatus = "passed" | "failed" | "timed_out" | "could_not_start" | "interrupted";
+
+/** A check that ran, as Windlass recorded it (`checks.finished`) and as the platform accounts for it. */
+export interface VerifiedCheck {
+	name: string;
+	command: string;
+	/**
+	 * "user": one of the checks the session's user saved for the repository, handed to Windlass for
+	 * that turn. "repository": from the repository's own `.windlass/config.json`, which Windlass
+	 * follows in place of the user's list whenever it names one.
+	 */
+	whose: "user" | "repository";
+	status: CheckStatus;
+	exitCode: number | null;
+	durationMs: number;
+	/** How many times in its turn the agent was sent back with this check failing. */
+	sentBack: number;
+	/** True when Windlass did not run it again in that run: it had passed earlier in the session, and no file it covers changed since. */
+	carried?: boolean;
+	/** The end of what it printed, at most CHECK_OUTPUT_CHARS: kept for one that did not pass, and for one whose user asked (`RepositoryCheck.showOutput`). */
+	output?: string;
+}
+
+/**
+ * What a session's work rests on after a turn, from what Windlass recorded of its verification gate:
+ * on the turn's closing item in the timeline, and what a pull request's description is given.
+ *
+ * `state` is how the gate ended in `turn`:
+ *
+ *   passed          every check that applied passed
+ *   unresolved      checks still failed and the turn ended anyway (`unresolved` says why)
+ *   not_needed      checks are set and none ran: the turn changed nothing they cover
+ *   none_set        no check is set, neither by the user nor by the repository's file
+ *   off             the repository's file turns verification off
+ *   emptied         the repository's file names an empty list, which stands in for the user's
+ *   no_sandbox      Windlass could not run checks in this sandbox, and said so
+ *   not_handed      the platform could not write the user's checks where Windlass reads them
+ *   not_in_force    the user has checks, Windlass reported none in force, and nothing says why
+ *   stopped         the turn was stopped, or cut off, before the gate decided
+ *   failed          the turn failed before the gate decided
+ */
+export interface Verified {
+	turn: number;
+	state: "passed" | "unresolved" | "not_needed" | "none_set" | "off" | "emptied" | "no_sandbox" | "not_handed" | "not_in_force" | "stopped" | "failed";
+	/** For "unresolved": why the turn was let end, and for "acknowledged" what the agent gave as its reason. */
+	unresolved?: { reason: "acknowledged" | "max_rounds" | "report_mode"; said: string | null };
+	/** The session's last run of checks that finished, with the turn it was in and when; null when none has. */
+	run: { turn: number; at: number; checks: VerifiedCheck[] } | null;
+	/** The user's checks, as saved when `turn` started, that are not among `run`'s. */
+	unrun: Array<{ name: string; command: string }>;
+	/** True when the repository's file named a list of its own in `turn`, so the user's did not apply. */
+	replaced: boolean;
+	/** True when Windlass recorded another state of the workspace after `run` finished than the one the checks ran on. */
+	changedAfter: boolean;
+}
+
+/**
+ * Something in a pull request's changes that a reviewer would want to look at, as an observation
+ * (README, "What a pull request shows was verified", says exactly what each one looks for):
+ *
+ *   tests_removed    test files deleted, or renamed to a path that is not a test's
+ *   tests_skipped    tests newly skipped or disabled in test files
+ *   checks_changed   the repository's check configuration, or what a check's command runs, changed
+ *   exit_ignored     a check's command, or what it runs, came to ignore an exit status
+ *
+ * That files changed after the checks last ran is one more, known from Windlass's record and not
+ * from the changes: `Verified.changedAfter`.
+ */
+export interface VerifiedFlag {
+	kind: "tests_removed" | "tests_skipped" | "checks_changed" | "exit_ignored";
+	/** What it was seen in: paths, at most a few. */
+	where: string[];
 }
 
 /**
@@ -532,8 +641,8 @@ export interface RepositoryView {
 	approvals: RepositoryApproval[];
 	/** What forgetting an approval does and does not do on this deployment, in a sentence or two. */
 	forgetting: string;
-	/** What else is saved for it: whether a setup command is, and how many secrets. */
-	saved: { setup: boolean; secrets: number };
+	/** What else is saved for it: whether a setup command is, how many secrets, and how many checks. */
+	saved: { setup: boolean; secrets: number; checks: number };
 }
 
 /** A repository the user's actor keeps something for: a setup command, a secret, a default or a remembered approval. */
@@ -779,6 +888,14 @@ export interface UserActions {
 	 * `bad_setup_command` for one longer than MAX_SETUP_COMMAND_CHARS or with a character a shell cannot take.
 	 */
 	saveRepositorySetup(input: { repositoryId: number; command: string }): Promise<RepositorySetup>;
+	/** The checks the user saved for a repository, by GitHub's id for it. Asks GitHub nothing. */
+	repositoryChecks(repositoryId: number): Promise<RepositoryChecks>;
+	/**
+	 * Saves the user's checks for a repository: the whole list, in place of what was saved; an empty
+	 * one saves none. They are handed to Windlass from each session's next turn on that repository.
+	 * Throws a UserError with code `bad_checks` for a list that cannot be saved, with what is wrong.
+	 */
+	saveRepositoryChecks(input: { repositoryId: number; checks: RepositoryCheck[] }): Promise<RepositoryChecks>;
 	/**
 	 * The names, scopes and times of the secrets the user saved for a repository, and what each reaches
 	 * in a sandbox of `profile`. With `sessionId`, one of the user's sessions on that repository, it is
@@ -822,8 +939,8 @@ export interface UserActions {
 	 */
 	forgetRepositoryApproval(input: { repositoryId: number; name: string }): Promise<RepositoryView>;
 	/**
-	 * Deletes everything kept for a repository: its setup command, its secrets, its defaults and the
-	 * remembered approvals. The user's sessions on it stay, and their next sandbox is made without them.
+	 * Deletes everything kept for a repository: its setup command, its checks, its secrets, its defaults
+	 * and the remembered approvals. The user's sessions on it stay, and their next sandbox is made without them.
 	 */
 	forgetRepository(repositoryId: number): Promise<RepositoryView>;
 	/** The repositories something is kept for, by name. Asks GitHub nothing. */
@@ -1000,6 +1117,8 @@ export type TimelineItem =
 			cachedShare: number | null;
 			/** Set for "error": what went wrong, fit to show. */
 			message: string | null;
+			/** What the session's work rests on after this turn. Absent on turns from before the platform kept it. */
+			verified?: Verified;
 	  };
 
 /**
@@ -1332,6 +1451,15 @@ export const MAX_NOTE_CHARS = 2_000;
 export const MAX_SETUP_COMMAND_CHARS = 2_000;
 /** How much of a setup run's output is kept, and shown while it runs: the end of it. */
 export const SETUP_OUTPUT_CHARS = 32_000;
+/** A repository's checks: how many one repository may have, and Windlass's own limit on how long one may run. */
+export const MAX_CHECKS_PER_REPOSITORY = 20;
+export const MAX_CHECK_NAME_CHARS = 64;
+export const MAX_CHECK_TIMEOUT_SECONDS = 3600;
+/** How many glob patterns one check's `when` may hold, and how long one may be. */
+export const MAX_CHECK_PATTERNS = 20;
+export const MAX_CHECK_PATTERN_CHARS = 200;
+/** How much of a check's output the platform keeps for a pull request's description: the end of it. */
+export const CHECK_OUTPUT_CHARS = 1_500;
 /** A repository's secrets: how many one repository may have, and what a name and a value may be. */
 export const MAX_SECRETS_PER_REPOSITORY = 50;
 export const MAX_SECRET_NAME_CHARS = 64;

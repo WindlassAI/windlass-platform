@@ -327,3 +327,83 @@ a.agent-group-name:hover .agent-group-owner {
 .repo-fields {
 	margin-top: 14px;
 }
+
+/* ---- a repository's checks ------------------------------------------------------------------------ */
+
+/* Each check is a name and a command on one line, and under them what narrows it: set smaller, as options are. */
+.verify-list {
+	display: grid;
+	gap: 14px;
+	margin-top: 12px;
+	padding: 0;
+	list-style: none;
+}
+.verify-list:empty {
+	display: none;
+}
+.verify-check {
+	min-width: 0;
+}
+.verify-main {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.verify-name {
+	flex: 0 0 9.5em;
+	min-width: 0;
+}
+.verify-command {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+.verify-options {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 18px;
+	margin-top: 6px;
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.verify-option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+.verify-option > span {
+	white-space: nowrap;
+}
+.verify-option-wide {
+	flex: 1 1 16em;
+}
+.verify-small {
+	min-width: 0;
+	padding-top: 4px;
+	padding-bottom: 4px;
+	font-size: var(--size-mono-small);
+}
+.verify-seconds {
+	width: 5.5em;
+}
+.verify-shows {
+	align-items: center;
+	gap: 8px;
+}
+.verify-shows .check-box {
+	margin-top: 0;
+}
+/* Narrow: the name and its control on one line, the command on the next. */
+@media (max-width: 560px) {
+	.verify-main {
+		flex-wrap: wrap;
+	}
+	.verify-name {
+		flex: 1 1 0;
+	}
+	.verify-command {
+		order: 1;
+		flex: 1 1 100%;
+	}
+}

@@ -1,6 +1,6 @@
 /**
- * Windlass's own configuration file in a sandbox, and the MCP servers the platform writes into it for
- * a turn.
+ * Windlass's own configuration file in a sandbox, and what the platform writes into it for a turn:
+ * MCP servers, and the checks of the session's repository.
  *
  * Windlass starts by itself the servers its user's own configuration file names
  * (`~/.config/windlass/config.json`; a server a repository's file names waits for approval). The
@@ -20,6 +20,20 @@
  * have (`isReservedServerName`), so a user's definition can neither take its name nor replace it; and
  * a server left in the file under that name without the platform's list knowing of it is removed all
  * the same: the name is the platform's.
+ *
+ * The checks the session's user saved for its repository (repository-checks.ts) go into the same file
+ * the same way, as its `checks`: Windlass takes its user's checks from there, runs them before a turn
+ * ends and sends the agent back with what fails. That key and `verify` beside it are the platform's
+ * alone: whatever the file had under them goes, so that what Windlass holds to be its user's checks
+ * is what the user saved and nothing a command left there, and its own defaults decide what is done
+ * with them (the agent is sent back, three times at most).
+ *
+ * A repository's own `.windlass/config.json` is not the platform's to write, and Windlass follows it
+ * before its user's file, key by key: a `checks` list there stands in for the user's whole, and
+ * `verify` there can turn the gate off (its docs/user-guide.md, "Project configuration"; tried
+ * against Windlass 0.2.0, scripts/verified-check.ts). Windlass reports neither, so the layer reads
+ * that file when it writes its own, and `projectChecks` says what it holds on the matter: that is
+ * how the platform knows whose checks a turn ran.
  *
  * Nothing here runs anything or touches a file: these are the texts, and sandbox/turn.ts reads and
  * writes them.
@@ -81,17 +95,17 @@ function same(a: unknown, b: unknown): boolean {
 }
 
 /**
- * The configuration file with exactly `servers` in it as the platform's own, and the list that says
- * so. `text` and `written` are the file and the list as the sandbox has them, null for one that is
- * not there. What an earlier turn wrote is taken out first, and what it stood in for is put back;
+ * The configuration file with exactly `servers` in it as the platform's own and `checks` as its
+ * checks, and the list that says which servers are the platform's. `text` and `written` are the file
+ * and the list as the sandbox has them, null for one that is not there. What an earlier turn wrote is taken out first, and what it stood in for is put back;
  * then each server is written, the later of two of one name last, and a definition the file had
- * under its name is kept in the list. With no server, that is the file as it was before the platform
- * wrote anything, and no list.
+ * under its name is kept in the list. With no server and no check, that is the file as it was before
+ * the platform wrote anything, less `checks` and `verify`, and no list.
  *
  * Null when the file is there and is not what Windlass reads (not JSON, or `mcp` or `mcp.servers` is
  * not an object): it is left alone then, and nothing is written.
  */
-export function platformConfig(text: string | null, written: string | null, servers: readonly ConfigServer[]): PlatformConfig | null {
+export function platformConfig(text: string | null, written: string | null, servers: readonly ConfigServer[], checks: readonly Record<string, unknown>[] = []): PlatformConfig | null {
 	let config: unknown = {};
 	if (text !== null && text.trim() !== "") {
 		try {
@@ -121,13 +135,40 @@ export function platformConfig(text: string | null, written: string | null, serv
 	}
 
 	const { servers: _servers, ...restOfMcp } = mcp;
-	const { mcp: _mcp, ...rest } = config;
+	// `checks` and `verify` are the platform's: what the file had under them goes.
+	const { mcp: _mcp, checks: _checks, verify: _verify, ...rest } = config;
 	const mcpNow = Object.keys(next).length > 0 ? { ...restOfMcp, servers: next } : restOfMcp;
-	const configNow = Object.keys(mcpNow).length > 0 ? { ...rest, mcp: mcpNow } : rest;
+	const configNow = { ...rest, ...(Object.keys(mcpNow).length > 0 ? { mcp: mcpNow } : {}), ...(checks.length > 0 ? { checks } : {}) };
 	return {
 		config: Object.keys(configNow).length === 0 ? null : `${JSON.stringify(configNow, null, 2)}\n`,
 		written: now.names.length === 0 ? null : `${JSON.stringify(now)}\n`,
 		// A file that is there and says nothing is left where it is.
 		changed: !same(config, configNow),
 	};
+}
+
+/** What a repository's own configuration file says about checks. */
+export interface ProjectChecks {
+	/** How many checks it names; null when it has no `checks`. A list, an empty one too, stands in for the user's. */
+	checks: number | null;
+	/** Its `verify.mode` ("off", "report", "gate"); null when it sets none. */
+	verify: string | null;
+}
+
+/**
+ * What the repository's `.windlass/config.json` says about checks, from its text: null for a file
+ * that is not there or is not a JSON object. Windlass refuses to start a turn on a file it cannot
+ * read, so a file that says nothing here either says nothing to Windlass or stops the turn.
+ */
+export function projectChecks(text: string | null): ProjectChecks | null {
+	if (text === null || text.trim() === "") return null;
+	let config: unknown;
+	try {
+		config = JSON.parse(text);
+	} catch {
+		return null;
+	}
+	if (!isObject(config)) return null;
+	const verify = isObject(config.verify) && typeof config.verify.mode === "string" ? config.verify.mode : null;
+	return { checks: Array.isArray(config.checks) ? config.checks.length : null, verify };
 }

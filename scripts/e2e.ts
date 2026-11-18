@@ -2551,6 +2551,7 @@ const GITHUB_CHECKS = [
 	"a repository's page: what is saved for it by GitHub's id, defaults saved field by field and at once, what GitHub says of it now, and all of it deleted in one step",
 	"open pull request: the platform pushes the session's branch and opens it, with one line in the timeline",
 	"push changes goes to the same pull request, with one line in the timeline",
+	"a repository's checks: saved as one list, run before a turn ends, said on the turn's closing item, and written into the pull request's description with every push",
 	"nothing is pushed while a turn runs, or for a session with no repository of the connection",
 	"a user who may only read a repository is told so, and nothing is pushed in their name",
 	"a repository that is gone, and an app that was uninstalled, are each said in a sentence",
@@ -2565,7 +2566,7 @@ const GITHUB_CHECKS = [
  * The git commands themselves, against a real remote, are scripts/github-check.ts.
  */
 async function githubChecks(server: Server, client: Client, demoSignIn: () => Promise<AuthResult>, profile: string): Promise<void> {
-	const [off, on, connecting, once, notTheirs, listing, launching, page, opening, pushing, blocked, readOnly, gone, disconnecting, secrets] = GITHUB_CHECKS as [string, string, string, string, string, string, string, string, string, string, string, string, string, string, string];
+	const [off, on, connecting, once, notTheirs, listing, launching, page, opening, pushing, verifying, blocked, readOnly, gone, disconnecting, secrets] = GITHUB_CHECKS as [string, string, string, string, string, string, string, string, string, string, string, string, string, string, string, string];
 	const ORIGIN = "http://localhost:5173";
 	const userOf = (auth: AuthResult) => client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 	const sessionOf = (auth: AuthResult, id: string) => client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } });
@@ -2763,7 +2764,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 
 			// Nothing is kept until something is saved: the page is there all the same, named after the agent on it.
 			const empty = await user.repository(harbor.id);
-			assert(plain(empty.defaults) === plain(NONE) && empty.name === "ada/harbor" && empty.approvals.length === 0 && plain(empty.saved) === plain({ setup: false, secrets: 0 }), `before anything was saved: ${plain(empty)}`);
+			assert(plain(empty.defaults) === plain(NONE) && empty.name === "ada/harbor" && empty.approvals.length === 0 && plain(empty.saved) === plain({ setup: false, secrets: 0, checks: 0 }), `before anything was saved: ${plain(empty)}`);
 			assert((await user.savedRepositories()).length === 0, "a repository is listed as having something saved");
 			for (const id of [0, -1, 1.5, "7", null]) await refused(() => user.repository(id as never), "bad_input");
 
@@ -2780,9 +2781,11 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 					user.saveRepositoryDefaults({ repositoryId: harbor.id, model }),
 					user.saveRepositorySetup({ repositoryId: harbor.id, command: `echo ${round}` }),
 					user.saveRepositorySecret({ repositoryId: harbor.id, profile: profile as never, name: "CHECK_TOKEN", value: secret, scope: "setup" }),
+					user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "test", command: `echo ${round}` }] }),
 				]);
 				const now = await user.repository(harbor.id);
-				assert(now.defaults.profile === profile && now.defaults.model === model && now.saved.setup && now.saved.secrets === 1, `round ${round}: four saves at once left ${plain(now)}`);
+				assert(now.defaults.profile === profile && now.defaults.model === model && now.saved.setup && now.saved.secrets === 1 && now.saved.checks === 1, `round ${round}: five saves at once left ${plain(now)}`);
+				assert((await user.repositoryChecks(harbor.id)).checks[0]?.command === `echo ${round}`, `round ${round}: the checks were lost`);
 				assert((await user.repositorySetup(harbor.id)).command === `echo ${round}`, `round ${round}: the setup command was lost`);
 				// Nothing of the page carries a secret's value.
 				assert(!plain(now).includes(secret) && !plain(await user.savedRepositories()).includes(secret), "the page carries a secret's value");
@@ -2802,11 +2805,11 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			await refused(() => userOf(carol).githubRepository(vault.id), "github_denied");
 			// Its page opens for somebody who cannot reach it, with nothing of anybody else's on it.
 			const carols = await userOf(carol).repository(harbor.id);
-			assert(plain(carols.defaults) === plain(NONE) && carols.name === null && plain(carols.saved) === plain({ setup: false, secrets: 0 }), `another user's page of the same repository: ${plain(carols)}`);
+			assert(plain(carols.defaults) === plain(NONE) && carols.name === null && plain(carols.saved) === plain({ setup: false, secrets: 0, checks: 0 }), `another user's page of the same repository: ${plain(carols)}`);
 
 			// All of it goes in one step, and the agent stays.
 			const cleared = await user.forgetRepository(harbor.id);
-			assert(plain(cleared.defaults) === plain(NONE) && plain(cleared.saved) === plain({ setup: false, secrets: 0 }) && cleared.approvals.length === 0, `after deleting what was saved: ${plain(cleared)}`);
+			assert(plain(cleared.defaults) === plain(NONE) && plain(cleared.saved) === plain({ setup: false, secrets: 0, checks: 0 }) && cleared.approvals.length === 0, `after deleting what was saved: ${plain(cleared)}`);
 			assert((await user.repositorySetup(harbor.id)).command === "" && (await user.repositorySecrets({ repositoryId: harbor.id, profile: profile as never })).secrets.length === 0, "a setup command or a secret is still there");
 			assert((await user.savedRepositories()).length === 0 && (await user.listSessions()).some((session) => session.id === sessionId), "the list still names it, or the agent went with it");
 			assert(server.output.includes(`[wlp] defaults.saved uid=${alice.profile.uid} project=github:${harbor.id}`) && server.output.includes(`[wlp] repository.forgotten uid=${alice.profile.uid} project=github:${harbor.id}`), "the server did not log the saves and the deletion");
@@ -2829,13 +2832,15 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			const pull = result.state.pullRequest;
 			assert(result.opened && pull?.number === 1 && pull.state === "open" && pull.branch === branch && pull.base === "main" && pull.url === `${standin.url}/ada/harbor/pull/1`, `the result is ${plain(result.state.pullRequest)}`);
 			const made = standin.pulls.at(-1);
-			assert(made?.title === "Fix the harbor light" && made.body === "It was dark." && made.head === branch && made.base === "main", `GitHub has ${plain(made)}`);
+			// The description is the user's, and after it the section that says what was verified: here, in one sentence, nothing.
+			assert(made?.title === "Fix the harbor light" && made.body.startsWith("It was dark.\n\n<!-- windlass-platform:verified -->") && made.body.includes("\n\nNothing was verified: no checks are set for this repository.\n\n") && made.head === branch && made.base === "main", `GitHub has ${plain(made)}`);
+			assert(pull.verified === "nothing verified", `the pull request says "${pull.verified}"`);
 			const minted = mintedSince(from);
 			assert(minted.includes(`metadata:read,contents:write @ ${harbor.id}`) && minted.includes(`metadata:read,contents:read,pull_requests:write @ ${harbor.id}`), `the tokens asked for were ${minted.join("; ")}`);
 			const pushToken = standin.minted.slice(from).find((entry) => entry.permissions?.contents === "write")?.token ?? "";
 			assert(pushToken !== "" && !standin.alive(pushToken), "the push's token was not revoked");
 			const line = await waitFor("the timeline's line", () => lines().find((text) => text.startsWith("Opened pull request")), 5_000);
-			assert(line === `Opened pull request #1 in ada/harbor from ${branch}.`, `the timeline says "${line}"`);
+			assert(line === `Opened pull request #1 in ada/harbor from ${branch}. Its description reports: nothing verified.`, `the timeline says "${line}"`);
 			const summary = await waitFor("the summary with the pull request", () => [...(watch?.summaries ?? [])].reverse().find((one) => one.pullRequest?.number === 1), 5_000);
 			assert(summary.pullRequest?.state === "open", "the summary's pull request is not open");
 			const listed = await waitFor("the user's list with the pull request", async () => (await userOf(alice).listSessions()).find((session) => session.id === sessionId && session.pullRequest?.number === 1), 5_000);
@@ -2850,7 +2855,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			const result = await handle.publish({ message: { title: "Trim the wick", body: "" } });
 			assert(!result.opened && result.state.pullRequest?.number === 1 && standin.pulls.length === count, `the result is ${plain(result.state.pullRequest)}; GitHub has ${standin.pulls.length} pull requests`);
 			const line = await waitFor("the timeline's line", () => lines().find((text) => text.startsWith("Pushed")), 5_000);
-			assert(line === `Pushed the work to ${branch}; pull request #1 is updated.`, `the timeline says "${line}"`);
+			assert(line === `Pushed the work to ${branch}; pull request #1 is updated. Its description reports: nothing verified.`, `the timeline says "${line}"`);
 			// Merged at GitHub: the panel's read sees it, and so does everyone who watches the session.
 			(standin.pulls[0] as (typeof standin.pulls)[number]).state = "closed";
 			(standin.pulls[0] as (typeof standin.pulls)[number]).merged = true;
@@ -2860,6 +2865,43 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			const again = await handle.publish({ message: { title: "After the merge", body: "" } });
 			assert(again.opened && again.state.pullRequest?.number === 2, `after a merge the result is ${plain(again.state.pullRequest)}`);
 			return `"${line}"; merged at GitHub is seen; the next push opened #2`;
+		});
+
+		await check(verifying, async () => {
+			assert(watch, "no session");
+			const user = userOf(alice);
+			const handle = sessionOf(alice, sessionId);
+			await refused(() => user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "has space", command: "npm test" }] }), "bad_checks");
+			await refused(() => user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "a", command: "x" }, { name: "a", command: "y" }] }), "bad_checks");
+			const saved = await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "test", command: "npm test" }, { name: "lint", command: "npm run lint", timeoutSeconds: 60 }] });
+			assert(saved.checks.length === 2 && (await user.repository(harbor.id)).saved.checks === 2 && (await userOf(carol).repositoryChecks(harbor.id)).checks.length === 0, `saved: ${plain(saved)}`);
+
+			// The session is handed them with its next turn, and the turn's closing item says what they came to and whose they are.
+			const first = await watch.conn.prompt({ text: "Write a short program" });
+			const ended = await watch.untilEnded(first.turn);
+			const ran = ended.verified?.run?.checks.map((one) => `${one.name}:${one.whose}:${one.status}:${one.sentBack}`).join(",");
+			assert(ended.outcome === "succeeded" && ended.verified?.state === "passed" && ended.verified.run?.turn === first.turn && ran === "test:user:passed:0,lint:user:passed:0" && ended.verified.unrun.length === 0 && !ended.verified.replaced, `the turn ended ${ended.outcome} with ${plain(ended.verified)}`);
+			assert(watch.windlass(first.turn, "checks.finished").length === 1, "the timeline has no run of checks");
+			const pushed = await handle.publish({ message: { title: "With its checks", body: "" } });
+			const described = standin.pulls.at(-1)?.body ?? "";
+			assert(pushed.state.pullRequest?.verified === "2 checks passed", `the pull request says "${pushed.state.pullRequest?.verified}"`);
+			assert(described.includes(`The 2 checks that applied passed when the agent's turn ${first.turn} ended.`) && described.includes("- **test** (`npm test`), ada's check: passed in 40 ms.") && described.includes("- **lint** (`npm run lint`), ada's check: passed in 40 ms."), `the description is ${plain(described)}`);
+			assert(!described.includes("Nothing was verified") && described.split("### What was verified").length === 2, "the description kept the section of the push before it");
+
+			// A check that fails: the turn ends with it unresolved, and the next push says that instead.
+			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "test", command: "npm run fail" }] });
+			const second = await watch.conn.prompt({ text: "Write a short program" });
+			const failing = await watch.untilEnded(second.turn);
+			assert(failing.outcome === "unresolved" && failing.verified?.state === "unresolved" && failing.verified.unresolved?.reason === "max_rounds" && failing.verified.run?.checks[0]?.status === "failed", `the turn ended ${failing.outcome} with ${plain(failing.verified)}`);
+			const again = await handle.publish({ message: { title: "With a check failing", body: "" } });
+			const now = standin.pulls.at(-1)?.body ?? "";
+			assert(again.state.pullRequest?.verified === "1 of 1 check failing" && now.includes(`The agent's turn ${second.turn} ended with a check still failing: the agent had been sent back as often as a turn allows.`) && now.includes("- **test** (`npm run fail`), ada's check: failed with exit code 1 after 40 ms."), `the description is ${plain(now)}`);
+			assert(!now.includes("npm run lint") && now.split("### What was verified").length === 2 && !/[✓✅]/.test(now), "the description kept the section of the push before it");
+			const line = lines().filter((text) => text.startsWith("Pushed")).at(-1);
+			assert(line?.endsWith("Its description reports: 1 of 1 check failing.") === true, `the timeline says "${line}"`);
+			// None again: the checks after this one run as they did.
+			assert((await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [] })).updatedAt === null && (await user.repository(harbor.id)).saved.checks === 0, "the checks were not deleted");
+			return `"${again.state.pullRequest?.verified}"; "${line}"`;
 		});
 
 		await check(blocked, async () => {

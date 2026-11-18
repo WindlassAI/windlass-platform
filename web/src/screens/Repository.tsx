@@ -4,9 +4,10 @@
  *
  * The page is addressed by GitHub's id for the repository, which a rename does not change. It shows
  * the agents launched on it and the pull requests they opened that are still open, both from the
- * summaries the list of agents already has; what new agents on it start with; its setup command and
- * its secrets, in the same components a session's panel has; and the approvals of its MCP servers
- * that are remembered, each with the way to forget it.
+ * summaries the list of agents already has, each pull request with what its description says was
+ * verified; what new agents on it start with; its setup command, its checks and its secrets, the
+ * first and the last in the same components a session's panel has; and the approvals of its MCP
+ * servers that are remembered, each with the way to forget it.
  *
  * Two things are asked, apart from each other. What is saved (`repository`) is the user's actor's
  * own and is there at once. Whether the repository can still be launched on (`githubRepository`) is
@@ -18,6 +19,7 @@ import type { GithubRepository, RepositoryView, SessionSummary } from "@contract
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { hasReason } from "../api/client";
 import { AgentList } from "../components/Agents";
+import { ChecksEditor } from "../components/Checks";
 import { DefaultsSection } from "../components/Defaults";
 import { Dialog } from "../components/Dialog";
 import { ArrowLeftIcon, ExternalIcon, LockIcon, PlusIcon, WarnIcon } from "../components/Icons";
@@ -267,6 +269,7 @@ function Pulls({ page, now }: { page: RepositoryPage; now: number }) {
 											</a>
 										</span>
 										<span title={absoluteTime(pull.pushedAt)}>pushed {relativeTime(pull.pushedAt, now)}</span>
+										{pull.verified ? <span title="What its description said was verified when the platform last wrote it">{pull.verified}</span> : null}
 									</p>
 								</div>
 							</li>
@@ -287,6 +290,7 @@ function ForgetDialog({ page, view, name, agents, onClose, onDone }: { page: Rep
 	const [error, setError] = useState<string | null>(null);
 	const parts = [
 		view.saved.setup ? "the setup command" : null,
+		view.saved.checks > 0 ? (view.saved.checks === 1 ? "its one check" : `its ${view.saved.checks} checks`) : null,
 		view.saved.secrets > 0 ? (view.saved.secrets === 1 ? "its one secret" : `its ${view.saved.secrets} secrets`) : null,
 		view.defaults.profile !== null || view.defaults.model !== null ? "the defaults for new agents" : null,
 		view.approvals.length > 0 ? (view.approvals.length === 1 ? "the remembered approval of one MCP server" : `the remembered approvals of ${view.approvals.length} MCP servers`) : null,
@@ -350,7 +354,7 @@ export function Repository({ page }: { page: RepositoryPage }) {
 	const account = useAccount();
 	const models = useModels();
 	const now = useNow(15_000);
-	const ids = { setup: useId() };
+	const ids = { setup: useId(), checks: useId() };
 	const [forgetting, setForgetting] = useState(false);
 	/** Counted up when everything saved was deleted: the setup command and the secrets are read anew. */
 	const [generation, setGeneration] = useState(0);
@@ -362,7 +366,7 @@ export function Repository({ page }: { page: RepositoryPage }) {
 	const choices = layerChoices(startingChoices(view?.defaults ?? null, info, models.list), accountChoices);
 	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
 	const launchable = access.state !== "unusable";
-	const anything = view !== null && (view.saved.setup || view.saved.secrets > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.approvals.length > 0);
+	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.approvals.length > 0);
 	const working = sessions?.filter((session) => session.status !== "idle").length ?? 0;
 
 	return (
@@ -471,6 +475,14 @@ export function Repository({ page }: { page: RepositoryPage }) {
 						<SetupEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.setup} applies="A change applies to workspaces created after it: an agent that has one is not set up again." onSaved={page.reload} />
 					</section>
 
+					<section className="usage-section repo-saved" aria-labelledby={ids.checks}>
+						<h2 className="usage-title" id={ids.checks}>
+							Checks
+							{view.saved.checks > 0 ? <span className="usage-count">{view.saved.checks}</span> : null}
+						</h2>
+						<ChecksEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.checks} onSaved={page.reload} />
+					</section>
+
 					<section className="usage-section repo-saved" aria-labelledby="repo-secrets">
 						<SecretsBlock
 							key={generation}
@@ -507,7 +519,7 @@ export function Repository({ page }: { page: RepositoryPage }) {
 						</h2>
 						<p className="usage-lede">
 							{anything
-								? `Deletes the setup command, the secrets, the defaults and the remembered approvals saved for ${name}, all at once. Its agents are not deleted with them.`
+								? `Deletes the setup command, the checks, the secrets, the defaults and the remembered approvals saved for ${name}, all at once. Its agents are not deleted with them.`
 								: `Nothing is saved for ${name}.`}
 						</p>
 						{anything ? (

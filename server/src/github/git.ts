@@ -32,7 +32,9 @@
  * a script reports (`wlp:` lines) is read where it is there and never required.
  */
 
+import { randomBytes } from "node:crypto";
 import type { ExecResult, SandboxHandle } from "../sandbox/api.js";
+import type { WorkDiff } from "../verified.js";
 import { redact } from "./redact.js";
 
 const CLONE_TIMEOUT_MS = 3 * 60 * 1000;
@@ -326,6 +328,48 @@ export function commitWork(sandbox: SandboxHandle, input: CommitInput, message: 
 
 export function probeWork(sandbox: SandboxHandle, base: string, pushed: string | null): Promise<GitOutcome> {
 	return run(sandbox, probeScript(base, pushed), { stdin: "", timeoutMs: PROBE_TIMEOUT_MS });
+}
+
+/**
+ * Reads the workspace's commit against the branch it started from, without changing anything, for
+ * what a pull request says of its changes (verified.ts, `workFlags`): which files changed and how,
+ * the changed lines, and the repository's `.windlass/config.json` and `package.json` as they were
+ * and as they are. Each part ends with a line only this call knows. No token, and no program of the
+ * repository's choosing is run for it: no external diff, no text conversion.
+ */
+export function workScript(base: string, mark: string): string {
+	const diff = "git -c core.quotePath=false -c core.fsmonitor=false diff --no-ext-diff --no-textconv --no-color -M";
+	return [
+		"set -eu",
+		PLAIN_START,
+		"if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then exit 0; fi",
+		`cd "$(git rev-parse --show-toplevel)"`,
+		`base=$(git merge-base HEAD ${shellQuote(`refs/remotes/origin/${base}`)} 2>/dev/null) || exit 0`,
+		`end() { printf '\\n%s\\n' ${shellQuote(mark)}; }`,
+		`${diff} --name-status -z "$base" HEAD | head -c 400000; end`,
+		`${diff} -U0 "$base" HEAD | head -c 2000000; end`,
+		`for at in "$base" HEAD; do for file in .windlass/config.json package.json; do if git cat-file -e "$at:$file" 2>/dev/null; then echo file; git cat-file blob "$at:$file" | head -c 200000; else echo absent; fi; end; done; done`,
+	].join("\n");
+}
+
+/** `workScript`'s answer, or null when git did not give one (no repository, no such base, a sandbox that is not running). Never throws. */
+export async function readWork(sandbox: SandboxHandle, base: string): Promise<WorkDiff | null> {
+	const mark = `wlp-${randomBytes(9).toString("hex")}`;
+	const result = await sandbox.run(workScript(base, mark), { timeoutMs: PROBE_TIMEOUT_MS }).catch(() => null);
+	if (result === null || result.exitCode !== 0) return null;
+	const parts = result.stdout.split(`\n${mark}\n`);
+	if (parts.length < 7) return null;
+	const names = (parts[0] as string).split("\0");
+	const files: WorkDiff["files"] = [];
+	for (let index = 0; index + 1 < names.length; index += 2) {
+		const status = names[index] as string;
+		const path = names[index + 1] as string;
+		// A rename or a copy names two paths: where it was, and where it is.
+		if (/^[RC]/.test(status)) files.push({ status, path, to: names[(index += 1) + 1] });
+		else files.push({ status, path });
+	}
+	const file = (part: string): string | null => (part.startsWith("file\n") ? part.slice(5) : null);
+	return { files, patch: parts[1] as string, config: { before: file(parts[2] as string), after: file(parts[4] as string) }, packageJson: { before: file(parts[3] as string), after: file(parts[5] as string) } };
 }
 
 /** Removes what `commitWork` left for a push that is not going to run. Never throws. */

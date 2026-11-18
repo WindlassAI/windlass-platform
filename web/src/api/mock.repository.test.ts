@@ -4,9 +4,10 @@
  * something is saved for. The refusals are held against the server's own words.
  */
 import { describe, expect, it } from "vitest";
-import type { ModelList, SandboxProfile } from "@contract";
+import type { ModelList, SandboxProfile, TimelineItem } from "@contract";
+import { ChecksProblem, cleanChecks } from "../../../server/src/repository-checks";
 import { DefaultsProblem, cleanDefaults } from "../../../server/src/repository-defaults";
-import { PlatformError } from "./client";
+import { PlatformError, type SessionFeed } from "./client";
 import { MOCK_FORGETTING, MOCK_PROFILES, createMockClient } from "./mock";
 
 const ada = { token: "mock:chatgpt:u_repo:ada@example.com", profile: { uid: "u_repo", email: "ada@example.com", demo: false } };
@@ -73,6 +74,68 @@ describe("the mock's repository page", () => {
 		mock.dispose();
 	});
 
+	it("keeps a repository's checks as one list, saved whole, and refuses what Windlass would not take in the server's words", async () => {
+		const mock = make();
+		const user = mock.user(ada);
+		expect((await user.repositoryChecks(7101)).checks).toEqual([
+			{ name: "test", command: "npm test" },
+			{ name: "types", command: "npm run typecheck", when: ["src/**/*.ts"], timeoutSeconds: 300 },
+		]);
+		expect((await user.repository(7101)).saved.checks).toBe(2);
+		expect(await user.repositoryChecks(7103)).toEqual({ checks: [], updatedAt: null });
+		const saved = await user.saveRepositoryChecks(7103, [{ name: " lint ", command: " npm run lint\r\n", when: [" src/** ", ""], showOutput: true }]);
+		expect(saved.checks).toEqual([{ name: "lint", command: "npm run lint", when: ["src/**"], showOutput: true }]);
+		expect(saved.checks).toEqual(cleanChecks([{ name: " lint ", command: " npm run lint\r\n", when: [" src/** ", ""], showOutput: true }]));
+		for (const list of [
+			[{ name: "", command: "npm test" }],
+			[{ name: "has space", command: "npm test" }],
+			[{ name: "test", command: "" }],
+			[{ name: "test", command: "a" }, { name: "test", command: "b" }],
+			[{ name: "test", command: "npm test", timeoutSeconds: 0 }],
+			[{ name: "test", command: "npm test", when: ["!src/**"] }],
+			Array.from({ length: 21 }, (_, index) => ({ name: `c${index}`, command: "true" })),
+		]) {
+			const refused = await refusal(user.saveRepositoryChecks(7103, list));
+			let server = "";
+			try {
+				cleanChecks(list);
+			} catch (error) {
+				if (error instanceof ChecksProblem) server = error.message;
+			}
+			expect([refused.reason, refused.message]).toEqual(["bad_checks", server]);
+		}
+		// What was saved before a refusal is still there; an empty list saves none, and deleting what is saved takes the checks too.
+		expect((await user.repositoryChecks(7103)).checks).toHaveLength(1);
+		expect(await user.saveRepositoryChecks(7103, [])).toEqual({ checks: [], updatedAt: null });
+		expect((await user.forgetRepository(7101)).saved).toEqual({ setup: false, secrets: 0, checks: 0 });
+		expect((await user.repositoryChecks(7101)).checks).toEqual([]);
+		mock.dispose();
+	});
+
+	it("says on a turn's closing item what the work rests on: the checks that ran, whose they are, and the ones that did not apply", async () => {
+		const mock = make();
+		/** The last closing item of a session's timeline, as a client that opens the session is handed it. */
+		const lastEnd = async (id: string) => {
+			const timeline = await new Promise<TimelineItem[]>((resolve) => {
+				const feed: SessionFeed = { onSnapshot: (snapshot) => resolve(snapshot.timeline), onItem: () => undefined, onDelta: () => undefined, onSummary: () => undefined, onQuestion: () => undefined, onConnection: () => undefined };
+				mock.session(ada, id).open(feed);
+			});
+			return timeline.filter((item) => item.kind === "turn.ended").at(-1);
+		};
+		const ended = await lastEnd("checks");
+		expect(ended?.kind === "turn.ended" ? ended.verified : null).toMatchObject({
+			state: "passed",
+			run: { turn: 1, checks: [{ name: "test", command: "npm test", whose: "user", status: "passed", sentBack: 1 }] },
+			unrun: [{ name: "types", command: "npm run typecheck" }],
+			replaced: false,
+			changedAfter: false,
+		});
+		// A session on a repository nothing is saved for says that nothing was set.
+		const other = await lastEnd("add-test");
+		expect(other?.kind === "turn.ended" ? other.verified : null).toMatchObject({ state: "none_set", run: null, unrun: [] });
+		mock.dispose();
+	});
+
 	it("keeps a default the user's plan stopped offering as it was saved", async () => {
 		const mock = make();
 		expect((await mock.user(ada).repository(7102)).defaults).toMatchObject({ profile: null, model: "gpt-5.5-terra" });
@@ -111,7 +174,7 @@ describe("the mock's repository page", () => {
 		const user = mock.user(ada);
 		expect((await user.savedRepositories()).map((repository) => `${repository.id} ${repository.name}`)).toEqual(["7101 acme/harbor", "7190 acme/old-pier", "7105 acme/quay", "7102 ada/tide-tables"]);
 		const emptied = await user.forgetRepository(7190);
-		expect(emptied).toMatchObject({ defaults: { profile: null, model: null }, approvals: [], saved: { setup: false, secrets: 0 } });
+		expect(emptied).toMatchObject({ defaults: { profile: null, model: null }, approvals: [], saved: { setup: false, secrets: 0, checks: 0 } });
 		expect((await user.repositorySetup(7190)).command).toBe("");
 		expect((await user.repositorySecrets(7190, "docker-windlass-sandbox")).secrets).toEqual([]);
 		expect((await user.savedRepositories()).some((repository) => repository.id === 7190)).toBe(false);

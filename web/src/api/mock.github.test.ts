@@ -112,7 +112,7 @@ describe("the mock's GitHub", () => {
 		expect(opened.state.pullRequest).toMatchObject({ number: 41, state: "open", branch: before.branch, base: "main", url: "https://github.com/ada/tide-tables/pull/41" });
 		expect(opened.state.changes).toBe(false);
 		expect(await session.changes()).toEqual([]);
-		expect(seen.at(-1)).toMatchObject({ kind: "platform", level: "info", text: "Opened pull request #41 in ada/tide-tables from windlass/fix-the-failing-add-test-ddtest, with 1 file." });
+		expect(seen.at(-1)).toMatchObject({ kind: "platform", level: "info", text: "Opened pull request #41 in ada/tide-tables from windlass/fix-the-failing-add-test-ddtest, with 1 file. Its description reports: nothing verified." });
 		expect((await mock.user(ada).listSessions()).find((one) => one.id === "add-test")?.pullRequest?.number).toBe(41);
 		expect((await refusal(session.publish({ title: "Again", body: "" }))).message).toBe("There is nothing to push: windlass/fix-the-failing-add-test-ddtest at GitHub already has everything in the workspace.");
 
@@ -121,6 +121,9 @@ describe("the mock's GitHub", () => {
 		const pushed = await checks.publish({ title: "Follow up", body: "" });
 		expect(pushed.opened).toBe(false);
 		expect(pushed.state.pullRequest?.number).toBe(38);
+		// Its repository has checks saved, and the pull request carries what its description says of them, in a few words.
+		expect(pushed.state.pullRequest?.verified).toBe("1 check passed");
+		expect(opened.state.pullRequest?.verified).toBe("nothing verified");
 	});
 
 	it("says each refusal in the server's sentence, and refuses while a turn runs", async () => {

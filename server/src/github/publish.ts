@@ -11,15 +11,23 @@
  * Before each, GitHub is asked what the connected user may do in the repository (repos.ts): the
  * platform pushes as the app, and must not push where its user could not.
  *
+ * A pull request's description ends with a section that says what the work was verified with
+ * (verified.ts). The platform writes it when it opens the pull request and again with every push,
+ * from what the session holds of its checks and from what git says of the work's changes once they
+ * are committed; what else the description says is kept. `describePull` writes it without a push,
+ * for a turn that ended after its work was pushed.
+ *
  * Every failure a user can do something about is a `GithubProblem` with a sentence that says what:
  * no write access, a protected branch, a repository or an installation that is gone, a connection that
  * was removed.
  */
 
-import type { PublishMessage, PullRequestInfo, SessionRepository } from "../contract.js";
+import type { PublishMessage, PullRequestInfo, SessionRepository, Verified } from "../contract.js";
 import type { SandboxHandle } from "../sandbox/api.js";
+import { type WorkDiff, verifiedSection, verifiedWords, withVerifiedSection, workFlags } from "../verified.js";
 import { type GithubApp, GithubError, type Pull } from "./app.js";
-import { CLONE_MINUTES, type GitOutcome, cloneWithToken, commitWork, discardHandover, probeWork, pushWithToken } from "./git.js";
+import { CLONE_MINUTES, type GitOutcome, cloneWithToken, commitWork, discardHandover, probeWork, pushWithToken, readWork } from "./git.js";
+import { redact } from "./redact.js";
 import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveRepository } from "./repos.js";
 
 /** What a session keeps of the repository it was launched on. */
@@ -123,6 +131,32 @@ export async function cloneRepository(app: GithubApp, connection: StoredConnecti
 // Pushing, and the pull request
 // ---------------------------------------------------------------------------------------------
 
+/** What a pull request's description is to say was verified, as the session holds it (verified.ts). */
+export interface PublishEvidence {
+	/** What the session's work rests on; null when no turn of the session has ended. */
+	verified: Verified | null;
+	/** The turn that is running while this is published, whose checks have not run; null between turns. */
+	during: number | null;
+	/** The user's checks as they are saved now: what their commands run is looked at among the changes. */
+	checks: ReadonlyArray<{ name: string; command: string }>;
+	/** Takes the saved secrets of the session's repository and account out of the section. */
+	redact: (text: string) => string;
+}
+
+/**
+ * The section for a pull request and the few words kept with it. `work` is what git says of the
+ * changes that are pushed, null when it did not say: then nothing was looked for in them, and the
+ * section says so. The section leaves through both redactions: the saved secrets, by value, and
+ * whatever looks like a credential.
+ */
+export function evidenceSection(evidence: PublishEvidence, work: WorkDiff | null, login: string): { section: string; words: string } {
+	const flags = work === null ? null : workFlags(work, [...evidence.checks, ...(evidence.verified?.run?.checks ?? [])]);
+	return {
+		section: redact(evidence.redact(verifiedSection({ verified: evidence.verified, flags, during: evidence.during, login }))),
+		words: verifiedWords(evidence.verified, flags ?? [], evidence.during),
+	};
+}
+
 export interface PublishInput {
 	app: GithubApp;
 	/** The user's connection as their actor has it now; null when there is none. */
@@ -137,6 +171,8 @@ export interface PublishInput {
 	/** The commit the platform last pushed to the branch, if it pushed before. */
 	pushed: string | null;
 	message: PublishMessage;
+	/** What the pull request's description says was verified. */
+	evidence: PublishEvidence;
 	/**
 	 * The request is the agent's (agent-publish.ts), which writes the pull request's title and description:
 	 * a pull request that is open already is given them too, where they differ from what it has, and
@@ -169,8 +205,8 @@ export class PullProblem extends GithubProblem {
 	}
 }
 
-function infoOf(pull: Pull, pushedAt: number): PullRequestInfo {
-	return { number: pull.number, url: pull.url, state: pull.state, title: pull.title, branch: pull.head, base: pull.base, pushedAt };
+function infoOf(pull: Pull, pushedAt: number, verified?: string): PullRequestInfo {
+	return { number: pull.number, url: pull.url, state: pull.state, title: pull.title, branch: pull.head, base: pull.base, pushedAt, ...(verified === undefined ? {} : { verified }) };
 }
 
 const isOpen = (pull: PullRequestInfo | null): pull is PullRequestInfo => pull !== null && (pull.state === "open" || pull.state === "draft");
@@ -211,6 +247,8 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 	let head = committed.marks.get("head") || null;
 	const count = Number(committed.marks.get("committed"));
 	const committedFiles = committed.marks.has("committed") && Number.isInteger(count) ? count : null;
+	// Read once everything is committed: what git says of the work now is what the pull request will show.
+	const said = evidenceSection(input.evidence, await readWork(sandbox, repository.branch), connection.user.login);
 
 	if (!nothingNew) {
 		let pushed: GitOutcome;
@@ -236,7 +274,7 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 	const now = Date.now();
 	const pushed = !nothingNew;
 	const title = input.message.title.trim();
-	const body = input.message.body.trim();
+	const body = withVerifiedSection(input.message.body, said.section);
 	try {
 		// Contents too, to read: GitHub opens no pull request for a token that cannot see the two branches
 		// ("not all refs are readable"), whatever it may do with pull requests.
@@ -250,22 +288,29 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 					const at = pushed ? now : open.pushedAt;
 					if (input.retitle && (current.title !== title || current.body.trim() !== body)) {
 						const updated = await app.updatePull(token, owner, repo, current.number, { title, body });
-						return { pull: infoOf(updated, at), opened: false, pushed, retitled: true, head, committedFiles };
+						return { pull: infoOf(updated, at, said.words), opened: false, pushed, retitled: true, head, committedFiles };
 					}
 					if (!pushed) throw nothingToPush();
-					return { pull: infoOf(current, at), opened: false, pushed, retitled: false, head, committedFiles };
+					// A push from the panel leaves the description as it is at GitHub, where its user may have edited it, but for the section.
+					const described = withVerifiedSection(current.body, said.section);
+					const kept = input.retitle || current.body.trim() === described ? current : await app.updatePull(token, owner, repo, current.number, { title: current.title, body: described });
+					return { pull: infoOf(kept, at, said.words), opened: false, pushed, retitled: false, head, committedFiles };
 				}
 				// Nothing was pushed, and the pull request it was for is no longer open: refused, as without the agent.
 				if (!pushed) throw nothingToPush();
 			}
 			try {
 				const created = await app.createPull(token, owner, repo, { title, body, head: branch, base: repository.branch });
-				return { pull: infoOf(created, now), opened: true, pushed, retitled: false, head, committedFiles };
+				return { pull: infoOf(created, now, said.words), opened: true, pushed, retitled: false, head, committedFiles };
 			} catch (error) {
 				// One pull request per pair of branches: one that is open already is the session's.
 				if (error instanceof GithubError && error.status === 422 && /already exists/i.test(error.said)) {
 					const existing = await app.openPull(token, owner, repo, branch, repository.branch);
-					if (existing) return { pull: infoOf(existing, now), opened: false, pushed, retitled: false, head, committedFiles };
+					if (existing) {
+						const described = withVerifiedSection(existing.body, said.section);
+						const kept = existing.body.trim() === described ? existing : await app.updatePull(token, owner, repo, existing.number, { title: existing.title, body: described });
+						return { pull: infoOf(kept, now, said.words), opened: false, pushed, retitled: false, head, committedFiles };
+					}
 				}
 				if (error instanceof GithubError && error.status === 422 && /no commits between/i.test(error.said)) {
 					throw new GithubProblem("github_failed", `GitHub opened no pull request: ${branch} has no commit that ${repository.branch} does not have.`);
@@ -286,6 +331,33 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 }
 
 /**
+ * Writes the section into the description of the session's open pull request without pushing
+ * anything, and resolves with the pull request as it is then: for a turn that ended after its work
+ * was pushed, so that the description says what that turn's checks came to. The caller has made
+ * sure the workspace holds nothing GitHub lacks: the section is about what the pull request shows.
+ * Null when the pull request is no longer open or GitHub could not be asked; never throws.
+ */
+export async function describePull(input: { app: GithubApp; connection: StoredConnection | null; repository: StoredRepository; sandbox: SandboxHandle; pull: PullRequestInfo; evidence: PublishEvidence }): Promise<PullRequestInfo | null> {
+	const { app, connection, repository, pull } = input;
+	if (!connection || !isOpen(pull)) return null;
+	try {
+		const said = evidenceSection(input.evidence, await readWork(input.sandbox, repository.branch), connection.user.login);
+		const resolved = await resolveRepository(app, connection, repository.id, "write");
+		const { owner, name } = resolved.repository;
+		return await app.withToken(resolved.installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read", pull_requests: "write" } }, async (token) => {
+			const current = await app.pull(token, owner, name, pull.number);
+			if (current.state !== "open" && current.state !== "draft") return null;
+			const described = withVerifiedSection(current.body, said.section);
+			const kept = current.body.trim() === described ? current : await app.updatePull(token, owner, name, current.number, { title: current.title, body: described });
+			return infoOf(kept, pull.pushedAt, said.words);
+		});
+	} catch (error) {
+		console.error(`[wlp] github.pull.describe_failed repository=${repository.id} pull=${pull.number}: ${error instanceof Error ? error.message : "unknown error"}`);
+		return null;
+	}
+}
+
+/**
  * The pull request as GitHub describes it now, or as it was known when GitHub cannot be asked: a
  * panel that shows a state a few minutes old is better than one that shows an error.
  */
@@ -294,7 +366,7 @@ export async function refreshPull(app: GithubApp, connection: StoredConnection |
 	try {
 		const resolved = await resolveRepository(app, connection, repository.id, "read");
 		const current = await app.withToken(resolved.installation.id, { repositoryId: repository.id, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, resolved.repository.owner, resolved.repository.name, pull.number));
-		return infoOf(current, pull.pushedAt);
+		return infoOf(current, pull.pushedAt, pull.verified);
 	} catch (error) {
 		console.error(`[wlp] github.pull.refresh_failed repository=${repository.id} pull=${pull.number}: ${error instanceof Error ? error.message : "unknown error"}`);
 		return pull;

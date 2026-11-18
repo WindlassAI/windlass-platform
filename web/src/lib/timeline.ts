@@ -15,7 +15,7 @@
  *
  * Nothing here touches the DOM, the clock or the network.
  */
-import { SETUP_OUTPUT_CHARS, type LiveDelta, type SessionSnapshot, type TimelineItem, type TurnOutcome, type TurnUsage, type WindlassEvent } from "@contract";
+import { SETUP_OUTPUT_CHARS, type LiveDelta, type SessionSnapshot, type TimelineItem, type TurnOutcome, type TurnUsage, type Verified, type WindlassEvent } from "@contract";
 
 // ---------------------------------------------------------------------------------------------
 // The view
@@ -209,6 +209,8 @@ export interface TurnEnd {
 	usage: TurnUsage | null;
 	cachedShare: number | null;
 	message: string | null;
+	/** What the session's work rests on after the turn, as the platform recorded it; null on a turn from before it did. */
+	verified: Verified | null;
 }
 
 export interface TurnView {
@@ -782,6 +784,7 @@ function endTurn(draft: Draft, item: Extract<TimelineItem, { kind: "turn.ended" 
 			usage: item.usage,
 			cachedShare: item.cachedShare,
 			message: item.message,
+			verified: item.verified ?? null,
 		},
 	});
 }

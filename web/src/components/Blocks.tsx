@@ -1,4 +1,5 @@
 /** The pieces of a conversation: one component per kind of block the timeline reducer produces. */
+import type { Verified } from "@contract";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { parseDiff } from "../lib/diff";
@@ -7,6 +8,7 @@ import { codeText, toolCopyLabels, toolInputText, toolOutputText } from "../lib/
 import { reasoningTitle, renderMarkdown } from "../lib/markdown";
 import { callKey, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
 import { formatInput, summarizeTool } from "../lib/toolSummary";
+import { checkLine, gateWord, ranEarlier, unresolvedLine, unrunLine } from "../lib/verified";
 import { useNow } from "../state/hooks";
 import { CopyButton, useLatest } from "./Copy";
 import { DiffHunks } from "./DiffView";
@@ -616,10 +618,55 @@ const VERIFICATION_WORD: Record<string, string> = {
 	unresolved: "checks unresolved",
 };
 
+/**
+ * Under a turn's closing line: what its work rests on, as the platform recorded it from Windlass's
+ * checks. Each check of the last run with how it ended and whose it is, the user's checks that did
+ * not run and why, and whether files changed after. The same facts a pull request's description is
+ * given. Nothing is drawn for a turn that had no checks and none before it.
+ */
+function VerifiedLines({ verified }: { verified: Verified }) {
+	const checks = verified.run?.checks ?? [];
+	const earlier = ranEarlier(verified);
+	const unresolved = unresolvedLine(verified);
+	const unrun = unrunLine(verified);
+	return (
+		<>
+			{checks.length > 0 ? (
+				<p className="turn-end-line turn-end-sub">
+					<span>checks{earlier ? `, ${earlier}` : ""}</span>
+					{checks.map((check) => (
+						<span key={check.name} className={check.status === "passed" ? undefined : "tone-bad"}>
+							<code>{check.name}</code> {checkLine(check)}
+						</span>
+					))}
+				</p>
+			) : null}
+			{unresolved ? (
+				<p className="turn-end-line turn-end-sub">
+					<span>{unresolved}</span>
+				</p>
+			) : null}
+			{unrun ? (
+				<p className="turn-end-line turn-end-sub">
+					<span>did not run</span>
+					<span>{unrun}</span>
+				</p>
+			) : null}
+			{verified.changedAfter ? (
+				<p className="turn-end-line turn-end-sub tone-warn">
+					<span>files changed after the checks last ran</span>
+				</p>
+			) : null}
+		</>
+	);
+}
+
 function TurnSummary({ turn }: { turn: TurnView }) {
 	const end = turn.end;
 	if (!end) return null;
 	const tone = OUTCOME_TONE[end.outcome];
+	// The platform's own word for how the gate ended, where the turn's item has it; Windlass's status otherwise.
+	const gate = end.verified ? gateWord(end.verified) : end.outcome !== "unresolved" && turn.verification ? (VERIFICATION_WORD[turn.verification] ?? null) : null;
 	const steps = end.steps ?? (turn.steps > 0 ? turn.steps : null);
 	const usage = end.usage;
 	const share = end.cachedShare ?? (usage && usage.inputTokens > 0 ? usage.cachedInputTokens / usage.inputTokens : null);
@@ -631,13 +678,14 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 					<OutcomeGlyph outcome={end.outcome} />
 				</span>
 				<strong className={`tone-${tone}`}>{OUTCOME_WORD[end.outcome]}</strong>
-				{turn.verification && VERIFICATION_WORD[turn.verification] && end.outcome !== "unresolved" ? <span>{VERIFICATION_WORD[turn.verification]}</span> : null}
+				{gate ? <span>{gate}</span> : null}
 				{steps !== null ? <span>{plural(steps, "step")}</span> : null}
 				<span>{duration(end.durationMs)}</span>
 				<span>turn {turn.turn}</span>
 				{end.exitCode !== null && end.exitCode !== 0 ? <span>exit {end.exitCode}</span> : null}
 			</p>
 			{end.message ? <p className="turn-end-message">{end.message}</p> : null}
+			{end.verified ? <VerifiedLines verified={end.verified} /> : null}
 			{files && files.length > 0 ? (
 				<p className="turn-end-line turn-end-sub">
 					<span>

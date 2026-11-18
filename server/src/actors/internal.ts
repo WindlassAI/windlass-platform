@@ -8,7 +8,7 @@
  * signin/directory.ts makes them with a client of its own.
  */
 
-import type { ModelList, RepositorySetup, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { ModelList, RepositoryCheck, RepositorySetup, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import { serviceParams } from "../auth.js";
 import type { StoredRepository } from "../github/publish.js";
 import type { StoredConnection } from "../github/repos.js";
@@ -83,6 +83,8 @@ export interface SealedSecrets {
 	/** What the secrets are saved for; null when the session has no repository of the GitHub connection. */
 	project: string | null;
 	secrets: Array<{ name: string; scope: SecretScope; sealed: string }>;
+	/** The checks the user saved for that repository (repository-checks.ts); none without one. They are no secret: they come with the secrets because a turn needs both before it starts. */
+	checks: RepositoryCheck[];
 	/**
 	 * What the session's user keeps for their account, whatever the repository: the account's secrets,
 	 * each value sealed (account-secrets.ts), and the user's own MCP servers with their definitions as
