@@ -4,7 +4,7 @@
  * something is saved for. The refusals are held against the server's own words.
  */
 import { describe, expect, it } from "vitest";
-import type { SandboxProfile } from "@contract";
+import type { ModelList, SandboxProfile } from "@contract";
 import { DefaultsProblem, cleanDefaults } from "../../../server/src/repository-defaults";
 import { PlatformError } from "./client";
 import { MOCK_FORGETTING, MOCK_PROFILES, createMockClient } from "./mock";
@@ -22,9 +22,9 @@ async function refusal(call: Promise<unknown>): Promise<PlatformError> {
 	throw new Error("the call was not refused");
 }
 
-function serverRefusal(raw: unknown, profiles: readonly SandboxProfile[]): { code: string; message: string } {
+function serverRefusal(raw: unknown, profiles: readonly SandboxProfile[], models: ModelList): { code: string; message: string } {
 	try {
-		cleanDefaults(raw, profiles, ["gpt-6.1-sol", "gpt-6-luna"]);
+		cleanDefaults(raw, profiles, models);
 	} catch (error) {
 		if (error instanceof DefaultsProblem) return { code: error.code, message: error.message };
 		throw error;
@@ -60,22 +60,23 @@ describe("the mock's repository page", () => {
 		mock.dispose();
 	});
 
-	it("refuses a default the deployment does not offer, in the server's words", async () => {
+	it("refuses a sandbox the deployment does not offer and a model that is not among the user's, in the server's words", async () => {
 		const mock = make();
 		const user = mock.user(ada);
+		const models = await user.models();
 		for (const change of [{ profile: "firecracker" as const }, { profile: "nowhere" as never }, { model: "gpt-3" }]) {
 			const refused = await refusal(user.saveRepositoryDefaults(7101, change));
-			const server = serverRefusal(change, MOCK_PROFILES);
+			const server = serverRefusal(change, MOCK_PROFILES, models);
 			expect([refused.reason, refused.message]).toEqual([server.code, server.message]);
 		}
 		expect((await user.repository(7101)).defaults).toMatchObject({ profile: "docker-hardened", model: "gpt-6-luna" });
 		mock.dispose();
 	});
 
-	it("keeps a default the deployment stopped offering as it was saved", async () => {
+	it("keeps a default the user's plan stopped offering as it was saved", async () => {
 		const mock = make();
 		expect((await mock.user(ada).repository(7102)).defaults).toMatchObject({ profile: null, model: "gpt-5.5-terra" });
-		expect((await mock.info()).models).not.toContain("gpt-5.5-terra");
+		expect((await mock.user(ada).models()).models.map((model) => model.id)).not.toContain("gpt-5.5-terra");
 		mock.dispose();
 	});
 

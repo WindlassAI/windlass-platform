@@ -746,8 +746,6 @@ async function main(): Promise<void> {
 		const problem = await layer.windlass.problem();
 		expect("windlass.problem() finds nothing wrong: this Windlass can hand a session an access token that is good for a while yet (`login token --valid-for`)", problem === null, problem ?? "");
 		expect("the server would start without a warning about it", (await warnAboutWindlass(layer, () => undefined)) === null);
-		const models = await layer.windlass.models();
-		expect("windlass.models() lists models, the default first", models[0] === "gpt-6.1-sol", models.join(", "));
 		const size = await docker(["image", "inspect", "--format", "{{.Size}}", "windlass-platform-sandbox:latest"]);
 		info(`image size ${(Number(size.stdout.trim()) / 1e6).toFixed(0)} MB`);
 	});

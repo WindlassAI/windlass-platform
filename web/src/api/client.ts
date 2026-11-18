@@ -20,6 +20,7 @@ import type {
 	GithubStatus,
 	LiveDelta,
 	LoginStart,
+	ModelList,
 	PendingQuestion,
 	PlatformInfo,
 	PromptInput,
@@ -120,6 +121,8 @@ export interface SessionFeed {
 export interface UserApi {
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
+	/** The models the user may choose and the efforts of each: their ChatGPT plan's, or the stand-in, and which it is. */
+	models(): Promise<ModelList>;
 	listSessions(): Promise<SessionSummary[]>;
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
 	renameSession(id: string, title: string): Promise<SessionSummary>;
@@ -170,12 +173,12 @@ export interface UserApi {
 	 * Saves an MCP server of the user's own: a new one, or with `existing` the definition of the one of that name.
 	 * Throws with reason `bad_server` (the message names the key), `server_exists`, `server_not_found` or `too_many_servers`.
 	 */
-	savePersonalServer(server: { name: string; definition: unknown; existing?: boolean }): Promise<AccountSettings>;
+	savePersonalServer(server: { name: string; definition: unknown; unasked?: boolean; existing?: boolean }): Promise<AccountSettings>;
 	deletePersonalServer(name: string): Promise<AccountSettings>;
 	/** The account's secrets, without their values, and what each reaches in a sandbox of `profile` made now. */
 	accountSecrets(profile: SandboxProfileId): Promise<AccountSecrets>;
 	/** Saves a secret of the account: a new one, or a new value for the one of that name. Throws with reason `bad_secret` or `too_many_secrets`. */
-	saveAccountSecret(profile: SandboxProfileId, secret: { name: string; value: string }): Promise<AccountSecrets>;
+	saveAccountSecret(profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }): Promise<AccountSecrets>;
 	deleteAccountSecret(profile: SandboxProfileId, name: string): Promise<AccountSecrets>;
 	/** Today's sandbox time against the allowance, and how many sandboxes the user keeps of how many they may. */
 	allowance(): Promise<UsageNumbers>;

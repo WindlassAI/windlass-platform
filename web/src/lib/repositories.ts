@@ -4,10 +4,10 @@
  * agent starts with: its user's choice, then its repository's default, then the account's.
  *
  * Everything here is worked out from what the web app already holds: the summaries of the user's
- * sessions, as their actor broadcasts them, and the deployment's own information. Nothing is asked of
- * GitHub or of a sandbox to draw a list.
+ * sessions, as their actor broadcasts them, the deployment's own information, and the user's models.
+ * Nothing is asked of GitHub or of a sandbox to draw a list.
  */
-import type { PlatformInfo, PullRequestInfo, RepositoryDefaults, SandboxProfileId, SessionRepository, SessionSummary } from "@contract";
+import type { ModelList, PlatformInfo, PullRequestInfo, RepositoryDefaults, SandboxProfileId, SessionRepository, SessionSummary } from "@contract";
 
 // ---- the list of agents, grouped -------------------------------------------------------------------
 
@@ -114,30 +114,34 @@ export function openPulls(sessions: readonly SessionSummary[], repositoryId: num
 export interface StartingChoices {
 	/** The default sandbox, when one is saved and this deployment can run it. */
 	profile: SandboxProfileId | null;
-	/** The default model, when one is saved and this deployment offers it. */
+	/** The default model, when one is saved and it is among the user's models. */
 	model: string | null;
 	/** What is saved and is not used, each with a sentence that says why; null where nothing is left out. */
 	ignored: { profile: string | null; model: string | null };
 }
 
 /**
- * Saved defaults held against what the deployment offers now: a repository's, or with `whose`
- * "account" the account's. A default that names a sandbox the deployment no longer lists, or cannot
- * run, or a model it no longer offers, is left out, and `ignored` says so in words.
+ * Saved defaults held against what can be chosen now: a repository's, or with `whose` "account" the
+ * account's. The sandbox is held against the deployment's (`info`), the model against the user's own
+ * (`models`), and neither is judged while what it is held against is not known. A default that names
+ * a sandbox the deployment no longer lists, or cannot run, or a model that is not in the user's list,
+ * is left out, and `ignored` says so in words: of a list that only stands in for the plan's, that the
+ * model is left out for now.
  */
-export function startingChoices(defaults: RepositoryDefaults | null, info: Pick<PlatformInfo, "profiles" | "models"> | null, whose: "repository" | "account" = "repository"): StartingChoices {
-	const none: StartingChoices = { profile: null, model: null, ignored: { profile: null, model: null } };
-	if (defaults === null || info === null) return none;
+export function startingChoices(defaults: RepositoryDefaults | null, info: Pick<PlatformInfo, "profiles"> | null, models: ModelList | null, whose: "repository" | "account" = "repository"): StartingChoices {
 	const choices: StartingChoices = { profile: null, model: null, ignored: { profile: null, model: null } };
+	if (defaults === null) return choices;
 	const the = whose === "account" ? "Your account's default" : "The default";
-	if (defaults.profile !== null) {
+	if (defaults.profile !== null && info !== null) {
 		const saved = info.profiles.find((profile) => profile.id === defaults.profile);
 		if (saved?.available) choices.profile = saved.id;
 		else choices.ignored.profile = saved ? `${the} sandbox, ${saved.name}, cannot be used on this deployment now, so it is ignored.` : `${the} sandbox, "${defaults.profile}", is not one this deployment has any more, so it is ignored.`;
 	}
-	if (defaults.model !== null) {
-		if (info.models.includes(defaults.model)) choices.model = defaults.model;
-		else choices.ignored.model = `${the} model, ${defaults.model}, is not offered here any more, so it is ignored.`;
+	if (defaults.model !== null && models !== null) {
+		if (models.models.some((model) => model.id === defaults.model)) choices.model = defaults.model;
+		else if (models.source === "account") choices.ignored.model = `${the} model, ${defaults.model}, is not among the models your ChatGPT plan offers now, so it is ignored.`;
+		else if (models.source === "demo") choices.ignored.model = `${the} model, ${defaults.model}, is not offered here any more, so it is ignored.`;
+		else choices.ignored.model = `${the} model, ${defaults.model}, is not in the list that stands in for your plan's models, so it is ignored for now.`;
 	}
 	return choices;
 }
@@ -165,7 +169,7 @@ export function layerChoices(repository: Pick<StartingChoices, "profile" | "mode
 	};
 }
 
-/** What a launch starts on: the user's own choice in the form when they made one, then the chosen repository's default, then the account's (`layerChoices`), then the deployment's first. */
+/** What a launch starts on: the user's own choice in the form when they made one, then the chosen repository's default, then the account's (`layerChoices`), then the deployment's first sandbox and the default of the user's models. */
 export function startingProfile(chosen: SandboxProfileId | null, choices: Pick<StartingChoices, "profile">, info: Pick<PlatformInfo, "profiles"> | null): SandboxProfileId | null {
 	const available = (id: SandboxProfileId | null) => id !== null && info !== null && info.profiles.some((profile) => profile.id === id && profile.available);
 	if (available(chosen)) return chosen;
@@ -173,7 +177,7 @@ export function startingProfile(chosen: SandboxProfileId | null, choices: Pick<S
 	return info?.profiles.find((profile) => profile.available)?.id ?? null;
 }
 
-export function startingModel(chosen: string, choices: Pick<StartingChoices, "model">, info: Pick<PlatformInfo, "models"> | null): string {
-	if (chosen !== "" && (info === null || info.models.includes(chosen))) return chosen;
-	return choices.model ?? info?.models[0] ?? "";
+export function startingModel(chosen: string, choices: Pick<StartingChoices, "model">, models: ModelList | null): string {
+	if (chosen !== "" && (models === null || models.models.some((model) => model.id === chosen))) return chosen;
+	return choices.model ?? models?.defaultModel ?? "";
 }

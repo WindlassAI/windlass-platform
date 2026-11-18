@@ -2,15 +2,17 @@
  * The composer: Enter sends, Shift-Enter makes a new line. While a turn runs (or waits on a question)
  * what is sent steers that turn, and Stop sits beside Send. While the sandbox starts or the turn stops
  * it cannot send and says why. The model and effort for the next turn sit beside it; they do not
- * apply to a steer, so they are off while a turn runs. A prompt that one of the user's limits refused
+ * apply to a steer, so they are off while a turn runs. The models are the user's own, the efforts
+ * are the chosen model's, and a few words beside them say whose list it is. A prompt that one of the user's limits refused
  * keeps its text and points to the usage page, and a quiet line above the field says beforehand when
  * little of the day's sandbox time is left.
  */
-import { MAX_PROMPT_CHARS, type SessionStatus } from "@contract";
+import { MAX_PROMPT_CHARS, type ModelList, type SessionStatus } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { errorMessage, hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { count } from "../lib/format";
+import { effortsOf, modelIds, modelsNote, modelsNoteShort } from "../lib/models";
 import { linkProps } from "../lib/router";
 import { ChevronIcon, SendIcon, SteerIcon, StopIcon, WarnIcon } from "./Icons";
 
@@ -18,8 +20,9 @@ export interface ComposerProps {
 	status: SessionStatus;
 	/** False while the connection is down: nothing can be sent. */
 	online: boolean;
-	models: string[];
-	efforts: string[];
+	/** The models the user may choose and the efforts of each; null until they are known. */
+	models: ModelList | null;
+	/** The model the session is on. */
 	model: string;
 	/** Rejects with what the client threw: a `turn_running` refusal is shown briefly and the text kept. */
 	onSend(input: { text: string; model?: string; effort?: string }): Promise<void>;
@@ -50,7 +53,7 @@ function UsageLink() {
 	);
 }
 
-export function Composer({ status, online, models, efforts, model, onSend, onStop, initial, suggestion, limitNote }: ComposerProps) {
+export function Composer({ status, online, models, model, onSend, onStop, initial, suggestion, limitNote }: ComposerProps) {
 	const [text, setText] = useState(initial?.text ?? "");
 	const [error, setError] = useState<string | null>(initial?.error ?? null);
 	/** Whether `error` is a refusal by one of the user's limits. */
@@ -70,6 +73,10 @@ export function Composer({ status, online, models, efforts, model, onSend, onSto
 	const writable = idle || steering;
 	const busy = !writable || sending;
 	const currentModel = chosenModel ?? model;
+	const offered = modelIds(models);
+	const efforts = effortsOf(models, currentModel);
+	// An effort the chosen model does not take is not sent: the picker is back at the default.
+	const currentEffort = efforts.includes(effort) ? effort : "";
 	const tooLong = text.length > MAX_PROMPT_CHARS;
 	const canSend = writable && online && !sending && text.trim() !== "" && !tooLong;
 	const reason = !online ? "The connection is down. Reconnecting…" : (REASON[status] ?? (sending ? "Sending…" : null));
@@ -109,7 +116,7 @@ export function Composer({ status, online, models, efforts, model, onSend, onSto
 		setNotice(null);
 		try {
 			// The model and effort do not apply to a steer.
-			await onSend(steering ? { text: text.trim() } : { text: text.trim(), model: chosenModel !== null && chosenModel !== model ? chosenModel : undefined, effort: effort || undefined });
+			await onSend(steering ? { text: text.trim() } : { text: text.trim(), model: chosenModel !== null && chosenModel !== model ? chosenModel : undefined, effort: currentEffort || undefined });
 			setText("");
 		} catch (failure) {
 			if (hasReason(failure, "turn_running")) setNotice(errorMessage(failure));
@@ -210,7 +217,7 @@ export function Composer({ status, online, models, efforts, model, onSend, onSto
 					<label className="mini-select" htmlFor={ids.model}>
 						<span>model</span>
 						<select id={ids.model} value={currentModel} onChange={(event) => setChosenModel(event.target.value)} disabled={!idle} title={idle ? undefined : "For the next turn; a message to the running turn uses its model"}>
-							{(models.includes(currentModel) ? models : [currentModel, ...models]).map((name) => (
+							{(offered.includes(currentModel) ? offered : [currentModel, ...offered]).map((name) => (
 								<option key={name} value={name}>
 									{name}
 								</option>
@@ -219,7 +226,7 @@ export function Composer({ status, online, models, efforts, model, onSend, onSto
 					</label>
 					<label className="mini-select" htmlFor={ids.effort}>
 						<span>effort</span>
-						<select id={ids.effort} value={effort} onChange={(event) => setEffort(event.target.value)} disabled={!idle} title={idle ? undefined : "For the next turn; a message to the running turn uses its effort"}>
+						<select id={ids.effort} value={currentEffort} onChange={(event) => setEffort(event.target.value)} disabled={!idle} title={idle ? undefined : "For the next turn; a message to the running turn uses its effort"}>
 							<option value="">default</option>
 							{efforts.map((name) => (
 								<option key={name} value={name}>
@@ -228,6 +235,11 @@ export function Composer({ status, online, models, efforts, model, onSend, onSto
 							))}
 						</select>
 					</label>
+					{models ? (
+						<span className="mini-note" title={modelsNote(models)}>
+							{modelsNoteShort(models)}
+						</span>
+					) : null}
 				</div>
 				<p className={`composer-hint${reason ? " composer-reason" : steering ? " composer-steer-hint" : ""}${tooLong ? " tone-bad" : ""}`} id={ids.reason} role={reason ? "status" : undefined}>
 					{tooLong ? (

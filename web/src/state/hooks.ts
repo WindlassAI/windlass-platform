@@ -1,4 +1,4 @@
-import type { AccountSettings, ChatgptStatus, SessionSummary, UsageNumbers } from "@contract";
+import type { AccountSettings, ChatgptStatus, ModelList, SessionSummary, UsageNumbers } from "@contract";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConnectionState, PlatformError } from "../api/client";
 import { useApp, useAuth } from "./app";
@@ -66,6 +66,40 @@ export function useAccount(): AccountState {
 		setState({ settings, error: null, reading: false });
 	}, []);
 	return { ...state, reload, replace };
+}
+
+export interface ModelsState {
+	/** Null until it was read, and when it could not be. */
+	list: ModelList | null;
+	/** Why it could not be read. */
+	error: string | null;
+	reading: boolean;
+}
+
+/**
+ * The models the user may choose and the efforts of each: read when a screen that offers them opens.
+ * The server keeps the list for an hour and answers within a few seconds whatever ChatGPT does, with
+ * the plan's list or a stand-in, and says which.
+ */
+export function useModels(): ModelsState {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [state, setState] = useState<ModelsState>({ list: null, error: null, reading: true });
+	useEffect(() => {
+		let current = true;
+		setState({ list: null, error: null, reading: true });
+		client
+			.user(auth)
+			.models()
+			.then(
+				(list) => current && setState({ list, error: null, reading: false }),
+				(failure: unknown) => current && setState({ list: null, error: explain(failure), reading: false }),
+			);
+		return () => {
+			current = false;
+		};
+	}, [client, auth, explain]);
+	return state;
 }
 
 /** The user's sessions, live. */

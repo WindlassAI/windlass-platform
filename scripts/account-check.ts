@@ -11,10 +11,12 @@
  *
  * What it holds to: a default is saved field by field, also beside another save; a server's name is
  * Windlass's and never the platform's own; a definition is what Windlass's configuration takes, key
- * by key, and nothing else is stored; servers and secrets saved together all stay, and never more
- * than an account may keep; an account's secret is sealed for the account, is listed without its
- * value, reaches MCP servers only and only where no command can read it from Windlass's process,
- * and gives way to a repository's secret of the same name; and the configuration file gets the
+ * by key, and nothing else is stored; a server's tools ask unless its user said otherwise; servers
+ * and secrets saved together all stay, and never more than an account may keep; an account's secret
+ * is sealed for the account, is listed without its value, reaches what a repository's secret of its
+ * scope reaches without the setup command (MCP servers only, and only where no command can read it
+ * from Windlass's process, or the agent's commands as well, everywhere), and gives way to a
+ * repository's secret of the same name; and the configuration file gets the
  * user's servers and the platform's own, loses them again, and never lets a user's take the
  * platform's place.
  *
@@ -32,6 +34,8 @@ import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from
 import {
 	ACCOUNT_SECRETS_TABLE,
 	ACCOUNT_SECRET_PROJECT,
+	type OpenedAccountSecret,
+	SecretNotFound,
 	TooManySecrets,
 	accountSecretNames,
 	accountSecretReach,
@@ -44,8 +48,8 @@ import {
 } from "../server/src/account-secrets.js";
 import { PUBLISH_SERVER, publishServerDefinition } from "../server/src/agent-publish.js";
 import { MAX_ACCOUNT_SECRETS, MAX_PERSONAL_SERVERS, MAX_SERVER_DEFINITION_BYTES, type SandboxProfile } from "../server/src/contract.js";
-import { PERSONAL_SERVERS_TABLE, SERVER_KEYS, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, definitionReads, deleteServer, isReservedServerName, listedServer, readServers } from "../server/src/personal-servers.js";
-import { type OpenedSecret, SecretRedactor, openSecret, sealSecret, setupEnvironment } from "../server/src/repo-secrets.js";
+import { PERSONAL_SERVERS_TABLE, SERVER_KEYS, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, definitionReads, deleteServer, isReservedServerName, listedServer, readServers } from "../server/src/personal-servers.js";
+import { type OpenedSecret, SecretRedactor, openSecret, sealSecret, secretReach, setupEnvironment } from "../server/src/repo-secrets.js";
 import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import { personalServerReach, serverQuestionWords } from "../server/src/server-question.js";
 import { createSealer } from "../server/src/signin/seal.js";
@@ -133,6 +137,15 @@ expect(
 
 // ---- a server's definition -------------------------------------------------------------------------
 
+function refusedSetting(raw: unknown): string | null {
+	try {
+		cleanUnasked(raw);
+		return null;
+	} catch (error) {
+		return error instanceof ServerProblem ? error.code : String(error);
+	}
+}
+
 function refused(raw: unknown): string | null {
 	try {
 		cleanServerDefinition(raw);
@@ -204,20 +217,25 @@ expect("what is not an object is no definition", [null, undefined, "tracker-mcp"
 
 {
 	const { db, all } = database();
-	await addServer(db, "tracker", cleanServerDefinition(COMMAND), 10);
-	await addServer(db, "docs", cleanServerDefinition(ADDRESS), 20);
+	await addServer(db, "tracker", cleanServerDefinition(COMMAND), false, 10);
+	await addServer(db, "docs", cleanServerDefinition(ADDRESS), true, 20);
 	const listed = (await readServers(db)).map((server) => listedServer(server, new Set(["DOCS_TOKEN"])));
 	expect("servers are listed by name, each with what starts it or where it is reached", plain(listed.map((server) => [server.name, server.remote, server.subject])) === plain([["docs", true, "https://docs.example.com/mcp"], ["tracker", false, "tracker-mcp --stdio"]]));
 	expect("the list says which variables a definition reads and whether an account's secret of that name is saved", plain(listed[0]?.reads) === plain([{ name: "DOCS_TOKEN", saved: true }, { name: "TEAM", saved: false }]) && plain(listed[1]?.reads) === plain([{ name: "TRACKER_TOKEN", saved: false }]));
-	const taken = await addServer(db, "tracker", { command: "other" }, 30).then(
+	expect("a server's tools ask unless it was saved with the setting on, and the list says which", plain(listed.map((server) => [server.name, server.unasked])) === plain([["docs", true], ["tracker", false]]));
+	expect("the setting is on only for exactly true, off when nothing is said, and anything else is refused", cleanUnasked(true) && !cleanUnasked(false) && !cleanUnasked(undefined) && [1, "true", null].every((raw) => refusedSetting(raw) === "bad_server"));
+	const taken = await addServer(db, "tracker", { command: "other" }, true, 30).then(
 		() => "saved",
 		(error: unknown) => (error instanceof ServerProblem ? error.code : String(error)),
 	);
 	expect("adding a server under a name that is taken is refused, and the saved one stays", taken === "server_exists" && plain((await readServers(db)).find((server) => server.name === "tracker")?.definition) === plain(COMMAND));
-	await changeServer(db, "tracker", { command: "tracker-mcp", args: ["--v2"] }, 40);
+	expect("and a refused add leaves the saved one's setting as it was", (await readServers(db)).find((server) => server.name === "tracker")?.unasked === false);
+	await changeServer(db, "tracker", { command: "tracker-mcp", args: ["--v2"] }, true, 40);
 	const changed = (await readServers(db)).find((server) => server.name === "tracker");
-	expect("a change replaces the definition of the one of that name", plain(changed?.definition) === plain({ command: "tracker-mcp", args: ["--v2"] }) && changed?.updatedAt === 40);
-	const missing = await changeServer(db, "nowhere", { command: "x" }, 50).then(
+	expect("a change replaces the definition and the setting of the one of that name", plain(changed?.definition) === plain({ command: "tracker-mcp", args: ["--v2"] }) && changed?.unasked === true && changed?.updatedAt === 40);
+	await changeServer(db, "tracker", { command: "tracker-mcp", args: ["--v2"] }, false, 45);
+	expect("and switches it off again", (await readServers(db)).find((server) => server.name === "tracker")?.unasked === false);
+	const missing = await changeServer(db, "nowhere", { command: "x" }, false, 50).then(
 		() => "saved",
 		(error: unknown) => (error instanceof ServerProblem ? error.code : String(error)),
 	);
@@ -239,7 +257,7 @@ expect("what is not an object is no definition", [null, undefined, "tracker-mcp"
 		const { db, all } = database();
 		const answers = await Promise.all(
 			Array.from({ length: MAX_PERSONAL_SERVERS + extra }, (_, index) =>
-				addServer(db, `server-${index}`, { command: "x", args: [String(index)] }, 100 + index).then(
+				addServer(db, `server-${index}`, { command: "x", args: [String(index)] }, false, 100 + index).then(
 					() => "saved",
 					(error: unknown) => (error instanceof ServerProblem ? error.code : String(error)),
 				),
@@ -256,8 +274,8 @@ expect("what is not an object is no definition", [null, undefined, "tracker-mcp"
 	let stay = 0;
 	for (let round = 0; round < ROUNDS; round += 1) {
 		const { db } = database();
-		await addServer(db, "tracker", { command: "old" }, 1);
-		await Promise.all([changeServer(db, "tracker", { command: "new" }, 100), addServer(db, "docs", { url: "https://docs.example.com/mcp" }, 100), saveAccountDefaults(db, { model: "gpt-6-luna" }, 100), saveAccountSecret(db, "DOCS_TOKEN", "sealed-value", 100)]);
+		await addServer(db, "tracker", { command: "old" }, false, 1);
+		await Promise.all([changeServer(db, "tracker", { command: "new" }, false, 100), addServer(db, "docs", { url: "https://docs.example.com/mcp" }, false, 100), saveAccountDefaults(db, { model: "gpt-6-luna" }, 100), saveAccountSecret(db, "DOCS_TOKEN", "setup", "sealed-value", 100)]);
 		const servers = await readServers(db);
 		if (plain(servers.map((server) => [server.name, server.definition.command ?? server.definition.url])) === plain([["docs", "https://docs.example.com/mcp"], ["tracker", "new"]]) && (await readAccountDefaults(db)).model === "gpt-6-luna" && (await accountSecretNames(db)).has("DOCS_TOKEN")) stay += 1;
 	}
@@ -284,14 +302,24 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 	expect("the sealed value does not hold the value in the clear", !sealed.includes(secret));
 
 	const { db, all } = database();
-	await saveAccountSecret(db, "TRACKER_TOKEN", sealed, 10);
-	await saveAccountSecret(db, "DOCS_TOKEN", sealSecret(sealer, "u_ada", ACCOUNT_SECRET_PROJECT, "DOCS_TOKEN", value()), 20);
+	await saveAccountSecret(db, "TRACKER_TOKEN", "setup", sealed, 10);
+	await saveAccountSecret(db, "DOCS_TOKEN", "agent", sealSecret(sealer, "u_ada", ACCOUNT_SECRET_PROJECT, "DOCS_TOKEN", value()), 20);
 	const next = sealSecret(sealer, "u_ada", ACCOUNT_SECRET_PROJECT, "TRACKER_TOKEN", value());
-	await saveAccountSecret(db, "TRACKER_TOKEN", next, 30);
-	const rows = all("SELECT name, sealed, updated_at FROM account_secret ORDER BY name");
+	await saveAccountSecret(db, "TRACKER_TOKEN", "setup", next, 30);
+	const rows = all("SELECT name, scope, sealed, updated_at FROM account_secret ORDER BY name");
 	expect("a value saved under a name that is saved takes the earlier one's place", rows.length === 2 && rows[1]?.sealed === next && rows[1]?.updated_at === 30);
+	expect("a secret is saved with its scope, a repository's two", plain(rows.map((row) => row.scope)) === plain(["agent", "setup"]));
+	await saveAccountSecret(db, "TRACKER_TOKEN", "agent", undefined, 35);
+	const [rescoped] = all("SELECT scope, sealed, updated_at FROM account_secret WHERE name = 'TRACKER_TOKEN'");
+	expect("a scope saved without a value changes the scope and keeps the value", rescoped?.scope === "agent" && rescoped.sealed === next && rescoped.updated_at === 35);
+	const absent = await saveAccountSecret(db, "NOWHERE", "agent", undefined, 36).then(
+		() => "saved",
+		(error: unknown) => (error instanceof SecretNotFound ? "not found" : String(error)),
+	);
+	expect("a scope for a name that is not saved is refused and adds nothing", absent === "not found" && all("SELECT name FROM account_secret").length === 2);
+	await saveAccountSecret(db, "TRACKER_TOKEN", "setup", undefined, 30);
 	const listed = listedAccountSecrets(
-		rows as Array<{ name: string; updated_at: number }>,
+		rows as Array<{ name: string; scope: string; updated_at: number }>,
 		[
 			{ name: "TRACKER_TOKEN", project: "github:7101", label: "acme/harbor" },
 			{ name: "TRACKER_TOKEN", project: "github:7190", label: "" },
@@ -299,7 +327,7 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 		],
 		STRICT,
 	);
-	expect("the list a client gets has names and times and no value, sealed or not", !plain(listed).includes(next) && !plain(listed).includes("sealed") && plain(listed.secrets.map((one) => [one.name, one.updatedAt])) === plain([["DOCS_TOKEN", 20], ["TRACKER_TOKEN", 30]]));
+	expect("the list a client gets has names and times and no value, sealed or not", !plain(listed).includes(next) && !plain(listed).includes("sealed") && plain(listed.secrets.map((one) => [one.name, one.scope, one.updatedAt])) === plain([["DOCS_TOKEN", "agent", 20], ["TRACKER_TOKEN", "setup", 30]]));
 	expect("it names the repositories that have a secret of their own under the name", plain(listed.secrets.map((one) => one.repositories)) === plain([[], ["acme/harbor", "repository 7190"]]));
 	await deleteAccountSecret(db, "DOCS_TOKEN");
 	expect("a deleted secret is gone", plain([...(await accountSecretNames(db))]) === plain(["TRACKER_TOKEN"]));
@@ -308,10 +336,10 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 	const extra = 5;
 	for (let round = 0; round < 20; round += 1) {
 		const fresh = database();
-		await saveAccountSecret(fresh.db, "KEPT_0", "first", 1);
+		await saveAccountSecret(fresh.db, "KEPT_0", "setup", "first", 1);
 		const answers = await Promise.all([
-			...Array.from({ length: MAX_ACCOUNT_SECRETS + extra }, (_, index) => saveAccountSecret(fresh.db, `KEPT_${index + 1}`, `v${index}`, 100).then(() => "saved", (error: unknown) => (error instanceof TooManySecrets ? "limit" : String(error)))),
-			saveAccountSecret(fresh.db, "KEPT_0", "second", 200).then(() => "replaced", (error: unknown) => String(error)),
+			...Array.from({ length: MAX_ACCOUNT_SECRETS + extra }, (_, index) => saveAccountSecret(fresh.db, `KEPT_${index + 1}`, "setup", `v${index}`, 100).then(() => "saved", (error: unknown) => (error instanceof TooManySecrets ? "limit" : String(error)))),
+			saveAccountSecret(fresh.db, "KEPT_0", "setup", "second", 200).then(() => "replaced", (error: unknown) => String(error)),
 		]);
 		const kept = fresh.all("SELECT name, sealed FROM account_secret");
 		if (kept.length === MAX_ACCOUNT_SECRETS && answers.filter((answer) => answer === "saved").length === MAX_ACCOUNT_SECRETS - 1 && answers.at(-1) === "replaced" && kept.find((row) => row.name === "KEPT_0")?.sealed === "second" && answers.every((answer) => ["saved", "limit", "replaced"].includes(answer))) exact += 1;
@@ -322,24 +350,36 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 // ---- whom an account's secret reaches --------------------------------------------------------------
 
 {
-	const strict = accountSecretReach("TRACKER_TOKEN", STRICT, true);
-	const open = accountSecretReach("TRACKER_TOKEN", OPEN, true);
-	const unknown = accountSecretReach("TRACKER_TOKEN", UNKNOWN, true);
-	expect("where Windlass sandboxes every command, MCP servers get it and no command does", strict.servers && strict.commands === "no" && strict.note === null);
+	const strict = accountSecretReach("TRACKER_TOKEN", "setup", STRICT, true);
+	const open = accountSecretReach("TRACKER_TOKEN", "setup", OPEN, true);
+	const unknown = accountSecretReach("TRACKER_TOKEN", "setup", UNKNOWN, true);
+	expect("a secret for MCP servers only: where Windlass sandboxes every command, MCP servers get it and no command does", strict.servers && strict.commands === "no" && strict.note === null);
 	expect("where commands are not held in Windlass's sandbox, or not known to be, nothing gets it, and the sentence says so", !open.servers && open.commands === "no" && !unknown.servers && unknown.commands === "no" && [open.note, unknown.note].every((note) => note !== null && note.endsWith("So nothing is given it there.") && !note.includes("setup command")), `${open.note}\n      ${unknown.note}`);
-	const old = [accountSecretReach("TRACKER_TOKEN", STRICT, false), accountSecretReach("SENTRY_DSN", STRICT, false), accountSecretReach("TRACKER_TOKEN", OPEN, false)];
+	const old = [accountSecretReach("TRACKER_TOKEN", "setup", STRICT, false), accountSecretReach("SENTRY_DSN", "setup", STRICT, false), accountSecretReach("TRACKER_TOKEN", "setup", OPEN, false)];
 	expect("with an older Windlass, only a name that looks like a credential reaches MCP servers, and only where commands are sandboxed", old[0]?.servers === true && old[1]?.servers === false && old[2]?.servers === false && old.every((reach) => reach.commands === "no") && !plain(old).includes("setup command"));
-	expect("in every kind of sandbox and with either Windlass, the commands never get it", [STRICT, OPEN, UNKNOWN].every((one) => [true, false].every((lists) => ["TRACKER_TOKEN", "SENTRY_DSN"].every((name) => accountSecretReach(name, one, lists).commands === "no"))));
-	expect("a session's panel is told why its sandbox hands them to no server, and nothing where it hands them all over", accountSecretsNote(STRICT, true) === null && [accountSecretsNote(OPEN, true), accountSecretsNote(UNKNOWN, true), accountSecretsNote(STRICT, false)].every((note) => note !== null && note.includes("does not start")));
+	expect("in every kind of sandbox and with either Windlass, the commands never get it", [STRICT, OPEN, UNKNOWN].every((one) => [true, false].every((lists) => ["TRACKER_TOKEN", "SENTRY_DSN"].every((name) => accountSecretReach(name, "setup", one, lists).commands === "no"))));
+	expect(
+		"a secret that is also for the agent's commands reaches MCP servers and commands in every kind of sandbox, and nothing is said under it",
+		[STRICT, OPEN, UNKNOWN].every((one) => ["TRACKER_TOKEN", "SENTRY_DSN"].every((name) => plain(accountSecretReach(name, "agent", one, true)) === plain({ servers: true, commands: "yes", note: null }))),
+	);
+	expect("what either scope reaches is what a repository's secret of that scope reaches", [STRICT, OPEN, UNKNOWN].every((one) => (["setup", "agent"] as const).every((scope) => [true, false].every((lists) => plain({ ...accountSecretReach("DEPLOY_KEY", scope, one, lists), note: null }) === plain({ ...secretReach("DEPLOY_KEY", scope, one, lists), note: null })))));
+	const olderAgent = [STRICT, OPEN, UNKNOWN].flatMap((one) => ["TRACKER_TOKEN", "SENTRY_DSN"].map((name) => accountSecretReach(name, "agent", one, false)));
+	expect("with an older Windlass it reaches MCP servers too, and no sentence about it speaks of a setup command", olderAgent.every((reach) => reach.servers) && !plain(olderAgent).includes("setup command") && olderAgent.some((reach) => reach.note?.endsWith("MCP servers get it.") === true));
+	expect(
+		"a session's panel is told which of them its sandbox hands to servers, and nothing where it hands them all over",
+		accountSecretsNote(STRICT, true) === null &&
+			[accountSecretsNote(OPEN, true), accountSecretsNote(UNKNOWN, true)].every((note) => note !== null && note.includes("only those that are also for the agent's commands") && note.includes("does not start")) &&
+			accountSecretsNote(STRICT, false)?.includes("for MCP servers only") === true,
+	);
 }
 
 {
 	const tracker = value();
 	const repositorys = value();
-	const account = [
-		{ name: "TRACKER_TOKEN", value: tracker },
-		{ name: "SHARED_KEY", value: value() },
-		{ name: "SENTRY_DSN", value: value() },
+	const account: OpenedAccountSecret[] = [
+		{ name: "TRACKER_TOKEN", scope: "setup", value: tracker },
+		{ name: "SHARED_KEY", scope: "setup", value: value() },
+		{ name: "SENTRY_DSN", scope: "setup", value: value() },
 	];
 	const repository: OpenedSecret[] = [
 		{ name: "SHARED_KEY", scope: "agent", value: repositorys },
@@ -364,6 +404,17 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 		const there = turnEnvironment(repository, account, kind, true);
 		expect(`where ${name}, Windlass is handed none of the account's secrets: only the repository's secret for the agent's commands`, plain(Object.keys(there.env)) === plain(["SHARED_KEY"]) && there.env.SHARED_KEY === repositorys && there.withholdEnv.length === 0);
 	}
+	// One that is also for the agent's commands is handed over where commands are not sandboxed too, and a server that reads it starts there.
+	const wide: OpenedAccountSecret[] = [...account, { name: "WIKI_TOKEN", scope: "agent", value: value() }, { name: "PREVIEW_HOST", scope: "agent", value: value() }];
+	for (const [name, kind] of [
+		["commands run without Windlass's sandbox", OPEN],
+		["nothing is promised of commands", UNKNOWN],
+	] as const) {
+		const there = turnEnvironment([], wide, kind, true);
+		expect(`where ${name}, an account's secret that is also for the agent's commands is handed over, and no other`, plain(Object.keys(there.env).sort()) === plain(["PREVIEW_HOST", "WIKI_TOKEN"]) && there.withholdEnv.length === 0 && plain(there.passEnv) === plain(["WIKI_TOKEN"]));
+	}
+	const sandboxed = turnEnvironment([], wide, STRICT, true);
+	expect("where commands are sandboxed it is not withheld, and passed on by name where its name would keep it from them", !sandboxed.withholdEnv.includes("WIKI_TOKEN") && !sandboxed.withholdEnv.includes("PREVIEW_HOST") && plain(sandboxed.passEnv) === plain(["WIKI_TOKEN"]) && sandboxed.withholdEnv.includes("TRACKER_TOKEN"));
 	const older = turnEnvironment([], account, STRICT, false);
 	expect("an older Windlass is handed only the ones its own rule keeps from commands, and no lists", plain(Object.keys(older.env).sort()) === plain(["SHARED_KEY", "TRACKER_TOKEN"]) && older.withholdEnv.length === 0 && older.passEnv.length === 0);
 

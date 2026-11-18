@@ -8,7 +8,7 @@
  * signin/directory.ts makes them with a client of its own.
  */
 
-import type { RepositorySetup, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { ModelList, RepositorySetup, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import { serviceParams } from "../auth.js";
 import type { StoredRepository } from "../github/publish.js";
 import type { StoredConnection } from "../github/repos.js";
@@ -74,6 +74,8 @@ export interface UserInternal {
 	internalSettle(input: { sessionId: string; hold: string; seconds: number }): Promise<{ known: boolean }>;
 	/** The session has no sandbox any more: its place among the kept ones is free. */
 	internalRelease(sessionId: string): Promise<void>;
+	/** The models the user may choose and the efforts of each (account-models.ts): their plan's, or what stands in for it. */
+	internalModels(): Promise<ModelList>;
 }
 
 /** A repository's secrets, and what the user keeps for their account, on their way to a session: each value as the `user` actor stores it, sealed (repo-secrets.ts). */
@@ -84,9 +86,9 @@ export interface SealedSecrets {
 	/**
 	 * What the session's user keeps for their account, whatever the repository: the account's secrets,
 	 * each value sealed (account-secrets.ts), and the user's own MCP servers with their definitions as
-	 * Windlass takes them (personal-servers.ts).
+	 * Windlass takes them and whether their tools run without asking (personal-servers.ts).
 	 */
-	account?: { secrets: Array<{ name: string; sealed: string }>; servers: Array<{ name: string; definition: Record<string, unknown> }> };
+	account?: { secrets: Array<{ name: string; scope: SecretScope; sealed: string }>; servers: Array<{ name: string; definition: Record<string, unknown>; unasked: boolean }> };
 }
 
 /** Actions of `user` that only one session may call, with a token made for it (`secretsActor`). */

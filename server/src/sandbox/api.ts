@@ -282,6 +282,18 @@ export interface TurnPersonalServer {
 	name: string;
 	/** Its definition, as Windlass's configuration takes one (personal-servers.ts, `cleanServerDefinition`). */
 	definition: Record<string, unknown>;
+	/** Its tools run without asking (`PersonalServer.unasked`): the layer answers Windlass's question about a call of one itself, see `RunTurnInput.onUnasked`. */
+	unasked?: boolean;
+}
+
+/** A call of a tool of one of the user's own servers that the layer let run without asking: see `RunTurnInput.onUnasked`. */
+export interface TurnUnaskedCall {
+	/** The call, as `tool.called` and `approval.requested` name it. */
+	messageId: string;
+	callId: string;
+	/** The server, by its name in `RunTurnInput.servers`, and the tool as that server names it. */
+	server: string;
+	tool: string;
 }
 
 /** What a turn is handed of its repository's secrets: see `RunTurnInput.secrets`. */
@@ -374,6 +386,22 @@ export interface RunTurnInput {
 	 * Windlass's configuration, nothing is written and the turn runs without them.
 	 */
 	servers?: TurnPersonalServer[];
+	/**
+	 * Called when the layer has answered Windlass's question about a tool call itself, with "once",
+	 * because the call is of a tool of one of the user's own servers whose tools run without asking
+	 * (`TurnPersonalServer.unasked`): `onQuestion` never sees that question. It comes after the
+	 * call's `approval.requested` was handed to `onEvent` and before its `approval.answered`, so
+	 * whoever keeps a record can say who allowed the call. The layer answers only what is all of
+	 * this, each by a field of Windlass's own and none by the words of the question: a call of the
+	 * session itself, not of a subagent; reported by the engine as an `mcp_call` of that server
+	 * (`tool.called`); of a server this turn wrote into Windlass's configuration with the setting
+	 * on, which the engine holds to be its user's own (`_windlass/mcp`: one a project's file names
+	 * or changes is the project's); and a question about using that tool and nothing else
+	 * (`approval.needs`). Every such call is answered by itself and nothing is remembered in
+	 * Windlass, so content it does not trust arriving in the conversation changes nothing: Windlass
+	 * asks again from then on, in every profile, and is answered again.
+	 */
+	onUnasked?: (call: TurnUnaskedCall) => void;
 	/**
 	 * Every event of the turn, in order: Windlass's own events exactly as `windlass --json` prints them,
 	 * and after the last of them one `cli.summary`-shaped event the layer makes itself (`type`,
@@ -504,8 +532,6 @@ export interface Windlass {
 	 * when it starts; a turn that fails for it has `windlass_outdated`.
 	 */
 	problem(): Promise<string | null>;
-	/** The models `--model` accepts, the default first. Falls back to a built-in list. */
-	models(): Promise<string[]>;
 	/**
 	 * Runs one prompt to its end with the profile's approval mode. It speaks the Agent Client Protocol
 	 * to a `windlass acp` process that lives for this one turn (see fixtures/acp-probe/), so the turn

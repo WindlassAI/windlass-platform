@@ -1242,6 +1242,13 @@ button.output-more:hover {
 	background: var(--bg-raised);
 	color: var(--ink);
 }
+/* Whose list the models are: beside the pickers, as quiet as their labels. */
+.mini-note {
+	align-self: center;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+}
 .composer-hint {
 	font-size: var(--size-mono-small);
 	font-family: var(--font-mono);

@@ -25,6 +25,11 @@
  * sign-in service has already replaced the refresh token: whatever Windlass managed to save is worth
  * more than the copy that went in. What is read back is only ever handed to the caller. Standard output
  * may hold a token (`login token`), so no runner logs it or puts it into an error.
+ *
+ * A runner also runs what Windlass can say of an account outside a turn (`windlass --models`), which
+ * needs no sign-in, only an access token of one (`runWithToken`). The token is handed in as a turn's
+ * is (sandbox/token-file.ts): in a file that WINDLASS_ACCESS_TOKEN_FILE names, readable by its owner
+ * only, in the same kind of private directory, which holds nothing else and is removed the same way.
  */
 
 import { spawn } from "node:child_process";
@@ -33,7 +38,8 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { WINDLASS_NEEDED, type WindlassLack } from "../sandbox/handoff.js";
+import type { AccessToken } from "../sandbox/api.js";
+import { ACCESS_TOKEN_FILE_ENV, WINDLASS_NEEDED, type WindlassLack, tokenFileContent } from "../sandbox/handoff.js";
 import { MATERIAL_FILES, MAX_MATERIAL_FILE_BYTES, type SignInMaterial, cleanMaterial } from "./material.js";
 
 export interface LoginCommand {
@@ -66,8 +72,15 @@ export interface LoginRun {
 	materialRead: boolean;
 }
 
+/** A command that runs on a handed-in access token: what follows `windlass`, and its limits. */
+export type TokenCommand = Pick<LoginCommand, "args" | "timeoutMs">;
+/** How it ended. Nothing is read back: there was no sign-in in its directory. */
+export type TokenRun = Pick<LoginRun, "code" | "stdout" | "stderr" | "timedOut">;
+
 export interface LoginRunner {
 	run(material: SignInMaterial, command: LoginCommand): Promise<LoginRun>;
+	/** Runs `windlass <args>` on `token`, handed in through a file that is removed when the command has ended, and on no sign-in. */
+	runWithToken(token: AccessToken, command: TokenCommand): Promise<TokenRun>;
 	/** What `windlass --version` says where this runner runs it; null when it could not be asked. */
 	version(): Promise<string | null>;
 	/** The sentence for a Windlass that is too old for the platform (`lack` is what it does not have), saying where that Windlass is and what to do. */
@@ -128,17 +141,33 @@ export class LocalLoginRunner implements LoginRunner {
 	}
 
 	async run(material: SignInMaterial, command: LoginCommand): Promise<LoginRun> {
+		return this.inPrivateDirectory(async (dir, env) => {
+			const data = join(dir, "data", "windlass");
+			for (const name of MATERIAL_FILES) {
+				const text = material.files[name];
+				if (text !== undefined) await writeFile(join(data, name), text, { mode: 0o600, flag: "wx" });
+			}
+			const ended = await execute(this.binary, ["login", ...command.args], { cwd: dir, env, stdin: command.stdin, timeoutMs: command.timeoutMs, signal: command.signal });
+			return { ...ended, material: await readBack(data), materialRead: true };
+		});
+	}
+
+	async runWithToken(token: AccessToken, command: TokenCommand): Promise<TokenRun> {
+		return this.inPrivateDirectory(async (dir, env) => {
+			const file = join(dir, "access-token.json");
+			await writeFile(file, tokenFileContent(token), { mode: 0o600, flag: "wx" });
+			return execute(this.binary, command.args, { cwd: dir, env: { ...env, [ACCESS_TOKEN_FILE_ENV]: file }, timeoutMs: command.timeoutMs });
+		});
+	}
+
+	/** Makes a private directory and the environment of a Windlass whose data, home and configuration are in it, runs `step`, and removes the directory however that ended. */
+	private async inPrivateDirectory<T>(step: (dir: string, env: Record<string, string>) => Promise<T>): Promise<T> {
 		this.swept ??= this.sweep();
 		await this.swept;
 		// mkdtemp makes it with mode 0700: nobody else on the machine can list or enter it.
 		const dir = await mkdtemp(join(this.tmpRoot, TMP_PREFIX));
 		try {
-			const data = join(dir, "data", "windlass");
 			for (const sub of ["home", "config", "tmp", join("data", "windlass")]) await mkdir(join(dir, sub), { recursive: true, mode: 0o700 });
-			for (const name of MATERIAL_FILES) {
-				const text = material.files[name];
-				if (text !== undefined) await writeFile(join(data, name), text, { mode: 0o600, flag: "wx" });
-			}
 			const env: Record<string, string> = {
 				PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
 				HOME: join(dir, "home"),
@@ -151,8 +180,7 @@ export class LocalLoginRunner implements LoginRunner {
 				if (value !== undefined && value !== "") env[name] = value;
 			}
 			Object.assign(env, this.options.env ?? {});
-			const ended = await execute(this.binary, ["login", ...command.args], { cwd: dir, env, stdin: command.stdin, timeoutMs: command.timeoutMs, signal: command.signal });
-			return { ...ended, material: await readBack(data), materialRead: true };
+			return await step(dir, env);
 		} finally {
 			await rm(dir, { recursive: true, force: true }).catch((error: unknown) => {
 				this.log(`[wlp] sign-in.tmp_left dir=${dir}: the private directory of a sign-in command could not be removed (${error instanceof Error ? error.message : String(error)}); remove it by hand`);

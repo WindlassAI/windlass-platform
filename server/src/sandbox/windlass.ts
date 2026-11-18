@@ -24,7 +24,7 @@ import { outdatedWindlass } from "./handoff.js";
 import { probeImage } from "./tokens.js";
 import { SandboxWindlass, type TurnOptions, type WindlassHost } from "./turn.js";
 
-export { BUILTIN_MODELS, START_TIMEOUT_MS } from "./turn.js";
+export { START_TIMEOUT_MS } from "./turn.js";
 
 export interface DockerWindlassOptions extends TurnOptions {
 	/** The image whose Windlass `version()` and `problem()` are about. Default the server's. */

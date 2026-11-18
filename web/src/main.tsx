@@ -44,7 +44,8 @@ async function createPlatformClient(): Promise<PlatformClient> {
 		const { createMockClient } = await import("./api/mock");
 		// `?github=off` plays a deployment with no GitHub App, `?sandbox=e2b` one on E2B,
 		// `?usage=low|used|full` a day with little sandbox time left, one that is used up, and an account at its cap of sandboxes,
-		// and `?account=empty` a user who has saved nothing for their account.
+		// `?account=empty` a user who has saved nothing for their account,
+		// and `?models=unavailable` one whose ChatGPT plan's models could not be read, so that the stand-in list is offered.
 		const params = new URLSearchParams(location.search);
 		const usage = params.get("usage");
 		const client = createMockClient({
@@ -54,6 +55,7 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			usage: usage === "low" || usage === "used" || usage === "full" ? usage : undefined,
 			// The user has MCP servers of their own and secrets for them saved, unless the address says `account=empty`.
 			account: params.get("account") === "empty" ? "empty" : "seeded",
+			models: params.get("models") === "unavailable" ? "unavailable" : "account",
 		});
 		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),
 		// `__wlpMock.mockNextAnswer("elsewhere" | "error")` (an answer that does not go through),

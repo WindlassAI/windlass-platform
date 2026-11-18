@@ -12,7 +12,7 @@ import { linkProps } from "../lib/router";
 import type { ToolBlock } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { takeHandover } from "../state/handover";
-import { allowanceState, useAllowance, type useSession } from "../state/hooks";
+import { allowanceState, useAllowance, useModels, type useSession } from "../state/hooks";
 
 /** What the top bar shows for a session: the way back, its title and state. */
 export function SessionCrumb({ title, status }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null }) {
@@ -54,7 +54,8 @@ function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): strin
 }
 
 export function Session({ sessionId, state }: { sessionId: string; state: ReturnType<typeof useSession> }) {
-	const { client, platform, explain } = useApp();
+	const { client, explain } = useApp();
+	const models = useModels();
 	const auth = useAuth();
 	const api = useMemo(() => client.session(auth, sessionId), [client, auth, sessionId]);
 	const handover = useMemo(() => takeHandover(sessionId), [sessionId]);
@@ -150,8 +151,7 @@ export function Session({ sessionId, state }: { sessionId: string; state: Return
 				<Composer
 					status={summary.status}
 					online={online}
-					models={platform.info?.models ?? [summary.model]}
-					efforts={platform.info?.efforts ?? []}
+					models={models.list}
 					model={summary.model}
 					initial={handover}
 					suggestion={suggestion}

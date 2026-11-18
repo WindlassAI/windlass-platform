@@ -224,19 +224,25 @@ export function commandSandbox(profile: Promises): CommandSandbox {
 }
 
 const LOOKS = "a name that looks like a credential (it contains TOKEN, KEY, SECRET or PASSWORD, for example)";
-/** What is left of a secret that MCP servers are not given: a repository's still goes to its setup command. */
-const ONLY_SETUP = "Only the setup command gets it.";
+
+/** Whose a secret is: a repository's goes to its setup command whatever its scope, an account's has no setup command to go to (account-secrets.ts). */
+export type SecretOwner = "repository" | "account";
+/** What is left of a secret that MCP servers are not given. */
+const LEFT: Record<SecretOwner, string> = { repository: "Only the setup command gets it.", account: "So nothing is given it there." };
+/** Who gets a secret that the agent's commands are not given although its scope says so. */
+const STILL_GET_IT: Record<SecretOwner, string> = { repository: "The setup command and MCP servers get it.", account: "MCP servers get it." };
 
 /**
  * What a secret of this name and scope reaches in a sandbox of `profile`, and the sentence that says
  * so when it is less than the scope. `lists`: whether the sandbox's Windlass takes `withholdEnv` and
  * `passEnv` (`WindlassFeatures.envLists`). With them only one thing is left that a scope cannot have:
  * a secret for MCP servers and not for commands, where commands are not held in Windlass's sandbox.
- * `left` ends the sentence about a secret MCP servers are not given: what it reaches all the same,
- * which for a repository's secret is its setup command (an account's says otherwise, account-secrets.ts).
+ * `owner` decides how a sentence ends that says who gets the secret all the same: a repository's
+ * setup command does, and an account's secret has none.
  */
-export function secretReach(name: string, scope: SecretScope, profile: Promises, lists: boolean, left: string = ONLY_SETUP): SecretReach {
-	if (!lists) return reachByName(name, scope, profile, left);
+export function secretReach(name: string, scope: SecretScope, profile: Promises, lists: boolean, owner: SecretOwner = "repository"): SecretReach {
+	const left = LEFT[owner];
+	if (!lists) return reachByName(name, scope, profile, owner);
 	if (scope === "agent") return { servers: true, commands: "yes", note: null };
 	const sandbox = commandSandbox(profile);
 	if (sandbox === "windlass") return { servers: true, commands: "no", note: null };
@@ -251,7 +257,8 @@ export function secretReach(name: string, scope: SecretScope, profile: Promises,
 }
 
 /** `secretReach` for a Windlass without the lists: a variable it has is kept from a command by its name alone, and only from one it sandboxes. */
-function reachByName(name: string, scope: SecretScope, profile: Promises, left: string): SecretReach {
+function reachByName(name: string, scope: SecretScope, profile: Promises, owner: SecretOwner): SecretReach {
+	const left = LEFT[owner];
 	const sandbox = commandSandbox(profile);
 	const withheld = looksLikeCredential(name);
 	if (scope === "setup") {
@@ -277,7 +284,7 @@ function reachByName(name: string, scope: SecretScope, profile: Promises, left: 
 		return {
 			servers: true,
 			commands: "no",
-			note: `The agent's commands do not get it in this sandbox: Windlass keeps a variable with ${LOOKS} from the commands it sandboxes, and has no setting that lets one through. The setup command and MCP servers get it.`,
+			note: `The agent's commands do not get it in this sandbox: Windlass keeps a variable with ${LOOKS} from the commands it sandboxes, and has no setting that lets one through. ${STILL_GET_IT[owner]}`,
 		};
 	}
 	return {

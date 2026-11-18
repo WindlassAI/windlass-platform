@@ -32,6 +32,14 @@
  * needs is saved as an account secret and read as `${NAME}` in `env` or `headers`. Nothing here logs
  * a definition, and nothing should: a user may put a token into an argument or an address by mistake.
  *
+ * Its tools without a question. Where Windlass asks before a call of an MCP tool (where it sandboxes
+ * commands, and anywhere once content it does not trust is in the conversation), a server's user
+ * can say that this server's tools run without asking (`unasked`, off unless they say so). It is the
+ * platform's setting and no key of the definition: Windlass still asks, and the sandbox layer
+ * answers for the user, each call once, for the servers it wrote into the sandbox for that turn
+ * (sandbox/turn.ts), and the timeline says so (`unaskedNote`). It says nothing of what the server
+ * returns: that stays content Windlass does not trust unless the definition says `untrusted: false`.
+ *
  * Saving. Each save is one statement, which reads nothing first: an added server is inserted only
  * while the account keeps fewer than it may, a changed one is updated by its name. So two saves that
  * run together both stay, neither undoes a secret or a default saved meanwhile (other tables), and
@@ -216,11 +224,12 @@ export function definitionReads(definition: Record<string, unknown>): string[] {
 // Storage
 // ---------------------------------------------------------------------------------------------
 
-/** One row per server: `definition` is JSON, as `cleanServerDefinition` made it. */
+/** One row per server: `definition` is JSON, as `cleanServerDefinition` made it; `unasked` is 1 where its tools run without asking. */
 export const PERSONAL_SERVERS_TABLE = `
 	CREATE TABLE IF NOT EXISTS personal_server (
 		name TEXT PRIMARY KEY,
 		definition TEXT NOT NULL,
+		unasked INTEGER NOT NULL DEFAULT 0,
 		updated_at INTEGER NOT NULL
 	)
 `;
@@ -229,17 +238,25 @@ export const PERSONAL_SERVERS_TABLE = `
 export interface StoredServer {
 	name: string;
 	definition: Record<string, unknown>;
+	/** Its tools run without asking: the platform answers Windlass's question about a call of one for the user. */
+	unasked: boolean;
 	updatedAt: number;
+}
+
+/** The setting as it is saved: on only when a client said exactly that. */
+export function cleanUnasked(raw: unknown): boolean {
+	if (raw === undefined || typeof raw === "boolean") return raw === true;
+	throw bad("Whether a server's tools run without asking is true or false.");
 }
 
 /** The account's servers, by name. A row that cannot be read as a definition is left out: it would fail every turn. */
 export async function readServers(db: DefaultsDb): Promise<StoredServer[]> {
-	const rows = await db.execute<{ name: string; definition: string; updated_at: number }>("SELECT name, definition, updated_at FROM personal_server ORDER BY name");
+	const rows = await db.execute<{ name: string; definition: string; unasked: number; updated_at: number }>("SELECT name, definition, unasked, updated_at FROM personal_server ORDER BY name");
 	const servers: StoredServer[] = [];
 	for (const row of rows) {
 		try {
 			// Held to the rules again: what is handed to a turn is what Windlass takes, whatever the row came to hold.
-			servers.push({ name: cleanServerName(row.name), definition: cleanServerDefinition(JSON.parse(String(row.definition))), updatedAt: Number(row.updated_at) });
+			servers.push({ name: cleanServerName(row.name), definition: cleanServerDefinition(JSON.parse(String(row.definition))), unasked: Number(row.unasked) === 1, updatedAt: Number(row.updated_at) });
 		} catch {
 			// Left out.
 		}
@@ -248,18 +265,19 @@ export async function readServers(db: DefaultsDb): Promise<StoredServer[]> {
 }
 
 /**
- * Adds a server whose name and definition were cleaned already. One statement inserts it, and only
+ * Adds a server whose name, definition and setting were cleaned already. One statement inserts it, and only
  * while the account keeps fewer than `limit`: nothing is counted first, so servers added together
  * cannot pass the limit between them. Throws ServerProblem when a server of that name is saved
  * (`server_exists`: it is not replaced) and at the limit (`too_many_servers`).
  */
-export async function addServer(db: DefaultsDb, name: string, definition: Record<string, unknown>, now: number, limit = MAX_PERSONAL_SERVERS): Promise<void> {
+export async function addServer(db: DefaultsDb, name: string, definition: Record<string, unknown>, unasked: boolean, now: number, limit = MAX_PERSONAL_SERVERS): Promise<void> {
 	const stored = JSON.stringify(definition);
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		await db.execute(
-			"INSERT INTO personal_server (name, definition, updated_at) SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM personal_server) < ? ON CONFLICT (name) DO NOTHING",
+			"INSERT INTO personal_server (name, definition, unasked, updated_at) SELECT ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM personal_server) < ? ON CONFLICT (name) DO NOTHING",
 			name,
 			stored,
+			unasked ? 1 : 0,
 			now,
 			limit,
 		);
@@ -275,9 +293,9 @@ export async function addServer(db: DefaultsDb, name: string, definition: Record
 	throw new Error("the server could not be saved");
 }
 
-/** Replaces the definition of the server of that name. Throws ServerProblem (`server_not_found`) when none is saved. */
-export async function changeServer(db: DefaultsDb, name: string, definition: Record<string, unknown>, now: number): Promise<void> {
-	await db.execute("UPDATE personal_server SET definition = ?, updated_at = ? WHERE name = ?", JSON.stringify(definition), now, name);
+/** Replaces the definition and the setting of the server of that name. Throws ServerProblem (`server_not_found`) when none is saved. */
+export async function changeServer(db: DefaultsDb, name: string, definition: Record<string, unknown>, unasked: boolean, now: number): Promise<void> {
+	await db.execute("UPDATE personal_server SET definition = ?, unasked = ?, updated_at = ? WHERE name = ?", JSON.stringify(definition), unasked ? 1 : 0, now, name);
 	const [row] = await db.execute<{ name: string }>("SELECT name FROM personal_server WHERE name = ?", name);
 	if (!row) throw new ServerProblem("server_not_found", `No server named ${name} is saved any more. Add it again.`);
 }
@@ -301,7 +319,17 @@ export function listedServer(server: StoredServer, secrets: ReadonlySet<string>)
 		remote,
 		subject: remote ? String(definition.url) : commandLine(argv),
 		enabled: definition.enabled !== false,
+		unasked: server.unasked,
 		reads: definitionReads(definition).map((name) => ({ name, saved: secrets.has(name) })),
 		updatedAt: server.updatedAt,
 	};
+}
+
+// ---------------------------------------------------------------------------------------------
+// As a session's timeline says it
+// ---------------------------------------------------------------------------------------------
+
+/** The line under a call the platform allowed for the user because their settings let that server's tools run without asking. */
+export function unaskedNote(server: string): string {
+	return `Allowed for you without asking: your settings let the tools of your MCP server "${server}" run that way.`;
 }

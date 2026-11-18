@@ -1,6 +1,6 @@
 /** How the list of agents is grouped and folded, which pull requests a repository's page lists, and what a new agent on a repository starts with. */
 import { describe, expect, it } from "vitest";
-import type { PlatformInfo, SandboxProfile, SessionRepository, SessionSummary } from "@contract";
+import type { ModelList, PlatformInfo, SandboxProfile, SessionRepository, SessionSummary } from "@contract";
 import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, foldGroup, groupSessions, layerChoices, openPulls, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile } from "./repositories";
 
 const repository = (id: number, owner: string, name: string, branch = "main"): SessionRepository => ({ provider: "github", id, owner, name, branch, private: true, url: `https://github.com/${owner}/${name}` });
@@ -103,71 +103,89 @@ describe("a repository's page", () => {
 
 describe("what a new agent on a repository starts with", () => {
 	const profile = (id: string, available: boolean): SandboxProfile => ({ id: id as SandboxProfile["id"], name: `The ${id} sandbox`, summary: "", layers: [], approval: "auto", commandNetwork: false, commandsCanReadAccessToken: false, available });
-	const info: Pick<PlatformInfo, "profiles" | "models"> = { profiles: [profile("docker-windlass-sandbox", true), profile("docker-hardened", true), profile("e2b", false)], models: ["gpt-6.1-sol", "gpt-6-luna"] };
+	const info: Pick<PlatformInfo, "profiles"> = { profiles: [profile("docker-windlass-sandbox", true), profile("docker-hardened", true), profile("e2b", false)] };
+	const plan = (source: ModelList["source"] = "account"): ModelList => ({ source, models: ["gpt-6.1-sol", "gpt-6-luna"].map((id) => ({ id, name: null, efforts: ["low"] })), defaultModel: "gpt-6.1-sol", fetchedAt: source === "account" ? 1 : null });
+	const models = plan();
 
 	it("is the repository's defaults where the deployment still offers them", () => {
-		const choices = startingChoices({ profile: "docker-hardened", model: "gpt-6-luna", updatedAt: 1 }, info);
+		const choices = startingChoices({ profile: "docker-hardened", model: "gpt-6-luna", updatedAt: 1 }, info, models);
 		expect(choices).toEqual({ profile: "docker-hardened", model: "gpt-6-luna", ignored: { profile: null, model: null } });
 		expect(startingProfile(null, choices, info)).toBe("docker-hardened");
-		expect(startingModel("", choices, info)).toBe("gpt-6-luna");
+		expect(startingModel("", choices, models)).toBe("gpt-6-luna");
 	});
 
 	it("leaves out a default the deployment no longer has or cannot run, and says so", () => {
-		const gone = startingChoices({ profile: "firecracker", model: "gpt-5.5-terra", updatedAt: 1 }, info);
+		const gone = startingChoices({ profile: "firecracker", model: "gpt-5.5-terra", updatedAt: 1 }, info, models);
 		expect([gone.profile, gone.model]).toEqual([null, null]);
 		expect(gone.ignored.profile).toContain('"firecracker"');
 		expect(gone.ignored.model).toContain("gpt-5.5-terra");
-		const cannot = startingChoices({ profile: "e2b", model: null, updatedAt: 1 }, info);
+		const cannot = startingChoices({ profile: "e2b", model: null, updatedAt: 1 }, info, models);
 		expect(cannot.profile).toBeNull();
 		expect(cannot.ignored.profile).toContain("The e2b sandbox");
 		// The form then starts where it would without a default.
 		expect(startingProfile(null, gone, info)).toBe("docker-windlass-sandbox");
-		expect(startingModel("", gone, info)).toBe("gpt-6.1-sol");
+		expect(startingModel("", gone, models)).toBe("gpt-6.1-sol");
 	});
 
 	it("lets the user's own choice in the form come first, for that agent", () => {
-		const choices = startingChoices({ profile: "docker-hardened", model: "gpt-6-luna", updatedAt: 1 }, info);
+		const choices = startingChoices({ profile: "docker-hardened", model: "gpt-6-luna", updatedAt: 1 }, info, models);
 		expect(startingProfile("docker-windlass-sandbox", choices, info)).toBe("docker-windlass-sandbox");
-		expect(startingModel("gpt-6.1-sol", choices, info)).toBe("gpt-6.1-sol");
+		expect(startingModel("gpt-6.1-sol", choices, models)).toBe("gpt-6.1-sol");
 		// A choice that cannot be used is no choice.
 		expect(startingProfile("e2b", choices, info)).toBe("docker-hardened");
-		expect(startingModel("gpt-3", choices, info)).toBe("gpt-6-luna");
+		expect(startingModel("gpt-3", choices, models)).toBe("gpt-6-luna");
 	});
 
 	it("goes by the repository's default, then the account's, then the deployment's, each field by itself", () => {
-		const account = startingChoices({ profile: "docker-hardened", model: "gpt-6-luna", updatedAt: 1 }, info, "account");
+		const account = startingChoices({ profile: "docker-hardened", model: "gpt-6-luna", updatedAt: 1 }, info, models, "account");
 		// A repository that says nothing leaves both to the account.
-		const open = layerChoices(startingChoices(null, info), account);
+		const open = layerChoices(startingChoices(null, info, models), account);
 		expect(open).toEqual({ profile: "docker-hardened", model: "gpt-6-luna", from: { profile: "account", model: "account" } });
 		// One that saves only a model leaves the sandbox to the account.
-		const half = layerChoices(startingChoices({ profile: null, model: "gpt-6.1-sol", updatedAt: 1 }, info), account);
+		const half = layerChoices(startingChoices({ profile: null, model: "gpt-6.1-sol", updatedAt: 1 }, info, models), account);
 		expect(half).toEqual({ profile: "docker-hardened", model: "gpt-6.1-sol", from: { profile: "account", model: "repository" } });
-		expect([startingProfile(null, half, info), startingModel("", half, info)]).toEqual(["docker-hardened", "gpt-6.1-sol"]);
+		expect([startingProfile(null, half, info), startingModel("", half, models)]).toEqual(["docker-hardened", "gpt-6.1-sol"]);
 		// The user's own choice in the form comes before both.
-		expect([startingProfile("docker-windlass-sandbox", half, info), startingModel("gpt-6-luna", half, info)]).toEqual(["docker-windlass-sandbox", "gpt-6-luna"]);
+		expect([startingProfile("docker-windlass-sandbox", half, info), startingModel("gpt-6-luna", half, models)]).toEqual(["docker-windlass-sandbox", "gpt-6-luna"]);
 		// Without either, the deployment's first.
-		const none = layerChoices(startingChoices(null, info), startingChoices(null, info, "account"));
+		const none = layerChoices(startingChoices(null, info, models), startingChoices(null, info, models, "account"));
 		expect(none.from).toEqual({ profile: null, model: null });
-		expect([startingProfile(null, none, info), startingModel("", none, info)]).toEqual(["docker-windlass-sandbox", "gpt-6.1-sol"]);
+		expect([startingProfile(null, none, info), startingModel("", none, models)]).toEqual(["docker-windlass-sandbox", "gpt-6.1-sol"]);
+	});
+
+	it("holds a model against the user's own list, says of a stand-in that it only stands in, and judges nothing before the list is known", () => {
+		const saved = { profile: null, model: "gpt-7-nova", updatedAt: 1 };
+		// The plan's list has another default than its first model: that one is what a launch starts on.
+		const luna = { ...models, defaultModel: "gpt-6-luna" };
+		expect(startingModel("", startingChoices(null, info, luna), luna)).toBe("gpt-6-luna");
+		// A stand-in may lack a model the plan has: the default is left out for now, and the sentence says why.
+		expect(startingChoices(saved, info, plan("unavailable")).ignored.model).toBe("The default model, gpt-7-nova, is not in the list that stands in for your plan's models, so it is ignored for now.");
+		expect(startingChoices(saved, info, plan("signed-out"), "account").ignored.model).toMatch(/^Your account's default model, gpt-7-nova, is not in the list that stands in/);
+		expect(startingChoices(saved, info, plan("demo")).ignored.model).toBe("The default model, gpt-7-nova, is not offered here any more, so it is ignored.");
+		// Until the list is read nothing is said of the model, and the sandbox is judged all the same.
+		const early = startingChoices({ profile: "docker-hardened", model: "gpt-7-nova", updatedAt: 1 }, info, null);
+		expect(early).toEqual({ profile: "docker-hardened", model: null, ignored: { profile: null, model: null } });
+		expect(startingModel("gpt-7-nova", early, null)).toBe("gpt-7-nova");
+		expect(startingModel("", early, null)).toBe("");
 	});
 
 	it("passes over a default that cannot be used, of the repository or of the account, and says whose it was", () => {
-		const account = startingChoices({ profile: "e2b", model: "gpt-5.5-terra", updatedAt: 1 }, info, "account");
+		const account = startingChoices({ profile: "e2b", model: "gpt-5.5-terra", updatedAt: 1 }, info, models, "account");
 		expect([account.profile, account.model]).toEqual([null, null]);
 		expect(account.ignored.profile).toMatch(/^Your account's default sandbox, The e2b sandbox, cannot be used/);
-		expect(account.ignored.model).toMatch(/^Your account's default model, gpt-5\.5-terra, is not offered/);
+		expect(account.ignored.model).toBe("Your account's default model, gpt-5.5-terra, is not among the models your ChatGPT plan offers now, so it is ignored.");
 		// The repository's unusable default gives way to the account's usable one, and the other way round.
-		const usable = startingChoices({ profile: "docker-hardened", model: null, updatedAt: 1 }, info, "account");
-		const gone = startingChoices({ profile: "firecracker", model: "gpt-6-luna", updatedAt: 1 }, info);
+		const usable = startingChoices({ profile: "docker-hardened", model: null, updatedAt: 1 }, info, models, "account");
+		const gone = startingChoices({ profile: "firecracker", model: "gpt-6-luna", updatedAt: 1 }, info, models);
 		expect(gone.ignored.profile).toMatch(/^The default sandbox/);
 		expect(layerChoices(gone, usable)).toEqual({ profile: "docker-hardened", model: "gpt-6-luna", from: { profile: "account", model: "repository" } });
 		expect(layerChoices(gone, account)).toEqual({ profile: null, model: "gpt-6-luna", from: { profile: null, model: "repository" } });
 	});
 
-	it("is the deployment's first sandbox and model without defaults, and nothing before the deployment has said what it offers", () => {
-		const none = startingChoices(null, info);
-		expect([startingProfile(null, none, info), startingModel("", none, info)]).toEqual(["docker-windlass-sandbox", "gpt-6.1-sol"]);
-		expect(startingChoices({ profile: "docker-hardened", model: null, updatedAt: 1 }, null)).toEqual(none);
+	it("is the deployment's first sandbox and the default of the user's models without defaults, and nothing before either is known", () => {
+		const none = startingChoices(null, info, models);
+		expect([startingProfile(null, none, info), startingModel("", none, models)]).toEqual(["docker-windlass-sandbox", "gpt-6.1-sol"]);
+		expect(startingChoices({ profile: "docker-hardened", model: "gpt-6-luna", updatedAt: 1 }, null, null)).toEqual(none);
 		expect([startingProfile(null, none, null), startingModel("", none, null)]).toEqual([null, ""]);
 	});
 });

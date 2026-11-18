@@ -7,6 +7,15 @@
  * with its headers. The server keeps exactly what Windlass would take, so the dialog shows the
  * server's refusal with the key that is wrong.
  *
+ * The dialog takes a definition in two ways, which save the same thing. As JSON: one server's
+ * definition, or a snippet as a server's README gives it, with the name around it
+ * (`pastedServers`), from which the name and the definition are taken and shown. Or, for a server
+ * that is reached at an address, a form: the address, and one header if it needs one
+ * (`addressDefinition`).
+ *
+ * A server has one setting besides: its tools run without asking. The dialog says what that does,
+ * what it does not, and what it risks, before it is saved.
+ *
  * Windlass starts a server of its user's own configuration without asking, in every session. There
  * is no question to say what such a server gets, as there is for one a repository names, so the
  * dialog says it before the server is saved, in that question's words (`AccountSettings.serverReach`),
@@ -64,6 +73,89 @@ export function writtenOut(definition: Record<string, unknown>): string[] {
 	return found;
 }
 
+/** A server a pasted snippet names: its name there, and its definition as it was written. */
+export interface PastedServer {
+	name: string;
+	definition: Record<string, unknown>;
+}
+
+/** The keys of one server's definition whose value is an object of the user's own keys: no server is taken to be named so. */
+const OBJECT_KEYS = ["env", "headers", "tools"];
+
+/**
+ * The servers a snippet names, where it is written as a server's README gives one and not as one
+ * server's definition: `{ "mcpServers": { "<name>": { ... } } }`, `{ "servers": { ... } }`, Windlass's
+ * own `{ "mcp": { "servers": { ... } } }`, or `{ "<name>": { ... } }`. Null for what is one server's
+ * definition, or not JSON: the field takes that as it is. What a definition found here holds is not
+ * looked at: a key Windlass does not know is refused when it is saved, as in any definition.
+ */
+export function pastedServers(text: string): PastedServer[] | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return null;
+	}
+	if (!isObject(parsed) || typeof parsed.command === "string" || typeof parsed.url === "string") return null;
+	const named = (servers: Record<string, unknown>): PastedServer[] => Object.entries(servers).flatMap(([name, definition]) => (isObject(definition) ? [{ name, definition }] : []));
+	if (isObject(parsed.mcpServers)) return named(parsed.mcpServers);
+	if (isObject(parsed.mcp) && isObject(parsed.mcp.servers)) return named(parsed.mcp.servers);
+	if (isObject(parsed.servers)) return named(parsed.servers);
+	// A name around a definition: every entry is something started or reached.
+	const entries = Object.entries(parsed);
+	const bare = entries.length > 0 && entries.every(([name, value]) => !OBJECT_KEYS.includes(name) && isObject(value) && (typeof value.command === "string" || typeof value.url === "string"));
+	return bare ? named(parsed) : null;
+}
+
+/** The form for a server that is reached at an address: the address, and one header it is sent. */
+export interface AddressForm {
+	url: string;
+	header: string;
+	value: string;
+}
+
+const NO_ADDRESS: AddressForm = { url: "", header: "", value: "" };
+
+/** The definition the form comes to, which is what the same server written as JSON would be; null while it has no address. */
+export function addressDefinition(form: AddressForm): Record<string, unknown> | null {
+	const url = form.url.trim();
+	const header = form.header.trim();
+	if (url === "") return null;
+	return header === "" || form.value === "" ? { url } : { url, headers: { [header]: form.value } };
+}
+
+/** A definition as the form shows it; null for one that holds more than an address and one header, which only JSON can say. */
+export function addressForm(definition: Record<string, unknown>): AddressForm | null {
+	const { url, headers, ...rest } = definition;
+	if (typeof url !== "string" || Object.keys(rest).length > 0) return null;
+	if (headers === undefined) return { url, header: "", value: "" };
+	const entries = isObject(headers) ? Object.entries(headers) : null;
+	if (entries === null || entries.length > 1) return null;
+	const [header, value] = entries[0] ?? ["", ""];
+	return typeof value === "string" ? { url, header, value } : null;
+}
+
+/** What is wrong with the form as it stands, or null: an address Windlass can reach, and a header that is whole. */
+function addressProblem(form: AddressForm): { url: string | null; header: string | null } {
+	const url = form.url.trim();
+	let reachable = false;
+	try {
+		reachable = ["http:", "https:"].includes(new URL(url).protocol);
+	} catch {
+		// Said below.
+	}
+	return {
+		url: url === "" || reachable ? null : "An http or https address, in full: https://docs.example.com/mcp",
+		header: (form.header.trim() === "") === (form.value === "") ? null : form.header.trim() === "" ? "The header needs a name, such as Authorization." : "The header needs a value, such as Bearer ${DOCS_TOKEN}.",
+	};
+}
+
+/** What the switch does, what it risks, and what it does not do: said before it is saved. */
+const UNASKED_MEANS =
+	"Windlass asks before a call of an MCP tool. With this on, the platform answers for you and you are not interrupted, in every agent of yours. Nothing then stops to ask if something the agent read talks it into misusing a tool of this server, and such a tool runs outside the command sandbox, with network access.";
+const UNASKED_KEEPS =
+	"Each call still shows in the agent's timeline, with a line that says it was allowed for you. What the server returns stays content Windlass does not trust: the model is told so, and other things that can send data out are asked about again. Only this server as it is saved here is covered, never one a repository names, also under this name.";
+
 /** What a server of the user's own gets where it runs: one sentence where every sandbox says the same, otherwise one for each. */
 function Reach({ reach, remote }: { reach: AccountSettings["serverReach"]; remote: boolean }) {
 	const said = reach.map((one) => ({ name: one.name, text: remote ? one.address : one.command }));
@@ -84,30 +176,69 @@ function Reach({ reach, remote }: { reach: AccountSettings["serverReach"]; remot
 function ServerDialog({ settings, editing, onSaved, onClose }: { settings: AccountSettings; editing: PersonalServer | null; onSaved(next: AccountSettings): void; onClose(): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const ids = { name: useId(), nameNote: useId(), definition: useId(), definitionNote: useId(), gets: useId() };
+	const ids = { name: useId(), nameNote: useId(), way: useId(), definition: useId(), definitionNote: useId(), url: useId(), urlNote: useId(), header: useId(), value: useId(), headerNote: useId(), gets: useId() };
 	const [name, setName] = useState("");
 	const [text, setText] = useState(() => (editing ? JSON.stringify(editing.definition, null, 2) : ""));
+	// A server that is an address and one header opens in the form; anything else, and a new one, as JSON.
+	const [form, setForm] = useState<AddressForm>(() => (editing ? (addressForm(editing.definition) ?? NO_ADDRESS) : NO_ADDRESS));
+	const [way, setWay] = useState<"json" | "address">(() => (editing && addressForm(editing.definition) !== null ? "address" : "json"));
+	const [unasked, setUnasked] = useState(editing?.unasked ?? false);
+	/** The server the definition was last taken from, where a snippet named it. */
+	const [taken, setTaken] = useState<string | null>(null);
 	const [busy, setBusy] = useState<"saving" | "deleting" | null>(null);
 	const [confirming, setConfirming] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	const read = readDefinition(text);
-	const definition = read?.definition ?? null;
+	// A snippet that names one server was taken apart as it was written into the field: what still reads as one names several, or none, and is no definition yet.
+	const found = way === "json" ? pastedServers(text) : null;
+	const several = found !== null;
+	const read = way === "json" && !several ? readDefinition(text) : null;
+	const wrong = way === "address" ? addressProblem(form) : { url: null, header: null };
+	const definition = way === "address" ? (wrong.url === null && wrong.header === null ? addressDefinition(form) : null) : (read?.definition ?? null);
 	const nameProblem = name === "" || /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name) ? null : "Letters, digits, '_', '.' and '-' only, starting with a letter or a digit.";
-	const taken = !editing && settings.servers.some((server) => server.name === name);
+	const nameTaken = !editing && settings.servers.some((server) => server.name === name);
 	const full = !editing && settings.servers.length >= settings.limits.servers;
-	const bytes = new TextEncoder().encode(definition ? JSON.stringify(definition) : text).length;
+	const bytes = new TextEncoder().encode(definition ? JSON.stringify(definition) : way === "json" ? text : "").length;
 	const tooLong = bytes > settings.limits.definitionBytes;
-	const ready = definition !== null && !tooLong && (editing ? true : name !== "" && nameProblem === null && !taken && !full);
+	const ready = definition !== null && !tooLong && (editing ? true : name !== "" && nameProblem === null && !nameTaken && !full);
 	const remote = definition !== null && typeof definition.url === "string";
 	const spelled = definition === null ? [] : writtenOut(definition);
+	// The form can show what the field holds when that is nothing, or an address and one header.
+	const fits = text.trim() === "" ? NO_ADDRESS : read?.definition ? addressForm(read.definition) : null;
+
+	/** One server out of a snippet: its definition goes into the field, and its name into the name's, where there is one to fill. */
+	const fill = (server: PastedServer) => {
+		setText(JSON.stringify(server.definition, null, 2));
+		if (!editing) setName(server.name);
+		setTaken(server.name);
+	};
+	const write = (raw: string) => {
+		const servers = pastedServers(raw);
+		if (servers?.length === 1 && servers[0]) fill(servers[0]);
+		else {
+			setText(raw);
+			setTaken(null);
+		}
+	};
+	const choose = (next: "json" | "address") => {
+		if (next === way) return;
+		if (next === "address") {
+			if (fits === null) return;
+			setForm(fits);
+		} else {
+			const made = addressDefinition(form);
+			if (made !== null) setText(JSON.stringify(made, null, 2));
+		}
+		setTaken(null);
+		setWay(next);
+	};
 
 	const save = async () => {
 		if (busy !== null || !ready || definition === null) return;
 		setBusy("saving");
 		setError(null);
 		try {
-			onSaved(await client.user(auth).savePersonalServer({ name: editing ? editing.name : name, definition, existing: editing !== null }));
+			onSaved(await client.user(auth).savePersonalServer({ name: editing ? editing.name : name, definition, unasked, existing: editing !== null }));
 			onClose();
 		} catch (failure) {
 			setError(explain(failure));
@@ -128,6 +259,7 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 		}
 	};
 
+	const plain = { spellCheck: false, autoCapitalize: "off", autoCorrect: "off", autoComplete: "off", disabled: busy !== null };
 	return (
 		<Dialog
 			title={editing ? `Change ${editing.name}` : "Add an MCP server"}
@@ -169,53 +301,154 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 							Name
 						</label>
 						<input
+							{...plain}
 							id={ids.name}
-							className={`input input-mono${nameProblem || taken ? " input-invalid" : ""}`}
+							className={`input input-mono${nameProblem || nameTaken ? " input-invalid" : ""}`}
 							type="text"
 							maxLength={MAX_SERVER_NAME_CHARS}
-							spellCheck={false}
-							autoCapitalize="off"
-							autoCorrect="off"
-							autoComplete="off"
 							placeholder="tracker"
 							data-autofocus
 							value={name}
 							onChange={(event) => setName(event.target.value)}
-							disabled={busy !== null}
 							aria-describedby={ids.nameNote}
-							aria-invalid={nameProblem !== null || taken}
+							aria-invalid={nameProblem !== null || nameTaken}
 						/>
-						<p className={`field-note${nameProblem || taken ? " tone-warn" : ""}`} id={ids.nameNote}>
-							{nameProblem ?? (taken ? `A server named ${name} is saved already. Change that one, or give this one another name.` : "What the agent calls it by, with its tools after it: tracker/create_issue.")}
+						<p className={`field-note${nameProblem || nameTaken ? " tone-warn" : ""}`} id={ids.nameNote}>
+							{nameProblem ?? (nameTaken ? `A server named ${name} is saved already. Change that one, or give this one another name.` : "What the agent calls it by, with its tools after it: tracker/create_issue.")}
 						</p>
 					</div>
 				)}
-				<div className="field">
-					<label className="label" htmlFor={ids.definition}>
-						Definition
-					</label>
-					<textarea
-						id={ids.definition}
-						className={`input input-mono textarea server-definition${read?.problem || tooLong ? " input-invalid" : ""}`}
-						rows={6}
-						spellCheck={false}
-						autoCapitalize="off"
-						autoCorrect="off"
-						autoComplete="off"
-						placeholder={EXAMPLE}
-						value={text}
-						onChange={(event) => setText(event.target.value)}
-						disabled={busy !== null}
-						aria-describedby={ids.definitionNote}
-						aria-invalid={Boolean(read?.problem) || tooLong}
-					/>
-					<p className={`field-note${read?.problem || tooLong ? " tone-warn" : ""}`} id={ids.definitionNote}>
-						{read?.problem ??
-							(tooLong
-								? `A definition can be at most ${settings.limits.definitionBytes.toLocaleString("en-US")} bytes long as JSON; this one is ${bytes.toLocaleString("en-US")}.`
-								: "As Windlass's configuration takes one server, in JSON: a command to start, with args and env, or a url to reach, with headers. ${NAME} in a value of env or headers reads a secret of your account.")}
-					</p>
-				</div>
+				<fieldset className="server-ways">
+					<legend className="visually-hidden">How the server is given</legend>
+					{(
+						[
+							["json", "As JSON"],
+							["address", "At an address"],
+						] as const
+					).map(([value, label]) => (
+						<label key={value} className={`server-way${way === value ? " server-way-chosen" : ""}${value === "address" && fits === null && way === "json" ? " server-way-off" : ""}`}>
+							<input className="secret-radio" type="radio" name={ids.way} value={value} checked={way === value} onChange={() => choose(value)} disabled={busy !== null || (value === "address" && fits === null && way === "json")} />
+							{label}
+						</label>
+					))}
+				</fieldset>
+				{way === "address" ? (
+					<>
+						<div className="field">
+							<label className="label" htmlFor={ids.url}>
+								Address
+							</label>
+							<input
+								{...plain}
+								id={ids.url}
+								className={`input input-mono${wrong.url ? " input-invalid" : ""}`}
+								type="url"
+								inputMode="url"
+								placeholder="https://docs.example.com/mcp"
+								value={form.url}
+								onChange={(event) => setForm({ ...form, url: event.target.value })}
+								aria-describedby={ids.urlNote}
+								aria-invalid={wrong.url !== null}
+							/>
+							<p className={`field-note${wrong.url ? " tone-warn" : ""}`} id={ids.urlNote}>
+								{wrong.url ?? "Where Windlass reaches the server. Nothing is started. A server that is started by a command, or needs more than this, is written as JSON."}
+							</p>
+						</div>
+						<div className="field">
+							<label className="label" htmlFor={ids.header}>
+								Header <span className="label-optional">optional</span>
+							</label>
+							<div className="server-header">
+								<input
+									{...plain}
+									id={ids.header}
+									className={`input input-mono${wrong.header && form.header.trim() === "" ? " input-invalid" : ""}`}
+									type="text"
+									placeholder="Authorization"
+									aria-label="The header's name"
+									value={form.header}
+									onChange={(event) => setForm({ ...form, header: event.target.value })}
+									aria-describedby={ids.headerNote}
+								/>
+								<input
+									{...plain}
+									id={ids.value}
+									className={`input input-mono${wrong.header && form.value === "" ? " input-invalid" : ""}`}
+									type="text"
+									placeholder={"Bearer ${DOCS_TOKEN}"}
+									aria-label="The header's value"
+									value={form.value}
+									onChange={(event) => setForm({ ...form, value: event.target.value })}
+									aria-describedby={ids.headerNote}
+								/>
+							</div>
+							<p className={`field-note${wrong.header ? " tone-warn" : ""}`} id={ids.headerNote}>
+								{wrong.header ?? "Sent with every request to the address. ${NAME} in its value reads a secret of your account: save the secret under Secrets, and write its name here."}
+							</p>
+						</div>
+					</>
+				) : (
+					<div className="field">
+						<label className="label" htmlFor={ids.definition}>
+							Definition
+						</label>
+						<textarea
+							{...plain}
+							id={ids.definition}
+							className={`input input-mono textarea server-definition${read?.problem || tooLong ? " input-invalid" : ""}`}
+							rows={6}
+							placeholder={EXAMPLE}
+							value={text}
+							onChange={(event) => write(event.target.value)}
+							aria-describedby={ids.definitionNote}
+							aria-invalid={Boolean(read?.problem) || tooLong}
+						/>
+						<p className={`field-note${read?.problem || tooLong ? " tone-warn" : ""}`} id={ids.definitionNote}>
+							{read?.problem ??
+								(tooLong
+									? `A definition can be at most ${settings.limits.definitionBytes.toLocaleString("en-US")} bytes long as JSON; this one is ${bytes.toLocaleString("en-US")}.`
+									: "As Windlass's configuration takes one server, in JSON: a command to start, with args and env, or a url to reach, with headers. ${NAME} in a value of env or headers reads a secret of your account. A snippet from a server's README, with mcpServers and the name around it, can be pasted as it is.")}
+						</p>
+						{taken !== null ? (
+							<p className="field-note server-taken" role="status">
+								{editing
+									? taken === editing.name
+										? `Taken from what you pasted: the definition of ${taken}.`
+										: `Taken from what you pasted: the definition of ${taken}. This server keeps its name, ${editing.name}.`
+									: `Taken from what you pasted: the server ${taken}. Its name and its definition are filled in; look them over before you add it.`}
+							</p>
+						) : null}
+						{several ? (
+							<p className="field-note tone-warn server-taken" role="status">
+								{found === null || found.length === 0 ? (
+									"This names no server: there is nothing in it to take."
+								) : (
+									<>
+										This names {found.length} servers, and one is saved at a time. Take{" "}
+										{found.map((server, index) => (
+											<span key={server.name}>
+												{index > 0 ? (index === found.length - 1 ? " or " : ", ") : ""}
+												<button type="button" className="link" onClick={() => fill(server)} disabled={busy !== null}>
+													{server.name}
+												</button>
+											</span>
+										))}
+										.
+									</>
+								)}
+							</p>
+						) : null}
+					</div>
+				)}
+				<label className={`check${unasked ? " check-on" : ""}`}>
+					<input className="check-input" type="checkbox" checked={unasked} disabled={busy !== null} onChange={(event) => setUnasked(event.target.checked)} />
+					<span className="check-box" aria-hidden="true" />
+					<span className="check-text">
+						<span className="check-name">Run this server's tools without asking</span>
+						<span className="check-means">{UNASKED_MEANS}</span>
+						<span className="check-means">{UNASKED_KEEPS}</span>
+					</span>
+				</label>
 				<div className="server-ask-details" id={ids.gets}>
 					<p className="label">What it gets</p>
 					<p>Windlass starts it without asking, in every agent of yours, from each agent's next turn. No question is put first, as one is put for a server a repository names.</p>
@@ -254,6 +487,7 @@ function Server({ server, onChange }: { server: PersonalServer; onChange(): void
 				<span className="visually-hidden">{server.remote ? "reached at " : "started by "}</span>
 				{server.subject}
 			</p>
+			{server.unasked ? <p className="server-reason">Its tools run without asking: the platform allows each call for you.</p> : null}
 			{set.length > 0 ? <p className="server-reason">Reads {list(set)} from your account's secrets.</p> : null}
 			{unset.length > 0 ? (
 				<p className="server-reason tone-warn">

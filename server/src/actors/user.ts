@@ -53,6 +53,11 @@
  * repository's secrets, in the one answer (`internalSessionSecrets`). Each save is one statement
  * that reads nothing first, so saves that run together all stay and a limit holds between them.
  *
+ * And the models the user may choose (account-models.ts): what their ChatGPT plan offers, as Windlass
+ * listed it with an access token of the sign-in above, in one row with the generation of that sign-in.
+ * It is listed again when somebody asks and the row is older than an hour, by one request to Windlass
+ * however many ask, and a row of an earlier sign-in is nobody's list.
+ *
  * And the deleted sessions whose copy of Windlass's data the bucket still holds (`backup_removal`),
  * one row each: a session that could not remove its copy as it was deleted hands it here, and this
  * actor, which outlives its sessions, tries again on its durable schedule, further apart each time.
@@ -85,6 +90,7 @@ import {
 	MAX_RUNNING_SESSIONS,
 	MAX_SERVER_DEFINITION_BYTES,
 	MAX_TITLE_CHARS,
+	type ModelList,
 	MAX_SECRETS_PER_REPOSITORY,
 	type RepositoryApproval,
 	type RepositoryDefaults,
@@ -106,11 +112,11 @@ import type { StoredRepository } from "../github/publish.js";
 import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches, listRepositories, resolveRepository } from "../github/repos.js";
 import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
-import { platformModels } from "../platform-info.js";
 import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../account-defaults.js";
-import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
+import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
+import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
-import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, deleteServer, listedServer, readServers } from "../personal-servers.js";
+import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, sealSecret } from "../repo-secrets.js";
 import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
 import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
@@ -154,6 +160,8 @@ interface UserVars {
 	approvals: ApprovalBook;
 	/** The user's GitHub connection; null when there is none. */
 	github: StoredConnection | null;
+	/** The models of the user's ChatGPT plan, as the table has them, and the listing that runs now. */
+	models: AccountModels;
 	/** The user's sandbox time and kept sandboxes, as the tables have them. */
 	usage: UsageBook;
 	/** The user's sandboxes as the provider last listed them, and when; null until it was asked. */
@@ -220,6 +228,39 @@ async function answered<T>(c: { log: { error: (entry: unknown) => void } }, step
 		const problem = problemOf(error);
 		if (problem.kind === "other") c.log.error({ msg: "a step on the user's sign-in failed", error: problem.message });
 		return { ok: false, problem };
+	}
+}
+
+interface ModelsCtx extends SignInCtx {
+	keepAwake<T>(promise: Promise<T>): Promise<T>;
+}
+
+/**
+ * The models the user may choose (account-models.ts). The demo's scripted model answers under any
+ * name, so a demo user is given the stand-in and Windlass is asked nothing. For anyone else the list
+ * is their plan's: Windlass lists it with the user's access token when the one kept here is older
+ * than an hour. The actor stays awake while it does, as for any request for the token: a sign-in
+ * that had to be refreshed for it is saved before the actor may sleep or move.
+ */
+function modelsOf(c: ModelsCtx, demo: boolean): Promise<ModelList> {
+	if (demo) return Promise.resolve(standInModels("demo"));
+	return c.vars.models.current({
+		db: c.db,
+		generation: async () => {
+			const [row] = await c.db.execute<{ generation: number }>("SELECT generation FROM signin WHERE id = 1 AND sealed IS NOT NULL");
+			return row?.generation ?? null;
+		},
+		list: () => c.keepAwake((async () => (await getSignIns()).commands.models(await (await signIn(c)).accessToken()))()),
+	});
+}
+
+/** A model a client named, held against the user's list, or the UserError that says what is wrong with it. */
+function modelInput<T>(pick: () => T): T {
+	try {
+		return pick();
+	} catch (error) {
+		if (error instanceof ModelProblem) throw new UserError(error.message, { code: error.code });
+		throw error;
 	}
 }
 
@@ -608,7 +649,7 @@ async function accountView(db: RawAccess): Promise<AccountSettings> {
  * column is not read, of either table, so no value can be in the answer.
  */
 async function listAccountSecrets(db: RawAccess, profile: SandboxProfile): Promise<AccountSecrets> {
-	const rows = await db.execute<{ name: string; updated_at: number }>("SELECT name, updated_at FROM account_secret ORDER BY name");
+	const rows = await db.execute<{ name: string; scope: string; updated_at: number }>("SELECT name, scope, updated_at FROM account_secret ORDER BY name");
 	const shared = rows.length === 0 ? [] : await db.execute<{ name: string; project: string; label: string }>("SELECT name, project, label FROM repo_secret WHERE name IN (SELECT name FROM account_secret)");
 	return listedAccountSecrets(rows, shared, profile);
 }
@@ -871,8 +912,18 @@ export const user = actor({
 			// What the user keeps for their account: the defaults for new sessions (account-defaults.ts), their own MCP
 			// servers (personal-servers.ts) and the secrets those read (account-secrets.ts), each value sealed.
 			await db.execute(ACCOUNT_DEFAULTS_TABLE);
+			// The models of the user's ChatGPT plan as Windlass last listed them (account-models.ts): one row.
+			await db.execute(MODELS_TABLE);
 			await db.execute(PERSONAL_SERVERS_TABLE);
 			await db.execute(ACCOUNT_SECRETS_TABLE);
+			// Tables made before a server had its setting and a secret its scope lack the column: those servers' tools ask, and those secrets are for MCP servers only, as they were.
+			for (const [table, column, definition] of [
+				["personal_server", "unasked", "INTEGER NOT NULL DEFAULT 0"],
+				["account_secret", "scope", "TEXT NOT NULL DEFAULT 'setup'"],
+			] as const) {
+				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
+				if (!columns.some((found) => found.name === column)) await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+			}
 			// The deleted sessions whose copy in the bucket is still to be removed: how often this actor
 			// tried, when it tries next, and the schedule that is to do it.
 			await db.execute(`
@@ -928,7 +979,7 @@ export const user = actor({
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, signIn: null, signInDb: null, approvals, github, usage: await readUsage(c.db), listed: null };
+		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, signIn: null, signInDb: null, approvals, github, models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null };
 	},
 
 	events: {
@@ -992,9 +1043,19 @@ export const user = actor({
 			if (profile.demo) return;
 			try {
 				await (await signIn(c)).logout();
+				await c.vars.models.forget(c.db);
 				console.log(`[wlp] sign-in.forgotten uid=${profile.uid}`);
 			} catch (error) {
 				throw clientError(c.log, error, "The ChatGPT sign-in could not be forgotten. Try again.");
+			}
+		},
+
+		models: async (c): Promise<ModelList> => {
+			const profile = requireUser(c);
+			try {
+				return await modelsOf(c, profile.demo);
+			} catch (error) {
+				throw clientError(c.log, error, "Your models could not be read. Try again.");
 			}
 		},
 
@@ -1053,11 +1114,8 @@ export const user = actor({
 				// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
 				const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
 				if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
-				const models = await platformModels();
-				const model = input.model === undefined || input.model === null || input.model === "" ? models[0] : input.model;
-				if (typeof model !== "string" || !models.includes(model)) {
-					throw new UserError(`That model is not offered. Choose one of: ${models.join(", ")}`, { code: "bad_model" });
-				}
+				const models = await modelsOf(c, profile.demo);
+				const model = modelInput(() => chosenModel(models, input.model));
 
 				// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
 				if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
@@ -1378,8 +1436,11 @@ export const user = actor({
 			// A session this user does not have is handed nothing, of the account's either.
 			const session = c.vars.sessions.get(id);
 			if (!session) return { project: null, secrets: [], account: { secrets: [], servers: [] } };
-			const kept = await c.db.execute<{ name: string; sealed: string }>("SELECT name, sealed FROM account_secret ORDER BY name");
-			const account = { secrets: kept.map((row) => ({ name: row.name, sealed: row.sealed })), servers: (await readServers(c.db)).map(({ name, definition }) => ({ name, definition })) };
+			const kept = await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name");
+			const account = {
+				secrets: kept.map((row) => ({ name: row.name, scope: row.scope === "agent" ? ("agent" as const) : ("setup" as const), sealed: row.sealed })),
+				servers: (await readServers(c.db)).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
+			};
 			const project = setupProjectKey(session.repository?.id);
 			if (project === null) return { project: null, secrets: [], account };
 			const rows = await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project);
@@ -1426,7 +1487,7 @@ export const user = actor({
 			let change: DefaultsChange;
 			try {
 				const { sandboxes } = await getLayer();
-				change = cleanDefaults(input, sandboxes.profiles(), await platformModels());
+				change = cleanDefaults(input, sandboxes.profiles(), await modelsOf(c, profile.demo));
 			} catch (error) {
 				if (error instanceof DefaultsProblem) throw new UserError(error.message, { code: error.code });
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
@@ -1509,7 +1570,7 @@ export const user = actor({
 			let change: DefaultsChange;
 			try {
 				const { sandboxes } = await getLayer();
-				change = cleanDefaults(input, sandboxes.profiles(), await platformModels());
+				change = cleanDefaults(input, sandboxes.profiles(), await modelsOf(c, profile.demo));
 			} catch (error) {
 				if (error instanceof DefaultsProblem) throw new UserError(error.message, { code: error.code });
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
@@ -1523,21 +1584,22 @@ export const user = actor({
 			}
 		},
 
-		savePersonalServer: async (c, input: { name: string; definition: unknown; existing?: boolean }): Promise<AccountSettings> => {
+		savePersonalServer: async (c, input: { name: string; definition: unknown; unasked?: boolean; existing?: boolean }): Promise<AccountSettings> => {
 			const profile = requireUser(c);
 			// Decided before anything is awaited: what is stored is what Windlass takes, or nothing is.
 			const name = serverInput(() => cleanServerName(input?.name));
 			const definition = serverInput(() => cleanServerDefinition(input?.definition));
+			const unasked = serverInput(() => cleanUnasked(input?.unasked));
 			const existing = input?.existing === true;
 			try {
-				if (existing) await changeServer(c.db, name, definition, Date.now());
-				else await addServer(c.db, name, definition, Date.now());
+				if (existing) await changeServer(c.db, name, definition, unasked, Date.now());
+				else await addServer(c.db, name, definition, unasked, Date.now());
 			} catch (error) {
 				if (error instanceof ServerProblem) throw new UserError(error.message, { code: error.code });
 				throw clientError(c.log, error, "The server could not be saved. Try again.");
 			}
 			// The name and the kind, never anything of the definition: an argument or an address may hold what its user would not want in a log.
-			console.log(`[wlp] server.saved uid=${profile.uid} name=${name} kind=${typeof definition.url === "string" ? "address" : "command"} definition=${existing ? "replaced" : "new"}`);
+			console.log(`[wlp] server.saved uid=${profile.uid} name=${name} kind=${typeof definition.url === "string" ? "address" : "command"} unasked=${unasked} definition=${existing ? "replaced" : "new"}`);
 			try {
 				return await accountView(c.db);
 			} catch (error) {
@@ -1567,20 +1629,22 @@ export const user = actor({
 			}
 		},
 
-		saveAccountSecret: async (c, input: { profile: string; name: string; value: string }): Promise<AccountSecrets> => {
+		saveAccountSecret: async (c, input: { profile: string; name: string; value?: string; scope: SecretScope }): Promise<AccountSecrets> => {
 			const user = requireUser(c);
 			const profile = await secretProfile(input?.profile);
 			const name = secretInput(() => cleanSecretName(input?.name));
-			const value = secretInput(() => cleanSecretValue(input?.value));
+			const scope = secretInput(() => cleanSecretScope(input?.scope));
+			const value = input?.value === undefined || input?.value === null ? undefined : secretInput(() => cleanSecretValue(input.value));
 			try {
 				// Sealed for this user, the account and the name before it is stored.
-				await saveAccountSecret(c.db, name, sealSecret(serverSealer(), user.uid, ACCOUNT_SECRET_PROJECT, name, value), Date.now());
+				await saveAccountSecret(c.db, name, scope, value === undefined ? undefined : sealSecret(serverSealer(), user.uid, ACCOUNT_SECRET_PROJECT, name, value), Date.now());
 			} catch (error) {
 				if (error instanceof TooManySecrets) throw new UserError(error.message, { code: "too_many_secrets" });
+				if (error instanceof SecretNotFound) throw new UserError(error.message, { code: "secret_not_found" });
 				throw clientError(c.log, error, "The secret could not be saved. Try again.");
 			}
 			// The name, never anything of the value: not its length either.
-			console.log(`[wlp] secret.saved uid=${user.uid} project=${ACCOUNT_SECRET_PROJECT} name=${name}`);
+			console.log(`[wlp] secret.saved uid=${user.uid} project=${ACCOUNT_SECRET_PROJECT} name=${name} scope=${scope} value=${value === undefined ? "kept" : "saved"}`);
 			try {
 				return await listAccountSecrets(c.db, profile);
 			} catch (error) {
@@ -1687,6 +1751,7 @@ export const user = actor({
 			requireService(c);
 			return answered(c, async () => {
 				await (await signIn(c)).logout();
+				await c.vars.models.forget(c.db);
 				console.log(`[wlp] sign-in.forgotten uid=${c.key[0]}`);
 				return null;
 			});
@@ -1710,6 +1775,12 @@ export const user = actor({
 				if (problem.kind === "other") c.log.error({ msg: "the user's access token could not be had", error: problem.message });
 				return { ok: false, problem };
 			}
+		},
+
+		/** The user's models, for a session of theirs whose prompt names a model or an effort. Never a demo user's: their sessions have the stand-in (account-models.ts). */
+		internalModels: async (c): Promise<ModelList> => {
+			requireService(c);
+			return modelsOf(c, false);
 		},
 
 		// --- called by the actor's own schedule only ------------------------------------------------

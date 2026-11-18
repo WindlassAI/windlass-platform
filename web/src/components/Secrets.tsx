@@ -12,9 +12,10 @@
  * carries, for each secret, the server's sentence about what is less than the scope says there.
  *
  * The account's secrets are managed with the same list and the same dialog, on the account's settings
- * page (`AccountSecretsBlock`). They are for MCP servers only, the user's own and a project's that
- * reads one, so they have no scope to choose: the dialog says whom they reach instead. Where a
- * repository has a secret of the same name, its agents are handed the repository's; both lists say so.
+ * page (`AccountSecretsBlock`). They are for MCP servers, the user's own and a project's that reads
+ * one, and have a repository's two scopes without the setup command: MCP servers only, or the
+ * agent's commands as well. Where a repository has a secret of the same name, its agents are handed
+ * the repository's; both lists say so.
  */
 import {
 	MAX_ACCOUNT_SECRETS,
@@ -35,13 +36,13 @@ import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
 import { WarnIcon } from "./Icons";
 
-/** A secret as either list has it: a repository's has a scope, the account's has the repositories that stand in for it. */
+/** A secret as either list has it: the account's has the repositories that stand in for it. */
 interface ListedSecret {
 	name: string;
 	updatedAt: number;
 	reach: SecretReach;
-	/** A repository's secret: who gets it. Absent for the account's, which is for MCP servers only. */
-	scope?: SecretScope;
+	/** Who gets it. */
+	scope: SecretScope;
 	/** A repository's secret: the account has one of this name too, which this one stands in for. */
 	account?: boolean;
 	/** The account's secret: the repositories that have one of their own under this name. */
@@ -88,33 +89,45 @@ const ACCOUNT_OWNER: SecretsOwner = {
 	name: "your account",
 	limit: MAX_ACCOUNT_SECRETS,
 	read: (api, profile) => api.accountSecrets(profile),
-	// A value is always sent: an account's secret has nothing else to change.
-	save: (api, profile, secret) => api.saveAccountSecret(profile, { name: secret.name, value: secret.value ?? "" }),
+	save: (api, profile, secret) => api.saveAccountSecret(profile, secret),
 	remove: (api, profile, name) => api.deleteAccountSecret(profile, name),
 };
 
-/** Whom an account's secret reaches, said where a repository's secret has its scopes to choose from. */
-const ACCOUNT_REACH =
-	"MCP servers get it where their definition reads it as ${NAME}: your own, and a project's once you have approved that server. The commands the agent runs do not, and neither does a repository's setup command. Where a repository has a secret of the same name, its agents are handed that one instead, with its scope.";
+/** What the wider scope lets in, for either owner. */
+const COMMANDS_RISK = "Whatever those commands can read, a manipulated agent could send out once a command has network access, and whatever a command prints goes to the model.";
 
-const SCOPES: Array<{ scope: SecretScope; name: string; means: string }> = [
-	{
-		scope: "setup",
-		name: "Setup and MCP servers",
-		means: "The repository's setup command gets it, and so do the MCP servers the repository names, where their definition reads it as ${NAME}. The commands the agent runs do not.",
-	},
-	{
-		scope: "agent",
-		name: "Also the agent's commands",
-		means: "The commands the agent runs get it as well. Whatever those commands can read, a manipulated agent could send out once a command has network access, and whatever a command prints goes to the model.",
-	},
-];
+/** The two scopes, as each owner's secret has them: an account's has no setup command to go to. */
+const SCOPES: Record<SecretsOwner["kind"], Array<{ scope: SecretScope; name: string; means: string }>> = {
+	repository: [
+		{
+			scope: "setup",
+			name: "Setup and MCP servers",
+			means: "The repository's setup command gets it, and so do the MCP servers the repository names, where their definition reads it as ${NAME}. The commands the agent runs do not.",
+		},
+		{ scope: "agent", name: "Also the agent's commands", means: `The commands the agent runs get it as well. ${COMMANDS_RISK}` },
+	],
+	account: [
+		{
+			scope: "setup",
+			name: "MCP servers only",
+			means: "MCP servers get it where their definition reads it as ${NAME}: your own, and a project's once you have approved that server. The commands the agent runs do not. In a sandbox that does not sandbox those commands, MCP servers go without it too, and a server that reads it does not start there.",
+		},
+		{
+			scope: "agent",
+			name: "Also the agent's commands",
+			means: `The commands the agent runs get it as well, so it is handed over in every sandbox, and a server that reads it starts where commands are not sandboxed too. ${COMMANDS_RISK}`,
+		},
+	],
+};
 
-const scopeName = (scope: SecretScope) => (scope === "agent" ? "also the agent's commands" : "setup and MCP servers");
+/** What stands in for a secret of the same name, or never gets one, said under an account's scopes. */
+const ACCOUNT_NEVER = "A repository's setup command never gets it. Where a repository has a secret of the same name, its agents are handed that one instead, with its scope.";
+
+const scopeName = (scope: SecretScope, owner: SecretsOwner["kind"]) => (scope === "agent" ? "also the agent's commands" : owner === "account" ? "MCP servers only" : "setup and MCP servers");
 
 /** When a change reaches whom. `workspace` is what the agent the panel is about has: none yet, or one that was set up already; null in the launch form. */
 function applies(workspace: "none" | "made" | null, owner: SecretsOwner["kind"] = "repository"): string {
-	if (owner === "account") return "A change reaches MCP servers from each agent's next turn, also in a sandbox that exists already. A turn that is running keeps what it started with.";
+	if (owner === "account") return "A change reaches MCP servers, and the agent's commands where a secret is also for them, from each agent's next turn, also in a sandbox that exists already. A turn that is running keeps what it started with.";
 	if (workspace === "none") return "A change reaches the setup command when this agent's workspace is created, with its next prompt, and MCP servers and the agent's commands from its next turn.";
 	if (workspace === "made") return "A change reaches MCP servers and the agent's commands from this agent's next turn. The setup command has run in this workspace and is not run again: it gets a change when a workspace is next created.";
 	return "A change reaches the setup command in workspaces created after it, and MCP servers and the agent's commands from an agent's next turn.";
@@ -189,7 +202,7 @@ function Secret({ secret, owner, onChange }: { secret: ListedSecret; owner: Secr
 		<li className="secret">
 			<p className="secret-head">
 				<span className="secret-name">{secret.name}</span>
-				<span className="secret-scope">{secret.scope === undefined ? "MCP servers only" : scopeName(secret.scope)}</span>
+				<span className="secret-scope">{scopeName(secret.scope, owner.kind)}</span>
 			</p>
 			<p className="secret-foot">
 				<span className="secret-when">
@@ -285,8 +298,7 @@ function SecretsDialog({ owner, profile, secrets, start, workspace, onSaved, onC
 					? `At most ${count(MAX_SECRET_VALUE_BYTES)} bytes; this is ${count(bytes)}.`
 					: null;
 	const full = !editing && secrets.length >= owner.limit;
-	// An account's secret has a value to replace and nothing else; a repository's has its scope as well.
-	const ready = editing ? (value !== "" ? valueProblem === null : !account && scope !== editing.scope) : name !== "" && nameProblem === null && value !== "" && valueProblem === null && !full;
+	const ready = editing ? (value !== "" ? valueProblem === null : scope !== editing.scope) : name !== "" && nameProblem === null && value !== "" && valueProblem === null && !full;
 
 	const save = async () => {
 		if (busy !== null || !ready) return;
@@ -423,7 +435,7 @@ function SecretsDialog({ owner, profile, secrets, start, workspace, onSaved, onC
 				)}
 				<div className="field">
 					<label className="label" htmlFor={ids.value}>
-						{editing ? "New value" : "Value"} {editing && !account ? <span className="label-optional">optional</span> : null}
+						{editing ? "New value" : "Value"} {editing ? <span className="label-optional">optional</span> : null}
 					</label>
 					{lines ? (
 						<textarea {...valueField} className={`input input-mono textarea secret-lines${valueProblem ? " input-invalid" : ""}`} rows={4} onChange={(event) => setValue(event.target.value)} />
@@ -446,9 +458,7 @@ function SecretsDialog({ owner, profile, secrets, start, workspace, onSaved, onC
 					<p className={`field-note${valueProblem ? " tone-warn" : ""}`} id={ids.valueNote}>
 						{valueProblem ??
 							(editing
-								? account
-									? "The saved value cannot be shown. A new one takes its place."
-									: "The saved value cannot be shown. Leave this empty to keep it."
+								? "The saved value cannot be shown. Leave this empty to keep it."
 								: `${MIN_SECRET_VALUE_CHARS} characters or more, so that it can be taken out of what is shown, and at most ${count(MAX_SECRET_VALUE_BYTES)} bytes. It is not shown again once saved.`)}{" "}
 						{lines ? null : (
 							<button type="button" className="link" onClick={() => setLines(true)} disabled={busy !== null}>
@@ -457,26 +467,22 @@ function SecretsDialog({ owner, profile, secrets, start, workspace, onSaved, onC
 						)}
 					</p>
 				</div>
-				{account ? (
-					<p className="secret-about">{ACCOUNT_REACH}</p>
-				) : (
-					<fieldset className="secret-scopes" aria-describedby={ids.scope}>
-						<legend className="label">Who gets it</legend>
-						{SCOPES.map((choice) => (
-							<label key={choice.scope} className={`secret-choice${scope === choice.scope ? " secret-choice-chosen" : ""}`}>
-								<input className="secret-radio" type="radio" name={ids.scope} value={choice.scope} checked={scope === choice.scope} onChange={() => setScope(choice.scope)} disabled={busy !== null} />
-								<span className="secret-pick" aria-hidden="true" />
-								<span className="secret-choice-text">
-									<span className="secret-choice-name">{choice.name}</span>
-									<span className="secret-choice-means">{choice.means}</span>
-								</span>
-							</label>
-						))}
-						<p className="field-note" id={ids.scope}>
-							What a choice comes to also depends on the agent's sandbox. Where a secret reaches less than chosen here, the list says so under it.
-						</p>
-					</fieldset>
-				)}
+				<fieldset className="secret-scopes" aria-describedby={ids.scope}>
+					<legend className="label">Who gets it</legend>
+					{SCOPES[owner.kind].map((choice) => (
+						<label key={choice.scope} className={`secret-choice${scope === choice.scope ? " secret-choice-chosen" : ""}`}>
+							<input className="secret-radio" type="radio" name={ids.scope} value={choice.scope} checked={scope === choice.scope} onChange={() => setScope(choice.scope)} disabled={busy !== null} />
+							<span className="secret-pick" aria-hidden="true" />
+							<span className="secret-choice-text">
+								<span className="secret-choice-name">{choice.name}</span>
+								<span className="secret-choice-means">{choice.means}</span>
+							</span>
+						</label>
+					))}
+					<p className="field-note" id={ids.scope}>
+						What a choice comes to also depends on the agent's sandbox. Where a secret reaches less than chosen here, the list says so under it.{account ? ` ${ACCOUNT_NEVER}` : ""}
+					</p>
+				</fieldset>
 				<p className="secret-about">{REMOVED}</p>
 				{full ? (
 					<p className="secret-about tone-warn">
@@ -524,8 +530,7 @@ export function SecretsBlock({
 
 /**
  * The account's secrets, listed and changed in place, as a sandbox of `profile` made now gets them:
- * the list and the dialog a repository's secrets have, without a scope to choose. `title` and
- * `onChanged` as for `SecretsBlock`.
+ * the list and the dialog a repository's secrets have. `title` and `onChanged` as for `SecretsBlock`.
  */
 export function AccountSecretsBlock({ profile, title, onChanged }: { profile: SandboxProfileId | null; title(add: ReactNode): ReactNode; onChanged?(): void }) {
 	return <OwnedSecrets owner={ACCOUNT_OWNER} profile={profile} title={title} onChanged={onChanged} />;

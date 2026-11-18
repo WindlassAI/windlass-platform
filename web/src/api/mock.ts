@@ -86,6 +86,8 @@ import {
 	type GithubStatus,
 	type LiveDelta,
 	type LoginStart,
+	type ModelChoice,
+	type ModelList,
 	type PendingQuestion,
 	type PersonalServer,
 	type PersonalServerReach,
@@ -140,6 +142,8 @@ export interface MockOptions {
 	usage?: MockUsageState;
 	/** "seeded": the user has MCP servers of their own and secrets for them saved. Default "empty": nothing is saved for the account. */
 	account?: "empty" | "seeded";
+	/** "unavailable" plays a signed-in user whose plan's models could not be read: the stand-in list, which says so. Default "account": the plan's own. */
+	models?: "account" | "unavailable";
 }
 
 /**
@@ -395,7 +399,17 @@ const sessionRepository = (owner: string, name: string, branch = "main"): Sessio
 };
 
 const MODELS = ["gpt-6.1-sol", "gpt-6-luna"];
-const EFFORTS = ["low", "medium", "high"];
+/** What the signed-in user's ChatGPT plan offers: each model with its own efforts, and one that takes none. */
+const MOCK_PLAN: ModelChoice[] = [
+	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", efforts: ["low", "medium", "high", "xhigh"] },
+	{ id: "gpt-6-luna", name: null, efforts: ["low", "medium"] },
+	{ id: "gpt-6-brisk", name: "GPT-6 Brisk", efforts: [] },
+];
+/** The platform's stand-in for a plan's models, as the server has it (`standInModels`, server/src/account-models.ts). */
+export function mockStandInModels(source: Exclude<ModelList["source"], "account">): ModelList {
+	const models = ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"].map((id) => ({ id, name: null, efforts: ["low", "medium", "high", "xhigh", "max"] }));
+	return { source, models, defaultModel: "gpt-6.1-sol", fetchedAt: null };
+}
 const REDIRECT_PREFIX = "http://127.0.0.1:1455/auth/callback";
 
 interface WorkspaceChange {
@@ -602,8 +616,8 @@ const commandLine = (argv: readonly string[]) => argv.map((argument) => (/^[A-Za
 
 /** What would set a variable a definition reads, as server/src/server-question.ts says it of a variable no secret is saved for. */
 function mockUnsetRemedy(unset: readonly string[], project: MockProject, profile: SandboxProfile): string {
-	// Where this sandbox gives the account's secrets to MCP servers, one of those sets the variable too.
-	if (project.kind !== "github") return `A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.${mockAccountSecretsNote(profile, true) === null ? " A secret of your account under that name, saved in your settings, sets it for MCP servers too." : ""}`;
+	// One of the account's secrets sets the variable too: any, where this sandbox gives them all to MCP servers.
+	if (project.kind !== "github") return `A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one. ${mockAccountSecretsNote(profile, true) === null ? "A secret of your account under that name, saved in your settings, sets it for MCP servers too." : "A secret of your account under that name, saved in your settings, sets it for MCP servers in this sandbox if it is also for the agent's commands."}`;
 	const names = unset.length <= 1 ? unset.join("") : `${unset.slice(0, -1).join(", ")} and ${unset[unset.length - 1]}`;
 	return unset.length === 1
 		? `Save a secret named ${names} for ${project.label}, under Secrets in this session's panel: it is handed over from the next turn.`
@@ -623,7 +637,9 @@ function mockLooksLikeCredential(name: string): boolean {
 }
 
 /** What a secret reaches in a sandbox of `profile`, word for word as server/src/repo-secrets.ts says it (`secretReach`), for a Windlass that takes the lists of variable names (`lists`) and for an older one. */
-export function mockSecretReach(name: string, scope: SecretScope, profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">, lists: boolean, left = "Only the setup command gets it."): SecretReach {
+export function mockSecretReach(name: string, scope: SecretScope, profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">, lists: boolean, owner: "repository" | "account" = "repository"): SecretReach {
+	// What is left of a secret that MCP servers are not given: a repository's goes to its setup command, an account's has none.
+	const left = owner === "repository" ? "Only the setup command gets it." : "So nothing is given it there.";
 	const sandbox = profile.approval === "full" ? "none" : !profile.commandNetwork && !profile.commandsCanReadAccessToken ? "windlass" : "unknown";
 	if (lists) {
 		if (scope === "agent") return { servers: true, commands: "yes", note: null };
@@ -662,7 +678,7 @@ export function mockSecretReach(name: string, scope: SecretScope, profile: Pick<
 		return {
 			servers: true,
 			commands: "no",
-			note: `The agent's commands do not get it in this sandbox: Windlass keeps a variable with ${looks} from the commands it sandboxes, and has no setting that lets one through. The setup command and MCP servers get it.`,
+			note: `The agent's commands do not get it in this sandbox: Windlass keeps a variable with ${looks} from the commands it sandboxes, and has no setting that lets one through. ${owner === "repository" ? "The setup command and MCP servers get it." : "MCP servers get it."}`,
 		};
 	}
 	return {
@@ -717,15 +733,13 @@ export function mockPanelWords(server: Pick<SessionServer, "name" | "remote">, p
 	return { title: `Start this project's MCP server "${server.name}"?`, details: [mockReach(profile, demo), mockApproving(project, "next"), MOCK_COVERS] };
 }
 
-/** What is left of an account's secret that MCP servers are not given (server/src/account-secrets.ts). */
-const MOCK_NOTHING_GETS_IT = "So nothing is given it there.";
-
-/** Why a sandbox hands the account's secrets to no MCP server, as server/src/account-secrets.ts says it (`accountSecretsNote`). */
+/** Why a sandbox hands MCP servers only some of the account's secrets, as server/src/account-secrets.ts says it (`accountSecretsNote`). */
 function mockAccountSecretsNote(profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">, lists: boolean): string | null {
-	if (profile.approval === "full") return "Your account's secrets are not given to MCP servers in this sandbox: the agent's commands run here without Windlass's sandbox, where a command can read whatever Windlass was handed for an MCP server from Windlass's own process. A server that reads one does not start.";
-	if (profile.commandNetwork || profile.commandsCanReadAccessToken) return "Your account's secrets are not given to MCP servers in this sandbox: it has not been established that Windlass can sandbox the agent's commands here, and a command it cannot sandbox can read whatever Windlass was handed for an MCP server from Windlass's own process. A server that reads one does not start.";
+	const only = "Of your account's secrets, MCP servers are given only those that are also for the agent's commands in this sandbox";
+	if (profile.approval === "full") return `${only}: the agent's commands run here without Windlass's sandbox, where a command can read whatever Windlass was handed for an MCP server from Windlass's own process. A server that reads another one does not start.`;
+	if (profile.commandNetwork || profile.commandsCanReadAccessToken) return `${only}: it has not been established that Windlass can sandbox the agent's commands here, and a command it cannot sandbox can read whatever Windlass was handed for an MCP server from Windlass's own process. A server that reads another one does not start.`;
 	if (lists) return null;
-	return "This sandbox has an older Windlass, which passes every variable it has on to the agent's commands unless its name looks like a credential (it contains TOKEN, KEY, SECRET or PASSWORD, for example). So an account's secret is given to MCP servers here only under such a name, and a server that reads another one does not start.";
+	return "This sandbox has an older Windlass, which passes every variable it has on to the agent's commands unless its name looks like a credential (it contains TOKEN, KEY, SECRET or PASSWORD, for example). So an account's secret that is for MCP servers only is given to them here only under such a name, and a server that reads another one does not start.";
 }
 
 /** What a server of the user's own can reach where it runs, as server/src/server-question.ts says it (`personalServerReach`). */
@@ -962,8 +976,8 @@ interface World {
 	/** What the user keeps for their account, whatever the repository. A secret's value is not kept at all. */
 	account: {
 		defaults: { profile: SandboxProfileId | null; model: string | null; updatedAt: number } | null;
-		servers: Map<string, { definition: Record<string, unknown>; updatedAt: number }>;
-		secrets: Map<string, { updatedAt: number }>;
+		servers: Map<string, { definition: Record<string, unknown>; unasked: boolean; updatedAt: number }>;
+		secrets: Map<string, { scope: SecretScope; updatedAt: number }>;
 	};
 	/** The seconds of sandbox time counted today, by session: the seeded ones, and what the turns played here ran. */
 	spent: Map<string, number>;
@@ -1951,10 +1965,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		// that is saved and runs; the other reads one that is not, and does not start. DEPLOY_KEY is a name acme/harbor has
 		// a secret of its own for, so there the repository's is used.
 		if (options.account === "seeded") {
-			world.account.servers.set("issues", { definition: { command: "npx", args: ["-y", "@acme/issues-mcp", "--stdio"], env: { ISSUES_TOKEN: "${ISSUES_TOKEN}" } }, updatedAt: start - 9 * 24 * HOUR });
-			world.account.servers.set("wiki", { definition: { url: "https://wiki.acme.example/mcp", headers: { Authorization: "Bearer ${WIKI_TOKEN}" } }, updatedAt: start - 2 * 24 * HOUR });
-			world.account.secrets.set("ISSUES_TOKEN", { updatedAt: start - 9 * 24 * HOUR });
-			world.account.secrets.set("DEPLOY_KEY", { updatedAt: start - 30 * 24 * HOUR });
+			world.account.servers.set("issues", { definition: { command: "npx", args: ["-y", "@acme/issues-mcp", "--stdio"], env: { ISSUES_TOKEN: "${ISSUES_TOKEN}" } }, unasked: true, updatedAt: start - 9 * 24 * HOUR });
+			world.account.servers.set("wiki", { definition: { url: "https://wiki.acme.example/mcp", headers: { Authorization: "Bearer ${WIKI_TOKEN}" } }, unasked: false, updatedAt: start - 2 * 24 * HOUR });
+			world.account.secrets.set("ISSUES_TOKEN", { scope: "agent", updatedAt: start - 9 * 24 * HOUR });
+			world.account.secrets.set("DEPLOY_KEY", { scope: "setup", updatedAt: start - 30 * 24 * HOUR });
 			// The sessions that have a sandbox had a turn since: their panels list the servers as that turn found them.
 			for (const session of world.sessions.values()) if (session.summary.sandbox !== "none" && session.summary.turns > 0) knowPersonal(world, session);
 		}
@@ -2100,14 +2114,28 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	/** Saves as the server does (server/src/repository-defaults.ts): the same refusals in the same words, and only the fields that are named. */
 	function saveDefaults(world: World, repositoryId: number, change: { profile?: SandboxProfileId | null; model?: string | null }): RepositoryDefaults {
-		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change);
+		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change, modelsFor(world.profile));
 		if (next === null) world.defaults.delete(repositoryId);
 		else world.defaults.set(repositoryId, next);
 		return defaultsOf(world, repositoryId);
 	}
 
 	/** What is saved after a change, for a repository or for the account: null when nothing is left. */
-	function changedDefaults(before: { profile: SandboxProfileId | null; model: string | null; updatedAt: number } | null, change: { profile?: SandboxProfileId | null; model?: string | null }): { profile: SandboxProfileId | null; model: string | null; updatedAt: number } | null {
+	/** The models the signed-in user may choose: the plan's as it was read when the page loaded, or the stand-in for the demo and where the address says the plan could not be read. */
+	const listedAt = realNow();
+	function modelsFor(profile: UserProfile): ModelList {
+		if (profile.demo) return mockStandInModels("demo");
+		if (options.models === "unavailable") return mockStandInModels("unavailable");
+		return { source: "account", models: MOCK_PLAN.map((model) => ({ ...model, efforts: [...model.efforts] })), defaultModel: MODELS[0] as string, fetchedAt: listedAt - 12 * MINUTE };
+	}
+	/** A model a client named, held against the user's list as the server holds it. */
+	function checkModel(models: ModelList, model: string): void {
+		if (models.models.some((candidate) => candidate.id === model)) return;
+		const names = models.models.map((candidate) => candidate.id).join(", ");
+		throw new PlatformError("user", models.source === "account" ? `That model is not among the ones your ChatGPT plan offers. Choose one of: ${names}` : `That model is not offered. Choose one of: ${names}`, { reason: "bad_model" });
+	}
+
+	function changedDefaults(before: { profile: SandboxProfileId | null; model: string | null; updatedAt: number } | null, change: { profile?: SandboxProfileId | null; model?: string | null }, models: ModelList): { profile: SandboxProfileId | null; model: string | null; updatedAt: number } | null {
 		const saved = before ?? { profile: null, model: null, updatedAt: 0 };
 		const next = { ...saved };
 		if (change.profile !== undefined) {
@@ -2117,7 +2145,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			next.profile = chosen?.id ?? null;
 		}
 		if (change.model !== undefined) {
-			if (change.model !== null && !MODELS.includes(change.model)) throw new PlatformError("user", `That model is not offered. Choose one of: ${MODELS.join(", ")}`, { reason: "bad_model" });
+			if (change.model !== null) checkModel(models, change.model);
 			next.model = change.model;
 		}
 		if (change.profile === undefined && change.model === undefined) return before;
@@ -2144,6 +2172,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					remote,
 					subject: remote ? String(server.definition.url) : commandLine(argv),
 					enabled: server.definition.enabled !== false,
+					unasked: server.unasked,
 					reads: mockDefinitionReads(server.definition).map((read) => ({ name: read, saved: world.account.secrets.has(read) })),
 					updatedAt: server.updatedAt,
 				};
@@ -2162,8 +2191,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			profile: profile.id,
 			secrets: saved.map(([name, secret]) => ({
 				name,
+				scope: secret.scope,
 				updatedAt: secret.updatedAt,
-				reach: mockSecretReach(name, "setup", profile, true, MOCK_NOTHING_GETS_IT),
+				reach: mockSecretReach(name, secret.scope, profile, true, "account"),
 				repositories: [...world.secrets.entries()]
 					.filter(([, secrets]) => secrets.has(name))
 					.map(([id]) => repositoryNameOf(world, id) ?? `repository ${id}`)
@@ -2185,7 +2215,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const handed = (name: string) => {
 			const theirs = repository?.get(name);
 			if (theirs) return mockSecretReach(name, theirs.scope, profile, lists).servers;
-			return world.account.secrets.has(name) && mockSecretReach(name, "setup", profile, lists, MOCK_NOTHING_GETS_IT).servers;
+			const mine = world.account.secrets.get(name);
+			return mine !== undefined && mockSecretReach(name, mine.scope, profile, lists, "account").servers;
 		};
 		const before = session.servers;
 		const projects = before.filter((server) => server.origin !== "user");
@@ -2230,6 +2261,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const { profile } = world();
 				return profile.demo ? { connected: false, email: null, accessExpiresAt: null } : { connected: true, email: profile.email, accessExpiresAt: now() + 52 * MINUTE };
 			},
+			async models(): Promise<ModelList> {
+				await latency(200);
+				return modelsFor(world().profile);
+			},
 			async listSessions() {
 				await latency();
 				return listOf(world());
@@ -2239,7 +2274,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const profile = profiles.find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
 				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());
-				if (input.model !== undefined && !MODELS.includes(input.model)) throw new PlatformError("user", `There is no model called ${input.model}.`);
+				const models = modelsFor(world().profile);
+				if (input.model !== undefined) checkModel(models, input.model);
 				const repoUrl = input.repoUrl?.trim() || null;
 				if (repoUrl !== null && !/^https:\/\/\S+$/.test(repoUrl)) throw new PlatformError("user", "The repository must be an https address.");
 				let repository: SessionRepository | null = null;
@@ -2252,7 +2288,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const title = input.title?.trim() ?? "";
 				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
 				if (repository && input.setupCommand !== undefined) saveSetup(world(), repository.id, input.setupCommand);
-				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, model: input.model ?? (MODELS[0] as string), repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
+				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, model: input.model ?? models.defaultModel, repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
 				setSummary(world(), session, {});
 				return session.summary;
 			},
@@ -2362,13 +2398,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(300);
 				const current = world();
 				// The same rules as a repository's defaults.
-				current.account.defaults = changedDefaults(current.account.defaults, change);
+				current.account.defaults = changedDefaults(current.account.defaults, change, modelsFor(current.profile));
 				return accountDefaultsOf(current);
 			},
-			async savePersonalServer(server: { name: string; definition: unknown; existing?: boolean }): Promise<AccountSettings> {
+			async savePersonalServer(server: { name: string; definition: unknown; unasked?: boolean; existing?: boolean }): Promise<AccountSettings> {
 				await latency(320);
 				const current = world();
 				const { name, definition } = mockCleanServer(server.name, server.definition);
+				if (server.unasked !== undefined && typeof server.unasked !== "boolean") throw new PlatformError("user", "Whether a server's tools run without asking is true or false.", { reason: "bad_server" });
 				const saved = current.account.servers.has(name);
 				if (server.existing === true) {
 					if (!saved) throw new PlatformError("user", `No server named ${name} is saved any more. Add it again.`, { reason: "server_not_found" });
@@ -2376,7 +2413,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					if (saved) throw new PlatformError("user", `A server named ${name} is saved already. Change that one, or give this one another name.`, { reason: "server_exists" });
 					if (current.account.servers.size >= MAX_PERSONAL_SERVERS) throw new PlatformError("user", `An account can keep ${MAX_PERSONAL_SERVERS} MCP servers, and yours has that many. Delete one first.`, { reason: "too_many_servers" });
 				}
-				current.account.servers.set(name, { definition, updatedAt: now() });
+				current.account.servers.set(name, { definition, unasked: server.unasked === true, updatedAt: now() });
 				return accountOf(current);
 			},
 			async deletePersonalServer(name: string): Promise<AccountSettings> {
@@ -2388,16 +2425,21 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(200);
 				return accountSecretsOf(world(), profile);
 			},
-			async saveAccountSecret(profile: SandboxProfileId, secret: { name: string; value: string }): Promise<AccountSecrets> {
+			async saveAccountSecret(profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }): Promise<AccountSecrets> {
 				await latency(340);
 				const current = world();
-				// The rules of a repository's secret for the name and the value.
+				// The rules of a repository's secret for the name, the scope and the value; without a value, only the scope changes.
 				checkSecretName(secret.name);
-				checkSecretValue(secret.value);
-				if (!current.account.secrets.has(secret.name) && current.account.secrets.size >= MAX_ACCOUNT_SECRETS) {
-					throw new PlatformError("user", `An account can keep ${MAX_ACCOUNT_SECRETS} secrets, and yours has that many. Delete one first.`, { reason: "too_many_secrets" });
+				if (secret.scope !== "setup" && secret.scope !== "agent") throw new PlatformError("user", "A secret is for the setup command and MCP servers, or for the agent's commands as well.", { reason: "bad_secret" });
+				if (secret.value === undefined) {
+					if (!current.account.secrets.has(secret.name)) throw new PlatformError("user", `No secret named ${secret.name} is saved for your account.`, { reason: "secret_not_found" });
+				} else {
+					checkSecretValue(secret.value);
+					if (!current.account.secrets.has(secret.name) && current.account.secrets.size >= MAX_ACCOUNT_SECRETS) {
+						throw new PlatformError("user", `An account can keep ${MAX_ACCOUNT_SECRETS} secrets, and yours has that many. Delete one first.`, { reason: "too_many_secrets" });
+					}
 				}
-				current.account.secrets.set(secret.name, { updatedAt: now() });
+				current.account.secrets.set(secret.name, { scope: secret.scope, updatedAt: now() });
 				return accountSecretsOf(current, profile);
 			},
 			async deleteAccountSecret(profile: SandboxProfileId, name: string): Promise<AccountSecrets> {
@@ -2572,7 +2614,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				}
 				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle").length;
 				if (running >= MAX_RUNNING_SESSIONS) throw new PlatformError("user", `${MAX_RUNNING_SESSIONS} of your agents are already working. Wait for one to finish, or stop one.`);
-				if (input.model !== undefined && !MODELS.includes(input.model)) throw new PlatformError("user", `There is no model called ${input.model}.`);
+				const models = modelsFor(world.profile);
+				if (input.model !== undefined) checkModel(models, input.model);
+				// An effort is held against the ones the turn's model accepts; of a model the list does not have nothing is said.
+				const efforts = models.models.find((candidate) => candidate.id === (input.model ?? session.summary.model))?.efforts;
+				if (input.effort !== undefined && efforts !== undefined && !efforts.includes(input.effort)) {
+					throw new PlatformError("user", efforts.length === 0 ? `${input.model ?? session.summary.model} takes no reasoning effort. Leave the effort at its default.` : `The effort for ${input.model ?? session.summary.model} must be one of: ${efforts.join(", ")}`, { reason: "bad_effort" });
+				}
 				// The user's two limits, as the server holds a prompt to them: time for the sandbox to run on, and a place for one the agent does not have.
 				const numbers = usageNumbers(world);
 				if ((numbers.leftSeconds ?? 0) < numbers.startSeconds) throw new PlatformError("user", mockAllowanceRefusal(numbers), { reason: "allowance_used" });
@@ -2751,7 +2799,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		endpoint: null,
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
-			return { demoEnabled: true, windlassVersion: "0.1.0", profiles, models: MODELS, efforts: EFFORTS, ...(githubOn ? { github: GITHUB } : {}) };
+			return { demoEnabled: true, windlassVersion: "0.1.0", profiles, ...(githubOn ? { github: GITHUB } : {}) };
 		},
 		login: {
 			async start(): Promise<LoginStart> {

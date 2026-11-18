@@ -13,6 +13,11 @@
  *            and otherwise a new one, for which it refreshes the sign-in first. Only the refresh needs
  *            the network, and it replaces the refresh token: `auth.json` comes back changed
  *
+ *   models   `windlass --models --json` on an access token of the sign-in, and on no sign-in: prints the
+ *            models the account's plan offers, one JSON object on a line each (`id`, `description`,
+ *            `efforts`, `isDefault`). The token is handed in as a turn's is (`runWithToken`, runner.ts),
+ *            so this command never refreshes anything
+ *
  * A refresh cannot give a token that lasts longer than the service issues them (about an hour). Should
  * that be less than is asked for, Windlass prints the token all the same, exits 0 and says so in one
  * line on standard error: `token` reports it (`shorter`), and what follows from it is the holder's.
@@ -40,6 +45,8 @@
  * error, where Windlass never prints a token.
  */
 
+import type { ListedModels } from "../account-models.js";
+import type { ModelChoice } from "../contract.js";
 import { type AccessToken, type ChatgptAccount, SandboxUserError } from "../sandbox/api.js";
 import {
 	NOT_SIGNED_IN,
@@ -60,6 +67,8 @@ import type { LoginRun, LoginRunner } from "./runner.js";
 const TOKEN_TIMEOUT_MS = 90_000;
 const FINISH_TIMEOUT_MS = 90_000;
 const START_TIMEOUT_MS = 60_000;
+/** How long `windlass --models` may take: one request to the provider, and whoever asked is waiting on a page. */
+const MODELS_TIMEOUT_MS = 5_000;
 
 /** What asking for a token gave, with the material as Windlass left it: changed when it refreshed, whether or not a token came of it. */
 export type TokenAnswer =
@@ -81,6 +90,11 @@ export interface SignInCommands {
 	 * material to keep from now on.
 	 */
 	token(material: SignInMaterial, options?: { signal?: AbortSignal }): Promise<TokenAnswer>;
+	/**
+	 * The models the plan of `token`'s account offers, with the efforts each accepts and the default.
+	 * Rejects when Windlass did not list them, with its own reason; no message holds the token.
+	 */
+	models(token: AccessToken): Promise<ListedModels>;
 	/** How many times `token` ran Windlass: for the checks that count refreshes. */
 	readonly asked: number;
 }
@@ -102,6 +116,8 @@ export interface WindlassSignInsOptions {
 	log?: (line: string) => void;
 	/** How long `windlass login token` may take. Default 90 s; shortened by checks. */
 	tokenTimeoutMs?: number;
+	/** How long `windlass --models` may take. Default 5 s; shortened by checks. */
+	modelsTimeoutMs?: number;
 }
 
 export class WindlassSignIns implements SignInCommands {
@@ -158,6 +174,17 @@ export class WindlassSignIns implements SignInCommands {
 		} catch (error) {
 			return { ok: false, material: left, error: error instanceof Error ? error : new Error(String(error)) };
 		}
+	}
+
+	async models(token: AccessToken): Promise<ListedModels> {
+		const timeoutMs = this.options.modelsTimeoutMs ?? MODELS_TIMEOUT_MS;
+		const result = await this.runner.runWithToken(token, { args: ["--models", "--json"], timeoutMs });
+		if (result.timedOut) throw new Error(`\`windlass --models\` did not answer in ${timeoutMs / 1000} s and was stopped`);
+		// Windlass says why on one line of standard error, where it never prints a token.
+		if (result.code !== 0) throw new Error(`\`windlass --models\` failed (exit code ${result.code}): ${thrownLine(result.stderr) ?? "it gave no reason"}`);
+		const listed = parseModels(result.stdout);
+		if (listed === null) throw new Error("`windlass --models --json` did not print a list of models");
+		return listed;
 	}
 
 	private async read(result: LoginRun): Promise<{ token: AccessToken; shorter: boolean }> {
@@ -233,6 +260,35 @@ function parseToken(stdout: string): AccessToken | null {
 	} catch {
 		return null;
 	}
+}
+
+/** More than any plan offers by far: what is longer is not a list of models. */
+const MAX_MODELS = 200;
+const MAX_MODEL_ID_CHARS = 200;
+
+/**
+ * What `windlass --models --json` prints: one object on a line for each model, `{"id":"...",
+ * "description":"..."|null,"efforts":["..."],"isDefault":true|false}`, the default being the model a
+ * new session uses when none is named (the first one where Windlass marks none). Null when any line
+ * is something else, or there is no model at all: half a list is not served as the plan's.
+ */
+export function parseModels(stdout: string): ListedModels | null {
+	const word = (value: unknown): value is string => typeof value === "string" && value !== "" && value.length <= MAX_MODEL_ID_CHARS && !/[\x00-\x1f\x7f]/.test(value);
+	const models: ModelChoice[] = [];
+	let defaultModel: string | null = null;
+	for (const line of stdout.split("\n")) {
+		if (line.trim() === "") continue;
+		let row: { id?: unknown; description?: unknown; efforts?: unknown; isDefault?: unknown };
+		try {
+			row = JSON.parse(line) as typeof row;
+		} catch {
+			return null;
+		}
+		if (typeof row !== "object" || row === null || !word(row.id) || !Array.isArray(row.efforts) || !row.efforts.every(word) || models.length >= MAX_MODELS || models.some((model) => model.id === row.id)) return null;
+		models.push({ id: row.id, name: word(row.description) ? row.description : null, efforts: row.efforts });
+		if (row.isDefault === true) defaultModel ??= row.id;
+	}
+	return models.length === 0 ? null : { models, defaultModel: defaultModel ?? models[0]!.id };
 }
 
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 300);

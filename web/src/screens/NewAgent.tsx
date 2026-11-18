@@ -16,9 +16,11 @@
  * the form starts from once it is picked. The account has defaults too, saved in its settings, for
  * what the repository leaves open and for an agent on no repository. Each of the two fields goes by
  * the user's own choice in the form, then the chosen repository's default, then the account's, then
- * the deployment's first; a choice made in the form is for this agent only. A default that names a
- * sandbox or a model the deployment no longer offers is left out, and the form says so and whose it
- * was. Opened from a repository's page, the form has that repository chosen.
+ * the deployment's first sandbox and the default of the user's models; a choice made in the form is
+ * for this agent only. A default that names a sandbox the deployment no longer offers, or a model
+ * that is not among the user's, is left out, and the form says so and whose it was. The models are
+ * the user's own, and a line under the field says whose list it is. Opened from a repository's page,
+ * the form has that repository chosen.
  *
  * An agent can always be created; what a limit refuses is its first prompt, which starts a sandbox.
  * So the form says beforehand when the day's sandbox time is used up or the user keeps as many
@@ -36,10 +38,11 @@ import { PublishUnaskedCheck, publishAlwaysAsked } from "../components/PullReque
 import { SetupField, useSetupDraft } from "../components/SetupCommand";
 import { isLimitRefusal } from "../api/errors";
 import { localTime, sandboxTime } from "../lib/format";
+import { modelsNote } from "../lib/models";
 import { layerChoices, startingChoices, startingModel, startingProfile, type DefaultSource, type LayeredChoices } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { allowanceState, useAccount, useAllowance } from "../state/hooks";
+import { allowanceState, useAccount, useAllowance, useModels } from "../state/hooks";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 
@@ -201,7 +204,7 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 	const auth = useAuth();
 	const info = platform.info;
 	const group = useId();
-	const ids = { model: useId(), repo: useId(), repoLabel: useId(), title: useId(), prompt: useId(), repoNote: useId(), profiles: useId() };
+	const ids = { model: useId(), modelNote: useId(), repo: useId(), repoLabel: useId(), title: useId(), prompt: useId(), repoNote: useId(), profiles: useId() };
 	const github = useGithub();
 	const limit = launchLimit(useAllowance());
 	// What the form held before its user left to connect GitHub, once.
@@ -271,15 +274,16 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 	// new agent, each held against what this deployment offers: the repository's first, field by field.
 	const saved = useDefaults(chosen?.repository.id ?? null);
 	const account = useAccount();
-	const repositoryDefaults = startingChoices(saved.defaults, info);
-	const accountDefaults = startingChoices(account.settings?.defaults ?? null, info, "account");
+	const models = useModels();
+	const repositoryDefaults = startingChoices(saved.defaults, info, models.list);
+	const accountDefaults = startingChoices(account.settings?.defaults ?? null, info, models.list, "account");
 	const defaults = layerChoices(repositoryDefaults, accountDefaults);
 	const profile = startingProfile(profileChoice, defaults, info);
-	const model = startingModel(modelChoice, defaults, info);
+	const model = startingModel(modelChoice, defaults, models.list);
 	const fromDefaults = { profile: defaults.profile !== null && profile === defaults.profile, model: defaults.model !== null && model === defaults.model };
-	// The defaults are read before the agent is created, so that it is not launched on other ones a moment too early.
+	// The defaults and the models are read before the agent is created, so that it is not launched on other ones a moment too early.
 	const accountReading = account.reading && account.settings === null;
-	const canCreate = info !== null && profile !== null && !repoInvalid && busy === null && !saved.reading && !accountReading && !(opening.reading && source === "github" && picked === null);
+	const canCreate = info !== null && profile !== null && !repoInvalid && busy === null && !saved.reading && !accountReading && !models.reading && !(opening.reading && source === "github" && picked === null);
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 	const chosenProfile = info?.profiles.find((candidate) => candidate.id === profile) ?? null;
 
@@ -489,14 +493,18 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 							<label className="label" htmlFor={ids.model}>
 								Model
 							</label>
-							<select id={ids.model} className="select" value={model} onChange={(event) => setModel(event.target.value)}>
-								{info.models.map((name, index) => (
-									<option key={name} value={name}>
-										{name}
-										{index === 0 ? " (default)" : ""}
+							<select id={ids.model} className="select" value={model} onChange={(event) => setModel(event.target.value)} disabled={models.list === null} aria-describedby={ids.modelNote}>
+								{models.list === null ? <option value={model}>{model || "Your default model"}</option> : null}
+								{models.list?.models.map(({ id }) => (
+									<option key={id} value={id}>
+										{id}
+										{id === models.list?.defaultModel ? " (default)" : ""}
 									</option>
 								))}
 							</select>
+							<p className="field-note" id={ids.modelNote} aria-busy={models.reading}>
+								{models.list ? modelsNote(models.list) : models.reading ? "Reading your models…" : `${models.error ?? "Your models could not be read."} The agent starts on your default model.`}
+							</p>
 						</div>
 						<div className="field">
 							<label className="label" htmlFor={ids.title}>

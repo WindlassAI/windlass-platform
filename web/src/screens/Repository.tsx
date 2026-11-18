@@ -31,7 +31,7 @@ import { LONE_GROUP_SHOWN, layerChoices, openPulls, repositoryName, sessionsOn, 
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useGithub, type Github } from "../state/github";
-import { useAccount, useNow, useSessions } from "../state/hooks";
+import { useAccount, useModels, useNow, useSessions } from "../state/hooks";
 
 /** Whether new agents can be launched on the repository, as GitHub says now. */
 export type RepositoryAccess =
@@ -348,6 +348,7 @@ export function Repository({ page }: { page: RepositoryPage }) {
 	const github = useGithub();
 	// What the account says new agents start with: what a field left without a default here comes to.
 	const account = useAccount();
+	const models = useModels();
 	const now = useNow(15_000);
 	const ids = { setup: useId() };
 	const [forgetting, setForgetting] = useState(false);
@@ -357,8 +358,8 @@ export function Repository({ page }: { page: RepositoryPage }) {
 	const name = page.name ?? `Repository ${page.id}`;
 	const info = platform.info;
 	// What a secret reaches depends on the sandbox: the list is said for the one new agents here start in.
-	const accountChoices = startingChoices(account.settings?.defaults ?? null, info, "account");
-	const choices = layerChoices(startingChoices(view?.defaults ?? null, info), accountChoices);
+	const accountChoices = startingChoices(account.settings?.defaults ?? null, info, models.list, "account");
+	const choices = layerChoices(startingChoices(view?.defaults ?? null, info, models.list), accountChoices);
 	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
 	const launchable = access.state !== "unusable";
 	const anything = view !== null && (view.saved.setup || view.saved.secrets > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.approvals.length > 0);
@@ -458,6 +459,7 @@ export function Repository({ page }: { page: RepositoryPage }) {
 						defaults={view.defaults}
 						whose="repository"
 						under={accountChoices}
+						models={models}
 						save={(change) => client.user(auth).saveRepositoryDefaults(page.id, change)}
 						onSaved={(next) => page.replace({ ...view, defaults: next })}
 					/>

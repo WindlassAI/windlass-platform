@@ -10,7 +10,7 @@
  * The user's own MCP servers, from the account's settings, are listed under the project's and told
  * apart from them: Windlass starts those in every session without asking, so they have a state and
  * no approval, and the way to change one leads to the settings page. Where the session's sandbox
- * hands the account's secrets to no MCP server, the list says so under one that could not start.
+ * hands MCP servers only some of the account's secrets, the list says so under one that could not start.
  *
  * The section is there only for a session that has a server of either kind (`SessionSummary.servers`),
  * and it is the panel's last, so that its arrival moves nothing above it.

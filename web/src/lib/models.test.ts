@@ -1,0 +1,96 @@
+/** The user's models as the screens read them, and the mock's list held against the server's own. */
+import { describe, expect, it } from "vitest";
+import type { ModelList } from "@contract";
+import { ModelProblem, checkEffort, chosenModel, standInModels } from "../../../server/src/account-models";
+import { PlatformError } from "../api/client";
+import { createMockClient, mockStandInModels } from "../api/mock";
+import { effortsOf, modelIds, modelsNote, modelsNoteShort } from "./models";
+
+const ada = { token: "mock:chatgpt:u_models:ada@example.com", profile: { uid: "u_models", email: "ada@example.com", demo: false } };
+const SOURCES = ["demo", "signed-out", "unavailable"] as const;
+
+async function refusal(call: Promise<unknown>): Promise<PlatformError> {
+	try {
+		await call;
+	} catch (error) {
+		if (error instanceof PlatformError) return error;
+		throw error;
+	}
+	throw new Error("the call was not refused");
+}
+
+function serverRefusal(step: () => unknown): { code: string; message: string } {
+	try {
+		step();
+	} catch (error) {
+		if (error instanceof ModelProblem) return { code: error.code, message: error.message };
+		throw error;
+	}
+	throw new Error("the server's rule refused nothing");
+}
+
+describe("the user's models", () => {
+	const plan: ModelList = { source: "account", models: [{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", efforts: ["low", "high"] }, { id: "gpt-6-brisk", name: null, efforts: [] }], defaultModel: "gpt-6.1-sol", fetchedAt: Date.UTC(2026, 10, 18, 9, 30) };
+
+	it("offers each model with its own efforts, and none for a model the list does not have", () => {
+		expect(modelIds(plan)).toEqual(["gpt-6.1-sol", "gpt-6-brisk"]);
+		expect(effortsOf(plan, "gpt-6.1-sol")).toEqual(["low", "high"]);
+		expect(effortsOf(plan, "gpt-6-brisk")).toEqual([]);
+		expect(effortsOf(plan, "gpt-5-old")).toEqual([]);
+		expect([modelIds(null), effortsOf(null, "gpt-6.1-sol")]).toEqual([[], []]);
+	});
+
+	it("says in one line whose list it is, and of a stand-in why it stands in", () => {
+		expect(modelsNote(plan)).toMatch(/^The models of your ChatGPT plan, as read at \d\d:\d\d /);
+		expect(modelsNoteShort(plan)).toBe("your plan's models");
+		for (const source of SOURCES) {
+			expect(modelsNote(mockStandInModels(source))).toMatch(/^A stand-in list: /);
+			expect(modelsNoteShort(mockStandInModels(source))).toMatch(/^stand-in models: /);
+		}
+		expect(modelsNote(mockStandInModels("unavailable"))).toContain("could not be read just now");
+		expect(modelsNote(mockStandInModels("signed-out"))).toContain("signed in with ChatGPT");
+		expect(modelsNote(mockStandInModels("demo"))).toContain("scripted model");
+	});
+});
+
+describe("the mock's models", () => {
+	it("has the server's stand-in, word for word", () => {
+		for (const source of SOURCES) expect(mockStandInModels(source)).toEqual(standInModels(source));
+	});
+
+	it("gives a signed-in user their plan's list, the demo the stand-in, and says which", async () => {
+		const mock = createMockClient({ pace: 0 });
+		const list = await mock.user(ada).models();
+		expect(list.source).toBe("account");
+		expect(typeof list.fetchedAt).toBe("number");
+		expect(list.models.map((model) => model.id)).toContain(list.defaultModel);
+		expect(new Set(list.models.map((model) => model.efforts.join(" "))).size).toBeGreaterThan(1);
+		const demo = await mock.login.demo();
+		expect(await mock.user(demo).models()).toEqual(mockStandInModels("demo"));
+		mock.dispose();
+		const failing = createMockClient({ pace: 0, models: "unavailable" });
+		expect(await failing.user(ada).models()).toEqual(mockStandInModels("unavailable"));
+		failing.dispose();
+	});
+
+	it("refuses a model that is not the user's and an effort the model does not take, in the server's words", async () => {
+		const mock = createMockClient({ pace: 0 });
+		const user = mock.user(ada);
+		const list = await user.models();
+		const none = list.models.find((model) => model.efforts.length === 0)!;
+		const some = list.models.find((model) => model.efforts.length > 0 && !model.efforts.includes("max"))!;
+		const unknown = await refusal(user.createSession({ profile: "docker-windlass-sandbox", model: "gpt-nope" }));
+		expect({ code: unknown.reason, message: unknown.message }).toEqual(serverRefusal(() => chosenModel(list, "gpt-nope")));
+		const session = await user.createSession({ profile: "docker-windlass-sandbox", model: some.id });
+		expect(session.model).toBe(some.id);
+		expect((await user.createSession({ profile: "docker-windlass-sandbox" })).model).toBe(list.defaultModel);
+		const api = mock.session(ada, session.id);
+		const tooMuch = await refusal(api.prompt({ text: "hello", effort: "max" }));
+		expect({ code: tooMuch.reason, message: tooMuch.message }).toEqual(serverRefusal(() => checkEffort(list, some.id, "max")));
+		const noEffort = await refusal(api.prompt({ text: "hello", model: none.id, effort: "low" }));
+		expect({ code: noEffort.reason, message: noEffort.message }).toEqual(serverRefusal(() => checkEffort(list, none.id, "low")));
+		const other = await refusal(api.prompt({ text: "hello", model: "gpt-nope" }));
+		expect(other.reason).toBe("bad_model");
+		mock.dispose();
+	});
+});

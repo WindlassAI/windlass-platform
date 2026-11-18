@@ -88,7 +88,9 @@ describe("what the mock serves", () => {
 		expect(info.profiles).toHaveLength(7);
 		expect(info.profiles.filter((profile) => profile.available).map((profile) => profile.id)).toEqual(["docker-windlass-sandbox", "docker-hardened"]);
 		for (const profile of info.profiles.filter((candidate) => !candidate.available)) expect(profile.unavailableReason?.length).toBeGreaterThan(40);
-		expect(info.models.length).toBeGreaterThan(0);
+		// The models are each user's own: the deployment names none.
+		expect(info).not.toHaveProperty("models");
+		expect(info).not.toHaveProperty("efforts");
 	});
 
 	it("says of every profile what the server says, word for word", () => {

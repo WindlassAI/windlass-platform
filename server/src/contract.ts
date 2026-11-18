@@ -64,16 +64,44 @@ export interface PlatformInfo {
 	/** The Windlass version inside the sandbox image, e.g. "0.1.1+0f5192c3ea". */
 	windlassVersion: string | null;
 	profiles: SandboxProfile[];
-	/** Models a session may be started with; the first is the default. */
-	models: string[];
-	/** Reasoning efforts a prompt may ask for. */
-	efforts: string[];
 	/**
 	 * Set when this deployment has a GitHub App: users can connect GitHub, launch agents on their own
 	 * repositories and open pull requests. Absent or null when it has none: the web app then shows
 	 * nothing of it.
 	 */
 	github?: GithubInfo | null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The models a user may choose (`UserActions.models`)
+// ---------------------------------------------------------------------------------------------
+
+/** One model, and the reasoning efforts it accepts: none for a model that takes no effort. */
+export interface ModelChoice {
+	id: string;
+	/** What the provider calls it, where that is not its id. */
+	name: string | null;
+	efforts: string[];
+}
+
+/**
+ * The models a user may start a session on or switch a turn to, and the efforts each accepts
+ * (README, "Models"). They are no fact of the deployment: they are what the user's ChatGPT plan
+ * offers, as Windlass lists them with that user's sign-in, kept in the user's actor for about an hour.
+ */
+export interface ModelList {
+	/**
+	 * Whose list this is. "account": the user's plan's, as it was read at `fetchedAt`. Anything else is
+	 * the platform's fixed stand-in, and says why it stands in: "demo", the demo's scripted model
+	 * answers under any of its names; "signed-out", there is no ChatGPT sign-in to list with;
+	 * "unavailable", the plan's list could not be read and none is kept from before.
+	 */
+	source: "account" | "demo" | "signed-out" | "unavailable";
+	models: ModelChoice[];
+	/** The model a session starts on where nothing else says: one of `models`. */
+	defaultModel: string;
+	/** When the plan's list was read, ms since the epoch; null for the stand-in. */
+	fetchedAt: number | null;
 }
 
 /** What the web app needs to know of the deployment's GitHub App. */
@@ -240,7 +268,7 @@ export interface CreateSessionInput {
 	/** Defaults to "New agent"; replaced by the first prompt's opening words when left unset. */
 	title?: string;
 	profile: SandboxProfileId;
-	/** Defaults to the platform's first model. */
+	/** One of the user's models (`UserActions.models`). Defaults to their default. */
 	model?: string;
 	/** An https git address to clone into the workspace. */
 	repoUrl?: string;
@@ -409,6 +437,7 @@ export interface RepositorySetup {
  *
  * Where Windlass sandboxes the agent's commands, that is what each of them gets. Where it does not,
  * and in a sandbox whose Windlass is an older one, a scope can come to less; `SecretReach` says what.
+ * A secret of the account (`AccountSecret`) has the same two, without the setup command.
  */
 export type SecretScope = "setup" | "agent";
 
@@ -461,8 +490,9 @@ export interface RepositorySecrets {
 /**
  * What a new session on a repository starts with, where its user said so (README, "A repository's
  * page"): the launch form starts from them when that repository is picked, and its user can still
- * choose otherwise for one session. Kept as they were saved: a default may come to name a sandbox or a
- * model this deployment no longer offers, and such a one is not used.
+ * choose otherwise for one session. Kept as they were saved: a default may come to name a sandbox
+ * this deployment no longer offers or a model its user's account no longer does, and such a one is
+ * not used.
  */
 export interface RepositoryDefaults {
 	/** The sandbox profile, by its id; null when none is saved. */
@@ -518,8 +548,9 @@ export interface SavedRepository {
 /**
  * What a new session starts with where neither the launch form nor the chosen repository says so
  * (README, "Account settings"): a sandbox profile and a model, the user's own, whatever the
- * repository. Kept as they were saved, as a repository's are: one that names a sandbox or a model this
- * deployment no longer offers is not used, and whoever reads it says so.
+ * repository. Kept as they were saved, as a repository's are: one that names a sandbox this
+ * deployment no longer offers, or a model the account no longer does, is not used, and whoever reads
+ * it says so.
  */
 export type AccountDefaults = RepositoryDefaults;
 
@@ -540,6 +571,13 @@ export interface PersonalServer {
 	subject: string;
 	/** False when its definition says `enabled: false`: Windlass then leaves it out. */
 	enabled: boolean;
+	/**
+	 * True when its tools run without asking: where Windlass asks before a call of one, the platform
+	 * answers for the user, each call once, and the session's timeline says so. Off unless its user
+	 * said so. It says nothing of what the server returns, which Windlass goes on not trusting unless
+	 * the definition says `untrusted: false`.
+	 */
+	unasked: boolean;
 	/**
 	 * The variables its definition reads (`${NAME}` in `env` or `headers`), in order, each with whether
 	 * an account secret of that name is saved. Windlass does not start a server that reads a variable
@@ -577,16 +615,17 @@ export interface AccountSettings {
 }
 
 /**
- * A secret of the account, as it is listed: never with its value. It is handed to MCP servers only,
- * the user's own and a project's that reads `${NAME}`: never to the agent's commands and never to a
- * repository's setup command.
+ * A secret of the account, as it is listed: never with its value. It is handed to MCP servers, the
+ * user's own and a project's that reads `${NAME}`, and never to a repository's setup command.
  */
 export interface AccountSecret {
 	/** The environment variable a server's definition reads it as. */
 	name: string;
-	/** When its value was last changed, ms since the epoch. */
+	/** A repository's secret's scopes, without the setup command: "setup" is MCP servers only, "agent" the agent's commands as well. */
+	scope: SecretScope;
+	/** When its value or scope was last changed, ms since the epoch. */
 	updatedAt: number;
-	/** What it reaches in the sandbox the list was asked for. `commands` is never "yes". */
+	/** What it reaches in the sandbox the list was asked for. */
 	reach: SecretReach;
 	/**
 	 * The repositories ("owner/name", or GitHub's number for one nothing names) that have a secret of
@@ -703,6 +742,11 @@ export interface UsageView extends UsageNumbers {
 export interface UserActions {
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
+	/**
+	 * The models the user may choose and the efforts of each. Never throws for a list that cannot be
+	 * read: the answer is then the last one that was, or the stand-in, and `source` says which.
+	 */
+	models(): Promise<ModelList>;
 	/** The user's GitHub connection. Throws a UserError with code `github_off` when the deployment has no GitHub App. */
 	github(): Promise<GithubStatus>;
 	/**
@@ -769,7 +813,7 @@ export interface UserActions {
 	/**
 	 * Saves what new sessions on a repository start with. A field that is left out stays as it is;
 	 * null saves none for it. Throws a UserError with code `bad_input` for a sandbox this deployment
-	 * does not offer or cannot run, and `bad_model` for a model it does not offer.
+	 * does not offer or cannot run, and `bad_model` for a model that is not among the user's.
 	 */
 	saveRepositoryDefaults(input: { repositoryId: number; profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
 	/**
@@ -793,22 +837,25 @@ export interface UserActions {
 	saveAccountDefaults(input: { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
 	/**
 	 * Saves an MCP server of the user's own. With `existing`, the definition of the one of that name is
-	 * replaced; without, a new one is added. Windlass has it from each session's next turn. Throws a
+	 * replaced, and its setting with it; without, a new one is added. `unasked` is `PersonalServer.unasked`,
+	 * off when it is left out. Windlass has it from each session's next turn. Throws a
 	 * UserError with code `bad_server` for a name or a definition Windlass would not take (its message
 	 * names the key), `server_exists` for a new one whose name is taken, `server_not_found` for a
 	 * change of one that is not saved, and `too_many_servers` at `AccountSettings.limits.servers`.
 	 */
-	savePersonalServer(input: { name: string; definition: unknown; existing?: boolean }): Promise<AccountSettings>;
+	savePersonalServer(input: { name: string; definition: unknown; unasked?: boolean; existing?: boolean }): Promise<AccountSettings>;
 	/** Deletes one of the user's own MCP servers. A turn that is running keeps it until it ends. */
 	deletePersonalServer(name: string): Promise<AccountSettings>;
 	/** The names and times of the account's secrets, and what each reaches in a sandbox of `profile` made now. No value. */
 	accountSecrets(input: { profile: SandboxProfileId }): Promise<AccountSecrets>;
 	/**
-	 * Saves a secret of the account: a new one, or a new value for the one of that name. MCP servers
-	 * have it from each session's next turn. Throws a UserError with code `bad_secret` for a name or
-	 * value that cannot be saved and `too_many_secrets` at `AccountSettings.limits.secrets`.
+	 * Saves a secret of the account, as `saveRepositorySecret` saves a repository's. With `value`: a
+	 * new one, or a new value for the one of that name. Without: only the scope of the one of that
+	 * name is changed. It holds from each session's next turn. Throws a UserError with code
+	 * `bad_secret` for a name or value that cannot be saved, `too_many_secrets` at
+	 * `AccountSettings.limits.secrets`, and `secret_not_found` for a scope change of a name that is not saved.
 	 */
-	saveAccountSecret(input: { profile: SandboxProfileId; name: string; value: string }): Promise<AccountSecrets>;
+	saveAccountSecret(input: { profile: SandboxProfileId; name: string; value?: string; scope: SecretScope }): Promise<AccountSecrets>;
 	deleteAccountSecret(input: { profile: SandboxProfileId; name: string }): Promise<AccountSecrets>;
 	listSessions(): Promise<SessionSummary[]>;
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
@@ -898,9 +945,10 @@ export type TimelineItem =
 			 * Set on the line that says the platform declined a question because nobody answered in time
 			 * ("question_expired"), with the call the question was about. Windlass's own `approval.answered`
 			 * for that call follows, with choice "deny": this is how a client tells it from the user's choice.
-			 * "question_allowed" is the same for a question the platform allowed itself, which is Windlass's
-			 * question about the tool that hands the agent's request to publish to the platform: the
-			 * `approval.answered` that follows has choice "once", and nobody was asked.
+			 * "question_allowed" is the same for a question the platform allowed itself: Windlass's question
+			 * about the tool that hands the agent's request to publish to the platform, and its question
+			 * about a tool of one of the user's own MCP servers whose tools run without asking
+			 * (`PersonalServer.unasked`). The `approval.answered` that follows has choice "once", and nobody was asked.
 			 */
 			code?: "question_expired" | "question_allowed";
 			call?: { messageId: string; callId: string };
@@ -1129,8 +1177,8 @@ export interface SessionServers {
 	/** What forgetting an approval does and does not do where this session runs, in a sentence or two. */
 	forgetting: string;
 	/**
-	 * Set where this session's sandbox hands the account's secrets to no MCP server, and says why: a
-	 * server of the user's own that reads one does not start there.
+	 * Set where this session's sandbox hands MCP servers only some of the account's secrets, and says
+	 * which and why: a server of the user's own that reads another one does not start there.
 	 */
 	accountSecrets?: string | null;
 }
@@ -1156,8 +1204,9 @@ export interface SessionSnapshot {
 
 export interface PromptInput {
 	text: string;
-	/** Switches the session's model from this turn on. */
+	/** Switches the session's model from this turn on: one of the user's (`UserActions.models`). */
 	model?: string;
+	/** One of the efforts the turn's model accepts. */
 	effort?: string;
 }
 

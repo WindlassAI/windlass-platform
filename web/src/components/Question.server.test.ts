@@ -128,7 +128,7 @@ describe("the question's words", () => {
 		expect(alone.details[3]).toBe("It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one. A secret of your account under that name, saved in your settings, sets it for MCP servers too.");
 		const three = serverQuestionWords(harbor({ unset: ["A", "B", "C"] }), { profile: profile("docker-hardened"), demo: false, dataInSandbox: false, project: own, secrets: null });
 		expect(three.details[3]).toBe(
-			"It will not start yet: its definition reads the variables A, B and C, which are not set where Windlass runs. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.",
+			"It will not start yet: its definition reads the variables A, B and C, which are not set where Windlass runs. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one. A secret of your account under that name, saved in your settings, sets it for MCP servers in this sandbox if it is also for the agent's commands.",
 		);
 	});
 

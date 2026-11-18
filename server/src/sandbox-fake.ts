@@ -95,6 +95,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { StandInObjectStore } from "./bucket/stand-in.js";
+import type { ListedModels } from "./account-models.js";
 import { FIXTURES_DIR, backupConfig } from "./config.js";
 import type { SandboxProfile, SandboxProfileId, WindlassEvent } from "./contract.js";
 import { definitionReads, isReservedServerName } from "./personal-servers.js";
@@ -131,7 +132,15 @@ import type { SignInMaterial } from "./signin/material.js";
 
 const WORKSPACE = "/workspace";
 const REDIRECT_PREFIX = "http://127.0.0.1:1455/auth/callback";
-const FAKE_MODELS = ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"];
+/** What the stand-in for `windlass --models` lists for every account: the efforts differ by model, as a plan's do. */
+const FAKE_PLAN: ListedModels = {
+	models: [
+		{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", efforts: ["low", "medium", "high", "xhigh", "max"] },
+		{ id: "gpt-6-sol", name: null, efforts: ["low", "medium", "high"] },
+		{ id: "gpt-6-luna", name: null, efforts: [] },
+	],
+	defaultModel: "gpt-6.1-sol",
+};
 const SLOW_CLONE_MS = 1_500;
 const SLOW_STOP_MS = 800;
 
@@ -576,10 +585,6 @@ class FakeWindlass implements Windlass {
 
 	async problem(): Promise<string | null> {
 		return null;
-	}
-
-	async models(): Promise<string[]> {
-		return FAKE_MODELS;
 	}
 
 	async features(): Promise<WindlassFeatures> {
@@ -1043,7 +1048,7 @@ interface FakeCredentials {
  * actors' storage and the one-request-at-a-time token source included. `token` answers as
  * `windlass login token --valid-for 20m` does: the saved token while that has twenty minutes left
  * (`TOKEN_VALID_FOR_MS`), and otherwise a new one that lasts an hour, with a new refresh token, which
- * is a changed `auth.json` for the caller to save.
+ * is a changed `auth.json` for the caller to save. `models` lists the same plan for every account.
  */
 class FakeSignInCommands implements SignInCommands {
 	/** How many times the (imaginary) `windlass login token --json --valid-for 20m` ran. */
@@ -1086,6 +1091,11 @@ class FakeSignInCommands implements SignInCommands {
 		// A refresh: the sign-in comes back with another refresh token, and has to be saved.
 		const next = this.issue(saved.account, 60 * 60 * 1000);
 		return { ok: true, material: { files: { ...material.files, "auth.json": JSON.stringify(next) } }, token: { accessToken: next.accessToken, expiresAt: next.expiresAt }, shorter: false };
+	}
+
+	async models(): Promise<ListedModels> {
+		await delay(10);
+		return structuredClone(FAKE_PLAN);
 	}
 
 	private issue(account: FakeCredentials["account"], lastsMs: number): FakeCredentials {

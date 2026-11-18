@@ -22,17 +22,23 @@
  * The network is the bridge for a command that talks to the sign-in service and none otherwise. What
  * the container prints may hold a sign-in and a token: it is parsed here and never logged or put into
  * an error.
+ *
+ * A command that runs on a handed-in access token (`runWithToken`) goes the same way: the token goes in
+ * on standard input, and the program writes it to a file in the private directory and names that file
+ * to Windlass with WINDLASS_ACCESS_TOKEN_FILE.
  */
 
-import { MATERIAL_FILES, MAX_MATERIAL_FILE_BYTES, type SignInMaterial, cleanMaterial } from "../signin/material.js";
-import type { LoginCommand, LoginRun, LoginRunner } from "../signin/runner.js";
+import { MATERIAL_FILES, MAX_MATERIAL_FILE_BYTES, NO_MATERIAL, type SignInMaterial, cleanMaterial } from "../signin/material.js";
+import type { LoginCommand, LoginRun, LoginRunner, TokenCommand, TokenRun } from "../signin/runner.js";
+import type { AccessToken } from "./api.js";
 import { IMAGE, docker, helperFlags, tmpName } from "./docker.js";
-import { type WindlassLack, outdatedWindlass } from "./handoff.js";
+import { ACCESS_TOKEN_FILE_ENV, type WindlassLack, outdatedWindlass, tokenFileContent } from "./handoff.js";
 import { probeImage } from "./tokens.js";
 
 /**
  * Runs inside the container. Arguments: the command's time limit in seconds, then Windlass's own
- * arguments. Standard input: `{"files": {name: text}, "stdin": text}`. Standard output:
+ * arguments. Standard input: `{"files": {name: text}, "stdin": text}`, or with `"token": text` in
+ * place of the files, the content of an access token file to hand to Windlass. Standard output:
  * `{"code": .., "stdout": .., "stderr": .., "timedOut": .., "files": {name: text}}`.
  */
 const IN_CONTAINER = `
@@ -56,6 +62,13 @@ try:
                 f.write(text)
     env = dict((k, v) for k, v in os.environ.items() if not k.startswith("WINDLASS_"))
     env["XDG_DATA_HOME"] = os.path.join(root, "data")
+    token = request.get("token")
+    if isinstance(token, str):
+        handed = os.path.join(root, "access-token.json")
+        fd = os.open(handed, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(token)
+        env[${JSON.stringify(ACCESS_TOKEN_FILE_ENV)}] = handed
     try:
         done = subprocess.run(["windlass"] + sys.argv[2:], input=request.get("stdin") or "", capture_output=True, text=True, timeout=seconds, env=env)
         answer["code"], answer["stdout"], answer["stderr"] = done.returncode, done.stdout, done.stderr
@@ -98,6 +111,15 @@ export class DockerLoginRunner implements LoginRunner {
 	}
 
 	async run(material: SignInMaterial, command: LoginCommand): Promise<LoginRun> {
+		return this.inContainer(["login", ...command.args], { files: material.files, stdin: command.stdin ?? "" }, command, material);
+	}
+
+	async runWithToken(token: AccessToken, command: TokenCommand): Promise<TokenRun> {
+		return this.inContainer(command.args, { token: tokenFileContent(token) }, { ...command, network: true });
+	}
+
+	/** One container for one command: `args` are Windlass's, `request` what the program inside is given. `material` is what the answer holds when nothing could be read back. */
+	private async inContainer(args: string[], request: Record<string, unknown>, command: Pick<LoginCommand, "network" | "timeoutMs" | "signal">, material: SignInMaterial = NO_MATERIAL): Promise<LoginRun> {
 		const name = tmpName();
 		const flags = [...helperFlags(name, command.network ? this.network : "none"), ...(this.options.extraFlags ?? [])];
 		const seconds = String(Math.max(1, Math.ceil(command.timeoutMs / 1000)));
@@ -119,8 +141,8 @@ export class DockerLoginRunner implements LoginRunner {
 		command.signal?.addEventListener("abort", onAbort, { once: true });
 		let result: Awaited<ReturnType<typeof docker>>;
 		try {
-			result = await docker(["run", ...flags, this.image, "python3", "-I", "-c", IN_CONTAINER, seconds, "login", ...command.args], {
-				stdin: JSON.stringify({ files: material.files, stdin: command.stdin ?? "" }),
+			result = await docker(["run", ...flags, this.image, "python3", "-I", "-c", IN_CONTAINER, seconds, ...args], {
+				stdin: JSON.stringify(request),
 				timeoutMs: command.timeoutMs + CONTAINER_MARGIN_MS,
 			});
 		} finally {

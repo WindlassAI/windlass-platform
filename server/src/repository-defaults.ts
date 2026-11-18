@@ -8,9 +8,10 @@
  *
  * What they do. Nothing on the server: the launch form reads them when that repository is picked and
  * starts from them, and what the form then sends is what a session is made with (`createSession`
- * checks it as it always did). A default is checked when it is saved, against what this deployment
- * offers then. What it offers can change afterwards, so a saved default may come to name a sandbox or
- * a model that is gone: it is handed out as it was saved, and whoever reads it leaves it out.
+ * checks it as it always did). A default is checked when it is saved: the sandbox against what this
+ * deployment offers then, the model against the user's own models then (account-models.ts). Both can
+ * change afterwards, so a saved default may come to name a sandbox or a model that is gone: it is
+ * handed out as it was saved, and whoever reads it leaves it out.
  *
  * Saving. A save names the fields it changes, and each save is one statement that writes those
  * columns and no others. The actor's actions interleave wherever one of them waits, so a save that
@@ -21,7 +22,8 @@
  * scripts/repository-check.ts runs them against a database of its own.
  */
 
-import { MAX_REPOSITORY_DEFAULTS, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId } from "./contract.js";
+import { modelRefusal } from "./account-models.js";
+import { MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId } from "./contract.js";
 
 /** Thrown for defaults that cannot be saved; `message` is fit to show, `code` is the UserError's. */
 export class DefaultsProblem extends Error {
@@ -42,9 +44,10 @@ export interface DefaultsChange {
 
 /**
  * What a client sent, as a change: only `profile` and `model` are looked at, each of them left out,
- * null, or a sandbox this deployment can run and a model it offers. Throws DefaultsProblem otherwise.
+ * null, or a sandbox this deployment can run and one of the user's models (account-models.ts). Throws
+ * DefaultsProblem otherwise.
  */
-export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[], models: readonly string[]): DefaultsChange {
+export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[], models: ModelList): DefaultsChange {
 	const input = (typeof raw === "object" && raw !== null ? raw : {}) as { profile?: unknown; model?: unknown };
 	const change: DefaultsChange = {};
 	if (input.profile !== undefined) {
@@ -57,9 +60,9 @@ export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[],
 		}
 	}
 	if (input.model !== undefined) {
-		if (input.model === null) change.model = null;
-		else if (typeof input.model === "string" && models.includes(input.model)) change.model = input.model;
-		else throw new DefaultsProblem("bad_model", `That model is not offered. Choose one of: ${models.join(", ")}`);
+		const refusal = input.model === null ? null : modelRefusal(models, input.model);
+		if (refusal !== null) throw new DefaultsProblem("bad_model", refusal);
+		change.model = input.model as string | null;
 	}
 	return change;
 }

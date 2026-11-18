@@ -28,6 +28,10 @@
  *     repository that names the server the same way, the next session after forgetting, and an
  *     approval past its 30 days are asked;
  *   - that a turn stopped under the question ends without having started;
+ *   - that a tool of a user's own server is asked about, and runs without a question where its user
+ *     said that its tools run without asking: every call, also once the server's own result is in
+ *     the conversation and Windlass asks where it did not before, and never for a server of the
+ *     same name that the repository names;
  *   - and, with a stand-in for the engine, what the layer does with a server reported while the turn
  *     runs, beside a tool call's question, and with a definition that changes under its question.
  *
@@ -41,7 +45,8 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SandboxProfileId, WindlassEvent } from "../server/src/contract.js";
-import type { RunTurnResult, ScriptedModel, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, Windlass } from "../server/src/sandbox/api.js";
+import { unaskedNote } from "../server/src/personal-servers.js";
+import type { RunTurnResult, ScriptedModel, TurnPersonalServer, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "../server/src/sandbox/api.js";
 import { DATA_DIR, IMAGE, LABEL_ARG, docker, randomId } from "../server/src/sandbox/docker.js";
 import { createSandboxLayer } from "../server/src/sandbox/index.js";
 import type { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
@@ -135,6 +140,8 @@ interface TurnRun {
 	toolQuestions: TurnQuestion[];
 	/** What the layer said of the project's servers, each time it said it. */
 	servers: TurnServer[][];
+	/** The calls the layer let run without asking, because their server's tools run that way. */
+	unasked: TurnUnaskedCall[];
 }
 interface TurnOptions {
 	windlassSessionId?: string;
@@ -146,6 +153,8 @@ interface TurnOptions {
 	windlass?: Windlass;
 	/** Filled with the outcomes as they arrive, for an answer that has to wait for one. */
 	outcomes?: TurnRun["outcomes"];
+	/** The user's own servers the turn is handed. */
+	own?: TurnPersonalServer[];
 }
 
 async function turn(handle: DockerSandboxHandle, prompt: string, script: ScriptedModel, options: TurnOptions = {}): Promise<TurnRun> {
@@ -154,12 +163,15 @@ async function turn(handle: DockerSandboxHandle, prompt: string, script: Scripte
 	const outcomes: TurnRun["outcomes"] = options.outcomes ?? [];
 	const toolQuestions: TurnQuestion[] = [];
 	const servers: TurnServer[][] = [];
+	const unasked: TurnUnaskedCall[] = [];
 	const answerServer = options.server;
 	const result = await (options.windlass ?? layer.windlass).runTurn(handle, {
 		prompt,
 		script,
 		windlassSessionId: options.windlassSessionId,
 		signal: options.signal,
+		servers: options.own,
+		onUnasked: (allowed) => unasked.push(allowed),
 		onEvent: (event) => events.push(event),
 		onQuestion: async (question) => {
 			toolQuestions.push(question);
@@ -175,7 +187,7 @@ async function turn(handle: DockerSandboxHandle, prompt: string, script: Scripte
 		onServerApproved: (question, outcome) => outcomes.push({ question, outcome }),
 		onServers: (list) => servers.push(list),
 	});
-	return { result, events, asked, outcomes, toolQuestions, servers };
+	return { result, events, asked, outcomes, toolQuestions, servers, unasked };
 }
 
 const dataOf = (event: WindlassEvent | undefined) => (event?.data ?? {}) as Record<string, unknown>;
@@ -640,6 +652,61 @@ async function main(): Promise<void> {
 		expect("the second approval starts it, and what the server says of itself is reported", ran?.outcome.state === "running" && ran.outcome.tools === 3, JSON.stringify(ran?.outcome));
 		if (ran) info(`the timeline's line: ${serverApprovedNote(ran.question, ran.outcome).text}`);
 		expect("the turn ends as the engine said", outcomeOf(found) === "succeeded" && found.result.failure === null, `${outcomeOf(found)} ${found.result.failure?.message ?? ""}`);
+	});
+
+	await section("a user's own server: its tools are asked about, or run without asking where its user said so", async () => {
+		// The fixture's server under another name, as the user's own: the layer writes it into Windlass's own configuration for each turn.
+		const tracker: TurnPersonalServer = { name: "tracker", definition: { command: "python3", args: ["tools/harbor_mcp.py"] } };
+		const quiet: TurnPersonalServer = { ...tracker, unasked: true };
+		// Two calls: the second names the tool with the server in front, which Windlass takes too, and comes after the first one's result.
+		const twoCalls = () => scripted(call("o1", "mcp_call", { server: "tracker", tool: "berth", arguments: { ship: "Ada" } }), call("o2", "mcp_call", { server: "tracker", tool: "tracker/berth", arguments: { ship: "Bo" } }), say("Both have a berth."));
+		const ran = (found: TurnRun) => ["o1", "o2"].every((id) => mcpOutcome(found, id) === "result");
+		const answers = (found: TurnRun) => found.events.filter((event) => event.type === "approval.answered").map((event) => `${String(dataOf(event).callId)}:${String(dataOf(event).choice)}`);
+		const allowed = (found: TurnRun) => found.unasked.map((one) => `${one.callId}:${one.server}/${one.tool}`);
+		const none = "{}\n";
+
+		const handle = await sandbox(uid, "docker-windlass-sandbox", "mcp-own");
+		// This repository names no server: "tracker" is the user's alone.
+		await handle.writeTextFile("/workspace/.windlass/config.json", none);
+		const asked = await turn(handle, "Find berths for Ada and Bo", twoCalls(), { own: [tracker] });
+		const own = asked.servers.at(-1)?.find((server) => server.name === "tracker");
+		expect("the user's own server starts without a question about the server", asked.asked.length === 0 && own?.origin === "user" && own.state === "running", JSON.stringify(own));
+		expect("with the setting off, each call of its tool is put to the user, and runs when allowed", asked.toolQuestions.length === 2 && asked.unasked.length === 0 && ran(asked) && outcomeOf(asked) === "succeeded", `${asked.toolQuestions.length} question(s); ${answers(asked).join(", ")}; ${outputOf(asked, "o1")}`);
+
+		const unaskedRun = await turn(handle, "Find berths for Ada and Bo again", twoCalls(), { own: [quiet], windlassSessionId: asked.result.windlassSessionId ?? undefined });
+		expect("with it on, nobody is asked and both calls run", unaskedRun.toolQuestions.length === 0 && ran(unaskedRun) && outcomeOf(unaskedRun) === "succeeded", `${unaskedRun.toolQuestions.length} question(s); ${outputOf(unaskedRun, "o1")} | ${outputOf(unaskedRun, "o2")}`);
+		expect("Windlass asked all the same, and the layer answered each call once and said which call, server and tool it was", JSON.stringify(answers(unaskedRun)) === JSON.stringify(["o1:once", "o2:once"]) && JSON.stringify(allowed(unaskedRun)) === JSON.stringify(["o1:tracker/berth", "o2:tracker/berth"]), `answered ${answers(unaskedRun).join(", ")}; told of ${allowed(unaskedRun).join(", ")}`);
+		const told = unaskedRun.events.findIndex((event) => event.type === "approval.requested");
+		expect("each is told between Windlass's question and its answer, so a timeline can say who allowed the call", told >= 0 && unaskedRun.events.findIndex((event) => event.type === "approval.answered") > told);
+		info(`the timeline's line under such a call: ${unaskedNote("tracker")}`);
+		const tainted = unaskedRun.events.filter((event) => event.type === "tool.settled").map((event) => (dataOf(event).display as { mcp?: { untrusted?: boolean } } | undefined)?.mcp?.untrusted);
+		expect("the setting does not make the server's output trusted: Windlass still marks its results as content it does not trust", tainted.length === 2 && tainted.every((untrusted) => untrusted === true), JSON.stringify(tainted));
+
+		const off = await turn(handle, "Find berths for Ada and Bo once more", twoCalls(), { own: [tracker], windlassSessionId: asked.result.windlassSessionId ?? undefined });
+		expect("switched off again, the next turn asks again: nothing was remembered in Windlass", off.toolQuestions.length === 2 && off.unasked.length === 0, `${off.toolQuestions.length} question(s)`);
+		const gone = await turn(handle, "Find a berth for Ada", scripted(call("o1", "mcp_call", { server: "tracker", tool: "berth", arguments: { ship: "Ada" } }), say("There is no such server.")), { windlassSessionId: asked.result.windlassSessionId ?? undefined });
+		expect("a server its user deleted is gone with the next turn: the layer answers for nothing, and nothing runs", gone.unasked.length === 0 && mcpOutcome(gone, "o1") !== "result" && !gone.servers.flat().some((server) => server.name === "tracker"), `${gone.toolQuestions.length} question(s) put to the user; ${mcpOutcome(gone, "o1")}: ${outputOf(gone, "o1").slice(0, 160)}`);
+
+		// A repository that names a server "tracker" itself: that one is the project's, whatever the user's settings say of theirs.
+		const project = await sandbox(uidOther, "docker-windlass-sandbox", "mcp-own-project");
+		const names = (definition: Record<string, unknown>) => project.writeTextFile("/workspace/.windlass/config.json", `${JSON.stringify({ mcp: { servers: { tracker: definition } } }, null, 2)}\n`);
+		await names({ command: "python3", args: ["tools/harbor_mcp.py", "--berths", "12"] });
+		const theirs = await turn(project, "Find berths for Ada and Bo", twoCalls(), { own: [quiet], server: () => true });
+		const named = theirs.servers.at(-1)?.find((server) => server.name === "tracker");
+		expect("a server of the same name that the repository names is the project's: it is asked about before it starts", theirs.asked.length === 1 && theirs.asked[0]?.question.name === "tracker" && named?.origin === "project", `${theirs.asked.length} question(s) about the server; ${JSON.stringify(named)}`);
+		expect("and the setting does not cover it: each call of its tool is put to the user", theirs.toolQuestions.length === 2 && theirs.unasked.length === 0 && ran(theirs), `${theirs.toolQuestions.length} question(s); told of ${allowed(theirs).join(", ") || "none"}`);
+		// Named by the repository exactly as the user defines it, Windlass starts it on the user's own word and still says it is the project's: not covered either.
+		await names(tracker.definition);
+		const same = await turn(project, "Find berths for Ada and Bo again", twoCalls(), { own: [quiet], server: () => true, windlassSessionId: theirs.result.windlassSessionId ?? undefined });
+		expect("nor one the repository names with the user's own definition: its calls are put to the user too", same.servers.at(-1)?.find((server) => server.name === "tracker")?.origin === "project" && same.toolQuestions.length === 2 && same.unasked.length === 0 && ran(same), `${same.asked.length} question(s) about the server; ${same.toolQuestions.length} about its calls`);
+
+		// Where commands are not sandboxed Windlass runs the first call unasked and asks from the first result on: the setting answers there too.
+		const hardened = await sandbox(uid, "docker-hardened", "mcp-own-hardened");
+		await hardened.writeTextFile("/workspace/.windlass/config.json", none);
+		const plainRun = await turn(hardened, "Find berths for Ada and Bo", twoCalls(), { own: [tracker] });
+		expect("docker-hardened, setting off: the first call runs unasked and the second, after the server's result, is put to the user", plainRun.toolQuestions.length === 1 && plainRun.toolQuestions[0]?.callId === "o2" && ran(plainRun), `${plainRun.toolQuestions.map((question) => question.callId).join(", ")}`);
+		const quietRun = await turn(hardened, "Find berths for Ada and Bo again", twoCalls(), { own: [quiet], windlassSessionId: plainRun.result.windlassSessionId ?? undefined });
+		expect("docker-hardened, setting on: nobody is asked, and the layer answered what Windlass asked", quietRun.toolQuestions.length === 0 && quietRun.unasked.length >= 1 && quietRun.unasked.length === answers(quietRun).length && ran(quietRun), `told of ${allowed(quietRun).join(", ")}; answered ${answers(quietRun).join(", ")}`);
 	});
 
 	await section("cleanup", async () => {

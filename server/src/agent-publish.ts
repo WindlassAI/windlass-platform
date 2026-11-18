@@ -168,10 +168,11 @@ export function publishServerDefinition(questionTimeoutMs: number): Record<strin
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
- * The arguments of a call of the tool, from Windlass's `tool.called` event of an `mcp_call`; null
- * for any other call. Windlass takes the tool's name with or without the server's in front.
+ * A call of an MCP server's tool, from Windlass's `tool.called` event of an `mcp_call`: the server,
+ * the tool as that server names it, and the arguments; null for any other call. Windlass takes the
+ * tool's name with or without the server's in front, and asks about the call as `<server>/<tool>`.
  */
-export function publishArguments(name: unknown, input: unknown): Record<string, unknown> | null {
+export function mcpCall(name: unknown, input: unknown): { server: string; tool: string; arguments: Record<string, unknown> } | null {
 	if (name !== "mcp_call") return null;
 	let call: unknown = input;
 	if (typeof input === "string") {
@@ -181,9 +182,15 @@ export function publishArguments(name: unknown, input: unknown): Record<string, 
 			return null;
 		}
 	}
-	if (!isObject(call) || call.server !== PUBLISH_SERVER) return null;
-	if (call.tool !== PUBLISH_TOOL && call.tool !== `${PUBLISH_SERVER}/${PUBLISH_TOOL}`) return null;
-	return isObject(call.arguments) ? call.arguments : {};
+	if (!isObject(call) || typeof call.server !== "string" || typeof call.tool !== "string") return null;
+	const tool = call.tool.startsWith(`${call.server}/`) ? call.tool.slice(call.server.length + 1) : call.tool;
+	return { server: call.server, tool, arguments: isObject(call.arguments) ? call.arguments : {} };
+}
+
+/** The arguments of a call of the tool to publish, from Windlass's `tool.called` event; null for any other call. */
+export function publishArguments(name: unknown, input: unknown): Record<string, unknown> | null {
+	const call = mcpCall(name, input);
+	return call !== null && call.server === PUBLISH_SERVER && call.tool === PUBLISH_TOOL ? call.arguments : null;
 }
 
 /** The server's name for a call, from the progress Windlass reports of it; null when it names none. */

@@ -13,7 +13,7 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { MAX_REPOSITORY_DEFAULTS, type RepositoryDefaults, type SandboxProfile } from "../server/src/contract.js";
+import { MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryDefaults, type SandboxProfile } from "../server/src/contract.js";
 import { DEFAULTS_TABLE, type DefaultsChange, type DefaultsDb, DefaultsProblem, cleanDefaults, readDefaults, saveDefaults } from "../server/src/repository-defaults.js";
 
 let failed = 0;
@@ -38,7 +38,7 @@ const profile = (id: string, available = true): SandboxProfile => ({
 	...(available ? {} : { unavailableReason: "It needs an E2B key." }),
 });
 const PROFILES = [profile("docker-windlass-sandbox"), profile("docker-hardened"), profile("e2b", false)];
-const MODELS = ["gpt-6.1-sol", "gpt-6-luna"];
+const MODELS: ModelList = { source: "account", models: ["gpt-6.1-sol", "gpt-6-luna"].map((id) => ({ id, name: null, efforts: [] })), defaultModel: "gpt-6.1-sol", fetchedAt: 1 };
 
 function refused(raw: unknown): { code: string; message: string } | null {
 	try {
@@ -49,13 +49,13 @@ function refused(raw: unknown): { code: string; message: string } | null {
 	}
 }
 
-expect("a sandbox this deployment can run and a model it offers are taken", plain(cleanDefaults({ profile: "docker-hardened", model: "gpt-6-luna" }, PROFILES, MODELS)) === plain({ profile: "docker-hardened", model: "gpt-6-luna" }));
+expect("a sandbox this deployment can run and one of the user's models are taken", plain(cleanDefaults({ profile: "docker-hardened", model: "gpt-6-luna" }, PROFILES, MODELS)) === plain({ profile: "docker-hardened", model: "gpt-6-luna" }));
 expect("a field that is left out is not part of the change", plain(cleanDefaults({ model: "gpt-6-luna" }, PROFILES, MODELS)) === plain({ model: "gpt-6-luna" }) && plain(cleanDefaults({}, PROFILES, MODELS)) === "{}");
 expect("null saves none for a field", plain(cleanDefaults({ profile: null, model: null }, PROFILES, MODELS)) === plain({ profile: null, model: null }));
 expect("nothing else a client sends is kept", plain(cleanDefaults({ repositoryId: 7, model: "gpt-6-luna", publishUnasked: true, setupCommand: "rm -rf /" }, PROFILES, MODELS)) === plain({ model: "gpt-6-luna" }));
 expect("a sandbox this deployment does not have is refused", refused({ profile: "firecracker" })?.code === "bad_input" && refused({ profile: 7 })?.code === "bad_input" && refused({ profile: "" })?.code === "bad_input");
 expect("a sandbox it cannot run is refused, and the sentence says why", refused({ profile: "e2b" })?.code === "bad_input" && (refused({ profile: "e2b" })?.message ?? "").includes("It needs an E2B key."), refused({ profile: "e2b" })?.message);
-expect("a model it does not offer is refused, and the sentence names the ones it does", refused({ model: "gpt-3" })?.code === "bad_model" && (refused({ model: "gpt-3" })?.message ?? "").includes("gpt-6.1-sol, gpt-6-luna") && refused({ model: "" })?.code === "bad_model" && refused({ model: ["gpt-6-luna"] })?.code === "bad_model");
+expect("a model that is not among the user's is refused, and the sentence names the ones that are", refused({ model: "gpt-3" })?.code === "bad_model" && (refused({ model: "gpt-3" })?.message ?? "").includes("gpt-6.1-sol, gpt-6-luna") && refused({ model: "" })?.code === "bad_model" && refused({ model: ["gpt-6-luna"] })?.code === "bad_model");
 expect("what is not an object changes nothing", [undefined, null, "docker-hardened", 7].every((raw) => plain(cleanDefaults(raw, PROFILES, MODELS)) === "{}"));
 
 // ---- how it is saved -----------------------------------------------------------------------------

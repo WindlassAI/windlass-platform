@@ -1,5 +1,6 @@
 import type { LiveDelta, TimelineItem, WindlassEvent } from "@contract";
 import { describe, expect, it } from "vitest";
+import { unaskedNote } from "../../../server/src/personal-servers";
 import { isLive, runToFeed, splitRuns, withSummary, type FeedEntry } from "../api/feed";
 import { FIXTURES, fixture } from "../api/fixtures";
 import {
@@ -613,6 +614,19 @@ describe("a question the platform allowed itself", () => {
 		expect(call).toMatchObject({ state: "done", answer: { choice: "once", approve: true, by: "platform", platformText: PLATFORM } });
 		expect(turn(view).blocks.some((block) => block.kind === "platform")).toBe(false);
 		expect(turn(view).platformAnswer).toBeNull();
+	});
+});
+
+describe("a call of a tool of the user's own MCP server that runs without asking", () => {
+	// The session's line for it (server/src/personal-servers.ts), marked as the platform's answer to that call.
+	const line = unaskedNote("tracker");
+	const view = reduce(insertBefore(feedOf("acp-approval-approved"), isEvent("approval.answered"), { at: 2, turn: 1, kind: "platform", level: "info", text: line, code: "question_allowed", call: { messageId: "msg_ccc3d07ef64d513915fcbeb9", callId: "c1" } }));
+
+	it("shows the call as run, and says under it that it was allowed for the user and why", () => {
+		const [call] = toolBlocks(turn(view));
+		expect(call).toMatchObject({ state: "done", answer: { choice: "once", approve: true, by: "platform", platformText: line } });
+		expect(line).toContain('your MCP server "tracker"');
+		expect(turn(view).blocks.some((block) => block.kind === "platform")).toBe(false);
 	});
 });
 

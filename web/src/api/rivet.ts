@@ -305,6 +305,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		return {
 			me: () => act("me"),
 			chatgpt: () => act("chatgpt"),
+			models: () => act("models"),
 			listSessions: () => act("listSessions"),
 			createSession: (input) => act("createSession", input),
 			renameSession: (id, title) => act("renameSession", id, title),

@@ -137,10 +137,11 @@ import { githubApp } from "../github/app.js";
 import { PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, hasUnpushedWork, publishWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, type StoredConnection } from "../github/repos.js";
 import { getLayer } from "../layer.js";
-import { EFFORTS, platformModels } from "../platform-info.js";
+import { ModelProblem, checkEffort, chosenModel, standInModels } from "../account-models.js";
 import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { runSetupCommand, stopLeftoverSetup } from "../sandbox/setup.js";
 import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
+import { unaskedNote } from "../personal-servers.js";
 import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, commandSandbox, openSecret, setupEnvironment } from "../repo-secrets.js";
 import { type KnownServer, type ServerApproval, knownServers, projectOf, sameServers, serversView } from "../server-approvals.js";
 import {
@@ -1130,7 +1131,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 	const shut: string[] = [];
 	for (const secret of sealed.account?.secrets ?? []) {
 		try {
-			account.push({ name: secret.name, value: openSecret(sealer, meta.uid, ACCOUNT_SECRET_PROJECT, secret.name, secret.sealed) });
+			account.push({ name: secret.name, scope: secret.scope, value: openSecret(sealer, meta.uid, ACCOUNT_SECRET_PROJECT, secret.name, secret.sealed) });
 		} catch {
 			shut.push(secret.name);
 		}
@@ -1140,7 +1141,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 		if (turn !== null) note(c, turn, "warn", `${shut.length === 1 ? `Your account's secret ${shut[0]}` : `Your account's secrets ${shut.join(", ")}`} could not be opened by this server, so ${shut.length === 1 ? "it is" : "they are"} not handed over. Save ${shut.length === 1 ? "it" : "them"} again in your settings.`);
 	}
 	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
-	return { opened, account, servers: (sealed.account?.servers ?? []).map(({ name, definition }) => ({ name, definition })), redactor: new SecretRedactor([...opened, ...account]) };
+	return { opened, account, servers: (sealed.account?.servers ?? []).map(({ name, definition, unasked }) => ({ name, definition, unasked })), redactor: new SecretRedactor([...opened, ...account]) };
 }
 
 /** What takes the saved values of the repository and of the account out of text now: the running turn's, or one read for this once. */
@@ -2496,6 +2497,10 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				secrets: { ...turnEnvironment(held.opened, held.account, profile, envLists), redactor: held.redactor },
 				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
 				servers: held.servers,
+				// Windlass's question about a tool of one whose tools run without asking: the layer answers it, and the timeline says for whom and why.
+				onUnasked: (call) => {
+					if (open) note(c, turn, "info", unaskedNote(str(call.server)), { code: "question_allowed", call: { messageId: str(call.messageId), callId: str(call.callId) } });
+				},
 				prompt: `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${text}`,
 				windlassSessionId: resumed ?? undefined,
 				model: meta.model,
@@ -2984,9 +2989,6 @@ export const agentSession = actor({
 			if (c.vars.publishing) throw new UserError("The platform is pushing this agent's work to GitHub. Send the prompt again in a moment.", { code: "turn_running" });
 
 			const effort = input.effort === undefined || input.effort === null || input.effort === "" ? null : input.effort;
-			if (effort !== null && !EFFORTS.includes(effort)) {
-				throw new UserError(`The effort must be one of: ${EFFORTS.join(", ")}`, { code: "bad_effort" });
-			}
 
 			// Nothing was awaited since the check above, so this prompt is the only one past it.
 			c.vars.accepting = true;
@@ -2995,12 +2997,17 @@ export const agentSession = actor({
 				// A suspend or removal of the idle sandbox finishes first; the turn then resumes or recreates it.
 				if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 				let model = meta.model;
-				if (input.model !== undefined && input.model !== null && input.model !== "") {
-					const models = await platformModels();
-					if (typeof input.model !== "string" || !models.includes(input.model)) {
-						throw new UserError(`That model is not offered. Choose one of: ${models.join(", ")}`, { code: "bad_model" });
+				const switches = input.model !== undefined && input.model !== null && input.model !== "";
+				if (switches || effort !== null) {
+					// Held against the user's own models, and the effort against the ones the turn's model accepts. The demo's scripted model has the stand-in.
+					const models = meta.demo ? standInModels("demo") : await userActor(c, meta.uid).internalModels();
+					try {
+						if (switches) model = chosenModel(models, input.model);
+						if (effort !== null) checkEffort(models, model, effort);
+					} catch (error) {
+						if (error instanceof ModelProblem) throw new UserError(error.message, { code: error.code });
+						throw error;
 					}
-					model = input.model;
 				}
 
 				if (!meta.demo && Date.now() >= c.vars.signedInUntil) {

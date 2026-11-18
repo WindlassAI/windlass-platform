@@ -504,12 +504,11 @@ async function main(server: Server | null): Promise<void> {
 		const available = info.profiles.filter((profile) => profile.available);
 		assert(available.length >= 1, "no available profile");
 		assert(info.profiles.some((profile) => !profile.available && profile.unavailableReason), "no unavailable profile with a reason");
-		assert(info.models.length >= 1, "no models");
-		assert(plain(info.efforts) === plain(["low", "medium", "high", "xhigh", "max"]), `efforts are ${plain(info.efforts)}`);
+		// The models are each user's own (`user.models`): the deployment names none.
+		assert(!("models" in info) && !("efforts" in info), `the platform's information still names models or efforts: ${plain(Object.keys(info))}`);
 		if (!FAKE) assert(typeof info.windlassVersion === "string" && info.windlassVersion !== "", "windlassVersion is null: is the sandbox image built?");
 		availableProfile = available[0].id;
 		commandsSandboxed = available[0].approval === "auto" && !available[0].commandNetwork && !available[0].commandsCanReadAccessToken;
-		models = info.models;
 		if (OWN_SERVER) {
 			// The information is no actor's: none named "platform" exists, whoever asked.
 			const listed = (await (await controlPlane("/actors?namespace=default&name=platform")).json()) as { actors?: unknown[] };
@@ -518,7 +517,7 @@ async function main(server: Server | null): Promise<void> {
 		const health = await fetch(`${API}/health`);
 		assert(health.ok, `GET /health answered ${health.status}`);
 		assert((await fetch(`${API}/nothing-here`)).status === 404, "an unknown path did not answer 404");
-		return `windlass ${info.windlassVersion}, ${available.length}/${info.profiles.length} profiles available, models ${info.models.join(", ")}; /health ${health.status}`;
+		return `windlass ${info.windlassVersion}, ${available.length}/${info.profiles.length} profiles available; /health ${health.status}`;
 	});
 
 	await check("platform info: only the web app's origin may read it", async () => {
@@ -568,6 +567,10 @@ async function main(server: Server | null): Promise<void> {
 		assert(plain(me) === plain(a.profile), `user.me() is ${plain(me)}`);
 		const chatgpt = await client.user.getOrCreate([a.profile.uid], { params: { token: a.token } }).chatgpt();
 		assert(chatgpt.connected === false, "a demo user is reported as connected to ChatGPT");
+		// The demo's scripted model answers under any name: its list is the stand-in, and says so.
+		const list = await client.user.getOrCreate([a.profile.uid], { params: { token: a.token } }).models();
+		assert(list.source === "demo" && list.fetchedAt === null && list.models.length >= 1 && list.defaultModel === list.models[0]!.id && list.models.every((model) => model.efforts.length > 0), `a demo user's models are ${plain(list)}`);
+		models = list.models.map((model) => model.id);
 		return a.profile.uid;
 	});
 	if (!a || !b) throw new Error("no demo users: the remaining checks cannot run");
@@ -1433,8 +1436,8 @@ async function main(server: Server | null): Promise<void> {
 		await check("a definition that reads a variable which is not set says so, in the question and after an approval", async () => {
 			const asked = await askAbout("try (mcp-env)");
 			assert(plain(asked.server?.unset) === plain(["HARBOR_TOKEN"]), `unset: ${plain(asked.server?.unset)}`);
-			// The session has no repository to save a secret for; where its sandbox gives the account's secrets to MCP servers, one of those would set the variable.
-			const remedy = `A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.${commandsSandboxed ? " A secret of your account under that name, saved in your settings, sets it for MCP servers too." : ""}`;
+			// The session has no repository to save a secret for; a secret of the account would set the variable: any, where its sandbox gives them all to MCP servers.
+			const remedy = `A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one. ${commandsSandboxed ? "A secret of your account under that name, saved in your settings, sets it for MCP servers too." : "A secret of your account under that name, saved in your settings, sets it for MCP servers in this sandbox if it is also for the agent's commands."}`;
 			assert(asked.details.length === 4 && asked.details[3] === `It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs. ${remedy}`, `details: ${plain(asked.details)}`);
 			await harborWatch.conn.answer({ questionId: asked.id, choice: "start" });
 			const ended = await harborWatch.untilEnded(asked.turn);
@@ -1831,6 +1834,40 @@ async function main(server: Server | null): Promise<void> {
 				300,
 			);
 			return `uid ${result.profile.uid}; refusals: "${wrong}" / "${refusedByOpenAi}" / "${internal}"`;
+		});
+
+		await check("the models are the signed-in account's own: listed once for all who ask at once and kept, each model with its own efforts, and gone with the sign-in", async () => {
+			const handle = client.login.getOrCreate([attempt()]);
+			const started = await handle.start();
+			const mona = await handle.finish(`${started.redirectPrefix}?code=mona`);
+			const user = client.user.getOrCreate([mona.profile.uid], { params: { token: mona.token } });
+			const lists = await Promise.all([1, 2, 3, 4, 5].map(() => user.models()));
+			const [list] = lists;
+			assert(list!.source === "account" && typeof list!.fetchedAt === "number" && list!.models.length === 3 && list!.defaultModel === "gpt-6.1-sol", `the account's models are ${plain(list)}`);
+			assert(lists.every((other) => plain(other) === plain(list)), "five requests at once were not answered from one listing");
+			assert(plain(await user.models()) === plain(list), "a list that is fresh was listed again");
+			if (server) {
+				const listed = server.output.split("\n").filter((line) => line.includes(`[wlp] models.listed uid=${mona.profile.uid}:`));
+				assert(listed.length === 1, `Windlass was asked for the models ${listed.length} times`);
+			}
+			// A model's own efforts, and a model that takes none.
+			const some = list!.models.find((model) => model.id === "gpt-6-sol")!;
+			const none = list!.models.find((model) => model.efforts.length === 0)!;
+			assert(plain(some.efforts) === plain(["low", "medium", "high"]) && none.id === "gpt-6-luna", `the efforts are ${plain(list!.models)}`);
+			const session = await user.createSession({ profile: availableProfile as never, model: some.id });
+			const conn = client.agentSession.get([mona.profile.uid, session.id], { params: { token: mona.token } });
+			const tooMuch = await refused(() => conn.prompt({ text: "hello", effort: "max" }), "bad_effort");
+			const noEffort = await refused(() => conn.prompt({ text: "hello", model: none.id, effort: "low" }), "bad_effort");
+			await refused(() => conn.prompt({ text: "hello", model: "gpt-nope" }), "bad_model");
+			await refused(() => user.createSession({ profile: availableProfile as never, model: "gpt-nope" }), "bad_model");
+			await refused(() => user.saveAccountDefaults({ model: "gpt-nope" }), "bad_model");
+			assert((await conn.snapshot()).timeline.length === 0, "a refused prompt left items in the timeline");
+			await user.deleteSession(session.id);
+			// The list does not outlive the sign-in it was read with: forgotten, there is the stand-in, which says why.
+			await user.forgetChatgpt();
+			const after = await user.models();
+			assert(after.source === "signed-out" && after.fetchedAt === null, `after the sign-in was forgotten the models are ${plain(after)}`);
+			return `${list!.models.map((model) => `${model.id} [${model.efforts.join(" ")}]`).join(", ")}; refused: "${tooMuch}" / "${noEffort}"; after forgetting: ${after.source}`;
 		});
 
 		await check("a user without a ChatGPT sign-in is told to sign in; with one, turns run unscripted on an access token handed to them", async () => {
@@ -2719,7 +2756,8 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 		await check(page, async () => {
 			const user = userOf(alice);
 			const info = (await (await platformInfo()).json()) as Info;
-			const [model, other] = [info.models[0], info.models[1] ?? info.models[0]];
+			const offered = (await user.models()).models.map((candidate) => candidate.id);
+			const [model, other] = [offered[0], offered[1] ?? offered[0]];
 			const unavailable = info.profiles.find((candidate) => !candidate.available);
 			const NONE = { profile: null, model: null, updatedAt: null };
 
@@ -3321,7 +3359,12 @@ async function serverApprovalChecks(server: Server, client: Client, demoSignIn: 
 			await refused(() => mine.savePersonalServer({ name: "windlass_platform", definition: { command: "x" } }), "bad_server");
 			await refused(() => mine.savePersonalServer({ name: "notes", definition: { comand: "x" } }), "bad_server");
 			const saved = await mine.savePersonalServer({ name: "notes", definition: { command: "notes-mcp", args: ["--stdio"], env: { NOTES_TOKEN: "${NOTES_TOKEN}" } } });
-			assert(saved.servers.length === 1 && saved.servers[0]?.subject === "notes-mcp --stdio" && plain(saved.servers[0]?.reads) === plain([{ name: "NOTES_TOKEN", saved: false }]), `saved: ${plain(saved.servers)}`);
+			assert(saved.servers.length === 1 && saved.servers[0]?.subject === "notes-mcp --stdio" && saved.servers[0]?.unasked === false && plain(saved.servers[0]?.reads) === plain([{ name: "NOTES_TOKEN", saved: false }]), `saved: ${plain(saved.servers)}`);
+			// Its tools ask unless its user says otherwise, and the setting is saved with the definition and is not part of it.
+			await refused(() => mine.savePersonalServer({ name: "notes", definition: saved.servers[0]?.definition, unasked: "yes" as never, existing: true }), "bad_server");
+			const unasked = await mine.savePersonalServer({ name: "notes", definition: saved.servers[0]?.definition, unasked: true, existing: true });
+			assert(unasked.servers[0]?.unasked === true && !("unasked" in (unasked.servers[0]?.definition ?? {})), `with the setting on: ${plain(unasked.servers)}`);
+			assert((await mine.savePersonalServer({ name: "notes", definition: saved.servers[0]?.definition, existing: true })).servers[0]?.unasked === false, "the setting was not switched off again");
 			await refused(() => mine.savePersonalServer({ name: "notes", definition: { command: "other" } }), "server_exists");
 
 			// A session with no server of its project: the user's own is the only one, and does not start without its secret.
@@ -3337,14 +3380,20 @@ async function serverApprovalChecks(server: Server, client: Client, demoSignIn: 
 
 			// The secret is saved for the account: no value comes back, and the sandbox that exists has it from its next turn.
 			const value = `made-up-${randomBytes(12).toString("hex")}`;
-			const listed = await mine.saveAccountSecret({ profile: profile as never, name: "NOTES_TOKEN", value });
-			assert(listed.secrets.length === 1 && listed.secrets[0]?.name === "NOTES_TOKEN" && !plain([listed, await mine.account()]).includes(value), "the list of the account's secrets is not one name without a value");
+			const listed = await mine.saveAccountSecret({ profile: profile as never, name: "NOTES_TOKEN", value, scope: "setup" });
+			assert(listed.secrets.length === 1 && listed.secrets[0]?.name === "NOTES_TOKEN" && listed.secrets[0]?.scope === "setup" && !plain([listed, await mine.account()]).includes(value), "the list of the account's secrets is not one name without a value");
 			const handed = listed.secrets[0]?.reach.servers === true;
 			const withIt = await turn("Write a short program again");
 			const [now] = withIt.servers;
 			if (handed) assert(now?.state === "running" && now.tools === 1 && now.origin === "user" && withIt.accountSecrets == null, `with its secret: ${plain(withIt)}`);
-			// Where the profile's commands are not held in Windlass's sandbox, the secret reaches no server, and the panel says why.
-			else assert(now?.state === "failed" && typeof withIt.accountSecrets === "string" && withIt.accountSecrets.includes("not given to MCP servers"), `in a sandbox that hands it to no server: ${plain(withIt)}`);
+			// Where the profile's commands are not held in Windlass's sandbox, a secret for MCP servers only reaches no server, and the panel says why.
+			else assert(now?.state === "failed" && typeof withIt.accountSecrets === "string" && withIt.accountSecrets.includes("only those that are also for the agent's commands"), `in a sandbox that hands it to no server: ${plain(withIt)}`);
+			// Its user says it may also go where the agent's commands could read it: the scope alone is saved, no value comes back, and the server starts in every profile.
+			await refused(() => mine.saveAccountSecret({ profile: profile as never, name: "NOT_SAVED", scope: "agent" }), "secret_not_found");
+			const wide = await mine.saveAccountSecret({ profile: profile as never, name: "NOTES_TOKEN", scope: "agent" });
+			assert(wide.secrets[0]?.scope === "agent" && plain(wide.secrets[0]?.reach) === plain({ servers: true, commands: "yes", note: null }) && !plain(wide).includes(value), `also for the agent's commands: ${plain(wide)}`);
+			const [everywhere] = (await turn("Write a short program a third time")).servers;
+			assert(everywhere?.state === "running" && everywhere.tools === 1, `with its secret also for the agent's commands: ${plain(everywhere)}`);
 			assert(!server.output.includes(value) && !plain((await session.watch.conn.snapshot()).timeline).includes(value), "the secret's value is in the server's log or in the timeline");
 
 			// Another user has none of it.
@@ -3352,7 +3401,7 @@ async function serverApprovalChecks(server: Server, client: Client, demoSignIn: 
 			assert(theirs.servers.length === 0 && (await userOf(bo).accountSecrets({ profile: profile as never })).secrets.length === 0, `another user's account: ${plain(theirs.servers)}`);
 
 			// The defaults are saved field by field, and a deleted server is gone from the sandbox with its next turn.
-			const { models } = (await (await platformInfo()).json()) as import("../server/src/contract.js").PlatformInfo;
+			const models = (await mine.models()).models.map((model) => model.id);
 			await mine.saveAccountDefaults({ model: models[models.length - 1] });
 			const defaults = await mine.saveAccountDefaults({ profile: profile as never });
 			assert(defaults.profile === profile && defaults.model === models[models.length - 1], `the defaults: ${plain(defaults)}`);

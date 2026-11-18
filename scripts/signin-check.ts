@@ -168,6 +168,9 @@ class ScriptedCommands implements SignInCommands {
 	async finish(): Promise<never> {
 		throw new Error("not used");
 	}
+	async models(): Promise<never> {
+		throw new Error("not used");
+	}
 	async token(material: SignInMaterial, options: { signal?: AbortSignal } = {}): Promise<TokenAnswer> {
 		this.asked += 1;
 		if (this.hold !== null) await Promise.race([this.hold, new Promise<void>((done) => options.signal?.addEventListener("abort", () => done(), { once: true }))]);
@@ -197,10 +200,12 @@ interface Expected {
 /**
  * Answers what Windlass sends to auth.openai.com. Windlass is given this as its HTTPS proxy: it asks
  * for a tunnel to auth.openai.com:443, and the stand-in answers on that tunnel itself, with a
- * certificate of its own that Windlass is told to trust. Nothing is forwarded anywhere.
+ * certificate of its own that Windlass is told to trust. Nothing is forwarded anywhere. It also answers
+ * the one thing the platform has Windlass ask the provider outside a turn, the models of an account
+ * (`GET /v1/models` at api.openai.com), to whoever shows an access token it issued.
  */
 class StandIn {
-	/** Every request it answered: "authorization_code", "refresh_token", "jwks". Never a token. */
+	/** Every request it answered: "authorization_code", "refresh_token", "jwks", "models". Never a token. */
 	readonly requests: string[] = [];
 	/** Every tunnel it was asked for. */
 	readonly tunnels: string[] = [];
@@ -221,7 +226,7 @@ class StandIn {
 	private readonly keyFile = join(scratch, "standin-key.pem");
 
 	async start(): Promise<void> {
-		execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=auth.openai.com", "-addext", "subjectAltName=DNS:auth.openai.com", "-keyout", this.keyFile, "-out", this.certFile], { stdio: "pipe" });
+		execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=auth.openai.com", "-addext", "subjectAltName=DNS:auth.openai.com,DNS:api.openai.com", "-keyout", this.keyFile, "-out", this.certFile], { stdio: "pipe" });
 		const tlsKey = readFileSync(this.keyFile);
 		const tlsCert = readFileSync(this.certFile);
 		const http = createHttpServer((request, response) => void this.answer(request, response));
@@ -294,6 +299,12 @@ class StandIn {
 			if (request.method === "GET" && request.url === "/.well-known/jwks.json") {
 				this.requests.push("jwks");
 				return send(200, { keys: [{ ...this.key.publicKey.export({ format: "jwk" }), kid: "standin", alg: "RS256", use: "sig" }] });
+			}
+			if (request.method === "GET" && request.url === "/v1/models") {
+				this.requests.push("models");
+				if (!/^Bearer FAKE-ACCESS-TOKEN-[SR]\d+-/.test(request.headers.authorization ?? "")) return send(401, { error: { message: "the stand-in issued no such token", code: "token_revoked" } });
+				const levels = (efforts: string[]) => efforts.map((effort) => ({ effort }));
+				return send(200, { models: [{ slug: "gpt-6.1-sol", display_name: "GPT-6.1 Sol", visibility: "list", supported_reasoning_levels: levels(["low", "medium", "high"]) }, { slug: "gpt-6-luna", visibility: "list", supported_reasoning_levels: levels(["low"]) }] });
 			}
 			const chunks: Buffer[] = [];
 			for await (const chunk of request) chunks.push(chunk as Buffer);
@@ -1162,6 +1173,16 @@ async function main(): Promise<void> {
 				`${keys.length} user actor(s): ${keys.join(", ")}`,
 			);
 
+			// ---- the models of the account: listed by the real Windlass with that token, once, and kept in the user's actor
+			const lists = await Promise.all([user.models(), user.models(), user.models()]);
+			expect(
+				"three requests at once for the user's models: Windlass lists the account's once on the user's token, without another refresh, and the answer says it is the account's",
+				lists.every((list) => list.source === "account" && typeof list.fetchedAt === "number" && list.defaultModel === "gpt-6.1-sol" && list.models.map((model) => `${model.id}:${model.efforts.join("+")}`).join(" ") === "gpt-6.1-sol:low+medium+high gpt-6-luna:low") && standin.count("models") === 1 && standin.count("refresh_token") === 1 && linesOf("models.listed", uid).length === 1,
+				`${standin.count("models")} listing, ${standin.count("refresh_token")} refresh; ${JSON.stringify(lists[0]).slice(0, 200)}`,
+			);
+			const unknownModel = await caught(user.createSession({ profile: "docker-windlass-sandbox", model: "gpt-6-sol" }));
+			expect("a model the account does not offer is refused, though the platform's stand-in list has it", (unknownModel as { code?: string } | null)?.code === "bad_model" && standin.count("models") === 1, String((unknownModel as Error | null)?.message));
+
 			// ---- a turn on the server is handed the same token, by way of the same actor
 			const profiles = (await (await fetch("http://127.0.0.1:6440/platform/info")).json()) as { profiles?: Array<{ id: string; available: boolean }> };
 			const profile = profiles.profiles?.find((entry) => entry.available)?.id ?? "docker-windlass-sandbox";
@@ -1182,6 +1203,8 @@ async function main(): Promise<void> {
 				afterDeath.accessToken === many[0]!.accessToken && afterDeath.expiresAt === many[0]!.expiresAt && standin.count("refresh_token") === 1,
 				`${standin.count("refresh_token")} refresh in all`,
 			);
+			const afterWake = await user.models();
+			expect("and it wakes with the account's models: they are served from the actor's storage, and Windlass is not asked again", afterWake.source === "account" && afterWake.fetchedAt === lists[0]!.fetchedAt && standin.count("models") === 1);
 
 			// Everything the engine wrote, while the sign-in is there: it is in it sealed, and nothing of it is readable.
 			let files = 0;
@@ -1206,6 +1229,8 @@ async function main(): Promise<void> {
 			await second.logout(uid);
 			const gone = await caught(second.accessToken(uid));
 			expect("logout() from the second server forgets the sign-in in the user's actor: no token, no account", gone instanceof SandboxUserError && gone.message === NOT_SIGNED_IN && (await second.status(uid)) === null && (await user.chatgpt()).connected === false);
+			const signedOut = await user.models();
+			expect("and the account's models go with the sign-in: the stand-in list is served, it says why, and Windlass is not asked", signedOut.source === "signed-out" && signedOut.fetchedAt === null && signedOut.models.length === 3 && standin.count("models") === 1, JSON.stringify(signedOut).slice(0, 160));
 
 			await killServer("SIGTERM");
 			expect("the server printed no token, and left no private directory", !SECRET.test(output) && leftIn(privateRoot).length === 0, `${output.split("\n").length} lines of server output read`);

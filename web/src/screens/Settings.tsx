@@ -5,7 +5,8 @@
  *   - the defaults a new agent starts with where neither the launch form nor its repository says
  *     (`DefaultsSection`);
  *   - the user's own MCP servers, which Windlass starts in every agent of theirs (`PersonalServers`);
- *   - the secrets those servers read (`AccountSecretsBlock`), which reach MCP servers and nothing else.
+ *   - the secrets those servers read (`AccountSecretsBlock`), which reach MCP servers and, where
+ *     their user says so for one, the agent's commands.
  *
  * Everything on the page is the user's actor's (`account`, `accountSecrets`): it is read when the
  * page opens, and every save answers with what is saved then. What a secret reaches depends on the
@@ -19,7 +20,7 @@ import { PersonalServers } from "../components/PersonalServers";
 import { startingChoices } from "../lib/repositories";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { useAccount } from "../state/hooks";
+import { useAccount, useModels } from "../state/hooks";
 
 /** What the top bar shows on this page: the way back and where one is. */
 export function SettingsCrumb() {
@@ -43,11 +44,12 @@ export function Settings() {
 	const { client, platform, auth: signedIn } = useApp();
 	const auth = useAuth();
 	const account = useAccount();
+	const models = useModels();
 	const { settings } = account;
 	const info = platform.info;
 	const who = signedIn?.profile.demo ? "the demo account" : (signedIn?.profile.email ?? signedIn?.profile.uid ?? "your account");
 	// What a secret reaches depends on the sandbox: the list is said for the one a new agent starts in when nothing else is chosen.
-	const choices = startingChoices(settings?.defaults ?? null, info, "account");
+	const choices = startingChoices(settings?.defaults ?? null, info, models.list, "account");
 	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
 
 	return (
@@ -94,6 +96,7 @@ export function Settings() {
 						defaults={settings.defaults}
 						whose="account"
 						under={null}
+						models={models}
 						save={(change) => client.user(auth).saveAccountDefaults(change)}
 						onSaved={(next) => account.replace({ ...settings, defaults: next })}
 					/>
@@ -114,7 +117,7 @@ export function Settings() {
 						/>
 						{reachProfile ? (
 							<p className="usage-note">
-								For MCP servers only: never the agent's commands, never a repository's setup command. What each reaches is said for {reachProfile.name}, {choices.profile === reachProfile.id ? "your default sandbox" : "the sandbox a new agent starts in when none is chosen"}. An account can keep{" "}
+								For MCP servers, and for the agent's commands only where you choose so for a secret: never a repository's setup command. What each reaches is said for {reachProfile.name}, {choices.profile === reachProfile.id ? "your default sandbox" : "the sandbox a new agent starts in when none is chosen"}. An account can keep{" "}
 								{settings.limits.secrets}.
 							</p>
 						) : null}

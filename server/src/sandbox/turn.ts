@@ -90,6 +90,16 @@
  * "once"; the server names the call in its progress, and the answer `onPublish` resolves with is
  * written where the server waits for it.
  *
+ * The same answer is given for a call of a tool of one of the user's own servers whose user said
+ * that its tools run without asking (`TurnPersonalServer.unasked`), and `onUnasked` is told. Which
+ * call that is is known as the tool to publish is: from the engine's `tool.called` event of an
+ * `mcp_call`, which names the server and the tool, for a server this turn wrote into the file with
+ * the setting on and which the engine holds to be its user's own; and the question has to be about
+ * using exactly that tool (`approval.needs`), asked by the session and not by a subagent. Nothing
+ * is read from the question's sentence. Each call is answered once and Windlass remembers nothing,
+ * so the answer does not depend on what Windlass makes of earlier approvals once content it does
+ * not trust is in the conversation, and the server's results stay content it does not trust.
+ *
  * When a turn fails, what the failure means is read from the stable code Windlass gives it, not from
  * the words of its message: the code on the error the engine answered with (`data.windlass.code`,
  * Windlass's docs/acp.md, "Errors") and, where there is no such error, the one on the provider error of
@@ -98,21 +108,18 @@
  * stays as Windlass reported it.
  */
 
-import { PUBLISH_SERVER, PUBLISH_STATE_DIR, publishArguments, publishRequestId, publishResultFile, publishServerDefinition } from "../agent-publish.js";
+import { PUBLISH_SERVER, PUBLISH_STATE_DIR, mcpCall, publishArguments, publishRequestId, publishResultFile, publishServerDefinition } from "../agent-publish.js";
 import { config } from "../config.js";
 import type { WindlassEvent } from "../contract.js";
 import { isReservedServerName } from "../personal-servers.js";
 import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
 import { type ConfigServer, PLATFORM_SERVERS_FILE, WINDLASS_CONFIG_FILE, platformConfig } from "../windlass-config.js";
-import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, Windlass, WindlassFeatures } from "./api.js";
+import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass, WindlassFeatures } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
 import { ACCESS_TOKEN_FILE_ENV, type Failure, OUTDATED_SANDBOX, WindlassOutdatedError, handedInFailure, handedInProblem, handedInProblemInWords, tokenRanOut, tokenSourceFailure } from "./handoff.js";
 import { type ProcessEnd, type SandboxProcess, type TurnSandbox, isTurnSandbox, randomId } from "./provider.js";
 import { TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
-
-/** Windlass's own default first. `--models` needs a signed-in account, so this list stands in. */
-export const BUILTIN_MODELS = ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"];
 
 /** The key of Windlass's extensions in `_meta` and in an error's `data`, and the prefix of its methods. */
 const NS = "windlass";
@@ -272,10 +279,6 @@ export class SandboxWindlass implements Windlass {
 
 	problem(): Promise<string | null> {
 		return this.host.problem();
-	}
-
-	async models(): Promise<string[]> {
-		return [...BUILTIN_MODELS];
 	}
 
 	demoScript(prompt: string, turn: number): ScriptedModel {
@@ -509,8 +512,12 @@ class Turn {
 	private configWritten = false;
 	/** The names of the user's own servers this turn wrote there: what `onServers` is told of beside the project's. */
 	private personal = new Set<string>();
-	/** The calls of that tool the engine reported and has not settled. */
+	/** Of those, the ones whose tools run without asking. */
+	private unasked = new Set<string>();
+	/** The calls of the tool to publish the engine reported and has not settled. */
 	private readonly publishCalls = new Map<string, PublishCall>();
+	/** The calls of a tool of a server in `unasked` the engine reported and has not settled. */
+	private readonly unaskedCalls = new Map<string, TurnUnaskedCall>();
 	/** The end of a piece of streaming text that may be the beginning of a saved value, per stream, until the next piece shows whether it is. */
 	private readonly heldBack = new Map<string, string>();
 
@@ -916,6 +923,7 @@ class Turn {
 			// A listener's failure must not stop the turn.
 		}
 		this.publishing(event);
+		this.callingUnasked(event);
 		this.check();
 	}
 
@@ -985,6 +993,7 @@ class Turn {
 			this.configWritten = next.written !== null;
 			this.publishOffered = publish;
 			this.personal = new Set(personal.map((server) => server.name));
+			this.unasked = new Set((this.input.servers ?? []).filter((server) => server.unasked === true && this.personal.has(server.name)).map((server) => server.name));
 		} catch (error) {
 			if (publish || personal.length > 0) this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be written (${error instanceof Error ? error.message : String(error)}), so ${what}`);
 		}
@@ -1044,6 +1053,26 @@ class Turn {
 		this.publishCalls.set(key, { controller, answer, settled: false });
 	}
 
+	/**
+	 * What the engine says of a call of a tool of a server whose tools run without asking. `tool.called`
+	 * names the server and the tool: the call is kept while the engine holds that server to be its
+	 * user's own, which a server of that name the project's file names or changes is not.
+	 * `tool.settled` ends it.
+	 */
+	private callingUnasked(event: WindlassEvent): void {
+		if (this.unasked.size === 0 || (event.type !== "tool.called" && event.type !== "tool.settled")) return;
+		const data = (event.data ?? {}) as Record<string, unknown>;
+		if (typeof data.messageId !== "string" || typeof data.callId !== "string") return;
+		const key = callKey(data.messageId, data.callId);
+		if (event.type === "tool.settled") {
+			this.unaskedCalls.delete(key);
+			return;
+		}
+		const call = mcpCall(data.name, data.input);
+		if (call === null || !this.unasked.has(call.server) || !this.servers.some((server) => server.name === call.server && server.origin === "user")) return;
+		this.unaskedCalls.set(key, { messageId: data.messageId, callId: data.callId, server: call.server, tool: call.tool });
+	}
+
 	/** Writes what the agent is to be told where the server waits for it, once it is known. Never throws. */
 	private async answerPublish(call: PublishCall, request: string): Promise<void> {
 		const text = await call.answer;
@@ -1096,11 +1125,25 @@ class Turn {
 		const cancelled = { outcome: { outcome: "cancelled" } };
 		const question = questionOf(params);
 		const ask = this.input.onQuestion;
-		// The engine's own question about a call of the tool to publish: the call does nothing in the sandbox but
-		// wait for the platform, which decides the request itself (`onPublish`), so it is let through and nobody is asked.
-		if (question !== null && params.sessionId === this.session && !this.cancelSent && !this.over && this.publishCalls.has(callKey(question.messageId, question.callId))) {
-			const allow = question.choices.find((choice) => choice.approve && choice.remembers === null) ?? question.choices.find((choice) => choice.approve);
-			if (allow !== undefined) return { outcome: { outcome: "selected", optionId: allow.id } };
+		if (question !== null && params.sessionId === this.session && !this.cancelSent && !this.over) {
+			const key = callKey(question.messageId, question.callId);
+			// A call of a tool of one of the user's own servers whose tools run without asking: answered for the user
+			// where the question is the session's own and about using exactly that tool, and whoever keeps a record is told.
+			const unasked = this.unaskedCalls.get(key);
+			const allowed = unasked !== undefined && question.subagent === null && toolAsked(params) === `${unasked.server}/${unasked.tool}`;
+			// The engine's own question about a call of the tool to publish: the call does nothing in the sandbox but
+			// wait for the platform, which decides the request itself (`onPublish`), so it is let through and nobody is asked.
+			if (allowed || this.publishCalls.has(key)) {
+				const allow = question.choices.find((choice) => choice.approve && choice.remembers === null) ?? question.choices.find((choice) => choice.approve);
+				if (allow !== undefined) {
+					try {
+						if (allowed) this.input.onUnasked?.(unasked);
+					} catch {
+						// A listener's failure must not stop the turn.
+					}
+					return { outcome: { outcome: "selected", optionId: allow.id } };
+				}
+			}
 		}
 		if (question === null || ask === undefined || params.sessionId !== this.session) return cancelled;
 		const controller = new AbortController();
@@ -1146,8 +1189,8 @@ class Turn {
 	 * cannot say leaves the turn as it was before the platform asked: such servers stay stopped.
 	 */
 	private async askAboutServers(): Promise<void> {
-		// Also asked for the tool to publish: whose its server is, by the engine's word, decides whether a call is acted on.
-		if (this.input.onServerQuestion === undefined && this.input.onServers === undefined && !this.publishOffered) return;
+		// Also asked for the tool to publish and for the servers whose tools run without asking: whose a server is, by the engine's word, decides whether a call is acted on.
+		if (this.input.onServerQuestion === undefined && this.input.onServers === undefined && !this.publishOffered && this.unasked.size === 0) return;
 		try {
 			this.serversSaid(await this.peer.request(EXT.mcp, { sessionId: this.session }, { timeoutMs: SERVERS_TIMEOUT_MS }));
 		} catch (error) {
@@ -1543,6 +1586,19 @@ function questionOf(params: Record<string, unknown>): TurnQuestion | null {
 		choices,
 		subagent: label === null || label.trim() === "" ? null : label.trim(),
 	};
+}
+
+/**
+ * The tool a permission request asks about, when using it is all the question is about: the one
+ * need of `_meta.windlass.approval.needs`, `{ kind: "tool", tool }`, which for an MCP server's tool
+ * is `<server>/<tool>`. Null for a question about anything else, or about more.
+ */
+function toolAsked(params: Record<string, unknown>): string | null {
+	const meta = (params._meta as Record<string, unknown> | undefined)?.[NS] as { approval?: { needs?: unknown } } | undefined;
+	const needs = meta?.approval?.needs;
+	if (!Array.isArray(needs) || needs.length !== 1) return null;
+	const need = needs[0] as { kind?: unknown; tool?: unknown } | null;
+	return need?.kind === "tool" && typeof need.tool === "string" ? need.tool : null;
 }
 
 /** One MCP server of the session as `_windlass/mcp` describes it (Windlass's docs/acp.md, "The session's features"). */
