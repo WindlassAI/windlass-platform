@@ -156,7 +156,7 @@ export class ApprovalBook {
 // What a session knows of its project's servers
 // ---------------------------------------------------------------------------------------------
 
-/** A server of the session's project, as Windlass last described it to the session. Kept with the session. */
+/** A server of the session, of its project or of its user's own, as Windlass last described it to the session. Kept with the session. */
 export type KnownServer = Omit<SessionServer, "approval" | "earlier" | "asks">;
 
 const STATES: readonly SessionServerState[] = ["running", "starting", "waiting", "failed", "stopped"];
@@ -165,7 +165,8 @@ const STATES: readonly SessionServerState[] = ["running", "starting", "waiting",
  * What Windlass says of the session's servers, folded into what the session knew. Windlass names a
  * definition's fingerprint only while it waits for approval, so the fingerprint a server waited with
  * is kept for as long as what it starts stays the same: that is the definition the session saw
- * approved. A server Windlass no longer names is gone from the project's configuration.
+ * approved. A server Windlass no longer names is gone from the project's configuration, or from its
+ * user's settings.
  */
 export function knownServers(known: readonly KnownServer[], said: readonly TurnServer[], at: number): KnownServer[] {
 	const next: KnownServer[] = [];
@@ -180,7 +181,9 @@ export function knownServers(known: readonly KnownServer[], said: readonly TurnS
 		const tools = state === "running" && typeof server.tools === "number" ? server.tools : null;
 		const reason = state === "failed" && typeof server.error === "string" && server.error.trim() !== "" ? server.error.trim().replace(/\s*\n\s*/g, " ") : null;
 		const file = typeof server.file === "string" && server.file !== "" ? server.file : null;
-		const one: KnownServer = { name: server.name, subject, remote: argv === null, file, state, tools, reason, fingerprint, at };
+		// One of the user's own never waits and has no definition to approve: Windlass starts it unasked.
+		const own = server.origin === "user";
+		const one: KnownServer = { name: server.name, ...(own ? { origin: "user" as const } : {}), subject, remote: argv === null, file: own ? null : file, state, tools, reason, fingerprint: own ? null : fingerprint, at };
 		// Nothing changed: the time it was first heard stays, so a reader can tell when it last did.
 		next.push(before && sameKnown(before, one) ? before : one);
 	}
@@ -188,7 +191,7 @@ export function knownServers(known: readonly KnownServer[], said: readonly TurnS
 }
 
 function sameKnown(a: KnownServer, b: KnownServer): boolean {
-	return a.name === b.name && a.subject === b.subject && a.remote === b.remote && a.file === b.file && a.state === b.state && a.tools === b.tools && a.reason === b.reason && a.fingerprint === b.fingerprint;
+	return a.name === b.name && (a.origin ?? "project") === (b.origin ?? "project") && a.subject === b.subject && a.remote === b.remote && a.file === b.file && a.state === b.state && a.tools === b.tools && a.reason === b.reason && a.fingerprint === b.fingerprint;
 }
 
 /** Whether two lists say the same of every server. */
@@ -218,6 +221,8 @@ export function serversView(
 	return {
 		project: { kind: project.kind, label: project.label },
 		servers: known.map((server) => {
+			// A server of the user's own is in the account's settings, not in the project: nothing was approved, and nothing is asked.
+			if (server.origin === "user") return { ...server, approval: null };
 			const approval = approvalFor(server, approvals);
 			// An approval of another definition of the server: it does not start this one, and the user can still forget it.
 			const earlier = approval === null ? (approvals.find((other) => other.name === server.name) ?? null) : null;

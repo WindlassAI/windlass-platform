@@ -14,10 +14,11 @@
  * GitHub no longer shows to this user keeps its page, with what is saved for it and the way to
  * delete that, and with a plain sentence that no new agent can be launched on it.
  */
-import type { GithubRepository, RepositoryView, SandboxProfileId, SessionSummary } from "@contract";
+import type { GithubRepository, RepositoryView, SessionSummary } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { hasReason } from "../api/client";
 import { AgentList } from "../components/Agents";
+import { DefaultsSection } from "../components/Defaults";
 import { Dialog } from "../components/Dialog";
 import { ArrowLeftIcon, ExternalIcon, LockIcon, PlusIcon, WarnIcon } from "../components/Icons";
 import { PullState } from "../components/PullRequest";
@@ -26,11 +27,11 @@ import { RepositoryApprovals } from "../components/Servers";
 import { SetupEditor } from "../components/SetupCommand";
 import type { ConnectionState } from "../api/client";
 import { absoluteTime, plural, relativeTime } from "../lib/format";
-import { LONE_GROUP_SHOWN, openPulls, repositoryName, sessionsOn, startingChoices } from "../lib/repositories";
+import { LONE_GROUP_SHOWN, layerChoices, openPulls, repositoryName, sessionsOn, startingChoices } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useGithub, type Github } from "../state/github";
-import { useNow, useSessions } from "../state/hooks";
+import { useAccount, useNow, useSessions } from "../state/hooks";
 
 /** Whether new agents can be launched on the repository, as GitHub says now. */
 export type RepositoryAccess =
@@ -278,103 +279,6 @@ function Pulls({ page, now }: { page: RepositoryPage; now: number }) {
 	);
 }
 
-/** What new agents on it start with: a sandbox and a model, each saved as soon as it is chosen. */
-function Defaults({ page, view, name }: { page: RepositoryPage; view: RepositoryView; name: string }) {
-	const { client, platform, explain } = useApp();
-	const auth = useAuth();
-	const ids = { profile: useId(), model: useId(), profileNote: useId(), modelNote: useId() };
-	const [saving, setSaving] = useState<"profile" | "model" | null>(null);
-	const [said, setSaid] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
-	const info = platform.info;
-	const { defaults } = view;
-	const choices = startingChoices(defaults, info);
-	const first = info?.profiles.find((profile) => profile.available) ?? null;
-	const savedProfile = info?.profiles.find((profile) => profile.id === defaults.profile) ?? null;
-
-	const save = async (field: "profile" | "model", value: string) => {
-		if (saving !== null) return;
-		setSaving(field);
-		setSaid(null);
-		try {
-			const next = await client.user(auth).saveRepositoryDefaults(page.id, field === "profile" ? { profile: value === "" ? null : (value as SandboxProfileId) } : { model: value === "" ? null : value });
-			page.replace({ ...view, defaults: next });
-			setSaid({ tone: "good", text: "Saved." });
-		} catch (failure) {
-			setSaid({ tone: "bad", text: explain(failure) });
-		} finally {
-			setSaving(null);
-		}
-	};
-
-	return (
-		<section className="usage-section" aria-labelledby="repo-defaults">
-			<h2 className="usage-title" id="repo-defaults">
-				Defaults for new agents
-			</h2>
-			<p className="usage-lede">The launch form starts from these when {name} is chosen. They can still be changed there for one agent, and an agent that exists keeps what it was launched with.</p>
-			{info === null ? (
-				<p className="usage-empty" aria-busy={platform.loading}>
-					{platform.loading ? "Asking the server which sandboxes and models it has…" : (platform.error ?? "The server did not say which sandboxes and models it has.")}
-				</p>
-			) : (
-				<div className="field-grid repo-fields">
-					<div className="field">
-						<label className="label" htmlFor={ids.profile}>
-							Sandbox
-						</label>
-						<select id={ids.profile} className="select" value={defaults.profile ?? ""} onChange={(event) => void save("profile", event.target.value)} disabled={saving !== null} aria-describedby={ids.profileNote}>
-							<option value="">No default</option>
-							{info.profiles
-								.filter((profile) => profile.available)
-								.map((profile) => (
-									<option key={profile.id} value={profile.id}>
-										{profile.name}
-									</option>
-								))}
-							{defaults.profile !== null && !savedProfile?.available ? (
-								<option value={defaults.profile} disabled>
-									{savedProfile?.name ?? defaults.profile} (not available)
-								</option>
-							) : null}
-						</select>
-						<p className={`field-note${choices.ignored.profile ? " tone-warn" : ""}`} id={ids.profileNote}>
-							{choices.ignored.profile
-								? `${choices.ignored.profile} New agents start in ${first?.name ?? "no sandbox"} until you choose another.`
-								: `Where a new agent's files live and its commands run.${defaults.profile === null && first ? ` Without a default: ${first.name}.` : ""}`}
-						</p>
-					</div>
-					<div className="field">
-						<label className="label" htmlFor={ids.model}>
-							Model
-						</label>
-						<select id={ids.model} className="select" value={defaults.model ?? ""} onChange={(event) => void save("model", event.target.value)} disabled={saving !== null} aria-describedby={ids.modelNote}>
-							<option value="">No default</option>
-							{info.models.map((model) => (
-								<option key={model} value={model}>
-									{model}
-								</option>
-							))}
-							{defaults.model !== null && !info.models.includes(defaults.model) ? (
-								<option value={defaults.model} disabled>
-									{defaults.model} (not offered)
-								</option>
-							) : null}
-						</select>
-						<p className={`field-note${choices.ignored.model ? " tone-warn" : ""}`} id={ids.modelNote}>
-							{choices.ignored.model
-								? `${choices.ignored.model} New agents start on ${info.models[0] ?? "the deployment's model"} until you choose another.`
-								: `The model a new agent starts on. It can be changed with any prompt.${defaults.model === null && info.models[0] ? ` Without a default: ${info.models[0]}.` : ""}`}
-						</p>
-					</div>
-				</div>
-			)}
-			<p className={`repo-said${said?.tone === "bad" ? " tone-bad" : ""}`} role={said?.tone === "bad" ? "alert" : "status"}>
-				{saving !== null ? "Saving…" : (said?.text ?? "")}
-			</p>
-		</section>
-	);
-}
-
 /** What deleting everything saved takes with it, and what it leaves. */
 function ForgetDialog({ page, view, name, agents, onClose, onDone }: { page: RepositoryPage; view: RepositoryView; name: string; agents: number; onClose(): void; onDone(): void }) {
 	const { client, explain } = useApp();
@@ -439,8 +343,11 @@ function ForgetDialog({ page, view, name, agents, onClose, onDone }: { page: Rep
 }
 
 export function Repository({ page }: { page: RepositoryPage }) {
-	const { platform } = useApp();
+	const { client, platform } = useApp();
+	const auth = useAuth();
 	const github = useGithub();
+	// What the account says new agents start with: what a field left without a default here comes to.
+	const account = useAccount();
 	const now = useNow(15_000);
 	const ids = { setup: useId() };
 	const [forgetting, setForgetting] = useState(false);
@@ -450,7 +357,8 @@ export function Repository({ page }: { page: RepositoryPage }) {
 	const name = page.name ?? `Repository ${page.id}`;
 	const info = platform.info;
 	// What a secret reaches depends on the sandbox: the list is said for the one new agents here start in.
-	const choices = startingChoices(view?.defaults ?? null, info);
+	const accountChoices = startingChoices(account.settings?.defaults ?? null, info, "account");
+	const choices = layerChoices(startingChoices(view?.defaults ?? null, info), accountChoices);
 	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
 	const launchable = access.state !== "unusable";
 	const anything = view !== null && (view.saved.setup || view.saved.secrets > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.approvals.length > 0);
@@ -543,7 +451,16 @@ export function Repository({ page }: { page: RepositoryPage }) {
 						</p>
 					) : null}
 
-					<Defaults key={generation} page={page} view={view} name={name} />
+					<DefaultsSection
+						key={generation}
+						id="repo-defaults"
+						lede={`The launch form starts from these when ${name} is chosen. They can still be changed there for one agent, and an agent that exists keeps what it was launched with.`}
+						defaults={view.defaults}
+						whose="repository"
+						under={accountChoices}
+						save={(change) => client.user(auth).saveRepositoryDefaults(page.id, change)}
+						onSaved={(next) => page.replace({ ...view, defaults: next })}
+					/>
 
 					<section className="usage-section repo-saved" aria-labelledby={ids.setup}>
 						<h2 className="usage-title" id={ids.setup}>

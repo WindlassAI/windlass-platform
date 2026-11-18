@@ -50,7 +50,10 @@
  * (per sandbox with WLP_FAKE_BACKUP_DIR, as on E2B; otherwise per user, as on Docker's volume). A
  * server left stopped is asked about again by the next turn that names it. What the turn's project
  * names is reported through `onServers` as the real layer reports it: before the first question, and
- * again whenever a server starts or fails.
+ * again whenever a server starts or fails. The user's own servers a turn is handed
+ * (`RunTurnInput.servers`) are reported with them, as Windlass starts them: running with one tool,
+ * or failed with Windlass's sentence when the definition reads a variable the turn's secrets do not
+ * hold; nothing is started.
  *
  * A repository address that contains "slow-clone" takes a second and a half to clone, which holds a
  * turn in `starting`; one that contains "fail-clone" fails.
@@ -94,6 +97,8 @@ import { join } from "node:path";
 import { StandInObjectStore } from "./bucket/stand-in.js";
 import { FIXTURES_DIR, backupConfig } from "./config.js";
 import type { SandboxProfile, SandboxProfileId, WindlassEvent } from "./contract.js";
+import { definitionReads, isReservedServerName } from "./personal-servers.js";
+import { WINDLASS_CONFIG_FILE } from "./windlass-config.js";
 import {
 	type AccessToken,
 	type AccessTokens,
@@ -858,6 +863,7 @@ class FakeWindlass implements Windlass {
 			const state: TurnServer["state"] = waits ? "waiting" : server.unset.length > 0 ? "failed" : "running";
 			told.set(server.name, {
 				name: server.name,
+				origin: "project",
 				state,
 				argv: server.argv,
 				url: server.url,
@@ -908,6 +914,24 @@ class FakeWindlass implements Windlass {
 		let lateAsked = false;
 
 		try {
+			// The user's own servers start without a question, as with a real Windlass: one whose definition reads a
+			// variable the turn was not handed does not start, and a name the project has too is the project's.
+			for (const own of input.servers ?? []) {
+				if (isReservedServerName(own.name) || own.definition.enabled === false || servers.some((server) => server.name === own.name)) continue;
+				const argv = typeof own.definition.command === "string" ? [own.definition.command, ...(Array.isArray(own.definition.args) ? own.definition.args.map(String) : [])] : null;
+				const unset = definitionReads(own.definition).find((name) => !(name in (input.secrets?.env ?? {})));
+				told.set(own.name, {
+					name: own.name,
+					origin: "user",
+					state: unset === undefined ? "running" : "failed",
+					argv,
+					url: argv === null ? String(own.definition.url ?? "") : null,
+					file: WINDLASS_CONFIG_FILE,
+					tools: unset === undefined ? 1 : null,
+					error: unset === undefined ? null : `the environment variable ${unset} named in its ${argv === null ? "headers" : "env"} is not set`,
+					fingerprint: null,
+				});
+			}
 			// What the project names is said in one answer, as Windlass gives it: also that it names nothing.
 			for (const server of servers) if (!server.late) describe(server, !this.sandboxes.approvalsOf(sandbox.id).has(keyOf(server)));
 			say();

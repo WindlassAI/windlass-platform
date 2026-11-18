@@ -8,7 +8,8 @@
  * servers its user's own configuration file names (`~/.config/windlass/config.json`; a server a
  * repository's file names waits for approval). So for a turn of a session that may publish, the
  * sandbox layer writes one server into that file, `windlass_platform`, with one tool, `publish`, and
- * takes it out again when the turn ends (sandbox/turn.ts). The model finds the tool in the list
+ * takes it out again when the turn ends (sandbox/turn.ts; windlass-config.ts has the file, which
+ * the user's own MCP servers go into as well). The model finds the tool in the list
  * Windlass gives it, with the description below, and calls it like any other.
  *
  * The server is a mailbox and nothing more: a few lines of Python that do nothing with a call but
@@ -45,8 +46,7 @@ import type { CommandSandbox, Redactor } from "./repo-secrets.js";
 export const PUBLISH_SERVER = "windlass_platform";
 export const PUBLISH_TOOL = "publish";
 
-/** Windlass's configuration file of the sandbox's user, and where the server waits for the platform's answers. */
-export const WINDLASS_CONFIG_FILE = "/home/agent/.config/windlass/config.json";
+/** Where the server waits for the platform's answers. */
 export const PUBLISH_STATE_DIR = "/home/agent/.local/state/windlass-platform";
 export const PUBLISH_DIR = `${PUBLISH_STATE_DIR}/publish`;
 
@@ -166,48 +166,6 @@ export function publishServerDefinition(questionTimeoutMs: number): Record<strin
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-
-/**
- * Windlass's configuration file with the server in it. `text` is the file as it is, or null when
- * there is none (a sandbox's image has none). Null when the file is not what Windlass reads: it is
- * left alone then, and the tool is not offered.
- */
-export function withPublishServer(text: string | null, definition: Record<string, unknown>): string | null {
-	let config: unknown = {};
-	if (text !== null && text.trim() !== "") {
-		try {
-			config = JSON.parse(text);
-		} catch {
-			return null;
-		}
-	}
-	if (!isObject(config)) return null;
-	const mcp = config.mcp === undefined ? {} : config.mcp;
-	if (!isObject(mcp)) return null;
-	const servers = mcp.servers === undefined ? {} : mcp.servers;
-	if (!isObject(servers)) return null;
-	return `${JSON.stringify({ ...config, mcp: { ...mcp, servers: { ...servers, [PUBLISH_SERVER]: definition } } }, null, 2)}\n`;
-}
-
-/**
- * The file without the server: its new content, null when nothing else is in it (the file goes), and
- * undefined when it is to be left as it is (it cannot be read as configuration, or has no such server).
- */
-export function withoutPublishServer(text: string): string | null | undefined {
-	let config: unknown;
-	try {
-		config = JSON.parse(text);
-	} catch {
-		return undefined;
-	}
-	if (!isObject(config) || !isObject(config.mcp) || !isObject(config.mcp.servers) || !(PUBLISH_SERVER in config.mcp.servers)) return undefined;
-	const { [PUBLISH_SERVER]: _own, ...servers } = config.mcp.servers;
-	const { servers: _servers, ...mcp } = config.mcp;
-	const { mcp: _mcp, ...rest } = config;
-	const kept = Object.keys(servers).length > 0 ? { ...mcp, servers } : mcp;
-	const next = Object.keys(kept).length > 0 ? { ...rest, mcp: kept } : rest;
-	return Object.keys(next).length === 0 ? null : `${JSON.stringify(next, null, 2)}\n`;
-}
 
 /**
  * The arguments of a call of the tool, from Windlass's `tool.called` event of an `mcp_call`; null

@@ -8,6 +8,7 @@ import { Home } from "./screens/Home";
 import { NewAgent } from "./screens/NewAgent";
 import { Repository, RepositoryCrumb, useRepository } from "./screens/Repository";
 import { Session, SessionCrumb } from "./screens/Session";
+import { Settings, SettingsCrumb } from "./screens/Settings";
 import { MockAuthorize, SignIn } from "./screens/SignIn";
 import { Usage, UsageCrumb } from "./screens/Usage";
 import { useApp } from "./state/app";
@@ -65,7 +66,7 @@ export function App() {
 	const { auth, client } = useApp();
 	const [theme, toggleTheme] = useTheme();
 
-	const needsAuth = route.name === "home" || route.name === "new" || route.name === "usage" || route.name === "session" || route.name === "repository";
+	const needsAuth = route.name === "home" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "session" || route.name === "repository";
 	/** The repository whose page is shown: its own address, or the launch form's over it. */
 	const repositoryId = route.name === "repository" ? route.id : route.name === "new" ? (route.repository ?? null) : null;
 	useEffect(() => {
@@ -74,7 +75,7 @@ export function App() {
 	}, [needsAuth, auth, route.name]);
 
 	useEffect(() => {
-		if (route.name !== "session" && repositoryId === null) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : "Agents · Windlass";
+		if (route.name !== "session" && repositoryId === null) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : "Agents · Windlass";
 	}, [route.name, repositoryId]);
 
 	if (route.name === "mock-authorize" && client.kind === "mock") return <MockAuthorize />;
@@ -112,6 +113,17 @@ export function App() {
 					<UsageCrumb />
 				</TopBar>
 				<Usage />
+			</div>
+		);
+	}
+
+	if (route.name === "settings") {
+		return (
+			<div className="app">
+				<TopBar theme={theme} onToggleTheme={toggleTheme}>
+					<SettingsCrumb />
+				</TopBar>
+				<Settings />
 			</div>
 		);
 	}

@@ -105,7 +105,7 @@ describe("the user's record of approvals", () => {
 // ---------------------------------------------------------------------------------------------
 
 describe("what a session knows of its project's servers", () => {
-	const said = (extra: Partial<TurnServer> = {}): TurnServer => ({ name: "harbor", state: "waiting", argv: ["python3", "tools/harbor_mcp.py"], url: null, file: "/workspace/.windlass/config.json", tools: null, error: null, fingerprint: PRINT, ...extra });
+	const said = (extra: Partial<TurnServer> = {}): TurnServer => ({ name: "harbor", origin: "project", state: "waiting", argv: ["python3", "tools/harbor_mcp.py"], url: null, file: "/workspace/.windlass/config.json", tools: null, error: null, fingerprint: PRINT, ...extra });
 
 	it("keeps the definition a server waited with once it runs, for as long as its command stays the same", () => {
 		const waiting = knownServers([], [said()], NOW);
@@ -157,6 +157,35 @@ describe("what a session knows of its project's servers", () => {
 		// Nothing remembered: a server that waits is asked about, one that runs is only listed.
 		expect(serversView(project, knownServers([], [said()], NOW), [], "", asks).servers[0]).toMatchObject({ approval: null, asks: { title: "Start it?" } });
 		expect(serversView(project, running, [], "", asks).servers[0]).toEqual({ ...running[0], approval: null });
+	});
+});
+
+describe("what a session knows of its user's own servers", () => {
+	const own = (extra: Partial<TurnServer> = {}): TurnServer => ({ name: "issues", origin: "user", state: "running", argv: ["npx", "-y", "issues-mcp"], url: null, file: "/home/agent/.config/windlass/config.json", tools: 3, error: null, fingerprint: null, ...extra });
+	const project = { key: "github:7101", kind: "github" as const, label: "acme/harbor" };
+	const asks = () => ({ title: "Start it?", details: [] });
+
+	it("keeps them apart from the project's, without the file the platform wrote them into", () => {
+		const harbor: TurnServer = { name: "harbor", origin: "project", state: "waiting", argv: ["python3", "tools/harbor_mcp.py"], url: null, file: "/workspace/.windlass/config.json", tools: null, error: null, fingerprint: PRINT };
+		const known = knownServers([], [harbor, own()], NOW);
+		expect(known).toEqual([
+			{ name: "harbor", subject: "python3 tools/harbor_mcp.py", remote: false, file: "/workspace/.windlass/config.json", state: "waiting", tools: null, reason: null, fingerprint: PRINT, at: NOW },
+			{ name: "issues", origin: "user", subject: "npx -y issues-mcp", remote: false, file: null, state: "running", tools: 3, reason: null, fingerprint: null, at: NOW },
+		]);
+		// One that could not start says why, and one whose state did not change keeps the time it was first heard.
+		const failed = knownServers(known, [harbor, own({ state: "failed", tools: null, error: "the environment variable ISSUES_TOKEN named in its env is not set" })], NOW + 1000);
+		expect(failed[1]).toMatchObject({ origin: "user", state: "failed", reason: "the environment variable ISSUES_TOKEN named in its env is not set", at: NOW + 1000 });
+		expect(failed[0]).toBe(known[0]);
+		// The same name as the project's, were Windlass to say it of both origins, is two different things to know.
+		expect(sameServers(knownServers([], [own()], NOW), knownServers([], [own({ origin: "project" })], NOW))).toBe(false);
+	});
+
+	it("has no approval and asks nothing: Windlass starts them without a question, whatever is remembered for a server of the name", () => {
+		const approvals = [{ project: project.key, label: project.label, name: "issues", fingerprint: PRINT, approvedAt: NOW, expiresAt: NOW + APPROVAL_TTL_MS }];
+		const view = serversView(project, knownServers([], [own()], NOW), approvals, "", asks);
+		expect(view.servers[0]).toMatchObject({ name: "issues", origin: "user", approval: null });
+		expect(view.servers[0]).not.toHaveProperty("asks");
+		expect(view.servers[0]).not.toHaveProperty("earlier");
 	});
 });
 
@@ -438,7 +467,7 @@ describe("the panel's section", () => {
 		it("lists the project's servers: the command in full, the state, the approval and until when", async () => {
 			render(await summaryOf("checks"));
 			expect(text(".panel-title")).toEqual(["MCP servers"]);
-			expect(host.querySelector("[aria-busy=true]")?.textContent).toBe("Reading the project's servers…");
+			expect(host.querySelector("[aria-busy=true]")?.textContent).toBe("Reading the servers…");
 			await pass(500);
 			expect(host.querySelector("[aria-busy=true]")).toBeNull();
 			expect(text(".server-lede")).toEqual(["Approvals are remembered for acme/harbor."]);
@@ -450,7 +479,7 @@ describe("the panel's section", () => {
 			expect(text(".server-held")).toEqual(["approved until 13 Dec 2026", "approved until 15 Dec 2026"]);
 			expect(host.querySelector(".server-held time")?.getAttribute("datetime")).toMatch(/^2026-12-13T11:20:/);
 			expect([...host.querySelectorAll("button")].map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual([
-				"Read the project's MCP servers again",
+				"Read this agent's MCP servers again",
 				"Forget the approval of the MCP server harbor",
 				"Approve the MCP server docs",
 				"Forget the approval of the MCP server tracker",
@@ -562,7 +591,7 @@ describe("the panel's section", () => {
 			await pass(500);
 			expect(text("[role=alert]")).toEqual(["The server did not answer, so the project's MCP servers could not be read. Try again."]);
 			expect(host.querySelector(".servers")).toBeNull();
-			act(() => host.querySelector<HTMLButtonElement>('[aria-label="Read the project\'s MCP servers again"]')?.click());
+			act(() => host.querySelector<HTMLButtonElement>('[aria-label="Read this agent\'s MCP servers again"]')?.click());
 			await pass(500);
 			expect(host.querySelector("[role=alert]")).toBeNull();
 			expect(text(".server-name")).toHaveLength(3);

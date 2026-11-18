@@ -221,6 +221,15 @@ a.agent-group-name:hover .agent-group-owner {
 .repo-approvals .server-state time {
 	color: var(--ink);
 }
+/* A command or an address, on a page set in the text face: in the face of what is typed. */
+.repo-saved .server-subject {
+	font-family: var(--font-mono);
+}
+/* A server's definition in its dialog: JSON, tall enough for a command with its arguments and environment. */
+.server-definition {
+	min-height: 132px;
+	line-height: 1.5;
+}
 
 /* A session's panel names its repository: the name leads to the repository's page. */
 .kv-link {

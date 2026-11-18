@@ -45,6 +45,14 @@
  * an object here: it is the key those four tables share, GitHub's id for it, and its page
  * (`repository`) is what they hold under that key, beside the user's sessions on it.
  *
+ * And what the user keeps for their account, whatever the repository (README, "Account settings"):
+ * the defaults a new session starts with where neither the form nor its repository says
+ * (account-defaults.ts), the user's own MCP servers (personal-servers.ts), one row each, and the
+ * secrets those servers read (account-secrets.ts), one row per name, the value sealed as a
+ * repository's secret is. A session is handed the servers and the sealed values with its
+ * repository's secrets, in the one answer (`internalSessionSecrets`). Each save is one statement
+ * that reads nothing first, so saves that run together all stay and a limit holds between them.
+ *
  * And the deleted sessions whose copy of Windlass's data the bucket still holds (`backup_removal`),
  * one row each: a session that could not remove its copy as it was deleted hands it here, and this
  * actor, which outlives its sessions, tries again on its durable schedule, further apart each time.
@@ -62,6 +70,9 @@ import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, authenticate, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { config } from "../config.js";
 import {
+	type AccountDefaults,
+	type AccountSecrets,
+	type AccountSettings,
 	type ChatgptStatus,
 	type CreateSessionInput,
 	type GithubBranchList,
@@ -69,7 +80,10 @@ import {
 	type GithubRepositoryList,
 	type GithubStatus,
 	type KeptSandbox,
+	MAX_ACCOUNT_SECRETS,
+	MAX_PERSONAL_SERVERS,
 	MAX_RUNNING_SESSIONS,
+	MAX_SERVER_DEFINITION_BYTES,
 	MAX_TITLE_CHARS,
 	MAX_SECRETS_PER_REPOSITORY,
 	type RepositoryApproval,
@@ -93,12 +107,15 @@ import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches,
 import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
 import { platformModels } from "../platform-info.js";
+import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../account-defaults.js";
+import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
+import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, deleteServer, listedServer, readServers } from "../personal-servers.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, sealSecret } from "../repo-secrets.js";
 import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
 import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
-import { forgettingWords } from "../server-question.js";
+import { forgettingWords, personalServerReach } from "../server-question.js";
 import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../signin/directory.js";
 import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
@@ -418,7 +435,10 @@ async function secretProfile(id: unknown): Promise<SandboxProfile> {
  */
 async function listSecrets(db: RawAccess, project: string, profile: SandboxProfile, lists: boolean): Promise<RepositorySecrets> {
 	const rows = await db.execute<{ name: string; scope: string; updated_at: number }>("SELECT name, scope, updated_at FROM repo_secret WHERE project = ? ORDER BY name", project);
-	return listedSecrets(rows, profile, lists);
+	const listed = listedSecrets(rows, profile, lists);
+	// A secret of the account under the same name is not used in this repository's sessions: the list says where that is so.
+	const account = rows.length === 0 ? new Set<string>() : await accountSecretNames(db);
+	return account.size === 0 ? listed : { ...listed, secrets: listed.secrets.map((secret) => (account.has(secret.name) ? { ...secret, account: true } : secret)) };
 }
 
 /**
@@ -563,6 +583,45 @@ async function repositoryView(c: UserCtx, repositoryId: number, project: string)
 
 /** A name a client sent, for a log line: what is printable of it. */
 const logged = (text: string) => text.replace(/[^\x21-\x7e]/g, "?");
+
+// ---------------------------------------------------------------------------------------------
+// The account's settings: defaults, the user's own MCP servers, and their secrets
+// ---------------------------------------------------------------------------------------------
+
+/** The account's settings as their page shows them. No value of a secret is read. */
+async function accountView(db: RawAccess): Promise<AccountSettings> {
+	const defaults = await readAccountDefaults(db);
+	const servers = await readServers(db);
+	const secrets = await accountSecretNames(db);
+	const { sandboxes } = await getLayer();
+	return {
+		defaults,
+		servers: servers.map((server) => listedServer(server, secrets)),
+		serverReach: personalServerReach(sandboxes.profiles()),
+		limits: { servers: MAX_PERSONAL_SERVERS, definitionBytes: MAX_SERVER_DEFINITION_BYTES, secrets: MAX_ACCOUNT_SECRETS },
+	};
+}
+
+/**
+ * The account's secrets as a client may see them: name, when each last changed, what it reaches in a
+ * sandbox of `profile`, and which repositories have a secret of their own under its name. The value's
+ * column is not read, of either table, so no value can be in the answer.
+ */
+async function listAccountSecrets(db: RawAccess, profile: SandboxProfile): Promise<AccountSecrets> {
+	const rows = await db.execute<{ name: string; updated_at: number }>("SELECT name, updated_at FROM account_secret ORDER BY name");
+	const shared = rows.length === 0 ? [] : await db.execute<{ name: string; project: string; label: string }>("SELECT name, project, label FROM repo_secret WHERE name IN (SELECT name FROM account_secret)");
+	return listedAccountSecrets(rows, shared, profile);
+}
+
+/** What a client sent about a server of the user's own, cleaned, or the UserError that says what is wrong with it. */
+function serverInput<T>(clean: () => T): T {
+	try {
+		return clean();
+	} catch (error) {
+		if (error instanceof ServerProblem) throw new UserError(error.message, { code: error.code });
+		throw error;
+	}
+}
 
 // ---------------------------------------------------------------------------------------------
 // Sandbox time and kept sandboxes (usage.ts)
@@ -809,6 +868,11 @@ export const user = actor({
 			`);
 			// What new sessions on a repository start with (repository-defaults.ts): one row per repository, `project` as above.
 			await db.execute(DEFAULTS_TABLE);
+			// What the user keeps for their account: the defaults for new sessions (account-defaults.ts), their own MCP
+			// servers (personal-servers.ts) and the secrets those read (account-secrets.ts), each value sealed.
+			await db.execute(ACCOUNT_DEFAULTS_TABLE);
+			await db.execute(PERSONAL_SERVERS_TABLE);
+			await db.execute(ACCOUNT_SECRETS_TABLE);
 			// The deleted sessions whose copy in the bucket is still to be removed: how often this actor
 			// tried, when it tries next, and the schedule that is to do it.
 			await db.execute(`
@@ -1301,19 +1365,25 @@ export const user = actor({
 		},
 
 		/**
-		 * The secrets of a session's repository, each value still sealed, for that session's turn. The caller
-		 * must hold a service token made for exactly this user and session (`secretsCaller`), and which
-		 * repository it is is read from this actor's own index of the user's sessions, not from the call:
-		 * a session is handed the secrets of the repository it was launched on and of no other, and a
-		 * session this user does not have is handed none.
+		 * The secrets of a session's repository, each value still sealed, for that session's turn, and with
+		 * them what its user keeps for the account: the account's secrets, sealed too, and the user's own
+		 * MCP servers. The caller must hold a service token made for exactly this user and session
+		 * (`secretsCaller`), and which repository it is is read from this actor's own index of the user's
+		 * sessions, not from the call: a session is handed the secrets of the repository it was launched
+		 * on and of no other, and a session this user does not have is handed none.
 		 */
 		internalSessionSecrets: async (c, sessionId: string): Promise<SealedSecrets> => {
 			const id = approvalText(sessionId, 200);
 			requireServiceFor(c, secretsCaller(c.key[0]!, id));
-			const project = setupProjectKey(c.vars.sessions.get(id)?.repository?.id);
-			if (project === null) return { project: null, secrets: [] };
+			// A session this user does not have is handed nothing, of the account's either.
+			const session = c.vars.sessions.get(id);
+			if (!session) return { project: null, secrets: [], account: { secrets: [], servers: [] } };
+			const kept = await c.db.execute<{ name: string; sealed: string }>("SELECT name, sealed FROM account_secret ORDER BY name");
+			const account = { secrets: kept.map((row) => ({ name: row.name, sealed: row.sealed })), servers: (await readServers(c.db)).map(({ name, definition }) => ({ name, definition })) };
+			const project = setupProjectKey(session.repository?.id);
+			if (project === null) return { project: null, secrets: [], account };
 			const rows = await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project);
-			return { project, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })) };
+			return { project, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), account };
 		},
 
 		// --- a repository's page ----------------------------------------------------------------------
@@ -1420,6 +1490,114 @@ export const user = actor({
 					.slice(0, MAX_SAVED_REPOSITORIES);
 			} catch (error) {
 				throw clientError(c.log, error, "The repositories something is saved for could not be listed. Try again.");
+			}
+		},
+
+		// --- the account's settings (account-defaults.ts, personal-servers.ts, account-secrets.ts) ----
+
+		account: async (c): Promise<AccountSettings> => {
+			requireUser(c);
+			try {
+				return await accountView(c.db);
+			} catch (error) {
+				throw clientError(c.log, error, "Your settings could not be read. Try again.");
+			}
+		},
+
+		saveAccountDefaults: async (c, input: { profile?: string | null; model?: string | null }): Promise<AccountDefaults> => {
+			const profile = requireUser(c);
+			let change: DefaultsChange;
+			try {
+				const { sandboxes } = await getLayer();
+				change = cleanDefaults(input, sandboxes.profiles(), await platformModels());
+			} catch (error) {
+				if (error instanceof DefaultsProblem) throw new UserError(error.message, { code: error.code });
+				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
+			}
+			try {
+				const saved = await saveAccountDefaults(c.db, change, Date.now());
+				console.log(`[wlp] defaults.saved uid=${profile.uid} project=account${change.profile === undefined ? "" : ` profile=${change.profile ?? "none"}`}${change.model === undefined ? "" : ` model=${change.model ?? "none"}`}`);
+				return saved;
+			} catch (error) {
+				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
+			}
+		},
+
+		savePersonalServer: async (c, input: { name: string; definition: unknown; existing?: boolean }): Promise<AccountSettings> => {
+			const profile = requireUser(c);
+			// Decided before anything is awaited: what is stored is what Windlass takes, or nothing is.
+			const name = serverInput(() => cleanServerName(input?.name));
+			const definition = serverInput(() => cleanServerDefinition(input?.definition));
+			const existing = input?.existing === true;
+			try {
+				if (existing) await changeServer(c.db, name, definition, Date.now());
+				else await addServer(c.db, name, definition, Date.now());
+			} catch (error) {
+				if (error instanceof ServerProblem) throw new UserError(error.message, { code: error.code });
+				throw clientError(c.log, error, "The server could not be saved. Try again.");
+			}
+			// The name and the kind, never anything of the definition: an argument or an address may hold what its user would not want in a log.
+			console.log(`[wlp] server.saved uid=${profile.uid} name=${name} kind=${typeof definition.url === "string" ? "address" : "command"} definition=${existing ? "replaced" : "new"}`);
+			try {
+				return await accountView(c.db);
+			} catch (error) {
+				throw clientError(c.log, error, "The server was saved, but your settings could not be read again. Reload the page.");
+			}
+		},
+
+		deletePersonalServer: async (c, name: string): Promise<AccountSettings> => {
+			const profile = requireUser(c);
+			const named = approvalText(name, 200);
+			try {
+				await deleteServer(c.db, named);
+				console.log(`[wlp] server.deleted uid=${profile.uid} name=${logged(named)}`);
+				return await accountView(c.db);
+			} catch (error) {
+				throw clientError(c.log, error, "The server could not be deleted. Try again.");
+			}
+		},
+
+		accountSecrets: async (c, input: { profile: string }): Promise<AccountSecrets> => {
+			requireUser(c);
+			const profile = await secretProfile(input?.profile);
+			try {
+				return await listAccountSecrets(c.db, profile);
+			} catch (error) {
+				throw clientError(c.log, error, "Your account's secrets could not be read. Try again.");
+			}
+		},
+
+		saveAccountSecret: async (c, input: { profile: string; name: string; value: string }): Promise<AccountSecrets> => {
+			const user = requireUser(c);
+			const profile = await secretProfile(input?.profile);
+			const name = secretInput(() => cleanSecretName(input?.name));
+			const value = secretInput(() => cleanSecretValue(input?.value));
+			try {
+				// Sealed for this user, the account and the name before it is stored.
+				await saveAccountSecret(c.db, name, sealSecret(serverSealer(), user.uid, ACCOUNT_SECRET_PROJECT, name, value), Date.now());
+			} catch (error) {
+				if (error instanceof TooManySecrets) throw new UserError(error.message, { code: "too_many_secrets" });
+				throw clientError(c.log, error, "The secret could not be saved. Try again.");
+			}
+			// The name, never anything of the value: not its length either.
+			console.log(`[wlp] secret.saved uid=${user.uid} project=${ACCOUNT_SECRET_PROJECT} name=${name}`);
+			try {
+				return await listAccountSecrets(c.db, profile);
+			} catch (error) {
+				throw clientError(c.log, error, "The secret was saved, but the list could not be read again. Reload the page.");
+			}
+		},
+
+		deleteAccountSecret: async (c, input: { profile: string; name: string }): Promise<AccountSecrets> => {
+			const user = requireUser(c);
+			const profile = await secretProfile(input?.profile);
+			const name = approvalText(input?.name, 200);
+			try {
+				await deleteAccountSecret(c.db, name);
+				console.log(`[wlp] secret.deleted uid=${user.uid} project=${ACCOUNT_SECRET_PROJECT} name=${name.replace(/[^A-Za-z0-9_]/g, "?")}`);
+				return await listAccountSecrets(c.db, profile);
+			} catch (error) {
+				throw clientError(c.log, error, "The secret could not be deleted. Try again.");
 			}
 		},
 

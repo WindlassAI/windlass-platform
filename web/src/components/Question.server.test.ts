@@ -123,6 +123,9 @@ describe("the question's words", () => {
 		const one = serverQuestionWords(harbor({ unset: ["HARBOR_TOKEN"], argv: ["bash", "-c", "tracker serve --port 80"] }), { profile: profile("docker-windlass-sandbox"), demo: false, dataInSandbox: false, project: repo, secrets: [] });
 		expect(one.subject).toBe("bash -c 'tracker serve --port 80'");
 		expect(one.details[3]).toBe(`It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs. ${SAVE_HARBOR_TOKEN}`);
+		// A session with no repository: where its sandbox gives the account's secrets to MCP servers, one of those sets the variable.
+		const alone = serverQuestionWords(harbor({ unset: ["HARBOR_TOKEN"] }), { profile: profile("docker-windlass-sandbox"), demo: false, dataInSandbox: false, project: own, secrets: null, envLists: true });
+		expect(alone.details[3]).toBe("It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one. A secret of your account under that name, saved in your settings, sets it for MCP servers too.");
 		const three = serverQuestionWords(harbor({ unset: ["A", "B", "C"] }), { profile: profile("docker-hardened"), demo: false, dataInSandbox: false, project: own, secrets: null });
 		expect(three.details[3]).toBe(
 			"It will not start yet: its definition reads the variables A, B and C, which are not set where Windlass runs. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.",
@@ -245,7 +248,8 @@ describe("the question's words", () => {
 				const mine = MOCK_PROFILES.find((candidate) => candidate.id === id) as SandboxProfile;
 				for (const demo of [true, false]) {
 					// The mock plays a repository no secret of that name is saved for; a session without one can have none.
-					const context = { profile: profile(id), demo, dataInSandbox: true, project: theirs, secrets: theirs.kind === "github" ? [] : null };
+					// And a sandbox whose Windlass can be told which variables its commands get, on which what an account's secret reaches depends.
+					const context = { profile: profile(id), demo, dataInSandbox: true, project: theirs, secrets: theirs.kind === "github" ? [] : null, envLists: true };
 					for (const unset of [[], ["HARBOR_TOKEN"], ["A", "B"]]) {
 						const server = harbor({ unset, argv: ["python3", "tools/harbor_mcp.py", "it's here"] });
 						expect(mockServerQuestion({ name: server.name, argv: server.argv as string[], unset }, mine, demo, project)).toEqual(serverQuestionWords(server, context));
@@ -378,9 +382,9 @@ describe("the mock's server question", () => {
 		const question = record.question as PendingQuestion;
 		expect(question.server?.unset).toEqual(["HARBOR_TOKEN"]);
 		// The session has no repository of the GitHub connection, so there is nowhere to save the variable.
-		expect(question.details[3]).toBe("It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.");
+		expect(question.details[3]).toBe("It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one. A secret of your account under that name, saved in your settings, sets it for MCP servers too.");
 		await after(400, api.answer({ questionId: question.id, choice: "start" }));
-		expect(lines()).toEqual(['Approved the MCP server "harbor" for this project, but it did not start: the environment variable HARBOR_TOKEN named in its env is not set. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.']);
+		expect(lines()).toEqual(['Approved the MCP server "harbor" for this project, but it did not start: the environment variable HARBOR_TOKEN named in its env is not set. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one. A secret of your account under that name, saved in your settings, sets it for MCP servers too.']);
 	});
 
 	it("lets a tool call's question come first: the server's steps aside, is put again after it, and goes with the turn", async () => {

@@ -1,7 +1,7 @@
 /** How the list of agents is grouped and folded, which pull requests a repository's page lists, and what a new agent on a repository starts with. */
 import { describe, expect, it } from "vitest";
 import type { PlatformInfo, SandboxProfile, SessionRepository, SessionSummary } from "@contract";
-import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, foldGroup, groupSessions, openPulls, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile } from "./repositories";
+import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, foldGroup, groupSessions, layerChoices, openPulls, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile } from "./repositories";
 
 const repository = (id: number, owner: string, name: string, branch = "main"): SessionRepository => ({ provider: "github", id, owner, name, branch, private: true, url: `https://github.com/${owner}/${name}` });
 const harbor = repository(7101, "acme", "harbor");
@@ -132,6 +132,36 @@ describe("what a new agent on a repository starts with", () => {
 		// A choice that cannot be used is no choice.
 		expect(startingProfile("e2b", choices, info)).toBe("docker-hardened");
 		expect(startingModel("gpt-3", choices, info)).toBe("gpt-6-luna");
+	});
+
+	it("goes by the repository's default, then the account's, then the deployment's, each field by itself", () => {
+		const account = startingChoices({ profile: "docker-hardened", model: "gpt-6-luna", updatedAt: 1 }, info, "account");
+		// A repository that says nothing leaves both to the account.
+		const open = layerChoices(startingChoices(null, info), account);
+		expect(open).toEqual({ profile: "docker-hardened", model: "gpt-6-luna", from: { profile: "account", model: "account" } });
+		// One that saves only a model leaves the sandbox to the account.
+		const half = layerChoices(startingChoices({ profile: null, model: "gpt-6.1-sol", updatedAt: 1 }, info), account);
+		expect(half).toEqual({ profile: "docker-hardened", model: "gpt-6.1-sol", from: { profile: "account", model: "repository" } });
+		expect([startingProfile(null, half, info), startingModel("", half, info)]).toEqual(["docker-hardened", "gpt-6.1-sol"]);
+		// The user's own choice in the form comes before both.
+		expect([startingProfile("docker-windlass-sandbox", half, info), startingModel("gpt-6-luna", half, info)]).toEqual(["docker-windlass-sandbox", "gpt-6-luna"]);
+		// Without either, the deployment's first.
+		const none = layerChoices(startingChoices(null, info), startingChoices(null, info, "account"));
+		expect(none.from).toEqual({ profile: null, model: null });
+		expect([startingProfile(null, none, info), startingModel("", none, info)]).toEqual(["docker-windlass-sandbox", "gpt-6.1-sol"]);
+	});
+
+	it("passes over a default that cannot be used, of the repository or of the account, and says whose it was", () => {
+		const account = startingChoices({ profile: "e2b", model: "gpt-5.5-terra", updatedAt: 1 }, info, "account");
+		expect([account.profile, account.model]).toEqual([null, null]);
+		expect(account.ignored.profile).toMatch(/^Your account's default sandbox, The e2b sandbox, cannot be used/);
+		expect(account.ignored.model).toMatch(/^Your account's default model, gpt-5\.5-terra, is not offered/);
+		// The repository's unusable default gives way to the account's usable one, and the other way round.
+		const usable = startingChoices({ profile: "docker-hardened", model: null, updatedAt: 1 }, info, "account");
+		const gone = startingChoices({ profile: "firecracker", model: "gpt-6-luna", updatedAt: 1 }, info);
+		expect(gone.ignored.profile).toMatch(/^The default sandbox/);
+		expect(layerChoices(gone, usable)).toEqual({ profile: "docker-hardened", model: "gpt-6-luna", from: { profile: "account", model: "repository" } });
+		expect(layerChoices(gone, account)).toEqual({ profile: null, model: "gpt-6-luna", from: { profile: null, model: "repository" } });
 	});
 
 	it("is the deployment's first sandbox and model without defaults, and nothing before the deployment has said what it offers", () => {

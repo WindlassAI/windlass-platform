@@ -620,17 +620,26 @@ await section("the agent asks: what a request may hold, and what becomes of an o
 	);
 	expect("the server's name for a call is read from its progress, and only a name it could have made", asks.publishRequestId("windlass_platform/publish: 0/1 handed to the platform as request 0123456789abcdef01234567") === "0123456789abcdef01234567" && asks.publishRequestId("request ../../etc/passwd") === null && asks.publishRequestId(undefined) === null);
 
-	// Windlass's configuration file in the sandbox: the server goes in beside what is there, and out again.
+	// Windlass's configuration file in the sandbox: the server goes in beside what is there, and out again (server/src/windlass-config.ts).
+	const { platformConfig } = await import("../server/src/windlass-config.js");
 	const definition = asks.publishServerDefinition(10 * 60_000);
-	const alone = asks.withPublishServer(null, definition);
-	const beside = asks.withPublishServer(JSON.stringify({ approval: { untrustedPaths: ["**"] }, mcp: { servers: { tracker: { command: "tracker-mcp" } } } }), definition);
-	expect("the tool's server is written into a configuration file that is not there, and beside what one holds", alone !== null && Object.keys(JSON.parse(alone).mcp.servers).join() === asks.PUBLISH_SERVER && beside !== null && Object.keys(JSON.parse(beside).mcp.servers).join() === `tracker,${asks.PUBLISH_SERVER}` && JSON.parse(beside).approval.untrustedPaths[0] === "**");
+	const tool = [{ name: asks.PUBLISH_SERVER, definition }];
+	const held = JSON.stringify({ approval: { untrustedPaths: ["**"] }, mcp: { servers: { tracker: { command: "tracker-mcp" } } } });
+	const alone = platformConfig(null, null, tool);
+	const beside = platformConfig(held, null, tool);
+	expect(
+		"the tool's server is written into a configuration file that is not there, and beside what one holds",
+		alone?.config != null && Object.keys(JSON.parse(alone.config).mcp.servers).join() === asks.PUBLISH_SERVER && beside?.config != null && Object.keys(JSON.parse(beside.config).mcp.servers).join() === `tracker,${asks.PUBLISH_SERVER}` && JSON.parse(beside.config).approval.untrustedPaths[0] === "**",
+	);
 	expect("its results are marked as the platform's own, and a call may wait for the user's answer and the push", definition.untrusted === false && definition.timeoutSeconds === 900 && definition.command === "python3");
-	expect("a file that is not Windlass's configuration is left alone", asks.withPublishServer("{ not json", definition) === null && asks.withPublishServer("[]", definition) === null && asks.withPublishServer(JSON.stringify({ mcp: { servers: [] } }), definition) === null);
+	expect("a file that is not Windlass's configuration is left alone", platformConfig("{ not json", null, tool) === null && platformConfig("[]", null, tool) === null && platformConfig(JSON.stringify({ mcp: { servers: [] } }), null, tool) === null);
+	const emptied = platformConfig(alone?.config ?? null, alone?.written ?? null, []);
+	const restored = platformConfig(beside?.config ?? null, beside?.written ?? null, []);
 	expect(
 		"taken out again, a file that held nothing else goes, and one that held more keeps it",
-		asks.withoutPublishServer(alone as string) === null && JSON.stringify(JSON.parse(asks.withoutPublishServer(beside as string) as string)) === JSON.stringify({ approval: { untrustedPaths: ["**"] }, mcp: { servers: { tracker: { command: "tracker-mcp" } } } }) && asks.withoutPublishServer("{}") === undefined && asks.withoutPublishServer("{ not json") === undefined,
+		emptied?.config === null && emptied.written === null && emptied.changed && restored?.config != null && JSON.stringify(JSON.parse(restored.config)) === held && restored.written === null && platformConfig("{}", null, [])?.changed === false && platformConfig("{ not json", null, []) === null,
 	);
+	expect("a server left under the tool's name by a turn that was cut off goes, whether or not the platform's list names it", platformConfig(beside?.config ?? null, null, [])?.config != null && JSON.stringify(JSON.parse(platformConfig(beside?.config ?? null, null, [])?.config as string)) === held);
 
 	// What a request may hold.
 	const fine = asks.publishRequest({ title: "  Fix   the\tlight ", description: "It was off.\r\n\r\nNow it is on.\u001b[31m", commit_message: undefined }, where, NO_REDACTION);

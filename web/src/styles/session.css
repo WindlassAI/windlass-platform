@@ -1569,6 +1569,14 @@ button.output-more:hover {
 	color: var(--ink-dim);
 	overflow-wrap: anywhere;
 }
+/* A command of the user's own can be a whole script: three lines of it, and all of it where it is changed. */
+.server-subject-short {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 3;
+	line-clamp: 3;
+	overflow: hidden;
+}
 .server-reason {
 	margin-top: 3px;
 	font-family: var(--font-text);
@@ -1613,6 +1621,12 @@ button.output-more:hover {
 }
 .server-note {
 	margin-top: 14px;
+}
+/* The user's own servers under the project's: a second list, set off by its own line. */
+.server-own {
+	margin-top: 18px;
+	padding-top: 14px;
+	border-top: 1px solid var(--line);
 }
 
 /* The repository's setup command in the panel: the field, its one control, and what it does. */

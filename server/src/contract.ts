@@ -228,10 +228,10 @@ export interface SessionSummary {
 	 */
 	envLists?: boolean;
 	/**
-	 * Set once Windlass has told the session of MCP servers its project's configuration names: how many,
-	 * and when what the session knows of them last changed (a server started, failed, came to wait, an
-	 * approval was remembered or forgotten here). A client asks `servers()` again when `changedAt` moves.
-	 * Absent for a session whose project names none.
+	 * Set once Windlass has told the session of MCP servers: those its project's configuration names,
+	 * and its user's own (`PersonalServer`). How many, and when what the session knows of them last
+	 * changed (a server started, failed, came to wait, an approval was remembered or forgotten here). A
+	 * client asks `servers()` again when `changedAt` moves. Absent for a session that has none.
 	 */
 	servers?: { count: number; changedAt: number };
 }
@@ -445,6 +445,8 @@ export interface RepositorySecret {
 	updatedAt: number;
 	/** What it reaches in the sandbox the list was asked for: its profile, and the Windlass in it. */
 	reach: SecretReach;
+	/** True when the user's account has a secret of this name too (`AccountSecret`): in this repository's sessions this one is used in its place. */
+	account?: boolean;
 }
 
 /** The secrets a user saved for one repository of their GitHub connection, by name. */
@@ -509,6 +511,95 @@ export interface SavedRepository {
 	id: number;
 	/** As `RepositoryView.name`. */
 	name: string | null;
+}
+
+// --- The account's settings ------------------------------------------------------------------
+
+/**
+ * What a new session starts with where neither the launch form nor the chosen repository says so
+ * (README, "Account settings"): a sandbox profile and a model, the user's own, whatever the
+ * repository. Kept as they were saved, as a repository's are: one that names a sandbox or a model this
+ * deployment no longer offers is not used, and whoever reads it says so.
+ */
+export type AccountDefaults = RepositoryDefaults;
+
+/**
+ * An MCP server of the user's own: Windlass starts it, or reaches it, in every session of theirs,
+ * whatever the repository. It is never read from a repository. `definition` is what Windlass's own
+ * configuration takes for one server (its docs/mcp.md, "The keys"): `command` with `args`, `cwd` and
+ * `env`, or `url` with `headers`, and `tools`, `timeoutSeconds`, `startupTimeoutSeconds`, `untrusted`,
+ * `enabled`, `protocol`.
+ */
+export interface PersonalServer {
+	/** Its key in Windlass's configuration: what the model calls it by. */
+	name: string;
+	definition: Record<string, unknown>;
+	/** True when it is reached at an address and nothing is started. */
+	remote: boolean;
+	/** What starts it, or where it is reached, in one line: the command with its arguments, or the address. */
+	subject: string;
+	/** False when its definition says `enabled: false`: Windlass then leaves it out. */
+	enabled: boolean;
+	/**
+	 * The variables its definition reads (`${NAME}` in `env` or `headers`), in order, each with whether
+	 * an account secret of that name is saved. Windlass does not start a server that reads a variable
+	 * which is not set.
+	 */
+	reads: Array<{ name: string; saved: boolean }>;
+	/** When it was last saved, ms since the epoch. */
+	updatedAt: number;
+}
+
+/**
+ * What a personal server can reach where it runs, said for one sandbox this deployment can run, in
+ * the words of the question about a project's MCP server (`PendingQuestion.server`): Windlass starts a
+ * server of its user's own configuration without asking, so this is said before one is saved.
+ */
+export interface PersonalServerReach {
+	profile: SandboxProfileId;
+	/** The profile's display name. */
+	name: string;
+	/** For a server that is started by a command. */
+	command: string;
+	/** For a server that is reached at an address. */
+	address: string;
+}
+
+/** The account's settings, as their page shows them. No value of a secret is among them: `accountSecrets` lists those. */
+export interface AccountSettings {
+	defaults: AccountDefaults;
+	/** By name. */
+	servers: PersonalServer[];
+	/** One entry for each sandbox this deployment can run. */
+	serverReach: PersonalServerReach[];
+	/** How many servers and account secrets a user may keep, and how long a server's definition may be as JSON, in bytes. */
+	limits: { servers: number; definitionBytes: number; secrets: number };
+}
+
+/**
+ * A secret of the account, as it is listed: never with its value. It is handed to MCP servers only,
+ * the user's own and a project's that reads `${NAME}`: never to the agent's commands and never to a
+ * repository's setup command.
+ */
+export interface AccountSecret {
+	/** The environment variable a server's definition reads it as. */
+	name: string;
+	/** When its value was last changed, ms since the epoch. */
+	updatedAt: number;
+	/** What it reaches in the sandbox the list was asked for. `commands` is never "yes". */
+	reach: SecretReach;
+	/**
+	 * The repositories ("owner/name", or GitHub's number for one nothing names) that have a secret of
+	 * their own under this name: in a session on one of them the repository's secret is used, with its
+	 * value and its scope, and this one is not.
+	 */
+	repositories: string[];
+}
+
+export interface AccountSecrets {
+	secrets: AccountSecret[];
+	/** The profile `reach` is said for. */
+	profile: SandboxProfileId;
 }
 
 // --- Usage -----------------------------------------------------------------------------------
@@ -693,6 +784,32 @@ export interface UserActions {
 	forgetRepository(repositoryId: number): Promise<RepositoryView>;
 	/** The repositories something is kept for, by name. Asks GitHub nothing. */
 	savedRepositories(): Promise<SavedRepository[]>;
+	/** The account's settings: the defaults for new sessions and the user's own MCP servers. No secret's value. */
+	account(): Promise<AccountSettings>;
+	/**
+	 * Saves what new sessions start with where neither the launch form nor the repository says. A field
+	 * that is left out stays as it is; null saves none for it. Throws as `saveRepositoryDefaults` does.
+	 */
+	saveAccountDefaults(input: { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
+	/**
+	 * Saves an MCP server of the user's own. With `existing`, the definition of the one of that name is
+	 * replaced; without, a new one is added. Windlass has it from each session's next turn. Throws a
+	 * UserError with code `bad_server` for a name or a definition Windlass would not take (its message
+	 * names the key), `server_exists` for a new one whose name is taken, `server_not_found` for a
+	 * change of one that is not saved, and `too_many_servers` at `AccountSettings.limits.servers`.
+	 */
+	savePersonalServer(input: { name: string; definition: unknown; existing?: boolean }): Promise<AccountSettings>;
+	/** Deletes one of the user's own MCP servers. A turn that is running keeps it until it ends. */
+	deletePersonalServer(name: string): Promise<AccountSettings>;
+	/** The names and times of the account's secrets, and what each reaches in a sandbox of `profile` made now. No value. */
+	accountSecrets(input: { profile: SandboxProfileId }): Promise<AccountSecrets>;
+	/**
+	 * Saves a secret of the account: a new one, or a new value for the one of that name. MCP servers
+	 * have it from each session's next turn. Throws a UserError with code `bad_secret` for a name or
+	 * value that cannot be saved and `too_many_secrets` at `AccountSettings.limits.secrets`.
+	 */
+	saveAccountSecret(input: { profile: SandboxProfileId; name: string; value: string }): Promise<AccountSecrets>;
+	deleteAccountSecret(input: { profile: SandboxProfileId; name: string }): Promise<AccountSecrets>;
 	listSessions(): Promise<SessionSummary[]>;
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
 	renameSession(id: string, title: string): Promise<SessionSummary>;
@@ -954,9 +1071,17 @@ export type SessionServerState =
 	| "failed"
 	| "stopped";
 
-/** An MCP server the configuration of a session's project names, as the session last heard of it from Windlass. */
+/**
+ * An MCP server of a session, as the session last heard of it from Windlass: one the configuration of
+ * its project names, or one of its user's own (`PersonalServer`).
+ */
 export interface SessionServer {
 	name: string;
+	/**
+	 * "user": one of the user's own, from the account's settings: Windlass starts it without asking, so
+	 * it never waits and has no approval. Absent or "project": the project's configuration names it.
+	 */
+	origin?: "project" | "user";
 	/** What approving starts, as a question shows it: the command with its arguments, or the address it is reached at. */
 	subject: string;
 	/** True when it is reached at an address and nothing is started. */
@@ -1003,6 +1128,11 @@ export interface SessionServers {
 	servers: SessionServer[];
 	/** What forgetting an approval does and does not do where this session runs, in a sentence or two. */
 	forgetting: string;
+	/**
+	 * Set where this session's sandbox hands the account's secrets to no MCP server, and says why: a
+	 * server of the user's own that reads one does not start there.
+	 */
+	accountSecrets?: string | null;
 }
 
 export interface SessionSnapshot {
@@ -1162,6 +1292,13 @@ export const MIN_SECRET_VALUE_CHARS = 8;
 export const MAX_SECRET_VALUE_BYTES = 16_384;
 /** How many repositories one user may have defaults for; the ones saved longest ago go first. */
 export const MAX_REPOSITORY_DEFAULTS = 500;
+/** The user's own MCP servers: how many one account may keep, and how long one's definition may be as JSON, in bytes of UTF-8. */
+export const MAX_PERSONAL_SERVERS = 20;
+export const MAX_SERVER_DEFINITION_BYTES = 8_192;
+/** A server's name in Windlass's configuration: at most this many characters. */
+export const MAX_SERVER_NAME_CHARS = 64;
+/** How many secrets one account may keep for its MCP servers. */
+export const MAX_ACCOUNT_SECRETS = 50;
 /** How long a question waits for an answer before the platform declines it. */
 export const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
 /** Sessions of one user that may run a turn at the same time. */

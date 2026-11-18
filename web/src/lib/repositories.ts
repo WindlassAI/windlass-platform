@@ -1,7 +1,7 @@
 /**
  * The repository as the place a user's agents are gathered under: how the list of agents is grouped,
  * how much of a long group is shown, which pull requests a repository's page lists, and what a new
- * agent on a repository starts with.
+ * agent starts with: its user's choice, then its repository's default, then the account's.
  *
  * Everything here is worked out from what the web app already holds: the summaries of the user's
  * sessions, as their actor broadcasts them, and the deployment's own information. Nothing is asked of
@@ -109,47 +109,71 @@ export function openPulls(sessions: readonly SessionSummary[], repositoryId: num
 	return open.sort((a, b) => b.pull.pushedAt - a.pull.pushedAt || b.pull.number - a.pull.number);
 }
 
-// ---- what a new agent on a repository starts with ----------------------------------------------------
+// ---- what a new agent starts with --------------------------------------------------------------------
 
 export interface StartingChoices {
-	/** The repository's default sandbox, when one is saved and this deployment can run it. */
+	/** The default sandbox, when one is saved and this deployment can run it. */
 	profile: SandboxProfileId | null;
-	/** The repository's default model, when one is saved and this deployment offers it. */
+	/** The default model, when one is saved and this deployment offers it. */
 	model: string | null;
 	/** What is saved and is not used, each with a sentence that says why; null where nothing is left out. */
 	ignored: { profile: string | null; model: string | null };
 }
 
 /**
- * A repository's saved defaults held against what the deployment offers now. A default that names a
- * sandbox the deployment no longer lists, or cannot run, or a model it no longer offers, is left out,
- * and `ignored` says so in words.
+ * Saved defaults held against what the deployment offers now: a repository's, or with `whose`
+ * "account" the account's. A default that names a sandbox the deployment no longer lists, or cannot
+ * run, or a model it no longer offers, is left out, and `ignored` says so in words.
  */
-export function startingChoices(defaults: RepositoryDefaults | null, info: Pick<PlatformInfo, "profiles" | "models"> | null): StartingChoices {
+export function startingChoices(defaults: RepositoryDefaults | null, info: Pick<PlatformInfo, "profiles" | "models"> | null, whose: "repository" | "account" = "repository"): StartingChoices {
 	const none: StartingChoices = { profile: null, model: null, ignored: { profile: null, model: null } };
 	if (defaults === null || info === null) return none;
 	const choices: StartingChoices = { profile: null, model: null, ignored: { profile: null, model: null } };
+	const the = whose === "account" ? "Your account's default" : "The default";
 	if (defaults.profile !== null) {
 		const saved = info.profiles.find((profile) => profile.id === defaults.profile);
 		if (saved?.available) choices.profile = saved.id;
-		else choices.ignored.profile = saved ? `The default sandbox, ${saved.name}, cannot be used on this deployment now, so it is ignored.` : `The default sandbox, "${defaults.profile}", is not one this deployment has any more, so it is ignored.`;
+		else choices.ignored.profile = saved ? `${the} sandbox, ${saved.name}, cannot be used on this deployment now, so it is ignored.` : `${the} sandbox, "${defaults.profile}", is not one this deployment has any more, so it is ignored.`;
 	}
 	if (defaults.model !== null) {
 		if (info.models.includes(defaults.model)) choices.model = defaults.model;
-		else choices.ignored.model = `The default model, ${defaults.model}, is not offered here any more, so it is ignored.`;
+		else choices.ignored.model = `${the} model, ${defaults.model}, is not offered here any more, so it is ignored.`;
 	}
 	return choices;
 }
 
-/** What a launch starts on: the user's own choice in the form when they made one, then the repository's default, then the deployment's first. */
-export function startingProfile(chosen: SandboxProfileId | null, choices: StartingChoices, info: Pick<PlatformInfo, "profiles"> | null): SandboxProfileId | null {
+/** Whose default a field of the launch form stands on. */
+export type DefaultSource = "repository" | "account";
+
+/** The defaults a launch starts from, each field by itself, and whose each is; null where neither the repository nor the account has one that can be used. */
+export interface LayeredChoices {
+	profile: SandboxProfileId | null;
+	model: string | null;
+	from: { profile: DefaultSource | null; model: DefaultSource | null };
+}
+
+/**
+ * The chosen repository's defaults over the account's, field by field: a repository that saves only
+ * a model leaves the sandbox to the account. Both were held against the deployment already
+ * (`startingChoices`), so a default that cannot be used gives way to the next.
+ */
+export function layerChoices(repository: Pick<StartingChoices, "profile" | "model">, account: Pick<StartingChoices, "profile" | "model">): LayeredChoices {
+	return {
+		profile: repository.profile ?? account.profile,
+		model: repository.model ?? account.model,
+		from: { profile: repository.profile !== null ? "repository" : account.profile !== null ? "account" : null, model: repository.model !== null ? "repository" : account.model !== null ? "account" : null },
+	};
+}
+
+/** What a launch starts on: the user's own choice in the form when they made one, then the chosen repository's default, then the account's (`layerChoices`), then the deployment's first. */
+export function startingProfile(chosen: SandboxProfileId | null, choices: Pick<StartingChoices, "profile">, info: Pick<PlatformInfo, "profiles"> | null): SandboxProfileId | null {
 	const available = (id: SandboxProfileId | null) => id !== null && info !== null && info.profiles.some((profile) => profile.id === id && profile.available);
 	if (available(chosen)) return chosen;
 	if (available(choices.profile)) return choices.profile;
 	return info?.profiles.find((profile) => profile.available)?.id ?? null;
 }
 
-export function startingModel(chosen: string, choices: StartingChoices, info: Pick<PlatformInfo, "models"> | null): string {
+export function startingModel(chosen: string, choices: Pick<StartingChoices, "model">, info: Pick<PlatformInfo, "models"> | null): string {
 	if (chosen !== "" && (info === null || info.models.includes(chosen))) return chosen;
 	return choices.model ?? info?.models[0] ?? "";
 }

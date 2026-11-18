@@ -234,12 +234,16 @@ export interface TurnServerQuestion {
 }
 
 /**
- * A server the project's configuration names, as Windlass describes it at one moment of a turn
- * (`_windlass/mcp`, `_windlass/mcp_changed`). A server the project's file leaves out (`enabled: false`)
- * is not among them, and neither is one that only the user's own configuration defines.
+ * A server of the session, as Windlass describes it at one moment of a turn (`_windlass/mcp`,
+ * `_windlass/mcp_changed`): one the project's configuration names, or one of the user's own that the
+ * turn was handed (`RunTurnInput.servers`). A server a file leaves out (`enabled: false`) is not
+ * among them, and neither is anything else that only the configuration file of the sandbox's user
+ * defines: the platform's own server, or one something in the sandbox wrote there.
  */
 export interface TurnServer {
 	name: string;
+	/** "user": one of the user's own, which the turn was handed. "project": the project's configuration names it, or changes it. */
+	origin: "project" | "user";
 	/**
 	 * "waiting": not started, it waits for the user's approval. "starting", "running", "failed": what
 	 * became of one that may start. "stopped": anything else Windlass says of it.
@@ -271,6 +275,14 @@ export type TurnServerOutcome =
 	| { state: "changed" }
 	/** The approval did not reach Windlass, or it refused the request; `reason` says why. */
 	| { state: "refused"; reason: string };
+
+/** An MCP server of the session's user, as a turn is handed it: see `RunTurnInput.servers`. */
+export interface TurnPersonalServer {
+	/** Its key in Windlass's configuration. */
+	name: string;
+	/** Its definition, as Windlass's configuration takes one (personal-servers.ts, `cleanServerDefinition`). */
+	definition: Record<string, unknown>;
+}
 
 /** What a turn is handed of its repository's secrets: see `RunTurnInput.secrets`. */
 export interface TurnSecrets {
@@ -351,6 +363,18 @@ export interface RunTurnInput {
 	 */
 	secrets?: TurnSecrets;
 	/**
+	 * The MCP servers of the session's user (personal-servers.ts), for this turn: the layer writes them
+	 * into Windlass's own configuration file in the sandbox before the turn's Windlass opens its
+	 * session, beside whatever that file holds, and takes them out again when the turn has ended
+	 * (windlass-config.ts). Windlass starts a server of its user's own configuration without asking.
+	 * A sandbox that has turns already gets the list as it is now: a server its user deleted since
+	 * is gone from the file, also where an earlier turn was cut off before it could take its own out.
+	 * `onServers` is told of them beside the project's, with what Windlass says of each. A name the
+	 * platform keeps for its own server is left out. Where the file in the sandbox cannot be read as
+	 * Windlass's configuration, nothing is written and the turn runs without them.
+	 */
+	servers?: TurnPersonalServer[];
+	/**
 	 * Every event of the turn, in order: Windlass's own events exactly as `windlass --json` prints them,
 	 * and after the last of them one `cli.summary`-shaped event the layer makes itself (`type`,
 	 * `sessionId`, `executionId`, `outcome`, `steps`, `summaryCalls`, `requests`, `durationMs`, `usage`,
@@ -383,9 +407,9 @@ export interface RunTurnInput {
 	/** Called after `onServerQuestion` resolved with true, once it is known what became of the server. */
 	onServerApproved?: (question: TurnServerQuestion, outcome: TurnServerOutcome) => void;
 	/**
-	 * Called with the project's servers each time Windlass says what they are: with its answer about
-	 * what waits, before the prompt goes, and whenever one starts, fails or comes to wait while the
-	 * turn runs. It is the whole list each time, and comes before the question about a server in it
+	 * Called with the project's servers, and the user's own that the turn was handed (`servers`), each
+	 * time Windlass says what they are: with its answer about what waits, before the prompt goes, and
+	 * whenever one starts, fails or comes to wait while the turn runs. It is the whole list each time, and comes before the question about a server in it
 	 * that waits. Nothing is said when the turn ends: a server lives with the turn's Windlass process.
 	 */
 	onServers?: (servers: TurnServer[]) => void;

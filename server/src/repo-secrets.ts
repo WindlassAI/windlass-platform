@@ -224,15 +224,19 @@ export function commandSandbox(profile: Promises): CommandSandbox {
 }
 
 const LOOKS = "a name that looks like a credential (it contains TOKEN, KEY, SECRET or PASSWORD, for example)";
+/** What is left of a secret that MCP servers are not given: a repository's still goes to its setup command. */
+const ONLY_SETUP = "Only the setup command gets it.";
 
 /**
  * What a secret of this name and scope reaches in a sandbox of `profile`, and the sentence that says
  * so when it is less than the scope. `lists`: whether the sandbox's Windlass takes `withholdEnv` and
  * `passEnv` (`WindlassFeatures.envLists`). With them only one thing is left that a scope cannot have:
  * a secret for MCP servers and not for commands, where commands are not held in Windlass's sandbox.
+ * `left` ends the sentence about a secret MCP servers are not given: what it reaches all the same,
+ * which for a repository's secret is its setup command (an account's says otherwise, account-secrets.ts).
  */
-export function secretReach(name: string, scope: SecretScope, profile: Promises, lists: boolean): SecretReach {
-	if (!lists) return reachByName(name, scope, profile);
+export function secretReach(name: string, scope: SecretScope, profile: Promises, lists: boolean, left: string = ONLY_SETUP): SecretReach {
+	if (!lists) return reachByName(name, scope, profile, left);
 	if (scope === "agent") return { servers: true, commands: "yes", note: null };
 	const sandbox = commandSandbox(profile);
 	if (sandbox === "windlass") return { servers: true, commands: "no", note: null };
@@ -241,13 +245,13 @@ export function secretReach(name: string, scope: SecretScope, profile: Promises,
 		commands: "no",
 		note:
 			sandbox === "none"
-				? "MCP servers are not given it in this sandbox: the agent's commands run there without Windlass's sandbox, where a command can read whatever Windlass was handed for an MCP server from Windlass's own process. Only the setup command gets it."
-				: "MCP servers are not given it in this sandbox: it has not been established that Windlass can sandbox the agent's commands there, and a command it cannot sandbox can read whatever Windlass was handed for an MCP server from Windlass's own process. Only the setup command gets it.",
+				? `MCP servers are not given it in this sandbox: the agent's commands run there without Windlass's sandbox, where a command can read whatever Windlass was handed for an MCP server from Windlass's own process. ${left}`
+				: `MCP servers are not given it in this sandbox: it has not been established that Windlass can sandbox the agent's commands there, and a command it cannot sandbox can read whatever Windlass was handed for an MCP server from Windlass's own process. ${left}`,
 	};
 }
 
 /** `secretReach` for a Windlass without the lists: a variable it has is kept from a command by its name alone, and only from one it sandboxes. */
-function reachByName(name: string, scope: SecretScope, profile: Promises): SecretReach {
+function reachByName(name: string, scope: SecretScope, profile: Promises, left: string): SecretReach {
 	const sandbox = commandSandbox(profile);
 	const withheld = looksLikeCredential(name);
 	if (scope === "setup") {
@@ -256,7 +260,7 @@ function reachByName(name: string, scope: SecretScope, profile: Promises): Secre
 			return {
 				servers: false,
 				commands: "no",
-				note: `MCP servers are not given it in this sandbox. Windlass passes every variable it has on to the agent's commands unless it has ${LOOKS}, so with this name an MCP server could only have it if the commands had it too. Only the setup command gets it.`,
+				note: `MCP servers are not given it in this sandbox. Windlass passes every variable it has on to the agent's commands unless it has ${LOOKS}, so with this name an MCP server could only have it if the commands had it too. ${left}`,
 			};
 		}
 		return {
@@ -264,8 +268,8 @@ function reachByName(name: string, scope: SecretScope, profile: Promises): Secre
 			commands: "no",
 			note:
 				sandbox === "none"
-					? "MCP servers are not given it in this sandbox: the agent's commands run there without Windlass's sandbox, and would get every variable an MCP server can be given. Only the setup command gets it."
-					: "MCP servers are not given it in this sandbox: it has not been established that Windlass can sandbox the agent's commands there, and a command it cannot sandbox gets every variable an MCP server can be given. Only the setup command gets it.",
+					? `MCP servers are not given it in this sandbox: the agent's commands run there without Windlass's sandbox, and would get every variable an MCP server can be given. ${left}`
+					: `MCP servers are not given it in this sandbox: it has not been established that Windlass can sandbox the agent's commands there, and a command it cannot sandbox gets every variable an MCP server can be given. ${left}`,
 		};
 	}
 	if (!withheld) return { servers: true, commands: "yes", note: null };

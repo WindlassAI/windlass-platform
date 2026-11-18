@@ -10,24 +10,92 @@
  * depends on the sandbox as well as on its scope, so the list is asked for one sandbox (a profile,
  * and in a session's panel that session's own sandbox, whose Windlass may be an older one) and
  * carries, for each secret, the server's sentence about what is less than the scope says there.
+ *
+ * The account's secrets are managed with the same list and the same dialog, on the account's settings
+ * page (`AccountSecretsBlock`). They are for MCP servers only, the user's own and a project's that
+ * reads one, so they have no scope to choose: the dialog says whom they reach instead. Where a
+ * repository has a secret of the same name, its agents are handed the repository's; both lists say so.
  */
 import {
+	MAX_ACCOUNT_SECRETS,
 	MAX_SECRET_NAME_CHARS,
 	MAX_SECRET_VALUE_BYTES,
 	MAX_SECRETS_PER_REPOSITORY,
 	MIN_SECRET_VALUE_CHARS,
-	type RepositorySecret,
-	type RepositorySecrets,
 	type SandboxProfileId,
+	type SecretReach,
 	type SecretScope,
 	type SessionSummary,
 } from "@contract";
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import type { UserApi } from "../api/client";
 import { absoluteTime, count, day } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
 import { WarnIcon } from "./Icons";
+
+/** A secret as either list has it: a repository's has a scope, the account's has the repositories that stand in for it. */
+interface ListedSecret {
+	name: string;
+	updatedAt: number;
+	reach: SecretReach;
+	/** A repository's secret: who gets it. Absent for the account's, which is for MCP servers only. */
+	scope?: SecretScope;
+	/** A repository's secret: the account has one of this name too, which this one stands in for. */
+	account?: boolean;
+	/** The account's secret: the repositories that have one of their own under this name. */
+	repositories?: string[];
+}
+
+interface SecretList {
+	secrets: ListedSecret[];
+	profile: SandboxProfileId;
+}
+
+/**
+ * Whose secrets a list is, and how they are read and changed: a repository's, as a sandbox of the
+ * profile gets them (with `sessionId`, that session's own sandbox), or the account's.
+ */
+interface SecretsOwner {
+	kind: "repository" | "account";
+	/** What separates one owner's list from another's. */
+	key: string;
+	/** In words: "acme/harbor", or "your account". */
+	name: string;
+	/** How many it may keep. */
+	limit: number;
+	read(api: UserApi, profile: SandboxProfileId): Promise<SecretList>;
+	save(api: UserApi, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }): Promise<SecretList>;
+	remove(api: UserApi, profile: SandboxProfileId, name: string): Promise<SecretList>;
+}
+
+function repositoryOwner(repositoryId: number, name: string, sessionId?: string): SecretsOwner {
+	return {
+		kind: "repository",
+		key: `repository:${repositoryId}:${sessionId ?? ""}`,
+		name,
+		limit: MAX_SECRETS_PER_REPOSITORY,
+		read: (api, profile) => api.repositorySecrets(repositoryId, profile, sessionId),
+		save: (api, profile, secret) => api.saveRepositorySecret(repositoryId, profile, secret, sessionId),
+		remove: (api, profile, secretName) => api.deleteRepositorySecret(repositoryId, profile, secretName, sessionId),
+	};
+}
+
+const ACCOUNT_OWNER: SecretsOwner = {
+	kind: "account",
+	key: "account",
+	name: "your account",
+	limit: MAX_ACCOUNT_SECRETS,
+	read: (api, profile) => api.accountSecrets(profile),
+	// A value is always sent: an account's secret has nothing else to change.
+	save: (api, profile, secret) => api.saveAccountSecret(profile, { name: secret.name, value: secret.value ?? "" }),
+	remove: (api, profile, name) => api.deleteAccountSecret(profile, name),
+};
+
+/** Whom an account's secret reaches, said where a repository's secret has its scopes to choose from. */
+const ACCOUNT_REACH =
+	"MCP servers get it where their definition reads it as ${NAME}: your own, and a project's once you have approved that server. The commands the agent runs do not, and neither does a repository's setup command. Where a repository has a secret of the same name, its agents are handed that one instead, with its scope.";
 
 const SCOPES: Array<{ scope: SecretScope; name: string; means: string }> = [
 	{
@@ -45,7 +113,8 @@ const SCOPES: Array<{ scope: SecretScope; name: string; means: string }> = [
 const scopeName = (scope: SecretScope) => (scope === "agent" ? "also the agent's commands" : "setup and MCP servers");
 
 /** When a change reaches whom. `workspace` is what the agent the panel is about has: none yet, or one that was set up already; null in the launch form. */
-function applies(workspace: "none" | "made" | null): string {
+function applies(workspace: "none" | "made" | null, owner: SecretsOwner["kind"] = "repository"): string {
+	if (owner === "account") return "A change reaches MCP servers from each agent's next turn, also in a sandbox that exists already. A turn that is running keeps what it started with.";
 	if (workspace === "none") return "A change reaches the setup command when this agent's workspace is created, with its next prompt, and MCP servers and the agent's commands from its next turn.";
 	if (workspace === "made") return "A change reaches MCP servers and the agent's commands from this agent's next turn. The setup command has run in this workspace and is not run again: it gets a change when a workspace is next created.";
 	return "A change reaches the setup command in workspaces created after it, and MCP servers and the agent's commands from an agent's next turn.";
@@ -55,64 +124,72 @@ const REMOVED =
 	"The platform takes every saved value out of what it shows and keeps of an agent's work: the timeline, the output of commands, error messages. A value that a program changes before printing it, into base64 say, is not recognised.";
 
 interface SecretsState {
-	list: RepositorySecrets | null;
+	list: SecretList | null;
 	error: string | null;
-	set(list: RepositorySecrets): void;
+	set(list: SecretList): void;
 }
 
 /**
- * The secrets of a repository as a sandbox of `profile` gets them: read when either changes. With
- * `session` it is that session's sandbox, and the list is read again when what is known of it
- * changes: a sandbox is made or removed, or a turn has asked its Windlass what it can be told.
+ * An owner's secrets as a sandbox of `profile` gets them: read when either changes. With `session` it
+ * is that session's sandbox, and the list is read again when what is known of it changes: a sandbox
+ * is made or removed, or a turn has asked its Windlass what it can be told. A null owner reads nothing.
  */
-function useRepositorySecrets(repositoryId: number | null, profile: SandboxProfileId | null, session?: Pick<SessionSummary, "id" | "sandbox" | "envLists">): SecretsState {
+function useSecrets(owner: SecretsOwner | null, profile: SandboxProfileId | null, session?: Pick<SessionSummary, "id" | "sandbox" | "envLists">): SecretsState {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const [list, setList] = useState<RepositorySecrets | null>(null);
+	const [list, setList] = useState<SecretList | null>(null);
 	const [error, setError] = useState<string | null>(null);
-	const sessionId = session?.id;
 	const sandbox = session === undefined ? "" : `${session.sandbox === "none" ? "none" : "made"}:${session.envLists ?? ""}`;
 	/** What the list on show was asked for, the session's sandbox aside. */
 	const shown = useRef("");
+	const key = owner?.key ?? null;
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: `sandbox` is not read here; it is what the server's answer depends on
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `sandbox` is not read here, it is what the server's answer depends on; the owner is the same while its key is
 	useEffect(() => {
 		// The same list said for a sandbox that changed stays on show until its new sentences are there: a dialog open over it is not closed.
-		const asked = `${repositoryId}:${profile}:${sessionId ?? ""}`;
+		const asked = `${key}:${profile}`;
 		if (shown.current !== asked) setList(null);
 		shown.current = asked;
 		setError(null);
-		if (repositoryId === null || profile === null) return;
+		if (owner === null || profile === null) return;
 		let current = true;
-		client
-			.user(auth)
-			.repositorySecrets(repositoryId, profile, sessionId)
-			.then(
-				(next) => {
-					if (current) setList(next);
-				},
-				(failure: unknown) => {
-					if (current) setError(explain(failure));
-				},
-			);
+		owner.read(client.user(auth), profile).then(
+			(next) => {
+				if (current) setList(next);
+			},
+			(failure: unknown) => {
+				if (current) setError(explain(failure));
+			},
+		);
 		return () => {
 			current = false;
 		};
-	}, [client, auth, explain, repositoryId, profile, sessionId, sandbox]);
+	}, [client, auth, explain, key, profile, sandbox]);
 
-	const set = useCallback((next: RepositorySecrets) => {
+	const set = useCallback((next: SecretList) => {
 		setList(next);
 		setError(null);
 	}, []);
 	return { list, error, set };
 }
 
-function Secret({ secret, onChange }: { secret: RepositorySecret; onChange(): void }) {
+/** Under a secret: where another one of its name is used in its place, or it is used in another's. */
+function sharedName(secret: ListedSecret, owner: SecretsOwner): string | null {
+	if (secret.account) return `Your account has a secret of this name too. ${owner.name}'s agents are handed this one, with its scope, and not the account's.`;
+	const repositories = secret.repositories ?? [];
+	if (repositories.length === 0) return null;
+	const named = repositories.length <= 3 ? repositories : [...repositories.slice(0, 2), `${repositories.length - 2} more`];
+	const list = named.length === 1 ? named[0] : `${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}`;
+	return `${list} ${repositories.length === 1 ? "has a secret" : "have secrets"} of ${repositories.length === 1 ? "its" : "their"} own under this name: ${repositories.length === 1 ? "its" : "their"} agents are handed that one, with its scope, and not this.`;
+}
+
+function Secret({ secret, owner, onChange }: { secret: ListedSecret; owner: SecretsOwner; onChange(): void }) {
+	const shared = sharedName(secret, owner);
 	return (
 		<li className="secret">
 			<p className="secret-head">
 				<span className="secret-name">{secret.name}</span>
-				<span className="secret-scope">{scopeName(secret.scope)}</span>
+				<span className="secret-scope">{secret.scope === undefined ? "MCP servers only" : scopeName(secret.scope)}</span>
 			</p>
 			<p className="secret-foot">
 				<span className="secret-when">
@@ -126,16 +203,17 @@ function Secret({ secret, onChange }: { secret: RepositorySecret; onChange(): vo
 				</button>
 			</p>
 			{secret.reach.note ? <p className="secret-note">{secret.reach.note}</p> : null}
+			{shared ? <p className="secret-note">{shared}</p> : null}
 		</li>
 	);
 }
 
-function SecretList({ secrets, repository, onChange }: { secrets: RepositorySecret[]; repository: string; onChange(name: string): void }) {
-	if (secrets.length === 0) return <p className="panel-empty">No secret is saved for {repository}.</p>;
+function SecretList({ secrets, owner, onChange }: { secrets: ListedSecret[]; owner: SecretsOwner; onChange(name: string): void }) {
+	if (secrets.length === 0) return <p className="panel-empty">No secret is saved for {owner.name}.</p>;
 	return (
-		<ul className="secrets" aria-label={`The secrets saved for ${repository}`}>
+		<ul className="secrets" aria-label={`The secrets saved for ${owner.name}`}>
 			{secrets.map((secret) => (
-				<Secret key={secret.name} secret={secret} onChange={() => onChange(secret.name)} />
+				<Secret key={secret.name} secret={secret} owner={owner} onChange={() => onChange(secret.name)} />
 			))}
 		</ul>
 	);
@@ -145,23 +223,21 @@ function SecretList({ secrets, repository, onChange }: { secrets: RepositorySecr
 type DialogView = "list" | "add" | { name: string };
 
 interface SecretsDialogProps {
-	repositoryId: number;
-	/** The repository in words. */
-	repository: string;
+	/** Whose they are: a repository's, said for a session's sandbox where the panel is that session's, or the account's. */
+	owner: SecretsOwner;
 	profile: SandboxProfileId;
-	/** The session whose sandbox the list is said for; absent in the launch form. */
-	sessionId?: string;
-	secrets: RepositorySecret[];
+	secrets: ListedSecret[];
 	/** Where it starts. From the list, a finished form goes back to the list; otherwise it closes the dialog. */
 	start: DialogView;
 	workspace: "none" | "made" | null;
-	onSaved(list: RepositorySecrets): void;
+	onSaved(list: SecretList): void;
 	onClose(): void;
 }
 
-function SecretsDialog({ repositoryId, repository, profile, sessionId, secrets, start, workspace, onSaved, onClose }: SecretsDialogProps) {
+function SecretsDialog({ owner, profile, secrets, start, workspace, onSaved, onClose }: SecretsDialogProps) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
+	const account = owner.kind === "account";
 	const ids = { name: useId(), value: useId(), nameNote: useId(), valueNote: useId(), scope: useId() };
 	const [view, setView] = useState<DialogView>(start);
 	const editing = typeof view === "object" ? (secrets.find((secret) => secret.name === view.name) ?? null) : null;
@@ -186,7 +262,7 @@ function SecretsDialog({ repositoryId, repository, profile, sessionId, secrets, 
 		setError(null);
 	}, [viewKey]);
 
-	const done = (list: RepositorySecrets) => {
+	const done = (list: SecretList) => {
 		onSaved(list);
 		setValue("");
 		if (start === "list") setView("list");
@@ -208,15 +284,16 @@ function SecretsDialog({ repositoryId, repository, profile, sessionId, secrets, 
 				: bytes > MAX_SECRET_VALUE_BYTES
 					? `At most ${count(MAX_SECRET_VALUE_BYTES)} bytes; this is ${count(bytes)}.`
 					: null;
-	const full = !editing && secrets.length >= MAX_SECRETS_PER_REPOSITORY;
-	const ready = editing ? (value !== "" ? valueProblem === null : scope !== editing.scope) : name !== "" && nameProblem === null && value !== "" && valueProblem === null && !full;
+	const full = !editing && secrets.length >= owner.limit;
+	// An account's secret has a value to replace and nothing else; a repository's has its scope as well.
+	const ready = editing ? (value !== "" ? valueProblem === null : !account && scope !== editing.scope) : name !== "" && nameProblem === null && value !== "" && valueProblem === null && !full;
 
 	const save = async () => {
 		if (busy !== null || !ready) return;
 		setBusy("saving");
 		setError(null);
 		try {
-			done(await client.user(auth).saveRepositorySecret(repositoryId, profile, { name: editing ? editing.name : name, scope, ...(value === "" ? {} : { value }) }, sessionId));
+			done(await owner.save(client.user(auth), profile, { name: editing ? editing.name : name, scope, ...(value === "" ? {} : { value }) }));
 		} catch (failure) {
 			setError(explain(failure));
 		} finally {
@@ -228,7 +305,7 @@ function SecretsDialog({ repositoryId, repository, profile, sessionId, secrets, 
 		setBusy("deleting");
 		setError(null);
 		try {
-			done(await client.user(auth).deleteRepositorySecret(repositoryId, profile, editing.name, sessionId));
+			done(await owner.remove(client.user(auth), profile, editing.name));
 		} catch (failure) {
 			setError(explain(failure));
 			setConfirming(false);
@@ -241,23 +318,25 @@ function SecretsDialog({ repositoryId, repository, profile, sessionId, secrets, 
 		return (
 			<Dialog
 				title="Secrets"
-				lede={`Saved for ${repository} · handed to its agents as environment variables`}
+				lede={account ? "Saved for your account · handed to MCP servers as environment variables" : `Saved for ${owner.name} · handed to its agents as environment variables`}
 				onClose={onClose}
 				footer={
 					<>
 						<button type="button" className="button button-quiet" onClick={onClose}>
 							Done
 						</button>
-						<button type="button" className="button button-outline" onClick={() => setView("add")} disabled={secrets.length >= MAX_SECRETS_PER_REPOSITORY}>
+						<button type="button" className="button button-outline" onClick={() => setView("add")} disabled={secrets.length >= owner.limit}>
 							Add a secret
 						</button>
 					</>
 				}
 			>
 				<div className="secret-dialog">
-					<SecretList secrets={secrets} repository={repository} onChange={(chosen) => setView({ name: chosen })} />
-					<p className="secret-about">{applies(workspace)}</p>
-					<p className="secret-about">A saved value is never shown again: it can be replaced or deleted. A repository can have {MAX_SECRETS_PER_REPOSITORY} secrets.</p>
+					<SecretList secrets={secrets} owner={owner} onChange={(chosen) => setView({ name: chosen })} />
+					<p className="secret-about">{applies(workspace, owner.kind)}</p>
+					<p className="secret-about">
+						A saved value is never shown again: it can be replaced or deleted. {account ? "An account" : "A repository"} can have {owner.limit} secrets.
+					</p>
 				</div>
 			</Dialog>
 		);
@@ -282,13 +361,15 @@ function SecretsDialog({ repositoryId, repository, profile, sessionId, secrets, 
 	return (
 		<Dialog
 			title={editing ? `Change ${editing.name}` : "Add a secret"}
-			lede={`For ${repository}`}
+			lede={account ? "For your account's MCP servers" : `For ${owner.name}`}
 			onClose={leave}
 			dismissable={busy === null}
 			footer={
 				confirming && editing ? (
 					<>
-						<span className="dialog-error secret-confirm">Delete {editing.name}? Agents stop being handed it from their next turn.</span>
+						<span className="dialog-error secret-confirm">
+							Delete {editing.name}? {account ? "MCP servers" : "Agents"} stop being handed it from {account ? "each agent's" : "their"} next turn.
+						</span>
 						<button type="button" className="button button-quiet" onClick={() => setConfirming(false)} disabled={busy !== null}>
 							Keep it
 						</button>
@@ -328,7 +409,7 @@ function SecretsDialog({ repositoryId, repository, profile, sessionId, secrets, 
 							autoCapitalize="off"
 							autoCorrect="off"
 							autoComplete="off"
-							placeholder="NPM_TOKEN"
+							placeholder={account ? "TRACKER_TOKEN" : "NPM_TOKEN"}
 							value={name}
 							onChange={(event) => setName(event.target.value)}
 							disabled={busy !== null}
@@ -336,13 +417,13 @@ function SecretsDialog({ repositoryId, repository, profile, sessionId, secrets, 
 							aria-invalid={nameProblem !== null}
 						/>
 						<p className={`field-note${nameProblem ? " tone-warn" : ""}`} id={ids.nameNote}>
-							{nameProblem ?? "The environment variable it is handed over as."}
+							{nameProblem ?? (account ? "The environment variable a server's definition reads it as: ${NAME} in its env or headers." : "The environment variable it is handed over as.")}
 						</p>
 					</div>
 				)}
 				<div className="field">
 					<label className="label" htmlFor={ids.value}>
-						{editing ? "New value" : "Value"} {editing ? <span className="label-optional">optional</span> : null}
+						{editing ? "New value" : "Value"} {editing && !account ? <span className="label-optional">optional</span> : null}
 					</label>
 					{lines ? (
 						<textarea {...valueField} className={`input input-mono textarea secret-lines${valueProblem ? " input-invalid" : ""}`} rows={4} onChange={(event) => setValue(event.target.value)} />
@@ -365,7 +446,9 @@ function SecretsDialog({ repositoryId, repository, profile, sessionId, secrets, 
 					<p className={`field-note${valueProblem ? " tone-warn" : ""}`} id={ids.valueNote}>
 						{valueProblem ??
 							(editing
-								? "The saved value cannot be shown. Leave this empty to keep it."
+								? account
+									? "The saved value cannot be shown. A new one takes its place."
+									: "The saved value cannot be shown. Leave this empty to keep it."
 								: `${MIN_SECRET_VALUE_CHARS} characters or more, so that it can be taken out of what is shown, and at most ${count(MAX_SECRET_VALUE_BYTES)} bytes. It is not shown again once saved.`)}{" "}
 						{lines ? null : (
 							<button type="button" className="link" onClick={() => setLines(true)} disabled={busy !== null}>
@@ -374,24 +457,32 @@ function SecretsDialog({ repositoryId, repository, profile, sessionId, secrets, 
 						)}
 					</p>
 				</div>
-				<fieldset className="secret-scopes" aria-describedby={ids.scope}>
-					<legend className="label">Who gets it</legend>
-					{SCOPES.map((choice) => (
-						<label key={choice.scope} className={`secret-choice${scope === choice.scope ? " secret-choice-chosen" : ""}`}>
-							<input className="secret-radio" type="radio" name={ids.scope} value={choice.scope} checked={scope === choice.scope} onChange={() => setScope(choice.scope)} disabled={busy !== null} />
-							<span className="secret-pick" aria-hidden="true" />
-							<span className="secret-choice-text">
-								<span className="secret-choice-name">{choice.name}</span>
-								<span className="secret-choice-means">{choice.means}</span>
-							</span>
-						</label>
-					))}
-					<p className="field-note" id={ids.scope}>
-						What a choice comes to also depends on the agent's sandbox. Where a secret reaches less than chosen here, the list says so under it.
-					</p>
-				</fieldset>
+				{account ? (
+					<p className="secret-about">{ACCOUNT_REACH}</p>
+				) : (
+					<fieldset className="secret-scopes" aria-describedby={ids.scope}>
+						<legend className="label">Who gets it</legend>
+						{SCOPES.map((choice) => (
+							<label key={choice.scope} className={`secret-choice${scope === choice.scope ? " secret-choice-chosen" : ""}`}>
+								<input className="secret-radio" type="radio" name={ids.scope} value={choice.scope} checked={scope === choice.scope} onChange={() => setScope(choice.scope)} disabled={busy !== null} />
+								<span className="secret-pick" aria-hidden="true" />
+								<span className="secret-choice-text">
+									<span className="secret-choice-name">{choice.name}</span>
+									<span className="secret-choice-means">{choice.means}</span>
+								</span>
+							</label>
+						))}
+						<p className="field-note" id={ids.scope}>
+							What a choice comes to also depends on the agent's sandbox. Where a secret reaches less than chosen here, the list says so under it.
+						</p>
+					</fieldset>
+				)}
 				<p className="secret-about">{REMOVED}</p>
-				{full ? <p className="secret-about tone-warn">This repository has {MAX_SECRETS_PER_REPOSITORY} secrets, which is the most it can have. Delete one first.</p> : null}
+				{full ? (
+					<p className="secret-about tone-warn">
+						{account ? "Your account" : "This repository"} has {owner.limit} secrets, which is the most it can have. Delete one first.
+					</p>
+				) : null}
 				{error ? (
 					<p className="callout callout-bad" role="alert">
 						<WarnIcon />
@@ -426,18 +517,34 @@ export function SecretsBlock({
 	title(add: ReactNode): ReactNode;
 	onChanged?(): void;
 }) {
-	const secrets = useRepositorySecrets(repositoryId, profile, session);
+	const sessionId = session?.id;
+	const owner = useMemo(() => repositoryOwner(repositoryId, name, sessionId), [repositoryId, name, sessionId]);
+	return <OwnedSecrets owner={owner} profile={profile} session={session} title={title} onChanged={onChanged} />;
+}
+
+/**
+ * The account's secrets, listed and changed in place, as a sandbox of `profile` made now gets them:
+ * the list and the dialog a repository's secrets have, without a scope to choose. `title` and
+ * `onChanged` as for `SecretsBlock`.
+ */
+export function AccountSecretsBlock({ profile, title, onChanged }: { profile: SandboxProfileId | null; title(add: ReactNode): ReactNode; onChanged?(): void }) {
+	return <OwnedSecrets owner={ACCOUNT_OWNER} profile={profile} title={title} onChanged={onChanged} />;
+}
+
+function OwnedSecrets({ owner, profile, session, title, onChanged }: { owner: SecretsOwner; profile: SandboxProfileId | null; session?: SessionSummary; title(add: ReactNode): ReactNode; onChanged?(): void }) {
+	const secrets = useSecrets(owner, profile, session);
 	const { list, error } = secrets;
 	const [open, setOpen] = useState<DialogView | null>(null);
 	const workspace = session === undefined ? null : session.sandbox === "none" ? "none" : "made";
-	const set = (next: RepositorySecrets) => {
+	const account = owner.kind === "account";
+	const set = (next: SecretList) => {
 		secrets.set(next);
 		onChanged?.();
 	};
 	return (
 		<>
 			{title(
-				<button type="button" className="link secret-add" onClick={() => setOpen("add")} disabled={list === null} aria-label={`Add a secret for ${name}`}>
+				<button type="button" className="link secret-add" onClick={() => setOpen("add")} disabled={list === null} aria-label={`Add a secret for ${owner.name}`}>
 					Add…
 				</button>,
 			)}
@@ -449,9 +556,9 @@ export function SecretsBlock({
 				)
 			) : (
 				<>
-					{list.secrets.length > 0 ? <p className="panel-empty secret-lede">Environment variables for {name}'s agents. A saved value is not shown again.</p> : null}
-					<SecretList secrets={list.secrets} repository={name} onChange={(chosen) => setOpen({ name: chosen })} />
-					<p className="panel-empty secret-applies">{applies(workspace)}</p>
+					{list.secrets.length > 0 ? <p className="panel-empty secret-lede">{account ? "Environment variables for MCP servers. A saved value is not shown again." : `Environment variables for ${owner.name}'s agents. A saved value is not shown again.`}</p> : null}
+					<SecretList secrets={list.secrets} owner={owner} onChange={(chosen) => setOpen({ name: chosen })} />
+					<p className="panel-empty secret-applies">{applies(workspace, owner.kind)}</p>
 				</>
 			)}
 			{error ? (
@@ -459,9 +566,7 @@ export function SecretsBlock({
 					<WarnIcon size={13} /> {error}
 				</p>
 			) : null}
-			{open !== null && list !== null && profile !== null
-				? createPortal(<SecretsDialog repositoryId={repositoryId} repository={name} profile={profile} sessionId={session?.id} secrets={list.secrets} start={open} workspace={workspace} onSaved={set} onClose={() => setOpen(null)} />, document.body)
-				: null}
+			{open !== null && list !== null && profile !== null ? createPortal(<SecretsDialog owner={owner} profile={profile} secrets={list.secrets} start={open} workspace={workspace} onSaved={set} onClose={() => setOpen(null)} />, document.body) : null}
 		</>
 	);
 }
@@ -490,7 +595,8 @@ export function SecretsSection({ summary }: { summary: SessionSummary }) {
 
 /** The launch form's field: what is saved for the chosen repository, and the way to the dialog. `repository` is the chosen one, in words. */
 export function SecretsField({ repositoryId, repository, profile, disabled }: { repositoryId: number; repository: string; profile: SandboxProfileId | null; disabled: boolean }) {
-	const { list, error, set } = useRepositorySecrets(repositoryId, profile);
+	const owner = useMemo(() => repositoryOwner(repositoryId, repository), [repositoryId, repository]);
+	const { list, error, set } = useSecrets(owner, profile);
 	const [open, setOpen] = useState(false);
 	const note = useId();
 	const names = list?.secrets.map((secret) => secret.name) ?? [];
@@ -519,7 +625,7 @@ export function SecretsField({ repositoryId, repository, profile, disabled }: { 
 			) : null}
 			{open && list !== null && profile !== null
 				? // Outside the launch form: Enter in one of its fields must not launch an agent.
-					createPortal(<SecretsDialog repositoryId={repositoryId} repository={repository} profile={profile} secrets={list.secrets} start="list" workspace={null} onSaved={set} onClose={() => setOpen(false)} />, document.body)
+					createPortal(<SecretsDialog owner={owner} profile={profile} secrets={list.secrets} start="list" workspace={null} onSaved={set} onClose={() => setOpen(false)} />, document.body)
 				: null}
 		</div>
 	);

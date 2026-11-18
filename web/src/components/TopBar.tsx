@@ -165,6 +165,10 @@ function SignedInMenu() {
 					{auth.profile.demo ? <p className="menu-note">The demo runs a scripted model with real tool calls. It has no ChatGPT account.</p> : <ChatgptLine />}
 					{client.kind === "mock" ? <p className="menu-note">Mock backend: nothing leaves this page.</p> : null}
 					{github.enabled ? <GithubBlock github={github} /> : null}
+					{/* The account's own page: closing the menu is the link's doing, the way there is the router's. */}
+					<a className="button button-quiet menu-action" {...linkProps({ name: "settings" })} onClickCapture={() => setOpen(false)}>
+						Settings
+					</a>
 					<button type="button" className="button button-quiet menu-action" onClick={() => signOut()}>
 						Sign out
 					</button>

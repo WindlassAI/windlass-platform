@@ -138,9 +138,10 @@ import { PullProblem, type Published, type StoredRepository, branchFor, cloneRep
 import { GithubProblem, type StoredConnection } from "../github/repos.js";
 import { getLayer } from "../layer.js";
 import { EFFORTS, platformModels } from "../platform-info.js";
-import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
+import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { runSetupCommand, stopLeftoverSetup } from "../sandbox/setup.js";
-import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, commandSandbox, openSecret, setupEnvironment, windlassEnvironment } from "../repo-secrets.js";
+import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
+import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, commandSandbox, openSecret, setupEnvironment } from "../repo-secrets.js";
 import { type KnownServer, type ServerApproval, knownServers, projectOf, sameServers, serversView } from "../server-approvals.js";
 import {
 	SERVER_START,
@@ -253,6 +254,12 @@ interface SessionMeta {
 	 * absent: no turn has asked this sandbox.
 	 */
 	envLists?: boolean | null;
+	/**
+	 * Why the session's sandbox hands the account's secrets to no MCP server, or to some only, as its
+	 * last turn found it (account-secrets.ts, `accountSecretsNote`); null where it hands them all over.
+	 * Said in the panel beside the user's own servers.
+	 */
+	accountSecrets?: string | null;
 	/** Whether `repoUrl` has been cloned into the current sandbox. */
 	cloned: boolean;
 	windlassSessionId: string | null;
@@ -367,8 +374,9 @@ interface ActiveTurn {
 	/** True once the turn is being closed: nothing of it can be steered, stopped or answered any more. */
 	closed: boolean;
 	/**
-	 * The secrets of the session's repository, with their values, for this turn. Held here and nowhere
-	 * else: not in `meta`, not in SQLite. Null until they were read, and for a session that has none.
+	 * The secrets of the session's repository and of its user's account, with their values, and the
+	 * user's own MCP servers, for this turn. Held here and nowhere else: not in `meta`, not in SQLite.
+	 * Null until they were read.
 	 */
 	secrets: HeldSecrets | null;
 	/** The calls of this turn by which the agent asked the platform to publish (`<message>\n<call>`). */
@@ -379,9 +387,18 @@ interface ActiveTurn {
 	outOfTime?: boolean;
 }
 
-/** A repository's secrets as a turn holds them: the values, and what takes them out of text. */
+/**
+ * What a turn holds of what its user saved: the repository's secrets with their values, the
+ * account's secrets with theirs, the user's own MCP servers, and what takes every one of those
+ * values out of text.
+ */
 interface HeldSecrets {
+	/** The repository's; none for a session that is not on a repository of the GitHub connection. */
 	opened: OpenedSecret[];
+	/** The account's, all of them: one whose name a secret of the repository has is not handed over (account-secrets.ts). */
+	account: OpenedAccountSecret[];
+	/** The user's own MCP servers, as Windlass's configuration takes them. */
+	servers: TurnPersonalServer[];
 	redactor: Redactor;
 }
 
@@ -765,6 +782,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		}
 		// What is known of a setup run, and of the Windlass that was asked, was the old sandbox's.
 		meta.envLists = null;
+		meta.accountSecrets = null;
 		meta.setupDue = null;
 		meta.setupRunning = null;
 		meta.setupUnfinished = null;
@@ -1078,22 +1096,24 @@ const PULL_FRESH_MS = 20_000;
 
 /** What clients see of the repository: all of it but the installation, which is the platform's own matter. */
 /**
- * The secrets the user saved for the session's repository, read from their `user` actor and opened
- * here: for one turn, or for one reading of the workspace. Null for a session that is not on a
- * repository of the GitHub connection: it has none. The caller's token names this user and this
- * session, and the actor answers with the secrets of the repository it knows the session to be on.
- * Throws a TurnProblem when they cannot be read: with values it does not know, the platform could
- * hand nothing over and take nothing out of what it shows, so nothing is started.
+ * What the session's user saved that a turn needs, read from their `user` actor and opened here, for
+ * one turn or for one reading of the workspace: the secrets of the session's repository (none for a
+ * session that is not on a repository of the GitHub connection), the secrets of the account, and the
+ * user's own MCP servers. The caller's token names this user and this session, and the actor answers
+ * with the secrets of the repository it knows the session to be on. Throws a TurnProblem when they
+ * cannot be read: with values it does not know, the platform could hand nothing over and take
+ * nothing out of what it shows, so nothing is started.
  */
-async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Promise<HeldSecrets | null> {
+async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Promise<HeldSecrets> {
 	const project = setupProjectOf(meta);
-	if (!project) return null;
 	const sealed = await orNull(secretsActor(c, meta.uid, meta.sessionId).internalSessionSecrets(meta.sessionId), RECALL_WAIT_MS);
-	if (sealed === null) throw new TurnProblem(`The secrets saved for ${project.label} could not be read. Nothing was started, because without them the platform could not take their values out of what it shows. Try again.`);
+	if (sealed === null) {
+		throw new TurnProblem(`${project ? `The secrets saved for ${project.label} and for your account` : "The secrets saved for your account"} could not be read. Nothing was started, because without them the platform could not take their values out of what it shows. Try again.`);
+	}
+	const sealer = serverSealer();
 	const opened: OpenedSecret[] = [];
 	const closed: string[] = [];
-	if (sealed.project === project.key) {
-		const sealer = serverSealer();
+	if (project && sealed.project === project.key) {
 		for (const secret of sealed.secrets) {
 			try {
 				opened.push({ name: secret.name, scope: secret.scope, value: openSecret(sealer, meta.uid, project.key, secret.name, secret.sealed) });
@@ -1102,17 +1122,31 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 			}
 		}
 	}
-	if (closed.length > 0) {
+	if (project && closed.length > 0) {
 		console.error(`[wlp] secret.unreadable uid=${meta.uid} session=${meta.sessionId} project=${project.key} names=${closed.join(",")}: sealed with another key than this server's, or changed in storage`);
 		if (turn !== null) note(c, turn, "warn", `${closed.length === 1 ? `The secret ${closed[0]}` : `The secrets ${closed.join(", ")}`} saved for ${project.label} could not be opened by this server, so ${closed.length === 1 ? "it is" : "they are"} not handed over. Save ${closed.length === 1 ? "it" : "them"} again under Secrets in the session's panel.`);
 	}
-	return { opened, redactor: new SecretRedactor(opened) };
+	const account: OpenedAccountSecret[] = [];
+	const shut: string[] = [];
+	for (const secret of sealed.account?.secrets ?? []) {
+		try {
+			account.push({ name: secret.name, value: openSecret(sealer, meta.uid, ACCOUNT_SECRET_PROJECT, secret.name, secret.sealed) });
+		} catch {
+			shut.push(secret.name);
+		}
+	}
+	if (shut.length > 0) {
+		console.error(`[wlp] secret.unreadable uid=${meta.uid} session=${meta.sessionId} project=${ACCOUNT_SECRET_PROJECT} names=${shut.join(",")}: sealed with another key than this server's, or changed in storage`);
+		if (turn !== null) note(c, turn, "warn", `${shut.length === 1 ? `Your account's secret ${shut[0]}` : `Your account's secrets ${shut.join(", ")}`} could not be opened by this server, so ${shut.length === 1 ? "it is" : "they are"} not handed over. Save ${shut.length === 1 ? "it" : "them"} again in your settings.`);
+	}
+	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
+	return { opened, account, servers: (sealed.account?.servers ?? []).map(({ name, definition }) => ({ name, definition })), redactor: new SecretRedactor([...opened, ...account]) };
 }
 
-/** What takes the repository's saved values out of text now: the running turn's, or one read for this once. */
+/** What takes the saved values of the repository and of the account out of text now: the running turn's, or one read for this once. */
 async function sessionRedactor(c: Ctx, meta: SessionMeta): Promise<Redactor> {
 	const held = c.vars.turn?.secrets ?? (await readSecrets(c, meta, null));
-	return held?.redactor ?? NO_REDACTION;
+	return held.redactor;
 }
 
 function repositoryOf(repo: StoredRepository): NonNullable<SessionSummary["repository"]> {
@@ -1621,11 +1655,13 @@ function ago(ms: number): string {
 async function sessionServers(c: Ctx, meta: SessionMeta): Promise<SessionServers> {
 	const known = meta.servers ?? [];
 	const { sandboxes } = await getLayer();
-	// A session whose project names no server asks nobody.
-	const approvals = known.length === 0 ? [] : await serverApprovals.of(c, meta);
+	// A session whose project names no server asks nobody: the user's own have no approval.
+	const approvals = known.some((server) => server.origin !== "user") ? await serverApprovals.of(c, meta) : [];
 	const project = projectOf(meta);
 	const context: ServerQuestionContext = { profile: sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: sandboxes.sessionsLiveInSandbox, project };
-	return serversView(project, known, approvals, forgettingWords(context), (server) => serverPanelWords(server, context));
+	const view = serversView(project, known, approvals, forgettingWords(context), (server) => serverPanelWords(server, context));
+	// Why a server of the user's own that reads an account's secret does not start here, where that is so.
+	return known.some((server) => server.origin === "user") ? { ...view, accountSecrets: meta.accountSecrets ?? null } : view;
 }
 
 /**
@@ -2448,12 +2484,18 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				demo: meta.demo,
 				dataInSandbox: layer.sandboxes.sessionsLiveInSandbox,
 				project: projectOf(meta),
-				secrets: held === null ? null : held.opened.map(({ name, scope }) => ({ name, scope })),
+				// Null for a session that is not on a repository of the GitHub connection: it can have none.
+				secrets: setupProjectOf(meta) ? held.opened.map(({ name, scope }) => ({ name, scope })) : null,
 				envLists,
+				accountSecrets: accountSecretsFor(held.account, held.opened).map((secret) => secret.name),
 			};
+			// What the panel says of the account's secrets goes by this sandbox, as the list of the repository's does.
+			meta.accountSecrets = accountSecretsNote(profile, envLists);
 			result = await layer.windlass.runTurn(sandbox, {
-				// Windlass gets the secrets that keep to their scope in this sandbox, with the names its commands are and are not to have; every saved value is taken out of what it says.
-				secrets: held === null ? undefined : { ...windlassEnvironment(held.opened, profile, envLists), redactor: held.redactor },
+				// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.
+				secrets: { ...turnEnvironment(held.opened, held.account, profile, envLists), redactor: held.redactor },
+				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
+				servers: held.servers,
 				prompt: `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${text}`,
 				windlassSessionId: resumed ?? undefined,
 				model: meta.model,

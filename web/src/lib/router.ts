@@ -1,5 +1,5 @@
 /**
- * Routing by URL with the History API: sign-in, home, the new-agent dialog over home, the usage page,
+ * Routing by URL with the History API: sign-in, home, the new-agent dialog over home, the usage page, the account's settings,
  * a session by its ID, and a repository's page by GitHub's id for it, with the new-agent dialog over
  * that page too. A reload stays on the same screen; `?mock=1` is carried from one address to the next.
  */
@@ -13,6 +13,8 @@ export type Route =
 	| { name: "repository"; id: number }
 	/** The user's sandbox time and kept sandboxes. */
 	| { name: "usage" }
+	/** What the user keeps for their account, whatever the repository: defaults, their own MCP servers, and those servers' secrets. */
+	| { name: "settings" }
 	| { name: "signin" }
 	| { name: "session"; id: string }
 	/** The mock's stand-in for OpenAI's sign-in page. */
@@ -24,6 +26,7 @@ export function parseRoute(pathname: string): Route {
 	if (path === "/") return { name: "home" };
 	if (path === "/new") return { name: "new" };
 	if (path === "/usage") return { name: "usage" };
+	if (path === "/settings") return { name: "settings" };
 	if (path === "/signin") return { name: "signin" };
 	if (path === "/mock/authorize") return { name: "mock-authorize" };
 	const repository = /^\/repositories\/([1-9][0-9]{0,15})(\/new)?$/.exec(path);
@@ -43,6 +46,8 @@ function pathOf(route: Route): string {
 			return `/repositories/${route.id}`;
 		case "usage":
 			return "/usage";
+		case "settings":
+			return "/settings";
 		case "signin":
 			return "/signin";
 		case "session":

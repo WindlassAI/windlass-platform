@@ -7,7 +7,12 @@
  * A server lives with the Windlass process of a turn, so between turns none runs: one that ran in the
  * last turn is said to start with each turn, which is what its approval comes to.
  *
- * The section is there only for a session whose project names a server (`SessionSummary.servers`),
+ * The user's own MCP servers, from the account's settings, are listed under the project's and told
+ * apart from them: Windlass starts those in every session without asking, so they have a state and
+ * no approval, and the way to change one leads to the settings page. Where the session's sandbox
+ * hands the account's secrets to no MCP server, the list says so under one that could not start.
+ *
+ * The section is there only for a session that has a server of either kind (`SessionSummary.servers`),
  * and it is the panel's last, so that its arrival moves nothing above it.
  *
  * A repository's own page lists the same record from the other side (`RepositoryApprovals`): every
@@ -18,6 +23,7 @@
 import type { PendingQuestion, RepositoryApproval, RepositoryView, SessionServer, SessionServers, SessionSummary } from "@contract";
 import { useCallback, useEffect, useId, useState } from "react";
 import { absoluteTime, day, plural, relativeTime } from "../lib/format";
+import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
 import { RefreshIcon, WarnIcon } from "./Icons";
@@ -153,7 +159,8 @@ function Server({
 					{fact ? <span className="server-fact"> · {fact}</span> : null}
 				</span>
 			</p>
-			<p className="server-subject" title={server.file ? `Defined in ${server.file}` : undefined}>
+			{/* A project's command is shown to its last character: it is what an approval is of. The user's own is theirs to read in full in their settings. */}
+			<p className={`server-subject${server.origin === "user" ? " server-subject-short" : ""}`} title={server.origin === "user" ? "Defined in your settings" : server.file ? `Defined in ${server.file}` : undefined}>
 				<span className="visually-hidden">{server.remote ? "reached at " : "started by "}</span>
 				{server.subject}
 			</p>
@@ -170,7 +177,7 @@ function Server({
 					)}
 				</p>
 			) : null}
-			{held || !server.asks || forgot === "earlier" ? (
+			{server.origin !== "user" && (held || !server.asks || forgot === "earlier") ? (
 				<p className="server-foot">
 					{held ? (
 						<>
@@ -260,15 +267,31 @@ export function ServersSection({ sessionId, summary, question }: { sessionId: st
 	};
 
 	const servers = state?.servers ?? [];
-	const inDialog = approving === null ? null : (servers.find((server) => server.name === approving && server.asks) ?? null);
-	const anyHeld = servers.some((server) => server.approval || server.earlier);
+	// The project's, which wait for an approval, and the user's own, which Windlass starts without one.
+	const projects = servers.filter((server) => server.origin !== "user");
+	const own = servers.filter((server) => server.origin === "user");
+	const inDialog = approving === null ? null : (projects.find((server) => server.name === approving && server.asks) ?? null);
+	const anyHeld = projects.some((server) => server.approval || server.earlier);
 	const busy = summary.status !== "idle";
+	const row = (server: SessionServer) => (
+		<Server
+			key={server.name}
+			server={server}
+			busy={busy}
+			asked={question?.server?.name === server.name}
+			acting={forgetting === server.name}
+			forgot={forgot[server.name] ?? null}
+			failure={failure?.name === server.name ? failure.message : null}
+			onApprove={() => setApproving(server.name)}
+			onForget={() => void forget(server.name)}
+		/>
+	);
 
 	return (
 		<section className="panel-section" aria-labelledby="panel-servers">
 			<h2 className="panel-title" id="panel-servers">
 				MCP servers
-				<button type="button" className="icon-button icon-button-small" onClick={load} disabled={loading} aria-label="Read the project's MCP servers again" title="Reload">
+				<button type="button" className="icon-button icon-button-small" onClick={load} disabled={loading} aria-label="Read this agent's MCP servers again" title="Reload">
 					<RefreshIcon size={13} className={loading ? "spin" : undefined} />
 				</button>
 			</h2>
@@ -280,30 +303,37 @@ export function ServersSection({ sessionId, summary, question }: { sessionId: st
 			{state === null ? (
 				error ? null : (
 					<p className="panel-empty" aria-busy="true">
-						Reading the project's servers…
+						Reading the servers…
 					</p>
 				)
 			) : servers.length === 0 ? (
-				<p className="panel-empty">The project's configuration names no MCP server any more.</p>
+				<p className="panel-empty">Neither the project's configuration nor your settings name an MCP server any more.</p>
 			) : (
 				<>
-					<p className="panel-empty server-lede">{remembered(state.project)}</p>
-					<ul className="servers" aria-label="The MCP servers this session's project names">
-						{servers.map((server) => (
-							<Server
-								key={server.name}
-								server={server}
-								busy={busy}
-								asked={question?.server?.name === server.name}
-								acting={forgetting === server.name}
-								forgot={forgot[server.name] ?? null}
-								failure={failure?.name === server.name ? failure.message : null}
-								onApprove={() => setApproving(server.name)}
-								onForget={() => void forget(server.name)}
-							/>
-						))}
-					</ul>
-					{anyHeld || Object.keys(forgot).length > 0 ? <p className="panel-empty server-note">{state.forgetting}</p> : null}
+					{projects.length > 0 ? (
+						<>
+							<p className="panel-empty server-lede">{remembered(state.project)}</p>
+							<ul className="servers" aria-label="The MCP servers this session's project names">
+								{projects.map(row)}
+							</ul>
+							{anyHeld || Object.keys(forgot).length > 0 ? <p className="panel-empty server-note">{state.forgetting}</p> : null}
+						</>
+					) : null}
+					{own.length > 0 ? (
+						<>
+							<p className={`panel-empty server-lede${projects.length > 0 ? " server-own" : ""}`}>
+								Yours, from{" "}
+								<a className="kv-link" {...linkProps({ name: "settings" })}>
+									your settings
+								</a>
+								: Windlass starts them in every agent, without asking.
+							</p>
+							<ul className="servers" aria-label="Your own MCP servers, from your settings">
+								{own.map(row)}
+							</ul>
+							{state.accountSecrets && own.some((server) => server.state === "failed") ? <p className="panel-empty server-note">{state.accountSecrets}</p> : null}
+						</>
+					) : null}
 				</>
 			)}
 			{inDialog ? (

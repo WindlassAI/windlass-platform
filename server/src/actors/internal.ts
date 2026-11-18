@@ -76,11 +76,17 @@ export interface UserInternal {
 	internalRelease(sessionId: string): Promise<void>;
 }
 
-/** A repository's secrets on their way to a session: each value as the `user` actor stores it, sealed (repo-secrets.ts). */
+/** A repository's secrets, and what the user keeps for their account, on their way to a session: each value as the `user` actor stores it, sealed (repo-secrets.ts). */
 export interface SealedSecrets {
 	/** What the secrets are saved for; null when the session has no repository of the GitHub connection. */
 	project: string | null;
 	secrets: Array<{ name: string; scope: SecretScope; sealed: string }>;
+	/**
+	 * What the session's user keeps for their account, whatever the repository: the account's secrets,
+	 * each value sealed (account-secrets.ts), and the user's own MCP servers with their definitions as
+	 * Windlass takes them (personal-servers.ts).
+	 */
+	account?: { secrets: Array<{ name: string; sealed: string }>; servers: Array<{ name: string; definition: Record<string, unknown> }> };
 }
 
 /** Actions of `user` that only one session may call, with a token made for it (`secretsActor`). */

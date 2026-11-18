@@ -1,5 +1,5 @@
-import type { ChatgptStatus, SessionSummary, UsageNumbers } from "@contract";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import type { AccountSettings, ChatgptStatus, SessionSummary, UsageNumbers } from "@contract";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConnectionState, PlatformError } from "../api/client";
 import { useApp, useAuth } from "./app";
 import { createSessionStore, type SessionState } from "./sessionStore";
@@ -21,6 +21,51 @@ export interface SessionsState {
 	sessions: SessionSummary[] | null;
 	connection: ConnectionState;
 	error: PlatformError | null;
+}
+
+export interface AccountState {
+	/** Null until it was read, and when it could not be. */
+	settings: AccountSettings | null;
+	/** Why it could not be read. */
+	error: string | null;
+	reading: boolean;
+	/** Reads it again. */
+	reload(): void;
+	/** Takes the settings as an action answered them. */
+	replace(settings: AccountSettings): void;
+}
+
+/** What the user keeps for their account, whatever the repository: read when the screen opens. */
+export function useAccount(): AccountState {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [state, setState] = useState<{ settings: AccountSettings | null; error: string | null; reading: boolean }>({ settings: null, error: null, reading: true });
+	const asked = useRef(0);
+
+	const reload = useCallback(() => {
+		const mine = ++asked.current;
+		setState((now) => ({ ...now, reading: true }));
+		client
+			.user(auth)
+			.account()
+			.then(
+				(settings) => mine === asked.current && setState({ settings, error: null, reading: false }),
+				(failure: unknown) => mine === asked.current && setState((now) => ({ settings: now.settings, error: explain(failure), reading: false })),
+			);
+	}, [client, auth, explain]);
+
+	useEffect(() => {
+		reload();
+		return () => {
+			asked.current += 1;
+		};
+	}, [reload]);
+
+	const replace = useCallback((settings: AccountSettings) => {
+		asked.current += 1;
+		setState({ settings, error: null, reading: false });
+	}, []);
+	return { ...state, reload, replace };
 }
 
 /** The user's sessions, live. */

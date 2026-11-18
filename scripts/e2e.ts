@@ -491,6 +491,8 @@ async function main(server: Server | null): Promise<void> {
 	// --- platform ---------------------------------------------------------------------------------
 
 	let availableProfile = "docker-windlass-sandbox";
+	/** Whether that profile holds every command of the agent in Windlass's sandbox: there the account's secrets are given to MCP servers. */
+	let commandsSandboxed = true;
 	let models: string[] = [];
 	await check("platform info over HTTP, from any server, with no actor", async () => {
 		const response = await platformInfo();
@@ -506,6 +508,7 @@ async function main(server: Server | null): Promise<void> {
 		assert(plain(info.efforts) === plain(["low", "medium", "high", "xhigh", "max"]), `efforts are ${plain(info.efforts)}`);
 		if (!FAKE) assert(typeof info.windlassVersion === "string" && info.windlassVersion !== "", "windlassVersion is null: is the sandbox image built?");
 		availableProfile = available[0].id;
+		commandsSandboxed = available[0].approval === "auto" && !available[0].commandNetwork && !available[0].commandsCanReadAccessToken;
 		models = info.models;
 		if (OWN_SERVER) {
 			// The information is no actor's: none named "platform" exists, whoever asked.
@@ -1430,7 +1433,9 @@ async function main(server: Server | null): Promise<void> {
 		await check("a definition that reads a variable which is not set says so, in the question and after an approval", async () => {
 			const asked = await askAbout("try (mcp-env)");
 			assert(plain(asked.server?.unset) === plain(["HARBOR_TOKEN"]), `unset: ${plain(asked.server?.unset)}`);
-			assert(asked.details.length === 4 && asked.details[3] === "It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.", `details: ${plain(asked.details)}`);
+			// The session has no repository to save a secret for; where its sandbox gives the account's secrets to MCP servers, one of those would set the variable.
+			const remedy = `A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.${commandsSandboxed ? " A secret of your account under that name, saved in your settings, sets it for MCP servers too." : ""}`;
+			assert(asked.details.length === 4 && asked.details[3] === `It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs. ${remedy}`, `details: ${plain(asked.details)}`);
 			await harborWatch.conn.answer({ questionId: asked.id, choice: "start" });
 			const ended = await harborWatch.untilEnded(asked.turn);
 			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
@@ -1438,7 +1443,7 @@ async function main(server: Server | null): Promise<void> {
 			assert(
 				lines.length === 1 &&
 					lines[0].level === "warn" &&
-					lines[0].text === 'Approved the MCP server "harbor" for this project, but it did not start: the environment variable HARBOR_TOKEN named in its env is not set. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.',
+					lines[0].text === `Approved the MCP server "harbor" for this project, but it did not start: the environment variable HARBOR_TOKEN named in its env is not set. ${remedy}`,
 				`lines: ${plain(lines.map((line) => line.text))}`,
 			);
 			return lines[0].text;
@@ -2946,6 +2951,7 @@ const SERVER_APPROVAL_CHECKS = [
 	"what is remembered is with the user, not with a server: it holds across a restart, and for no other user",
 	"an approval past its time is asked about again, and the panel no longer lists it",
 	"the repository's page lists the approval with its times, for its user alone, and forgetting it there has the next session asked",
+	"a user's own MCP server and its secret, saved in the account's settings, reach a sandbox that exists with its next turn, are listed apart from the project's, and are no other user's",
 ];
 
 /**
@@ -2955,7 +2961,7 @@ const SERVER_APPROVAL_CHECKS = [
  * repository of the connection. The sandboxes are in the server's memory, so a restart loses them all.
  */
 async function serverApprovalChecks(server: Server, client: Client, demoSignIn: () => Promise<AuthResult>, profile: string): Promise<void> {
-	const [none, first, second, replaced, asked, notNow, open, forgetting, projects, restart, expiry, page] = SERVER_APPROVAL_CHECKS as [string, string, string, string, string, string, string, string, string, string, string, string];
+	const [none, first, second, replaced, asked, notNow, open, forgetting, projects, restart, expiry, page, account] = SERVER_APPROVAL_CHECKS as [string, string, string, string, string, string, string, string, string, string, string, string, string];
 	type Servers = import("../server/src/contract.js").SessionServers;
 	const DAYS_30 = 30 * 24 * 60 * 60 * 1000;
 	const ORIGIN = "http://localhost:5173";
@@ -3305,6 +3311,58 @@ async function serverApprovalChecks(server: Server, client: Client, demoSignIn: 
 			const again = await answered(fresh, "say hello (mcp)", "not_now");
 			assert(again.asked.subject === HARBOR, "the next session on the repository was not asked");
 			return `ada/harbor: "harbor", good for 30 days; forgotten on the page, and the next session was asked`;
+		});
+
+		await step(account, async () => {
+			const mine = userOf(ada);
+			const empty = await mine.account();
+			assert(empty.servers.length === 0 && empty.defaults.profile === null && empty.defaults.model === null && empty.serverReach.length > 0, `an account nothing is saved for: ${plain(empty).slice(0, 300)}`);
+			assert((empty.serverReach[0]?.command ?? "").includes("outside Windlass's sandbox around commands") || (empty.serverReach[0]?.command ?? "").includes("as the agent's commands do here") || (empty.serverReach[0]?.command ?? "").includes("never inside Windlass's sandbox"), `what a server can reach: ${empty.serverReach[0]?.command}`);
+			await refused(() => mine.savePersonalServer({ name: "windlass_platform", definition: { command: "x" } }), "bad_server");
+			await refused(() => mine.savePersonalServer({ name: "notes", definition: { comand: "x" } }), "bad_server");
+			const saved = await mine.savePersonalServer({ name: "notes", definition: { command: "notes-mcp", args: ["--stdio"], env: { NOTES_TOKEN: "${NOTES_TOKEN}" } } });
+			assert(saved.servers.length === 1 && saved.servers[0]?.subject === "notes-mcp --stdio" && plain(saved.servers[0]?.reads) === plain([{ name: "NOTES_TOKEN", saved: false }]), `saved: ${plain(saved.servers)}`);
+			await refused(() => mine.savePersonalServer({ name: "notes", definition: { command: "other" } }), "server_exists");
+
+			// A session with no server of its project: the user's own is the only one, and does not start without its secret.
+			const session = await launch(ada, { repoUrl: "https://example.com/acme/nothing.git" });
+			const turn = async (text: string) => {
+				const { turn: number } = await session.watch.conn.prompt({ text });
+				await finish(session, number);
+				return session.servers();
+			};
+			const without = await turn("Write a short program");
+			const [failed] = without.servers;
+			assert(without.servers.length === 1 && failed.name === "notes" && failed.origin === "user" && failed.state === "failed" && failed.reason === "the environment variable NOTES_TOKEN named in its env is not set" && failed.approval === null && failed.fingerprint === null && failed.asks === undefined, `without its secret: ${plain(without.servers)}`);
+
+			// The secret is saved for the account: no value comes back, and the sandbox that exists has it from its next turn.
+			const value = `made-up-${randomBytes(12).toString("hex")}`;
+			const listed = await mine.saveAccountSecret({ profile: profile as never, name: "NOTES_TOKEN", value });
+			assert(listed.secrets.length === 1 && listed.secrets[0]?.name === "NOTES_TOKEN" && !plain([listed, await mine.account()]).includes(value), "the list of the account's secrets is not one name without a value");
+			const handed = listed.secrets[0]?.reach.servers === true;
+			const withIt = await turn("Write a short program again");
+			const [now] = withIt.servers;
+			if (handed) assert(now?.state === "running" && now.tools === 1 && now.origin === "user" && withIt.accountSecrets == null, `with its secret: ${plain(withIt)}`);
+			// Where the profile's commands are not held in Windlass's sandbox, the secret reaches no server, and the panel says why.
+			else assert(now?.state === "failed" && typeof withIt.accountSecrets === "string" && withIt.accountSecrets.includes("not given to MCP servers"), `in a sandbox that hands it to no server: ${plain(withIt)}`);
+			assert(!server.output.includes(value) && !plain((await session.watch.conn.snapshot()).timeline).includes(value), "the secret's value is in the server's log or in the timeline");
+
+			// Another user has none of it.
+			const theirs = await userOf(bo).account();
+			assert(theirs.servers.length === 0 && (await userOf(bo).accountSecrets({ profile: profile as never })).secrets.length === 0, `another user's account: ${plain(theirs.servers)}`);
+
+			// The defaults are saved field by field, and a deleted server is gone from the sandbox with its next turn.
+			const { models } = (await (await platformInfo()).json()) as import("../server/src/contract.js").PlatformInfo;
+			await mine.saveAccountDefaults({ model: models[models.length - 1] });
+			const defaults = await mine.saveAccountDefaults({ profile: profile as never });
+			assert(defaults.profile === profile && defaults.model === models[models.length - 1], `the defaults: ${plain(defaults)}`);
+			await refused(() => mine.saveAccountDefaults({ model: "no-such-model" }), "bad_model");
+			assert((await mine.deletePersonalServer("notes")).servers.length === 0, "the server was not deleted");
+			const after = await turn("Write a short program once more");
+			assert(after.servers.length === 0 && (await session.watch.conn.snapshot()).summary.servers === undefined, `after it was deleted: ${plain(after.servers)}`);
+			await mine.deleteAccountSecret({ profile: profile as never, name: "NOTES_TOKEN" });
+			await mine.saveAccountDefaults({ profile: null, model: null });
+			return `"notes": could not start without its secret, ${handed ? "ran with it from the next turn" : "is given no account secret in this profile, which the panel says"}, and was gone after it was deleted`;
 		});
 	} finally {
 		for (const session of opened) await session.watch.conn.dispose().catch(() => undefined);

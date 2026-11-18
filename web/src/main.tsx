@@ -42,8 +42,9 @@ async function createPlatformClient(): Promise<PlatformClient> {
 	// Each implementation is its own chunk: the mock never loads RivetKit, the real client never loads the fixtures.
 	if (wantsMock()) {
 		const { createMockClient } = await import("./api/mock");
-		// `?github=off` plays a deployment with no GitHub App, `?sandbox=e2b` one on E2B, and
-		// `?usage=low|used|full` a day with little sandbox time left, one that is used up, and an account at its cap of sandboxes.
+		// `?github=off` plays a deployment with no GitHub App, `?sandbox=e2b` one on E2B,
+		// `?usage=low|used|full` a day with little sandbox time left, one that is used up, and an account at its cap of sandboxes,
+		// and `?account=empty` a user who has saved nothing for their account.
 		const params = new URLSearchParams(location.search);
 		const usage = params.get("usage");
 		const client = createMockClient({
@@ -51,6 +52,8 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			github: params.get("github") !== "off",
 			sandbox: params.get("sandbox") === "e2b" ? "e2b" : "docker",
 			usage: usage === "low" || usage === "used" || usage === "full" ? usage : undefined,
+			// The user has MCP servers of their own and secrets for them saved, unless the address says `account=empty`.
+			account: params.get("account") === "empty" ? "empty" : "seeded",
 		});
 		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),
 		// `__wlpMock.mockNextAnswer("elsewhere" | "error")` (an answer that does not go through),

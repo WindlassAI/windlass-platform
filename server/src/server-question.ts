@@ -48,7 +48,8 @@
  * web/src/api/mock.ts repeats these texts for the web app's mock.
  */
 
-import type { QuestionChoice, SandboxProfile, SecretScope } from "./contract.js";
+import type { PersonalServerReach, QuestionChoice, SandboxProfile, SecretScope } from "./contract.js";
+import { accountSecretsNote } from "./account-secrets.js";
 import { withheldFromServers } from "./repo-secrets.js";
 import type { TurnServerOutcome, TurnServerQuestion } from "./sandbox/api.js";
 import type { ApprovalProject } from "./server-approvals.js";
@@ -74,6 +75,11 @@ export interface ServerQuestionContext {
 	 * `secrets` is, and read as an older Windlass then.
 	 */
 	envLists?: boolean;
+	/**
+	 * The names of the account's secrets this session's turn is handed (account-secrets.ts): those no
+	 * secret of the repository has the name of. Absent where there are none, or it is not known.
+	 */
+	accountSecrets?: string[];
 }
 
 export const SERVER_START = "start";
@@ -93,30 +99,34 @@ function machine(profile: SandboxProfile): string {
 	return profile.id.startsWith("e2b") ? "microVM" : profile.id.startsWith("docker") ? "container" : "sandbox";
 }
 
-/** Where the server runs and what it can reach there, for this profile. One sentence. */
-function reach(question: Pick<TurnServerQuestion, "argv">, context: ServerQuestionContext): string {
+/**
+ * Where the server runs and what it can reach there, for this profile. One sentence. `whose` names the
+ * sandbox machine it is said of: this session's, in a question, and a session's, where it is said of
+ * every session a server of the user's own runs in (`personalServerReach`).
+ */
+function reach(question: Pick<TurnServerQuestion, "argv">, context: Pick<ServerQuestionContext, "profile" | "demo">, whose: "this session's" | "a session's" = "this session's"): string {
 	const { profile, demo } = context;
-	const where = machine(profile);
+	const where = `${whose} ${machine(profile)}`;
 	if (question.argv === null) {
-		return `Nothing is started: Windlass reaches it at that address from this session's ${where}, outside its sandbox around commands, and what the agent sends it leaves the ${where}.`;
+		return `Nothing is started: Windlass reaches it at that address from ${where}, outside its sandbox around commands, and what the agent sends it leaves the ${machine(profile)}.`;
 	}
 	// Windlass's data directory: its record of the conversation, and the turn's access token file.
 	const data = "Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed";
 	if (profile.approval === "full") {
 		// Commands run directly in the machine: the server has what they have.
 		return demo
-			? `It runs in this session's ${where}, as the agent's commands do here: like them, it has the network and can read Windlass's own data. A demo session has no access token there.`
-			: `It runs in this session's ${where}, as the agent's commands do here: like them, it has the network and can read ${data}.`;
+			? `It runs in ${where}, as the agent's commands do here: like them, it has the network and can read Windlass's own data. A demo session has no access token there.`
+			: `It runs in ${where}, as the agent's commands do here: like them, it has the network and can read ${data}.`;
 	}
 	if (!profile.commandNetwork && !profile.commandsCanReadAccessToken) {
 		return demo
-			? `It runs in this session's ${where}, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data. A demo session has no access token there.`
-			: `It runs in this session's ${where}, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read ${data}.`;
+			? `It runs in ${where}, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data. A demo session has no access token there.`
+			: `It runs in ${where}, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read ${data}.`;
 	}
 	// Nothing is promised of commands here; of the server it is certain.
 	return demo
-		? `It runs in this session's ${where} and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has the network and can read Windlass's own data. A demo session has no access token there.`
-		: `It runs in this session's ${where} and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has the network and can read ${data}.`;
+		? `It runs in ${where} and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has the network and can read Windlass's own data. A demo session has no access token there.`
+		: `It runs in ${where} and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has the network and can read ${data}.`;
 }
 
 /**
@@ -135,6 +145,20 @@ function approving(question: Pick<TurnServerQuestion, "argv">, context: ServerQu
 	return `${does} and is remembered for 30 days for exactly this definition: your sessions on ${context.project.label} then ${remote ? "connect" : "start it"} without asking, until you forget the approval in a session's panel.`;
 }
 
+/**
+ * What a server of the user's own can reach where it runs (personal-servers.ts), for each sandbox
+ * this deployment can run: the first sentence of the question about a project's server, said of a
+ * session's sandbox instead of this session's, so that the settings page and the question say the
+ * same. Windlass starts such a server without asking, in every session, so there is no question to
+ * say it in: the page says it before a server is saved. Said for a session on a ChatGPT sign-in,
+ * which is handed an access token; a demo session is handed none.
+ */
+export function personalServerReach(profiles: readonly SandboxProfile[]): PersonalServerReach[] {
+	return profiles
+		.filter((profile) => profile.available)
+		.map((profile) => ({ profile: profile.id, name: profile.name, command: reach({ argv: [] }, { profile, demo: false }, "a session's"), address: reach({ argv: null }, { profile, demo: false }, "a session's") }));
+}
+
 /** What an approval is of, and so what it does not cover. One sentence. */
 function covers(question: Pick<TurnServerQuestion, "argv">): string {
 	return question.argv === null
@@ -151,11 +175,20 @@ function remembered(context: ServerQuestionContext): string {
 /**
  * What would set the variables a definition reads and Windlass does not have. A variable is set by
  * saving a secret of its name for the repository; one that is saved and still not set is one this
- * sandbox keeps from MCP servers, and the sentence of `secretReach` says why.
+ * sandbox keeps from MCP servers, and the sentence of `secretReach` says why. A session with no
+ * repository has none to save one for: there a secret of the user's account sets the variable, where
+ * the session's sandbox hands those to MCP servers (account-secrets.ts).
  */
+/** Said of a session with no repository to save a secret for, where its sandbox hands the account's secrets to MCP servers. */
+const ACCOUNT_SECRET_SETS_IT = "A secret of your account under that name, saved in your settings, sets it for MCP servers too.";
+
 export function unsetRemedy(unset: readonly string[], context: Pick<ServerQuestionContext, "profile" | "project" | "secrets" | "envLists">): string {
 	if (unset.length === 0) return "";
-	if (context.secrets === null) return "A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.";
+	if (context.secrets === null) {
+		// Where this sandbox gives the account's secrets to MCP servers, one of those sets the variable too.
+		const account = accountSecretsNote(context.profile, context.envLists === true) === null ? ` ${ACCOUNT_SECRET_SETS_IT}` : "";
+		return `A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one.${account}`;
+	}
 	if (context.secrets === undefined) return "A variable is set by saving a secret of that name for the repository, under Secrets in the session's panel.";
 	const kept = unset.flatMap((name) => {
 		const why = withheldFromServers(name, context.secrets ?? [], context.profile, context.envLists === true);
@@ -183,22 +216,29 @@ function missing(question: TurnServerQuestion, context: ServerQuestionContext): 
 	return `${start}: ${reads}. ${unsetRemedy(question.unset, context)}`;
 }
 
-/** Which of the repository's secrets approving hands over: a server reads only the variables its definition names. */
-function handsOver(question: TurnServerQuestion): string | null {
-	const names = question.secrets ?? [];
-	if (names.length === 0) return null;
-	const one = names.length === 1;
-	const what = one ? `the secret ${names[0]}` : `the secrets ${list(names)}`;
+/**
+ * Which saved secrets approving hands over: a server reads only the variables its definition names.
+ * A secret of the user's account is said apart from the repository's: it was saved for the user's
+ * own MCP servers, and a server the project names gets it by reading its name.
+ */
+function handsOver(question: TurnServerQuestion, context: Pick<ServerQuestionContext, "accountSecrets">): string | null {
+	const read = question.secrets ?? [];
+	if (read.length === 0) return null;
+	const account = read.filter((name) => (context.accountSecrets ?? []).includes(name));
+	const repository = read.filter((name) => !account.includes(name));
+	const what = (names: readonly string[], kind: string) => (names.length === 1 ? `the ${kind} ${names[0]}` : `the ${kind}s ${list(names)}`);
+	const whose = [...(repository.length > 0 ? [`${what(repository, "secret")} saved for this repository`] : []), ...(account.length > 0 ? [`${what(account, "secret")} of your account, saved in your settings for MCP servers`] : [])];
+	const one = read.length === 1;
 	return question.argv === null
-		? `Its definition reads ${what} saved for this repository: approving sends ${one ? "its value" : "their values"} to that address.`
-		: `Its definition reads ${what} saved for this repository: approving gives ${one ? "its value" : "their values"} to the server.`;
+		? `Its definition reads ${whose.join(", and ")}: approving sends ${one ? "its value" : "their values"} to that address.`
+		: `Its definition reads ${whose.join(", and ")}: approving gives ${one ? "its value" : "their values"} to the server.`;
 }
 
 /** The question as the clients show it: `PendingQuestion`'s title, subject, details and choices. */
 export function serverQuestionWords(question: TurnServerQuestion, context: ServerQuestionContext): { title: string; subject: string; details: string[]; choices: QuestionChoice[] } {
 	const remote = question.argv === null;
 	const unset = missing(question, context);
-	const handed = handsOver(question);
+	const handed = handsOver(question, context);
 	return {
 		title: remote ? `Connect to this project's MCP server "${question.name}"?` : `Start this project's MCP server "${question.name}"?`,
 		subject: question.argv === null ? (question.url ?? "") : commandLine(question.argv),

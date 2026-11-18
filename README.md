@@ -65,7 +65,9 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
                            │                                    sign-in (encrypted) and its access tokens,
                            │                                    approvals of projects' MCP servers,
                            │                                    setup commands of repositories, their
-                           │                                    secrets (encrypted) and their defaults
+                           │                                    secrets (encrypted) and their defaults,
+                           │                                    and the account's own: defaults, MCP
+                           │                                    servers and their secrets (encrypted)
                            └─ agentSession  [uid, sessionId]    timeline in SQLite, one sandbox
                                                │
                                                ▼
@@ -755,6 +757,8 @@ asks the platform, and the platform does what "Open pull request" does, with the
   work to GitHub: commit and push it to the session's own branch and open or update the session's pull
   request."), with the rest of its description when it looks the tool up. A session without such a
   repository, or on a deployment without a GitHub App, is given no such server and is told of no such tool.
+  The user's own MCP servers go into the same file ("Account settings"); `server/src/windlass-config.ts`
+  has what the platform writes there and how it is taken out.
   (Windlass's protocol has a place for a client's servers, `mcpServers` in `session/new`; this Windlass
   ignores it, which is why the server goes into the file.)
 - **What the platform acts on.** The server is a mailbox: a few lines of Python that do nothing with a call but
@@ -1111,7 +1115,10 @@ the same place as a tool call's question, with the same control.
   Save a secret named HARBOR_TOKEN for acme/harbor, under Secrets in this session's panel: it is handed over
   from the next turn."), or, where a secret of that name is saved and the session's sandbox keeps it from MCP
   servers (commands are not held in Windlass's sandbox there, or its Windlass is an older one), why. An
-  approval of such a server ends in Windlass's own reason and the same sentence.
+  approval of such a server ends in Windlass's own reason and the same sentence. A session on no
+  repository has none to save a secret for: there the sentence adds that a secret of the user's account
+  under that name sets the variable, where the session's sandbox gives those to MCP servers ("Account
+  settings").
 - **What is remembered, and where.** Windlass keeps an approval in its data directory, for the project
   directory and exactly that definition, for 30 days. On E2B that directory is on the sandbox's disk, so by
   itself an approval would hold for one sandbox: every new session on the repository would ask again, and so
@@ -1146,7 +1153,8 @@ the same place as a tool call's question, with the same control.
   on starting it, and a server that is running is not stopped (Windlass's protocol has an approval and no
   withdrawal, and nothing that stops a server: `_windlass/mcp`, `_windlass/mcp_approve` and
   `_windlass/mcp_changed` are all it has). The section says this under the list. A session whose project names
-  no server has no such section.
+  no server has no such section, unless its user has MCP servers of their own: those are listed there
+  too, apart from the project's, with a state and no approval ("Account settings").
 - **Approving from the panel.** A server that waits because the user said "not now" has "Approve…" there. The
   dialog shows the command and the file and says what the question says. Windlass itself takes an approval at
   any time a session is open, with or without a turn (`approveMcpServer` in its
@@ -1225,6 +1233,8 @@ something, and nothing is left once they have deleted it.
   chosen further up. A choice made in the form comes first and holds for that session only. A default that
   names a sandbox or a model the deployment no longer offers is left out, and both the page and the form
   say so. Whether the agent may publish without asking is the session's own setting and is not among them.
+  Where a repository saves none, the account's default holds ("Account settings"), and the page says so
+  under the field.
 - **Saves that run together.** The actor's actions interleave wherever one of them waits. A save of the
   defaults names the fields it changes and writes those columns in one statement, without reading the row
   first, so a save of the sandbox and a save of the model that run together both stay, and neither undoes
@@ -1245,6 +1255,133 @@ The web app's mock (`?mock=1`) has defaults saved for acme/harbor (`/repositorie
 that is no longer offered for ada/tide-tables (`/repositories/7102`), a secret and no agent for acme/quay,
 and a repository the connection no longer covers with a setup command, a secret and an approval still saved
 (`/repositories/7190`).
+
+## Account settings
+
+What a user configures for a repository holds for that repository. Three things belong to the user and
+hold whatever the repository, and have a page of their own (`/settings`, from the account menu in the
+top bar; `web/src/screens/Settings.tsx`): defaults for new sessions, MCP servers of the user's own, and
+the secrets those servers read. All three are kept in the user's `user` actor, in tables of their own
+beside the repositories', and each is read and changed by its own actions (`account`,
+`saveAccountDefaults`, `savePersonalServer`, `deletePersonalServer`, `accountSecrets`,
+`saveAccountSecret`, `deleteAccountSecret`).
+
+### Defaults
+
+- **What they are.** A sandbox profile and a model (`server/src/account-defaults.ts`), under the rules
+  of a repository's defaults: checked against what the deployment offers when they are saved, and doing
+  nothing on the server afterwards.
+- **The order.** The launch form goes by the user's own choice in the form, then the chosen
+  repository's default, then the account's, then the deployment's first, each of the two fields by
+  itself (`layerChoices`, `web/src/lib/repositories.ts`): a repository that saves only a model leaves
+  the sandbox to the account. An agent on no repository, or on a pasted address, starts from the
+  account's.
+- **What the form says.** Beside the repository it says which defaults it stands on and whose each
+  is ("This agent starts in Docker, hardened, your account's default, and on gpt-6-luna, the default
+  saved for acme/harbor."), offers to take back a default its user chose over, and says of a default
+  that names a sandbox or a model the deployment no longer offers that it is ignored, whose it was,
+  and where it is changed. A repository's page says what a field left without a default comes to:
+  the account's default where there is one.
+- **Saves that run together.** As a repository's: a save names the fields it changes and is one
+  statement that writes those columns, so a save of the sandbox and a save of the model both stay.
+
+### MCP servers of the user's own
+
+A user defines MCP servers once, and every session of theirs has them: an issue tracker, a
+documentation search, whatever the repository. They are never read from a repository; a repository's
+own servers are the ones in its `.windlass/config.json` ("A project's MCP servers").
+
+- **A server** is a name and a definition, written as Windlass's own configuration takes one server
+  (its docs/mcp.md): `command` with `args`, `cwd` and `env`, or `url` with `headers`, and `tools`,
+  `timeoutSeconds`, `startupTimeoutSeconds`, `untrusted`, `enabled`, `protocol`. The page takes it as
+  JSON.
+- **What is saved is what Windlass takes** (`server/src/personal-servers.ts`). Windlass refuses a
+  configuration file with a key it does not know or a value of the wrong type, and a turn whose
+  configuration is refused fails before anything is sent. So a definition is held to Windlass's rules
+  key by key when it is saved, refused with the key that is wrong, and stored rebuilt from the keys
+  that are known; a stored row that does not pass is not handed to a turn. The list of keys is a copy
+  of Windlass's, which `scripts/account-check.ts` holds against Windlass's source when that is beside
+  this repository.
+- **Limits.** 20 servers for an account; a definition of at most 8,192 bytes as JSON; a name of
+  letters, digits, `_`, `.` and `-`, at most 64 characters, which is Windlass's rule for one. Adding
+  a server is one statement that inserts it only while the account keeps fewer than it may, so the
+  limit holds between saves that run together, and none of them undoes another.
+- **The platform's own server keeps its name.** No server of a user's may be called
+  `windlass_platform`, or by a name that begins with it; the platform's own is written into the file
+  last; and whatever the file holds under that name without the platform having put it there is
+  removed. A user's definition can neither take the name nor replace the server.
+- **How a session gets them** (`server/src/windlass-config.ts`, `server/src/sandbox/turn.ts`). A
+  session reads its user's servers from the `user` actor when a turn starts, with the secrets, in the
+  one answer. The sandbox layer writes them into Windlass's own configuration file in the sandbox
+  (`~/.config/windlass/config.json`), the file the tool to publish goes into, before the turn's
+  Windlass opens its session, and takes them out again when the turn has ended. What the file holds
+  besides stays: a definition of the same name gives way for the turn and is put back. What the
+  platform wrote is known from a list of its own beside the file
+  (`~/.local/state/windlass-platform-servers.json`).
+- **When a change takes effect.** With each session's next turn, also in a sandbox that exists
+  already: every turn writes the list as it is then, and first takes out what an earlier turn left
+  behind because its server stopped under it. A deleted server does not go on starting. A turn that
+  is running keeps what it started with. The page says so under the list.
+- **Windlass does not ask about them.** It asks before it starts a server a project's file names,
+  and starts one its user's own configuration names without a question. So what such a server gets is
+  said on the settings page, in the dialog a server is added or changed in, before it is saved, in
+  the first sentence of the question about a project's server (`personalServerReach`,
+  `server/src/server-question.ts`), for each sandbox the deployment can run: "It runs in a session's
+  container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the
+  network and can read Windlass's own data, including the session's access token, which lasts about
+  an hour and cannot be renewed." Calling its tools is another matter: where Windlass sandboxes
+  commands it asks before each call, through the question the platform already puts.
+- **A definition is no place for a credential.** It is stored as it is written, not encrypted,
+  shown again on the page, written into a file in the sandbox and shown in a session's panel. The
+  dialog says so, says to save a credential as a secret and to read it as `${NAME}`, and points at a
+  value in `env` or `headers`, or a user name in an address, that looks written out. No log line
+  holds anything of a definition: saving logs the name and whether it is a command or an address.
+- **In a session's panel.** The section "MCP servers" lists the user's own under the project's, apart
+  from them ("Yours, from your settings"), each with what Windlass said of it in the session's last
+  turn: it runs and with how many tools, or it could not start and why. They have no approval and
+  nothing to approve. A server of the same name that the project's file names is the project's, as
+  Windlass has it, and is asked about. A session lists them once it has had a turn.
+
+### Secrets of the account
+
+A server needs a token. The account's secrets are a repository's secrets ("A repository's secrets")
+with another owner and a narrower reach (`server/src/account-secrets.ts`).
+
+- **Stored as a repository's.** One row per name in the `user` actor, the value sealed under the same
+  key and bound to the user, the account and the name: it does not open as another user's, as a
+  repository's secret of that name, or under another name. Write-only: the value comes from the
+  browser once, and the listing does not read the value's column. The rules for a name and a value
+  are a repository's. An account can keep 50, by one statement that holds the limit between saves
+  that run together.
+- **For MCP servers only.** Windlass is handed an account's secret in its environment, where a
+  server's definition reads it as `${NAME}`, and it is named in `withholdEnv`, so no command the agent
+  runs is given it. It is never handed to a repository's setup command. A project's server that reads
+  the name gets it too, once its user has approved that server, and the question about such a server
+  says so apart from the repository's secrets ("Its definition reads the secret TRACKER_TOKEN of your
+  account, saved in your settings for MCP servers: approving gives its value to the server.").
+- **Where commands are not sandboxed, it reaches nothing.** The line a repository's secrets keep: a
+  withheld variable can be read from Windlass's process by a command that runs as Windlass's user, so
+  in `docker-hardened`, `e2b-open` and E2B before its check an account's secret stays out of
+  Windlass's environment, and a server that reads it does not start. In a sandbox with an older
+  Windlass it is handed over only under a name Windlass keeps from commands by itself. The list on
+  the settings page says what each secret reaches in the sandbox a new session starts in, and a
+  session's panel says why its sandbox hands them to no server, under a server that could not start.
+- **One name, two secrets.** A session on a repository that has a secret of the same name is handed
+  the repository's, with its value and its scope, and not the account's: what is saved for the one
+  repository is the more particular choice, as with the defaults. Both lists say so under the secret
+  ("acme/harbor has a secret of its own under this name: its agents are handed that one, with its
+  scope, and not this."), and both values are taken out of what the session shows.
+- **Redaction.** As a repository's: every value of the account is taken out of everything that leaves
+  the sandbox layer and replaced by `[secret:NAME]`, also where it is not handed over.
+
+```sh
+cd server && npx tsx ../scripts/account-check.ts   # the rules on their own: defaults, names, definitions, limits under saves that interleave, sealing, reach, the configuration file
+cd server && flock /tmp/wlp-test.lock pnpm e2e     # one step of its last section: through the actors, on the fake layer
+```
+
+The web app's mock has two servers and two secrets saved for the account (`?mock=1`; `&account=empty`
+for an account with nothing saved): one server that runs, one whose secret is not saved, and a secret
+under a name acme/harbor has one of its own for. Its seeded sessions that have a sandbox list them.
 
 ## Usage and limits
 
@@ -1370,6 +1507,8 @@ used up and an account with no place left.
 | `server/src/usage.ts` | A user's sandbox time and kept sandboxes: what is counted, the two limits, the book the `user` actor decides with, and the words of a refusal ("Usage and limits") |
 | `server/src/setup-command.ts`, `server/src/sandbox/setup.ts` | A repository's setup command: what it is saved for, its limits, what is kept of a run's output and what the agent is told; and the run itself in a sandbox |
 | `server/src/repository-defaults.ts` | A repository's defaults for new sessions: what may be saved, and how a save writes only the fields it names ("A repository's page") |
+| `server/src/account-defaults.ts`, `server/src/personal-servers.ts`, `server/src/account-secrets.ts` | What a user keeps for their account ("Account settings"): the defaults for new sessions; their own MCP servers, what a name and a definition may be and how many are kept; and the secrets those read, whom they reach and how they give way to a repository's |
+| `server/src/windlass-config.ts` | Windlass's own configuration file in a sandbox: the servers the platform writes into it for a turn, the user's own and the tool to publish, and how they are taken out again |
 | `server/src/agent-publish.ts` | The agent asking the platform to publish: the tool and its server, what a request may hold, and the words of the question, of the timeline's lines and of what the agent is told |
 | `server/src/repo-secrets.ts` | A repository's secrets: what may be saved, what a scope comes to in each kind of sandbox, the sealing, and taking saved values out of text |
 | `server/src/bucket/`, `server/src/sandbox/backup.ts` | The object store the copies of Windlass's session data go to (S3 protocol, and a stand-in for tests), and what is copied, saved and restored |
@@ -1393,6 +1532,7 @@ cd server && npx tsx ../scripts/setup-check.ts                    # a repository
 cd server && npx tsx ../scripts/usage-check.ts                    # sandbox time and kept sandboxes: their rules, no server and no Docker
 cd server && npx tsx ../scripts/secrets-check.ts                  # a repository's secrets: its rules, no server and no Docker
 cd server && npx tsx ../scripts/repository-check.ts               # a repository's defaults: its rules and saves that interleave, no server and no Docker
+cd server && npx tsx ../scripts/account-check.ts                  # the account's settings: defaults, own MCP servers and their secrets, no server and no Docker
 cd server && npx tsx ../scripts/signin-check.ts                   # the sign-in machinery: no server, no Docker, a stand-in for OpenAI
 cd server && npx tsx ../scripts/connection-check.ts               # the tokens browsers connect with: a stand-in for the engine
 cd server && npx tsx ../scripts/access-check.ts                   # who may sign in: the invitation list and the demo
@@ -1522,10 +1662,27 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   publish"), so a task that is to publish while its user is away needs a profile whose commands Windlass
   sandboxes. What would close it: an engine that runs as another user than its commands, or one whose
   connection a command cannot write to.
-- **The tool to publish can outlast a turn that was cut off with its server.** It is written into Windlass's
-  configuration file in the sandbox for a turn and removed when the turn ends; a server that dies in between
-  leaves it there. The next turn that offers the tool writes it anew. A later turn that does not (the
-  deployment lost its GitHub App) would find a tool nobody answers, which says so after its time is up.
+- **What a turn wrote into Windlass's configuration can outlast it until the next turn.** The tool to
+  publish and the user's own MCP servers are written into Windlass's configuration file in the sandbox
+  for a turn and removed when the turn ends; a server that dies in between leaves them there. The
+  session's next turn takes them out before it writes its own, by the platform's list of what it wrote.
+  Nothing reads the file in between: no Windlass runs between turns.
+- **A user's own MCP server runs unasked, with the network and the session's access token.** Windlass
+  asks before it starts a project's server and not before one of its user's own configuration, and
+  such a server is a process outside Windlass's sandbox around commands in every profile. The settings
+  page says so before one is saved; nothing asks again in a session. On Docker, Windlass's data is
+  the user's volume, with the records of the user's other sessions in it.
+- **An account's secret reaches no MCP server where commands are not sandboxed.** In `docker-hardened`,
+  `e2b-open` and E2B before its check, a server of the user's own that reads a secret does not start
+  ("Account settings"), for the reason a repository's secret for MCP servers is not handed over there.
+  A value written into the definition itself would reach it, and is then stored and shown as written.
+- **A server's definition is checked against a copy of Windlass's rules.** The keys Windlass takes
+  for one server are repeated in `server/src/personal-servers.ts`. With a Windlass that takes a key
+  the copy lacks, that key cannot be saved; with one that refuses a key the copy has, a saved
+  definition would fail its user's turns until it is changed. A sandbox keeps the Windlass of the
+  image it was made from, so the second can happen for a sandbox older than the key.
+- **Personal servers have not run on E2B.** They were run with a real Windlass in local Docker
+  containers, in both profiles; the E2B layer writes the same file through the same seam.
 - **A subagent cannot ask to publish.** The platform acts on the calls of the session's own agent, as the
   engine reports them for the session. A subagent's calls are reported another way and are not acted on, so
   one that called the tool would wait until the tool's time is up and be told that the platform did not

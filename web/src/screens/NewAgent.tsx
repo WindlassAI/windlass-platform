@@ -13,9 +13,12 @@
  * it, and what it holds is saved with the launch (components/SetupCommand.tsx).
  *
  * A repository picked that way can also have defaults, saved on its page: the sandbox and the model
- * the form starts from once it is picked. A choice the user makes in the form itself comes first and
- * is for this agent only; a default that names a sandbox or a model the deployment no longer offers is
- * left out, and the form says so. Opened from a repository's page, the form has that repository chosen.
+ * the form starts from once it is picked. The account has defaults too, saved in its settings, for
+ * what the repository leaves open and for an agent on no repository. Each of the two fields goes by
+ * the user's own choice in the form, then the chosen repository's default, then the account's, then
+ * the deployment's first; a choice made in the form is for this agent only. A default that names a
+ * sandbox or a model the deployment no longer offers is left out, and the form says so and whose it
+ * was. Opened from a repository's page, the form has that repository chosen.
  *
  * An agent can always be created; what a limit refuses is its first prompt, which starts a sandbox.
  * So the form says beforehand when the day's sandbox time is used up or the user keeps as many
@@ -33,10 +36,10 @@ import { PublishUnaskedCheck, publishAlwaysAsked } from "../components/PullReque
 import { SetupField, useSetupDraft } from "../components/SetupCommand";
 import { isLimitRefusal } from "../api/errors";
 import { localTime, sandboxTime } from "../lib/format";
-import { startingChoices, startingModel, startingProfile, type StartingChoices } from "../lib/repositories";
+import { layerChoices, startingChoices, startingModel, startingProfile, type DefaultSource, type LayeredChoices } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { allowanceState, useAllowance } from "../state/hooks";
+import { allowanceState, useAccount, useAllowance } from "../state/hooks";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 
@@ -79,56 +82,78 @@ function ChosenSandbox({ profile }: { profile: SandboxProfile }) {
 }
 
 /**
- * What the chosen repository's defaults did to the form, said beside the repository: the sandbox is
- * chosen further down and folded, so a change of it there would otherwise go unseen. `used` says which defaults the
- * form stands on now; a default the user chose over can be taken back with one press.
+ * Which defaults the form stands on, said beside the repository: the sandbox is chosen further down
+ * and folded, so what it starts on would otherwise go unseen. `defaults` are the ones that hold, each
+ * field with whose it is: the chosen repository's, or the account's where the repository has none.
+ * `used` says which of them the form stands on now; one the user chose over can be taken back with
+ * one press. A saved default that cannot be used is said with whose it was and where it is changed.
  */
 function DefaultsNote({
 	repository,
 	defaults,
 	used,
 	profileName,
-	error,
+	ignored,
+	errors,
 	disabled,
 	onUseDefaults,
 }: {
-	repository: string;
-	defaults: StartingChoices;
+	/** "owner/name" of the chosen repository; null when none is chosen. */
+	repository: string | null;
+	defaults: LayeredChoices;
 	used: { profile: boolean; model: boolean };
 	profileName: string | null;
-	error: string | null;
+	/** What is saved and not used: the repository's, and the account's where the repository's does not stand in for it. */
+	ignored: { repository: Array<string | null>; account: Array<string | null> };
+	/** Why the repository's defaults, or the account's, could not be read. */
+	errors: { repository: string | null; account: string | null };
 	disabled: boolean;
 	onUseDefaults(): void;
 }) {
-	const applied = [used.profile && profileName ? `in ${profileName}` : null, used.model && defaults.model ? `on ${defaults.model}` : null].filter((part) => part !== null);
-	const passed = [defaults.profile !== null && !used.profile ? `sandbox (${profileName ?? defaults.profile})` : null, defaults.model !== null && !used.model ? `model (${defaults.model})` : null].filter((part) => part !== null);
-	const ignored = [defaults.ignored.profile, defaults.ignored.model].filter((part) => part !== null);
-	if (applied.length === 0 && passed.length === 0 && ignored.length === 0 && error === null) return null;
+	const whose = (source: DefaultSource | null, count = 1) => (source === "repository" ? `the default${count === 1 ? "" : "s"} saved for ${repository ?? "the repository"}` : `your account's default${count === 1 ? "" : "s"}`);
+	const applied = [used.profile && profileName ? { text: `in ${profileName}`, from: defaults.from.profile } : null, used.model && defaults.model ? { text: `on ${defaults.model}`, from: defaults.from.model } : null].filter((part) => part !== null);
+	const passed = [
+		defaults.profile !== null && !used.profile ? `sandbox (${profileName ?? defaults.profile}, ${defaults.from.profile === "repository" ? (repository ?? "the repository's") : "your account's"})` : null,
+		defaults.model !== null && !used.model ? `model (${defaults.model}, ${defaults.from.model === "repository" ? (repository ?? "the repository's") : "your account's"})` : null,
+	].filter((part) => part !== null);
+	const left = { repository: ignored.repository.filter((part) => part !== null), account: ignored.account.filter((part) => part !== null) };
+	if (applied.length === 0 && passed.length === 0 && left.repository.length === 0 && left.account.length === 0 && errors.repository === null && errors.account === null) return null;
+	const one = applied.length === 2 && applied[0]?.from === applied[1]?.from;
 	return (
 		<div className="field field-wide new-agent-defaults" role="status">
 			{applied.length > 0 ? (
 				<p className="field-note">
-					This agent starts {applied.join(" and ")}: the {applied.length === 1 ? "default" : "defaults"} saved for {repository}. Choose otherwise in this form and it holds for this agent only.
+					This agent starts {one ? `${applied.map((part) => part.text).join(" and ")}: ${whose(applied[0]?.from ?? null, 2)}` : applied.map((part) => `${part.text}, ${whose(part.from)}`).join(", and ")}. Choose otherwise in this form and it holds for this agent only.
 				</p>
 			) : null}
 			{passed.length > 0 ? (
 				<p className="field-note">
-					{repository} has a default {passed.join(" and a default ")}; this agent uses what you chose instead.{" "}
+					There is a default {passed.join(" and a default ")}; this agent uses what you chose instead.{" "}
 					<button type="button" className="link" onClick={onUseDefaults} disabled={disabled}>
 						Use the {passed.length === 1 ? "default" : "defaults"}
 					</button>
 				</p>
 			) : null}
-			{ignored.map((sentence) => (
+			{left.repository.map((sentence) => (
 				<p key={sentence} className="field-note tone-warn">
 					{sentence} Change it on the repository's page.
 				</p>
 			))}
-			{error !== null ? (
+			{left.account.map((sentence) => (
+				<p key={sentence} className="field-note tone-warn">
+					{sentence} Change it in{" "}
+					<a className="link" {...linkProps({ name: "settings" })}>
+						your settings
+					</a>
+					.
+				</p>
+			))}
+			{errors.repository !== null ? (
 				<p className="field-note tone-warn">
-					The defaults saved for {repository} could not be read, so this form starts from the deployment's: {error}
+					The defaults saved for {repository ?? "the repository"} could not be read, so this form goes by {defaults.from.profile === "account" || defaults.from.model === "account" ? "your account's and the deployment's" : "the deployment's"}: {errors.repository}
 				</p>
 			) : null}
+			{errors.account !== null ? <p className="field-note tone-warn">Your account's defaults could not be read, so this form goes without them: {errors.account}</p> : null}
 		</div>
 	);
 }
@@ -242,14 +267,19 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 	const repoInvalid = repo !== "" && !/^https:\/\/[^\s/]+\/\S+$/.test(repo);
 	const notice = github.notice?.where === "launch" ? github.notice : null;
 	const chosen = source === "github" && picked ? picked : null;
-	// What the chosen repository's page says new agents on it start with, held against what this deployment offers.
+	// What the chosen repository's page says new agents on it start with, and what the account's settings say of every
+	// new agent, each held against what this deployment offers: the repository's first, field by field.
 	const saved = useDefaults(chosen?.repository.id ?? null);
-	const defaults = startingChoices(saved.defaults, info);
+	const account = useAccount();
+	const repositoryDefaults = startingChoices(saved.defaults, info);
+	const accountDefaults = startingChoices(account.settings?.defaults ?? null, info, "account");
+	const defaults = layerChoices(repositoryDefaults, accountDefaults);
 	const profile = startingProfile(profileChoice, defaults, info);
 	const model = startingModel(modelChoice, defaults, info);
 	const fromDefaults = { profile: defaults.profile !== null && profile === defaults.profile, model: defaults.model !== null && model === defaults.model };
 	// The defaults are read before the agent is created, so that it is not launched on other ones a moment too early.
-	const canCreate = info !== null && profile !== null && !repoInvalid && busy === null && !saved.reading && !(opening.reading && source === "github" && picked === null);
+	const accountReading = account.reading && account.settings === null;
+	const canCreate = info !== null && profile !== null && !repoInvalid && busy === null && !saved.reading && !accountReading && !(opening.reading && source === "github" && picked === null);
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 	const chosenProfile = info?.profiles.find((candidate) => candidate.id === profile) ?? null;
 
@@ -431,20 +461,23 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 								</p>
 							) : null}
 						</div>
-						{chosen ? (
-							<DefaultsNote
-								repository={`${chosen.repository.owner}/${chosen.repository.name}`}
-								defaults={defaults}
-								used={fromDefaults}
-								profileName={info.profiles.find((candidate) => candidate.id === defaults.profile)?.name ?? null}
-								error={saved.error}
-								disabled={busy !== null}
-								onUseDefaults={() => {
-									setProfile(null);
-									setModel("");
-								}}
-							/>
-						) : null}
+						<DefaultsNote
+							repository={chosen ? `${chosen.repository.owner}/${chosen.repository.name}` : null}
+							defaults={defaults}
+							used={fromDefaults}
+							profileName={info.profiles.find((candidate) => candidate.id === defaults.profile)?.name ?? null}
+							ignored={{
+								repository: [repositoryDefaults.ignored.profile, repositoryDefaults.ignored.model],
+								// An account's default that cannot be used matters here only where the repository's does not stand in for it.
+								account: [repositoryDefaults.profile === null ? accountDefaults.ignored.profile : null, repositoryDefaults.model === null ? accountDefaults.ignored.model : null],
+							}}
+							errors={{ repository: chosen ? saved.error : null, account: account.settings === null ? account.error : null }}
+							disabled={busy !== null}
+							onUseDefaults={() => {
+								setProfile(null);
+								setModel("");
+							}}
+						/>
 						{chosen ? <SetupField setup={setup} repository={`${chosen.repository.owner}/${chosen.repository.name}`} disabled={busy !== null} /> : null}
 						{chosen ? <SecretsField repositoryId={chosen.repository.id} repository={`${chosen.repository.owner}/${chosen.repository.name}`} profile={profile} disabled={busy !== null} /> : null}
 						{chosen?.repository.canPush ? (

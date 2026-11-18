@@ -8,6 +8,9 @@
  * happen while a connection is down are lost.
  */
 import type {
+	AccountDefaults,
+	AccountSecrets,
+	AccountSettings,
 	AuthResult,
 	ChatgptStatus,
 	CreateSessionInput,
@@ -159,6 +162,21 @@ export interface UserApi {
 	forgetRepository(repositoryId: number): Promise<RepositoryView>;
 	/** The repositories something is kept for. Asks GitHub nothing. */
 	savedRepositories(): Promise<SavedRepository[]>;
+	/** The account's settings: the defaults for new agents and the user's own MCP servers. No secret's value. */
+	account(): Promise<AccountSettings>;
+	/** Saves what new agents start with where neither the launch form nor the repository says: a field left out stays, null saves none. Throws as `saveRepositoryDefaults` does. */
+	saveAccountDefaults(change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
+	/**
+	 * Saves an MCP server of the user's own: a new one, or with `existing` the definition of the one of that name.
+	 * Throws with reason `bad_server` (the message names the key), `server_exists`, `server_not_found` or `too_many_servers`.
+	 */
+	savePersonalServer(server: { name: string; definition: unknown; existing?: boolean }): Promise<AccountSettings>;
+	deletePersonalServer(name: string): Promise<AccountSettings>;
+	/** The account's secrets, without their values, and what each reaches in a sandbox of `profile` made now. */
+	accountSecrets(profile: SandboxProfileId): Promise<AccountSecrets>;
+	/** Saves a secret of the account: a new one, or a new value for the one of that name. Throws with reason `bad_secret` or `too_many_secrets`. */
+	saveAccountSecret(profile: SandboxProfileId, secret: { name: string; value: string }): Promise<AccountSecrets>;
+	deleteAccountSecret(profile: SandboxProfileId, name: string): Promise<AccountSecrets>;
 	/** Today's sandbox time against the allowance, and how many sandboxes the user keeps of how many they may. */
 	allowance(): Promise<UsageNumbers>;
 	/** The usage page: the numbers, today by agent, the kept sandboxes, the last two weeks and what a second is estimated to cost. */

@@ -131,6 +131,10 @@
 	border-color: var(--line-strong);
 	color: var(--ink);
 }
+/* The way to the account's settings and the way out, one under the other. */
+.menu-action + .menu-action {
+	margin-top: 8px;
+}
 
 /* The session's place in the bar: back, title, state. */
 .crumb {
