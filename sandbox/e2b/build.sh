@@ -8,9 +8,10 @@
 #   sandbox/e2b/build.sh --print                   print what E2B would be asked to build; talks to nobody
 #                                                  and needs no key
 #
-#   WINDLASS_BINARY=/path/to/windlass-linux-x64    the executable to put in it (default:
-#                                                  ~/projects/windlass-local-builds/windlass-linux-x64,
-#                                                  which sandbox/e2b/build-windlass-x64.sh makes)
+#   WINDLASS_BINARY=/path/to/windlass-linux-x64    the executable to put in it (default: the released
+#                                                  Windlass that sandbox/fetch-windlass.sh pins and
+#                                                  fetches; sandbox/e2b/build-windlass-x64.sh makes one
+#                                                  from a local checkout, for a Windlass not released yet)
 #   WLP_E2B_TEMPLATE=<name>                        another name than windlass-platform-sandbox; the server
 #                                                  reads the same variable
 #   WLP_E2B_CPU, WLP_E2B_MEMORY_MB                 the size of every sandbox made from it (default 1 vCPU,
@@ -24,9 +25,12 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 
-binary="${WINDLASS_BINARY:-/home/ubuntu/projects/windlass-local-builds/windlass-linux-x64}"
+binary="${WINDLASS_BINARY:-}"
+if [ -z "$binary" ]; then
+  binary="$("$here/../fetch-windlass.sh")/windlass-linux-x64"
+fi
 if [ ! -f "$binary" ]; then
-  echo "build.sh: no x86_64 Windlass at $binary; make one with sandbox/e2b/build-windlass-x64.sh, or set WINDLASS_BINARY" >&2
+  echo "build.sh: no x86_64 Windlass at $binary; set WINDLASS_BINARY to one, or leave it unset for the released one" >&2
   exit 1
 fi
 # The two bytes at offset 18 of an ELF file name the machine: 3e 00 is x86-64.

@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Copies the locally built Windlass executables to server/vendor/, where server/Dockerfile takes the one
-# for the image's architecture from. The server runs Windlass's sign-in commands with it.
+# Copies the Windlass executables to server/vendor/, where server/Dockerfile takes the one for the
+# image's architecture from. The server runs Windlass's sign-in commands with it.
 #
-#   server/stage-windlass.sh                 from ~/projects/windlass-local-builds
+#   server/stage-windlass.sh                 the released Windlass that sandbox/fetch-windlass.sh pins
 #   WINDLASS_BUILDS=/some/dir server/stage-windlass.sh
+#                                            builds of your own, for a Windlass that is not released yet:
+#                                            windlass-linux-arm64 (`bun scripts/build.ts` in the Windlass
+#                                            repository) and windlass-linux-x64
+#                                            (sandbox/e2b/build-windlass-x64.sh)
 #
-# The builds are windlass-linux-arm64 (`bun scripts/build.ts` in the Windlass repository) and
-# windlass-linux-x64 (sandbox/e2b/build-windlass-x64.sh). server/vendor/ is not committed.
+# server/vendor/ is not committed.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-builds="${WINDLASS_BUILDS:-$HOME/projects/windlass-local-builds}"
+builds="${WINDLASS_BUILDS:-$("$here/../sandbox/fetch-windlass.sh")}"
 mkdir -p "$here/vendor"
 
 staged=0

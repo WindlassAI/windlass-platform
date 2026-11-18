@@ -732,10 +732,15 @@ async function main(): Promise<void> {
 		const built = spawnSync(join(root, "sandbox/build.sh"), { encoding: "utf8" });
 		const printed = built.stdout.trim().split("\n").pop() ?? "";
 		expect("build.sh builds the image and prints the Windlass version", built.status === 0 && /^\d+\.\d+\.\d+/.test(printed), `${printed}, ${ms(start)}`);
-		const preferred = `/home/ubuntu/projects/windlass-local-builds/windlass-linux-${ARCH}`;
+		// Without WINDLASS_BINARY the image is built with the release sandbox/fetch-windlass.sh pins.
 		if ((process.env.WINDLASS_BINARY ?? "") !== "") info("SKIP  which binary build.sh takes by default: WINDLASS_BINARY is set");
-		else if (!existsSync(preferred)) info(`SKIP  which binary build.sh takes by default: there is none at ${preferred}`);
-		else expect("without WINDLASS_BINARY build.sh takes the local build that has `login token --valid-for`, before the older ones it knows, and has nothing to warn about", built.stderr.includes(`building ${IMAGE} with ${preferred}`) && !/WARNING/.test(built.stderr), built.stderr.trim().split("\n")[0] ?? "");
+		else {
+			expect(
+				"without WINDLASS_BINARY build.sh takes the released Windlass that fetch-windlass.sh pins, and has nothing to warn about",
+				new RegExp(`building ${IMAGE} with \\S+/windlass-v\\d+\\.\\d+\\.\\d+/windlass-linux-${ARCH}`).test(built.stderr) && !/WARNING/.test(built.stderr),
+				built.stderr.trim().split("\n")[0] ?? "",
+			);
+		}
 		const version = await layer.windlass.version();
 		expect("windlass.version() reports the same version", version === printed, String(version));
 		const problem = await layer.windlass.problem();
@@ -749,7 +754,7 @@ async function main(): Promise<void> {
 
 	await section("profiles", async () => {
 		const profiles = layer.sandboxes.profiles();
-		expect("six profiles, two available", profiles.length === 6 && profiles.filter((p) => p.available).map((p) => p.id).join(",") === "docker-windlass-sandbox,docker-hardened");
+		expect("seven profiles, two available", profiles.length === 7 && profiles.filter((p) => p.available).map((p) => p.id).join(",") === "docker-windlass-sandbox,docker-hardened");
 		expect("every unavailable profile says why", profiles.every((p) => p.available || (p.unavailableReason ?? "").length > 20));
 		await throwsUserError("create() refuses an unavailable profile", () => layer.sandboxes.create({ uid, sessionId: "s", profile: "e2b" }));
 		await throwsAny("create() refuses an invalid uid", () => layer.sandboxes.create({ uid: "../etc", sessionId: "s", profile: "docker-hardened" }));

@@ -11,11 +11,9 @@
 # ChatGPT sign-in do not. That is so for a Windlass without `login token`, and for one that has the
 # command but not its `--valid-for`.
 #
-# Without WINDLASS_BINARY it takes the first of these that exists for this machine's architecture:
-#   ~/projects/windlass-local-builds            a copy of the local build that has all of it
-#   ~/projects/wt-windlass-token-handoff/dist   an older local build: `login token` without `--valid-for`
-#   ~/projects/light-harness/dist               an older local build, without `login token`
-#   ~/windlass-0.1.0/release                    the 0.1.0 release build, without `login token`
+# Without WINDLASS_BINARY it takes the released Windlass that sandbox/fetch-windlass.sh pins and fetches.
+# A build of your own is for trying a Windlass that is not released yet:
+#   WINDLASS_BINARY=~/projects/windlass-local-builds/windlass-linux-<arch> sandbox/build.sh
 # Prints the installed Windlass version on its last line.
 set -eu
 
@@ -31,13 +29,7 @@ esac
 
 binary="${WINDLASS_BINARY:-}"
 if [ -z "$binary" ]; then
-  for candidate in \
-    "/home/ubuntu/projects/windlass-local-builds/windlass-linux-$arch" \
-    "/home/ubuntu/projects/wt-windlass-token-handoff/dist/windlass-linux-$arch" \
-    "/home/ubuntu/projects/light-harness/dist/windlass-linux-$arch" \
-    "/home/ubuntu/windlass-0.1.0/release/windlass-linux-$arch"; do
-    if [ -f "$candidate" ]; then binary="$candidate"; break; fi
-  done
+  binary="$("$here/fetch-windlass.sh")/windlass-linux-$arch"
 fi
 if [ -z "$binary" ] || [ ! -f "$binary" ]; then
   echo "build.sh: no Windlass binary found; set WINDLASS_BINARY to a windlass-linux-$arch executable" >&2

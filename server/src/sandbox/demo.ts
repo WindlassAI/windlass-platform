@@ -187,7 +187,8 @@ function fixFailingTest(turn: number): ScriptedModel {
 			});
 		});
 		b.step((s) => {
-			s.call("shell", { command: "cd slugify && node --test 2>&1 | grep -E '^# (tests|pass|fail)'" });
+			// The TAP reporter by name: Node's default reporter changed after Node 18, and its summary lines with it.
+			s.call("shell", { command: "cd slugify && node --test --test-reporter=tap 2>&1 | grep -E '^# (tests|pass|fail)'" });
 		});
 		b.step((s) => {
 			s.say(
@@ -247,7 +248,11 @@ function searchAndEdit(turn: number): ScriptedModel {
 	});
 }
 
-const STATS_ESM = `import { argv } from "node:process";
+// A mistake that fails on every Node: `require` in a file that is an ES module by its name. (An `import`
+// in a plain `.js` file, the mistake this scenario used to make, runs on Node 22 and later.)
+const STATS_REQUIRE = 'const { argv } = require("node:process");';
+const STATS_IMPORT = 'import { argv } from "node:process";';
+const STATS_MODULE = `${STATS_REQUIRE}
 
 const numbers = argv.slice(2).map(Number);
 const sum = numbers.reduce((a, b) => a + b, 0);
@@ -261,21 +266,22 @@ console.log(\`count \${numbers.length}  sum \${sum}  mean \${mean.toFixed(2)}  m
 function failThenCorrect(turn: number): ScriptedModel {
 	return script(turn, (b) => {
 		b.step((s) => {
-			s.think("A small statistics script in Node. I'll write it with an ES module import.");
+			s.think("A small statistics script in Node, as an ES module.");
 			s.say("I'll write a small Node script that prints the count, sum, mean and median of its arguments.");
-			s.call("write", { path: "stats/stats.js", content: STATS_ESM });
+			s.call("write", { path: "stats/stats.mjs", content: STATS_MODULE });
 		});
 		b.step((s) => {
-			s.call("shell", { command: "node stats/stats.js 4 8 15 16 23 42" });
+			s.call("shell", { command: "node stats/stats.mjs 4 8 15 16 23 42" });
 		});
 		b.step((s) => {
-			s.think("Node treats a .js file without a package.json \"type\" as CommonJS, so the import statement is a syntax error. Renaming to .mjs makes it an ES module without touching anything else.");
-			s.say("That failed: Node reads a plain `.js` file as CommonJS, where `import` is not allowed. Renaming the file to `.mjs` makes it an ES module.");
-			s.call("shell", { command: "mv stats/stats.js stats/stats.mjs && node stats/stats.mjs 4 8 15 16 23 42" });
+			s.think("A .mjs file is an ES module, and `require` does not exist there. The line has to be an import.");
+			s.say("That failed: a `.mjs` file is an ES module, where `require` is not defined. I'll change the line to an `import`.");
+			s.call("edit", { path: "stats/stats.mjs", old_string: STATS_REQUIRE, new_string: STATS_IMPORT });
+			s.call("shell", { command: "node stats/stats.mjs 4 8 15 16 23 42" });
 		});
 		b.step((s) => {
 			s.say(
-				"Done. The first run failed with `Cannot use import statement outside a module`, because Node treats `.js` files as CommonJS when there is no `package.json` saying otherwise. I renamed the script to `stats/stats.mjs`, and `node stats/stats.mjs 4 8 15 16 23 42` now prints count 6, sum 108, mean 18.00 and median 15.5.",
+				"Done. The first run failed with `require is not defined in ES module scope`, because a `.mjs` file is an ES module. I changed the first line of `stats/stats.mjs` to an `import`, and `node stats/stats.mjs 4 8 15 16 23 42` now prints count 6, sum 108, mean 18.00 and median 15.5.",
 			);
 		});
 	});

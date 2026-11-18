@@ -12,24 +12,25 @@ conversation and drives a Windlass process inside a sandbox.
 
 ## Run it
 
-You need Node 22 or later, pnpm, Docker, and a Windlass executable for Linux that can hand its sign-in's access
-token to another Windlass and be asked for one that is good for a while yet: one with
-`windlass login token --valid-for <duration>` and `WINDLASS_ACCESS_TOKEN_FILE` (`windlass login --help` lists
-`--valid-for` under `login token`). The version number does not tell: both the builds that have the option and
-the ones before it call themselves 0.1.1. Until a release has it, that is a local build of Windlass with the
-option (`windlass --version` prints `0.1.1+a9c3601d40` for the one this was tested with, which also names every
-failure of a sign-in by a stable code; `0.1.1+dca57b2627` has `login token` without `--valid-for` and is too
-old). That build has two more things the platform uses where a sandbox's Windlass has them, and does without
-where it has not: a home of the session's own for sandboxed commands ("Sandboxes" below), and two lists that
-say by name which variables a command gets ("A repository's secrets"). `0.1.1+739e1cbc09` has the option and
-neither of those.
+You need Node 22 or later, pnpm and Docker. The Windlass the platform runs is the released 0.2.0, which the
+build scripts fetch by themselves (`sandbox/fetch-windlass.sh`: the release is pinned there by tag and by the
+SHA-256 of each executable, and a file that does not match is not installed).
+
+What the platform needs of a Windlass, should you try another one: it can hand its sign-in's access token to
+another Windlass and be asked for one that is good for a while yet (`windlass login token --valid-for <duration>`
+and `WINDLASS_ACCESS_TOKEN_FILE`), and it names every failure of a sign-in by a stable code. 0.2.0 also has two
+things the platform uses where a sandbox's Windlass has them, and does without where it has not: a home of the
+session's own for sandboxed commands ("Sandboxes" below), and two lists that say by name which variables a
+command gets ("A repository's secrets"). The local builds before the release all call themselves 0.1.1:
+`0.1.1+a9c3601d40` is the same code as 0.2.0, `0.1.1+739e1cbc09` has the token option and neither of the two
+later things, and `0.1.1+dca57b2627` has `login token` without `--valid-for` and is too old.
 
 ```sh
 pnpm install
 
-# Build the sandbox image. Without WINDLASS_BINARY it takes the local build that has all of this,
-# ~/projects/windlass-local-builds/windlass-linux-<arch>, when that exists.
-WINDLASS_BINARY=/path/to/windlass-linux-arm64 sandbox/build.sh
+# Build the sandbox image, with the released Windlass. For a Windlass that is not released yet:
+# WINDLASS_BINARY=/path/to/windlass-linux-<arch> sandbox/build.sh
+sandbox/build.sh
 
 scripts/dev.sh                              # the server: Rivet endpoint on http://localhost:6420, its own routes on :6440, demo sign-in on
 pnpm --filter @windlass-platform/web dev    # the web app on http://localhost:5173
@@ -414,8 +415,7 @@ a server on E2B offers the E2B profiles and no Docker profile. Nothing of this h
 was no account when it was written, and `scripts/e2b-check.ts` is what tries it.
 
 ```sh
-sandbox/e2b/build-windlass-x64.sh                                   # the x86_64 Windlass E2B needs, from the local checkout
-E2B_API_KEY=e2b_... sandbox/e2b/build.sh                            # builds the template windlass-platform-sandbox at E2B
+E2B_API_KEY=e2b_... sandbox/e2b/build.sh                            # builds the template windlass-platform-sandbox at E2B, with the released x86_64 Windlass
 cd server && E2B_API_KEY=e2b_... npx tsx ../scripts/e2b-check.ts    # one sandbox, one scripted turn, about two minutes
 WLP_SANDBOX=e2b E2B_API_KEY=e2b_... WLP_WINDLASS_BIN=/path/to/windlass npx tsx src/index.ts
 ```
