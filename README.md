@@ -525,8 +525,8 @@ and the web app is then built with its address in `VITE_WLP_ENDPOINT`.
 
 With `WLP_SANDBOX=e2b` a session's sandbox is a microVM at [E2B](https://e2b.dev) instead of a container on the
 server's machine, so any server of a deployment reaches any session's sandbox. A deployment has one provider:
-a server on E2B offers the E2B profiles and no Docker profile. Nothing of this has run against E2B yet: there
-was no account when it was written, and `scripts/e2b-check.ts` is what tries it.
+a server on E2B offers the E2B profiles and no Docker profile. `scripts/e2b-check.ts` tries it against the real
+service; it first passed there on 2026-11-15.
 
 ```sh
 E2B_API_KEY=e2b_... sandbox/e2b/build.sh                            # builds the template windlass-platform-sandbox at E2B, with the released x86_64 Windlass
@@ -540,10 +540,11 @@ from the Docker image's own `sandbox/Dockerfile`, so a microVM has what a contai
 Docker: Windlass's sign-in commands run from `WLP_WINDLASS_BIN`, an executable for the server's own machine.
 E2B's SDK (`e2b` 2.63.0, loaded only by a server on E2B) needs Node 22.19 or later.
 
-- **What the profile promises.** Whether Windlass's bubblewrap sandbox works inside an E2B microVM is not known
-  until the check has run, so the profile promises nothing of it: commands may have network and may read the
-  session's access token. Windlass runs with `--approval auto` and probes bubblewrap itself: where the probe
-  passes it sandboxes commands, where it fails it asks before every command. The check prints which (`ANSWER:`).
+- **What the profile promises.** Whether Windlass's bubblewrap sandbox works inside a deployment's microVMs is
+  for the check to show (it worked in the template on 2026-11-15), so by default the profile promises nothing
+  of it: commands may have network and may read the session's access token. Windlass runs with
+  `--approval auto` and probes bubblewrap itself: where the probe passes it sandboxes commands, where it fails
+  it asks before every command. The check prints which (`ANSWER:`).
   If bubblewrap works, `WLP_E2B_WINDLASS_SANDBOX=1` makes the profile promise what the first Docker profile
   promises, and every new sandbox is held to it: one in which the probe fails is removed and not handed out.
 - **A second profile: E2B, microVM only** (`e2b-open`), offered only where the servers run with
@@ -605,9 +606,10 @@ cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/e2b-provider-test.ts --
 The provider's logic is written against a small interface of its own (`server/src/sandbox/e2b/client.ts`);
 `sdk.ts` maps it to E2B's SDK and `fake.ts` keeps it in memory for the tests. Limits of this provider: a paused
 sandbox is kept at E2B, at no charge, until its session is deleted, the session's sandbox is removed for not
-being used (`WLP_IDLE_DESTROY_MS`) or `e2b-cleanup.ts` removes it; opening a session's changes in the browser
-resumes its sandbox for the length of the idle timeout; and a turn whose command stream to E2B breaks ends as
-a failed turn, though the sandbox goes on until its timeout.
+being used (`WLP_IDLE_DESTROY_MS`) or by its user on the Usage page ("Usage and limits"), or `e2b-cleanup.ts`
+removes it; opening a session's changes in the browser resumes its sandbox for the length of the idle timeout;
+and a turn whose command stream to E2B breaks ends as a failed turn, though the sandbox goes on until its
+timeout.
 
 ## The agent's memory outlives its sandbox
 
@@ -991,10 +993,9 @@ The web app's mock plays a deployment with a GitHub App (`?mock=1`; `&github=off
 `__wlpMock.mockNextGithub("list" | "connect" | "denied" | "protected" | "gone")` in the console makes its next
 call fail as GitHub can.
 
-Not checked, because there is no GitHub App yet: anything against GitHub itself. That is the exact words of
-GitHub's refusals of a push (the sentences above are chosen by them), what GitHub's installation page does
-with a `state` for an account that has the app already, and that the callback after an installation carries a
-code as documented.
+Not checked, because no check calls GitHub itself: the exact words of GitHub's refusals of a push (the
+sentences above are chosen by them), what GitHub's installation page does with a `state` for an account that
+has the app already, and that the callback after an installation carries a code as documented.
 
 ## A repository's setup command
 
