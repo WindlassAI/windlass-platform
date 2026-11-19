@@ -12,7 +12,7 @@
  * claimed in one step, given back, and held against what the provider lists.
  */
 
-import { CLAIM_SETTLING_MS, DAY_MS, HOLD_GRACE_SECONDS, REPORT_SLACK_SECONDS, UsageBook, type UsageLimits, allowanceRefusal, dayOf, sandboxRefusal, spellSeconds, stoppedBy, turnStoppedNote } from "../server/src/usage.js";
+import { CLAIM_SETTLING_MS, DAY_MS, HOLD_GRACE_SECONDS, REPORT_SLACK_SECONDS, UsageBook, type UsageLimits, allowanceRefusal, closingReports, dayOf, holdDeadline, sandboxRefusal, spellSeconds, stoppedBy, stretchSeconds, turnStoppedNote } from "../server/src/usage.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
@@ -196,6 +196,48 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 	expect("and not before it was last seen running", stoppedBy({ ...stretch, seen: at(400) }, at(100), 120_000, at(600)) === at(400));
 	expect("where nothing stops it by itself, nothing is known but now", stoppedBy(stretch, at(100), null, at(600)) === at(600));
 	expect("lengths of time are said in the two largest units that matter", [7200, 6600, 725, 245, 60, 45, 0].map(spellSeconds).join("|") === "2 h|1 h 50 min|12 min|4 min 5 s|1 min|45 s|0 s", [7200, 6600, 725, 245, 60, 45, 0].map(spellSeconds).join("|"));
+}
+
+// A request whose answer was lost, and a hold that could not be renewed (agent-session.ts, `takeHold`, `meterTick`).
+{
+	// A renewal reaches the book and its answer is lost; the session asks again 25 s later, under the same id and from the first moment.
+	const book = new UsageBook(LIMITS);
+	book.reserve(at(0), { id: "a1", session: "a", fresh: true });
+	const first = { hold: "a1", since: at(0), seconds: 600 };
+	book.reserve(at(600), { id: "a2", session: "a", settle: { hold: "a1", seconds: stretchSeconds(first, at(600)) } });
+	const retry = book.reserve(at(625), { id: "a2", session: "a", settle: { hold: "a1", seconds: stretchSeconds(first, at(600)) } });
+	const second = { hold: "a2", since: at(600), seconds: 600 };
+	book.reserve(at(1200), { id: "a3", session: "a", settle: { hold: "a2", seconds: stretchSeconds(second, at(1200)) } });
+	book.settle(at(1300), { session: "a", hold: "a3", seconds: 100 });
+	expect("a renewal asked again under its id, from when it was first asked, counts every second once", retry.ok && retry.hold.id === "a2" && book.usedOn(TODAY) === 1300, `${book.usedOn(TODAY)} s counted for 1300 s`);
+	expect("from the retry's own moment, the 25 s between the two are in no hold", stretchSeconds({ ...second, since: at(625) }, at(1200)) === 575);
+
+	// The stretch ends with that renewal unanswered: both halves are reported, whichever of them the book has.
+	const asked = { id: "b2", at: at(600) };
+	const reports = closingReports({ hold: "b1", since: at(0), seconds: 600 }, asked, at(700));
+	for (const reached of [false, true]) {
+		const other = new UsageBook(LIMITS);
+		other.reserve(at(0), { id: "b1", session: "b", fresh: true });
+		if (reached) other.reserve(at(600), { id: "b2", session: "b", settle: { hold: "b1", seconds: 600 } });
+		for (const report of reports) other.settle(at(700), { session: "b", ...report });
+		expect(`a stretch that ends with its renewal unanswered counts what ran, once, when the renewal ${reached ? "had" : "had not"} reached the book`, other.usedOn(TODAY) === 700 && other.openHolds().length === 0, `${other.usedOn(TODAY)} s, ${other.openHolds().length} open`);
+	}
+
+	// A prompt's hold whose answer was lost, and the prompt refused: reported at 0 s before the next hold is taken.
+	for (const late of [false, true]) {
+		const orphan = new UsageBook(LIMITS, { entries: [{ day: TODAY, session: "o", hold: "o0", kind: "used", seconds: 100, at: at(-60), note: null }] });
+		orphan.reserve(at(0), { id: "o1", session: "o", keep: true, fresh: true });
+		const when = late ? at(600 + HOLD_GRACE_SECONDS + 1) : at(30);
+		const settled = orphan.settle(when, { session: "o", hold: "o1", seconds: 0 });
+		const next = orphan.reserve(when, { id: "o2", session: "o", fresh: true });
+		expect(`an orphan hold settled at 0 s ${late ? "after it was counted in full" : "while it is open"} leaves the day as it was`, settled.known && next.ok && orphan.usedOn(TODAY) === 100, `${orphan.usedOn(TODAY)} s`);
+	}
+
+	// When a hold that cannot be renewed stops the sandbox.
+	const hold = new UsageBook(LIMITS).reserve(at(2), { id: "d1", session: "d", fresh: true });
+	expect("a hold that is not renewed stops its sandbox 30 s before the book stops counting it", holdDeadline(at(0), 600) === at(600 + HOLD_GRACE_SECONDS - 30) && hold.ok && holdDeadline(at(0), hold.hold.seconds) < hold.hold.expiresAt);
+	expect("not at the end of the hold: the book still counts what runs past it until then", holdDeadline(at(0), 600) > at(600) + 60_000);
+	expect("a lease without grace stops the same margin before it runs out", holdDeadline(at(0), 180, 0) === at(150));
 }
 
 console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) failed.`);

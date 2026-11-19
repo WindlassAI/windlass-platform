@@ -176,7 +176,7 @@ import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf 
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { VerificationLog, outputTail, withOutputs } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
-import { type OpenStretch, USAGE_UNAVAILABLE, allowanceRefusal, countsSandboxTime, freedNote, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
+import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, countsSandboxTime, freedNote, holdDeadline, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { grantIsValid, type ReserveAnswer, secretsActor, type SessionCreateInput, userActor } from "./internal.js";
 
 // ---------------------------------------------------------------------------------------------
@@ -351,6 +351,11 @@ interface SessionMeta {
 	/** What the sandbox ran of holds that the user's actor has not been told yet: told again when the session is next awake. */
 	unsettled?: Array<{ hold: string; seconds: number }>;
 	/**
+	 * The hold asked for last, stored before it was asked for, until its answer comes (usage.ts,
+	 * `PendingAsk`): an answer that was lost, before a sleep or not, does not leave a hold nobody settles.
+	 */
+	meterAsked?: PendingAsk | null;
+	/**
 	 * The messages that were taken with a key (submissions.ts), the newest MAX_REMEMBERED_SUBMISSIONS:
 	 * the key, the digest of the text it came with, and what the prompt was answered. A prompt that
 	 * comes with one of these keys is that message again: it is answered from here and adds nothing.
@@ -472,6 +477,13 @@ interface SessionVars {
 	signedInUntil: number;
 	/** A suspend or removal of the idle sandbox under way; a prompt or a read of the workspace waits for it. */
 	idling: Promise<void> | null;
+	/**
+	 * How many operations have the session's sandbox now (`takeSandbox`): a prompt from its acceptance to
+	 * the end of its turn, a push, a read of the workspace, and the suspend, removal or free that `idling`
+	 * names. While any has it, nothing suspends or removes the sandbox (`busy`). This instance's only: an
+	 * operation goes with the instance, and so does its count.
+	 */
+	sandboxOps: number;
 	/** The copy of the workspace taken when the last turn ended; undefined until it is read from SQLite. */
 	workspace: WorkspaceCopy | null | undefined;
 	/** The tail of the queue that sets the idle check, so two of them cannot cross. */
@@ -486,8 +498,17 @@ interface SessionVars {
 	meterTimer: ReturnType<typeof setTimeout> | null;
 	/** The tail of the queue of calls to the user's meter: a hold is traded or settled by one of them at a time. */
 	metering: Promise<unknown>;
-	/** The id of a hold that was asked for and not answered: asked for again under the same id, so it is one hold. */
-	meterAsked: string | null;
+	/**
+	 * `Sandboxes.idleStopMs` of this session's own layer, read when it takes a hold or wakes, for the
+	 * meter's timer. Lost with the instance and read again: nothing is settled from it before then.
+	 */
+	idleStopMs: number | null;
+	/**
+	 * Counts the creates, connects, suspends and destroys of the session's sandbox. A read of the
+	 * sandbox's state that was asked before the count moved describes a sandbox that is no more, and is
+	 * dropped. This instance's only: a read in flight goes with it.
+	 */
+	sandboxGen: number;
 	/**
 	 * For a session on one of its user's machines: the conversation with the machine's runner, over its
 	 * socket to this actor. This instance's alone, never stored: one that wakes starts a new one.
@@ -707,7 +728,7 @@ function noteSandbox(c: Ctx, meta: SessionMeta, state: SessionMeta["sandbox"]): 
 	if (meta.sandbox === state) return;
 	meta.sandbox = state;
 	// Found stopped without the session having stopped it: the stretch being counted ended with it. A turn settles when it closes.
-	if (state !== "running" && meta.meter && !c.vars.turn && !c.vars.accepting) void closeMeter(c, meta, "found");
+	if (state !== "running" && meta.meter && !c.vars.turn && !c.vars.accepting) void closeMeter(c, meta, "found", useOf(meta));
 	publish(c);
 	void persist(c);
 }
@@ -852,6 +873,7 @@ function tail(text: string, lines = 6, chars = 800): string {
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
 async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer, secrets: HeldSecrets | null): Promise<SandboxHandle> {
 	let handle = meta.sandboxId ? await layer.sandboxes.connect(meta.sandboxId) : undefined;
+	sandboxChanged(c);
 	if (handle) {
 		if (meta.sandbox === "paused") note(c, turn, "info", "Resuming sandbox");
 		noteSandbox(c, meta, "running");
@@ -869,10 +891,13 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		meta.setupRunning = null;
 		meta.setupUnfinished = null;
 		await dropWorkspace(c);
+		// The session holds its turn here, so it is making no other sandbox: one the provider has for it is one it never heard of.
+		await sweepSandboxes(c, meta, layer);
 		note(c, turn, "info", "Creating sandbox");
 		const id = await layer.sandboxes.create({ uid: meta.uid, sessionId: meta.sessionId, profile: meta.profile });
 		console.log(`[wlp] sandbox.created id=${id} session=${meta.sessionId}`);
 		meta.sandboxId = id;
+		sandboxChanged(c);
 		meta.sandbox = "running";
 		publish(c);
 		await persist(c);
@@ -1057,6 +1082,29 @@ async function removeBackup(c: Ctx, meta: SessionMeta): Promise<void> {
 }
 
 /**
+ * Takes the session's sandbox for an operation that uses it, in the synchronous step that decides to
+ * start it; the release it returns gives it back (once, however often it is called). An operation that
+ * changes the sandbox (suspend, removal, free) takes it only when nothing else has it, and sets `idling`,
+ * which the others wait for once they have taken it. A turn, a push, a read of the workspace, and the
+ * factory's delivery into a session, take this one guard: an idle check that falls due under any of them
+ * leaves the sandbox as it is and looks again later.
+ */
+function takeSandbox(c: Ctx): () => void {
+	c.vars.sandboxOps += 1;
+	let held = true;
+	return () => {
+		if (!held) return;
+		held = false;
+		c.vars.sandboxOps -= 1;
+	};
+}
+
+/** Whether an operation has the session's sandbox now (`takeSandbox`). */
+function busy(c: Ctx): boolean {
+	return c.vars.sandboxOps > 0;
+}
+
+/**
  * Reading the workspace through the sandbox starts a paused one, so it counts as using it: the idle
  * times start again, and a check is set for the sandbox that now runs.
  */
@@ -1148,6 +1196,7 @@ async function workspaceView(c: Ctx, meta: SessionMeta): Promise<WorkspaceCopy |
 	// Starting a paused sandbox to read it uses its user's sandbox time, as a turn does: refused when none is left.
 	if (!c.vars.turn && !meta.meter) await holdSandbox(c, meta, true);
 	const sandbox = await sandboxes.connect(meta.sandboxId);
+	sandboxChanged(c);
 	if (!sandbox) {
 		noteSandbox(c, meta, "none");
 		return null;
@@ -1158,12 +1207,40 @@ async function workspaceView(c: Ctx, meta: SessionMeta): Promise<WorkspaceCopy |
 	return (await copyWorkspace(c, meta, sandbox)) ?? { sandbox };
 }
 
+/**
+ * Destroys the sandboxes the provider has for this session other than `meta.sandboxId`: ones whose
+ * create was cut off by a crash, or outlasted a shutdown, so the session never learnt their id (the
+ * provider names the session on each). The session is their only owner. Hosted places only: there they
+ * cost money, and the list is the provider's own; a machine's list is its last report. Never throws.
+ */
+async function sweepSandboxes(c: Ctx, meta: SessionMeta, layer: SandboxLayer): Promise<void> {
+	if (!countsSandboxTime(meta.place)) return;
+	try {
+		for (const listed of await layer.sandboxes.list(meta.uid)) {
+			if (listed.sessionId !== meta.sessionId || listed.id === meta.sandboxId) continue;
+			await layer.sandboxes.destroy(listed.id);
+			console.log(`[wlp] sandbox.swept id=${listed.id} session=${meta.sessionId}`);
+		}
+	} catch (error) {
+		c.log.warn({ msg: "could not remove the sandboxes the session did not know of", session: meta.sessionId, error: describeError(error) });
+	}
+}
+
+/** The session's sandbox was created, connected to, suspended or destroyed: a state read asked before then is out of date. */
+function sandboxChanged(c: Ctx): void {
+	c.vars.sandboxGen += 1;
+}
+
 /** Asks the sandbox layer what state the sandbox is really in. */
 async function refreshSandbox(c: Ctx, meta: SessionMeta): Promise<void> {
-	if (!meta.sandboxId) return;
+	const id = meta.sandboxId;
+	if (!id) return;
+	const gen = c.vars.sandboxGen;
 	try {
 		const { sandboxes } = await layerOf(c, meta);
-		noteSandbox(c, meta, await sandboxes.state(meta.sandboxId));
+		const state = await sandboxes.state(id);
+		// A prompt that woke the actor may have resumed the sandbox while this was asked: "paused" is then the sandbox it was, not the one that runs.
+		if (c.vars.sandboxGen === gen) noteSandbox(c, meta, state);
 	} catch (error) {
 		c.log.warn({ msg: "could not read the sandbox's state", error: describeError(error) });
 	}
@@ -1436,6 +1513,7 @@ async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, f
 		const { sandboxes } = await layerOf(c, meta);
 		if (!c.vars.idling && (!countsSandboxTime(meta.place) || meta.meter) && (await sandboxes.state(meta.sandboxId)) === "running") {
 			const sandbox = await sandboxes.connect(meta.sandboxId);
+			sandboxChanged(c);
 			if (sandbox && !c.vars.turn) value = await hasUnpushedWork(sandbox, repo.branch, meta.pushedHead ?? null);
 		}
 	} catch (error) {
@@ -1528,6 +1606,7 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 	// A push starts a paused sandbox, which uses its user's sandbox time.
 	if (!meta.meter) await holdSandbox(c, meta, true);
 	const sandbox = meta.sandboxId ? await sandboxes.connect(meta.sandboxId) : undefined;
+	sandboxChanged(c);
 	if (!sandbox) {
 		noteSandbox(c, meta, "none");
 		throw new UserError("The sandbox with this agent's files is gone, so there is nothing to push. The next prompt starts a new one from the repository.", { code: "publish_blocked" });
@@ -2114,8 +2193,15 @@ const IDLE_STOP_MARGIN_MS = 3_000;
 /** How many reports of sandbox time a session keeps to send again. */
 const MAX_UNSETTLED = 20;
 
-/** `Sandboxes.idleStopMs` of the hosted layer, once the layer was asked: the same for every metered session on this server. */
-let providerIdleStop: number | null = null;
+/**
+ * What a decision to stop counting names: the use of the sandbox the open hold was taken for
+ * (`OpenStretch.use`). It is read in the synchronous step that decides, and the queued settlement goes
+ * ahead only while the meter is still that use's: a hold a turn, a read or a push took after the
+ * decision is theirs, whatever the decision found. Null when nothing is being counted.
+ */
+function useOf(meta: SessionMeta): string | null {
+	return meta.meter ? (meta.meter.use ?? meta.meter.hold) : null;
+}
 
 /** Runs `job` after every call to the user's meter queued before it. */
 function metered<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
@@ -2136,24 +2222,40 @@ function inTime<T>(promise: Promise<T>, ms: number): Promise<T> {
  * the meter did not answer. Only ever called from inside the meter's queue.
  */
 async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<ReserveAnswer | null> {
+	// Reports the book has not had go first: one for a hold it still has open would be counted in full once another is taken.
+	if (meta.unsettled?.length) await sendUnsettled(c, meta);
 	const open = meta.meter ?? null;
-	const now = Date.now();
-	// The same id until an answer comes: a request that arrived, and whose answer did not, is not a second hold.
-	const id = c.vars.meterAsked ?? `h_${randomBytes(8).toString("hex")}`;
-	c.vars.meterAsked = id;
+	// The same id, from the same moment, until an answer comes: a request that arrived and whose answer did
+	// not is not a second hold, and the stretch goes on in it from when it was asked, not from the retry.
+	const asked = meta.meterAsked ?? { id: `h_${randomBytes(8).toString("hex")}`, at: Date.now() };
+	const now = asked.at;
+	if (!meta.meterAsked) {
+		// Stored before it is sent: a sleep, a crash or another node after this still knows what may be open.
+		meta.meterAsked = asked;
+		await persist(c);
+	}
 	let answer: ReserveAnswer;
 	try {
 		answer = await inTime(
-			userActor(c, meta.uid).internalReserve({ id, sessionId: meta.sessionId, keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, now) } : undefined }),
+			userActor(c, meta.uid).internalReserve({ id: asked.id, sessionId: meta.sessionId, keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, now) } : undefined }),
 			METER_WAIT_MS,
 		);
 	} catch (error) {
 		c.log.warn({ msg: "the user's sandbox time could not be asked for", session: meta.sessionId, error: describeError(error) });
+		// With nothing running, nothing was started on it: a hold the book may have opened is reported at 0 s before the next is asked for.
+		if (!meta.meter && meta.meterAsked === asked) {
+			meta.unsettled = [...(meta.unsettled ?? []), { hold: asked.id, seconds: 0 }].slice(-MAX_UNSETTLED);
+			meta.meterAsked = null;
+			void persist(c);
+		}
 		return null;
 	}
-	c.vars.meterAsked = null;
+	meta.meterAsked = null;
+	void persist(c);
 	if (answer.ok) {
-		meta.meter = { hold: answer.hold.id, since: now, seconds: answer.hold.seconds, ...(open?.seen ? { seen: open.seen } : {}) };
+		// A renewal goes on with the use the hold was for; anything that starts takes a use of its own.
+		const use = !fresh && open ? (open.use ?? open.hold) : answer.hold.id;
+		meta.meter = { hold: answer.hold.id, since: now, seconds: answer.hold.seconds, use, ...(open?.seen ? { seen: open.seen } : {}) };
 		void persist(c);
 	}
 	return answer;
@@ -2169,7 +2271,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
 function holdSandbox(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<void> {
 	if (!countsSandboxTime(meta.place)) return Promise.resolve();
 	return metered(c, async () => {
-		providerIdleStop = (await layerOf(c, meta)).sandboxes.idleStopMs;
+		c.vars.idleStopMs = (await layerOf(c, meta)).sandboxes.idleStopMs;
 		const answer = await takeHold(c, meta, fresh);
 		armMeter(c, meta);
 		if (answer === null) throw new UserError(USAGE_UNAVAILABLE, { code: "usage_unavailable" });
@@ -2191,8 +2293,9 @@ function armMeter(c: Ctx, meta: SessionMeta, notBefore = 0): void {
 	const open = meta.meter;
 	if (!open || c.vars.stopping || c.vars.destroying) return;
 	let at = open.since + open.seconds * 1000;
-	if (providerIdleStop !== null && !c.vars.turn) {
-		at = Math.min(at, Math.max(Math.max(open.since, lastUsed(meta)) + providerIdleStop + IDLE_STOP_MARGIN_MS, (open.seen ?? 0) + METER_RETRY_MS));
+	const idleStopMs = c.vars.idleStopMs;
+	if (idleStopMs !== null && !c.vars.turn) {
+		at = Math.min(at, Math.max(Math.max(open.since, lastUsed(meta)) + idleStopMs + IDLE_STOP_MARGIN_MS, (open.seen ?? 0) + METER_RETRY_MS));
 	}
 	c.vars.meterTimer = setTimeout(
 		() => {
@@ -2221,14 +2324,18 @@ function meterTick(c: Ctx, meta: SessionMeta): Promise<void> {
 		const open = meta.meter;
 		if (!open || c.vars.stopping || c.vars.destroying || c.vars.meta !== meta) return;
 		const id = meta.sandboxId;
-		const unused = !c.vars.turn && !c.vars.accepting && !c.vars.publishing && !c.vars.idling;
-		if (id && unused && providerIdleStop !== null && Date.now() >= Math.max(open.since, lastUsed(meta)) + providerIdleStop) {
-			const state = await layerOf(c, meta)
+		const unused = !busy(c);
+		const idleStopMs = c.vars.idleStopMs;
+		if (id && unused && idleStopMs !== null && Date.now() >= Math.max(open.since, lastUsed(meta)) + idleStopMs) {
+			const gen = c.vars.sandboxGen;
+			const read = await layerOf(c, meta)
 				.then(({ sandboxes }) => sandboxes.state(id))
 				.catch(() => null);
+			// A sandbox resumed or suspended while it was asked about is not the one the answer describes.
+			const state = c.vars.sandboxGen === gen ? read : null;
 			if (state === "running") open.seen = Date.now();
-			else if (state !== null && !c.vars.turn && !c.vars.accepting) {
-				await settleStretch(c, meta, stoppedBy(open, lastUsed(meta), providerIdleStop, Date.now()));
+			else if (state !== null && !busy(c)) {
+				await settleStretch(c, meta, stoppedBy(open, lastUsed(meta), idleStopMs, Date.now()), useOf(meta));
 				noteSandbox(c, meta, state);
 				void armIdle(c, meta);
 				return;
@@ -2239,27 +2346,33 @@ function meterTick(c: Ctx, meta: SessionMeta): Promise<void> {
 			return;
 		}
 		const answer = await takeHold(c, meta, false);
-		if (answer !== null && !answer.ok && answer.reason === "allowance") outOfTime(c, meta, answer.numbers);
-		else armMeter(c, meta, answer?.ok ? 0 : Date.now() + METER_RETRY_MS);
+		// Without an answer the sandbox goes on, still counted by the book, until shortly before the hold runs out there; then it stops.
+		const deadline = holdDeadline(open.since, open.seconds);
+		if (answer !== null && !answer.ok && answer.reason === "allowance") outOfTime(c, meta, turnStoppedNote(answer.numbers), idleSuspendedNote(answer.numbers));
+		else if (answer === null && Date.now() >= deadline) {
+			console.log(`[wlp] usage.unchecked_stop session=${meta.sessionId}: its sandbox time could not be checked before its hold ran out`);
+			outOfTime(c, meta, UNCHECKED_TURN_NOTE, UNCHECKED_IDLE_NOTE);
+		} else armMeter(c, meta, answer?.ok ? 0 : Math.min(Date.now() + METER_RETRY_MS, deadline));
 	});
 }
 
 /**
- * The day's allowance cannot cover the sandbox any longer. A turn that runs is stopped, with a line
- * that says why, and its sandbox is suspended once the turn has closed (`meterAfterTurn`); a sandbox
- * with no turn in it is suspended now. Either way its files stay as they are.
+ * The sandbox may not run on: the day's allowance cannot cover it, or its time could not be checked
+ * before its hold ran out. A turn that runs is stopped, with a line that says why (`turnText`), and its
+ * sandbox is suspended once the turn has closed (`meterAfterTurn`); a sandbox with no turn in it is
+ * suspended now (`idleText`). Either way its files stay as they are.
  */
-function outOfTime(c: Ctx, meta: SessionMeta, numbers: UsageNumbers): void {
+function outOfTime(c: Ctx, meta: SessionMeta, turnText: string, idleText: string): void {
 	const active = c.vars.turn;
 	if (active) {
 		if (active.outOfTime || active.closed) return;
 		active.outOfTime = true;
-		note(c, active.number, "warn", turnStoppedNote(numbers));
-		console.log(`[wlp] usage.turn_stopped session=${meta.sessionId} turn=${active.number}: its user's sandbox time for the day is used up`);
+		note(c, active.number, "warn", turnText);
+		console.log(`[wlp] usage.turn_stopped session=${meta.sessionId} turn=${active.number}: its sandbox may not run on`);
 		abortTurn(c, meta, active);
 		return;
 	}
-	void c.keepAwake(suspendOutOfTime(c, meta, idleSuspendedNote(numbers)));
+	void c.keepAwake(suspendOutOfTime(c, meta, idleText));
 }
 
 /**
@@ -2270,18 +2383,21 @@ function outOfTime(c: Ctx, meta: SessionMeta, numbers: UsageNumbers): void {
 async function suspendOutOfTime(c: Ctx, meta: SessionMeta, text: string | null): Promise<void> {
 	const id = meta.sandboxId;
 	if (!id || c.vars.stopping || c.vars.destroying) return;
-	if (c.vars.turn || c.vars.accepting || c.vars.publishing || c.vars.idling) {
+	if (busy(c)) {
 		armMeter(c, meta, Date.now() + METER_RETRY_MS);
 		return;
 	}
 	// Set in the same step as the checks above: from here a prompt waits for it.
+	const release = takeSandbox(c);
 	const work = (async () => {
 		const { sandboxes } = await layerOf(c, meta);
 		await sandboxes.suspend(id);
+		sandboxChanged(c);
 		console.log(`[wlp] sandbox.suspended_out_of_time id=${id} session=${meta.sessionId}`);
 		meta.sandbox = "paused";
+		const use = useOf(meta);
 		if (text !== null) note(c, meta.turns, "info", text);
-		await closeMeter(c, meta);
+		await closeMeter(c, meta, "now", use);
 		publish(c);
 		await persist(c);
 	})();
@@ -2293,6 +2409,7 @@ async function suspendOutOfTime(c: Ctx, meta: SessionMeta, text: string | null):
 		armMeter(c, meta, Date.now() + METER_RETRY_MS);
 	} finally {
 		c.vars.idling = null;
+		release();
 	}
 	await armIdle(c, meta);
 }
@@ -2302,13 +2419,15 @@ async function suspendOutOfTime(c: Ctx, meta: SessionMeta, text: string | null):
  * kept with the session first and sent then, so a report that does not get through is sent again
  * when the session is next awake. Only ever called from inside the meter's queue.
  */
-async function settleStretch(c: Ctx, meta: SessionMeta, until: number): Promise<void> {
+async function settleStretch(c: Ctx, meta: SessionMeta, until: number, use: string | null): Promise<void> {
 	const open = meta.meter;
-	if (!open) return;
+	if (!open || useOf(meta) !== use) return;
 	meta.meter = null;
 	if (c.vars.meterTimer) clearTimeout(c.vars.meterTimer);
 	c.vars.meterTimer = null;
-	meta.unsettled = [...(meta.unsettled ?? []), { hold: open.hold, seconds: stretchSeconds(open, until) }].slice(-MAX_UNSETTLED);
+	// A renewal whose answer never came ends with the stretch it was to continue.
+	meta.unsettled = [...(meta.unsettled ?? []), ...closingReports(open, meta.meterAsked ?? null, until)].slice(-MAX_UNSETTLED);
+	meta.meterAsked = null;
 	void persist(c);
 	await sendUnsettled(c, meta);
 }
@@ -2330,14 +2449,19 @@ async function sendUnsettled(c: Ctx, meta: SessionMeta): Promise<void> {
 /**
  * The session's sandbox does not run any more: settles the stretch that was being counted. "now" when
  * the session stopped it itself; "found" when the session finds it stopped, and it can have run until
- * the provider's own timeout at the latest, and no longer than the hold it had. Never throws.
+ * the provider's own timeout at the latest, and no longer than the hold it had. `use` is what the
+ * caller decided about (`useOf`), read when it decided: a turn that ended without a sandbox, or a state
+ * read from before a wake, must not settle the hold of a prompt that came meanwhile. Never throws.
  */
-function closeMeter(c: Ctx, meta: SessionMeta, how: "now" | "found" = "now"): Promise<void> {
+function closeMeter(c: Ctx, meta: SessionMeta, how: "now" | "found", use: string | null): Promise<void> {
 	const at = Date.now();
+	if (use === null) return Promise.resolve();
 	return metered(c, async () => {
 		const open = meta.meter;
-		if (!open) return;
-		await settleStretch(c, meta, how === "now" ? at : Math.min(stoppedBy(open, lastUsed(meta), providerIdleStop, at), open.since + open.seconds * 1000));
+		if (!open || useOf(meta) !== use) return;
+		// The provider's timeout is asked of this session's layer every time: a server that has not asked yet must not count to now.
+		const until = how === "now" ? at : Math.min(stoppedBy(open, lastUsed(meta), (await layerOf(c, meta)).sandboxes.idleStopMs, at), open.since + open.seconds * 1000);
+		await settleStretch(c, meta, until, use);
 	}).catch((error) => {
 		c.log.warn({ msg: "could not settle the sandbox's time", session: meta.sessionId, error: describeError(error) });
 	});
@@ -2351,13 +2475,17 @@ async function releasePlace(c: Ctx, meta: SessionMeta): Promise<void> {
 	});
 }
 
-/** A turn has closed: what follows for the sandbox's time and place. Never throws. */
-async function meterAfterTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): Promise<void> {
+/**
+ * A turn has closed: what follows for the sandbox's time and place. `use` is the meter's when the turn
+ * ended, read before a new prompt could be taken: one that came in the turn's last steps has a hold
+ * and a place of its own. Never throws.
+ */
+async function meterAfterTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, use: string | null): Promise<void> {
 	try {
 		if (!meta.sandboxId || meta.sandbox !== "running") {
-			await closeMeter(c, meta);
-			// A turn that ended without a sandbox, because none could be made, holds no place.
-			if (!meta.sandboxId && !c.vars.destroying) await releasePlace(c, meta);
+			await closeMeter(c, meta, "now", use);
+			// A turn that ended without a sandbox, because none could be made, holds no place; unless a prompt that came since is making one.
+			if (!meta.sandboxId && !c.vars.turn && !c.vars.accepting && !c.vars.destroying) await releasePlace(c, meta);
 		} else if (active.outOfTime) {
 			await suspendOutOfTime(c, meta, null);
 		} else {
@@ -2371,16 +2499,18 @@ async function meterAfterTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): Pr
 /**
  * When the actor wakes: a stretch that was open when it went away, a sandbox that runs with nobody
  * counting it (one from before sandbox time was counted, or one that went on under a server that
- * stopped), and reports that never arrived. Called once the sandbox's real state is known. Never throws.
+ * stopped), and reports that never arrived. Called once the sandbox's real state is known. `use` is
+ * the meter's as the actor woke, read before anything was awaited: the prompt that woke it may have
+ * taken a hold since, which is that prompt's to settle. Never throws.
  */
-async function wakeMeter(c: Ctx, meta: SessionMeta): Promise<void> {
+async function wakeMeter(c: Ctx, meta: SessionMeta, use: string | null): Promise<void> {
 	if (!countsSandboxTime(meta.place)) return;
 	try {
-		providerIdleStop = (await layerOf(c, meta)).sandboxes.idleStopMs;
+		c.vars.idleStopMs = (await layerOf(c, meta)).sandboxes.idleStopMs;
 		const running = meta.sandboxId !== null && meta.sandbox === "running";
-		if (meta.meter && !running) await closeMeter(c, meta, "found");
+		if (use !== null && !running) await closeMeter(c, meta, "found", use);
 		else if (meta.meter) armMeter(c, meta);
-		else if (running && !c.vars.turn && !c.vars.accepting) {
+		else if (running && !busy(c)) {
 			const answer = await metered(c, () => takeHold(c, meta, false));
 			armMeter(c, meta);
 			if (answer !== null && !answer.ok && answer.reason === "allowance") await suspendOutOfTime(c, meta, idleSuspendedNote(answer.numbers));
@@ -2395,7 +2525,7 @@ async function wakeMeter(c: Ctx, meta: SessionMeta): Promise<void> {
 function sleepMeter(c: Ctx, meta: SessionMeta): Promise<void> {
 	if (c.vars.meterTimer) clearTimeout(c.vars.meterTimer);
 	c.vars.meterTimer = null;
-	return meta.sandboxId && meta.sandbox === "running" ? Promise.resolve() : closeMeter(c, meta);
+	return meta.sandboxId && meta.sandbox === "running" ? Promise.resolve() : closeMeter(c, meta, "now", useOf(meta));
 }
 
 /** The sessions that have settled and given back what they had as they were deleted, so that it is done once. */
@@ -2407,7 +2537,7 @@ async function leaveUsage(c: Ctx, meta: SessionMeta): Promise<void> {
 	usageLeft.add(meta);
 	if (c.vars.meterTimer) clearTimeout(c.vars.meterTimer);
 	c.vars.meterTimer = null;
-	await closeMeter(c, meta);
+	await closeMeter(c, meta, "now", useOf(meta));
 	await releasePlace(c, meta);
 }
 
@@ -2418,14 +2548,16 @@ async function leaveUsage(c: Ctx, meta: SessionMeta): Promise<void> {
 async function removeSandbox(c: Ctx, meta: SessionMeta, id: string, text: string): Promise<void> {
 	const { sandboxes } = await layerOf(c, meta);
 	await sandboxes.destroy(id);
+	sandboxChanged(c);
 	meta.sandboxId = null;
 	meta.sandbox = "none";
+	const use = useOf(meta);
 	meta.cloned = false;
 	meta.setupDue = null;
 	meta.setupUnfinished = null;
 	await dropWorkspace(c);
 	note(c, meta.turns, "info", text);
-	await closeMeter(c, meta);
+	await closeMeter(c, meta, "now", use);
 	await releasePlace(c, meta);
 }
 
@@ -2466,7 +2598,10 @@ function armIdle(c: Ctx, meta: SessionMeta, notBefore = 0): Promise<void> {
 		const due = idleDue(meta);
 		const at = due === null ? null : Math.max(due, notBefore);
 		const current = meta.idleCheck ?? null;
-		if (current?.at === at || (current === null && at === null)) return;
+		// A check whose time has passed was taken by the schedule already. One that was cut off before it set
+		// the next (a deploy or a crash while it ran) would otherwise stand for ever, the wake's repair included.
+		const armed = current !== null && current.at > Date.now() ? current : null;
+		if (armed?.at === at || (armed === null && at === null)) return;
 		meta.idleCheck = at === null ? null : { id: await c.schedule.at(at, "internalIdle"), at };
 		// Written before the old one is cancelled: a crash in between leaves the old one, which still works.
 		await persist(c);
@@ -2485,8 +2620,10 @@ async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 		console.log(`[wlp] sandbox.idle_kept session=${meta.sessionId} status=${meta.status}`);
 		return;
 	}
-	// A prompt being accepted may fail before it starts a turn, and then nothing would set one.
-	if (c.vars.accepting || c.vars.idling) {
+	// Something has the sandbox (a prompt being accepted, a push, a read of the workspace, a suspend): it
+	// is not taken from under it, and the check comes back, since what has it may set none.
+	if (busy(c)) {
+		console.log(`[wlp] sandbox.idle_busy session=${meta.sessionId}`);
 		await armIdle(c, meta, Date.now() + IDLE_RETRY_MS);
 		return;
 	}
@@ -2498,6 +2635,7 @@ async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 	let retry = 0;
 	if (id && (remove || suspend)) {
 		// Set in the same step as the checks above: from here a prompt waits for it.
+		const release = takeSandbox(c);
 		const work = (async () => {
 			const { sandboxes } = await layerOf(c, meta);
 			if (remove) {
@@ -2507,14 +2645,16 @@ async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 				const state = await sandboxes.state(id);
 				if (state === "running") {
 					await sandboxes.suspend(id);
+					sandboxChanged(c);
 					console.log(`[wlp] sandbox.idle_suspended id=${id} session=${meta.sessionId}`);
 					meta.sandbox = "paused";
+					const use = useOf(meta);
 					note(c, meta.turns, "info", `Suspended the sandbox after ${duration(config.idleSuspendMs)} without use; the next prompt resumes it.`);
-					await closeMeter(c, meta);
+					await closeMeter(c, meta, "now", use);
 				} else {
 					// Paused by a sleep, or gone: nothing to suspend, and nothing to say.
 					meta.sandbox = state;
-					await closeMeter(c, meta, "found");
+					await closeMeter(c, meta, "found", useOf(meta));
 				}
 			}
 			publish(c);
@@ -2528,6 +2668,7 @@ async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 			retry = Date.now() + IDLE_RETRY_MS;
 		} finally {
 			c.vars.idling = null;
+			release();
 		}
 	}
 	await armIdle(c, meta, retry);
@@ -2573,8 +2714,8 @@ function titleFrom(prompt: string): string {
 	return title.length < text.length ? `${title}…` : title;
 }
 
-/** Runs one accepted turn to its `turn.ended`. Never rejects. */
-async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: string): Promise<void> {
+/** Runs one accepted turn to its `turn.ended`. `release` gives back the sandbox its acceptance took (`takeSandbox`). Never rejects. */
+async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: string, release: () => void): Promise<void> {
 	const startedAt = Date.now();
 	const turn = active.number;
 	const effort = active.effort;
@@ -2586,6 +2727,8 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 	let events = 0;
 	let open = true;
 	let used: SandboxHandle | null = null;
+	/** The meter's use when the turn ended (`meterAfterTurn`). */
+	let meterUse: string | null = null;
 	// A turn that never ends would hold its sandbox, and one of the user's running slots, for ever.
 	const limit = setTimeout(() => {
 		if (!open) return;
@@ -2807,6 +2950,8 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		meta.updatedAt = Date.now();
 		meta.lastUsedAt = meta.updatedAt;
 		meta.turnStartedAt = null;
+		// In the step that lets the next prompt in: what this turn leaves to settle is the hold it has now.
+		meterUse = useOf(meta);
 		c.vars.turn = null;
 		publish(c);
 		if (outcome === "error") await refreshSandbox(c, meta);
@@ -2823,12 +2968,15 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		meta.status = "idle";
 		meta.lastUsedAt = Date.now();
 		meta.turnStartedAt = null;
+		if (c.vars.turn === active) meterUse = useOf(meta);
 		c.vars.turn = null;
 		c.vars.pending = [];
 		publish(c);
 		await persist(c);
 	}
-	await meterAfterTurn(c, meta, active);
+	// Given back before what follows the turn for its time: a sandbox out of time is suspended there.
+	release();
+	await meterAfterTurn(c, meta, active, meterUse);
 	// The idle times count from here.
 	await armIdle(c, meta);
 }
@@ -2936,6 +3084,8 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 
 	// Nothing was awaited since the check above, so this prompt is the only one past it.
 	c.vars.accepting = true;
+	// The sandbox is this prompt's from here, and its turn's to the end: no idle check takes it meanwhile.
+	let release: (() => void) | null = takeSandbox(c);
 	let claimed = false;
 	try {
 		// A suspend or removal of the idle sandbox finishes first; the turn then resumes or recreates it.
@@ -2991,7 +3141,8 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 		c.vars.turn = active;
 		// The turn's first step writes the session, and the key with it.
 		const answer = remember(meta, submission, { turn, steered: false });
-		active.done = c.keepAwake(runTurn(c, meta, active, text));
+		active.done = c.keepAwake(runTurn(c, meta, active, text, release));
+		release = null;
 		return answer;
 	} catch (error) {
 		if (!c.vars.turn && meta.status !== "idle") {
@@ -3004,6 +3155,7 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 		throw clientError(c.log, error, "The prompt could not be started. Try again.");
 	} finally {
 		c.vars.accepting = false;
+		release?.();
 	}
 }
 
@@ -3095,6 +3247,7 @@ export const agentSession = actor({
 			reportAgain: false,
 			signedInUntil: 0,
 			idling: null,
+			sandboxOps: 0,
 			workspace: undefined,
 			arming: Promise.resolve(),
 			publishing: false,
@@ -3102,7 +3255,8 @@ export const agentSession = actor({
 			unpushed: null,
 			meterTimer: null,
 			metering: Promise.resolve(),
-			meterAsked: null,
+			idleStopMs: null,
+			sandboxGen: 0,
 			runner: null,
 		};
 	},
@@ -3169,9 +3323,10 @@ export const agentSession = actor({
 		meta.setupRunning = null;
 		// The sandbox may have been paused, removed or left running while the actor was away. A session
 		// from before the idle checks, or one whose check was lost, gets one here.
+		const use = useOf(meta);
 		void c.keepAwake(
 			refreshSandbox(c, meta)
-				.then(() => wakeMeter(c, meta))
+				.then(() => wakeMeter(c, meta, use))
 				.then(() => armIdle(c, meta)),
 		);
 	},
@@ -3194,6 +3349,7 @@ export const agentSession = actor({
 					() => {
 						ended = true;
 						if (!waiting) return;
+						sandboxChanged(c);
 						meta.sandbox = "paused";
 						publish(c);
 					},
@@ -3224,11 +3380,13 @@ export const agentSession = actor({
 			try {
 				const { sandboxes } = await layerOf(c, meta);
 				await sandboxes.destroy(meta.sandboxId);
+				sandboxChanged(c);
 				console.log(`[wlp] sandbox.destroyed id=${meta.sandboxId} session=${meta.sessionId}`);
 			} catch (error) {
 				c.log.error({ msg: "could not destroy the sandbox", sandbox: meta.sandboxId, error: describeError(error) });
 			}
 		}
+		await layerOf(c, meta).then((layer) => sweepSandboxes(c, meta, layer), () => undefined);
 		await leaveUsage(c, meta);
 		// After the sandbox, which is what uploads: nothing can put the copy back once it is removed.
 		await removeBackup(c, meta);
@@ -3391,24 +3549,31 @@ export const agentSession = actor({
 		changes: async (c): Promise<WorkspaceFile[]> => {
 			requireUser(c);
 			const meta = liveMeta(c);
+			// The sandbox is this read's until it is done: it may resume a paused one and read it.
+			const release = takeSandbox(c);
 			try {
 				const view = await workspaceView(c, meta);
 				if (view === null) return [];
 				return "sandbox" in view ? ((await readFiles(c, view.sandbox)) ?? []) : view.files;
 			} catch (error) {
 				throw clientError(c.log, error, "The workspace's changes could not be read.");
+			} finally {
+				release();
 			}
 		},
 
 		diff: async (c): Promise<string> => {
 			requireUser(c);
 			const meta = liveMeta(c);
+			const release = takeSandbox(c);
 			try {
 				const view = await workspaceView(c, meta);
 				if (view === null) return "";
 				return "sandbox" in view ? ((await readDiff(c, meta, view.sandbox)) ?? "") : view.diff;
 			} catch (error) {
 				throw clientError(c.log, error, "The workspace's diff could not be read.");
+			} finally {
+				release();
 			}
 		},
 
@@ -3433,12 +3598,14 @@ export const agentSession = actor({
 			if (blocked) throw new UserError(blocked, { code: "publish_blocked" });
 			// Nothing was awaited since the check: this push is the only one past it.
 			c.vars.publishing = true;
+			const release = takeSandbox(c);
 			try {
 				return await c.keepAwake(publishSession(c, meta, repo, message));
 			} catch (error) {
 				throw clientError(c.log, error, "The work could not be pushed. Try again.");
 			} finally {
 				c.vars.publishing = false;
+				release();
 			}
 		},
 
@@ -3537,11 +3704,15 @@ export const agentSession = actor({
 
 		internalIdle: async (c): Promise<void> => {
 			// RivetKit sets `scheduledFire` on the context of a call its schedule makes; a client cannot.
-			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			const fire = c.scheduledFire;
+			if (!fire) throw new UserError("This action is internal.", { code: "forbidden" });
 			const meta = c.vars.meta;
+			// Every firing is said, whatever the check then finds: one that finds the sandbox paused already does nothing else that shows.
+			const superseded = meta?.idleCheck ? meta.idleCheck.id !== fire.id : false;
+			console.log(`[wlp] schedule.fired session=${c.key[1]} action=internalIdle id=${fire.id} late_ms=${fire.firedAt - fire.scheduledAt}${superseded ? " superseded" : ""}`);
 			if (!meta || c.vars.destroying) return;
 			// A check that was replaced by a later one, and whose cancel did not reach it, does nothing.
-			if (meta.idleCheck && meta.idleCheck.id !== c.scheduledFire.id) return;
+			if (superseded) return;
 			try {
 				await idleCheck(c, meta);
 			} catch (error) {
@@ -3577,15 +3748,18 @@ export const agentSession = actor({
 			const meta = liveMeta(c);
 			if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 			if (c.vars.turn || c.vars.accepting || meta.status !== "idle") throw new UserError(`${meta.title} is working. Stop its turn first, then free its sandbox.`, { code: "sandbox_busy" });
-			if (c.vars.publishing || c.vars.idling) throw new UserError(`The platform is busy with the sandbox of ${meta.title}. Try again in a moment.`, { code: "sandbox_busy" });
+			if (busy(c)) throw new UserError(`The platform is busy with the sandbox of ${meta.title}. Try again in a moment.`, { code: "sandbox_busy" });
 			const id = meta.sandboxId;
 			if (!id) return { freed: false };
 			// Set in the same step as the checks above: from here a prompt waits for it.
+			const release = takeSandbox(c);
 			const work = (async () => {
 				const layer = await layerOf(c, meta);
 				const memory = !meta.windlassSessionId ? null : !layer.sandboxes.sessionsLiveInSandbox ? "kept" : layer.backups && meta.backup?.windlassSessionId === meta.windlassSessionId ? "copied" : "lost";
 				await removeSandbox(c, meta, id, freedNote(memory));
 				console.log(`[wlp] sandbox.freed id=${id} session=${meta.sessionId}`);
+				// Under the same exclusion: what the provider still has for the session goes with it, by the session's own hand.
+				await sweepSandboxes(c, meta, layer);
 				publish(c);
 				await persist(c);
 			})();
@@ -3596,6 +3770,7 @@ export const agentSession = actor({
 				throw clientError(c.log, error, "The sandbox could not be freed. Try again.");
 			} finally {
 				c.vars.idling = null;
+				release();
 			}
 			await armIdle(c, meta);
 			return { freed: true };
@@ -3613,6 +3788,7 @@ export const agentSession = actor({
 					try {
 						const { sandboxes } = await layerOf(c, meta);
 						await sandboxes.destroy(meta.sandboxId);
+						sandboxChanged(c);
 						console.log(`[wlp] sandbox.destroyed id=${meta.sandboxId} session=${meta.sessionId}`);
 						meta.sandboxId = null;
 						meta.sandbox = "none";
@@ -3620,6 +3796,7 @@ export const agentSession = actor({
 						c.log.error({ msg: "could not destroy the sandbox", sandbox: meta.sandboxId, error: describeError(error) });
 					}
 				}
+				await layerOf(c, meta).then((layer) => sweepSandboxes(c, meta, layer), () => undefined);
 				// What its sandbox ran is reported, and its place among the user's sandboxes given back.
 				await leaveUsage(c, meta);
 				// The copy of Windlass's session goes with the session, once the sandbox that uploads it is gone.

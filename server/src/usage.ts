@@ -459,8 +459,53 @@ export interface OpenStretch {
 	since: number;
 	/** How many seconds the hold is for: the session trades it for the next one when they are over. */
 	seconds: number;
+	/**
+	 * The id of the hold the current use of the sandbox began with: a turn, a read of the workspace, a
+	 * push or a wake takes a new one, and a renewal keeps it. A decision to stop counting names it, so a
+	 * use that began after the decision is not stopped by it. Absent in stretches stored before: `hold`.
+	 */
+	use?: string;
 	/** When the session last saw the sandbox running after the time it would have stopped by itself. */
 	seen?: number;
+}
+
+/**
+ * A hold a session asked for and had no answer to, kept with the session's stored state from before
+ * the request was sent. The book may have opened it, and closed the hold it was traded for: so it is
+ * asked for again under the same id, from `at`, while the stretch it continues runs, and reported with
+ * what ran of it when that ends (`closingReports`). One asked for with nothing running is reported at
+ * 0 s: what was asked for it never started.
+ */
+export interface PendingAsk {
+	id: string;
+	/** When it was first asked, by the session's clock: the stretch goes on in it from there. */
+	at: number;
+}
+
+/**
+ * What a session reports when its stretch ends at `until`. With a trade that may or may not have
+ * reached the book (`asked`), both halves are reported: the book knows exactly one of the two holds,
+ * and the report for the other counts nothing there. Either way every second from `open.since` to
+ * `until` is counted once.
+ */
+export function closingReports(open: OpenStretch, asked: PendingAsk | null, until: number): Array<{ hold: string; seconds: number }> {
+	const reports = [{ hold: open.hold, seconds: stretchSeconds(open, until) }];
+	if (asked) reports.push({ hold: asked.id, seconds: Math.max(0, until - asked.at) / 1000 });
+	return reports;
+}
+
+/** How long before the book would count an unrenewed hold in full a session stops what runs on it. */
+export const STOP_MARGIN_MS = 30_000;
+
+/**
+ * When a session whose hold could not be traded for the next one stops its sandbox: a margin before the
+ * book stops counting the hold (`UsageHold.expiresAt`). Not at the first renewal that failed: until
+ * then the book still counts what runs past the hold, so a short outage of the user's actor costs
+ * nothing. `since` is when the hold was asked for, by the session's clock, which is never after the
+ * book took it. A lease of `seconds` with no grace after it is stopped the same way (`graceSeconds` 0).
+ */
+export function holdDeadline(since: number, seconds: number, graceSeconds = HOLD_GRACE_SECONDS): number {
+	return since + (seconds + graceSeconds) * 1000 - STOP_MARGIN_MS;
 }
 
 /** The seconds of a stretch's hold that ran until `until`. */
@@ -531,6 +576,10 @@ export const USAGE_UNAVAILABLE = "Your sandbox time could not be checked just no
 export function turnStoppedNote(numbers: UsageNumbers): string {
 	return `Today's ${spellSeconds(numbers.allowanceSeconds ?? 0)} of sandbox time is used up, so this turn was stopped at the end of the time it held. The sandbox is suspended with its files as they are, and the conversation is kept. ${resetWords(numbers)} A prompt after that goes on from here.`;
 }
+
+/** The timeline's lines when a turn is stopped, or a sandbox with no turn suspended, because its user's sandbox time could not be checked until the hold ran out (`holdDeadline`). */
+export const UNCHECKED_TURN_NOTE = "Your sandbox time could not be checked for several minutes, so this turn was stopped before it ran on uncounted. The sandbox is suspended with its files as they are, and the conversation is kept: send the prompt again in a moment.";
+export const UNCHECKED_IDLE_NOTE = "Suspended the sandbox: your sandbox time could not be checked for several minutes. Its files are kept, and the next prompt resumes it.";
 
 /** The timeline's line when a sandbox that runs with no turn in it is suspended for the same reason. */
 export function idleSuspendedNote(numbers: UsageNumbers): string {

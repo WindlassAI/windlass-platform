@@ -996,9 +996,34 @@ async function main(server: Server | null): Promise<void> {
 	// --- a server that dies mid-turn --------------------------------------------------------------
 
 	const askedBeforeCrash: { id: string; turn: number; questionId: string; problem: string | null } = { id: "", turn: 0, questionId: "", problem: "the crash check did not get that far" };
+	// A session whose turn ended with its sandbox running, so its hold is open when the server dies: the
+	// sandbox-time checks after the crash. The fake layer restarts as a slow provider (state, resume, destroy), with a
+	// provider's idle stop, and with its first create refused (WLP_FAKE_*, sandbox-fake.ts).
+	const counted = { id: "", promptAt: 0, endedAt: 0, wokeAt: 0, found: -1, problem: "the crash check did not get that far" as string | null };
+	const IDLE_STOP_S = 2;
+	const PROVIDER_DELAY_MS = 1_000;
+	const countedUsage = async () => (await userHandle.usage()).today.find((row) => row.sessionId === counted.id);
 
 	if (server) {
 		await check("a turn lost to a server crash is closed as interrupted on wake", async () => {
+			if (FAKE) {
+				try {
+					const made = await userConn.createSession({ profile: availableProfile as never, title: "Counted before the crash" });
+					const handle = client.agentSession.get([uid, made.id], { params: { token } });
+					counted.promptAt = Date.now();
+					const { turn } = await handle.prompt({ text: "Write a short program" });
+					const ended = await waitFor("its turn to end", async () => {
+						const now = await handle.snapshot();
+						const last = now.timeline.at(-1);
+						return now.summary.status === "idle" && last?.kind === "turn.ended" && last.turn === turn ? last : undefined;
+					}, TURN_MS, 100);
+					counted.id = made.id;
+					counted.endedAt = ended.at;
+					counted.problem = (await countedUsage())?.heldSeconds ? null : "its hold was not open after the turn";
+				} catch (error) {
+					counted.problem = describe(error);
+				}
+			}
 			const { turn } = await watchTwo.conn.prompt({ text: "Fix the failing test (slow)" });
 			await waitFor("the turn to stream", () => watchTwo.deltas.some((delta) => delta.turn === turn), TURN_MS);
 			const seen = watchTwo.items.length;
@@ -1016,8 +1041,17 @@ async function main(server: Server | null): Promise<void> {
 			await watchTwo.conn.dispose().catch(() => undefined);
 			await userConn.dispose().catch(() => undefined);
 			await server.crash();
-			await server.start({ WLP_LOGIN_TTL_MS: String(SHORT_LOGIN_TTL_MS) });
+			await server.start({ WLP_LOGIN_TTL_MS: String(SHORT_LOGIN_TTL_MS), ...(FAKE ? { WLP_FAKE_PROVIDER_DELAY_MS: String(PROVIDER_DELAY_MS), WLP_FAKE_IDLE_STOP_MS: String(IDLE_STOP_S * 1000), WLP_FAKE_CREATE_FAILS: "1" } : {}) });
 			loginTtlMs = SHORT_LOGIN_TTL_MS;
+			// Woken before any other session: nothing in the new server has asked the layer for its idle stop yet.
+			if (counted.problem === null) {
+				await client.agentSession.get([uid, counted.id], { params: { token } }).snapshot();
+				counted.wokeAt = Date.now();
+				counted.found = (await waitFor("the hold left open by the crash to be settled", async () => {
+					const row = await countedUsage();
+					return row && row.heldSeconds === 0 ? row : undefined;
+				}, 20_000, 200)).seconds;
+			}
 
 			const snapshot = await withTimeout("the first snapshot after the restart", sessionHandle.snapshot(), 90_000);
 			const last = snapshot.timeline.at(-1);
@@ -1052,6 +1086,41 @@ async function main(server: Server | null): Promise<void> {
 			return `status ${listed.status}, no question, an answer is refused with no_question`;
 		});
 		if (askedBeforeCrash.id) await userHandle.deleteSession(askedBeforeCrash.id).catch(() => undefined);
+
+		if (FAKE) {
+			await check("a hold the crash left open is counted to the provider's idle stop, not to the wake", async () => {
+				assert(counted.problem === null, `no session had an open hold before the crash: ${counted.problem}`);
+				const bound = Math.ceil((counted.endedAt - counted.promptAt) / 1000) + IDLE_STOP_S;
+				const toWake = Math.round((counted.wokeAt - counted.promptAt) / 1000);
+				assert(counted.found <= bound + 1, `${counted.found} s counted; the sandbox can have run ${bound} s at most (its turn, then the ${IDLE_STOP_S} s idle stop), and it was woken ${toWake} s after its prompt`);
+				return `${counted.found} s counted (bound ${bound} s; ${toWake} s to the wake)`;
+			});
+
+			const countedWatch = counted.problem === null ? new Watch(client, uid, counted.id, token) : null;
+			await check("a prompt in the last steps of a turn that failed without a sandbox keeps its own hold and place", async () => {
+				assert(countedWatch, `no session for it: ${counted.problem}`);
+				// Its sandbox died with the server; the replacement's create is refused once, so the turn fails, and its end reads the state slowly.
+				const failed = await countedWatch.conn.prompt({ text: "Write a short program" });
+				const ended = await countedWatch.untilEnded(failed.turn);
+				assert(ended.outcome === "error", `the first turn ended ${ended.outcome}`);
+				const { turn } = await countedWatch.conn.prompt({ text: "Fix the failing test (slow)" });
+				await waitFor("the second turn to stream", () => countedWatch.deltas.some((delta) => delta.turn === turn), TURN_MS);
+				// The refused create had made its sandbox: the session's next create removes it first.
+				assert(/the sandbox was made/.test(ended.message ?? ""), `the first turn failed otherwise: ${ended.message}`);
+				assert(new RegExp(`\\[wlp\\] sandbox\\.swept id=\\S+ session=${counted.id}`).test(server.output), "the sandbox the refused create made was not removed by the next create");
+				await sleep(PROVIDER_DELAY_MS + 1_000);
+				assert(!countedWatch.ended(turn), "the second turn ended before it could be looked at");
+				const row = await countedUsage();
+				assert(row && row.heldSeconds > 0, `mid-turn the session holds ${row?.heldSeconds ?? 0} s: the failed turn's end closed the new turn's hold`);
+				assert((await userHandle.usage()).kept.some((kept) => kept.sessionId === counted.id), "the session has no place among the kept sandboxes");
+				const second = await countedWatch.untilEnded(turn);
+				assert(second.outcome === "succeeded", `the second turn ended ${second.outcome}: ${second.message ?? ""}`);
+				return `turn ${failed.turn} ${ended.outcome}, its orphan swept by the next create; turn ${turn} held ${row.heldSeconds} s mid-turn`;
+			});
+			await countedWatch?.conn.dispose().catch(() => undefined);
+
+			await userHandle.deleteSession(counted.id).catch(() => undefined);
+		}
 
 		const watchThree = new Watch(client, uid, sid, token);
 		await check(FAKE ? "a sandbox that is gone is replaced, with a warning" : "the session works after a server crash", async () => {
@@ -2326,6 +2395,9 @@ const IDLE_CHECKS = [
 	"the running-sessions count after an automatic suspend",
 	"an idle sandbox is removed after the longer time; the timeline stays and the next prompt starts a new one",
 	"the idle checks hold across a server restart",
+	"a prompt that wakes a session with a paused sandbox keeps its hold while the provider is slow to say the state",
+	"a removal that falls due while a read of the workspace resumes the sandbox leaves it, and the check comes back",
+	"a session put to sleep is woken by its schedule, and a removal cut off by a crash is armed again on the next wake and runs",
 ];
 
 async function idleChecks(server: Server, client: Client, uid: string, token: string, profile: string, ASK: string, LONG: string): Promise<void> {
@@ -2474,6 +2546,96 @@ async function idleChecks(server: Server, client: Client, uid: string, token: st
 			if (!FAKE) assert(containerState(logged("idle_removed").at(-1) ?? "") === "gone", "the container still exists");
 			return `removed ${line.at - lastEnd.at} ms after the last turn, by a server started ${restarted - lastEnd.at} ms after it`;
 		});
+
+		if (FAKE) {
+			// From here the fake provider is slow: resuming a paused sandbox, saying its state and removing one each take PROVIDER_MS.
+			const PROVIDER_MS = 4_000;
+			const idleEnv = { WLP_IDLE_SUSPEND_MS: String(SUSPEND_MS), WLP_IDLE_DESTROY_MS: String(DESTROY_MS), WLP_LOGIN_TTL_MS: String(loginTtlMs) };
+			const count = (what: string) => server.output.split("\n").filter((line) => line.includes(what)).length;
+			const busyLines = () => count(`sandbox.idle_busy session=${idle.id}`);
+			const firings = () => count(`schedule.fired session=${idle.id} action=internalIdle`);
+			await step(IDLE_CHECKS[6], async () => {
+				await server.stop();
+				await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+				await server.start({ ...idleEnv, WLP_FAKE_PROVIDER_DELAY_MS: String(PROVIDER_MS) });
+				const first = new Watch(client, uid, idle.id, token);
+				const made = await first.conn.prompt({ text: "Write a short program" });
+				await first.untilEnded(made.turn);
+				await first.conn.dispose().catch(() => undefined);
+				// Asleep with its sandbox paused, nothing connected: the prompt wakes the actor, whose read of the paused sandbox's state takes PROVIDER_MS.
+				await forceSleep(idle.id);
+				await sleep(2_500);
+				const row = async () => (await userHandle.usage()).today.find((entry) => entry.sessionId === idle.id);
+				const countedBefore = (await row())?.seconds ?? 0;
+				const { turn } = await handle.prompt({ text: "Fix the failing test (slow)" });
+				await sleep(PROVIDER_MS + 1_500);
+				const mid = await handle.snapshot();
+				const held = (await row())?.heldSeconds ?? 0;
+				assert(mid.summary.status === "running", `the turn is ${mid.summary.status} when it is looked at`);
+				assert(held > 0, "mid-turn the session holds 0 s: the wake closed the prompt's hold");
+				assert(mid.summary.sandbox === "running", `the running sandbox is recorded as ${mid.summary.sandbox}`);
+				const done = await waitFor("the turn to end", async () => {
+					const now = await handle.snapshot();
+					return now.summary.status === "idle" ? now.timeline.find((item) => item.kind === "turn.ended" && item.turn === turn) : undefined;
+				}, TURN_MS, 200);
+				const ran = Math.floor((done.at - mid.timeline.find((item) => item.kind === "user" && item.turn === turn)!.at) / 1000);
+				const counted = await waitFor("the hold to be settled once the sandbox is suspended", async () => {
+					const now = await row();
+					return now && now.heldSeconds === 0 ? now.seconds - countedBefore : undefined;
+				}, SUSPEND_MS + 3 * PROVIDER_MS + 10_000, 300);
+				assert(counted >= ran - 1, `${counted} s counted for a turn of ${ran} s`);
+				return `held ${held} s mid-turn; ${counted} s counted for a turn of ${ran} s`;
+			});
+
+			await step(IDLE_CHECKS[7], async () => {
+				const slow = new Watch(client, uid, idle.id, token);
+				// It winds down slowly when stopped, so the sleep has begun before its end could copy the workspace.
+				const { turn } = await slow.conn.prompt({ text: "Fix the failing test (slow) (slow-stop)" });
+				await waitFor("the turn to stream", () => slow.deltas.some((delta) => delta.turn === turn), TURN_MS);
+				await slow.conn.dispose().catch(() => undefined);
+				// A turn stopped by its actor's sleep leaves no copy of the workspace, so a read resumes the paused sandbox.
+				const sleptAt = Date.now();
+				await forceSleep(idle.id);
+				await sleep(sleptAt + DESTROY_MS - 2_000 - Date.now());
+				const busyBefore = busyLines();
+				const removals = logged("idle_removed").length;
+				const readAt = Date.now();
+				const files = await handle.changes();
+				assert(Date.now() - readAt >= PROVIDER_MS, `the read took ${Date.now() - readAt} ms: it answered from a copy, not from the sandbox`);
+				await sleep(PROVIDER_MS + 1_000);
+				const after = await handle.snapshot();
+				assert(logged("idle_removed").length === removals && after.summary.sandbox === "running", `the sandbox was removed under the read (sandbox ${after.summary.sandbox})`);
+				assert(busyLines() > busyBefore, "the removal did not fall due while the read resumed the sandbox");
+				// A check that finds the sandbox taken looks again within a minute (IDLE_RETRY_MS in agent-session.ts).
+				const deferred = firings();
+				await waitFor("the idle check to come back", () => firings() > deferred, 60_000 + 3 * PROVIDER_MS + 10_000, 200);
+				return `${files.length} files read from the resumed sandbox; the removal deferred, and the check came back`;
+			});
+
+			await step(IDLE_CHECKS[8], async () => {
+				const fresh = new Watch(client, uid, idle.id, token);
+				const made = await fresh.conn.prompt({ text: "Write a short program" });
+				await fresh.untilEnded(made.turn);
+				await fresh.conn.dispose().catch(() => undefined);
+				const before = firings();
+				// Nobody is connected and the actor is made to sleep, which pauses the sandbox and leaves the removal to its schedule: only that wakes it.
+				await forceSleep(idle.id);
+				await waitFor("the schedule to wake the session for its removal", () => firings() > before, DESTROY_MS + 30_000, 100);
+				const fired = server.output.split("\n").filter((line) => line.includes(`schedule.fired session=${idle.id}`)).at(-1);
+				// The removal takes PROVIDER_MS: the server dies under it, after the schedule let go of the check and before it set the next.
+				await sleep(1_000);
+				await server.crash();
+				await server.start(idleEnv);
+				const removals = logged("idle_removed").length;
+				await handle.snapshot();
+				await waitFor("the removal after the wake", () => logged("idle_removed").length > removals, 20_000, 200);
+				const snapshot = await handle.snapshot();
+				assert(snapshot.summary.sandbox === "none" && snapshot.timeline.some((item) => item.kind === "platform" && item.text === REMOVED), `after the wake: ${plain(snapshot.summary)}`);
+				return `${fired?.replace(/^.*schedule\.fired /, "") ?? "?"}; after the crash the wake armed it again and it removed the sandbox`;
+			});
+		} else {
+			for (const name of IDLE_CHECKS.slice(6)) skip(name, "needs the fake layer's slow provider");
+		}
 	} finally {
 		await watch.conn.dispose().catch(() => undefined);
 		await userHandle.deleteSession(idle.id).catch(() => undefined);

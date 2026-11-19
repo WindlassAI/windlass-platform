@@ -64,6 +64,13 @@
  * or failed with Windlass's sentence when the definition reads a variable the turn's secrets do not
  * hold; nothing is started.
  *
+ * Settings for checks of the session's sandbox time (scripts/e2e.ts), read once when the layer is made:
+ * WLP_FAKE_PROVIDER_DELAY_MS makes `state()`, the resume of a paused sandbox and `destroy()` each take
+ * that long, as a slow provider's do (`state()` says what was so when it was asked);
+ * WLP_FAKE_IDLE_STOP_MS gives the layer a provider's `idleStopMs` (it stops nothing: only the meter's
+ * bound uses it); WLP_FAKE_CREATE_FAILS=<n> makes the first n creates of the process fail after the
+ * sandbox was made, as a create whose answer was lost: the sandbox is listed for its session.
+ *
  * A repository address that contains "slow-clone" takes a second and a half to clone, which holds a
  * turn in `starting`; one that contains "fail-clone" fails.
  *
@@ -353,8 +360,8 @@ class FakeSandboxes implements Sandboxes {
 	readonly all = new Map<string, FakeSandbox>();
 	/** As on Docker, the fake Windlass sessions are not tied to a sandbox; with a stand-in for the bucket they are, as on E2B. */
 	readonly sessionsLiveInSandbox: boolean;
-	/** Nothing stops a fake sandbox but the session that has it, and none is billed. */
-	readonly idleStopMs = null;
+	/** Nothing stops a fake sandbox but the session that has it, and none is billed; WLP_FAKE_IDLE_STOP_MS says otherwise for a check. */
+	readonly idleStopMs: number | null;
 	/** The Windlass sessions where they outlive sandboxes: all in one place, as on a volume. */
 	private readonly shared = new Map<string, FakeSession>();
 	/** The definitions of project servers Windlass was told to start, by where its data directory is. */
@@ -368,8 +375,12 @@ class FakeSandboxes implements Sandboxes {
 		return found;
 	}
 
-	constructor(private readonly bucket: StandInObjectStore | null = null) {
+	constructor(
+		private readonly bucket: StandInObjectStore | null = null,
+		private readonly settings: { delayMs: number; idleStopMs: number | null; createFails: number } = { delayMs: 0, idleStopMs: null, createFails: 0 },
+	) {
 		this.sessionsLiveInSandbox = bucket !== null;
+		this.idleStopMs = settings.idleStopMs;
 	}
 
 	/** Where the Windlass that runs in this sandbox keeps its sessions. */
@@ -392,18 +403,26 @@ class FakeSandboxes implements Sandboxes {
 		await delay(20);
 		const id = `fake-${randomBytes(6).toString("hex")}`;
 		this.all.set(id, { id, uid: input.uid, sessionId: input.sessionId, profile: input.profile, state: "running", files: new Map(), windlass: new Map(), packed: null });
+		if (this.settings.createFails > 0) {
+			this.settings.createFails -= 1;
+			throw new Error("fake layer: the sandbox was made and the answer was lost (WLP_FAKE_CREATE_FAILS)");
+		}
 		return id;
 	}
 
 	async connect(id: string): Promise<SandboxHandle | undefined> {
 		const sandbox = this.all.get(id);
 		if (!sandbox) return undefined;
+		if (sandbox.state === "paused" && this.settings.delayMs > 0) await delay(this.settings.delayMs);
 		sandbox.state = "running";
 		return new FakeHandle(sandbox, () => this.all.has(id), this.bucket);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {
-		return this.all.get(id)?.state ?? "none";
+		// What the provider says is what was so when it was asked.
+		const state = this.all.get(id)?.state ?? "none";
+		if (this.settings.delayMs > 0) await delay(this.settings.delayMs);
+		return state;
 	}
 
 	price(): null {
@@ -420,6 +439,7 @@ class FakeSandboxes implements Sandboxes {
 	}
 
 	async destroy(id: string): Promise<void> {
+		if (this.settings.delayMs > 0) await delay(this.settings.delayMs);
 		this.all.delete(id);
 	}
 }
@@ -1165,6 +1185,10 @@ export function createFakeSandboxLayer(options: { signIns?: "actors" | "memory" 
 function fakeLayer(bucket: StandInObjectStore | null, { logins, tokens }: Pick<SandboxLayer, "logins" | "tokens">): SandboxLayer {
 	const raw = Number.parseInt(process.env.WLP_FAKE_DELAY_MS ?? "", 10);
 	const eventDelayMs = Number.isFinite(raw) && raw >= 0 ? raw : 15;
-	const sandboxes = new FakeSandboxes(bucket);
+	const setting = (name: string) => {
+		const value = Number.parseInt(process.env[name] ?? "", 10);
+		return Number.isFinite(value) && value >= 0 ? value : null;
+	};
+	const sandboxes = new FakeSandboxes(bucket, { delayMs: setting("WLP_FAKE_PROVIDER_DELAY_MS") ?? 0, idleStopMs: setting("WLP_FAKE_IDLE_STOP_MS"), createFails: setting("WLP_FAKE_CREATE_FAILS") ?? 0 });
 	return { sandboxes, windlass: new FakeWindlass(sandboxes, eventDelayMs, tokens), logins, tokens, backups: bucket === null ? null : new SandboxSessionBackups(bucket, { maxBytes: backupConfig().maxBytes }) };
 }
