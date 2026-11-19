@@ -11,11 +11,30 @@ import { Refusal, RunnerError, type Identity } from "./state.js";
 type Lifecycle = Extract<Operation, { name: "connect" | "state" | "suspend" | "destroy" }>;
 export interface Box { raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; usedAt: number; busy: number }
 
+// Health checks need Docker's diagnostic itself, without the CLI wrapper's command and exit status.
+async function dockerOutput(args: string[]) {
+	try {
+		const result = await docker(args);
+		if (result.code === 0) return result.stdout;
+		throw new Error(result.stderr.trim() || result.stdout.trim() || "Docker exited without a diagnostic.");
+	} catch (error) {
+		let line = error instanceof Error ? error.message.split(/[\r\n]/, 1)[0] : "";
+		// Docker may echo a setting (including a credential) verbatim in its diagnostic.
+		for (const value of Object.values(process.env).filter((v): v is string => !!v).sort((a, b) => b.length - a.length)) {
+			line = line.replaceAll(value, "[redacted]");
+		}
+		line = line.replace(/\b(?!unix:)[a-z][a-z0-9+.-]*:\/\/\S+|\bBasic\s+\S+/gi, "[redacted]")
+			.replace(/\b(?:token|password|secret|api[_-]?key)\s*[:=]\s*(?:"[^"]*"|'[^']*'|\S+)/gi, "[redacted]");
+		throw new RunnerError(safeSentence(line).trim().slice(0, 500) || "Docker did not provide a diagnostic.");
+	}
+}
+
 export class Executor extends MachineDocker {
 	readonly provider: DockerSandboxes;
 	readonly boxes = new Map<string, Box>();
 	private pending: Promise<unknown> = Promise.resolve();
-	private ready = false;
+	private dockerHealth: Report["docker"] = { ok: false, reason: "Docker has not been checked." };
+	publishReport?: () => void;
 	private commandSandbox: Report["commandSandbox"] = { ok: false, reason: "The Windlass sandbox probe has not run." };
 	private freeDiskBytes: number | null = null;
 
@@ -35,10 +54,12 @@ export class Executor extends MachineDocker {
 	private filters() {
 		return [LABEL_ARG, ...Object.entries(this.labels).map(([k, v]) => k + "=" + v)].flatMap(label => ["--filter", "label=" + label]);
 	}
-	async discover() {
-		const rows = await docker(["ps", "-a", ...this.filters(), "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${LABEL}.profile"}}`], { check: true });
+	async discover(onlySession?: string) {
+		const filters = this.filters();
+		if (onlySession) filters.push("--filter", `label=${LABEL}.session=${onlySession}`);
+		const rows = await dockerOutput(["ps", "-a", ...filters, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${LABEL}.profile"}}`]);
 		const found = new Set<string>();
-		for (const line of rows.stdout.trim().split("\n")) {
+		for (const line of rows.trim().split("\n")) {
 			const [name, state, sessionId, profile] = line.split("|");
 			const raw = /^wlp-session-([a-f0-9]{12})$/.exec(name)?.[1];
 			if (!raw || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
@@ -47,26 +68,38 @@ export class Executor extends MachineDocker {
 			const box = this.boxes.get(id) ?? { raw, sessionId, profile, usedAt: Date.now(), busy: 0 };
 			this.boxes.set(id, Object.assign(box, { state: state === "running" || state === "restarting" ? "running" as const : "paused" as const }));
 		}
-		for (const id of this.boxes.keys()) if (!found.has(id)) this.boxes.delete(id);
-		this.ready = true;
+		for (const [id, box] of this.boxes) {
+			if ((!onlySession || box.sessionId === onlySession) && !found.has(id)) this.boxes.delete(id);
+		}
+		this.dockerHealth = { ok: true };
 	}
 	async refresh(): Promise<void> {
 		try {
-			if (this.ready) await docker(["version", "--format", "{{.Server.Version}}"], { check: true });
+			if (this.dockerHealth.ok) await dockerOutput(["version", "--format", "{{.Server.Version}}"]);
 			else await this.discover();
-		} catch {
-			this.ready = false;
-			this.freeDiskBytes = null;
-			return;
+		} catch (error) {
+			const reason = error instanceof RunnerError ? error.message : "Docker did not provide a diagnostic.";
+			const category = /permission denied|EACCES/i.test(reason) ? "permission denied"
+				: /no such file|ENOENT/i.test(reason) ? "not found" : "unreachable";
+			audit(null, null, "docker", category);
+			this.dockerHealth = { ok: false, reason };
 		}
+	}
+	async welcome(signal: AbortSignal) {
+		await this.serial(() => this.refresh());
+		if (!this.dockerHealth.ok || signal.aborted) return;
 		try {
 			await this.ensureImage();
-			// Once a real create has failed its probe, keep that result. A lightweight
-			// startup probe cannot overrule what happened inside the actual sandbox.
-			const first = this.freeDiskBytes === null;
-			this.freeDiskBytes = await this.disk();
-			if (first) this.commandSandbox = await this.probeAvailable();
+			await this.serial(async () => {
+				if (signal.aborted) return;
+				// Once a real create has failed its probe, keep that result. A lightweight
+				// startup probe cannot overrule what happened inside the actual sandbox.
+				const first = this.freeDiskBytes === null;
+				this.freeDiskBytes = await this.disk();
+				if (first) this.commandSandbox = await this.probeAvailable();
+			});
 		} catch (error) {
+			if (signal.aborted) return;
 			this.freeDiskBytes = null;
 			this.commandSandbox = { ok: false, reason: error instanceof RunnerError ? error.message : "The sandbox image could not be checked." };
 		}
@@ -75,7 +108,7 @@ export class Executor extends MachineDocker {
 		return await this.probe() ? { ok: true } : { ok: false, reason: "Bubblewrap could not start in a sandbox on this machine." };
 	}
 	report(): Report {
-		return { kind: "report", docker: this.ready ? { ok: true } : { ok: false, reason: "Docker is not reachable. Check the daemon and the socket mount and permissions." },
+		return { kind: "report", docker: this.dockerHealth,
 			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes,
 			sandboxes: [...this.boxes.entries()].slice(0, MAX_REPORTED_SANDBOXES).map(([id, { sessionId, state, usedAt }]) => ({ id, sessionId, state, usedAt })) };
 	}
@@ -83,11 +116,25 @@ export class Executor extends MachineDocker {
 		if ([...this.boxes.values()].filter(b => b.state === "running").length >= this.limits.maxRunning)
 			throw new Refusal("This machine has reached its limit on running sandboxes.");
 	}
+	async existing(sessionId: string) {
+		// The owner may have removed the container since discovery. Refresh just this
+		// session once the rest of the inventory is known, before applying capacity limits.
+		if (!this.dockerHealth.ok) await this.discover();
+		else if ([...this.boxes.values()].some(box => box.sessionId === sessionId)) await this.discover(sessionId);
+		else return;
+		for (const [id, box] of this.boxes) {
+			if (box.sessionId === sessionId) {
+				this.publishReport?.();
+				return id;
+			}
+		}
+	}
 	async create(sessionId: string, profile: Profile) {
-		if (!this.ready) await this.discover();
+		// Another create could have finished while this one waited for the image.
+		const existing = await this.existing(sessionId);
+		if (existing) return existing;
 		if (this.boxes.size >= this.limits.maxSandboxes) throw new Refusal("This machine has reached its limit on kept sandboxes.");
 		this.room();
-		await this.ensureImage();
 		this.freeDiskBytes = await this.disk();
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
 		const raw = await this.provider.create({ uid: this.identity.uid, sessionId, profile });
@@ -104,6 +151,7 @@ export class Executor extends MachineDocker {
 			}
 			this.commandSandbox = { ok: true };
 		}
+		this.publishReport?.();
 		return id;
 	}
 	private owned(id: string, session?: string) {
@@ -119,13 +167,14 @@ export class Executor extends MachineDocker {
 		return box;
 	}
 	async lifecycle(op: Lifecycle["name"], id: string, session?: string) {
-		if (!this.ready) await this.discover();
+		if (!this.dockerHealth.ok) await this.discover();
 		const box = this.owned(id, session);
 		if (!box) {
 			// A repeated destroy is harmless, but an existing, unlabelled namesake is not ours.
 			const raw = rawId(this.identity.machineId, id);
 			if ((await docker(["container", "inspect", "--format", "{{.Id}}", containerName(raw)])).code === 0)
 				throw new Refusal("This sandbox does not belong to this machine.");
+			if (op === "destroy") this.publishReport?.();
 			return op === "state" ? "none" as const : null;
 		}
 		box.usedAt = Date.now();
@@ -158,21 +207,35 @@ export class Executor extends MachineDocker {
 		return null;
 	}
 	async requestedRemoval(id: string) {
-		if (!this.ready) await this.discover();
+		if (!this.dockerHealth.ok) await this.discover();
 		if (this.boxes.has(id)) await this.lifecycle("destroy", id);
+		else this.publishReport?.();
 		// The control acknowledgement also covers a sandbox that was never this machine's.
 	}
 	private async remove(id: string) {
 		await this.provider.destroy(rawId(this.identity.machineId, id));
 		this.boxes.delete(id);
+		this.publishReport?.();
 	}
 	async idle(ms: number, connected: (session: string) => boolean) {
+		// A running process (including Windlass throughout a turn), an outstanding operation,
+		// or a connected session socket keeps the sandbox in use.
 		for (const [id, b] of this.boxes) {
 			if (b.state === "running" && !b.busy && !connected(b.sessionId) && Date.now() - b.usedAt >= ms) {
 				await this.lifecycle("suspend", id);
 				audit(b.sessionId, id, "idle-suspend", "done");
 			}
 		}
+	}
+	async suspendAll() {
+		await this.discover();
+		let failed = false;
+		for (const [id, box] of this.boxes) {
+			if (box.state !== "running") continue;
+			try { await this.lifecycle("suspend", id); }
+			catch { failed = true; audit(box.sessionId, id, "suspend", "failed"); }
+		}
+		if (failed) throw new RunnerError("Docker could not stop all kept sandboxes.");
 	}
 	async prune() {
 		await this.discover();

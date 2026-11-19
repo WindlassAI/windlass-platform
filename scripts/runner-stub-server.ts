@@ -3,7 +3,8 @@
 import { randomBytes, verify } from "node:crypto";
 import { createServer as http } from "node:http";
 import { createRequire } from "node:module";
-import { createServer, connect, type AddressInfo, type Socket } from "node:net";
+import { createServer, connect, type AddressInfo } from "node:net";
+import type { Duplex } from "node:stream";
 import { setTimeout as wait } from "node:timers/promises";
 import { ServerChannel } from "../server/src/runner/channel.js";
 import { parseFrame } from "../server/src/runner/protocol.js";
@@ -40,7 +41,7 @@ export async function stub(storage: string) {
 	const signed = (statement: string, signature: string) => verify(null, Buffer.from(statement), publicKey, Buffer.from(signature, "base64url"));
 	let live: { ws: WS; epoch: string; heardAt: number } | null = null;
 	const state = {
-		report: null as Report | null, epoch: "", connections: 0, connectionRequests: 0, pairStarts: 0, pairingMode: "approve" as "approve" | "gone" | "refused" | "waiting", pollFailures: 0, clockRefusals: 0,
+		report: null as Report | null, reports: 0, gatewayLifetime: 0, epoch: "", connections: 0, connectionRequests: 0, pairStarts: 0, pairingMode: "approve" as "approve" | "gone" | "refused" | "waiting", startFailures: 0, pollFailures: 0, clockRefusals: 0,
 		refusal: null as Refusal | null, httpRefusal: null as "removed" | "unknown" | null, idleMs: 600_000, removed: "", lastErrorKind: "",
 	};
 	const tickets = new Map<string, string>();
@@ -82,7 +83,7 @@ export async function stub(storage: string) {
 				for (const s of wanted) ticket(s);
 			} else if (live?.ws === ws) {
 				live.heardAt = Date.now();
-				if (f.kind === "report") state.report = f;
+				if (f.kind === "report") { state.report = f; state.reports++; }
 				if (f.kind === "removed") state.removed = f.sandbox;
 			}
 		});
@@ -122,11 +123,24 @@ export async function stub(storage: string) {
 	await client.machine.getOrCreate([uid, machineId]).resolve();
 	for (const s of [sessionId, other]) await client.agentSession.getOrCreate([uid, s]).resolve();
 
-	const pipes = new Set<Socket>();
+	const pipes = new Set<Duplex>();
+	let credential: { token: string; expiresAt: number; validForMs: number } | null = null;
 	let offline = false;
-	const proxy = createServer(incoming => {
+	const proxy = http();
+	proxy.on("upgrade", (req, incoming, head) => {
 		if (offline) { incoming.destroy(); return; }
+		const url = new URL(req.url!, "http://localhost");
+		if (credential) {
+			if (url.searchParams.get("rvt-token") !== credential.token || Date.now() >= credential.expiresAt) {
+				incoming.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+				return;
+			}
+			url.searchParams.set("rvt-token", "default"); // The local Rivet engine uses its own development credential.
+		}
 		const outgoing = connect(port, "127.0.0.1");
+		const headers = Object.entries(req.headers).map(([k, v]) => k + ": " + v);
+		outgoing.write([`GET ${url.pathname}${url.search} HTTP/1.1`, ...headers, "", ""].join("\r\n"));
+		if (head.length) outgoing.write(head);
 		const close = () => { incoming.destroy(); outgoing.destroy(); pipes.delete(incoming); };
 		pipes.add(incoming); incoming.on("error", close); outgoing.on("error", close);
 		incoming.on("close", close); outgoing.on("close", close);
@@ -135,6 +149,7 @@ export async function stub(storage: string) {
 	await new Promise<void>(resolve => proxy.listen(0, "127.0.0.1", resolve));
 	const advertised = "http://127.0.0.1:" + (proxy.address() as AddressInfo).port;
 	let started: PairStarted | undefined;
+	let pendingKey = "";
 	const api = http(async (req, res) => {
 		const answer = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
 		try {
@@ -143,9 +158,10 @@ export async function stub(storage: string) {
 			if (req.method !== "POST") return answer(405, {});
 			if (req.url === RUNNER_PAIR_PATH) {
 				state.pairStarts++;
+				if (state.startFailures > 0) { state.startFailures--; return answer(503, {}); }
 				if (state.pairingMode === "refused") return answer(429, {});
 				const p = parsePairRequest(b); if (!p) return answer(400, {});
-				publicKey = p.publicKey;
+				pendingKey = p.publicKey;
 				const digits = randomBytes(4).toString("hex").toUpperCase();
 				started = { pairing: random(), pollSecret: random(), code: digits.slice(0, 4) + "-" + digits.slice(4) };
 				return answer(201, started);
@@ -155,6 +171,7 @@ export async function stub(storage: string) {
 				if (!started || p?.pollSecret !== started.pollSecret || p.pairing !== started.pairing) return answer(403, {});
 				if (!state.pollFailures++) return answer(503, {});
 				if (state.pairingMode !== "approve") return answer(200, { state: state.pairingMode });
+				publicKey = pendingKey;
 				return answer(200, { state: "approved", uid, machineId, githubLogin: "runner-check" } satisfies PairStatus);
 			}
 			if (req.url === RUNNER_CONNECTION_PATH) {
@@ -165,7 +182,9 @@ export async function stub(storage: string) {
 				if (Math.abs(now - p.time) > CLOCK_TOLERANCE_MS) { state.clockRefusals++; return answer(403, { reason: "clock", serverTime: now }); }
 				if (state.httpRefusal === "unknown") return answer(403, { reason: "unknown" });
 				if (state.httpRefusal === "removed") return answer(410, { reason: "removed", removeSandboxes: false });
-				return offline ? answer(503, {}) : answer(200, { endpoint: advertised, namespace: "default", token: null });
+				if (offline) return answer(503, {});
+				credential = state.gatewayLifetime ? { token: random(), expiresAt: Date.now() + state.gatewayLifetime, validForMs: state.gatewayLifetime } : null;
+				return answer(200, { endpoint: advertised, namespace: "default", token: credential });
 			}
 			answer(404, {});
 		} catch { answer(400, {}); }

@@ -73,9 +73,6 @@ const operations = {
 	sweep: [object({ ...sandbox, tag, options: optional(object({ waitMs: optional(duration), files: optional(list(string)) })) }), count],
 	writeSecretFile: [object({ ...sandbox, path: string, content: string }), nil],
 	removeFiles: [object({ ...sandbox, paths: list(string) }), nil],
-	/** This operation's id names the hold that `releaseTurn` ends. */
-	holdForTurn: [object(sandbox), nil],
-	releaseTurn: [object({ ...sandbox, hold: id }), nil],
 } as const satisfies Record<string, readonly [Check<unknown>, Check<unknown>]>;
 
 export type Name = keyof typeof operations;

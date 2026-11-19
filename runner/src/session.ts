@@ -26,7 +26,6 @@ class Conversation {
 	private paused = false;
 	private pipes = new Set<DockerProcess>();
 	private processes = new Map<string, { p: DockerProcess; acp: boolean; handle: Handle; id: string }>();
-	private holds = new Map<string, Box>();
 	private runs = new Map<string, AbortController>();
 	constructor(private owner: Executor, private session: string, private channel: RunnerChannel) {}
 	input(id: string, data: string) { this.processes.get(id)?.p.write(data); }
@@ -39,8 +38,6 @@ class Conversation {
 	async orphan() {
 		this.active = false;
 		this.pause(false);
-		for (const box of this.holds.values()) { box.busy--; box.usedAt = Date.now(); }
-		this.holds.clear();
 		const stops = [...this.processes.values()].map(async ({ p, acp, handle, id }) => {
 			p.closeStdin();
 			if (acp) {
@@ -53,13 +50,22 @@ class Conversation {
 	private output(id: string, fd: 1 | 2, text: string) {
 		if (this.active && !this.channel.output(id, fd, text)) this.pause(true);
 	}
+	private requireActive() {
+		if (!this.active) throw new Refusal("The session conversation ended.");
+	}
 	private async execute(op: Operation, abort?: AbortController): Promise<Value<Operation["name"]>> {
 		const o = this.owner;
 		switch (op.name) {
-			case "create": case "connect": case "suspend": case "destroy": case "state":
+			case "create": {
+				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session); });
+				if (existing) return existing;
+				await o.ensureImage();
+				return o.serial(() => { this.requireActive(); return o.create(this.session, op.args.profile); });
+			}
+			case "connect": case "suspend": case "destroy": case "state":
 				return o.serial(async () => {
-					if (!this.active) throw new Refusal("The session conversation ended.");
-					return op.name === "create" ? o.create(this.session, op.args.profile) : o.lifecycle(op.name, op.args.id, this.session);
+					this.requireActive();
+					return o.lifecycle(op.name, op.args.id, this.session);
 				});
 			case "killClient": case "signal": {
 				const run = this.processes.get(op.args.process);
@@ -104,15 +110,6 @@ class Conversation {
 				case "removeFiles": await h.removeFiles(op.args.paths); return null;
 				case "stopLeftovers": return await h.stopLeftovers(op.args.program);
 				case "sweep": return await h.sweep(op.args.tag, op.args.options);
-				case "holdForTurn":
-					if (this.holds.has(op.id)) throw new Refusal("This turn hold already exists.");
-					this.holds.set(op.id, box); box.busy++; return null;
-				case "releaseTurn": {
-					const held = this.holds.get(op.args.hold);
-					if (held && held !== box) throw new Refusal("That hold belongs to another sandbox.");
-					if (held) { this.holds.delete(op.args.hold); held.busy--; }
-					return null;
-				}
 			}
 		} finally { box.busy--; box.usedAt = Date.now(); }
 	}

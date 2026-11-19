@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import { createPrivateKey, randomUUID, type KeyObject } from "node:crypto";
 import { chmodSync, closeSync, existsSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { MACHINE_ID } from "../../server/src/runner/control.js";
+import { setTimeout as wait } from "node:timers/promises";
+import { MACHINE_ID, REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
 import { list, object, is, text, json, nullable } from "../../server/src/runner/check.js";
 import { NAME } from "../../server/src/sandbox/provider.js";
 import manifest from "../package.json";
@@ -27,12 +28,18 @@ const record = object({ current: identity, previous: list(identity), platform: t
 
 export function read(file: string): unknown {
 	const path = join(directory, file);
-	if (!existsSync(path)) return undefined;
-	const stat = lstatSync(path);
-	if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new RunnerError("The runner state must be a private regular file.");
-	const value = json(readFileSync(path, "utf8"));
-	if (value === undefined) throw new RunnerError("The runner state is unreadable.");
-	return value;
+	try {
+		const stat = lstatSync(path);
+		if (!stat.isFile() || (stat.mode & 0o077) !== 0)
+			throw new RunnerError(`Restore ${file} as a private regular file (mode 0600) in the runner state volume.`);
+		const value = json(readFileSync(path, "utf8"));
+		if (value === undefined) throw new Error("invalid JSON");
+		return value;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		if (error instanceof RunnerError) throw error;
+		throw new RunnerError(`Cannot read ${file}. Repair or restore that file in the runner state volume.`);
+	}
 }
 export function save(file: string, value: unknown): void {
 	const path = join(directory, file);
@@ -45,12 +52,13 @@ export function save(file: string, value: unknown): void {
 export function loadPair() {
 	const stored = read("pair.json");
 	if (stored === undefined) return;
-	if (!record(stored)) throw new RunnerError("Invalid pairing state. Check the runner's state volume.");
-	origin(stored.platform);
+	const invalid = () => new RunnerError("Invalid pair.json. Repair or restore that file in the runner state volume.");
+	if (!record(stored)) throw invalid();
+	try { origin(stored.platform); } catch { throw invalid(); }
 	let key: KeyObject | null = null;
 	if (stored.key !== null) {
-		try { key = createPrivateKey(stored.key); } catch { throw new RunnerError("Invalid private key in the runner state."); }
-		if (key.asymmetricKeyType !== "ed25519") throw new RunnerError("The runner state needs an Ed25519 key.");
+		try { key = createPrivateKey(stored.key); } catch { throw invalid(); }
+		if (key.asymmetricKeyType !== "ed25519") throw invalid();
 	}
 	return { current: stored.current, previous: stored.previous, platform: stored.platform, key };
 }
@@ -67,18 +75,23 @@ export function storePair(current: Identity, key: KeyObject, platform: string) {
 
 // flock also works across Docker PID namespaces (two services can both be PID 1).
 // Keep the fd open until exit. The kernel releases it even on SIGKILL; the PID is diagnostic.
-export function lock(): () => void {
+export async function lock(signal: AbortSignal): Promise<void> {
 	mkdirSync(directory, { mode: 0o700, recursive: true });
 	chmodSync(directory, 0o700);
-	const fd = openSync(join(directory, "lock"), "a+", 0o600);
-	const result = spawnSync("flock", ["-n", "3"], { stdio: ["ignore", "ignore", "ignore", fd] });
-	if (result.status !== 0) {
+	while (!signal.aborted) {
+		const fd = openSync(join(directory, "lock"), "a+", 0o600);
+		const result = spawnSync("flock", ["-n", "3"], { stdio: ["ignore", "ignore", "ignore", fd] });
+		if (result.status === 0) {
+			process.once("exit", () => closeSync(fd));
+			ftruncateSync(fd);
+			writeFileSync(fd, String(process.pid) + "\n");
+			return;
+		}
 		closeSync(fd);
-		throw new RunnerError(result.error ? "The runner needs flock to lock its state." : "Another runner holds the state lock. Stop the service before pairing or pruning.");
+		if (result.status !== 1) throw new RunnerError("The runner needs flock to lock its state.");
+		console.error("Another runner holds the state lock. Waiting to retry.");
+		await wait(REFUSED_RETRY_MS, undefined, { signal }).catch(() => {});
 	}
-	ftruncateSync(fd);
-	writeFileSync(fd, String(process.pid) + "\n");
-	return () => closeSync(fd);
 }
 
 export function serviceRunning(): boolean {

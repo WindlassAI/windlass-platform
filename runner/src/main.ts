@@ -28,14 +28,15 @@ async function main() {
 	const limits = { maxSandboxes: limit(values["max-sandboxes"], 10), maxRunning: limit(values["max-running"], 3) };
 	// Orphaned commands may still be finishing when the control loop returns.
 	if (command === "pair" && serviceRunning()) return requestPair(values.platform);
-	if (command !== "status") process.once("exit", lock());
 	const abort = new AbortController();
 	const stop = () => abort.abort();
 	process.on("SIGINT", stop); process.on("SIGTERM", stop);
 	try {
+		if (command !== "status") await lock(abort.signal);
+		if (abort.signal.aborted) return;
 		let paired = loadPair();
 		const stored = read("status.json");
-		if (stored !== undefined && !snapshot(stored)) throw new RunnerError("The runner's status file is unreadable.");
+		if (stored !== undefined && !snapshot(stored)) throw new RunnerError("Invalid status.json. Repair or restore that file in the runner state volume.");
 		const status = snapshot(stored) && stored.machineId === (paired?.current.machineId ?? null) ? stored : undefined;
 		if (command === "status") {
 			console.log(`Runner ${VERSION}, protocol ${PROTOCOL_VERSION}. ${paired && !serviceRunning() ? "Stopped" : status?.connection ?? (paired ? "Paired" : "Unpaired")}`);
@@ -64,23 +65,30 @@ async function main() {
 		let platform = origin(values.platform ?? paired?.platform ?? "");
 		let needsPair = command === "pair" || !paired?.key;
 		let client: Socket | undefined;
+		let resumePlatform: string | undefined;
 		const say = (line: string) => { console.log(line); client?.write(line + "\n"); };
 		while (!abort.signal.aborted) {
 			let idle: string;
 			if (needsPair) {
-				if (paired?.key) { forgetKey(); paired = { ...paired, key: null }; }
 				const result = await pair(platform, abort.signal, say);
 				if (abort.signal.aborted) { client?.end(); return; }
 				if (result.paired) {
-					paired = result.paired;
+					paired = result.paired; resumePlatform = undefined;
 					client?.end(); client = undefined;
 					if (command === "pair") return;
 					needsPair = false;
 					continue;
 				}
 				idle = result.idle!;
+				if (command === "pair") { say(idle); process.exitCode = 1; return; }
+				if (resumePlatform) {
+					say(idle); client?.end(); client = undefined;
+					platform = resumePlatform; resumePlatform = undefined; needsPair = false;
+					continue;
+				}
+			} else if (!paired?.key || platform !== paired.platform) {
+				idle = "Run windlass-runner pair to pair with a different platform.";
 			} else {
-				if (!paired?.key || platform !== paired.platform) throw new RunnerError("Run windlass-runner pair to pair with a different platform.");
 				// The recovery command printed after approval also works when the owner sees
 				// the wrong account: the lock holder shuts its links before making a new key.
 				const connection = new AbortController();
@@ -96,6 +104,7 @@ async function main() {
 				} finally { connection.abort(); }
 				const request = await local;
 				if (request && !abort.signal.aborted) {
+					resumePlatform = platform;
 					client = request.client; platform = request.platform ?? platform; needsPair = true;
 					continue;
 				}

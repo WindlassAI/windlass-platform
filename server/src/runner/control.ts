@@ -42,7 +42,7 @@ export const CONTROL_HEARTBEAT_MS = 30_000;
 export const CONTROL_DEAD_MS = 90_000;
 /** A socket heard from within this is live (it sends a heartbeat every CONTROL_HEARTBEAT_MS): see `secondHello`. */
 export const LIVE_MS = CONTROL_HEARTBEAT_MS + 10_000;
-/** The least time between two reports: a change within it goes with the next one. */
+/** The least time between two scheduled reports: a change within it goes with the next one. A sandbox made or removed is the exception: the runner reports that at once, since the page and a session that lost a `create` read the newest report. */
 export const REPORT_MS = 60_000;
 export const REFUSED_RETRY_MS = 10 * 60_000;
 /** How far a runner's clock may be from the platform's: a signed time further off is refused (and signed again with the offset), and the page warns about one. */

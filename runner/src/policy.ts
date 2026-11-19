@@ -47,9 +47,13 @@ export class MachineDocker {
 		return runHelper([...this.flags(name, "docker-hardened"),
 			...(mount ? ["--mount", `type=volume,src=${this.volume},dst=/data,volume-nocopy`] : [])], name, argv, { image });
 	}
-	async ensureImage() {
+	private preparingImage?: Promise<void>;
+	ensureImage() {
+		return this.preparingImage ??= this.fetchImage().finally(() => { this.preparingImage = undefined; });
+	}
+	private async fetchImage() {
 		if ((await docker(["image", "inspect", image, "--format", "{{.Id}}"])).code === 0) return;
-		if (!image.includes("@") || (await docker(["pull", image], { timeoutMs: 120_000 })).code !== 0)
+		if (!image.includes("@") || (await docker(["pull", image], { timeoutMs: 30 * 60_000 })).code !== 0)
 			throw new RunnerError("The pinned sandbox image is missing and could not be pulled.");
 	}
 	async disk() {

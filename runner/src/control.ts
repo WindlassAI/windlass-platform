@@ -53,8 +53,16 @@ export async function pair(platform: string, signal: AbortSignal, say: (message:
 		name: hostname().slice(0, 64), os: process.platform, arch: process.arch, runnerVersion: VERSION };
 	const again = "restart the container or run `windlass-runner pair` to get a new code.";
 	let response;
-	try { response = await post(platform, RUNNER_PAIR_PATH, request, deadline); }
-	catch (error) { return { idle: `Pairing could not start (${category(error)}), so ${again}` }; }
+	for (let attempt = 1; ; attempt++) {
+		try {
+			response = await post(platform, RUNNER_PAIR_PATH, request, deadline);
+			if (response.status < 500 || attempt === 3) break;
+		} catch (error) {
+			if (deadline.aborted || attempt === 3) return { idle: `Pairing could not start (${category(error)}), so ${again}` };
+		}
+		say("Pairing could not start yet. Trying again.");
+		await wait(PAIRING_POLL_MS, undefined, { signal: deadline }).catch(() => {});
+	}
 	const started = parsePairStarted(response.value);
 	if (response.status < 200 || response.status >= 300 || !started)
 		return { idle: `Pairing was refused (HTTP ${response.status}), so ${again}` };
@@ -108,9 +116,8 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 	let idle = initialIdle;
 	let state = "";
 	let offset = 0;
-	let correctedClock = false;
 	let backoff = 1000;
-	let publish: (() => void) | undefined;
+	let lastSent = 0;
 	function status(connection: string) {
 		if (connection !== state) save("status.json", { machineId, connection, idleSuspendMs: idle ?? null, runnerVersion: VERSION, protocol: PROTOCOL_VERSION });
 		state = connection;
@@ -131,7 +138,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				if (Date.now() - lastRefresh >= REPORT_MS) { await owner.refresh(); lastRefresh = Date.now(); }
 				if (mayMaintain && idle !== undefined) await owner.idle(idle, id => sessions.get(id)?.channel.connected === true);
 			});
-			publish?.();
+			if (Date.now() - lastSent >= REPORT_MS) owner.publishReport?.();
 		} catch (error) { audit(null, null, "maintenance", category(error)); }
 		finally { maintaining = false; }
 	};
@@ -152,34 +159,48 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 			const attempt = new AbortController();
 			const active = AbortSignal.any([signal, attempt.signal]);
 			try {
-				const time = Date.now() + offset;
-				const response = await post(platform, RUNNER_CONNECTION_PATH, { uid, machineId, time, signature: proof(key, connectionProof(uid, machineId, time)) }, active);
-				if (response.status !== 200) {
-					const r = parseConnectionRefusal(response.value);
-					if (response.status === 403 && r?.reason === "clock") {
-						const correction = r.serverTime - Date.now();
-						if (!correctedClock) {
-							correctedClock = true; offset = correction; audit(null, null, "control", "HTTP 403; signing with corrected time"); continue;
+				async function connectGateway(correctClock = true): Promise<{ refreshAt: number; client: ReturnType<typeof createClient> }> {
+					// The lease ages even while a laptop is asleep. Apply server clock
+					// correction only to the signed timestamp, not to its relative lifetime.
+					const started = Date.now();
+					const time = started + offset;
+					const response = await post(platform, RUNNER_CONNECTION_PATH, { uid, machineId, time, signature: proof(key, connectionProof(uid, machineId, time)) }, active);
+					if (response.status !== 200) {
+						const r = parseConnectionRefusal(response.value);
+						if (response.status === 403 && r?.reason === "clock" && correctClock) {
+							offset = r.serverTime - Date.now();
+							audit(null, null, "control", "HTTP 403; signing with corrected time");
+							return connectGateway(false);
 						}
+						if (response.status === 410 && r?.reason === "removed") refusal = refuse("removed", r);
+						else if (response.status === 403 && r?.reason === "unknown") refusal = refuse("unknown");
+						slow = response.status >= 400 && response.status < 500;
+						throw new RunnerError(`HTTP ${response.status}`);
 					}
-					if (response.status === 410 && r?.reason === "removed") refusal = refuse("removed", r);
-					else if (response.status === 403 && r?.reason === "unknown") refusal = refuse("unknown");
-					slow = response.status >= 400 && response.status < 500;
-					throw new RunnerError(`HTTP ${response.status}`);
+					const info = parseConnection(response.value);
+					if (!info) throw new RunnerError("Invalid HTTP connection answer.");
+					const endpoint = origin(info.endpoint ?? platform);
+					if (platform.startsWith("https:") && !endpoint.startsWith("https:")) throw new RunnerError("The gateway needs HTTPS.");
+					return { refreshAt: info.token ? started + info.token.validForMs * 0.8 : Infinity,
+						client: createClient({ endpoint, namespace: info.namespace, token: info.token?.token, disableMetadataLookup: true }) };
 				}
-				const info = parseConnection(response.value);
-				if (!info) throw new RunnerError("Invalid HTTP connection answer.");
-				const endpoint = origin(info.endpoint ?? platform);
-				if (platform.startsWith("https:") && !endpoint.startsWith("https:")) throw new RunnerError("The gateway needs HTTPS.");
-				const client = createClient({ endpoint, namespace: info.namespace, token: info.token?.token, disableMetadataLookup: true });
-				const ws = await openSocket(client.machine.get([uid, machineId]).webSocket("control"), active);
+				let gateway = await connectGateway();
+				let refreshing: Promise<void> | undefined;
+				async function currentClient() {
+					if (Date.now() >= gateway.refreshAt) {
+						refreshing ??= connectGateway().then(next => { gateway = next; }).finally(() => { refreshing = undefined; });
+						await refreshing;
+					}
+					return gateway.client;
+				}
+				const ws = await openSocket(gateway.client.machine.get([uid, machineId]).webSocket("control"), active);
 				const send = (f: RunnerFrame) => ws.send(JSON.stringify(f));
 				let phase: "challenge" | "welcome" | "online" = "challenge";
 				let heard = Date.now();
-				let lastSent = 0;
+				lastSent = Date.now();
 				let lastReport = "";
-				publish = () => {
-					if (phase !== "online" || ws.readyState !== 1 || Date.now() - lastSent < REPORT_MS) return;
+				owner.publishReport = () => {
+					if (phase !== "online" || ws.readyState !== 1) return;
 					const report = owner.report();
 					const next = JSON.stringify(report);
 					if (next !== lastReport) { send(report); lastReport = next; lastSent = Date.now(); }
@@ -211,12 +232,16 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						phase = "online"; idle = f.idleSuspendMs; backoff = 1000;
 						mayMaintain = true;
 						status("Online");
-						await maintain(); publish?.();
+						lastRefresh = Date.now();
+						await owner.welcome(active);
+						if (!active.aborted) owner.publishReport?.();
 					} else if (phase !== "online") { reason = "Unexpected control handshake"; disconnect(); }
 					else if (f.kind === "attach") {
 						if (sessions.get(f.sessionId)?.refused) return;
 						attaching.set(f.sessionId, f.ticket);
 						try {
+							const client = await currentClient();
+							if (active.aborted || attaching.get(f.sessionId) !== f.ticket) return;
 							const socket = await openSocket(client.agentSession.get([uid, f.sessionId]).webSocket("runner"), active);
 							if (active.aborted || refusal || ws.readyState !== 1 || attaching.get(f.sessionId) !== f.ticket) { socket.close(); return; }
 							socket.addEventListener("close", e => audit(f.sessionId, null, "session", `socket close ${e.code}`));
@@ -227,7 +252,10 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 								sessions.set(f.sessionId, session);
 							}
 							session.attach(socket, { machineId, runnerVersion: VERSION, ticket: f.ticket, signature: proof(key, sessionProof(uid, f.sessionId, machineId, f.ticket)) });
-						} catch (error) { audit(f.sessionId, null, "attach", category(error)); }
+						} catch (error) {
+							audit(f.sessionId, null, "attach", category(error));
+							if (refusal || slow) { reason = category(error); disconnect(); }
+						}
 						finally { if (attaching.get(f.sessionId) === f.ticket) attaching.delete(f.sessionId); }
 					} else if (f.kind === "remove") {
 						await owner.serial(() => owner.requestedRemoval(f.sandbox));
@@ -240,7 +268,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				try { if (active.aborted) disconnect(); await closed; }
 				finally { clearInterval(heartbeat); active.removeEventListener("abort", disconnect); }
 			} catch (error) { reason = category(error); }
-			finally { attempt.abort(); publish = undefined; }
+			finally { attempt.abort(); owner.publishReport = undefined; }
 			if (signal.aborted) break;
 			if (refusal || slow) {
 				mayMaintain = false; idle = undefined;
@@ -248,11 +276,14 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				if (refusal?.reason === "removed") {
 					removed = true;
 					audit(null, null, "control", reason);
-					if (refusal.removeSandboxes) {
-						try { await owner.serial(() => owner.prune()); }
-						catch (error) { audit(null, null, "prune", category(error)); }
+					const action = refusal.removeSandboxes ? "prune" : "suspend";
+					let warning = "";
+					try { await owner.serial(() => action === "prune" ? owner.prune() : owner.suspendAll()); }
+					catch (error) {
+						audit(null, null, action, category(error));
+						warning = ` Docker could not ${action} all of its sandboxes. Check the runner log.`;
 					}
-					return "This machine was removed from its account, so run `windlass-runner pair` to pair it again with a new key.";
+					return "This machine was removed from its account, so run `windlass-runner pair` to pair it again with a new key." + warning;
 				}
 				if (refusal) reason = `${refusal.reason}: ${safeSentence(refusal.message)} (${reason})`;
 				status(reason);
@@ -263,7 +294,6 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				status("Offline: " + reason);
 			}
 			await wait(refusal || slow ? REFUSED_RETRY_MS : Math.min(60_000, backoff * (0.8 + Math.random() * 0.4)), undefined, { signal }).catch(() => {});
-			correctedClock = false;
 			backoff = Math.min(60_000, backoff * 2);
 		}
 	} finally { mayMaintain = false; clearInterval(timer); await stopSessions(); if (!removed) status("Stopped"); }

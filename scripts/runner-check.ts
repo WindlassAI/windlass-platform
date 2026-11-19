@@ -18,6 +18,7 @@ import { tokenFilePath } from "../server/src/sandbox/token-file.js";
 import { PAIRING_TTL_MS, REFUSED_RETRY_MS, refuse, type Refusal } from "../server/src/runner/control.js";
 import { RUNNER_GRACE_MS } from "../server/src/runner/protocol.js";
 import { ConversationLost, ServerChannel } from "../server/src/runner/channel.js";
+import { safeSentence } from "../runner/src/audit.js";
 import { stub, until } from "./runner-stub-server.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -86,6 +87,7 @@ async function realMachine() {
 	const directory = join(tmp, "real-runner");
 	const name = "wlp-check-runner-" + randomBytes(6).toString("hex");
 	let service: ChildProcess | undefined;
+	let output = "", stderr = "", health = "";
 	try {
 		await until(async () => {
 			if (node.exitCode !== null) throw Error("Local platform exited during startup.");
@@ -100,16 +102,18 @@ async function realMachine() {
 		service = spawn("docker", ["run", "--rm", "--pull", "never", "--name", name, "--label", LABEL_ARG,
 			"--log-driver", "none", "--network", "host", "--user", `${process.getuid!()}:${process.getgid!()}`,
 			"--group-add", String((await stat(socket)).gid), "-e", "HOME=/tmp",
-			"-v", socket + ":" + socket, "-v", directory + ":/var/lib/windlass-runner", "windlass-runner:dev", "--platform", platform],
+			"-v", socket + ":" + socket, "-v", directory + ":/var/lib/windlass-runner", process.env.WLP_RUNNER_CHECK_IMAGE ?? "windlass-runner:dev", "--platform", platform],
 			{ stdio: ["ignore", "pipe", "pipe"] });
-		service.stderr!.resume();
-		let output = "";
-		service.stdout!.on("data", chunk => { output += chunk; });
+		service.stderr!.on("data", chunk => { stderr = (stderr + chunk).slice(-8192); });
+		service.stdout!.on("data", chunk => { output = (output + chunk).slice(-8192); });
 		await until(() => /enter [A-Z0-9]{4}-[A-Z0-9]{4}/.test(output), "Real platform did not start pairing.");
 		const code = /enter ([A-Z0-9]{4}-[A-Z0-9]{4})/.exec(output)![1];
 		await user.claimMachine({ code }); const machine = await user.confirmMachine({ code });
-		await until(async () => (await user.machines()).some(m => m.machineId === machine.machineId && m.status === "online" && m.freeDiskBytes !== null),
-			"The real machine actor did not accept the runner's hello and report.", 60_000);
+		await until(async () => {
+			const current = (await user.machines()).find(m => m.machineId === machine.machineId);
+			health = current?.commandSandbox?.ok === false ? current.commandSandbox.reason : "";
+			return current?.status === "online" && current.freeDiskBytes !== null;
+		}, "The real machine actor did not accept the runner's hello and report.", 60_000);
 		assert.match(output, /Paired with an account without a GitHub login/);
 		const publicKey = async () => createPublicKey(JSON.parse(await readFile(join(directory, "pair.json"), "utf8")).key).export({ type: "spki", format: "der" });
 		const formerKey = await publicKey();
@@ -135,6 +139,15 @@ async function realMachine() {
 		for (const id of [machine.machineId, replacement]) assert.ok(status.stdout.includes(id + " (previous pairing)"));
 		ok("The packaged runner pairs against the real actor, parks on removal, and accepts a local pair command both while parked and while online.");
 
+	} catch (error) {
+		for (const [source, tail] of [["stdout", output], ["stderr", stderr], ["health", health]]) {
+			const lines = tail.trim().split("\n").slice(-6);
+			for (const line of lines) {
+				const clean = safeSentence(line.replace(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b|\b(?:ws|wss):\/\/\S+/gi, "[redacted]"));
+				if (clean) console.error(`Runner ${source}: ${clean.slice(0, 500)}`);
+			}
+		}
+		throw error;
 	} finally {
 		if (service) { await stop(service); await docker(["rm", "-f", name]); }
 		await stop(node);
@@ -147,13 +160,15 @@ async function check(image: string) {
 	const hostedName = containerName(hostedRaw);
 	const marker = "dev.windlass-platform.check=" + randomBytes(6).toString("hex");
 	const ownedFilters = ["--filter", "label=" + LABEL_ARG, "--filter", "label=" + MACHINE_LABEL + "=" + machineId];
+	const containers = async () => (await docker(["ps", "-a", ...ownedFilters, "--format", "{{.Names}}"], { check: true })).stdout.trim();
+	const reported = (id: string) => srv.state.report!.sandboxes.some(box => box.id === id);
 	const testClock = join(tmp, "owner-clock.cjs");
 	await writeFile(testClock, `const timers = require("node:timers/promises"); const wait = timers.setTimeout;
 timers.setTimeout = (ms, ...args) => wait(ms === ${REFUSED_RETRY_MS} ? 3500 : ms, ...args);
 const timeout = AbortSignal.timeout.bind(AbortSignal);
 AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
-	function run(dir = state, preload?: string, program = bundle, dockerEnv: NodeJS.ProcessEnv = {}) {
-		const child = spawn(process.execPath, ["--require", testClock, ...(preload ? ["--require", preload] : []), program, "--platform", srv.platform, "--max-running", "1", "--max-sandboxes", "2"], { env: { ...env(dir), ...dockerEnv }, stdio: ["ignore", "pipe", "pipe"] });
+	function run(dir = state, preload?: string, program = bundle, dockerEnv: NodeJS.ProcessEnv = {}, platform = srv.platform) {
+		const child = spawn(process.execPath, ["--require", testClock, ...(preload ? ["--require", preload] : []), program, "--platform", platform, "--max-running", "1", "--max-sandboxes", "2"], { env: { ...env(dir), ...dockerEnv }, stdio: ["ignore", "pipe", "pipe"] });
 		let output = "";
 		child.stdout.on("data", s => { output += s; }); child.stderr.on("data", s => { output += s; });
 		children.add(child); child.once("exit", () => children.delete(child));
@@ -169,17 +184,25 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 		let service = run();
 		await until(() => service.output().includes("Pairing was refused"), "Pairing refusal did not park the runner.");
 		assert.equal(service.child.exitCode, null); assert.match(await cli("status"), /restart the container/);
+		assert.equal(srv.state.pairStarts, 1);
+		await assert.rejects(exec(process.execPath, [bundle, "pair", "--platform", srv.platform], { env: env(join(tmp, "standalone")), timeout: 10_000 }),
+			(error: { code?: number; stdout?: string }) => error.code === 1 && !!error.stdout?.includes("Pairing was refused"));
 		srv.state.pairingMode = "gone";
 		assert.match(await cli("pair"), /pairing code expired/);
 		srv.state.pairingMode = "waiting";
 		assert.match(await cli("pair"), /pairing code expired/);
+		const invalid = join(tmp, "standalone");
+		await writeFile(join(invalid, "status.json"), "broken", { mode: 0o600 });
+		await assert.rejects(exec(process.execPath, [bundle, "status"], { env: env(invalid) }),
+			(error: { stderr?: string }) => !!error.stderr?.includes("status.json. Repair or restore"));
 		const parkedStarts = srv.state.pairStarts;
 		const parkedPolls = srv.state.pollFailures;
 		await wait(7000);
 		assert.equal(srv.state.pairStarts, parkedStarts); assert.equal(srv.state.pollFailures, parkedPolls);
 		assert.match(await cli("log"), /pairing code expired/);
-		srv.state.pairingMode = "approve";
-		assert.match(await cli("pair"), /Paired with runner-check/);
+		srv.state.pairingMode = "approve"; srv.state.startFailures = 1;
+		const paired = await cli("pair");
+		assert.match(paired, /Trying again/); assert.match(paired, /Paired with runner-check/);
 		ok("Refused start, expired code and polling deadline all park the service. Only the owner's pair command obtains another code.");
 		await until(() => !!srv.state.report, "The runner did not pair and report.", 75_000);
 		assert.match(service.output(), /Paired with runner-check\. If that is not you, run `windlass-runner pair` again\./);
@@ -188,11 +211,25 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 		assert.equal((await stat(state)).mode & 0o777, 0o700); assert.equal((await stat(join(state, "pair.json"))).mode & 0o777, 0o600);
 		assert.equal((await readFile(join(state, "lock"), "utf8")).trim(), String(service.child.pid));
 		assert.equal(srv.state.report!.docker.ok, true);
-		const locked = run(); await until(() => locked.child.exitCode !== null, "Duplicate local process did not finish.");
-		assert.equal(locked.child.exitCode, 1); assert.match(locked.output(), /state lock/);
+		const locked = run();
+		await until(() => locked.output().split("Another runner holds the state lock").length >= 3, "Duplicate runner did not wait and retry.");
+		assert.equal(locked.child.exitCode, null);
+		await stop(locked.child);
 		ok("Pairing retries a 503, identifies the account, protects the key and lock, and corrects a 30-minute clock error.");
 		const second = join(tmp, "second");
 		await mkdir(second, { mode: 0o700 }); await copyFile(join(state, "pair.json"), join(second, "pair.json"));
+		const mismatch = run(second, undefined, bundle, {}, "http://127.0.0.1:1");
+		await until(() => mismatch.output().includes("pair with a different platform"), "Platform mismatch did not park.");
+		assert.equal(mismatch.child.exitCode, null);
+		assert.match(await cli("status", second), /pair with a different platform/);
+		await stop(mismatch.child);
+		const oldPair = await readFile(join(state, "pair.json"));
+		srv.state.pairingMode = "gone";
+		assert.match(await cli("pair"), /pairing code expired/);
+		assert.ok(oldPair.equals(await readFile(join(state, "pair.json"))));
+		await until(() => srv.online(), "An abandoned pairing failed to reconnect with the working key.");
+		srv.state.pairingMode = "approve";
+		ok("A platform mismatch parks, standalone pairing exits on refusal, and an abandoned replacement preserves the working pairing.");
 		const duplicate = run(second);
 		await until(() => duplicate.output().includes("key-in-use"), "Copied key was not refused.");
 		assert.equal(duplicate.child.exitCode, null); assert.match(await cli("status", second), /key-in-use/);
@@ -203,22 +240,39 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 		await exec(process.execPath, ["runner/bundle.mjs", "sha256:" + randomBytes(32).toString("hex"), missing], { cwd: root });
 		const bin = join(tmp, "bin");
 		await mkdir(bin);
-		// Only the df reading is forced low. All other Docker calls use the actual daemon.
+		const measured = join(tmp, "disk-measurements");
+		const pullStarted = join(tmp, "pull-started"), releasePull = join(tmp, "release-pull");
+		const wrappedDocker = { PATH: bin + ":" + env(state).PATH, CHECK_DOCKER_PATH: env(state).PATH };
+		// A delayed pull is entirely local. All container operations use the real daemon.
 		await writeFile(join(bin, "docker"), `#!/bin/sh
+if [ "$1" = "pull" ]; then
+  echo start >> "$CHECK_PULL_STARTED"
+  for i in $(seq 1 100); do [ -f "$CHECK_RELEASE_PULL" ] && break; sleep 0.1; done
+  exit 1
+fi
 for arg in "$@"; do
-  if [ "$arg" = "df" ]; then printf 'Avail\\n4999999999\\n'; exit 0; fi
+  if [ "$arg" = "df" ] && [ -n "$CHECK_DF_LOG" ]; then echo df >> "$CHECK_DF_LOG"; fi
+  if [ "$arg" = "df" ] && [ -n "$CHECK_LOW_DISK" ]; then printf 'Avail\\n4999999999\\n'; exit 0; fi
 done
 PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 `, { mode: 0o700 });
 		for (const fault of ["daemon", "image", "disk"] as const) {
 			await stop(service.child); await until(() => !srv.online(), "Test runner did not disconnect.");
 			srv.state.report = null;
-			const dockerEnv = fault === "daemon" ? { DOCKER_HOST: "unix://" + join(tmp, "missing.sock") } :
-				fault === "disk" ? { PATH: bin + ":" + env(state).PATH, CHECK_DOCKER_PATH: env(state).PATH } : {};
+			const missingHost = "unix://" + join(tmp, "absent-directory", "missing.sock");
+			const dockerEnv = fault === "daemon" ? { DOCKER_HOST: missingHost, CHECK_PRIVATE_SETTING: "absent-directory" } :
+				fault === "disk" ? { ...wrappedDocker, CHECK_LOW_DISK: "1" } : {};
 			service = run(state, undefined, fault === "image" ? missing : bundle, dockerEnv);
 			await until(() => !!srv.state.report, "Missing machine-health report.");
 			if (fault === "daemon") {
-				assert.equal(srv.state.report!.docker.ok, false);
+				const health = srv.state.report!.docker;
+				assert.ok(!health.ok);
+				const { stderr, code } = await docker(["--host", missingHost, "ps"]);
+				assert.notEqual(code, 0);
+				const prefix = stderr.trim().split(/[\r\n]/, 1)[0].split("unix://")[0];
+				assert.ok(prefix.length > 0 && health.reason.startsWith(prefix));
+				assert.ok(!health.reason.includes("absent-directory") && !/[\r\n]/.test(health.reason) && health.reason.length <= 500);
+				assert.match(await cli("log"), /"operation":"docker","outcome":"(?:not found|unreachable)"/);
 			} else {
 				await srv.attach();
 				await assert.rejects(srv.channel(sessionId).request("create", { profile: "docker-hardened" }),
@@ -227,9 +281,33 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 			}
 		}
 		await stop(service.child); await until(() => !srv.online(), "Fault fixture stayed connected.");
-		srv.state.report = null; service = run(); await until(() => !!srv.state.report, "Healthy runner did not report again.");
-		ok("An unavailable daemon is reported, and a missing pin or less than 5 GB free prevents sandbox creation.");
+		const slowImage = join(tmp, "slow.cjs");
+		await exec(process.execPath, ["runner/bundle.mjs", "fixture.invalid/sandbox@sha256:" + "0".repeat(64), slowImage], { cwd: root });
+		service = run(state, undefined, slowImage, { ...wrappedDocker, CHECK_PULL_STARTED: pullStarted, CHECK_RELEASE_PULL: releasePull });
+		await until(() => stat(pullStarted).then(() => true, () => false), "The simulated pull did not start.");
 		await srv.attach();
+		const pullingChannel = srv.channel(sessionId);
+		const creates = Promise.all([1, 2].map(() => assert.rejects(pullingChannel.request("create", { profile: "docker-hardened" }), /pinned sandbox image/)));
+		try {
+			assert.equal(await pullingChannel.request("state", { id: "m" + machineId + "-" + hostedRaw }), "none");
+		} finally { await writeFile(releasePull, "done"); }
+		await creates;
+		assert.equal(await readFile(pullStarted, "utf8"), "start\n");
+		await stop(service.child); await until(() => !srv.online(), "Slow pull fixture stayed connected.");
+		ok("Concurrent creates and welcome share one image pull while another lifecycle request completes.");
+		srv.state.gatewayLifetime = 2000;
+		srv.state.report = null; service = run(state, undefined, bundle, { ...wrappedDocker, CHECK_DF_LOG: measured }); await until(() => !!srv.state.report, "Healthy runner did not report again.");
+		ok("An unavailable daemon is reported, and a missing pin or less than 5 GB free prevents sandbox creation.");
+		assert.equal(await readFile(measured, "utf8"), "df\n");
+		const connections = srv.state.connections, requests = srv.state.connectionRequests;
+		await wait(srv.state.gatewayLifetime + 100);
+		srv.state.gatewayLifetime = 60_000;
+		await srv.attach();
+		assert.equal(srv.state.connections, connections);
+		assert.equal(srv.state.connectionRequests, requests + 1);
+		await srv.attach();
+		assert.equal(srv.state.connectionRequests, requests + 1);
+		ok("An expired gateway credential is renewed for a session open and reused on the next open, on the original control connection.");
 		let ch = srv.channel(sessionId);
 		let id: string;
 		try {
@@ -242,6 +320,7 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 			ok("This kernel refused the create-time bubblewrap probe; the runner removed the failed sandbox.");
 			id = await ch.request("create", { profile: "docker-hardened" });
 		}
+		assert.ok((await readFile(measured, "utf8")).split("df\n").length >= 3);
 		const raw = id.slice(-12); assert.equal(id, "m" + machineId + "-" + raw);
 		const name = containerName(raw);
 		const [inspection] = JSON.parse((await docker(["inspect", name], { check: true })).stdout);
@@ -253,7 +332,12 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		assert.deepEqual(inspection.HostConfig.CapDrop, ["ALL"]); assert.equal(inspection.HostConfig.PidsLimit, 512);
 		assert.equal(inspection.Mounts.length, 1); assert.equal(inspection.Mounts[0].Type, "volume");
 		assert.notEqual(inspection.Mounts[0].Name, "wlp-user-" + uid);
-		await assert.rejects(ch.request("create", { profile: "docker-hardened" }), /limit on running/);
+		await until(() => reported(id), "Create did not promptly report the sandbox.", 5000);
+		const reports = srv.state.reports;
+		assert.equal(await ch.request("create", { profile: "docker-hardened" }), id);
+		assert.equal(await containers(), name);
+		assert.equal(srv.state.reports, reports);
+		ok("Repeating create returns the one container and the unchanged inventory is reported once.");
 		await ch.request("writeTextFile", { id, path: "/tmp/runner-file", content: "survives suspend" });
 		await ch.request("writeSecretFile", { id, path: "/tmp/private-fixture", content: "ordinary fixture" });
 		assert.equal((await ch.request("ask", { id, argv: ["stat", "-c", "%a", "/tmp/private-fixture"] }))?.stdout.trim(), "600");
@@ -264,11 +348,14 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		const log = await cli("log");
 		assert.ok(!log.includes("ordinary fixture") && !log.includes("/tmp/private-fixture") && !log.includes("PRIVATE KEY"));
 		await ch.request("suspend", { id }); assert.equal(await ch.request("state", { id }), "paused");
+		assert.equal(await ch.request("create", { profile: "docker-hardened" }), id);
+		assert.equal((await docker(["inspect", "-f", "{{.State.Status}}", name])).stdout.trim(), "exited");
 		assert.equal((await ch.request("connect", { id }))?.cwd, "/workspace");
 		assert.equal(await ch.request("readTextFile", { id, path: "/tmp/runner-file" }), "survives suspend");
 		ok("Create, read, write, ask, run, suspend and resume use the pinned image, local limits and labelled volume.");
 
 		await srv.attach(srv.other);
+		await assert.rejects(srv.channel(srv.other).request("create", { profile: "docker-hardened" }), /limit on running/);
 		await assert.rejects(srv.channel(srv.other).request("run", { id, command: "touch /tmp/wrong-session" }), /another session/);
 		assert.equal(srv.state.lastErrorKind, "refused");
 		srv.corruptNext("unknown");
@@ -328,7 +415,6 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		await ch.request("writeTextFile", { id, path: tokenPath, content: "fixture" });
 		srv.send({ kind: "logout" });
 		await until(async () => (await ch.request("ask", { id, argv: ["test", "!", "-e", tokenPath] }))?.code === 0, "Logout left the token file.");
-		await ch.request("holdForTurn", { id });
 		let running = false;
 		const oldRun = ch.request("run", { id, command: "echo ready; sleep 3; touch /tmp/orphan-finished" }, { onOutput: () => { running = true; } });
 		const lost = assert.rejects(oldRun, ConversationLost);
@@ -343,14 +429,16 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		let windlass: string | undefined;
 		for (const [duration, freeze] of [[5000, false], [300_000, false], [120_000, true]] as const) {
 			windlass = await scripted(ch, id, async () => {
+				const before = await readFile(measured, "utf8");
 				srv.cut();
 				if (freeze) { service.child.kill("SIGSTOP"); await docker(["pause", name], { check: true }); }
-				try { await wait(duration); }
+				try { await wait(duration); assert.equal(await readFile(measured, "utf8"), before); }
 				finally { if (freeze) { await docker(["unpause", name], { check: true }); service.child.kill("SIGCONT"); } srv.restore(); }
 			}, windlass);
 			ok(`A scripted Windlass turn finished with unique events across a ${duration / 1000}s ${freeze ? "laptop sleep" : "network loss"}.`);
 		}
 
+		ok("Disk is measured on welcome and create, and the five-minute outage starts no disk helper.");
 		const crash = ch.start({ id, tag: "crash", argv: ["sh", "-c", "sleep 120 | windlass acp"] }, () => {});
 		await until(async () => !!(await docker(["exec", name, "wlp-run", "list", "crash"])).stdout.trim(), "Crash fixture did not start.");
 		const epoch = srv.state.epoch;
@@ -364,34 +452,54 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		await until(() => srv.state.epoch !== epoch && !!srv.state.report, "Restart did not report.");
 		assert.ok((await crash.ended).error instanceof ConversationLost);
 		assert.ok(srv.state.report!.sandboxes.some(b => b.id === id)); assert.ok(!srv.state.report!.sandboxes.some(b => b.id === foreign));
+		assert.equal(await ch.request("create", { profile: "docker-hardened" }), id);
+		assert.equal(await containers(), name);
 		assert.ok(await ch.request("stopLeftovers", { id, program: "windlass" }) > 0);
 		assert.equal(await ch.request("readTextFile", { id, path: "/tmp/runner-file" }), "survives suspend");
 		const orphan = ch.start({ id, tag: "longloss", argv: ["windlass", "acp"] }, () => {});
-		await ch.request("holdForTurn", { id });
 		await until(async () => !!(await docker(["exec", name, "wlp-run", "list", "longloss"])).stdout.trim(), "Long-outage fixture did not start.");
 		const timer = globalThis.setTimeout;
 		globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) =>
 			timer(fn, ms === RUNNER_GRACE_MS ? 60_000 : ms, ...args)) as typeof setTimeout;
 		try {
 			srv.cut();
-			await wait(90_000);
+			await until(() => !ch.connected, "The session socket stayed connected.");
+			await wait(5000); // Longer than the two-second idle interval, within the conversation's grace.
+			assert.equal((await docker(["inspect", "-f", "{{.State.Status}}", name])).stdout.trim(), "running");
+			await wait(85_000);
 			assert.ok((await orphan.ended).error instanceof ConversationLost);
 			await until(async () => (await docker(["inspect", "-f", "{{.State.Status}}", name])).stdout.trim() === "exited",
-				"The expired conversation kept its turn hold or Windlass process.");
+				"The sandbox did not idle-stop after the orphaned Windlass process ended.");
 		} finally { globalThis.setTimeout = timer; srv.restore(); }
 		await until(() => ch.connected, "Fresh socket did not attach after the expired grace.", 90_000);
 		await ch.request("connect", { id });
 		assert.equal((await ch.request("ask", { id, argv: ["wlp-run", "list", "longloss"] }))?.stdout.trim(), "");
 		await scripted(ch, id, async () => {}, windlass);
-		ok("After grace plus 30 seconds the turn is lost, the hold drops, idle stops the sandbox, and Windlass resumes its saved session.");
+		ok("Windlass keeps the disconnected sandbox running past idle time. After grace expires, the process ends, idle stops the sandbox, and Windlass can resume.");
 		srv.detach();
 		await until(async () => (await docker(["inspect", "-f", "{{.State.Status}}", name])).stdout.trim() === "exited", "Welcome idle time was ignored.");
 		await srv.attach(); await ch.request("connect", { id }); await ch.request("destroy", { id });
+		await until(() => !reported(id), "Destroy did not promptly report the removal.", 5000);
 		assert.equal(await ch.request("state", { id }), "none");
 		ok("SIGKILL loses the conversation. Restart recovers only owned containers, the next turn can stop leftovers, and welcome controls idle suspension.");
 
-		const remove = await ch.request("create", { profile: "docker-hardened" }); srv.send({ kind: "remove", sandbox: remove });
+		const replacement = await ch.request("create", { profile: "docker-hardened" });
+		assert.notEqual(replacement, id);
+		const replacementName = containerName(replacement.slice(-12));
+		assert.equal(await containers(), replacementName);
+		await docker(["pause", replacementName], { check: true });
+		assert.equal(await ch.request("create", { profile: "docker-hardened" }), replacement);
+		assert.equal((await docker(["inspect", "-f", "{{.State.Status}}", replacementName])).stdout.trim(), "paused");
+		await docker(["unpause", replacementName], { check: true });
+		await docker(["rm", "-f", replacementName], { check: true });
+		const remove = await ch.request("create", { profile: "docker-hardened" });
+		assert.notEqual(remove, replacement);
+		assert.equal(await containers(), containerName(remove.slice(-12)));
+		await until(() => reported(remove) && !reported(replacement), "The new inventory was not reported.", 5000);
+		srv.send({ kind: "remove", sandbox: remove });
 		await until(() => srv.state.removed === remove, "Control removal not acknowledged.");
+		await until(() => !reported(remove), "Control removal did not promptly update the report.", 5000);
+		ok("Create reuses a stopped, paused or rediscovered sandbox. Session destroy and external deletion each allow a fresh create, and both removal paths report promptly.");
 		await ch.request("create", { profile: "docker-hardened" });
 		for (const refusal of [refuse("outdated", { runnerVersion: "0.0.9" }), refuse("bad-frame"), refuse("unknown"), { kind: "refused", reason: "other", message: "Account unavailable." } as Refusal]) {
 			srv.send(refusal);
@@ -423,6 +531,7 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		await until(() => service.output().includes("HTTP 403"), "HTTP refusal was not reported.");
 		assert.equal(service.child.exitCode, null); assert.match(await cli("status"), /unknown/);
 		srv.state.httpRefusal = "removed"; await expectParked();
+		assert.equal((await docker(["inspect", "-f", "{{.State.Status}}", containerName(kept.slice(-12))], { check: true })).stdout.trim(), "exited");
 		assert.match(await cli("log"), /HTTP 410/);
 		await stop(service.child);
 		ok("Recoverable refusals retry slowly. Both forms of removal erase the key and park until the owner acts.");
