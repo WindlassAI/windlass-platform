@@ -7,6 +7,8 @@ export interface Handover {
 	error: string;
 	/** True when one of the user's limits refused it: the composer then points to the usage page. */
 	limit?: boolean;
+	/** The key the prompt was sent with (lib/submission.ts): sent again from the composer unchanged, it is the same submission. */
+	idempotencyKey: string;
 }
 
 const waiting = new Map<string, Handover>();

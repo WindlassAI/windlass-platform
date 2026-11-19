@@ -28,7 +28,7 @@
  * screen, where the composer keeps it and says why.
  */
 import { MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type UsageNumbers } from "@contract";
-import { useEffect, useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
 import { Layers, ProfileFacts } from "../components/Layers";
@@ -45,6 +45,7 @@ import { useApp, useAuth } from "../state/app";
 import { allowanceState, useAccount, useAllowance, useModels } from "../state/hooks";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
+import { submissionOf, type Submission } from "../lib/submission";
 
 function ProfileCard({ profile, name, checked, onChoose }: { profile: SandboxProfile; name: string; checked: boolean; onChoose(id: SandboxProfileId): void }) {
 	const id = useId();
@@ -287,6 +288,9 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 	const chosenProfile = info?.profiles.find((candidate) => candidate.id === profile) ?? null;
 
+	/** The agent that was asked for and not answered with, with its key: launching the same again is another attempt of it. */
+	const asked = useRef<Submission | null>(null);
+
 	const create = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!canCreate || profile === null) return;
@@ -295,7 +299,7 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 		let sessionId: string;
 		try {
 			const repository = chosen ? { id: chosen.repository.id, branch: chosen.branch } : undefined;
-			const session = await client.user(auth).createSession({
+			const input = {
 				profile,
 				model: model || undefined,
 				repoUrl: repo || undefined,
@@ -303,7 +307,10 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 				setupCommand: repository ? setup.toSave : undefined,
 				publishUnasked: repository && chosen?.repository.canPush && chosenProfile !== null && publishAlwaysAsked(chosenProfile) === null ? publishUnasked : undefined,
 				title: title.trim() || undefined,
-			});
+			};
+			// One key for the agent: launching again after an answer that never came, with nothing changed, makes no second one.
+			asked.current = submissionOf(JSON.stringify(input), asked.current);
+			const session = await client.user(auth).createSession({ ...input, idempotencyKey: asked.current.idempotencyKey });
 			sessionId = session.id;
 		} catch (failure) {
 			setError(explain(failure));
@@ -313,11 +320,13 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 		const text = prompt.trim();
 		if (text !== "") {
 			setBusy("prompting");
+			// And one for the prompt, which keeps it when it is handed over.
+			const { idempotencyKey } = submissionOf(text, null);
 			try {
-				await client.session(auth, sessionId).prompt({ text });
+				await client.session(auth, sessionId).prompt({ text, idempotencyKey });
 			} catch (failure) {
 				// The agent exists; its screen shows why the prompt was not accepted, with the text kept.
-				handOver(sessionId, { text, error: explain(failure), limit: isLimitRefusal(failure) });
+				handOver(sessionId, { text, error: explain(failure), limit: isLimitRefusal(failure), idempotencyKey });
 			}
 		}
 		navigate({ name: "session", id: sessionId });

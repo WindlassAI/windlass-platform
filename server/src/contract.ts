@@ -290,7 +290,25 @@ export interface CreateSessionInput {
 	setupCommand?: string;
 	/** With `repository`: `SessionSummary.publishUnasked` to start with. Left out: the agent's requests to publish are asked about. Refused (`bad_input`) for a profile it cannot be on in. */
 	publishUnasked?: boolean;
+	/** The key of this submission (`IdempotencyKey`): the same key again answers with the session the first attempt made, for as long as that session exists. */
+	idempotencyKey?: IdempotencyKey;
 }
+
+/**
+ * The key of one submission, named and shaped as the Agent Client Protocol's `idempotencyKey` is.
+ * Whoever submits makes it, a random UUID, once for each submission, and sends the same key with
+ * every attempt of that submission: when no answer came, when the answer was a failure to reach the
+ * server, and when the user sends again what was refused, unchanged. The server takes a key at most
+ * once and answers a repeat with what the first attempt was answered, so a message that reaches it
+ * twice is one message (README, "A message sent twice").
+ *
+ * A string of 1 to MAX_IDEMPOTENCY_KEY_CHARS characters. Left out, or null: no key, and every call
+ * is a submission of its own. Anything else is refused with the code `bad_idempotency_key` and is
+ * never read as no key. A key that comes again with other content is refused with
+ * `idempotency_key_reused`, and stays the key of what it came with first. An attempt that was
+ * refused leaves its key unused: the same key is then a new try.
+ */
+export type IdempotencyKey = string;
 
 export interface ChatgptStatus {
 	connected: boolean;
@@ -1378,6 +1396,13 @@ export interface PromptInput {
 	model?: string;
 	/** One of the efforts the turn's model accepts. */
 	effort?: string;
+	/**
+	 * The key of this submission (`IdempotencyKey`). The same key again, with the same text, is
+	 * answered as the first attempt was and adds nothing: no second message in the running turn, no
+	 * second turn. What a key is held against is the text; `model` and `effort` are the first attempt's.
+	 * A session remembers the keys of its last MAX_REMEMBERED_SUBMISSIONS messages that came with one.
+	 */
+	idempotencyKey?: IdempotencyKey;
 }
 
 export interface WorkspaceFile {
@@ -1399,6 +1424,8 @@ export interface AgentSessionActions {
 	 * created or started: code `allowance_used` when too little of the day's sandbox time is left, and
 	 * `too_many_sandboxes` when the session needs a sandbox and its user keeps as many as they may. Each
 	 * comes with a sentence that says what was used, what the limit is, and what to do or when it resets.
+	 * With `idempotencyKey`, a message that was taken before under that key is not taken again: the
+	 * answer is the one its first attempt had, whatever the session does now (`IdempotencyKey`).
 	 */
 	prompt(input: PromptInput): Promise<{ turn: number; steered: boolean }>;
 	/**
@@ -1492,6 +1519,10 @@ export const PLATFORM_INFO_PATH = "/platform/info";
 export const PLATFORM_CONNECTION_PATH = "/platform/connection";
 
 export const MAX_PROMPT_CHARS = 20_000;
+/** The longest `IdempotencyKey`, in characters: the Agent Client Protocol's limit. */
+export const MAX_IDEMPOTENCY_KEY_CHARS = 255;
+/** How many of a session's messages that came with a key have theirs remembered: the newest. */
+export const MAX_REMEMBERED_SUBMISSIONS = 50;
 /** The title of a commit or pull request, and its body. */
 export const MAX_PUBLISH_TITLE_CHARS = 120;
 export const MAX_PUBLISH_BODY_CHARS = 4_000;

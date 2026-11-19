@@ -126,6 +126,7 @@ export interface UserApi {
 	/** The models the user may choose and the efforts of each: their ChatGPT plan's, or the stand-in, and which it is. */
 	models(): Promise<ModelList>;
 	listSessions(): Promise<SessionSummary[]>;
+	/** Makes an agent. With `idempotencyKey`, the same call again answers with the agent the first one made, while that agent exists. */
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
 	renameSession(id: string, title: string): Promise<SessionSummary>;
 	deleteSession(id: string): Promise<void>;
@@ -201,7 +202,11 @@ export interface SessionApi {
 	open(feed: SessionFeed): () => void;
 	/** Asks for a fresh `onSnapshot` on every open feed (after a gap in the item numbering). */
 	resync(): void;
-	/** Starts a turn, or steers the running one (`steered: true`). */
+	/**
+	 * Starts a turn, or steers the running one (`steered: true`). With `idempotencyKey`, the key of this
+	 * submission (lib/submission.ts), a message the server took before under that key is not taken again:
+	 * the answer is its first attempt's. Throws with reason `idempotency_key_reused` for a key that came with another text.
+	 */
 	prompt(input: PromptInput): Promise<{ turn: number; steered: boolean }>;
 	/** Answers the pending question. Throws with reason `no_question` when it is no longer pending. */
 	answer(input: { questionId: string; choice: string; note?: string }): Promise<void>;

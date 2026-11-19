@@ -3,7 +3,9 @@
  *
  * Stored in SQLite: the profile last seen on a valid token, one row per session holding its summary,
  * and the sign-in. The summaries are also held in memory so that counting the running sessions and
- * marking one as running happen in one synchronous step.
+ * marking one as running happen in one synchronous step. A session that was created with the key of
+ * its submission (submissions.ts; README, "A message sent twice") has that key in its row, and in
+ * memory with the summaries: `createSession` with the same key answers with that session and makes none.
  *
  * The sign-in is what Windlass saves of it (`auth.json`, `host-id`), in one row, sealed with a key that
  * is derived from the server's secret and is never in this storage (signin/seal.ts): whoever holds the
@@ -130,6 +132,7 @@ import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey }
 import { forgettingWords, personalServerReach } from "../server-question.js";
 import { CHECKS_TABLE, ChecksProblem, cleanChecks, readChecks, saveChecks } from "../repository-checks.js";
 import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
+import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../signin/directory.js";
 import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
 import { getSignIns } from "../signin/index.js";
@@ -159,6 +162,15 @@ interface UserVars {
 	/** False until a valid token of this user has been seen: until then the actor may be a stranger's doing. */
 	reached: boolean;
 	sessions: Map<string, SessionSummary>;
+	/**
+	 * The sessions that were created with a key (submissions.ts), by that key: the digest of what was
+	 * asked for, and the session it made. As the `sessions` table has them, one for each such session
+	 * and for as long as that session exists: a `createSession` with one of these keys answers with
+	 * its session and makes none.
+	 */
+	created: Map<string, Submission & { id: string }>;
+	/** The `createSession` calls with a key that are being decided: another attempt of one of them ends as it does. */
+	creating: Attempts<SessionSummary>;
 	/** The user's sign-in and token source, made when first needed: a demo user never has one. */
 	signIn: Promise<SignInHolder> | null;
 	/** The database as the action that is running now has it: what the holder's store reads and writes. */
@@ -285,12 +297,15 @@ function broadcastSessions(c: UserCtx): void {
 	c.broadcast("sessions", sessionList(c.vars));
 }
 
-async function storeSession(c: UserCtx, summary: SessionSummary): Promise<void> {
+/** Writes a session's row: its summary, and for a new session the key it was created with, which stays with the row. */
+async function storeSession(c: UserCtx, summary: SessionSummary, submission: Submission | null = null): Promise<void> {
 	await c.db.execute(
-		"INSERT INTO sessions (id, created_at, summary) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET summary = excluded.summary",
+		"INSERT INTO sessions (id, created_at, summary, key, sent) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET summary = excluded.summary",
 		summary.id,
 		summary.createdAt,
 		JSON.stringify(summary),
+		submission?.key ?? null,
+		submission?.sent ?? null,
 	);
 }
 
@@ -831,6 +846,114 @@ export function cleanRepoUrl(raw: unknown): string | null {
 	return url.toString();
 }
 
+/** What `makeSession` needs of an action's context. */
+interface CreateCtx extends UserCtx, ModelsCtx {
+	log: { error(entry: unknown): void };
+	// biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
+	client(): any;
+}
+
+/** What a key belongs to in a user's actor, in the words of a refusal (submissions.ts). */
+const KEYED = "agent";
+
+/**
+ * Makes a session from what `createSession` was sent: checks it, asks GitHub about a repository of the
+ * connection, creates the session's actor, and puts the session in the user's index. It waits on
+ * several of those, and other calls run meanwhile; the session is in the index, and its key with it,
+ * in one synchronous step at the end, or the call is refused and nothing of it is kept.
+ */
+async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null): Promise<SessionSummary> {
+	let repoUrl = cleanRepoUrl(input.repoUrl);
+	const givenTitle = input.title === undefined || input.title === null ? null : cleanTitle(input.title);
+	// A setup command is saved for a repository of the GitHub connection, and is checked before GitHub is asked anything.
+	const setupCommand = input.setupCommand === undefined || input.setupCommand === null ? null : setupCommandOf(input.setupCommand);
+	if (setupCommand !== null && (input.repository === undefined || input.repository === null)) {
+		throw new UserError("A setup command is saved for a repository of your GitHub connection. Choose one, or leave the setup command out.", { code: "bad_input" });
+	}
+	if (input.publishUnasked !== undefined && input.publishUnasked !== null && typeof input.publishUnasked !== "boolean") throw new UserError("Say yes or no to letting the agent publish without asking.", { code: "bad_input" });
+	if (input.publishUnasked === true && (input.repository === undefined || input.repository === null)) {
+		throw new UserError("An agent can publish only to a repository of your GitHub connection. Choose one, or leave that setting off.", { code: "bad_input" });
+	}
+	// A repository of the user's GitHub connection: GitHub is asked now whether this user may read it.
+	let repo: StoredRepository | null = null;
+	if (input.repository !== undefined && input.repository !== null) {
+		if (repoUrl !== null) throw new UserError("Choose a repository from GitHub or paste an address, not both.", { code: "bad_input" });
+		const { id, branch } = input.repository;
+		if (!Number.isSafeInteger(id) || id <= 0 || (branch !== undefined && branch !== null && !isBranchName(branch))) throw new UserError("Choose one of the listed repositories and one of its branches.", { code: "bad_input" });
+		const app = requireGithub();
+		try {
+			const { installation, repository } = await resolveRepository(app, requireConnection(c), id, "read");
+			repo = {
+				provider: "github",
+				id: repository.id,
+				owner: repository.owner,
+				name: repository.name,
+				branch: branch ?? repository.defaultBranch,
+				private: repository.private,
+				url: app.repositoryUrl(repository.owner, repository.name),
+				installationId: installation.id,
+			};
+			repoUrl = app.cloneUrl(repository.owner, repository.name);
+		} catch (error) {
+			throw githubError(c.log, error, "The repository could not be checked at GitHub. Try again.");
+		}
+	}
+
+	let summary: SessionSummary;
+	try {
+		const { sandboxes } = await getLayer();
+		const chosen = sandboxes.profiles().find((candidate) => candidate.id === input.profile);
+		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
+		if (!chosen.available) {
+			throw new UserError(`${chosen.name} cannot be chosen yet. ${chosen.unavailableReason ?? ""}`.trim(), { code: "profile_unavailable" });
+		}
+		// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
+		const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
+		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
+		const models = await modelsOf(c, profile.demo);
+		const model = modelInput(() => chosenModel(models, input.model));
+
+		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
+		if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
+
+		const now = Date.now();
+		summary = {
+			id: `s_${randomBytes(8).toString("hex")}`,
+			title: givenTitle ?? DEFAULT_TITLE,
+			profile: chosen.id,
+			model,
+			repoUrl,
+			...(repo ? { repository: { provider: repo.provider, id: repo.id, owner: repo.owner, name: repo.name, branch: repo.branch, private: repo.private, url: repo.url }, pullRequest: null, publishUnasked: input.publishUnasked === true } : {}),
+			createdAt: now,
+			updatedAt: now,
+			status: "idle",
+			turns: 0,
+			lastOutcome: null,
+			sandbox: "none",
+		};
+		await createSessionActor(c, profile.uid, summary.id, {
+			title: summary.title,
+			titleIsDefault: givenTitle === null,
+			profile: summary.profile,
+			model,
+			repoUrl,
+			repo,
+			publishUnasked: repo !== null && input.publishUnasked === true,
+			demo: profile.demo,
+			createdAt: now,
+		});
+	} catch (error) {
+		throw clientError(c.log, error, "The agent could not be created. Try again.");
+	}
+
+	// In one step with the session: from here a `createSession` with this key answers with it.
+	c.vars.sessions.set(summary.id, summary);
+	if (submission) c.vars.created.set(submission.key, { ...submission, id: summary.id });
+	await storeSession(c, summary, submission);
+	broadcastSessions(c);
+	return summary;
+}
+
 export const user = actor({
 	options: { name: "User", icon: "user", actionTimeout: 180_000 },
 
@@ -928,9 +1051,12 @@ export const user = actor({
 			await db.execute(PERSONAL_SERVERS_TABLE);
 			await db.execute(ACCOUNT_SECRETS_TABLE);
 			// Tables made before a server had its setting and a secret its scope lack the column: those servers' tools ask, and those secrets are for MCP servers only, as they were.
+			// And the sessions made before a session could be created with a key have none (submissions.ts): `key`, and `sent`, the digest of what was asked for under it.
 			for (const [table, column, definition] of [
 				["personal_server", "unasked", "INTEGER NOT NULL DEFAULT 0"],
 				["account_secret", "scope", "TEXT NOT NULL DEFAULT 'setup'"],
+				["sessions", "key", "TEXT"],
+				["sessions", "sent", "TEXT"],
 			] as const) {
 				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
 				if (!columns.some((found) => found.name === column)) await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
@@ -979,18 +1105,20 @@ export const user = actor({
 
 	createVars: async (c): Promise<UserVars> => {
 		const [row] = await c.db.execute<{ uid: string; email: string | null; demo: number }>("SELECT uid, email, demo FROM profile WHERE id = 1");
-		const rows = await c.db.execute<{ summary: string }>("SELECT summary FROM sessions");
+		const rows = await c.db.execute<{ summary: string; key: string | null; sent: string | null }>("SELECT summary, key, sent FROM sessions");
 		const sessions = new Map<string, SessionSummary>();
-		for (const { summary } of rows) {
+		const created = new Map<string, Submission & { id: string }>();
+		for (const { summary, key, sent } of rows) {
 			const parsed = JSON.parse(summary) as SessionSummary;
 			sessions.set(parsed.id, parsed);
+			if (key !== null && sent !== null) created.set(key, { key, sent, id: parsed.id });
 		}
 		// An actor that holds a sign-in is a user's, also before that user's own token was seen here.
 		const [held] = await c.db.execute<{ id: number }>("SELECT id FROM signin WHERE id = 1");
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, signIn: null, signInDb: null, approvals, github, models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null };
+		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null };
 	},
 
 	events: {
@@ -1078,93 +1206,23 @@ export const user = actor({
 		createSession: async (c, input: CreateSessionInput): Promise<SessionSummary> => {
 			const profile = requireUser(c);
 			if (typeof input !== "object" || input === null) throw new UserError("Choose a sandbox for the agent.", { code: "bad_input" });
-			let repoUrl = cleanRepoUrl(input.repoUrl);
-			const givenTitle = input.title === undefined || input.title === null ? null : cleanTitle(input.title);
-			// A setup command is saved for a repository of the GitHub connection, and is checked before GitHub is asked anything.
-			const setupCommand = input.setupCommand === undefined || input.setupCommand === null ? null : setupCommandOf(input.setupCommand);
-			if (setupCommand !== null && (input.repository === undefined || input.repository === null)) {
-				throw new UserError("A setup command is saved for a repository of your GitHub connection. Choose one, or leave the setup command out.", { code: "bad_input" });
-			}
-			if (input.publishUnasked !== undefined && input.publishUnasked !== null && typeof input.publishUnasked !== "boolean") throw new UserError("Say yes or no to letting the agent publish without asking.", { code: "bad_input" });
-			if (input.publishUnasked === true && (input.repository === undefined || input.repository === null)) {
-				throw new UserError("An agent can publish only to a repository of your GitHub connection. Choose one, or leave that setting off.", { code: "bad_input" });
-			}
-			// A repository of the user's GitHub connection: GitHub is asked now whether this user may read it.
-			let repo: StoredRepository | null = null;
-			if (input.repository !== undefined && input.repository !== null) {
-				if (repoUrl !== null) throw new UserError("Choose a repository from GitHub or paste an address, not both.", { code: "bad_input" });
-				const { id, branch } = input.repository;
-				if (!Number.isSafeInteger(id) || id <= 0 || (branch !== undefined && branch !== null && !isBranchName(branch))) throw new UserError("Choose one of the listed repositories and one of its branches.", { code: "bad_input" });
-				const app = requireGithub();
-				try {
-					const { installation, repository } = await resolveRepository(app, requireConnection(c), id, "read");
-					repo = {
-						provider: "github",
-						id: repository.id,
-						owner: repository.owner,
-						name: repository.name,
-						branch: branch ?? repository.defaultBranch,
-						private: repository.private,
-						url: app.repositoryUrl(repository.owner, repository.name),
-						installationId: installation.id,
-					};
-					repoUrl = app.cloneUrl(repository.owner, repository.name);
-				} catch (error) {
-					throw githubError(c.log, error, "The repository could not be checked at GitHub. Try again.");
-				}
-			}
-
-			let summary: SessionSummary;
+			// Without a key every call makes a session, as it always did.
+			let attempt: Promise<SessionSummary>;
 			try {
-				const { sandboxes } = await getLayer();
-				const chosen = sandboxes.profiles().find((candidate) => candidate.id === input.profile);
-				if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
-				if (!chosen.available) {
-					throw new UserError(`${chosen.name} cannot be chosen yet. ${chosen.unavailableReason ?? ""}`.trim(), { code: "profile_unavailable" });
-				}
-				// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
-				const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
-				if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
-				const models = await modelsOf(c, profile.demo);
-				const model = modelInput(() => chosenModel(models, input.model));
-
-				// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
-				if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
-
-				const now = Date.now();
-				summary = {
-					id: `s_${randomBytes(8).toString("hex")}`,
-					title: givenTitle ?? DEFAULT_TITLE,
-					profile: chosen.id,
-					model,
-					repoUrl,
-					...(repo ? { repository: { provider: repo.provider, id: repo.id, owner: repo.owner, name: repo.name, branch: repo.branch, private: repo.private, url: repo.url }, pullRequest: null, publishUnasked: input.publishUnasked === true } : {}),
-					createdAt: now,
-					updatedAt: now,
-					status: "idle",
-					turns: 0,
-					lastOutcome: null,
-					sandbox: "none",
-				};
-				await createSessionActor(c, profile.uid, summary.id, {
-					title: summary.title,
-					titleIsDefault: givenTitle === null,
-					profile: summary.profile,
-					model,
-					repoUrl,
-					repo,
-					publishUnasked: repo !== null && input.publishUnasked === true,
-					demo: profile.demo,
-					createdAt: now,
-				});
+				const { idempotencyKey, ...asked } = input;
+				const submission = submissionOf(idempotencyKey, asked);
+				if (submission === null) return await makeSession(c, profile, input, null);
+				// Made before, and still there: the answer is that session as it is now. Nothing was awaited, so this is decided before any other call runs.
+				const made = c.vars.created.get(submission.key);
+				const session = made && isRepeat(made, submission, KEYED) ? c.vars.sessions.get(made.id) : undefined;
+				if (session) return session;
+				// Being decided, or new: every attempt that arrives until the session is made or refused ends as this one does.
+				attempt = c.vars.creating.run(submission, KEYED, () => makeSession(c, profile, input, submission));
 			} catch (error) {
-				throw clientError(c.log, error, "The agent could not be created. Try again.");
+				if (error instanceof SubmissionProblem) throw new UserError(error.message, { code: error.code });
+				throw error;
 			}
-
-			c.vars.sessions.set(summary.id, summary);
-			await storeSession(c, summary);
-			broadcastSessions(c);
-			return summary;
+			return await attempt;
 		},
 
 		renameSession: async (c, id: string, title: string): Promise<SessionSummary> => {
@@ -1204,6 +1262,8 @@ export const user = actor({
 				}
 			}
 			await c.db.execute("DELETE FROM sessions WHERE id = ?", id);
+		// The key it was created with went with its row: the same key makes a new session from here.
+		for (const [key, made] of c.vars.created) if (made.id === id) c.vars.created.delete(key);
 			// A session with no repository was its own project: what was approved for it goes with it.
 			await changeApprovals(c, (book) => book.forgetProject(sessionProjectKey(id))).catch((error) => c.log.warn({ msg: "could not forget the deleted session's approvals of MCP servers", session: id, error: String(error) }));
 			broadcastSessions(c);

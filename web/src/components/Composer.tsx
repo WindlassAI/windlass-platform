@@ -6,14 +6,20 @@
  * are the chosen model's, and a few words beside them say whose list it is. A prompt that one of the user's limits refused
  * keeps its text and points to the usage page, and a quiet line above the field says beforehand when
  * little of the day's sandbox time is left.
+ *
+ * A message that was sent and not taken stays in the field, and stays one submission: sending it
+ * again unchanged goes with the key it was sent with first, so the server takes it once even when
+ * the first attempt did arrive and only its answer was lost. A message whose text changed is a new
+ * submission, with a key of its own (lib/submission.ts).
  */
-import { MAX_PROMPT_CHARS, type ModelList, type SessionStatus } from "@contract";
+import { MAX_PROMPT_CHARS, type ModelList, type PromptInput, type SessionStatus } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { errorMessage, hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { count } from "../lib/format";
 import { effortsOf, modelIds, modelsNote, modelsNoteShort } from "../lib/models";
 import { linkProps } from "../lib/router";
+import { submissionOf, type Submission } from "../lib/submission";
 import { ChevronIcon, SendIcon, SteerIcon, StopIcon, WarnIcon } from "./Icons";
 
 export interface ComposerProps {
@@ -25,10 +31,13 @@ export interface ComposerProps {
 	/** The model the session is on. */
 	model: string;
 	/** Rejects with what the client threw: a `turn_running` refusal is shown briefly and the text kept. */
-	onSend(input: { text: string; model?: string; effort?: string }): Promise<void>;
+	onSend(input: PromptInput): Promise<void>;
 	onStop(): Promise<void>;
-	/** Text to start with, and why it is there (a prompt that could not be sent earlier); `limit` when one of the user's limits refused it. */
-	initial?: { text: string; error: string; limit?: boolean } | null;
+	/**
+	 * Text to start with, and why it is there (a prompt that could not be sent earlier); `limit` when one
+	 * of the user's limits refused it, and the key it was sent with, which it keeps while it is unchanged.
+	 */
+	initial?: { text: string; error: string; limit?: boolean; idempotencyKey?: string } | null;
 	/** What there is to say about the user's limits before anything is sent: little sandbox time left, none, or no room for a sandbox. */
 	limitNote?: string | null;
 	/** Text put in from outside (a suggested prompt); `key` changes to apply it again. */
@@ -64,6 +73,8 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 	const [effort, setEffort] = useState("");
 	const [sending, setSending] = useState(false);
 	const [stopping, setStopping] = useState(false);
+	/** The message that was sent and not taken, with its key: the same text again is another attempt of it. */
+	const untaken = useRef<Submission | null>(initial?.idempotencyKey ? { content: initial.text, idempotencyKey: initial.idempotencyKey } : null);
 	const area = useRef<HTMLTextAreaElement>(null);
 	const ids = { text: useId(), model: useId(), effort: useId(), reason: useId() };
 
@@ -114,9 +125,12 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 		setSending(true);
 		setError(null);
 		setNotice(null);
+		const { content, idempotencyKey } = submissionOf(text.trim(), untaken.current);
+		untaken.current = { content, idempotencyKey };
 		try {
 			// The model and effort do not apply to a steer.
-			await onSend(steering ? { text: text.trim() } : { text: text.trim(), model: chosenModel !== null && chosenModel !== model ? chosenModel : undefined, effort: currentEffort || undefined });
+			await onSend(steering ? { text: content, idempotencyKey } : { text: content, idempotencyKey, model: chosenModel !== null && chosenModel !== model ? chosenModel : undefined, effort: currentEffort || undefined });
+			untaken.current = null;
 			setText("");
 		} catch (failure) {
 			if (hasReason(failure, "turn_running")) setNotice(errorMessage(failure));

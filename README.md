@@ -104,6 +104,42 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
   decline with a note for the agent. A question nobody answers in ten minutes is declined by the platform. A
   message sent while a turn runs steers it: the model reads it at its next step. One running tool call can be
   stopped without ending the turn.
+- **A message sent twice.** A call can reach an actor twice. RivetKit's client sends an action again by
+  itself when the engine says the answer was lost on its way, an action that is in flight when its actor's
+  instance goes away runs again in the next one, and a user who was told that the server did not answer
+  presses Send again. So the web app makes a key for every submission, a random UUID, and sends it with
+  every attempt of that submission: `idempotencyKey` on `prompt` and on `createSession`, named and shaped
+  as the Agent Client Protocol's is, a string of 1 to 255 characters (`server/src/submissions.ts`).
+
+  | What comes | What the session does |
+  |---|---|
+  | no key (left out, or null) | what it always did: every call is a message of its own. Older clients send none |
+  | a key that is empty, longer than 255 characters or no string | refuses it, `bad_idempotency_key`: it is never read as no key |
+  | a key it has not taken | takes the prompt as usual, and keeps the key in the same step that puts the message into the timeline |
+  | a key it has taken, with the same text | answers what the first attempt was answered, `{ turn, steered }`, whatever the session does by now: no second message in the running turn, no second turn, nothing in the timeline. `model` and `effort` are the first attempt's |
+  | a key whose first attempt is still being decided | nothing of its own: the attempt ends as the first one ends, with its answer or its refusal. A prompt waits on the user's actor and on the sandbox layer before it is taken, and other calls run meanwhile |
+  | a key it has taken, with another text | refuses it, `idempotency_key_reused`; the key stays the first message's |
+
+  A prompt that was refused (one of the user's limits, a ChatGPT sign-in that is needed, a turn that is
+  starting or stopping) leaves its key unused, and the same key is then a new try. "Refused" and "taken, but
+  the answer was lost" are told apart by one thing: whether the key is kept, which happens only in the step
+  that takes the message. A turn that was taken and then failed, as when its sandbox could not be made, has
+  used its key: its message is in the timeline with the turn's error, and a repeat is answered with that turn.
+
+  A session keeps the keys of its last 50 messages that came with one (`MAX_REMEMBERED_SUBMISSIONS`), each
+  with a digest of its text and its answer, in its own stored state, written when the message is: they hold
+  across the actor's sleep and a restart, and cost the same in a session of five turns and of five thousand.
+  The fifty-first is forgotten, and a prompt with it is a new message, as without a key. `createSession`
+  goes by the same rules in the user's actor: the key is in the session's row of the user's index, so the
+  same key answers with the session the first attempt made for as long as that session exists, and makes a
+  new one once it was deleted. A key is never logged and never sent to a client: it is not in the timeline.
+
+  In the web app a message that was not taken stays in the composer ("Your message is still here"), and
+  sending it again unchanged is the same submission, with the same key; a message whose text changed is a new
+  one. The launch form has one key for the agent and one for its first prompt, and a prompt that is handed
+  to the session's screen keeps its key until its text changes. No control shows any of this. The key is not
+  passed to Windlass: the Windlass the platform runs speaks ACP v1, which has no such field, and each turn's
+  Windlass is reached over a local pipe that does not send anything twice.
 - **Sleep.** With no browser connected and no turn running, the actor sleeps after 30 seconds and stops its
   container. The next prompt, or opening the session, starts it again with its files intact.
 - **When a server stops.** On SIGTERM (a deploy) RivetKit puts every actor to sleep and exits after 20
@@ -1926,6 +1962,7 @@ used up and an account with no place left.
 | `server/src/sandbox-fake.ts` | The same interface in memory, for tests |
 | `server/src/server-question.ts` | The words of the question about a project's MCP server, for each sandbox profile, and of the timeline's lines about it |
 | `server/src/server-approvals.ts` | The user's remembered approvals of projects' MCP servers: what a project is, the record itself, and what a session keeps of its project's servers for its side panel |
+| `server/src/submissions.ts` | A submission and its key: what a key may be, what is held against it, and how an attempt that arrives while another is being decided ends as that one does ("A message sent twice") |
 | `server/src/usage.ts` | A user's sandbox time and kept sandboxes: what is counted, the two limits, the book the `user` actor decides with, and the words of a refusal ("Usage and limits") |
 | `server/src/setup-command.ts`, `server/src/sandbox/setup.ts` | A repository's setup command: what it is saved for, its limits, what is kept of a run's output and what the agent is told; and the run itself in a sandbox |
 | `server/src/repository-defaults.ts` | A repository's defaults for new sessions: what may be saved, and how a save writes only the fields it names ("A repository's page") |
@@ -1959,6 +1996,7 @@ cd server && npx tsx ../scripts/secrets-check.ts                  # a repository
 cd server && npx tsx ../scripts/repository-check.ts               # a repository's defaults: its rules and saves that interleave, no server and no Docker
 cd server && npx tsx ../scripts/verified-check.ts                 # a repository's checks and what a pull request says was verified: the rules, no server and no Docker (--docker: a real Windlass)
 cd server && npx tsx ../scripts/account-check.ts                  # the account's settings: defaults, own MCP servers and their secrets, no server and no Docker
+cd server && npx tsx ../scripts/idempotency-check.ts              # a message sent twice: with and without a key, through the actors on fake sandboxes, on ports of its own
 cd server && npx tsx ../scripts/models-check.ts                   # a user's models: the list's rules, and the real `windlass --models` against a stand-in for the provider
 cd server && npx tsx ../scripts/signin-check.ts                   # the sign-in machinery: no server, no Docker, a stand-in for OpenAI
 cd server && npx tsx ../scripts/connection-check.ts               # the tokens browsers connect with: a stand-in for the engine
@@ -2041,6 +2079,15 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   its own sandbox every command would otherwise need an answer. Two exceptions: it asks before starting a
   project's MCP server, and after an MCP server's first result, which it does not trust, it asks about commands
   again ("A project's MCP servers").
+- **A key covers a prompt and the making of an agent, and nothing else.** The other actions set a value,
+  or go by something the call names (a question's id, a ticket, a secret's name), so a repeat does nothing
+  a second time; some of them answer a repeat with a refusal where the first attempt had succeeded
+  (`answer`: `no_question`; `deleteSession`: `session_not_found`; a new MCP server: `server_exists`). `stop`
+  names no turn, so one that arrives late stops the turn that runs then. And three things a key does not
+  mend: a server killed between the write of a message and the write of the session's state forgets that
+  message's key, as it forgets that the turn was counted; a message Windlass admitted into a turn in the
+  moment that turn ended is refused, and sent again it starts a turn; and a sign-in whose answer was lost
+  has to be started again.
 - **Signing out forgets the token in the browser only.** The token is good for 30 days, but an account taken off
   the invitation list, or a demo user once the demo is off, is refused at every call (`server/src/access.ts`).
 - **Each demo sign-in leaves a small volume** until `sandbox/cleanup.sh` runs.

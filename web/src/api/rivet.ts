@@ -62,7 +62,10 @@ const ACTOR = { login: "login", user: "user", agentSession: "agentSession" } as 
 
 /**
  * How long an action may take. RivetKit retries an endpoint that does not answer for as long as it
- * is asked to, so without a limit a call to a server that is down would never settle.
+ * is asked to, so without a limit a call to a server that is down would never settle. A call that
+ * ends here may have arrived all the same, and RivetKit sends one again by itself when the engine
+ * says its answer was lost: what must not be done twice goes with the key of its submission
+ * (`idempotencyKey` on `prompt` and `createSession`; lib/submission.ts), and the server takes it once.
  */
 const ACTION_TIMEOUT_MS = 30_000;
 /** A push commits, pushes and opens a pull request before it answers: the server gives it two minutes. */

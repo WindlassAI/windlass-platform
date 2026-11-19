@@ -66,6 +66,12 @@
  * up, a turn that runs is stopped at the end of its hold, with a line that says so, and its sandbox
  * is suspended with its files as they are.
  *
+ * A prompt can come with the key of its submission (submissions.ts; README, "A message sent twice"):
+ * the session takes a key once. The keys of its newest messages are in `meta.submissions`, each with
+ * what its prompt was answered, kept in the synchronous step that takes the message, so a prompt with
+ * one of them is answered from there before anything is awaited and adds nothing; a prompt that is
+ * still being decided has its later attempts wait for it (`SessionVars.attempts`).
+ *
  * Codes of the UserErrors the contract's actions throw, besides those of auth.ts:
  *   session_not_found   the session was deleted, or never properly created
  *   empty_prompt, prompt_too_long, bad_effort, bad_model   `prompt()`: its input
@@ -75,6 +81,7 @@
  *   too_many_sandboxes  `prompt()`: the session needs a sandbox and its user keeps as many as they may
  *   usage_unavailable   the same four: the user's sandbox time could not be checked, so nothing was started
  *   turn_running        `prompt()`: a turn is in progress and cannot take the message now
+ *   bad_idempotency_key, idempotency_key_reused   `prompt()`: its key is no key, or came with another text before
  *   bad_answer, note_too_long   `answer()`: its input
  *   no_question         `answer()`: that question is not pending (any more)
  *   bad_choice          `answer()`: the question does not offer that choice
@@ -114,6 +121,7 @@ import {
 	MAX_PROMPT_CHARS,
 	MAX_PUBLISH_BODY_CHARS,
 	MAX_PUBLISH_TITLE_CHARS,
+	MAX_REMEMBERED_SUBMISSIONS,
 	MAX_RUNNING_SESSIONS,
 	type PendingQuestion,
 	type PromptInput,
@@ -163,6 +171,7 @@ import {
 	unsetRemedy,
 } from "../server-question.js";
 import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf } from "../setup-command.js";
+import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { VerificationLog, outputTail, withOutputs } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, USAGE_UNAVAILABLE, allowanceRefusal, freedNote, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
@@ -338,7 +347,18 @@ interface SessionMeta {
 	meter?: OpenStretch | null;
 	/** What the sandbox ran of holds that the user's actor has not been told yet: told again when the session is next awake. */
 	unsettled?: Array<{ hold: string; seconds: number }>;
+	/**
+	 * The messages that were taken with a key (submissions.ts), the newest MAX_REMEMBERED_SUBMISSIONS:
+	 * the key, the digest of the text it came with, and what the prompt was answered. A prompt that
+	 * comes with one of these keys is that message again: it is answered from here and adds nothing.
+	 * A key older than these is forgotten, and a prompt with it is a new message. Absent in a session
+	 * no message came to with a key.
+	 */
+	submissions?: Array<Submission & PromptAnswer>;
 }
+
+/** What `prompt()` answers: the turn the message is in, and whether it was steered into one that ran. */
+type PromptAnswer = { turn: number; steered: boolean };
 
 /** A question put to the user: the copy the clients see, and the ways to settle the layer's promise. */
 interface Asked {
@@ -439,6 +459,8 @@ interface SessionVars {
 	turn: ActiveTurn | null;
 	/** True while `prompt` is deciding, so a second prompt cannot slip in between its awaits. */
 	accepting: boolean;
+	/** The prompts with a key that are being decided: another attempt of one of them ends as it does (submissions.ts). */
+	attempts: Attempts<PromptAnswer>;
 	destroying: boolean;
 	/** True once the actor is going to sleep or being destroyed. */
 	stopping: boolean;
@@ -2812,11 +2834,24 @@ async function stopTurn(c: Ctx): Promise<void> {
 	await within(turn.done, STOP_WAIT_MS);
 }
 
+/** What a key belongs to in a session, in the words of a refusal (submissions.ts). */
+const KEYED = "message to this agent";
+
+/**
+ * Keeps the key a message was taken with, and what its prompt is answered, in the same synchronous
+ * step that took the message: from here a prompt with that key is this message again. Stored with the
+ * session's next write, which the caller sees to.
+ */
+function remember(meta: SessionMeta, submission: Submission | null, answer: PromptAnswer): PromptAnswer {
+	if (submission) meta.submissions = [...(meta.submissions ?? []), { ...submission, ...answer }].slice(-MAX_REMEMBERED_SUBMISSIONS);
+	return answer;
+}
+
 /**
  * `prompt()` while a turn is in progress: the message goes into that turn. It takes no new turn, no
  * running slot and no title, and it is stored only once Windlass has admitted it.
  */
-async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, message: string): Promise<{ turn: number; steered: boolean }> {
+async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, message: string, submission: Submission | null): Promise<PromptAnswer> {
 	const control = active?.control;
 	const stopping = meta.status === "stopping" || active?.controller.signal.aborted === true || active?.closed === true;
 	if (!active || !control || stopping || (meta.status !== "running" && meta.status !== "waiting")) {
@@ -2837,7 +2872,97 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
 	append(c, { turn: active.number, kind: "user", text: message, model: meta.model, effort: active.effort, steer: true });
 	meta.updatedAt = Date.now();
 	publish(c);
-	return { turn: active.number, steered: true };
+	const answer = remember(meta, submission, { turn: active.number, steered: true });
+	// A key is stored with its message, not when the turn next writes the session: a server that stops in between must not forget it.
+	if (submission) void persist(c);
+	return answer;
+}
+
+/**
+ * Takes a prompt whose text was checked: into the turn in progress, or as a new turn, which it starts.
+ * It waits on the user's actor and on the sandbox layer before the message is taken, and other calls
+ * run meanwhile; the message is taken, and its key kept (`remember`), in one synchronous step at the
+ * end, or the prompt is refused and nothing of it is kept.
+ */
+async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: string, submission: Submission | null): Promise<PromptAnswer> {
+	// A turn in progress takes the message itself; `model` and `effort` are for a turn that starts.
+	if (c.vars.turn || c.vars.accepting) return await steerTurn(c, meta, c.vars.turn, text, submission);
+	// The platform is committing and pushing the workspace: the agent does not start under it.
+	if (c.vars.publishing) throw new UserError("The platform is pushing this agent's work to GitHub. Send the prompt again in a moment.", { code: "turn_running" });
+
+	const effort = input.effort === undefined || input.effort === null || input.effort === "" ? null : input.effort;
+
+	// Nothing was awaited since the check above, so this prompt is the only one past it.
+	c.vars.accepting = true;
+	let claimed = false;
+	try {
+		// A suspend or removal of the idle sandbox finishes first; the turn then resumes or recreates it.
+		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
+		let model = meta.model;
+		const switches = input.model !== undefined && input.model !== null && input.model !== "";
+		if (switches || effort !== null) {
+			// Held against the user's own models, and the effort against the ones the turn's model accepts. The demo's scripted model has the stand-in.
+			const models = meta.demo ? standInModels("demo") : await userActor(c, meta.uid).internalModels();
+			try {
+				if (switches) model = chosenModel(models, input.model);
+				if (effort !== null) checkEffort(models, model, effort);
+			} catch (error) {
+				if (error instanceof ModelProblem) throw new UserError(error.message, { code: error.code });
+				throw error;
+			}
+		}
+
+		if (!meta.demo && Date.now() >= c.vars.signedInUntil) {
+			const { logins } = await getLayer();
+			if (!(await logins.status(meta.uid))) {
+				throw new UserError("Sign in with ChatGPT first: this agent needs your account to run.", { code: "chatgpt_required" });
+			}
+			c.vars.signedInUntil = Date.now() + SIGNED_IN_FRESH_MS;
+		}
+
+		const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId);
+		if (!claim.known || c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
+		if (!claim.ok) {
+			throw new UserError(`You already have ${MAX_RUNNING_SESSIONS} agents working. Wait for one to finish, or stop one.`, { code: "too_many_running" });
+		}
+		claimed = true;
+		// Time for the sandbox to run on, and a place for one the session does not have: refused here, before anything is started.
+		await holdSandbox(c, meta, true);
+		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
+
+		// Accepted. From here to the return nothing is awaited.
+		const turn = meta.turns + 1;
+		const now = Date.now();
+		meta.turns = turn;
+		meta.model = model;
+		meta.status = "starting";
+		meta.updatedAt = now;
+		meta.turnStartedAt = now;
+		if (meta.titleIsDefault) {
+			meta.title = titleFrom(text);
+			meta.titleIsDefault = false;
+		}
+		append(c, { turn, kind: "user", text, model, effort });
+		publish(c);
+
+		const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishCalls: new Set(), publishes: new Set() };
+		c.vars.turn = active;
+		// The turn's first step writes the session, and the key with it.
+		const answer = remember(meta, submission, { turn, steered: false });
+		active.done = c.keepAwake(runTurn(c, meta, active, text));
+		return answer;
+	} catch (error) {
+		if (!c.vars.turn && meta.status !== "idle") {
+			meta.status = "idle";
+			meta.turnStartedAt = null;
+		}
+		// Hands back the place among the user's running sessions, if one was taken.
+		if (claimed) publish(c);
+		else if (!(error instanceof UserError)) void report(c);
+		throw clientError(c.log, error, "The prompt could not be started. Try again.");
+	} finally {
+		c.vars.accepting = false;
+	}
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2918,6 +3043,7 @@ export const agentSession = actor({
 			pending: [],
 			turn: null,
 			accepting: false,
+			attempts: new Attempts(),
 			destroying: false,
 			stopping: false,
 			reporting: null,
@@ -3102,7 +3228,7 @@ export const agentSession = actor({
 			}
 		},
 
-		prompt: async (c, input: PromptInput): Promise<{ turn: number; steered: boolean }> => {
+		prompt: async (c, input: PromptInput): Promise<PromptAnswer> => {
 			requireUser(c);
 			const meta = liveMeta(c);
 			if (typeof input !== "object" || input === null || typeof input.text !== "string" || input.text.trim() === "") {
@@ -3112,82 +3238,21 @@ export const agentSession = actor({
 			if (text.length > MAX_PROMPT_CHARS) {
 				throw new UserError(`The prompt is ${text.length} characters long; the limit is ${MAX_PROMPT_CHARS}.`, { code: "prompt_too_long" });
 			}
-			// A turn in progress takes the message itself; `model` and `effort` are for a turn that starts.
-			if (c.vars.turn || c.vars.accepting) return await steerTurn(c, meta, c.vars.turn, text);
-			// The platform is committing and pushing the workspace: the agent does not start under it.
-			if (c.vars.publishing) throw new UserError("The platform is pushing this agent's work to GitHub. Send the prompt again in a moment.", { code: "turn_running" });
-
-			const effort = input.effort === undefined || input.effort === null || input.effort === "" ? null : input.effort;
-
-			// Nothing was awaited since the check above, so this prompt is the only one past it.
-			c.vars.accepting = true;
-			let claimed = false;
+			// Without a key every prompt is a message of its own, as it always was.
+			let attempt: Promise<PromptAnswer>;
 			try {
-				// A suspend or removal of the idle sandbox finishes first; the turn then resumes or recreates it.
-				if (c.vars.idling) await c.vars.idling.catch(() => undefined);
-				let model = meta.model;
-				const switches = input.model !== undefined && input.model !== null && input.model !== "";
-				if (switches || effort !== null) {
-					// Held against the user's own models, and the effort against the ones the turn's model accepts. The demo's scripted model has the stand-in.
-					const models = meta.demo ? standInModels("demo") : await userActor(c, meta.uid).internalModels();
-					try {
-						if (switches) model = chosenModel(models, input.model);
-						if (effort !== null) checkEffort(models, model, effort);
-					} catch (error) {
-						if (error instanceof ModelProblem) throw new UserError(error.message, { code: error.code });
-						throw error;
-					}
-				}
-
-				if (!meta.demo && Date.now() >= c.vars.signedInUntil) {
-					const { logins } = await getLayer();
-					if (!(await logins.status(meta.uid))) {
-						throw new UserError("Sign in with ChatGPT first: this agent needs your account to run.", { code: "chatgpt_required" });
-					}
-					c.vars.signedInUntil = Date.now() + SIGNED_IN_FRESH_MS;
-				}
-
-				const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId);
-				if (!claim.known || c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
-				if (!claim.ok) {
-					throw new UserError(`You already have ${MAX_RUNNING_SESSIONS} agents working. Wait for one to finish, or stop one.`, { code: "too_many_running" });
-				}
-				claimed = true;
-				// Time for the sandbox to run on, and a place for one the session does not have: refused here, before anything is started.
-				await holdSandbox(c, meta, true);
-				if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
-
-				// Accepted. From here to the return nothing is awaited.
-				const turn = meta.turns + 1;
-				const now = Date.now();
-				meta.turns = turn;
-				meta.model = model;
-				meta.status = "starting";
-				meta.updatedAt = now;
-				meta.turnStartedAt = now;
-				if (meta.titleIsDefault) {
-					meta.title = titleFrom(text);
-					meta.titleIsDefault = false;
-				}
-				append(c, { turn, kind: "user", text, model, effort });
-				publish(c);
-
-				const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishCalls: new Set(), publishes: new Set() };
-				c.vars.turn = active;
-				active.done = c.keepAwake(runTurn(c, meta, active, text));
-				return { turn, steered: false };
+				const submission = submissionOf(input.idempotencyKey, text);
+				if (submission === null) return await takePrompt(c, meta, input, text, null);
+				// Taken before: answered as it was then, whatever the session does now. Nothing was awaited, so this is decided before any other call runs.
+				const taken = meta.submissions?.find((kept) => kept.key === submission.key);
+				if (taken && isRepeat(taken, submission, KEYED)) return { turn: taken.turn, steered: taken.steered };
+				// Being decided, or new: every attempt that arrives until it is taken or refused ends as this one does.
+				attempt = c.vars.attempts.run(submission, KEYED, () => takePrompt(c, meta, input, text, submission));
 			} catch (error) {
-				if (!c.vars.turn && meta.status !== "idle") {
-					meta.status = "idle";
-					meta.turnStartedAt = null;
-				}
-				// Hands back the place among the user's running sessions, if one was taken.
-				if (claimed) publish(c);
-				else if (!(error instanceof UserError)) void report(c);
-				throw clientError(c.log, error, "The prompt could not be started. Try again.");
-			} finally {
-				c.vars.accepting = false;
+				if (error instanceof SubmissionProblem) throw new UserError(error.message, { code: error.code });
+				throw error;
 			}
+			return await attempt;
 		},
 
 		stop: (c): void => {

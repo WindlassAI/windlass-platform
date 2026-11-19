@@ -478,6 +478,55 @@ describe("steering", () => {
 	});
 });
 
+describe("a submission's key", () => {
+	it("takes a prompt once: the same key again is answered as before, while the turn runs and after it ended", async () => {
+		const { api, record } = await freshSession();
+		const first = await after(400, api.prompt({ text: "Explore the workspace", idempotencyKey: "one" }));
+		await vi.advanceTimersByTimeAsync(4000);
+		const whileRunning = await after(400, api.prompt({ text: "Explore the workspace", idempotencyKey: "one" }));
+		await vi.advanceTimersByTimeAsync(60_000);
+		const afterwards = await after(400, api.prompt({ text: "Explore the workspace", idempotencyKey: "one" }));
+		expect([whileRunning, afterwards]).toEqual([first, first]);
+		expect(first).toEqual({ turn: 1, steered: false });
+		expect(record.items.filter((item) => item.kind === "user")).toHaveLength(1);
+		expect(record.summaries.at(-1)).toMatchObject({ turns: 1, status: "idle" });
+		// Without a key, as before: the same words again are a new turn.
+		expect(await after(400, api.prompt({ text: "Explore the workspace" }))).toEqual({ turn: 2, steered: false });
+	});
+
+	it("refuses a key that comes with another message, and a key that is none", async () => {
+		const { api } = await freshSession();
+		await after(400, api.prompt({ text: "Explore the workspace", idempotencyKey: "one" }));
+		const reused = await after(400, api.prompt({ text: "Something else", idempotencyKey: "one" }).catch((error: unknown) => error));
+		expect(reused).toMatchObject({ reason: "idempotency_key_reused" });
+		for (const bad of ["", "k".repeat(256), 7]) {
+			const refused = await after(400, api.prompt({ text: "Explore the workspace", idempotencyKey: bad as string }).catch((error: unknown) => error));
+			expect(refused).toMatchObject({ reason: "bad_idempotency_key" });
+		}
+	});
+
+	it("leaves the key of a prompt that was refused unused", async () => {
+		const { api } = await freshSession();
+		const refused = await after(400, api.prompt({ text: "hello", effort: "nope", idempotencyKey: "again" }).catch((error: unknown) => error));
+		expect(refused).toMatchObject({ reason: "bad_effort" });
+		expect(await after(400, api.prompt({ text: "hello", idempotencyKey: "again" }))).toEqual({ turn: 1, steered: false });
+	});
+
+	it("makes one agent for one key, and a new one once that agent is deleted", async () => {
+		const user = client.user(auth);
+		const before = (await after(300, user.listSessions())).length;
+		const first = await after(500, user.createSession({ profile: "docker-windlass-sandbox", title: "Once", idempotencyKey: "launch" }));
+		const again = await after(500, user.createSession({ profile: "docker-windlass-sandbox", title: "Once", idempotencyKey: "launch" }));
+		expect(again.id).toBe(first.id);
+		expect((await after(300, user.listSessions())).length).toBe(before + 1);
+		const other = await after(500, user.createSession({ profile: "docker-hardened", title: "Once", idempotencyKey: "launch" }).catch((error: unknown) => error));
+		expect(other).toMatchObject({ reason: "idempotency_key_reused" });
+		await after(500, user.deleteSession(first.id));
+		const anew = await after(500, user.createSession({ profile: "docker-windlass-sandbox", title: "Once", idempotencyKey: "launch" }));
+		expect(anew.id).not.toBe(first.id);
+	});
+});
+
 describe("stopping one call", () => {
 	it("stops the call and lets the turn go on", async () => {
 		const { api, record } = await freshSession();

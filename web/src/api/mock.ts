@@ -60,6 +60,7 @@
  * across a reload and sessions created by hand do not survive one.
  */
 import {
+	MAX_IDEMPOTENCY_KEY_CHARS,
 	MAX_PROMPT_CHARS,
 	MAX_RUNNING_SESSIONS,
 	MAX_SECRET_NAME_CHARS,
@@ -961,6 +962,31 @@ interface MockSession {
 	pushed: boolean;
 	/** What the session's work rests on since its last turn ended, as the server keeps it (`Verified`). */
 	verified: Verified | null;
+	/** The messages that were taken with a key, by that key: the text, and what the prompt was answered. */
+	submissions: Map<string, Taken<{ turn: number; steered: boolean }>>;
+}
+
+/** What was taken under a submission's key: what it came with, and what its first attempt was answered. */
+interface Taken<Answer> {
+	content: string;
+	answer: Answer;
+}
+
+/** A submission's key as the server reads it (`IdempotencyKey`): null for none, a refusal for what is no key. */
+function keyOf(raw: unknown): string | null {
+	if (raw === undefined || raw === null) return null;
+	if (typeof raw !== "string" || raw === "" || [...raw].length > MAX_IDEMPOTENCY_KEY_CHARS) {
+		throw new PlatformError("user", `The key of a submission must be a text of 1 to ${MAX_IDEMPOTENCY_KEY_CHARS} characters. Leave it out to send without one.`, { reason: "bad_idempotency_key" });
+	}
+	return raw;
+}
+
+/** What the first attempt under `key` was answered, when this is that submission again; a refusal when the key came with something else. */
+function takenUnder<Answer>(kept: Map<string, Taken<Answer>>, key: string | null, content: string, what: string): Answer | undefined {
+	const first = key === null ? undefined : kept.get(key);
+	if (first === undefined) return undefined;
+	if (first.content !== content) throw new PlatformError("user", `The key this was sent with was already used for another ${what}, so this one was not taken. A new submission needs a key of its own.`, { reason: "idempotency_key_reused" });
+	return first.answer;
 }
 
 interface World {
@@ -991,6 +1017,8 @@ interface World {
 	};
 	/** The seconds of sandbox time counted today, by session: the seeded ones, and what the turns played here ran. */
 	spent: Map<string, number>;
+	/** The agents that were created with a key, by that key: what was asked for, and the agent's id. */
+	created: Map<string, Taken<string>>;
 }
 
 interface Step {
@@ -1051,7 +1079,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), names: new Map(), account: { defaults: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)) };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), names: new Map(), account: { defaults: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), created: new Map() };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -1238,6 +1266,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			resume: null,
 			aside: null,
 			startedServers: new Set(),
+			submissions: new Map(),
 			servers: [],
 			pushed: false,
 			verified: null,
@@ -2379,8 +2408,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency();
 				return listOf(world());
 			},
-			async createSession(input: CreateSessionInput) {
+			async createSession({ idempotencyKey, ...input }: CreateSessionInput) {
 				await latency(260);
+				// With a key, the agent its first attempt made, for as long as that agent exists.
+				const key = keyOf(idempotencyKey);
+				const made = world().sessions.get(takenUnder(world().created, key, JSON.stringify(input), "agent") ?? "");
+				if (made) return made.summary;
 				const profile = profiles.find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
 				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());
@@ -2400,6 +2433,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (repository && input.setupCommand !== undefined) saveSetup(world(), repository.id, input.setupCommand);
 				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, model: input.model ?? models.defaultModel, repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
 				setSummary(world(), session, {});
+				if (key !== null) world().created.set(key, { content: JSON.stringify(input), answer: session.summary.id });
 				return session.summary;
 			},
 			async renameSession(id: string, title: string) {
@@ -2719,6 +2753,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const text = input.text.trim();
 				if (text === "") throw new PlatformError("user", "Write something for the agent to do.");
 				if (text.length > MAX_PROMPT_CHARS) throw new PlatformError("user", `A prompt can be at most ${MAX_PROMPT_CHARS.toLocaleString("en")} characters.`);
+				// With a key, a message that was taken before is answered as it was then, and nothing is added.
+				const key = keyOf(input.idempotencyKey);
+				const taken = takenUnder(session.submissions, key, text, "message to this agent");
+				if (taken) return taken;
+				const take = (answer: { turn: number; steered: boolean }) => {
+					if (key !== null) session.submissions.set(key, { content: text, answer });
+					return answer;
+				};
 				const status = session.summary.status;
 				if (status === "starting") throw new PlatformError("user", "The agent is still starting. Send this again once it is working.", { reason: "turn_running" });
 				if (status === "stopping") throw new PlatformError("user", "The turn is stopping. Send this again once it has stopped.", { reason: "turn_running" });
@@ -2730,7 +2772,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					emit(session, turn, windlassEvent(session, "inbox.enqueued", { messageId, origin: null, delivery: "steer", content: [{ type: "text", text }] }));
 					session.run.steers.push(messageId);
 					setSummary(world, session, { updatedAt: now() });
-					return { turn, steered: true };
+					return take({ turn, steered: true });
 				}
 				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle").length;
 				if (running >= MAX_RUNNING_SESSIONS) throw new PlatformError("user", `${MAX_RUNNING_SESSIONS} of your agents are already working. Wait for one to finish, or stop one.`);
@@ -2753,7 +2795,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const script: Script = server ? { ...recording, server } : recording;
 				const turn = session.summary.turns + 1;
 				play(session, plan(world, session, { ...input, text }, script));
-				return { turn, steered: false };
+				return take({ turn, steered: false });
 			},
 			async answer(input: { questionId: string; choice: string; note?: string }) {
 				await latency(220);

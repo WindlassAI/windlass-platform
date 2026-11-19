@@ -2087,6 +2087,10 @@ async function main(server: Server | null): Promise<void> {
 		return "destroyed a few seconds after issuing its token";
 	});
 
+	// --- a message sent twice ---------------------------------------------------------------------
+
+	await submissionChecks(server, client, uid, token, availableProfile, LONG);
+
 	// --- the turn's time limit, on a server restarted with a short one ------------------------------
 
 	if (server && FAKE) {
@@ -2200,6 +2204,118 @@ async function main(server: Server | null): Promise<void> {
 	}
 
 	await client.dispose().catch(() => undefined);
+}
+
+/**
+ * A message that reaches the platform twice (README, "A message sent twice"): with the key of its
+ * submission it is taken once and answered as its first attempt was, also after the session's actor
+ * slept and after the server was restarted; without one it is what it always was.
+ */
+async function submissionChecks(server: Server | null, client: Client, uid: string, token: string, profile: string, LONG: string): Promise<void> {
+	const user = client.user.getOrCreate([uid], { params: { token } });
+	const key = () => randomBytes(16).toString("hex");
+	const userItems = (items: TimelineItem[]) => items.filter((item): item is Extract<TimelineItem, { kind: "user" }> => item.kind === "user");
+	const launched = key();
+	const once = key();
+	const steer = key();
+	const made = await user.createSession({ profile: profile as never, title: "Sent twice", idempotencyKey: launched });
+	const handle = client.agentSession.get([uid, made.id], { params: { token } });
+	const watch = new Watch(client, uid, made.id, token);
+	await watch.conn.snapshot();
+	/** The timeline as it was when the turns had ended: what no repeat may add to. */
+	let settled: TimelineItem[] = [];
+
+	try {
+		await check("a prompt sent twice with one key while its turn runs, and again after it ended, is one message and one turn", async () => {
+			const first = await handle.prompt({ text: LONG, idempotencyKey: once });
+			assert(first.turn === 1 && first.steered === false, `the first attempt was answered ${plain(first)}`);
+			await waitFor("the long command to start", () => watch.windlass(1, "tool.started")[0], TURN_MS);
+			const whileRunning = await handle.prompt({ text: LONG, idempotencyKey: once });
+			// A message steered into the turn is one submission too.
+			const steered = [await handle.prompt({ text: "Also, keep the report short.", idempotencyKey: steer }), await handle.prompt({ text: "Also, keep the report short.", idempotencyKey: steer })];
+			const ended = await watch.untilEnded(1);
+			const afterwards = await handle.prompt({ text: LONG, idempotencyKey: once });
+			const lateSteer = await handle.prompt({ text: "Also, keep the report short.", idempotencyKey: steer });
+			await sleep(500);
+			const snapshot = await handle.snapshot();
+			assert(plain(whileRunning) === plain(first) && plain(afterwards) === plain(first), `the three answers: ${plain([first, whileRunning, afterwards])}`);
+			assert(steered.every((answer) => answer.turn === 1 && answer.steered === true) && plain(lateSteer) === plain(steered[0]), `the steered message's answers: ${plain([...steered, lateSteer])}`);
+			const messages = userItems(snapshot.timeline);
+			assert(messages.length === 2 && messages[0].text === LONG && !messages[0].steer && messages[1].steer === true, `the session's user messages: ${plain(messages.map((item) => [item.turn, item.steer === true, item.text]))}`);
+			assert(snapshot.summary.turns === 1 && snapshot.summary.status === "idle" && snapshot.timeline.at(-1)?.kind === "turn.ended", `after the repeats: ${plain(snapshot.summary)}`);
+			// Windlass was handed two messages: the prompt and the one steered into its turn.
+			const handed = watch.windlass(1, "inbox.enqueued").length;
+			assert(snapshot.timeline.filter((item) => item.kind === "turn.ended").length === 1 && handed === 2, `a repeat started a turn or reached Windlass: ${handed} messages were handed to it`);
+			assert(!plain(snapshot).includes(once) && !plain(watch.items).includes(steer), "a key is in what a client is sent");
+			settled = snapshot.timeline;
+			return `three answers ${plain(first)}, a steered message three times ${plain(steered[0])}; ${messages.length} user messages, 1 turn, ended ${ended.outcome}`;
+		});
+
+		await check("a key that is no key, or that comes with another message, is refused and changes nothing", async () => {
+			for (const bad of ["", "k".repeat(256), 7]) await refused(() => handle.prompt({ text: "Explore the workspace", idempotencyKey: bad as never }), "bad_idempotency_key");
+			const message = await refused(() => handle.prompt({ text: "Something else entirely", idempotencyKey: once }), "idempotency_key_reused");
+			await refused(() => user.createSession({ profile: profile as never, title: "Another one", idempotencyKey: launched }), "idempotency_key_reused");
+			await refused(() => user.createSession({ profile: profile as never, idempotencyKey: "" }), "bad_idempotency_key");
+			assert(plain((await handle.snapshot()).timeline) === plain(settled), "a refused prompt changed the timeline");
+			return message;
+		});
+
+		await check("the keys outlive the actor's sleep; createSession with its key again answers with the same agent", async () => {
+			await watch.conn.dispose();
+			await forceSleep(made.id);
+			await sleep(2_500);
+			const answer = await handle.prompt({ text: LONG, idempotencyKey: once });
+			const again = await user.createSession({ profile: profile as never, title: "Sent twice", idempotencyKey: launched });
+			const snapshot = await handle.snapshot();
+			assert(plain(answer) === plain({ turn: 1, steered: false }) && plain(snapshot.timeline) === plain(settled) && snapshot.summary.turns === 1, `after the sleep: ${plain(answer)}, ${snapshot.timeline.length} items, was ${settled.length}`);
+			assert(again.id === made.id && (await user.listSessions()).filter((entry) => entry.title === "Sent twice").length === 1, `createSession again answered with ${again.id}, the first with ${made.id}`);
+			return `prompt answered ${plain(answer)} with nothing added; createSession answered with ${again.id} again`;
+		});
+
+		if (server) {
+			await check("the keys outlive a server restart", async () => {
+				await server.stop();
+				await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+				await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs) });
+				const answer = await handle.prompt({ text: LONG, idempotencyKey: once });
+				const steered = await handle.prompt({ text: "Also, keep the report short.", idempotencyKey: steer });
+				const again = await user.createSession({ profile: profile as never, title: "Sent twice", idempotencyKey: launched });
+				const snapshot = await handle.snapshot();
+				assert(plain(answer) === plain({ turn: 1, steered: false }) && plain(steered) === plain({ turn: 1, steered: true }), `after the restart: ${plain([answer, steered])}`);
+				assert(plain(snapshot.timeline) === plain(settled) && snapshot.summary.turns === 1 && snapshot.summary.status === "idle", `after the restart the session has ${snapshot.timeline.length} items, had ${settled.length}`);
+				assert(again.id === made.id, `createSession again answered with ${again.id}, the first with ${made.id}`);
+				return `prompt ${plain(answer)}, steered message ${plain(steered)}, agent ${again.id}: all as before the restart`;
+			});
+		} else {
+			skip("the keys outlive a server restart", "needs to restart the server");
+		}
+
+		await check("without a key the same prompt again is a second message, and after the turn a second turn", async () => {
+			const second = new Watch(client, uid, made.id, token);
+			try {
+				const first = await handle.prompt({ text: LONG });
+				assert(first.turn === 2 && first.steered === false, `the prompt was answered ${plain(first)}`);
+				await waitFor("the long command to start", () => second.windlass(2, "tool.started")[0], TURN_MS);
+				const again = await handle.prompt({ text: LONG });
+				assert(again.turn === 2 && again.steered === true, `the same prompt again was answered ${plain(again)}`);
+				await handle.stop();
+				await second.untilEnded(2);
+				const third = await handle.prompt({ text: LONG });
+				assert(third.turn === 3 && third.steered === false, `the same prompt after the turn was answered ${plain(third)}`);
+				await waitFor("the third turn to start", () => second.summaries.at(-1)?.status === "running", TURN_MS);
+				await handle.stop();
+				await second.untilEnded(3);
+				const messages = userItems((await handle.snapshot()).timeline).filter((item) => item.turn > 1);
+				assert(messages.length === 3, `turns 2 and 3 have ${messages.length} user messages`);
+				return "answered {turn 2}, {turn 2, steered}, {turn 3}: three messages, two turns";
+			} finally {
+				await second.conn.dispose().catch(() => undefined);
+			}
+		});
+	} finally {
+		await watch.conn.dispose().catch(() => undefined);
+		await user.deleteSession(made.id).catch(() => undefined);
+	}
 }
 
 const IDLE_CHECKS = [
