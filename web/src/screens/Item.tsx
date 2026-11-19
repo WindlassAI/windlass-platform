@@ -14,7 +14,7 @@
  * Retry (a failed item), Send back (in review), and the open question's answers. The server refuses
  * one the item no longer allows with `item_conflict` and says why; that sentence is shown.
  */
-import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemRun, type ItemView, type StepKind, type Verdict } from "@contract";
+import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemView, type StepKind, type Verdict } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
@@ -50,9 +50,6 @@ const STEP_DOING: Partial<Record<StepKind, string>> = {
 
 /** Steps that are a turn of the agent, or a push: a second attempt of one is worth saying. Waits on GitHub count every poll as an attempt, which is not. */
 const TRIED: ReadonlySet<StepKind> = new Set(["refine", "implement", "ci_fix", "conflict", "publish"]);
-
-/** The round caps of a run (server/src/factory/blueprint.ts, `RULES`): the contract does not carry them. */
-const ROUND_CAPS = { gate: 2, ci: 2, conflict: 1 } as const;
 
 const ORDINAL = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
 const ordinal = (n: number) => ORDINAL[n - 1] ?? `${n}th`;
@@ -327,8 +324,8 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 }
 
 /** The run it is in, or ended last: its step, and the rounds of fixing used of what a run allows. */
-function RunFacts({ run, events, asks, now }: { run: ItemRun; events: ItemEvent[]; asks: boolean; now: number }) {
-	const { step, rounds } = run;
+function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView["run"]>; events: ItemEvent[]; asks: boolean; now: number }) {
+	const { step, rounds, caps } = run;
 	const sentBack = events.filter((event) => event.step === null && event.said.startsWith("Sent back")).length;
 	return (
 		<dl className="usage-facts item-facts">
@@ -359,13 +356,13 @@ function RunFacts({ run, events, asks, now }: { run: ItemRun; events: ItemEvent[
 				<dd>
 					<span className="item-rounds">
 						<span>
-							after your checks {rounds.gate} of {ROUND_CAPS.gate}
+							after your checks {rounds.gate} of {caps.gate}
 						</span>
 						<span>
-							after CI {rounds.ci} of {ROUND_CAPS.ci}
+							after CI {rounds.ci} of {caps.ci}
 						</span>
 						<span>
-							merging the base {rounds.conflict} of {ROUND_CAPS.conflict}
+							merging the base {rounds.conflict} of {caps.conflict}
 						</span>
 					</span>
 				</dd>
@@ -505,29 +502,6 @@ function gateWords(gate: Verdict["gate"]): string {
 	}
 }
 
-/** CI in a sentence (server/src/factory/verdict.ts, `verdictWords`). Not being able to read it is its own case. */
-function ciWords(ci: Verdict["ci"]): string {
-	switch (ci.state) {
-		case "passed":
-			return `Passed (${plural(ci.runs.length, "check")}).`;
-		case "failed":
-			return "Failed.";
-		case "none":
-			return "No CI ran on this commit.";
-		case "timed_out":
-			return "Had not finished when this was handed over.";
-		case "not_permitted":
-			return `Not read: GitHub does not let the platform see this repository's checks${ci.said ? ` (“${ci.said}”)` : ""}. The GitHub App needs read access to Checks, Commit statuses and Actions, accepted on the installation. The pull request's own page shows them.`;
-	}
-}
-
-const FLAG_WORD: Record<Verdict["flags"][number]["kind"], string> = {
-	tests_removed: "Test files were deleted or renamed away",
-	tests_skipped: "Tests were newly skipped or disabled",
-	checks_changed: "What the checks run was changed in this work",
-	exit_ignored: "A check's command came to ignore an exit status (|| true or the like)",
-};
-
 function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView; now: number }) {
 	const { gate, ci } = verdict;
 	return (
@@ -563,7 +537,7 @@ function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView
 				<div>
 					<dt>CI</dt>
 					<dd>
-						<span className={ci.state === "failed" ? "tone-bad" : ci.state === "not_permitted" || ci.state === "timed_out" ? "tone-warn" : undefined}>{ciWords(ci)}</span>
+						<span className={ci.state === "failed" ? "tone-bad" : ci.state === "not_permitted" || ci.state === "timed_out" ? "tone-warn" : undefined}>{verdict.said.ci}</span>
 						{ci.runs.length > 0 ? (
 							<ul className="item-checks">
 								{ci.runs.map((run) => (
@@ -585,9 +559,9 @@ function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView
 						<dt>To look at</dt>
 						<dd>
 							<ul className="item-checks">
-								{verdict.flags.map((flag) => (
+								{verdict.flags.map((flag, index) => (
 									<li key={flag.kind}>
-										<span className="tone-warn">{FLAG_WORD[flag.kind]}:</span> <code className="item-paths">{flag.where.join(", ")}</code>
+										<span className="tone-warn">{verdict.said.flags[index]}:</span> <code className="item-paths">{flag.where.join(", ")}</code>
 									</li>
 								))}
 							</ul>

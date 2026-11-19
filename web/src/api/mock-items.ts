@@ -160,8 +160,6 @@ function ciRuns(count: number, conclusion: string): VerdictRun[] {
 const userChecks = (...statuses: Array<[name: string, status: Verdict["gate"]["required"][number]["status"], sentBack?: number]>): Verdict["gate"]["required"] => statuses.map(([name, status, sentBack]) => ({ name, status, sentBack: sentBack ?? 0 }));
 const passingGate: Verdict["gate"] = { state: "passed", required: userChecks(["unit tests", "passed"], ["lint", "passed"]) };
 
-const BODY = "The release script uploads every artefact in one go. Make it retry an upload that times out, at most three times, and say which one failed when it gives up.";
-const ACCEPTANCE = ["An upload that times out is tried again, at most three times.", "The error names the artefact that could not be uploaded."];
 
 /** The seeded set for a state, relative to `at`. */
 function seeds(state: MockItemsState, at: number): Seed[] {
@@ -174,12 +172,15 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 			state: "queued",
 			filed: 3,
 			source: "api",
+			body: "The release script uploads every artefact in one go. Make it retry an upload that times out, at most three times, and say which one failed when it gives up.",
+			acceptance: ["An upload that times out is tried again, at most three times.", "The error names the artefact that could not be uploaded."],
 			run: { n: 1, started: 3, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 3, turn: "delivered" } },
 			events: [[3, "Started.", undefined, true]],
 		},
 		{
 			n: 3,
 			title: "Rename the config loader's options",
+			body: "The config loader's options are named opts and cb. Rename them to options and onLoad, and keep the old names working with a deprecation warning.",
 			on: HARBOR,
 			state: "working",
 			filed: 26,
@@ -195,6 +196,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		{
 			n: 4,
 			title: "Bump the TLS library",
+			body: "Move to the TLS library's current minor release and drop the patch we carry for its old handshake bug.",
 			on: HARBOR,
 			state: "working",
 			filed: 18,
@@ -207,24 +209,25 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 			spent: { tokens: 1_240_000, turns: 1, activeSeconds: 16 * 60, hostedSeconds: 16 * 60 },
 		},
 		// Each wait for capacity, as the user actor's turn queue words it (budget.ts, `admit`).
-		waitingFor(5, "Fix the flaky clock test", HARBOR, "capacity", "Waiting for one of your 5 factory turns; 5 are running (“Bump the TLS library”, “Rename the config loader's options”, “Tidy the README's install steps”, …).", 6, at + 25_000),
-		waitingFor(6, "Drop the Node 20 workaround", HARBOR, "capacity", "Waiting for one of your 6 running turns; 6 are running, 1 of them your own.", 4, at + 40_000),
-		waitingFor(7, "Log the upload's size", TIDES, "capacity", `Your 2 h of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${spellSeconds(Math.max(60, Math.ceil((nextMidnight(at) - at) / MINUTE) * 60))}). Raise it on the Usage page.`, 50, nextMidnight(at)),
-		waitingFor(8, "Explain the tide formula in a comment", TIDES, "capacity", "Waiting for a place among the 20 sandboxes you may keep: all are in use. Free one on the Usage page, or it frees itself 3 days after its item is done.", 12, at + 2 * MINUTE),
-		waitingFor(9, "Speed up the harmonic constants table", TIDES, "capacity", "Waiting for one of your 3 hosted sandboxes: 3 running now.", 7, at + 30_000),
-		waitingFor(10, "Show the next high tide first", TIDES, "capacity", `Waiting for a hosted sandbox: this deployment runs 10 at once and all are in use. Trying again at ${utc(at + 4 * MINUTE)} UTC.`, 9, at + 4 * MINUTE),
-		waitingFor(11, "Fix the timezone in the station list", TIDES, "capacity", "Waiting for the item's agent to answer.", 1, at + 30_000),
-		waitingFor(12, "Add a changelog entry for 2.4", DOCS, "review_cap", "Waiting until fewer than 6 of your items are in review (6 now).", 35, at + 5 * MINUTE),
+		waitingFor(5, "Fix the flaky clock test", "The clock test fails about one run in twenty when the minute rolls over. Freeze the time in it.", HARBOR, "capacity", "Waiting for one of your 5 factory turns; 5 are running (“Bump the TLS library”, “Rename the config loader's options”, “Tidy the README's install steps”, …).", 6, at + 25_000),
+		waitingFor(6, "Drop the Node 20 workaround", "Node 20 is no longer supported. Remove the fallback for its missing fetch timeout, and 20 from the engines range.", HARBOR, "capacity", "Waiting for one of your 6 running turns; 6 are running, 1 of them your own.", 4, at + 40_000),
+		waitingFor(7, "Log the upload's size", "Log each artefact's size when it is uploaded, in a unit a person reads easily.", TIDES, "capacity", `Your 2 h of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${spellSeconds(Math.max(60, Math.ceil((nextMidnight(at) - at) / MINUTE) * 60))}). The allowance is this deployment's setting, which its owner can raise.`, 50, nextMidnight(at)),
+		waitingFor(8, "Explain the tide formula in a comment", "Above the harmonic sum, say in a comment what each term stands for and where the constants come from.", TIDES, "capacity", "Waiting for a place among the 20 sandboxes you may keep: all are in use. Free one on the Usage page, or it frees itself 3 days after its item is done.", 12, at + 2 * MINUTE),
+		waitingFor(9, "Speed up the harmonic constants table", "Building the harmonic constants table takes 2 s at start. Build it once and keep it.", TIDES, "capacity", "Waiting for one of your 3 hosted sandboxes: 3 running now.", 7, at + 30_000),
+		waitingFor(10, "Show the next high tide first", "On a station's page, list the next high tide above the rest of the day's tides.", TIDES, "capacity", `Waiting for a hosted sandbox: this deployment runs 10 at once and all are in use. Trying again at ${utc(at + 4 * MINUTE)} UTC.`, 9, at + 4 * MINUTE),
+		waitingFor(11, "Fix the timezone in the station list", "The station list shows times in UTC. Show them in each station's own timezone, and say which.", TIDES, "capacity", "Waiting for the item's agent to answer.", 1, at + 30_000),
+		waitingFor(12, "Add a changelog entry for 2.4", "Add the changelog entry for 2.4: the new search, the end of IE support and the fixed anchor links.", DOCS, "review_cap", "Waiting until fewer than 6 of your items are in review (6 now).", 35, at + 5 * MINUTE),
 		// The waits on CI (blueprint.ts, `ciWaitSentence`): the work is pushed and has a pull request.
-		ciWait(13, "Cache the parsed station file", TIDES, `Waiting for CI to start on ${short(hex(13))}.`, 2, 51),
-		ciWait(14, "Use the new rounding helper", TIDES, `Waiting for CI on ${short(hex(14))}: 2 of 5 checks finished.`, 6, 52),
-		ciWait(15, "Remove the unused tide fixtures", TIDES, `Waiting for CI on ${short(hex(15))}: GitHub asked the platform to wait until ${utc(at + 6 * MINUTE)} UTC before reading it again.`, 11, 53, at + 6 * MINUTE),
-		ciWait(16, "Pin the docs builder's version", DOCS, `Waiting for CI on ${short(hex(16))}: GitHub could not be reached; it is read again shortly.`, 3, 8),
-		ciWait(17, "Link the API page from the index", DOCS, `CI on ${short(hex(17))} cannot be read.`, 1, 9),
+		ciWait(13, "Cache the parsed station file", "Parse the station file once per run instead of once per lookup.", TIDES, `Waiting for CI to start on ${short(hex(13))}.`, 2, 51),
+		ciWait(14, "Use the new rounding helper", "Replace the three hand-written rounding functions with the shared helper.", TIDES, `Waiting for CI on ${short(hex(14))}: 2 of 5 checks finished.`, 6, 52),
+		ciWait(15, "Remove the unused tide fixtures", "Delete the fixtures under test/fixtures/old that no test reads.", TIDES, `Waiting for CI on ${short(hex(15))}: GitHub asked the platform to wait until ${utc(at + 6 * MINUTE)} UTC before reading it again.`, 11, 53, at + 6 * MINUTE),
+		ciWait(16, "Pin the docs builder's version", "Pin the docs builder to an exact version, so that a new release of it cannot break the build.", DOCS, `Waiting for CI on ${short(hex(16))}: GitHub could not be reached; it is read again shortly.`, 3, 8),
+		ciWait(17, "Link the API page from the index", "Link the API reference from the docs index, under Getting started.", DOCS, `CI on ${short(hex(17))} cannot be read.`, 1, 9),
 		// The questions of slice 1 (blueprint.ts, every `ask`).
 		{
 			n: 18,
 			title: "Make the upload progress bar optional",
+			body: "Add a --quiet flag that hides the upload progress bar, for CI logs.",
 			on: HARBOR,
 			state: "waiting",
 			filed: 95,
@@ -240,6 +243,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		{
 			n: 19,
 			title: "Run the integration tests in CI",
+			body: "Add a CI job that runs the integration tests on every pull request.",
 			on: HARBOR,
 			state: "waiting",
 			filed: 140,
@@ -256,6 +260,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		{
 			n: 20,
 			title: "Split the e2e suite into shards",
+			body: "The e2e suite takes 80 minutes. Split it into four shards that run at once.",
 			on: TIDES,
 			state: "waiting",
 			filed: 260,
@@ -274,6 +279,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		{
 			n: 21,
 			title: "Handle leap seconds in the tide clock",
+			body: "The tide clock is a second off after a leap second. Count leap seconds when converting from UTC.",
 			on: TIDES,
 			state: "waiting",
 			filed: 180,
@@ -293,6 +299,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		{
 			n: 22,
 			title: "Stop the station import from timing out",
+			body: "The station import times out on the full list. Import the stations in batches of 500.",
 			on: HARBOR,
 			state: "waiting",
 			filed: 300,
@@ -316,6 +323,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		{
 			n: 23,
 			title: "Migrate the docs search to the new index",
+			body: "Move the docs search to the new search index and remove the old index's build step.",
 			on: DOCS,
 			state: "waiting",
 			filed: 420,
@@ -337,18 +345,20 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 			spent: { tokens: 4_100_000, turns: 3, activeSeconds: 3 * 3600 + 10 * 60, hostedSeconds: 1.5 * 3600 },
 		},
 		// In review: each verdict, and each state of CI.
-		review(24, "Show the upload's checksum in the log", HARBOR, 61, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 20 }),
-		review(25, "Make the station parser accept tabs", TIDES, 58, { result: "pass", gate: passingGate, ci: ci.passed(4), flags: [{ kind: "tests_skipped", where: ["src/parse.test.ts"] }], mergeable: true, run: 1, ago: 38 }),
-		review(26, "Replace the deprecated glob call", HARBOR, 62, { result: "fail", gate: passingGate, ci: ci.failed(), flags: [], mergeable: true, run: 1, ago: 55 }, "CI failed again after 2 rounds of fixes."),
-		review(27, "Shorten the release notes template", DOCS, 14, { result: "incomplete", gate: { state: "stopped", required: userChecks(["docs build", "interrupted"]) }, ci: ci.none(), flags: [], mergeable: true, run: 1, ago: 70 }, "This step was cut off 3 times, by deploys or restarts."),
-		review(28, "Fix the typo in the contributing guide", DOCS, 15, { result: "unverified", gate: { state: "none_set", required: [] }, ci: ci.none(), flags: [], mergeable: true, run: 1, ago: 90 }),
-		review(29, "Read the port from the environment", HARBOR, 63, { result: "pass", gate: passingGate, ci: ci.notPermitted(), flags: [], mergeable: null, run: 1, ago: 24 }),
-		review(30, "Upgrade the test runner", HARBOR, 64, { result: "unverified", gate: { state: "passed", required: [] }, ci: ci.timedOut(), flags: [{ kind: "checks_changed", where: [".windlass/config.json"] }, { kind: "tests_removed", where: ["test/legacy.test.ts", "test/old-api.test.ts"] }], mergeable: false, run: 1, ago: 33 }, "CI has not finished 1 h 30 min after the push."),
+		review(24, "Show the upload's checksum in the log", HARBOR, 61, { body: "After each upload, log the artefact's SHA-256 next to its name.", acceptance: ["The log has each uploaded artefact's SHA-256, next to its name."] }, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 20 }),
+		review(25, "Make the station parser accept tabs", TIDES, 58, { body: "Some station files separate their columns with tabs. Accept tabs as well as spaces between columns.", acceptance: ["A station file with tabs between its columns reads the same as one with spaces.", "A file that mixes tabs and spaces is read too."] }, { result: "pass", gate: passingGate, ci: ci.passed(4), flags: [{ kind: "tests_skipped", where: ["src/parse.test.ts"] }], mergeable: true, run: 1, ago: 38 }),
+		review(26, "Replace the deprecated glob call", HARBOR, 62, { body: "glob.sync is deprecated in the glob library's new major release. Use its promise API instead.", acceptance: ["The release script finds the same files as before."] }, { result: "fail", gate: passingGate, ci: ci.failed(), flags: [], mergeable: true, run: 1, ago: 55 }, "CI failed again after 2 rounds of fixes."),
+		review(27, "Shorten the release notes template", DOCS, 14, { body: "Cut the release notes template down to a summary, the changes and the upgrade notes.", acceptance: ["The template has three sections: summary, changes, upgrade notes."] }, { result: "incomplete", gate: { state: "stopped", required: userChecks(["docs build", "interrupted"]) }, ci: ci.none(), flags: [], mergeable: true, run: 1, ago: 70 }, "This step was cut off 3 times, by deploys or restarts."),
+		review(28, "Fix the typo in the contributing guide", DOCS, 15, { body: "The contributing guide says “recieve” in its second paragraph.", acceptance: [] }, { result: "unverified", gate: { state: "none_set", required: [] }, ci: ci.none(), flags: [], mergeable: true, run: 1, ago: 90 }),
+		review(29, "Read the port from the environment", HARBOR, 63, { body: "Read the server's port from PORT, and fall back to 8080.", acceptance: ["With PORT set, the server listens on it.", "Without it, the server listens on 8080."] }, { result: "pass", gate: passingGate, ci: ci.notPermitted(), flags: [], mergeable: null, run: 1, ago: 24 }),
+		review(30, "Upgrade the test runner", HARBOR, 64, { body: "Move to the test runner's next major release and fix what it breaks.", acceptance: ["Every test that ran before still runs."] }, { result: "unverified", gate: { state: "passed", required: [] }, ci: ci.timedOut(), flags: [{ kind: "checks_changed", where: [".windlass/config.json"] }, { kind: "tests_removed", where: ["test/legacy.test.ts", "test/old-api.test.ts"] }], mergeable: false, run: 1, ago: 33 }, "CI has not finished 1 h 30 min after the push."),
 		sentBack(31, "Add a health check endpoint", HARBOR, 60),
 		// Ended.
 		{
 			n: 32,
 			title: "Document the release checklist",
+			body: "Write down the checklist the maintainers follow for a release, as a page of the docs.",
+			acceptance: ["The page lists every step of a release, in order."],
 			on: DOCS,
 			state: "done",
 			filed: 26 * 60,
@@ -369,6 +379,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		{
 			n: 33,
 			title: "Try a dark theme for the docs",
+			body: "Try a dark theme for the docs site that follows the reader's system setting.",
 			on: DOCS,
 			state: "cancelled",
 			filed: 30 * 60,
@@ -383,6 +394,8 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		{
 			n: 34,
 			title: "Rewrite the station importer in one pass",
+			body: "The station importer reads the file three times. Make it read it once.",
+			acceptance: ["The importer reads the station file once."],
 			on: HARBOR,
 			state: "cancelled",
 			filed: 50 * 60,
@@ -403,6 +416,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		{
 			n: 35,
 			title: "Port the tide charts to the new renderer",
+			body: "Draw the tide charts with the new renderer and remove the old canvas code.",
 			on: TIDES,
 			state: "failed",
 			filed: 8 * 60,
@@ -431,10 +445,11 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 	if (state === "few") return all.filter((seed) => [3, 18, 21, 22, 24].includes(seed.n));
 	return all;
 
-	function waitingFor(n: number, title: string, on: typeof HARBOR, reason: Waiting["reason"], sentence: string, since: number, retryAt: number): Seed {
+	function waitingFor(n: number, title: string, body: string, on: typeof HARBOR, reason: Waiting["reason"], sentence: string, since: number, retryAt: number): Seed {
 		return {
 			n,
 			title,
+			body,
 			on,
 			state: "waiting",
 			filed: since + 1,
@@ -447,11 +462,12 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		};
 	}
 
-	function ciWait(n: number, title: string, on: typeof HARBOR, sentence: string, since: number, pr: number, retryAt = at + 60_000): Seed {
+	function ciWait(n: number, title: string, body: string, on: typeof HARBOR, sentence: string, since: number, pr: number, retryAt = at + 60_000): Seed {
 		const head = hex(n);
 		return {
 			n,
 			title,
+			body,
 			on,
 			state: "waiting",
 			filed: since + 40,
@@ -468,7 +484,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		};
 	}
 
-	function review(n: number, title: string, on: typeof HARBOR, pr: number, verdict: NonNullable<Seed["verdicts"]>[number], asked?: string): Seed {
+	function review(n: number, title: string, on: typeof HARBOR, pr: number, task: { body: string; acceptance: string[] }, verdict: NonNullable<Seed["verdicts"]>[number], asked?: string): Seed {
 		const ago = verdict.ago;
 		const started = ago + 70;
 		// Handed over by the person, at a question that stopped the run.
@@ -485,8 +501,8 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 			state: "review",
 			filed: started + 1,
 			pr,
-			body: BODY,
-			acceptance: ACCEPTANCE,
+			body: task.body,
+			acceptance: task.acceptance,
 			// The rounds the question that stopped it says were used up.
 			run: { n: 1, started, ended: ago, stopReason: null, rounds: { plan: 0, gate: 0, ci: asked?.startsWith("CI failed") ? 2 : 0, conflict: 0 }, step: { n: 6, kind: "merged", attempt: 2, started: ago } },
 			events: [
@@ -641,7 +657,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		createdAt: ago(seed.filed),
 		updatedAt,
 		revision: events.length + 1,
-		task: { title: seed.title, body: seed.body ?? BODY, acceptance: seed.acceptance ?? [], base: repository.branch },
+		task: { title: seed.title, body: seed.body ?? "", acceptance: seed.acceptance ?? [], base: repository.branch },
 		run,
 		head,
 		events,

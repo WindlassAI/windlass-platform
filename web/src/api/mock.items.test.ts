@@ -35,6 +35,21 @@ describe("the mock's work items", () => {
 		mock.dispose();
 	});
 
+	it("sends a run's caps and a verdict's sentences, as the server does", async () => {
+		const mock = make();
+		const user = mock.user(auth);
+		const views = await Promise.all((await user.listItems()).map((item) => user.item(item.id)));
+		for (const view of views) {
+			if (view.run) expect(view.run.caps).toEqual({ plan: 3, gate: 2, ci: 2, conflict: 1 });
+			for (const verdict of view.verdicts) expect(verdict.said.flags).toHaveLength(verdict.flags.length);
+		}
+		const said = new Set(views.flatMap((view) => view.verdicts.map((verdict) => verdict.said.ci)));
+		expect(said).toContain("CI passed (3 checks).");
+		expect(said).toContain("CI failed: lint.");
+		expect([...said].some((line) => line.startsWith("CI was not read: GitHub does not let the platform see this repository's checks (“Resource not accessible by integration”)."))).toBe(true);
+		mock.dispose();
+	});
+
 	it("files an item once per key, starts it, and tells the live feed", async () => {
 		const mock = make("none");
 		const user = mock.user(auth);
