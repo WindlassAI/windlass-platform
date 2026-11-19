@@ -37,11 +37,13 @@ export interface ComposerProps {
 	 * Text to start with, and why it is there (a prompt that could not be sent earlier); `limit` when one
 	 * of the user's limits refused it, and the key it was sent with, which it keeps while it is unchanged.
 	 */
-	initial?: { text: string; error: string; limit?: boolean; idempotencyKey?: string } | null;
+	initial?: { text: string; error?: string; limit?: boolean; idempotencyKey?: string } | null;
 	/** What there is to say about the user's limits before anything is sent: little sandbox time left, none, or no room for a sandbox. */
 	limitNote?: string | null;
 	/** Text put in from outside (a suggested prompt); `key` changes to apply it again. */
 	suggestion?: { key: number; text: string } | null;
+	/** Set when nothing can be sent to this agent again, with why (its machine was removed). */
+	closed?: string | null;
 }
 
 /** Why nothing can be sent right now. */
@@ -62,7 +64,7 @@ function UsageLink() {
 	);
 }
 
-export function Composer({ status, online, models, model, onSend, onStop, initial, suggestion, limitNote }: ComposerProps) {
+export function Composer({ status, online, models, model, onSend, onStop, initial, suggestion, limitNote, closed }: ComposerProps) {
 	const [text, setText] = useState(initial?.text ?? "");
 	const [error, setError] = useState<string | null>(initial?.error ?? null);
 	/** Whether `error` is a refusal by one of the user's limits. */
@@ -81,7 +83,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 	const idle = status === "idle";
 	/** A turn is under way and takes messages: what is sent steers it. */
 	const steering = status === "running" || status === "waiting";
-	const writable = idle || steering;
+	const writable = (idle || steering) && !closed;
 	const busy = !writable || sending;
 	const currentModel = chosenModel ?? model;
 	const offered = modelIds(models);
@@ -90,7 +92,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 	const currentEffort = efforts.includes(effort) ? effort : "";
 	const tooLong = text.length > MAX_PROMPT_CHARS;
 	const canSend = writable && online && !sending && text.trim() !== "" && !tooLong;
-	const reason = !online ? "The connection is down. Reconnecting…" : (REASON[status] ?? (sending ? "Sending…" : null));
+	const reason = closed || (!online ? "The connection is down. Reconnecting…" : (REASON[status] ?? (sending ? "Sending…" : null)));
 
 	useEffect(() => {
 		if (notice === null) return;
@@ -206,7 +208,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 					className="composer-text"
 					rows={1}
 					value={text}
-					placeholder={idle ? "Tell the agent what to do" : steering ? "Steer it: add to or change what it is doing" : status === "stopping" ? "Stopping…" : "Starting…"}
+					placeholder={closed ? "Nothing can be sent to this agent" : idle ? "Tell the agent what to do" : steering ? "Steer it: add to or change what it is doing" : status === "stopping" ? "Stopping…" : "Starting…"}
 					onChange={(event) => setText(event.target.value)}
 					onKeyDown={onKeyDown}
 					disabled={!writable || sending}

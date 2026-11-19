@@ -33,6 +33,7 @@ import {
 	type AgentSessionActions,
 	type AgentSessionEvents,
 	type AuthResult,
+	type ItemSummary,
 	type LoginActions,
 	type MachineSummary,
 	type SessionSnapshot,
@@ -348,6 +349,14 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			confirmMachine: (input) => act("confirmMachine", input),
 			removeMachine: (input) => act("removeMachine", input),
 			setMachineSecrets: (input) => act("setMachineSecrets", input),
+			listItems: () => act("listItems"),
+			item: (id) => act("item", id),
+			createItem: (input) => act("createItem", input),
+			actOnItem: (id, action) => act("actOnItem", { id, action }),
+			factoryLimits: () => act("factoryLimits"),
+			apiTokens: () => act("apiTokens"),
+			createApiToken: (input) => act("createApiToken", input),
+			revokeApiToken: (id) => act("revokeApiToken", id),
 			watch(feed: UserFeed) {
 				let live = false;
 				const feedConn = feedConnection(
@@ -374,6 +383,9 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 						}),
 						conn.on("machines" satisfies keyof UserEvents, (machines: MachineSummary[]) => {
 							if (live) feed.onMachines?.(machines);
+						}),
+						conn.on("items" satisfies keyof UserEvents, (items: ItemSummary[]) => {
+							if (live) feed.onItems?.(items);
 						}),
 					],
 				);

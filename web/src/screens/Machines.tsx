@@ -53,7 +53,7 @@ function installCommand(info: MachinesInfo): string | null {
 }
 
 /** A time of day, with the day when it is not today: "14:02", "17 Nov, 14:02". */
-function clockTime(at: number, now: number): string {
+export function clockTime(at: number, now: number): string {
 	const date = new Date(at);
 	const time = date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 	return date.toDateString() === new Date(now).toDateString() ? time : `${date.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}, ${time}`;
@@ -72,7 +72,7 @@ function formatCode(typed: string): string {
 	return characters.length > 4 ? `${characters.slice(0, 4)}-${characters.slice(4)}` : characters;
 }
 
-interface MachinesState {
+export interface MachinesState {
 	/** Null until it was read, and when it could not be. */
 	list: MachineSummary[] | null;
 	/** Why it could not be read the last time it was asked for. */
@@ -82,8 +82,12 @@ interface MachinesState {
 	replace(list: MachineSummary[]): void;
 }
 
-/** The user's machines: read when the page opens, then as the user's actor sends them, and again after the live feed was down. */
-function useMachines(): MachinesState {
+/**
+ * The user's machines: read when the screen opens, then as the user's actor sends them, and again
+ * after the live feed was down. `enabled` false asks nothing: for a deployment that offers no machines,
+ * and for a screen that needs them only sometimes (a session on a machine).
+ */
+export function useMachines(enabled = true): MachinesState {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [state, setState] = useState<{ list: MachineSummary[] | null; error: string | null }>({ list: null, error: null });
@@ -106,6 +110,7 @@ function useMachines(): MachinesState {
 	}, []);
 
 	useEffect(() => {
+		if (!enabled) return;
 		reload();
 		let connected = false;
 		const close = client.user(auth).watch({
@@ -122,13 +127,13 @@ function useMachines(): MachinesState {
 			asked.current += 1;
 			close();
 		};
-	}, [client, auth, reload, replace]);
+	}, [client, auth, reload, replace, enabled]);
 
 	return { ...state, reload, replace };
 }
 
 /** Where a machine is, as a dot and a few words. A runner that is too old is refused, so that is what it says. */
-function MachineState({ machine, now }: { machine: MachineSummary; now: number }) {
+export function MachineState({ machine, now }: { machine: MachineSummary; now: number }) {
 	const outdated = machine.warnings.some((warning) => warning.kind === "outdated");
 	const kind = outdated ? "outdated" : machine.status;
 	const word = outdated ? "Needs an update" : machine.status === "online" ? "Online" : machine.status === "offline" ? `Offline since ${clockTime(machine.since, now)}` : "Waiting for the runner";
@@ -145,7 +150,8 @@ function Command({ text, label }: { text: string; label: string }) {
 	return (
 		<div className="machine-command">
 			<pre tabIndex={0} aria-label={label}>
-				{text}
+				{/* A short word, a flag such as "--restart", is never split after its hyphens; a long one, a path or the image's digest, fills its lines. */}
+				{text.split(/(\s+)/).map((part, index) => (index % 2 === 0 && part.length <= 24 ? <span key={index}>{part}</span> : part))}
 			</pre>
 			<CopyButton text={text} label={`Copy ${label.toLowerCase()}`} />
 		</div>
@@ -174,7 +180,7 @@ function Warning({ warning, machine, info, now }: { warning: MachineWarning; mac
 			<div className="callout callout-warn" role="status">
 				<WarnIcon />
 				<div>
-					<p className="callout-text">The runner cannot reach Docker on this machine, so no agent can start here. Docker said:</p>
+					<p className="callout-text">The runner cannot reach Docker on this machine, so no agent can start here. The runner reports:</p>
 					<p className="callout-detail">{warning.reason}</p>
 				</div>
 			</div>
@@ -248,7 +254,8 @@ function SecretsSwitch({ machine, onChanged }: { machine: MachineSummary; onChan
 	);
 }
 
-function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: number }) {
+/** An agent's sandbox on a machine: the agent, whether the sandbox runs, and when it was last used. */
+export function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: number }) {
 	return (
 		<li>
 			{sandbox.title === null ? (
@@ -313,7 +320,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 
 			<div id={details} className="machine-details" hidden={!open}>
 				<div>
-					<h4 className="machine-label">Sandboxes</h4>
+					<h4 className="eyebrow">Sandboxes</h4>
 					{machine.sandboxes.length === 0 ? (
 						<p className="usage-lede">{reported ? "No agent's sandbox is on it." : "Its runner has not reported yet."}</p>
 					) : (
@@ -429,7 +436,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 			>
 				<div className="machine-dialog">
 					<div>
-						<p className="machine-label">What the machine says about itself</p>
+						<p className="eyebrow">What the machine says about itself</p>
 						<dl className="machine-claim">
 							<dt>Name</dt>
 							<dd>{claim.name}</dd>
@@ -613,6 +620,11 @@ export function Machines({ adding }: { adding: boolean }) {
 	const full = list !== null && list.length >= MAX_MACHINES;
 	const add = () => navigate({ name: "machines", add: true });
 	const closeAdd = () => navigate({ name: "machines" }, { replace: true });
+	// The address a runner prints opens the dialog once what it needs is known; an account that cannot add another goes to its list.
+	const canAdd = (list !== null || machines.error !== null) && !full;
+	useEffect(() => {
+		if (adding && full) navigate({ name: "machines" }, { replace: true });
+	}, [adding, full]);
 
 	return (
 		<main className="home usage repo machines">
@@ -694,7 +706,7 @@ export function Machines({ adding }: { adding: boolean }) {
 				</>
 			)}
 
-			{adding && info !== null && !full ? <AddDialog info={info} onClose={closeAdd} onAdded={(machine) => machines.replace([...(list ?? []).filter((one) => one.machineId !== machine.machineId), machine])} /> : null}
+			{adding && info !== null && canAdd ? <AddDialog info={info} onClose={closeAdd} onAdded={(machine) => machines.replace([...(list ?? []).filter((one) => one.machineId !== machine.machineId), machine])} /> : null}
 			{removing ? <RemoveDialog machine={removing} onClose={() => setRemoving(null)} onRemoved={machines.replace} /> : null}
 		</main>
 	);

@@ -34,6 +34,7 @@ import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useGithub, type Github } from "../state/github";
 import { useAccount, useModels, useNow, useSessions } from "../state/hooks";
+import { RepositoryItems } from "./Items";
 
 /** Whether new agents can be launched on the repository, as GitHub says now. */
 export type RepositoryAccess =
@@ -425,6 +426,8 @@ export function Repository({ page }: { page: RepositoryPage }) {
 					</div>
 				)}
 			</section>
+
+			<RepositoryItems repositoryId={page.id} name={name} base={access.state === "usable" ? access.repository.defaultBranch : null} launchable={launchable} now={now} />
 
 			<Pulls page={page} now={now} />
 

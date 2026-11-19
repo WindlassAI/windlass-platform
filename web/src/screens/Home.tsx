@@ -15,6 +15,7 @@ import { count, localTime, plural, sandboxTime } from "../lib/format";
 import { NO_REPOSITORY, groupSessions, shownLimit, type SessionGroup } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
+import { NeedsYou } from "./Items";
 import { allowanceState, useAllowance, useChatgpt, useNow, useSessions } from "../state/hooks";
 
 /** One repository's agents under its name, or the agents on none. `headed` is false for a list that has only the latter. */
@@ -160,6 +161,8 @@ export function Home() {
 					<span>The connection dropped. Reconnecting; the list may be behind.</span>
 				</p>
 			) : null}
+
+			<NeedsYou now={now} />
 
 			{connection === "failed" ? (
 				<div className="state state-error" role="alert">

@@ -4,7 +4,7 @@
  */
 import { MAX_MACHINES, type MachineSummary } from "@contract";
 import { describe, expect, it } from "vitest";
-import { createMockClient, MOCK_MACHINE_STATES } from "./mock";
+import { createMockClient, MOCK_MACHINE_STATES, type MockMachineSession } from "./mock";
 
 const auth = { token: "mock:chatgpt:u_machines:ada@example.com", profile: { uid: "u_machines", email: "ada@example.com", demo: false } };
 const make = (machine?: (typeof MOCK_MACHINE_STATES)[number]) => createMockClient({ pace: 0, machine });
@@ -28,8 +28,71 @@ describe("the mock's machines", () => {
 		const mock = make();
 		const [nas] = await mock.user(auth).machines();
 		expect(nas?.status).toBe("online");
-		expect(nas?.sandboxes.map((sandbox) => sandbox.title)).toEqual(["Check the site's response headers", "Check what the sandbox allows", null]);
+		expect(nas?.sandboxes.map((sandbox) => sandbox.title)).toEqual(["Run the tests on my machine", null]);
 		mock.dispose();
+	});
+
+	it("lists each machine's sandboxes as its runner reported them, none before it reported", async () => {
+		const profiles = async (state: (typeof MOCK_MACHINE_STATES)[number]) => {
+			const mock = make(state);
+			const list = await mock.user(auth).machines();
+			mock.dispose();
+			return list.map((machine) => machine.profiles.map((profile) => profile.available));
+		};
+		expect(await profiles("online")).toEqual([[true, true]]);
+		expect(await profiles("pairing")).toEqual([[]]);
+		expect(await profiles("docker")).toEqual([[false, false]]);
+		expect(await profiles("full")).toEqual([
+			[true, true],
+			[false, true],
+			[true, true],
+		]);
+	});
+
+	it("launches an agent on a machine with one of its sandboxes, outside the day's sandbox time", async () => {
+		const mock = createMockClient({ pace: 0, usage: "used" });
+		const user = mock.user(auth);
+		const made = await user.createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened", title: "On nas" });
+		expect(made.place).toEqual({ kind: "machine", machineId: "m_nas" });
+		const session = mock.session(auth, made.id);
+		const snapshots: Array<{ machine?: unknown; profile: string }> = [];
+		const close = session.open({ onSnapshot: (snapshot) => snapshots.push({ machine: snapshot.machine, profile: snapshot.profile.name }), onItem: () => undefined, onDelta: () => undefined, onSummary: () => undefined, onQuestion: () => undefined, onConnection: () => undefined });
+		await tick();
+		expect(snapshots[0]).toEqual({ machine: null, profile: 'Hardened Docker on your machine "nas"' });
+		// The day's time is used up, and a turn on the user's own machine starts all the same.
+		expect(await session.prompt({ text: "What is 1 + 1, to be sure?" })).toEqual({ turn: 1, steered: false });
+		await expect(user.createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "e2b" })).rejects.toThrow("There is no such sandbox.");
+		close();
+		mock.dispose();
+	});
+
+	it("fails a turn at once with the server's sentence when the agent's machine is offline or removed, and its snapshot says so", async () => {
+		const failed = async (machineSession: MockMachineSession) => {
+			const mock = createMockClient({ pace: 0, machineSession });
+			const session = mock.session(auth, "nas-tests");
+			const seen: { machine?: unknown; message?: string | null } = {};
+			const close = session.open({
+				onSnapshot: (snapshot) => (seen.machine = snapshot.machine?.state),
+				onItem: (item) => {
+					if (item.kind === "turn.ended" && item.outcome === "error") seen.message = item.message;
+				},
+				onDelta: () => undefined,
+				onSummary: () => undefined,
+				onQuestion: () => undefined,
+				onConnection: () => undefined,
+			});
+			await tick();
+			const before = seen.machine;
+			await session.prompt({ text: "Run the tests again." });
+			await tick();
+			session.resync();
+			await new Promise((resolve) => setTimeout(resolve, 80));
+			close();
+			mock.dispose();
+			return { before, after: seen.machine, message: seen.message };
+		};
+		expect(await failed("offline")).toEqual({ before: "answering", after: "offline", message: `Your machine "nas" is offline. The agent's files are there; send the prompt again when it is back.` });
+		expect(await failed("removed")).toEqual({ before: "removed", after: "removed", message: "This agent's machine was removed. Its files were there. Start a new agent to go on." });
 	});
 
 	it("starts each state as its name says", async () => {

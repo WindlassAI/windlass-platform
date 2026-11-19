@@ -1,6 +1,14 @@
-/** One agent: the conversation and composer in the main column, the session's facts beside it. */
-import { USAGE_LOW_SHARE, type SessionSummary, type UsageNumbers } from "@contract";
-import { useCallback, useMemo, useState } from "react";
+/**
+ * One agent: the conversation and composer in the main column, the session's facts beside it.
+ *
+ * An agent on one of the user's machines says so beside its title, and above the composer says when
+ * that machine is offline, stopped answering in the middle of a turn, or was removed. What the session
+ * last found is in its snapshot (`SessionSnapshot.machine`), which nothing pushes between snapshots: it
+ * is asked for again when a turn ends and when a prompt was refused. Whether the machine is offline or
+ * gone is also in the user's live list of machines, which is read for such a session only.
+ */
+import { USAGE_LOW_SHARE, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Composer } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
 import { ArrowLeftIcon, Mark, WarnIcon } from "../components/Icons";
@@ -13,9 +21,24 @@ import type { ToolBlock } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { takeHandover } from "../state/handover";
 import { allowanceState, useAllowance, useModels, type useSession } from "../state/hooks";
+import { clockTime, useMachines } from "./Machines";
+
+/** How long a turn waits for a machine that stopped answering before it ends: the grace of the runner's channel on the server. */
+const MACHINE_GRACE_MS = 10 * 60_000;
+
+/**
+ * The machine a session runs on, from the user's live list of machines: undefined for a hosted session
+ * and while the list is not known, null once it is known and the machine is not in it (it was removed).
+ */
+export function useSessionMachine(place: SandboxPlace | undefined): MachineSummary | null | undefined {
+	const machineId = place?.kind === "machine" ? place.machineId : null;
+	const { list } = useMachines(machineId !== null);
+	if (machineId === null || list === null) return undefined;
+	return list.find((machine) => machine.machineId === machineId) ?? null;
+}
 
 /** What the top bar shows for a session: the way back, its title and state. */
-export function SessionCrumb({ title, status }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null }) {
+export function SessionCrumb({ title, status, place, machine }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null }) {
 	return (
 		<nav className="crumb" aria-label="Where you are">
 			<a className="crumb-back" {...linkProps({ name: "home" })}>
@@ -33,8 +56,26 @@ export function SessionCrumb({ title, status }: { title: string | null; status: 
 				</>
 			) : null}
 			{status !== null ? <StatusBadge status={status} /> : null}
+			{place?.kind === "machine" ? <span className="chip crumb-place">On {machine ? machine.name : "your machine"}</span> : null}
 		</nav>
 	);
+}
+
+/**
+ * What the banner above the composer says of the session's machine; null when it answers. The snapshot
+ * says what the session last found, the live list whether the machine is offline now or gone; a machine
+ * the list says came back after what the snapshot found is not reported.
+ */
+function machineNote(reach: SessionSnapshot["machine"], machine: MachineSummary | null | undefined, sandbox: SessionSummary["sandbox"], now: number): { text: string; removed: boolean } | null {
+	if (reach?.state === "removed" || machine === null) return { removed: true, text: "This agent's machine was removed. Its files were there. Start a new agent to go on." };
+	const named = machine ? `Your machine "${machine.name}"` : "Your machine";
+	const back = reach != null && machine?.status === "online" && machine.since >= reach.since;
+	if (reach?.state === "not_answering" && !back) {
+		return { removed: false, text: `${named} is not answering since ${clockTime(reach.since, now)}. The turn goes on when it is back, or stops at ${clockTime(reach.since + MACHINE_GRACE_MS, now)}.` };
+	}
+	const offline = machine?.status === "offline" ? machine.since : reach?.state === "offline" && !back ? reach.since : null;
+	if (offline === null) return null;
+	return { removed: false, text: `${named} is offline since ${clockTime(offline, now)}.${sandbox === "none" ? "" : " The agent's files are there."} Send a prompt once it is back.` };
 }
 
 /** What the composer says about the user's limits before a prompt runs into one; null while there is nothing to say. */
@@ -53,7 +94,8 @@ function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): strin
 	return null;
 }
 
-export function Session({ sessionId, state }: { sessionId: string; state: ReturnType<typeof useSession> }) {
+/** `machine`: the machine the session runs on, as `useSessionMachine` says. */
+export function Session({ sessionId, state, machine }: { sessionId: string; state: ReturnType<typeof useSession>; machine?: MachineSummary | null }) {
 	const { client, explain } = useApp();
 	const models = useModels();
 	const auth = useAuth();
@@ -63,6 +105,15 @@ export function Session({ sessionId, state }: { sessionId: string; state: Return
 	// Asked again when a turn starts or ends, and when a prompt was refused: each moves what is left of the day.
 	const [refusals, setRefusals] = useState(0);
 	const allowance = useAllowance(`${state.turnsEnded}:${state.summary?.status ?? ""}:${refusals}`);
+	// What the session found of its machine is said only in a snapshot: one is asked for when a turn ended or a prompt was refused.
+	const onMachine = state.summary?.place.kind === "machine";
+	const settled = useRef(`${state.turnsEnded}:${refusals}`);
+	useEffect(() => {
+		const key = `${state.turnsEnded}:${refusals}`;
+		if (key === settled.current) return;
+		settled.current = key;
+		if (onMachine) api.resync();
+	}, [api, onMachine, state.turnsEnded, refusals]);
 	const online = state.connection === "connected";
 	const flow = useQuestionFlow(api, state.phase === "ready" ? state.question : null, explain);
 	const stopCall = useCallback(
@@ -126,6 +177,7 @@ export function Session({ sessionId, state }: { sessionId: string; state: Return
 	}
 
 	const { summary, profile, view } = state;
+	const reach = summary.place.kind === "machine" ? machineNote(state.machine, machine, summary.sandbox, Date.now()) : null;
 
 	return (
 		<main className="session">
@@ -147,6 +199,12 @@ export function Session({ sessionId, state }: { sessionId: string; state: Return
 				<InteractiveProvider value={interactive}>
 					<Conversation view={view} summary={summary} profile={profile} onSuggest={(text) => setSuggestion((current) => ({ key: (current?.key ?? 0) + 1, text }))} />
 				</InteractiveProvider>
+				{reach ? (
+					<p className={`banner ${reach.removed ? "banner-bad" : "banner-warn"}`} role="status">
+						<WarnIcon size={14} />
+						{reach.text}
+					</p>
+				) : null}
 				<QuestionDock flow={flow} />
 				<Composer
 					status={summary.status}
@@ -155,7 +213,8 @@ export function Session({ sessionId, state }: { sessionId: string; state: Return
 					model={summary.model}
 					initial={handover}
 					suggestion={suggestion}
-					limitNote={limitNote(allowance, summary)}
+					limitNote={summary.place.kind === "machine" ? null : limitNote(allowance, summary)}
+					closed={reach?.removed ? "Its machine was removed, so this agent cannot run again." : null}
 					onSend={async (input) => {
 						try {
 							await api.prompt(input);

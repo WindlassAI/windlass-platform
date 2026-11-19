@@ -5,10 +5,11 @@ import { TopBar } from "./components/TopBar";
 import { linkProps, navigate, useRoute } from "./lib/router";
 import { useTheme } from "./lib/theme";
 import { Home } from "./screens/Home";
+import { Item, ItemCrumb, useItem } from "./screens/Item";
 import { Machines, MachinesCrumb } from "./screens/Machines";
 import { NewAgent } from "./screens/NewAgent";
 import { Repository, RepositoryCrumb, useRepository } from "./screens/Repository";
-import { Session, SessionCrumb } from "./screens/Session";
+import { Session, SessionCrumb, useSessionMachine } from "./screens/Session";
 import { Settings, SettingsCrumb } from "./screens/Settings";
 import { MockAuthorize, SignIn } from "./screens/SignIn";
 import { Usage, UsageCrumb } from "./screens/Usage";
@@ -28,6 +29,8 @@ function useHidden(): boolean {
 
 function SessionRoute({ sessionId, theme, onToggleTheme }: { sessionId: string; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
 	const state = useSession(sessionId);
+	// Read once for the bar and the session both: the machine an agent on one of the user's machines runs on.
+	const machine = useSessionMachine(state.summary?.place);
 	const hidden = useHidden();
 	const waiting = state.summary?.status === "waiting";
 	useEffect(() => {
@@ -38,14 +41,32 @@ function SessionRoute({ sessionId, theme, onToggleTheme }: { sessionId: string; 
 	return (
 		<div className="app app-fixed">
 			<TopBar theme={theme} onToggleTheme={onToggleTheme}>
-				<SessionCrumb title={state.summary?.title ?? null} status={state.summary?.status ?? null} />
+				<SessionCrumb title={state.summary?.title ?? null} status={state.summary?.status ?? null} place={state.summary?.place} machine={machine} />
 			</TopBar>
-			<Session key={sessionId} sessionId={sessionId} state={state} />
+			<Session key={sessionId} sessionId={sessionId} state={state} machine={machine} />
 		</div>
 	);
 }
 
 /** A repository's page, and the launch form over it when the address asks for one with that repository chosen. */
+/** A work item's page, with the way back to its repository. */
+function ItemRoute({ itemId, theme, onToggleTheme }: { itemId: string; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
+	const page = useItem(itemId);
+	const title = page.view?.title ?? null;
+	const asks = Boolean(page.view?.question);
+	useEffect(() => {
+		document.title = title ? `${asks ? "(?) Needs you · " : ""}${title} · Windlass` : "Work item · Windlass";
+	}, [title, asks]);
+	return (
+		<div className="app">
+			<TopBar theme={theme} onToggleTheme={onToggleTheme}>
+				<ItemCrumb view={page.view} />
+			</TopBar>
+			<Item page={page} />
+		</div>
+	);
+}
+
 function RepositoryRoute({ repositoryId, launching, theme, onToggleTheme }: { repositoryId: number; launching: boolean; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
 	const page = useRepository(repositoryId);
 	useEffect(() => {
@@ -67,7 +88,7 @@ export function App() {
 	const { auth, client, platform } = useApp();
 	const [theme, toggleTheme] = useTheme();
 
-	const needsAuth = route.name === "home" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "machines" || route.name === "session" || route.name === "repository";
+	const needsAuth = route.name === "home" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "machines" || route.name === "session" || route.name === "item" || route.name === "repository";
 	/** A deployment that does not offer machines has no such page. While its information loads, the page says it is loading. */
 	const noMachines = route.name === "machines" && auth !== null && platform.info !== null && !platform.info.machines;
 	/** The repository whose page is shown: its own address, or the launch form's over it. */
@@ -78,7 +99,7 @@ export function App() {
 	}, [needsAuth, auth, route.name]);
 
 	useEffect(() => {
-		if (route.name !== "session" && repositoryId === null) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : "Agents · Windlass";
+		if (route.name !== "session" && route.name !== "item" && repositoryId === null) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : "Agents · Windlass";
 	}, [route.name, repositoryId, noMachines]);
 
 	if (route.name === "mock-authorize" && client.kind === "mock") return <MockAuthorize />;
@@ -106,6 +127,8 @@ export function App() {
 	}
 
 	if (route.name === "session") return <SessionRoute key={route.id} sessionId={route.id} theme={theme} onToggleTheme={toggleTheme} />;
+
+	if (route.name === "item") return <ItemRoute key={route.id} itemId={route.id} theme={theme} onToggleTheme={toggleTheme} />;
 
 	if (repositoryId !== null) return <RepositoryRoute key={repositoryId} repositoryId={repositoryId} launching={route.name === "new"} theme={theme} onToggleTheme={toggleTheme} />;
 

@@ -13,6 +13,7 @@
  * sandbox, so the list of secrets is said for the sandbox a new agent starts in when nothing else is
  * chosen: the account's default, or the deployment's first.
  */
+import { ApiTokens } from "../components/ApiTokens";
 import { AccountSecretsBlock } from "../components/Secrets";
 import { DefaultsSection } from "../components/Defaults";
 import { ArrowLeftIcon, WarnIcon } from "../components/Icons";
@@ -124,6 +125,22 @@ export function Settings() {
 					</section>
 				</>
 			)}
+
+			{info?.machines ? (
+				<section className="usage-section" aria-labelledby="settings-machines">
+					<h2 className="usage-title" id="settings-machines">
+						Machines
+					</h2>
+					<p className="usage-lede">
+						Your own Linux machines with Docker, where the agents you launch can run.{" "}
+						<a className="link" {...linkProps({ name: "machines" })}>
+							Your machines
+						</a>
+					</p>
+				</section>
+			) : null}
+
+			<ApiTokens />
 		</main>
 	);
 }

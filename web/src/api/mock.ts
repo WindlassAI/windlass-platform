@@ -134,6 +134,7 @@ import {
 import { PlatformError, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
 import { isDurable, isLive, schedule, splitRuns, turnEnded, withSummary } from "./feed";
 import { fixture } from "./fixtures";
+import { createMockItems, type MockItemsState } from "./mock-items";
 
 export interface MockOptions {
 	/** Multiplies every wait: 1 is real time, 0 makes everything happen at once (still asynchronously). */
@@ -155,6 +156,10 @@ export interface MockOptions {
 	models?: "account" | "unavailable";
 	/** How the user's machines stand when the page loads (`MockMachineState`). Default "online". */
 	machine?: MockMachineState;
+	/** How the agent on the user's machine finds that machine when its page opens (`MockMachineSession`). Default "answering". */
+	machineSession?: MockMachineSession;
+	/** How the user's work items and API tokens stand when the page loads (mock-items.ts, `MockItemsState`). Default "all". */
+	items?: MockItemsState;
 }
 
 /**
@@ -177,10 +182,53 @@ export type MockUsageState = "plenty" | "low" | "used" | "full";
 export const MOCK_MACHINE_STATES = ["none", "online", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off"] as const;
 export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
 
+/**
+ * How the agent seeded on the machine "nas" finds it (`?machineSession=`), for looking at each banner of
+ * a session on a machine by hand: "answering"; "not_answering" (a turn waits on the machine, which
+ * stopped answering three minutes ago); "offline" (the machine went offline after the agent last used
+ * it); "removed" (the agent's machine was removed, so it is not in the list). A prompt to an agent whose
+ * machine is offline or removed fails at once with the server's sentence, as a turn that could not run.
+ * Seeded where the user's machines are listed with "nas" as reported, and for "removed" wherever machines are offered.
+ */
+export const MOCK_MACHINE_SESSIONS = ["answering", "not_answering", "offline", "removed"] as const;
+export type MockMachineSession = (typeof MOCK_MACHINE_SESSIONS)[number];
+
 /** What the mock's runners say they are, and what its platform asks of them. */
 const MOCK_RUNNER_VERSION = "0.2.1";
 const MOCK_MIN_RUNNER_VERSION = "0.2.0";
 const MOCK_RUNNER_IMAGE = "registry.example.com/windlass-runner@sha256:6b1f0c2d9e4a8b7c3f5e1d0a9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b";
+
+/** A machine's sandbox profiles as the server words them from its runner's report (server/src/runner/machine-profiles.ts): `docker` and `commandSandbox` are what failed, if anything. */
+function mockMachineProfiles(name: string, failed: { docker?: string; commandSandbox?: string } = {}): SandboxProfile[] {
+	const machine = `your machine "${name}"`;
+	const layers = [`Your machine "${name}" (yours; the platform does not control it)`, "Docker container made by the runner (non-root, no capabilities, limits)"];
+	const sandbox = failed.docker ?? failed.commandSandbox;
+	const trust = "The platform does not control this machine. It receives the repository, the saved secrets you allow and a ChatGPT token that lasts about an hour. The checks and changes shown are what your machine reports.";
+	return [
+		{
+			id: "docker-windlass-sandbox",
+			name: `Docker + Windlass sandbox on ${machine}`,
+			summary: `The agent runs in a container on ${machine}. As far as its runner reports, Windlass sandboxes each command, with no network and the session's access token out of reach. ${trust}`,
+			layers: [...layers, "Windlass's bubblewrap sandbox around each command (as the runner reports)"],
+			approval: "auto",
+			commandNetwork: false,
+			commandsCanReadAccessToken: false,
+			available: sandbox === undefined,
+			...(sandbox !== undefined ? { unavailableReason: sandbox } : {}),
+		},
+		{
+			id: "docker-hardened",
+			name: `Hardened Docker on ${machine}`,
+			summary: `Commands run directly in a container on ${machine}, can reach its local network and can read the session's access token. ${trust}`,
+			layers,
+			approval: "full",
+			commandNetwork: true,
+			commandsCanReadAccessToken: true,
+			available: failed.docker === undefined,
+			...(failed.docker !== undefined ? { unavailableReason: failed.docker } : {}),
+		},
+	];
+}
 
 /** What the next call about GitHub fails with, for looking at each failure by hand. */
 export type MockGithubFailure =
@@ -477,6 +525,8 @@ interface Script {
 	workspace?: Record<string, WorkspaceChange>;
 	/** The platform could not run the turn at all: no Windlass events, an "error" outcome with this message. */
 	platformFailure?: string;
+	/** With `platformFailure`: the sandbox's machine could not be reached, so the turn fails before its sandbox is opened. */
+	unreachable?: boolean;
 }
 
 const run = (name: string, index = 0): WindlassEvent[] => splitRuns(fixture(name))[index] ?? [];
@@ -989,6 +1039,8 @@ interface MockSession {
 	verified: Verified | null;
 	/** The messages that were taken with a key, by that key: the text, and what the prompt was answered. */
 	submissions: Map<string, Taken<{ turn: number; steered: boolean }>>;
+	/** For an agent on one of the user's machines: its sandbox profile as that machine offered it, and what the session last found of the machine (`SessionSnapshot.machine`). */
+	machine?: { profile: SandboxProfile; reach: NonNullable<SessionSnapshot["machine"]> | null };
 }
 
 /** What was taken under a submission's key: what it came with, and what its first attempt was answered. */
@@ -1092,6 +1144,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	};
 	/** The time a request takes. */
 	const latency = (ms = 140) => new Promise<void>((resolve) => later(ms, resolve));
+	// Work items, API tokens and the factory's limits live in mock-items.ts; an item's agent is made here, as `createSession` makes one.
+	const items = createMockItems({ state: options.items, now: () => realNow(), latency, later, feeds: (auth) => worldOf(auth).feeds, session: (auth, input) => userApi(auth).createSession({ ...input, profile: (profiles.find((profile) => profile.available) ?? profiles[0])?.id ?? "docker-windlass-sandbox" }) });
 
 	// ---- identity -------------------------------------------------------------------------------
 
@@ -1178,7 +1232,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	// ---- sessions -------------------------------------------------------------------------------
 
-	const profileOf = (session: MockSession): SandboxProfile => profiles.find((profile) => profile.id === session.summary.profile) ?? (MOCK_PROFILES[0] as SandboxProfile);
+	const profileOf = (session: MockSession): SandboxProfile => session.machine?.profile ?? profiles.find((profile) => profile.id === session.summary.profile) ?? (MOCK_PROFILES[0] as SandboxProfile);
 
 	const listOf = (world: World): SessionSummary[] => [...world.sessions.values()].map((session) => session.summary).sort((a, b) => b.createdAt - a.createdAt);
 
@@ -1201,8 +1255,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		return Math.max(0, MOCK_ALLOWANCE_SECONDS - held - spent - (usageState === "low" ? 14 * 60 : 0));
 	}
 
-	const runningSandboxes = (world: World) => [...world.sessions.values()].filter((session) => session.summary.sandbox === "running");
-	const keptSandboxes = (world: World) => [...world.sessions.values()].filter((session) => session.summary.sandbox !== "none");
+	// The day's time and the cap on kept sandboxes are the platform's own sandboxes': one on the user's machine is in neither.
+	const runningSandboxes = (world: World) => [...world.sessions.values()].filter((session) => session.summary.place.kind === "hosted" && session.summary.sandbox === "running");
+	const keptSandboxes = (world: World) => [...world.sessions.values()].filter((session) => session.summary.place.kind === "hosted" && session.summary.sandbox !== "none");
 
 	function usageNumbers(world: World): UsageNumbers {
 		const at = realNow();
@@ -1233,7 +1288,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				// What the day's state adds is the busiest agent's.
 				seconds: (world.spent.get(session.summary.id) ?? 0) + (session.summary.id === "add-test" ? offset : 0),
 				unreportedSeconds: MOCK_UNREPORTED[session.summary.id] ?? 0,
-				heldSeconds: session.summary.sandbox === "running" ? MOCK_HOLD_SECONDS : 0,
+				heldSeconds: session.summary.place.kind === "hosted" && session.summary.sandbox === "running" ? MOCK_HOLD_SECONDS : 0,
 			}))
 			.filter((row) => row.seconds > 0 || row.heldSeconds > 0)
 			.sort((a, b) => b.seconds + b.heldSeconds - (a.seconds + a.heldSeconds));
@@ -1441,6 +1496,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				setSummary(world, session, { status: "starting", model, title, updatedAt: now() });
 			},
 		});
+		if (script.unreachable && script.platformFailure !== undefined) {
+			const message = script.platformFailure;
+			steps.push({ wait: 400, run: () => finish(world, session, { outcome: "error", exitCode: null, steps: null, usage: null, cachedShare: null, message }) });
+			return steps;
+		}
 		if (session.summary.sandbox === "none") {
 			steps.push({ wait: 350, run: () => store(session, { turn, kind: "platform", level: "info", text: `Creating sandbox: ${profileOf(session).name}` }) });
 			if (session.summary.repoUrl !== null) {
@@ -1850,7 +1910,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			verified: (session.verified = verifiedAfter(world, session, state.turn, end.outcome)),
 		});
 		// What the turn's sandbox ran is counted for the day.
-		if (clock === null) world.spent.set(session.summary.id, (world.spent.get(session.summary.id) ?? 0) + Math.max(1, Math.round((now() - state.startedAt) / 1000)));
+		if (clock === null && session.summary.place.kind === "hosted") world.spent.set(session.summary.id, (world.spent.get(session.summary.id) ?? 0) + Math.max(1, Math.round((now() - state.startedAt) / 1000)));
 		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: end.outcome, updatedAt: now() });
 		// An idle sandbox is suspended after a while, and the timeline says so as the server's does; its files stay.
 		if (clock === null) {
@@ -1991,10 +2051,15 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			profile: SessionSummary["profile"],
 			ago: number,
 			turns: Array<{ text: string; script: ScriptName; effort?: string }>,
-			extra: { repoUrl?: string; sandbox?: SessionSummary["sandbox"]; model?: string; repository?: SessionRepository; pull?: Pick<PullRequestInfo, "number" | "state"> & { hoursAgo: number; clean?: boolean }; olderWindlass?: boolean } = {},
+			extra: { repoUrl?: string; sandbox?: SessionSummary["sandbox"]; model?: string; repository?: SessionRepository; pull?: Pick<PullRequestInfo, "number" | "state"> & { hoursAgo: number; clean?: boolean }; olderWindlass?: boolean; machine?: NonNullable<MockSession["machine"]> & { machineId: string } } = {},
 		): MockSession => {
 			clock = start - ago;
 			const session = addSession(world, { id, title, titled: true, profile, model: extra.model ?? (MODELS[0] as string), repoUrl: extra.repoUrl ?? null, repository: githubOn ? extra.repository : undefined });
+			if (extra.machine) {
+				// Before its turns play: they say which sandbox they ran in.
+				session.summary = { ...session.summary, place: { kind: "machine", machineId: extra.machine.machineId } };
+				session.machine = { profile: extra.machine.profile, reach: extra.machine.reach };
+			}
 			let at = start - ago;
 			// Said before its turns play: each of them ran on that Windlass.
 			if (extra.olderWindlass) session.summary = { ...session.summary, envLists: false, requiredChecks: false };
@@ -2064,6 +2129,20 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		// One agent is at work when the user arrives: a second turn, a long build, played slowly.
 		const building = history("harbor-build", "Check the release build", "docker-windlass-sandbox", 6 * MINUTE, [{ text: "Fix the failing test.", script: "steps" }], { sandbox: "running", repoUrl: "https://github.com/acme/harbor.git", repository: sessionRepository("acme", "harbor") });
 		play(building, plan(world, building, { text: "Run the full build and the tests, and tell me if they pass.", effort: "medium" }, { ...SCRIPTS.build, stretch: 7 }));
+
+		// One agent on the user's machine "nas", which finds it as `?machineSession=` says; when its machine was removed, it was another one.
+		if (machineSessionSeeded) {
+			const removed = machineSession === "removed";
+			const reach: NonNullable<MockSession["machine"]>["reach"] =
+				machineSession === "not_answering" ? { state: "not_answering", since: start - 3 * MINUTE } : removed ? { state: "removed", since: start - 2 * HOUR } : { state: "answering", since: start - 25 * MINUTE };
+			const machine = { machineId: removed ? "m_old" : "m_nas", profile: mockMachineProfiles(removed ? "old-laptop" : "nas")[0] as SandboxProfile, reach };
+			const onNas = history("nas-tests", "Run the tests on my machine", "docker-windlass-sandbox", 25 * MINUTE, [{ text: "The add test is failing. Find out why and fix it.", script: "fix", effort: "low" }], { sandbox: machineSession === "answering" ? "running" : "paused", machine });
+			// A turn that was under way when the machine stopped answering: it waits for it.
+			if (machineSession === "not_answering") {
+				onNas.summary = { ...onNas.summary, sandbox: "running" };
+				play(onNas, plan(world, onNas, { text: "Run the full build and the tests, and tell me if they pass.", effort: "medium" }, { ...SCRIPTS.build, stretch: 40 }));
+			}
+		}
 
 		// The user saved a setup command for acme/harbor some days ago: the launch form and the panel show it.
 		world.setups.set(7101, { command: "npm ci", updatedAt: start - 3 * 24 * HOUR - 50 * MINUTE });
@@ -2428,6 +2507,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	const machineState: MockMachineState = options.machine ?? "online";
+	const machineSession: MockMachineSession = options.machineSession ?? "answering";
+	// The agent on "nas" is seeded where "nas" is listed as its runner reported it, and, when its machine was removed, wherever machines are offered.
+	const machineSessionSeeded = machineSession === "removed" ? machineState !== "off" : !["none", "unpublished", "off", "pairing"].includes(machineState);
 	const machineSets = new Map<string, MockMachines>();
 
 	function machinesOf(auth: AuthResult): MockMachines {
@@ -2457,6 +2539,23 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		return machine;
 	}
 
+	/**
+	 * For an agent on one of the user's machines: the sentence its turn fails with when the machine cannot
+	 * be reached, as server/src/sandbox/runner-layer.ts words it, and null when it can. What it found is
+	 * kept for the session's snapshot, as the server's link notes it.
+	 */
+	function machineUnreachable(auth: AuthResult, session: MockSession): string | null {
+		const { place } = session.summary;
+		if (place.kind !== "machine") return null;
+		const machine = machinesOf(auth).list.find((one) => one.machineId === place.machineId);
+		const state = machine === undefined ? "removed" : machine.status === "online" ? "answering" : "offline";
+		const reach = session.machine?.reach ?? null;
+		if (session.machine && reach?.state !== state && (state !== "offline" || reach?.state !== "not_answering")) session.machine.reach = { state, since: realNow() };
+		if (machine === undefined) return "This agent's machine was removed. Its files were there. Start a new agent to go on.";
+		if (state === "offline") return `Your machine "${machine.name}" is offline. The agent's files are there; send the prompt again when it is back.`;
+		return null;
+	}
+
 	/** The user's live feeds drop and come back, as `simulateDrop` does for everything. */
 	function dropUserFeeds(auth: AuthResult): void {
 		const world = worldOf(auth);
@@ -2473,6 +2572,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		if (machineState === "off") throw new PlatformError("user", "This deployment does not run agents on machines of your own.", { reason: "machines_off" });
 	}
 
+	const WORKSHOP_NO_BUBBLEWRAP = "Unprivileged user namespaces are turned off on this kernel (kernel.apparmor_restrict_unprivileged_userns=1), so bubblewrap cannot start.";
+
 	/** The machines a state starts with. Their sandboxes name the seeded agents; titles are looked up when the list is read. */
 	function seedMachines(state: MockMachineState): MachineSummary[] {
 		const at = realNow();
@@ -2486,14 +2587,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			since: at - 3 * HOUR,
 			agents: 3,
 			sandboxes: [
-				{ sessionId: "headers", title: null, state: "running", usedAt: at - 2 * MINUTE },
-				{ sessionId: "probe", title: null, state: "paused", usedAt: at - 2 * HOUR },
+				...(machineSessionSeeded && machineSession !== "removed" ? [{ sessionId: "nas-tests", title: null, state: machineSession === "answering" ? ("running" as const) : ("paused" as const), usedAt: at - 3 * MINUTE }] : []),
 				{ sessionId: "gone", title: null, state: "paused", usedAt: at - 4 * 24 * HOUR },
 			],
 			commandSandbox: { ok: true },
 			freeDiskBytes: 61.4e9,
-			// The launch form does not offer machines yet: when it does, the mock names their profiles here.
-			profiles: [],
+			profiles: mockMachineProfiles(patch.name ?? "nas"),
 			sendSecrets: true,
 			warnings: [],
 			...patch,
@@ -2505,12 +2604,15 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				return [];
 			case "offline":
 				return [nas({ status: "offline", since: at - 47 * MINUTE })];
+			// The agent on "nas" finds it offline: the machine went offline after the agent last used it, or while a turn waited on it.
+			case "online":
+				return [machineSession === "offline" ? nas({ status: "offline", since: at - 12 * MINUTE }) : machineSession === "not_answering" ? nas({ status: "offline", since: at - 3 * MINUTE }) : nas({})];
 			case "pairing":
-				return [nas({ status: "waiting", since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null })];
+				return [nas({ status: "waiting", since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [] })];
 			case "outdated":
 				return [nas({ status: "offline", since: at - 12 * MINUTE, runnerVersion: "0.1.0", warnings: [{ kind: "outdated" }] })];
 			case "docker":
-				return [nas({ warnings: [{ kind: "docker", reason: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" }] })];
+				return [nas({ warnings: [{ kind: "docker", reason: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" }], profiles: mockMachineProfiles("nas", { docker: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" }) })];
 			case "clock":
 				return [nas({ warnings: [{ kind: "clock", offsetSeconds: 7 * 60 + 12 }] })];
 			case "key":
@@ -2518,7 +2620,19 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			case "full":
 				return [
 					nas({}),
-					nas({ machineId: "m_workshop", name: "workshop", arch: "x64", status: "offline", since: at - 2 * 24 * HOUR, agents: 1, sandboxes: [{ sessionId: "suite", title: null, state: "paused", usedAt: at - 2 * 24 * HOUR }], commandSandbox: { ok: false, reason: "Unprivileged user namespaces are turned off on this kernel (kernel.apparmor_restrict_unprivileged_userns=1), so bubblewrap cannot start." }, freeDiskBytes: 3.2e9, sendSecrets: false }),
+					nas({
+						machineId: "m_workshop",
+						name: "workshop",
+						arch: "x64",
+						status: "offline",
+						since: at - 2 * 24 * HOUR,
+						agents: 1,
+						sandboxes: [{ sessionId: "workshop-gone", title: null, state: "paused", usedAt: at - 2 * 24 * HOUR }],
+						commandSandbox: { ok: false, reason: WORKSHOP_NO_BUBBLEWRAP },
+						profiles: mockMachineProfiles("workshop", { commandSandbox: WORKSHOP_NO_BUBBLEWRAP }),
+						freeDiskBytes: 3.2e9,
+						sendSecrets: false,
+					}),
 					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9 }),
 				];
 			default:
@@ -2614,6 +2728,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const world = () => worldOf(auth);
 		return {
 			...machineCalls(auth),
+			...items.calls(auth),
 			async me() {
 				await latency();
 				return world().profile;
@@ -2637,7 +2752,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const key = keyOf(idempotencyKey);
 				const made = world().sessions.get(takenUnder(world().created, key, JSON.stringify(input), "agent") ?? "");
 				if (made) return made.summary;
-				const profile = profiles.find((candidate) => candidate.id === input.profile);
+				// On one of the user's machines, the sandboxes are the ones its runner last reported.
+				const machine = input.place?.kind === "machine" ? machineOf(auth, input.place.machineId) : null;
+				const profile = (machine ? machine.profiles : profiles).find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
 				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());
 				const models = modelsFor(world().profile);
@@ -2655,6 +2772,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
 				if (repository && input.setupCommand !== undefined) saveSetup(world(), repository.id, input.setupCommand);
 				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, model: input.model ?? models.defaultModel, repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
+				if (machine) {
+					session.summary = { ...session.summary, place: { kind: "machine", machineId: machine.machineId } };
+					session.machine = { profile, reach: null };
+					machine.agents += 1;
+					machinesChanged(auth);
+				}
 				setSummary(world(), session, {});
 				if (key !== null) world().created.set(key, { content: JSON.stringify(input), answer: session.summary.id });
 				return session.summary;
@@ -2935,6 +3058,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		timeline: [...session.timeline],
 		pending: [...session.pending],
 		question: session.question,
+		...(session.summary.place.kind === "machine" ? { machine: session.machine?.reach ?? null } : {}),
 	});
 
 	function sessionApi(auth: AuthResult, id: string): SessionApi {
@@ -3006,10 +3130,18 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (input.effort !== undefined && efforts !== undefined && !efforts.includes(input.effort)) {
 					throw new PlatformError("user", efforts.length === 0 ? `${input.model ?? session.summary.model} takes no reasoning effort. Leave the effort at its default.` : `The effort for ${input.model ?? session.summary.model} must be one of: ${efforts.join(", ")}`, { reason: "bad_effort" });
 				}
-				// The user's two limits, as the server holds a prompt to them: time for the sandbox to run on, and a place for one the agent does not have.
+				// The user's two limits, as the server holds a prompt to them: time for the sandbox to run on, and a place for one the agent does not have. Not on the user's own machine.
 				const numbers = usageNumbers(world);
-				if ((numbers.leftSeconds ?? 0) < numbers.startSeconds) throw new PlatformError("user", mockAllowanceRefusal(numbers), { reason: "allowance_used" });
-				if (session.summary.sandbox === "none" && numbers.sandboxes.limit !== null && numbers.sandboxes.kept >= numbers.sandboxes.limit) throw new PlatformError("user", mockSandboxRefusal(numbers), { reason: "too_many_sandboxes" });
+				const hosted = session.summary.place.kind === "hosted";
+				if (hosted && (numbers.leftSeconds ?? 0) < numbers.startSeconds) throw new PlatformError("user", mockAllowanceRefusal(numbers), { reason: "allowance_used" });
+				if (hosted && session.summary.sandbox === "none" && numbers.sandboxes.limit !== null && numbers.sandboxes.kept >= numbers.sandboxes.limit) throw new PlatformError("user", mockSandboxRefusal(numbers), { reason: "too_many_sandboxes" });
+				// A machine that cannot be reached fails the turn at once, with the server's sentence, as the server's turn does when its sandbox cannot be opened.
+				const unreachable = machineUnreachable(auth, session);
+				if (unreachable !== null) {
+					const turn = session.summary.turns + 1;
+					play(session, plan(world, session, { ...input, text }, { events: [], platformFailure: unreachable, unreachable: true }));
+					return take({ turn, steered: false });
+				}
 				const name = chooseScript(text, world.rotation);
 				if (ROTATION[world.rotation % ROTATION.length] === name) world.rotation += 1;
 				// A second plain answer in one session uses the recording's second run.

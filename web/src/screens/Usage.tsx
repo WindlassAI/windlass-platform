@@ -11,6 +11,8 @@
 import { USAGE_HISTORY_DAYS, type KeptSandbox, type UsageView } from "@contract";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog } from "../components/Dialog";
+import { FactoryUsage } from "../components/FactoryUsage";
+import { MachineUsage } from "../components/MachineUsage";
 import { ArrowLeftIcon, WarnIcon } from "../components/Icons";
 import { SandboxState } from "../components/Status";
 import { absoluteTime, count, localTime, plural, relativeTime, sandboxClock, sandboxTime as spelledTime, usd, utcDay } from "../lib/format";
@@ -403,6 +405,10 @@ export function Usage() {
 					</ul>
 				)}
 			</section>
+
+			<MachineUsage />
+
+			<FactoryUsage />
 
 			<section className="usage-section" aria-labelledby="usage-history">
 				<h2 className="usage-title" id="usage-history">

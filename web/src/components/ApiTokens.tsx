@@ -1,0 +1,257 @@
+/**
+ * The settings page's API tokens: for a script that files work items and reads them over the
+ * platform's HTTP API. The list is the user's actor's (`apiTokens`), read when the page opens; every
+ * change answers with the list as it is then. A token's value is shown once, in the dialog that made
+ * it, and never again: the platform keeps only a digest of it.
+ */
+import { MAX_API_TOKENS, type ApiToken, type ApiTokenScope } from "@contract";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { absoluteTime, day, relativeTime } from "../lib/format";
+import { useApp, useAuth } from "../state/app";
+import { useNow } from "../state/hooks";
+import { CopyButton } from "./Copy";
+import { Dialog } from "./Dialog";
+import { WarnIcon } from "./Icons";
+
+const SCOPES: Array<{ scope: ApiTokenScope; name: string; means: string }> = [
+	{ scope: "items:create", name: "File work items", means: "POST /api/items: on your repositories, as you would from a repository's page." },
+	{ scope: "items:read", name: "Read work items", means: "GET /api/items/<id>: where an item is, its verdict and its cost." },
+];
+const scopeWords = (scopes: ApiTokenScope[]) => scopes.map((scope) => (scope === "items:create" ? "files items" : "reads items")).join(", ");
+
+function Failure({ error }: { error: string | null }) {
+	if (!error) return null;
+	return (
+		<p className="callout callout-bad" role="alert">
+			<WarnIcon />
+			<span>{error}</span>
+		</p>
+	);
+}
+
+/** Making a token: its name and what it may do; then its value, this once. */
+function NewTokenDialog({ onClose, onMade }: { onClose(): void; onMade(token: ApiToken): void }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [name, setName] = useState("");
+	const [scopes, setScopes] = useState<ApiTokenScope[]>(["items:create", "items:read"]);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const [secret, setSecret] = useState<string | null>(null);
+	const ids = { form: useId(), name: useId() };
+	const ready = name.trim() !== "" && scopes.length > 0;
+
+	const make = async (event: FormEvent) => {
+		event.preventDefault();
+		if (!ready || busy) return;
+		setBusy(true);
+		setError(null);
+		try {
+			const made = await client.user(auth).createApiToken({ name: name.trim(), scopes });
+			onMade(made.token);
+			setSecret(made.secret);
+		} catch (failure) {
+			setError(explain(failure));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	if (secret !== null) {
+		return (
+			<Dialog
+				title={`“${name.trim()}” is made`}
+				lede="Copy its value now. It is not shown again: the platform keeps only a digest of it."
+				onClose={onClose}
+				footer={
+					<button type="button" className="button button-primary" onClick={onClose} data-autofocus>
+						Done
+					</button>
+				}
+			>
+				<div className="machine-command">
+					<pre tabIndex={0} aria-label="The token">
+						{secret}
+					</pre>
+					<CopyButton text={secret} label="Copy the token" />
+				</div>
+				<p className="field-note">Send it as <code>Authorization: Bearer {secret.slice(0, 8)}…</code>. Anyone who has it can do what its scopes allow until you revoke it.</p>
+			</Dialog>
+		);
+	}
+
+	return (
+		<Dialog
+			title="New API token"
+			onClose={onClose}
+			dismissable={!busy}
+			footer={
+				<>
+					<button type="button" className="button button-quiet" onClick={onClose} disabled={busy}>
+						Cancel
+					</button>
+					<button type="submit" form={ids.form} className="button button-primary" disabled={!ready || busy}>
+						{busy ? "Making…" : "Make token"}
+					</button>
+				</>
+			}
+		>
+			<form id={ids.form} className="item-form" onSubmit={make}>
+				<div>
+					<label className="label" htmlFor={ids.name}>
+						Name
+					</label>
+					<input id={ids.name} className="input" value={name} maxLength={64} placeholder="Nightly triage script" onChange={(event) => setName(event.target.value)} readOnly={busy} data-autofocus />
+					<p className="field-note">For you to tell it apart: where it is used.</p>
+				</div>
+				<fieldset className="item-scopes">
+					<legend className="label">What it may do</legend>
+					{SCOPES.map(({ scope, name: label, means }) => {
+						const on = scopes.includes(scope);
+						return (
+							<label key={scope} className={`check${on ? " check-on" : ""}`}>
+								<input className="check-input" type="checkbox" checked={on} disabled={busy} onChange={(event) => setScopes((now) => (event.target.checked ? [...now, scope] : now.filter((one) => one !== scope)))} />
+								<span className="check-box" aria-hidden="true" />
+								<span className="check-text">
+									<span className="check-name">{label}</span>
+									<span className="check-means">{means}</span>
+								</span>
+							</label>
+						);
+					})}
+				</fieldset>
+				<Failure error={error} />
+			</form>
+		</Dialog>
+	);
+}
+
+function RevokeDialog({ token, onClose, onRevoked }: { token: ApiToken; onClose(): void; onRevoked(list: ApiToken[]): void }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const revoke = async () => {
+		setBusy(true);
+		setError(null);
+		try {
+			onRevoked(await client.user(auth).revokeApiToken(token.id));
+			onClose();
+		} catch (failure) {
+			setError(explain(failure));
+			setBusy(false);
+		}
+	};
+	return (
+		<Dialog
+			title={`Revoke “${token.name}”?`}
+			size="small"
+			onClose={onClose}
+			dismissable={!busy}
+			footer={
+				<>
+					<button type="button" className="button button-quiet" onClick={onClose} disabled={busy}>
+						Keep it
+					</button>
+					<button type="button" className="button button-danger" onClick={revoke} disabled={busy}>
+						{busy ? "Revoking…" : "Revoke token"}
+					</button>
+				</>
+			}
+		>
+			<p>It stops working at once: whatever sends it is refused from then on. Work items it filed stay.</p>
+			<Failure error={error} />
+		</Dialog>
+	);
+}
+
+export function ApiTokens() {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const now = useNow(60_000);
+	const [state, setState] = useState<{ list: ApiToken[] | null; error: string | null }>({ list: null, error: null });
+	const [making, setMaking] = useState(false);
+	const [revoking, setRevoking] = useState<ApiToken | null>(null);
+	const asked = useRef(0);
+
+	const reload = useCallback(() => {
+		const mine = ++asked.current;
+		client
+			.user(auth)
+			.apiTokens()
+			.then(
+				(list) => mine === asked.current && setState({ list, error: null }),
+				(failure: unknown) => mine === asked.current && setState((current) => ({ list: current.list, error: explain(failure) })),
+			);
+	}, [client, auth, explain]);
+
+	useEffect(() => {
+		reload();
+		return () => {
+			asked.current += 1;
+		};
+	}, [reload]);
+
+	const replace = (list: ApiToken[]) => {
+		asked.current += 1;
+		setState({ list, error: null });
+	};
+	const { list } = state;
+	const full = list !== null && list.length >= MAX_API_TOKENS;
+
+	return (
+		<section className="usage-section repo-saved" aria-labelledby="settings-tokens">
+			<h2 className="usage-title" id="settings-tokens">
+				API tokens
+				{list && list.length > 0 ? <span className="usage-count">{`${list.length} of ${MAX_API_TOKENS}`}</span> : null}
+				<button type="button" className="link secret-add" onClick={() => setMaking(true)} disabled={list === null || full} title={full ? `An account can keep ${MAX_API_TOKENS} tokens: revoke one first` : undefined}>
+					New token…
+				</button>
+			</h2>
+			<p className="usage-lede">
+				For a script that files your work items and reads them: it sends one as <code>Authorization: Bearer &lt;token&gt;</code> with <code>POST /api/items</code>. A token works until you revoke it.
+			</p>
+			{full ? <p className="usage-note tone-warn">An account can keep {MAX_API_TOKENS} tokens: revoke one to make another.</p> : null}
+			{list === null ? (
+				state.error ? (
+					<div className="state state-error" role="alert">
+						<WarnIcon size={22} />
+						<h2>Your API tokens could not be loaded</h2>
+						<p>{state.error}</p>
+						<button type="button" className="button button-outline" onClick={reload}>
+							Try again
+						</button>
+					</div>
+				) : (
+					<p className="usage-empty" aria-busy="true">
+						Reading your tokens…
+					</p>
+				)
+			) : list.length === 0 ? (
+				<p className="usage-empty">No API token yet.</p>
+			) : (
+				<ul className="usage-kept" aria-label="Your API tokens">
+					{list.map((token) => (
+						<li key={token.id} className="usage-kept-row">
+							<div className="usage-kept-main">
+								<span className="usage-kept-title token-name">{token.name}</span>
+								<p className="agent-meta">
+									<span>{scopeWords(token.scopes)}</span>
+									<span>made {day(token.createdAt)}</span>
+								</p>
+							</div>
+							<span className="machine-used" title={token.usedAt === null ? undefined : absoluteTime(token.usedAt)}>{token.usedAt === null ? "never used" : `used ${relativeTime(token.usedAt, now)}`}</span>
+							<button type="button" className="button button-outline button-small" onClick={() => setRevoking(token)}>
+								<span>
+									Revoke<span className="visually-hidden"> {token.name}</span>…
+								</span>
+							</button>
+						</li>
+					))}
+				</ul>
+			)}
+			{making ? <NewTokenDialog onClose={() => setMaking(false)} onMade={(token) => replace([token, ...(list ?? []).filter((one) => one.id !== token.id)])} /> : null}
+			{revoking ? <RevokeDialog token={revoking} onClose={() => setRevoking(null)} onRevoked={replace} /> : null}
+		</section>
+	);
+}

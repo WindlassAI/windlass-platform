@@ -3,7 +3,7 @@
  * screen draws. A plain store (no React) so it can be tested and so a burst of streaming deltas
  * becomes one render per frame.
  */
-import type { PendingQuestion, SandboxProfile, SessionSummary } from "@contract";
+import type { PendingQuestion, SandboxProfile, SessionSnapshot, SessionSummary } from "@contract";
 import type { ConnectionState, PlatformError, SessionApi } from "../api/client";
 import { applyDelta, applyItem, emptyView, fromSnapshot, type SessionView } from "../lib/timeline";
 
@@ -19,6 +19,8 @@ export interface SessionState {
 	question: PendingQuestion | null;
 	/** Counts the turns that ended while the session was open: the changes list reloads when it moves. */
 	turnsEnded: number;
+	/** For a session on one of the user's machines, what the last snapshot said of the machine; nothing pushes a change to it between snapshots. */
+	machine: SessionSnapshot["machine"];
 }
 
 export interface SessionStore {
@@ -34,7 +36,7 @@ const frame = (run: () => void): void => {
 };
 
 export function createSessionStore(api: SessionApi): SessionStore {
-	let state: SessionState = { phase: "loading", connection: "connecting", error: null, summary: null, profile: null, view: emptyView(), question: null, turnsEnded: 0 };
+	let state: SessionState = { phase: "loading", connection: "connecting", error: null, summary: null, profile: null, view: emptyView(), question: null, turnsEnded: 0, machine: undefined };
 	const listeners = new Set<() => void>();
 	let scheduled = false;
 	let resyncing = false;
@@ -59,7 +61,7 @@ export function createSessionStore(api: SessionApi): SessionStore {
 			return api.open({
 				onSnapshot(snapshot) {
 					resyncing = false;
-					set({ phase: "ready", error: null, summary: snapshot.summary, profile: snapshot.profile, view: fromSnapshot(snapshot), question: snapshot.question ?? null });
+					set({ phase: "ready", error: null, summary: snapshot.summary, profile: snapshot.profile, view: fromSnapshot(snapshot), question: snapshot.question ?? null, machine: snapshot.machine });
 				},
 				onItem(item) {
 					if (state.phase !== "ready") return;

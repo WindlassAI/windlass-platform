@@ -1,6 +1,6 @@
 /**
  * Routing by URL with the History API: sign-in, home, the new-agent dialog over home, the usage page, the account's settings and machines,
- * a session by its ID, and a repository's page by GitHub's id for it, with the new-agent dialog over
+ * a session by its ID, a work item by its ID, and a repository's page by GitHub's id for it, with the new-agent dialog over
  * that page too. A reload stays on the same screen; `?mock=1` is carried from one address to the next.
  */
 import { useSyncExternalStore } from "react";
@@ -19,6 +19,8 @@ export type Route =
 	| { name: "machines"; add?: boolean }
 	| { name: "signin" }
 	| { name: "session"; id: string }
+	/** A work item: where it is, what it waits for, what it asks, its verdicts and its cost. */
+	| { name: "item"; id: string }
 	/** The mock's stand-in for OpenAI's sign-in page. */
 	| { name: "mock-authorize" }
 	| { name: "notfound" };
@@ -37,6 +39,8 @@ export function parseRoute(pathname: string): Route {
 	if (repository?.[1]) return repository[2] ? { name: "new", repository: Number(repository[1]) } : { name: "repository", id: Number(repository[1]) };
 	const session = /^\/agents\/([^/]+)$/.exec(path);
 	if (session?.[1]) return { name: "session", id: decodeURIComponent(session[1]) };
+	const item = /^\/items\/([^/]+)$/.exec(path);
+	if (item?.[1]) return { name: "item", id: decodeURIComponent(item[1]) };
 	return { name: "notfound" };
 }
 
@@ -58,6 +62,8 @@ function pathOf(route: Route): string {
 			return "/signin";
 		case "session":
 			return `/agents/${encodeURIComponent(route.id)}`;
+		case "item":
+			return `/items/${encodeURIComponent(route.id)}`;
 		case "mock-authorize":
 			return "/mock/authorize";
 		case "notfound":

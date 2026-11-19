@@ -1,0 +1,848 @@
+/**
+ * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
+ * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
+ * "Work items", and `UserActions.listItems` to `revokeApiToken`), and pushes the list to the user's
+ * live feeds (`UserFeed.onItems`) after every change, as `UserEvents.items` is.
+ *
+ * Every sentence an item shows is the server's (server/src/factory/blueprint.ts, budget.ts and
+ * verdict.ts, server/src/actors/user-items.ts), copied here: the screens only display them. The seeded
+ * set has one item in each state, each wait sentence, each question of slice 1, and a review with each
+ * verdict and each state of CI.
+ *
+ * mock.ts wires it in with one hook: `createMockItems(…)` once, and `...items.calls(auth)` in the user's interface.
+ */
+import {
+	MAX_ACCEPTANCE_CRITERIA,
+	MAX_API_TOKENS,
+	MAX_ITEM_BODY_CHARS,
+	MAX_NOTE_CHARS,
+	MAX_TITLE_CHARS,
+	type ApiToken,
+	type ApiTokenScope,
+	type AuthResult,
+	type ChoiceId,
+	type CreateItemInput,
+	type CreateSessionInput,
+	type FactoryLimits,
+	type ItemAction,
+	type ItemBudget,
+	type ItemEvent,
+	type ItemQuestion,
+	type ItemRun,
+	type ItemSummary,
+	type ItemView,
+	type SessionRepository,
+	type SessionSummary,
+	type StepKind,
+	type Verdict,
+	type VerdictRun,
+	type Waiting,
+} from "@contract";
+import { PlatformError, type UserApi, type UserFeed } from "./client";
+
+/**
+ * How the user's work items stand when the page loads (`?items=`): "all" (the default: every state,
+ * wait, question and verdict, on three repositories), "few" (three questions on two repositories and
+ * little else), "none" (no item and no API token), "full" (all of them, and as many API tokens as an
+ * account may have), "loading" (nothing is ever answered) and "failed" (nothing can be read).
+ */
+export const MOCK_ITEMS_STATES = ["all", "few", "none", "full", "loading", "failed"] as const;
+export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
+
+export interface MockItemsDeps {
+	state?: MockItemsState;
+	now(): number;
+	/** Waits as long as the mock's answers take. */
+	latency(ms?: number): Promise<void>;
+	later(ms: number, action: () => void): unknown;
+	/** The user's open live feeds. */
+	feeds(auth: AuthResult): Iterable<UserFeed>;
+	/** Makes the item's agent, as `createSession` does. */
+	session(auth: AuthResult, input: Omit<CreateSessionInput, "profile">): Promise<SessionSummary>;
+}
+
+/** The deployment's limits (server/src/factory/budget.ts, `FACTORY_DEFAULTS`). */
+export const MOCK_FACTORY_LIMITS: FactoryLimits = {
+	runningTurns: 6,
+	factoryTurns: 5,
+	hostedRunning: 3,
+	reviewCap: 6,
+	item: { tokens: 4_000_000, turns: 10, activeSeconds: 4 * 3600, hostedSeconds: 1.5 * 3600 },
+};
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+
+const repository = (id: number, owner: string, name: string, isPrivate: boolean): SessionRepository => ({ provider: "github", id, owner, name, branch: "main", private: isPrivate, url: `https://github.com/${owner}/${name}` });
+/** Repositories of the mock's GitHub connection (mock.ts), with the seeded agent each item's session stands for. */
+const HARBOR = { repository: repository(7101, "acme", "harbor", true), session: "harbor-build" };
+const TIDES = { repository: repository(7102, "ada", "tide-tables", false), session: "add-test" };
+const DOCS = { repository: repository(7103, "acme", "lighthouse-docs", false), session: "changelog" };
+
+/** The choices' labels (blueprint.ts, `CHOICES`). */
+const CHOICES: Record<ChoiceId, string> = {
+	approve: "Approve the plan",
+	revise: "Revise the plan",
+	raise: "Raise the limit and go on",
+	retry: "Retry from scratch",
+	again: "Try again",
+	wait: "Keep waiting",
+	hand_over: "Hand it over as it is",
+	give_up: "Give up",
+};
+const choices = (...ids: ChoiceId[]) => ids.map((id) => ({ id, label: CHOICES[id] }));
+
+const hex = (seed: number, length = 40) => {
+	let out = "";
+	let value = seed * 2654435761;
+	while (out.length < length) {
+		value = (value * 1103515245 + 12345) >>> 0;
+		out += value.toString(16).padStart(8, "0");
+	}
+	return out.slice(0, length);
+};
+const short = (sha: string) => sha.slice(0, 7);
+/** A new id or value, for what is made here rather than seeded. */
+const fresh = (length: number) => crypto.randomUUID().replace(/-/g, "").slice(0, length);
+const utc = (at: number) => new Date(at).toISOString().slice(11, 16);
+
+/** "1 h 30 min" (server/src/usage.ts, `spellSeconds`). */
+function spellSeconds(total: number): string {
+	const seconds = Math.max(0, Math.round(total));
+	const hours = Math.floor(seconds / 3600);
+	const minutes = Math.floor((seconds % 3600) / 60);
+	const rest = seconds % 60;
+	if (hours > 0) return minutes === 0 ? `${hours} h` : `${hours} h ${minutes} min`;
+	if (minutes >= 10 || (minutes > 0 && rest === 0)) return `${minutes} min`;
+	if (minutes > 0) return `${minutes} min ${rest} s`;
+	return `${seconds} s`;
+}
+
+interface Seed {
+	n: number;
+	title: string;
+	on: typeof HARBOR;
+	state: ItemSummary["state"];
+	source?: ItemSummary["source"];
+	body?: string;
+	acceptance?: string[];
+	/** Minutes ago it was filed. */
+	filed: number;
+	wait?: { reason: Waiting["reason"]; sentence: string; since: number; retryAt: number | null };
+	question?: Omit<ItemQuestion, "id" | "askedAt"> & { asked: number };
+	pr?: number;
+	run?: Omit<ItemRun, "startedAt" | "endedAt" | "step"> & { started: number; ended?: number; step: { n: number; kind: StepKind; attempt?: number; started: number; turn?: ItemRun["step"]["turn"] } };
+	events?: Array<[ago: number, said: string, step?: [run: number, n: number, kind: StepKind, attempt?: number], person?: boolean]>;
+	verdicts?: Array<Omit<Verdict, "id" | "item" | "head" | "at" | "place" | "attestedBy" | "acceptance"> & { ago: number }>;
+	spent?: Partial<ItemBudget>;
+	budget?: Partial<ItemBudget>;
+}
+
+const ci = {
+	passed: (count = 3): Verdict["ci"] => ({ state: "passed", runs: ciRuns(count, "success"), said: null }),
+	failed: (): Verdict["ci"] => ({ state: "failed", runs: [...ciRuns(2, "success"), { name: "lint", app: "github-actions", conclusion: "failure", url: "https://github.com/acme/harbor/actions/runs/9120" }], said: null }),
+	none: (): Verdict["ci"] => ({ state: "none", runs: [], said: null }),
+	timedOut: (): Verdict["ci"] => ({ state: "timed_out", runs: [...ciRuns(1, "success"), { name: "e2e", app: "github-actions", conclusion: "", url: "https://github.com/acme/harbor/actions/runs/9188" }], said: null }),
+	notPermitted: (): Verdict["ci"] => ({ state: "not_permitted", runs: [], said: "Resource not accessible by integration" }),
+};
+
+function ciRuns(count: number, conclusion: string): VerdictRun[] {
+	const names = ["build", "test (node 22)", "test (node 24)", "typecheck", "docs"];
+	return names.slice(0, count).map((name, index) => ({ name, app: "github-actions", conclusion, url: `https://github.com/acme/harbor/actions/runs/${9100 + index}` }));
+}
+
+const userChecks = (...statuses: Array<[name: string, status: Verdict["gate"]["required"][number]["status"], sentBack?: number]>): Verdict["gate"]["required"] => statuses.map(([name, status, sentBack]) => ({ name, status, sentBack: sentBack ?? 0 }));
+const passingGate: Verdict["gate"] = { state: "passed", required: userChecks(["unit tests", "passed"], ["lint", "passed"]) };
+
+const BODY = "The release script uploads every artefact in one go. Make it retry an upload that times out, at most three times, and say which one failed when it gives up.";
+const ACCEPTANCE = ["An upload that times out is tried again, at most three times.", "The error names the artefact that could not be uploaded."];
+
+/** The seeded set for a state, relative to `at`. */
+function seeds(state: MockItemsState, at: number): Seed[] {
+	const all: Seed[] = [
+		{ n: 1, title: "Add a --dry-run flag to the release script", on: HARBOR, state: "draft", filed: 40, body: "Print what the release script would upload and tag, without doing it.", acceptance: ["Nothing is uploaded or tagged with --dry-run."] },
+		{
+			n: 2,
+			title: "Retry uploads that time out",
+			on: HARBOR,
+			state: "queued",
+			filed: 3,
+			source: "api",
+			run: { n: 1, started: 3, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 3, turn: "delivered" } },
+			events: [[3, "Started.", undefined, true]],
+		},
+		{
+			n: 3,
+			title: "Rename the config loader's options",
+			on: HARBOR,
+			state: "working",
+			filed: 26,
+			run: { n: 1, started: 25, stopReason: null, rounds: { plan: 0, gate: 1, ci: 0, conflict: 0 }, step: { n: 3, kind: "implement", started: 9, turn: "started" } },
+			events: [
+				[25, "Started.", undefined, true],
+				[24, "The turn started.", [1, 1, "implement"]],
+				[10, "The checks failed: unit tests.", [1, 2, "gate"]],
+				[9, "The turn started.", [1, 3, "implement"]],
+			],
+			spent: { tokens: 812_000, turns: 1, activeSeconds: 15 * 60, hostedSeconds: 14 * 60 },
+		},
+		{
+			n: 4,
+			title: "Bump the TLS library",
+			on: HARBOR,
+			state: "working",
+			filed: 18,
+			run: { n: 1, started: 17, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 3, kind: "publish", started: 1 } },
+			events: [
+				[17, "Started.", undefined, true],
+				[16, "The turn started.", [1, 1, "implement"]],
+				[1, "The checks passed.", [1, 2, "gate"]],
+			],
+			spent: { tokens: 1_240_000, turns: 1, activeSeconds: 16 * 60, hostedSeconds: 16 * 60 },
+		},
+		// Each wait for capacity, as the user actor's turn queue words it (budget.ts, `admit`).
+		waitingFor(5, "Fix the flaky clock test", HARBOR, "capacity", "Waiting for one of your 5 factory turns; 5 are running (“Bump the TLS library”, “Rename the config loader's options”, “Tidy the README's install steps”, …).", 6, at + 25_000),
+		waitingFor(6, "Drop the Node 20 workaround", HARBOR, "capacity", "Waiting for one of your 6 running turns; 6 are running, 1 of them your own.", 4, at + 40_000),
+		waitingFor(7, "Log the upload's size", TIDES, "capacity", `Your 2 h of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${spellSeconds(Math.max(60, Math.ceil((nextMidnight(at) - at) / MINUTE) * 60))}). Raise it on the Usage page.`, 50, nextMidnight(at)),
+		waitingFor(8, "Explain the tide formula in a comment", TIDES, "capacity", "Waiting for a place among the 20 sandboxes you may keep: all are in use. Free one on the Usage page, or it frees itself 3 days after its item is done.", 12, at + 2 * MINUTE),
+		waitingFor(9, "Speed up the harmonic constants table", TIDES, "capacity", "Waiting for one of your 3 hosted sandboxes: 3 running now.", 7, at + 30_000),
+		waitingFor(10, "Show the next high tide first", TIDES, "capacity", `Waiting for a hosted sandbox: this deployment runs 10 at once and all are in use. Trying again at ${utc(at + 4 * MINUTE)} UTC.`, 9, at + 4 * MINUTE),
+		waitingFor(11, "Fix the timezone in the station list", TIDES, "capacity", "Waiting for the item's agent to answer.", 1, at + 30_000),
+		waitingFor(12, "Add a changelog entry for 2.4", DOCS, "review_cap", "Waiting until fewer than 6 of your items are in review (6 now).", 35, at + 5 * MINUTE),
+		// The waits on CI (blueprint.ts, `ciWaitSentence`): the work is pushed and has a pull request.
+		ciWait(13, "Cache the parsed station file", TIDES, `Waiting for CI to start on ${short(hex(13))}.`, 2, 51),
+		ciWait(14, "Use the new rounding helper", TIDES, `Waiting for CI on ${short(hex(14))}: 2 of 5 checks finished.`, 6, 52),
+		ciWait(15, "Remove the unused tide fixtures", TIDES, `Waiting for CI on ${short(hex(15))}: GitHub asked the platform to wait until ${utc(at + 6 * MINUTE)} UTC before reading it again.`, 11, 53, at + 6 * MINUTE),
+		ciWait(16, "Pin the docs builder's version", DOCS, `Waiting for CI on ${short(hex(16))}: GitHub could not be reached; it is read again shortly.`, 3, 8),
+		ciWait(17, "Link the API page from the index", DOCS, `CI on ${short(hex(17))} cannot be read.`, 1, 9),
+		// The questions of slice 1 (blueprint.ts, every `ask`).
+		{
+			n: 18,
+			title: "Make the upload progress bar optional",
+			on: HARBOR,
+			state: "waiting",
+			filed: 95,
+			question: { kind: "no_change", text: "The agent ended its turn without changing anything.", choices: choices("again", "give_up"), asked: 62 },
+			run: { n: 1, started: 94, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 93 } },
+			events: [
+				[94, "Started.", undefined, true],
+				[93, "The turn started.", [1, 1, "implement"]],
+				[62, "Asked: The agent ended its turn without changing anything.", [1, 1, "implement"]],
+			],
+			spent: { tokens: 640_000, turns: 1, activeSeconds: 31 * 60, hostedSeconds: 31 * 60 },
+		},
+		{
+			n: 19,
+			title: "Run the integration tests in CI",
+			on: HARBOR,
+			state: "waiting",
+			filed: 140,
+			question: { kind: "publish_refused", text: "GitHub refused the push: refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission", choices: choices("again", "give_up"), asked: 101 },
+			run: { n: 1, started: 139, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 3, kind: "publish", attempt: 1, started: 102 } },
+			events: [
+				[139, "Started.", undefined, true],
+				[138, "The turn started.", [1, 1, "implement"]],
+				[102, "The checks passed.", [1, 2, "gate"]],
+				[101, "Asked: GitHub refused the push: refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission", [1, 3, "publish"]],
+			],
+			spent: { tokens: 1_020_000, turns: 1, activeSeconds: 37 * 60, hostedSeconds: 37 * 60 },
+		},
+		{
+			n: 20,
+			title: "Split the e2e suite into shards",
+			on: TIDES,
+			state: "waiting",
+			filed: 260,
+			pr: 57,
+			question: { kind: "ci_timeout", text: "CI has not finished 1 h 30 min after the push.", choices: choices("wait", "hand_over", "give_up"), asked: 18 },
+			run: { n: 1, started: 259, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 4, kind: "ci", attempt: 91, started: 108 } },
+			events: [
+				[259, "Started.", undefined, true],
+				[258, "The turn started.", [1, 1, "implement"]],
+				[109, "The checks passed.", [1, 2, "gate"]],
+				[108, `Pushed ${short(hex(20))} to pull request #57.`, [1, 3, "publish"]],
+				[18, "Asked: CI has not finished 1 h 30 min after the push.", [1, 4, "ci", 91]],
+			],
+			spent: { tokens: 2_150_000, turns: 1, activeSeconds: 150 * 60, hostedSeconds: 150 * 60 },
+		},
+		{
+			n: 21,
+			title: "Handle leap seconds in the tide clock",
+			on: TIDES,
+			state: "waiting",
+			filed: 180,
+			question: { kind: "rounds", text: "The checks still fail after 2 more turns of fixing.", choices: choices("raise", "retry", "give_up"), asked: 44 },
+			run: { n: 1, started: 179, stopReason: null, rounds: { plan: 0, gate: 2, ci: 0, conflict: 0 }, step: { n: 6, kind: "gate", started: 44 } },
+			events: [
+				[179, "Started.", undefined, true],
+				[178, "The turn started.", [1, 1, "implement"]],
+				[130, "The checks failed: unit tests.", [1, 2, "gate"]],
+				[129, "The turn started.", [1, 3, "implement"]],
+				[88, "The checks failed: unit tests.", [1, 4, "gate"]],
+				[87, "The turn started.", [1, 5, "implement"]],
+				[44, "Asked: The checks still fail after 2 more turns of fixing.", [1, 6, "gate"]],
+			],
+			spent: { tokens: 2_900_000, turns: 3, activeSeconds: 134 * 60, hostedSeconds: 134 * 60 },
+		},
+		{
+			n: 22,
+			title: "Stop the station import from timing out",
+			on: HARBOR,
+			state: "waiting",
+			filed: 300,
+			pr: 49,
+			question: { kind: "rounds", text: "The same failure came back after a fix, so the factory stopped instead of trying it again.", choices: choices("raise", "retry", "hand_over", "give_up"), asked: 75 },
+			run: { n: 1, started: 299, stopReason: null, rounds: { plan: 0, gate: 0, ci: 1, conflict: 0 }, step: { n: 5, kind: "ci_fix", started: 75 } },
+			events: [
+				[299, "Started.", undefined, true],
+				[298, "The turn started.", [1, 1, "implement"]],
+				[241, "The checks passed.", [1, 2, "gate"]],
+				[240, `Pushed ${short(hex(220))} to pull request #49.`, [1, 3, "publish"]],
+				[205, "CI failed: test (node 24).", [1, 4, "ci", 12]],
+				[204, "The turn started.", [1, 5, "ci_fix"]],
+				[150, "The checks passed.", [1, 6, "gate"]],
+				[149, `Pushed ${short(hex(22))} to pull request #49.`, [1, 7, "publish"]],
+				[76, "CI failed: test (node 24).", [1, 8, "ci", 9]],
+				[75, "Asked: The same failure came back after a fix, so the factory stopped instead of trying it again.", [1, 8, "ci", 9]],
+			],
+			spent: { tokens: 3_300_000, turns: 2, activeSeconds: 112 * 60, hostedSeconds: 112 * 60 },
+		},
+		{
+			n: 23,
+			title: "Migrate the docs search to the new index",
+			on: DOCS,
+			state: "waiting",
+			filed: 420,
+			pr: 12,
+			question: { kind: "budget", text: "This item has used 4.1M of its 4M tokens.", choices: choices("raise", "retry", "hand_over", "give_up"), asked: 130 },
+			run: { n: 1, started: 419, stopReason: null, rounds: { plan: 0, gate: 1, ci: 2, conflict: 0 }, step: { n: 9, kind: "ci", started: 130 } },
+			events: [
+				[419, "Started.", undefined, true],
+				[418, "The turn started.", [1, 1, "implement"]],
+				[330, "The checks passed.", [1, 2, "gate"]],
+				[329, `Pushed ${short(hex(231))} to pull request #12.`, [1, 3, "publish"]],
+				[290, "CI failed: docs.", [1, 4, "ci", 8]],
+				[289, "The turn started.", [1, 5, "ci_fix"]],
+				[220, "The checks passed.", [1, 6, "gate"]],
+				[219, `Pushed ${short(hex(23))} to pull request #12.`, [1, 7, "publish"]],
+				[180, "CI failed: docs.", [1, 8, "ci", 6]],
+				[130, "Asked: This item has used 4.1M of its 4M tokens.", [1, 9, "ci_fix"]],
+			],
+			spent: { tokens: 4_100_000, turns: 3, activeSeconds: 3 * 3600 + 10 * 60, hostedSeconds: 1.5 * 3600 },
+		},
+		// In review: each verdict, and each state of CI.
+		review(24, "Show the upload's checksum in the log", HARBOR, 61, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 20 }),
+		review(25, "Make the station parser accept tabs", TIDES, 58, { result: "pass", gate: passingGate, ci: ci.passed(4), flags: [{ kind: "tests_skipped", where: ["src/parse.test.ts"] }], mergeable: true, run: 1, ago: 38 }),
+		review(26, "Replace the deprecated glob call", HARBOR, 62, { result: "fail", gate: passingGate, ci: ci.failed(), flags: [], mergeable: true, run: 1, ago: 55 }, "CI failed again after 2 rounds of fixes."),
+		review(27, "Shorten the release notes template", DOCS, 14, { result: "incomplete", gate: { state: "stopped", required: userChecks(["docs build", "interrupted"]) }, ci: ci.none(), flags: [], mergeable: true, run: 1, ago: 70 }, "This step was cut off 3 times, by deploys or restarts."),
+		review(28, "Fix the typo in the contributing guide", DOCS, 15, { result: "unverified", gate: { state: "none_set", required: [] }, ci: ci.none(), flags: [], mergeable: true, run: 1, ago: 90 }),
+		review(29, "Read the port from the environment", HARBOR, 63, { result: "pass", gate: passingGate, ci: ci.notPermitted(), flags: [], mergeable: null, run: 1, ago: 24 }),
+		review(30, "Upgrade the test runner", HARBOR, 64, { result: "unverified", gate: { state: "passed", required: [] }, ci: ci.timedOut(), flags: [{ kind: "checks_changed", where: [".windlass/config.json"] }, { kind: "tests_removed", where: ["test/legacy.test.ts", "test/old-api.test.ts"] }], mergeable: false, run: 1, ago: 33 }, "CI has not finished 1 h 30 min after the push."),
+		sentBack(31, "Add a health check endpoint", HARBOR, 60),
+		// Ended.
+		{
+			n: 32,
+			title: "Document the release checklist",
+			on: DOCS,
+			state: "done",
+			filed: 26 * 60,
+			pr: 11,
+			run: { n: 1, started: 26 * 60, ended: 25 * 60, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", attempt: 4, started: 25 * 60 } },
+			events: [
+				[26 * 60, "Started.", undefined, true],
+				[26 * 60 - 1, "The turn started.", [1, 1, "implement"]],
+				[25 * 60 + 40, "The checks passed.", [1, 2, "gate"]],
+				[25 * 60 + 39, `Pushed ${short(hex(32))} to pull request #11.`, [1, 3, "publish"]],
+				[25 * 60 + 20, "CI passed.", [1, 4, "ci", 5]],
+				[25 * 60 + 20, "Ready for review. The 2 checks that applied passed when the agent's turn 1 ended. CI passed (3 checks).", [1, 5, "handoff"]],
+				[23 * 60, "The pull request was merged.", [1, 6, "merged", 4]],
+			],
+			verdicts: [{ result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 25 * 60 + 20 }],
+			spent: { tokens: 1_100_000, turns: 1, activeSeconds: 41 * 60, hostedSeconds: 41 * 60 },
+		},
+		{
+			n: 33,
+			title: "Try a dark theme for the docs",
+			on: DOCS,
+			state: "cancelled",
+			filed: 30 * 60,
+			run: { n: 1, started: 30 * 60, ended: 29 * 60, stopReason: "cancelled", rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 30 * 60 } },
+			events: [
+				[30 * 60, "Started.", undefined, true],
+				[30 * 60 - 1, "The turn started.", [1, 1, "implement"]],
+				[29 * 60, "Cancelled.", [1, 1, "implement"], true],
+			],
+			spent: { tokens: 380_000, turns: 1, activeSeconds: 60 * 60, hostedSeconds: 60 * 60 },
+		},
+		{
+			n: 34,
+			title: "Rewrite the station importer in one pass",
+			on: HARBOR,
+			state: "cancelled",
+			filed: 50 * 60,
+			pr: 40,
+			run: { n: 1, started: 50 * 60, ended: 47 * 60, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", attempt: 9, started: 47 * 60 } },
+			events: [
+				[50 * 60, "Started.", undefined, true],
+				[50 * 60 - 1, "The turn started.", [1, 1, "implement"]],
+				[48 * 60, "The checks passed.", [1, 2, "gate"]],
+				[48 * 60 - 1, `Pushed ${short(hex(34))} to pull request #40.`, [1, 3, "publish"]],
+				[47 * 60, "CI passed.", [1, 4, "ci", 6]],
+				[47 * 60, "Needs a look. The 2 checks that applied passed when the agent's turn 1 ended. CI passed (3 checks). Test files were deleted or renamed away: test/importer.test.ts.", [1, 5, "handoff"]],
+				[30 * 60, "The pull request was closed without merging.", [1, 6, "merged", 9]],
+			],
+			verdicts: [{ result: "pass", gate: passingGate, ci: ci.passed(3), flags: [{ kind: "tests_removed", where: ["test/importer.test.ts"] }], mergeable: true, run: 1, ago: 47 * 60 }],
+			spent: { tokens: 1_900_000, turns: 1, activeSeconds: 80 * 60, hostedSeconds: 80 * 60 },
+		},
+		{
+			n: 35,
+			title: "Port the tide charts to the new renderer",
+			on: TIDES,
+			state: "failed",
+			filed: 8 * 60,
+			pr: 55,
+			run: { n: 1, started: 8 * 60, ended: 5 * 60, stopReason: "ci", rounds: { plan: 0, gate: 0, ci: 2, conflict: 0 }, step: { n: 10, kind: "ci", started: 5 * 60 + 10 } },
+			events: [
+				[8 * 60, "Started.", undefined, true],
+				[8 * 60 - 1, "The turn started.", [1, 1, "implement"]],
+				[7 * 60, "The checks passed.", [1, 2, "gate"]],
+				[7 * 60 - 1, `Pushed ${short(hex(351))} to pull request #55.`, [1, 3, "publish"]],
+				[6 * 60 + 40, "CI failed: test (node 22).", [1, 4, "ci", 5]],
+				[6 * 60 + 39, "The turn started.", [1, 5, "ci_fix"]],
+				[6 * 60, "The checks passed.", [1, 6, "gate"]],
+				[6 * 60 - 1, `Pushed ${short(hex(352))} to pull request #55.`, [1, 7, "publish"]],
+				[5 * 60 + 40, "CI failed: build.", [1, 8, "ci", 5]],
+				[5 * 60 + 39, "The turn started.", [1, 9, "ci_fix"]],
+				[5 * 60 + 12, `Pushed ${short(hex(35))} to pull request #55.`, [1, 9, "ci_fix"]],
+				[5 * 60 + 10, "Asked: CI failed again after 2 rounds of fixes.", [1, 10, "ci", 4]],
+				[5 * 60, "Answered “Give up”: The renderer is not ready for this yet.", [1, 10, "ci", 4], true],
+			],
+			spent: { tokens: 2_600_000, turns: 3, activeSeconds: 2 * 3600 + 20 * 60, hostedSeconds: 2 * 3600 + 20 * 60 },
+		},
+	];
+
+	if (state === "none" || state === "loading" || state === "failed") return [];
+	if (state === "few") return all.filter((seed) => [3, 18, 21, 22, 24].includes(seed.n));
+	return all;
+
+	function waitingFor(n: number, title: string, on: typeof HARBOR, reason: Waiting["reason"], sentence: string, since: number, retryAt: number): Seed {
+		return {
+			n,
+			title,
+			on,
+			state: "waiting",
+			filed: since + 1,
+			wait: { reason, sentence, since, retryAt },
+			run: { n: 1, started: since + 1, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: since, turn: "delivered" } },
+			events: [
+				[since + 1, "Started.", undefined, true],
+				[since, sentence, [1, 1, "implement"]],
+			],
+		};
+	}
+
+	function ciWait(n: number, title: string, on: typeof HARBOR, sentence: string, since: number, pr: number, retryAt = at + 60_000): Seed {
+		const head = hex(n);
+		return {
+			n,
+			title,
+			on,
+			state: "waiting",
+			filed: since + 40,
+			pr,
+			wait: { reason: "ci", sentence, since, retryAt },
+			run: { n: 1, started: since + 40, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 4, kind: "ci", attempt: Math.max(1, since), started: since } },
+			events: [
+				[since + 40, "Started.", undefined, true],
+				[since + 39, "The turn started.", [1, 1, "implement"]],
+				[since + 1, "The checks passed.", [1, 2, "gate"]],
+				[since, `Pushed ${short(head)} to pull request #${pr}.`, [1, 3, "publish"]],
+			],
+			spent: { tokens: 900_000 + n * 20_000, turns: 1, activeSeconds: 38 * 60, hostedSeconds: 38 * 60 },
+		};
+	}
+
+	function review(n: number, title: string, on: typeof HARBOR, pr: number, verdict: NonNullable<Seed["verdicts"]>[number], asked?: string): Seed {
+		const ago = verdict.ago;
+		const started = ago + 70;
+		// Handed over by the person, at a question that stopped the run.
+		const handedOver: NonNullable<Seed["events"]> = asked
+			? [
+					[ago + 1, `Asked: ${asked}`, [1, 4, "ci"]],
+					[ago, "Answered “Hand it over as it is”.", [1, 4, "ci"], true],
+				]
+			: [];
+		return {
+			n,
+			title,
+			on,
+			state: "review",
+			filed: started + 1,
+			pr,
+			body: BODY,
+			acceptance: ACCEPTANCE,
+			// The rounds the question that stopped it says were used up.
+			run: { n: 1, started, ended: ago, stopReason: null, rounds: { plan: 0, gate: 0, ci: asked?.startsWith("CI failed") ? 2 : 0, conflict: 0 }, step: { n: 6, kind: "merged", attempt: 2, started: ago } },
+			events: [
+				[started, "Started.", undefined, true],
+				[started - 1, "The turn started.", [1, 1, "implement"]],
+				[ago + 30, verdict.gate.state === "none_set" ? "No check verified this work; it is published as unverified." : "The checks passed.", [1, 2, "gate"]],
+				[ago + 29, `Pushed ${short(hex(n))} to pull request #${pr}.`, [1, 3, "publish"]],
+				...handedOver,
+				[ago, verdictSaid(verdict), [1, 5, "handoff"]],
+			],
+			verdicts: [verdict],
+			spent: { tokens: 1_000_000 + n * 31_000, turns: 1, activeSeconds: 45 * 60, hostedSeconds: 45 * 60 },
+		};
+	}
+
+	/** An item handed over, sent back with a note, and handed over again: its page shows the earlier run in its log. */
+	function sentBack(n: number, title: string, on: typeof HARBOR, pr: number): Seed {
+		const first: NonNullable<Seed["verdicts"]>[number] = { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 200 };
+		const second: NonNullable<Seed["verdicts"]>[number] = { result: "pass", gate: { state: "passed", required: userChecks(["unit tests", "passed", 1], ["lint", "passed"]) }, ci: ci.passed(3), flags: [], mergeable: true, run: 2, ago: 12 };
+		return {
+			n,
+			title,
+			on,
+			state: "review",
+			filed: 300,
+			pr,
+			body: "Add GET /healthz that answers 200 with the version once the database is reachable, and 503 before.",
+			acceptance: ["GET /healthz answers 503 until the database is reachable.", "The answer names the running version."],
+			run: { n: 2, started: 150, ended: 12, stopReason: null, rounds: { plan: 0, gate: 1, ci: 0, conflict: 0 }, step: { n: 8, kind: "merged", attempt: 1, started: 12 } },
+			events: [
+				[300, "Started.", undefined, true],
+				[299, "The turn started.", [1, 1, "implement"]],
+				[240, "The checks passed.", [1, 2, "gate"]],
+				[239, `Pushed ${short(hex(311))} to pull request #${pr}.`, [1, 3, "publish"]],
+				[201, "CI passed.", [1, 4, "ci", 4]],
+				[200, verdictSaid(first), [1, 5, "handoff"]],
+				[150, "Sent back: Answer 503 while migrations run, too, and say so in the body.", undefined, true],
+				[149, "The turn started.", [2, 1, "implement"]],
+				[90, "The checks failed: unit tests.", [2, 2, "gate"]],
+				[89, "The turn started.", [2, 3, "implement"]],
+				[50, "The checks passed.", [2, 4, "gate"]],
+				[49, `Pushed ${short(hex(n))} to pull request #${pr}.`, [2, 5, "publish"]],
+				[13, "CI passed.", [2, 6, "ci", 4]],
+				[12, verdictSaid(second), [2, 7, "handoff"]],
+			],
+			verdicts: [first, second],
+			spent: { tokens: 2_400_000, turns: 3, activeSeconds: 95 * 60, hostedSeconds: 78 * 60 },
+		};
+	}
+}
+
+/** The verdict's sentence as the log has it (verdict.ts, `verdictWords`), for the seeds' gates. */
+function verdictSaid(verdict: Pick<Verdict, "result" | "gate" | "ci" | "flags" | "mergeable">): string {
+	const head = verdict.result === "pass" ? (verdict.flags.length > 0 ? "Needs a look." : "Ready for review.") : verdict.result === "fail" ? "Failing." : verdict.result === "incomplete" ? "Incomplete: the last turn did not finish." : "Not verified.";
+	const gate = verdict.gate.state === "none_set" ? "No check ran in the agent's turn 1: no checks are set for it." : verdict.gate.state === "stopped" ? "The agent's turn 1 was stopped before its checks finished." : "The 2 checks that applied passed when the agent's turn 1 ended.";
+	const runs = verdict.ci.runs;
+	const failed = runs.filter((run) => run.conclusion === "failure");
+	const ciWords =
+		verdict.ci.state === "passed"
+			? `CI passed (${runs.length} ${runs.length === 1 ? "check" : "checks"}).`
+			: verdict.ci.state === "failed"
+				? `CI failed: ${failed.map((run) => run.name).join(", ")}.`
+				: verdict.ci.state === "none"
+					? "No CI ran on this commit."
+					: verdict.ci.state === "timed_out"
+						? "CI had not finished when this was handed over."
+						: `CI was not read: GitHub does not let the platform see this repository's checks${verdict.ci.said ? ` (“${verdict.ci.said}”)` : ""}. The GitHub App needs read access to Checks, Commit statuses and Actions, accepted on the installation. The pull request's own page shows them.`;
+	const FLAG: Record<Verdict["flags"][number]["kind"], string> = {
+		tests_removed: "Test files were deleted or renamed away",
+		tests_skipped: "Tests were newly skipped or disabled",
+		checks_changed: "What the checks run was changed in this work",
+		exit_ignored: "A check's command came to ignore an exit status (`|| true` or the like)",
+	};
+	const flags = verdict.flags.map((flag) => `${FLAG[flag.kind]}: ${flag.where.join(", ")}.`);
+	return [head, gate, ciWords, ...flags, ...(verdict.mergeable === false ? ["GitHub says the pull request conflicts with its base."] : [])].join(" ");
+}
+
+function nextMidnight(at: number): number {
+	const day = new Date(at);
+	return Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1);
+}
+
+function viewOf(seed: Seed, at: number, uid: string): ItemView {
+	const id = `it_${hex(seed.n, 12)}`;
+	const ago = (minutes: number) => at - minutes * MINUTE;
+	const budget: ItemBudget = { ...MOCK_FACTORY_LIMITS.item, ...seed.budget };
+	const spent: ItemBudget = { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0, ...seed.spent };
+	const head = seed.pr === undefined ? null : hex(seed.n);
+	const repository = seed.on.repository;
+	const verdicts: Verdict[] = (seed.verdicts ?? []).map(({ ago: when, ...verdict }, index) => ({
+		...verdict,
+		id: `${id}:${verdict.run}:${index + 5}:1`,
+		item: id,
+		head: index === (seed.verdicts?.length ?? 0) - 1 && head !== null ? head : hex(seed.n * 10 + index),
+		at: ago(when),
+		place: "hosted",
+		attestedBy: "platform",
+		acceptance: seed.acceptance ?? [],
+	}));
+	const last = verdicts[verdicts.length - 1];
+	const question: ItemQuestion | null = seed.question ? { id: `${id}:q${seed.n + 3}`, kind: seed.question.kind, text: seed.question.text, choices: seed.question.choices, askedAt: ago(seed.question.asked) } : null;
+	const wait: Waiting | null = question ? { reason: question.kind === "budget" ? "budget" : "person", sentence: question.text, retryAt: null, since: question.askedAt } : seed.wait ? { reason: seed.wait.reason, sentence: seed.wait.sentence, retryAt: seed.wait.retryAt, since: ago(seed.wait.since) } : null;
+	const run: ItemRun | null = seed.run
+		? {
+				n: seed.run.n,
+				startedAt: ago(seed.run.started),
+				endedAt: seed.run.ended === undefined ? null : ago(seed.run.ended),
+				stopReason: seed.run.stopReason,
+				rounds: seed.run.rounds,
+				step: { n: seed.run.step.n, kind: seed.run.step.kind, attempt: seed.run.step.attempt ?? 1, startedAt: ago(seed.run.step.started), turn: seed.run.step.turn ?? null, checks: 0, interruptions: 0 },
+			}
+		: null;
+	const events: ItemEvent[] = (seed.events ?? []).map(([when, said, step, person]) => ({ at: ago(when), by: person ? `person:${uid}` : "platform", step: step ? { run: step[0], n: step[1], kind: step[2], attempt: step[3] ?? 1 } : null, said }));
+	const updatedAt = events.length > 0 ? Math.max(...events.map((event) => event.at)) : ago(seed.filed);
+	return {
+		id,
+		title: seed.title,
+		repository,
+		place: { kind: "hosted" },
+		source: seed.source ?? "web",
+		state: seed.state,
+		wait,
+		question,
+		pullRequest: seed.pr === undefined ? null : { number: seed.pr, url: `${repository.url}/pull/${seed.pr}` },
+		verdict: last ? { result: last.result, flags: last.flags } : null,
+		budget,
+		spent,
+		sessionId: seed.on.session,
+		createdAt: ago(seed.filed),
+		updatedAt,
+		revision: events.length + 1,
+		task: { title: seed.title, body: seed.body ?? BODY, acceptance: seed.acceptance ?? [], base: repository.branch },
+		run,
+		head,
+		events,
+		verdicts,
+	};
+}
+
+const summaryOf = ({ task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, ...summary }: ItemView): ItemSummary => summary;
+
+function seedTokens(state: MockItemsState, at: number): ApiToken[] {
+	if (state === "none" || state === "loading" || state === "failed") return [];
+	const seeded: ApiToken[] = [
+		{ id: "tok_ci", name: "Nightly triage script", scopes: ["items:create", "items:read"], createdAt: at - 9 * 24 * HOUR, usedAt: Math.floor((at - 3 * HOUR) / MINUTE) * MINUTE },
+		{ id: "tok_dash", name: "Status dashboard", scopes: ["items:read"], createdAt: at - 2 * 24 * HOUR, usedAt: null },
+	];
+	if (state !== "full") return seeded;
+	const more = Array.from({ length: MAX_API_TOKENS - seeded.length }, (_, index): ApiToken => ({ id: `tok_${index}`, name: `Runner ${index + 1}`, scopes: ["items:create"], createdAt: at - (20 + index) * 24 * HOUR, usedAt: index % 3 === 0 ? null : at - (index + 1) * HOUR }));
+	return [...seeded, ...more];
+}
+
+interface Kept {
+	items: ItemView[];
+	tokens: ApiToken[];
+	/** The items made with a key, by that key: what was asked for, and the item's id. */
+	made: Map<string, { content: string; id: string }>;
+}
+
+export function createMockItems(deps: MockItemsDeps) {
+	const state: MockItemsState = deps.state ?? "all";
+	const kept = new Map<string, Kept>();
+
+	function keptOf(auth: AuthResult): Kept {
+		let found = kept.get(auth.profile.uid);
+		if (!found) {
+			const at = deps.now();
+			const items = seeds(state, at)
+				.map((seed) => viewOf(seed, at, auth.profile.uid))
+				.sort((a, b) => b.createdAt - a.createdAt);
+			found = { items, tokens: seedTokens(state, at), made: new Map() };
+			kept.set(auth.profile.uid, found);
+		}
+		return found;
+	}
+
+	async function answer(ms?: number): Promise<void> {
+		if (state === "loading") await new Promise<never>(() => undefined);
+		await deps.latency(ms);
+		if (state === "failed") throw new PlatformError("network", "The platform could not be reached. Check your connection.");
+	}
+
+	function changed(auth: AuthResult): void {
+		const list = keptOf(auth).items.map(summaryOf);
+		for (const feed of deps.feeds(auth)) feed.onItems?.(list);
+	}
+
+	function itemOf(auth: AuthResult, id: string): ItemView {
+		const item = keptOf(auth).items.find((one) => one.id === id);
+		if (!item) throw new PlatformError("user", "That work item is not one of yours. It may have been filed by another account.", { reason: "item_not_found" });
+		return item;
+	}
+
+	/** One change of an item, as the step machine makes it: the revision goes up, and the log says what happened. */
+	function change(auth: AuthResult, item: ItemView, patch: Partial<ItemView>, said: string[], by: "person" | "platform"): void {
+		const at = deps.now();
+		Object.assign(item, patch);
+		const run = item.run;
+		const step = run === null ? null : { run: run.n, n: run.step.n, kind: run.step.kind, attempt: run.step.attempt };
+		for (const line of said) item.events.push({ at, by: by === "person" ? `person:${auth.profile.uid}` : "platform", step, said: line });
+		item.revision += 1;
+		item.updatedAt = at;
+		changed(auth);
+	}
+
+	/** A new run, queued for its first turn; its turn starts a moment later. */
+	function beginRun(auth: AuthResult, item: ItemView, said: string): void {
+		const at = deps.now();
+		const before = item.run;
+		const run: ItemRun = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 } };
+		if (before && before.endedAt === null) Object.assign(before, { endedAt: at, stopReason: "retried" });
+		item.events.push({ at, by: `person:${auth.profile.uid}`, step: null, said });
+		change(auth, item, { state: "queued", wait: null, question: null, run }, [], "person");
+		deps.later(2500, () => {
+			if (item.run !== run || item.state !== "queued") return;
+			change(auth, item, { state: "working", run: { ...run, step: { ...run.step, turn: "started" } } }, ["The turn started."], "platform");
+		});
+	}
+
+	const conflict = (why: string) => new PlatformError("user", why, { reason: "item_conflict" });
+	const STATE_WORDS: Record<ItemSummary["state"], string> = { draft: "a draft", queued: "queued", working: "working", waiting: "waiting", review: "in review", done: "done", failed: "failed", cancelled: "cancelled" };
+
+	function act(auth: AuthResult, item: ItemView, action: ItemAction): void {
+		const now = STATE_WORDS[item.state];
+		switch (action.kind) {
+			case "start":
+				if (item.state !== "draft") throw conflict(`This item is ${now}: only a draft can be started.`);
+				return beginRun(auth, item, "Started.");
+			case "retry":
+				if (item.state !== "failed") throw conflict(`This item is ${now}: only a failed item can be retried.`);
+				return beginRun(auth, item, "Started again.");
+			case "send_back": {
+				if (item.state !== "review") throw conflict(`This item is ${now}: only an item in review can be sent back.`);
+				const note = action.note.trim();
+				if (note === "") throw new PlatformError("user", "Say what to change: the note is what the agent is given.", { reason: "bad_input" });
+				return beginRun(auth, item, `Sent back: ${note}`);
+			}
+			case "cancel":
+				if (item.state === "done" || item.state === "cancelled") throw conflict(`This item is ${now} already.`);
+				return change(auth, item, { state: "cancelled", wait: null, question: null, run: item.run ? { ...item.run, endedAt: deps.now(), stopReason: item.run.endedAt === null ? "cancelled" : item.run.stopReason } : null }, ["Cancelled."], "person");
+			case "answer": {
+				const question = item.question;
+				if (question === null || question.id !== action.question) throw conflict("That question was answered already, here or in another tab.");
+				const picked = question.choices.find((option) => option.id === action.choice);
+				if (!picked) throw conflict("That is not one of the question's answers.");
+				const note = action.note?.trim() || null;
+				const said = `Answered “${picked.label}”${note === null ? "" : `: ${note}`}.`;
+				const run = item.run;
+				if (action.choice === "give_up") return change(auth, item, { state: "failed", wait: null, question: null, run: run ? { ...run, endedAt: deps.now(), stopReason: question.kind } : null }, [said], "person");
+				if (action.choice === "retry") {
+					item.events.push({ at: deps.now(), by: `person:${auth.profile.uid}`, step: null, said });
+					if (run) Object.assign(run, { endedAt: deps.now(), stopReason: "retried" });
+					return beginRun(auth, item, "Started again.");
+				}
+				if (action.choice === "hand_over") {
+					const verdict = item.verdicts[item.verdicts.length - 1];
+					return change(auth, item, { state: "review", wait: null, question: null, run: run ? { ...run, endedAt: deps.now() } : null, verdict: verdict ? { result: verdict.result, flags: verdict.flags } : { result: "unverified", flags: [] } }, [said], "person");
+				}
+				if (action.choice === "wait") return change(auth, item, { state: "waiting", question: null, wait: { reason: "ci", sentence: `Waiting for CI on ${short(item.head ?? "")}, as you asked.`, retryAt: deps.now() + 60_000, since: deps.now() } }, [said], "person");
+				const budget = action.choice === "raise" && action.budget ? { ...item.budget, ...Object.fromEntries(Object.entries(action.budget).filter(([, value]) => typeof value === "number" && value > 0)) } : item.budget;
+				return change(auth, item, { state: "working", wait: null, question: null, budget }, [said, "The turn started."], "person");
+			}
+		}
+	}
+
+	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "item" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
+		return {
+			async listItems() {
+				await answer(240);
+				return keptOf(auth).items.map(summaryOf);
+			},
+			async item(id) {
+				await answer(220);
+				return structuredClone(itemOf(auth, id));
+			},
+			async createItem({ idempotencyKey, ...input }: CreateItemInput) {
+				await answer(420);
+				const mine = keptOf(auth);
+				const content = JSON.stringify(input);
+				if (typeof idempotencyKey === "string") {
+					const taken = mine.made.get(idempotencyKey);
+					if (taken && taken.content !== content) throw new PlatformError("user", "That key was used for another work item.", { reason: "idempotency_key_reused" });
+					const made = taken && mine.items.find((one) => one.id === taken.id);
+					if (made) return summaryOf(made);
+				}
+				const title = input.title.trim();
+				const acceptance = (input.acceptance ?? []).map((line) => line.trim()).filter((line) => line !== "");
+				if (title === "") throw new PlatformError("user", "A work item needs a title.", { reason: "bad_input" });
+				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title is at most ${MAX_TITLE_CHARS} characters.`, { reason: "bad_input" });
+				if (input.body.length > MAX_ITEM_BODY_CHARS) throw new PlatformError("user", `What to do is at most ${MAX_ITEM_BODY_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
+				if (acceptance.length > MAX_ACCEPTANCE_CRITERIA) throw new PlatformError("user", `An item takes at most ${MAX_ACCEPTANCE_CRITERIA} acceptance criteria.`, { reason: "bad_input" });
+				if (acceptance.some((line) => line.length > MAX_NOTE_CHARS)) throw new PlatformError("user", `An acceptance criterion is at most ${MAX_NOTE_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
+				if (input.place?.kind === "machine") throw new PlatformError("user", "Work items run on hosted sandboxes for now.", { reason: "bad_input" });
+				const session = await deps.session(auth, { title, repository: input.repository });
+				const repository = session.repository;
+				if (!repository) throw new PlatformError("user", "Work items need a repository of your GitHub connection.", { reason: "bad_input" });
+				const at = deps.now();
+				const id = `it_${fresh(12)}`;
+				const item: ItemView = {
+					id,
+					title,
+					repository,
+					place: { kind: "hosted" },
+					source: "web",
+					state: "draft",
+					wait: null,
+					question: null,
+					pullRequest: null,
+					verdict: null,
+					budget: { ...MOCK_FACTORY_LIMITS.item },
+					spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
+					sessionId: session.id,
+					createdAt: at,
+					updatedAt: at,
+					revision: 0,
+					task: { title, body: input.body, acceptance, base: repository.branch },
+					run: null,
+					head: null,
+					events: [],
+					verdicts: [],
+				};
+				mine.items.unshift(item);
+				if (typeof idempotencyKey === "string") mine.made.set(idempotencyKey, { content, id });
+				if (input.start) beginRun(auth, item, "Started.");
+				else changed(auth);
+				return summaryOf(item);
+			},
+			async actOnItem(id, action) {
+				await answer(360);
+				const item = itemOf(auth, id);
+				act(auth, item, action);
+				return structuredClone(item);
+			},
+			async factoryLimits() {
+				await answer(160);
+				return structuredClone(MOCK_FACTORY_LIMITS);
+			},
+			async apiTokens() {
+				await answer(180);
+				return [...keptOf(auth).tokens];
+			},
+			async createApiToken({ name, scopes }) {
+				await answer(320);
+				const mine = keptOf(auth);
+				const clean = name.trim();
+				const wanted = [...new Set(scopes)].filter((scope): scope is ApiTokenScope => scope === "items:create" || scope === "items:read");
+				if (clean === "" || clean.length > 64) throw new PlatformError("user", "A token needs a name of at most 64 characters.", { reason: "bad_input" });
+				if (wanted.length === 0) throw new PlatformError("user", "A token needs at least one of its two scopes.", { reason: "bad_input" });
+				if (mine.tokens.length >= MAX_API_TOKENS) throw new PlatformError("user", `An account can keep ${MAX_API_TOKENS} tokens. Revoke one first.`, { reason: "too_many_tokens" });
+				const token: ApiToken = { id: `tok_${fresh(10)}`, name: clean, scopes: wanted, createdAt: deps.now(), usedAt: null };
+				mine.tokens.unshift(token);
+				return { token, secret: `wlp_${fresh(32)}${fresh(8)}` };
+			},
+			async revokeApiToken(id) {
+				await answer(260);
+				const mine = keptOf(auth);
+				mine.tokens = mine.tokens.filter((token) => token.id !== id);
+				return [...mine.tokens];
+			},
+		};
+	}
+
+	return { calls };
+}
+

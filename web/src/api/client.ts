@@ -11,13 +11,20 @@ import type {
 	AccountDefaults,
 	AccountSecrets,
 	AccountSettings,
+	ApiToken,
+	ApiTokenScope,
 	AuthResult,
 	ChatgptStatus,
+	CreateItemInput,
 	CreateSessionInput,
+	FactoryLimits,
 	GithubBranchList,
 	GithubRepository,
 	GithubRepositoryList,
 	GithubStatus,
+	ItemAction,
+	ItemSummary,
+	ItemView,
 	LiveDelta,
 	LoginStart,
 	MachineClaim,
@@ -110,6 +117,8 @@ export interface UserFeed {
 	onUsage?(numbers: UsageNumbers): void;
 	/** The user's machines, whenever one is paired or removed or its status, warnings or secrets switch changes. */
 	onMachines?(machines: MachineSummary[]): void;
+	/** The user's work items, newest first, whenever one of them changes. Not sent when the feed opens: `listItems` is. */
+	onItems?(items: ItemSummary[]): void;
 	onConnection?(state: ConnectionState, error?: PlatformError): void;
 }
 
@@ -207,6 +216,22 @@ export interface UserApi {
 	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
 	/** Turns the sending of saved secrets to a machine's agents on or off. Throws as `removeMachine` does. */
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
+	/** The user's work items, the newest first. */
+	listItems(): Promise<ItemSummary[]>;
+	/** One item's page. Throws with reason `item_not_found` for one that is not the user's. */
+	item(id: string): Promise<ItemView>;
+	/** Files a work item, with its own agent on the repository. With `idempotencyKey`, the same call again answers with the item the first one made. Throws as `createSession` does, and with reason `bad_input`. */
+	createItem(input: CreateItemInput): Promise<ItemSummary>;
+	/** Starts, cancels, retries, sends back or answers an item. Throws with reason `item_conflict` where its state does not allow it, with why. */
+	actOnItem(id: string, action: ItemAction): Promise<ItemView>;
+	/** The factory's limits for this user, which the deployment's owner sets. */
+	factoryLimits(): Promise<FactoryLimits>;
+	/** The user's API tokens, the newest first, without their values. */
+	apiTokens(): Promise<ApiToken[]>;
+	/** Makes one: `secret` is its value, which is never sent again. Throws with reason `bad_input` or `too_many_tokens`. */
+	createApiToken(input: { name: string; scopes: ApiTokenScope[] }): Promise<{ token: ApiToken; secret: string }>;
+	/** Revokes one: it stops working at once. Answers with the list as it is then. */
+	revokeApiToken(id: string): Promise<ApiToken[]>;
 	/** Opens the live list of sessions. Returns the function that closes it. */
 	watch(feed: UserFeed): () => void;
 }

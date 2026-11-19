@@ -15,6 +15,7 @@ import "./styles/github.css";
 import "./styles/usage.css";
 import "./styles/repository.css";
 import "./styles/machines.css";
+import "./styles/items.css";
 import { QUESTION_TIMEOUT_MS } from "@contract";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -42,15 +43,20 @@ function mockQuestionTimeout(): number | undefined {
 async function createPlatformClient(): Promise<PlatformClient> {
 	// Each implementation is its own chunk: the mock never loads RivetKit, the real client never loads the fixtures.
 	if (wantsMock()) {
-		const { createMockClient, MOCK_MACHINE_STATES } = await import("./api/mock");
+		const { createMockClient, MOCK_MACHINE_SESSIONS, MOCK_MACHINE_STATES } = await import("./api/mock");
+		const { MOCK_ITEMS_STATES } = await import("./api/mock-items");
 		// `?github=off` plays a deployment with no GitHub App, `?sandbox=e2b` one on E2B,
 		// `?usage=low|used|full` a day with little sandbox time left, one that is used up, and an account at its cap of sandboxes,
 		// `?account=empty` a user who has saved nothing for their account,
 		// `?models=unavailable` one whose ChatGPT plan's models could not be read, so that the stand-in list is offered,
-		// and `?machine=none|offline|pairing|outdated|docker|clock|key|full|unpublished|stale|failed|loading|off` the user's machines in that state (`MockMachineState`).
+		// `?machine=none|offline|pairing|outdated|docker|clock|key|full|unpublished|stale|failed|loading|off` the user's machines in that state (`MockMachineState`),
+		// `?machineSession=answering|not_answering|offline|removed` how the agent on the machine "nas" finds it (`MockMachineSession`),
+		// and `?items=few|none|full|loading|failed` the user's work items and API tokens in that state (`MockItemsState`).
 		const params = new URLSearchParams(location.search);
 		const usage = params.get("usage");
 		const machine = params.get("machine");
+		const machineSession = params.get("machineSession");
+		const items = params.get("items");
 		const client = createMockClient({
 			questionTimeoutMs: mockQuestionTimeout(),
 			github: params.get("github") !== "off",
@@ -60,6 +66,8 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			account: params.get("account") === "empty" ? "empty" : "seeded",
 			models: params.get("models") === "unavailable" ? "unavailable" : "account",
 			machine: MOCK_MACHINE_STATES.find((state) => state === machine),
+			machineSession: MOCK_MACHINE_SESSIONS.find((state) => state === machineSession),
+			items: MOCK_ITEMS_STATES.find((state) => state === items),
 		});
 		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),
 		// `__wlpMock.mockNextAnswer("elsewhere" | "error")` (an answer that does not go through),

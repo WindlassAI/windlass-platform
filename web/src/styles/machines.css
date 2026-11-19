@@ -23,11 +23,11 @@
 	gap: 4px 8px;
 	min-width: 0;
 }
-.machine-name h3 {
+/* A machine's name is its row's title, in the face and weight of an agent's title on the other pages. */
+.machine-row .usage-kept-title {
 	min-width: 0;
-	font-family: var(--font-mono);
-	font-size: var(--size-mono);
-	font-weight: 700;
+	font-size: inherit;
+	font-weight: 600;
 }
 /* A line of facts wraps between them, not inside one. */
 .machine-row .agent-meta > span {
@@ -91,14 +91,6 @@
 .machine-details .usage-lede {
 	margin-top: 4px;
 }
-.machine-label {
-	font-family: var(--font-mono);
-	font-size: var(--size-mono-small);
-	font-weight: 400;
-	letter-spacing: 0.08em;
-	text-transform: uppercase;
-	color: var(--ink-faint);
-}
 .machine-sandboxes {
 	display: grid;
 	gap: 6px;
@@ -116,15 +108,15 @@
 	font-size: var(--size-mono-small);
 	color: var(--ink-faint);
 }
+/* One grid for every fact, so the labels take the width of the longest and the values line up. */
 .machine-facts {
 	display: grid;
-	gap: 6px;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 6px 16px;
 	font-size: var(--size-small);
 }
 .machine-facts > div {
-	display: grid;
-	grid-template-columns: 220px minmax(0, 1fr);
-	column-gap: 16px;
+	display: contents;
 }
 .machine-facts dt {
 	color: var(--ink-dim);
@@ -150,8 +142,11 @@
 	line-height: 1.6;
 	color: var(--ink);
 	white-space: pre-wrap;
-	/* The image's digest is one long word: it fills each line rather than leaving a ragged one. */
-	word-break: break-all;
+	/* Lines break between words; only a word longer than the line, the image's digest, breaks inside. */
+	overflow-wrap: anywhere;
+}
+.machine-command pre > span {
+	white-space: nowrap;
 }
 .machine-command > .copy {
 	position: absolute;
@@ -203,6 +198,18 @@
 	margin-top: 14px;
 }
 
+/* A session's place in the bar; on a phone the title needs the room, and the banner says what matters. */
+@media (max-width: 640px) {
+	.crumb-place {
+		display: none;
+	}
+}
+
+/* The launch form: what an offline machine means sits under the chosen place, apart from it. */
+.sandbox-chosen + .callout {
+	margin-top: 10px;
+}
+
 @media (max-width: 760px) {
 	.machine-row {
 		grid-template-columns: minmax(0, 1fr) auto;
@@ -227,9 +234,19 @@
 	.machine-details {
 		grid-column: 1 / -1;
 	}
-	.machine-facts > div {
+	.machine-facts {
 		grid-template-columns: minmax(0, 1fr);
 		row-gap: 2px;
+	}
+	.machine-facts > div + div dt {
+		margin-top: 6px;
+	}
+	/* One fact a line: a line that wraps would end with the dot between facts. */
+	.machine-row .agent-meta > span {
+		display: block;
+	}
+	.machine-row .agent-meta > span::after {
+		content: none;
 	}
 	/* The head's button is the width of the page here, as on the other pages; the note under it starts where it does. */
 	.machines-add {

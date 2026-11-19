@@ -1,10 +1,11 @@
 /**
  * What one screen leaves for the next: a prompt that the new-agent dialog could not send is handed
- * to the session screen, which puts the text back in the composer and shows why it was refused.
+ * to the session screen, which puts the text back in the composer and shows why it was refused. A
+ * prompt the user chose not to send yet (its machine is offline) is handed over without a refusal.
  */
 export interface Handover {
 	text: string;
-	error: string;
+	error?: string;
 	/** True when one of the user's limits refused it: the composer then points to the usage page. */
 	limit?: boolean;
 	/** The key the prompt was sent with (lib/submission.ts): sent again from the composer unchanged, it is the same submission. */
