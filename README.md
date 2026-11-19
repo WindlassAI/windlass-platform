@@ -72,17 +72,25 @@ browser ── HTTP ───────▶ any server (:6440)  GET /platform/i
                                              GET /platform/connection   where the actors are reached, and the token for it
 browser ── WebSocket ──▶ Rivet endpoint (:6420)
                            │
-                           ├─ login         [attemptId]         one sign-in attempt
-                           ├─ user          [uid]               profile, the index of sessions, the ChatGPT
-                           │                                    sign-in (encrypted) and its access tokens,
-                           │                                    the models of the ChatGPT plan,
-                           │                                    approvals of projects' MCP servers,
-                           │                                    setup commands of repositories, their
-                           │                                    checks, their secrets (encrypted) and
-                           │                                    their defaults,
-                           │                                    and the account's own: defaults, MCP
-                           │                                    servers and their secrets (encrypted)
-                           └─ agentSession  [uid, sessionId]    timeline in SQLite, one sandbox
+                           ├─ login             [attemptId]          one sign-in attempt
+                           ├─ user              [uid]                profile, the index of sessions, the ChatGPT
+                           │                                         sign-in (encrypted) and its access tokens,
+                           │                                         the models of the ChatGPT plan,
+                           │                                         approvals of projects' MCP servers,
+                           │                                         setup commands of repositories, their
+                           │                                         checks, their secrets (encrypted) and
+                           │                                         their defaults, the account's own:
+                           │                                         defaults, MCP servers and their secrets
+                           │                                         (encrypted), the index of machines, the
+                           │                                         index of work items, the turn queue and
+                           │                                         the API tokens (digests only)
+                           ├─ machine           [uid, machineId]     one paired machine: its public key, its
+                           │                                         runner's last report, its control socket
+                           ├─ machinePairing    [pairingId]          one pairing attempt, for ten minutes
+                           ├─ pairingDirectory  ["starts"]           the codes of open pairings, and their budget
+                           ├─ workItem          [uid, itemId]        one work item: its run, its step, its
+                           │                                         question, its log and its verdicts
+                           └─ agentSession      [uid, sessionId]     timeline in SQLite, one sandbox
                                                │
                                                ▼
                                    Docker container  wlp-session-<id>
@@ -142,6 +150,11 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
   Windlass is reached over a local pipe that does not send anything twice.
 - **Sleep.** With no browser connected and no turn running, the actor sleeps after 30 seconds and stops its
   container. The next prompt, or opening the session, starts it again with its files intact.
+- **A session on a machine of the user's.** The session's actor is the same, and so is the turn: Windlass's
+  protocol is spoken by the server, as above. The sandbox is a container on that machine, which the
+  machine's runner makes and runs. The session has the runner open a socket to it, through the machine's
+  actor and with a one-use ticket, and every operation on the sandbox goes over that socket instead of
+  `docker exec` ("Machines of your own").
 - **When a server stops.** On SIGTERM (a deploy) RivetKit puts every actor to sleep and exits after 20
   seconds, done or not, so a session's sleep fits in 16: a turn that runs is stopped and closed in the
   timeline (at most 10 seconds), the timeline and the session are saved, the sandbox is suspended (at most 4),
@@ -158,7 +171,8 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
   engine wakes the actor when the time comes. A turn that runs, or waits on the user's answer, is never cut off;
   the check is set again when it ends. The next prompt resumes a suspended sandbox, or makes a new one after a
   removal. Reading the workspace's changes starts a suspended sandbox too and counts as use. A suspended
-  session counts as idle: it holds none of the user's `MAX_RUNNING_SESSIONS` places.
+  session counts as idle: it is not among the user's turns running at once (`WLP_FACTORY_RUNNING_TURNS`,
+  "Usage and limits").
 - **Sign-in.** Windlass does it itself. `login.start()` runs `windlass login start` and returns the OpenAI
   address. The browser ends on `http://127.0.0.1:1455/auth/callback`, which does not load; the user pastes that
   address, and `login.finish()` feeds it to `windlass login finish`. The saved sign-in goes to the user's `user`
@@ -354,7 +368,9 @@ token files of the user's running turns. On Docker that is done in the user's da
 has it. A provider whose sandboxes are elsewhere has to do the same for its own: on E2B, remove
 `access-token-*.json` from Windlass's data directory in each of the user's running sandboxes (they are listed
 by the metadata `wlp_uid`). Until it does, a turn that is running on E2B goes on with the token it has
-until that token expires, within the hour, and then ends asking for a sign-in; it is given no new one.
+until that token expires, within the hour, and then ends asking for a sign-in; it is given no new one. On
+a user's own machine its runner removes them, when it is connected at that moment ("Machines of your
+own" says what holds for one that is not).
 
 **Sign-ins of the first version.** A machine that ran it has a Docker volume `wlp-auth-<uid>` per signed-in
 user (and before that, `auth.json` in `wlp-user-<uid>`). The first time such a user is touched, the Docker
@@ -433,8 +449,10 @@ Every server is one Rivet node. With `RIVET_ENDPOINT` set it starts no engine of
 connection to the one engine all servers share, and that engine places each actor on one of them, wakes it on
 another when its server stops, keeps every actor's SQLite data and runs every actor's schedule. Nothing of a
 user or a session is kept on a server. Browsers reach the actors through the engine's gateway, never through a
-server; a server's own port serves only `GET /platform/info`, `GET /platform/connection` and `/health`, and any
-server answers each.
+server, and so do the machines' runners once they are paired. A server's own port serves `GET /platform/info`,
+`GET /platform/connection`, `/health`, GitHub's callback (`GET /github/callback`), the three routes a
+machine's runner calls (`POST /runner/pair`, `POST /runner/pair/poll`, `POST /runner/connection`) and the
+API (`POST /api/items`, `GET /api/items/<id>`), and any server answers each.
 
 What every server needs, the same on all of them:
 
@@ -454,6 +472,8 @@ What every server needs, the same on all of them:
 | `WLP_SIGNIN_KEY` | optional; when set, the same on every server: what the key that encrypts sign-ins is derived from, in place of `WLP_SECRET` |
 | `WLP_DEMO`, `WLP_TURN_TIMEOUT_MS`, `WLP_QUESTION_TIMEOUT_MS`, `WLP_IDLE_SUSPEND_MS`, `WLP_IDLE_DESTROY_MS` | the same values everywhere: a session's limits are applied by whichever server holds its actor |
 | `WLP_DAILY_SANDBOX_SECONDS`, `WLP_MAX_KEPT_SANDBOXES`, `WLP_USAGE_HOLD_SECONDS` | the same values everywhere: a user's limits are applied by whichever server holds their `user` actor ("Usage and limits") |
+| `WLP_FACTORY_*` | the same values everywhere: the limits of work items and of a user's running turns are applied by whichever server holds the user's actor ("Work items") |
+| `WLP_MACHINES`, `WLP_PUBLIC_URL`, `WLP_RUNNER_IMAGE` | the same values everywhere, where users may pair machines of their own ("Machines of your own"). `WLP_PUBLIC_URL` is required then: it is the address runners are given |
 | `WLP_HTTP_PORT` or `PORT` | the port the load balancer sends `/platform/info` to |
 
 **What browsers connect with.** An engine that is shared is one that checks who connects. A Rivet Cloud
@@ -502,6 +522,10 @@ rivet deploy --cluster <cluster> --dockerfile server/Dockerfile --build-context 
   --env WLP_PUBLIC_ENDPOINT=https://<name>-api.onrivet.dev
 ```
 
+To let users pair machines of their own, add `--env WLP_MACHINES=1 --env WLP_PUBLIC_URL=https://<name>.onrivet.dev`,
+and `--env WLP_RUNNER_IMAGE=<name>@sha256:<digest>` once a runner image is published. With `WLP_MACHINES=1`
+and no `WLP_PUBLIC_URL`, a server on a remote engine does not start.
+
 The CLI builds the image for linux/amd64 (on an arm64 machine too: the image's build runs nothing of the other
 architecture) and prints the pool's public address, `https://<name>.onrivet.dev`, which serves the port in
 `PORT`. The image holds the web app as well and serves it there (`WLP_WEB_DIR`, `server/src/web.ts`), so that
@@ -525,7 +549,8 @@ and the web app is then built with its address in `VITE_WLP_ENDPOINT`.
 
 With `WLP_SANDBOX=e2b` a session's sandbox is a microVM at [E2B](https://e2b.dev) instead of a container on the
 server's machine, so any server of a deployment reaches any session's sandbox. A deployment has one provider:
-a server on E2B offers the E2B profiles and no Docker profile. `scripts/e2b-check.ts` tries it against the real
+a server on E2B offers the E2B profiles and no Docker profile of its own (a user's machine offers its own
+two, "Machines of your own"). `scripts/e2b-check.ts` tries it against the real
 service; it first passed there on 2026-11-15.
 
 ```sh
@@ -577,7 +602,7 @@ at once and one hour of running without a pause; every default is well inside th
 | What | How | Default |
 |---|---|---|
 | Size of a sandbox | the template's, set when it is built: `WLP_E2B_CPU`, `WLP_E2B_MEMORY_MB` for `sandbox/e2b/build.sh` | 1 vCPU, 1024 MiB |
-| Sandboxes running at once | `WLP_E2B_MAX_RUNNING`, counted from E2B's own list of the deployment's running sandboxes before one is created or resumed, and again after, so it holds across servers. At the cap the user reads: "This deployment runs at most 3 sandboxes at the same time, and all of them are in use. Try again in a few minutes; an agent's sandbox is freed shortly after its turn has ended." | 3 |
+| Sandboxes running at once | `WLP_E2B_MAX_RUNNING`, counted from E2B's own list of the deployment's running sandboxes before one is created or resumed, and again after, so it holds across servers. At the cap the user reads: "This deployment runs at most 3 sandboxes at the same time, and all of them are in use. Try again in a few minutes; an agent's sandbox is freed shortly after its turn has ended." A work item's turn is not refused at the cap: it waits, and is tried again after 30 seconds, then twice as long each time up to five minutes ("Work items") | 3 |
 | A sandbox nobody uses | its own timeout at E2B, `WLP_E2B_IDLE_TIMEOUT_MS`: E2B pauses it by itself that long after the last use | 2 minutes |
 | A sandbox whose server died | while a turn runs, the server pushes the timeout out to `WLP_E2B_TURN_LEASE_MS` every third of it; a dead server stops doing so, and E2B pauses the sandbox | 3 minutes |
 | Suspend and destroy | `suspend` pauses: files and memory are kept, nothing is billed, and E2B keeps a paused sandbox without limit. `destroy` kills. With `WLP_E2B_PAUSE=0`, for an account that cannot pause, both the timeout and `suspend` kill, and the session's files and Windlass session are lost each time | pause |
@@ -610,6 +635,168 @@ being used (`WLP_IDLE_DESTROY_MS`) or by its user on the Usage page ("Usage and 
 removes it; opening a session's changes in the browser resumes its sandbox for the length of the idle timeout;
 and a turn whose command stream to E2B breaks ends as a failed turn, though the sandbox goes on until its
 timeout.
+
+## Machines of your own
+
+With `WLP_MACHINES=1` a user can pair a Linux machine of their own that has Docker, and launch agents on it.
+A small program on that machine, the runner, connects out to the platform, and makes and runs the
+sessions' containers on the machine's own Docker. Everything else stays with the platform: the session's
+actor, the turn's conversation with Windlass, questions, secrets, the GitHub App, the checks' record and the
+timeline. Nothing on the machine needs to be reachable from outside. A session's place is chosen at launch
+("Where it runs" in the launch form, `place` in `createSession`) and kept for its whole life.
+
+- **Pairing.** The Machines page (`/machines`) shows the command that starts the runner:
+
+  ```sh
+  docker run -d --name windlass-runner --restart unless-stopped \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v windlass-runner:/var/lib/windlass-runner \
+    <WLP_RUNNER_IMAGE> --platform <WLP_PUBLIC_URL>
+  ```
+
+  For rootless Docker the socket to mount is `$XDG_RUNTIME_DIR/docker.sock`. The runner makes an Ed25519
+  key pair, keeps the private key in its volume, sends the public key with its machine's host name,
+  system, architecture and its own version to `POST /runner/pair`, and prints a code in
+  `docker logs windlass-runner`: "Open https://.../machines/add and enter XXXX-XXXX". The user types the
+  code on that page (case, spaces and dashes do not matter). The page then shows what the machine says
+  about itself, its name, OS, architecture and runner version, says that nobody has checked these, and
+  says what the machine will receive: the repository's files, its saved secrets and a ChatGPT token for
+  each turn that lasts about an hour. Only after "Connect" is the machine paired. The runner, which asks
+  `POST /runner/pair/poll` meanwhile, then prints whose account it joined ("Paired with ada. If that is not
+  you, run `windlass-runner pair` again."; "an account without a GitHub login" where GitHub is not
+  connected) and connects. A code lasts ten minutes and belongs to the first account that types it; for
+  any other it is not found. A runner whose code expired waits and says so: "The pairing code expired, so
+  restart the container or run `windlass-runner pair` to get a new code." To update the runner, the same
+  command after `docker rm -f windlass-runner`: the volume keeps the key, so the machine stays paired.
+- **Launching on it.** The launch form lists the user's machines beside the platform's own sandboxes, each
+  with its state. A machine whose runner has not reported yet cannot be chosen ("“nas” has not connected
+  yet. Start its runner, and once the Machines page shows it online, start the agent again."), nor one
+  whose runner is older than the platform takes ("The runner on “nas” is older than this platform takes:
+  update it to 0.1.0 or later, then start the agent again."). A machine offers the two Docker profiles,
+  `docker-windlass-sandbox` and `docker-hardened`, as its runner last reported them: the first only where
+  bubblewrap starts in a container there.
+- **What the platform keeps.** The machine's public key, what it said of itself when it was paired, when
+  its runner was last heard from, and the runner's last report: whether Docker answers, whether bubblewrap
+  starts in a sandbox there, the free disk space, its sandboxes, and the caps its owner set, where any is
+  set. The private key never leaves the machine. The runner's request for a connection is signed with it,
+  its control socket proves it by signing a challenge, and a session's socket carries a ticket the session
+  made for it, through the machine's control socket, which is good once and for one minute and is signed
+  with the machine's key too.
+- **What the runner does.** What the server's Docker layer does, on the machine's Docker, and only what its
+  protocol names: it makes a session's container, runs the platform's commands in it, starts and stops
+  it, and removes it when asked. It runs one sandbox image, pinned by digest when the runner is built, and
+  never pulls another. It touches only containers it labelled for its own machine
+  (`dev.windlass-platform.machine=<machine id>`) and one data volume of its own,
+  `wlp-machine-<machine id>`, which is Windlass's data directory for the machine's sessions, as the user's
+  volume is on Docker. Each container has the limits a hosted Docker sandbox has (1.5 CPUs, 1536 MiB of
+  memory, 512 processes, no capabilities), and none is made with less than 5 GB of free disk. It stops a
+  sandbox that has not been used for the idle time the platform names (`WLP_IDLE_SUSPEND_MS`), never while
+  a command runs in it or the session's socket is connected, and it never removes one by itself.
+- **What the runner cannot do, and what the platform cannot do.** The runner cannot start a container of
+  another image, run anything on the machine outside the containers it made, touch a container or a volume
+  it did not make, or reach a session that did not hand it a ticket. It holds no sign-in: each turn is
+  handed a ChatGPT access token in a file, as on every place. The platform, for its part, cannot reach the
+  machine except through its runner, and does not control it: whoever runs the machine can change what
+  runs there and what it reports. The launch form, the profiles and a pull request's section say so.
+- **No limit unless its owner sets one.** The platform counts nothing of a machine: its sandboxes take no
+  sandbox time and no place among the kept sandboxes, have no price, and its turns are not among the
+  user's agents working at once: one rule, `hostedLimitsApply` (`server/src/usage.ts`), holds a session
+  to the daily time, the kept sandboxes and the running agents, and it holds only a hosted one.
+  What bounds a machine is the machine: its runner takes `--max-running` and `--max-sandboxes`, with no
+  default, after the command above, and a turn that would pass one ends with "This machine has reached its
+  own limit on kept sandboxes, set by --max-sandboxes." (or on running sandboxes, by `--max-running`). The
+  Machines page shows what is in force under "Sandbox limit", "no limit" or the numbers, and says that a
+  limit is set on the machine, not there.
+  A sandbox there is not removed after `WLP_IDLE_DESTROY_MS` either: it goes with its agent, with the
+  machine's sandboxes, or by `prune`.
+- **When the link drops.** One control socket per machine to its `machine` actor, and one socket per
+  session to that session's actor while the session needs its machine, both through the engine's gateway.
+  A dropped socket does not end a turn: both ends keep what the other has not acknowledged, and the turn
+  goes on when the runner is back, with every event once. Meanwhile the session says "Your machine "nas"
+  is not answering since 14:02. The turn goes on when it is back, or stops at 14:12." The banner follows
+  the machine while the page is open: the session pushes a `machine` event to it each time what it found
+  changes (answering, not answering, offline, removed). Ten minutes without
+  the runner (`RUNNER_GRACE_MS`) end that conversation, and what was outstanding in it fails. An operation
+  that is the same done twice is asked once more after a lost conversation, `create` included: the runner
+  answers a second `create` for a session with the sandbox that session already has, so a lost answer
+  never makes a second sandbox.
+- **When the runner restarts.** Its conversations with the sessions are in its process's memory, so a turn
+  running then ends, not as done; the next turn stops what the old one left running in the sandbox, and
+  runs.
+- **When a server restarts.** The session goes to sleep as any does ("When a server stops") and its
+  conversation with the runner ends with it; the next turn, on whichever server, opens a new one. The
+  session does not suspend a machine's sandbox on its way to sleep (`[wlp] sandbox.suspend_skipped`): the
+  runner stops it after the idle time.
+- **When the machine is offline.** An agent can be launched on it, and the form says that a prompt sent
+  before the machine is back fails. A prompt is not queued: it fails with "Your machine "nas" is offline.
+  The agent's files are there; send the prompt again when it is back.", at once when the machine's actor
+  knows it is offline, and after 15 seconds when the runner does not answer. The banner above the
+  composer says since when the machine is offline.
+- **When the machine is removed.** "Remove…" on the Machines page deletes its key: the runner's control
+  socket is refused at once, and the runner forgets its key, stops its sandboxes and waits to be paired
+  again ("This machine was removed from its account, so run `windlass-runner pair` to pair it again with a
+  new key."). With "Also remove the agents' sandboxes on it", it removes them and its data volume instead,
+  at once when it is connected and when it next connects when not. A turn running on the machine ends
+  within seconds: the timeline closes it with the sentence of an engine that stopped in the middle of the
+  turn, not with the removal; from then on the banner says "This agent's machine was removed. Its files
+  were there. Start a new agent to go on.", a prompt is answered with the same sentence, and the agents
+  keep their timelines. If the machine's control connection was already down when it was removed, its
+  runner learns of the removal only when it next connects, at most a minute after its network is back, and
+  serves the sessions it already has until then. Deleting an agent on a machine records the removal of its sandbox with the
+  machine's actor, and the runner removes it, at once when it is connected and when it next connects when
+  not. A delete whose removal could not be recorded is refused (`machine_unreachable`: "The agent could
+  not be deleted: its machine's record of the sandbox to remove could not be written. Try again in a
+  moment."), and the agent stays listed until a delete goes through; once the removal is recorded, nothing
+  the runner answers holds the delete back.
+- **Not seen for 90 days.** A machine whose runner has not been heard from for 90 days is removed with its
+  key (`MACHINE_EXPIRY_MS`); its agents keep their timelines, and its sandboxes are left where they are.
+- **Forgetting the ChatGPT sign-in.** Each machine whose runner is connected at that moment is told, and
+  its runner removes the token files of running turns from its data volume. A machine that is offline then
+  is not told, and is not told later: the platform keeps no logout for it. A token in a file there, which a
+  turn cut off by the machine going away can leave, lasts about an hour from when it was handed out, and
+  whoever reads it cannot renew it. To remove such files sooner, the machine's owner removes the runner's
+  sandboxes and its data volume there with `prune`. It waits for the lock the running runner holds, so the
+  runner is stopped first, and started again afterwards:
+
+  ```sh
+  docker stop windlass-runner
+  docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock \
+    -v windlass-runner:/var/lib/windlass-runner <WLP_RUNNER_IMAGE> prune
+  docker start windlass-runner
+  ```
+- **Saved secrets.** A repository's and the account's saved secrets reach a machine's agents only while
+  "Send saved secrets to this machine" is on, which it is for a new machine; a change holds from each
+  agent's next turn.
+- **Pull requests, and the machine's name.** The session keeps its machine's name from the launch, so it
+  can name the machine while the machine is offline. A pull request of a session on a machine keeps its
+  "What was verified" section, with one more line: "These checks ran on ada's own machine, “nas”; this is
+  what that machine reported." And the question about a project's MCP server says where the server would
+  run: "It runs in this session's container on your machine "nas", with its network, ..."
+- **The pairing limits.** A user can have three machines paired at once (`MAX_MACHINES`): each machine
+  that is connected keeps an actor awake on the platform, and this is what bounds that cost for one
+  account. A user can look up five codes in ten minutes. And the platform's routes see no client address
+  they could trust, so the pairings that are started are limited by the machine key that starts them,
+  three in ten minutes, and in 64 groups of sixteen that a key cannot choose. That bounds how many pairing
+  attempts anyone can leave open on the deployment; someone who makes many keys can use up the starts for
+  ten minutes, and the runners that are paired already are not affected.
+- **What the runner reports on the machine.** `windlass-runner status` (in the container:
+  `docker exec windlass-runner windlass-runner status`) says whether it is connected, the caps in force and
+  the sandboxes and data volume of its pairings; `windlass-runner log` is its own record of what it was
+  asked.
+
+| Variable | Effect |
+|---|---|
+| `WLP_MACHINES` | `1`: every user of the deployment may pair machines. Off (the default): the runner's routes answer 404, the machine actions refuse with `machines_off`, and platform info has no `machines`. The machines and their tables stay, so turning it off and on again loses nothing |
+| `WLP_PUBLIC_URL` | the platform's address as a machine outside reaches it: an `https://` origin, or `http://` on a loopback address, with no path. Required with `WLP_MACHINES=1` and a remote engine; with the local one, `http://localhost:<WLP_HTTP_PORT>` |
+| `WLP_RUNNER_IMAGE` | the runner image the Machines page tells users to start, pinned by digest (`<name>@sha256:<64 hex>`). Unset: the page says that it cannot be installed yet. Set to anything else, the server does not start |
+
+What is not there yet. No runner image is published, so the page has no command to copy until one is:
+`scripts/runner-build.sh [<sandbox image pin>]` builds `windlass-runner:dev` for the machine it runs on,
+from a local sandbox image (`windlass-platform-sandbox:latest` by default) whose id it pins, and with
+`WLP_RUNNER_PLATFORMS=linux/amd64,linux/arm64` it writes a two-architecture OCI archive instead. A new
+sandbox image means a new runner build. `docker-windlass-sandbox` is offered on a machine only where the
+runner's probe found that bubblewrap starts in a container there, which is the machine's kernel's to allow;
+elsewhere only `docker-hardened` is. And work items do not run on machines ("Work items").
 
 ## The agent's memory outlives its sandbox
 
@@ -740,12 +927,22 @@ platform is served at, `https://<name>.onrivet.dev` below:
 | Setup URL | none. GitHub takes none while the setting above is selected |
 | Enable Device Flow | not selected |
 | Webhook | "Active" not selected: the platform listens to nothing |
-| Repository permissions | Contents: read and write. Pull requests: read and write. Metadata: read-only (GitHub adds it). Nothing else |
+| Repository permissions | Contents: read and write. Pull requests: read and write. Checks: read-only. Commit statuses: read-only. Actions: read-only. Metadata: read-only (GitHub adds it). Nothing else |
 | Organization and account permissions | none |
 | Where can this GitHub App be installed? | "Any account", for users other than the app's owner |
 
 Then, on the app's page: note the App ID and the Client ID, generate a client secret, and generate a private
 key (a `.pem` file is downloaded).
+
+The three read-only permissions are for work items ("Work items"), which read the CI of a commit the
+platform pushed: its check runs (Checks), its commit statuses (Commit statuses) and the log of a GitHub
+Actions job that failed (Actions). Nothing else uses them, and everything else works without them. An app
+that was registered with the first two only is changed on its page, under Permissions and events; GitHub
+then asks the owner of each account the app is installed on to accept the new permissions. Until an
+installation has accepted them GitHub refuses the platform its CI, and an item on that installation's
+repositories is handed over without it: its verdict says that CI was not read, that the app needs read
+access to Checks, Commit statuses and Actions, accepted on the installation, and that the pull request's
+own page shows the checks.
 
 | Variable | Effect |
 |---|---|
@@ -818,6 +1015,7 @@ Three credentials exist, and none is stored, logged, or put in a timeline item, 
 | cloning | contents: read, metadata: read (one repository) | the sandbox, for one `git clone`; then revoked |
 | pushing | contents: write, metadata: read (one repository) | the sandbox, for one `git push`; then revoked |
 | the pull request | pull requests: write, contents: read, metadata: read (one repository). Contents, because GitHub opens no pull request for a token that cannot read the two branches | the server |
+| reading a commit's CI, for a work item | checks: read, statuses: read, actions: read, metadata: read (one repository), for one reading | the server. A job's log is a redirect to GitHub's short-lived storage, which is fetched without the token |
 
 **In a sandbox** the token is given to the one git command the platform itself runs, and to nothing else
 (`server/src/github/git.ts`):
@@ -1075,7 +1273,8 @@ session on it.
   checks. What is saved is what Windlass reads: a name it would refuse, two checks of one name, or a
   pattern that starts with `!` is refused when it is saved, because Windlass fails a turn whose checks it
   cannot read.
-- **Where the user sets them.** On the repository's page, under the setup command. The list is saved
+- **Where the user sets them.** On the repository's Settings, under the setup command
+  (`/repositories/<id>/settings#checks`). The list is saved
   whole, by one statement that reads nothing first, so of two saves that run together one stays as it was
   sent, and neither undoes a setup command or a secret saved meanwhile.
 - **Two kinds of Windlass.** What a repository's own `.windlass/config.json` can do to the user's checks
@@ -1085,7 +1284,7 @@ session on it.
   the platform asks each sandbox's Windlass, with the question it asks already ("Sandboxes that keep an
   older Windlass": `requiredChecks` among the keys it lists), and each turn goes by the Windlass it runs
   on. The session's summary carries the answer (`SessionSummary.requiredChecks`), and the repository's
-  page says under the checks which of the two holds in the sandboxes of the user's agents on it, as far
+  Settings say under the checks which of the two holds in the sandboxes of the user's agents on it, as far
   as they have said. A session made under 0.2.0 carries on in a sandbox with 0.3.0. The
   other way about it does not: once 0.3.0 has recorded anything about checks in a session
   (a run of them, or the ending of a turn with checks in force), 0.2.0 refuses to open it, whole: the
@@ -1177,7 +1376,7 @@ cd server && npx tsx ../scripts/verified-check.ts                               
 cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/verified-check.ts --docker # and what a real Windlass does with a user's checks and a repository's own: the image's, and the last release without required checks (`sandbox/fetch-windlass.sh older`)
 ```
 
-The web app's mock has two checks saved for acme/harbor (`?mock=1`, `/repositories/7101`), one of them with
+The web app's mock has two checks saved for acme/harbor (`?mock=1`, `/repositories/7101/settings`), one of them with
 file patterns that the mock's turns never match. Its sandboxes have a Windlass with required checks, except
 the one of "Make add() pass its checks", which keeps an older one; the fake sandbox layer's Windlass has them
 too, and its evidence of a run names what the run's changes are measured from and the session's required
@@ -1317,7 +1516,7 @@ To look at:
   checks with how each ended, whose it is ("yours", "yours, required", "the repository's file") and how
   often the agent was sent back (or why it was not started), the user's checks that did not run and why, whom the repository's own
   settings held for, and that files changed after the checks last ran. The line of a push says what the
-  description reports, in a few words, and the repository's page lists them beside each open pull request
+  description reports, in a few words, and the repository's Work view lists them beside each open pull request
   (`PullRequestInfo.verified`): "2 checks passed", "1 of 2 checks failing", "nothing verified",
   "1 check passed (the repository's own)", "no check was needed", "no check covers what changed",
   "nothing verified, 1 check not started", "1 of 2 checks failing, 1 not started", with "1 thing to
@@ -1612,15 +1811,19 @@ something, and nothing is left once they have deleted it.
   fold that would hide one or two is not made. All of it is worked out in the browser from the summaries
   the `user` actor already broadcasts: drawing the list asks nothing of GitHub, of a sandbox provider or of
   a session.
-- **The page** (`/repositories/<GitHub's id>`, `web/src/screens/Repository.tsx`) gathers the repository's
-  sessions; the pull requests they opened that are still open, as each session's summary last had them
-  (GitHub is not asked for a list, so one merged or closed at GitHub stays until its session's panel next
-  reads it), each with what its description says was verified, in a few words; the defaults for new
-  sessions; the setup command and the secrets, in the same components a session's panel has
-  (`SetupEditor`, `SecretsBlock`); the checks ("A repository's checks"; `ChecksEditor`); the remembered approvals of its MCP servers, each
-  with when it was given, until when it holds, and "Forget"; and one control that deletes everything saved
-  for the repository at once. "New agent" opens the launch form with the repository chosen
-  (`/repositories/<id>/new`).
+- **The page** has two views under one tab row, each with its own address. **Work**
+  (`/repositories/<GitHub's id>`, `web/src/screens/Repository.tsx`) gathers the repository's sessions, its
+  work items ("Work items"), and the pull requests the sessions opened that are still open, as each
+  session's summary last had them (GitHub is not asked for a list, so one merged or closed at GitHub stays
+  until its session's panel next reads it), each with what its description says was verified, in a few
+  words. **Settings** (`/repositories/<id>/settings`, `web/src/screens/RepositorySettings.tsx`) has the
+  defaults for new sessions; the setup command and the secrets, in the same components a session's panel
+  has (`SetupEditor`, `SecretsBlock`); the checks ("A repository's checks"; `ChecksEditor`); the remembered
+  approvals of its MCP servers, each with when it was given, until when it holds, and "Forget"; and one
+  control that deletes everything saved for the repository at once. A link opens Settings at one section
+  by its fragment: `#defaults`, `#setup`, `#checks`, `#secrets`, `#servers`, `#forget`. "New agent" opens
+  the launch form with the repository chosen (`/repositories/<id>/new`, or `/repositories/<id>/settings/new`
+  over Settings).
 - **Two questions, asked apart.** What is saved (`repository`) is the actor's own and answers at once,
   whoever can or cannot reach the repository at GitHub. Whether a session can still be launched on it
   (`githubRepository`) is GitHub's to say. So the page of a repository its user lost access to, or whose
@@ -1670,7 +1873,8 @@ top bar; `web/src/screens/Settings.tsx`): defaults for new sessions, MCP servers
 the secrets those servers read. All three are kept in the user's `user` actor, in tables of their own
 beside the repositories', and each is read and changed by its own actions (`account`,
 `saveAccountDefaults`, `savePersonalServer`, `deletePersonalServer`, `accountSecrets`,
-`saveAccountSecret`, `deleteAccountSecret`).
+`saveAccountSecret`, `deleteAccountSecret`). The same page has the user's API tokens, with which a script
+files work items ("Work items").
 
 ### Defaults
 
@@ -1686,7 +1890,7 @@ beside the repositories', and each is read and changed by its own actions (`acco
   is ("This agent starts in Docker, hardened, your account's default, and on gpt-6-luna, the default
   saved for acme/harbor."), offers to take back a default its user chose over, and says of a default
   that names a sandbox the deployment no longer offers, or a model that is not in the user's list, that
-  it is ignored, whose it was, and where it is changed. A repository's page says what a field left without a default comes to:
+  it is ignored, whose it was, and where it is changed. A repository's Settings say what a field left without a default comes to:
   the account's default where there is one.
 - **Saves that run together.** As a repository's: a save names the fields it changes and is one
   statement that writes those columns, so a save of the sandbox and a save of the model both stay.
@@ -1854,11 +2058,20 @@ stand (`server/src/usage.ts` has the rules, with no actor in it):
 
 Either takes `unlimited`. The time is counted and shown with or without a limit.
 
+A user may also have at most `WLP_FACTORY_RUNNING_TURNS` turns running at once (default 6), their own and
+their work items' together ("Work items"); the work items take at most `WLP_FACTORY_TURNS` of them
+(default 5), so one is always free for the person's own prompt. A prompt beyond the ceiling is refused before
+anything starts (`too_many_running`: "You already have 6 agents working, which is your limit. Wait for one
+to finish, or stop one."); a work item's turn waits instead.
+
 Only hosted sandboxes, the layer `WLP_SANDBOX` chooses, are counted. A session says where it runs
 (`place` in `createSession`): hosted when left out, as is every session stored before places existed,
-or one of its user's machines. A machine's sandboxes take no sandbox time and no kept place and have no
-price; its turns still count towards the limit on agents working at once. The only machine so far is a
-fake deployment's `m_fake`, which every user has.
+or one of its user's machines ("Machines of your own"). The platform's limits do not hold a machine's
+sessions (`hostedLimitsApply`): their sandboxes take no sandbox time and no kept place and have no price,
+and their turns do not count towards the limit on agents working at once. What bounds a machine is its
+runner's own caps, which its owner may set with `--max-running` and `--max-sandboxes`, and there are none
+unless they do. The usage page lists a machine's sandboxes apart, under "On your machines": "Not counted
+against your daily sandbox time, running agents or kept sandboxes."
 
 - **What is counted.** The time a session's sandbox runs: from the moment the session has it created or
   resumed, for a turn, a clone, a setup command, a push, or to read the workspace's changes, until it is
@@ -1925,6 +2138,9 @@ fake deployment's `m_fake`, which every user has.
 - **Before the limit.** The home screen has the day's numbers in one line. A session says so above its
   composer when less than a fifth of the allowance is left, and the launch form when the day is used up or
   no place is left.
+- **The factory's limits.** The usage page also lists what the factory may run for the user at once and
+  what each work item may spend, "Set by this deployment's owner", and what each item has cost so far
+  against its budget ("Work items"). A work item's hosted sandbox is counted here as any other.
 - **The estimated cost** is the counted seconds times the provider's published price for the size of the
   deployment's sandboxes (`server/src/sandbox/e2b/pricing.ts`), and is labelled as an estimate with that
   price. On Docker nothing is billed by the second and nothing is estimated.
@@ -1953,13 +2169,122 @@ The web app's mock plays a deployment with the default allowance and room for tw
 `&usage=full`, or `__wlpMock.mockUsage(...)` in the console, play a day with little left, a day that is
 used up and an account with no place left.
 
+## Work items
+
+A work item is a task on one repository of the user's GitHub connection that the platform carries from the
+start to a pull request by itself: a title, a description, and acceptance criteria, which are for the
+person to check and which the verdict lists. Each item has an agent session of its own, listed with the
+user's other agents, that only the item's steps send prompts to ("This agent works for a work item, whose
+steps send its prompts. Answer the item, or send its work back with a note.") and that cannot be deleted
+while the item has it; the item is cancelled instead, and the agent and what it did stay readable. An
+item is filed on its repository's Work view ("New work item…") or through the API below, and has a page
+of its own (`/items/<id>`) with its step, its log, its verdicts and its cost. The home screen lists, under
+"Needs you", every item that asks its person something.
+
+- **The sequence is fixed** (`server/src/factory/blueprint.ts`). Which step comes next is decided from what
+  the platform observed, never from what the agent says. The agent implements the task in one turn. The
+  turn's own verification, the user's checks for the repository ("A repository's checks"), decides what
+  follows: a check that failed sends the agent back to fix it, at most twice in a run. Then the platform
+  pushes the item's branch and opens the pull request; a push that does not get through for a network
+  error is tried three times, and one GitHub refuses is a question with GitHub's reason. It waits for CI with
+  the sandbox paused, reading it every minute, or every three minutes while the user has more than ten
+  items open; no check run and no status ten minutes after the push means the repository has no CI. It
+  gives the agent CI's failing checks and the end of their logs, at most twice in a run. A pull request
+  that GitHub says conflicts with its base gets one turn to merge the base. Then the item is handed to its
+  person with a verdict and is in review, and the platform reads the pull request every ten minutes until
+  it is merged (the item is done) or closed (cancelled).
+- **The platform never merges.** Nothing in the sequence merges a pull request, and no verdict does: the
+  person merges at GitHub, or sends the work back from the item's page with a note, which starts a new run.
+- **Turns are unattended.** An item's turn has nobody to ask: a tool call that would ask is refused at once,
+  and the model is told so. A turn takes at most 60 steps. The agent is not given the tool to publish,
+  since the platform pushes an item's work itself; it is given one, `report`, to file what it did, in a
+  title and a description that the platform puts on the pull request, and what it is unsure of.
+- **Every stop is a question.** The rounds above used up, the same failure again after a fix, a turn that
+  changed nothing, a push GitHub refused, CI still running 90 minutes after the push, a step whose turn was
+  cut off three times (by a deploy or a restart), or the item's budget used up: the item waits for its
+  person, for days if need be, with the reason and the choices that fit it ("Raise the limit and go on",
+  "Retry from scratch", "Hand it over as it is" once there is a pull request, "Give up").
+- **The verdict** is what the work at the pushed commit rests on, made from what the session's gate
+  recorded, the observations on the changes ("What a pull request shows was verified") and CI at that
+  commit, never from the agent's words (`server/src/factory/verdict.ts`). `fail`: a check of the gate's
+  run or CI failed; `incomplete`: the turn was stopped, failed or was cut off; `unverified`: nothing
+  verified this state of the work; `pass` otherwise. A pass with observations is shown as needing a look.
+- **Limits are waits.** Nothing is refused for lack of room. An item that cannot go on now waits and says
+  for what, with its numbers ("Waiting for one of your 5 factory turns; 5 are running (…)."): a free turn,
+  a free place among the kept sandboxes, the day's allowance (until 00:00 UTC), one of the user's hosted
+  sandboxes running at once, the deployment's cap on running sandboxes, or fewer of the user's items in
+  review, which holds back new work and never work in progress. A request is tried again when a turn is
+  given back or one of the person's own agents goes idle, and otherwise after 30 seconds, then twice as long
+  each time up to five minutes. Requests are taken oldest first, and an item has at most one turn
+  waiting, so the items take turns.
+- **The same ceiling as the person's own agents.** `WLP_FACTORY_RUNNING_TURNS` counts the person's own
+  turns and the items' together, and is the ceiling on the person's own running agents ("Usage and
+  limits"). The items' share, `WLP_FACTORY_TURNS`, is held at least one below it (unless the ceiling is
+  1), so a person's own prompt never waits behind the factory.
+- **The cost of an item** is its tokens, turns, working time and hosted sandbox time, against its budget, on
+  the item's page and the usage page. Working time leaves out what it waited for. A budget used up is a
+  question, and "Raise the limit and go on" takes the person's new figures for that item.
+
+The limits are the deployment's, the same for every user, set by its owner; a user cannot raise them. A
+setting that is not a whole number in its range stops the server when it starts.
+
+| Limit | Setting | Default |
+|---|---|---|
+| A user's turns running at once, their own and their items' together | `WLP_FACTORY_RUNNING_TURNS` | 6 (at most 100) |
+| Of those, the items' | `WLP_FACTORY_TURNS` | 5; one set higher is held to one less than `WLP_FACTORY_RUNNING_TURNS`, and to 1 at least |
+| The user's hosted sandboxes running at once beside which an item's turn may start | `WLP_FACTORY_HOSTED_RUNNING` | 3 |
+| Items in review at which new items wait | `WLP_FACTORY_REVIEW_CAP` | 6 |
+| A new item's budget: tokens, turns, working seconds, hosted sandbox seconds | `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_TURNS`, `WLP_FACTORY_ITEM_ACTIVE_SECONDS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | 4,000,000 tokens, 10 turns, 14400 (4 hours), 5400 (1.5 hours) |
+
+An item's hosted sandbox counts against the user's daily allowance and kept sandboxes as any other ("Usage
+and limits"), whose defaults are sized for a few agents by hand, not for many items a day.
+
+**The API.** A script files and reads items with an API token, sent as `Authorization: Bearer wlp_…`. A user
+makes one on their Settings page (`/settings`), under "API tokens", with one or both scopes,
+`items:create` and `items:read`; its value is shown once, the platform keeps only its SHA-256 digest
+(`server/src/api-tokens.ts`), and it works until it is revoked there. An account keeps at most 20.
+
+```sh
+curl -X POST https://<name>.onrivet.dev/api/items \
+  -H "Authorization: Bearer $API_TOKEN" -H "Idempotency-Key: $(uuidgen)" -H "content-type: application/json" \
+  -d '{"repository":{"id":123456789},"title":"Fix the light","body":"...","acceptance":["The light turns off"],"start":true}'
+curl https://<name>.onrivet.dev/api/items/<id> -H "Authorization: Bearer $API_TOKEN"
+```
+
+`POST /api/items` takes what the web app's form sends (`CreateItemInput`): `repository.id` is GitHub's id
+for a repository of the user's connection, `branch` beside it names the base (the default branch when left
+out), and `start: true` starts the item at once; without it the item is a draft until it is started. It
+answers 201 with the item's summary. `GET /api/items/<id>` answers 200 with the item's page (`ItemView`).
+The `Idempotency-Key` header is the creation's key, by the rules of "A message sent twice": the same key
+with the same body answers with the item the first attempt made, and with another body it is refused (409,
+`idempotency_key_reused`). A token that is not valid, or lacks the scope, is answered 401, `invalid_token`;
+every error is `{ code, message }`, with the codes of the web app's actions.
+
+**CI needs the GitHub App's three read permissions** ("The GitHub App"). Without them, or before an
+installation has accepted them, an item waits for no CI: it is handed over saying that CI was not read.
+
+What is not in this slice. Items run on hosted sandboxes only: one filed for a machine is refused
+(`bad_input`). Nothing of an item is pushed before the step that opens its pull request. At the handover
+the platform asks nobody to review the pull request and writes no comment on it; the person finds it on
+the item's page and on the repository's Work view. Until the next Windlass release, in a profile where
+Windlass 0.3.0 asks before a call of an MCP tool (`docker-windlass-sandbox`, E2B with its sandbox
+promised), an item's agent is told that its report was not taken, since nobody is there to allow the
+call, although the platform has received it; in the profiles where Windlass asks nothing, it is told the
+report was taken. There is no planning step: an item starts by implementing. Items come from the web app
+and the API, from their own user, and nothing is taken in from GitHub's issues.
+
+```sh
+cd server && npx tsx ../scripts/factory-check.ts                          # the sequence, verdicts and budgets as tables of facts, and the reader of CI against the GitHub stand-in
+cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/factory-e2e.ts   # items through the real actors, on fake sandboxes and the GitHub stand-in; ports 6620, 6621, 6630 and 6645
+```
+
 ## Layout
 
 | Path | What it holds |
 |---|---|
 | `server/src/contract.ts` | The contract between the actors and the web app: types only |
-| `server/src/actors/` | The three actors |
-| `server/src/index.ts`, `platform-info.ts` | The server: one Rivet node, and its HTTP routes (`/platform/info`, `/platform/connection`, `/health`) |
+| `server/src/actors/` | The actors: `login`, `user`, `agentSession`, `machine`, `machinePairing` with `pairingDirectory`, and `workItem`. `user-machines.ts` and `user-items.ts` hold what the `user` actor does for machines and for work items (the index, the turn queue, the API tokens), `session-inbox.ts` what a session does for its item |
+| `server/src/index.ts`, `platform-info.ts`, `runner-routes.ts`, `api-routes.ts` | The server: one Rivet node, and its HTTP routes (`/platform/info`, `/platform/connection`, `/health`, GitHub's callback, the runner's three, the API's two) |
 | `server/src/web.ts` | The web app's built files, served on the same port where `WLP_WEB_DIR` names them |
 | `server/src/connection-tokens.ts` | The tokens browsers connect with: issued by the engine for the admin token, kept and handed out by each server |
 | `server/Dockerfile` | The server as an image, for a Rivet Cloud cluster or a machine of your own ("Running on several servers") |
@@ -1977,16 +2302,21 @@ used up and an account with no place left.
 | `server/src/verified.ts` | What a session's work was verified with: what a turn's events come to, what is looked for in the work's changes, and the section of a pull request's description ("What a pull request shows was verified") |
 | `server/src/account-models.ts` | The models a user may choose ("Models"): the list of their ChatGPT plan as the `user` actor keeps it, when Windlass is asked again, the stand-in, and how a model and an effort are held against the list |
 | `server/src/account-defaults.ts`, `server/src/personal-servers.ts`, `server/src/account-secrets.ts` | What a user keeps for their account ("Account settings"): the defaults for new sessions; their own MCP servers, what a name and a definition may be and how many are kept; and the secrets those read, whom they reach and how they give way to a repository's |
-| `server/src/windlass-config.ts` | Windlass's own configuration file in a sandbox: what the platform writes into it for a turn (the user's own MCP servers, the tool to publish, the repository's checks), how it is taken out again, and what a repository's own file says about checks |
+| `server/src/windlass-config.ts` | Windlass's own configuration file in a sandbox: what the platform writes into it for a turn (the user's own MCP servers, the tool to publish, the repository's checks), how it is taken out again, and what a repository's own file says about checks, and that wake-ups are off (`wake.enabled: false`) for every session, since nothing delivers one while a sandbox is paused |
 | `server/src/agent-publish.ts` | The agent asking the platform to publish: the tool and its server, what a request may hold, and the words of the question, of the timeline's lines and of what the agent is told |
 | `server/src/repo-secrets.ts` | A repository's secrets: what may be saved, what a scope comes to in each kind of sandbox, the sealing, and taking saved values out of text |
 | `server/src/bucket/`, `server/src/sandbox/backup.ts` | The object store the copies of Windlass's session data go to (S3 protocol, and a stand-in for tests), and what is copied, saved and restored |
-| `server/src/github/` | The GitHub App: its tokens and API calls, connecting (the callback route), which repositories a user may work on, and the git commands the platform runs in a sandbox ("GitHub") |
+| `server/src/github/` | The GitHub App: its tokens and API calls, connecting (the callback route), which repositories a user may work on, the git commands the platform runs in a sandbox ("GitHub"), and the reader of a commit's CI (`ci.ts`) |
+| `server/src/runner/` | What the server and the runner share: a session socket's protocol and its resumable channel (`protocol.ts`, `channel.ts`), the control socket's frames and refusals (`control.ts`), and the checks both are built from (`check.ts`) |
+| `server/src/machines/`, `server/src/sandbox/runner-layer.ts`, `server/src/runner-keys.ts` | A machine on the server: the one-use tickets of a session's socket and the profiles a machine offers from its report; the session's link to its runner, and what the session says when the machine does not answer; the pairing codes, and the machine keys and their signatures ("Machines of your own") |
+| `server/src/factory/` | Work items as pure modules: the fixed sequence (`blueprint.ts`), the verdict, the budgets and waits, and the types they share ("Work items") |
+| `server/src/api-tokens.ts` | The API's tokens: how one is made, kept as a digest, checked and revoked |
 | `sandbox/` | The sandbox image, `build.sh`, `cleanup.sh` |
+| `runner/` | The runner program for a user's machine (Node, bundled with esbuild into one file by `bundle.mjs`), and its `Dockerfile`; `scripts/runner-build.sh` builds the image |
 | `web/` | The web app (Vite, React); `src/api/rivet.ts` is the real client, `src/api/connection.ts` where it gets its connection and renews its token, `src/api/mock.ts` the mock |
 | `fixtures/windlass-events/` | Recorded Windlass events, used by the fake layer, the mock and the reducer's tests |
 | `fixtures/mcp-repo/` | A small repository whose `.windlass/config.json` names an MCP server, and the server (Python, nothing else), for `scripts/mcp-check.ts` |
-| `scripts/` | `dev.sh`, `e2e.ts` (the actors), `sandbox-check.ts` (the sandbox layer), `signin-check.ts` (the sign-ins), `connection-check.ts` and `connection-e2e.ts` (what browsers connect with, and its renewal) |
+| `scripts/` | `dev.sh`, `e2e.ts` (the actors), `sandbox-check.ts` (the sandbox layer), `signin-check.ts` (the sign-ins), `connection-check.ts` and `connection-e2e.ts` (what browsers connect with, and its renewal), the stand-ins the checks use (`github-standin.ts`; `runner-fake.ts` and `runner-stub-server.ts` for a runner and for the platform), and the checks listed under "Checks" |
 
 ## Checks
 
@@ -2013,12 +2343,26 @@ cd server && npx tsx --tsconfig ../web/tsconfig.json ../scripts/connection-e2e.t
                                                                   # the web app's client through an engine whose tokens run out
 ```
 
-The two runner checks run from `server/`.
+The checks of machines and of work items run from `server/` too, except `runner-check.ts`, whose header
+has it run from the repository root after `scripts/runner-build.sh` has built the runner's image.
 
 ```sh
-pnpm exec tsx ../scripts/runner-protocol-check.ts   # a turn's streams across a broken connection, on two loopback sockets
-pnpm exec tsx ../scripts/runner-socket-probe.ts     # one throwaway actor on a local engine, ports 6740, 6741 and 6750
+npx tsx ../scripts/runner-protocol-check.ts                    # the runner channel under the failures it will meet, on loopback sockets and a clock moved by hand
+npx tsx ../scripts/runner-control-check.ts                     # the control socket's frames: input that is not a frame, every refusal readable by a runner, a second runner with one key
+flock /tmp/wlp-test.lock npx tsx ../scripts/machine-check.ts   # pairing, keys, removal and the 90-day expiry, through the real routes and actors, a second node and the runner's own control loop. Ports 6850, 6851, 6860, 6870 and 6871
+npx tsx ../scripts/runner-e2e.ts                               # sessions on a machine through the real server and actors, with a runner stood in for in the process; no Docker. Ports 6950, 6951, 6960 and 6970
+pnpm exec tsx ../scripts/runner-socket-probe.ts                # one throwaway actor on a local engine, ports 6740, 6741 and 6750
+npx tsx ../scripts/factory-check.ts                            # work items' sequence, verdicts and budgets as tables of facts, and the reader of CI against the GitHub stand-in
+flock /tmp/wlp-test.lock npx tsx ../scripts/factory-e2e.ts     # work items through the real actors on fake sandboxes and the GitHub stand-in; ports 6620, 6621, 6630 and 6645
 ```
+
+```sh
+scripts/runner-build.sh                                                            # the runner's image, windlass-runner:dev, from the local sandbox image
+flock /tmp/wlp-test.lock server/node_modules/.bin/tsx scripts/runner-check.ts      # the real runner in real containers, against a stand-in of the platform and the real routes: pairing, outages, refusals, prune. Ports 6900, 6901, 6910, 6920, 7020, 7021 and 7030
+```
+
+`runner-check.ts` plays a five-minute outage of the machine's network and a two-minute sleep of the machine
+in wall time, so it takes some minutes.
 
 The probe measures raw text messages up to `WLP_PROBE_MAX_BYTES` (default 32 MiB), waits without sending
 for `WLP_PROBE_IDLE_MS` (default one minute), then drains its own node. To use an existing cluster, set
@@ -2032,7 +2376,7 @@ The local engine asks for no token, so `connection-e2e.ts` puts a front before i
 cluster's engine does, with tokens that last twelve seconds, and runs real turns through it with the web
 app's own client: past a token's expiry, across a dropped connection, and with a clock that runs behind.
 
-The end-to-end scripts start their own server on ports 6420 and 6440, so stop a running one first.
+`pnpm e2e` and `pnpm e2e:docker` start their own server on ports 6420 and 6440, so stop a running one first; the other scripts that start a server use ports of their own, named above where they bind any.
 
 ## Configuration
 
@@ -2053,10 +2397,16 @@ The end-to-end scripts start their own server on ports 6420 and 6440, so stop a 
 | `WLP_DAILY_SANDBOX_SECONDS` | how many seconds a user's sandboxes may run in one UTC day, all of them together (default 7200, two hours; at least 60), or `unlimited` ("Usage and limits") |
 | `WLP_MAX_KEPT_SANDBOXES` | how many sandboxes a user may keep at the same time, running or paused (default 5), or `unlimited` |
 | `WLP_USAGE_HOLD_SECONDS` | how much of the day's allowance a running sandbox reserves at a time, and so how often its session reports (default 300, from 5 to 3600). A shorter time is for the checks |
+| `WLP_FACTORY_RUNNING_TURNS` | how many turns a user may have running at once, their own and their work items' together (default 6, from 1 to 100): also the ceiling on the user's own running agents ("Work items") |
+| `WLP_FACTORY_TURNS` | how many of those a user's work items may take (default 5, from 1 to 100); held to one less than `WLP_FACTORY_RUNNING_TURNS` |
+| `WLP_FACTORY_HOSTED_RUNNING` | how many of a user's hosted sandboxes may run at once for a work item's turn to start beside them (default 3) |
+| `WLP_FACTORY_REVIEW_CAP` | how many of a user's work items may be in review before new ones wait (default 6) |
+| `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_TURNS`, `WLP_FACTORY_ITEM_ACTIVE_SECONDS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | a new work item's budget: tokens, turns, seconds of working time and seconds of hosted sandbox time (defaults 4000000, 10, 14400 and 5400) |
 | `WLP_BUCKET_ENDPOINT`, `WLP_BUCKET_NAME`, `WLP_BUCKET_ACCESS_KEY_ID`, `WLP_BUCKET_SECRET_ACCESS_KEY` | the S3 bucket that keeps a copy of each agent's Windlass session where sandboxes are E2B's ("The agent's memory outlives its sandbox", which has the optional ones too). Unset: no copy is kept |
 | `WLP_BACKUP_MAX_BYTES` | the largest copy that is kept (default 64 MiB) |
 | `WLP_FAKE_BACKUP_DIR` | fake layer only: a directory that stands in for the bucket; the fake sandboxes then hold Windlass's sessions as E2B's do |
-| `WLP_HTTP_PORT` | the port of the server's own routes, `/platform/info`, `/platform/connection` and `/health` (default `PORT` when that is set, else 6440) |
+| `WLP_FAKE_RESERVE_FAULT` | fake layer only, for `scripts/e2e.ts`: makes the answers between a session and its user's actor about sandbox time go wrong (`lose:<n>`, `lose-renewal:<n>`, `down:<ms>`, comma-separated) |
+| `WLP_HTTP_PORT` | the port of the server's own routes ("Running on several servers" lists them; default `PORT` when that is set, else 6440) |
 | `WLP_WEB_DIR` | the web app's built files (`web/dist`), for the server to serve on that port; unset, it serves none. `server/Dockerfile` sets it |
 | `WLP_HTTP_HOST` | the address they bind (default `127.0.0.1` with the local engine, `0.0.0.0` with a remote one) |
 | `RIVET_ENDPOINT`, `RIVET_NAMESPACE`, `RIVET_TOKEN`, `RIVET_POOL`, `RIVET_NODE_VERSION` | RivetKit's own: the engine to join instead of starting a local one ("Running on several servers") |
@@ -2067,6 +2417,9 @@ The end-to-end scripts start their own server on ports 6420 and 6440, so stop a 
 | `WLP_GITHUB_APP_ID`, `WLP_GITHUB_APP_SLUG`, `WLP_GITHUB_CLIENT_ID` | the deployment's GitHub App: its id, its name as its address has it, its client id ("GitHub"). With these and the two below, users can connect GitHub; with none, nothing of GitHub is offered |
 | `WLP_GITHUB_CLIENT_SECRET`, `WLP_GITHUB_PRIVATE_KEY` | the app's client secret and private key, both secrets. The key as the `.pem` file has it, with `\n` for its line breaks, or in base64 |
 | `WLP_GITHUB_API_URL`, `WLP_GITHUB_URL` | GitHub's API and GitHub itself (defaults `https://api.github.com` and `https://github.com`) |
+| `WLP_MACHINES` | `1`: users may pair machines of their own ("Machines of your own"); default off |
+| `WLP_PUBLIC_URL` | the platform's address for runners: an `https://` origin, or `http://` on a loopback address. Required with `WLP_MACHINES=1` and a remote engine; with the local one, default `http://localhost:<WLP_HTTP_PORT>` |
+| `WLP_RUNNER_IMAGE` | the runner image the Machines page names, `<name>@sha256:<64 hex>`; unset: none is published yet |
 | `WINDLASS_BINARY` | the executable `sandbox/build.sh` puts in the image (default: the local build with `login token --valid-for`, see "Run it") |
 | `WLP_SANDBOX_IMAGE` | `sandbox/build.sh` only: another tag for the image it builds, for a throwaway image; the server always uses `windlass-platform-sandbox:latest` |
 | `VITE_WLP_ENDPOINT` | the Rivet endpoint the web app connects to when the server names none, as a development server does (default `http://localhost:6420`). A server with `WLP_PUBLIC_ENDPOINT` names its own, and this is not needed |
@@ -2076,6 +2429,8 @@ The end-to-end scripts start their own server on ports 6420 and 6440, so stop a 
 A duration (`WLP_..._MS`) that is set and is not a number of milliseconds the platform can use stops the
 server when it starts, with one line that names the variable (`[wlp] WLP_IDLE_SUSPEND_MS must be a number
 of milliseconds of at least 1000, or not set for its default.`). One that is not set takes its default.
+A count (`WLP_DAILY_SANDBOX_SECONDS`, `WLP_MAX_KEPT_SANDBOXES`, `WLP_USAGE_HOLD_SECONDS`, the `WLP_FACTORY_*`
+settings) that is not a whole number in its range stops the server the same way.
 
 Actor data is in `.data/.rivetkit`; stop the server and remove that directory to start from nothing.
 `sandbox/cleanup.sh --keep-image` removes every container and volume this project made, sign-ins of the first
@@ -2119,6 +2474,23 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   the provider's bill by seconds in ordinary use and by up to a hold when a server dies ("Usage and
   limits" has the cases). Nothing compares the two by itself: the log has one line per entry, and E2B's
   usage page has what was billed.
+- **What a machine reports is what the platform shows.** A session on a user's own machine runs its checks
+  there, and its pull request's section says that this is what that machine reported. The platform does
+  not control the machine: whoever runs it can change what runs there and what it reports, and can read
+  what its sessions are handed (the repository, the saved secrets it is sent, a turn's access token).
+- **A machine that is offline when its user forgets the ChatGPT sign-in is never told.** The runners that
+  are connected then remove the token files of running turns; an offline one keeps what it has until each
+  token expires, within the hour ("Machines of your own" says how its owner removes them sooner).
+- **Pairing has one budget for the deployment.** The routes a runner calls see no client address they
+  could trust, so the pairings that are started are limited per machine key and in 64 groups a key cannot
+  choose. Someone who makes many keys can use up the deployment's starts for ten minutes; the machines that
+  are paired already are not affected.
+- **A machine's sandboxes are not removed by the platform.** Their disk is the machine's: the runner stops
+  an idle sandbox and removes one only when asked, with its agent, with the machine's removal, or by
+  `prune`.
+- **The runner pins one sandbox image, and no runner image is published.** A new sandbox image means a
+  new runner build, and until one is published a machine runs only a runner built there from a local
+  sandbox image (`scripts/runner-build.sh`).
 - **A day's allowance at the time it was used is not kept.** The history marks a day as at the limit by
   today's allowance, so after the setting changes an earlier day may be marked that was not at its limit
   then, or not marked that was.
@@ -2166,6 +2538,12 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   sandbox made from the image as it is now has. And the observations about a work's changes are a short list of
   patterns: they miss a test deleted from inside its file and a check weakened in a way the list does
   not name, and they have not been run on a large repository.
+- **Work items take only their person's words.** Items come from the web app and the API, from their own
+  user, and the agent is given the text as its prompt. There is no intake from GitHub's issues and no
+  planning step, and an item runs on hosted sandboxes only.
+- **An item's verdict is as good as its repository's checks and CI.** The acceptance criteria are listed
+  for the person and checked by nobody, and a repository with no checks of its user's and no CI is
+  handed over `unverified`.
 - **A pull request's section is as old as the last push.** It is written when the platform pushes, and
   once more after a turn in which the agent published. A turn that changes files and is not pushed
   leaves the description saying what was true of what is at GitHub.
