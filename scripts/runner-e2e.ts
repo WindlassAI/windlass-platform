@@ -8,9 +8,9 @@
  * (runner-layer.ts) is checked in this process, against a stand-in machine actor, on a clock it moves by
  * hand: the interleavings of hellos, answers, deadlines and closes that a real run meets only by chance.
  *
- *   cd server && npx tsx ../scripts/runner-e2e.ts
+ *   cd server && ../scripts/locked.sh runner-e2e.ts
  *
- * Its ports are its own (engine 6950, +1 and +10; HTTP 6970), so it needs no lock. Nothing runs in
+ * The helper takes group 6950 (engine 6950, +1 and +10; HTTP 6970). Nothing runs in
  * Docker. Prints one PASS/FAIL line per check and exits 1 if any failed.
  */
 import { type ChildProcess, spawn } from "node:child_process";
@@ -25,7 +25,7 @@ import { createClient, type Registry } from "../server/src/client.js";
 import type { SessionSnapshot, SessionSummary, TimelineItem, WindlassEvent } from "../server/src/contract.js";
 import { type ChannelSocket, RunnerChannel } from "../server/src/runner/channel.js";
 import { MIN_RUNNER_VERSION, parseConnection, parseServerFrame, sessionProof } from "../server/src/runner/control.js";
-import { PROTOCOL_VERSION, type Operation } from "../server/src/runner/protocol.js";
+import { DEAD_MS, PROTOCOL_VERSION, type Operation } from "../server/src/runner/protocol.js";
 import { FakeRunner } from "./runner-fake.js";
 
 const PORT = 6950;
@@ -264,19 +264,22 @@ class StandInRunner {
 		const status = await this.fake.poll(ORIGIN, pairing);
 		assert(status?.state === "approved", `pairing ended ${JSON.stringify(status)}`);
 		this.id = { uid: status.uid, machineId: status.machineId };
-		await this.connectControl();
 	}
 
 	private client() {
 		return createClient<Registry>({ endpoint: ENDPOINT, token: "default", namespace: "default" });
 	}
 
-	/** The control socket, again whenever it closes, unless the machine is offline or removed. */
-	async connectControl(): Promise<void> {
+	async openControl(version = MIN_RUNNER_VERSION) {
 		const answer = await this.fake.connection(ORIGIN, this.id);
 		const connection = parseConnection(await answer.json());
 		assert(connection, `no connection (HTTP ${answer.status})`);
-		const control = await this.fake.connect(connection, this.id, { epoch: this.epoch });
+		return this.fake.connect(connection, this.id, { epoch: this.epoch, version });
+	}
+
+	/** The control socket, again whenever it closes, unless the machine is offline or removed. */
+	async connectControl(): Promise<void> {
+		const control = await this.openControl();
 		// One begun before the machine went off the network does not bring it back.
 		if (this.offline || this.removed || this.control) {
 			control.ws.close();
@@ -592,18 +595,21 @@ function socketPair() {
 	const server = { message: [] as Array<(event: { data: unknown }) => void>, close: [] as Array<() => void> };
 	const runner = { message: [] as Array<(data: unknown) => void>, close: [] as Array<() => void> };
 	let open = true;
+	let silent = false;
 	const close = () => {
 		if (!open) return;
 		open = false;
+		if (silent) return;
 		queueMicrotask(() => {
 			for (const listener of [...server.close, ...runner.close]) listener();
 		});
 	};
 	return {
+		silence: () => { silent = true; },
 		server: {
 			send: (text: string) => {
 				if (!open) throw new Error("closed");
-				queueMicrotask(() => open && runner.message.forEach((listener) => listener(text)));
+				queueMicrotask(() => open && !silent && runner.message.forEach((listener) => listener(text)));
 			},
 			close,
 			addEventListener: (type: "message" | "close", listener: never) => (type === "message" ? server.message : server.close).push(listener),
@@ -611,7 +617,7 @@ function socketPair() {
 		runner: {
 			send: (text: string) => {
 				if (!open) throw new Error("closed");
-				queueMicrotask(() => open && server.message.forEach((listener) => listener({ data: text })));
+				queueMicrotask(() => open && !silent && server.message.forEach((listener) => listener({ data: text })));
 			},
 			close,
 			onMessage: (listener: (data: unknown) => void) => runner.message.push(listener),
@@ -698,6 +704,7 @@ function bench(layer: LinkModule, options: { report?: Facts["report"]; serve?: (
 		hello,
 		/** The session's socket drops, as when the runner's network goes. */
 		drop: () => current?.server.close(),
+		silence: () => current?.silence(),
 		close: () => {
 			link.close();
 			runner.close();
@@ -819,6 +826,25 @@ async function linkChecks(): Promise<void> {
 			return `${times.length} tickets 5 s apart; at most one actor call at a time with 7 s answers`;
 		});
 
+		await check("link: a silent socket with no close event gets a new ticket and the pending operation resumes", async () => {
+			const b = fresh();
+			const ready = b.link.ready();
+			await advance(50);
+			await ready;
+			b.silence();
+			b.mode.hello = "never";
+			const before = b.log.attaches.length;
+			const state = track(b.link.request("state", { id: LINK_SANDBOX }));
+			await advance(DEAD_MS + 5_000);
+			const retries = b.log.attaches.slice(before);
+			assert(b.link.reach()?.state === "not_answering" && b.log.reaches.at(-1) === "not_answering", `banner: ${b.log.reaches.join(", ")}`);
+			assert(retries.length === 2 && retries[1]! - retries[0]! === 5_000, `retry times: ${retries.join(", ")}`);
+			b.hello(b.log.tickets.at(-1)!);
+			await advance(100);
+			assert(state.at === "running" && b.log.ops.join() === "state" && b.link.reach()?.state === "answering", `state: ${String(state.at)}, operations: ${b.log.ops.join()}`);
+			return "two tickets five seconds apart; one completed operation on the resumed socket";
+		});
+
 		await check("link: once closed it settles its waiters and asks nothing more; a socket that comes after the work gave up is let go", async () => {
 			const b = fresh();
 			b.mode.hello = "never";
@@ -898,14 +924,35 @@ async function main(): Promise<void> {
 		const token = auth.token;
 		const user = client.user.getOrCreate([uid], { params: { token } });
 		await runner.pair(user);
+		const place = { kind: "machine" as const, machineId: runner.id.machineId };
+		const newSession = (repoUrl?: string): Promise<SessionSummary> => user.createSession({ place, profile: "docker-hardened", ...(repoUrl ? { repoUrl } : {}) });
+		const refusal = (p: Promise<unknown>) => p.then(() => "accepted", (error) => String((error as { code?: unknown }).code));
+
+		await check("launch on a paired machine that has never reported is refused", async () => {
+			const code = await refusal(newSession());
+			assert(code === "machine_not_connected", `launch was ${code}`);
+			return code;
+		});
+
+		await check("launch on a machine with an outdated runner is refused", async () => {
+			const old = await runner.openControl("0.0.9");
+			try {
+				await until("the outdated version in the user's list", async () => (await user.machines()).some((m) => m.machineId === place.machineId && m.warnings.some((w) => w.kind === "outdated")));
+				const code = await refusal(newSession());
+				assert(code === "runner_outdated", `launch was ${code}`);
+				return code;
+			} finally {
+				old.ws.close();
+			}
+		});
+
+		await runner.connectControl();
 		// What the machine's own actor says of it now (the user's list may be behind, as after a restart).
 		const { serviceParams } = await import("../server/src/auth.js");
 		const machineIs = (status: string) => until(`the machine's actor to say it is ${status}`, async () => (await client.machine.get([uid, runner.id.machineId], { params: serviceParams() }).internalFacts()).status === status, 60_000);
 		await machineIs("online");
 		// A launch reads the machine's profiles from its report in the user's list.
 		await until("the machine's report in the user's list", async () => (await user.machines()).some((machine) => machine.commandSandbox !== null));
-		const place = { kind: "machine" as const, machineId: runner.id.machineId };
-		const newSession = (repoUrl?: string): Promise<SessionSummary> => user.createSession({ place, profile: "docker-hardened", ...(repoUrl ? { repoUrl } : {}) });
 		const boxesOf = (sessionId: string) => [...runner.boxes.values()].filter((box) => box.sessionId === sessionId);
 		const turn = async (sessionId: string, text: string): Promise<{ watch: Watch; ended: Extract<TimelineItem, { kind: "turn.ended" }>; ms: number }> => {
 			const watch = new Watch(client, uid, sessionId, token);
@@ -952,7 +999,6 @@ async function main(): Promise<void> {
 		await check(`a session on the machine takes no running slot: with the ceiling at ${CEILING} and a hosted turn running it starts, a second hosted one is refused, and a hosted one starts beside a machine turn`, async () => {
 			const hosted = await user.createSession({ place: { kind: "hosted" }, profile: "docker-hardened" });
 			const second = await user.createSession({ place: { kind: "hosted" }, profile: "docker-hardened" });
-			const refusal = (p: Promise<unknown>) => p.then(() => "accepted", (error) => String((error as { code?: unknown }).code));
 			try {
 				const busy = new Watch(client, uid, hosted.id, token);
 				try {
@@ -1022,6 +1068,27 @@ async function main(): Promise<void> {
 			const now = runner.served.get(main.id)?.resets ?? [];
 			assert(now.length === resets + 1, `${now.length - resets} resets on the runner`);
 			return `runner told: ${now.at(-1)}`;
+		});
+
+		await check("a server restart during a machine turn interrupts it, ends its engine and lets the next prompt run", async () => {
+			const watch = new Watch(client, uid, main.id, token);
+			try {
+				const { turn: number } = await watch.conn.prompt({ text: "Write the primes (slow)" });
+				const box = await until("the turn's engine to stream", () => watch.windlass(number) >= 3 && boxesOf(main.id).find((box) => box.engines.size === 1));
+				await server.stop();
+				await server.start();
+				await machineIs("online");
+				// The server may have closed the turn while the watcher was disconnected.
+				const snapshot = await snapshotOf(client, uid, main.id, token);
+				const cut = snapshot.timeline.find((item) => item.turn === number && item.kind === "turn.ended");
+				assert(cut?.kind === "turn.ended" && cut.outcome === "interrupted", `turn ${number} after restart: ${cut?.kind === "turn.ended" ? cut.outcome : "no ending"}`);
+				await until("the runner to end the interrupted turn's engine", () => box.engines.size === 0);
+				const { ended } = await turn(main.id, "Write the primes");
+				assert(ended.outcome === "succeeded", `next turn ended ${ended.outcome}: ${ended.message}`);
+				return `turn ${number} interrupted, its engine stopped; turn ${ended.turn} succeeded`;
+			} finally {
+				await watch.conn.dispose();
+			}
 		});
 
 		await check("a machine session put to sleep with its sandbox running is not suspended through a runner its sleep refuses, and its next prompt runs", async () => {
@@ -1189,13 +1256,15 @@ async function main(): Promise<void> {
 			} finally {
 				await watch.conn.dispose();
 			}
-			// At once, not after the ten-minute grace. Its sentence is turn.ts's for an engine cut off; the next prompt and the banner say why.
 			assert(first.outcome !== "succeeded" && ms < 10_000, `ended ${first.outcome} after ${ms} ms: ${first.message}`);
+			// Platform diagnostics can follow the reason on a separate line.
+			const reason = first.message?.split("\n")[0];
+			assert(reason === "This agent's machine was removed. Its files were there. Start a new agent to go on.", `removed mid-turn: ${reason}`);
 			const next = await turn(main.id, "Write the primes");
 			assert(next.ended.outcome === "error" && /was removed/.test(next.ended.message ?? ""), `next turn ended ${next.ended.outcome}: ${next.ended.message}`);
 			const snapshot = await snapshotOf(client, uid, main.id, token);
 			assert(snapshot.machine?.state === "removed" && snapshot.timeline.length > 0, `snapshot: ${JSON.stringify(snapshot.machine)}`);
-			return `the running turn ended ${ms} ms after the removal (${first.message?.split("\n")[0]}), the open page told in ${pushedMs} ms; the next refused in ${next.ms} ms`;
+			return `the running turn ended ${ms} ms after the removal (${reason}), the open page told in ${pushedMs} ms; the next refused in ${next.ms} ms`;
 		});
 	} catch (error) {
 		failed += 1;

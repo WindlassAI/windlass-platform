@@ -136,6 +136,7 @@ export class RunnerLink {
 			accept: (hello) => this.tickets.admits(hello, { ...this.who, publicKey: this.heard?.publicKey ?? null }),
 			onReset,
 			onConnect: () => this.connected(),
+			onDisconnect: () => this.lost(),
 		});
 	}
 
@@ -148,8 +149,6 @@ export class RunnerLink {
 			onClose: (listener) => ws.addEventListener("close", () => listener()),
 		};
 		this.channel.attach(socket);
-		// After the channel's own listener, which lets go of the socket when it was the current one.
-		ws.addEventListener("close", () => this.lost());
 	}
 
 	reach(): MachineReach | null {

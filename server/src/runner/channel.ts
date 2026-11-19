@@ -82,7 +82,7 @@ abstract class Channel {
 	private clock?: ReturnType<typeof setInterval>;
 	private grace?: ReturnType<typeof setTimeout>;
 
-	constructor(private readonly base: Options & { onDrain?(): void }, private readonly graceReason: string) {}
+	constructor(private readonly base: Options & { onDrain?(): void; onDisconnect?(): void }, private readonly graceReason: string) {}
 
 	get connected(): boolean { return this.socket !== null; }
 	/** What is held for the peer until it acknowledges it. */
@@ -99,6 +99,13 @@ abstract class Channel {
 		clearInterval(this.clock);
 		if (!this.grace && !this.closed && this.conversation) this.grace = setTimeout(() => { this.grace = undefined; this.reset(this.graceReason); }, RUNNER_GRACE_MS);
 		socket?.close();
+	}
+
+	/** A local close may have no close event. Release the current socket and tell its owner once. */
+	private lost(): void {
+		if (!this.socket) return;
+		this.detach();
+		this.base.onDisconnect?.();
 	}
 
 	close(reason = "The runner channel is closed."): void {
@@ -128,7 +135,7 @@ abstract class Channel {
 			if (this.socket !== socket) socket.close();
 		});
 		socket.onClose(() => {
-			if (this.socket === socket) this.detach();
+			if (this.socket === socket) this.lost();
 			else this.dismiss(socket);
 		});
 	}
@@ -212,7 +219,7 @@ abstract class Channel {
 	/** The peer broke the protocol: nothing it says can be trusted, so the conversation ends with the socket. */
 	protected fail(reason: string): void {
 		this.reset(reason);
-		this.detach();
+		this.lost();
 	}
 
 	private push(text: string): void {
@@ -227,7 +234,7 @@ abstract class Channel {
 		try {
 			this.socket?.send(text);
 			this.spoke = Date.now();
-		} catch { this.detach(); }
+		} catch { this.lost(); }
 	}
 
 	private release(ack: number): void {
@@ -271,7 +278,7 @@ abstract class Channel {
 
 	private tick(): void {
 		const now = Date.now();
-		if (now - this.heard >= DEAD_MS) { this.detach(); return; }
+		if (now - this.heard >= DEAD_MS) { this.lost(); return; }
 		if (this.received > this.told || now - this.spoke >= PING_MS) {
 			this.told = this.received;
 			this.transmit(JSON.stringify({ kind: "ack", ack: this.received }));
@@ -291,8 +298,9 @@ export class ServerChannel extends Channel {
 	/**
 	 * `accept` checks a hello's ticket and signature before it can resume anything. `onConnect` is told
 	 * when a hello has made its socket the current one; it must not call the channel.
+	 * `onDisconnect` is told when that socket is lost, including a heartbeat timeout or a failed send.
 	 */
-	constructor(private readonly options: Options & { accept(hello: Hello): boolean; onConnect?(): void }) {
+	constructor(private readonly options: Options & { accept(hello: Hello): boolean; onConnect?(): void; onDisconnect?(): void }) {
 		super(options, "The machine did not come back within ten minutes.");
 	}
 
@@ -472,7 +480,7 @@ export class RunnerChannel extends Channel {
 			this.conversation = welcome.conversation;
 			this.adopt(socket, null, 0);
 		});
-		try { socket.send(text); } catch { socket.close(); }
+		try { socket.send(text); } catch { this.dismiss(socket); }
 	}
 
 	/** Throws for a value that is not the operation's result: that is the runner's own mistake. */

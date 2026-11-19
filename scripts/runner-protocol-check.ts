@@ -35,6 +35,7 @@ class End implements ChannelSocket {
 	open = true;
 	cut = false;
 	twice = false;
+	notifyClose = true;
 	largest = 0;
 	private listener: (data: unknown) => void = () => {};
 	private closed = () => {};
@@ -48,7 +49,7 @@ class End implements ChannelSocket {
 	close(): void {
 		if (!this.open) return;
 		this.open = false;
-		this.closed();
+		if (this.notifyClose) this.closed();
 		// What was sent before a close still arrives before it.
 		if (this.peer && !this.cut) { this.peer.take(); this.peer.close(); }
 	}
@@ -62,6 +63,7 @@ class End implements ChannelSocket {
 		}
 		return texts.length > 0;
 	}
+	lateClose(): void { this.closed(); }
 	/** Late delivery: what a dead socket still had in flight. */
 	late(texts: string[]): void { for (const text of texts) this.listener(text); }
 }
@@ -321,7 +323,8 @@ async function mismatch(): Promise<void> {
 }
 
 async function liveness(): Promise<void> {
-	const { ch: s } = server();
+	let lost = 0;
+	const s = new ServerChannel({ accept: () => true, onDisconnect: () => { lost++; } });
 	const { ch: r, log } = runner();
 	const link = join(s, r);
 	for (let i = 0; i < 4; i++) { mock.timers.tick(PING_MS); link.flush(); }
@@ -332,8 +335,14 @@ async function liveness(): Promise<void> {
 	stop.abort();
 	link.flush();
 	expect("aborting a run reaches the runner", log.cancels.length === 1 && log.cancels[0] === log.held[0].id);
+	// A silent network passes neither frames nor a close event back to the actor.
+	link.s.cut = link.r.cut = true;
+	link.s.notifyClose = false;
 	mock.timers.tick(DEAD_MS);
 	expect("a peer that goes quiet is dropped after 45 s", !s.connected && !r.connected);
+	expect("the owner learns of a dead socket without a local close event", lost === 1);
+	link.s.lateClose();
+	expect("a late close of the dead socket does not notify the owner again", lost === 1);
 	s.close(); r.close();
 }
 
@@ -436,6 +445,7 @@ async function strangers(): Promise<void> {
 	const link = join(s, r);
 	const silent = Array.from({ length: 5 }, () => {
 		const end = new End();
+		end.notifyClose = false;
 		end.peer = new End();
 		s.attach(end);
 		return end;

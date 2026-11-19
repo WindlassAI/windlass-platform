@@ -1,26 +1,29 @@
 import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { actor, UserError, type UniversalWebSocket } from "rivetkit";
+import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, requireServiceFor, serviceParams } from "../auth.js";
 import { config } from "../config.js";
 import { MACHINE_EXPIRY_MS, type MachineClaim, type MachineStatus, type MachineWarning } from "../contract.js";
 import { machineError, signed } from "../runner-keys.js";
-import { CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, MIN_RUNNER_VERSION, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
+import { CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
 import { grantIsValid } from "./internal.js";
 
 const SEEN_INTERVAL = 3 * 60_000;
+// A refused copy has no open socket. Give it time to retry before retiring the warning.
+const KEY_WARNING_MS = REFUSED_RETRY_MS + CONTROL_DEAD_MS;
 /**
  * How long a control socket may stay open without a hello. The runner sends it as soon as the challenge
  * arrives; a socket that never does would otherwise keep the actor awake until CONTROL_DEAD_MS.
  */
 const HELLO_WAIT_MS = 10_000;
-type Socket = UniversalWebSocket;
+interface Socket { send(frame: ServerFrame): boolean; close(code: number, reason: string): void }
 interface Live { ws: Socket; epoch: string; heardAt: number; connected: number; savedAt: number }
 /** `greeting` is the one control socket that has yet to say hello: a newer one replaces it. */
 interface Vars { live: Live | null; work: Promise<void>; greeting: Socket | null }
 interface Ctx {
 	db: RawAccess; vars: Vars; key: string[];
+	schedule: { at(timestamp: number, action: string): Promise<string>; list(): Promise<Array<{ action: string; runAt: number }>> };
 	// Actor references are resolved through this node's registry.
 	client(): any;
 }
@@ -32,20 +35,9 @@ export interface MachineFacts { status: MachineStatus | "removed"; name: string;
 export type Attachment = { ok: true } | { ok: false; reason: "offline" | "removed" | "unknown" };
 
 const controlPath = (r?: Request) => !!r && new URL(r.url).pathname === "/websocket/control";
-function send(ws: Socket, frame: ServerFrame): boolean {
-	if (ws.readyState !== ws.OPEN) return false;
-	try {
-		ws.send(JSON.stringify(frame));
-		return true;
-	} catch (error) {
-		machineError("send control frame", error);
-		ws.close(1011, "Control socket failed");
-		return false;
-	}
-}
 function reject(ws: Socket, frame: Refusal) {
-	send(ws, frame);
-	if (ws.readyState === ws.OPEN) ws.close(1008, frame.reason);
+	ws.send(frame);
+	ws.close(1008, frame.reason);
 }
 
 // A socket and a SQL write cannot be updated in one SQL statement. Order those transitions,
@@ -66,11 +58,20 @@ function update(c: Ctx, row: Row): MachineUpdate {
 	if (!versionAtLeast(row.version, MIN_RUNNER_VERSION)) warnings.push({ kind: "outdated" });
 	if (report && !report.docker.ok) warnings.push({ kind: "docker", reason: report.docker.reason });
 	if (Math.abs(row.offset) > CLOCK_TOLERANCE_MS) warnings.push({ kind: "clock", offsetSeconds: Math.round(row.offset / 1000) });
-	if (row.duplicate !== null) warnings.push({ kind: "key", at: row.duplicate });
+	if (row.duplicate !== null && Date.now() < row.duplicate + KEY_WARNING_MS) warnings.push({ kind: "key", at: row.duplicate });
 	return { status: c.vars.live ? "online" : row.seen === null ? "waiting" : "offline", since: c.vars.live?.connected ?? row.seen ?? row.created, runnerVersion: row.version, warnings, report };
 }
 async function publish(c: Ctx, row: Row) {
-	await user(c).internalMachineChanged(c.key[1], row.removed_at === null ? update(c, row) : null);
+	const facts = row.removed_at === null ? update(c, row) : null;
+	const conflict = facts?.warnings.find(w => w.kind === "key");
+	if (conflict) {
+		// An earlier alarm rereads the last refusal. One alarm also covers repeated attempts and actor sleeps.
+		const alarms = await c.schedule.list();
+		if (!alarms.some(alarm => alarm.action === "expireKeyWarning" && alarm.runAt > Date.now())) {
+			await c.schedule.at(conflict.at + KEY_WARNING_MS, "expireKeyWarning");
+		}
+	}
+	await user(c).internalMachineChanged(c.key[1], facts);
 }
 /**
  * For what a runner's frame changed: a user actor that is briefly away (its node restarting) must not
@@ -133,51 +134,68 @@ export const machine = actor({
 	},
 	onSleep: async c => {
 		await ordered(c, async () => {
-			if (c.vars.live) await disconnected(c, c.vars.live.ws);
+			c.vars.greeting?.close(1001, "Machine actor sleeping");
+			c.vars.live?.ws.close(1001, "Machine actor sleeping");
 		});
+		await c.vars.work;
 	},
 	onBeforeConnect: (c, params) => {
 		assertOrigin(c);
 		if (!controlPath(c.request)) requireServiceFor({ key: c.key, conn: { params } }, "call");
 	},
-	onWebSocket: (c, ws) => {
-		if (!controlPath(c.request)) { ws.close(1008, "Unknown path"); return; }
+	onWebSocket: (c, raw) => {
+		if (!controlPath(c.request)) { raw.close(1008, "Unknown path"); return; }
 		const [uid, id] = c.key;
 		const nonce = randomBytes(32).toString("base64url");
 		let hello = false;
 		let closed = false;
 		let queued = 0;
-		let heard = Date.now();
-		const timer = setInterval(() => {
-			if (Date.now() - heard >= CONTROL_DEAD_MS) ws.close(1001, "Runner timed out");
-			else if (c.vars.live?.ws === ws) send(ws, { kind: "heartbeat" });
+		// The raw socket need not deliver a close event when the actor initiates the close.
+		const gone = () => {
+			if (closed) return;
+			closed = true;
+			clearTimeout(deadline);
+			clearInterval(heartbeat);
+			if (c.vars.greeting === ws) c.vars.greeting = null;
+			if (c.vars.live?.ws === ws) return ordered(c, () => disconnected(c, ws)).catch(error => machineError("machine disconnect", error));
+		};
+		const ws: Socket = {
+			send(frame) {
+				if (!closed && raw.readyState === raw.OPEN) {
+					try { raw.send(JSON.stringify(frame)); return true; }
+					catch (error) { machineError("send control frame", error); }
+				}
+				ws.close(1011, "Control socket failed");
+				return false;
+			},
+			close(code, reason) {
+				if (closed) return;
+				void gone();
+				if (raw.readyState === raw.OPEN) raw.close(code, reason);
+			},
+		};
+		let deadline = setTimeout(() => ws.close(1008, "No hello"), HELLO_WAIT_MS);
+		const heartbeat = setInterval(() => {
+			if (c.vars.live?.ws === ws) ws.send({ kind: "heartbeat" });
 		}, CONTROL_HEARTBEAT_MS);
-		// Opening one takes only the uid and the machine's id. Each open socket keeps the actor awake, so
-		// one that says nothing goes soon, and at most one waits for its hello at a time; a socket that
-		// has said hello is not touched by either.
 		c.vars.greeting?.close(1008, "Replaced before its hello");
 		c.vars.greeting = ws;
-		const silent = setTimeout(() => ws.close(1008, "No hello"), HELLO_WAIT_MS);
-		const greeted = () => {
-			clearTimeout(silent);
-			if (c.vars.greeting === ws) c.vars.greeting = null;
-		};
 		const fail = (error: unknown) => { machineError("machine control socket", error); ws.close(1011, "Control socket failed"); };
-		ws.addEventListener("close", () => {
-			clearInterval(timer);
-			greeted();
-			closed = true;
-			return ordered(c, () => disconnected(c, ws)).catch(error => machineError("machine disconnect", error));
-		});
-		ws.addEventListener("message", ({ data }) => {
+		raw.addEventListener("close", gone);
+		raw.addEventListener("message", ({ data }) => {
 			if (closed) return;
-			greeted();
 			const frame = parseRunnerFrame(data);
 			if (!frame || ++queued > 128 || (!hello && frame.kind !== "hello") || (hello && frame.kind === "hello")) {
-				closed = true;
 				reject(ws, refuse("bad-frame")); return;
 			}
-			hello = true;
+			if (!hello) {
+				hello = true;
+				if (c.vars.greeting === ws) c.vars.greeting = null;
+				clearTimeout(deadline);
+				deadline = setTimeout(() => ws.close(1001, "Runner timed out"), CONTROL_DEAD_MS);
+			} else {
+				deadline.refresh();
+			}
 			const now = Date.now();
 			return ordered(c, async () => {
 				if (closed) return;
@@ -202,8 +220,8 @@ export const machine = actor({
 					if (!changed || closed) return;
 					c.vars.live = { ws, epoch: frame.epoch, heardAt: now, connected: now, savedAt: now };
 					old?.ws.close(1001, "Reconnected");
-					send(ws, { kind: "welcome", idleSuspendMs: config.idleSuspendMs });
-					for (const { sandbox } of await c.db.execute<{ sandbox: string }>("SELECT sandbox FROM pending")) send(ws, { kind: "remove", sandbox });
+					ws.send({ kind: "welcome", idleSuspendMs: config.idleSuspendMs });
+					for (const { sandbox } of await c.db.execute<{ sandbox: string }>("SELECT sandbox FROM pending")) ws.send({ kind: "remove", sandbox });
 					await tell(c, changed);
 				} else {
 					const live = c.vars.live;
@@ -223,10 +241,9 @@ export const machine = actor({
 						}
 					}
 				}
-				heard = now;
 			}).catch(fail).finally(() => { queued--; });
 		});
-		send(ws, { kind: "challenge", nonce });
+		ws.send({ kind: "challenge", nonce });
 	},
 	actions: {
 		internalFacts: async (c): Promise<MachineFacts> => {
@@ -251,7 +268,7 @@ export const machine = actor({
 				if (r.removed_at !== null) return { ok: false, reason: "removed" };
 				const live = c.vars.live;
 				// The session had the key from `internalFacts` before it made the ticket: the runner's hello can come before this answer.
-				if (!live || !send(live.ws, { kind: "attach", sessionId: input.sessionId, ticket: input.ticket })) return { ok: false, reason: "offline" };
+				if (!live || !live.ws.send({ kind: "attach", sessionId: input.sessionId, ticket: input.ticket })) return { ok: false, reason: "offline" };
 				return { ok: true };
 			});
 		},
@@ -259,18 +276,25 @@ export const machine = actor({
 			requireServiceFor(c, "call");
 			await ordered(c, async () => {
 				await c.db.execute("INSERT OR IGNORE INTO pending SELECT ? WHERE EXISTS (SELECT 1 FROM machine WHERE removed_at IS NULL)", sandboxId);
-				if (c.vars.live) send(c.vars.live.ws, { kind: "remove", sandbox: sandboxId });
+				if (c.vars.live) c.vars.live.ws.send({ kind: "remove", sandbox: sandboxId });
 			});
 		},
 		internalLogout: async c => {
 			requireServiceFor(c, "call");
 			await ordered(c, async () => {
-				if (c.vars.live) send(c.vars.live.ws, { kind: "logout" });
+				if (c.vars.live) c.vars.live.ws.send({ kind: "logout" });
 			});
 		},
 		internalRevoke: async (c, removeSandboxes: boolean) => {
 			requireServiceFor(c, "call");
 			await revoke(c, removeSandboxes, false);
+		},
+		expireKeyWarning: async c => {
+			if (!c.scheduledFire) throw new UserError("Only the machine's schedule can expire its key warning.", { code: "forbidden" });
+			await ordered(c, async () => {
+				const row = await record(c);
+				if (row && row.removed_at === null) await publish(c, row);
+			});
 		},
 		expire: async c => {
 			if (!c.scheduledFire) throw new UserError("Only the expiry schedule can remove an idle machine.", { code: "forbidden" });

@@ -1,4 +1,4 @@
-/** cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/machine-check.ts */
+/** cd server && ../scripts/locked.sh machine-check.ts */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
@@ -11,7 +11,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { MachineSummary } from "../server/src/contract.js";
 import type { Registry } from "../server/src/client.js";
-import { parseConnection, RUNNER_PAIR_PATH } from "../server/src/runner/control.js";
+import { CONTROL_DEAD_MS, REFUSED_RETRY_MS, parseConnection, RUNNER_PAIR_PATH } from "../server/src/runner/control.js";
 import { FakeRunner, controlProxy, post } from "./runner-fake.js";
 
 const port = 6850;
@@ -27,6 +27,18 @@ async function eventually(test: () => boolean | Promise<boolean>, ms = 15_000) {
 async function server() {
 	// Observe real sleeps and wakes outside the actor; listing an offline machine must leave it asleep.
 	const { machine } = await import("../server/src/actors/machine.js");
+	// Model the raw transport seen on a silent link: a local close need not deliver a close event.
+	const accept = machine.config.onWebSocket!;
+	machine.config.onWebSocket = (c, ws) => {
+		const close = ws.close.bind(ws);
+		const listen = ws.addEventListener.bind(ws);
+		let closedHere = false;
+		ws.close = (code, reason) => { closedHere = true; close(code, reason); };
+		ws.addEventListener = (type, listener) => listen(type, (event) => {
+			if (type !== "close" || !closedHere) return listener(event);
+		});
+		return accept(c, ws);
+	};
 	const create = machine.config.onCreate!;
 	machine.config.onCreate = async (c, input) => {
 		await create(c, input);
@@ -52,6 +64,18 @@ async function server() {
 		if (row?.name === "Logout fails fixture") { process.send?.({ hook: "logout-refused", id: c.key[1] }); throw new Error("The machine actor is away."); }
 		return logout(c);
 	};
+	Object.assign(machineActions, {
+		e2eWaitingForHello: (c: Parameters<typeof logout>[0]) => c.vars.greeting !== null,
+		// Advance the production alarm and its stored timestamp together in this private database.
+		async e2eAgeKeyWarning(c: Parameters<typeof logout>[0]) {
+			const alarm = (await c.schedule.list()).find(event => event.action === "expireKeyWarning");
+			if (!alarm || alarm.runAt <= Date.now() + REFUSED_RETRY_MS) return false;
+			await c.db.execute("UPDATE machine SET duplicate = duplicate - ? WHERE duplicate IS NOT NULL", alarm.runAt - Date.now());
+			await c.schedule.cancel(alarm.id);
+			await c.schedule.after(50, alarm.action);
+			return true;
+		},
+	});
 	for (const hook of ["onWake", "onSleep"] as const) {
 		const original = machine.config[hook]!;
 		machine.config[hook] = async c => { await original(c); process.send?.({ hook, id: c.key[1] }); };
@@ -149,7 +173,7 @@ async function check() {
 		// Paired, but its runner has not reported yet: told so, not that the sandbox does not exist.
 		await refused(user.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } }), "machine_not_connected");
 		assert.equal((await user.setMachineSecrets({ machineId, send: false }))[0].sendSecrets, false);
-		const service = client.machine.get([uid, machineId], { params: serviceParams() });
+		const service = () => client.machine.get([uid, machineId], { params: serviceParams() });
 		const row = async () => (await user.machines()).find(r => r.machineId === machineId)!;
 		const observer = user.connect();
 		const events: MachineSummary[][] = [];
@@ -195,13 +219,20 @@ async function check() {
 		assert.equal(back.ws.readyState, 1);
 		await user.forgetChatgpt();
 		await eventually(() => back.frames.some(f => f.kind === "logout"));
+		step("the duplicate-key warning clears after its retry window while the original runner stays online");
+		const fixture = () => service() as unknown as { e2eAgeKeyWarning(): Promise<boolean>; e2eWaitingForHello(): Promise<boolean> };
+		assert(await fixture().e2eAgeKeyWarning(), "no warning expiry after the refused runner's retry");
+		await eventually(async () => {
+			const machine = await row();
+			return machine.status === "online" && !machine.warnings.some(w => w.kind === "key");
+		});
 		const ticket = randomUUID();
-		const attached = await service.internalAttach({ sessionId: "s_deleted", ticket });
+		const attached = await service().internalAttach({ sessionId: "s_deleted", ticket });
 		const expectedKey = createPublicKey(runner.key).export({ type: "spki", format: "der" }).toString("base64");
-		assert(attached.ok && (await service.internalFacts()).publicKey === expectedKey);
+		assert(attached.ok && (await service().internalFacts()).publicKey === expectedKey);
 		await eventually(() => back.frames.some(f => f.kind === "attach" && f.ticket === ticket));
 		const fresh = randomUUID();
-		assert((await service.internalAttach({ sessionId: "s_deleted", ticket: fresh })).ok);
+		assert((await service().internalAttach({ sessionId: "s_deleted", ticket: fresh })).ok);
 		await eventually(() => back.frames.some(f => f.kind === "attach" && f.ticket === fresh));
 		step("the user actor briefly away keeps the control socket; sockets that never say hello go, one at a time");
 		back.send({ ...runner.report, freeDiskBytes: 404 });
@@ -224,10 +255,18 @@ async function check() {
 		const lasted = Date.now() - opened;
 		assert(lasted >= 8000 && lasted < 14_000, `a silent control socket lasted ${lasted} ms`);
 		assert.equal(back.ws.readyState, 1);
-		step("offline event, list reads leaving the actor asleep, a second node and queued removal");
-		back.ws.close();
-		await eventually(() => events.some(rows => rows.some(r => r.status === "offline")));
-		const actorId = await service.resolve();
+		assert.equal(await fixture().e2eWaitingForHello(), false, "the actor kept the expired greeting");
+		step("a silent control socket marks the machine offline on the person's list by its deadline");
+		proxy = await controlProxy(port);
+		const quietLink = await runner.connect({ ...conn, endpoint: proxy.endpoint }, id);
+		await eventually(() => quietLink.frames.some(f => f.kind === "welcome"));
+		await eventually(async () => (await row()).freeDiskBytes === runner.report.freeDiskBytes);
+		const since = events.length;
+		proxy.drop();
+		await eventually(async () => events.slice(since).some(rows => rows.some(r => r.machineId === machineId && r.status === "offline")) && (await row()).status === "offline", CONTROL_DEAD_MS + 2_000);
+		proxy.close(); proxy = undefined;
+		step("list reads leaving the actor asleep, a second node and queued removal");
+		const actorId = await service().resolve();
 		const sleeps = () => hooks.filter(h => h.id === machineId && h.hook === "onSleep").length;
 		const before = sleeps();
 		assert((await fetch(endpoint + "/actors/" + actorId + "/sleep?namespace=default", { method: "POST", headers: { authorization: "Bearer default", "content-type": "application/json" }, body: "{}" })).ok);
@@ -236,7 +275,7 @@ async function check() {
 		const asleep = wakes();
 		for (let i = 0; i < 3; i++) assert.equal((await row()).status, "offline");
 		assert.equal(wakes(), asleep);
-		await service.internalRemoveSandbox({ sandboxId: "deleted-sandbox" });
+		await service().internalRemoveSandbox({ sandboxId: "deleted-sandbox" });
 		const node2 = await start(port + 21, true, true);
 		assert.equal((await runner.connection(peer, id)).status, 200);
 		const returned = await runner.connect(conn, id);
@@ -282,8 +321,8 @@ async function check() {
 		const removal = user.removeMachine({ machineId, removeSandboxes: true }); release();
 		await removal;
 		await eventually(() => pending.frames.some(f => f.kind === "refused" && f.reason === "removed") && returned.ws.readyState === 3);
-		assert.equal((await service.internalFacts()).status, "removed");
-		assert.deepEqual(await service.internalAttach({ sessionId: "s_deleted", ticket }), { ok: false, reason: "removed" });
+		assert.equal((await service().internalFacts()).status, "removed");
+		assert.deepEqual(await service().internalAttach({ sessionId: "s_deleted", ticket }), { ok: false, reason: "removed" });
 		const gone = await runner.connection(origin, id); assert.equal(gone.status, 410); assert.deepEqual(await gone.json(), { reason: "removed", removeSandboxes: true });
 		assert.equal((await wrong.connection(origin, id)).status, 403);
 		const stranger = await wrong.connect(conn, id);
