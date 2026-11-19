@@ -72,9 +72,9 @@ export interface PlatformInfo {
 	github?: GithubInfo | null;
 	/**
 	 * Set when users of this deployment may run agents on machines of their own (WLP_MACHINES=1). Absent
-	 * or null when not: the web app then shows nothing of it, and /machines is not found.
+	 * when not: the web app then shows nothing of it, and /machines is not found.
 	 */
-	machines?: MachinesInfo | null;
+	machines?: MachinesInfo;
 }
 
 /**

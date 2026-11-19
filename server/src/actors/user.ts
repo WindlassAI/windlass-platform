@@ -1243,8 +1243,8 @@ export const user = actor({
 			if (profile.demo) { await logoutMachines(c); return; }
 			try {
 				await (await signIn(c)).logout();
-				await logoutMachines(c);
 				await c.vars.models.forget(c.db);
+				await logoutMachines(c);
 				console.log(`[wlp] sign-in.forgotten uid=${profile.uid}`);
 			} catch (error) {
 				throw clientError(c.log, error, "The ChatGPT sign-in could not be forgotten. Try again.");
@@ -1920,8 +1920,8 @@ export const user = actor({
 			requireService(c);
 			return answered(c, async () => {
 				await (await signIn(c)).logout();
-				await logoutMachines(c);
 				await c.vars.models.forget(c.db);
+				await logoutMachines(c);
 				console.log(`[wlp] sign-in.forgotten uid=${c.key[0]}`);
 				return null;
 			});

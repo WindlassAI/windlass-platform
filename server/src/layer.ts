@@ -43,9 +43,10 @@ export function getLayer(): Promise<SandboxLayer> {
 /**
  * The layer of a session's place. A machine is addressed by its owner and its id, and its layer is
  * made from those, in the session's link to the machine's runner, on whichever server asks, so no
- * server has to have been told of the machine. Making it calls nothing and never throws: a session on
- * a machine that is offline or removed stays readable, and its operations say why they fail
- * (sandbox/runner-layer.ts).
+ * server has to have been told of the machine. Making it calls nothing, and whether the machine is
+ * offline or removed does not matter to it: such a session stays readable, and its operations say why
+ * they fail (sandbox/runner-layer.ts). It throws only for a link that is not the session's own, which
+ * is the caller's mistake.
  */
 export async function layerFor(place: SandboxPlace, uid: string, link: RunnerLink | null): Promise<SandboxLayer> {
 	if (place.kind === "hosted") return getLayer();

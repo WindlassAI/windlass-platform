@@ -7,7 +7,7 @@ import { MAX_MACHINES, type MachineClaim, type MachineSummary, type SessionSumma
 import type { Registry } from "../registry.js";
 import { machineProfiles } from "../runner/machine-profiles.js";
 import { codeDigest } from "../runner-keys.js";
-import { PAIRING_TTL_MS } from "../runner/control.js";
+import { MIN_RUNNER_VERSION, PAIRING_TTL_MS, versionAtLeast } from "../runner/control.js";
 import { createGrant, isActorGone } from "./internal.js";
 import type { MachineUpdate } from "./machine.js";
 import { asPairingError, pairingGone } from "./machine-pairing.js";
@@ -63,18 +63,32 @@ export async function machineSecrets(db: RawAccess, id: string): Promise<boolean
 	return row ? !!row.send : null;
 }
 
+/** The machine's profiles as its last report has them; a machine that cannot take an agent yet is told apart, with what to do. */
 export async function launchMachineProfiles(db: RawAccess, id: string) {
 	enabled();
 	const [row] = await db.execute<{ name: string; facts: string }>("SELECT name, facts FROM machines WHERE id = ? AND expires IS NULL", id);
 	if (!row) throw missing();
-	const { report }: MachineUpdate = JSON.parse(row.facts);
+	const { report, runnerVersion }: MachineUpdate = JSON.parse(row.facts);
+	// First: an outdated runner is refused before it can report, so it has no report either.
+	if (!versionAtLeast(runnerVersion, MIN_RUNNER_VERSION)) {
+		throw new UserError(`The runner on "${row.name}" is older than this platform takes: update it to ${MIN_RUNNER_VERSION} or later, then start the agent again.`, { code: "runner_outdated" });
+	}
+	if (!report) throw new UserError(`"${row.name}" has not connected yet. Start its runner, and once the Machines page shows it online, start the agent again.`, { code: "machine_not_connected" });
 	return machineProfiles(row.name, report);
 }
 
+/**
+ * Has each machine's runner remove its sign-in files. Never throws: by now the sign-in itself is gone,
+ * and one machine actor that does not answer must not have the person told that nothing was forgotten.
+ * Only a runner connected now hears it (the machine actor queues nothing for it).
+ */
 export async function logoutMachines(c: Ctx) {
 	// A newly accepted socket can precede its status event. Ask each of the at most three owners.
 	const paired = await c.db.execute<{ id: string }>("SELECT id FROM machines WHERE expires IS NULL");
-	await Promise.all(paired.map(({ id }) => machine(c, id).internalLogout()));
+	const asked = await Promise.allSettled(paired.map(({ id }) => machine(c, id).internalLogout()));
+	asked.forEach((answer, index) => {
+		if (answer.status === "rejected") console.warn(`[wlp] machine.logout_failed uid=${c.key[0]} machine=${paired[index]!.id}: ${answer.reason instanceof Error ? answer.reason.message : String(answer.reason)}`);
+	});
 }
 
 export const machineActions = {

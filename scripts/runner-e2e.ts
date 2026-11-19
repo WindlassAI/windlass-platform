@@ -4,7 +4,9 @@
  * actor, against a runner stood in for in this process. The stand-in speaks the control socket with
  * `FakeRunner` (runner-fake.ts) and serves each session's socket on the real `RunnerChannel`, with
  * sandboxes in memory and a small `windlass acp` that replays a recorded turn. The turn code that
- * speaks to it is the server's own (turn.ts).
+ * speaks to it is the server's own (turn.ts). Before the server starts, the session's link to its runner
+ * (runner-layer.ts) is checked in this process, against a stand-in machine actor, on a clock it moves by
+ * hand: the interleavings of hellos, answers, deadlines and closes that a real run meets only by chance.
  *
  *   cd server && npx tsx ../scripts/runner-e2e.ts
  *
@@ -12,11 +14,12 @@
  * Docker. Prints one PASS/FAIL line per check and exits 1 if any failed.
  */
 import { type ChildProcess, spawn } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { createWriteStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mock } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createClient, type Registry } from "../server/src/client.js";
 import type { SessionSnapshot, SessionSummary, TimelineItem, WindlassEvent } from "../server/src/contract.js";
@@ -219,8 +222,9 @@ class StandInRunner {
 	usedTickets: Array<{ sessionId: string; ticket: string }> = [];
 	cancels: string[] = [];
 	leftovers = 0;
-	/** The next `create` makes its container and then the runner dies before it answers. */
+	/** The next `create` makes its container and then the runner dies before it answers or reports it. */
 	loseNextCreate = false;
+	creates = 0;
 	offline = false;
 	removed = false;
 
@@ -384,14 +388,19 @@ class StandInRunner {
 		const mine = box !== undefined && box.sessionId === sessionId;
 		switch (op.name) {
 			case "create": {
+				this.creates += 1;
+				// As the runner does: a session's sandbox, once made, is the answer to its every `create`, also after a restart.
+				const had = [...this.boxes.values()].find((existing) => existing.sessionId === sessionId);
+				if (had) return channel.respond(op, had.id);
 				const made: Box = { id: `${this.id.machineId}-${randomBytes(6).toString("hex")}`, sessionId, profile: op.args.profile, state: "running", files: new Map(), engines: new Set() };
 				this.boxes.set(made.id, made);
-				this.report();
 				if (this.loseNextCreate) {
+					// Before any report: the real runner reports at most once a minute, so the server cannot count on one.
 					this.loseNextCreate = false;
 					void sleep(300).then(() => this.restartProcess());
 					return;
 				}
+				this.report();
 				return channel.respond(op, made.id);
 			}
 			case "connect":
@@ -457,9 +466,6 @@ class StandInRunner {
 			}
 			case "sweep":
 				return channel.respond(op, 0);
-			case "holdForTurn":
-			case "releaseTurn":
-				return channel.respond(op, null);
 		}
 	}
 }
@@ -522,9 +528,333 @@ async function welcomed(client: Client, uid: string, sessionId: string, hello: R
 	});
 }
 
+// ---------------------------------------------------------------------------------------------
+// The session's link, in this process: a stand-in machine actor, the real channels, a clock moved by hand
+// ---------------------------------------------------------------------------------------------
+
+type LinkModule = typeof import("../server/src/sandbox/runner-layer.js");
+type Facts = import("../server/src/actors/machine.js").MachineFacts;
+type Attachment = import("../server/src/actors/machine.js").Attachment;
+
+const LINK_WHO = { uid: "u_link", sessionId: "s_link", machineId: "m_0123456789abcdef" };
+const LINK_SANDBOX = `${LINK_WHO.machineId}-000000000001`;
+const turnOver = () => new Promise<void>((done) => setImmediate(done));
+/** Moves the hand-held clock, letting what each step makes due run before the next. */
+async function advance(ms: number): Promise<void> {
+	for (let left = ms; left > 0; left -= 50) {
+		mock.timers.tick(Math.min(left, 50));
+		await turnOver();
+	}
+}
+/** Follows `p` from the moment it is made: `at` is its value, its error, or "pending". */
+function track<T>(p: Promise<T>): { at: T | Error | "pending" } {
+	const followed: { at: T | Error | "pending" } = { at: "pending" };
+	p.then((value) => { followed.at = value; }, (error: Error) => { followed.at = error; });
+	return followed;
+}
+
+/** A socket between the link (RivetKit's raw socket, as `onWebSocket` hands it) and the runner's channel; what is sent arrives a moment later. */
+function socketPair() {
+	const server = { message: [] as Array<(event: { data: unknown }) => void>, close: [] as Array<() => void> };
+	const runner = { message: [] as Array<(data: unknown) => void>, close: [] as Array<() => void> };
+	let open = true;
+	const close = () => {
+		if (!open) return;
+		open = false;
+		queueMicrotask(() => {
+			for (const listener of [...server.close, ...runner.close]) listener();
+		});
+	};
+	return {
+		server: {
+			send: (text: string) => {
+				if (!open) throw new Error("closed");
+				queueMicrotask(() => open && runner.message.forEach((listener) => listener(text)));
+			},
+			close,
+			addEventListener: (type: "message" | "close", listener: never) => (type === "message" ? server.message : server.close).push(listener),
+		},
+		runner: {
+			send: (text: string) => {
+				if (!open) throw new Error("closed");
+				queueMicrotask(() => open && server.message.forEach((listener) => listener({ data: text })));
+			},
+			close,
+			onMessage: (listener: (data: unknown) => void) => runner.message.push(listener),
+			onClose: (listener: () => void) => runner.close.push(listener),
+		} satisfies ChannelSocket,
+	};
+}
+
+/**
+ * The machine's actor as a session sees it, and the machine's runner behind it. `hello` is when the
+ * runner answers an `attach`: "now" (before the actor's reply reaches the session), after a number of
+ * ms, or "never"; `reply` is what the actor's answer waits for first.
+ */
+function bench(layer: LinkModule, options: { report?: Facts["report"]; serve?: (op: Operation, channel: RunnerChannel) => void } = {}) {
+	const key = generateKeyPairSync("ed25519");
+	const report: Facts["report"] = options.report ?? { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 10e9, sandboxes: [] };
+	const facts: Facts = { status: "online", name: "Bench", publicKey: key.publicKey.export({ type: "spki", format: "der" }).toString("base64"), report };
+	const log = { calls: [] as string[], attaches: [] as number[], tickets: [] as string[], ops: [] as string[], reaches: [] as string[], inFlight: 0, mostInFlight: 0 };
+	const mode: { hello: "now" | "never" | number; reply: () => Promise<void>; facts: () => Promise<void>; answer: Attachment } = {
+		hello: "now",
+		reply: async () => undefined,
+		facts: async () => undefined,
+		answer: { ok: true },
+	};
+	const serve = options.serve ?? ((op: Operation, channel: RunnerChannel) => {
+		if (op.name === "connect") channel.respond(op, { cwd: "/workspace", profile: "docker-hardened" });
+		else if (op.name === "state") channel.respond(op, "running");
+		else if (op.name === "run") channel.respond(op, { exitCode: 0, timedOut: false, aborted: false, stdout: "", stderr: "" });
+		else if (op.name === "suspend") channel.respond(op, null);
+	});
+	const runner: RunnerChannel = new RunnerChannel({
+		onOperation: (op) => {
+			log.ops.push(op.name);
+			serve(op, runner);
+		},
+		onInput: () => undefined,
+		onCloseIn: () => undefined,
+		onCancel: () => undefined,
+		onDrain: () => undefined,
+		onReset: () => undefined,
+		onRefused: () => undefined,
+	});
+	let current: ReturnType<typeof socketPair> | null = null;
+	const hello = (ticket: string) => {
+		current = socketPair();
+		link.socket(current.server);
+		runner.attach(current.runner, { runnerVersion: MIN_RUNNER_VERSION, machineId: LINK_WHO.machineId, ticket, signature: sign(null, Buffer.from(sessionProof(LINK_WHO.uid, LINK_WHO.sessionId, LINK_WHO.machineId, ticket)), key.privateKey).toString("base64url") });
+	};
+	const link = new layer.RunnerLink(
+		LINK_WHO,
+		{
+			facts: async () => {
+				log.calls.push("facts");
+				await mode.facts();
+				return facts;
+			},
+			attach: async (_sessionId, ticket) => {
+				log.calls.push("attach");
+				log.attaches.push(Date.now());
+				log.tickets.push(ticket);
+				log.mostInFlight = Math.max(log.mostInFlight, ++log.inFlight);
+				try {
+					if (mode.answer.ok) {
+						if (mode.hello === "now") hello(ticket);
+						else if (typeof mode.hello === "number") setTimeout(() => hello(ticket), mode.hello);
+					}
+					await mode.reply();
+					return mode.answer;
+				} finally {
+					log.inFlight -= 1;
+				}
+			},
+			removeSandbox: async () => undefined,
+		},
+		() => undefined,
+		(reach) => log.reaches.push(reach.state),
+	);
+	const hosted = { windlass: { problem: () => null }, tokens: {}, logins: {}, backups: null } as never;
+	return {
+		link,
+		sandboxes: layer.machineLayer(link, hosted).sandboxes,
+		log,
+		mode,
+		hello,
+		/** The session's socket drops, as when the runner's network goes. */
+		drop: () => current?.server.close(),
+		close: () => {
+			link.close();
+			runner.close();
+		},
+	};
+}
+const never = () => new Promise<void>(() => undefined);
+const after = (ms: number) => () => new Promise<void>((done) => setTimeout(done, ms));
+
+async function linkChecks(): Promise<void> {
+	const layer: LinkModule = await import("../server/src/sandbox/runner-layer.js");
+	const { ATTACH_WAIT_MS, IDLE_DETACH_MS, MachineUnreachable } = layer;
+	const benches: Array<ReturnType<typeof bench>> = [];
+	const fresh = (options?: Parameters<typeof bench>[1]) => {
+		const made = bench(layer, options);
+		benches.push(made);
+		return made;
+	};
+	mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: Date.UTC(2026, 10, 19) });
+	try {
+		await check("link: a runner whose hello comes before the machine actor's answer is let in, with the key had first", async () => {
+			const b = fresh();
+			b.mode.reply = after(200);
+			const connected = track(b.sandboxes.connect(LINK_SANDBOX));
+			await advance(300);
+			const handle = connected.at;
+			assert(handle !== "pending" && !(handle instanceof Error) && handle !== undefined, `connect came to ${handle instanceof Error ? handle.message : String(handle)}`);
+			assert(b.log.calls.join() === "facts,attach", `calls: ${b.log.calls.join()}`);
+			return "hello at once, answer at 200 ms: connected at once, facts asked once and before the ticket";
+		});
+
+		await check("link: Stop while a command waits for the socket ends it at once, and the runner never has it", async () => {
+			const b = fresh();
+			const handle = await (async () => {
+				const connecting = b.sandboxes.connect(LINK_SANDBOX);
+				await advance(50);
+				return await connecting;
+			})();
+			assert(handle, "no handle");
+			await advance(IDLE_DETACH_MS + 100);
+			assert(!b.link.channel.connected, "the idle socket was kept");
+			b.mode.hello = 1_000;
+			const stop = new AbortController();
+			const run = track(handle.run("pwd", { signal: stop.signal }));
+			await turnOver();
+			stop.abort();
+			await turnOver();
+			const at = run.at;
+			await advance(1_100);
+			assert(at !== "pending" && !(at instanceof Error) && at.aborted, `run came to ${at instanceof Error ? at.message : JSON.stringify(at)} when stopped`);
+			assert(b.link.channel.connected && !b.log.ops.includes("run"), `connected ${b.link.channel.connected}, runner had: ${b.log.ops.join()}`);
+			// With the socket there: stopped in the same moment it was asked, before the link has handed it over.
+			const now = new AbortController();
+			const quick = track(handle.run("pwd", { signal: now.signal }));
+			now.abort();
+			await advance(100);
+			assert(quick.at !== "pending" && !(quick.at instanceof Error) && quick.at.aborted && !b.log.ops.includes("run"), `stopped as it was asked: ${JSON.stringify(quick.at)}, runner had: ${b.log.ops.join()}`);
+			return "aborted at once; the socket came a second later and carried no run, nor did one stopped as it was asked";
+		});
+
+		await check("link: suspend on a machine that cannot be reached fails, so the session keeps the state it had", async () => {
+			const b = fresh();
+			b.mode.answer = { ok: false, reason: "offline" };
+			const suspended = track(b.sandboxes.suspend(LINK_SANDBOX));
+			await advance(50);
+			const at = suspended.at;
+			assert(at instanceof MachineUnreachable && at.reason === "offline", `suspend came to ${at instanceof Error ? at.message : String(at)}`);
+			return at.message;
+		});
+
+		await check(`link: the offline wait is ${ATTACH_WAIT_MS / 1000} s from the first ask, for every caller that joins it, even with the machine's actor stalled`, async () => {
+			const b = fresh();
+			b.mode.hello = "never";
+			b.mode.reply = never;
+			const first = track(b.sandboxes.connect(LINK_SANDBOX));
+			await advance(5_000);
+			const second = track(b.sandboxes.connect(LINK_SANDBOX));
+			await advance(ATTACH_WAIT_MS - 5_000 - 100);
+			const early = [first.at, second.at];
+			await advance(200);
+			const late = [first.at, second.at];
+			assert(early.every((at) => at === "pending"), `gave up early: ${early.map((at) => (at instanceof Error ? at.message : String(at))).join(" | ")}`);
+			assert(late.every((at) => at instanceof MachineUnreachable && at.message.startsWith('Your machine "Bench" is offline')), `at ${ATTACH_WAIT_MS / 1000} s: ${late.map((at) => (at instanceof Error ? at.message : String(at))).join(" | ")}`);
+			const c = fresh();
+			c.mode.facts = never;
+			const stalled = track(c.sandboxes.connect(LINK_SANDBOX));
+			await advance(ATTACH_WAIT_MS + 100);
+			const unnamed = stalled.at;
+			assert(unnamed instanceof MachineUnreachable && unnamed.message.startsWith("Your machine is offline"), `with the facts stalled: ${unnamed instanceof Error ? unnamed.message : String(unnamed)}`);
+			return `both callers at ${ATTACH_WAIT_MS / 1000} s, named; with no name had: "${unnamed.message.split(".")[0]}"`;
+		});
+
+		await check("link: while work waits on a lost socket a ticket goes every 5 s, one call to the machine's actor at a time", async () => {
+			const b = fresh({ serve: (op, channel) => op.name === "connect" && channel.respond(op, { cwd: "/workspace", profile: "docker-hardened" }) });
+			const handle = await (async () => {
+				const connecting = b.sandboxes.connect(LINK_SANDBOX);
+				await advance(50);
+				return await connecting;
+			})();
+			assert(handle, "no handle");
+			const waiting = b.link.request("state", { id: LINK_SANDBOX }).catch(() => undefined);
+			await advance(50);
+			b.mode.hello = "never";
+			const from = b.log.attaches.length;
+			b.drop();
+			await advance(16_000);
+			const times = b.log.attaches.slice(from);
+			const gaps = times.slice(1).map((t, i) => t - times[i]!);
+			assert(times.length >= 4 && gaps.every((gap) => gap === 5_000), `asked at +${times.map((t) => t - times[0]!).join(", +")} ms`);
+			const c = fresh();
+			c.mode.hello = "never";
+			c.mode.reply = after(7_000);
+			const slow = c.sandboxes.connect(LINK_SANDBOX).catch(() => undefined);
+			await advance(ATTACH_WAIT_MS + 100);
+			assert(c.log.mostInFlight === 1, `${c.log.mostInFlight} calls to the machine's actor at once`);
+			b.close();
+			await waiting;
+			await slow;
+			return `${times.length} tickets 5 s apart; at most one actor call at a time with 7 s answers`;
+		});
+
+		await check("link: once closed it settles its waiters and asks nothing more; a socket that comes after the work gave up is let go", async () => {
+			const b = fresh();
+			b.mode.hello = "never";
+			const waiting = track(b.sandboxes.connect(LINK_SANDBOX));
+			await advance(100);
+			const calls = b.log.calls.length;
+			b.link.close();
+			b.link.close();
+			await turnOver();
+			const at = waiting.at;
+			await advance(30_000);
+			assert(at instanceof Error && !(at instanceof MachineUnreachable), `at close: ${at instanceof Error ? at.message : String(at)}`);
+			assert(b.log.calls.length === calls, `${b.log.calls.length - calls} calls to the machine's actor after close`);
+			const c = fresh();
+			c.mode.hello = "never";
+			const gaveUp = c.sandboxes.connect(LINK_SANDBOX).catch((error: Error) => error);
+			await advance(ATTACH_WAIT_MS + 100);
+			assert((await gaveUp) instanceof MachineUnreachable, "the connect did not give up");
+			await advance(36_000 - ATTACH_WAIT_MS - 100);
+			c.hello(c.log.tickets.at(-1)!);
+			await advance(100);
+			const late = c.link.channel.connected;
+			await advance(IDLE_DETACH_MS + 100);
+			assert(late && !c.link.channel.connected && c.log.ops.length === 0, `late socket taken ${late}, still held ${c.link.channel.connected}`);
+			return `closed: "${at.message}", no call after; a late socket went after ${IDLE_DETACH_MS / 1000} s idle`;
+		});
+
+		await check("link: a machine session's profile is the machine's own, with its real availability", async () => {
+			const b = fresh({ report: { kind: "report", docker: { ok: true }, commandSandbox: { ok: false, reason: "Bubblewrap could not start" }, freeDiskBytes: 10e9, sandboxes: [] } });
+			const connecting = b.sandboxes.connect(LINK_SANDBOX);
+			await advance(50);
+			await connecting;
+			const profile = b.sandboxes.profile("docker-windlass-sandbox");
+			assert(profile.name.includes('"Bench"') && !profile.available, `profile: ${profile.name}, available ${profile.available}`);
+			return `${profile.name}: ${profile.unavailableReason}`;
+		});
+
+		await check("link: what the banner reads is pushed each time it changes", async () => {
+			const b = fresh({ serve: (op, channel) => op.name === "connect" && channel.respond(op, { cwd: "/workspace", profile: "docker-hardened" }) });
+			const connecting = b.sandboxes.connect(LINK_SANDBOX);
+			await advance(50);
+			await connecting;
+			const waiting = b.link.request("state", { id: LINK_SANDBOX }).catch(() => undefined);
+			await advance(50);
+			b.mode.hello = "never";
+			b.drop();
+			await advance(100);
+			b.mode.answer = { ok: false, reason: "removed" };
+			await advance(5_000);
+			await waiting;
+			const c = fresh();
+			c.mode.answer = { ok: false, reason: "offline" };
+			await c.sandboxes.connect(LINK_SANDBOX).catch(() => undefined);
+			const seen = [...b.log.reaches, ...c.log.reaches].join(", ");
+			assert(seen === "answering, not_answering, removed, offline", `pushed: ${seen}`);
+			return seen;
+		});
+	} finally {
+		for (const b of benches) b.close();
+		mock.timers.reset();
+	}
+}
+
 async function main(): Promise<void> {
-	for (const port of [PORT, PORT + 1, PORT + 10, HTTP]) assert(await free(port), `port ${port} is in use`);
 	const server = new Server();
+	// Before anything imports auth.js, which reads it once: the service tokens this process makes are the server's.
+	process.env.WLP_SECRET = server.secret;
+	// First, and on a clock of their own: nothing of the server is needed for them.
+	await linkChecks();
+	for (const port of [PORT, PORT + 1, PORT + 10, HTTP]) assert(await free(port), `port ${port} is in use`);
 	const runner = new StandInRunner();
 	try {
 		await server.start();
@@ -535,7 +865,6 @@ async function main(): Promise<void> {
 		const user = client.user.getOrCreate([uid], { params: { token } });
 		await runner.pair(user);
 		// What the machine's own actor says of it now (the user's list may be behind, as after a restart).
-		process.env.WLP_SECRET = server.secret;
 		const { serviceParams } = await import("../server/src/auth.js");
 		const machineIs = (status: string) => until(`the machine's actor to say it is ${status}`, async () => (await client.machine.get([uid, runner.id.machineId], { params: serviceParams() }).internalFacts()).status === status, 60_000);
 		await machineIs("online");
@@ -567,6 +896,20 @@ async function main(): Promise<void> {
 			const usage = await user.usage();
 			assert(usage.usedSeconds === 0 && usage.heldSeconds === 0 && usage.today.length === 0 && usage.kept.length === 0, "the machine's sandbox counted against the user's sandbox time");
 			return `${plainEvents} events, one sandbox, nothing held`;
+		});
+
+		await check("a hosted session of the same person still takes its hold and its kept place; the machine's takes neither", async () => {
+			const hosted = await user.createSession({ place: { kind: "hosted" }, profile: "docker-hardened" });
+			try {
+				const { ended } = await turn(hosted.id, "Write the primes");
+				assert(ended.outcome === "succeeded", `the hosted turn ended ${ended.outcome}: ${ended.message}`);
+				const usage = await user.usage();
+				assert(usage.today.length === 1 && usage.today[0]?.sessionId === hosted.id && usage.today[0].heldSeconds > 0, `today: ${JSON.stringify(usage.today)}`);
+				assert(usage.sandboxes.kept === 1 && usage.kept.length === 1 && usage.kept[0]?.sessionId === hosted.id, `kept: ${usage.sandboxes.kept}, ${JSON.stringify(usage.kept.map((k) => k.sessionId))}`);
+			} finally {
+				await user.deleteSession(hosted.id);
+			}
+			return "one hold and one kept place, both the hosted session's, beside a running machine sandbox";
 		});
 
 		await check("a link cut in the middle of a turn resumes, and the person sees nothing of it", async () => {
@@ -619,13 +962,15 @@ async function main(): Promise<void> {
 			return `cut turn ${first.outcome}: ${first.message?.split("\n")[0]}`;
 		});
 
-		await check("create in a conversation that is lost makes no second sandbox", async () => {
+		await check("create in a conversation that is lost, before any report, is asked again and makes no second sandbox", async () => {
 			const fresh = await newSession();
+			const creates = runner.creates;
 			runner.loseNextCreate = true;
 			const { ended } = await turn(fresh.id, "Write the primes");
 			assert(ended.outcome === "succeeded", `ended ${ended.outcome}: ${ended.message}`);
 			assert(boxesOf(fresh.id).length === 1, `${boxesOf(fresh.id).length} sandboxes for the session`);
-			return "one sandbox, found in the machine's report";
+			assert(runner.creates === creates + 2, `${runner.creates - creates} creates reached the runner`);
+			return "two creates, one sandbox: the runner answered the repeat with the one it had made";
 		});
 
 		await check("a stopped turn cancels the command running on the machine", async () => {

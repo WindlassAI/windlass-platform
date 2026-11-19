@@ -47,6 +47,12 @@ const PART_UNITS = MAX_FRAME_BYTES / 8;
  * pile up is not acknowledging, so the next message ends the conversation instead of growing it.
  */
 const HELD_BYTES = 2 * (WINDOW_BYTES + (MAX_OPS_IN_FLIGHT + 1) * MAX_MESSAGE_BYTES);
+/**
+ * Sockets that have yet to introduce themselves, at most. Each is a RivetKit connection that keeps the
+ * session's actor awake for up to DEAD_MS, and anyone who knows the session's key can open one; the
+ * genuine runner introduces itself in its first frame, so the oldest of them is the one to let go.
+ */
+const MAX_STRANGERS = 4;
 
 /** The message as JSON. Throws when it is larger than MAX_MESSAGE_BYTES. */
 function measure(body: Body): string {
@@ -106,6 +112,8 @@ abstract class Channel {
 
 	/** Listens to a socket that has yet to introduce itself: its first frame goes to `introduce`, within DEAD_MS. */
 	protected watch(socket: ChannelSocket, introduce: (frame: Frame) => void): void {
+		const [oldest] = this.strangers.keys();
+		if (oldest && this.strangers.size >= MAX_STRANGERS) this.dismiss(oldest);
 		this.strangers.set(socket, setTimeout(() => this.dismiss(socket), DEAD_MS));
 		socket.onMessage((data) => {
 			if (this.closed) return;
@@ -280,8 +288,11 @@ export class ServerChannel extends Channel {
 	private pending = new Map<string, Pending>();
 	private processes = new Map<string, Process>();
 
-	/** `accept` checks a hello's ticket and signature before it can resume anything. */
-	constructor(private readonly options: Options & { accept(hello: Hello): boolean }) {
+	/**
+	 * `accept` checks a hello's ticket and signature before it can resume anything. `onConnect` is told
+	 * when a hello has made its socket the current one; it must not call the channel.
+	 */
+	constructor(private readonly options: Options & { accept(hello: Hello): boolean; onConnect?(): void }) {
 		super(options, "The machine did not come back within ten minutes.");
 	}
 
@@ -303,6 +314,7 @@ export class ServerChannel extends Channel {
 			}
 			const welcome: Welcome = { kind: "welcome", protocol: PROTOCOL_VERSION, conversation: this.conversation!, received: this.delivered, resumed: resumes };
 			this.adopt(socket, welcome, resumes ? hello.resume!.received : 0);
+			if (this.socket === socket) this.options.onConnect?.();
 		});
 	}
 

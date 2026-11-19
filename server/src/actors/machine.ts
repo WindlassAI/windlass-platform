@@ -10,19 +10,26 @@ import { CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, 
 import { grantIsValid } from "./internal.js";
 
 const SEEN_INTERVAL = 3 * 60_000;
+/**
+ * How long a control socket may stay open without a hello. The runner sends it as soon as the challenge
+ * arrives; a socket that never does would otherwise keep the actor awake until CONTROL_DEAD_MS.
+ */
+const HELLO_WAIT_MS = 10_000;
 type Socket = UniversalWebSocket;
 interface Live { ws: Socket; epoch: string; heardAt: number; connected: number; savedAt: number }
-interface Vars { live: Live | null; work: Promise<void> }
+/** `greeting` is the one control socket that has yet to say hello: a newer one replaces it. */
+interface Vars { live: Live | null; work: Promise<void>; greeting: Socket | null }
 interface Ctx {
 	db: RawAccess; vars: Vars; key: string[];
 	// Actor references are resolved through this node's registry.
 	client(): any;
 }
 interface Input { grant: string; details: MachineClaim; publicKey: string; expires: number }
-type Row = { name: string; version: string; public_key: string; created: number; seen: number | null; removed_at: number | null; remove_all: number; offset: number; duplicate: number | null; report: string | null };
+type Row = { name: string; version: string; public_key: string; created: number; seen: number | null; removed_at: number | null; remove_sandboxes: number; offset: number; duplicate: number | null; report: string | null };
 export interface MachineUpdate { status: MachineStatus; since: number; runnerVersion: string; warnings: MachineWarning[]; report: Report | null }
-export interface MachineFacts { status: MachineStatus | "removed"; name: string; report: Report | null }
-export type Attachment = { ok: true; publicKey: string } | { ok: false; reason: "offline" | "removed" | "unknown" };
+/** `publicKey` is the machine's Ed25519 key, SPKI in base64; it never changes (pairing again makes a new machine). */
+export interface MachineFacts { status: MachineStatus | "removed"; name: string; publicKey: string; report: Report | null }
+export type Attachment = { ok: true } | { ok: false; reason: "offline" | "removed" | "unknown" };
 
 const controlPath = (r?: Request) => !!r && new URL(r.url).pathname === "/websocket/control";
 function send(ws: Socket, frame: ServerFrame): boolean {
@@ -65,6 +72,14 @@ function update(c: Ctx, row: Row): MachineUpdate {
 async function publish(c: Ctx, row: Row) {
 	await user(c).internalMachineChanged(c.key[1], row.removed_at === null ? update(c, row) : null);
 }
+/**
+ * For what a runner's frame changed: a user actor that is briefly away (its node restarting) must not
+ * cost the runner its control socket, and with it every session's attach. Each publish carries the
+ * whole row, so the next one puts the user's list right.
+ */
+function tell(c: Ctx, row: Row | undefined): Promise<void> {
+	return row ? publish(c, row).catch((error) => machineError("publish machine change", error)) : Promise.resolve();
+}
 
 async function disconnected(c: Ctx, ws: Socket) {
 	if (c.vars.live?.ws !== ws) return;
@@ -75,7 +90,7 @@ async function disconnected(c: Ctx, ws: Socket) {
 
 async function revoke(c: Ctx, removeSandboxes: boolean, idle: boolean): Promise<void> {
 	await ordered(c, async () => {
-		const [row] = await c.db.execute<Row>(`UPDATE machine SET removed_at = ?, remove_all = ?
+		const [row] = await c.db.execute<Row>(`UPDATE machine SET removed_at = ?, remove_sandboxes = ?
 			WHERE removed_at IS NULL AND (? = 0 OR COALESCE(seen, created) <= ?) RETURNING *`, Date.now(), Number(removeSandboxes), Number(idle), Date.now() - MACHINE_EXPIRY_MS);
 		if (!row) {
 			// A previous removal may have committed just before its index notification failed.
@@ -95,10 +110,10 @@ async function revoke(c: Ctx, removeSandboxes: boolean, idle: boolean): Promise<
 export const machine = actor({
 	db: db({ onMigrate: async db => {
 		await db.execute(`CREATE TABLE IF NOT EXISTS machine (id INTEGER PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL,
-			public_key TEXT NOT NULL, created INTEGER NOT NULL, seen INTEGER, removed_at INTEGER, remove_all INTEGER NOT NULL DEFAULT 0, offset INTEGER NOT NULL DEFAULT 0, duplicate INTEGER, report TEXT)`);
+			public_key TEXT NOT NULL, created INTEGER NOT NULL, seen INTEGER, removed_at INTEGER, remove_sandboxes INTEGER NOT NULL DEFAULT 0, offset INTEGER NOT NULL DEFAULT 0, duplicate INTEGER, report TEXT)`);
 		await db.execute("CREATE TABLE IF NOT EXISTS pending (sandbox TEXT PRIMARY KEY)");
 	} }),
-	createVars: (): Vars => ({ live: null, work: Promise.resolve() }),
+	createVars: (): Vars => ({ live: null, work: Promise.resolve(), greeting: null }),
 	onCreate: async (c, input?: Input) => {
 		if (!input || c.key.length !== 2 || !MACHINE_ID.test(c.key[1]!) || !grantIsValid(input.grant, c.key, "machine") || Date.now() >= input.expires) { c.destroy(); return; }
 		const now = Date.now();
@@ -137,14 +152,26 @@ export const machine = actor({
 			if (Date.now() - heard >= CONTROL_DEAD_MS) ws.close(1001, "Runner timed out");
 			else if (c.vars.live?.ws === ws) send(ws, { kind: "heartbeat" });
 		}, CONTROL_HEARTBEAT_MS);
+		// Opening one takes only the uid and the machine's id. Each open socket keeps the actor awake, so
+		// one that says nothing goes soon, and at most one waits for its hello at a time; a socket that
+		// has said hello is not touched by either.
+		c.vars.greeting?.close(1008, "Replaced before its hello");
+		c.vars.greeting = ws;
+		const silent = setTimeout(() => ws.close(1008, "No hello"), HELLO_WAIT_MS);
+		const greeted = () => {
+			clearTimeout(silent);
+			if (c.vars.greeting === ws) c.vars.greeting = null;
+		};
 		const fail = (error: unknown) => { machineError("machine control socket", error); ws.close(1011, "Control socket failed"); };
 		ws.addEventListener("close", () => {
 			clearInterval(timer);
+			greeted();
 			closed = true;
 			return ordered(c, () => disconnected(c, ws)).catch(error => machineError("machine disconnect", error));
 		});
 		ws.addEventListener("message", ({ data }) => {
 			if (closed) return;
+			greeted();
 			const frame = parseRunnerFrame(data);
 			if (!frame || ++queued > 128 || (!hello && frame.kind !== "hello") || (hello && frame.kind === "hello")) {
 				closed = true;
@@ -157,18 +184,18 @@ export const machine = actor({
 				if (frame.kind === "hello") {
 					const r = await record(c);
 					if (!r || !signed(r.public_key, controlProof(uid!, id!, nonce), frame.signature)) { reject(ws, refuse("unknown")); return; }
-					if (r.removed_at !== null) { reject(ws, refuse("removed", { removeSandboxes: !!r.remove_all })); return; }
+					if (r.removed_at !== null) { reject(ws, refuse("removed", { removeSandboxes: !!r.remove_sandboxes })); return; }
 					if (!versionAtLeast(frame.runnerVersion, MIN_RUNNER_VERSION)) {
 						const [changed] = await c.db.execute<Row>("UPDATE machine SET version = ? WHERE removed_at IS NULL RETURNING *", frame.runnerVersion);
 						reject(ws, refuse("outdated", frame));
-						if (changed) await publish(c, changed);
+						await tell(c, changed);
 						return;
 					}
 					const old = c.vars.live;
 					if (secondHello(old, frame, now) === "refuse") {
 						const [changed] = await c.db.execute<Row>("UPDATE machine SET duplicate = ? WHERE removed_at IS NULL RETURNING *", now);
 						reject(ws, refuse("key-in-use"));
-						if (changed) await publish(c, changed);
+						await tell(c, changed);
 						return;
 					}
 					const [changed] = await c.db.execute<Row>("UPDATE machine SET seen = ?, version = ?, offset = ? WHERE removed_at IS NULL RETURNING *", now, frame.runnerVersion, frame.time - now);
@@ -177,7 +204,7 @@ export const machine = actor({
 					old?.ws.close(1001, "Reconnected");
 					send(ws, { kind: "welcome", idleSuspendMs: config.idleSuspendMs });
 					for (const { sandbox } of await c.db.execute<{ sandbox: string }>("SELECT sandbox FROM pending")) send(ws, { kind: "remove", sandbox });
-					await publish(c, changed);
+					await tell(c, changed);
 				} else {
 					const live = c.vars.live;
 					if (live?.ws !== ws) return;
@@ -192,7 +219,7 @@ export const machine = actor({
 						const report: Report = { ...frame, sandboxes: frame.sandboxes.map(s => ({ ...s, usedAt: Math.max(0, s.usedAt - r.offset) })) };
 						if (!r.report || !isDeepStrictEqual(JSON.parse(r.report), report)) {
 							const [changed] = await c.db.execute<Row>("UPDATE machine SET report = ? WHERE removed_at IS NULL RETURNING *", JSON.stringify(report));
-							if (changed) await publish(c, changed);
+							await tell(c, changed);
 						}
 					}
 				}
@@ -205,14 +232,16 @@ export const machine = actor({
 		internalFacts: async (c): Promise<MachineFacts> => {
 			requireServiceFor(c, "call");
 			const r = await record(c);
+			// No row: the actor was made without a valid reservation and is going away. To a session, and to a confirmation, that is a machine removed.
+			if (!r) return { name: "", status: "removed", publicKey: "", report: null };
 			const facts = update(c, r);
-			return { name: r.name, status: r.removed_at !== null ? "removed" : facts.status, report: facts.report };
+			return { name: r.name, status: r.removed_at !== null ? "removed" : facts.status, publicKey: r.public_key, report: facts.report };
 		},
 		internalConnection: async (c, proof: string, signature: string): Promise<"unknown" | "active" | { removeSandboxes: boolean }> => {
 			requireServiceFor(c, "call");
 			const r = await record(c);
 			if (!r || !signed(r.public_key, proof, signature)) return "unknown";
-			return r.removed_at === null ? "active" : { removeSandboxes: !!r.remove_all };
+			return r.removed_at === null ? "active" : { removeSandboxes: !!r.remove_sandboxes };
 		},
 		internalAttach: async (c, input: { sessionId: string; ticket: string }): Promise<Attachment> => {
 			requireServiceFor(c, "call");
@@ -221,8 +250,9 @@ export const machine = actor({
 				if (!r) return { ok: false, reason: "unknown" };
 				if (r.removed_at !== null) return { ok: false, reason: "removed" };
 				const live = c.vars.live;
+				// The session had the key from `internalFacts` before it made the ticket: the runner's hello can come before this answer.
 				if (!live || !send(live.ws, { kind: "attach", sessionId: input.sessionId, ticket: input.ticket })) return { ok: false, reason: "offline" };
-				return { ok: true, publicKey: r.public_key };
+				return { ok: true };
 			});
 		},
 		internalRemoveSandbox: async (c, { sandboxId }: { sandboxId: string }): Promise<void> => {

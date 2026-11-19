@@ -36,6 +36,22 @@ async function server() {
 			await c.schedule.after(2500, "expire");
 		}
 	};
+	// A report of 404 bytes free stands for the user actor being briefly away (its node restarting) when the machine publishes it.
+	const { user } = await import("../server/src/actors/user.js");
+	const userActions = user.config.actions!;
+	const changed = userActions.internalMachineChanged;
+	userActions.internalMachineChanged = async (c, id, facts) => {
+		if (facts?.report?.freeDiskBytes === 404) { process.send?.({ hook: "publish-refused", id }); throw new Error("The user actor is away."); }
+		return changed(c, id, facts);
+	};
+	// A machine of this name stands for a machine actor that does not answer a logout.
+	const machineActions = machine.config.actions!;
+	const logout = machineActions.internalLogout;
+	machineActions.internalLogout = async c => {
+		const [row] = await c.db.execute<{ name: string }>("SELECT name FROM machine");
+		if (row?.name === "Logout fails fixture") { process.send?.({ hook: "logout-refused", id: c.key[1] }); throw new Error("The machine actor is away."); }
+		return logout(c);
+	};
 	for (const hook of ["onWake", "onSleep"] as const) {
 		const original = machine.config[hook]!;
 		machine.config[hook] = async c => { await original(c); process.send?.({ hook, id: c.key[1] }); };
@@ -127,6 +143,8 @@ async function check() {
 		await refused(other.confirmMachine(code), "pairing_not_found");
 		await refused(other.setMachineSecrets({ machineId, send: false }), "machine_not_found");
 		await refused(other.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } }), "machine_not_found");
+		// Paired, but its runner has not reported yet: told so, not that the sandbox does not exist.
+		await refused(user.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } }), "machine_not_connected");
 		assert.equal((await user.setMachineSecrets({ machineId, send: false }))[0].sendSecrets, false);
 		const service = client.machine.get([uid, machineId], { params: serviceParams() });
 		const row = async () => (await user.machines()).find(r => r.machineId === machineId)!;
@@ -144,6 +162,7 @@ async function check() {
 		const old = await runner.connect(conn, id, { version: "0.0.9" });
 		await eventually(() => old.frames.some(f => f.kind === "refused" && f.reason === "outdated"));
 		await eventually(async () => (await row()).warnings.some(w => w.kind === "outdated"));
+		await refused(user.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } }), "runner_outdated");
 		const replay = await runner.connect(conn, id, { signature: old.proof() });
 		await eventually(() => replay.frames.some(f => f.kind === "refused" && f.reason === "unknown"));
 		const foreign = new WebSocket(old.ws.url, { headers: { Origin: "https://foreign.invalid" } } as unknown as string[]);
@@ -176,11 +195,32 @@ async function check() {
 		const ticket = randomUUID();
 		const attached = await service.internalAttach({ sessionId: "s_deleted", ticket });
 		const expectedKey = createPublicKey(runner.key).export({ type: "spki", format: "der" }).toString("base64");
-		assert(attached.ok && attached.publicKey === expectedKey);
+		assert(attached.ok && (await service.internalFacts()).publicKey === expectedKey);
 		await eventually(() => back.frames.some(f => f.kind === "attach" && f.ticket === ticket));
 		const fresh = randomUUID();
 		assert((await service.internalAttach({ sessionId: "s_deleted", ticket: fresh })).ok);
 		await eventually(() => back.frames.some(f => f.kind === "attach" && f.ticket === fresh));
+		step("the user actor briefly away keeps the control socket; sockets that never say hello go, one at a time");
+		back.send({ ...runner.report, freeDiskBytes: 404 });
+		await eventually(() => hooks.some(h => h.hook === "publish-refused" && h.id === machineId));
+		await wait(300);
+		assert.equal(back.ws.readyState, 1);
+		back.send({ ...runner.report, freeDiskBytes: 405 });
+		await eventually(async () => (await row()).freeDiskBytes === 405);
+		const silent = async () => {
+			const ws: WebSocket = await createClient<Registry>({ endpoint: conn.endpoint!, namespace: conn.namespace, token: conn.token?.token ?? "default", disableMetadataLookup: true })
+				.machine.get([uid, machineId]).webSocket("control");
+			await eventually(() => ws.readyState === 1);
+			return ws;
+		};
+		const quiet = await silent();
+		const opened = Date.now();
+		const quieter = await silent();
+		await eventually(() => quiet.readyState === 3, 3000);
+		await eventually(() => quieter.readyState === 3, 20_000);
+		const lasted = Date.now() - opened;
+		assert(lasted >= 8000 && lasted < 14_000, `a silent control socket lasted ${lasted} ms`);
+		assert.equal(back.ws.readyState, 1);
 		step("offline event, list reads leaving the actor asleep, a second node and queued removal");
 		back.ws.close();
 		await eventually(() => events.some(rows => rows.some(r => r.status === "offline")));
@@ -246,11 +286,18 @@ async function check() {
 		await refused(user.confirmMachine(code), "pairing_not_found"); assert.equal((await user.machines()).length, 0);
 		await observer.dispose();
 		step("three slots under concurrent confirmation and five code lookups per account");
-		const more = await Promise.all(Array.from({ length: 4 }, () => new FakeRunner().pair(origin)));
+		const more = await Promise.all(Array.from({ length: 4 }, () => {
+			const fixture = new FakeRunner();
+			fixture.details.name = "Logout fails fixture";
+			return fixture.pair(origin);
+		}));
 		await Promise.all(more.map(p => user.claimMachine({ code: p.code })));
 		const confirmed = await Promise.allSettled(more.map(p => user.confirmMachine({ code: p.code })));
 		assert.equal(confirmed.filter(r => r.status === "fulfilled").length, 3);
 		assert(confirmed.some(r => r.status === "rejected" && r.reason.code === "too_many_machines"));
+		// Each machine actor fails the logout: forgetting the sign-in still succeeds.
+		await user.forgetChatgpt();
+		assert.equal(hooks.filter(h => h.hook === "logout-refused").length, 3);
 		for (let i = 0; i < 4; i++) await refused(other.claimMachine({ code: "0000-0000" }), "pairing_not_found");
 		await refused(other.claimMachine({ code: "0000-0000" }), "too_many_claims");
 		step("expired pairing and scheduled 90-day removal");

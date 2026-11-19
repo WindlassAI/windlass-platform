@@ -430,10 +430,24 @@ async function closing(): Promise<void> {
 	expect("work asked for from onReset during close fails at once", (await now(late)) instanceof ConversationLost);
 }
 
+async function strangers(): Promise<void> {
+	const { ch: s } = server();
+	const { ch: r } = runner();
+	const link = join(s, r);
+	const silent = Array.from({ length: 5 }, () => {
+		const end = new End();
+		end.peer = new End();
+		s.attach(end);
+		return end;
+	});
+	expect("a fifth socket that has not introduced itself sends the oldest away; the current one is not touched", !silent[0]!.open && silent.slice(1).every((end) => end.open) && s.connected && link.s.open);
+	s.close(); r.close();
+}
+
 async function main(): Promise<void> {
 	mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1_000_000 });
 	try {
-		for (const check of [dropAndResume, actorWakes, runnerRestarts, grace, stream, large, untrusted, mismatch, liveness, order, expiry, closing]) await check();
+		for (const check of [dropAndResume, actorWakes, runnerRestarts, grace, stream, large, untrusted, mismatch, liveness, order, expiry, closing, strangers]) await check();
 	} finally { mock.timers.reset(); }
 	timers();
 	console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
