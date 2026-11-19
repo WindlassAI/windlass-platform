@@ -1240,6 +1240,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			summary: {
 				id: input.id,
 				title: input.title,
+				place: { kind: "hosted" },
 				profile: input.profile,
 				model: input.model,
 				repoUrl: repository ? `${repository.url}.git` : input.repoUrl,
@@ -2414,6 +2415,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const key = keyOf(idempotencyKey);
 				const made = world().sessions.get(takenUnder(world().created, key, JSON.stringify(input), "agent") ?? "");
 				if (made) return made.summary;
+				if (input.place !== undefined && input.place?.kind !== "hosted") {
+					if (input.place?.kind === "machine" && typeof input.place.machineId === "string" && input.place.machineId !== "") throw new PlatformError("user", "That machine is not known.", { reason: "sandbox_error" });
+					throw new PlatformError("user", "Choose where the sandbox runs.", { reason: "bad_input" });
+				}
 				const profile = profiles.find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
 				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());

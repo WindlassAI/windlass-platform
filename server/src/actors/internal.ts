@@ -8,7 +8,7 @@
  * signin/directory.ts makes them with a client of its own.
  */
 
-import type { ModelList, RepositoryCheck, RepositorySetup, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import { serviceParams } from "../auth.js";
 import type { StoredRepository } from "../github/publish.js";
 import type { StoredConnection } from "../github/repos.js";
@@ -21,6 +21,7 @@ export interface SessionCreateInput {
 	grant: string;
 	title: string;
 	titleIsDefault: boolean;
+	place: SandboxPlace;
 	profile: SandboxProfileId;
 	model: string;
 	repoUrl: string | null;

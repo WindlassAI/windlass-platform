@@ -135,6 +135,7 @@ import {
 } from "./sandbox/api.js";
 import { BACKUP_ENV, SandboxSessionBackups } from "./sandbox/backup.js";
 import { NOT_SIGNED_IN, SIGN_IN_EXPIRED, SIGN_IN_UNREACHABLE, SignInRefreshError, TOKEN_VALID_FOR_MS, outdatedWindlass, tokenSourceFailure } from "./sandbox/handoff.js";
+import { places } from "./sandbox/places.js";
 import type { SignInCommands, TokenAnswer } from "./signin/commands.js";
 import { actorSignIns, memorySignIns } from "./signin/facade.js";
 import type { SignInMaterial } from "./signin/material.js";
@@ -1154,13 +1155,23 @@ export function createFakeSignInCommands(): SignInCommands {
  * a check that uses the layer by itself, with no server beside it.
  */
 export function createFakeSandboxLayer(options: { signIns?: "actors" | "memory" } = {}): SandboxLayer {
-	const raw = Number.parseInt(process.env.WLP_FAKE_DELAY_MS ?? "", 10);
-	const eventDelayMs = Number.isFinite(raw) && raw >= 0 ? raw : 15;
 	// A directory that stands in for the bucket: Windlass's sessions then live in the sandboxes, and are copied there.
 	const backupDir = (process.env.WLP_FAKE_BACKUP_DIR ?? "").trim();
 	const bucket = backupDir === "" ? null : new StandInObjectStore({ dir: backupDir });
-	const sandboxes = new FakeSandboxes(bucket);
 	// The sign-in steps and the token source are the real ones, over the stand-in for Windlass above.
 	const { logins, tokens } = options.signIns === "memory" ? memorySignIns({ commands: createFakeSignInCommands(), rows: new Map() }) : actorSignIns();
+	return fakeLayer(bucket, { logins, tokens });
+}
+
+/** The machine has its own sandboxes. Its turns use the same sign-ins as hosted turns. */
+export function registerFakeMachine(hosted: SandboxLayer): void {
+	const machine = fakeLayer(null, hosted);
+	places.set("m_fake", () => machine);
+}
+
+function fakeLayer(bucket: StandInObjectStore | null, { logins, tokens }: Pick<SandboxLayer, "logins" | "tokens">): SandboxLayer {
+	const raw = Number.parseInt(process.env.WLP_FAKE_DELAY_MS ?? "", 10);
+	const eventDelayMs = Number.isFinite(raw) && raw >= 0 ? raw : 15;
+	const sandboxes = new FakeSandboxes(bucket);
 	return { sandboxes, windlass: new FakeWindlass(sandboxes, eventDelayMs, tokens), logins, tokens, backups: bucket === null ? null : new SandboxSessionBackups(bucket, { maxBytes: backupConfig().maxBytes }) };
 }

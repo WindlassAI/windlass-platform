@@ -1843,7 +1843,7 @@ acme/harbor has one of its own for. Its seeded sessions that have a sandbox list
 
 ## Usage and limits
 
-A sandbox costs money while it runs, so two things are limited for each user, and a page shows where they
+A hosted sandbox costs money while it runs, so two things are limited for each user, and a page shows where they
 stand (`server/src/usage.ts` has the rules, with no actor in it):
 
 | Limit | Setting | Default |
@@ -1852,6 +1852,13 @@ stand (`server/src/usage.ts` has the rules, with no actor in it):
 | Sandboxes a user may keep at the same time, running or paused | `WLP_MAX_KEPT_SANDBOXES` | 5 |
 
 Either takes `unlimited`. The time is counted and shown with or without a limit.
+
+Each session keeps its place beside its sandbox profile. The web app launches on the hosted layer
+chosen by `WLP_SANDBOX`, as does a session stored without a place. On a fake deployment,
+`createSession` also accepts `place: { kind: "machine", machineId: "m_fake" }` with a profile
+offered there. Its sandboxes run in a second fake layer. They take no time or kept place on the usage
+page and have no estimated cost. Turns in both places count towards the same limit on working agents.
+Repository and account profile defaults apply to hosted launches.
 
 - **What is counted.** The time a session's sandbox runs: from the moment the session has it created or
   resumed, for a turn, a clone, a setup command, a push, or to read the workspace's changes, until it is
@@ -2005,6 +2012,19 @@ cd server && npx tsx ../scripts/web-files-check.ts                # the web app'
 cd server && npx tsx --tsconfig ../web/tsconfig.json ../scripts/connection-e2e.ts
                                                                   # the web app's client through an engine whose tokens run out
 ```
+
+The two runner checks run from `server/`.
+
+```sh
+pnpm exec tsx ../scripts/runner-protocol-check.ts   # a turn's streams across a broken connection, on two loopback sockets
+pnpm exec tsx ../scripts/runner-socket-probe.ts     # one throwaway actor on a local engine, ports 6740, 6741 and 6750
+```
+
+The probe measures raw text messages up to `WLP_PROBE_MAX_BYTES` (default 32 MiB), waits without sending
+for `WLP_PROBE_IDLE_MS` (default one minute), then drains its own node. To use an existing cluster, set
+`WLP_CHECK_ENGINE` to its public engine origin, `RIVET_NAMESPACE`, `RIVET_POOL` to an existing pool
+reserved for the probe, and `RIVET_ADMIN_TOKEN` in the environment. It uses a scoped token for its client
+and removes its actor when it finishes.
 
 `connection-check.ts` also runs against a real engine when it is given one, with about ten requests that issue
 and read back tokens and nothing else (`WLP_CHECK_ENGINE=https://<name>-api.onrivet.dev RIVET_ADMIN_TOKEN=...`).

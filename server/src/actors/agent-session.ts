@@ -57,7 +57,7 @@
  * session"), publishes exactly as `publish()` does, to the session's branch and pull request and
  * nowhere else, and resolves with what the agent is told. What became of it is a line in the timeline.
  *
- * The time the session's sandbox runs is counted against its user's daily allowance, and the sandbox
+ * The time a hosted sandbox runs is counted against its user's daily allowance, and the sandbox
  * is one of those the user keeps (usage.ts). The user's `user` actor decides both, so the session
  * asks there: before its sandbox is created or started it takes a hold of sandbox time, and with it
  * a place when it has no sandbox; while the sandbox runs it trades each hold for the next when it is
@@ -130,6 +130,7 @@ import {
 	type PublishState,
 	type PullRequestInfo,
 	type RepositoryCheck,
+	type SandboxPlace,
 	type SandboxProfileId,
 	type SessionServers,
 	type SessionSnapshot,
@@ -147,7 +148,7 @@ import {
 import { githubApp } from "../github/app.js";
 import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, publishWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, type StoredConnection } from "../github/repos.js";
-import { getLayer } from "../layer.js";
+import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, standInModels } from "../account-models.js";
 import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { runSetupCommand, stopLeftoverSetup } from "../sandbox/setup.js";
@@ -174,7 +175,7 @@ import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf 
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { VerificationLog, outputTail, withOutputs } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
-import { type OpenStretch, USAGE_UNAVAILABLE, allowanceRefusal, freedNote, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
+import { type OpenStretch, USAGE_UNAVAILABLE, allowanceRefusal, countsSandboxTime, freedNote, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { grantIsValid, type ReserveAnswer, secretsActor, type SessionCreateInput, userActor } from "./internal.js";
 
 // ---------------------------------------------------------------------------------------------
@@ -251,6 +252,7 @@ interface SessionMeta {
 	demo: boolean;
 	title: string;
 	titleIsDefault: boolean;
+	place: SandboxPlace;
 	profile: SandboxProfileId;
 	model: string;
 	repoUrl: string | null;
@@ -479,6 +481,8 @@ interface SessionVars {
 	pullCheckedAt: number;
 	/** Whether the workspace has commits GitHub lacks, as last read from the sandbox, and what it was read for. */
 	unpushed: { key: string; value: boolean | null } | null;
+	/** How long this sandbox's provider lets it run unused. */
+	providerIdleStop: number | null;
 	/** Fires when the running sandbox's hold is over, or when an unused sandbox would have stopped by itself (`armMeter`). */
 	meterTimer: ReturnType<typeof setTimeout> | null;
 	/** The tail of the queue of calls to the user's meter: a hold is traded or settled by one of them at a time. */
@@ -514,10 +518,15 @@ const UNREADABLE_SESSION =
 /** A failure of a turn whose message is fit to show as it is. */
 class TurnProblem extends Error {}
 
+function layerOf(c: Ctx, meta: SessionMeta): Promise<SandboxLayer> {
+	return layerFor(meta.place, c.key[0]!);
+}
+
 function summaryOf(meta: SessionMeta): SessionSummary {
 	return {
 		id: meta.sessionId,
 		title: meta.title,
+		place: meta.place,
 		profile: meta.profile,
 		model: meta.model,
 		repoUrl: meta.repoUrl,
@@ -1002,7 +1011,7 @@ const backupRemoved = new WeakSet<SessionMeta>();
 async function removeBackup(c: Ctx, meta: SessionMeta): Promise<void> {
 	if (backupRemoved.has(meta)) return;
 	try {
-		const layer = await getLayer();
+		const layer = await layerOf(c, meta);
 		if (!layer.backups || !layer.sandboxes.sessionsLiveInSandbox) return;
 		for (let attempt = 1; ; attempt += 1) {
 			try {
@@ -1114,7 +1123,7 @@ async function workspaceView(c: Ctx, meta: SessionMeta): Promise<WorkspaceCopy |
 		const saved = await savedWorkspace(c);
 		if (saved) return saved;
 	}
-	const { sandboxes } = await getLayer();
+	const { sandboxes } = await layerOf(c, meta);
 	// Starting a paused sandbox to read it uses its user's sandbox time, as a turn does: refused when none is left.
 	if (!c.vars.turn && !meta.meter) await holdSandbox(c, meta, true);
 	const sandbox = await sandboxes.connect(meta.sandboxId);
@@ -1132,7 +1141,7 @@ async function workspaceView(c: Ctx, meta: SessionMeta): Promise<WorkspaceCopy |
 async function refreshSandbox(c: Ctx, meta: SessionMeta): Promise<void> {
 	if (!meta.sandboxId) return;
 	try {
-		const { sandboxes } = await getLayer();
+		const { sandboxes } = await layerOf(c, meta);
 		noteSandbox(c, meta, await sandboxes.state(meta.sandboxId));
 	} catch (error) {
 		c.log.warn({ msg: "could not read the sandbox's state", error: describeError(error) });
@@ -1403,8 +1412,8 @@ async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, f
 	if (meta.unpushed?.key === key) return meta.unpushed.value;
 	let value: boolean | null = null;
 	try {
-		const { sandboxes } = await getLayer();
-		if (!c.vars.idling && meta.meter && (await sandboxes.state(meta.sandboxId)) === "running") {
+		const { sandboxes } = await layerOf(c, meta);
+		if (!c.vars.idling && (!countsSandboxTime(meta.place) || meta.meter) && (await sandboxes.state(meta.sandboxId)) === "running") {
 			const sandbox = await sandboxes.connect(meta.sandboxId);
 			if (sandbox && !c.vars.turn) value = await hasUnpushedWork(sandbox, repo.branch, meta.pushedHead ?? null);
 		}
@@ -1494,7 +1503,7 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 	if (!app || !meta.sandboxId) throw new UserError(publishBlocked(c, meta) ?? "There is nothing to push yet.", { code: "publish_blocked" });
 	// A suspend or removal of the idle sandbox finishes first, as before a prompt.
 	if (c.vars.idling) await c.vars.idling.catch(() => undefined);
-	const { sandboxes } = await getLayer();
+	const { sandboxes } = await layerOf(c, meta);
 	// A push starts a paused sandbox, which uses its user's sandbox time.
 	if (!meta.meter) await holdSandbox(c, meta, true);
 	const sandbox = meta.sandboxId ? await sandboxes.connect(meta.sandboxId) : undefined;
@@ -1753,7 +1762,7 @@ function ago(ms: number): string {
 /** The session's servers as the side panel shows them: what the session kept, and what the user's record says of each. */
 async function sessionServers(c: Ctx, meta: SessionMeta): Promise<SessionServers> {
 	const known = meta.servers ?? [];
-	const { sandboxes } = await getLayer();
+	const { sandboxes } = await layerOf(c, meta);
 	// A session whose project names no server asks nobody: the user's own have no approval.
 	const approvals = known.some((server) => server.origin !== "user") ? await serverApprovals.of(c, meta) : [];
 	const project = projectOf(meta);
@@ -2084,9 +2093,6 @@ const IDLE_STOP_MARGIN_MS = 3_000;
 /** How many reports of sandbox time a session keeps to send again. */
 const MAX_UNSETTLED = 20;
 
-/** `Sandboxes.idleStopMs` of the deployment's layer, once the layer was asked: the same for every session on this server. */
-let providerIdleStop: number | null = null;
-
 /** Runs `job` after every call to the user's meter queued before it. */
 function metered<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 	const run = c.vars.metering.then(job, job);
@@ -2137,8 +2143,9 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
  * then goes on to the end of the hold it has.
  */
 function holdSandbox(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<void> {
+	if (!countsSandboxTime(meta.place)) return Promise.resolve();
 	return metered(c, async () => {
-		providerIdleStop = (await getLayer()).sandboxes.idleStopMs;
+		c.vars.providerIdleStop = (await layerOf(c, meta)).sandboxes.idleStopMs;
 		const answer = await takeHold(c, meta, fresh);
 		armMeter(c, meta);
 		if (answer === null) throw new UserError(USAGE_UNAVAILABLE, { code: "usage_unavailable" });
@@ -2160,8 +2167,8 @@ function armMeter(c: Ctx, meta: SessionMeta, notBefore = 0): void {
 	const open = meta.meter;
 	if (!open || c.vars.stopping || c.vars.destroying) return;
 	let at = open.since + open.seconds * 1000;
-	if (providerIdleStop !== null && !c.vars.turn) {
-		at = Math.min(at, Math.max(Math.max(open.since, lastUsed(meta)) + providerIdleStop + IDLE_STOP_MARGIN_MS, (open.seen ?? 0) + METER_RETRY_MS));
+	if (c.vars.providerIdleStop !== null && !c.vars.turn) {
+		at = Math.min(at, Math.max(Math.max(open.since, lastUsed(meta)) + c.vars.providerIdleStop + IDLE_STOP_MARGIN_MS, (open.seen ?? 0) + METER_RETRY_MS));
 	}
 	c.vars.meterTimer = setTimeout(
 		() => {
@@ -2191,13 +2198,13 @@ function meterTick(c: Ctx, meta: SessionMeta): Promise<void> {
 		if (!open || c.vars.stopping || c.vars.destroying || c.vars.meta !== meta) return;
 		const id = meta.sandboxId;
 		const unused = !c.vars.turn && !c.vars.accepting && !c.vars.publishing && !c.vars.idling;
-		if (id && unused && providerIdleStop !== null && Date.now() >= Math.max(open.since, lastUsed(meta)) + providerIdleStop) {
-			const state = await getLayer()
+		if (id && unused && c.vars.providerIdleStop !== null && Date.now() >= Math.max(open.since, lastUsed(meta)) + c.vars.providerIdleStop) {
+			const state = await layerOf(c, meta)
 				.then(({ sandboxes }) => sandboxes.state(id))
 				.catch(() => null);
 			if (state === "running") open.seen = Date.now();
 			else if (state !== null && !c.vars.turn && !c.vars.accepting) {
-				await settleStretch(c, meta, stoppedBy(open, lastUsed(meta), providerIdleStop, Date.now()));
+				await settleStretch(c, meta, stoppedBy(open, lastUsed(meta), c.vars.providerIdleStop, Date.now()));
 				noteSandbox(c, meta, state);
 				void armIdle(c, meta);
 				return;
@@ -2245,7 +2252,7 @@ async function suspendOutOfTime(c: Ctx, meta: SessionMeta, text: string | null):
 	}
 	// Set in the same step as the checks above: from here a prompt waits for it.
 	const work = (async () => {
-		const { sandboxes } = await getLayer();
+		const { sandboxes } = await layerOf(c, meta);
 		await sandboxes.suspend(id);
 		console.log(`[wlp] sandbox.suspended_out_of_time id=${id} session=${meta.sessionId}`);
 		meta.sandbox = "paused";
@@ -2306,7 +2313,7 @@ function closeMeter(c: Ctx, meta: SessionMeta, how: "now" | "found" = "now"): Pr
 	return metered(c, async () => {
 		const open = meta.meter;
 		if (!open) return;
-		await settleStretch(c, meta, how === "now" ? at : Math.min(stoppedBy(open, lastUsed(meta), providerIdleStop, at), open.since + open.seconds * 1000));
+		await settleStretch(c, meta, how === "now" ? at : Math.min(stoppedBy(open, lastUsed(meta), c.vars.providerIdleStop, at), open.since + open.seconds * 1000));
 	}).catch((error) => {
 		c.log.warn({ msg: "could not settle the sandbox's time", session: meta.sessionId, error: describeError(error) });
 	});
@@ -2314,6 +2321,7 @@ function closeMeter(c: Ctx, meta: SessionMeta, how: "now" | "found" = "now"): Pr
 
 /** The session has no sandbox any more: its place among the sandboxes its user keeps is free. Never throws; a place that is not given back is found when the count is held against the provider's list. */
 async function releasePlace(c: Ctx, meta: SessionMeta): Promise<void> {
+	if (!countsSandboxTime(meta.place)) return;
 	await inTime(userActor(c, meta.uid).internalRelease(meta.sessionId), METER_WAIT_MS).catch((error) => {
 		c.log.warn({ msg: "could not give the sandbox's place back to its user", session: meta.sessionId, error: describeError(error) });
 	});
@@ -2342,8 +2350,9 @@ async function meterAfterTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): Pr
  * stopped), and reports that never arrived. Called once the sandbox's real state is known. Never throws.
  */
 async function wakeMeter(c: Ctx, meta: SessionMeta): Promise<void> {
+	if (!countsSandboxTime(meta.place)) return;
 	try {
-		providerIdleStop = (await getLayer()).sandboxes.idleStopMs;
+		c.vars.providerIdleStop = (await layerOf(c, meta)).sandboxes.idleStopMs;
 		const running = meta.sandboxId !== null && meta.sandbox === "running";
 		if (meta.meter && !running) await closeMeter(c, meta, "found");
 		else if (meta.meter) armMeter(c, meta);
@@ -2383,7 +2392,7 @@ async function leaveUsage(c: Ctx, meta: SessionMeta): Promise<void> {
  * one. For a sandbox nobody used for long, and for one its user frees to make room for another.
  */
 async function removeSandbox(c: Ctx, meta: SessionMeta, id: string, text: string): Promise<void> {
-	const { sandboxes } = await getLayer();
+	const { sandboxes } = await layerOf(c, meta);
 	await sandboxes.destroy(id);
 	meta.sandboxId = null;
 	meta.sandbox = "none";
@@ -2457,7 +2466,7 @@ async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 	if (id && (remove || suspend)) {
 		// Set in the same step as the checks above: from here a prompt waits for it.
 		const work = (async () => {
-			const { sandboxes } = await getLayer();
+			const { sandboxes } = await layerOf(c, meta);
 			if (remove) {
 				await removeSandbox(c, meta, id, `Removed the sandbox and its files after ${duration(config.idleDestroyMs)} without use; the next prompt starts a new one.`);
 				console.log(`[wlp] sandbox.idle_removed id=${id} session=${meta.sessionId}`);
@@ -2553,7 +2562,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 
 	try {
 		await persist(c);
-		layer = await getLayer();
+		layer = await layerOf(c, meta);
 		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
 		active.secrets = await readSecrets(c, meta, turn);
 		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
@@ -2913,7 +2922,7 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 		}
 
 		if (!meta.demo && Date.now() >= c.vars.signedInUntil) {
-			const { logins } = await getLayer();
+			const { logins } = await layerOf(c, meta);
 			if (!(await logins.status(meta.uid))) {
 				throw new UserError("Sign in with ChatGPT first: this agent needs your account to run.", { code: "chatgpt_required" });
 			}
@@ -3008,6 +3017,7 @@ export const agentSession = actor({
 				demo: input.demo === true,
 				title: String(input.title),
 				titleIsDefault: input.titleIsDefault === true,
+				place: input.place,
 				profile: input.profile,
 				model: String(input.model),
 				repoUrl: typeof input.repoUrl === "string" ? input.repoUrl : null,
@@ -3033,8 +3043,10 @@ export const agentSession = actor({
 	createVars: async (c): Promise<SessionVars> => {
 		const [row] = await c.db.execute<{ data: string }>("SELECT data FROM meta WHERE id = 1");
 		const [last] = await c.db.execute<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM timeline");
+		const meta = row ? (JSON.parse(row.data) as SessionMeta) : null;
+		if (meta && meta.place === undefined) meta.place = { kind: "hosted" };
 		return {
-			meta: row ? (JSON.parse(row.data) as SessionMeta) : null,
+			meta,
 			nextSeq: (last?.seq ?? 0) + 1,
 			unwritten: [],
 			flushTimer: null,
@@ -3055,6 +3067,7 @@ export const agentSession = actor({
 			publishing: false,
 			pullCheckedAt: 0,
 			unpushed: null,
+			providerIdleStop: null,
 			meterTimer: null,
 			metering: Promise.resolve(),
 			meterAsked: null,
@@ -3142,7 +3155,7 @@ export const agentSession = actor({
 			// A suspend that ends after the wait goes on without the actor, whose state may be gone by then.
 			let waiting = true;
 			let ended = false;
-			const suspended = getLayer()
+			const suspended = layerOf(c, meta)
 				.then(({ sandboxes }) => sandboxes.suspend(id))
 				.then(
 					() => {
@@ -3174,7 +3187,7 @@ export const agentSession = actor({
 		if (c.vars.flushTimer) clearTimeout(c.vars.flushTimer);
 		if (meta.sandboxId) {
 			try {
-				const { sandboxes } = await getLayer();
+				const { sandboxes } = await layerOf(c, meta);
 				await sandboxes.destroy(meta.sandboxId);
 				console.log(`[wlp] sandbox.destroyed id=${meta.sandboxId} session=${meta.sessionId}`);
 			} catch (error) {
@@ -3204,7 +3217,7 @@ export const agentSession = actor({
 			requireUser(c);
 			const meta = liveMeta(c);
 			try {
-				const { sandboxes } = await getLayer();
+				const { sandboxes } = await layerOf(c, meta);
 				const profile = sandboxes.profile(meta.profile);
 				return await serial(c, async () => {
 					await writeItems(c).catch((error) => c.log.error({ msg: "could not write the timeline", error: describeError(error) }));
@@ -3386,7 +3399,7 @@ export const agentSession = actor({
 			if (typeof input !== "object" || input === null || typeof input.unasked !== "boolean") throw new UserError("Say whether the agent may publish without asking.", { code: "bad_input" });
 			if (!meta.repo) throw new UserError("This agent does not work on a repository of your GitHub connection, so it has nowhere to publish to.", { code: "publish_blocked" });
 			if (input.unasked) {
-				const { sandboxes } = await getLayer();
+				const { sandboxes } = await layerOf(c, meta);
 				const problem = publishUnaskedProblem(commandSandbox(sandboxes.profile(meta.profile)));
 				if (problem !== null) throw new UserError(problem, { code: "publish_blocked" });
 			}
@@ -3461,7 +3474,7 @@ export const agentSession = actor({
 			try {
 				const forgotten = await serverApprovals.forget(c, meta, input.name);
 				if (forgotten > 0) {
-					const { sandboxes } = await getLayer();
+					const { sandboxes } = await layerOf(c, meta);
 					note(c, meta.turns, "info", serverForgottenNote({ name: input.name }, { dataInSandbox: sandboxes.sessionsLiveInSandbox }));
 					serversChanged(c, meta);
 				}
@@ -3520,7 +3533,7 @@ export const agentSession = actor({
 			if (!id) return { freed: false };
 			// Set in the same step as the checks above: from here a prompt waits for it.
 			const work = (async () => {
-				const layer = await getLayer();
+				const layer = await layerOf(c, meta);
 				const memory = !meta.windlassSessionId ? null : !layer.sandboxes.sessionsLiveInSandbox ? "kept" : layer.backups && meta.backup?.windlassSessionId === meta.windlassSessionId ? "copied" : "lost";
 				await removeSandbox(c, meta, id, freedNote(memory));
 				console.log(`[wlp] sandbox.freed id=${id} session=${meta.sessionId}`);
@@ -3549,7 +3562,7 @@ export const agentSession = actor({
 				await stopTurn(c);
 				if (meta.sandboxId) {
 					try {
-						const { sandboxes } = await getLayer();
+						const { sandboxes } = await layerOf(c, meta);
 						await sandboxes.destroy(meta.sandboxId);
 						console.log(`[wlp] sandbox.destroyed id=${meta.sandboxId} session=${meta.sessionId}`);
 						meta.sandboxId = null;

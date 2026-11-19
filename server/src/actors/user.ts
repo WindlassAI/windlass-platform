@@ -105,6 +105,7 @@ import {
 	type RepositorySecrets,
 	type RepositorySetup,
 	type RepositoryView,
+	type SandboxPlace,
 	type SandboxProfile,
 	type SavedRepository,
 	type SecretScope,
@@ -119,7 +120,7 @@ import { isBranchName } from "../github/git.js";
 import type { StoredRepository } from "../github/publish.js";
 import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches, listRepositories, resolveRepository } from "../github/repos.js";
 import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
-import { getLayer } from "../layer.js";
+import { getLayer, layerFor } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../account-defaults.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
@@ -284,6 +285,7 @@ function modelInput<T>(pick: () => T): T {
 }
 
 interface UserCtx {
+	key: string[];
 	vars: UserVars;
 	db: RawAccess;
 	broadcast(name: string, ...args: unknown[]): void;
@@ -484,9 +486,11 @@ function setupKeyOf(repositoryId: unknown): string {
 // Secrets of repositories
 // ---------------------------------------------------------------------------------------------
 
-/** The profile a list of secrets is asked for, as this deployment's sandbox layer describes it. */
-async function secretProfile(id: unknown): Promise<SandboxProfile> {
-	const { sandboxes } = await getLayer();
+/** A session's list describes its own sandbox. The settings and launch form describe hosted profiles. */
+async function secretProfile(c: UserCtx, id: unknown, repo?: { repositoryId: number; sessionId?: string }): Promise<SandboxProfile> {
+	const session = repo?.sessionId ? c.vars.sessions.get(repo.sessionId) : undefined;
+	const place: SandboxPlace = session && session.repository?.id === repo?.repositoryId ? session.place : { kind: "hosted" };
+	const { sandboxes } = await layerFor(place, c.key[0]!);
 	const profile = sandboxes.profiles().find((item) => item.id === id);
 	if (!profile) throw new UserError("Choose one of the listed sandboxes.", { code: "bad_input" });
 	return profile;
@@ -696,7 +700,6 @@ function serverInput<T>(clean: () => T): T {
 const KEPT_FRESH_MS = 30_000;
 
 interface UsageCtx extends UserCtx {
-	key: string[];
 	log: { warn(entry: unknown): void };
 }
 
@@ -846,6 +849,12 @@ export function cleanRepoUrl(raw: unknown): string | null {
 	return url.toString();
 }
 
+function launchPlace(place: SandboxPlace | undefined): SandboxPlace {
+	if (place === undefined || place?.kind === "hosted") return { kind: "hosted" };
+	if (place?.kind === "machine" && typeof place.machineId === "string" && place.machineId !== "") return { kind: "machine", machineId: place.machineId };
+	throw new UserError("Choose where the sandbox runs.", { code: "bad_input" });
+}
+
 /** What `makeSession` needs of an action's context. */
 interface CreateCtx extends UserCtx, ModelsCtx {
 	log: { error(entry: unknown): void };
@@ -863,6 +872,7 @@ const KEYED = "agent";
  * in one synchronous step at the end, or the call is refused and nothing of it is kept.
  */
 async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null): Promise<SessionSummary> {
+	const place = launchPlace(input.place);
 	let repoUrl = cleanRepoUrl(input.repoUrl);
 	const givenTitle = input.title === undefined || input.title === null ? null : cleanTitle(input.title);
 	// A setup command is saved for a repository of the GitHub connection, and is checked before GitHub is asked anything.
@@ -901,7 +911,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 
 	let summary: SessionSummary;
 	try {
-		const { sandboxes } = await getLayer();
+		const { sandboxes } = await layerFor(place, profile.uid);
 		const chosen = sandboxes.profiles().find((candidate) => candidate.id === input.profile);
 		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
 		if (!chosen.available) {
@@ -920,6 +930,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		summary = {
 			id: `s_${randomBytes(8).toString("hex")}`,
 			title: givenTitle ?? DEFAULT_TITLE,
+			place,
 			profile: chosen.id,
 			model,
 			repoUrl,
@@ -934,6 +945,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		await createSessionActor(c, profile.uid, summary.id, {
 			title: summary.title,
 			titleIsDefault: givenTitle === null,
+			place: summary.place,
 			profile: summary.profile,
 			model,
 			repoUrl,
@@ -1110,6 +1122,7 @@ export const user = actor({
 		const created = new Map<string, Submission & { id: string }>();
 		for (const { summary, key, sent } of rows) {
 			const parsed = JSON.parse(summary) as SessionSummary;
+			if (parsed.place === undefined) parsed.place = { kind: "hosted" };
 			sessions.set(parsed.id, parsed);
 			if (key !== null && sent !== null) created.set(key, { key, sent, id: parsed.id });
 		}
@@ -1302,7 +1315,8 @@ export const user = actor({
 			const id = approvalText(sessionId, 200);
 			if (id === "") throw new UserError("Say which agent's sandbox to free.", { code: "bad_input" });
 			try {
-				if (c.vars.sessions.has(id)) {
+				const session = c.vars.sessions.get(id);
+				if (session) {
 					await sessionActor(c, profile.uid, id)
 						.internalFreeSandbox()
 						.catch((error: unknown) => {
@@ -1312,6 +1326,7 @@ export const user = actor({
 							if (group === "user" && typeof message === "string") throw new UserError(message, { code: typeof code === "string" ? code : "sandbox_busy" });
 							throw error;
 						});
+					if (session.place.kind === "machine") return await usageView(c);
 				}
 				const { sandboxes } = await getLayer();
 				for (const left of await sandboxes.list(profile.uid)) {
@@ -1489,7 +1504,7 @@ export const user = actor({
 		repositorySecrets: async (c, input: { repositoryId: number; profile: string; sessionId?: string }): Promise<RepositorySecrets> => {
 			requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
-			const profile = await secretProfile(input?.profile);
+			const profile = await secretProfile(c, input?.profile, input);
 			try {
 				return await listSecrets(c.db, project, profile, secretLists(c.vars, input.repositoryId, input.sessionId));
 			} catch (error) {
@@ -1500,7 +1515,7 @@ export const user = actor({
 		saveRepositorySecret: async (c, input: { repositoryId: number; profile: string; sessionId?: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets> => {
 			const user = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
-			const profile = await secretProfile(input?.profile);
+			const profile = await secretProfile(c, input?.profile, input);
 			const name = secretInput(() => cleanSecretName(input?.name));
 			const scope = secretInput(() => cleanSecretScope(input?.scope));
 			const value = input?.value === undefined || input?.value === null ? undefined : secretInput(() => cleanSecretValue(input.value));
@@ -1515,7 +1530,7 @@ export const user = actor({
 		deleteRepositorySecret: async (c, input: { repositoryId: number; profile: string; sessionId?: string; name: string }): Promise<RepositorySecrets> => {
 			const user = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
-			const profile = await secretProfile(input?.profile);
+			const profile = await secretProfile(c, input?.profile, input);
 			const name = approvalText(input?.name, 200);
 			try {
 				await c.db.execute("DELETE FROM repo_secret WHERE project = ? AND name = ?", project, name);
@@ -1727,7 +1742,7 @@ export const user = actor({
 
 		accountSecrets: async (c, input: { profile: string }): Promise<AccountSecrets> => {
 			requireUser(c);
-			const profile = await secretProfile(input?.profile);
+			const profile = await secretProfile(c, input?.profile);
 			try {
 				return await listAccountSecrets(c.db, profile);
 			} catch (error) {
@@ -1737,7 +1752,7 @@ export const user = actor({
 
 		saveAccountSecret: async (c, input: { profile: string; name: string; value?: string; scope: SecretScope }): Promise<AccountSecrets> => {
 			const user = requireUser(c);
-			const profile = await secretProfile(input?.profile);
+			const profile = await secretProfile(c, input?.profile);
 			const name = secretInput(() => cleanSecretName(input?.name));
 			const scope = secretInput(() => cleanSecretScope(input?.scope));
 			const value = input?.value === undefined || input?.value === null ? undefined : secretInput(() => cleanSecretValue(input.value));
@@ -1760,7 +1775,7 @@ export const user = actor({
 
 		deleteAccountSecret: async (c, input: { profile: string; name: string }): Promise<AccountSecrets> => {
 			const user = requireUser(c);
-			const profile = await secretProfile(input?.profile);
+			const profile = await secretProfile(c, input?.profile);
 			const name = approvalText(input?.name, 200);
 			try {
 				await deleteAccountSecret(c.db, name);

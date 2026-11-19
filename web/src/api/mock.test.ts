@@ -118,12 +118,17 @@ describe("what the mock serves", () => {
 		await vi.advanceTimersByTimeAsync(300);
 		expect(lists).toHaveLength(1);
 		const created = await after(500, client.user(auth).createSession({ profile: "docker-hardened", title: "Mine" }));
-		expect(lists.at(-1)?.[0]).toMatchObject({ id: created.id, title: "Mine", status: "idle", sandbox: "none" });
+		expect(lists.at(-1)?.[0]).toMatchObject({ id: created.id, title: "Mine", place: { kind: "hosted" }, status: "idle", sandbox: "none" });
 		await after(500, client.user(auth).renameSession(created.id, "Renamed"));
 		expect(lists.at(-1)?.[0]?.title).toBe("Renamed");
 		await after(500, client.user(auth).deleteSession(created.id));
 		expect(lists.at(-1)?.some((session) => session.id === created.id)).toBe(false);
 		close();
+	});
+
+	it("refuses a machine the mock deployment does not know", async () => {
+		const attempt = client.user(auth).createSession({ place: { kind: "machine", machineId: "m_fake" }, profile: "docker-hardened" });
+		expect(await after(500, attempt.catch((error: unknown) => error))).toMatchObject({ message: "That machine is not known." });
 	});
 
 	it("refuses a sandbox that is not available, and says why", async () => {

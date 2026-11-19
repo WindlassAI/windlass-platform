@@ -17,10 +17,10 @@
 // Sandboxes
 // ---------------------------------------------------------------------------------------------
 
-/**
- * Where a session's files and commands live. Two profiles work today, both on local Docker; the
- * rest are listed so the picker can say what each would need.
- */
+/** Whose machine runs the sandbox. A session keeps its place for its whole life. */
+export type SandboxPlace = { kind: "hosted" } | { kind: "machine"; machineId: string };
+
+/** The kind of sandbox a session uses. Each place says which profiles it offers. */
 export type SandboxProfileId =
 	| "docker-windlass-sandbox"
 	| "docker-hardened"
@@ -217,6 +217,7 @@ export type TurnOutcome =
 export interface SessionSummary {
 	id: string;
 	title: string;
+	place: SandboxPlace;
 	profile: SandboxProfileId;
 	model: string;
 	/** A git repository cloned into the workspace when the sandbox was created, if any. */
@@ -273,6 +274,8 @@ export interface SessionSummary {
 export interface CreateSessionInput {
 	/** Defaults to "New agent"; replaced by the first prompt's opening words when left unset. */
 	title?: string;
+	/** Left out: run on the hosted layer. */
+	place?: SandboxPlace;
 	profile: SandboxProfileId;
 	/** One of the user's models (`UserActions.models`). Defaults to their default. */
 	model?: string;
@@ -824,7 +827,7 @@ export interface AccountSecrets {
 /**
  * A user's sandbox time today and the sandboxes they keep, in numbers (README, "Usage and limits").
  *
- * Sandbox time is the time a session's sandbox runs: from when it is created or resumed, for a turn or
+ * Sandbox time is the time a hosted sandbox runs: from when it is created or resumed, for a turn or
  * to read the workspace, until it is suspended, removed or stops by itself. A sandbox that is paused
  * uses none. A day is a UTC day. While a sandbox runs, its session holds a few minutes of the day's
  * allowance at a time, and what it does not use of a hold comes back when the sandbox stops.

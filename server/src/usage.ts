@@ -1,9 +1,9 @@
 /**
  * A user's sandbox time and kept sandboxes: what is counted, the two limits, and the book that decides.
  *
- * What costs money is the time a sandbox runs, so that is what is counted: from the moment a session
- * has its sandbox created or resumed until it is suspended, removed, or stops by itself. A paused
- * sandbox runs nothing and counts no time; it counts as one of the sandboxes its user keeps.
+ * Only hosted sandboxes use this book. Their time counts from the moment a sandbox is created or
+ * resumed until it is suspended, removed, or stops by itself. A paused sandbox runs nothing and
+ * counts no time; it counts as one of the sandboxes its user keeps.
  *
  *   The allowance    A user may use WLP_DAILY_SANDBOX_SECONDS of sandbox time in one UTC day (two hours
  *                    unless set otherwise).
@@ -48,8 +48,12 @@
  * on their own.
  */
 
-import type { UsageDay, UsageNumbers, UsageSession } from "./contract.js";
+import type { SandboxPlace, UsageDay, UsageNumbers, UsageSession } from "./contract.js";
 import { USAGE_HISTORY_DAYS } from "./contract.js";
+
+export function countsSandboxTime(place: SandboxPlace): boolean {
+	return place.kind === "hosted";
+}
 
 export const DAY_MS = 86_400_000;
 /** The defaults of the three settings (config.ts). */
