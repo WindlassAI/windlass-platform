@@ -8,7 +8,8 @@ declare const SANDBOX_IMAGE: string;
 export const image = SANDBOX_IMAGE;
 export const bubblewrap = "docker-windlass-sandbox";
 export type Profile = Args<"create">["profile"];
-export type Limits = { maxRunning: number; maxSandboxes: number };
+// The machine belongs to its owner, so the platform sets no default sandbox limits.
+export type Limits = { maxRunning?: number; maxSandboxes?: number };
 export const externalId = (machine: string, id: string) => `m${machine}-${id}`;
 export function rawId(machine: string, id: string) {
 	const prefix = externalId(machine, "");

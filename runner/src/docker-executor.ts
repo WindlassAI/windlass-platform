@@ -1,5 +1,6 @@
 import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/control.js";
 import { type Operation } from "../../server/src/runner/protocol.js";
+import { SandboxUserError } from "../../server/src/sandbox/api.js";
 import { LABEL, LABEL_ARG, docker } from "../../server/src/sandbox/docker.js";
 import { BWRAP_PROBE, NAME } from "../../server/src/sandbox/provider.js";
 import { containerName, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
@@ -113,8 +114,8 @@ export class Executor extends MachineDocker {
 			sandboxes: [...this.boxes.entries()].slice(0, MAX_REPORTED_SANDBOXES).map(([id, { sessionId, state, usedAt }]) => ({ id, sessionId, state, usedAt })) };
 	}
 	private room() {
-		if ([...this.boxes.values()].filter(b => b.state === "running").length >= this.limits.maxRunning)
-			throw new Refusal("This machine has reached its limit on running sandboxes.");
+		if (this.limits.maxRunning !== undefined && [...this.boxes.values()].filter(b => b.state === "running").length >= this.limits.maxRunning)
+			throw new SandboxUserError("This machine has reached its own limit on running sandboxes, set by --max-running.");
 	}
 	async existing(sessionId: string) {
 		// The owner may have removed the container since discovery. Refresh just this
@@ -133,7 +134,8 @@ export class Executor extends MachineDocker {
 		// Another create could have finished while this one waited for the image.
 		const existing = await this.existing(sessionId);
 		if (existing) return existing;
-		if (this.boxes.size >= this.limits.maxSandboxes) throw new Refusal("This machine has reached its limit on kept sandboxes.");
+		if (this.limits.maxSandboxes !== undefined && this.boxes.size >= this.limits.maxSandboxes)
+			throw new SandboxUserError("This machine has reached its own limit on kept sandboxes, set by --max-sandboxes.");
 		this.room();
 		this.freeDiskBytes = await this.disk();
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");

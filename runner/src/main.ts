@@ -1,7 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
-import { count, nullable, object, text } from "../../server/src/runner/check.js";
-import { MAX_REPORTED_SANDBOXES } from "../../server/src/runner/control.js";
+import { count, is, nullable, object, optional, text } from "../../server/src/runner/check.js";
 import { PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
 import type { Socket } from "node:net";
 import { audit, showLog } from "./audit.js";
@@ -10,11 +9,13 @@ import { Executor } from "./docker-executor.js";
 import { requestPair, waitForPair } from "./pair-command.js";
 import { forgetKey, save, loadPair, lock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
 
-const snapshot = object({ machineId: nullable(text(64)), connection: text(2048), idleSuspendMs: nullable(count), runnerVersion: text(64), protocol: count });
-function limit(value: string | undefined, fallback: number) {
-	const n = Number(value ?? fallback);
-	if (!Number.isSafeInteger(n) || n < 1 || n > MAX_REPORTED_SANDBOXES)
-		throw new RunnerError(`Choose sandbox limits between 1 and ${MAX_REPORTED_SANDBOXES}.`);
+const positiveInteger = is<number>(v => count(v) && v > 0);
+const snapshot = object({ machineId: nullable(text(64)), connection: text(2048), idleSuspendMs: nullable(count), runnerVersion: text(64), protocol: count,
+	maxRunning: optional(positiveInteger), maxSandboxes: optional(positiveInteger) });
+function limit(flag: string, value: string | undefined) {
+	if (value === undefined) return undefined;
+	const n = Number(value);
+	if (!/^\d+$/.test(value) || !positiveInteger(n)) throw new RunnerError(`Give --${flag} a positive whole number.`);
 	return n;
 }
 async function main() {
@@ -24,8 +25,8 @@ async function main() {
 	const command = positionals[0] ?? "run";
 	if (positionals.length > 1 || !["run", "pair", "status", "log", "prune"].includes(command))
 		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune] [--platform URL] [--max-sandboxes N] [--max-running N].");
+	const limits = { maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]) };
 	if (command === "log") return showLog();
-	const limits = { maxSandboxes: limit(values["max-sandboxes"], 10), maxRunning: limit(values["max-running"], 3) };
 	// Orphaned commands may still be finishing when the control loop returns.
 	if (command === "pair" && serviceRunning()) return requestPair(values.platform);
 	const abort = new AbortController();
@@ -40,6 +41,9 @@ async function main() {
 		const status = snapshot(stored) && stored.machineId === (paired?.current.machineId ?? null) ? stored : undefined;
 		if (command === "status") {
 			console.log(`Runner ${VERSION}, protocol ${PROTOCOL_VERSION}. ${paired && !serviceRunning() ? "Stopped" : status?.connection ?? (paired ? "Paired" : "Unpaired")}`);
+			const caps = status ?? limits;
+			console.log(`Running sandbox limit: ${caps.maxRunning ?? "no limit"}`);
+			console.log(`Kept sandbox limit: ${caps.maxSandboxes ?? "no limit"}`);
 			if (paired) for (const machine of [paired.current, ...paired.previous]) {
 				console.log(`${machine.machineId}${machine === paired.current ? "" : " (previous pairing)"}`);
 				const executor = new Executor(machine, limits);
@@ -66,6 +70,11 @@ async function main() {
 		let needsPair = command === "pair" || !paired?.key;
 		let client: Socket | undefined;
 		let resumePlatform: string | undefined;
+		function saveStatus(connection: string, idleSuspendMs?: number) {
+			save("status.json", { machineId: paired?.current.machineId ?? null, connection, idleSuspendMs: idleSuspendMs ?? null,
+				runnerVersion: VERSION, protocol: PROTOCOL_VERSION, ...limits });
+		}
+		if (command === "run") saveStatus(needsPair ? "Pairing" : "Connecting", status?.idleSuspendMs ?? undefined);
 		const say = (line: string) => { console.log(line); client?.write(line + "\n"); };
 		while (!abort.signal.aborted) {
 			let idle: string;
@@ -99,7 +108,7 @@ async function main() {
 				});
 				let removed: string | undefined;
 				try {
-					removed = await control(new Executor(paired.current, limits), paired.key, platform, active,
+					removed = await control(new Executor(paired.current, limits), paired.key, platform, active, saveStatus,
 						status?.machineId === paired.current.machineId ? status.idleSuspendMs ?? undefined : undefined);
 				} finally { connection.abort(); }
 				const request = await local;
@@ -115,7 +124,7 @@ async function main() {
 			}
 			// No network timer in either terminal state. Only a local owner starts the next pairing.
 			const requested = await waitForPair(abort.signal, () => {
-				save("status.json", { machineId: paired?.current.machineId ?? null, connection: idle, idleSuspendMs: null, runnerVersion: VERSION, protocol: PROTOCOL_VERSION });
+				saveStatus(idle);
 				audit(null, null, "idle", idle); say(idle);
 				client?.end(); client = undefined;
 			});
@@ -125,4 +134,8 @@ async function main() {
 		}
 	} finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
 }
-void main().catch(error => { console.error(category(error)); process.exitCode = 1; });
+void main().catch(error => {
+	console.error(error?.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+		? "Give each sandbox limit a positive whole number and --platform a URL." : category(error));
+	process.exitCode = 1;
+});

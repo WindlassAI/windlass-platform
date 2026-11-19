@@ -121,7 +121,6 @@ export async function stub(storage: string) {
 	const endpoint = "http://127.0.0.1:" + port;
 	const client = createClient<typeof registry>({ endpoint, namespace: "default" });
 	await client.machine.getOrCreate([uid, machineId]).resolve();
-	for (const s of [sessionId, other]) await client.agentSession.getOrCreate([uid, s]).resolve();
 
 	const pipes = new Set<Duplex>();
 	let credential: { token: string; expiresAt: number; validForMs: number } | null = null;
@@ -194,6 +193,7 @@ export async function stub(storage: string) {
 	return { state, uid, machineId, sessionId, other, platform: "http://127.0.0.1:" + (api.address() as AddressInfo).port,
 		channel, ticket, opened, incompatible(s: string) { incompatible = s; }, online: () => !!live, send: (f: ServerFrame) => { if (!live) throw new Error("Control is offline"); send(live.ws, f); },
 		async attach(s = sessionId) {
+			await client.agentSession.getOrCreate([uid, s]).resolve();
 			const prior = joined.get(s) ?? 0;
 			wanted.add(s); ticket(s);
 			await until(() => (joined.get(s) ?? 0) > prior && channel(s).connected, "The session did not attach.");

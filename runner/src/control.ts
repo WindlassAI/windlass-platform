@@ -7,11 +7,10 @@ import {
 	parseConnection, parseConnectionRefusal, parsePairStarted, parsePairStatus, parseServerFrame, refuse,
 	type ConnectionRequest, type PairRequest, type PairPoll, type Refusal, type RunnerFrame,
 } from "../../server/src/runner/control.js";
-import { PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
 import { audit, safeSentence } from "./audit.js";
 import { Executor } from "./docker-executor.js";
 import { Session } from "./session.js";
-import { RunnerError, VERSION, origin, save, storePair } from "./state.js";
+import { RunnerError, VERSION, origin, storePair } from "./state.js";
 
 const epoch = randomUUID();
 
@@ -107,7 +106,7 @@ async function openSocket(opening: Promise<WebSocket>, signal: AbortSignal) {
 	});
 }
 
-export async function control(owner: Executor, key: KeyObject, platform: string, signal: AbortSignal, initialIdle: number | undefined) {
+export async function control(owner: Executor, key: KeyObject, platform: string, signal: AbortSignal, saveStatus: (connection: string, idleSuspendMs?: number) => void, initialIdle: number | undefined) {
 	// Gateway diagnostics can contain the access URL. Only our categorised errors go to the owner.
 	process.env.RIVET_LOG_LEVEL = "silent";
 	const { createClient } = await import("rivetkit/client");
@@ -119,7 +118,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 	let backoff = 1000;
 	let lastSent = 0;
 	function status(connection: string) {
-		if (connection !== state) save("status.json", { machineId, connection, idleSuspendMs: idle ?? null, runnerVersion: VERSION, protocol: PROTOCOL_VERSION });
+		if (connection !== state) saveStatus(connection, idle);
 		state = connection;
 		console.log(connection);
 		audit(null, null, "control", connection);

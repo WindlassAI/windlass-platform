@@ -167,8 +167,8 @@ async function check(image: string) {
 timers.setTimeout = (ms, ...args) => wait(ms === ${REFUSED_RETRY_MS} ? 3500 : ms, ...args);
 const timeout = AbortSignal.timeout.bind(AbortSignal);
 AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
-	function run(dir = state, preload?: string, program = bundle, dockerEnv: NodeJS.ProcessEnv = {}, platform = srv.platform) {
-		const child = spawn(process.execPath, ["--require", testClock, ...(preload ? ["--require", preload] : []), program, "--platform", platform, "--max-running", "1", "--max-sandboxes", "2"], { env: { ...env(dir), ...dockerEnv }, stdio: ["ignore", "pipe", "pipe"] });
+	function run(dir = state, preload?: string, program = bundle, dockerEnv: NodeJS.ProcessEnv = {}, { platform = srv.platform, flags = [] }: { platform?: string; flags?: string[] } = {}) {
+		const child = spawn(process.execPath, ["--require", testClock, ...(preload ? ["--require", preload] : []), program, "--platform", platform, ...flags], { env: { ...env(dir), ...dockerEnv }, stdio: ["ignore", "pipe", "pipe"] });
 		let output = "";
 		child.stdout.on("data", s => { output += s; }); child.stderr.on("data", s => { output += s; });
 		children.add(child); child.once("exit", () => children.delete(child));
@@ -178,6 +178,10 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 	let hosted = false;
 	try {
 		await mkdir(state, { mode: 0o700 });
+		for (const [flag, value] of [["--max-running", "0"], ["--max-sandboxes", "1.5"]]) {
+			await assert.rejects(exec(process.execPath, [bundle, "status", flag, value], { env: env(state) }),
+				(error: { code?: number; stderr?: string }) => error.code === 1 && error.stderr?.trim() === `Give ${flag} a positive whole number.`);
+		}
 		const expiredAudit = join(state, "audit-2000-01-01.jsonl");
 		await writeFile(expiredAudit, "old", { mode: 0o600 });
 		srv.state.pairingMode = "refused";
@@ -218,7 +222,7 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 		ok("Pairing retries a 503, identifies the account, protects the key and lock, and corrects a 30-minute clock error.");
 		const second = join(tmp, "second");
 		await mkdir(second, { mode: 0o700 }); await copyFile(join(state, "pair.json"), join(second, "pair.json"));
-		const mismatch = run(second, undefined, bundle, {}, "http://127.0.0.1:1");
+		const mismatch = run(second, undefined, bundle, {}, { platform: "http://127.0.0.1:1" });
 		await until(() => mismatch.output().includes("pair with a different platform"), "Platform mismatch did not park.");
 		assert.equal(mismatch.child.exitCode, null);
 		assert.match(await cli("status", second), /pair with a different platform/);
@@ -295,6 +299,60 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		assert.equal(await readFile(pullStarted, "utf8"), "start\n");
 		await stop(service.child); await until(() => !srv.online(), "Slow pull fixture stayed connected.");
 		ok("Concurrent creates and welcome share one image pull while another lifecycle request completes.");
+		async function startWithLimits(...flags: string[]) {
+			srv.state.report = null;
+			service = run(state, undefined, bundle, {}, { flags });
+			await until(() => !!srv.state.report, "The runner did not report after changing its limits.");
+		}
+		async function stopService() {
+			await stop(service.child);
+			await until(() => !srv.online(), "The runner stayed connected after stopping.");
+		}
+		async function limitsInStatus(running: string, kept: string) {
+			const lines = (await cli("status")).split("\n");
+			assert.ok(lines.includes("Running sandbox limit: " + running));
+			assert.ok(lines.includes("Kept sandbox limit: " + kept));
+			return lines;
+		}
+		await startWithLimits();
+		const boxes = [];
+		for (let i = 0; i < 11; i++) {
+			const session = i === 0 ? sessionId : i === 1 ? srv.other : sessionId + "_cap" + i;
+			await srv.attach(session);
+			const channel = srv.channel(session);
+			const id = await channel.request("create", { profile: "docker-hardened" });
+			if (i >= 1 && i <= 7) await channel.request("suspend", { id });
+			boxes.push({ session, channel, id });
+		}
+		const inventory = await limitsInStatus("no limit", "no limit");
+		assert.equal(inventory.filter(line => line.endsWith("  running")).length, 4);
+		assert.equal(inventory.filter(line => line.endsWith("  paused")).length, 7);
+		for (const { session, channel, id } of boxes.slice(2)) {
+			await channel.request("destroy", { id });
+			srv.reset(session);
+		}
+		ok("Without flags the runner keeps eleven sandboxes, four running, and status shows no limit for both.");
+		const [first, secondBox] = boxes;
+		await stopService();
+		await startWithLimits("--max-running", "1");
+		await limitsInStatus("1", "no limit");
+		await until(() => first.channel.connected && secondBox.channel.connected, "The sessions did not reconnect.");
+		const runningLimit = { name: "SandboxUserError", message: "This machine has reached its own limit on running sandboxes, set by --max-running." };
+		await assert.rejects(secondBox.channel.request("connect", { id: secondBox.id }), runningLimit);
+		await secondBox.channel.request("destroy", { id: secondBox.id });
+		await assert.rejects(secondBox.channel.request("create", { profile: "docker-hardened" }), runningLimit);
+		await first.channel.request("suspend", { id: first.id });
+		ok("--max-running 1 refuses a second start on resume and create with the owner's flag in the session message.");
+		await stopService();
+		await startWithLimits("--max-sandboxes", "1");
+		await limitsInStatus("no limit", "1");
+		await until(() => first.channel.connected && secondBox.channel.connected, "The sessions did not reconnect.");
+		await assert.rejects(secondBox.channel.request("create", { profile: "docker-hardened" }),
+			{ name: "SandboxUserError", message: "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." });
+		await first.channel.request("destroy", { id: first.id });
+		srv.detach(srv.other);
+		await stopService();
+		ok("--max-sandboxes 1 counts the suspended sandbox and refuses a second create with the owner's flag in the session message.");
 		srv.state.gatewayLifetime = 2000;
 		srv.state.report = null; service = run(state, undefined, bundle, { ...wrappedDocker, CHECK_DF_LOG: measured }); await until(() => !!srv.state.report, "Healthy runner did not report again.");
 		ok("An unavailable daemon is reported, and a missing pin or less than 5 GB free prevents sandbox creation.");
@@ -355,7 +413,6 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		ok("Create, read, write, ask, run, suspend and resume use the pinned image, local limits and labelled volume.");
 
 		await srv.attach(srv.other);
-		await assert.rejects(srv.channel(srv.other).request("create", { profile: "docker-hardened" }), /limit on running/);
 		await assert.rejects(srv.channel(srv.other).request("run", { id, command: "touch /tmp/wrong-session" }), /another session/);
 		assert.equal(srv.state.lastErrorKind, "refused");
 		srv.corruptNext("unknown");
