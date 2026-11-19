@@ -1,4 +1,4 @@
-import type { AccountSettings, ChatgptStatus, ModelList, SessionSummary, UsageNumbers } from "@contract";
+import type { AccountSettings, ChatgptStatus, FactoryLimits, ModelList, SessionSummary, UsageNumbers } from "@contract";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConnectionState, PlatformError } from "../api/client";
 import { useApp, useAuth } from "./app";
@@ -141,6 +141,27 @@ export function useChatgpt(): { status: ChatgptStatus | null; error: string | nu
 		};
 	}, [client, auth, explain]);
 	return { status, error };
+}
+
+/** The factory's limits for the user, the deployment's settings: read once when the screen opens. */
+export function useFactoryLimits(): { value: FactoryLimits | null; error: string | null } {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [limits, setLimits] = useState<{ value: FactoryLimits | null; error: string | null }>({ value: null, error: null });
+	useEffect(() => {
+		let current = true;
+		client
+			.user(auth)
+			.factoryLimits()
+			.then(
+				(value) => current && setLimits({ value, error: null }),
+				(failure: unknown) => current && setLimits({ value: null, error: explain(failure) }),
+			);
+		return () => {
+			current = false;
+		};
+	}, [client, auth, explain]);
+	return limits;
 }
 
 /** One session, live: its store is opened on mount and closed on unmount. */

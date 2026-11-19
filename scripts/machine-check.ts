@@ -65,8 +65,11 @@ async function realRunner() {
 	Object.assign(globalThis, { SANDBOX_IMAGE: "sha256:" + "0".repeat(64) });
 	const { control } = await import(new URL("../runner/src/control.ts", import.meta.url).href);
 	const { Executor } = await import(new URL("../runner/src/docker-executor.ts", import.meta.url).href);
+	const { save } = await import(new URL("../runner/src/state.ts", import.meta.url).href);
 	const owner = new Executor(id, { maxRunning: 1, maxSandboxes: 1 });
-	await control(owner, createPrivateKey({ key, type: "pkcs8", format: "der" }), origin, new AbortController().signal, undefined);
+	// The connection's state in status.json, as runner/src/main.ts keeps it: the check reads "key-in-use" there.
+	const saveStatus = (connection: string, idleSuspendMs?: number) => save("status.json", { machineId: id.machineId, connection, idleSuspendMs: idleSuspendMs ?? null });
+	await control(owner, createPrivateKey({ key, type: "pkcs8", format: "der" }), origin, new AbortController().signal, saveStatus, undefined);
 }
 
 async function check() {
@@ -256,6 +259,8 @@ async function check() {
 		};
 		const accepted = await run();
 		await eventually(async () => (await row()).status === "online" && (await row()).warnings.some(w => w.kind === "docker"));
+		// The caps its owner set (realRunner: --max-running 1, --max-sandboxes 1) are what the list says of the machine.
+		await eventually(async () => { const listed = await row(); return listed.maxRunning === 1 && listed.maxSandboxes === 1; });
 		const beforeDuplicate = Date.now();
 		const copy = await run();
 		await eventually(async () => (await row()).warnings.some(w => w.kind === "key" && w.at >= beforeDuplicate));

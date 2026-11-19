@@ -18,6 +18,7 @@ import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type I
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
+import { InlineMarkdown } from "../components/Blocks";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, WarnIcon } from "../components/Icons";
 import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
@@ -537,7 +538,7 @@ function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView
 				<div>
 					<dt>CI</dt>
 					<dd>
-						<span className={ci.state === "failed" ? "tone-bad" : ci.state === "not_permitted" || ci.state === "timed_out" ? "tone-warn" : undefined}>{verdict.said.ci}</span>
+						<InlineMarkdown className={ci.state === "failed" ? "tone-bad" : ci.state === "not_permitted" || ci.state === "timed_out" ? "tone-warn" : undefined} text={verdict.said.ci} />
 						{ci.runs.length > 0 ? (
 							<ul className="item-checks">
 								{ci.runs.map((run) => (
@@ -561,7 +562,9 @@ function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView
 							<ul className="item-checks">
 								{verdict.flags.map((flag, index) => (
 									<li key={flag.kind}>
-										<span className="tone-warn">{verdict.said.flags[index]}:</span> <code className="item-paths">{flag.where.join(", ")}</code>
+										<span className="tone-warn">
+											<InlineMarkdown text={verdict.said.flags[index] ?? ""} />:
+										</span> <code className="item-paths">{flag.where.join(", ")}</code>
 									</li>
 								))}
 							</ul>
@@ -695,7 +698,7 @@ function LogEntry({ event, now, uid }: { event: ItemEvent; now: number; uid: str
 			</span>
 			<span className="item-event-step">{event.step ? STEP_WORD[event.step.kind] : ""}</span>
 			<p className="item-event-said">
-				{event.said}
+				<InlineMarkdown text={event.said} />
 				{person ? <span className="tone-faint"> · {event.by === `person:${uid}` ? "you" : "a person"}</span> : null}
 			</p>
 		</li>

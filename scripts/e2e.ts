@@ -30,7 +30,6 @@ import {
 	type AuthResult,
 	type LiveDelta,
 	MAX_PROMPT_CHARS,
-	MAX_RUNNING_SESSIONS,
 	type PendingQuestion,
 	type SessionSnapshot,
 	type SessionSummary,
@@ -55,6 +54,8 @@ const TURN_MS = FAKE ? 30_000 : 240_000;
 /** How long the server this script starts lets a question wait before it declines it: short, so the wait can be watched. */
 const QUESTION_MS = FAKE ? 8_000 : 20_000;
 
+/** The ceiling on a person's agents working at once that this script's cases assume: its servers are started with it (WLP_FACTORY_RUNNING_TURNS). */
+const RUNNING_CEILING = 3;
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 // A browser sends its origin on the WebSocket handshake. Node's WebSocket can be told to as well, which
@@ -161,7 +162,13 @@ class Server {
 	output = "";
 	readonly storage = mkdtempSync(join(process.env.WLP_E2E_DIR ?? tmpdir(), "wlp-e2e-"));
 	readonly logFile = join(this.storage, "server.log");
-	private readonly secret = randomBytes(24).toString("hex");
+	/** The server's WLP_SECRET: a check that calls an internal action signs its service token with it (`serviceUser`). */
+	readonly secret = randomBytes(24).toString("hex");
+
+	constructor() {
+		// Before anything of the server is imported here, which reads WLP_SECRET once (config.ts).
+		process.env.WLP_SECRET = this.secret;
+	}
 
 	async start(extraEnv: Record<string, string> = {}): Promise<void> {
 		const log = createWriteStream(this.logFile, { flags: "a" });
@@ -177,8 +184,8 @@ class Server {
 			// two limits have a check of their own (usage-check.ts).
 			WLP_DAILY_SANDBOX_SECONDS: "unlimited",
 			WLP_MAX_KEPT_SANDBOXES: "unlimited",
-			// The checks of the limit on running sessions count to MAX_RUNNING_SESSIONS: a person's ceiling, WLP_FACTORY_RUNNING_TURNS, is set to it here.
-			WLP_FACTORY_RUNNING_TURNS: String(MAX_RUNNING_SESSIONS),
+			// A person's ceiling on agents working at once, set to what the checks of that limit count to.
+			WLP_FACTORY_RUNNING_TURNS: String(RUNNING_CEILING),
 			...extraEnv,
 		};
 		// The local engine asks browsers for no token. An admin token in the shell this is run from is some
@@ -332,6 +339,14 @@ async function controlPlane(path: string, method = "GET"): Promise<Response> {
 		headers: { Authorization: "Bearer default", "Content-Type": "application/json" },
 		body: method === "GET" ? undefined : "{}",
 	});
+}
+
+/** The user actor as the platform's own actors call it, with a service token signed with the server's secret. */
+async function serviceUser(server: Server, uid: string) {
+	// Signed with the server's secret: this process has it as WLP_SECRET (`Server`'s constructor).
+	assert(process.env.WLP_SECRET === server.secret, "this process does not have the server's secret");
+	const { serviceParams } = await import("../server/src/auth.js");
+	return newClient().user.get([uid], { params: serviceParams() }) as unknown as { internalRelease(sessionId: string): Promise<void> };
 }
 
 /** Puts a session's actor to sleep through the control plane, as the lifecycle documentation describes. */
@@ -1732,20 +1747,20 @@ async function main(server: Server | null): Promise<void> {
 	// --- the limit on running sessions ------------------------------------------------------------
 
 	if (FAKE) {
-		await check(`at most ${MAX_RUNNING_SESSIONS} sessions of a user run at once`, async () => {
+		await check(`at most ${RUNNING_CEILING} sessions of a user run at once`, async () => {
 			const created: SessionSummary[] = [];
-			for (let index = 0; index <= MAX_RUNNING_SESSIONS; index += 1) created.push(await userConnTwo.createSession({ profile: availableProfile as never, title: `limit ${index}` }));
+			for (let index = 0; index <= RUNNING_CEILING; index += 1) created.push(await userConnTwo.createSession({ profile: availableProfile as never, title: `limit ${index}` }));
 			const handles = created.map((entry) => client.agentSession.get([uid, entry.id], { params: { token } }));
 			// The first of them waits on a question: a waiting session holds its place like a running one.
 			await handles[0].prompt({ text: ASK });
-			for (const handle of handles.slice(1, MAX_RUNNING_SESSIONS)) await handle.prompt({ text: "Run the long build (slow)" });
+			for (const handle of handles.slice(1, RUNNING_CEILING)) await handle.prompt({ text: "Run the long build (slow)" });
 			await waitFor("the first session to wait on its question", async () => (await handles[0].snapshot()).summary.status === "waiting", 15_000, 50);
-			const message = await refused(() => handles[MAX_RUNNING_SESSIONS].prompt({ text: "One too many" }), "too_many_running");
+			const message = await refused(() => handles[RUNNING_CEILING].prompt({ text: "One too many" }), "too_many_running");
 			assert((await userConnTwo.listSessions()).find((entry) => entry.id === created[0].id)?.status === "waiting", "the user's list does not show the first session as waiting");
-			assert((await handles[MAX_RUNNING_SESSIONS].snapshot()).timeline.length === 0, "the refused prompt left a timeline");
+			assert((await handles[RUNNING_CEILING].snapshot()).timeline.length === 0, "the refused prompt left a timeline");
 			await handles[0].stop();
 			await waitFor("the stopped session to be idle", async () => (await handles[0].snapshot()).summary.status === "idle", 15_000, 100);
-			const { turn } = await handles[MAX_RUNNING_SESSIONS].prompt({ text: "Now there is room" });
+			const { turn } = await handles[RUNNING_CEILING].prompt({ text: "Now there is room" });
 			assert(turn === 1, "the prompt was not accepted once a session had stopped");
 			assert(created[0].title === "limit 0" && (await handles[0].snapshot()).summary.title === "limit 0", "a given title was replaced by the prompt");
 			for (const entry of created) await userConnTwo.deleteSession(entry.id);
@@ -1753,7 +1768,7 @@ async function main(server: Server | null): Promise<void> {
 			return `the fourth was refused while one of the three was waiting on a question: "${message}"; deleting running sessions works`;
 		});
 	} else {
-		skip(`at most ${MAX_RUNNING_SESSIONS} sessions of a user run at once`, "four containers at once is too much for this machine; run in fake mode");
+		skip(`at most ${RUNNING_CEILING} sessions of a user run at once`, "four containers at once is too much for this machine; run in fake mode");
 	}
 
 	// --- endings other than success, and the repository clone (fake layer's switches) ---------------
@@ -2196,6 +2211,192 @@ async function main(server: Server | null): Promise<void> {
 		});
 	} else {
 		skip("the turn's time limit applies while a question waits", "needs its own server with the fake layer, restarted with a short limit");
+	}
+
+	// --- one owner for a session's sandboxes and its place: a server restarted with one kept sandbox per user ---
+
+	const OWNER_CHECKS = [
+		"a sandbox made by a create whose answer was lost is removed by its session's delete",
+		"a sandbox found gone is replaced only with a place of its own: at the cap the replacement is refused",
+		"a free with a prompt sent at the same moment: the prompt's sandbox and its place survive",
+	];
+	if (server && FAKE) {
+		// Removing a sandbox takes PROVIDER_MS here, so that a prompt sent during a free arrives while the session removes it.
+		const PROVIDER_MS = 1_500;
+		await server.stop();
+		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+		await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_MAX_KEPT_SANDBOXES: "1", WLP_FAKE_CREATE_FAILS: "1", WLP_FAKE_PROVIDER_DELAY_MS: String(PROVIDER_MS) });
+		const someone = await demoSignIn();
+		const theirs = client.user.getOrCreate([someone.profile.uid], { params: { token: someone.token } });
+		const turnOf = async (id: string, text: string) => {
+			const watch = new Watch(client, someone.profile.uid, id, someone.token);
+			try {
+				return await watch.untilEnded((await watch.conn.prompt({ text })).turn);
+			} finally {
+				await watch.conn.dispose().catch(() => undefined);
+			}
+		};
+		const lines = (pattern: string) => server.output.split("\n").filter((line) => new RegExp(pattern).test(line));
+		const madeFor = (id: string) => lines(`\\[wlp\\] sandbox\\.created id=\\S+ session=${id}`);
+
+		await check(OWNER_CHECKS[0], async () => {
+			const orphaned = await theirs.createSession({ profile: availableProfile as never, title: "Its create is lost" });
+			// The first create of this server makes its sandbox and then fails, as a create whose answer was lost (WLP_FAKE_CREATE_FAILS).
+			const ended = await turnOf(orphaned.id, "Write a short program");
+			assert(ended.outcome === "error" && /the sandbox was made/.test(ended.message ?? ""), `the turn ended ${ended.outcome}: ${ended.message}`);
+			await theirs.deleteSession(orphaned.id);
+			const swept = lines(`\\[wlp\\] sandbox\\.swept id=\\S+ session=${orphaned.id}`);
+			assert(swept.length === 1, `${swept.length} sandboxes swept by the delete`);
+			const usage = await theirs.usage();
+			assert(usage.sandboxes.kept === 0, `${usage.sandboxes.kept} kept after the delete`);
+			return swept[0]!.replace(/^.*sandbox\.swept /, "");
+		});
+
+		await check(OWNER_CHECKS[1], async () => {
+			const gone = await theirs.createSession({ profile: availableProfile as never, title: "Its sandbox is removed" });
+			const other = await theirs.createSession({ profile: availableProfile as never, title: "Takes the one place" });
+			try {
+				// Its sandbox is removed as the turn ends, as a provider removes one; the session still names it.
+				assert((await turnOf(gone.id, "Write a short program (lose-sandbox)")).outcome === "succeeded", "the first turn failed");
+				// The count drops a place whose sandbox the provider does not list once it is CLAIM_SETTLING_MS old (usage.ts): given back here at once.
+				await (await serviceUser(server, someone.profile.uid)).internalRelease(gone.id);
+				assert((await turnOf(other.id, "Write a short program")).outcome === "succeeded", "the other session's turn failed");
+				const before = madeFor(gone.id).length;
+				const replaced = await turnOf(gone.id, "Write a short program");
+				assert(replaced.outcome === "error" && /^You keep 1 sandbox, the most an account may have/.test(replaced.message ?? ""), `the replacement ended ${replaced.outcome}: ${replaced.message}`);
+				assert(madeFor(gone.id).length === before, "a sandbox was made for it past the cap");
+				const usage = await theirs.usage();
+				assert(usage.sandboxes.kept === 1 && usage.kept[0]?.sessionId === other.id, `kept: ${usage.sandboxes.kept}, ${plain(usage.kept.map((k) => k.sessionId))}`);
+				return `"${replaced.message?.slice(0, 60)}…"; no sandbox made, the one place still the other session's`;
+			} finally {
+				await theirs.deleteSession(gone.id).catch(() => undefined);
+				await theirs.deleteSession(other.id).catch(() => undefined);
+			}
+		});
+
+		await check(OWNER_CHECKS[2], async () => {
+			const freed = await theirs.createSession({ profile: availableProfile as never, title: "Freed while prompted" });
+			try {
+				assert((await turnOf(freed.id, "Write a short program")).outcome === "succeeded", "the first turn failed");
+				const watch = new Watch(client, someone.profile.uid, freed.id, someone.token);
+				try {
+					// The first turn's last steps may still have the sandbox: the session says so (`sandbox_busy`), and the free is asked again.
+					let freeing: Promise<unknown> | null = null;
+					for (let tries = 0; freeing === null; tries += 1) {
+						const attempt = theirs.freeSandbox(freed.id).then(() => null, (error: unknown) => error);
+						// Still going after 300 ms: the session is removing its sandbox (PROVIDER_MS).
+						const early = await Promise.race([attempt, sleep(300).then(() => "removing" as const)]);
+						if (early === "removing") freeing = attempt;
+						else if (early === null) throw new Error("the free was over before the prompt could be sent");
+						else if ((early as { code?: unknown }).code !== "sandbox_busy" || tries >= 20) throw early;
+						else await sleep(300);
+					}
+					// The prompt waits for the removal, then makes a new sandbox.
+					const { turn } = await watch.conn.prompt({ text: "Write a short program" });
+					const refused = await freeing;
+					assert(refused === null, `the free failed: ${describe(refused)}`);
+					const ended = await watch.untilEnded(turn);
+					assert(ended.outcome === "succeeded", `the prompt's turn ended ${ended.outcome}: ${ended.message}`);
+				} finally {
+					await watch.conn.dispose().catch(() => undefined);
+				}
+				const made = madeFor(freed.id).at(-1)?.match(/id=(\S+)/)?.[1];
+				const usage = await theirs.usage();
+				const snapshot = await client.agentSession.get([someone.profile.uid, freed.id], { params: { token: someone.token } }).snapshot();
+				assert(madeFor(freed.id).length === 2 && snapshot.summary.sandbox !== "none", `${madeFor(freed.id).length} sandboxes made; the session's is ${snapshot.summary.sandbox}`);
+				assert(lines(`sandbox\\.(destroyed|freed|swept) id=${made}`).length === 0, `the prompt's sandbox ${made} was removed`);
+				assert(usage.kept.some((k) => k.sessionId === freed.id), "the prompt's place was given back by the free");
+				return `the old sandbox freed, the prompt's ${made} kept with its place`;
+			} finally {
+				await theirs.deleteSession(freed.id).catch(() => undefined);
+			}
+		});
+	} else {
+		for (const name of OWNER_CHECKS) skip(name, "needs its own server with the fake layer");
+	}
+
+	// --- the reply between a session and its user's actor lost (WLP_FAKE_RESERVE_FAULT, user.ts) -----------
+
+	const FAULT_CHECKS = [
+		"a turn's first reserve whose reply is lost refuses the prompt, and the hold it opened is counted at 0 s before the next is taken",
+		"a renewal whose reply is lost is asked again under the same hold: nothing counted twice, nothing counted in full",
+		"with the user's actor away past the hold's grace, the turn runs until shortly before its hold runs out, and stops then with the line that says why",
+	];
+	if (server && FAKE) {
+		const HOLD_S = 5;
+		// usage.counted lines of one session, by hold: what the book counted, once each.
+		const counted = (session: string) => [...server.output.matchAll(new RegExp(`\\[wlp\\] usage\\.counted uid=\\S+ session=${session} hold=(\\S+) kind=(\\S+) seconds=(-?\\d+)`, "g"))].map((m) => ({ hold: m[1]!, kind: m[2]!, seconds: Number(m[3]) }));
+		const lost = (session: string, kind: string) => [...server.output.matchAll(new RegExp(`\\[wlp\\] usage\\.fault_lost uid=\\S+ session=${session} hold=(\\S+) ${kind}:`, "g"))].map((m) => m[1]!);
+		await server.stop();
+		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+		await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_USAGE_HOLD_SECONDS: String(HOLD_S), WLP_FAKE_RESERVE_FAULT: "lose:1,lose-renewal:1" });
+		const someone = await demoSignIn();
+		const theirs = client.user.getOrCreate([someone.profile.uid], { params: { token: someone.token } });
+		const faulted = await theirs.createSession({ profile: availableProfile as never, title: "Its replies are lost" });
+		let ran = 0;
+		try {
+			await check(FAULT_CHECKS[0], async () => {
+				const handle = client.agentSession.get([someone.profile.uid, faulted.id], { params: { token: someone.token } });
+				const said = await refused(() => handle.prompt({ text: "Write a short program" }), "usage_unavailable");
+				const [hold] = lost(faulted.id, "fresh");
+				assert(hold, "no reply was lost");
+				// The next prompt reports the lost hold first, then takes its own; it is slow, so that it renews (the next check).
+				const watch = new Watch(client, someone.profile.uid, faulted.id, someone.token);
+				try {
+					const { turn } = await watch.conn.prompt({ text: "Fix the failing test (slow)" });
+					const started = Date.now();
+					const ended = await watch.untilEnded(turn);
+					ran = Math.ceil((Date.now() - started) / 1000);
+					assert(ended.outcome === "succeeded", `the next turn ended ${ended.outcome}: ${ended.message}`);
+				} finally {
+					await watch.conn.dispose().catch(() => undefined);
+				}
+				const ofLost = await waitFor("the lost hold to be counted", () => { const rows = counted(faulted.id).filter((row) => row.hold === hold); return rows.length > 0 ? rows : undefined; }, 15_000, 200);
+				assert(ofLost.length === 1 && ofLost[0]!.kind === "used" && ofLost[0]!.seconds === 0, `the lost hold was counted as ${plain(ofLost)}`);
+				return `"${said.slice(0, 60)}…"; hold ${hold} counted once, at 0 s`;
+			});
+
+			await check(FAULT_CHECKS[1], async () => {
+				const [renewal] = lost(faulted.id, "renewal");
+				assert(renewal, `no renewal's reply was lost (the turn ran ${ran} s on holds of ${HOLD_S} s)`);
+				const rows = await waitFor("the turn's holds to be counted", () => { const all = counted(faulted.id); return all.some((row) => row.hold === renewal) ? all : undefined; }, 30_000, 200);
+				const holds = rows.map((row) => row.hold);
+				assert(new Set(holds).size === holds.length, `a hold was counted twice: ${plain(rows)}`);
+				assert(!rows.some((row) => row.kind === "unreported"), `a hold was counted in full: ${plain(rows)}`);
+				// Each counted at most what its stretch can have run: a hold of HOLD_S, or the wait for the retry (METER_RETRY_MS, 15 s) after the lost reply.
+				assert(rows.every((row) => row.seconds <= HOLD_S + 16), `a hold was counted past its stretch: ${plain(rows)}`);
+				return `${rows.length} holds counted once each (the sandbox runs on after the turn of ${ran} s, renewed every ${HOLD_S} s); the renewal ${renewal} asked again under its id`;
+			});
+		} finally {
+			await theirs.deleteSession(faulted.id).catch(() => undefined);
+		}
+
+		await check(FAULT_CHECKS[2], async () => {
+			const { UNCHECKED_TURN_NOTE, holdDeadline } = await import("../server/src/usage.js");
+			await server.stop();
+			await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+			// The question waits as long as the hold's grace and more: the turn runs on, its sandbox with it, until the meter stops it.
+			await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_USAGE_HOLD_SECONDS: String(HOLD_S), WLP_FAKE_RESERVE_FAULT: "down:300000", WLP_QUESTION_TIMEOUT_MS: "600000" });
+			const away = await theirs.createSession({ profile: availableProfile as never, title: "Its user's actor is away" });
+			const watch = new Watch(client, someone.profile.uid, away.id, someone.token);
+			try {
+				const promptAt = Date.now();
+				const { turn } = await watch.conn.prompt({ text: ASK });
+				const deadline = holdDeadline(promptAt, HOLD_S);
+				const ended = await watch.untilEnded(turn, deadline - Date.now() + 60_000);
+				const line = watch.items.find((item): item is Extract<TimelineItem, { kind: "platform" }> => item.kind === "platform" && item.turn === turn && item.text === UNCHECKED_TURN_NOTE);
+				assert(line, `the turn ended ${ended.outcome} without the line: ${plain(watch.items.filter((item) => item.kind === "platform").map((item) => (item as { text: string }).text))}`);
+				const firstMissed = server.output.split("\n").find((text) => text.includes(`usage.fault_down uid=${someone.profile.uid} session=${away.id}`));
+				assert(firstMissed, "no renewal was refused");
+				assert(Math.abs(line.at - deadline) < 10_000, `stopped ${Math.round((line.at - promptAt) / 1000)} s after the prompt; the hold's deadline was ${Math.round((deadline - promptAt) / 1000)} s`);
+				return `stopped ${Math.round((line.at - promptAt) / 1000)} s after the prompt (deadline ${Math.round((deadline - promptAt) / 1000)} s; first renewal refused at about ${HOLD_S} s): "${line.text.slice(0, 60)}…"`;
+			} finally {
+				await watch.conn.dispose().catch(() => undefined);
+				await theirs.deleteSession(away.id).catch(() => undefined);
+			}
+		});
+	} else {
+		for (const name of FAULT_CHECKS) skip(name, "needs its own server with the fake layer");
 	}
 
 	// --- idle sandboxes, on a server restarted with short idle times ---------------------------------

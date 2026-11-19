@@ -51,7 +51,13 @@
 import type { SandboxPlace, UsageDay, UsageNumbers, UsageSession } from "./contract.js";
 import { USAGE_HISTORY_DAYS } from "./contract.js";
 
-export function countsSandboxTime(place: SandboxPlace): boolean {
+/**
+ * Whether the platform's own limits hold a session at this place: its sandbox time, its place among the
+ * kept sandboxes, and its slot among the person's agents working at once (user.ts `internalAcquireRun`,
+ * the turn queue in user-items.ts). Not on one of the user's machines: what bounds one is its runner's
+ * own caps, which its owner sets (`--max-running`, `--max-sandboxes`; `MachineSummary`).
+ */
+export function hostedLimitsApply(place: SandboxPlace): boolean {
 	return place.kind === "hosted";
 }
 
@@ -317,11 +323,7 @@ export class UsageBook {
 			change.entries.push(closing);
 			change.closed.push(own.id);
 		}
-		if (input.keep === true && !this.claims.has(input.session)) {
-			const claim = { session: input.session, since: now };
-			this.claims.set(input.session, claim);
-			change.kept.push(claim);
-		}
+		if (input.keep === true) change.kept.push(...this.claim(now, input.session).change.kept);
 		const hold: UsageHold = { id: input.id, session: input.session, day, seconds: grant, startedAt: now, expiresAt: now + (grant + HOLD_GRACE_SECONDS) * 1000 };
 		this.holds.set(input.session, hold);
 		change.opened.push(hold);
@@ -352,6 +354,20 @@ export class UsageBook {
 		change.entries.push(entry);
 		change.closed.push(own.id);
 		return { known: true, entry, change };
+	}
+
+	/**
+	 * A place among the kept sandboxes, for a session whose sandbox is about to be made: kept when it has
+	 * one, refused at the cap, otherwise taken, in one step.
+	 */
+	claim(now: number, session: string): { ok: boolean; change: UsageChange } {
+		const change = noChange();
+		if (this.claims.has(session)) return { ok: true, change };
+		if (this.atCap(session)) return { ok: false, change };
+		const claim = { session, since: now };
+		this.claims.set(session, claim);
+		change.kept.push(claim);
+		return { ok: true, change };
 	}
 
 	/** The session's sandbox is gone: its place is free. */

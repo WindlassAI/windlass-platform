@@ -130,6 +130,8 @@ export interface SessionFeed {
 	onSummary(summary: SessionSummary): void;
 	/** The pending question, when one is asked; null when it was settled. The snapshot carries it too. */
 	onQuestion(question: PendingQuestion | null): void;
+	/** For a session on one of the user's machines, what its banner says of the machine, each time that changes. The snapshot carries it too. */
+	onMachine?(machine: NonNullable<SessionSnapshot["machine"]>): void;
 	onConnection(state: ConnectionState, error?: PlatformError): void;
 }
 

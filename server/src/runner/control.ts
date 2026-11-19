@@ -32,7 +32,7 @@
  * ("bad-frame"), the runner drops the socket and connects again.
  */
 import type { MachineProbe, PlatformConnection } from "../contract.js";
-import { type Assert, type Of, type Same, boolean, count, either, integer, is, json, list, nullable, object, oneOf, plain, text } from "./check.js";
+import { type Assert, type Of, type Same, boolean, count, either, integer, is, json, list, nullable, object, oneOf, optional, plain, text } from "./check.js";
 
 /** The oldest runner release this server serves: raise it when the server stops reading what older runners send. */
 export const MIN_RUNNER_VERSION = "0.1.0";
@@ -139,6 +139,7 @@ export type ServerFrame = Of<typeof serverFrame>;
  * said), the release (else "outdated", recorded for the page), then `secondHello`.
  */
 const hello = object({ kind: oneOf("hello"), runnerVersion: version, epoch, time, signature });
+const cap = is<number>((v) => Number.isSafeInteger(v) && (v as number) >= 1);
 const report = object({
 	kind: oneOf("report"),
 	docker: probe,
@@ -147,6 +148,9 @@ const report = object({
 	freeDiskBytes: nullable(count),
 	/** `usedAt` by the runner's clock: the actor corrects it by the offset from the hello. */
 	sandboxes: list(object({ id: sandboxId, sessionId: name, state: oneOf("running", "paused"), usedAt: count }), MAX_REPORTED_SANDBOXES),
+	/** The caps its owner set (`--max-running`, `--max-sandboxes`); left out where none is set, and by a runner from before them. */
+	maxRunning: optional(cap),
+	maxSandboxes: optional(cap),
 });
 const runnerFrame = either(either(hello, report), either(object({ kind: oneOf("heartbeat") }), object({ kind: oneOf("removed"), sandbox: sandboxId })));
 export type Hello = Of<typeof hello>;

@@ -3,12 +3,10 @@
  * owner sets and nobody can raise from here, and what each item has cost so far against its budget.
  * The limits are read once when the page opens; the items are the user's live list (`useItems`).
  */
-import type { FactoryLimits } from "@contract";
-import { useEffect, useState } from "react";
 import { compact, count, plural, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useItems } from "../screens/Items";
-import { useApp, useAuth } from "../state/app";
+import { useFactoryLimits } from "../state/hooks";
 
 /** A figure spent, and of how much: "1.2M of 4M". */
 function Of({ spent, budget, spell }: { spent: number; budget: number; spell(value: number): string }) {
@@ -21,25 +19,8 @@ function Of({ spent, budget, spell }: { spent: number; budget: number; spell(val
 }
 
 export function FactoryUsage() {
-	const { client, explain } = useApp();
-	const auth = useAuth();
 	const items = useItems();
-	const [limits, setLimits] = useState<{ value: FactoryLimits | null; error: string | null }>({ value: null, error: null });
-
-	useEffect(() => {
-		let current = true;
-		client
-			.user(auth)
-			.factoryLimits()
-			.then(
-				(value) => current && setLimits({ value, error: null }),
-				(failure: unknown) => current && setLimits({ value: null, error: explain(failure) }),
-			);
-		return () => {
-			current = false;
-		};
-	}, [client, auth, explain]);
-
+	const limits = useFactoryLimits();
 	const { value } = limits;
 	const list = items.list;
 	return (
@@ -61,7 +42,7 @@ export function FactoryUsage() {
 					<div>
 						<dt>Running turns</dt>
 						<dd className="usage-number">{count(value.runningTurns)}</dd>
-						<dd className="usage-gloss">of yours at once: the factory's and your own prompts</dd>
+						<dd className="usage-gloss">of yours at once: the factory's and your own prompts, not counting your machines</dd>
 					</div>
 					<div>
 						<dt>Factory turns</dt>

@@ -139,7 +139,8 @@ interface Seed {
 	pr?: number;
 	run?: Omit<ItemRun, "startedAt" | "endedAt" | "step"> & { started: number; ended?: number; step: { n: number; kind: StepKind; attempt?: number; started: number; turn?: ItemRun["step"]["turn"] } };
 	events?: Array<[ago: number, said: string, step?: [run: number, n: number, kind: StepKind, attempt?: number], person?: boolean]>;
-	verdicts?: Array<Omit<Verdict, "id" | "item" | "head" | "at" | "place" | "attestedBy" | "acceptance" | "said"> & { ago: number }>;
+	/** `repositoryChecks`: how many of the repository's own checks ran beside the user's (`gate.required`); none when left out. */
+	verdicts?: Array<Omit<Verdict, "id" | "item" | "head" | "at" | "place" | "attestedBy" | "acceptance" | "said"> & { ago: number; repositoryChecks?: number }>;
 	spent?: Partial<ItemBudget>;
 	budget?: Partial<ItemBudget>;
 }
@@ -351,7 +352,8 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		review(27, "Shorten the release notes template", DOCS, 14, { body: "Cut the release notes template down to a summary, the changes and the upgrade notes.", acceptance: ["The template has three sections: summary, changes, upgrade notes."] }, { result: "incomplete", gate: { state: "stopped", required: userChecks(["docs build", "interrupted"]) }, ci: ci.none(), flags: [], mergeable: true, run: 1, ago: 70 }, "This step was cut off 3 times, by deploys or restarts."),
 		review(28, "Fix the typo in the contributing guide", DOCS, 15, { body: "The contributing guide says “recieve” in its second paragraph.", acceptance: [] }, { result: "unverified", gate: { state: "none_set", required: [] }, ci: ci.none(), flags: [], mergeable: true, run: 1, ago: 90 }),
 		review(29, "Read the port from the environment", HARBOR, 63, { body: "Read the server's port from PORT, and fall back to 8080.", acceptance: ["With PORT set, the server listens on it.", "Without it, the server listens on 8080."] }, { result: "pass", gate: passingGate, ci: ci.notPermitted(), flags: [], mergeable: null, run: 1, ago: 24 }),
-		review(30, "Upgrade the test runner", HARBOR, 64, { body: "Move to the test runner's next major release and fix what it breaks.", acceptance: ["Every test that ran before still runs."] }, { result: "unverified", gate: { state: "passed", required: [] }, ci: ci.timedOut(), flags: [{ kind: "checks_changed", where: [".windlass/config.json"] }, { kind: "tests_removed", where: ["test/legacy.test.ts", "test/old-api.test.ts"] }], mergeable: false, run: 1, ago: 33 }, "CI has not finished 1 h 30 min after the push."),
+		review(30, "Upgrade the test runner", HARBOR, 64, { body: "Move to the test runner's next major release and fix what it breaks.", acceptance: ["Every test that ran before still runs."] }, { result: "unverified", gate: { state: "passed", required: [] }, repositoryChecks: 1, ci: ci.timedOut(), flags: [{ kind: "checks_changed", where: [".windlass/config.json"] }, { kind: "tests_removed", where: ["test/legacy.test.ts", "test/old-api.test.ts"] }], mergeable: false, run: 1, ago: 33 }, "CI has not finished 1 h 30 min after the push."),
+		review(36, "Stop lint failing on warnings", HARBOR, 65, { body: "The lint check fails the build on warnings. Only errors should fail it.", acceptance: ["A warning is printed and does not fail the check."] }, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [{ kind: "checks_changed", where: [".windlass/config.json"] }, { kind: "exit_ignored", where: [".windlass/config.json"] }], mergeable: true, run: 1, ago: 16 }),
 		sentBack(31, "Add a health check endpoint", HARBOR, 60),
 		// Ended.
 		{
@@ -592,10 +594,16 @@ function flagWords(kind: Verdict["flags"][number]["kind"]): string {
 /** A verdict's `said`, as `verdictOf` makes it. */
 const saidOf = (verdict: Pick<Verdict, "ci" | "flags">): Verdict["said"] => ({ ci: ciSentence(verdict.ci), flags: verdict.flags.map((flag) => flagWords(flag.kind)) });
 
-/** The verdict's sentence as the log has it (verdict.ts, `verdictWords`), for the seeds' gates. */
-function verdictSaid(verdict: Pick<Verdict, "result" | "gate" | "ci" | "flags" | "mergeable">): string {
+/** The verdict's sentence as the log has it (verdict.ts, `verdictWords`), for the seeds' gates: the checks that applied are the user's and the repository's own. */
+function verdictSaid(verdict: Pick<Verdict, "result" | "gate" | "ci" | "flags" | "mergeable"> & { repositoryChecks?: number }): string {
 	const head = verdict.result === "pass" ? (verdict.flags.length > 0 ? "Needs a look." : "Ready for review.") : verdict.result === "fail" ? "Failing." : verdict.result === "incomplete" ? "Incomplete: the last turn did not finish." : "Not verified.";
-	const gate = verdict.gate.state === "none_set" ? "No check ran in the agent's turn 1: no checks are set for it." : verdict.gate.state === "stopped" ? "The agent's turn 1 was stopped before its checks finished." : "The 2 checks that applied passed when the agent's turn 1 ended.";
+	const applied = verdict.gate.required.length + (verdict.repositoryChecks ?? 0);
+	const gate =
+		verdict.gate.state === "none_set"
+			? "No check ran in the agent's turn 1: no checks are set for it."
+			: verdict.gate.state === "stopped"
+				? "The agent's turn 1 was stopped before its checks finished."
+				: `${applied === 1 ? "The check that applied" : `The ${applied} checks that applied`} passed when the agent's turn 1 ended.`;
 	const said = saidOf(verdict);
 	const flags = verdict.flags.map((flag, index) => `${said.flags[index]}: ${flag.where.join(", ")}.`);
 	return [head, gate, said.ci, ...flags, ...(verdict.mergeable === false ? ["GitHub says the pull request conflicts with its base."] : [])].join(" ");
@@ -613,7 +621,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 	const spent: ItemBudget = { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0, ...seed.spent };
 	const head = seed.pr === undefined ? null : hex(seed.n);
 	const repository = seed.on.repository;
-	const verdicts: Verdict[] = (seed.verdicts ?? []).map(({ ago: when, ...verdict }, index) => ({
+	const verdicts: Verdict[] = (seed.verdicts ?? []).map(({ ago: when, repositoryChecks: _, ...verdict }, index) => ({
 		...verdict,
 		said: saidOf(verdict),
 		id: `${id}:${verdict.run}:${index + 5}:1`,

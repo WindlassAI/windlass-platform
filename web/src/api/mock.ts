@@ -62,7 +62,6 @@
 import {
 	MAX_IDEMPOTENCY_KEY_CHARS,
 	MAX_PROMPT_CHARS,
-	MAX_RUNNING_SESSIONS,
 	MAX_SECRET_NAME_CHARS,
 	MAX_ACCOUNT_SECRETS,
 	MAX_PERSONAL_SERVERS,
@@ -134,7 +133,7 @@ import {
 import { PlatformError, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
 import { isDurable, isLive, schedule, splitRuns, turnEnded, withSummary } from "./feed";
 import { fixture } from "./fixtures";
-import { createMockItems, type MockItemsState } from "./mock-items";
+import { createMockItems, MOCK_FACTORY_LIMITS, type MockItemsState } from "./mock-items";
 
 export interface MockOptions {
 	/** Multiplies every wait: 1 is real time, 0 makes everything happen at once (still asynchronously). */
@@ -184,8 +183,9 @@ export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
 
 /**
  * How the agent seeded on the machine "nas" finds it (`?machineSession=`), for looking at each banner of
- * a session on a machine by hand: "answering"; "not_answering" (a turn waits on the machine, which
- * stopped answering three minutes ago); "offline" (the machine went offline after the agent last used
+ * a session on a machine by hand: "answering"; "not_answering" (a turn is under way, and while its page
+ * is open the machine stops answering after a few seconds and is back half a minute later, as the
+ * session's `machine` event tells the page); "offline" (the machine went offline after the agent last used
  * it); "removed" (the agent's machine was removed, so it is not in the list). A prompt to an agent whose
  * machine is offline or removed fails at once with the server's sentence, as a turn that could not run.
  * Seeded where the user's machines are listed with "nas" as reported, and for "removed" wherever machines are offered.
@@ -2133,11 +2133,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		// One agent on the user's machine "nas", which finds it as `?machineSession=` says; when its machine was removed, it was another one.
 		if (machineSessionSeeded) {
 			const removed = machineSession === "removed";
-			const reach: NonNullable<MockSession["machine"]>["reach"] =
-				machineSession === "not_answering" ? { state: "not_answering", since: start - 3 * MINUTE } : removed ? { state: "removed", since: start - 2 * HOUR } : { state: "answering", since: start - 25 * MINUTE };
+			const reach: NonNullable<MockSession["machine"]>["reach"] = removed ? { state: "removed", since: start - 2 * HOUR } : { state: "answering", since: start - 25 * MINUTE };
 			const machine = { machineId: removed ? "m_old" : "m_nas", profile: mockMachineProfiles(removed ? "old-laptop" : "nas")[0] as SandboxProfile, reach };
 			const onNas = history("nas-tests", "Run the tests on my machine", "docker-windlass-sandbox", 25 * MINUTE, [{ text: "The add test is failing. Find out why and fix it.", script: "fix", effort: "low" }], { sandbox: machineSession === "answering" ? "running" : "paused", machine });
-			// A turn that was under way when the machine stopped answering: it waits for it.
+			// A turn under way, which waits for the machine while it does not answer (`blipMachine`).
 			if (machineSession === "not_answering") {
 				onNas.summary = { ...onNas.summary, sandbox: "running" };
 				play(onNas, plan(world, onNas, { text: "Run the full build and the tests, and tell me if they pass.", effort: "medium" }, { ...SCRIPTS.build, stretch: 40 }));
@@ -2549,11 +2548,46 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		if (place.kind !== "machine") return null;
 		const machine = machinesOf(auth).list.find((one) => one.machineId === place.machineId);
 		const state = machine === undefined ? "removed" : machine.status === "online" ? "answering" : "offline";
-		const reach = session.machine?.reach ?? null;
-		if (session.machine && reach?.state !== state && (state !== "offline" || reach?.state !== "not_answering")) session.machine.reach = { state, since: realNow() };
+		if (state !== "offline" || session.machine?.reach?.state !== "not_answering") noteReach(session, state);
 		if (machine === undefined) return "This agent's machine was removed. Its files were there. Start a new agent to go on.";
 		if (state === "offline") return `Your machine "${machine.name}" is offline. The agent's files are there; send the prompt again when it is back.`;
 		return null;
+	}
+
+	/** What the session finds of its machine, kept for its snapshot and told to its open pages when it changes, as the server's link does. */
+	function noteReach(session: MockSession, state: NonNullable<SessionSnapshot["machine"]>["state"]): void {
+		if (!session.machine || session.machine.reach?.state === state) return;
+		const reach = { state, since: realNow() };
+		session.machine.reach = reach;
+		for (const feed of session.feeds) feed.onMachine?.(reach);
+	}
+
+	/** Sessions whose machine is stopping answering or coming back (`blipMachine`). */
+	const blipping = new Set<MockSession>();
+
+	/**
+	 * With `?machineSession=not_answering`, once the agent's page is open: its machine stops answering in
+	 * the middle of the turn, and comes back half a minute later. The machine's status changes with it.
+	 */
+	function blipMachine(auth: AuthResult, session: MockSession): void {
+		const { place } = session.summary;
+		if (machineSession !== "not_answering" || place.kind !== "machine" || blipping.has(session)) return;
+		blipping.add(session);
+		const status = (to: MachineSummary["status"]) => {
+			const machine = machinesOf(auth).list.find((one) => one.machineId === place.machineId);
+			if (!machine) return;
+			Object.assign(machine, { status: to, since: realNow() });
+			machinesChanged(auth);
+		};
+		later(4_000, () => {
+			noteReach(session, "not_answering");
+			status("offline");
+			later(30_000, () => {
+				status("online");
+				noteReach(session, "answering");
+				blipping.delete(session);
+			});
+		});
 	}
 
 	/** The user's live feeds drop and come back, as `simulateDrop` does for everything. */
@@ -2587,7 +2621,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			since: at - 3 * HOUR,
 			agents: 3,
 			sandboxes: [
-				...(machineSessionSeeded && machineSession !== "removed" ? [{ sessionId: "nas-tests", title: null, state: machineSession === "answering" ? ("running" as const) : ("paused" as const), usedAt: at - 3 * MINUTE }] : []),
+				...(machineSessionSeeded && machineSession !== "removed" ? [{ sessionId: "nas-tests", title: null, state: machineSession === "offline" ? ("paused" as const) : ("running" as const), usedAt: at - 3 * MINUTE }] : []),
 				{ sessionId: "gone", title: null, state: "paused", usedAt: at - 4 * 24 * HOUR },
 			],
 			commandSandbox: { ok: true },
@@ -2604,9 +2638,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				return [];
 			case "offline":
 				return [nas({ status: "offline", since: at - 47 * MINUTE })];
-			// The agent on "nas" finds it offline: the machine went offline after the agent last used it, or while a turn waited on it.
+			// The agent on "nas" finds it offline: the machine went offline after the agent last used it.
 			case "online":
-				return [machineSession === "offline" ? nas({ status: "offline", since: at - 12 * MINUTE }) : machineSession === "not_answering" ? nas({ status: "offline", since: at - 3 * MINUTE }) : nas({})];
+				return [machineSession === "offline" ? nas({ status: "offline", since: at - 12 * MINUTE }) : nas({})];
 			case "pairing":
 				return [nas({ status: "waiting", since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [] })];
 			case "outdated":
@@ -2633,7 +2667,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						freeDiskBytes: 3.2e9,
 						sendSecrets: false,
 					}),
-					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9 }),
+					// Its owner started its runner with --max-running 2 --max-sandboxes 6; the others have no limit.
+					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9, maxRunning: 2, maxSandboxes: 6 }),
 				];
 			default:
 				return [nas({})];
@@ -3079,6 +3114,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						session.feeds.add(feed);
 						feed.onConnection("connected");
 						feed.onSnapshot(snapshotOf(session));
+						blipMachine(auth, session);
 					} catch (error) {
 						feed.onConnection("failed", asPlatformError(error));
 					}
@@ -3121,8 +3157,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					setSummary(world, session, { updatedAt: now() });
 					return take({ turn, steered: true });
 				}
-				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle").length;
-				if (running >= MAX_RUNNING_SESSIONS) throw new PlatformError("user", `${MAX_RUNNING_SESSIONS} of your agents are already working. Wait for one to finish, or stop one.`);
+				// The ceiling on working agents is the deployment's (`FactoryLimits.runningTurns`) and the platform's sandboxes': one on the user's machine is neither counted nor refused.
+				const hosted = session.summary.place.kind === "hosted";
+				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle" && other.summary.place.kind === "hosted").length;
+				if (hosted && running >= MOCK_FACTORY_LIMITS.runningTurns) throw new PlatformError("user", `You already have ${running} agents working, which is your limit. Wait for one to finish, or stop one.`, { reason: "too_many_running" });
 				const models = modelsFor(world.profile);
 				if (input.model !== undefined) checkModel(models, input.model);
 				// An effort is held against the ones the turn's model accepts; of a model the list does not have nothing is said.
@@ -3132,7 +3170,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				}
 				// The user's two limits, as the server holds a prompt to them: time for the sandbox to run on, and a place for one the agent does not have. Not on the user's own machine.
 				const numbers = usageNumbers(world);
-				const hosted = session.summary.place.kind === "hosted";
 				if (hosted && (numbers.leftSeconds ?? 0) < numbers.startSeconds) throw new PlatformError("user", mockAllowanceRefusal(numbers), { reason: "allowance_used" });
 				if (hosted && session.summary.sandbox === "none" && numbers.sandboxes.limit !== null && numbers.sandboxes.kept >= numbers.sandboxes.limit) throw new PlatformError("user", mockSandboxRefusal(numbers), { reason: "too_many_sandboxes" });
 				// A machine that cannot be reached fails the turn at once, with the server's sentence, as the server's turn does when its sandbox cannot be opened.

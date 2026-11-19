@@ -3,12 +3,12 @@
  *
  * An agent on one of the user's machines says so beside its title, and above the composer says when
  * that machine is offline, stopped answering in the middle of a turn, or was removed. What the session
- * last found is in its snapshot (`SessionSnapshot.machine`), which nothing pushes between snapshots: it
- * is asked for again when a turn ends and when a prompt was refused. Whether the machine is offline or
- * gone is also in the user's live list of machines, which is read for such a session only.
+ * last found is in its snapshot (`SessionSnapshot.machine`) and then in its `machine` event, each time
+ * that changes. Whether the machine is offline or gone is also in the user's live list of machines,
+ * which is read for such a session only.
  */
 import { USAGE_LOW_SHARE, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Composer } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
 import { ArrowLeftIcon, Mark, WarnIcon } from "../components/Icons";
@@ -105,15 +105,6 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 	// Asked again when a turn starts or ends, and when a prompt was refused: each moves what is left of the day.
 	const [refusals, setRefusals] = useState(0);
 	const allowance = useAllowance(`${state.turnsEnded}:${state.summary?.status ?? ""}:${refusals}`);
-	// What the session found of its machine is said only in a snapshot: one is asked for when a turn ended or a prompt was refused.
-	const onMachine = state.summary?.place.kind === "machine";
-	const settled = useRef(`${state.turnsEnded}:${refusals}`);
-	useEffect(() => {
-		const key = `${state.turnsEnded}:${refusals}`;
-		if (key === settled.current) return;
-		settled.current = key;
-		if (onMachine) api.resync();
-	}, [api, onMachine, state.turnsEnded, refusals]);
 	const online = state.connection === "connected";
 	const flow = useQuestionFlow(api, state.phase === "ready" ? state.question : null, explain);
 	const stopCall = useCallback(

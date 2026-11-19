@@ -12,7 +12,7 @@
  * The link (`RunnerLink`) is the session actor's, one per instance, kept in its vars and never stored:
  *
  *   - It has the runner attach on demand. An operation that finds no socket asks the machine's actor
- *     to send `attach` with a new one-use ticket (runner/ticket.ts), again every REATTACH_MS while it
+ *     to send `attach` with a new one-use ticket (machines/ticket.ts), again every REATTACH_MS while it
  *     waits, and waits up to ATTACH_WAIT_MS in all for the runner's hello; a machine its actor says is
  *     offline or removed is refused at once.
  *   - A socket lost while work is outstanding is asked for again, every REATTACH_MS, until the work
@@ -28,11 +28,11 @@
  */
 import type { Attachment, MachineFacts } from "../actors/machine.js";
 import type { SandboxProfile, SandboxProfileId, SessionSnapshot } from "../contract.js";
-import { serviceParams } from "../auth.js";
+import { describeError, serviceParams } from "../auth.js";
 import { type ChannelSocket, ConversationLost, ServerChannel } from "../runner/channel.js";
-import { machineProfiles } from "../runner/machine-profiles.js";
+import { machineProfiles } from "../machines/profiles.js";
 import type { Args, Name, Value } from "../runner/protocol.js";
-import { AttachTickets } from "../runner/ticket.js";
+import { AttachTickets } from "../machines/ticket.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxLayer, type Sandboxes, SandboxUserError, type Windlass } from "./api.js";
 import { findProfile } from "./profiles.js";
 import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
@@ -547,13 +547,14 @@ class RunnerSandboxes implements Sandboxes {
 	async destroy(id: string): Promise<void> {
 		const { link } = this;
 		await link.removeSandbox(id);
+		// Recorded: the removal happens whatever follows, so only a record not written fails the caller
+		// (a session's delete is refused then, agent-session.ts `internalDestroy`). Asking now is only sooner.
 		try {
 			await link.ready();
+			await link.again("destroy", { id });
 		} catch (error) {
-			if (error instanceof MachineUnreachable) return;
-			throw error;
+			if (!(error instanceof MachineUnreachable)) console.warn(`[wlp] sandbox.destroy_later id=${id}: recorded with the machine, which removes it when its runner is next connected (${describeError(error)})`);
 		}
-		await link.again("destroy", { id });
 	}
 }
 

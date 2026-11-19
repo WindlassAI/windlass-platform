@@ -76,7 +76,7 @@
  *   session_not_found   the session was deleted, or never properly created
  *   empty_prompt, prompt_too_long, bad_effort, bad_model   `prompt()`: its input
  *   chatgpt_required    `prompt()`: the user has no ChatGPT sign-in
- *   too_many_running    `prompt()`: MAX_RUNNING_SESSIONS of the user's sessions are busy
+ *   too_many_running    `prompt()`: as many of the user's hosted sessions are busy as they may have (never for one on a machine of theirs)
  *   allowance_used      `prompt()`, `changes()`, `diff()`, `publish()`: too little of the user's sandbox time is left today for a turn or a paused sandbox to start
  *   too_many_sandboxes  `prompt()`: the session needs a sandbox and its user keeps as many as they may
  *   usage_unavailable   the same four: the user's sandbox time could not be checked, so nothing was started
@@ -92,6 +92,7 @@
  *   bad_input           `setPublishUnasked()`: its input (`publish_blocked` for a session without a connected repository)
  *   bad_server          `approveServer()`, `forgetServer()`: their input
  *   server_gone, server_changed   `approveServer()`: the session knows no such server, or it does not wait with that definition
+ *   machine_unreachable `internalDestroy()` (the user's `deleteSession`): the machine's actor could not record the removal of the sandbox
  */
 
 import { randomBytes } from "node:crypto";
@@ -122,7 +123,6 @@ import {
 	MAX_PUBLISH_BODY_CHARS,
 	MAX_PUBLISH_TITLE_CHARS,
 	MAX_REMEMBERED_SUBMISSIONS,
-	MAX_RUNNING_SESSIONS,
 	type PendingQuestion,
 	type PromptInput,
 	type PublishMessage,
@@ -176,7 +176,7 @@ import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf 
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { VerificationLog, outputTail, withOutputs } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
-import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, countsSandboxTime, freedNote, holdDeadline, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
+import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { grantIsValid, type ReserveAnswer, secretsActor, type SessionCreateInput, userActor } from "./internal.js";
 import { type AgentReport, REPORT_REFUSED, REPORT_TAKEN, reportOf } from "../agent-publish.js";
 import type { Fact } from "../factory/types.js";
@@ -371,6 +371,8 @@ interface SessionMeta {
 	submissions?: Array<Submission & PromptAnswer>;
 	/** Set for a work item's session: its turns come from the item's deliveries (session-inbox.ts), and no person prompts it. Absent: a person's. */
 	origin?: { kind: "item"; itemId: string };
+	/** For a session on one of the user's machines: the machine's name at launch. Absent in a session from before it was kept. */
+	machineName?: string | null;
 	/** What the item's agent last filed with `report`: the pull request's title and description. */
 	report?: AgentReport | null;
 }
@@ -568,9 +570,18 @@ function runnerLink(c: Ctx, machineId: string): RunnerLink {
 	if (!c.vars.runner) {
 		const [uid, sessionId] = c.key as [string, string];
 		const client = c.client();
-		c.vars.runner = new RunnerLink({ uid, sessionId, machineId }, machineActor(() => client, uid, machineId), (reason) => {
-			console.log(`[wlp] runner.conversation_ended session=${sessionId} machine=${machineId}: ${reason}`);
-		});
+		c.vars.runner = new RunnerLink(
+			{ uid, sessionId, machineId },
+			machineActor(() => client, uid, machineId),
+			(reason) => {
+				console.log(`[wlp] runner.conversation_ended session=${sessionId} machine=${machineId}: ${reason}`);
+			},
+			// What the banner says of the machine, to an open page, each time it changes. Not while stopping:
+			// RivetKit refuses a broadcast then ("Actor stopping"), and the link's `close()` notes too.
+			(reach) => {
+				if (!c.vars.stopping) c.broadcast("machine", reach);
+			},
+		);
 	}
 	return c.vars.runner;
 }
@@ -910,6 +921,12 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		await dropWorkspace(c);
 		// The session holds its turn here, so it is making no other sandbox: one the provider has for it is one it never heard of.
 		await sweepSandboxes(c, meta, layer);
+		if (hostedLimitsApply(meta.place)) {
+			// The place is claimed where the sandbox is made: the hold's reserve asked for one only if the session
+			// had no sandbox then, and the one it had may have been found gone above.
+			const place = await userActor(c, meta.uid).internalClaimPlace(meta.sessionId);
+			if (!place.ok) throw new TurnProblem("numbers" in place ? sandboxRefusal(place.numbers) : "The agent was deleted.");
+		}
 		note(c, turn, "info", "Creating sandbox");
 		const id = await layer.sandboxes.create({ uid: meta.uid, sessionId: meta.sessionId, profile: meta.profile });
 		console.log(`[wlp] sandbox.created id=${id} session=${meta.sessionId}`);
@@ -1231,7 +1248,7 @@ async function workspaceView(c: Ctx, meta: SessionMeta): Promise<WorkspaceCopy |
  * cost money, and the list is the provider's own; a machine's list is its last report. Never throws.
  */
 async function sweepSandboxes(c: Ctx, meta: SessionMeta, layer: SandboxLayer): Promise<void> {
-	if (!countsSandboxTime(meta.place)) return;
+	if (!hostedLimitsApply(meta.place)) return;
 	try {
 		for (const listed of await layer.sandboxes.list(meta.uid)) {
 			if (listed.sessionId !== meta.sessionId || listed.id === meta.sandboxId) continue;
@@ -1528,7 +1545,7 @@ async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, f
 	let value: boolean | null = null;
 	try {
 		const { sandboxes } = await layerOf(c, meta);
-		if (!c.vars.idling && (!countsSandboxTime(meta.place) || meta.meter) && (await sandboxes.state(meta.sandboxId)) === "running") {
+		if (!c.vars.idling && (!hostedLimitsApply(meta.place) || meta.meter) && (await sandboxes.state(meta.sandboxId)) === "running") {
 			const sandbox = await sandboxes.connect(meta.sandboxId);
 			sandboxChanged(c);
 			if (sandbox && !c.vars.turn) value = await hasUnpushedWork(sandbox, repo.branch, meta.pushedHead ?? null);
@@ -1579,7 +1596,12 @@ function publishedLine(repo: StoredRepository, pull: PullRequestInfo, opened: bo
  */
 async function evidenceOf(c: Ctx, meta: SessionMeta, during: number | null): Promise<PublishEvidence> {
 	const held = c.vars.turn?.secrets ?? (await readSecrets(c, meta, null));
-	return { verified: meta.verified ?? null, during, checks: held.checks, redact: (text) => held.redactor.text(text) };
+	return { verified: meta.verified ?? null, during, checks: held.checks, redact: (text) => held.redactor.text(text), machine: machineOf(meta) };
+}
+
+/** For a session on one of the user's machines, that machine as a question or a pull request names it: by the name kept at launch, null in an older session. */
+function machineOf(meta: SessionMeta): { name: string | null } | null {
+	return meta.place.kind === "machine" ? { name: meta.machineName ?? null } : null;
 }
 
 /** After a push's line in the timeline: what the pull request's description now says was verified, in its few words. */
@@ -1883,7 +1905,7 @@ async function sessionServers(c: Ctx, meta: SessionMeta): Promise<SessionServers
 	// A session whose project names no server asks nobody: the user's own have no approval.
 	const approvals = known.some((server) => server.origin !== "user") ? await serverApprovals.of(c, meta) : [];
 	const project = projectOf(meta);
-	const context: ServerQuestionContext = { profile: sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: sandboxes.sessionsLiveInSandbox, project };
+	const context: ServerQuestionContext = { profile: sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: sandboxes.sessionsLiveInSandbox, project, machine: machineOf(meta) };
 	const view = serversView(project, known, approvals, forgettingWords(context), (server) => serverPanelWords(server, context));
 	// Why a server of the user's own that reads an account's secret does not start here, where that is so.
 	return known.some((server) => server.origin === "user") ? { ...view, accountSecrets: meta.accountSecrets ?? null } : view;
@@ -2286,7 +2308,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
  * then goes on to the end of the hold it has.
  */
 function holdSandbox(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<void> {
-	if (!countsSandboxTime(meta.place)) return Promise.resolve();
+	if (!hostedLimitsApply(meta.place)) return Promise.resolve();
 	return metered(c, async () => {
 		c.vars.idleStopMs = (await layerOf(c, meta)).sandboxes.idleStopMs;
 		const answer = await takeHold(c, meta, fresh);
@@ -2486,7 +2508,7 @@ function closeMeter(c: Ctx, meta: SessionMeta, how: "now" | "found", use: string
 
 /** The session has no sandbox any more: its place among the sandboxes its user keeps is free. Never throws; a place that is not given back is found when the count is held against the provider's list. */
 async function releasePlace(c: Ctx, meta: SessionMeta): Promise<void> {
-	if (!countsSandboxTime(meta.place)) return;
+	if (!hostedLimitsApply(meta.place)) return;
 	await inTime(userActor(c, meta.uid).internalRelease(meta.sessionId), METER_WAIT_MS).catch((error) => {
 		c.log.warn({ msg: "could not give the sandbox's place back to its user", session: meta.sessionId, error: describeError(error) });
 	});
@@ -2521,7 +2543,7 @@ async function meterAfterTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, use
  * taken a hold since, which is that prompt's to settle. Never throws.
  */
 async function wakeMeter(c: Ctx, meta: SessionMeta, use: string | null): Promise<void> {
-	if (!countsSandboxTime(meta.place)) return;
+	if (!hostedLimitsApply(meta.place)) return;
 	try {
 		c.vars.idleStopMs = (await layerOf(c, meta)).sandboxes.idleStopMs;
 		const running = meta.sandboxId !== null && meta.sandbox === "running";
@@ -2789,6 +2811,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				demo: meta.demo,
 				dataInSandbox: layer.sandboxes.sessionsLiveInSandbox,
 				project: projectOf(meta),
+				machine: machineOf(meta),
 				// Null for a session that is not on a repository of the GitHub connection: it can have none.
 				secrets: setupProjectOf(meta) ? held.opened.map(({ name, scope }) => ({ name, scope })) : null,
 				envLists,
@@ -3371,7 +3394,7 @@ export const agentSession = actor({
 	// `onWake`. Throwing here would make the engine retry the start in a loop.
 	onCreate: async (c, input: SessionCreateInput | undefined) => {
 		try {
-			if (!input || !grantIsValid(input.grant, c.key)) return;
+			if (!input || !grantIsValid(input.grant, c.key, "agentSession")) return;
 			const meta: SessionMeta = {
 				uid: c.key[0],
 				sessionId: c.key[1],
@@ -3379,6 +3402,7 @@ export const agentSession = actor({
 				title: String(input.title),
 				titleIsDefault: input.titleIsDefault === true,
 				place: input.place,
+				machineName: typeof input.machineName === "string" ? input.machineName : null,
 				profile: input.profile,
 				model: String(input.model),
 				repoUrl: typeof input.repoUrl === "string" ? input.repoUrl : null,
@@ -3514,64 +3538,74 @@ export const agentSession = actor({
 
 	onSleep: async (c) => {
 		c.vars.stopping = true;
-		const meta = c.vars.meta;
-		if (!meta) return;
-		// The order and the waits are what fits in the shutdown grace period (SHUTDOWN_GRACE_MS above).
-		await stopTurn(c);
-		await persist(c);
-		if (meta.sandboxId && meta.sandbox === "running") {
-			const id = meta.sandboxId;
-			// A suspend that ends after the wait goes on without the actor, whose state may be gone by then.
-			let waiting = true;
-			let ended = false;
-			const suspended = layerOf(c, meta)
-				.then(({ sandboxes }) => sandboxes.suspend(id))
-				.then(
-					() => {
-						ended = true;
-						if (!waiting) return;
-						sandboxChanged(c);
-						meta.sandbox = "paused";
-						publish(c);
-					},
-					(error) => {
-						ended = true;
-						console.error(`[wlp] sandbox.suspend_failed id=${id} session=${meta.sessionId}: could not pause the sandbox while going to sleep (${describeError(error)})`);
-					},
-				);
-			await within(suspended, SUSPEND_WAIT_MS);
-			waiting = false;
-			if (!ended) console.warn(`[wlp] sandbox.suspend_slow id=${id} session=${meta.sessionId}: not paused within ${SUSPEND_WAIT_MS / 1000} s of going to sleep; its provider stops it`);
+		// The runner lets go of what it ran for this instance however the rest ends, a throw included.
+		try {
+			const meta = c.vars.meta;
+			if (!meta) return;
+			// The order and the waits are what fits in the shutdown grace period (SHUTDOWN_GRACE_MS above).
+			await stopTurn(c);
+			await persist(c);
+			if (meta.sandboxId && meta.sandbox === "running" && meta.place.kind === "machine") {
+				// Asking would have the runner attach to this instance, whose sockets are refused from here
+				// (`onWebSocket`); its runner stops the sandbox itself once no session is connected to it for its idle time.
+				console.log(`[wlp] sandbox.suspend_skipped id=${meta.sandboxId} session=${meta.sessionId}: the machine's runner stops it after its idle time`);
+			} else if (meta.sandboxId && meta.sandbox === "running") {
+				const id = meta.sandboxId;
+				// A suspend that ends after the wait goes on without the actor, whose state may be gone by then.
+				let waiting = true;
+				let ended = false;
+				const suspended = layerOf(c, meta)
+					.then(({ sandboxes }) => sandboxes.suspend(id))
+					.then(
+						() => {
+							ended = true;
+							if (!waiting) return;
+							sandboxChanged(c);
+							meta.sandbox = "paused";
+							publish(c);
+						},
+						(error) => {
+							ended = true;
+							console.error(`[wlp] sandbox.suspend_failed id=${id} session=${meta.sessionId}: could not pause the sandbox while going to sleep (${describeError(error)})`);
+						},
+					);
+				await within(suspended, SUSPEND_WAIT_MS);
+				waiting = false;
+				if (!ended) console.warn(`[wlp] sandbox.suspend_slow id=${id} session=${meta.sessionId}: not paused within ${SUSPEND_WAIT_MS / 1000} s of going to sleep; its provider stops it`);
+			}
+			// A paused sandbox is due for removal later: the schedule wakes the actor for it.
+			await within(Promise.all([armIdle(c, meta), c.vars.reporting, sleepMeter(c, meta)]), SETTLE_WAIT_MS);
+			await persist(c);
+		} finally {
+			c.vars.runner?.close();
 		}
-		// A paused sandbox is due for removal later: the schedule wakes the actor for it.
-		await within(Promise.all([armIdle(c, meta), c.vars.reporting, sleepMeter(c, meta)]), SETTLE_WAIT_MS);
-		await persist(c);
-		// Last: the turn was stopped and the sandbox suspended through it. The runner lets go of what it ran for this instance.
-		c.vars.runner?.close();
 	},
 
 	onDestroy: async (c) => {
 		c.vars.stopping = true;
 		c.vars.destroying = true;
-		const meta = c.vars.meta;
-		if (!meta) return;
-		await stopTurn(c);
-		if (c.vars.flushTimer) clearTimeout(c.vars.flushTimer);
-		if (meta.sandboxId) {
-			try {
-				const { sandboxes } = await layerOf(c, meta);
-				await sandboxes.destroy(meta.sandboxId);
-				sandboxChanged(c);
-				console.log(`[wlp] sandbox.destroyed id=${meta.sandboxId} session=${meta.sessionId}`);
-			} catch (error) {
-				c.log.error({ msg: "could not destroy the sandbox", sandbox: meta.sandboxId, error: describeError(error) });
+		try {
+			const meta = c.vars.meta;
+			if (!meta) return;
+			await stopTurn(c);
+			if (c.vars.flushTimer) clearTimeout(c.vars.flushTimer);
+			if (meta.sandboxId) {
+				try {
+					const { sandboxes } = await layerOf(c, meta);
+					await sandboxes.destroy(meta.sandboxId);
+					sandboxChanged(c);
+					console.log(`[wlp] sandbox.destroyed id=${meta.sandboxId} session=${meta.sessionId}`);
+				} catch (error) {
+					c.log.error({ msg: "could not destroy the sandbox", sandbox: meta.sandboxId, error: describeError(error) });
+				}
 			}
+			await layerOf(c, meta).then((layer) => sweepSandboxes(c, meta, layer), () => undefined);
+			await leaveUsage(c, meta);
+			// After the sandbox, which is what uploads: nothing can put the copy back once it is removed.
+			await removeBackup(c, meta);
+		} finally {
+			c.vars.runner?.close();
 		}
-		await layerOf(c, meta).then((layer) => sweepSandboxes(c, meta, layer), () => undefined);
-		await leaveUsage(c, meta);
-		// After the sandbox, which is what uploads: nothing can put the copy back once it is removed.
-		await removeBackup(c, meta);
-		c.vars.runner?.close();
 	},
 
 	events: {
@@ -3579,6 +3613,7 @@ export const agentSession = actor({
 		delta: event<LiveDelta>({ canSubscribe: (c) => maySubscribe(c) }),
 		summary: event<SessionSummary>({ canSubscribe: (c) => maySubscribe(c) }),
 		question: event<PendingQuestion | null>({ canSubscribe: (c) => maySubscribe(c) }),
+		machine: event<NonNullable<SessionSnapshot["machine"]>>({ canSubscribe: (c) => maySubscribe(c) }),
 	},
 
 	onBeforeConnect: (c, params: unknown) => {
@@ -3588,7 +3623,10 @@ export const agentSession = actor({
 	},
 
 	// The machine's runner, which this instance asked to attach. Its hello is checked by the channel,
-	// synchronously (runner/ticket.ts); a socket this instance did not ask for has no ticket it knows.
+	// synchronously (machines/ticket.ts); a socket this instance did not ask for has no ticket it knows.
+	// A machine removed while only its control socket is down is not told to its sessions: its runner
+	// learns of it when it next connects (about a minute, with backoff) and then drops every session;
+	// until then it serves them. Accepted (`Prep/Fix batch 2 - brief.md`, item 5).
 	onWebSocket: (c, ws) => {
 		assertOrigin(c);
 		const link = c.vars.runner;
@@ -3889,6 +3927,11 @@ export const agentSession = actor({
 			const fire = c.scheduledFire;
 			if (!fire) throw new UserError("This action is internal.", { code: "forbidden" });
 			const meta = c.vars.meta;
+			// The arming that set this check may not have stored its id yet: one set for a moment already past
+			// (the wake's repair after a crash or a deploy cut a check off) fires before `schedule.at` has
+			// answered, and judged then it would look replaced and be dropped, leaving the sandbox past its time.
+			// The queue never rejects.
+			await c.vars.arming;
 			// Every firing is said, whatever the check then finds: one that finds the sandbox paused already does nothing else that shows.
 			const superseded = meta?.idleCheck ? meta.idleCheck.id !== fire.id : false;
 			console.log(`[wlp] schedule.fired session=${c.key[1]} action=internalIdle id=${fire.id} late_ms=${fire.firedAt - fire.scheduledAt}${superseded ? " superseded" : ""}`);
@@ -4011,16 +4054,20 @@ export const agentSession = actor({
 			if (c.vars.turn || c.vars.accepting || meta.status !== "idle") throw new UserError(`${meta.title} is working. Stop its turn first, then free its sandbox.`, { code: "sandbox_busy" });
 			if (busy(c)) throw new UserError(`The platform is busy with the sandbox of ${meta.title}. Try again in a moment.`, { code: "sandbox_busy" });
 			const id = meta.sandboxId;
-			if (!id) return { freed: false };
 			// Set in the same step as the checks above: from here a prompt waits for it.
 			const release = takeSandbox(c);
 			const work = (async () => {
 				const layer = await layerOf(c, meta);
-				const memory = !meta.windlassSessionId ? null : !layer.sandboxes.sessionsLiveInSandbox ? "kept" : layer.backups && meta.backup?.windlassSessionId === meta.windlassSessionId ? "copied" : "lost";
-				await removeSandbox(c, meta, id, freedNote(memory));
-				console.log(`[wlp] sandbox.freed id=${id} session=${meta.sessionId}`);
-				// Under the same exclusion: what the provider still has for the session goes with it, by the session's own hand.
+				if (id) {
+					const memory = !meta.windlassSessionId ? null : !layer.sandboxes.sessionsLiveInSandbox ? "kept" : layer.backups && meta.backup?.windlassSessionId === meta.windlassSessionId ? "copied" : "lost";
+					await removeSandbox(c, meta, id, freedNote(memory));
+					console.log(`[wlp] sandbox.freed id=${id} session=${meta.sessionId}`);
+				}
+				// Under the same exclusion: what the provider still has for the session goes with it, by the session's
+				// own hand (the user actor removes only what a session that is gone left). With no sandbox of its own,
+				// its place is given back here too: `removeSandbox` did not run.
 				await sweepSandboxes(c, meta, layer);
+				if (!id) await releasePlace(c, meta);
 				publish(c);
 				await persist(c);
 			})();
@@ -4034,7 +4081,7 @@ export const agentSession = actor({
 				release();
 			}
 			await armIdle(c, meta);
-			return { freed: true };
+			return { freed: id !== null };
 		},
 
 		internalDestroy: async (c): Promise<void> => {
@@ -4055,6 +4102,17 @@ export const agentSession = actor({
 						meta.sandbox = "none";
 					} catch (error) {
 						c.log.error({ msg: "could not destroy the sandbox", sandbox: meta.sandboxId, error: describeError(error) });
+						// On a machine the removal is done by the machine's actor, which records it before it tells the
+						// runner: a failure here is that record not written, and nothing else would ever remove the
+						// sandbox. The delete is refused and the user's list keeps the session, so a second one retries.
+						// A hosted sandbox left behind is still found by its provider's list (`sweepSandboxes`, the user's `freeSandbox`).
+						if (meta.place.kind === "machine") {
+							c.vars.destroying = false;
+							await persist(c);
+							// What a turn stopped above could not set while the session was being destroyed.
+							void armIdle(c, meta);
+							throw new UserError("The agent could not be deleted: its machine's record of the sandbox to remove could not be written. Try again in a moment.", { code: "machine_unreachable" });
+						}
 					}
 				}
 				await layerOf(c, meta).then((layer) => sweepSandboxes(c, meta, layer), () => undefined);

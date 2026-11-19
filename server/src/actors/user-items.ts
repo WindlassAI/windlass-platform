@@ -54,7 +54,7 @@ import { admit, ledgerSeconds } from "../factory/budget.js";
 import { getLayer } from "../layer.js";
 import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
-import { type UsageBook, dayOf } from "../usage.js";
+import { type UsageBook, dayOf, hostedLimitsApply } from "../usage.js";
 import { createItemActor, isActorGone, itemActor, sessionActor } from "./internal.js";
 import type { TurnAnswer, TurnRequest } from "./session-inbox.js";
 import type { ItemMeta } from "./work-item.js";
@@ -322,7 +322,8 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 	}
 	const limits = config.factory;
 	const sessions = [...c.vars.sessions.values()];
-	const own = sessions.filter((session) => !session.item && session.status !== "idle").length;
+	// The person's own agents at work, as `internalAcquireRun` counts them: one on a machine of theirs is not (`hostedLimitsApply`).
+	const own = sessions.filter((session) => !session.item && session.status !== "idle" && hostedLimitsApply(session.place)).length;
 	const inReview = [...state.items.values()].filter((item) => item.state === "review").length;
 	const usage = c.vars.usage.numbers(now);
 	const hostedRunning = new Set(sessions.filter((session) => session.place.kind === "hosted" && session.sandbox === "running").map((session) => session.id));

@@ -1,7 +1,7 @@
 /**
  * Usage, "On your machines": the sandboxes of the user's agents on their own machines, each machine
- * with its own. Their time is not metered: it runs on the user's machine, so there is no cost, no
- * hours and no allowance here. Shown only where the deployment offers machines and the user has one.
+ * with its own. They are outside the platform's limits: their time is not metered (no cost, no hours,
+ * no allowance here), and they are not counted among the user's running agents or kept sandboxes. Shown only where the deployment offers machines and the user has one.
  */
 import { useApp } from "../state/app";
 import { useNow } from "../state/hooks";
@@ -24,7 +24,7 @@ export function MachineUsage() {
 				{list ? <span className="usage-count">{plural(sandboxes, "sandbox", "sandboxes")}</span> : null}
 			</h2>
 			<p className="usage-lede">
-				Not counted against your daily sandbox time: they run on your machine.{" "}
+				Not counted against your daily sandbox time, running agents or kept sandboxes.{" "}
 				<a className="link" {...linkProps({ name: "machines" })}>
 					Machines
 				</a>

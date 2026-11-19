@@ -111,7 +111,9 @@ export class Executor extends MachineDocker {
 	report(): Report {
 		return { kind: "report", docker: this.dockerHealth,
 			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes,
-			sandboxes: [...this.boxes.entries()].slice(0, MAX_REPORTED_SANDBOXES).map(([id, { sessionId, state, usedAt }]) => ({ id, sessionId, state, usedAt })) };
+			sandboxes: [...this.boxes.entries()].slice(0, MAX_REPORTED_SANDBOXES).map(([id, { sessionId, state, usedAt }]) => ({ id, sessionId, state, usedAt })),
+			...(this.limits.maxRunning !== undefined ? { maxRunning: this.limits.maxRunning } : {}),
+			...(this.limits.maxSandboxes !== undefined ? { maxSandboxes: this.limits.maxSandboxes } : {}) };
 	}
 	private room() {
 		if (this.limits.maxRunning !== undefined && [...this.boxes.values()].filter(b => b.state === "running").length >= this.limits.maxRunning)

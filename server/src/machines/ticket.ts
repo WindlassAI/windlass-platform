@@ -10,8 +10,8 @@
  * someone else is no use to them either.
  */
 import { createPublicKey, randomBytes, verify } from "node:crypto";
-import { sessionProof } from "./control.js";
-import type { Hello } from "./protocol.js";
+import { sessionProof } from "../runner/control.js";
+import type { Hello } from "../runner/protocol.js";
 
 export const TICKET_MS = 60_000;
 

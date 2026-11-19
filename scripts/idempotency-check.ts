@@ -35,7 +35,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Registry } from "../server/src/client.js";
-import { type AuthResult, MAX_REMEMBERED_SUBMISSIONS, MAX_RUNNING_SESSIONS, type SessionSnapshot, type SessionSummary, type TimelineItem } from "../server/src/contract.js";
+import { type AuthResult, MAX_REMEMBERED_SUBMISSIONS, type SessionSnapshot, type SessionSummary, type TimelineItem } from "../server/src/contract.js";
 
 // The client's own log lines about refusals are not this check's output.
 process.env.RIVET_LOG_LEVEL ??= "silent";
@@ -47,6 +47,8 @@ const HTTP_PORT = Number(process.env.WLP_CHECK_HTTP_PORT ?? 6480);
 const ENDPOINT = `http://127.0.0.1:${ENGINE_PORT}`;
 const API = `http://127.0.0.1:${HTTP_PORT}`;
 const PROFILE = "docker-windlass-sandbox" as const;
+/** The ceiling on a person's agents working at once that this check's cases assume: its server is started with it (WLP_FACTORY_RUNNING_TURNS). */
+const RUNNING_CEILING = 3;
 /** A prompt whose turn runs one command for a while: long enough to send a second message into. */
 const LONG = "Run the long build and report its progress (slow)";
 
@@ -99,8 +101,8 @@ async function startServer(): Promise<void> {
 		WLP_HTTP_PORT: String(HTTP_PORT),
 		WLP_FAKE_DELAY_MS: "15",
 		WLP_DAILY_SANDBOX_SECONDS: "unlimited",
-		// The refusal at MAX_RUNNING_SESSIONS busy sessions is checked: a person's ceiling, WLP_FACTORY_RUNNING_TURNS, is set to it here.
-		WLP_FACTORY_RUNNING_TURNS: String(MAX_RUNNING_SESSIONS),
+		// The refusal at RUNNING_CEILING busy sessions is checked: a person's ceiling, WLP_FACTORY_RUNNING_TURNS, is set to it here.
+		WLP_FACTORY_RUNNING_TURNS: String(RUNNING_CEILING),
 		WLP_MAX_KEPT_SANDBOXES: "unlimited",
 	};
 	// The local engine asks for no token; one in the shell this is run from is some other engine's.
@@ -328,9 +330,9 @@ async function main(): Promise<void> {
 		const other = await signIn();
 		const theirs = client.user.getOrCreate([other.profile.uid], { params: { token: other.token } });
 		const sessions: Array<ReturnType<typeof sessionOf>> = [];
-		for (let index = 0; index <= MAX_RUNNING_SESSIONS; index += 1) sessions.push(sessionOf((await theirs.createSession({ profile: PROFILE })).id, other));
-		for (const session of sessions.slice(0, MAX_RUNNING_SESSIONS)) await session.prompt({ text: LONG });
-		const last = sessions[MAX_RUNNING_SESSIONS]!;
+		for (let index = 0; index <= RUNNING_CEILING; index += 1) sessions.push(sessionOf((await theirs.createSession({ profile: PROFILE })).id, other));
+		for (const session of sessions.slice(0, RUNNING_CEILING)) await session.prompt({ text: LONG });
+		const last = sessions[RUNNING_CEILING]!;
 		const retried = randomUUID();
 		const refused = await outcome(last.prompt({ text: "Explore the workspace", idempotencyKey: retried }));
 		const nothing = await last.snapshot();
@@ -344,7 +346,7 @@ async function main(): Promise<void> {
 			plain(refused) === plain({ code: "too_many_running" }) && nothing.timeline.length === 0 && plain(taken) === plain({ value: { turn: 1, steered: false } }) && plain(once) === plain(taken) && userItems(after).length === 1 && after.summary.turns === 1,
 			`answers ${plain(refused)}, ${plain(taken)}, ${plain(once)}; ${shape(after)}`,
 		);
-		for (const session of sessions.slice(1, MAX_RUNNING_SESSIONS)) await session.stop().catch(() => undefined);
+		for (const session of sessions.slice(1, RUNNING_CEILING)) await session.stop().catch(() => undefined);
 	}
 
 	{

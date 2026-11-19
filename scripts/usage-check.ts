@@ -188,6 +188,20 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 	expect("holding the count against the same list again changes nothing", book.reconcile(at(CLAIM_SETTLING_MS / 1000 + 1), ["here"]).change.kept.length === 0 && book.kept().length === 1);
 }
 
+// A place claimed where the sandbox is made (agent-session.ts, `openSandbox`; user.ts, `internalClaimPlace`).
+{
+	const book = new UsageBook(LIMITS, { kept: [{ session: "x", since: at(-3600) }, { session: "y", since: at(-3600) }] });
+	const refused = book.claim(at(0), "z");
+	expect("a claim at the cap is refused and takes nothing", !refused.ok && refused.change.kept.length === 0 && !book.keeps("z") && book.kept().length === 2);
+	const again = book.claim(at(1), "x");
+	expect("a session that has its place claims it again and changes nothing", again.ok && again.change.kept.length === 0 && book.kept().length === 2 && book.kept().find((k) => k.session === "x")?.since === at(-3600));
+	book.release("y");
+	const taken = book.claim(at(2), "z");
+	expect("a free place is taken in the same step", taken.ok && taken.change.kept.length === 1 && book.keeps("z") && book.atCap("w"));
+	book.reconcile(at(3), ["x"]);
+	expect("held against a list that does not have its sandbox yet, a place just claimed is kept", book.keeps("z") && book.kept().length === 2);
+}
+
 // Until when a sandbox that is found stopped can have run, and how lengths of time are said.
 {
 	const stretch = { hold: "h", since: at(0), seconds: 300 };

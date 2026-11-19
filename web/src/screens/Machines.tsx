@@ -255,6 +255,12 @@ function SecretsSwitch({ machine, onChanged }: { machine: MachineSummary; onChan
 }
 
 /** An agent's sandbox on a machine: the agent, whether the sandbox runs, and when it was last used. */
+/** How many sandboxes the machine's runner may run and keep, as its owner started it: "no limit" unless a cap is set. */
+function sandboxLimit(machine: MachineSummary): string {
+	const caps = [machine.maxRunning === undefined ? null : `at most ${machine.maxRunning} running at once`, machine.maxSandboxes === undefined ? null : `at most ${machine.maxSandboxes} kept`].filter((cap) => cap !== null);
+	return caps.length === 0 ? "no limit" : caps.join(", ");
+}
+
 export function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: number }) {
 	return (
 		<li>
@@ -339,6 +345,15 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 					<div>
 						<dt>Free disk</dt>
 						<dd>{machine.freeDiskBytes === null ? <span className="tone-faint">not reported yet</span> : diskSize(machine.freeDiskBytes)}</dd>
+					</div>
+					<div>
+						<dt>Sandbox limit</dt>
+						<dd>
+							{reported ? sandboxLimit(machine) : <span className="tone-faint">not reported yet</span>}
+							<p className="field-note">
+								Set on the machine, not here: start its runner with <code>--max-running</code> or <code>--max-sandboxes</code>.
+							</p>
+						</dd>
 					</div>
 				</dl>
 				<SecretsSwitch machine={machine} onChanged={onChanged} />

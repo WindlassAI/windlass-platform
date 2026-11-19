@@ -1,5 +1,5 @@
 import type { SandboxProfile } from "../contract.js";
-import type { Report } from "./control.js";
+import type { Report } from "../runner/control.js";
 
 /** The last report is the runner's account of its Docker daemon and probe, including while offline. */
 export function machineProfiles(name: string, report: Report | null): SandboxProfile[] {

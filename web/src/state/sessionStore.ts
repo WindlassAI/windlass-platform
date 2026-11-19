@@ -19,7 +19,7 @@ export interface SessionState {
 	question: PendingQuestion | null;
 	/** Counts the turns that ended while the session was open: the changes list reloads when it moves. */
 	turnsEnded: number;
-	/** For a session on one of the user's machines, what the last snapshot said of the machine; nothing pushes a change to it between snapshots. */
+	/** For a session on one of the user's machines, what its banner says of the machine: from the snapshot, then from the `machine` event. */
 	machine: SessionSnapshot["machine"];
 }
 
@@ -82,6 +82,9 @@ export function createSessionStore(api: SessionApi): SessionStore {
 				},
 				onQuestion(question) {
 					set({ question });
+				},
+				onMachine(machine) {
+					set({ machine });
 				},
 				onConnection(connection, error) {
 					if (connection !== "failed") {

@@ -3,7 +3,7 @@
  * server's user actor says it does (contract.ts, `UserActions.machines` and the four calls after it).
  */
 import { MAX_MACHINES, type MachineSummary } from "@contract";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createMockClient, MOCK_MACHINE_STATES, type MockMachineSession } from "./mock";
 
 const auth = { token: "mock:chatgpt:u_machines:ada@example.com", profile: { uid: "u_machines", email: "ada@example.com", demo: false } };
@@ -93,6 +93,41 @@ describe("the mock's machines", () => {
 		};
 		expect(await failed("offline")).toEqual({ before: "answering", after: "offline", message: `Your machine "nas" is offline. The agent's files are there; send the prompt again when it is back.` });
 		expect(await failed("removed")).toEqual({ before: "removed", after: "removed", message: "This agent's machine was removed. Its files were there. Start a new agent to go on." });
+	});
+
+	it("tells the open page when the machine stops answering and when it is back", async () => {
+		const mock = createMockClient({ pace: 0, machineSession: "not_answering" });
+		const seen: string[] = [];
+		const close = mock.session(auth, "nas-tests").open({ onSnapshot: (snapshot) => seen.push(`snapshot ${snapshot.machine?.state}`), onMachine: (machine) => seen.push(machine.state), onItem: () => undefined, onDelta: () => undefined, onSummary: () => undefined, onQuestion: () => undefined, onConnection: () => undefined });
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(seen).toEqual(["snapshot answering", "not_answering", "answering"]);
+		close();
+		mock.dispose();
+	});
+
+	it("starts a turn on a machine when the hosted agents working are at the ceiling", async () => {
+		vi.useFakeTimers();
+		try {
+			const mock = createMockClient({});
+			const user = mock.user(auth);
+			const settle = async <T,>(promise: Promise<T>) => {
+				await vi.advanceTimersByTimeAsync(400);
+				return promise;
+			};
+			// Hosted agents fill the deployment's ceiling, beside the seeds' that are at work.
+			const hosted = async () => (await settle(user.createSession({ profile: "docker-windlass-sandbox" }))).id;
+			const working = (await settle(user.listSessions())).filter((session) => session.status !== "idle" && session.place.kind === "hosted").length;
+			const { runningTurns } = await settle(user.factoryLimits());
+			for (let filled = working; filled < runningTurns; filled++) await settle(mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." }));
+			const refused = expect(mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." })).rejects.toMatchObject({ reason: "too_many_running" });
+			await vi.advanceTimersByTimeAsync(400);
+			await refused;
+			const onNas = await settle(user.createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened" }));
+			expect(await settle(mock.session(auth, onNas.id).prompt({ text: "Run the full build and the tests." }))).toEqual({ turn: 1, steered: false });
+			mock.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("starts each state as its name says", async () => {

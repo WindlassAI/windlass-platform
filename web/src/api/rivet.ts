@@ -455,6 +455,10 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 						conn.on("question" satisfies keyof AgentSessionEvents, (question: AgentSessionEvents["question"] | undefined) => {
 							if (live) feed.onQuestion(question ?? null);
 						}),
+						// Dropped before the snapshot, as a question is: the snapshot's `machine` is newer.
+						conn.on("machine" satisfies keyof AgentSessionEvents, (machine: AgentSessionEvents["machine"]) => {
+							if (live) feed.onMachine?.(machine);
+						}),
 					],
 				);
 				reloads.add(feedConn.reload);
@@ -510,7 +514,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
  *    unknown session fails with group "actor", code "not_found".
  * 4. Events. `c.broadcast("item", item)` (one argument) arrives as `conn.on("item", (item) => ...)`;
  *    `on` returns the function that unsubscribes; the names are "sessions" (user) and "item",
- *    "delta", "summary" (agentSession). Subscriptions survive a reconnect (RivetKit resends them).
+ *    "delta", "summary", "question", "machine" (agentSession). Subscriptions survive a reconnect (RivetKit resends them).
  * 5. Errors. A `UserError` arrives with `group: "user"` and its message intact, through both the
  *    stateless handle and a connection. A refused token is recognised by its `code` only: one of
  *    UNAUTHORIZED_CODES (errors.ts). A UserError with another code and the same meaning would be shown as

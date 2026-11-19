@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { reasoningTitle, renderMarkdown } from "./markdown";
+import { reasoningTitle, renderInlineMarkdown, renderMarkdown } from "./markdown";
 
 describe("the assistant's Markdown", () => {
 	it("renders prose, code and lists", () => {
@@ -45,5 +45,13 @@ describe("a reasoning summary's title", () => {
 		expect(reasoningTitle("**Locating the test**\n\nI should find where `add` is defined.")).toBe("Locating the test");
 		expect(reasoningTitle("\n## Plan\nsteps")).toBe("Plan");
 		expect(reasoningTitle("")).toBe("");
+	});
+});
+
+describe("a server's sentence, inline", () => {
+	it("renders code spans and emphasis, and no block, link or markup of its own", () => {
+		expect(renderInlineMarkdown("A check's command came to ignore an exit status (`|| true` or the like)")).toBe("A check's command came to ignore an exit status (<code>|| true</code> or the like)");
+		expect(renderInlineMarkdown("# Not a heading, **bold**")).toBe("# Not a heading, <strong>bold</strong>");
+		expect(renderInlineMarkdown("See https://example.com and [this](https://example.com) <img src=x onerror=alert(1)>")).toBe("See https://example.com and this ");
 	});
 });

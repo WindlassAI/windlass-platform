@@ -25,6 +25,8 @@ export interface SessionCreateInput {
 	title: string;
 	titleIsDefault: boolean;
 	place: SandboxPlace;
+	/** For a place on one of the user's machines: its name when the session was launched. */
+	machineName?: string;
 	profile: SandboxProfileId;
 	model: string;
 	repoUrl: string | null;
@@ -62,7 +64,7 @@ export interface UserInternal {
 	internalSessionChanged(summary: SessionSummary): Promise<void>;
 	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
 	internalRemoveBackupLater(sessionId: string): Promise<void>;
-	/** Counts the session as running if the user is below MAX_RUNNING_SESSIONS. */
+	/** Counts the session as running if the user's hosted sessions at work are below their ceiling (`FactoryLimits.runningTurns`); one on a machine of theirs always is. */
 	internalAcquireRun(sessionId: string): Promise<{ ok: boolean; running: number; known: boolean }>;
 	/** The user's GitHub connection as it is now; null when there is none. */
 	internalGithubConnection(): Promise<StoredConnection | null>;
@@ -80,6 +82,8 @@ export interface UserInternal {
 	internalSettle(input: { sessionId: string; hold: string; seconds: number }): Promise<{ known: boolean }>;
 	/** The session has no sandbox any more: its place among the kept ones is free. */
 	internalRelease(sessionId: string): Promise<void>;
+	/** The session's place among the kept sandboxes, claimed right before its sandbox is made (`UsageBook.claim`). */
+	internalClaimPlace(sessionId: string): Promise<{ ok: boolean; numbers: UsageNumbers } | { ok: false; reason: "gone" }>;
 	/** The models the user may choose and the efforts of each (account-models.ts): their plan's, or what stands in for it. */
 	internalModels(): Promise<ModelList>;
 	/** A work item's summary changed (user-items.ts). */
@@ -157,7 +161,7 @@ export function createGrant(kind: string, key: readonly string[]): string {
 	return issueServiceToken(creationSubject(kind, key));
 }
 
-export function grantIsValid(grant: unknown, key: readonly string[], kind = "agentSession"): boolean {
+export function grantIsValid(grant: unknown, key: readonly string[], kind: string): boolean {
 	const caller = verifyToken(grant);
 	return caller?.kind === "service" && caller.subject === creationSubject(kind, key);
 }

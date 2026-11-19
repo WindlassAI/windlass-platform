@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { parseDiff } from "../lib/diff";
 import { absoluteTime, count, duration, percent, plural, spelledDuration } from "../lib/format";
 import { codeText, toolCopyLabels, toolInputText, toolOutputText } from "../lib/copy";
-import { reasoningTitle, renderMarkdown } from "../lib/markdown";
+import { reasoningTitle, renderInlineMarkdown, renderMarkdown } from "../lib/markdown";
 import { callKey, toolBlocks, ZERO_USAGE, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type SubagentRun, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
 import { formatInput, parseInput, summarizeTool } from "../lib/toolSummary";
 import { checkLine, gateWord, overruledLine, ranEarlier, unneededLine, unresolvedLine, unrunLine } from "../lib/verified";
@@ -31,6 +31,13 @@ export function Markdown({ text, streaming = false, className = "", copyCode = f
 			{copyCode && !streaming ? <CodeCopies root={root} html={html} /> : null}
 		</>
 	);
+}
+
+/** A sentence with inline Markdown only (`renderInlineMarkdown`), in a span: for a server's sentence shown inside other text. */
+export function InlineMarkdown({ text, className }: { text: string; className?: string }) {
+	const html = useMemo(() => renderInlineMarkdown(text), [text]);
+	// The HTML is sanitised by DOMPurify in renderInlineMarkdown.
+	return <span className={className} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 /**

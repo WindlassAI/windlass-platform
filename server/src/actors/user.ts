@@ -133,7 +133,7 @@ import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels }
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
-import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, sealSecret } from "../repo-secrets.js";
+import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
 import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
 import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
@@ -146,7 +146,7 @@ import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
 import { getSignIns } from "../signin/index.js";
 import { serverSealer } from "../signin/seal.js";
 import { uidOfAccount } from "../signin/material.js";
-import { USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, isEmptyChange } from "../usage.js";
+import { USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
@@ -534,30 +534,20 @@ function secretLists(vars: UserVars, repositoryId: number, sessionId: unknown): 
  * Without: the scope of the one of that name.
  */
 async function saveSecret(c: UserCtx, uid: string, project: string, label: string, name: string, value: string | undefined, scope: SecretScope): Promise<void> {
-	const [found] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ? AND name = ?", project, name);
-	const exists = (found?.n ?? 0) > 0;
+	let saved: "kept" | "new" | "replaced" = "kept";
 	if (value === undefined) {
-		if (!exists) throw new UserError(`No secret named ${name} is saved for this repository.`, { code: "secret_not_found" });
+		const [found] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ? AND name = ?", project, name);
+		if ((found?.n ?? 0) === 0) throw new UserError(`No secret named ${name} is saved for this repository.`, { code: "secret_not_found" });
 		await c.db.execute("UPDATE repo_secret SET scope = ?, updated_at = ? WHERE project = ? AND name = ?", scope, Date.now(), project, name);
 	} else {
-		if (!exists) {
-			const [here] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ?", project);
-			if ((here?.n ?? 0) >= MAX_SECRETS_PER_REPOSITORY) throw new UserError(`A repository can have at most ${MAX_SECRETS_PER_REPOSITORY} secrets. Delete one first.`, { code: "too_many_secrets" });
-			const [all] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret");
-			if ((all?.n ?? 0) >= MAX_SECRETS_PER_USER) throw new UserError(`You have ${MAX_SECRETS_PER_USER.toLocaleString("en-US")} secrets saved over all your repositories, which is the limit. Delete one first.`, { code: "too_many_secrets" });
-		}
-		await c.db.execute(
-			"INSERT INTO repo_secret (project, name, label, scope, sealed, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (project, name) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, scope = excluded.scope, sealed = excluded.sealed, updated_at = excluded.updated_at",
-			project,
-			name,
-			label,
-			scope,
-			sealSecret(serverSealer(), uid, project, name, value),
-			Date.now(),
-		);
+		// The limits and the write are one conditional statement: saves at the same moment cannot pass a limit together.
+		const result = await saveRepoSecret(c.db, { uid, project, label, name, sealed: sealSecret(serverSealer(), uid, project, name, value), scope, now: Date.now() });
+		if (result === "repository_full") throw new UserError(`A repository can have at most ${MAX_SECRETS_PER_REPOSITORY} secrets. Delete one first.`, { code: "too_many_secrets" });
+		if (result === "account_full") throw new UserError(`You have ${MAX_SECRETS_PER_USER.toLocaleString("en-US")} secrets saved over all your repositories, which is the limit. Delete one first.`, { code: "too_many_secrets" });
+		saved = result === "replaced" ? "replaced" : "new";
 	}
 	// The name, never anything of the value: not its length either.
-	console.log(`[wlp] secret.saved uid=${uid} project=${project} name=${name} scope=${scope} value=${value === undefined ? "kept" : exists ? "replaced" : "new"}`);
+	console.log(`[wlp] secret.saved uid=${uid} project=${project} name=${name} scope=${scope} value=${saved}`);
 }
 
 /** What a client sent about a secret, cleaned, or the UserError that says what is wrong with it. */
@@ -736,6 +726,31 @@ async function readUsage(db: RawAccess): Promise<UsageBook> {
  * is what is stored. An entry is written before its hold's row is removed, and a hold is closed once
  * (an entry's `hold` is unique), so a server that stops in between counts nothing twice.
  */
+/**
+ * For scripts/e2e.ts only, and only with the fake layer (WLP_SANDBOX=fake), as the fake layer's own
+ * settings are (sandbox-fake.ts): WLP_FAKE_RESERVE_FAULT, read once, plays the reply between a session
+ * and this actor going wrong in `internalReserve`. Parts, comma-separated: `lose:<n>` has the next n
+ * reserves that start something (`fresh`) do their work and commit, then throw, which is what a reply
+ * lost on its way back looks like to the session; `lose-renewal:<n>` the same for the next n renewals;
+ * `down:<ms>` refuses every reserve for that long from the first renewal on (this actor unreachable).
+ * In this process's memory: a restart starts it again.
+ */
+const reserveFault = ((): { fresh: number; renewal: number; downMs: number; downUntil: number | null } | null => {
+	const spec = process.env.WLP_FAKE_RESERVE_FAULT;
+	if (!spec || config.sandbox !== "fake") return null;
+	const fault = { fresh: 0, renewal: 0, downMs: 0, downUntil: null };
+	for (const part of spec.split(",")) {
+		const [kind, value] = part.trim().split(":");
+		const n = Number(value);
+		if (!Number.isSafeInteger(n) || n < 0) throw new Error(`WLP_FAKE_RESERVE_FAULT: "${part}" is not lose:<n>, lose-renewal:<n> or down:<ms>`);
+		if (kind === "lose") fault.fresh = n;
+		else if (kind === "lose-renewal") fault.renewal = n;
+		else if (kind === "down") fault.downMs = n;
+		else throw new Error(`WLP_FAKE_RESERVE_FAULT: "${part}" is not lose:<n>, lose-renewal:<n> or down:<ms>`);
+	}
+	return fault;
+})();
+
 async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step: (book: UsageBook) => T): Promise<T> {
 	const done = step(c.vars.usage);
 	const { change } = done;
@@ -918,7 +933,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 
 	let summary: SessionSummary;
 	try {
-		const profiles = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : (await getLayer()).sandboxes.profiles();
+		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : null;
+		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
 		const chosen = profiles.find((candidate) => candidate.id === input.profile);
 		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
 		if (!chosen.available) {
@@ -955,6 +971,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			title: summary.title,
 			titleIsDefault: givenTitle === null,
 			place: summary.place,
+			...(machine ? { machineName: machine.name } : {}),
 			profile: summary.profile,
 			model,
 			repoUrl,
@@ -1322,6 +1339,9 @@ export const user = actor({
 			} catch (error) {
 				if (!isActorGone(error)) {
 					if (!c.vars.sessions.has(id)) c.vars.sessions.set(id, existing);
+					// What the session itself refused (its machine could not record the sandbox's removal) is said in its words.
+					const { group, code, message } = (typeof error === "object" && error !== null ? error : {}) as { group?: unknown; code?: unknown; message?: unknown };
+					if (group === "user" && typeof code === "string" && typeof message === "string") throw new UserError(message, { code });
 					throw clientError(c.log, error, "The agent could not be deleted. Try again.");
 				}
 			}
@@ -1357,33 +1377,41 @@ export const user = actor({
 
 		/**
 		 * Removes the sandbox of one of the user's agents to make room. The agent does it itself where it
-		 * is there, so its timeline says so and nothing is removed under a turn. What the provider then
-		 * still lists for that agent is removed here: a sandbox the agent no longer knows of, or one that
-		 * an agent which was deleted left behind.
+		 * is there, with every other sandbox the provider lists for it, so its timeline says so and nothing
+		 * is removed under a turn. For an agent that was deleted, what the provider still lists for it is
+		 * removed here.
 		 */
 		freeSandbox: async (c, sessionId: string): Promise<UsageView> => {
 			const profile = requireUser(c);
 			const id = approvalText(sessionId, 200);
 			if (id === "") throw new UserError("Say which agent's sandbox to free.", { code: "bad_input" });
 			try {
-				if (c.vars.sessions.has(id)) {
+				let gone = !c.vars.sessions.has(id);
+				if (!gone) {
 					await sessionActor(c, profile.uid, id)
 						.internalFreeSandbox()
 						.catch((error: unknown) => {
-							if (isActorGone(error)) return;
+							if (isActorGone(error)) {
+								gone = true;
+								return;
+							}
 							// What the session itself refused (it is working) is said in its words.
 							const { group, code, message } = (typeof error === "object" && error !== null ? error : {}) as { group?: unknown; code?: unknown; message?: unknown };
 							if (group === "user" && typeof message === "string") throw new UserError(message, { code: typeof code === "string" ? code : "sandbox_busy" });
 							throw error;
 						});
 				}
-				const { sandboxes } = await getLayer();
-				for (const left of await sandboxes.list(profile.uid)) {
-					if (left.sessionId !== id) continue;
-					await sandboxes.destroy(left.id);
-					console.log(`[wlp] sandbox.freed id=${left.id} uid=${profile.uid} session=${id}: it was left at the provider without its agent`);
+				// A living session removed its sandboxes and gave its place back itself, inside its own exclusion: a
+				// list read here could hold one a prompt has just made it. Only what a session that is gone left is removed here.
+				if (gone) {
+					const { sandboxes } = await getLayer();
+					for (const left of await sandboxes.list(profile.uid)) {
+						if (left.sessionId !== id) continue;
+						await sandboxes.destroy(left.id);
+						console.log(`[wlp] sandbox.freed id=${left.id} uid=${profile.uid} session=${id}: it was left at the provider without its agent`);
+					}
+					await changeUsage(c, (book) => ({ change: book.release(id) }));
 				}
-				await changeUsage(c, (book) => ({ change: book.release(id) }));
 				c.vars.listed = null;
 				return await usageView(c);
 			} catch (error) {
@@ -2010,12 +2038,14 @@ export const user = actor({
 			requireService(c);
 			const uid = c.key[0];
 			// An item session's turn holds a slot of the turn queue (user-items.ts), counted here instead of by its summary.
-			const others = () => [...c.vars.sessions.values()].filter((session) => session.id !== sessionId && !session.item && session.status !== "idle");
+			// A session on one of the user's machines is neither counted nor refused (`hostedLimitsApply`).
+			const others = () => [...c.vars.sessions.values()].filter((session) => session.id !== sessionId && !session.item && session.status !== "idle" && hostedLimitsApply(session.place));
 			const ceiling = config.factory.runningTurns - factorySlots(c);
+			const asking = c.vars.sessions.get(sessionId);
 
 			// At the limit, ask the sessions that look busy: one whose report never arrived would
 			// otherwise block the user for good.
-			if (others().length >= ceiling) {
+			if ((!asking || hostedLimitsApply(asking.place)) && others().length >= ceiling) {
 				await Promise.all(
 					others().map(async (stale) => {
 						let fresh: SessionSummary | null = null;
@@ -2037,7 +2067,7 @@ export const user = actor({
 			const entry = c.vars.sessions.get(sessionId);
 			if (!entry) return { ok: false, running: others().length, known: false };
 			const running = others().length;
-			if (running >= ceiling) return { ok: false, running: running + factorySlots(c), known: true };
+			if (hostedLimitsApply(entry.place) && running >= ceiling) return { ok: false, running: running + factorySlots(c), known: true };
 			const claimed: SessionSummary = { ...entry, status: entry.status === "idle" ? "starting" : entry.status };
 			c.vars.sessions.set(sessionId, claimed);
 
@@ -2061,6 +2091,14 @@ export const user = actor({
 			if (id === "" || session === "") throw new UserError("A hold needs an id and a session.", { code: "bad_input" });
 			const settle = typeof input.settle?.hold === "string" && typeof input.settle.seconds === "number" ? { hold: input.settle.hold, seconds: input.settle.seconds } : undefined;
 			const keep = input.keep === true;
+			const renewal = input.fresh !== true && settle !== undefined;
+			if (reserveFault) {
+				if (renewal && reserveFault.downMs > 0 && reserveFault.downUntil === null) reserveFault.downUntil = Date.now() + reserveFault.downMs;
+				if (reserveFault.downUntil !== null && Date.now() < reserveFault.downUntil) {
+					console.log(`[wlp] usage.fault_down uid=${c.key[0]} session=${session} hold=${id}: refused (WLP_FAKE_RESERVE_FAULT)`);
+					throw new Error("the user's actor is away (WLP_FAKE_RESERVE_FAULT)");
+				}
+			}
 			// A session that is being deleted is given nothing new.
 			if (!c.vars.sessions.has(session)) return { ok: false, reason: "gone", numbers: c.vars.usage.numbers(Date.now()) };
 			if (keep) await reconcileKept(c, c.vars.usage.atCap(session));
@@ -2068,11 +2106,35 @@ export const user = actor({
 			const now = Date.now();
 			const done = await changeUsage(c, (book) => book.reserve(now, { id, session, keep, fresh: input.fresh === true, settle }));
 			const numbers = c.vars.usage.numbers(now);
+			const lose = reserveFault === null ? null : input.fresh === true ? "fresh" : renewal ? "renewal" : null;
+			if (reserveFault && lose && reserveFault[lose] > 0) {
+				reserveFault[lose] -= 1;
+				console.log(`[wlp] usage.fault_lost uid=${c.key[0]} session=${session} hold=${id} ${lose}: done, and its reply lost (WLP_FAKE_RESERVE_FAULT)`);
+				throw new Error("reply lost (WLP_FAKE_RESERVE_FAULT)");
+			}
 			if (!done.ok) {
 				console.log(`[wlp] usage.refused uid=${c.key[0]} session=${session} limit=${done.reason} used=${numbers.usedSeconds} held=${numbers.heldSeconds} allowance=${numbers.allowanceSeconds ?? "none"} kept=${numbers.sandboxes.kept} of ${numbers.sandboxes.limit ?? "any"}`);
 				return { ok: false, reason: done.reason, numbers };
 			}
 			return { ok: true, hold: { id: done.hold.id, seconds: done.hold.seconds }, numbers };
+		},
+
+		/**
+		 * The session is about to make its sandbox: its place among the kept ones, taken where the sandbox is
+		 * made (`UsageBook.claim`). A reserve's place was the session's as it stood then, and a sandbox found
+		 * gone since is replaced here. Held against the provider's list first, as a reserve is.
+		 */
+		internalClaimPlace: async (c, sessionId: string): Promise<{ ok: boolean; numbers: UsageNumbers } | { ok: false; reason: "gone" }> => {
+			requireService(c);
+			const session = approvalText(sessionId, 200);
+			await reconcileKept(c, c.vars.usage.atCap(session));
+			// From the check to the claim nothing is awaited: a session being deleted is given nothing new.
+			if (!c.vars.sessions.has(session)) return { ok: false, reason: "gone" };
+			const now = Date.now();
+			const done = await changeUsage(c, (book) => book.claim(now, session));
+			const numbers = c.vars.usage.numbers(now);
+			if (!done.ok) console.log(`[wlp] usage.refused uid=${c.key[0]} session=${session} limit=sandboxes kept=${numbers.sandboxes.kept} of ${numbers.sandboxes.limit ?? "any"}: at the making of its sandbox`);
+			return { ok: done.ok, numbers };
 		},
 
 		internalSettle: async (c, input: { sessionId: string; hold: string; seconds: number }): Promise<{ known: boolean }> => {

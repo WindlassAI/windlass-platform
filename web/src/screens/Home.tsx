@@ -7,7 +7,7 @@
  * Under the groups, the repositories something is saved for that have no agent: their pages are
  * where what was saved is changed or deleted, and nothing else leads there.
  */
-import { MAX_RUNNING_SESSIONS, USAGE_LOW_SHARE, type SavedRepository, type UsageNumbers } from "@contract";
+import { USAGE_LOW_SHARE, type SavedRepository, type UsageNumbers } from "@contract";
 import { useEffect, useId, useState } from "react";
 import { AgentList } from "../components/Agents";
 import { Mark, PlusIcon, WarnIcon } from "../components/Icons";
@@ -16,7 +16,7 @@ import { NO_REPOSITORY, groupSessions, shownLimit, type SessionGroup } from "../
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { NeedsYou } from "./Items";
-import { allowanceState, useAllowance, useChatgpt, useNow, useSessions } from "../state/hooks";
+import { allowanceState, useAllowance, useChatgpt, useFactoryLimits, useNow, useSessions } from "../state/hooks";
 
 /** One repository's agents under its name, or the agents on none. `headed` is false for a list that has only the latter. */
 function Group({ group, limit, headed, now }: { group: SessionGroup; limit: number; headed: boolean; now: number }) {
@@ -129,6 +129,10 @@ export function Home() {
 	const { sessions, connection, error } = useSessions();
 	const now = useNow(15_000);
 	const working = sessions?.filter((session) => session.status !== "idle").length ?? 0;
+	// The ceiling on working agents is the deployment's, and only the platform's agents count against it.
+	const ceiling = useFactoryLimits().value?.runningTurns ?? null;
+	const onMachines = sessions?.filter((session) => session.status !== "idle" && session.place.kind === "machine").length ?? 0;
+	const hosted = working - onMachines;
 	// Asked again when an agent starts or stops working, and when one is added or deleted.
 	const usage = useAllowance(`${working}:${sessions?.length ?? 0}`);
 
@@ -142,7 +146,7 @@ export function Home() {
 			<header className="home-head">
 				<div>
 					<p className="eyebrow">
-						{sessions === null ? "agents" : `${plural(sessions.length, "agent")} · ${working} of ${MAX_RUNNING_SESSIONS} working`}
+						{sessions === null ? "agents" : `${plural(sessions.length, "agent")} · ${ceiling === null ? hosted : `${hosted} of ${ceiling}`} working${onMachines > 0 ? ` · ${onMachines}\u00a0on\u00a0your\u00a0machines` : ""}`}
 						{waiting > 0 ? <span className="eyebrow-waiting"> · {waiting} {waiting === 1 ? "needs" : "need"} you</span> : null}
 					</p>
 					<h1 className="display">Agents</h1>

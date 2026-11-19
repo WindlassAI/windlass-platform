@@ -15,7 +15,7 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
-import { createWriteStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createWriteStream, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,6 +34,8 @@ const ENDPOINT = `http://127.0.0.1:${PORT}`;
 const ORIGIN = `http://127.0.0.1:${HTTP}`;
 const SERVER_DIR = fileURLToPath(new URL("../server/", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("../fixtures/windlass-events/demo-several-steps-in-one-turn.jsonl", import.meta.url));
+/** The person's ceiling on agents working at once (WLP_FACTORY_RUNNING_TURNS): one, so that a second hosted turn is refused. */
+const CEILING = 1;
 /** The design's numbers (Plans/2026-11-19, section 1.4): how long a session waits for its runner's socket. */
 const OFFLINE_WAIT_MS = 15_000;
 
@@ -79,10 +81,11 @@ class Server {
 	async start(): Promise<void> {
 		const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(WLP_|RIVET|E2B_)/.test(key)));
 		const log = createWriteStream(join(this.storage, "server.log"), { flags: "a" });
-		const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
+		// The server is this file in its "node" role (`serverNode` below): the real server, with one hook.
+		const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "node"], {
 			cwd: SERVER_DIR,
 			stdio: ["ignore", "pipe", "pipe"],
-			env: { ...env, WLP_SECRET: this.secret, WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_MACHINES: "1", WLP_PUBLIC_URL: ORIGIN, WLP_HTTP_PORT: String(HTTP), RIVET_RUN_ENGINE_PORT: String(PORT), RIVETKIT_STORAGE_PATH: this.storage, RIVET_LOG_LEVEL: "warn" },
+			env: { ...env, WLP_SECRET: this.secret, WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_MACHINES: "1", WLP_FACTORY_RUNNING_TURNS: String(CEILING), WLP_PUBLIC_URL: ORIGIN, WLP_HTTP_PORT: String(HTTP), RIVET_RUN_ENGINE_PORT: String(PORT), RIVETKIT_STORAGE_PATH: this.storage, RIVET_LOG_LEVEL: "warn" },
 		});
 		child.stdout?.pipe(log);
 		child.stderr?.pipe(log);
@@ -108,6 +111,30 @@ class Server {
 	log(): string {
 		return readFileSync(join(this.storage, "server.log"), "utf8");
 	}
+
+	/** While this file exists, the machine's actor fails to record a sandbox's removal (`serverNode`). */
+	get refusal(): string {
+		return join(this.storage, "refuse-removal");
+	}
+}
+
+/**
+ * The server's process: the real server, whose machine actor fails `internalRemoveSandbox` while
+ * `Server.refusal` exists, as one whose storage is away; and whose session has one action more,
+ * `e2eMeta`, which reads its stored meta for a check (no page shows the machine's name kept at launch).
+ */
+async function serverNode(): Promise<void> {
+	const { agentSession } = await import("../server/src/actors/agent-session.js");
+	Object.assign(agentSession.config.actions!, { e2eMeta: (c: { vars: { meta: unknown } }) => c.vars.meta });
+	const { machine } = await import("../server/src/actors/machine.js");
+	const actions = machine.config.actions!;
+	const remove = actions.internalRemoveSandbox;
+	const refusal = join(process.env.RIVETKIT_STORAGE_PATH!, "refuse-removal");
+	actions.internalRemoveSandbox = async (c, input) => {
+		if (existsSync(refusal)) throw new Error("the machine's storage is away (runner-e2e)");
+		return remove(c, input);
+	};
+	await import("../server/src/index.js");
 }
 
 function free(port: number): Promise<boolean> {
@@ -222,6 +249,8 @@ class StandInRunner {
 	usedTickets: Array<{ sessionId: string; ticket: string }> = [];
 	cancels: string[] = [];
 	leftovers = 0;
+	/** The machine is at its owner's cap (`--max-sandboxes`): a `create` is refused as the real runner refuses it. */
+	full = false;
 	/** The next `create` makes its container and then the runner dies before it answers or reports it. */
 	loseNextCreate = false;
 	creates = 0;
@@ -392,6 +421,8 @@ class StandInRunner {
 				// As the runner does: a session's sandbox, once made, is the answer to its every `create`, also after a restart.
 				const had = [...this.boxes.values()].find((existing) => existing.sessionId === sessionId);
 				if (had) return channel.respond(op, had.id);
+				// The real runner's sentence (runner/src/docker-executor.ts), sent as a SandboxUserError is (runner/src/session.ts).
+				if (this.full) return channel.refuse(op, { kind: "user", message: "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." });
 				const made: Box = { id: `${this.id.machineId}-${randomBytes(6).toString("hex")}`, sessionId, profile: op.args.profile, state: "running", files: new Map(), engines: new Set() };
 				this.boxes.set(made.id, made);
 				if (this.loseNextCreate) {
@@ -487,10 +518,13 @@ type Client = ReturnType<typeof createClient<Registry>>;
 
 class Watch {
 	readonly items: TimelineItem[] = [];
+	/** Each `machine` event: what the banner says of the machine, when it changes. */
+	readonly machines: Array<{ state: string; since: number; at: number }> = [];
 	readonly conn;
 	constructor(client: Client, uid: string, id: string, token: string) {
 		this.conn = client.agentSession.get([uid, id], { params: { token } }).connect();
 		this.conn.on("item", (item: unknown) => this.items.push(item as TimelineItem));
+		this.conn.on("machine", (reach: unknown) => this.machines.push({ ...(reach as { state: string; since: number }), at: Date.now() }));
 	}
 	ended(turn: number) {
 		return this.items.find((item): item is Extract<TimelineItem, { kind: "turn.ended" }> => item.kind === "turn.ended" && item.turn === turn);
@@ -895,7 +929,10 @@ async function main(): Promise<void> {
 			assert(boxesOf(main.id).length === 1, `${boxesOf(main.id).length} sandboxes on the machine`);
 			const usage = await user.usage();
 			assert(usage.usedSeconds === 0 && usage.heldSeconds === 0 && usage.today.length === 0 && usage.kept.length === 0, "the machine's sandbox counted against the user's sandbox time");
-			return `${plainEvents} events, one sandbox, nothing held`;
+			// What its server question and its pull request name the machine by, kept from the launch.
+			const meta = (await (client.agentSession.get([uid, main.id], { params: { token } }) as unknown as { e2eMeta(): Promise<{ machineName?: string | null }> }).e2eMeta());
+			assert(meta.machineName === runner.fake.details.name, `the session kept the machine's name as ${JSON.stringify(meta.machineName)}`);
+			return `${plainEvents} events, one sandbox, nothing held; the machine's name "${meta.machineName}" kept`;
 		});
 
 		await check("a hosted session of the same person still takes its hold and its kept place; the machine's takes neither", async () => {
@@ -910,6 +947,50 @@ async function main(): Promise<void> {
 				await user.deleteSession(hosted.id);
 			}
 			return "one hold and one kept place, both the hosted session's, beside a running machine sandbox";
+		});
+
+		await check(`a session on the machine takes no running slot: with the ceiling at ${CEILING} and a hosted turn running it starts, a second hosted one is refused, and a hosted one starts beside a machine turn`, async () => {
+			const hosted = await user.createSession({ place: { kind: "hosted" }, profile: "docker-hardened" });
+			const second = await user.createSession({ place: { kind: "hosted" }, profile: "docker-hardened" });
+			const refusal = (p: Promise<unknown>) => p.then(() => "accepted", (error) => String((error as { code?: unknown }).code));
+			try {
+				const busy = new Watch(client, uid, hosted.id, token);
+				try {
+					const { turn: number } = await busy.conn.prompt({ text: "Fix the failing test (slow)" });
+					await until("the hosted turn to run", () => busy.windlass(number) >= 3, 30_000);
+					const { ended } = await turn(main.id, "Write the primes");
+					assert(ended.outcome === "succeeded", `the machine's turn beside a hosted one ended ${ended.outcome}: ${ended.message}`);
+					const refused = await refusal(client.agentSession.get([uid, second.id], { params: { token } }).prompt({ text: "Write the primes" }));
+					assert(refused === "too_many_running", `a second hosted turn was ${refused}`);
+					await busy.untilEnded(number);
+				} finally {
+					await busy.conn.dispose();
+				}
+				const onMachine = new Watch(client, uid, main.id, token);
+				try {
+					const { turn: number } = await onMachine.conn.prompt({ text: "Write the primes (slow)" });
+					await until("the machine's turn to run", () => onMachine.windlass(number) >= 3);
+					const { ended } = await turn(second.id, "Write the primes");
+					assert(ended.outcome === "succeeded", `a hosted turn beside the machine's ended ${ended.outcome}: ${ended.message}`);
+					await onMachine.untilEnded(number);
+				} finally {
+					await onMachine.conn.dispose();
+				}
+			} finally {
+				await user.deleteSession(hosted.id);
+				await user.deleteSession(second.id);
+			}
+			// What bounds the machine is its runner's own cap: the turn says the runner's sentence.
+			const capped = await newSession();
+			runner.full = true;
+			try {
+				const { ended } = await turn(capped.id, "Write the primes");
+				assert(ended.outcome === "error" && ended.message === "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes.", `at the machine's cap the turn ended ${ended.outcome}: ${ended.message}`);
+				return `machine turn beside a hosted one: succeeded; second hosted: too_many_running; hosted beside a machine turn: succeeded; at the machine's cap: "${ended.message}"`;
+			} finally {
+				runner.full = false;
+				await user.deleteSession(capped.id);
+			}
 		});
 
 		await check("a link cut in the middle of a turn resumes, and the person sees nothing of it", async () => {
@@ -943,6 +1024,19 @@ async function main(): Promise<void> {
 			return `runner told: ${now.at(-1)}`;
 		});
 
+		await check("a machine session put to sleep with its sandbox running is not suspended through a runner its sleep refuses, and its next prompt runs", async () => {
+			const lines = (what: string) => server.log().split("\n").filter((line) => line.includes(what) && line.includes(`session=${main.id}`)).length;
+			const before = { slow: lines("sandbox.suspend_slow"), skipped: lines("sandbox.suspend_skipped") };
+			assert(boxesOf(main.id)[0]?.state === "running", `the sandbox is ${boxesOf(main.id)[0]?.state}`);
+			await forceSleep(main.id);
+			// The sleep says one or the other: skipped at once, or slow after the suspend's wait (SUSPEND_WAIT_MS).
+			await until("the sleep to say what it did with the sandbox", () => lines("sandbox.suspend_skipped") > before.skipped || lines("sandbox.suspend_slow") > before.slow, 20_000);
+			assert(lines("sandbox.suspend_slow") === before.slow, "the sleep asked the runner to suspend, and waited for a socket it refused");
+			const { ended } = await turn(main.id, "Write the primes");
+			assert(ended.outcome === "succeeded", `the next turn ended ${ended.outcome}: ${ended.message}`);
+			return `sandbox left to the runner's idle rule (${boxesOf(main.id)[0]?.state}); the next turn succeeded`;
+		});
+
 		await check("the runner restarting mid-turn ends that turn, and the next turn stops what it left and works", async () => {
 			const watch = new Watch(client, uid, main.id, token);
 			let first: Extract<TimelineItem, { kind: "turn.ended" }>;
@@ -971,6 +1065,25 @@ async function main(): Promise<void> {
 			assert(boxesOf(fresh.id).length === 1, `${boxesOf(fresh.id).length} sandboxes for the session`);
 			assert(runner.creates === creates + 2, `${runner.creates - creates} creates reached the runner`);
 			return "two creates, one sandbox: the runner answered the repeat with the one it had made";
+		});
+
+		await check("a delete whose machine cannot record the sandbox's removal is refused and keeps the session; once the machine answers it goes through", async () => {
+			const doomed = await newSession();
+			const { ended } = await turn(doomed.id, "Write the primes");
+			assert(ended.outcome === "succeeded" && boxesOf(doomed.id).length === 1, `ended ${ended.outcome}, ${boxesOf(doomed.id).length} sandboxes`);
+			writeFileSync(server.refusal, "");
+			let code: unknown;
+			try {
+				code = await user.deleteSession(doomed.id).then(() => "resolved", (error) => (error as { code?: unknown }).code);
+				assert(code === "machine_unreachable", `the delete ${code === "resolved" ? "went through with nothing recorded to remove its sandbox" : `failed with ${String(code)}`}`);
+				assert((await user.listSessions()).some((s) => s.id === doomed.id), "the session left the list");
+			} finally {
+				rmSync(server.refusal, { force: true });
+			}
+			await user.deleteSession(doomed.id);
+			assert(!(await user.listSessions()).some((s) => s.id === doomed.id), "the second delete left the session listed");
+			await until("the machine's runner to remove the sandbox", () => boxesOf(doomed.id).length === 0, 15_000);
+			return `refused with ${String(code)}, still listed; the second delete removed it and its sandbox`;
 		});
 
 		await check("a stopped turn cancels the command running on the machine", async () => {
@@ -1060,6 +1173,7 @@ async function main(): Promise<void> {
 		await check("a machine removed during a turn ends that turn at once, later prompts get the removed sentence, and the session stays readable", async () => {
 			const watch = new Watch(client, uid, main.id, token);
 			let ms = 0;
+			let pushedMs = 0;
 			let first: Extract<TimelineItem, { kind: "turn.ended" }>;
 			try {
 				const { turn: number } = await watch.conn.prompt({ text: "Write the primes (slow)" });
@@ -1068,6 +1182,10 @@ async function main(): Promise<void> {
 				await user.removeMachine({ machineId: runner.id.machineId, removeSandboxes: false });
 				first = await watch.untilEnded(number);
 				ms = Date.now() - removedAt;
+				// The open page is told, not only a page opened afterwards.
+				const told = await until("the open session to be told the machine was removed", () => watch.machines.find((m) => m.state === "removed"), 5_000);
+				pushedMs = told.at - removedAt;
+				assert(pushedMs < 2_000, `told ${pushedMs} ms after the removal`);
 			} finally {
 				await watch.conn.dispose();
 			}
@@ -1077,7 +1195,7 @@ async function main(): Promise<void> {
 			assert(next.ended.outcome === "error" && /was removed/.test(next.ended.message ?? ""), `next turn ended ${next.ended.outcome}: ${next.ended.message}`);
 			const snapshot = await snapshotOf(client, uid, main.id, token);
 			assert(snapshot.machine?.state === "removed" && snapshot.timeline.length > 0, `snapshot: ${JSON.stringify(snapshot.machine)}`);
-			return `the running turn ended ${ms} ms after the removal (${first.message?.split("\n")[0]}); the next refused in ${next.ms} ms`;
+			return `the running turn ended ${ms} ms after the removal (${first.message?.split("\n")[0]}), the open page told in ${pushedMs} ms; the next refused in ${next.ms} ms`;
 		});
 	} catch (error) {
 		failed += 1;
@@ -1093,8 +1211,19 @@ async function main(): Promise<void> {
 	process.exit(failed === 0 ? 0 : 1);
 }
 
+/** Puts a session's actor to sleep through the engine's control plane, as e2e.ts does. */
+async function forceSleep(sessionId: string): Promise<void> {
+	const plane = (path: string, method = "GET") => fetch(`${ENDPOINT}${path}`, { method, headers: { Authorization: "Bearer default", "Content-Type": "application/json" }, body: method === "GET" ? undefined : "{}" });
+	const list = (await (await plane("/actors?namespace=default&name=agentSession")).json()) as { actors: Array<{ actor_id: string; key: string }> };
+	const record = list.actors.find((entry) => entry.key.includes(sessionId));
+	assert(record, "the control plane does not list the session's actor");
+	const slept = await plane(`/actors/${record.actor_id}/sleep?namespace=default`, "POST");
+	assert(slept.ok, `the control plane refused the sleep: ${slept.status} ${await slept.text()}`);
+}
+
 function snapshotOf(client: Client, uid: string, id: string, token: string): Promise<SessionSnapshot> {
 	return client.agentSession.get([uid, id], { params: { token } }).snapshot();
 }
 
-await main();
+if (process.argv[2] === "node") await serverNode();
+else await main();

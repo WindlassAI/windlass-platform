@@ -5,7 +5,7 @@ import { requireServiceFor, requireUser, serviceParams } from "../auth.js";
 import { config } from "../config.js";
 import { MAX_MACHINES, type MachineClaim, type MachineSummary, type SessionSummary } from "../contract.js";
 import type { Registry } from "../registry.js";
-import { machineProfiles } from "../runner/machine-profiles.js";
+import { machineProfiles } from "../machines/profiles.js";
 import { codeDigest } from "../runner-keys.js";
 import { MIN_RUNNER_VERSION, PAIRING_TTL_MS, versionAtLeast } from "../runner/control.js";
 import { createGrant, isActorGone } from "./internal.js";
@@ -49,7 +49,9 @@ async function list(c: Ctx): Promise<MachineSummary[]> {
 			name: row.name, os: row.os, arch: row.arch, ...facts, machineId: row.id,
 			profiles: machineProfiles(row.name, report), sendSecrets: !!row.send, agents: sessions.length,
 			sandboxes: (report?.sandboxes ?? []).map(({ sessionId, state, usedAt }) => ({ sessionId, state, usedAt, title: titles.get(sessionId) ?? null })).sort((a, b) => b.usedAt - a.usedAt),
-			freeDiskBytes: report?.freeDiskBytes ?? null, commandSandbox: report?.commandSandbox ?? null };
+			freeDiskBytes: report?.freeDiskBytes ?? null, commandSandbox: report?.commandSandbox ?? null,
+			...(report?.maxRunning !== undefined ? { maxRunning: report.maxRunning } : {}),
+			...(report?.maxSandboxes !== undefined ? { maxSandboxes: report.maxSandboxes } : {}) };
 	});
 }
 async function changed(c: Ctx) {
@@ -63,7 +65,10 @@ export async function machineSecrets(db: RawAccess, id: string): Promise<boolean
 	return row ? !!row.send : null;
 }
 
-/** The machine's profiles as its last report has them; a machine that cannot take an agent yet is told apart, with what to do. */
+/**
+ * The machine's profiles as its last report has them, and its name, which the session keeps (asking for it
+ * later fails while the machine is offline); a machine that cannot take an agent yet is told apart, with what to do.
+ */
 export async function launchMachineProfiles(db: RawAccess, id: string) {
 	enabled();
 	const [row] = await db.execute<{ name: string; facts: string }>("SELECT name, facts FROM machines WHERE id = ? AND expires IS NULL", id);
@@ -74,7 +79,7 @@ export async function launchMachineProfiles(db: RawAccess, id: string) {
 		throw new UserError(`The runner on "${row.name}" is older than this platform takes: update it to ${MIN_RUNNER_VERSION} or later, then start the agent again.`, { code: "runner_outdated" });
 	}
 	if (!report) throw new UserError(`"${row.name}" has not connected yet. Start its runner, and once the Machines page shows it online, start the agent again.`, { code: "machine_not_connected" });
-	return machineProfiles(row.name, report);
+	return { name: row.name, profiles: machineProfiles(row.name, report) };
 }
 
 /**

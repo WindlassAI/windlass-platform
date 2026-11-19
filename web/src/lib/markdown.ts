@@ -46,6 +46,17 @@ export function renderMarkdown(source: string): string {
 	return html;
 }
 
+const INLINE_TAGS = ["strong", "em", "del", "code"];
+
+/**
+ * One sentence of the server's, as `renderMarkdown` would render it, inline only: emphasis and code
+ * spans. No block, no link (GFM would make one of a bare address), no line break; their text stays.
+ */
+export function renderInlineMarkdown(source: string): string {
+	const raw = marked.parseInline(source, { async: false });
+	return purifier().sanitize(raw, { ALLOWED_TAGS: INLINE_TAGS, ALLOWED_ATTR: [] });
+}
+
 /** The first heading or bold line of a reasoning summary, for its collapsed row: "**Locating the test**" → "Locating the test". */
 export function reasoningTitle(text: string): string {
 	const line = text.split("\n").find((candidate) => candidate.trim() !== "") ?? "";

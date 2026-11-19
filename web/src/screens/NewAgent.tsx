@@ -32,8 +32,9 @@
  * are then that machine's, as its runner last reported them (`MachineSummary.profiles`). An offline
  * machine can be chosen: the agent is created, and a prompt fails until the machine is back, so the
  * form says that and offers to keep the prompt unsent. A machine whose runner never reported, or is
- * too old for the platform, is listed and cannot be chosen. The user's daily sandbox time and the cap
- * on kept sandboxes are the platform's own sandboxes', so on a machine the form says nothing of them.
+ * too old for the platform, is listed and cannot be chosen. The user's daily sandbox time, the cap on
+ * kept sandboxes and the one on running agents are the platform's own sandboxes', so on a machine the
+ * form says nothing of them.
  */
 import { MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type UsageNumbers } from "@contract";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
@@ -99,7 +100,7 @@ function PlaceCard({ machine, why, name, checked, now, onChoose }: { machine: Ma
 				<span className="profile-name">{machine ? machine.name : "This platform"}</span>
 				{machine ? <MachineState machine={machine} now={now} /> : null}
 			</span>
-			<span className="profile-summary">{machine ? `Your ${machine.os} ${machine.arch} machine. Not counted against your daily sandbox time.` : "A sandbox the platform makes and controls. It counts against your daily sandbox time."}</span>
+			<span className="profile-summary">{machine ? `Your ${machine.os} ${machine.arch} machine. The platform's limits do not apply.` : "A sandbox the platform makes and controls. It counts against your daily sandbox time."}</span>
 			{why === null ? null : (
 				<span className="profile-reason" id={reasonId}>
 					<strong>Why not yet.</strong> {why}{" "}
@@ -609,7 +610,7 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: number; over?:
 												<span>
 													your {chosenMachine.os} {chosenMachine.arch} machine
 												</span>
-												<span>not counted against your daily sandbox time</span>
+												<span>the platform's limits do not apply</span>
 											</>
 										) : (
 											<>

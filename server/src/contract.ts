@@ -1006,6 +1006,13 @@ export interface MachineSummary {
 	commandSandbox: MachineProbe | null;
 	/** Free space where Docker keeps the sandboxes, as last reported; null when not known. */
 	freeDiskBytes: number | null;
+	/**
+	 * The caps its owner set on the machine, as its runner last reported: at most this many sandboxes
+	 * running at once (`--max-running`) and kept at once (`--max-sandboxes`). Absent where none is set, and
+	 * before its runner first reported. The platform's own limits do not apply to a machine.
+	 */
+	maxRunning?: number;
+	maxSandboxes?: number;
 	/** The sandbox profiles this machine offers, for the launch form: every one, available or not; empty until its runner first reported. */
 	profiles: SandboxProfile[];
 	/** Whether the repository's and the account's saved secrets are sent to this machine's agents (on for a new machine). */
@@ -1110,7 +1117,7 @@ export interface ItemBudget {
 
 /** The factory's limits for a user: the deployment's settings (WLP_FACTORY_*), which its owner sets; a user cannot raise them. */
 export interface FactoryLimits {
-	/** Running turns of the user at once, the factory's and the person's own. */
+	/** Running turns of the user at once, the factory's and the person's own; a turn on one of the user's machines is not counted. */
 	runningTurns: number;
 	/** Of those, the factory's: the rest are always free for the person's own prompts. */
 	factoryTurns: number;
@@ -1425,7 +1432,11 @@ export interface UserActions {
 	listSessions(): Promise<SessionSummary[]>;
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
 	renameSession(id: string, title: string): Promise<SessionSummary>;
-	/** Destroys the session's actor and its sandbox. */
+	/**
+	 * Destroys the session's actor and its sandbox. Refused with `machine_unreachable`, the session still
+	 * listed, when its sandbox is on one of the user's machines and that machine's removal of it could not
+	 * be recorded: deleting again retries.
+	 */
 	deleteSession(id: string): Promise<void>;
 	/** Today's sandbox time and the count of kept sandboxes, as the user's actor has them. Asks no provider. */
 	allowance(): Promise<UsageNumbers>;
@@ -1936,6 +1947,8 @@ export interface AgentSessionEvents {
 	summary: SessionSummary;
 	/** The pending question, when one is asked; null when it was settled (answered, expired, withdrawn). */
 	question: PendingQuestion | null;
+	/** For a session on one of the user's machines, what its banner says of the machine, each time that changes. */
+	machine: NonNullable<SessionSnapshot["machine"]>;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1999,8 +2012,6 @@ export const MAX_SERVER_NAME_CHARS = 64;
 export const MAX_ACCOUNT_SECRETS = 50;
 /** How long a question waits for an answer before the platform declines it. */
 export const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
-/** Sessions of one user that may run a turn at the same time. */
-export const MAX_RUNNING_SESSIONS = 3;
 /** How many machines a user may have paired at once. */
 export const MAX_MACHINES = 3;
 /** A work item's body, in characters. */
