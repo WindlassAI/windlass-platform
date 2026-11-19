@@ -6,7 +6,7 @@
  *                                                                 signer against AWS's published example,
  *                                                                 and the backups on a scripted sandbox
  *   cd server && npx tsx ../scripts/backup-check.ts --bucket      and the S3 store against a real bucket
- *   cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/backup-check.ts --bucket --docker
+ *   cd server && ../scripts/locked.sh backup-check.ts --bucket --docker
  *                                                                 and the real scripts in real containers
  *                                                                 of the sandbox image, with a real
  *                                                                 Windlass, through that bucket

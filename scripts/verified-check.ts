@@ -5,7 +5,7 @@
  * request's description (server/src/verified.ts). No server, nothing sent anywhere.
  *
  *   cd server && npx tsx ../scripts/verified-check.ts
- *   cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/verified-check.ts --docker
+ *   cd server && ../scripts/locked.sh verified-check.ts --docker
  *
  * With --docker it also asks a real Windlass what it does with a user's checks and a repository's
  * own: real turns in local containers, with a scripted model and no sign-in. That is what the

@@ -3,7 +3,7 @@
  * (web/src/api/rivet.ts, with RivetKit's real client under it) against a real server, through an
  * engine that asks for tokens and lets them run out. Run with:
  *
- *   cd server && flock /tmp/wlp-test.lock npx tsx --tsconfig ../web/tsconfig.json ../scripts/connection-e2e.ts
+ *   cd server && ../scripts/locked.sh connection-e2e.ts
  *
  * The local engine asks for no token and issues none, so this check stands a front before it, on a
  * port of its own, that does what a cluster's engine does at its edge (guard-core `auth.rs` and
@@ -20,8 +20,7 @@
  *
  * The server is started as a deployment's: with the (made-up) admin token and the front as
  * WLP_PUBLIC_ENDPOINT. The client is given the platform's address and nothing else. Sandboxes are the
- * fake layer's; it starts its own server on ports 6420 and 6440, so run it where the other end-to-end
- * scripts are run, one at a time.
+ * fake layer's. Its server shares ports 6420 and 6440 with the other checks in group 6420.
  *
  * What it shows, with turns that really run: the web app signs in, creates an agent and runs a turn
  * with a token it was handed; a feed stays open and delivers after its token ran out; the next prompt

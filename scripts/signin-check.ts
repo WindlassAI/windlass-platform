@@ -1,11 +1,11 @@
 /**
  * Check of the sign-in machinery (server/src/signin/) on this machine, without Docker. Run with:
  *
- *   cd server && npx tsx ../scripts/signin-check.ts
+ *   cd server && ../scripts/locked.sh signin-check.ts
  *
  * Its last section, `actors`, starts a server of its own on ports 6420 and 6440 (fake sandboxes, the
- * real sign-in), so run it where the other end-to-end scripts are run, one at a time; it is skipped,
- * and says so, when port 6420 is taken. The sections before it need no server.
+ * real sign-in), so the helper takes group 6420. The section skips itself when port 6420 is taken.
+ * The sections before it need no server.
  *
  * No real sign-in is used and nothing is sent to OpenAI:
  *

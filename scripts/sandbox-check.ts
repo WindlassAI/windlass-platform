@@ -1,7 +1,7 @@
 /**
  * End-to-end check of the sandbox layer on this machine. Run with:
  *
- *   cd server && npx tsx ../scripts/sandbox-check.ts
+ *   cd server && ../scripts/locked.sh sandbox-check.ts
  *
  * No real model is called, no real sign-in is completed, and nothing is sent to OpenAI:
  *
@@ -34,7 +34,8 @@
  *
  *   WLP_CHECK_SECTIONS=image,failures   run only the sections whose names start with one of these
  *   WLP_CHECK_CLEANUP_SH=0              do not run sandbox/cleanup.sh (it removes every windlass-platform
- *                                       resource on the machine, also those of a server running beside this check)
+ *                                       resource on the machine, also those of a server running beside this check).
+ *                                       The helper's exclusive Docker lock keeps other Docker checks away from cleanup.sh.
  */
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";

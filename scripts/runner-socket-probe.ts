@@ -2,7 +2,7 @@
  * A raw socket to one actor, through the engine's gateway. The node doing the answering is a
  * child of this check, so a drain reaches just that node. The actor answers with a byte count.
  *
- *   cd server && npx tsx ../scripts/runner-socket-probe.ts
+ *   cd server && ../scripts/locked.sh runner-socket-probe.ts
  *
  * WLP_CHECK_ENGINE selects an existing engine. On a cluster give RIVET_ADMIN_TOKEN and a
  * RIVET_POOL reserved for this node. WLP_PROBE_IDLE_MS sets the wait without any messages.

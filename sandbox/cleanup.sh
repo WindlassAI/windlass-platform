@@ -2,9 +2,10 @@
 # Removes every Docker resource windlass-platform created: containers and volumes that carry the label
 # dev.windlass-platform=1 and a wlp- name, then the sandbox image. Nothing without that label is touched.
 #
-#   sandbox/cleanup.sh            containers, volumes (wlp-user-*, and any wlp-auth-* left from before sign-ins moved into the users' actors)
-#                                 and the image
-#   sandbox/cleanup.sh --keep-image
+# From server/, take the exclusive Docker lock when running by hand:
+#   ../scripts/locked.sh ../sandbox/cleanup.sh            containers, volumes (wlp-user-*, and any wlp-auth-* left from before sign-ins moved into the users' actors)
+#                                                         and the image
+#   ../scripts/locked.sh ../sandbox/cleanup.sh --keep-image
 set -eu
 LABEL=dev.windlass-platform=1
 keep_image=0

@@ -4,7 +4,7 @@
  * of its submission (`PromptInput.idempotencyKey`, `CreateSessionInput.idempotencyKey`) it is taken
  * once and answered as the first attempt was (README, "A message sent twice").
  *
- *   cd server && npx tsx ../scripts/idempotency-check.ts
+ *   cd server && ../scripts/locked.sh idempotency-check.ts
  *
  * It starts a server of its own on fresh state, on ports of its own (the engine on 6460, which also
  * takes 6461 and 6470, the platform's routes on 6480; WLP_CHECK_ENGINE_PORT and WLP_CHECK_HTTP_PORT

@@ -1,4 +1,5 @@
 #!/bin/sh
+# From server/, take the exclusive Docker lock when running by hand: ../scripts/locked.sh ../scripts/runner-build.sh
 # A local immutable image ID works for development. For a release pass registry/repo@sha256:...
 # WLP_RUNNER_PLATFORMS=linux/amd64,linux/arm64 writes an OCI archive instead of loading one platform.
 set -eu

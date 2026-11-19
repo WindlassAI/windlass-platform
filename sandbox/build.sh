@@ -1,7 +1,8 @@
 #!/bin/sh
 # Builds the sandbox image, windlass-platform-sandbox:latest. Idempotent: an unchanged Dockerfile and binary reuse the cache.
 #
-#   WINDLASS_BINARY=/path/to/windlass-linux-<arch> sandbox/build.sh
+# From server/, take the exclusive Docker lock when running by hand:
+#   WINDLASS_BINARY=/path/to/windlass-linux-<arch> ../scripts/locked.sh ../sandbox/build.sh
 #   WLP_SANDBOX_IMAGE=<name:tag> ...   another tag than the one the server uses (scripts/sandbox-check.ts
 #                                      builds throwaway images from older Windlasses this way)
 #
@@ -13,7 +14,7 @@
 #
 # Without WINDLASS_BINARY it takes the released Windlass that sandbox/fetch-windlass.sh pins and fetches.
 # A build of your own is for trying a Windlass that is not released yet:
-#   WINDLASS_BINARY=~/projects/windlass-local-builds/windlass-linux-<arch> sandbox/build.sh
+#   WINDLASS_BINARY=~/projects/windlass-local-builds/windlass-linux-<arch> ../scripts/locked.sh ../sandbox/build.sh
 # Prints the installed Windlass version on its last line.
 set -eu
 
