@@ -12,10 +12,10 @@
  *
  *   checks.finished        the evidence of one run: each check's name, command, status, exit code,
  *                          duration, and the file its output is kept in; from a Windlass with
- *                          required checks also whose it is (`origin`), whether it is required,
- *                          the end of its output (`outputTail`) and why it could not be started
- *                          (`startError`); from a later one also what the run's changes are
- *                          measured from (`since`) and the session's required checks
+ *                          required checks (0.3.0) also whose it is (`origin`), whether it is
+ *                          required, the end of its output (`outputTail`), why it could not be
+ *                          started (`startError`), what the run's changes are measured from
+ *                          (`since`) and the session's required checks
  *   synthetic.appended     with `origin: "check_report"`: what failed, as the harness tells the agent
  *   step.started           a model call: after such a message, the agent was sent back with it.
  *                          Windlass writes the message with an ending that leaves checks
@@ -238,7 +238,7 @@ export class VerificationLog {
 		let state: Verified["state"];
 		if (this.ending?.kind === "failed") state = "failed";
 		else if (this.ending?.kind !== "succeeded") state = "stopped";
-		// From a Windlass that sends the agent back over them: required checks that no sandbox could run are in the run as not started, and the turn ends with them failing. Nothing was verified. A later one ends the turn at once and says why (`not_started`).
+		// Windlass said that it could not run checks in the sandbox, and the turn ended with checks unresolved for another reason than the one 0.3.0 gives a turn it ends over checks that were not started (`not_started`): nothing was verified.
 		else if (status === "unresolved" && this.noSandbox && reason !== "not_started") state = "no_sandbox";
 		else if (status === "passed" || status === "unresolved" || status === "not_needed") state = status;
 		else if (saved.length === 0 && !(project !== null && (project.checks ?? 0) > 0)) state = "none_set";

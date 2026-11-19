@@ -10,8 +10,8 @@
  * No real sign-in is used and nothing is sent to OpenAI:
  *
  *   - every sign-in here is made up, with obviously fake tokens (`FAKE-ACCESS-TOKEN-...`);
- *   - where a real Windlass runs (the section `windlass`, with the local build at
- *     ~/projects/windlass-local-builds/windlass-linux-<arch>, or the executable WLP_WINDLASS_BIN names),
+ *   - where a real Windlass runs (the sections `windlass` and `actors`, with the pinned release as
+ *     sandbox/fetch-windlass.sh keeps it, or the executable WLP_WINDLASS_BIN names),
  *     it is pointed at a stand-in for OpenAI's sign-in service that runs inside this process: Windlass
  *     is given it as its HTTPS proxy, so the requests Windlass means for auth.openai.com arrive here,
  *     are answered here, and go nowhere else. The stand-in exchanges a made-up code, signs an ID token
@@ -32,12 +32,12 @@
  *   WLP_CHECK_SECTIONS=seal,holder   run only the sections whose names start with one of these
  */
 
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createSign, generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, type ServerResponse, createServer as createHttpServer } from "node:http";
 import { type AddressInfo, type Server, type Socket, createServer as createNetServer } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { TLSSocket } from "node:tls";
 import { fileURLToPath } from "node:url";
@@ -54,6 +54,12 @@ import { LocalLoginRunner, TMP_PREFIX } from "../server/src/signin/runner.js";
 import { SealError, createSealer, serverSealer } from "../server/src/signin/seal.js";
 
 const run = randomBytes(3).toString("hex");
+/** The Windlass the sections with a real one run: the executable WLP_WINDLASS_BIN names, else the pinned release, which sandbox/fetch-windlass.sh keeps and fetches the first time. */
+function windlassBinary(): string | null {
+	if (process.env.WLP_WINDLASS_BIN) return process.env.WLP_WINDLASS_BIN;
+	const kept = spawnSync(resolve(dirname(fileURLToPath(import.meta.url)), "../sandbox/fetch-windlass.sh"), { encoding: "utf8" });
+	return kept.status === 0 ? join(kept.stdout.trim(), `windlass-linux-${process.arch === "arm64" ? "arm64" : "x64"}`) : null;
+}
 const SECRET = /FAKE-(ACCESS|REFRESH)-TOKEN|FAKE\.ID\.TOKEN|FAKE-code/;
 
 /** Everything this process prints, to be read at the end. */
@@ -786,10 +792,9 @@ async function main(): Promise<void> {
 	});
 
 	await section("windlass", async () => {
-		const arch = process.arch === "arm64" ? "arm64" : "x64";
-		const binary = process.env.WLP_WINDLASS_BIN || join(homedir(), "projects", "windlass-local-builds", `windlass-linux-${arch}`);
-		if (!existsSync(binary)) {
-			info(`SKIP  no Windlass executable at ${binary}: set WLP_WINDLASS_BIN to one with \`login token --valid-for\``);
+		const binary = windlassBinary();
+		if (binary === null || !existsSync(binary)) {
+			info(`SKIP  no Windlass executable ${binary === null ? "from sandbox/fetch-windlass.sh" : `at ${binary}`}: set WLP_WINDLASS_BIN to one with \`login token --valid-for\``);
 			return;
 		}
 		const standin = new StandIn();
@@ -1021,10 +1026,9 @@ async function main(): Promise<void> {
 	});
 
 	await section("actors", async () => {
-		const arch = process.arch === "arm64" ? "arm64" : "x64";
-		const binary = process.env.WLP_WINDLASS_BIN || join(homedir(), "projects", "windlass-local-builds", `windlass-linux-${arch}`);
-		if (!existsSync(binary)) {
-			info(`SKIP  no Windlass executable at ${binary}: set WLP_WINDLASS_BIN to one with \`login token --valid-for\``);
+		const binary = windlassBinary();
+		if (binary === null || !existsSync(binary)) {
+			info(`SKIP  no Windlass executable ${binary === null ? "from sandbox/fetch-windlass.sh" : `at ${binary}`}: set WLP_WINDLASS_BIN to one with \`login token --valid-for\``);
 			return;
 		}
 		const free = await new Promise<boolean>((done) => {

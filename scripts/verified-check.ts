@@ -22,8 +22,10 @@
  *       started ends the turn at once and is kept apart from one that failed, a check named
  *       later runs with the next change, and a session it cannot read is refused with a reason
  *
- * The same cases run against the server's image and, where a build of Windlass's branch with
- * required checks is on this machine (`BRANCH_BINARY`), against a throwaway image made from it.
+ * The same cases run against the server's image, whose Windlass is the pinned release and takes
+ * required checks, and against a throwaway image made from the last release without them, which
+ * sandbox/fetch-windlass.sh keeps (`older`): the Windlass of a sandbox made before the image was
+ * rebuilt. Where that release cannot be had, its half is skipped, and the check says so.
  */
 
 import { spawnSync } from "node:child_process";
@@ -476,8 +478,9 @@ if (process.argv.includes("--docker")) {
 	type Handle = import("../server/src/sandbox/sandboxes.js").DockerSandboxHandle;
 	const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 	const run = randomId(3);
-	/** A build of Windlass's branch with required checks, where this machine has one: the second Windlass the cases run against until the server's image has them itself. */
-	const BRANCH_BINARY = `/home/ubuntu/projects/windlass-local-builds/checks-branch/windlass-linux-${process.arch === "arm64" ? "arm64" : "x64"}`;
+	/** The last release without required checks, which a sandbox made from an earlier image keeps: the second Windlass the cases run against. */
+	const older = spawnSync(join(root, "sandbox/fetch-windlass.sh"), ["older"], { encoding: "utf8" });
+	const OLDER_BINARY = join(older.stdout.trim(), `windlass-linux-${process.arch === "arm64" ? "arm64" : "x64"}`);
 	type Item = Record<string, unknown>;
 	const call = (callId: string, name: string, input: Record<string, unknown>): Item[] => [{ type: "tool_call", callId, name, input }, { type: "finish", reason: "tool_calls" }];
 	const say = (words: string): Item[] => [{ type: "text", text: words }, { type: "finish", reason: "stop" }];
@@ -489,8 +492,8 @@ if (process.argv.includes("--docker")) {
 	const SWITCHED_OFF = { checks: [], verify: { mode: "off" } };
 	const facts = (verified: Verified) => plain(verified.run?.checks.map((check) => [check.name, check.command, check.whose, check.required ?? false, check.status, check.sentBack]) ?? null);
 
-	/** The cases, against the Windlass of one image: what it says it takes decides what is expected of it. */
-	async function cases(layer: Layer, image: string): Promise<void> {
+	/** The cases, against the Windlass of one image: what it says it takes decides what is expected of it, and `takes` is what it has to say. */
+	async function cases(layer: Layer, image: string, takes: boolean): Promise<void> {
 		const created: string[] = [];
 		const users: string[] = [];
 		async function sandbox(name: string, project?: unknown): Promise<Handle> {
@@ -521,6 +524,7 @@ if (process.argv.includes("--docker")) {
 			const { requiredChecks: required } = await layer.windlass.features(a);
 			console.log(`\nwith the Windlass of ${image} (${(await layer.windlass.version()) ?? "unknown version"}), which ${required ? "takes" : "does not take"} required checks:`);
 			const expectAs = (what: string, ok: boolean, detail = "") => expect(`${required ? "[required]" : "[replaceable]"} ${what}`, ok, detail);
+			expectAs(takes ? "the server's image has a Windlass with required checks" : "the older release has none", required === takes);
 
 			// (a) The user's check alone.
 			const fixed = await turn(a, fixes(), [{ ...OWN_CHECK, showOutput: true }]);
@@ -707,17 +711,17 @@ if (process.argv.includes("--docker")) {
 		}
 	}
 
-	await cases(createSandboxLayer({ signIns: "memory", tokenNetwork: "none" }), IMAGE);
+	await cases(createSandboxLayer({ signIns: "memory", tokenNetwork: "none" }), IMAGE, true);
 
-	if (!existsSync(BRANCH_BINARY)) console.log(`\nSKIP  the same cases against a Windlass with required checks: there is no such build at ${BRANCH_BINARY}`);
+	if (older.status !== 0 || !existsSync(OLDER_BINARY)) console.log(`\nSKIP  the same cases against a Windlass without required checks: sandbox/fetch-windlass.sh older did not give one (${older.stderr.trim().split("\n").pop() ?? `exit ${older.status}`})`);
 	else {
-		const tag = `windlass-platform-sandbox-checks:chk-${run}`;
+		const tag = `windlass-platform-sandbox-older:chk-${run}`;
 		const idOf = async (image: string) => (await docker(["image", "inspect", "--format", "{{.Id}}", image])).stdout.trim();
 		const latest = await idOf(IMAGE);
-		const built = spawnSync(join(root, "sandbox/build.sh"), { env: { ...process.env, WLP_SANDBOX_IMAGE: tag, WINDLASS_BINARY: BRANCH_BINARY }, encoding: "utf8" });
+		const built = spawnSync(join(root, "sandbox/build.sh"), { env: { ...process.env, WLP_SANDBOX_IMAGE: tag, WINDLASS_BINARY: OLDER_BINARY }, encoding: "utf8" });
 		expect("build.sh builds that Windlass into a throwaway image of its own", built.status === 0 && (await idOf(tag)) !== "" && (await idOf(IMAGE)) === latest, built.stderr.trim().split("\n").pop());
 		try {
-			if (built.status === 0) await cases(createSandboxLayer({ image: tag, signIns: "memory", tokenNetwork: "none" }), tag);
+			if (built.status === 0) await cases(createSandboxLayer({ image: tag, signIns: "memory", tokenNetwork: "none" }), tag, false);
 		} finally {
 			const label = await docker(["image", "inspect", "--format", `{{index .Config.Labels "${LABEL}"}}`, tag]);
 			if (label.code === 0 && label.stdout.trim() === "1") await docker(["rmi", tag]);

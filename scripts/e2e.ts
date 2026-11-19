@@ -1473,6 +1473,7 @@ async function main(server: Server | null): Promise<void> {
 				const asked = await askAbout("read the docs (mcp-remote)");
 				assert(asked.title === 'Connect to this project\'s MCP server "docs"?' && asked.subject === "https://docs.example.com/mcp" && asked.server?.remote === true, `asked: ${plain(asked).slice(0, 300)}`);
 				assert(asked.choices[0].label === "Connect for this project" && /^Nothing is started: Windlass reaches it at that address/.test(asked.details[0]), `asked: ${plain(asked).slice(0, 400)}`);
+				await waitFor("the summary event to say waiting", () => harborWatch.summaries.at(-1)?.status === "waiting", 5_000);
 				const from = harborWatch.summaries.length - 1;
 				await waitFor("the platform to settle the question", () => harborWatch.questions.at(-1) === null, QUESTION_MS + 20_000);
 				const waited = Date.now() - asked.askedAt;

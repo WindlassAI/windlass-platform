@@ -795,8 +795,10 @@ function endTurn(draft: Draft, item: Extract<TimelineItem, { kind: "turn.ended" 
 
 const NOTICE_TITLES: Record<string, string> = {
 	sandbox_unavailable: "Windlass's own sandbox is not available",
-	approval_ignored: "A project file asked for a looser approval policy and was not followed",
-	checks_not_run: "The project's checks were not run",
+	// Windlass says under this kind what a project's file asked for and may not: a looser approval policy, a home for sandboxed commands, variables for commands, required checks.
+	approval_ignored: "A setting in the project's own file was not followed",
+	// The project's checks, and with required checks the user's too: the message says which.
+	checks_not_run: "Checks were not run",
 	no_closing_answer: "The model ended without a closing answer",
 };
 

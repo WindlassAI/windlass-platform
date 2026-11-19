@@ -591,7 +591,7 @@ class FakeWindlass implements Windlass {
 	) {}
 
 	async version(): Promise<string | null> {
-		return "0.1.0-fake";
+		return "0.3.0-fake";
 	}
 
 	async problem(): Promise<string | null> {

@@ -12,20 +12,30 @@ conversation and drives a Windlass process inside a sandbox.
 
 ## Run it
 
-You need Node 22 or later, pnpm and Docker. The Windlass the platform runs is the released 0.2.0, which the
+You need Node 22 or later, pnpm and Docker. The Windlass the platform runs is the released 0.3.0, which the
 build scripts fetch by themselves (`sandbox/fetch-windlass.sh`: the release is pinned there by tag and by the
 SHA-256 of each executable, and a file that does not match is not installed).
 
 What the platform needs of a Windlass, should you try another one: it can hand its sign-in's access token to
 another Windlass and be asked for one that is good for a while yet (`windlass login token --valid-for <duration>`
 and `WINDLASS_ACCESS_TOKEN_FILE`), it names every failure of a sign-in by a stable code, and it lists an
-account's models on such a token, one JSON object on a line (`windlass --models --json`; "Models"). 0.2.0 also has two
+account's models on such a token, one JSON object on a line (`windlass --models --json`; "Models"). 0.3.0 also has three
 things the platform uses where a sandbox's Windlass has them, and does without where it has not: a home of the
-session's own for sandboxed commands ("Sandboxes" below), and two lists that say by name which variables a
-command gets ("A repository's secrets"). A third such thing is in no release yet: required checks, which a
-repository's own file cannot replace ("A repository's checks"); with 0.2.0 the platform does without them. The local builds before the release all call themselves 0.1.1:
-`0.1.1+a9c3601d40` is the same code as 0.2.0, `0.1.1+739e1cbc09` has the token option and neither of the two
-later things, and `0.1.1+dca57b2627` has `login token` without `--valid-for` and is too old.
+session's own for sandboxed commands ("Sandboxes" below), two lists that say by name which variables a
+command gets ("A repository's secrets"), and required checks, which a repository's own file cannot replace
+("A repository's checks"). The released 0.2.0 has the first two and not the third. The local builds before
+0.2.0 all call themselves 0.1.1: `0.1.1+a9c3601d40` is the same code as 0.2.0, `0.1.1+739e1cbc09` has the
+token option and none of the three later things, and `0.1.1+dca57b2627` has `login token` without
+`--valid-for` and is too old.
+
+A sandbox keeps the Windlass it was made with, so a session whose sandbox was made before the image had
+0.3.0 goes on with 0.2.0 until its sandbox is replaced. It works as it did: its user's checks reach Windlass
+the older way, where a repository's own list can stand in for them, and its pull requests and the
+repository's page say so. A sandbox made in its place has 0.3.0, which opens every session 0.2.0 wrote, and
+the user's checks are required from that turn on. The other way about does not work: 0.2.0 does not open a
+session in which 0.3.0 recorded check results. So a sandbox image is not to be rolled back to 0.2.0 while
+such sessions are in use ("A repository's checks", "Two kinds of Windlass", has what a turn then says and
+what its user can do).
 
 ```sh
 pnpm install
@@ -41,7 +51,7 @@ pnpm --filter @windlass-platform/web dev    # the web app on http://localhost:51
 Open http://localhost:5173. "Try the demo" needs no account: it runs Windlass's real engine and real tool calls in
 a real container, with a scripted model in place of ChatGPT. "Continue with ChatGPT" runs on your own plan.
 
-With an older Windlass in the image the demo still works and nothing else does. There are two kinds: one without
+With a Windlass from before 0.2.0 in the image the demo still works and nothing else does. There are two kinds: one without
 `windlass login token`, and one that has the command but not its `--valid-for` option. `sandbox/build.sh` warns
 about either, the server says so when it starts (`[wlp] WARNING: The Windlass in the sandbox image ... has no
 windlass login token ...`, or `... has windlass login token but not its --valid-for option ...`), and a turn on a
@@ -1033,22 +1043,23 @@ session on it.
   sent, and neither undoes a setup command or a secret saved meanwhile.
 - **Two kinds of Windlass.** What a repository's own `.windlass/config.json` can do to the user's checks
   depends on the Windlass in the session's sandbox. One with *required checks* (its docs/safety.md,
-  "Required checks"; in no release yet) runs them whatever that file says. The released 0.2.0 has none:
-  there a repository's list stands in for the user's. A sandbox keeps the Windlass it was made with, so
+  "Required checks"; 0.3.0, which the image has) runs them whatever that file says. The released 0.2.0
+  has none: there a repository's list stands in for the user's. A sandbox keeps the Windlass it was made with, so
   the platform asks each sandbox's Windlass, with the question it asks already ("Sandboxes that keep an
   older Windlass": `requiredChecks` among the keys it lists), and each turn goes by the Windlass it runs
   on. The session's summary carries the answer (`SessionSummary.requiredChecks`), and the repository's
   page says under the checks which of the two holds in the sandboxes of the user's agents on it, as far
-  as they have said. A session made under 0.2.0 carries on in a sandbox with the newer Windlass. The
-  other way about it does not: once the newer Windlass has recorded anything about checks in a session
+  as they have said. A session made under 0.2.0 carries on in a sandbox with 0.3.0. The
+  other way about it does not: once 0.3.0 has recorded anything about checks in a session
   (a run of them, or the ending of a turn with checks in force), 0.2.0 refuses to open it, whole: the
-  record has fields 0.2.0 does not know. So an image is not to be rebuilt from an older Windlass while
-  such sessions are in use. A turn that meets this ends with what the user can do about it instead of
+  record has fields 0.2.0 does not know (Windlass's changelog, 0.3.0, says the same). So an image is
+  not to be rolled back to 0.2.0 while such sessions are in use. A turn that meets this ends with what the user can do about it instead of
   Windlass's "Internal error": the session is unchanged and opens again in a sandbox with the Windlass
   that last worked in it, so the image is to be built from that one, the agent's sandbox freed (what
   was not pushed goes with it) and the prompt sent again; or a new agent started. The platform says so
-  on a structured fact and never on a message's words. A Windlass that refuses such a session with a
-  reason (`unreadable_session`, with a sentence that names the record) is taken at its word. 0.2.0
+  on a structured fact and never on a message's words. A Windlass that refuses a session with a
+  reason (0.3.0, of one a later Windlass wrote to: `unreadable_session`, with a sentence that names
+  the record) is taken at its word. 0.2.0
   gives none, only JSON-RPC's internal error, which the sandbox layer hands on as that
   (`open_refused`); the session's actor then goes by what it knows: this sandbox's Windlass takes no
   required checks, and one that does ended a turn of this very Windlass session with checks in
@@ -1102,7 +1113,7 @@ session on it.
   whole, an empty one too, and `verify.mode` there can turn the gate off or make it report without sending
   the agent back. Windlass reads both files when a turn starts and not again in it.
 
-  | The repository's `.windlass/config.json` | Windlass 0.2.0 | A Windlass with required checks |
+  | The repository's `.windlass/config.json` | Windlass 0.2.0 | A Windlass with required checks (0.3.0) |
   |---|---|---|
   | is not there, or says nothing of checks | runs the user's checks | runs the user's checks |
   | names `checks` | runs those, and none of the user's: a turn can end as done without one of the user's checks having run | runs the user's, then those |
@@ -1111,8 +1122,8 @@ session on it.
   | is written or changed by the agent during a turn | changes nothing in that turn; from the next turn on it is followed as above | changes nothing for the user's checks, in that turn or later |
   | cannot run checks: commands are sandboxed and there is no sandbox | runs nothing, says so, and calls the turn done | records the user's checks as not started, and ends the turn as unresolved, at once |
 
-  Both columns were tried against the real thing, the released 0.2.0 and a build of the branch with
-  required checks (`scripts/verified-check.ts --docker`). 0.2.0's record of a run does not say which file
+  Both columns were tried against the real thing, the released 0.2.0 and the released 0.3.0
+  (`scripts/verified-check.ts --docker`). 0.2.0's record of a run does not say which file
   a check came from. The platform does not rewrite a repository's file. It says whose checks ran, and for
   that the sandbox layer reads the repository's file when it writes its own, in the same step, and hands
   on what it holds about checks (`projectChecks`). On 0.2.0 a check is presented as the user's only when
@@ -1126,7 +1137,7 @@ session on it.
 
 ```sh
 cd server && npx tsx ../scripts/verified-check.ts                                   # the rules on their own: what may be saved, the configuration file, a turn's events, the section
-cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/verified-check.ts --docker # and what a real Windlass does with a user's checks and a repository's own: the image's, and a build with required checks where this machine has one
+cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/verified-check.ts --docker # and what a real Windlass does with a user's checks and a repository's own: the image's, and the last release without required checks (`sandbox/fetch-windlass.sh older`)
 ```
 
 The web app's mock has two checks saved for acme/harbor (`?mock=1`, `/repositories/7101`), one of them with
@@ -1181,8 +1192,8 @@ To look at:
   most). And when nothing was verified, one plain sentence: "Nothing was verified: no checks are
   set for this repository.", or which file turned verification off, or that the turn was stopped before
   its checks had run. There is no badge and no tick in it, and it ends by saying that it is not a review.
-- **What a turn that needed no check rests on, and a check that was not started.** A Windlass later
-  than the first with required checks says more in two places, and the platform says it after it
+- **What a turn that needed no check rests on, and a check that was not started.** Windlass 0.3.0
+  says more than 0.2.0 in two places, and the platform says it after it
   (`Verified.unneeded`, `putBack`, `VerifiedCheck.startError`). A Windlass that does not say it is
   told as before, word for word: nothing is worked out in its place.
   - *Why no check was needed* (`reason` of the ending). "The turn changed no file." is told apart
@@ -1217,7 +1228,7 @@ To look at:
   `check_report`, followed by a model call (`step.started`), is the agent being sent back (Windlass
   writes the same message with an ending that leaves checks unresolved, for whoever continues the
   session, and that one sends nobody back); `execution.succeeded` has how the gate ended, why a turn
-  was let end with a check failing, and from a later Windlass why no check was needed and on what;
+  was let end with a check failing, and from 0.3.0 on why no check was needed and on what;
   `snapshot.taken` names each state of the workspace. A key of the evidence or of an ending that the
   platform does not know is passed over, and an ending is never compared whole. The session's
   actor keeps what they come to (`Verified`) on the item that ends the turn, and in its own state for the
@@ -2078,15 +2089,14 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   publish"), so a task that is to publish while its user is away needs a profile whose commands Windlass
   sandboxes. What would close it: an engine that runs as another user than its commands, or one whose
   connection a command cannot write to.
-- **With the released Windlass, a repository's own file can replace a user's checks, and the platform
-  can only say so.** Windlass 0.2.0 follows `checks` and `verify` in a repository's
+- **In a sandbox that still has Windlass 0.2.0, a repository's own file can replace a user's checks,
+  and the platform can only say so.** Windlass 0.2.0 follows `checks` and `verify` in a repository's
   `.windlass/config.json` before its user's, and an agent can write that file: from the turn after, its
   list runs in place of the user's, or nothing does. The pull request then says that the checks that
   ran were the repository's, that the user's did not run, and that the check configuration changed in
   this work; nothing stops the turn from being called done. In a sandbox whose Windlass has required
-  checks the user's run whatever that file says ("A repository's checks"); that Windlass is not
-  released, so an image has it only when it was built from such a build
-  (`WINDLASS_BINARY=... sandbox/build.sh`). And the observations about a work's changes are a short list of
+  checks the user's run whatever that file says ("A repository's checks"): that is 0.3.0, which every
+  sandbox made from the image as it is now has. And the observations about a work's changes are a short list of
   patterns: they miss a test deleted from inside its file and a check weakened in a way the list does
   not name, and they have not been run on a large repository.
 - **A pull request's section is as old as the last push.** It is written when the platform pushes, and
@@ -2124,9 +2134,11 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   the variable there, but a command of the same user reads it from Windlass's process. What would close
   it: MCP servers started with an environment that is not Windlass's own, or as another user.
 - **A sandbox keeps the Windlass it was made with.** A session whose sandbox was made from an older image
-  has a read-only home for its sandboxed commands and the narrower secret scopes of an older Windlass,
+  has what that Windlass has: with 0.2.0, checks of its user's that a repository's own file can replace;
+  with one before it, also a read-only home for its sandboxed commands and the narrower secret scopes,
   until its sandbox is replaced: removed for not being used, or lost. Nothing in the platform replaces a
-  sandbox for its Windlass.
+  sandbox for its Windlass. And no sandbox can go back: an image rolled back to 0.2.0 does not open the
+  sessions 0.3.0 recorded check results in ("A repository's checks").
 - **The launch form's list of secrets is said for the image the platform is built for.** A server does not
   look at the Windlass of its image or template for it (on E2B that would mean starting a sandbox), so
   with an older Windlass there the launch form's sentences are the newer one's, and a session's own list

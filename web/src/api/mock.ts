@@ -2921,7 +2921,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		endpoint: null,
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
-			return { demoEnabled: true, windlassVersion: "0.1.0", profiles, ...(githubOn ? { github: GITHUB } : {}) };
+			return { demoEnabled: true, windlassVersion: "0.3.0", profiles, ...(githubOn ? { github: GITHUB } : {}) };
 		},
 		login: {
 			async start(): Promise<LoginStart> {
