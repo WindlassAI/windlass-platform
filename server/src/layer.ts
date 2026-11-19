@@ -8,16 +8,13 @@
 import { config } from "./config.js";
 import type { SandboxPlace } from "./contract.js";
 import { type SandboxLayer, SandboxUserError } from "./sandbox/api.js";
-import { places } from "./sandbox/places.js";
 
 let loading: Promise<SandboxLayer> | null = null;
 
 async function load(): Promise<SandboxLayer> {
 	if (config.sandbox === "fake") {
-		const { createFakeSandboxLayer, registerFakeMachine } = await import("./sandbox-fake.js");
-		const hosted = createFakeSandboxLayer();
-		registerFakeMachine(hosted);
-		return hosted;
+		const { createFakeSandboxLayer } = await import("./sandbox-fake.js");
+		return createFakeSandboxLayer();
 	}
 	// Not a literal, so this file type-checks and loads without the real layers being present.
 	const specifier = "./sandbox/index.js";
@@ -42,11 +39,16 @@ export function getLayer(): Promise<SandboxLayer> {
 	return loading;
 }
 
+/**
+ * The layer of a session's place. A machine is addressed by its owner and its id, and its layer is
+ * made from those alone on whichever server asks, so no server has to have been told of the machine.
+ * Only a fake deployment has a machine so far: `m_fake`, which every user has.
+ */
 export async function layerFor(place: SandboxPlace, uid: string): Promise<SandboxLayer> {
 	if (place.kind === "hosted") return getLayer();
-	// Loading the hosted layer also registers the fake machine on a fake deployment.
-	if (config.sandbox === "fake") await getLayer();
-	const provider = places.get(place.machineId);
-	if (!provider) throw new SandboxUserError("That machine is not known.");
-	return provider(uid, place.machineId);
+	if (config.sandbox === "fake" && place.machineId === "m_fake") {
+		const { fakeMachineLayer } = await import("./sandbox-fake.js");
+		return fakeMachineLayer(await getLayer());
+	}
+	throw new SandboxUserError("That machine is not known.");
 }

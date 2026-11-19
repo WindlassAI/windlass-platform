@@ -481,8 +481,6 @@ interface SessionVars {
 	pullCheckedAt: number;
 	/** Whether the workspace has commits GitHub lacks, as last read from the sandbox, and what it was read for. */
 	unpushed: { key: string; value: boolean | null } | null;
-	/** How long this sandbox's provider lets it run unused. */
-	providerIdleStop: number | null;
 	/** Fires when the running sandbox's hold is over, or when an unused sandbox would have stopped by itself (`armMeter`). */
 	meterTimer: ReturnType<typeof setTimeout> | null;
 	/** The tail of the queue of calls to the user's meter: a hold is traded or settled by one of them at a time. */
@@ -2093,6 +2091,9 @@ const IDLE_STOP_MARGIN_MS = 3_000;
 /** How many reports of sandbox time a session keeps to send again. */
 const MAX_UNSETTLED = 20;
 
+/** `Sandboxes.idleStopMs` of the hosted layer, once the layer was asked: the same for every metered session on this server. */
+let providerIdleStop: number | null = null;
+
 /** Runs `job` after every call to the user's meter queued before it. */
 function metered<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 	const run = c.vars.metering.then(job, job);
@@ -2145,7 +2146,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
 function holdSandbox(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<void> {
 	if (!countsSandboxTime(meta.place)) return Promise.resolve();
 	return metered(c, async () => {
-		c.vars.providerIdleStop = (await layerOf(c, meta)).sandboxes.idleStopMs;
+		providerIdleStop = (await layerOf(c, meta)).sandboxes.idleStopMs;
 		const answer = await takeHold(c, meta, fresh);
 		armMeter(c, meta);
 		if (answer === null) throw new UserError(USAGE_UNAVAILABLE, { code: "usage_unavailable" });
@@ -2167,8 +2168,8 @@ function armMeter(c: Ctx, meta: SessionMeta, notBefore = 0): void {
 	const open = meta.meter;
 	if (!open || c.vars.stopping || c.vars.destroying) return;
 	let at = open.since + open.seconds * 1000;
-	if (c.vars.providerIdleStop !== null && !c.vars.turn) {
-		at = Math.min(at, Math.max(Math.max(open.since, lastUsed(meta)) + c.vars.providerIdleStop + IDLE_STOP_MARGIN_MS, (open.seen ?? 0) + METER_RETRY_MS));
+	if (providerIdleStop !== null && !c.vars.turn) {
+		at = Math.min(at, Math.max(Math.max(open.since, lastUsed(meta)) + providerIdleStop + IDLE_STOP_MARGIN_MS, (open.seen ?? 0) + METER_RETRY_MS));
 	}
 	c.vars.meterTimer = setTimeout(
 		() => {
@@ -2198,13 +2199,13 @@ function meterTick(c: Ctx, meta: SessionMeta): Promise<void> {
 		if (!open || c.vars.stopping || c.vars.destroying || c.vars.meta !== meta) return;
 		const id = meta.sandboxId;
 		const unused = !c.vars.turn && !c.vars.accepting && !c.vars.publishing && !c.vars.idling;
-		if (id && unused && c.vars.providerIdleStop !== null && Date.now() >= Math.max(open.since, lastUsed(meta)) + c.vars.providerIdleStop) {
+		if (id && unused && providerIdleStop !== null && Date.now() >= Math.max(open.since, lastUsed(meta)) + providerIdleStop) {
 			const state = await layerOf(c, meta)
 				.then(({ sandboxes }) => sandboxes.state(id))
 				.catch(() => null);
 			if (state === "running") open.seen = Date.now();
 			else if (state !== null && !c.vars.turn && !c.vars.accepting) {
-				await settleStretch(c, meta, stoppedBy(open, lastUsed(meta), c.vars.providerIdleStop, Date.now()));
+				await settleStretch(c, meta, stoppedBy(open, lastUsed(meta), providerIdleStop, Date.now()));
 				noteSandbox(c, meta, state);
 				void armIdle(c, meta);
 				return;
@@ -2313,7 +2314,7 @@ function closeMeter(c: Ctx, meta: SessionMeta, how: "now" | "found" = "now"): Pr
 	return metered(c, async () => {
 		const open = meta.meter;
 		if (!open) return;
-		await settleStretch(c, meta, how === "now" ? at : Math.min(stoppedBy(open, lastUsed(meta), c.vars.providerIdleStop, at), open.since + open.seconds * 1000));
+		await settleStretch(c, meta, how === "now" ? at : Math.min(stoppedBy(open, lastUsed(meta), providerIdleStop, at), open.since + open.seconds * 1000));
 	}).catch((error) => {
 		c.log.warn({ msg: "could not settle the sandbox's time", session: meta.sessionId, error: describeError(error) });
 	});
@@ -2352,7 +2353,7 @@ async function meterAfterTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): Pr
 async function wakeMeter(c: Ctx, meta: SessionMeta): Promise<void> {
 	if (!countsSandboxTime(meta.place)) return;
 	try {
-		c.vars.providerIdleStop = (await layerOf(c, meta)).sandboxes.idleStopMs;
+		providerIdleStop = (await layerOf(c, meta)).sandboxes.idleStopMs;
 		const running = meta.sandboxId !== null && meta.sandbox === "running";
 		if (meta.meter && !running) await closeMeter(c, meta, "found");
 		else if (meta.meter) armMeter(c, meta);
@@ -3067,7 +3068,6 @@ export const agentSession = actor({
 			publishing: false,
 			pullCheckedAt: 0,
 			unpushed: null,
-			providerIdleStop: null,
 			meterTimer: null,
 			metering: Promise.resolve(),
 			meterAsked: null,

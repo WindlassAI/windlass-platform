@@ -1853,12 +1853,11 @@ stand (`server/src/usage.ts` has the rules, with no actor in it):
 
 Either takes `unlimited`. The time is counted and shown with or without a limit.
 
-Each session keeps its place beside its sandbox profile. The web app launches on the hosted layer
-chosen by `WLP_SANDBOX`, as does a session stored without a place. On a fake deployment,
-`createSession` also accepts `place: { kind: "machine", machineId: "m_fake" }` with a profile
-offered there. Its sandboxes run in a second fake layer. They take no time or kept place on the usage
-page and have no estimated cost. Turns in both places count towards the same limit on working agents.
-Repository and account profile defaults apply to hosted launches.
+Only hosted sandboxes, the layer `WLP_SANDBOX` chooses, are counted. A session says where it runs
+(`place` in `createSession`): hosted when left out, as is every session stored before places existed,
+or one of its user's machines. A machine's sandboxes take no sandbox time and no kept place and have no
+price; its turns still count towards the limit on agents working at once. The only machine so far is a
+fake deployment's `m_fake`, which every user has.
 
 - **What is counted.** The time a session's sandbox runs: from the moment the session has it created or
   resumed, for a turn, a clone, a setup command, a push, or to read the workspace's changes, until it is

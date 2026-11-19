@@ -135,7 +135,6 @@ import {
 } from "./sandbox/api.js";
 import { BACKUP_ENV, SandboxSessionBackups } from "./sandbox/backup.js";
 import { NOT_SIGNED_IN, SIGN_IN_EXPIRED, SIGN_IN_UNREACHABLE, SignInRefreshError, TOKEN_VALID_FOR_MS, outdatedWindlass, tokenSourceFailure } from "./sandbox/handoff.js";
-import { places } from "./sandbox/places.js";
 import type { SignInCommands, TokenAnswer } from "./signin/commands.js";
 import { actorSignIns, memorySignIns } from "./signin/facade.js";
 import type { SignInMaterial } from "./signin/material.js";
@@ -1163,10 +1162,15 @@ export function createFakeSandboxLayer(options: { signIns?: "actors" | "memory" 
 	return fakeLayer(bucket, { logins, tokens });
 }
 
-/** The machine has its own sandboxes. Its turns use the same sign-ins as hosted turns. */
-export function registerFakeMachine(hosted: SandboxLayer): void {
-	const machine = fakeLayer(null, hosted);
-	places.set("m_fake", () => machine);
+let fakeMachine: SandboxLayer | null = null;
+
+/**
+ * The fake deployment's machine: sandboxes of its own, apart from the hosted ones, and no bucket, as
+ * on a real machine. Its turns use the hosted sign-ins. One machine serves every user here.
+ */
+export function fakeMachineLayer(hosted: SandboxLayer): SandboxLayer {
+	fakeMachine ??= fakeLayer(null, hosted);
+	return fakeMachine;
 }
 
 function fakeLayer(bucket: StandInObjectStore | null, { logins, tokens }: Pick<SandboxLayer, "logins" | "tokens">): SandboxLayer {
