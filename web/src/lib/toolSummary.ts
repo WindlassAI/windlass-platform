@@ -48,6 +48,11 @@ function targetOf(block: ToolBlock): string {
 		const value = input ? input[key] : partialString(block.inputText, key);
 		return typeof value === "string" ? value : null;
 	};
+	// A subagent is named by the first line of its task, as Windlass names it.
+	if (block.name === "subagent") {
+		const task = read("task");
+		if (task !== null) return task.trim().split("\n", 1)[0] ?? "";
+	}
 	if (block.name === "grep") {
 		const pattern = read("pattern");
 		const path = read("path");

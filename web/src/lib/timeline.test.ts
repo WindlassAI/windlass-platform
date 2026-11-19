@@ -73,7 +73,7 @@ const NAMES = Object.keys(FIXTURES);
 
 describe("every fixture", () => {
 	it("is found", () => {
-		expect(NAMES).toHaveLength(13);
+		expect(NAMES).toHaveLength(14);
 	});
 
 	describe.each(NAMES)("%s", (name) => {
@@ -729,6 +729,50 @@ describe("a run of the repository's setup command", () => {
 	it("that has no ending item when its turn ends was cut off", () => {
 		const ended = applyItem(running, { seq: 2, at: 3_000, turn: 1, kind: "turn.ended", outcome: "interrupted", exitCode: null, steps: null, durationMs: 2_000, usage: null, cachedShare: null, message: null });
 		expect(block(ended)[0]).toMatchObject({ state: "cut_off" });
+	});
+});
+
+describe("subagents (a real turn of Windlass 0.3.0 over ACP: acp-subagents)", () => {
+	const feed = feedOf("acp-subagents");
+	const subagents = (view: SessionView) => toolBlocks(turn(view)).filter((block) => block.name === "subagent");
+	const ended = subagents(reduce(feed));
+
+	it("are the calls that started them, each with how it ended and Windlass's sentence about it", () => {
+		expect(ended.map((call) => [call.subagent?.state, call.subagent?.background, call.subagent?.detail])).toEqual([
+			["completed", false, "It finished."],
+			["failed", false, "It failed: The request was rejected: the input is too long for this model."],
+			["stopped", false, "It was stopped before it finished: the user stopped this call."],
+			["completed", true, "It finished."],
+		]);
+		expect(ended[2]).toMatchObject({ state: "failed", stoppedByUser: true });
+		expect(ended.every((call) => call.subagent !== null && call.subagent.durationMs !== null && /^ses_/.test(call.subagent.sessionId))).toBe(true);
+	});
+
+	it("fold what each did into a view of its own: its calls, its words and its error, none of them in the session's own", () => {
+		const work = ended.map((call) => turn(call.subagent!.work).blocks);
+		expect(work[0]?.map((block) => block.kind)).toEqual(["tool", "text"]);
+		expect(work[0]?.[0]).toMatchObject({ name: "glob", state: "done" });
+		expect((work[0]?.[1] as TextBlock).text).toMatch(/^There are no test files yet/);
+		expect(work[1]?.map((block) => block.kind)).toEqual(["error"]);
+		expect((work[1]?.[0] as ErrorBlock).message).toBe("The request was rejected: the input is too long for this model.");
+		expect(work[3]?.map((block) => block.kind)).toEqual(["tool", "text"]);
+		expect(toolBlocks(turn(reduce(feed))).map((block) => block.name)).toEqual(["subagent", "subagent", "subagent", "subagent"]);
+	});
+
+	it("run until their work ends, a background one after its call has returned", () => {
+		const returned = feed.findIndex((entry) => "item" in entry && entry.item.kind === "windlass" && entry.item.event.type === "tool.settled" && (entry.item.event.data as { callId?: string }).callId === "b1");
+		const [, , , background] = subagents(reduce(feed.slice(0, returned + 1)));
+		expect(background).toMatchObject({ state: "done" });
+		expect(background?.subagent?.state).toBe("running");
+	});
+
+	it("that are still running when their turn ends were cut off, and so is what they had open", () => {
+		const opened = feed.findIndex((entry) => "item" in entry && entry.item.kind === "windlass" && entry.item.event.type === "child.event" && (entry.item.event.event as { type?: string }).type === "tool.started");
+		const running = reduce(feed.slice(0, opened + 1));
+		const cut = applyItem(running, { seq: running.lastSeq + 1, at: 2_000_000, turn: 1, kind: "turn.ended", outcome: "interrupted", exitCode: null, steps: null, durationMs: 1_000, usage: null, cachedShare: null, message: null });
+		const [call] = subagents(cut);
+		expect(call?.subagent?.state).toBe("cut_off");
+		expect(turn(call!.subagent!.work).blocks[0]).toMatchObject({ kind: "tool", state: "failed", interrupted: true });
 	});
 });
 

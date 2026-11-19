@@ -20,3 +20,9 @@ the top level and no `seq`. The schema is documented in
   refusal). A second message is sent while a later command runs (`inbox.enqueued` with `delivery: "steer"`,
   delivered at the next step). These have no `cli.summary`: the command line prints that, not the engine.
   `fixtures/acp-probe/` holds the script and the small client that recorded them.
+- `acp-subagents.jsonl`: one turn of Windlass 0.3.0 over ACP with a scripted model, as the platform's sandbox layer
+  hands its events to the session's actor (a `docker-hardened` sandbox). The agent starts four subagents with the
+  `subagent` tool: one finishes after a `glob` call, one fails (its model call is refused), one is stopped by the user
+  (`_windlass/cancel_call` of its call) and one runs in the background, whose answer comes back as an inbox message
+  (`origin: "subagent_result"`). Each has `spawn.started`, its own events as `child.event` and `spawn.ended`. The
+  children's `baseline.set` (their whole system prompt and tool list) is left out to keep the file small.

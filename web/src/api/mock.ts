@@ -553,6 +553,8 @@ const SCRIPTS = {
 	cancelled: { events: run("demo-cancel-while-one-tool-is-running") },
 	network: questionScript(),
 	subagentNetwork: questionScript("Check what the API's health endpoint returns"),
+	// Four subagents: one finishes, one fails, the user stops one, and one runs in the background. Played slowly enough to watch them run.
+	subagents: { events: run("acp-subagents"), stretch: 3 },
 	crash: { events: [], platformFailure: "The sandbox stopped responding and the turn was abandoned. Nothing it had written was lost; send the prompt again to carry on." },
 } satisfies Record<string, Script>;
 
@@ -567,6 +569,7 @@ function chooseScript(text: string, rotation: number): ScriptName {
 	if (/sign.?in|signed out|auth/.test(words)) return "signedOut";
 	if (/crash/.test(words)) return "crash";
 	if (/\b(network|fetch|download|curl|https?|headers?|website|url)\b/.test(words)) return /subagent/.test(words) ? "subagentNetwork" : "network";
+	if (/subagent/.test(words)) return "subagents";
 	if (/refus|approv|unattended|without the sandbox/.test(words)) return "refused";
 	if (/sandbox/.test(words)) return "sandboxed";
 	if (/build|slow|long|stop|cancel/.test(words)) return "build";
@@ -1354,6 +1357,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		if (copy.type === "inbox.enqueued" && data.origin === null) data.content = [{ type: "text", text: prompt }];
 		if (copy.type === "step.started") data.model = session.summary.model;
+		// A subagent's event is its own session's, written now too.
+		if (copy.type === "child.event" && typeof copy.event === "object" && copy.event !== null) (copy.event as WindlassEvent).time = now();
 		return copy;
 	}
 

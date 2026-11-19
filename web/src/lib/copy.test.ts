@@ -30,6 +30,7 @@ function tool(name: string, input: unknown, extra: Partial<ToolBlock> = {}): Too
 		answer: null,
 		stopRequested: false,
 		stoppedByUser: false,
+		subagent: null,
 		...extra,
 	};
 }

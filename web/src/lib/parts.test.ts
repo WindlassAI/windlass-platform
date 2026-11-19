@@ -31,6 +31,7 @@ const tool = (patch: Partial<ToolBlock>): ToolBlock => ({
 	answer: null,
 	stopRequested: false,
 	stoppedByUser: false,
+	subagent: null,
 	...patch,
 });
 

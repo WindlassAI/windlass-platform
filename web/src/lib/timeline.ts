@@ -12,6 +12,8 @@
  * - `tool.progress` replaces the previous progress text of its call; it is not appended.
  * - A run of the repository's setup command is two stored items with one id, and between them the
  *   platform's `setup.output` deltas, each appended; the ending item's output replaces what they built.
+ * - A subagent belongs to the `subagent` call that started it (`spawn.started`, by its `spawnId`), and
+ *   what it does (`child.event`) is folded by this same reducer into a view of its own on that call.
  *
  * Nothing here touches the DOM, the clock or the network.
  */
@@ -137,6 +139,27 @@ export interface ToolBlock extends BlockBase {
 	stopRequested: boolean;
 	/** The call settled after the user stopped it: it ended because of them, not because it failed. */
 	stoppedByUser: boolean;
+	/** The subagent a `subagent` call started; null for every other call, and before it started. */
+	subagent: SubagentRun | null;
+}
+
+/** How a subagent's work ended (`spawn.ended`); "cut_off": its turn ended and nothing said how it did. */
+export type SubagentState = "running" | "completed" | "failed" | "stopped" | "lost" | "cut_off";
+
+/** A subagent: a session of Windlass's own that a call of the agent's started, and what it did there. */
+export interface SubagentRun {
+	spawnId: string;
+	/** Its own session. */
+	sessionId: string;
+	/** The call returned at once, and the answer reaches the agent later as a message. */
+	background: boolean;
+	state: SubagentState;
+	/** Windlass's sentence about how it ended ("It failed: ..."), once it has. */
+	detail: string | null;
+	startedAt: number | null;
+	durationMs: number | null;
+	/** Its steps, calls and words, folded as a session of its own: its one turn is turn 1. */
+	work: SessionView;
 }
 
 export interface CheckResult {
@@ -428,6 +451,7 @@ const isStreamingReasoning = (messageId: string) => (block: Block): block is Rea
 const isCall = (messageId: string, callId: string) => (block: Block): block is ToolBlock => block.kind === "tool" && block.messageId === messageId && block.callId === callId;
 const isChecksRun = (run: number) => (block: Block): block is ChecksBlock => block.kind === "checks" && block.run === run;
 const isSetup = (id: string) => (block: Block): block is SetupBlock => block.kind === "setup" && block.setupId === id;
+const isSpawn = (spawnId: string) => (block: Block): block is ToolBlock => block.kind === "tool" && block.subagent?.spawnId === spawnId;
 
 function newTool(messageId: string, callId: string, name: string, at: number | null): NewBlock<ToolBlock> {
 	return {
@@ -453,6 +477,7 @@ function newTool(messageId: string, callId: string, name: string, at: number | n
 		answer: null,
 		stopRequested: false,
 		stoppedByUser: false,
+		subagent: null,
 	};
 }
 
@@ -613,6 +638,33 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			return;
 		}
 
+		// ---- subagents --------------------------------------------------------------------------
+		case "spawn.started": {
+			// A background command is its shell call's own: only a subagent is followed here.
+			const work = isRecord(data.work) ? data.work : null;
+			if (work?.kind !== "subagent") return;
+			const call = draft.find(turn, isCall(str(data.messageId), str(data.callId)));
+			if (call) draft.replace(turn, call, { subagent: { spawnId: str(data.spawnId), sessionId: str(work.sessionId), background: data.background === true, state: "running", detail: null, startedAt: at, durationMs: null, work: emptyView() } });
+			return;
+		}
+		case "child.event": {
+			const call = draft.find(turn, isSpawn(str(data.spawnId)));
+			if (!call?.subagent || !isRecord(data.event)) return;
+			const child = new Draft(call.subagent.work);
+			const event = data.event as WindlassEvent;
+			applyEvent(child, 1, event, typeof event.time === "number" ? event.time : at);
+			draft.replace(turn, call, { subagent: { ...call.subagent, work: child.view } });
+			return;
+		}
+		case "spawn.ended": {
+			const call = draft.find(turn, isSpawn(str(data.spawnId)));
+			if (!call?.subagent) return;
+			const run = call.subagent;
+			const state = oneOf(data.outcome, ["completed", "failed", "stopped", "lost"] as const) ?? "failed";
+			draft.replace(turn, call, { subagent: { ...run, state, detail: str(data.detail) || null, durationMs: at !== null && run.startedAt !== null ? Math.max(0, at - run.startedAt) : null } });
+			return;
+		}
+
 		// ---- steps -----------------------------------------------------------------------------
 		case "step.started":
 			draft.patchTurn(turn, { steps: draft.turn(turn).steps + 1 });
@@ -762,17 +814,25 @@ function recordCall(draft: Draft, turn: number, messageId: string, usage: unknow
 	draft.patchTurn(turn, { usage: addUsage(draft.turn(turn).usage, call) });
 }
 
-function endTurn(draft: Draft, item: Extract<TimelineItem, { kind: "turn.ended" }>): void {
-	// Whatever is still open when the turn ends will never be closed by an event: close it here.
-	draft.mapBlocks(item.turn, (block) => {
-		if ((block.kind === "text" || block.kind === "reasoning") && block.streaming) return { ...block, streaming: false };
-		if (block.kind === "tool" && (block.state === "input" || block.state === "queued" || block.state === "asking" || block.state === "running")) {
-			return { ...block, state: "failed", interrupted: true, stopRequested: false, progress: null, output: block.output ?? block.progress };
+/** A block as it stays once its turn has ended: whatever is still open then will never be closed by an event. */
+function closed(block: Block): Block {
+	if ((block.kind === "text" || block.kind === "reasoning") && block.streaming) return { ...block, streaming: false };
+	if (block.kind === "tool") {
+		const run = block.subagent;
+		// A subagent still running is cut off with the turn, and so is whatever it had open.
+		const subagent = run?.state === "running" ? { ...run, state: "cut_off" as const, work: { ...run.work, turns: run.work.turns.map((turn) => ({ ...turn, blocks: turn.blocks.map(closed) })) } } : run;
+		if (block.state === "input" || block.state === "queued" || block.state === "asking" || block.state === "running") {
+			return { ...block, state: "failed", interrupted: true, stopRequested: false, progress: null, output: block.output ?? block.progress, subagent };
 		}
-		if (block.kind === "checks" && block.state === "running") return { ...block, state: "error", message: "The checks did not finish." };
-		if (block.kind === "setup" && block.state === "running") return { ...block, state: "cut_off" };
-		return block;
-	});
+		return subagent === run ? block : { ...block, subagent };
+	}
+	if (block.kind === "checks" && block.state === "running") return { ...block, state: "error", message: "The checks did not finish." };
+	if (block.kind === "setup" && block.state === "running") return { ...block, state: "cut_off" };
+	return block;
+}
+
+function endTurn(draft: Draft, item: Extract<TimelineItem, { kind: "turn.ended" }>): void {
+	draft.mapBlocks(item.turn, closed);
 	draft.patchTurn(item.turn, {
 		platformAnswer: null,
 		end: {

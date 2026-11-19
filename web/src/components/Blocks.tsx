@@ -6,8 +6,8 @@ import { parseDiff } from "../lib/diff";
 import { absoluteTime, count, duration, percent, plural, spelledDuration } from "../lib/format";
 import { codeText, toolCopyLabels, toolInputText, toolOutputText } from "../lib/copy";
 import { reasoningTitle, renderMarkdown } from "../lib/markdown";
-import { callKey, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
-import { formatInput, summarizeTool } from "../lib/toolSummary";
+import { callKey, toolBlocks, ZERO_USAGE, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type SubagentRun, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
+import { formatInput, parseInput, summarizeTool } from "../lib/toolSummary";
 import { checkLine, gateWord, overruledLine, ranEarlier, unneededLine, unresolvedLine, unrunLine } from "../lib/verified";
 import { useNow } from "../state/hooks";
 import { CopyButton, useLatest } from "./Copy";
@@ -300,16 +300,21 @@ function toolStateWord(block: ToolBlock, exitCode: number | null): string | null
 	}
 }
 
-const ToolRow = memo(function ToolRow({ block }: { block: ToolBlock }) {
+/**
+ * A tool call's row. `nested`: a call of a subagent's, under the row of the call that started it.
+ * Its question is answered at the end of the turn (`Turn`), and the user stops the subagent, not one
+ * call of its.
+ */
+const ToolRow = memo(function ToolRow({ block, nested = false }: { block: ToolBlock; nested?: boolean }) {
 	const [open, setOpen] = useState(false);
 	const interactive = useInteractive();
 	const running = block.state === "running";
 	const now = useNow(1000, running);
 	const summary = summarizeTool(block);
 	const elapsed = running && block.startedAt !== null ? Math.max(0, now - block.startedAt) : null;
-	const question = interactive?.flow.question ?? null;
+	const question = nested ? null : (interactive?.flow.question ?? null);
 	const asked = question !== null && block.state === "asking" && callKey(question) === callKey(block) ? question : null;
-	const stopCall = running && !block.stopRequested ? (interactive?.stopCall ?? null) : null;
+	const stopCall = !nested && running && !block.stopRequested ? (interactive?.stopCall ?? null) : null;
 
 	const stateWord = toolStateWord(block, summary.exitCode);
 	// Under the row, without opening it: output as it arrives, and the end of what a failed call printed.
@@ -369,6 +374,130 @@ const ToolRow = memo(function ToolRow({ block }: { block: ToolBlock }) {
 		</div>
 	);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Subagents
+// ---------------------------------------------------------------------------------------------
+
+/** The subagent's own state, in the words and classes of a call's. */
+function subagentLook(block: ToolBlock, run: SubagentRun): { look: "running" | "done" | "failed"; halted: boolean; word: string | null; asking?: boolean } {
+	switch (run.state) {
+		case "running":
+			// One of its calls waits on a question of the user's, which is put at the end of the turn.
+			if (run.work.turns[0]?.blocks.some((child) => child.kind === "tool" && child.state === "asking")) return { look: "running", halted: false, word: TOOL_STATE_WORD.asking, asking: true };
+			return { look: "running", halted: false, word: block.stopRequested ? "stopping" : TOOL_STATE_WORD.running };
+		case "completed":
+			return { look: "done", halted: false, word: null };
+		case "failed":
+			return { look: "failed", halted: false, word: "failed" };
+		case "stopped":
+			return { look: "failed", halted: true, word: block.stoppedByUser ? "stopped by you" : "stopped" };
+		case "lost":
+			return { look: "failed", halted: true, word: "lost" };
+		case "cut_off":
+			return { look: "failed", halted: true, word: "cut off" };
+	}
+}
+
+/** What is said under a subagent that did not finish: Windlass's own sentence, unless the row's word says it already. */
+function subagentSaid(block: ToolBlock, run: SubagentRun): string | null {
+	if (run.state === "running" || run.state === "completed") return null;
+	if (run.state === "cut_off") return "The turn ended before Windlass said how the subagent did.";
+	if (run.state === "stopped" && block.stoppedByUser) return null;
+	return run.detail;
+}
+
+const EMPTY_TURN: TurnView = { turn: 1, blocks: [], steps: 0, interruptRequested: false, verification: null, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null };
+
+/**
+ * A call of the `subagent` tool once its subagent started: a row like any call's, whose state is the
+ * subagent's (a background one runs on after its call returned), and in it the task, what the
+ * subagent did, with the rows the session's own work has, and its answer.
+ */
+const SubagentRow = memo(function SubagentRow({ block, run }: { block: ToolBlock; run: SubagentRun }) {
+	const [open, setOpen] = useState(false);
+	const interactive = useInteractive();
+	const running = run.state === "running";
+	const now = useNow(1000, running);
+	const elapsed = running && run.startedAt !== null ? Math.max(0, now - run.startedAt) : null;
+	const work = run.work.turns[0] ?? EMPTY_TURN;
+	const calls = toolBlocks(work);
+	const { look, halted, word, asking } = subagentLook(block, run);
+	const said = subagentSaid(block, run);
+	// A background subagent's call has returned already: only a call that waits for its subagent can be stopped.
+	const stopCall = block.state === "running" && !block.stopRequested ? (interactive?.stopCall ?? null) : null;
+	// Under the row, without opening it: what it is doing now.
+	const latest = open || !running ? undefined : calls.at(-1);
+	const target = summarizeTool(block).target;
+	return (
+		<div className={`tool tool-${look}${halted ? " tool-interrupted" : ""}${stopCall ? " tool-stoppable" : ""}`}>
+			<div className="tool-head">
+				<button type="button" className="line-button tool-row" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+					<span className="line-glyph">
+						{running ? <Mark size={15} turning className="tone-accent" /> : look === "done" ? <CheckIcon size={14} className="tone-accent settle" /> : halted ? <StopIcon size={14} className="tone-warn settle" /> : <CrossIcon size={14} className="tone-bad settle" />}
+					</span>
+					<span className="tool-name">subagent</span>
+					<span className="tool-target">{target}</span>
+					<span className="tool-facts">
+						{run.background ? <span>background</span> : null}
+						{calls.length > 0 ? <span>{plural(calls.length, "tool call")}</span> : null}
+						{word ? <span className={`tool-state tool-state-${asking ? "asking" : look}`}>{word}</span> : null}
+						{elapsed !== null ? <span>{duration(Math.max(1000, Math.floor(elapsed / 1000) * 1000))}</span> : run.durationMs !== null ? <span>{duration(run.durationMs)}</span> : null}
+					</span>
+					<ChevronIcon size={12} className={`line-chevron${open ? " line-chevron-open" : ""}`} />
+				</button>
+				{stopCall ? <StopCallButton block={block} stop={stopCall} /> : null}
+			</div>
+			{said ? <p className="tool-refusal">{said}</p> : null}
+			{latest ? (
+				<pre className="tool-preview">
+					{latest.name} {summarizeTool(latest).target}
+				</pre>
+			) : null}
+			{open ? <SubagentBody block={block} run={run} work={work} /> : null}
+		</div>
+	);
+});
+
+function SubagentBody({ block, run, work }: { block: ToolBlock; run: SubagentRun; work: TurnView }) {
+	const input = parseInput(block.inputText);
+	const task = typeof input?.task === "string" ? input.task.trim() : formatInput(block);
+	// Its last words are its answer once it finished; what came before is what it did.
+	const answer = run.state === "completed" ? (work.blocks.findLast((candidate): candidate is TextBlock => candidate.kind === "text") ?? null) : null;
+	const did = work.blocks.filter((candidate) => candidate !== answer);
+	return (
+		<div className="tool-body">
+			<section className="tool-part" aria-label="Task">
+				<div className="tool-part-head">
+					<h4 className="tool-part-title">task</h4>
+					<CopyButton text={task} label="Copy the subagent's task" />
+				</div>
+				<Output text={task} label="Task of the subagent" limit={16} />
+			</section>
+			<section className="tool-part" aria-label="What it did">
+				<h4 className="tool-part-title">what it did</h4>
+				{did.length === 0 ? (
+					<p className="tool-part-empty">{run.state === "running" ? "nothing yet" : "nothing recorded"}</p>
+				) : (
+					did.map((child) => (
+						<div key={child.id} className={blockClass(child)}>
+							{renderBlock(child, true)}
+						</div>
+					))
+				)}
+			</section>
+			{answer ? (
+				<section className="tool-part" aria-label="Answer">
+					<div className="tool-part-head">
+						<h4 className="tool-part-title">answer</h4>
+						<CopyButton text={answer.text} label="Copy the subagent's answer" />
+					</div>
+					<Output text={answer.text} label="Answer of the subagent" />
+				</section>
+			) : null}
+		</div>
+	);
+}
 
 // ---------------------------------------------------------------------------------------------
 // The repository's setup command
@@ -746,7 +875,13 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 	);
 }
 
-function renderBlock(block: Block): ReactNode {
+/** A block's wrapper classes, by its kind. */
+function blockClass(block: Block): string {
+	return `block block-${block.kind}${block.kind === "user" && block.steer ? " block-steer" : ""}${block.kind === "notice" && block.noticeKind === "taint" ? " block-taint" : ""}`;
+}
+
+/** `nested`: a block of a subagent's, inside the row of the call that started it. */
+function renderBlock(block: Block, nested = false): ReactNode {
 	switch (block.kind) {
 		case "user":
 			return <UserPrompt block={block} />;
@@ -755,7 +890,7 @@ function renderBlock(block: Block): ReactNode {
 		case "reasoning":
 			return <Reasoning block={block} />;
 		case "tool":
-			return <ToolRow block={block} />;
+			return block.subagent ? <SubagentRow block={block} run={block.subagent} /> : <ToolRow block={block} nested={nested} />;
 		case "checks":
 			return <Checks block={block} />;
 		case "setup":
@@ -779,7 +914,7 @@ export const Turn = memo(function Turn({ turn }: { turn: TurnView }) {
 	return (
 		<section className="turn" aria-label={`Turn ${turn.turn}`}>
 			{turn.blocks.map((block) => (
-				<div key={block.id} className={`block block-${block.kind}${block.kind === "user" && block.steer ? " block-steer" : ""}${block.kind === "notice" && block.noticeKind === "taint" ? " block-taint" : ""}`}>
+				<div key={block.id} className={blockClass(block)}>
 					{renderBlock(block)}
 				</div>
 			))}
