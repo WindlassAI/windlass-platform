@@ -73,6 +73,8 @@ export interface StandinPull {
 	merged: boolean;
 	mergeable: boolean | null;
 	draft: boolean;
+	requestedReviewers: string[];
+	comments: Array<{ id: number; body: string; user: { login: string } }>;
 }
 
 interface Token {
@@ -165,6 +167,8 @@ export class GithubStandin {
 	appPermissions: Permissions = { metadata: "read", contents: "write", pull_requests: "write" };
 	/** Set to make every API call fail as an unreachable GitHub would. */
 	down = false;
+	/** Simulate a refused comment, or GitHub storing one whose reply never reaches the caller. */
+	commentFault: "refuse" | "lose_reply" | null = null;
 	ciRateLimit: { status: 403 | 429; headers: Record<string, string>; message: string } | null = null;
 	private readonly codes = new Map<string, { user: number; challenge: string | null; used: boolean }>();
 	private nextId = 1000;
@@ -473,6 +477,7 @@ export class GithubStandin {
 			html_url: `${this.url}/${repository.owner}/${repository.name}/pull/${pull.number}`,
 			state: pull.state,
 			draft: pull.draft,
+			requested_reviewers: pull.requestedReviewers.map((login) => ({ login })),
 			merged: pull.merged,
 			mergeable: pull.mergeable,
 			merged_at: pull.merged ? new Date().toISOString() : null,
@@ -669,7 +674,7 @@ export class GithubStandin {
 				if (this.pulls.some((pull) => pull.repository === repository.id && pull.state === "open" && pull.head === head && pull.base === base)) {
 					return answer(422, { message: "Validation Failed", errors: [{ resource: "PullRequest", code: "custom", message: `A pull request already exists for ${repository.owner}:${head}.` }] });
 				}
-				const pull: StandinPull = { number: this.pulls.filter((other) => other.repository === repository.id).length + 1, repository: repository.id, title: String(fields.title ?? ""), body: String(fields.body ?? ""), head, base, state: "open", merged: false, mergeable: null, draft: false };
+				const pull: StandinPull = { number: this.pulls.filter((other) => other.repository === repository.id).length + 1, repository: repository.id, title: String(fields.title ?? ""), body: String(fields.body ?? ""), head, base, state: "open", merged: false, mergeable: null, draft: false, requestedReviewers: [], comments: [] };
 				this.pulls.push(pull);
 				return answer(201, this.pullJson(pull));
 			}
@@ -680,6 +685,38 @@ export class GithubStandin {
 				const base = url.searchParams.get("base");
 				const list = this.pulls.filter((pull) => pull.repository === repository.id && pull.state === (url.searchParams.get("state") ?? "open") && (head === "" || pull.head === head) && (base === null || pull.base === base));
 				return answer(200, list.map((pull) => this.pullJson(pull)));
+			}
+
+			const review = /^\/pulls\/(\d+)\/requested_reviewers$/.exec(rest);
+			if (review && method === "POST") {
+				if (!this.allows(token, repository, "pull_requests", "write")) return denied();
+				const pull = this.pulls.find((one) => one.repository === repository.id && one.number === Number(review[1]));
+				if (!pull) return answer(404, { message: "Not Found" });
+				const logins = (body as { reviewers: string[] }).reviewers;
+				if (logins.some((login) => !this.users.has(login) || this.levelOf(repository, login) === "none")) return answer(422, { message: "Reviewers must be collaborators" });
+				pull.requestedReviewers = [...new Set([...pull.requestedReviewers, ...logins])];
+				return answer(201, this.pullJson(pull));
+			}
+			const comments = /^\/issues\/(\d+)\/comments$/.exec(rest);
+			if (comments && (method === "GET" || method === "POST")) {
+				if (!this.allows(token, repository, "pull_requests", method === "GET" ? "read" : "write")) return denied();
+				const pull = this.pulls.find((one) => one.repository === repository.id && one.number === Number(comments[1]));
+				if (!pull) return answer(404, { message: "Not Found" });
+				if (method === "GET") return answer(200, pull.comments.slice(0, Number(url.searchParams.get("per_page") ?? 30)));
+				if (this.commentFault === "refuse") return denied();
+				const comment = { id: ++this.nextId, body: (body as { body: string }).body, user: { login: `${this.slug}[bot]` } };
+				pull.comments.push(comment);
+				if (this.commentFault === "lose_reply") return void response.destroy();
+				return answer(201, comment);
+			}
+			const edit = /^\/issues\/comments\/(\d+)$/.exec(rest);
+			if (edit && method === "PATCH") {
+				if (!this.allows(token, repository, "pull_requests", "write")) return denied();
+				const comment = this.pulls.filter((one) => one.repository === repository.id).flatMap((one) => one.comments).find((one) => one.id === Number(edit[1]));
+				if (!comment) return answer(404, { message: "Not Found" });
+				if (this.commentFault === "refuse") return denied();
+				comment.body = (body as { body: string }).body;
+				return answer(200, comment);
 			}
 
 			const one = /^\/pulls\/(\d+)$/.exec(rest);

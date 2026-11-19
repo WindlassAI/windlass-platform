@@ -168,7 +168,7 @@ export type Effect =
 	/** Record the question and show it ("Needs you"). */
 	| { kind: "ask"; question: Question }
 	/** Record the verdict, request a review from the item's person, and put the verdict line on the pull request. */
-	| { kind: "handoff"; key: string; verdict: Verdict };
+	| { kind: "handoff"; key: string; verdict: Verdict; words: string; reviewDone?: true };
 
 export interface Outcome {
 	/** The same object as given when the fact changed nothing. */

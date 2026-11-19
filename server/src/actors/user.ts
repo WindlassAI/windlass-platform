@@ -151,6 +151,9 @@ import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSess
 
 export const DEFAULT_TITLE = "New agent";
 const MAX_REPO_URL_CHARS = 300;
+// The session normally acknowledges the next turn after its meter call (10 s timeout).
+// If that launch dies first, reconcile its claim with the session after a minute.
+const LAUNCH_LEASE_MS = 60_000;
 /**
  * How often a deleted session's copy is tried again, and how long before the first try: each wait is
  * twice the one before, so the tries come 1, 2, 4, ... 128 minutes apart, the last about four hours
@@ -170,6 +173,7 @@ interface UserVars {
 	/** False until a valid token of this user has been seen: until then the actor may be a stranger's doing. */
 	reached: boolean;
 	sessions: Map<string, SessionSummary>;
+	launchUntil: Map<string, number>;
 	/**
 	 * The sessions that were created with a key (submissions.ts), by that key: the digest of what was
 	 * asked for, and the session it made. As the `sessions` table has them, one for each such session
@@ -317,6 +321,21 @@ async function storeSession(c: UserCtx, summary: SessionSummary, submission: Sub
 		submission?.key ?? null,
 		submission?.sent ?? null,
 	);
+}
+
+/** All reports, including a refresh at the ceiling, respect an outstanding claim for the next turn. */
+async function storeReport(c: UserCtx, summary: SessionSummary, checkedAt = 0): Promise<void> {
+	const known = c.vars.sessions.get(summary.id);
+	if (!known || summary.turns < known.turns) return;
+	const until = c.vars.launchUntil.get(summary.id);
+	if (until !== undefined && until > checkedAt && summary.turns === known.turns) {
+		summary = { ...summary, status: "starting" };
+	} else {
+		c.vars.launchUntil.delete(summary.id);
+	}
+	c.vars.sessions.set(summary.id, summary);
+	await c.db.execute("UPDATE sessions SET summary = ?, launch_until = ? WHERE id = ?", JSON.stringify(summary), c.vars.launchUntil.get(summary.id) ?? null, summary.id);
+	broadcastSessions(c);
 }
 
 interface BackupRemovalCtx {
@@ -732,21 +751,22 @@ async function readUsage(db: RawAccess): Promise<UsageBook> {
  * and this actor going wrong in `internalReserve`. Parts, comma-separated: `lose:<n>` has the next n
  * reserves that start something (`fresh`) do their work and commit, then throw, which is what a reply
  * lost on its way back looks like to the session; `lose-renewal:<n>` the same for the next n renewals;
- * `down:<ms>` refuses every reserve for that long from the first renewal on (this actor unreachable).
+ * `delay:<ms>` delays fresh reserves; `down:<ms>` refuses every reserve for that long from the first renewal on (this actor unreachable).
  * In this process's memory: a restart starts it again.
  */
-const reserveFault = ((): { fresh: number; renewal: number; downMs: number; downUntil: number | null } | null => {
+const reserveFault = ((): { fresh: number; renewal: number; delayMs: number; downMs: number; downUntil: number | null } | null => {
 	const spec = process.env.WLP_FAKE_RESERVE_FAULT;
 	if (!spec || config.sandbox !== "fake") return null;
-	const fault = { fresh: 0, renewal: 0, downMs: 0, downUntil: null };
+	const fault = { fresh: 0, renewal: 0, delayMs: 0, downMs: 0, downUntil: null };
 	for (const part of spec.split(",")) {
 		const [kind, value] = part.trim().split(":");
 		const n = Number(value);
-		if (!Number.isSafeInteger(n) || n < 0) throw new Error(`WLP_FAKE_RESERVE_FAULT: "${part}" is not lose:<n>, lose-renewal:<n> or down:<ms>`);
+		if (!Number.isSafeInteger(n) || n < 0) throw new Error(`WLP_FAKE_RESERVE_FAULT: "${part}" is not lose:<n>, lose-renewal:<n>, delay:<ms> or down:<ms>`);
 		if (kind === "lose") fault.fresh = n;
 		else if (kind === "lose-renewal") fault.renewal = n;
+		else if (kind === "delay") fault.delayMs = n;
 		else if (kind === "down") fault.downMs = n;
-		else throw new Error(`WLP_FAKE_RESERVE_FAULT: "${part}" is not lose:<n>, lose-renewal:<n> or down:<ms>`);
+		else throw new Error(`WLP_FAKE_RESERVE_FAULT: "${part}" is not lose:<n>, lose-renewal:<n>, delay:<ms> or down:<ms>`);
 	}
 	return fault;
 })();
@@ -1103,6 +1123,7 @@ export const user = actor({
 				["account_secret", "scope", "TEXT NOT NULL DEFAULT 'setup'"],
 				["sessions", "key", "TEXT"],
 				["sessions", "sent", "TEXT"],
+				["sessions", "launch_until", "INTEGER"],
 			] as const) {
 				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
 				if (!columns.some((found) => found.name === column)) await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
@@ -1153,13 +1174,15 @@ export const user = actor({
 
 	createVars: async (c): Promise<UserVars> => {
 		const [row] = await c.db.execute<{ uid: string; email: string | null; demo: number }>("SELECT uid, email, demo FROM profile WHERE id = 1");
-		const rows = await c.db.execute<{ summary: string; key: string | null; sent: string | null }>("SELECT summary, key, sent FROM sessions");
+		const rows = await c.db.execute<{ summary: string; key: string | null; sent: string | null; launch_until: number | null }>("SELECT summary, key, sent, launch_until FROM sessions");
+		const launchUntil = new Map<string, number>();
 		const sessions = new Map<string, SessionSummary>();
 		const created = new Map<string, Submission & { id: string }>();
-		for (const { summary, key, sent } of rows) {
+		for (const { summary, key, sent, launch_until } of rows) {
 			const parsed = JSON.parse(summary) as SessionSummary;
 			if (parsed.place === undefined) parsed.place = { kind: "hosted" };
 			sessions.set(parsed.id, parsed);
+			if (launch_until !== null) launchUntil.set(parsed.id, launch_until);
 			if (key !== null && sent !== null) created.set(key, { key, sent, id: parsed.id });
 		}
 		// An actor that holds a sign-in is a user's, also before that user's own token was seen here.
@@ -1167,7 +1190,7 @@ export const user = actor({
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, items: await loadItems(c.db) };
+		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, launchUntil, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, items: await loadItems(c.db) };
 	},
 
 	events: {
@@ -1317,11 +1340,7 @@ export const user = actor({
 				if (isActorGone(error)) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 				throw clientError(c.log, error, "The agent could not be renamed. Try again.");
 			}
-			if (c.vars.sessions.has(id)) {
-				c.vars.sessions.set(id, summary);
-				await storeSession(c, summary);
-				broadcastSessions(c);
-			}
+			await storeReport(c, summary);
 			return summary;
 		},
 
@@ -1345,6 +1364,7 @@ export const user = actor({
 					throw clientError(c.log, error, "The agent could not be deleted. Try again.");
 				}
 			}
+			c.vars.launchUntil.delete(id);
 			await c.db.execute("DELETE FROM sessions WHERE id = ?", id);
 		// The key it was created with went with its row: the same key makes a new session from here.
 		for (const [key, made] of c.vars.created) if (made.id === id) c.vars.created.delete(key);
@@ -2018,10 +2038,8 @@ export const user = actor({
 		internalSessionChanged: async (c, summary: SessionSummary): Promise<void> => {
 			requireService(c);
 			if (typeof summary?.id !== "string" || !c.vars.sessions.has(summary.id)) return;
-			c.vars.sessions.set(summary.id, summary);
-			await c.db.execute("UPDATE sessions SET summary = ? WHERE id = ?", JSON.stringify(summary), summary.id);
-			broadcastSessions(c);
-			if (summary.status === "idle") queueChanged(c);
+			await storeReport(c, summary);
+			if (c.vars.sessions.get(summary.id)?.status === "idle") queueChanged(c);
 		},
 
 		/** A deleted session's copy that the session could not remove: it is tried again from here. */
@@ -2034,20 +2052,35 @@ export const user = actor({
 			console.log(`[wlp] backup.remove_deferred uid=${c.key[0]} session=${sessionId}: tried again in ${BACKUP_REMOVE_FIRST_MS / 1000} s`);
 		},
 
+		internalCheckLaunch: async (c, id: string, until: number): Promise<void> => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			if (c.vars.launchUntil.get(id) !== until) return;
+			const entry = c.vars.sessions.get(id);
+			if (!entry) return;
+			const fresh = await sessionActor(c, c.key[0], id).internalSummary().catch((error: unknown): SessionSummary => {
+				if (isActorGone(error)) return { ...entry, status: "idle", sandbox: "none" };
+				throw error;
+			});
+			if (c.vars.launchUntil.get(id) !== until) return;
+			await storeReport(c, fresh, until);
+			queueChanged(c);
+		},
+
 		internalAcquireRun: async (c, sessionId: string): Promise<{ ok: boolean; running: number; known: boolean }> => {
 			requireService(c);
 			const uid = c.key[0];
 			// An item session's turn holds a slot of the turn queue (user-items.ts), counted here instead of by its summary.
 			// A session on one of the user's machines is neither counted nor refused (`hostedLimitsApply`).
 			const others = () => [...c.vars.sessions.values()].filter((session) => session.id !== sessionId && !session.item && session.status !== "idle" && hostedLimitsApply(session.place));
-			const ceiling = config.factory.runningTurns - factorySlots(c);
+			const atLimit = () => others().length + factorySlots(c) >= config.factory.runningTurns;
 			const asking = c.vars.sessions.get(sessionId);
 
 			// At the limit, ask the sessions that look busy: one whose report never arrived would
 			// otherwise block the user for good.
-			if ((!asking || hostedLimitsApply(asking.place)) && others().length >= ceiling) {
+			if ((!asking || hostedLimitsApply(asking.place)) && atLimit()) {
 				await Promise.all(
 					others().map(async (stale) => {
+						const checkedAt = Date.now();
 						let fresh: SessionSummary | null = null;
 						try {
 							fresh = await sessionActor(c, uid, stale.id).internalSummary();
@@ -2055,23 +2088,26 @@ export const user = actor({
 							if (isActorGone(error)) fresh = { ...stale, status: "idle", sandbox: "none" };
 							else c.log.warn({ msg: "could not refresh a session's summary", session: stale.id, error: String(error) });
 						}
-						if (fresh && c.vars.sessions.has(stale.id)) {
-							c.vars.sessions.set(stale.id, fresh);
-							await storeSession(c, fresh);
-						}
+						if (fresh && c.vars.sessions.get(stale.id) === stale) await storeReport(c, fresh, checkedAt);
 					}),
 				);
 			}
 
+			// The user's index can still be a turn behind. The session asking for the slot
+			// cannot start its next turn until we answer, so this is its actual starting count.
+			const own = asking && hostedLimitsApply(asking.place) ? await sessionActor(c, uid, sessionId).internalSummary() : null;
 			// From here to the `set` nothing is awaited: the count and the claim are one step.
 			const entry = c.vars.sessions.get(sessionId);
 			if (!entry) return { ok: false, running: others().length, known: false };
 			const running = others().length;
-			if (hostedLimitsApply(entry.place) && running >= ceiling) return { ok: false, running: running + factorySlots(c), known: true };
-			const claimed: SessionSummary = { ...entry, status: entry.status === "idle" ? "starting" : entry.status };
+			if (hostedLimitsApply(entry.place) && atLimit()) return { ok: false, running: running + factorySlots(c), known: true };
+			const claimed: SessionSummary = { ...entry, turns: own?.turns ?? entry.turns, status: entry.status === "idle" ? "starting" : entry.status };
+			const until = hostedLimitsApply(entry.place) ? Date.now() + LAUNCH_LEASE_MS : null;
+			if (until !== null) c.vars.launchUntil.set(sessionId, until);
 			c.vars.sessions.set(sessionId, claimed);
 
-			await storeSession(c, claimed);
+			if (until !== null) await c.schedule.at(until, "internalCheckLaunch", sessionId, until);
+			await c.db.execute("UPDATE sessions SET summary = ?, launch_until = ? WHERE id = ?", JSON.stringify(claimed), until, sessionId);
 			broadcastSessions(c);
 			return { ok: true, running: running + factorySlots(c) + 1, known: true };
 		},
@@ -2093,6 +2129,7 @@ export const user = actor({
 			const keep = input.keep === true;
 			const renewal = input.fresh !== true && settle !== undefined;
 			if (reserveFault) {
+				if (input.fresh && reserveFault.delayMs) await new Promise((done) => setTimeout(done, reserveFault.delayMs));
 				if (renewal && reserveFault.downMs > 0 && reserveFault.downUntil === null) reserveFault.downUntil = Date.now() + reserveFault.downMs;
 				if (reserveFault.downUntil !== null && Date.now() < reserveFault.downUntil) {
 					console.log(`[wlp] usage.fault_down uid=${c.key[0]} session=${session} hold=${id}: refused (WLP_FAKE_RESERVE_FAULT)`);

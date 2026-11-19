@@ -157,13 +157,24 @@ function creationSubject(kind: string, key: readonly string[]): string {
 	return `create:${encodeURIComponent(kind)}:${key.map(encodeURIComponent).join("/")}`;
 }
 
+// 26d2365 introduced kind-bound grants. For the rollout from 148e17c, issue session grants
+// that old nodes can read and accept both forms. Resume scoped issuance once all pre-26d2365
+// nodes are gone; remove this reader after the last old-form grants have expired (one minute).
+function legacySessionSubject(kind: string, key: readonly string[]): string | null {
+	// Old session keys had two plain IDs. A separator in either could alias another signed subject.
+	if (kind !== "agentSession" || key.length !== 2 || !key.every((part) => /^[A-Za-z0-9_-]+$/.test(part))) return null;
+	return `create:${key[0]}/${key[1]}`;
+}
+
 export function createGrant(kind: string, key: readonly string[]): string {
-	return issueServiceToken(creationSubject(kind, key));
+	return issueServiceToken(legacySessionSubject(kind, key) ?? creationSubject(kind, key));
 }
 
 export function grantIsValid(grant: unknown, key: readonly string[], kind: string): boolean {
 	const caller = verifyToken(grant);
-	return caller?.kind === "service" && caller.subject === creationSubject(kind, key);
+	if (caller?.kind === "service" && (caller.subject === creationSubject(kind, key) || caller.subject === legacySessionSubject(kind, key))) return true;
+	console.warn(`[wlp] actor.create_refused kind=${kind} keyParts=${key.length}`);
+	return false;
 }
 
 export async function createSessionActor(c: HasClient, uid: string, sessionId: string, input: Omit<SessionCreateInput, "grant">): Promise<void> {

@@ -2,7 +2,7 @@
  * Tests of the E2B provider that need no E2B account and send nothing to E2B. Run with:
  *
  *   cd server && npx tsx ../scripts/e2b-provider-test.ts                  the provider on the in-memory client
- *   cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/e2b-provider-test.ts --docker
+ *   cd server && ../scripts/locked.sh e2b-provider-test.ts --docker
  *                                                                        the same, and "a real turn" besides
  *
  * The first part runs the provider's logic (server/src/sandbox/e2b/sandboxes.ts) on `FakeE2b`, which
@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WindlassEvent } from "../server/src/contract.js";
-import { type AccessTokens, type ChatgptLogins, type RunTurnResult, SandboxUserError, type ScriptedModel, type TurnQuestion } from "../server/src/sandbox/api.js";
+import { type AccessTokens, type ChatgptLogins, DeploymentFull, type RunTurnResult, SandboxUserError, type ScriptedModel, type TurnQuestion } from "../server/src/sandbox/api.js";
 import { IMAGE, LABEL_ARG, docker } from "../server/src/sandbox/docker.js";
 import { cleanupDeployment } from "../server/src/sandbox/e2b/cleanup.js";
 import type { E2bClient, E2bCommand, E2bCommandOptions } from "../server/src/sandbox/e2b/client.js";
@@ -216,22 +216,22 @@ await section("a profile per session", async () => {
 });
 
 await section("the cap", async () => {
-	const w = world({ maxRunning: 2 });
+	const w = world({ maxRunning: 1 });
 	const a = await w.make("u1", "s1");
-	const b = await w.make("u2", "s2");
+	const capacityWait = (error: unknown) => error instanceof DeploymentFull && error.limit === 1 && error.message === capReached(1);
 	const before = callsOf(w.fake, "create").length;
-	const third = await userError(() => w.make("u3", "s3"));
-	expect("with as many running as may, no sandbox is created, and the user reads why", third === capReached(2) && callsOf(w.fake, "create").length === before && w.fake.sandboxes.size === 2, third ?? "did not throw");
+	const refused = await w.make("u2", "s2").catch((error: unknown) => error);
+	expect("creating at the deployment cap throws the capacity wait with limit 1 and the user's sentence", capacityWait(refused) && callsOf(w.fake, "create").length === before && w.fake.sandboxes.size === 1);
 	expect("the sentence is one for a user", /at most 2 sandboxes at the same time/.test(capReached(2)) && /Try again in a few minutes/.test(capReached(2)) && /at most 1 sandbox at the same time, and it is in use/.test(capReached(1)));
 	expect("the count comes from E2B's list of the deployment's running sandboxes", w.fake.calls.some((call) => call === `list {"${META.deployment}":"test"} running`));
-	expect("a line says the cap was reached", w.lines.some((line) => line.includes("e2b.cap_reached deployment=test: 2 of at most 2 sandboxes are running")));
+	expect("a line says the cap was reached", w.lines.some((line) => line.includes("e2b.cap_reached deployment=test: 1 of at most 1 sandboxes are running")));
 
 	await w.sandboxes.suspend(a);
 	const c = await w.make("u3", "s3");
 	expect("a paused sandbox does not count: another may be created", w.fake.sandboxes.get(c)?.state === "running" && w.fake.sandboxes.get(a)?.state === "paused");
-	const resumed = await userError(() => w.sandboxes.connect(a));
-	expect("resuming a paused sandbox counts as starting one: refused at the cap, and it stays paused", resumed === capReached(2) && w.fake.sandboxes.get(a)?.state === "paused" && callsOf(w.fake, "connect").filter((call) => call.includes(a)).length === 1, resumed ?? "did not throw");
-	await w.sandboxes.destroy(b);
+	const resumed = await w.sandboxes.connect(a).catch((error: unknown) => error);
+	expect("resuming at the deployment cap throws the same capacity wait and keeps the sandbox paused", capacityWait(resumed) && w.fake.sandboxes.get(a)?.state === "paused" && callsOf(w.fake, "connect").filter((call) => call.includes(a)).length === 1);
+	await w.sandboxes.destroy(c);
 	expect("once one is gone the paused one can be resumed", (await w.sandboxes.connect(a)) !== undefined && w.fake.sandboxes.get(a)?.state === "running");
 
 	// Sandboxes of other deployments on the same account, and sandboxes that are not the platform's at all, are not counted.

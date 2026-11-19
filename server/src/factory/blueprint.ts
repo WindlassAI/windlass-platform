@@ -469,8 +469,9 @@ function handoff(c: Change): void {
 	if (item.head === null || item.pr === null) throw new Error("an item is handed over only after its work was pushed");
 	c.enter("handoff");
 	const verdict = verdictOf({ id: c.key, item: item.id, run: run.n, head: item.head, at: c.at, place: item.place, gate: run.gate, ci: verdictCi(run.ci), acceptance: item.task.acceptance, mergeable: run.ci?.mergeable ?? null });
-	c.effects.push({ kind: "handoff", key: c.key, verdict });
-	c.say(verdictWords(verdict, run.gate));
+	const words = verdictWords(verdict, run.gate);
+	c.effects.push({ kind: "handoff", key: c.key, verdict, words });
+	c.say(words);
 	run.endedAt = c.at;
 	c.state("review");
 	c.enter("merged");

@@ -34,9 +34,9 @@ import { clientError, describeError, requireService } from "../auth.js";
 import { type ItemAction, type ItemEvent, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
 import { RULES, advance, currentKey } from "../factory/blueprint.js";
 import type { Effect, Fact, FactoryItem } from "../factory/types.js";
-import { githubApp } from "../github/app.js";
+import { githubApp, GithubError } from "../github/app.js";
 import { readCi } from "../github/ci.js";
-import { resolveRepository } from "../github/repos.js";
+import { resolveRepository, type StoredConnection } from "../github/repos.js";
 import { grantIsValid, sessionActor, userActor } from "./internal.js";
 
 /** The rounds a run allows, as the blueprint stops on them (`RULES`), for the item's page. */
@@ -80,6 +80,8 @@ interface ItemVars {
 	writing: Promise<unknown>;
 	/** The effects being performed now, by row id: one is not performed twice at once. */
 	performing: Set<string>;
+	/** Every handoff edits the same comment, including a retry that overlaps the next run. */
+	handoff: Promise<void>;
 	/** The schedule that wakes the item for its earliest effect, as the item row has it. */
 	due: { id: string; at: number } | null;
 	reporting: Promise<void> | null;
@@ -264,7 +266,7 @@ async function performDue(c: Ctx): Promise<void> {
 async function performRow(c: Ctx, row: EffectRow): Promise<void> {
 	c.vars.performing.add(row.id);
 	try {
-		await perform(c, JSON.parse(row.effect) as Effect);
+		await perform(c, row);
 		await queued(c, () => c.db.execute("DELETE FROM effects WHERE id = ? AND effect = ?", row.id, row.effect));
 	} catch (error) {
 		const wait = Math.min(RETRY_MOST_MS, RETRY_FIRST_MS * 2 ** Math.min(row.attempts, 10));
@@ -294,16 +296,81 @@ async function armDue(c: Ctx): Promise<void> {
 async function github(c: Ctx, meta: ItemMeta) {
 	const app = githubApp();
 	if (!app) throw new Error("the deployment has no GitHub App");
-	const connection = await userActor(c, meta.uid).internalGithubConnection();
+	const connection: StoredConnection | null = await userActor(c, meta.uid).internalGithubConnection();
 	if (!connection) throw new Error("the user's GitHub connection is gone");
 	const resolved = await resolveRepository(app, connection, meta.repository.id, "read");
 	const { owner, name } = resolved.repository;
 	const pull = (number: number) => app.withToken(resolved.installation.id, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, owner, name, number));
-	return { app, installationId: resolved.installation.id, owner, name, pull };
+	return { app, installationId: resolved.installation.id, owner, name, pull, login: connection.user.login };
+}
+
+type Handoff = Extract<Effect, { kind: "handoff" }>;
+
+/** Put outside text in one paragraph. Bound it before escaping, so even twenty criteria fit in a GitHub comment. */
+function commentText(value: string, limit: number): string {
+	const line = value.replace(/\s+/g, " ").trim();
+	const bounded = line.length > limit ? `${line.slice(0, limit)}…` : line;
+	return bounded.replace(/([\\`*_{}\[\]()<>!&~|@#:$.])/g, "\\$1");
+}
+
+async function handoffProblem(c: Ctx, effect: Handoff, said: string): Promise<void> {
+	const [, , n, attempt] = effect.key.split(":");
+	const event: ItemEvent = { at: Date.now(), by: "platform", step: { run: effect.verdict.run, kind: "handoff", n: Number(n), attempt: Number(attempt) }, said };
+	// A scheduled retry of the same refusal leaves one explanation in the item's log.
+	await queued(c, () => c.db.execute(
+		"INSERT INTO events (at, data) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM events WHERE json_extract(data, '$.step.run') = ? AND json_extract(data, '$.step.kind') = 'handoff' AND json_extract(data, '$.said') = ?)",
+		event.at, JSON.stringify(event), effect.verdict.run, said,
+	));
+}
+
+async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: Handoff, row: EffectRow): Promise<void> {
+	const { verdict } = effect;
+	let action = "reach the pull request";
+	try {
+		const { app, installationId, owner, name, login } = await github(c, meta);
+		await app.withToken(installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } }, async (token) => {
+			if (!effect.reviewDone) {
+				action = "request your review";
+				const pull = await app.pull(token, owner, name, number);
+				if (!pull.requestedReviewers.some((reviewer) => reviewer.toLowerCase() === login.toLowerCase())) {
+					try {
+						await app.requestReviewers(token, owner, name, number, [login]);
+					} catch (error) {
+						if (!(error instanceof GithubError && error.status === 422)) throw error;
+						console.log(`[wlp] factory.review_request_refused item=${verdict.item} status=422`);
+						await handoffProblem(c, effect, "GitHub refused the review request (422).");
+					}
+				}
+				// The person may finish their review while a refused comment waits to be retried.
+				const done = JSON.stringify({ ...effect, reviewDone: true });
+				await queued(c, () => c.db.execute("UPDATE effects SET effect = ? WHERE id = ? AND effect = ?", done, row.id, row.effect));
+				row.effect = done;
+			}
+
+			action = "post the verdict comment";
+			const marker = `<!-- windlass-item:${verdict.item} -->`;
+			// Older queued handoffs kept the sentence in the same transaction, only in the item's log.
+			const words = effect.words ?? (await c.db.execute<{ said: string }>(
+				"SELECT json_extract(data, '$.said') AS said FROM events WHERE at = ? AND json_extract(data, '$.step.kind') = 'handoff' ORDER BY seq LIMIT 1", verdict.at,
+			))[0]?.said;
+			if (!words) throw new Error("the handoff has no recorded verdict sentence");
+			const acceptance = verdict.acceptance.map((criterion) => `- ${commentText(criterion, 1000)}`);
+			const body = [marker, `**Windlass verdict at ${commentText(verdict.head.slice(0, 7), 7)}: ${verdict.result}**`, commentText(words, MAX_NOTE_CHARS), ...(acceptance.length ? [`Acceptance criteria left to you:\n\n${acceptance.join("\n")}`] : [])].join("\n\n");
+			const comments = await app.issueComments(token, owner, name, number);
+			const own = comments.find((one) => one.author.toLowerCase() === `${app.settings.slug.toLowerCase()}[bot]` && one.body.split("\n", 1)[0] === marker);
+			if (own) await app.updateIssueComment(token, owner, name, own.id, body);
+			else await app.createIssueComment(token, owner, name, number, body);
+		});
+	} catch (error) {
+		const status = error instanceof GithubError && error.status ? ` (GitHub ${error.status})` : "";
+		await handoffProblem(c, effect, `Could not ${action}${status}. The platform will try again.`);
+		throw error;
+	}
 }
 
 /** Performs one effect: what comes of it is taken as a fact. Throws when it could not be done, to be tried again. */
-async function perform(c: Ctx, effect: Effect): Promise<void> {
+async function perform(c: Ctx, row: EffectRow): Promise<void> {
+	const effect: Effect = JSON.parse(row.effect);
 	const stored = c.vars.stored;
 	if (!stored) return;
 	const { item, meta } = stored;
@@ -346,9 +413,14 @@ async function perform(c: Ctx, effect: Effect): Promise<void> {
 			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, state: pull.state });
 			return;
 		}
-		case "handoff":
-			// The verdict was stored with the item. Requesting the review and the verdict's comment on the pull request are not in this slice.
-			return;
+		case "handoff": {
+			const next = c.vars.handoff.then(async () => {
+				const latest = c.vars.stored?.item;
+				if (latest?.pr && latest.run?.n === effect.verdict.run) await handoffOnGithub(c, meta, latest.pr.number, effect, row);
+			});
+			c.vars.handoff = next.catch(() => undefined);
+			return next;
+		}
 		case "ask":
 			return;
 	}
@@ -445,7 +517,7 @@ export const workItem = actor({
 
 	createVars: async (c): Promise<ItemVars> => {
 		const [row] = await c.db.execute<{ due: string | null }>("SELECT due FROM item WHERE id = 1");
-		return { stored: await load(c.db), writing: Promise.resolve(), performing: new Set(), due: row?.due ? (JSON.parse(row.due) as ItemVars["due"]) : null, reporting: null, reportAgain: false };
+		return { stored: await load(c.db), writing: Promise.resolve(), performing: new Set(), handoff: Promise.resolve(), due: row?.due ? (JSON.parse(row.due) as ItemVars["due"]) : null, reporting: null, reportAgain: false };
 	},
 
 	onWake: (c) => {

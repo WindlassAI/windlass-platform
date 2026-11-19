@@ -130,6 +130,7 @@ export interface Pull {
 	body: string;
 	head: string;
 	base: string;
+	requestedReviewers: string[];
 }
 
 type Auth = { bearer: string } | { basic: string } | null;
@@ -461,7 +462,8 @@ export class GithubApp {
 		if (number === 0) return null;
 		const merged = fields.merged === true || (fields.merged_at !== null && fields.merged_at !== undefined);
 		const state = merged ? "merged" : text(fields.state) === "closed" ? "closed" : fields.draft === true ? "draft" : "open";
-		return { number, url: text(fields.html_url), state, mergeable: typeof fields.mergeable === "boolean" ? fields.mergeable : null, title: text(fields.title), body: text(fields.body), head: text(record(fields.head).ref), base: text(record(fields.base).ref) };
+		const requestedReviewers = Array.isArray(fields.requested_reviewers) ? fields.requested_reviewers.map((user) => text(record(user).login)) : [];
+		return { number, requestedReviewers, url: text(fields.html_url), state, mergeable: typeof fields.mergeable === "boolean" ? fields.mergeable : null, title: text(fields.title), body: text(fields.body), head: text(record(fields.head).ref), base: text(record(fields.base).ref) };
 	}
 
 	async createPull(token: string, owner: string, name: string, input: { title: string; body: string; head: string; base: string }): Promise<Pull> {
@@ -476,6 +478,27 @@ export class GithubApp {
 		const pull = this.pullOf(answer.body);
 		if (!pull) throw new GithubError(answer.status, "the answer describes no pull request", `could not read pull request #${number} of ${owner}/${name}`);
 		return pull;
+	}
+
+	async requestReviewers(token: string, owner: string, name: string, number: number, logins: string[]): Promise<void> {
+		await this.call({ method: "POST", path: `/repos/${owner}/${name}/pulls/${number}/requested_reviewers`, body: { reviewers: logins }, auth: { bearer: token }, what: "request a review" });
+	}
+
+	async issueComments(token: string, owner: string, name: string, number: number) {
+		const answer = await this.call({ path: `/repos/${owner}/${name}/issues/${number}/comments`, query: { per_page: 100 }, auth: { bearer: token }, what: "list the pull request's comments" });
+		if (!Array.isArray(answer.body)) throw new GithubError(answer.status, "the answer is not a list", "could not read the comments");
+		return answer.body.map((entry) => {
+			const fields = record(entry);
+			return { id: whole(fields.id), body: text(fields.body), author: text(record(fields.user).login) };
+		});
+	}
+
+	async createIssueComment(token: string, owner: string, name: string, number: number, body: string): Promise<void> {
+		await this.call({ method: "POST", path: `/repos/${owner}/${name}/issues/${number}/comments`, body: { body }, auth: { bearer: token }, what: "post the verdict comment" });
+	}
+
+	async updateIssueComment(token: string, owner: string, name: string, id: number, body: string): Promise<void> {
+		await this.call({ method: "PATCH", path: `/repos/${owner}/${name}/issues/comments/${id}`, body: { body }, auth: { bearer: token }, what: "edit the verdict comment" });
 	}
 
 	/** Gives an open pull request another title and description. */

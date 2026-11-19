@@ -166,7 +166,35 @@ async function check() {
 		const id = { uid, machineId };
 		assert.deepEqual(first.profiles, []); assert.equal(first.status, "waiting"); assert.equal(repeat.machineId, machineId);
 		assert.deepEqual(await runner.poll(origin, pair), { state: "approved", ...id, githubLogin: "machine-check" });
-		assert(!grantIsValid(createGrant("machine", [uid, machineId]), [uid, machineId], "agentSession"));
+		const { issueServiceToken, verifyToken } = await import("../server/src/tokens.js");
+		const sessionKey = [uid, "s_0123456789abcdef"];
+		const oldSubject = `create:${sessionKey.join("/")}`;
+		const legacy = issueServiceToken(oldSubject);
+		assert(grantIsValid(legacy, sessionKey, "agentSession"), "a session refused the old issuer");
+		assert(grantIsValid(issueServiceToken(`create:agentSession:${sessionKey.join("/")}`), sessionKey, "agentSession"), "a session refused the scoped issuer");
+		const issued = verifyToken(createGrant("agentSession", sessionKey));
+		assert(issued?.kind === "service" && issued.subject === oldSubject, "an old session would refuse the new issuer");
+
+		const warn = console.warn;
+		try {
+			const rejects = (grant: string, key: string[], kind: string) => {
+				let lines = 0;
+				console.warn = (...args: unknown[]) => {
+					lines++;
+					assert(args.length === 1 && args[0] === `[wlp] actor.create_refused kind=${kind} keyParts=${key.length}`, "the refusal must log only kind and key shape");
+				};
+				assert(!grantIsValid(grant, key, kind), "a creation grant crossed its binding");
+				assert.equal(lines, 1, "one warning per refused grant");
+			};
+			for (const kind of ["machine", "machinePairing", "workItem"]) rejects(legacy, sessionKey, kind);
+			rejects(legacy, [uid, "s_another"], "agentSession");
+			const machineGrant = createGrant("machine", [uid, machineId]);
+			rejects(machineGrant, [uid, machineId], "agentSession");
+			rejects(machineGrant, [`machine:${uid}`, machineId], "agentSession");
+		} finally {
+			console.warn = warn;
+		}
+		console.log("ok   both session grant formats, the old reader, kind isolation and one redacted refusal");
 		await refused(other.confirmMachine(code), "pairing_not_found");
 		await refused(other.setMachineSecrets({ machineId, send: false }), "machine_not_found");
 		await refused(other.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } }), "machine_not_found");

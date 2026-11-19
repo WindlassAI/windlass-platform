@@ -3,7 +3,7 @@
  * through the real actors (`user`, `workItem`, `agentSession`) on the fake sandbox layer, with GitHub
  * played by scripts/github-standin.ts. Run with:
  *
- *   cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/factory-e2e.ts
+ *   cd server && ../scripts/locked.sh factory-e2e.ts
  *
  * It starts its own servers on fresh state, on ports of its own (engine 6620, which also takes 6621
  * and 6630; HTTP 6645), and stops each by its PID. The fake layer replays recorded turns (its words
@@ -25,7 +25,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AuthResult, ItemSummary, ItemView } from "../server/src/contract.js";
 import { createClient, type Registry } from "../server/src/client.js";
-import { GithubStandin, type StandinRepository } from "./github-standin.js";
+import { GithubStandin, type StandinRepository, type StandinPull } from "./github-standin.js";
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
 const ENGINE_PORT = 6620;
@@ -132,10 +132,10 @@ class Server {
 	}
 
 	/** As a deploy stops it: SIGTERM, then the grace period. The engine it started is stopped by its PID, and its ports waited for. */
-	async stop(): Promise<void> {
+	async stop(signal: "SIGTERM" | "SIGKILL" = "SIGTERM"): Promise<void> {
 		const child = this.child;
 		if (!child) return;
-		child.kill("SIGTERM");
+		child.kill(signal);
 		await waitFor("the server to exit", () => this.child === null, 45_000, 100).catch(() => child.kill("SIGKILL"));
 		await sleep(500);
 		try {
@@ -187,11 +187,12 @@ function setCi(repository: StandinRepository, branch: string, conclusion: "succe
 	repository.ci.set(branch, { runs: [run], statuses: [] });
 }
 
-async function api(path: string, init: RequestInit & { token?: string; key?: string } = {}): Promise<{ status: number; body: Record<string, unknown> }> {
+async function api(path: string, init: RequestInit & { token?: string; key?: string; transport?: typeof fetch } = {}): Promise<{ status: number; body: Record<string, unknown> }> {
+	const { token, key, transport = fetch, ...request } = init;
 	const headers: Record<string, string> = { "content-type": "application/json" };
-	if (init.token) headers.authorization = `Bearer ${init.token}`;
-	if (init.key) headers["idempotency-key"] = init.key;
-	const response = await fetch(`${API}${path}`, { ...init, headers });
+	if (token) headers.authorization = `Bearer ${token}`;
+	if (key) headers["idempotency-key"] = key;
+	const response = await transport(`${API}${path}`, { ...request, headers });
 	return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
@@ -222,6 +223,17 @@ await check("schedules: every action the factory schedules is registered under t
 	return `${DUE_ACTION}, ${QUEUE_ACTION}, ${OUTBOX_ACTION}`;
 });
 
+function checkHandoff(pull: StandinPull, view: ItemView) {
+	const verdict = view.verdicts.at(-1)!;
+	const posts = standin.requests.filter((call) => call.method === "POST" && call.path.endsWith(`/pulls/${pull.number}/requested_reviewers`));
+	assert(posts.length === 1 && pull.requestedReviewers.join() === "ada", `expected one review request for ada, got ${posts.length} calls, ${pull.requestedReviewers}`);
+	const own = pull.comments.filter((one) => one.user.login === `${standin.slug}[bot]`);
+	assert(own.length === 1, `expected one platform comment, got ${own.length}`);
+	const comment = own[0]!;
+	assert(comment.body.startsWith(`<!-- windlass-item:${view.id} -->\n\n**Windlass verdict at ${verdict.head.slice(0, 7)}: ${verdict.result}**`), "the comment is missing the marker or the current verdict");
+	return comment;
+}
+
 const main = new Server();
 try {
 	// Room for every sandbox these items leave running: the cap on them has a check of its own (factory-check.ts, `admit`).
@@ -235,7 +247,7 @@ try {
 		assert(/^wlp_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(token), "the token is not shaped as one");
 		const listed = await user.apiTokens();
 		assert(listed.length === 1 && !JSON.stringify(listed).includes(token.slice(-43)), "the token's value is in the list");
-		const body = { repository: { id: harbor.id }, title: "Write a short program", body: "Add a small program to the repository.", acceptance: ["It runs"], start: true };
+		const body = { repository: { id: harbor.id }, title: "Write a short program", body: "Add a small program to the repository.", acceptance: ["It runs", "Keep <!-- windlass-item:fake --> and @everyone inert"], start: true };
 		assert((await api("/api/items", { method: "POST", body: JSON.stringify(body) })).status === 401, "no token was taken");
 		const one = await api("/api/items", { method: "POST", body: JSON.stringify(body), token, key: "k-1" });
 		const two = await api("/api/items", { method: "POST", body: JSON.stringify(body), token, key: "k-1" });
@@ -270,11 +282,17 @@ try {
 		const published = await untilItem(user, id, "the push", (view) => view.pullRequest !== null, 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === published.pullRequest?.number);
 		assert(pull, "the stand-in has no such pull request");
+		const decoy = { id: -1, body: `<!-- windlass-item:${id} -->`, user: { login: "ada" } };
+		pull.comments.push(decoy);
 		setCi(harbor, pull.head, "success");
 		const handed = await untilItem(user, id, "the handoff", (view) => view.state === "review", CI_WAIT_MS);
 		const verdict = handed.verdicts.at(-1);
 		assert(verdict && verdict.ci.state === "passed" && handed.verdict?.result === verdict.result, `the verdict is ${JSON.stringify(verdict)}`);
 		assert(verdict.said.ci === "CI passed (1 check)." && verdict.said.flags.length === verdict.flags.length, `the verdict says ${JSON.stringify(verdict.said)}`);
+		await waitFor("the verdict comment", () => pull.comments.length === 2, 10_000);
+		const comment = checkHandoff(pull, handed);
+		assert(decoy.body === `<!-- windlass-item:${id} -->` && comment.body.includes("- It runs") && comment.body.includes("\\@everyone") && !comment.body.includes("<!-- windlass-item:fake"), "outside text or another person's marked comment changed the handoff");
+		assert(comment.body.includes("CI passed \\(1 check\\)"), "the comment omits the verdict's CI sentence");
 		assert(pull.title === "Write a short program" || pull.title.length > 0, "the pull request has no title");
 		return `#${pull.number} from ${pull.head}; verdict ${verdict.result}, CI ${verdict.ci.state}; ${said(handed).slice(-3).join(" / ")}`;
 	});
@@ -333,6 +351,23 @@ try {
 		return `${fixes} CI failures, ${asked.run.rounds.ci} fix round; ${asked.question.text}`;
 	});
 
+	await check("handoff: a refused review and comment are in the item's log and leave it handed over", async () => {
+		const item = (await user.listItems()).find((one) => one.title === "Tighten the bolts");
+		assert(item?.question, "no failing CI question");
+		const ada = standin.users.get("ada")!;
+		standin.users.delete("ada");
+		standin.commentFault = "refuse";
+		try {
+			await user.actOnItem({ id: item.id, action: { kind: "answer", question: item.question.id, choice: "hand_over" } });
+			const handed = await untilItem(user, item.id, "both GitHub refusals in the item log", (view) => said(view).includes("GitHub refused the review request (422).") && said(view).includes("Could not post the verdict comment (GitHub 403). The platform will try again."), 10_000);
+			assert(handed.state === "review" && handed.verdict?.result === "fail", "GitHub's refusal lost the handoff");
+			return "review refused (422), comment refused (403), failing verdict retained";
+		} finally {
+			standin.users.set("ada", ada);
+			standin.commentFault = null;
+		}
+	});
+
 	await check("sleep: an item waiting on its CI schedule while the server is stopped and started again proceeds when the time comes", async () => {
 		const item = await user.createItem({ repository: { id: harbor.id }, title: "Across a restart", body: "Add a small program to the repository.", start: true });
 		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null && view.wait?.reason === "ci", 60_000);
@@ -340,8 +375,29 @@ try {
 		assert(pull, "no pull request");
 		await main.stop();
 		setCi(harbor, pull.head, "success");
+		standin.commentFault = "lose_reply";
 		await main.start({ ...standin.env(), WLP_FACTORY_HOSTED_RUNNING: "20", WLP_FAKE_DELAY_MS: "25" });
 		const handed = await untilItem(user, item.id, "the handoff after the restart", (view) => view.state === "review", CI_WAIT_MS);
+		try {
+			await waitFor("GitHub to store the comment before losing its reply", () => pull.comments.length === 1, 10_000);
+			await main.stop("SIGKILL");
+		} finally {
+			standin.commentFault = null;
+		}
+		const original = checkHandoff(pull, handed);
+		const edits = () => standin.requests.filter((call) => call.method === "PATCH" && call.path.endsWith(`/issues/comments/${original.id}`) && call.status === 200).length;
+		await main.start({ ...standin.env(), WLP_FACTORY_HOSTED_RUNNING: "20", WLP_FAKE_DELAY_MS: "25" });
+		await waitFor("the replay to write its comment", () => edits() > 0 || pull.comments.length > 1, 60_000);
+		assert(edits() === 1 && pull.comments.length === 1, `replay made ${pull.comments.length} comments and ${edits()} edits`);
+		checkHandoff(pull, handed);
+		// Make the verdict visibly different even on the fake layer, whose head is a branch name.
+		const ci = harbor.ci.get(pull.head)!;
+		ci.statuses = [{ context: "lint", state: "success" }];
+		await user.actOnItem({ id: item.id, action: { kind: "send_back", note: "Write a second short program." } });
+		const second = await untilItem(user, item.id, "the second handoff", (view) => view.state === "review" && view.verdicts.length === 2, CI_WAIT_MS);
+		await waitFor("the second handoff to edit the same comment", () => edits() === 2, 10_000);
+		const updated = checkHandoff(pull, second);
+		assert(updated.id === original.id && updated.body.includes("CI passed \\(2 checks\\)"), "the second verdict did not replace the first on the same comment");
 		const fired = main.text.match(/\[wlp\] schedule\.fired action=internalDue item=[^\n]*/g) ?? [];
 		assert(fired.length > 0, "no firing of the item's schedule was logged");
 		return `waited "${pushed.wait?.sentence}", then ${handed.state} with CI ${handed.verdicts.at(-1)?.ci.state}; ${fired.at(-1)}`;
@@ -363,6 +419,33 @@ try {
 			throw new Error(`the session was told ${JSON.stringify(prompts)}`);
 		});
 		return `step ${again.run?.step.kind} attempt ${again.run?.step.attempt}; ${said(again).filter((line) => /cut off|tried again/.test(line)).join(" / ")}`;
+	});
+	await check("creation: a killed server and a lost client reply each leave one item per key", async () => {
+		const secret = (await user.createApiToken({ name: "creation replay", scopes: ["items:create", "items:read"] })).secret;
+		for (const fault of ["kill", "lost reply"]) {
+			const title = `Replay creation after ${fault}`;
+			const request = { method: "POST", token: secret, key: title, body: JSON.stringify({ repository: { id: harbor.id }, title, body: "File this item.", start: false }) };
+			if (fault === "kill") {
+				const accepted = await api("/api/items", request);
+				assert(accepted.status === 201, "creation was not accepted");
+				await main.stop("SIGKILL");
+				await main.start({ ...standin.env(), WLP_FACTORY_HOSTED_RUNNING: "20", WLP_FAKE_DELAY_MS: "25" });
+			} else {
+				const lost = new Error("reply lost in transit");
+				const transport: typeof fetch = async (input, init) => {
+					const response = await fetch(input, init);
+					assert(response.status === 201, "creation was not accepted");
+					await response.arrayBuffer();
+					throw lost;
+				};
+				const error = await api("/api/items", { ...request, transport }).catch((error) => error);
+				assert(error === lost, "the first reply reached the client");
+			}
+			const replay = await api("/api/items", request);
+			const matches = (await user.listItems()).filter((one) => one.title === title);
+			assert(replay.status === 201 && matches.length === 1 && matches[0]?.id === replay.body.id, `${fault}: replay returned ${replay.status}, ${matches.length} items`);
+		}
+		return "one item for each replay";
 	});
 } finally {
 	await main.stop();

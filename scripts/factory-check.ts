@@ -178,6 +178,8 @@ const toReview: Row[] = [
 		effects: ["handoff", "poll_pr"],
 		also: (o) => {
 			const verdict = effect(o, "handoff")?.verdict;
+			const words = effect(o, "handoff")?.words;
+			if (!words || !o.events.some((event) => event.step?.kind === "handoff" && event.said === words)) return "the handoff did not carry the logged verdict sentence";
 			return holds(verdict?.result === "pass" && verdict.head === H(1) && verdict.attestedBy === "platform" && verdict.ci.state === "passed" && verdict.acceptance[0] === "add(1, 2) is 3", `the verdict is a pass at the pushed head: ${JSON.stringify(verdict)}`);
 		},
 	},

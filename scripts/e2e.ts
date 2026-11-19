@@ -2,10 +2,11 @@
  * End-to-end check of the server's three actors, through RivetKit's client, as the web app uses them,
  * and of its HTTP routes (`/platform/info`, `/platform/connection`, `/health`).
  *
- *   cd server && npx tsx ../scripts/e2e.ts                 starts its own server on fresh state
- *   cd server && npx tsx ../scripts/e2e.ts --endpoint URL  uses a server that is already running; its
- *                                                          HTTP routes are on the same host, port 6440,
- *                                                          or at WLP_E2E_API
+ *   cd server && pnpm e2e                 starts its own server on fresh state (ports 6420, 6421,
+ *                                          6430, 6440 and 6449, group 6420)
+ *   cd server && pnpm e2e --endpoint URL  uses a running server (HTTP on the same host, port 6440,
+ *                                          or at WLP_E2E_API). With WLP_SANDBOX=docker both runs
+ *                                          take the shared Docker lock.
  *
  * WLP_SANDBOX chooses the sandbox layer of the server it starts (default here: fake). The server is
  * always started with WLP_DEMO=1; with --endpoint the server must have it too. Some checks need the
@@ -346,7 +347,7 @@ async function serviceUser(server: Server, uid: string) {
 	// Signed with the server's secret: this process has it as WLP_SECRET (`Server`'s constructor).
 	assert(process.env.WLP_SECRET === server.secret, "this process does not have the server's secret");
 	const { serviceParams } = await import("../server/src/auth.js");
-	return newClient().user.get([uid], { params: serviceParams() }) as unknown as { internalRelease(sessionId: string): Promise<void> };
+	return newClient().user.get([uid], { params: serviceParams() }) as unknown as { internalRelease(sessionId: string): Promise<void>; internalSessionChanged(summary: SessionSummary): Promise<void> };
 }
 
 /** Puts a session's actor to sleep through the control plane, as the lifecycle documentation describes. */
@@ -491,6 +492,36 @@ function dense(items: TimelineItem[], from = 1): void {
 // ---------------------------------------------------------------------------------------------
 // The checks
 // ---------------------------------------------------------------------------------------------
+
+/** Two live launches contend for the last slot while the first is still waiting for its meter. */
+async function runningSlotRace(server: Server, client: Client, auth: AuthResult, profile: string): Promise<void> {
+	await check("a late idle report during a slow reserve cannot give the last running slot to two launches", async () => {
+		const uid = auth.profile.uid;
+		const params = { token: auth.token };
+		const user = client.user.getOrCreate([uid], { params });
+		const service = await serviceUser(server, uid);
+		const sessions = await Promise.all(Array.from({ length: RUNNING_CEILING + 1 }, (_, i) => user.createSession({ profile: profile as SessionSummary["profile"], title: `Racing launch ${i}` })));
+		const handles = sessions.map((one) => client.agentSession.get([uid, one.id], { params }));
+		const last = RUNNING_CEILING - 1;
+		try {
+			await Promise.all(handles.slice(0, last).map((one) => one.prompt({ text: "Run the long build (slow)" })));
+			const launch = handles[last].prompt({ text: "Run the long build (slow)" });
+			try {
+				await waitFor("the last slot to be claimed", async () => (await user.listSessions()).some((one) => one.id === sessions[last].id && one.status === "starting"), 10_000, 25);
+				const stale = (await handles[last].snapshot()).summary;
+				assert(stale.status === "idle" && stale.turns === 0, "the meter had already answered");
+				await service.internalSessionChanged(stale);
+				await refused(() => handles[last + 1].prompt({ text: "One too many" }), "too_many_running");
+			} finally {
+				await launch;
+			}
+			assert((await handles[last + 1].snapshot()).summary.turns === 0, "the fourth session started a turn");
+			return "three launches admitted, the fourth refused before its first turn";
+		} finally {
+			await Promise.all(sessions.map((one) => user.deleteSession(one.id)));
+		}
+	});
+}
 
 async function main(server: Server | null): Promise<void> {
 	const client = newClient();
@@ -2329,7 +2360,7 @@ async function main(server: Server | null): Promise<void> {
 		const lost = (session: string, kind: string) => [...server.output.matchAll(new RegExp(`\\[wlp\\] usage\\.fault_lost uid=\\S+ session=${session} hold=(\\S+) ${kind}:`, "g"))].map((m) => m[1]!);
 		await server.stop();
 		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
-		await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_USAGE_HOLD_SECONDS: String(HOLD_S), WLP_FAKE_RESERVE_FAULT: "lose:1,lose-renewal:1" });
+		await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_USAGE_HOLD_SECONDS: String(HOLD_S), WLP_FAKE_RESERVE_FAULT: "lose:1,lose-renewal:1,delay:1500" });
 		const someone = await demoSignIn();
 		const theirs = client.user.getOrCreate([someone.profile.uid], { params: { token: someone.token } });
 		const faulted = await theirs.createSession({ profile: availableProfile as never, title: "Its replies are lost" });
@@ -2370,6 +2401,8 @@ async function main(server: Server | null): Promise<void> {
 		} finally {
 			await theirs.deleteSession(faulted.id).catch(() => undefined);
 		}
+
+		await runningSlotRace(server, client, await demoSignIn(), availableProfile);
 
 		await check(FAULT_CHECKS[2], async () => {
 			const { UNCHECKED_TURN_NOTE, holdDeadline } = await import("../server/src/usage.js");
