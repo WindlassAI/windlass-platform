@@ -48,7 +48,9 @@
 import { type AccessToken, type AccessTokens, SandboxUserError } from "./api.js";
 import { TOKEN_REPLACE_LEAD_MS, TOKEN_REPLACE_RETRY_MS, type TokenFileState, tokenFileContent } from "./handoff.js";
 import { DATA_DIR, type TurnSandbox } from "./provider.js";
-import { TOKEN_FILE_PREFIX } from "./volumes.js";
+
+/** The name of a turn's access token file in Windlass's data directory, before the sandbox id. */
+export const TOKEN_FILE_PREFIX = "access-token-";
 
 /** Where a sandbox's turn finds its access token. */
 export function tokenFilePath(sandboxId: string): string {

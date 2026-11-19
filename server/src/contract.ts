@@ -70,6 +70,36 @@ export interface PlatformInfo {
 	 * nothing of it.
 	 */
 	github?: GithubInfo | null;
+	/**
+	 * Set when users of this deployment may run agents on machines of their own (WLP_MACHINES=1). Absent
+	 * or null when not: the web app then shows nothing of it, and /machines is not found.
+	 */
+	machines?: MachinesInfo | null;
+}
+
+/**
+ * What the Machines page needs of the deployment. The install command it shows, with `runnerImage`
+ * and `platformUrl` put in (the runner's state, its key among it, is in the `windlass-runner` volume):
+ *
+ *   docker run -d --name windlass-runner --restart unless-stopped \
+ *     -v /var/run/docker.sock:/var/run/docker.sock \
+ *     -v windlass-runner:/var/lib/windlass-runner \
+ *     <runnerImage> --platform <platformUrl>
+ *
+ * For rootless Docker the socket to mount is `$XDG_RUNTIME_DIR/docker.sock`. To update, the same
+ * command after `docker rm -f windlass-runner`: the volume keeps the key, so the machine stays paired.
+ * The runner prints its pairing code in `docker logs windlass-runner`.
+ */
+export interface MachinesInfo {
+	/**
+	 * The oldest runner release this platform serves, "0.1.0". A machine whose runner is older is
+	 * refused until it is updated (`MachineWarning` "outdated"); a newer one is served.
+	 */
+	minRunnerVersion: string;
+	/** The runner image to install, pinned by digest; null while none is published, and the page says it cannot be installed yet. */
+	runnerImage: string | null;
+	/** The platform's address as a runner on another machine reaches it: `--platform` in the install command. */
+	platformUrl: string;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -920,6 +950,73 @@ export interface UsageView extends UsageNumbers {
 	memory: "kept" | "copied" | "lost";
 }
 
+// --- The user's own machines (Plans "bring your own computer") ------------------------------
+
+/**
+ * Where a machine is, with `MachineSummary.since`. "waiting": it was confirmed and its runner has not
+ * connected since (since: when it was confirmed); a runner that lost its key before it connected never
+ * will, and the page offers to remove it. "online": its runner is connected (since: when it connected).
+ * "offline": its runner was connected before and is not now (since: when it was last heard from).
+ */
+export type MachineStatus = "waiting" | "online" | "offline";
+
+/** A probe on the machine: passed, or what it found. */
+export type MachineProbe = { ok: true } | { ok: false; reason: string };
+
+/** Something the Machines page warns about. Each is listed only while it holds. */
+export type MachineWarning =
+	/** The runner is older than `MachinesInfo.minRunnerVersion`, so it is refused; its version is `MachineSummary.runnerVersion`. */
+	| { kind: "outdated" }
+	/** The runner cannot reach Docker on its machine; `reason` is what Docker said, as the runner reported it. */
+	| { kind: "docker"; reason: string }
+	/** The machine's clock is this far off the platform's (positive: ahead), enough for a turn's access token to read as expired too early or too late. */
+	| { kind: "clock"; offsetSeconds: number }
+	/** A second runner with this machine's key tried to connect while its runner was connected, last at `at`: the key was copied. */
+	| { kind: "key"; at: number };
+
+/** An agent's sandbox on a machine, as its runner last reported it. */
+export interface MachineSandbox {
+	sessionId: string;
+	/** Null when that agent was deleted and its sandbox is still there. */
+	title: string | null;
+	state: "running" | "paused";
+	/** When the sandbox was last used, ms since the epoch, by the platform's clock. */
+	usedAt: number;
+}
+
+/** One of the user's machines, as the Machines page lists it. */
+export interface MachineSummary {
+	machineId: string;
+	/** What the machine said of itself when it was paired: its host name, OS and architecture. Nobody checked them. */
+	name: string;
+	os: string;
+	arch: string;
+	/** Its runner's release, as the runner last said. */
+	runnerVersion: string;
+	status: MachineStatus;
+	/** Ms since the epoch: see `MachineStatus`. */
+	since: number;
+	/** How many of the user's agents were launched on it: what keeps its conversation here and cannot run again once it is removed. */
+	agents: number;
+	/** The sandboxes on it, the most recently used first; empty until its runner first reported. */
+	sandboxes: MachineSandbox[];
+	/** Whether Windlass can sandbox each command the agent runs there (the runner's probe of bubblewrap); null until its runner first reported. */
+	commandSandbox: MachineProbe | null;
+	/** Free space where Docker keeps the sandboxes, as last reported; null when not known. */
+	freeDiskBytes: number | null;
+	/** Whether the repository's and the account's saved secrets are sent to this machine's agents (on for a new machine). */
+	sendSecrets: boolean;
+	warnings: MachineWarning[];
+}
+
+/** What a machine said of itself when its runner asked to be paired: shown before the user confirms it. */
+export interface MachineClaim {
+	name: string;
+	os: string;
+	arch: string;
+	runnerVersion: string;
+}
+
 export interface UserActions {
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
@@ -1066,6 +1163,35 @@ export interface UserActions {
 	 * UserError with code `sandbox_busy` while the agent works. Answers with the page as it is then.
 	 */
 	freeSandbox(sessionId: string): Promise<UsageView>;
+	/**
+	 * The user's machines, the first paired first. The machine actions throw a UserError with code
+	 * `machines_off` when the deployment has no machines (`PlatformInfo.machines`).
+	 */
+	machines(): Promise<MachineSummary[]>;
+	/**
+	 * Looks up the code a runner printed ("XXXX-XXXX": Crockford base32, so case, spaces and dashes do
+	 * not matter, O reads as 0 and I and L as 1) and answers with what that machine said of itself. The
+	 * first account to look a code up keeps it: for any other the code is not found. Throws a UserError
+	 * with code `pairing_not_found` for a code that is unknown, expired (ten minutes after the runner
+	 * asked) or another account's, `too_many_claims` after five lookups in ten minutes, and
+	 * `too_many_machines` at MAX_MACHINES.
+	 */
+	claimMachine(input: { code: string }): Promise<MachineClaim>;
+	/**
+	 * Pairs the machine of a code this user looked up. Its runner is told the GitHub login of the
+	 * account it joined (none when GitHub is not connected), prints it, and connects. Asked again for the
+	 * same code, it answers with the same machine. Throws as `claimMachine` does.
+	 */
+	confirmMachine(input: { code: string }): Promise<MachineSummary>;
+	/**
+	 * Removes a machine: its key stops working at once, and its agents keep their conversations and can
+	 * no longer run. With `removeSandboxes`, its runner also removes the agents' sandboxes on it and
+	 * Windlass's data volume there, now when it is online and when it next connects when not. Throws a
+	 * UserError with code `machine_not_found` for one that is not the user's. Answers with the list as it is then.
+	 */
+	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
+	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
+	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
 }
 
 export interface UserEvents {
@@ -1073,6 +1199,8 @@ export interface UserEvents {
 	sessions: SessionSummary[];
 	/** Today's numbers, after sandbox time was held or counted, or a sandbox was kept or freed. */
 	usage: UsageNumbers;
+	/** The user's machines, after one was paired or removed, or its status, warnings or secrets switch changed. */
+	machines: MachineSummary[];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1565,6 +1693,10 @@ export const MAX_ACCOUNT_SECRETS = 50;
 export const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
 /** Sessions of one user that may run a turn at the same time. */
 export const MAX_RUNNING_SESSIONS = 3;
+/** How many machines a user may have paired at once. */
+export const MAX_MACHINES = 3;
+/** A machine whose runner has not been heard from for this long is removed, its sandboxes left where they are. */
+export const MACHINE_EXPIRY_MS = 90 * 24 * 60 * 60 * 1000;
 /** How many days of sandbox time the usage page lists, today included. */
 export const USAGE_HISTORY_DAYS = 14;
 /** The share of the day's allowance below which a session says how little is left. */

@@ -16,17 +16,26 @@
  * `docker` process (readable by the server's own Unix user and by root, as the server's memory is)
  * and in no argument. The Docker daemon is sent the value in the request that starts the program; a
  * daemon run with debug logging writes such requests to its log.
+ *
+ * A secret's own name never enters the client's environment: it is handed over as WLP_SECRET_<n>, and
+ * a `sh` in the container gives each value its name before it runs the program (`secretNamesScript`).
+ * Otherwise a name the `docker` client reads itself (DOCKER_HOST, LD_PRELOAD, a proxy, or whatever a
+ * later client reads) would change what the client does on the machine it runs on. On the hosted side
+ * the names are the user's saved ones, which leave such names out already (repo-secrets.ts); a runner
+ * is handed them by a server it does not trust, and no list of names the client reads is ever complete.
+ *
+ * Two kinds of provider are made from this file: the hosted one, and a runner's on a user's own machine
+ * (`DockerSandboxOptions`). They differ in the volume a container mounts and in its machine label.
  */
 
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { SandboxProfile, SandboxProfileId } from "../contract.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "./api.js";
-import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, WORKSPACE, docker, randomId } from "./docker.js";
+import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, WORKSPACE, docker, randomId } from "./docker.js";
 import { COMMON_RUN_FLAGS, PROFILE_RUN_FLAGS, findProfile, profilesFor } from "./profiles.js";
-import { type Answer, type InternalExecResult, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, markTurnSandbox } from "./provider.js";
+import { type Answer, type InternalExecResult, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, markTurnSandbox } from "./provider.js";
 import { tokenFilePath } from "./token-file.js";
-import { assertName, ensureUserVolume, userVolume } from "./volumes.js";
 
 const SANDBOX_ID = /^[a-f0-9]{12}$/;
 const STDOUT_CAP = 4 * 1024 * 1024;
@@ -34,14 +43,32 @@ const STDERR_CAP = 256 * 1024;
 
 export const containerName = (id: string) => `wlp-session-${id}`;
 
+/** What a secret is called in the `docker` client's environment: `${SECRET_ALIAS}<n>`. No saved secret's name starts with WLP_ (repo-secrets.ts). */
+const SECRET_ALIAS = "WLP_SECRET_";
+
 /**
- * Variables the `docker` client reads for itself, or that decide which `docker` is run and what it
- * loads. A secret is handed over through the client's environment, so one of these names would change
- * what the client does; the names a secret may have leave them out already (repo-secrets.ts).
+ * Run in the container before the program, with the names as `-c` text: each value is given its own
+ * name from its alias, the aliases are unset, and `exec` replaces the shell with the program, so the
+ * program keeps the shell's process and nothing of it is left. The names are checked as identifiers
+ * (`assertEnvNames`) before they are put into the script. `sh` is in every sandbox image there is.
  */
-const CLIENT_READS = /^(DOCKER_.*|PATH|HOME|LD_.*|XDG_.*|HTTPS?_PROXY|ALL_PROXY|NO_PROXY)$/i;
+function secretNamesScript(names: string[]): string {
+	const assign = names.map((name, n) => `${name}="$${SECRET_ALIAS}${n}"`).join(" ");
+	const aliases = names.map((_, n) => `${SECRET_ALIAS}${n}`).join(" ");
+	return `export ${assign}; unset ${aliases}; exec "$@"`;
+}
+
+function assertUid(uid: string): void {
+	if (!NAME.test(uid)) throw new Error("invalid user id");
+}
 
 export type { InternalExecResult, ProcessEnd, SandboxProcess, StartOptions } from "./provider.js";
+
+/** A started program of this provider's: a runner stops reading its output while its session's window is full. */
+export interface DockerProcess extends SandboxProcess {
+	/** Stops reading the program's output (true), or reads on (false). Unread output fills the pipe, and the program's writes wait. */
+	pauseOutput(paused: boolean): void;
+}
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -73,17 +100,22 @@ export class DockerSandboxHandle implements TurnSandbox {
 		return this.exec(["bash", "-c", command], options);
 	}
 
-	/** Starts argv (no shell) under wlp-run and leaves its standard input open. */
-	start(argv: string[], options: StartOptions = {}): SandboxProcess {
-		const tag = `r${randomId(6)}`;
+	/**
+	 * Starts argv (no shell) under wlp-run and leaves its standard input open. `tag` is the run's tag
+	 * when the caller has named it already (a runner is given the server's); otherwise one is made.
+	 */
+	start(argv: string[], options: StartOptions = {}, tag = `r${randomId(6)}`): DockerProcess {
+		if (!RUN_TAG.test(tag)) throw new Error("invalid run tag");
 		assertEnvNames(options.env);
 		assertEnvNames(options.secretEnv);
 		const env = Object.entries(options.env ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
-		// Named only: the client takes each value from its own environment, which is the server's with these added.
 		const secret = Object.entries(options.secretEnv ?? {}).filter(([key]) => options.env?.[key] === undefined);
-		for (const [key] of secret) if (CLIENT_READS.test(key)) throw new Error(`the variable ${key} cannot be handed to a program in the sandbox: the docker client reads it itself`);
-		const args = ["exec", "-i", "-w", options.cwd ?? this.cwd, ...env, ...secret.flatMap(([key]) => ["-e", key]), this.container, "wlp-run", "exec", tag, ...argv];
-		const child = spawn("docker", args, { stdio: ["pipe", "pipe", "pipe"], ...(secret.length === 0 ? {} : { env: { ...process.env, ...Object.fromEntries(secret) } }) });
+		for (const [key] of secret) if (key.startsWith(SECRET_ALIAS)) throw new Error(`the variable ${key} cannot be handed to a program in the sandbox: its name is the platform's`);
+		// Named only, by alias: the client takes each value from its own environment, which is this process's with the aliases added.
+		const aliases = secret.map(([, value], n) => [`${SECRET_ALIAS}${n}`, value] as const);
+		const names = secret.length === 0 ? [] : ["sh", "-c", secretNamesScript(secret.map(([key]) => key)), "sh"];
+		const args = ["exec", "-i", "-w", options.cwd ?? this.cwd, ...env, ...aliases.flatMap(([alias]) => ["-e", alias]), this.container, ...names, "wlp-run", "exec", tag, ...argv];
+		const child = spawn("docker", args, { stdio: ["pipe", "pipe", "pipe"], ...(secret.length === 0 ? {} : { env: { ...process.env, ...Object.fromEntries(aliases) } }) });
 		const out = new StringDecoder("utf8");
 		const err = new StringDecoder("utf8");
 		let hasEnded = false;
@@ -119,6 +151,12 @@ export class DockerSandboxHandle implements TurnSandbox {
 		});
 		return {
 			tag,
+			pauseOutput: (paused) => {
+				for (const pipe of [child.stdout, child.stderr]) {
+					if (paused) pipe.pause();
+					else pipe.resume();
+				}
+			},
 			write: (text) => {
 				if (!stdinOpen) return false;
 				child.stdin.write(text);
@@ -308,15 +346,6 @@ interface Inspected {
 	uid: string;
 }
 
-async function inspect(id: string): Promise<Inspected | null> {
-	if (!SANDBOX_ID.test(id)) return null;
-	const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{index .Config.Labels "${LABEL}.profile"}}|{{index .Config.Labels "${LABEL}.uid"}}`, containerName(id)]);
-	if (result.code !== 0) return null;
-	const [status = "", ours = "", profile = "", uid = ""] = result.stdout.trim().split("|");
-	if (ours !== "1") return null;
-	return { status, profile: profile as SandboxProfileId, uid };
-}
-
 function stateOf(status: string): "none" | "running" | "paused" {
 	if (status === "running" || status === "restarting") return "running";
 	if (status === "created" || status === "exited" || status === "paused") return "paused";
@@ -333,11 +362,45 @@ async function forgetTokenFile(id: string): Promise<void> {
 	await docker(["exec", containerName(id), "rm", "-f", "--", path, `${path}.tmp`], { timeoutMs: 10_000 }).catch(() => undefined);
 }
 
+/** What the hosted provider and a runner's differ in. */
+export interface DockerSandboxOptions {
+	/** The sandbox image; windlass-platform-sandbox:latest when left out. */
+	image?: string;
+	/**
+	 * Null for the hosted provider. A runner's machine id: every container it makes carries it as
+	 * MACHINE_LABEL, and each provider lists and acts on only the containers whose machine label is its
+	 * own (none for the hosted one), so a runner and a hosted server on one Docker daemon never see each
+	 * other's sandboxes.
+	 */
+	machine: string | null;
+	/**
+	 * Makes sure the data volume of `uid`'s containers exists and returns its name: the one volume a
+	 * container mounts, at Windlass's data directory. The hosted provider's is `wlp-user-<uid>`, which
+	 * it also takes old sign-ins out of (volumes.ts); a runner's is its own, so the two never share one.
+	 */
+	dataVolume(uid: string): Promise<string>;
+}
+
 export class DockerSandboxes implements Sandboxes {
 	private readonly image: string;
+	private readonly machine: string;
+	private readonly dataVolume: (uid: string) => Promise<string>;
 
-	constructor(options: { image?: string } = {}) {
+	constructor(options: DockerSandboxOptions) {
+		if (options.machine !== null && !NAME.test(options.machine)) throw new Error("invalid machine id");
 		this.image = options.image ?? IMAGE;
+		// A container without the label reads as "" (Go templates), which is the hosted provider's.
+		this.machine = options.machine ?? "";
+		this.dataVolume = options.dataVolume;
+	}
+
+	private async inspect(id: string): Promise<Inspected | null> {
+		if (!SANDBOX_ID.test(id)) return null;
+		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{index .Config.Labels "${MACHINE_LABEL}"}}|{{index .Config.Labels "${LABEL}.profile"}}|{{index .Config.Labels "${LABEL}.uid"}}`, containerName(id)]);
+		if (result.code !== 0) return null;
+		const [status = "", ours = "", machine = "", profile = "", uid = ""] = result.stdout.trim().split("|");
+		if (ours !== "1" || machine !== this.machine) return null;
+		return { status, profile: profile as SandboxProfileId, uid };
 	}
 
 	/** The data directory is a volume of the user's (wlp-user-<uid>): it outlives every sandbox. */
@@ -352,14 +415,16 @@ export class DockerSandboxes implements Sandboxes {
 
 	/** The user's containers, by the labels each was made with. */
 	async list(uid: string): Promise<ListedSandbox[]> {
-		assertName(uid, "user id");
-		const result = await docker(["ps", "-a", "--no-trunc", "--filter", `label=${LABEL_ARG}`, "--filter", `label=${LABEL}.uid=${uid}`, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}`], { timeoutMs: 30_000, check: true });
+		assertUid(uid);
+		// Docker cannot filter by a label's absence: the hosted provider's are told apart below.
+		const onMachine = this.machine === "" ? [] : ["--filter", `label=${MACHINE_LABEL}=${this.machine}`];
+		const result = await docker(["ps", "-a", "--no-trunc", "--filter", `label=${LABEL_ARG}`, "--filter", `label=${LABEL}.uid=${uid}`, ...onMachine, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${MACHINE_LABEL}"}}`], { timeoutMs: 30_000, check: true });
 		const found: ListedSandbox[] = [];
 		for (const line of result.stdout.split("\n")) {
-			const [name = "", status = "", sessionId = ""] = line.trim().split("|");
+			const [name = "", status = "", sessionId = "", machine = ""] = line.trim().split("|");
 			const id = name.startsWith("wlp-session-") ? name.slice("wlp-session-".length) : "";
 			const state = stateOf(status);
-			if (SANDBOX_ID.test(id) && state !== "none") found.push({ id, sessionId, state });
+			if (SANDBOX_ID.test(id) && state !== "none" && machine === this.machine) found.push({ id, sessionId, state });
 		}
 		return found;
 	}
@@ -374,12 +439,12 @@ export class DockerSandboxes implements Sandboxes {
 	}
 
 	async create(input: CreateSandboxInput): Promise<string> {
-		assertName(input.uid, "user id");
+		assertUid(input.uid);
 		const profile = findProfile(input.profile);
 		const flags = PROFILE_RUN_FLAGS[input.profile];
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
 		// The user's data volume, and only that one. It holds no sign-in: that is in the user's actor (signin/).
-		await ensureUserVolume(input.uid, this.image);
+		const volume = await this.dataVolume(input.uid);
 		const id = randomId(6);
 		const name = containerName(id);
 		const result = await docker(
@@ -398,10 +463,11 @@ export class DockerSandboxes implements Sandboxes {
 				`${LABEL}.session=${input.sessionId.slice(0, 200)}`,
 				"--label",
 				`${LABEL}.profile=${input.profile}`,
+				...(this.machine === "" ? [] : ["--label", `${MACHINE_LABEL}=${this.machine}`]),
 				...COMMON_RUN_FLAGS,
 				...flags,
 				"-v",
-				`${userVolume(input.uid)}:${DATA_DIR}`,
+				`${volume}:${DATA_DIR}`,
 				this.image,
 			],
 			{ timeoutMs: 120_000 },
@@ -421,7 +487,7 @@ export class DockerSandboxes implements Sandboxes {
 	}
 
 	async connect(id: string): Promise<SandboxHandle | undefined> {
-		const found = await inspect(id);
+		const found = await this.inspect(id);
 		if (found === null || stateOf(found.status) === "none") return undefined;
 		if (found.status === "paused") await docker(["unpause", containerName(id)], { check: true });
 		else if (found.status !== "running") {
@@ -432,12 +498,12 @@ export class DockerSandboxes implements Sandboxes {
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {
-		const found = await inspect(id);
+		const found = await this.inspect(id);
 		return found === null ? "none" : stateOf(found.status);
 	}
 
 	async suspend(id: string): Promise<void> {
-		const found = await inspect(id);
+		const found = await this.inspect(id);
 		if (found === null || found.status !== "running") return;
 		await forgetTokenFile(id);
 		// SIGTERM to the container's init, SIGKILL after 5 s. A turn still running is cut off: stop it first.
@@ -445,7 +511,7 @@ export class DockerSandboxes implements Sandboxes {
 	}
 
 	async destroy(id: string): Promise<void> {
-		const found = await inspect(id);
+		const found = await this.inspect(id);
 		if (found === null) return;
 		if (found.status === "running") await forgetTokenFile(id);
 		await docker(["rm", "-f", "-v", containerName(id)], { timeoutMs: 60_000, check: true });

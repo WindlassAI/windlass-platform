@@ -164,6 +164,24 @@
  *   WLP_GITHUB_URL             GitHub itself, where users authorize and git clones from (default
  *                              https://github.com)
  *
+ * Machines of the users' own (Plans/2026-11-19 "bring your own computer"). A user pairs a Linux
+ * machine with Docker, and the runner on it dials out to the platform and runs the sandboxes of the
+ * sessions launched there. The same on every server.
+ *
+ *   WLP_MACHINES=1             offer it to every user of the deployment (default off). Off, the routes a
+ *                              runner calls answer 404, the user actor's machine actions throw
+ *                              `machines_off`, and platform info has no `machines`: each of those entry
+ *                              points reads `config.machines` once, and nothing else does. The `machine`
+ *                              actors and the tables are there either way, so turning it off and on
+ *                              again loses nothing
+ *   WLP_RUNNER_IMAGE           the runner image the Machines page tells users to install, pinned by
+ *                              digest: <name>@sha256:<64 hex>. Unset: none is published yet, and the
+ *                              page says so
+ *   WLP_PUBLIC_URL             the platform's address as a machine outside reaches its HTTP routes:
+ *                              https://<host>, or http:// on a loopback address. Required with
+ *                              WLP_MACHINES=1 and a remote engine; with the local one it defaults to
+ *                              http://localhost:<WLP_HTTP_PORT>
+ *
  * The Rivet engine is RivetKit's to configure, from its own variables: without RIVET_ENDPOINT it starts
  * a local engine on :6420 (development), with it the server joins that engine as one of its nodes
  * (RIVET_ENDPOINT, RIVET_NAMESPACE, RIVET_TOKEN, RIVET_POOL, RIVET_NODE_VERSION; README, "Running on
@@ -206,8 +224,17 @@ export interface BrowserConnectionConfig {
 	tokenTtlMs: number;
 }
 
+/** WLP_MACHINES and what goes with it; `Config.machines` is null when the feature is off. */
+export interface MachinesConfig {
+	runnerImage: string | null;
+	/** WLP_PUBLIC_URL as an origin, without a trailing slash. */
+	publicUrl: string;
+}
+
 export interface Config {
 	demo: boolean;
+	/** Null when users may not pair machines of their own (WLP_MACHINES). */
+	machines: MachinesConfig | null;
 	/** Who may use the platform (access.ts). */
 	access: AccessRules;
 	sandbox: SandboxMode;
@@ -522,8 +549,37 @@ function readCount(name: string, fallback: number, min: number, max: number, unl
 	return fallback;
 }
 
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+function readMachines(httpPort: number): MachinesConfig | null {
+	if (process.env.WLP_MACHINES !== "1") return null;
+	const image = (process.env.WLP_RUNNER_IMAGE ?? "").trim();
+	// A runner release pins the sandbox image it runs; the runner image is pinned the same way, so what the page names is one exact build.
+	const pinned = /^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$/.test(image);
+	if (image !== "" && !pinned) unusable.push("WLP_RUNNER_IMAGE must be an image pinned by digest, <name>@sha256:<64 hex>");
+	const raw = (process.env.WLP_PUBLIC_URL ?? "").trim();
+	let publicUrl = `http://localhost:${httpPort}`;
+	if (raw === "") {
+		if (engine.remote) unusable.push("WLP_PUBLIC_URL must be set with WLP_MACHINES=1 and a remote engine: it is the address runners are given");
+	} else {
+		let url: URL | null = null;
+		try {
+			url = new URL(raw);
+		} catch {
+			// Said below.
+		}
+		const fit = url !== null && (url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.has(url.hostname))) && url.username === "" && url.password === "" && url.pathname === "/" && url.search === "" && url.hash === "";
+		if (fit) publicUrl = url!.origin;
+		else unusable.push("WLP_PUBLIC_URL must be an https:// origin (or http:// on a loopback address), with no path, query or credentials");
+	}
+	return { runnerImage: pinned ? image : null, publicUrl };
+}
+
+const httpPort = readHttpPort();
+
 export const config: Config = {
 	demo: process.env.WLP_DEMO === "1",
+	machines: readMachines(httpPort),
 	access: readAccessRules(),
 	sandbox: readSandboxMode(),
 	secret: readSecret(),
@@ -531,7 +587,7 @@ export const config: Config = {
 	unusable,
 	engine,
 	browsers: readBrowsers(),
-	httpPort: readHttpPort(),
+	httpPort,
 	httpHost: process.env.WLP_HTTP_HOST || (engine.remote ? "0.0.0.0" : "127.0.0.1"),
 	webDir: (process.env.WLP_WEB_DIR ?? "").trim() || null,
 	idleSuspendMs,

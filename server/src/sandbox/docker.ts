@@ -14,6 +14,13 @@ export const IMAGE = "windlass-platform-sandbox:latest";
 /** Every resource the platform creates carries `dev.windlass-platform=1`. */
 export const LABEL = "dev.windlass-platform";
 export const LABEL_ARG = `${LABEL}=1`;
+/**
+ * The machine id a runner's containers carry. Every container of the sandbox image carries LABEL from
+ * the image itself, so this is what keeps a runner's containers and the hosted provider's apart when
+ * both use one Docker daemon: each provider sees only those whose machine is its own, the hosted one
+ * those with none (`DockerSandboxes`).
+ */
+export const MACHINE_LABEL = `${LABEL}.machine`;
 
 export interface DockerResult {
 	code: number | null;

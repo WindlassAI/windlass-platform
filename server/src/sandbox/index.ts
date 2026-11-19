@@ -15,7 +15,7 @@ import type { MemorySignInDirectory } from "../signin/directory.js";
 import { type SignInLogins, type SignInTokens, actorSignIns, memorySignIns } from "../signin/facade.js";
 import { DockerLoginRunner } from "./logins.js";
 import { DockerSandboxes } from "./sandboxes.js";
-import { dockerLegacySignIns, ensureUserVolume, removeTokenFiles } from "./volumes.js";
+import { dockerLegacySignIns, ensureUserVolume, removeTokenFiles, userVolume } from "./volumes.js";
 import { DockerWindlass } from "./windlass.js";
 
 export interface DockerSandboxLayer extends SandboxLayer {
@@ -59,7 +59,15 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 				})
 			: { ...actorSignIns({ ensureUserData }), directory: null };
 	return {
-		sandboxes: new DockerSandboxes({ image }),
+		// The hosted provider: its containers carry no machine, and mount the user's volume of this machine.
+		sandboxes: new DockerSandboxes({
+			image,
+			machine: null,
+			dataVolume: async (uid) => {
+				await ensureUserData(uid);
+				return userVolume(uid);
+			},
+		}),
 		windlass: new DockerWindlass(signIns.tokens, { image }),
 		logins: signIns.logins,
 		tokens: signIns.tokens,

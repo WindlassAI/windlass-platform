@@ -35,10 +35,10 @@ import { DEFAULT_MAX_RUNNING, type E2bSettings, HOBBY_MAX_RUNNING, readE2bConfig
 import { FakeE2b, type FakeMachine, ScriptedMachine } from "../server/src/sandbox/e2b/fake.js";
 import { createE2bSandboxLayer } from "../server/src/sandbox/e2b/index.js";
 import { describeUsage, estimatedCostUsd } from "../server/src/sandbox/e2b/pricing.js";
-import { ACCOUNT_LIMIT, BWRAP_PROBE, E2bSandboxHandle, E2bSandboxes, META, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
+import { ACCOUNT_LIMIT, E2bSandboxHandle, E2bSandboxes, META, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
 import { describeTemplate } from "../server/src/sandbox/e2b/template.js";
 import { OPEN_PROFILE_NOT_OFFERED, PROFILES, PROFILE_RUN_FLAGS, e2bProfile, profilesFor } from "../server/src/sandbox/profiles.js";
-import { DATA_DIR, isTurnSandbox, randomId, shellQuote } from "../server/src/sandbox/provider.js";
+import { BWRAP_PROBE, DATA_DIR, isTurnSandbox, randomId, shellQuote } from "../server/src/sandbox/provider.js";
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");

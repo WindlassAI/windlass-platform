@@ -21,6 +21,7 @@
 import type { LegacySignIns } from "../signin/holder.js";
 import { MATERIAL_FILES, MAX_MATERIAL_FILE_BYTES, type SignInMaterial, assertName, cleanMaterial, hasSignIn } from "../signin/material.js";
 import { DATA_DIR, LABEL, createVolume, helperFlags, removeVolume, runHelper, tmpName, volumeExists } from "./docker.js";
+import { TOKEN_FILE_PREFIX } from "./token-file.js";
 
 // User ids become Docker volume names, which is why they are held to a safe alphabet (signin/material.ts).
 export { assertName };
@@ -61,9 +62,6 @@ export async function ensureUserVolume(uid: string, image?: string): Promise<voi
 export async function ensureAuthVolume(uid: string, image?: string): Promise<boolean> {
 	return ensureDataVolume(authVolume(uid), { [`${LABEL}.uid`]: uid, [`${LABEL}.holds`]: "sign-in" }, image);
 }
-
-/** The name of a turn's access token file in Windlass's data directory: one per sandbox (see token-file.ts). */
-export const TOKEN_FILE_PREFIX = "access-token-";
 
 /**
  * The Docker provider's part of forgetting a sign-in (`SignInHolder.logout`): the token files of the

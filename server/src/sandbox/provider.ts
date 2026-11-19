@@ -156,3 +156,12 @@ export const SWEEP_SCRIPT = 'tag=$1; shift; if [ -n "$(wlp-run list "$tag")" ]; 
 export const SECRET_FILE_SCRIPT = 'set -eu; umask 077; tmp="$1.tmp"; trap \'rm -f -- "$tmp"\' EXIT; cat > "$tmp"; mv -f -- "$tmp" "$1"';
 
 export const RUN_TAG = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * The arguments of Windlass's own start-up probe of bubblewrap (its packages/core/src/sandbox/detect.ts,
+ * `PROBE_FLAGS`): the namespaces and mounts its sandbox uses. Where this passes, Windlass sandboxes
+ * commands; where it fails, it sandboxes none and asks before each. E2B runs it in a sandbox it is to
+ * promise this of, a runner in each new container of the profile that needs it.
+ */
+export const BWRAP_PROBE = ["bwrap", "--die-with-parent", "--unshare-user-try", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try", "--unshare-net", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--", "true"];
+

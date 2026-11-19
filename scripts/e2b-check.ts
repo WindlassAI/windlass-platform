@@ -39,7 +39,8 @@ import { cleanupDeployment } from "../server/src/sandbox/e2b/cleanup.js";
 import type { E2bClient, E2bSandboxInfo } from "../server/src/sandbox/e2b/client.js";
 import { readE2bSettings } from "../server/src/sandbox/e2b/config.js";
 import { describeUsage } from "../server/src/sandbox/e2b/pricing.js";
-import { BWRAP_PROBE, type E2bSandboxHandle, META } from "../server/src/sandbox/e2b/sandboxes.js";
+import { type E2bSandboxHandle, META } from "../server/src/sandbox/e2b/sandboxes.js";
+import { BWRAP_PROBE } from "../server/src/sandbox/provider.js";
 import { DATA_DIR, randomId } from "../server/src/sandbox/provider.js";
 
 const MAX_LIMIT_MS = 6 * 60_000;

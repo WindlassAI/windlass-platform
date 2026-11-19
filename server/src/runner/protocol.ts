@@ -14,6 +14,7 @@
 import type { SandboxProfileId } from "../contract.js";
 import type { ExecOptions, ExecResult } from "../sandbox/api.js";
 import { RUN_TAG, type Answer, type SandboxProcess, type StartOptions, type TurnSandbox } from "../sandbox/provider.js";
+import { type Assert, type Check, type Of, type Same, anything, boolean, count, either, integer, is, json, list, nil, nullable, object, oneOf, optional, plain, string, text } from "./check.js";
 
 export const PROTOCOL_VERSION = 1;
 /** Under the 256 KiB RivetKit takes per incoming message (registry.ts); the probe measures the gateway. */
@@ -31,34 +32,6 @@ export const DEAD_MS = 45_000;
 export const RUNNER_GRACE_MS = 600_000;
 /** What an operation without a `timeoutMs` of its own may take: `create` is `docker run` and `git init`. */
 export const OP_MS = 180_000;
-
-// A check that is also a type.
-type Check<T> = (v: unknown) => v is T;
-type Optional<T> = Check<T | undefined> & { readonly optional: true };
-type Of<C> = C extends Check<infer T> ? T : never;
-type Fields = Record<string, Check<unknown>>;
-type Flat<T> = { [K in keyof T]: T[K] } & {};
-type Shape<F extends Fields> = Flat<
-	{ [K in keyof F as F[K] extends { optional: true } ? never : K]: Of<F[K]> } &
-	{ [K in keyof F as F[K] extends { optional: true } ? K : never]?: Exclude<Of<F[K]>, undefined> }
->;
-const is = <T>(test: (v: unknown) => boolean) => test as Check<T>;
-const plain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-const text = (max: number) => is<string>((v) => typeof v === "string" && v.length > 0 && v.length <= max);
-const string = is<string>((v) => typeof v === "string");
-const boolean = is<boolean>((v) => typeof v === "boolean");
-const integer = is<number>((v) => Number.isSafeInteger(v));
-const count = is<number>((v) => Number.isSafeInteger(v) && (v as number) >= 0);
-const nil = is<null>((v) => v === null);
-const anything = is<unknown>((v) => v !== undefined);
-const oneOf = <const T extends readonly (string | number | boolean)[]>(...values: T) => is<T[number]>((v) => values.includes(v as T[number]));
-const nullable = <T>(check: Check<T>) => is<T | null>((v) => v === null || check(v));
-const optional = <T>(check: Check<T>): Optional<T> => Object.assign(is<T | undefined>((v) => v === undefined || check(v)), { optional: true as const });
-const list = <T>(check: Check<T>) => is<T[]>((v) => Array.isArray(v) && v.every(check));
-const either = <A, B>(a: Check<A>, b: Check<B>) => is<A | B>((v) => a(v) || b(v));
-function object<F extends Fields>(fields: F): Check<Shape<F>> {
-	return is((v) => plain(v) && Object.keys(v).every((k) => Object.hasOwn(fields, k)) && Object.entries(fields).every(([k, check]) => check(v[k])));
-}
 
 const id = text(255);
 const tag = is<string>((v) => id(v) && RUN_TAG.test(v));
@@ -154,10 +127,6 @@ export function parseBody(data: string): Body | null {
 	return body(v) ? v : null;
 }
 
-function json(data: string): unknown {
-	try { return JSON.parse(data); } catch { return undefined; }
-}
-
 export function protocolRefusal(runnerProtocol: number): string {
 	return runnerProtocol < PROTOCOL_VERSION
 		? `This machine's runner speaks protocol ${runnerProtocol}; the platform needs ${PROTOCOL_VERSION}. Update the runner.`
@@ -165,8 +134,6 @@ export function protocolRefusal(runnerProtocol: number): string {
 }
 
 // The wire types are the provider's, without what cannot cross a socket (callbacks, an AbortSignal).
-type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
-type Assert<T extends true> = T;
 type Drift = [
 	Assert<Same<Args<"run">["options"], Omit<ExecOptions, "onStdout" | "onStderr" | "signal"> | undefined>>,
 	Assert<Same<Value<"run">, ExecResult>>,

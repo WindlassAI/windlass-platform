@@ -20,6 +20,7 @@ import { config, engineAdminToken, githubConfig } from "./config.js";
 import { ConnectionTokens } from "./connection-tokens.js";
 import { type GithubInfo, PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH, type PlatformConnection, type PlatformInfo } from "./contract.js";
 import { getLayer } from "./layer.js";
+import { MIN_RUNNER_VERSION } from "./runner/control.js";
 
 const FRESH_MS = 5 * 60 * 1000;
 /** A missing image or a failed lookup is asked about again sooner. */
@@ -76,6 +77,7 @@ export async function platformInfo(): Promise<PlatformInfo> {
 	// Left out without a GitHub App: the answer is then what it was before there could be one.
 	const app = githubInfo();
 	if (app) info.github = app;
+	if (config.machines) info.machines = { minRunnerVersion: MIN_RUNNER_VERSION, runnerImage: config.machines.runnerImage, platformUrl: config.machines.publicUrl };
 	return info;
 }
 

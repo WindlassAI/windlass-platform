@@ -54,6 +54,7 @@ import type { SandboxProfile, SandboxProfileId } from "../../contract.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "../api.js";
 import { profilesFor } from "../profiles.js";
 import {
+	BWRAP_PROBE,
 	type Answer,
 	type InternalExecResult,
 	NAME,
@@ -87,13 +88,6 @@ const SANDBOX_ENVS = { LANG: "C.UTF-8", NO_COLOR: "1" };
 /** How often a refused pause is tried, and how long apart (E2B: "retry the pause after a short wait"). */
 const PAUSE_TRIES = 3;
 const PAUSE_RETRY_MS = 5_000;
-
-/**
- * The arguments of Windlass's own start-up probe of bubblewrap (its packages/core/src/sandbox/detect.ts,
- * `PROBE_FLAGS`): the namespaces and mounts its sandbox uses. Where this passes, Windlass sandboxes
- * commands; where it fails, it sandboxes none and asks before each.
- */
-export const BWRAP_PROBE = ["bwrap", "--die-with-parent", "--unshare-user-try", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try", "--unshare-net", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--", "true"];
 
 /** What a user reads when the deployment already runs as many sandboxes as it may. */
 export function capReached(limit: number): string {
