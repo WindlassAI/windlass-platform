@@ -10,57 +10,20 @@
  * None of them reads a clock, stores anything or talks to anything: every time comes in on a fact.
  */
 
-import type { CheckStatus, SandboxPlace, TurnOutcome, Verified, VerifiedFlag } from "../contract.js";
+import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { CiReading, CiState } from "../github/ci.js";
+
+// What the web sees of these is in the contract; they are named here as the factory's modules use them.
+export type { ChoiceId, FactoryLimits, ItemBudget, ItemEvent, ItemState, QuestionKind, StepKind, Verdict, VerdictRun, Wait, WaitReason, Waiting } from "../contract.js";
 
 // ---------------------------------------------------------------------------------------------
 // The item
 // ---------------------------------------------------------------------------------------------
 
-/** §1.3. "waiting" always comes with a `Waiting` that says for what. */
-export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | "done" | "failed" | "cancelled";
-
-/**
- * What a waiting item waits for (§1.3; `children` and `dependency` come with slices 4 and 6).
- * "person" and "budget" have an open question; the others end by themselves.
- */
-export type WaitReason = "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
-
-/** A wait as a person reads it (§4.5): one reason, a sentence with its numbers, and when it is next tried. */
-export interface Wait {
-	reason: WaitReason;
-	sentence: string;
-	/** When whoever holds the wait tries again; null for a wait only a person ends. */
-	retryAt: number | null;
-}
-
-export interface Waiting extends Wait {
-	/** Since when the item waits for this reason. */
-	since: number;
-}
-
-/** §2.1. `gate` and `handoff` are code and are entered and left on the same fact. */
-export type StepKind = "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "handoff" | "merged";
 export type TurnStepKind = "refine" | "implement" | "ci_fix" | "conflict";
 
-export interface Step {
-	/** Dense within its run, from 1. */
-	n: number;
-	kind: StepKind;
-	/**
-	 * From 1. A turn step's next delivery (after an interruption, or to go on after an answer), a
-	 * publish's retry and every poll of a wait step is a new attempt: the step's key names one attempt,
-	 * so a fact about an earlier one is recognised and ignored.
-	 */
-	attempt: number;
-	startedAt: number;
-	/** For a turn step: delivered to the session's inbox, started, or null once it ended. */
-	turn: "delivered" | "started" | null;
-	/** How many times the session was asked whether the turn still runs (§2.2's fallback): names the last ask. */
-	checks: number;
-	/** Times this step's turn was cut off (§2.4: at most 3; not rounds). */
-	interruptions: number;
-}
+/** A step as the contract has it (`ItemStep`): a turn step's next delivery, a publish's retry and every poll of a wait step is a new attempt, so a fact about an earlier one is recognised by its key and ignored. */
+export type Step = ItemStep;
 
 /** What the gate read from the turn that ended last (§2.1 step 2). */
 export interface GateEvidence {
@@ -79,29 +42,16 @@ export interface CiProgress {
 	mergeable: boolean | null;
 }
 
-/** One attempt of the blueprint (§1.2 `runs`). */
-export interface Run {
-	n: number;
-	startedAt: number;
-	endedAt: number | null;
-	/** Why it ended other than by handing over: "cancelled", "retried", or the question's cause given up on. */
-	stopReason: string | null;
-	step: Step;
-	/** Rounds used in this run (§2.4); `plan` counts every refine turn. */
-	rounds: { plan: number; gate: number; ci: number; conflict: number };
+/** One attempt of the blueprint (§1.2 `runs`): what the contract shows (`ItemRun`), and what the gate and CI read. */
+export interface Run extends ItemRun {
 	/** The fingerprint of the last failure a fix turn was started for. */
 	lastFailure: string | null;
 	gate: GateEvidence | null;
 	ci: CiProgress | null;
 }
 
-/** The work as the item was given it. `base` is the branch its pull request goes into. */
-export interface Task {
-	title: string;
-	body: string;
-	acceptance: string[];
-	base: string;
-}
+/** The work as the item was given it (`ItemTask`). */
+export type Task = ItemTask;
 
 export interface FactoryItem {
 	id: string;
@@ -129,30 +79,11 @@ export interface FactoryItem {
 // Questions (§9)
 // ---------------------------------------------------------------------------------------------
 
-export type QuestionKind = "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout";
-
-/**
- *   approve     the plan is approved: implement it
- *   revise      plan again, with the person's note
- *   raise       "Raise the limit and go on": the round counter that stopped is reset, or the budget raised
- *   retry       "Retry from scratch": a new run
- *   again       try the same thing again (a turn that changed nothing, a refused push)
- *   wait        keep waiting for CI
- *   hand_over   hand the pull request to the person as it is, with its verdict
- *   give_up     the item fails
- */
-export type ChoiceId = "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
-
 /** What stopped a run (§2.4), for a "rounds" or "budget" question: what "raise" lifts. */
 export type StopCause = "repeated" | "plan" | "gate" | "ci" | "conflict" | "interruptions" | keyof ItemBudget;
 
-export interface Question {
-	/** Unique within the item. */
-	id: string;
-	kind: QuestionKind;
-	text: string;
-	choices: Array<{ id: ChoiceId; label: string }>;
-	askedAt: number;
+/** A question as the contract shows it (`ItemQuestion`), and what answering it goes on with. */
+export interface Question extends ItemQuestion {
 	cause: StopCause | null;
 	/** The turn that was about to start when the question was asked: what "raise" and "again" go on with. */
 	resume: TurnPlan | null;
@@ -239,80 +170,10 @@ export type Effect =
 	/** Record the verdict, request a review from the item's person, and put the verdict line on the pull request. */
 	| { kind: "handoff"; key: string; verdict: Verdict };
 
-/** An entry of the item's event log (§1.2 `events`), in the order it happened. */
-export interface ItemEvent {
-	at: number;
-	/** "person:<uid>" or "platform". */
-	by: string;
-	step: { run: number; n: number; kind: StepKind; attempt: number } | null;
-	said: string;
-}
-
 export interface Outcome {
 	/** The same object as given when the fact changed nothing. */
 	item: FactoryItem;
 	effects: Effect[];
+	/** Entries for the item's event log (§1.2 `events`), in the order they happened. */
 	events: ItemEvent[];
-}
-
-// ---------------------------------------------------------------------------------------------
-// Budgets and limits (§4.2, §4.3)
-// ---------------------------------------------------------------------------------------------
-
-/** An item's budget, and what it has spent in the same units. Hosted seconds count only where the item's sandbox is hosted. */
-export interface ItemBudget {
-	tokens: number;
-	turns: number;
-	activeSeconds: number;
-	hostedSeconds: number;
-}
-
-/** The factory's settings (WLP_FACTORY_*; decisions 6–8), per user where the owner raised them. */
-export interface FactoryLimits {
-	/** Running turns per user, the factory's and the person's own. */
-	runningTurns: number;
-	/** Of those, the factory's. */
-	factoryTurns: number;
-	/** Hosted sandboxes of the user running at once. */
-	hostedRunning: number;
-	/** Items in review at which new items wait. */
-	reviewCap: number;
-	/** A new item's budget. */
-	item: ItemBudget;
-}
-
-// ---------------------------------------------------------------------------------------------
-// The verdict (§8, without `review`)
-// ---------------------------------------------------------------------------------------------
-
-export interface VerdictRun {
-	name: string;
-	app: string;
-	conclusion: string;
-	url: string;
-}
-
-export interface Verdict {
-	id: string;
-	item: string;
-	run: number;
-	head: string;
-	at: number;
-	place: "hosted" | "machine";
-	attestedBy: "platform" | `machine:${string}`;
-	result: "pass" | "fail" | "incomplete" | "unverified";
-	gate: {
-		state: Verified["state"] | null;
-		/** The user's checks in the run the work rests on. */
-		required: Array<{ name: string; status: CheckStatus; sentBack: number }>;
-		unneeded?: Verified["unneeded"];
-	};
-	/**
-	 * "not_permitted": GitHub would not show the platform this repository's CI (`said` is GitHub's
-	 * words); "timed_out": still running when the person had it handed over.
-	 */
-	ci: { state: "passed" | "failed" | "none" | "timed_out" | "not_permitted"; runs: VerdictRun[]; said: string | null };
-	flags: VerifiedFlag[];
-	acceptance: string[];
-	mergeable: boolean | null;
 }

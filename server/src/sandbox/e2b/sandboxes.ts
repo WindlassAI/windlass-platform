@@ -51,7 +51,7 @@
  */
 
 import type { SandboxProfile, SandboxProfileId } from "../../contract.js";
-import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "../api.js";
+import { type CreateSandboxInput, DeploymentFull, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "../api.js";
 import { profilesFor } from "../profiles.js";
 import {
 	BWRAP_PROBE,
@@ -530,7 +530,7 @@ export class E2bSandboxes implements Sandboxes {
 		if (running !== null && running.length > this.settings.maxRunning) {
 			await discard();
 			this.log(`[wlp] e2b.cap_reached deployment=${this.settings.deployment}: ${running.length} sandboxes ran at once where ${this.settings.maxRunning} may; the newest (id=${id}) was removed again`);
-			throw new SandboxUserError(capReached(this.settings.maxRunning));
+			throw new DeploymentFull(this.settings.maxRunning, capReached(this.settings.maxRunning));
 		}
 		const handle = new E2bSandboxHandle(this, connection, id, input.uid, profile.id, profile.approval);
 		try {
@@ -580,7 +580,7 @@ export class E2bSandboxes implements Sandboxes {
 			if (running !== null && running.length > this.settings.maxRunning) {
 				await this.client.pause(id).catch(() => undefined);
 				this.log(`[wlp] e2b.cap_reached deployment=${this.settings.deployment}: ${running.length} sandboxes ran at once where ${this.settings.maxRunning} may; id=${id} was paused again`);
-				throw new SandboxUserError(capReached(this.settings.maxRunning));
+				throw new DeploymentFull(this.settings.maxRunning, capReached(this.settings.maxRunning));
 			}
 			known.runningSince = now;
 			known.deadline = now + this.settings.idleTimeoutMs;
@@ -725,7 +725,7 @@ export class E2bSandboxes implements Sandboxes {
 		const running = await this.running();
 		if (running.length < this.settings.maxRunning) return;
 		this.log(`[wlp] e2b.cap_reached deployment=${this.settings.deployment}: ${running.length} of at most ${this.settings.maxRunning} sandboxes are running; none was started`);
-		throw new SandboxUserError(capReached(this.settings.maxRunning));
+		throw new DeploymentFull(this.settings.maxRunning, capReached(this.settings.maxRunning));
 	}
 
 	/** The sandbox, when it exists and is this deployment's. */

@@ -137,6 +137,35 @@ export function cloneScript(url: string, branch: string, directory: string, work
 	return lines.join("\n");
 }
 
+/**
+ * Fetches `base` from `url` into the workspace's repository as `origin/<base>`, for a work item's turn
+ * that merges it (Plans "software factory" §2.1 step 6). The token fetches into a bare repository of
+ * the script's own, which reads none of the workspace's configuration; the workspace then fetches
+ * from that one with no token left anywhere, as the clone's step for the work does. `wlp:fetched`.
+ */
+export function fetchBaseScript(url: string, base: string): string {
+	return [
+		"set -eu",
+		READ_TOKEN,
+		tokenGit(hostOf(url)),
+		PLAIN_GIT,
+		"here=$(pwd)",
+		"tmp=$(mktemp -d /tmp/wlp-fetch.XXXXXXXX)",
+		`trap 'rm -rf "$tmp"' EXIT`,
+		`plain_git init --quiet --bare --template= "$tmp/repo"`,
+		`(cd "$tmp" && wlp_git --git-dir="$tmp/repo" fetch --quiet -- ${shellQuote(url)} ${shellQuote(`+refs/heads/${base}:refs/heads/${base}`)})`,
+		"WLP_T=",
+		`cd "$here"`,
+		`plain_git -c core.hooksPath=/dev/null fetch --quiet --no-tags "$tmp/repo" ${shellQuote(`+refs/heads/${base}:refs/remotes/origin/${base}`)}`,
+		`echo "wlp:fetched"`,
+	].join("\n");
+}
+
+/** Fetches the base branch with `token`, which is given to the command on its standard input and to nothing else. */
+export function fetchWithToken(sandbox: SandboxHandle, token: string, input: { url: string; base: string }): Promise<GitOutcome> {
+	return run(sandbox, fetchBaseScript(input.url, input.base), { stdin: `${token}\n`, timeoutMs: PUSH_TIMEOUT_MS, secrets: [token] });
+}
+
 /** Where the commit step leaves the push step two lines: the commit to push, and the workspace's object directory. */
 function handoverFile(sessionId: string): string {
 	return `/tmp/wlp-publish-${sessionId.replace(/[^A-Za-z0-9_-]/g, "")}`;

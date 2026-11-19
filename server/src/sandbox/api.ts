@@ -481,6 +481,15 @@ export interface RunTurnInput {
 	 * project whose own configuration names a server by the tool's server's name.
 	 */
 	onPublish?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
+	/**
+	 * Given for a turn of a work item's session: the agent is offered the tool `report` on the same
+	 * server as `publish` (agent-publish.ts), and may not be offered both. Called with each call of it
+	 * the engine reports, with the arguments as the model wrote them; returns what the agent is told.
+	 * Not offered where `onPublish` would not be.
+	 */
+	onReport?: (request: TurnPublishRequest) => string;
+	/** The most model steps the turn may take (`_meta["windlass/maxSteps"]` on its prompt); a turn at the limit ends. Left out: Windlass's own. */
+	maxSteps?: number;
 }
 
 /** What a turn's Windlass had for checks when its session was opened, as far as the layer saw. */
@@ -630,6 +639,22 @@ export class SandboxUserError extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "SandboxUserError";
+	}
+}
+
+/**
+ * The layer refused to start a sandbox because the deployment runs as many as it may at once
+ * (`limit`, WLP_E2B_MAX_RUNNING). A sentence for a person like any `SandboxUserError`, and for the
+ * factory a wait, not a failure: a work item's turn waits for a sandbox and is tried again
+ * (factory/budget.ts `PlaceNow.deploymentFull`). Known by its class, never by its words.
+ */
+export class DeploymentFull extends SandboxUserError {
+	constructor(
+		readonly limit: number,
+		message: string,
+	) {
+		super(message);
+		this.name = "DeploymentFull";
 	}
 }
 

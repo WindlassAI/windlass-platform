@@ -120,7 +120,7 @@
  * stays as Windlass reported it.
  */
 
-import { PUBLISH_SERVER, PUBLISH_STATE_DIR, mcpCall, publishArguments, publishRequestId, publishResultFile, publishServerDefinition } from "../agent-publish.js";
+import { PUBLISH_SERVER, PUBLISH_STATE_DIR, mcpCall, publishArguments, publishRequestId, publishResultFile, publishServerDefinition, reportArguments } from "../agent-publish.js";
 import { config } from "../config.js";
 import type { WindlassEvent } from "../contract.js";
 import { isReservedServerName } from "../personal-servers.js";
@@ -785,7 +785,8 @@ class Turn {
 		if (asked === "aborted" || this.abortRequested || this.peer.closed) return;
 
 		this.promptSent = true;
-		void peer.request<{ stopReason?: unknown; _meta?: Record<string, unknown> }>("session/prompt", { sessionId: this.session, prompt: [{ type: "text", text: input.prompt }] }).then(
+		const prompt = { sessionId: this.session, prompt: [{ type: "text", text: input.prompt }], ...(input.maxSteps === undefined ? {} : { _meta: { "windlass/maxSteps": input.maxSteps } }) };
+		void peer.request<{ stopReason?: unknown; _meta?: Record<string, unknown> }>("session/prompt", prompt).then(
 			(result) => {
 				const turn = result?._meta?.[NS] as { executionId?: unknown; outcome?: unknown } | undefined;
 				const outcome = typeof turn?.outcome === "string" && ["succeeded", "unresolved", "failed", "interrupted"].includes(turn.outcome) ? (turn.outcome as Outcome) : result?.stopReason === "cancelled" ? "interrupted" : null;
@@ -995,12 +996,14 @@ class Turn {
 	 * engine has them, and what the project's own file held. Never throws.
 	 */
 	private async writeServers(): Promise<void> {
+		// The platform's server carries the tool to publish, or a work item's tool to report: never both.
 		const publish = this.input.onPublish !== undefined && this.methods.includes(EXT.mcp);
+		const report = !publish && this.input.onReport !== undefined && this.methods.includes(EXT.mcp);
 		// The platform's own name is not a user's to have, whatever was saved.
 		const personal: ConfigServer[] = (this.input.servers ?? []).filter((server) => !isReservedServerName(server.name)).map(({ name, definition }) => ({ name, definition }));
 		const required = this.openKeys.includes("requiredChecks");
 		const checks = required ? [] : windlassChecks(this.input.checks ?? []);
-		const missed = [...(personal.length > 0 ? ["your own MCP servers were not started"] : []), ...(publish ? ["the agent was not offered the tool to publish"] : []), ...(checks.length > 0 ? ["your checks were not handed to Windlass"] : [])].join(" and ");
+		const missed = [...(personal.length > 0 ? ["your own MCP servers were not started"] : []), ...(publish ? ["the agent was not offered the tool to publish"] : []), ...(report ? ["the agent was not offered the tool to report"] : []), ...(checks.length > 0 ? ["your checks were not handed to Windlass"] : [])].join(" and ");
 		// Until the file holds them, a turn with checks to write there has not handed them over.
 		this.checks = { required, handed: checks.length === 0, project: null };
 		try {
@@ -1011,17 +1014,17 @@ class Turn {
 			}
 			this.checks = { ...this.checks, project: projectChecks(had.project) };
 			// The platform's own server last: nothing written before it can stand in its place.
-			const next = platformConfig(had.config, had.written, [...personal, ...(publish ? [{ name: PUBLISH_SERVER, definition: publishServerDefinition(config.questionTimeoutMs) }] : [])], checks);
+			const next = platformConfig(had.config, had.written, [...personal, ...(publish || report ? [{ name: PUBLISH_SERVER, definition: publishServerDefinition(config.questionTimeoutMs, { publish, report }) }] : [])], checks);
 			if (next === null) {
 				if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be read as one, so ${missed}`);
 				return;
 			}
 			// An answer left by a turn that was cut off is nobody's any more.
-			if (publish) await this.sandbox.ask(["rm", "-rf", "--", PUBLISH_STATE_DIR], { timeoutMs: DEFINITION_TIMEOUT_MS });
+			if (publish || report) await this.sandbox.ask(["rm", "-rf", "--", PUBLISH_STATE_DIR], { timeoutMs: DEFINITION_TIMEOUT_MS });
 			await this.storeConfiguration(next, had);
 			this.configWritten = next.written !== null || checks.length > 0;
 			this.checks = { ...this.checks, handed: true };
-			this.publishOffered = publish;
+			this.publishOffered = publish || report;
 			this.personal = new Set(personal.map((server) => server.name));
 			this.unasked = new Set((this.input.servers ?? []).filter((server) => server.unasked === true && this.personal.has(server.name)).map((server) => server.name));
 		} catch (error) {
@@ -1053,7 +1056,8 @@ class Turn {
 	 */
 	private publishing(event: WindlassEvent): void {
 		const ask = this.input.onPublish;
-		if (ask === undefined || !this.publishOffered) return;
+		const report = this.input.onReport;
+		if ((ask === undefined && report === undefined) || !this.publishOffered) return;
 		if (event.type === "tool.progress") {
 			const call = this.publishCalls.get(callKey(event.messageId, event.callId));
 			const request = call === undefined ? null : publishRequestId(event.text);
@@ -1071,12 +1075,14 @@ class Turn {
 			return;
 		}
 		if (event.type !== "tool.called" || typeof data.messageId !== "string" || typeof data.callId !== "string") return;
-		const given = publishArguments(data.name, data.input);
+		const given = ask === undefined ? null : publishArguments(data.name, data.input);
+		const reported = report === undefined ? null : reportArguments(data.name, data.input);
 		// A server of that name which the project's own configuration defines is the project's, not the platform's.
-		if (given === null || !this.servers.some((server) => server.name === PUBLISH_SERVER && server.origin === "user")) return;
+		if ((given === null && reported === null) || !this.servers.some((server) => server.name === PUBLISH_SERVER && server.origin === "user")) return;
 		const controller = new AbortController();
-		const request: TurnPublishRequest = { messageId: data.messageId, callId: data.callId, arguments: given };
-		const answer = (async () => ask(request, controller.signal))().then(
+		const request: TurnPublishRequest = { messageId: data.messageId, callId: data.callId, arguments: given ?? reported ?? {} };
+		// A report is taken at once; it only waits for the server to hand back what the agent is told.
+		const answer = (async () => (given !== null && ask !== undefined ? ask(request, controller.signal) : (report as NonNullable<typeof report>)(request)))().then(
 			(text) => (typeof text === "string" && text !== "" ? text : PUBLISH_NOT_HANDLED),
 			() => PUBLISH_NOT_HANDLED,
 		);
@@ -1474,7 +1480,9 @@ class Turn {
 		}
 		this.sealed = true;
 		if (this.failure === null && this.processEnd !== null && !this.abortRequested && this.summary === null) {
-			this.failure = { reason: "engine", message: `the engine process ${describeEnd(this.processEnd)} in the middle of the turn${this.lastWords()}` };
+			// A process the sandbox layer ended itself carries its sentence (a machine removed, its runner restarted): that is what a person can act on.
+			const end = this.processEnd;
+			this.failure = { reason: "engine", message: end.error !== null ? end.error.message : `the engine process ${describeEnd(end)} in the middle of the turn${this.lastWords()}` };
 		}
 	}
 

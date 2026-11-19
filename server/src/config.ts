@@ -41,6 +41,19 @@
  *   WLP_USAGE_HOLD_SECONDS     how much of the day's allowance a running sandbox reserves at a time,
  *                              and so how often its session reports to the user's actor (default 300,
  *                              five minutes; from 5 to 3600). Shortened by the checks
+ *   WLP_FACTORY_RUNNING_TURNS  the software factory's limits for every user (factory/budget.ts; the
+ *   WLP_FACTORY_TURNS          defaults are FACTORY_DEFAULTS there): turns of a user running at once,
+ *   WLP_FACTORY_HOSTED_RUNNING the factory's and the user's own (default 6, also the ceiling of a
+ *   WLP_FACTORY_REVIEW_CAP     user's own prompts); of those, the factory's (default 5, so one is always
+ *                              free for the person); the user's hosted sandboxes running at once that
+ *                              a factory turn may start beside (default 3); and how many of a user's
+ *                              items may be in review before new ones wait (default 6). A limit that
+ *                              is reached makes work wait, with a sentence, and never refuses it
+ *   WLP_FACTORY_ITEM_TOKENS, WLP_FACTORY_ITEM_TURNS, WLP_FACTORY_ITEM_ACTIVE_SECONDS,
+ *   WLP_FACTORY_ITEM_HOSTED_SECONDS
+ *                              a new work item's budget (default 4,000,000 tokens, 10 turns, 4 hours
+ *                              working, 1.5 hours of hosted sandbox); a person raises one item's when
+ *                              it stops on it. The same on every server, like all of these
  *   WLP_HTTP_PORT, PORT        where the platform's HTTP routes listen (`/platform/info`, `/health`);
  *                              WLP_HTTP_PORT first, then PORT, which Rivet Cloud sets on its nodes
  *                              (default 6440)
@@ -197,6 +210,8 @@ import { type AccessRules, readAccessRules } from "./access.js";
 import { QUESTION_TIMEOUT_MS } from "./contract.js";
 import { APPROVAL_TTL_MS } from "./server-approvals.js";
 import { DEFAULT_DAILY_SECONDS, DEFAULT_HOLD_SECONDS, DEFAULT_MAX_KEPT, type UsageLimits } from "./usage.js";
+import type { FactoryLimits } from "./contract.js";
+import { FACTORY_DEFAULTS } from "./factory/budget.js";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const DATA_DIR = join(REPO_ROOT, ".data");
@@ -263,6 +278,8 @@ export interface Config {
 	turnTimeoutMs: number;
 	/** A user's daily allowance of sandbox time, the cap on the sandboxes they keep, and the size of a hold (usage.ts). */
 	usage: UsageLimits;
+	/** The software factory's limits, the same for every user (WLP_FACTORY_*). */
+	factory: FactoryLimits;
 }
 
 function readSandboxMode(): SandboxMode {
@@ -549,6 +566,26 @@ function readCount(name: string, fallback: number, min: number, max: number, unl
 	return fallback;
 }
 
+function readFactory(): FactoryLimits {
+	const d = FACTORY_DEFAULTS;
+	const count = (name: string, fallback: number, max: number) => readCount(name, fallback, 1, max, false) ?? fallback;
+	const runningTurns = count("WLP_FACTORY_RUNNING_TURNS", d.runningTurns, 100);
+	// The factory's share leaves the person at least one turn of their own.
+	const factoryTurns = Math.min(count("WLP_FACTORY_TURNS", d.factoryTurns, 100), Math.max(1, runningTurns - 1));
+	return {
+		runningTurns,
+		factoryTurns,
+		hostedRunning: count("WLP_FACTORY_HOSTED_RUNNING", d.hostedRunning, 100),
+		reviewCap: count("WLP_FACTORY_REVIEW_CAP", d.reviewCap, 1_000),
+		item: {
+			tokens: count("WLP_FACTORY_ITEM_TOKENS", d.item.tokens, 1_000_000_000),
+			turns: count("WLP_FACTORY_ITEM_TURNS", d.item.turns, 1_000),
+			activeSeconds: count("WLP_FACTORY_ITEM_ACTIVE_SECONDS", d.item.activeSeconds, 7 * 86_400),
+			hostedSeconds: count("WLP_FACTORY_ITEM_HOSTED_SECONDS", d.item.hostedSeconds, 7 * 86_400),
+		},
+	};
+}
+
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 function readMachines(httpPort: number): MachinesConfig | null {
@@ -605,4 +642,5 @@ export const config: Config = {
 		maxKept: readCount("WLP_MAX_KEPT_SANDBOXES", DEFAULT_MAX_KEPT, 1, 1_000, true),
 		holdSeconds: readCount("WLP_USAGE_HOLD_SECONDS", DEFAULT_HOLD_SECONDS, 5, 3_600, false) ?? DEFAULT_HOLD_SECONDS,
 	},
+	factory: readFactory(),
 };

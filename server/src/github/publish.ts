@@ -26,7 +26,7 @@ import type { PublishMessage, PullRequestInfo, SessionRepository, Verified } fro
 import type { SandboxHandle } from "../sandbox/api.js";
 import { type WorkDiff, verifiedSection, verifiedWords, withVerifiedSection, workFlags } from "../verified.js";
 import { type GithubApp, GithubError, type Pull } from "./app.js";
-import { CLONE_MINUTES, type GitOutcome, cloneWithToken, commitWork, discardHandover, probeWork, pushWithToken, readWork } from "./git.js";
+import { CLONE_MINUTES, type GitOutcome, cloneWithToken, commitWork, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
 import { redact } from "./redact.js";
 import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveRepository } from "./repos.js";
 
@@ -328,6 +328,24 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 	} catch (error) {
 		throw new PullProblem(problemOf(error, account, name), head);
 	}
+}
+
+/**
+ * Fetches the base branch into the workspace as `origin/<base>`, for a work item's turn that merges it
+ * (git.ts `fetchBaseScript`), with a token that may only read the repository. Throws GithubProblem.
+ */
+export async function fetchBase(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, sandbox: SandboxHandle): Promise<void> {
+	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
+	const resolved = await resolveRepository(app, connection, repository.id, "read");
+	const name = fullName(resolved.repository);
+	const account = resolved.installation.account.login;
+	let fetched: GitOutcome;
+	try {
+		fetched = await app.withToken(resolved.installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } }, (token) => fetchWithToken(sandbox, token, { url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), base: repository.branch }), { revokeAfter: true });
+	} catch (error) {
+		throw problemOf(error, account, name);
+	}
+	if (!fetched.ok) throw gitProblem(fetched, "clone", name, account, repository.branch);
 }
 
 /**

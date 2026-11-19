@@ -42,9 +42,16 @@
 import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
 import type { CommandSandbox, Redactor } from "./repo-secrets.js";
 
-/** The server's name in Windlass's configuration, and its one tool: the model calls `mcp_call` with these. */
+/** The server's name in Windlass's configuration, and its tools: the model calls `mcp_call` with these. */
 export const PUBLISH_SERVER = "windlass_platform";
 export const PUBLISH_TOOL = "publish";
+/**
+ * The tool a work item's agent files its report with (Plans "software factory" §2.1): what it did, in
+ * a title and a description the platform puts on the pull request, and what it is unsure of. Offered
+ * on the same server, in place of `publish`, which an item's agent is not given: the platform pushes
+ * an item's work itself. Nothing is decided from a report; it is prose for the person.
+ */
+export const REPORT_TOOL = "report";
 
 /** Where the server waits for the platform's answers. */
 export const PUBLISH_STATE_DIR = "/home/agent/.local/state/windlass-platform";
@@ -71,6 +78,22 @@ const DESCRIPTION = [
 	"The result says what was published and gives the pull request's address, or says why nothing was published. Tell the user what it says, and do not try another way to publish.",
 ].join(" ");
 
+const REPORT_DESCRIPTION = [
+	"File your report on this turn's work, for the person who reviews it: a title and a description for the pull request, and what you are unsure of.",
+	"Call it once, at the end of your turn, after the work is done; a later call replaces the report. The platform commits and pushes your work and opens the pull request itself: you have no GitHub credential and do not push.",
+	"Whether the work is ready is decided from the checks and CI, not from the report: say plainly what you did not finish or could not verify.",
+].join(" ");
+
+const REPORT_SCHEMA = {
+	type: "object",
+	properties: {
+		title: { type: "string", description: `The pull request's title, at most ${MAX_PUBLISH_TITLE_CHARS} characters.` },
+		description: { type: "string", description: `The pull request's description, in Markdown, at most ${MAX_PUBLISH_BODY_CHARS} characters: what changed and why, and how it was checked.` },
+		concerns: { type: "string", description: "What you are unsure of, did not finish, or did differently from what was asked; left out when there is nothing." },
+	},
+	required: ["title", "description"],
+};
+
 const INPUT_SCHEMA = {
 	type: "object",
 	properties: {
@@ -84,15 +107,15 @@ const INPUT_SCHEMA = {
 
 /**
  * The server. One JSON-RPC message per line on standard input and output, the handshake of the MCP
- * revisions Windlass falls back to. A call of the tool is named (`request`), announced with that
- * name as the call's progress, and answered with the content of the file of that name once the
+ * revisions Windlass falls back to. A call of one of its tools is named (`request`), announced with
+ * that name as the call's progress, and answered with the content of the file of that name once the
  * platform has written it; the file is removed when it was read. A call nobody answers in `wait`
  * seconds ends by saying so. Calls are taken one at a time.
  */
 const SERVER_SOURCE = String.raw`
 import json, os, secrets, sys, time
 
-DIRECTORY, WAIT, TOOL = json.loads(sys.argv[1])
+DIRECTORY, WAIT, TOOLS = json.loads(sys.argv[1])
 os.makedirs(DIRECTORY, mode=0o700, exist_ok=True)
 
 
@@ -106,7 +129,7 @@ def text(words, failed=False):
 
 
 def call(params):
-    if params.get("name") != TOOL["name"]:
+    if params.get("name") not in [tool["name"] for tool in TOOLS]:
         return text("There is no such tool.", True)
     request = secrets.token_hex(12)
     token = (params.get("_meta") or {}).get("progressToken")
@@ -141,7 +164,7 @@ for line in sys.stdin:
     if method == "initialize":
         result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "windlass-platform", "version": "1"}}
     elif method == "tools/list":
-        result = {"tools": [TOOL]}
+        result = {"tools": TOOLS}
     elif method == "tools/call":
         result = call(message.get("params") or {})
     elif method == "ping":
@@ -153,16 +176,20 @@ for line in sys.stdin:
 `;
 
 /**
- * The server's definition, as Windlass's configuration takes it. `questionTimeoutMs` is how long
- * the user has to answer: a call may wait that long and then for the publishing itself. What the
+ * The server's definition, as Windlass's configuration takes it, with the tools of `offer`: `publish`
+ * for a session the agent may publish from, `report` for a work item's. `questionTimeoutMs` is how
+ * long the user has to answer: a call may wait that long and then for the publishing itself. What the
  * server returns is the platform's own words, so it is marked as trusted: its results do not count
  * as content from outside, after which Windlass would ask about every command it cannot sandbox.
  */
-export function publishServerDefinition(questionTimeoutMs: number): Record<string, unknown> {
+export function publishServerDefinition(questionTimeoutMs: number, offer: { publish: boolean; report: boolean } = { publish: true, report: false }): Record<string, unknown> {
 	const limit = Math.min(WINDLASS_CALL_LIMIT_SECONDS, Math.ceil(questionTimeoutMs / 1000) + PUBLISHING_SECONDS);
-	const tool = { name: PUBLISH_TOOL, description: DESCRIPTION, inputSchema: INPUT_SCHEMA };
+	const tools = [
+		...(offer.publish ? [{ name: PUBLISH_TOOL, description: DESCRIPTION, inputSchema: INPUT_SCHEMA }] : []),
+		...(offer.report ? [{ name: REPORT_TOOL, description: REPORT_DESCRIPTION, inputSchema: REPORT_SCHEMA }] : []),
+	];
 	// The server gives up a little before Windlass would: its own sentence is the better one to end on.
-	return { command: "python3", args: ["-c", SERVER_SOURCE, JSON.stringify([PUBLISH_DIR, Math.max(30, limit - 30), tool])], untrusted: false, timeoutSeconds: limit };
+	return { command: "python3", args: ["-c", SERVER_SOURCE, JSON.stringify([PUBLISH_DIR, Math.max(30, limit - 30), tools])], untrusted: false, timeoutSeconds: limit };
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -192,6 +219,34 @@ export function publishArguments(name: unknown, input: unknown): Record<string, 
 	const call = mcpCall(name, input);
 	return call !== null && call.server === PUBLISH_SERVER && call.tool === PUBLISH_TOOL ? call.arguments : null;
 }
+
+/** The arguments of a call of the tool to report, as `publishArguments` reads those of the tool to publish. */
+export function reportArguments(name: unknown, input: unknown): Record<string, unknown> | null {
+	const call = mcpCall(name, input);
+	return call !== null && call.server === PUBLISH_SERVER && call.tool === REPORT_TOOL ? call.arguments : null;
+}
+
+/** A report the agent filed, as its words are kept: cleaned as a request's are, cut to the limits. */
+export interface AgentReport {
+	title: string;
+	description: string;
+	concerns: string;
+}
+
+/** A call's arguments as a report; the saved secrets and control characters are taken out, and what is too long is cut. Null without a title. */
+export function reportOf(given: Record<string, unknown>, redactor: Redactor): AgentReport | null {
+	const clean = (value: unknown, limit: number, oneLine: boolean) => {
+		const text = redactor.text(typeof value === "string" ? value : "").replace(/\r\n?/g, "\n").replace(CONTROL, "");
+		return (oneLine ? text.replace(/\s+/g, " ") : text).trim().slice(0, limit);
+	};
+	const title = clean(given.title, MAX_PUBLISH_TITLE_CHARS, true);
+	if (title === "") return null;
+	return { title, description: clean(given.description, MAX_PUBLISH_BODY_CHARS, false), concerns: clean(given.concerns, MAX_PUBLISH_BODY_CHARS, false) };
+}
+
+/** What the agent is told when its report was taken. */
+export const REPORT_TAKEN = "Your report was filed. The platform publishes your work when your turn ends; end your turn now.";
+export const REPORT_REFUSED = "Not filed: the report needs a title. Call the tool again with a title and a description.";
 
 /** The server's name for a call, from the progress Windlass reports of it; null when it names none. */
 export function publishRequestId(progress: unknown): string | null {

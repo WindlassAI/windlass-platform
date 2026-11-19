@@ -299,6 +299,8 @@ export interface SessionSummary {
 	 * client asks `servers()` again when `changedAt` moves. Absent for a session that has none.
 	 */
 	servers?: { count: number; changedAt: number };
+	/** Set for the session of a work item: the item it works for (`ItemSummary`). Its prompts come from the item; a person may still read it. */
+	item?: { id: string };
 }
 
 export interface CreateSessionInput {
@@ -1019,6 +1021,271 @@ export interface MachineClaim {
 	runnerVersion: string;
 }
 
+// --- Work items: the software factory (Plans "software factory") ------------------------------
+//
+// A work item is a task on one repository that the platform carries through a fixed sequence of
+// steps (the blueprint): an agent implements it, the user's checks gate it, the platform pushes the
+// branch and opens the pull request, waits for CI, gives the agent at most two rounds of fixes, and
+// hands the pull request to the person with a verdict. Each item has one agent session of its own,
+// listed with the user's sessions (`SessionSummary.item`). Nothing is refused for lack of capacity:
+// an item that cannot go on waits, and says for what (`Waiting`). The server's own types for the
+// same things (server/src/factory/types.ts) are these, extended.
+
+/** Where an item is. "waiting" always comes with `ItemSummary.wait`. */
+export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | "done" | "failed" | "cancelled";
+
+/**
+ * What a waiting item waits for. "person" and "budget": a question to the person (`ItemSummary.question`);
+ * the others end by themselves: "capacity" a free turn or sandbox, or the day's allowance; "machine" the
+ * user's machine; "review_cap" fewer of the user's items in review; "ci" CI on the pushed commit.
+ */
+export type WaitReason = "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
+
+/** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
+export interface Wait {
+	reason: WaitReason;
+	/** "Waiting for one of your 5 factory turns; 5 are running (…)." */
+	sentence: string;
+	/** When it is tried again, ms since the epoch; null for a wait only a person ends. */
+	retryAt: number | null;
+}
+
+export interface Waiting extends Wait {
+	/** Since when the item waits for this reason. */
+	since: number;
+}
+
+/**
+ * A step of the blueprint. "implement", "ci_fix", "conflict" (and "refine", which is not offered yet)
+ * are turns of the item's agent; "gate" and "handoff" are the platform's decisions; "publish" is the
+ * platform pushing; "ci" and "merged" are waits on GitHub.
+ */
+export type StepKind = "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "handoff" | "merged";
+
+/** The step a run is at. */
+export interface ItemStep {
+	/** Dense within its run, from 1. */
+	n: number;
+	kind: StepKind;
+	/** From 1: a step tried again (after an interruption, a retried push, every poll of a wait) is a new attempt. */
+	attempt: number;
+	startedAt: number;
+	/** For a turn step: delivered to the session and not started yet, started, or null once it ended. */
+	turn: "delivered" | "started" | null;
+	/** How many times the session was asked whether the turn still runs. */
+	checks: number;
+	/** How many times this step's turn was cut off, by a deploy or a restart (at most 3). */
+	interruptions: number;
+}
+
+/** One run of the blueprint: an item has a new one when it is retried or sent back. */
+export interface ItemRun {
+	n: number;
+	startedAt: number;
+	endedAt: number | null;
+	/** Why it ended other than by handing over: "cancelled", "retried", or the cause of the question given up on. */
+	stopReason: string | null;
+	step: ItemStep;
+	/** The rounds of each kind used in this run: fixing after the checks, after CI, merging the base; `plan` counts planning turns. */
+	rounds: { plan: number; gate: number; ci: number; conflict: number };
+}
+
+/** The work as the item was given it. `base` is the branch its pull request goes into. */
+export interface ItemTask {
+	title: string;
+	body: string;
+	/** What a person will check, one criterion each; listed in the verdict, not checked by a machine. */
+	acceptance: string[];
+	base: string;
+}
+
+/** An item's budget, and what it has spent, in the same units. Hosted seconds count only where the item's sandbox is hosted. */
+export interface ItemBudget {
+	tokens: number;
+	turns: number;
+	/** Time the item was working: waiting for capacity, CI or a person does not count. */
+	activeSeconds: number;
+	hostedSeconds: number;
+}
+
+/** The factory's limits for a user: the deployment's settings (WLP_FACTORY_*), which its owner sets; a user cannot raise them. */
+export interface FactoryLimits {
+	/** Running turns of the user at once, the factory's and the person's own. */
+	runningTurns: number;
+	/** Of those, the factory's: the rest are always free for the person's own prompts. */
+	factoryTurns: number;
+	/** The user's hosted sandboxes running at once. */
+	hostedRunning: number;
+	/** New items wait while this many of the user's items are in review. */
+	reviewCap: number;
+	/** A new item's budget. */
+	item: ItemBudget;
+}
+
+export type QuestionKind = "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout";
+
+/**
+ *   approve     the plan is approved: implement it
+ *   revise      plan again, with the person's note
+ *   raise       "Raise the limit and go on": the round counter that stopped is reset, or the budget raised
+ *   retry       "Retry from scratch": a new run
+ *   again       try the same thing again (a turn that changed nothing, a refused push)
+ *   wait        keep waiting for CI
+ *   hand_over   hand the pull request to the person as it is, with its verdict
+ *   give_up     the item fails
+ */
+export type ChoiceId = "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
+
+/** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
+export interface ItemQuestion {
+	/** Unique within the item: what `ItemAction` "answer" names. */
+	id: string;
+	kind: QuestionKind;
+	text: string;
+	choices: Array<{ id: ChoiceId; label: string }>;
+	askedAt: number;
+}
+
+/** An entry of an item's log, oldest first: every change of the item, and what caused it. */
+export interface ItemEvent {
+	at: number;
+	/** "person:<uid>" or "platform". */
+	by: string;
+	/** The step it happened in; null outside a run. */
+	step: { run: number; n: number; kind: StepKind; attempt: number } | null;
+	said: string;
+}
+
+/** A check run or commit status of CI, as the verdict lists it. */
+export interface VerdictRun {
+	name: string;
+	/** The app that reported it ("github-actions"), or "status" for a commit status. */
+	app: string;
+	/** GitHub's word for how it ended. */
+	conclusion: string;
+	url: string;
+}
+
+/**
+ * What the work at a pushed commit rests on, for the person to read: made from what the session's
+ * gate recorded (`Verified`), the observations on the changes (`VerifiedFlag`) and CI, never from the
+ * agent's words. `result`: "fail" a check or CI failed; "incomplete" the turn did not finish;
+ * "unverified" nothing verified this state of the work; "pass" otherwise. A pass with flags needs a
+ * look; a verdict never merges anything.
+ */
+export interface Verdict {
+	id: string;
+	item: string;
+	run: number;
+	/** The commit it is for. */
+	head: string;
+	at: number;
+	place: "hosted" | "machine";
+	attestedBy: "platform" | `machine:${string}`;
+	result: "pass" | "fail" | "incomplete" | "unverified";
+	gate: {
+		state: Verified["state"] | null;
+		/** The user's checks in the run the work rests on. */
+		required: Array<{ name: string; status: CheckStatus; sentBack: number }>;
+		unneeded?: Verified["unneeded"];
+	};
+	/** "not_permitted": GitHub would not show the platform this repository's CI (`said` is GitHub's words); "timed_out": still running when the work was handed over. */
+	ci: { state: "passed" | "failed" | "none" | "timed_out" | "not_permitted"; runs: VerdictRun[]; said: string | null };
+	flags: VerifiedFlag[];
+	acceptance: string[];
+	mergeable: boolean | null;
+}
+
+/** An item as the user's index lists it. */
+export interface ItemSummary {
+	id: string;
+	title: string;
+	/** The repository of the user's GitHub connection it is on; `branch` is the base its pull request goes into. */
+	repository: SessionRepository;
+	place: SandboxPlace;
+	/** How it was filed: from the web app, or with an API token (`ApiToken`). */
+	source: "web" | "api";
+	state: ItemState;
+	/** Set exactly when `state` is "waiting". */
+	wait: Waiting | null;
+	/** The open question, if any. */
+	question: ItemQuestion | null;
+	pullRequest: { number: number; url: string } | null;
+	/** The latest verdict's result and flags; null before the first. */
+	verdict: { result: Verdict["result"]; flags: VerifiedFlag[] } | null;
+	budget: ItemBudget;
+	spent: ItemBudget;
+	/** The item's agent session, among the user's sessions. */
+	sessionId: string;
+	createdAt: number;
+	/** When the item last changed. */
+	updatedAt: number;
+	/** Increased by every change: a client that holds an `ItemView` of a lower revision asks for it again. */
+	revision: number;
+}
+
+/** An item's page. */
+export interface ItemView extends ItemSummary {
+	task: ItemTask;
+	/** The run it is in, or ended last; null before it was started. */
+	run: ItemRun | null;
+	/** The commit pushed last. */
+	head: string | null;
+	/** Its log, oldest first: the runs and steps before the current one are read from it. */
+	events: ItemEvent[];
+	/** Every verdict, the oldest first. */
+	verdicts: Verdict[];
+}
+
+export interface CreateItemInput {
+	/** A repository of the user's GitHub connection, by GitHub's id for it, and the base branch (default: the repository's default branch). */
+	repository: { id: number; branch?: string };
+	/** At most MAX_TITLE_CHARS. */
+	title: string;
+	/** At most MAX_ITEM_BODY_CHARS. */
+	body: string;
+	/** At most MAX_ACCEPTANCE_CRITERIA, each at most MAX_NOTE_CHARS. */
+	acceptance?: string[];
+	/** The agent's sandbox and model; left out, the repository's defaults, then the account's, then the deployment's. */
+	profile?: SandboxProfileId;
+	model?: string;
+	/** Left out: hosted. Items run only on hosted sandboxes for now: a machine is refused (`bad_input`). */
+	place?: SandboxPlace;
+	/** True: started at once, as "Start" would. Left out: the item is a draft until started. */
+	start?: boolean;
+	/** As `CreateSessionInput.idempotencyKey`: the same key again answers with the item the first attempt made. */
+	idempotencyKey?: IdempotencyKey;
+}
+
+/** What a person does to an item: each is refused (`item_conflict`) where the item's state does not allow it. */
+export type ItemAction =
+	/** A draft: start it. */
+	| { kind: "start" }
+	| { kind: "cancel" }
+	/** A failed item: start a new run. */
+	| { kind: "retry" }
+	/** An item in review: a new run, with the person's note to the agent. */
+	| { kind: "send_back"; note: string }
+	/** The open question: one of its choices, with a note to the agent, and for "raise" on a budget question the new budget. */
+	| { kind: "answer"; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget> };
+
+/** What an API token may do. */
+export type ApiTokenScope = "items:create" | "items:read";
+
+/**
+ * A token for the platform's HTTP API (`POST /api/items`, `GET /api/items/<id>`), sent as
+ * `Authorization: Bearer wlp_…`. Its value is shown once, when it is made; the platform keeps only a
+ * digest of it. It works until it is revoked.
+ */
+export interface ApiToken {
+	id: string;
+	name: string;
+	scopes: ApiTokenScope[];
+	createdAt: number;
+	/** When it was last used, to the minute; null before. */
+	usedAt: number | null;
+}
+
 export interface UserActions {
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
@@ -1194,6 +1461,26 @@ export interface UserActions {
 	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
+	/** The user's work items, the newest first. */
+	listItems(): Promise<ItemSummary[]>;
+	/** One item's page. Throws a UserError with code `item_not_found` for one that is not the user's. */
+	item(id: string): Promise<ItemView>;
+	/**
+	 * Files a work item, with its own agent session on the repository. Checks the repository at GitHub
+	 * as `createSession` does, and throws as it does; also `bad_input` for a title, body or criteria that
+	 * cannot be taken, and for a machine place.
+	 */
+	createItem(input: CreateItemInput): Promise<ItemSummary>;
+	/** Throws a UserError with code `item_not_found`, or `item_conflict` when the item's state does not allow the action (it says why). */
+	actOnItem(input: { id: string; action: ItemAction }): Promise<ItemView>;
+	/** The factory's limits for this user. */
+	factoryLimits(): Promise<FactoryLimits>;
+	/** The user's API tokens, the newest first; never a token's value. */
+	apiTokens(): Promise<ApiToken[]>;
+	/** Makes an API token: `secret` is its value, shown this once. Throws a UserError with code `bad_input` for a name or scopes that cannot be taken, `too_many_tokens` at MAX_API_TOKENS. */
+	createApiToken(input: { name: string; scopes: ApiTokenScope[] }): Promise<{ token: ApiToken; secret: string }>;
+	/** Revokes one: it stops working at once. Resolves for one that is not there, too. */
+	revokeApiToken(id: string): Promise<ApiToken[]>;
 }
 
 export interface UserEvents {
@@ -1203,6 +1490,8 @@ export interface UserEvents {
 	usage: UsageNumbers;
 	/** The user's machines, after one was paired or removed, or its status, warnings or secrets switch changed. */
 	machines: MachineSummary[];
+	/** The user's work items, newest first, after any of them changed. */
+	items: ItemSummary[];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1704,6 +1993,10 @@ export const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
 export const MAX_RUNNING_SESSIONS = 3;
 /** How many machines a user may have paired at once. */
 export const MAX_MACHINES = 3;
+/** A work item's body, in characters. */
+export const MAX_ITEM_BODY_CHARS = 20_000;
+export const MAX_ACCEPTANCE_CRITERIA = 20;
+export const MAX_API_TOKENS = 20;
 /** A machine whose runner has not been heard from for this long is removed, its sandboxes left where they are. */
 export const MACHINE_EXPIRY_MS = 90 * 24 * 60 * 60 * 1000;
 /** How many days of sandbox time the usage page lists, today included. */

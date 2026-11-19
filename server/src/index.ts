@@ -12,6 +12,7 @@
  */
 
 import { runnerResponse } from "./runner-routes.js";
+import { apiRoute } from "./api-routes.js";
 import { RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH } from "./runner/control.js";
 import { config, githubConfig } from "./config.js";
 import { PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH } from "./contract.js";
@@ -85,6 +86,8 @@ async function route(request: Request): Promise<Response> {
 	const { pathname } = new URL(request.url);
 	if ([RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH].includes(pathname)) return runnerResponse(request);
 	if (pathname === PLATFORM_INFO_PATH) return platformInfoResponse(request);
+	const api = await apiRoute(request);
+	if (api) return api;
 	if (pathname === PLATFORM_CONNECTION_PATH) return platformConnectionResponse(request);
 	// Where GitHub sends a user's browser back to when they connect: the GitHub App's callback URL.
 	if (pathname === GITHUB_CALLBACK_PATH) return githubCallbackResponse(request);

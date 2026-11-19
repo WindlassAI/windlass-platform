@@ -8,7 +8,10 @@
  * signin/directory.ts makes them with a client of its own.
  */
 
-import type { ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { Fact } from "../factory/types.js";
+import type { Delivery, TurnAnswer, TurnRequest } from "./session-inbox.js";
+import type { ItemCreateInput, ItemPublishAnswer } from "./work-item.js";
 import { serviceParams } from "../auth.js";
 import type { StoredRepository } from "../github/publish.js";
 import type { StoredConnection } from "../github/repos.js";
@@ -31,6 +34,8 @@ export interface SessionCreateInput {
 	publishUnasked?: boolean;
 	demo: boolean;
 	createdAt: number;
+	/** Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's. */
+	origin?: { kind: "item"; itemId: string };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
@@ -77,6 +82,16 @@ export interface UserInternal {
 	internalRelease(sessionId: string): Promise<void>;
 	/** The models the user may choose and the efforts of each (account-models.ts): their plan's, or what stands in for it. */
 	internalModels(): Promise<ModelList>;
+	/** A work item's summary changed (user-items.ts). */
+	internalItemChanged(summary: ItemSummary): Promise<void>;
+	/** What an item reads of its user: its session's hosted seconds in the ledger, and the user's open items. */
+	internalItemFacts(sessionId: string): Promise<{ hostedSeconds: number; openItems: number }>;
+	/** An item session asks for a running slot for the turn of a delivery: granted now, or queued (`SessionInternal.internalGrant` later). */
+	internalRequestTurn(request: TurnRequest): Promise<TurnAnswer>;
+	/** The turn a slot was given to ended, or could not start: the slot, by its id, is free. */
+	internalTurnDone(input: { sessionId: string; slot: string; key: string }): Promise<void>;
+	/** A delivery that waited for a slot is not wanted any more. */
+	internalWithdrawTurn(input: { sessionId: string; key: string }): Promise<void>;
 }
 
 /** A repository's secrets, and what the user keeps for their account, on their way to a session: each value as the `user` actor stores it, sealed (repo-secrets.ts). */
@@ -107,6 +122,25 @@ export interface SessionInternal {
 	internalDestroy(): Promise<void>;
 	/** Removes the session's sandbox for its user, who is making room: the session and its timeline stay. `freed` is false when it had none. */
 	internalFreeSandbox(): Promise<{ freed: boolean }>;
+	/** A work item's message (its `deliver` effect), into the inbox: resolves once it is stored; the same key again adds nothing. */
+	internalDeliver(input: Delivery): Promise<void>;
+	/** The user's turn queue gives the delivery of `key` its slot. */
+	internalGrant(input: { key: string; slot: string }): Promise<void>;
+	/** The turn of `key` is not wanted any more: out of the inbox, or stopped. */
+	internalWithdraw(key: string): Promise<void>;
+	/** Whether the turn of `turn` still runs (a `turn_running` fact with `check`), how it ended, or null when it has not started. */
+	internalCheckTurn(input: { turn: string; check: string }): Promise<Fact | null>;
+	/** Pushes the item's work and opens or updates its pull request, with the agent's report or else the item's title and body. */
+	internalPublish(input: { key: string; title: string; body: string }): Promise<ItemPublishAnswer>;
+}
+
+/** Actions of `workItem` that only actors may call. */
+export interface ItemInternal {
+	internalSummary(): Promise<ItemSummary>;
+	internalView(): Promise<ItemView>;
+	internalAct(input: { action: ItemAction; by: string }): Promise<ItemView>;
+	/** A fact about the item's turn; resolves once it is stored. */
+	internalFact(fact: Fact): Promise<void>;
 }
 
 interface HasClient {
@@ -131,6 +165,27 @@ export function grantIsValid(grant: unknown, key: readonly string[], kind = "age
 export async function createSessionActor(c: HasClient, uid: string, sessionId: string, input: Omit<SessionCreateInput, "grant">): Promise<void> {
 	const full: SessionCreateInput = { ...input, grant: createGrant("agentSession", [uid, sessionId]) };
 	await c.client().agentSession.create([uid, sessionId], { input: full, params: serviceParams() });
+}
+
+/** Whether a create failed because an actor of that key exists: for an id derived from a key, a creation that was tried before. */
+export function isDuplicateKey(error: unknown): boolean {
+	if (typeof error !== "object" || error === null) return false;
+	const { group, code } = error as { group?: unknown; code?: unknown };
+	return group === "actor" && code === "duplicate_key";
+}
+
+/** Creates a work item; one of that key that exists already is the one a creation tried before made. */
+export async function createItemActor(c: HasClient, uid: string, itemId: string, input: Omit<ItemCreateInput, "grant">): Promise<void> {
+	const full: ItemCreateInput = { ...input, grant: createGrant("workItem", [uid, itemId]) };
+	try {
+		await c.client().workItem.create([uid, itemId], { input: full, params: serviceParams() });
+	} catch (error) {
+		if (!isDuplicateKey(error)) throw error;
+	}
+}
+
+export function itemActor(c: HasClient, uid: string, itemId: string): ItemInternal {
+	return c.client().workItem.get([uid, itemId], { params: serviceParams() }) as ItemInternal;
 }
 
 export function sessionActor(c: HasClient, uid: string, sessionId: string): SessionInternal {

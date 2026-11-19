@@ -78,6 +78,9 @@
 import { MACHINE_ID } from "../runner/control.js";
 import type { MachineUpdate } from "./machine.js";
 import { launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
+import { ITEM_TABLES, type ItemsState, type MakeSession, QUEUE_ACTION, factorySlots, itemActions, loadItems, queueChanged } from "./user-items.js";
+import type { ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemSummary, ItemView } from "../contract.js";
+import type { TurnAnswer, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
@@ -96,7 +99,6 @@ import {
 	type KeptSandbox,
 	MAX_ACCOUNT_SECRETS,
 	MAX_PERSONAL_SERVERS,
-	MAX_RUNNING_SESSIONS,
 	MAX_SERVER_DEFINITION_BYTES,
 	MAX_TITLE_CHARS,
 	type ModelList,
@@ -145,7 +147,7 @@ import { getSignIns } from "../signin/index.js";
 import { serverSealer } from "../signin/seal.js";
 import { uidOfAccount } from "../signin/material.js";
 import { USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, isEmptyChange } from "../usage.js";
-import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, secretsCaller, sessionActor } from "./internal.js";
+import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
 const MAX_REPO_URL_CHARS = 300;
@@ -191,6 +193,8 @@ interface UserVars {
 	usage: UsageBook;
 	/** The user's sandboxes as the provider last listed them, and when; null until it was asked. */
 	listed: { at: number; sandboxes: ListedSandbox[] } | null;
+	/** The user's work items, the turn queue and its slots (user-items.ts), as the tables have them. */
+	items: ItemsState;
 }
 
 interface SignInCtx {
@@ -874,7 +878,7 @@ const KEYED = "agent";
  * several of those, and other calls run meanwhile; the session is in the index, and its key with it,
  * in one synchronous step at the end, or the call is refused and nothing of it is kept.
  */
-async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null): Promise<SessionSummary> {
+async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: { sessionId: string; itemId: string }): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
 	let repoUrl = cleanRepoUrl(input.repoUrl);
 	const givenTitle = input.title === undefined || input.title === null ? null : cleanTitle(input.title);
@@ -931,7 +935,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 
 		const now = Date.now();
 		summary = {
-			id: `s_${randomBytes(8).toString("hex")}`,
+			id: item?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
 			title: givenTitle ?? DEFAULT_TITLE,
 			place,
 			profile: chosen.id,
@@ -944,8 +948,10 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			turns: 0,
 			lastOutcome: null,
 			sandbox: "none",
+			...(item ? { item: { id: item.itemId } } : {}),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId } } : {}),
 			title: summary.title,
 			titleIsDefault: givenTitle === null,
 			place: summary.place,
@@ -956,6 +962,9 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			publishUnasked: repo !== null && input.publishUnasked === true,
 			demo: profile.demo,
 			createdAt: now,
+		}).catch((error: unknown) => {
+			// An item's session has an id derived from its item's: one that exists is the one an earlier try made.
+			if (!item || !isDuplicateKey(error)) throw error;
 		});
 	} catch (error) {
 		throw clientError(c.log, error, "The agent could not be created. Try again.");
@@ -967,6 +976,11 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	await storeSession(c, summary, submission);
 	broadcastSessions(c);
 	return summary;
+}
+
+/** `makeSession` for an item's session, as user-items.ts asks for it, with the action's own context. */
+function itemSession(c: CreateCtx): MakeSession {
+	return (_, profile, input, submission, item) => makeSession(c, profile, input, submission, item);
 }
 
 export const user = actor({
@@ -1116,6 +1130,7 @@ export const user = actor({
 			// The sessions that have a place among the sandboxes the user keeps.
 			await db.execute("CREATE TABLE IF NOT EXISTS kept_sandbox (session TEXT PRIMARY KEY, since INTEGER NOT NULL)");
 			await machineTables(db);
+			for (const table of ITEM_TABLES) await db.execute(table);
 		},
 	}),
 
@@ -1135,13 +1150,14 @@ export const user = actor({
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null };
+		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, items: await loadItems(c.db) };
 	},
 
 	events: {
 		machines: event<MachineSummary[]>({ canSubscribe: (c) => maySubscribe(c) }),
 		sessions: event<SessionSummary[]>({ canSubscribe: (c) => maySubscribe(c) }),
 		usage: event<UsageNumbers>({ canSubscribe: (c) => maySubscribe(c) }),
+		items: event<ItemSummary[]>({ canSubscribe: (c) => maySubscribe(c) }),
 	},
 
 	onBeforeConnect: (c, params: ConnParams | undefined) => {
@@ -1163,6 +1179,8 @@ export const user = actor({
 	},
 
 	onWake: async (c) => {
+		// Turn requests that waited while the actor was away are tried, and their schedule set again (user-items.ts).
+		queueChanged(c);
 		// A try whose next schedule was set and not stored, because the server stopped in between, is set again.
 		try {
 			const late = await c.db.execute<{ session: string; tries: number }>("SELECT session, tries FROM backup_removal WHERE due_at < ?", Date.now() - BACKUP_REMOVE_LATE_MS);
@@ -1181,6 +1199,23 @@ export const user = actor({
 		internalMachineCreated: (c, id: string): Promise<boolean> => machineActions.internalMachineCreated(c, id),
 		internalMachineApproval: (c, id: string): Promise<{ login: string | null } | null> => machineActions.internalMachineApproval(c, id),
 		internalMachineChanged: (c, id: string, facts: MachineUpdate | null): Promise<void> => machineActions.internalMachineChanged(c, id, facts),
+		// --- work items, the turn queue and API tokens (user-items.ts) ---
+		listItems: (c): ItemSummary[] => itemActions.listItems(c),
+		item: (c, id: string): Promise<ItemView> => itemActions.item(c, id),
+		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),
+		actOnItem: (c, input: { id: string; action: ItemAction }): Promise<ItemView> => itemActions.actOnItem(c, input),
+		factoryLimits: (c): FactoryLimits => itemActions.factoryLimits(c),
+		apiTokens: (c): Promise<ApiToken[]> => itemActions.apiTokens(c),
+		createApiToken: (c, input: { name: string; scopes: ApiTokenScope[] }): Promise<{ token: ApiToken; secret: string }> => itemActions.createApiToken(c, input),
+		revokeApiToken: (c, id: string): Promise<ApiToken[]> => itemActions.revokeApiToken(c, id),
+		internalApiCreateItem: (c, input: { token: string; item: CreateItemInput }): Promise<ItemSummary> => itemActions.internalApiCreateItem(c, input, itemSession(c)),
+		internalApiItem: (c, input: { token: string; id: string }): Promise<ItemView> => itemActions.internalApiItem(c, input),
+		internalItemChanged: (c, summary: ItemSummary): Promise<void> => itemActions.internalItemChanged(c, summary),
+		internalItemFacts: (c, sessionId: string): { hostedSeconds: number; openItems: number } => itemActions.internalItemFacts(c, sessionId),
+		internalRequestTurn: (c, request: TurnRequest): Promise<TurnAnswer> => itemActions.internalRequestTurn(c, request),
+		internalTurnDone: (c, input: { sessionId: string; slot: string; key: string }): Promise<void> => itemActions.internalTurnDone(c, input),
+		internalWithdrawTurn: (c, input: { sessionId: string; key: string }): Promise<void> => itemActions.internalWithdrawTurn(c, input),
+		[QUEUE_ACTION]: (c): Promise<void> => itemActions.internalTurnQueue(c),
 		me: async (c): Promise<UserProfile> => {
 			const profile = requireUser(c);
 			await rememberProfile(c, profile);
@@ -1956,6 +1991,7 @@ export const user = actor({
 			c.vars.sessions.set(summary.id, summary);
 			await c.db.execute("UPDATE sessions SET summary = ? WHERE id = ?", JSON.stringify(summary), summary.id);
 			broadcastSessions(c);
+			if (summary.status === "idle") queueChanged(c);
 		},
 
 		/** A deleted session's copy that the session could not remove: it is tried again from here. */
@@ -1971,11 +2007,13 @@ export const user = actor({
 		internalAcquireRun: async (c, sessionId: string): Promise<{ ok: boolean; running: number; known: boolean }> => {
 			requireService(c);
 			const uid = c.key[0];
-			const others = () => [...c.vars.sessions.values()].filter((session) => session.id !== sessionId && session.status !== "idle");
+			// An item session's turn holds a slot of the turn queue (user-items.ts), counted here instead of by its summary.
+			const others = () => [...c.vars.sessions.values()].filter((session) => session.id !== sessionId && !session.item && session.status !== "idle");
+			const ceiling = config.factory.runningTurns - factorySlots(c);
 
 			// At the limit, ask the sessions that look busy: one whose report never arrived would
 			// otherwise block the user for good.
-			if (others().length >= MAX_RUNNING_SESSIONS) {
+			if (others().length >= ceiling) {
 				await Promise.all(
 					others().map(async (stale) => {
 						let fresh: SessionSummary | null = null;
@@ -1997,13 +2035,13 @@ export const user = actor({
 			const entry = c.vars.sessions.get(sessionId);
 			if (!entry) return { ok: false, running: others().length, known: false };
 			const running = others().length;
-			if (running >= MAX_RUNNING_SESSIONS) return { ok: false, running, known: true };
+			if (running >= ceiling) return { ok: false, running: running + factorySlots(c), known: true };
 			const claimed: SessionSummary = { ...entry, status: entry.status === "idle" ? "starting" : entry.status };
 			c.vars.sessions.set(sessionId, claimed);
 
 			await storeSession(c, claimed);
 			broadcastSessions(c);
-			return { ok: true, running: running + 1, known: true };
+			return { ok: true, running: running + factorySlots(c) + 1, known: true };
 		},
 
 		// --- sandbox time and kept sandboxes, for the user's sessions (usage.ts) --------------------

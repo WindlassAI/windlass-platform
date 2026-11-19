@@ -1,0 +1,587 @@
+/**
+ * The software factory's part of the `user` actor (Plans "software factory" §1.2, §4.1): the index of
+ * the user's work items, the turn queue, and the user's API tokens. user.ts registers these actions
+ * and holds the state in its vars; everything about items is here.
+ *
+ * The index. One row per item with its summary, as the item last reported it, and the key it was
+ * created with. An item and its agent session are made with ids derived from that key (or random,
+ * without one), so a creation tried again after a lost answer reaches the same two actors and makes
+ * nothing twice; the item's session is an ordinary row of the sessions' index, marked with its item.
+ *
+ * The turn queue. An item's turn does not take a running slot the way a person's prompt does
+ * (`internalAcquireRun`, which refuses at the limit): its session asks here, and the request waits
+ * as a row until it is admitted (factory/budget.ts `admit`), which answers granted or a wait with
+ * the sentence the item shows. A slot is a row with its own id, named for the turn it was given to,
+ * and released only by that id, when that turn ends (the session's outbox), or when it has been held
+ * longer than any turn may run: never by what a session's summary says, which cannot tell "released"
+ * from "not reported yet". A person's prompt counts these slots, and the factory counts the person's
+ * running sessions, against the same limit; the factory's own share is lower, so a person always has
+ * a turn of their own. Requests are admitted oldest first: each item has at most one turn waiting,
+ * so oldest first is round-robin over items. A request that waits is tried again when a slot is given
+ * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
+ *
+ * Items run only on hosted sandboxes in this slice: a machine place is refused when the item is filed.
+ */
+
+import { createHash, randomBytes } from "node:crypto";
+import { UserError } from "rivetkit";
+import type { RawAccess } from "rivetkit/db";
+import { readAccountDefaults } from "../account-defaults.js";
+import { API_TOKENS_TABLE, ApiTokenProblem, createApiToken, listApiTokens, revokeApiToken, tokenOwner, useApiToken } from "../api-tokens.js";
+import { clientError, requireService, requireServiceFor, requireUser } from "../auth.js";
+import { config } from "../config.js";
+import {
+	type ApiToken,
+	type ApiTokenScope,
+	type CreateItemInput,
+	type CreateSessionInput,
+	type FactoryLimits,
+	type ItemAction,
+	type ItemSummary,
+	type ItemView,
+	MAX_ACCEPTANCE_CRITERIA,
+	MAX_ITEM_BODY_CHARS,
+	MAX_NOTE_CHARS,
+	MAX_TITLE_CHARS,
+	type SandboxProfileId,
+	type SessionSummary,
+	USAGE_HISTORY_DAYS,
+	type UserProfile,
+	type Wait,
+} from "../contract.js";
+import { createItem } from "../factory/blueprint.js";
+import { admit, ledgerSeconds } from "../factory/budget.js";
+import { getLayer } from "../layer.js";
+import { readDefaults } from "../repository-defaults.js";
+import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
+import { type UsageBook, dayOf } from "../usage.js";
+import { createItemActor, isActorGone, itemActor, sessionActor } from "./internal.js";
+import type { TurnAnswer, TurnRequest } from "./session-inbox.js";
+import type { ItemMeta } from "./work-item.js";
+
+export const ITEM_TABLES = [
+	"CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, summary TEXT NOT NULL, key TEXT, sent TEXT)",
+	// A turn of an item's session waiting for a slot: `wait` is what it was last told, `attempt` how often it waited.
+	"CREATE TABLE IF NOT EXISTS turn_request (key TEXT PRIMARY KEY, session TEXT NOT NULL, item TEXT NOT NULL, title TEXT NOT NULL, starts_run INTEGER NOT NULL, at INTEGER NOT NULL, attempt INTEGER NOT NULL, full INTEGER, full_until INTEGER, wait TEXT)",
+	// A slot given to the turn of `key`: released by its id, or when `expires_at` has passed.
+	"CREATE TABLE IF NOT EXISTS turn_slot (id TEXT PRIMARY KEY, key TEXT NOT NULL UNIQUE, session TEXT NOT NULL, item TEXT NOT NULL, title TEXT NOT NULL, at INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
+	// The schedule that tries the waiting requests again: one, at the earliest wait's time.
+	"CREATE TABLE IF NOT EXISTS turn_queue (id INTEGER PRIMARY KEY CHECK (id = 1), schedule TEXT NOT NULL, at INTEGER NOT NULL)",
+	API_TOKENS_TABLE,
+];
+
+interface Request {
+	key: string;
+	session: string;
+	item: string;
+	title: string;
+	startsRun: boolean;
+	at: number;
+	attempt: number;
+	/** The deployment's cap the sandbox layer refused at, and until when that is believed. */
+	full: { limit: number; until: number } | null;
+	wait: Wait | null;
+}
+
+interface Slot {
+	id: string;
+	key: string;
+	session: string;
+	item: string;
+	title: string;
+	at: number;
+	expiresAt: number;
+}
+
+export interface ItemsState {
+	items: Map<string, ItemSummary>;
+	/** The items created with a key, by that key: what was asked for, and the item. */
+	created: Map<string, Submission & { id: string }>;
+	creating: Attempts<ItemSummary>;
+	requests: Map<string, Request>;
+	slots: Map<string, Slot>;
+	queueAt: { id: string; at: number } | null;
+}
+
+/** A slot is held at most this long: longer than any turn may run, and the time a lost release costs. */
+const SLOT_LEASE_MS = config.turnTimeoutMs + 5 * 60_000;
+/** What the sandbox layer said of the deployment's cap is believed this long. */
+const FULL_FOR_MS = 5 * 60_000;
+const KEYED = "work item";
+/** The action the turn queue's schedule fires (factory-e2e.ts checks it is registered under this name). */
+export const QUEUE_ACTION = "internalTurnQueue";
+
+export async function loadItems(db: RawAccess): Promise<ItemsState> {
+	const items = new Map<string, ItemSummary>();
+	const created = new Map<string, Submission & { id: string }>();
+	for (const row of await db.execute<{ summary: string; key: string | null; sent: string | null }>("SELECT summary, key, sent FROM items")) {
+		const summary = JSON.parse(row.summary) as ItemSummary;
+		items.set(summary.id, summary);
+		if (row.key !== null && row.sent !== null) created.set(row.key, { key: row.key, sent: row.sent, id: summary.id });
+	}
+	const requests = new Map<string, Request>();
+	type RequestRow = { key: string; session: string; item: string; title: string; starts_run: number; at: number; attempt: number; full: number | null; full_until: number | null; wait: string | null };
+	for (const row of await db.execute<RequestRow>("SELECT key, session, item, title, starts_run, at, attempt, full, full_until, wait FROM turn_request")) {
+		requests.set(row.key, { key: row.key, session: row.session, item: row.item, title: row.title, startsRun: row.starts_run === 1, at: row.at, attempt: row.attempt, full: row.full === null ? null : { limit: row.full, until: row.full_until ?? 0 }, wait: row.wait ? (JSON.parse(row.wait) as Wait) : null });
+	}
+	const slots = new Map<string, Slot>();
+	type SlotRow = { id: string; key: string; session: string; item: string; title: string; at: number; expires_at: number };
+	for (const row of await db.execute<SlotRow>("SELECT id, key, session, item, title, at, expires_at FROM turn_slot")) slots.set(row.id, { ...row, expiresAt: row.expires_at });
+	const [queue] = await db.execute<{ schedule: string; at: number }>("SELECT schedule, at FROM turn_queue WHERE id = 1");
+	return { items, created, creating: new Attempts(), requests, slots, queueAt: queue ? { id: queue.schedule, at: queue.at } : null };
+}
+
+/** What the factory's functions need of the user actor's context. */
+export interface ItemsCtx {
+	vars: { items: ItemsState; sessions: Map<string, SessionSummary>; usage: UsageBook; profile: UserProfile | null };
+	db: RawAccess;
+	key: string[];
+	log: { warn(entry: unknown): void; error(entry: unknown): void };
+	broadcast(name: string, ...args: unknown[]): void;
+	// biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
+	client(): any;
+	keepAwake<T>(promise: Promise<T>): Promise<T>;
+	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
+	conn?: { params: unknown } | null;
+	scheduledFire?: { id: string; scheduledAt: number; firedAt: number };
+}
+
+/** `makeSession` of user.ts: makes the item's session under the id given, with the item as its origin, and puts it in the index. */
+export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string }) => Promise<SessionSummary>;
+
+// ---------------------------------------------------------------------------------------------
+// The index
+// ---------------------------------------------------------------------------------------------
+
+function itemList(state: ItemsState): ItemSummary[] {
+	return [...state.items.values()].sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+}
+
+/** The summary's own fields of an item's summary or page: the index keeps no more. */
+function summaryOf(item: ItemSummary): ItemSummary {
+	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
+	return { id, title, repository, place, source, state, wait, question, pullRequest, verdict, budget, spent, sessionId, createdAt, updatedAt, revision };
+}
+
+/** Takes a summary the item reported when it is newer than the one held: reports can arrive out of order. */
+async function noteItem(c: ItemsCtx, given: ItemSummary): Promise<void> {
+	const summary = summaryOf(given);
+	const held = c.vars.items.items.get(summary.id);
+	if (!held || held.revision > summary.revision) return;
+	c.vars.items.items.set(summary.id, summary);
+	await c.db.execute("UPDATE items SET summary = ? WHERE id = ?", JSON.stringify(summary), summary.id);
+	c.broadcast("items", itemList(c.vars.items));
+}
+
+function knownItem(c: ItemsCtx, id: unknown): ItemSummary {
+	const summary = typeof id === "string" ? c.vars.items.items.get(id) : undefined;
+	if (!summary) throw new UserError("That item does not exist.", { code: "item_not_found" });
+	return summary;
+}
+
+const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
+
+/** The input of a new item, checked. */
+function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { repository: { id: number; branch?: string }; profile: SandboxProfileId | null; model: string | null; start: boolean } {
+	const bad = (message: string) => new UserError(message, { code: "bad_input" });
+	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput, unknown>>;
+	const title = typeof input.title === "string" ? input.title.replace(/\s+/g, " ").trim() : "";
+	if (title === "" || title.length > MAX_TITLE_CHARS) throw bad(`Give the item a title of at most ${MAX_TITLE_CHARS} characters.`);
+	const body = typeof input.body === "string" ? input.body.trim() : "";
+	if (body === "" || body.length > MAX_ITEM_BODY_CHARS) throw bad(`Say what is to be done, in at most ${MAX_ITEM_BODY_CHARS} characters.`);
+	const acceptance = input.acceptance === undefined || input.acceptance === null ? [] : input.acceptance;
+	if (!Array.isArray(acceptance) || acceptance.length > MAX_ACCEPTANCE_CRITERIA || !acceptance.every((line) => typeof line === "string" && line.trim() !== "" && line.length <= MAX_NOTE_CHARS)) {
+		throw bad(`The acceptance criteria are at most ${MAX_ACCEPTANCE_CRITERIA} lines of text, each at most ${MAX_NOTE_CHARS} characters.`);
+	}
+	const place = input.place as { kind?: unknown } | undefined | null;
+	if (place !== undefined && place !== null && place.kind !== "hosted") throw bad("Work items run on this platform's sandboxes for now: an item cannot be given to one of your machines yet.");
+	const repository = input.repository as { id?: unknown; branch?: unknown } | undefined;
+	if (typeof repository !== "object" || repository === null || typeof repository.id !== "number") throw bad("Choose a repository of your GitHub connection for the item.");
+	if (input.start !== undefined && input.start !== null && typeof input.start !== "boolean") throw bad("Say yes or no to starting the item at once.");
+	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
+	return {
+		title,
+		body,
+		acceptance: (acceptance as string[]).map((line) => line.trim()),
+		repository: { id: repository.id, ...(typeof repository.branch === "string" ? { branch: repository.branch } : {}) },
+		profile: text(input.profile) as SandboxProfileId | null,
+		model: text(input.model),
+		start: input.start === true,
+	};
+}
+
+/** The sandbox an item's session is made in when the input names none: the repository's default, the account's, then the deployment's first that can be chosen. */
+async function itemProfile(c: ItemsCtx, repositoryId: number, asked: SandboxProfileId | null): Promise<SandboxProfileId> {
+	if (asked !== null) return asked;
+	const saved = (await readDefaults(c.db, `github:${repositoryId}`)).profile ?? (await readAccountDefaults(c.db)).profile;
+	if (saved !== null) return saved;
+	const first = (await getLayer()).sandboxes.profiles().find((profile) => profile.available);
+	if (!first) throw new UserError("This deployment offers no sandbox an item could run in.", { code: "bad_profile" });
+	return first.id;
+}
+
+/**
+ * Makes the item: its session (`makeSession`, under an id derived from the item's), then the item
+ * actor, then its row in the index, in one step at the end. Both actors are made under ids fixed
+ * before anything is asked of the engine, and one that exists already is taken as made: a creation
+ * that is tried again after a lost answer, or after the server stopped half way, finishes the first.
+ */
+async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession): Promise<ItemSummary> {
+	const input = cleanItemInput(raw);
+	const uid = profile.uid;
+	const itemId = `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`;
+	const sessionId = `s_${hex16(`item\n${itemId}`)}`;
+	let summary: ItemSummary;
+	try {
+		const session = c.vars.sessions.get(sessionId) ?? (await makeSession(c, profile, { title: input.title, profile: await itemProfile(c, input.repository.id, input.profile), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId }));
+		const repository = session.repository;
+		if (!repository) throw new Error("the item's session has no repository");
+		const now = Date.now();
+		const meta: ItemMeta = { uid, sessionId, repository, source, createdAt: now, updatedAt: now, verdict: null };
+		const item = createItem({ id: itemId, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: { kind: "hosted" }, budget: config.factory.item });
+		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
+		summary = await itemActor(c, uid, itemId).internalSummary();
+	} catch (error) {
+		throw clientError(c.log, error, "The item could not be filed. Try again.");
+	}
+	// In one step with the item: from here a creation with this key answers with it.
+	c.vars.items.items.set(summary.id, summary);
+	if (submission) c.vars.items.created.set(submission.key, { ...submission, id: summary.id });
+	await c.db.execute("INSERT INTO items (id, created_at, summary, key, sent) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET summary = excluded.summary", summary.id, summary.createdAt, JSON.stringify(summary), submission?.key ?? null, submission?.sent ?? null);
+	c.broadcast("items", itemList(c.vars.items));
+	console.log(`[wlp] item.created uid=${uid} item=${summary.id} session=${sessionId} source=${source}`);
+	return summary;
+}
+
+/** `createItem`, keyed or not, as `createSession` is: the same key answers with the item it made. */
+async function fileItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], makeSession: MakeSession): Promise<ItemSummary> {
+	if (typeof raw !== "object" || raw === null) throw new UserError("Say what the item is.", { code: "bad_input" });
+	let attempt: Promise<ItemSummary>;
+	try {
+		const { idempotencyKey, ...asked } = raw as CreateItemInput;
+		const submission = submissionOf(idempotencyKey, asked);
+		if (submission === null) return await makeItem(c, profile, asked, source, null, makeSession);
+		const made = c.vars.items.created.get(submission.key);
+		const item = made && isRepeat(made, submission, KEYED) ? c.vars.items.items.get(made.id) : undefined;
+		if (item) return item;
+		attempt = c.vars.items.creating.run(submission, KEYED, () => makeItem(c, profile, asked, source, submission, makeSession));
+	} catch (error) {
+		if (error instanceof SubmissionProblem) throw new UserError(error.message, { code: error.code });
+		throw error;
+	}
+	return await attempt;
+}
+
+async function itemView(c: ItemsCtx, id: string): Promise<ItemView> {
+	const view = await itemActor(c, c.key[0] as string, id).internalView();
+	await noteItem(c, view);
+	return view;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The turn queue
+// ---------------------------------------------------------------------------------------------
+
+async function storeRequest(c: ItemsCtx, request: Request): Promise<void> {
+	await c.db.execute(
+		"INSERT OR REPLACE INTO turn_request (key, session, item, title, starts_run, at, attempt, full, full_until, wait) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		request.key,
+		request.session,
+		request.item,
+		request.title,
+		request.startsRun ? 1 : 0,
+		request.at,
+		request.attempt,
+		request.full?.limit ?? null,
+		request.full?.until ?? null,
+		request.wait === null ? null : JSON.stringify(request.wait),
+	);
+}
+
+/** The factory's slots held now, for `internalAcquireRun`: they count against the person's turns too. */
+export function factorySlots(c: { vars: { items: ItemsState } }): number {
+	return c.vars.items.slots.size;
+}
+
+/**
+ * Admits what can run now, oldest first, and gives each its slot; every other request gets the wait
+ * that holds it. The counts and the grants are one synchronous step; what was decided is then
+ * written, the sessions told of their slots (except `answering`, which is answered directly), the
+ * items told of their waits, and the schedule set for the earliest wait. A grant whose session could
+ * not be told is taken back and tried again later.
+ */
+async function runQueue(c: ItemsCtx, answering: string | null = null, retrying = false): Promise<Slot | null> {
+	const state = c.vars.items;
+	const now = Date.now();
+	const released: string[] = [];
+	for (const slot of state.slots.values()) {
+		if (slot.expiresAt > now) continue;
+		state.slots.delete(slot.id);
+		released.push(slot.id);
+		console.warn(`[wlp] factory.slot_expired uid=${c.key[0]} slot=${slot.id} key=${slot.key}: held past ${Math.round(SLOT_LEASE_MS / 60_000)} min without its turn's end being reported; given back`);
+	}
+	const limits = config.factory;
+	const sessions = [...c.vars.sessions.values()];
+	const own = sessions.filter((session) => !session.item && session.status !== "idle").length;
+	const inReview = [...state.items.values()].filter((item) => item.state === "review").length;
+	const usage = c.vars.usage.numbers(now);
+	const hostedRunning = new Set(sessions.filter((session) => session.place.kind === "hosted" && session.sandbox === "running").map((session) => session.id));
+	const granted: Slot[] = [];
+	const waits: Request[] = [];
+	const dropped: string[] = [];
+	for (const request of [...state.requests.values()].sort((a, b) => a.at - b.at || (a.key < b.key ? -1 : 1))) {
+		// The item may not be in the index yet: its first delivery can come before its creation has answered here.
+		const session = c.vars.sessions.get(request.session);
+		if (!session) {
+			state.requests.delete(request.key);
+			dropped.push(request.key);
+			continue;
+		}
+		const slots = [...state.slots.values()];
+		const answer = admit({
+			at: now,
+			limits,
+			turns: { running: own + slots.length, factory: slots.map((slot) => slot.title) },
+			startsRun: request.startsRun,
+			inReview,
+			// The session's own sandbox, running already, is not one more for its turn.
+			place: { kind: "hosted", usage, running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0), needsSandbox: session.sandbox === "none", deploymentFull: request.full !== null && request.full.until > now ? request.full.limit : null },
+			attempt: request.attempt,
+		});
+		if (answer.ok) {
+			const slot: Slot = { id: `t_${randomBytes(8).toString("hex")}`, key: request.key, session: request.session, item: request.item, title: request.title, at: now, expiresAt: now + SLOT_LEASE_MS };
+			state.requests.delete(request.key);
+			state.slots.set(slot.id, slot);
+			granted.push(slot);
+			hostedRunning.add(session.id);
+			continue;
+		}
+		const before = request.wait;
+		// A try that was due counts as one more wait: the next one is further off.
+		if (retrying && before !== null && before.retryAt !== null && before.retryAt <= now) request.attempt += 1;
+		request.wait = answer.wait;
+		if (before?.sentence !== answer.wait.sentence || before?.retryAt !== answer.wait.retryAt) waits.push(request);
+	}
+
+	for (const id of released) await c.db.execute("DELETE FROM turn_slot WHERE id = ?", id);
+	for (const key of dropped) await c.db.execute("DELETE FROM turn_request WHERE key = ?", key);
+	for (const slot of granted) {
+		await c.db.execute("DELETE FROM turn_request WHERE key = ?", slot.key);
+		await c.db.execute("INSERT OR REPLACE INTO turn_slot (id, key, session, item, title, at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)", slot.id, slot.key, slot.session, slot.item, slot.title, slot.at, slot.expiresAt);
+		console.log(`[wlp] factory.slot_granted uid=${c.key[0]} slot=${slot.id} key=${slot.key} factory=${state.slots.size}`);
+	}
+	for (const request of waits) await storeRequest(c, request);
+
+	const uid = c.key[0] as string;
+	let mine: Slot | null = null;
+	for (const slot of granted) {
+		if (slot.key === answering) {
+			mine = slot;
+			continue;
+		}
+		try {
+			await sessionActor(c, uid, slot.session).internalGrant({ key: slot.key, slot: slot.id });
+		} catch (error) {
+			c.log.warn({ msg: "could not give a session its slot; it is asked again later", session: slot.session, error: String(error) });
+			await takeBack(c, slot, isActorGone(error));
+		}
+	}
+	for (const request of waits) {
+		if (request.wait === null) continue;
+		const fact = { kind: "turn_waiting" as const, at: now, key: request.key, wait: request.wait };
+		await itemActor(c, uid, request.item)
+			.internalFact(fact)
+			.catch((error: unknown) => c.log.warn({ msg: "could not tell an item why its turn waits", item: request.item, error: String(error) }));
+	}
+	await armQueue(c);
+	return mine;
+}
+
+/** A granted slot whose session was not told: released, and its request put back (unless the session is gone). */
+async function takeBack(c: ItemsCtx, slot: Slot, gone: boolean): Promise<void> {
+	const state = c.vars.items;
+	state.slots.delete(slot.id);
+	await c.db.execute("DELETE FROM turn_slot WHERE id = ?", slot.id);
+	if (gone) return;
+	const request: Request = { key: slot.key, session: slot.session, item: slot.item, title: slot.title, startsRun: false, at: slot.at, attempt: 1, full: null, wait: { reason: "capacity", sentence: "Waiting for the item's agent to answer.", retryAt: Date.now() + 30_000 } };
+	state.requests.set(request.key, request);
+	await storeRequest(c, request);
+}
+
+/** One schedule, at the earliest time a waiting request is to be tried again. */
+async function armQueue(c: ItemsCtx): Promise<void> {
+	const state = c.vars.items;
+	const times = [...state.requests.values()].map((request) => request.wait?.retryAt ?? null).filter((at): at is number => at !== null);
+	if (times.length === 0) return;
+	const at = Math.max(Date.now(), Math.min(...times));
+	if (state.queueAt !== null && state.queueAt.at <= at && state.queueAt.at > Date.now()) return;
+	const before = state.queueAt;
+	const id = await c.schedule.at(at, QUEUE_ACTION);
+	state.queueAt = { id, at };
+	await c.db.execute("INSERT OR REPLACE INTO turn_queue (id, schedule, at) VALUES (1, ?, ?)", id, at);
+	if (before !== null) await c.schedule.cancel(before.id).catch(() => false);
+}
+
+/** Something that frees capacity happened (a person's session went idle), or the actor woke: the waiting requests are tried, and the schedule armed again. Never throws. */
+export function queueChanged(c: ItemsCtx): void {
+	if (c.vars.items.requests.size === 0) return;
+	void c.keepAwake(runQueue(c).catch((error) => c.log.error({ msg: "the turn queue could not be run", error: String(error) })));
+}
+
+// ---------------------------------------------------------------------------------------------
+// API tokens
+// ---------------------------------------------------------------------------------------------
+
+function tokenInput<T>(step: () => Promise<T>): Promise<T> {
+	return step().catch((error) => {
+		if (error instanceof ApiTokenProblem) throw new UserError(error.message, { code: error.code });
+		throw error;
+	});
+}
+
+/** The profile of the user an API token names, when the token is good for `scope` here. */
+async function apiCaller(c: ItemsCtx, token: unknown, scope: ApiTokenScope): Promise<UserProfile> {
+	const owner = tokenOwner(token);
+	const profile = c.vars.profile;
+	const refused = new UserError("That API token is not valid, or may not do this.", { code: "invalid_token" });
+	if (!owner || owner.uid !== c.key[0] || !profile) throw refused;
+	if (!(await useApiToken(c.db, owner.digest, scope, Date.now()))) throw refused;
+	return profile;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The actions
+// ---------------------------------------------------------------------------------------------
+
+export const itemActions = {
+	listItems: (c: ItemsCtx): ItemSummary[] => {
+		requireUser(c);
+		return itemList(c.vars.items);
+	},
+
+	item: async (c: ItemsCtx, id: string): Promise<ItemView> => {
+		requireUser(c);
+		knownItem(c, id);
+		try {
+			return await itemView(c, id);
+		} catch (error) {
+			throw clientError(c.log, error, "The item could not be read. Try again.");
+		}
+	},
+
+	createItem: async (c: ItemsCtx, input: CreateItemInput, makeSession: MakeSession): Promise<ItemSummary> => fileItem(c, requireUser(c), input, "web", makeSession),
+
+	actOnItem: async (c: ItemsCtx, input: { id: string; action: ItemAction }): Promise<ItemView> => {
+		const profile = requireUser(c);
+		knownItem(c, input?.id);
+		const view = await itemActor(c, profile.uid, input.id).internalAct({ action: input.action, by: `person:${profile.uid}` });
+		await noteItem(c, view);
+		return view;
+	},
+
+	factoryLimits: (c: ItemsCtx): FactoryLimits => {
+		requireUser(c);
+		return config.factory;
+	},
+
+	apiTokens: async (c: ItemsCtx): Promise<ApiToken[]> => {
+		requireUser(c);
+		return await listApiTokens(c.db);
+	},
+
+	createApiToken: async (c: ItemsCtx, input: { name: string; scopes: ApiTokenScope[] }): Promise<{ token: ApiToken; secret: string }> => {
+		const profile = requireUser(c);
+		const made = await tokenInput(() => createApiToken(c.db, profile.uid, input, Date.now()));
+		console.log(`[wlp] api_token.created uid=${profile.uid} token=${made.token.id} scopes=${made.token.scopes.join(",")}`);
+		return made;
+	},
+
+	revokeApiToken: async (c: ItemsCtx, id: string): Promise<ApiToken[]> => {
+		const profile = requireUser(c);
+		await revokeApiToken(c.db, id);
+		console.log(`[wlp] api_token.revoked uid=${profile.uid} token=${String(id).slice(0, 40)}`);
+		return await listApiTokens(c.db);
+	},
+
+	// --- called by api-routes.ts, with the caller's API token -------------------------------------
+
+	internalApiCreateItem: async (c: ItemsCtx, input: { token: string; item: CreateItemInput }, makeSession: MakeSession): Promise<ItemSummary> => {
+		requireServiceFor(c, "api");
+		return fileItem(c, await apiCaller(c, input?.token, "items:create"), input?.item, "api", makeSession);
+	},
+
+	internalApiItem: async (c: ItemsCtx, input: { token: string; id: string }): Promise<ItemView> => {
+		requireServiceFor(c, "api");
+		await apiCaller(c, input?.token, "items:read");
+		knownItem(c, input?.id);
+		return await itemView(c, input.id);
+	},
+
+	// --- called by `workItem` and by item sessions ------------------------------------------------
+
+	internalItemChanged: async (c: ItemsCtx, summary: ItemSummary): Promise<void> => {
+		requireService(c);
+		if (typeof summary?.id !== "string") return;
+		const before = c.vars.items.items.get(summary.id);
+		await noteItem(c, summary);
+		// An item that left review, or came to it, changes what the review cap holds back.
+		if (before && (before.state === "review") !== (summary.state === "review")) queueChanged(c);
+	},
+
+	/** What an item reads of its user: the hosted sandbox seconds the ledger has for its session, and the user's open items. */
+	internalItemFacts: (c: ItemsCtx, sessionId: string): { hostedSeconds: number; openItems: number } => {
+		requireService(c);
+		const today = dayOf(Date.now());
+		const entries = Array.from({ length: USAGE_HISTORY_DAYS }, (_, back) => c.vars.usage.entriesOn(today - back)).flat();
+		const openItems = [...c.vars.items.items.values()].filter((item) => item.state !== "done" && item.state !== "failed" && item.state !== "cancelled").length;
+		return { hostedSeconds: ledgerSeconds(entries, String(sessionId)), openItems };
+	},
+
+	/** An item session asks for a slot for the turn of `key`: granted now, or queued with a wait the item is told. Asked again, it answers the same. */
+	internalRequestTurn: async (c: ItemsCtx, input: TurnRequest): Promise<TurnAnswer> => {
+		requireService(c);
+		const state = c.vars.items;
+		const key = String(input?.key);
+		const held = [...state.slots.values()].find((slot) => slot.key === key);
+		if (held) return { granted: true, slot: held.id };
+		const session = c.vars.sessions.get(String(input?.sessionId));
+		if (!session?.item || session.item.id !== input.itemId) return { granted: false };
+		const now = Date.now();
+		const known = state.requests.get(key);
+		const full = typeof input.deploymentFull === "number" && input.deploymentFull > 0 ? { limit: input.deploymentFull, until: now + FULL_FOR_MS } : (known?.full ?? null);
+		const request: Request = { key, session: session.id, item: input.itemId, title: String(input.title ?? ""), startsRun: input.startsRun === true, at: known?.at ?? now, attempt: known?.attempt ?? 0, full, wait: known?.wait ?? null };
+		state.requests.set(key, request);
+		await storeRequest(c, request);
+		const mine = await runQueue(c, key);
+		return mine ? { granted: true, slot: mine.id } : { granted: false };
+	},
+
+	/** The turn a slot was given to has ended, or could not start: the slot is free. Named by its id, so a release that comes twice frees nothing else. */
+	internalTurnDone: async (c: ItemsCtx, input: { sessionId: string; slot: string; key: string }): Promise<void> => {
+		requireService(c);
+		const slot = c.vars.items.slots.get(String(input?.slot));
+		if (!slot || slot.session !== input.sessionId) return;
+		c.vars.items.slots.delete(slot.id);
+		await c.db.execute("DELETE FROM turn_slot WHERE id = ?", slot.id);
+		await runQueue(c);
+	},
+
+	/** The item does not want the turn of `key` any more, before it started: its request goes. */
+	internalWithdrawTurn: async (c: ItemsCtx, input: { sessionId: string; key: string }): Promise<void> => {
+		requireService(c);
+		const request = c.vars.items.requests.get(String(input?.key));
+		if (!request || request.session !== input.sessionId) return;
+		c.vars.items.requests.delete(request.key);
+		await c.db.execute("DELETE FROM turn_request WHERE key = ?", request.key);
+	},
+
+	// --- called by the actor's own schedule only ------------------------------------------------
+
+	internalTurnQueue: async (c: ItemsCtx): Promise<void> => {
+		const fire = c.scheduledFire;
+		if (!fire) throw new UserError("This action is internal.", { code: "forbidden" });
+		console.log(`[wlp] schedule.fired action=${QUEUE_ACTION} uid=${c.key[0]} waiting=${c.vars.items.requests.size} late_ms=${fire.firedAt - fire.scheduledAt}`);
+		if (c.vars.items.queueAt?.id === fire.id) c.vars.items.queueAt = null;
+		await runQueue(c, null, true);
+	},
+};
