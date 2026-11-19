@@ -200,6 +200,17 @@ drive("a required check fails at first and passes after a fix turn", newItem(), 
 	...toReview,
 ]);
 
+const failedGate = (name: string, output: string) => ended("unresolved", verified("unresolved", [check(name, "failed", output)]));
+drive("a third distinct required-check failure asks the person after two fix turns", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: ended("unresolved", FAILING), state: "working", effects: ["deliver"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: failedGate("lint", "Unused import"), state: "working", effects: ["deliver"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: failedGate("typecheck", "Missing return value"), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "rounds" && o.item.question.cause === "gate", "the gate ran out of fix turns") },
+]);
+
 const failingCi = (log: string) => ciRead([{ name: "build", state: "passed" }, { name: "e2e", state: "failed", log }]);
 const ciFix: Row[] = [
 	{ fact: started(), state: "working", effects: ["check_turn"] },
@@ -224,6 +235,17 @@ const begun: Row[] = [
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
 ];
+
+const pendingBuild = ciRead([{ name: "build", state: "pending" }]);
+drive("a second base conflict asks the person after one resolving turn", newItem(), [
+	...begun,
+	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: ci(H(1), pendingBuild, false), state: "working", effects: ["deliver"], also: (o) => holds(effect(o, "deliver")?.fetchBase === "main", "the resolving turn fetches the base") },
+	...ciFix,
+	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: ci(H(2), pendingBuild, true), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: ci(H(2), pendingBuild, false), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "rounds" && o.item.question.cause === "conflict", "the conflict round was used") },
+]);
 
 drive("a failure only CI catches, fixed within two rounds", newItem(), [
 	...begun,
@@ -303,6 +325,29 @@ drive("the item's budget runs out, and the person raises it", newItem({ budget: 
 		also: (o) => holds(o.item.question?.kind === "budget" && o.item.wait?.sentence === "This item has used 2 of its 2 turns.", `asked, with the numbers: ${o.item.wait?.sentence}`),
 	},
 	{ fact: answer("raise", { budget: { turns: 4 } }), state: "working", effects: ["deliver"], also: (o) => holds(o.item.budget.turns === 4, "the raised budget is kept") },
+]);
+
+const fourHours = 4 * 60 * MINUTE;
+drive("four hours working uses the active-time budget, four hours waiting does not", newItem(), [
+	...begun,
+	{ fact: published(H(1)), after: 0, state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: ci(H(1), pendingBuild), after: fourHours, state: "waiting", wait: "person", effects: ["ask"] },
+	{ fact: answer("wait"), after: fourHours, state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: ci(H(1), failingCi("Error: login timed out")), state: "working", effects: ["deliver"], also: (o) => holds(o.item.spent.activeSeconds === 60, "only the first minute of work counts") },
+	{ fact: started(), after: 0, state: "working", effects: ["check_turn"] },
+	{ fact: ended("unresolved", FAILING), after: fourHours - MINUTE, state: "waiting", wait: "budget", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "budget" && o.item.question.cause === "activeSeconds" && o.item.spent.activeSeconds === fourHours / 1000, "exactly four hours of work stops the next turn") },
+]);
+
+const planRound = (canRevise: boolean): Row[] => [
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: ended("succeeded", null, { changes: false, report: "Fix the sign in add()." }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "plan_approval" && o.item.question.choices.some((choice) => choice.id === "revise") === canRevise, canRevise ? "the person can request another plan" : "the third plan must not offer a fourth round") },
+];
+const revise: Row = { fact: answer("revise"), state: "working", effects: ["deliver"], also: (o) => holds(effect(o, "deliver")?.agent === "planner", "the revision goes to the planner") };
+drive("the person can request a second and third plan, then planning stops for a decision", newItem({ plan: "approve" }), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver"] },
+	...planRound(true), revise,
+	...planRound(true), revise,
+	...planRound(false),
 ]);
 
 drive("a plan for approval, a question to the person and its answer", newItem({ plan: "approve" }), [
