@@ -1058,6 +1058,39 @@ async function main(): Promise<void> {
 			return `the runner was asked to attach ${runner.attaches - before} time(s) after the cut; every event once`;
 		});
 
+		await check("a message sent into a turn while the machine is not answering is refused at once, is not kept, and the turn goes on when the machine is back", async () => {
+			const watch = new Watch(client, uid, main.id, token);
+			const STEER = "And print the squares too";
+			try {
+				const { turn: number } = await watch.conn.prompt({ text: "Write the primes (slow)" });
+				await until("the turn's first events", () => watch.windlass(number) >= 3);
+				// The socket goes, and the runner does not come back until it is let.
+				runner.attachMode = "ignore";
+				runner.served.get(main.id)?.ws?.close();
+				await sleep(1_000);
+				const at = Date.now();
+				const said = await Promise.race([
+					watch.conn.prompt({ text: STEER }).then(
+						() => ({ code: "taken" as unknown, message: "" }),
+						(error) => ({ code: (error as { code?: unknown }).code, message: String((error as { message?: unknown }).message ?? "") }),
+					),
+					sleep(8_000).then(() => ({ code: "still waiting" as unknown, message: "" })),
+				]);
+				const ms = Date.now() - at;
+				runner.attachMode = "serve";
+				assert(said.code === "turn_running" && said.message === "Your machine is not answering, so the message was not sent. Send it again when it is back.", `the message sent with the machine away: ${String(said.code)} after ${ms} ms ${said.message}`);
+				assert(ms < 3_000, `refused after ${ms} ms`);
+				const ended = await watch.untilEnded(number);
+				assert(ended.outcome === "succeeded", `the turn ended ${ended.outcome} once the machine was back: ${ended.message}`);
+				const timeline = (await snapshotOf(client, uid, main.id, token)).timeline;
+				assert(!timeline.some((item) => item.kind === "user" && item.text === STEER), "the refused message is in the timeline");
+				return `refused in ${ms} ms: "${said.message}"; the turn then ${ended.outcome}`;
+			} finally {
+				runner.attachMode = "serve";
+				await watch.conn.dispose();
+			}
+		});
+
 		await check("the session's actor going to sleep and waking ends the conversation, and the next turn works", async () => {
 			const resets = runner.served.get(main.id)?.resets.length ?? 0;
 			await server.stop();

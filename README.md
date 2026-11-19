@@ -730,6 +730,10 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   (`CONTROL_DEAD_MS`) is closed, and the machine is shown offline. An operation that is the same done twice
   is asked once more after a lost conversation, `create` included: the runner answers a second `create`
   for a session with the sandbox that session already has, so a lost answer never makes a second sandbox.
+  A message sent into the running turn while the machine is not answering is refused at once ("Your
+  machine is not answering, so the message was not sent. Send it again when it is back.",
+  `turn_running`), and so is stopping one tool call ("Stop the turn instead, or try again when the
+  machine is back."); stopping the whole turn works, since it waits for nothing on the machine.
 - **When the runner cannot reach the platform.** It tries again at once, then after 1 s, 2 s, 4 s and so
   on up to 15 s between attempts, each attempt given 5 s, and back to 1 s once connected; so a runner is
   online again within seconds of its network being back. A control socket that sends no hello within 10

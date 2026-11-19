@@ -1051,6 +1051,8 @@ async function main(server: Server | null): Promise<void> {
 	const IDLE_STOP_S = 2;
 	const PROVIDER_DELAY_MS = 1_000;
 	const countedUsage = async () => (await userHandle.usage()).today.find((row) => row.sessionId === counted.id);
+	// A second such session, woken after the restart by a prompt with nothing connected first; `logFrom` is where the restarted server's output begins.
+	const promptWoken = { id: "", promptAt: 0, endedAt: 0, logFrom: 0, problem: "the crash check did not get that far" as string | null };
 
 	if (server) {
 		await check("a turn lost to a server crash is closed as interrupted on wake", async () => {
@@ -1071,6 +1073,23 @@ async function main(server: Server | null): Promise<void> {
 				} catch (error) {
 					counted.problem = describe(error);
 				}
+				try {
+					const made = await userConn.createSession({ profile: availableProfile as never, title: "Woken by a prompt after the crash" });
+					const handle = client.agentSession.get([uid, made.id], { params: { token } });
+					promptWoken.promptAt = Date.now();
+					const { turn } = await handle.prompt({ text: "Write a short program" });
+					const ended = await waitFor("its turn to end", async () => {
+						const now = await handle.snapshot();
+						const last = now.timeline.at(-1);
+						return now.summary.status === "idle" && last?.kind === "turn.ended" && last.turn === turn ? last : undefined;
+					}, TURN_MS, 100);
+					promptWoken.id = made.id;
+					promptWoken.endedAt = ended.at;
+					const row = (await userHandle.usage()).today.find((entry) => entry.sessionId === made.id);
+					promptWoken.problem = row?.heldSeconds ? null : "its hold was not open after the turn";
+				} catch (error) {
+					promptWoken.problem = describe(error);
+				}
 			}
 			const { turn } = await watchTwo.conn.prompt({ text: "Fix the failing test (slow)" });
 			await waitFor("the turn to stream", () => watchTwo.deltas.some((delta) => delta.turn === turn), TURN_MS);
@@ -1089,6 +1108,7 @@ async function main(server: Server | null): Promise<void> {
 			await watchTwo.conn.dispose().catch(() => undefined);
 			await userConn.dispose().catch(() => undefined);
 			await server.crash();
+			promptWoken.logFrom = server.output.length;
 			await server.start({ WLP_LOGIN_TTL_MS: String(SHORT_LOGIN_TTL_MS), ...(FAKE ? { WLP_FAKE_PROVIDER_DELAY_MS: String(PROVIDER_DELAY_MS), WLP_FAKE_IDLE_STOP_MS: String(IDLE_STOP_S * 1000), WLP_FAKE_CREATE_FAILS: "1" } : {}) });
 			loginTtlMs = SHORT_LOGIN_TTL_MS;
 			// Woken before any other session: nothing in the new server has asked the layer for its idle stop yet.
@@ -1166,6 +1186,27 @@ async function main(server: Server | null): Promise<void> {
 				return `turn ${failed.turn} ${ended.outcome}, its orphan swept by the next create; turn ${turn} held ${row.heldSeconds} s mid-turn`;
 			});
 			await countedWatch?.conn.dispose().catch(() => undefined);
+
+			await check("a prompt that wakes a session with a hold the crash left open counts that hold to the provider's idle stop, not to the wake", async () => {
+				assert(promptWoken.problem === null, `no session had an open hold before the crash: ${promptWoken.problem}`);
+				const handle = client.agentSession.get([uid, promptWoken.id], { params: { token } });
+				// Nothing connects first: the prompt asks for its hold while the wake's read of the sandbox's state (PROVIDER_DELAY_MS) is still out.
+				const wokeAt = Date.now();
+				const { turn } = await handle.prompt({ text: "Write a short program" });
+				await waitFor("its turn to end", async () => {
+					const now = await handle.snapshot();
+					return now.summary.status === "idle" && now.timeline.some((item) => item.kind === "turn.ended" && item.turn === turn) ? true : undefined;
+				}, TURN_MS, 200);
+				// The first hold the restarted server counted for the session is the one the crash left open, traded for the prompt's.
+				const first = await waitFor("the hold left open by the crash to be counted", () => server.output.slice(promptWoken.logFrom).match(new RegExp(`\\[wlp\\] usage\\.counted uid=\\S+ session=${promptWoken.id} hold=(\\S+) kind=\\S+ seconds=(-?\\d+)`)) ?? undefined, 20_000, 200);
+				const found = Number(first[2]);
+				const bound = Math.ceil((promptWoken.endedAt - promptWoken.promptAt) / 1000) + IDLE_STOP_S;
+				const toWake = Math.round((wokeAt - promptWoken.promptAt) / 1000);
+				assert(toWake > bound + 5, `woken ${toWake} s after its prompt, too soon to tell a count to the wake from one to the idle stop (${bound} s)`);
+				assert(found <= bound + 1, `${found} s counted for hold ${first[1]}; the sandbox can have run ${bound} s at most (its turn, then the ${IDLE_STOP_S} s idle stop), and the prompt woke it ${toWake} s after its first prompt`);
+				return `${found} s counted (bound ${bound} s; ${toWake} s to the waking prompt)`;
+			});
+			if (promptWoken.id) await userHandle.deleteSession(promptWoken.id).catch(() => undefined);
 
 			await userHandle.deleteSession(counted.id).catch(() => undefined);
 		}
@@ -2352,6 +2393,7 @@ async function main(server: Server | null): Promise<void> {
 		"a turn's first reserve whose reply is lost refuses the prompt, and the hold it opened is counted at 0 s before the next is taken",
 		"a renewal whose reply is lost is asked again under the same hold: nothing counted twice, nothing counted in full",
 		"with the user's actor away past the hold's grace, the turn runs until shortly before its hold runs out, and stops then with the line that says why",
+		"a first hold asked for when the server died is not the next prompt's: that prompt's stretch is counted from its own request",
 	];
 	if (server && FAKE) {
 		const HOLD_S = 5;
@@ -2426,6 +2468,46 @@ async function main(server: Server | null): Promise<void> {
 			} finally {
 				await watch.conn.dispose().catch(() => undefined);
 				await theirs.deleteSession(away.id).catch(() => undefined);
+			}
+		});
+
+		await check(FAULT_CHECKS[3], async () => {
+			await server.stop();
+			await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+			// A first hold is answered after 5 s: the server dies while the session waits, once it has stored what it asked for.
+			await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_FAKE_RESERVE_FAULT: "delay:5000" });
+			const cut = await theirs.createSession({ profile: availableProfile as never, title: "Its first hold was cut off" });
+			const handle = client.agentSession.get([someone.profile.uid, cut.id], { params: { token: someone.token } });
+			const asking = handle.prompt({ text: "Write a short program" }).then(
+				() => "answered",
+				(error: unknown) => describe(error),
+			);
+			await sleep(2_000);
+			await server.crash();
+			const before = await asking;
+			await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs) });
+			// Long enough that a stretch counted from the request before the crash stands out from the turn's own by more than the book's slack.
+			await sleep(10_000);
+			const from = server.output.length;
+			const watch = new Watch(client, someone.profile.uid, cut.id, someone.token);
+			try {
+				const { turn } = await watch.conn.prompt({ text: "Write a short program" });
+				const ended = await watch.untilEnded(turn);
+				assert(ended.outcome === "succeeded", `the turn after the crash ended ${ended.outcome}: ${ended.message ?? ""}`);
+				await watch.conn.dispose().catch(() => undefined);
+				// Its sleep suspends the sandbox and settles the turn's stretch.
+				await forceSleep(cut.id);
+				const lines = await waitFor("the turn's hold to be counted", () => {
+					const found = server.output.slice(from).split("\n").filter((text) => text.includes(`usage.counted uid=${someone.profile.uid} session=${cut.id} `));
+					return found.length > 0 ? found : undefined;
+				}, 20_000, 200);
+				// The book counts no more than the time since it took the hold, and says so when a session reports more.
+				const over = lines.filter((text) => text.includes("since its hold was taken"));
+				assert(over.length === 0, `the session reported a stretch from before the crash: ${over.map((text) => text.replace(/^.*usage\.counted /, "")).join("; ")}`);
+				return `the prompt cut off by the crash: ${before.slice(0, 60)}; after it: ${lines.map((text) => text.replace(/^.*usage\.counted uid=\S+ session=\S+ /, "")).join("; ")}`;
+			} finally {
+				await watch.conn.dispose().catch(() => undefined);
+				await theirs.deleteSession(cut.id).catch(() => undefined);
 			}
 		});
 	} else {

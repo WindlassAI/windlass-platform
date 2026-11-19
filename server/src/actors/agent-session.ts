@@ -81,6 +81,7 @@
  *   too_many_sandboxes  `prompt()`: the session needs a sandbox and its user keeps as many as they may
  *   usage_unavailable   the same four: the user's sandbox time could not be checked, so nothing was started
  *   turn_running        `prompt()`: a turn is in progress and cannot take the message now
+ *                       (also `stopCall()`: the session's machine is not answering, so nothing was sent)
  *   bad_idempotency_key, idempotency_key_reused   `prompt()`: its key is no key, or came with another text before
  *   bad_answer, note_too_long   `answer()`: its input
  *   no_question         `answer()`: that question is not pending (any more)
@@ -527,6 +528,12 @@ interface SessionVars {
 	 * dropped. This instance's only: a read in flight goes with it.
 	 */
 	sandboxGen: number;
+	/**
+	 * The stretch the session's stored state had open as the actor woke (its `useOf`), with the
+	 * `sandboxGen` of then, until the sandbox's real state is known (`wakeMeter`). Its sandbox may have
+	 * stopped by itself while no server counted it: see `carriedOver`.
+	 */
+	carried: { use: string; gen: number } | null;
 	/**
 	 * For a session on one of its user's machines: the conversation with the machine's runner, over its
 	 * socket to this actor. This instance's alone, never stored: one that wakes starts a new one.
@@ -1228,7 +1235,8 @@ async function workspaceView(c: Ctx, meta: SessionMeta): Promise<WorkspaceCopy |
 	}
 	const { sandboxes } = await layerOf(c, meta);
 	// Starting a paused sandbox to read it uses its user's sandbox time, as a turn does: refused when none is left.
-	if (!c.vars.turn && !meta.meter) await holdSandbox(c, meta, true);
+	// So does a stretch carried over a wake: it is settled where it can have ended, and the read takes a hold of its own.
+	if (!c.vars.turn && (!meta.meter || carriedOver(c, meta))) await holdSandbox(c, meta, true);
 	const sandbox = await sandboxes.connect(meta.sandboxId);
 	sandboxChanged(c);
 	if (!sandbox) {
@@ -1642,8 +1650,8 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 	// A suspend or removal of the idle sandbox finishes first, as before a prompt.
 	if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 	const { sandboxes } = await layerOf(c, meta);
-	// A push starts a paused sandbox, which uses its user's sandbox time.
-	if (!meta.meter) await holdSandbox(c, meta, true);
+	// A push starts a paused sandbox, which uses its user's sandbox time; a stretch carried over a wake is settled as for a read (`workspaceView`).
+	if (!meta.meter || carriedOver(c, meta)) await holdSandbox(c, meta, true);
 	const sandbox = meta.sandboxId ? await sandboxes.connect(meta.sandboxId) : undefined;
 	sandboxChanged(c);
 	if (!sandbox) {
@@ -2256,6 +2264,16 @@ function inTime<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
+ * Whether the open stretch is the one the session's stored state had as the actor woke, and nothing
+ * has created, resumed, suspended or removed the sandbox since (`c.vars.carried`): what it ran after
+ * the server that counted it went away is not known until the wake's read of the sandbox's state.
+ */
+function carriedOver(c: Ctx, meta: SessionMeta): boolean {
+	const carried = c.vars.carried;
+	return carried !== null && carried.use === useOf(meta) && carried.gen === c.vars.sandboxGen;
+}
+
+/**
  * Asks the user's meter for a hold, in trade for the one the session has when it has one, with what
  * the sandbox ran of that. On a yes the stretch goes on in the new hold from this moment. Null when
  * the meter did not answer. Only ever called from inside the meter's queue.
@@ -2273,10 +2291,15 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
 		meta.meterAsked = asked;
 		await persist(c);
 	}
+	// A fresh hold is for a use that starts now. A stretch carried over a wake that nobody has looked at
+	// since may have ended long before, when the provider stopped the unused sandbox by itself: it is
+	// traded at the latest moment the sandbox can have run, as a "found" close would count it, and not
+	// up to the wake. Decided in the step that sends it.
+	const until = open && fresh && carriedOver(c, meta) ? stoppedBy(open, lastUsed(meta), c.vars.idleStopMs, now) : now;
 	let answer: ReserveAnswer;
 	try {
 		answer = await inTime(
-			userActor(c, meta.uid).internalReserve({ id: asked.id, sessionId: meta.sessionId, keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, now) } : undefined }),
+			userActor(c, meta.uid).internalReserve({ id: asked.id, sessionId: meta.sessionId, keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, until) } : undefined }),
 			METER_WAIT_MS,
 		);
 	} catch (error) {
@@ -2543,6 +2566,8 @@ async function meterAfterTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, use
  * taken a hold since, which is that prompt's to settle. Never throws.
  */
 async function wakeMeter(c: Ctx, meta: SessionMeta, use: string | null): Promise<void> {
+	// The sandbox's state was read (`refreshSandbox`): from here the stretch is settled as found, or goes on.
+	c.vars.carried = null;
 	if (!hostedLimitsApply(meta.place)) return;
 	try {
 		c.vars.idleStopMs = (await layerOf(c, meta)).sandboxes.idleStopMs;
@@ -2558,6 +2583,22 @@ async function wakeMeter(c: Ctx, meta: SessionMeta, use: string | null): Promise
 	} catch (error) {
 		c.log.warn({ msg: "could not take up the sandbox's time again", session: meta.sessionId, error: describeError(error) });
 	}
+}
+
+/**
+ * As the actor wakes, before any call can ask for a hold: a hold asked for with nothing running, whose
+ * answer never came because the server stopped under the request, is reported at 0 s, as `takeHold`
+ * reports one whose answer did not come in time. Nothing was started on it. Asked again instead, it
+ * would be the waking prompt's hold, counted from before the server went away, and with no prompt it
+ * would wait until the book counted it in full. One asked for while the sandbox was stored as running
+ * may have had the sandbox run in it, and is asked again as before.
+ */
+function settleWokenAsk(c: Ctx, meta: SessionMeta): void {
+	const asked = meta.meterAsked;
+	if (!asked || meta.meter || (meta.sandboxId !== null && meta.sandbox === "running")) return;
+	meta.unsettled = [...(meta.unsettled ?? []), { hold: asked.id, seconds: 0 }].slice(-MAX_UNSETTLED);
+	meta.meterAsked = null;
+	void persist(c);
 }
 
 /** Going to sleep: the timer goes, and a sandbox that was suspended has its stretch settled. One that could not be suspended keeps its hold, which the meter counts by itself. */
@@ -3099,6 +3140,16 @@ function remember(meta: SessionMeta, submission: Submission | null, answer: Prom
 }
 
 /**
+ * Whether the session's machine is out of reach now: a session on a machine whose runner has no socket
+ * to it. What the turn's layer sends then waits in the link's queue until the runner is back, so an
+ * action that would wait on it (a steer, a stop of one call) is refused at once instead of at its
+ * time limit, after which the message would still arrive, and arrive twice if it was sent again.
+ */
+function machineAway(c: Ctx, meta: SessionMeta): boolean {
+	return meta.place.kind === "machine" && c.vars.runner?.channel.connected !== true;
+}
+
+/**
  * `prompt()` while a turn is in progress: the message goes into that turn. It takes no new turn, no
  * running slot and no title, and it is stored only once Windlass has admitted it.
  */
@@ -3109,6 +3160,8 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
 		const state = stopping ? "is being stopped" : "is still starting";
 		throw new UserError(`The turn ${state} and cannot take a message right now. Try again in a moment.`, { code: "turn_running" });
 	}
+	// Refused before anything is sent or kept: queued behind a dead link, the message would arrive whenever the machine is back.
+	if (machineAway(c, meta)) throw new UserError("Your machine is not answering, so the message was not sent. Send it again when it is back.", { code: "turn_running" });
 	try {
 		await control.steer(message);
 	} catch (error) {
@@ -3458,6 +3511,7 @@ export const agentSession = actor({
 			metering: Promise.resolve(),
 			idleStopMs: null,
 			sandboxGen: 0,
+			carried: null,
 			runner: null,
 		};
 	},
@@ -3468,6 +3522,8 @@ export const agentSession = actor({
 			c.destroy();
 			return;
 		}
+		// Before anything is awaited, so before the call that woke the actor can ask for a hold.
+		settleWokenAsk(c, meta);
 		// The signal taken here is the actor's own; the one on an action's context stops firing once
 		// the action has returned.
 		c.abortSignal.addEventListener(
@@ -3529,6 +3585,7 @@ export const agentSession = actor({
 		// The sandbox may have been paused, removed or left running while the actor was away. A session
 		// from before the idle checks, or one whose check was lost, gets one here.
 		const use = useOf(meta);
+		c.vars.carried = use === null ? null : { use, gen: c.vars.sandboxGen };
 		void c.keepAwake(
 			refreshSandbox(c, meta)
 				.then(() => wakeMeter(c, meta, use))
@@ -3748,7 +3805,7 @@ export const agentSession = actor({
 
 		stopCall: async (c, input: { messageId: string; callId: string }): Promise<{ stopped: boolean; message: string | null }> => {
 			requireUser(c);
-			liveMeta(c);
+			const meta = liveMeta(c);
 			if (typeof input !== "object" || input === null || typeof input.messageId !== "string" || input.messageId === "" || typeof input.callId !== "string" || input.callId === "") {
 				throw new UserError("Say which tool call to stop.", { code: "bad_call" });
 			}
@@ -3757,6 +3814,8 @@ export const agentSession = actor({
 			if (!active || !control || active.closed) {
 				throw new UserError("No turn is running, so there is no tool call to stop.", { code: "no_turn" });
 			}
+			// As for a steer: the request would wait for the machine. Stopping the whole turn (`stop`) waits for nothing and still works.
+			if (machineAway(c, meta)) throw new UserError("Your machine is not answering, so the tool call was not stopped. Stop the turn instead, or try again when the machine is back.", { code: "turn_running" });
 			try {
 				const result = await control.cancelCall(input.messageId, input.callId);
 				return { stopped: result?.stopped === true, message: typeof result?.message === "string" && result.message !== "" ? result.message : null };
