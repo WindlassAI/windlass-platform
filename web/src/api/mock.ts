@@ -3160,7 +3160,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				// The ceiling on working agents is the deployment's (`FactoryLimits.runningTurns`) and the platform's sandboxes': one on the user's machine is neither counted nor refused.
 				const hosted = session.summary.place.kind === "hosted";
 				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle" && other.summary.place.kind === "hosted").length;
-				if (hosted && running >= MOCK_FACTORY_LIMITS.runningTurns) throw new PlatformError("user", `You already have ${running} agents working, which is your limit. Wait for one to finish, or stop one.`, { reason: "too_many_running" });
+				if (hosted && running >= MOCK_FACTORY_LIMITS.runningTurns) throw new PlatformError("user", `You already have ${running} ${running === 1 ? "agent" : "agents"} working, which is your limit. Wait for one to finish, or stop one.`, { reason: "too_many_running" });
 				const models = modelsFor(world.profile);
 				if (input.model !== undefined) checkModel(models, input.model);
 				// An effort is held against the ones the turn's model accepts; of a model the list does not have nothing is said.
