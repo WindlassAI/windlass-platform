@@ -24,7 +24,7 @@ interface UserPayload {
 
 interface ServicePayload {
 	k: "s";
-	/** What the token is for: "call", or "create:<uid>/<sessionId>". */
+	/** What the token is for: "call", or "create:<actor kind>:<actor key>". */
 	sub: string;
 	exp: number;
 }

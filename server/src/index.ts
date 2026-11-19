@@ -11,6 +11,8 @@
  * See config.ts for the variables.
  */
 
+import { runnerResponse } from "./runner-routes.js";
+import { RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH } from "./runner/control.js";
 import { config, githubConfig } from "./config.js";
 import { PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH } from "./contract.js";
 import { githubApp } from "./github/app.js";
@@ -81,6 +83,7 @@ if (config.webDir) console.log(`[wlp] web app: served from ${config.webDir}`);
 
 async function route(request: Request): Promise<Response> {
 	const { pathname } = new URL(request.url);
+	if ([RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH].includes(pathname)) return runnerResponse(request);
 	if (pathname === PLATFORM_INFO_PATH) return platformInfoResponse(request);
 	if (pathname === PLATFORM_CONNECTION_PATH) return platformConnectionResponse(request);
 	// Where GitHub sends a user's browser back to when they connect: the GitHub App's callback URL.

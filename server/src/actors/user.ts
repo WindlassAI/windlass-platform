@@ -75,6 +75,9 @@
  * whichever servers, and each takes its hold and its place here, so no server counts for itself.
  */
 
+import { MACHINE_ID } from "../runner/control.js";
+import type { MachineUpdate } from "./machine.js";
+import { launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
@@ -106,6 +109,8 @@ import {
 	type RepositorySetup,
 	type RepositoryView,
 	type SandboxPlace,
+	type MachineSummary,
+	type MachineClaim,
 	type SandboxProfile,
 	type SavedRepository,
 	type SecretScope,
@@ -120,7 +125,7 @@ import { isBranchName } from "../github/git.js";
 import type { StoredRepository } from "../github/publish.js";
 import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches, listRepositories, resolveRepository } from "../github/repos.js";
 import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
-import { getLayer, layerFor } from "../layer.js";
+import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../account-defaults.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
@@ -849,7 +854,7 @@ export function cleanRepoUrl(raw: unknown): string | null {
 
 function launchPlace(place: SandboxPlace | undefined): SandboxPlace {
 	if (place === undefined || place?.kind === "hosted") return { kind: "hosted" };
-	if (place?.kind === "machine" && typeof place.machineId === "string" && place.machineId !== "") return { kind: "machine", machineId: place.machineId };
+	if (place?.kind === "machine" && typeof place.machineId === "string" && MACHINE_ID.test(place.machineId)) return { kind: "machine", machineId: place.machineId };
 	throw new UserError("Choose where the sandbox runs.", { code: "bad_input" });
 }
 
@@ -909,8 +914,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 
 	let summary: SessionSummary;
 	try {
-		const { sandboxes } = await layerFor(place, profile.uid);
-		const chosen = sandboxes.profiles().find((candidate) => candidate.id === input.profile);
+		const profiles = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : (await getLayer()).sandboxes.profiles();
+		const chosen = profiles.find((candidate) => candidate.id === input.profile);
 		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
 		if (!chosen.available) {
 			throw new UserError(`${chosen.name} cannot be chosen yet. ${chosen.unavailableReason ?? ""}`.trim(), { code: "profile_unavailable" });
@@ -1110,6 +1115,7 @@ export const user = actor({
 			`);
 			// The sessions that have a place among the sandboxes the user keeps.
 			await db.execute("CREATE TABLE IF NOT EXISTS kept_sandbox (session TEXT PRIMARY KEY, since INTEGER NOT NULL)");
+			await machineTables(db);
 		},
 	}),
 
@@ -1133,6 +1139,7 @@ export const user = actor({
 	},
 
 	events: {
+		machines: event<MachineSummary[]>({ canSubscribe: (c) => maySubscribe(c) }),
 		sessions: event<SessionSummary[]>({ canSubscribe: (c) => maySubscribe(c) }),
 		usage: event<UsageNumbers>({ canSubscribe: (c) => maySubscribe(c) }),
 	},
@@ -1166,6 +1173,14 @@ export const user = actor({
 	},
 
 	actions: {
+		machines: (c): Promise<MachineSummary[]> => machineActions.machines(c),
+		claimMachine: (c, input: { code: string }): Promise<MachineClaim> => machineActions.claimMachine(c, input),
+		confirmMachine: (c, input: { code: string }): Promise<MachineSummary> => machineActions.confirmMachine(c, input),
+		removeMachine: (c, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> => machineActions.removeMachine(c, input),
+		setMachineSecrets: (c, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> => machineActions.setMachineSecrets(c, input),
+		internalMachineCreated: (c, id: string): Promise<boolean> => machineActions.internalMachineCreated(c, id),
+		internalMachineApproval: (c, id: string): Promise<{ login: string | null } | null> => machineActions.internalMachineApproval(c, id),
+		internalMachineChanged: (c, id: string, facts: MachineUpdate | null): Promise<void> => machineActions.internalMachineChanged(c, id, facts),
 		me: async (c): Promise<UserProfile> => {
 			const profile = requireUser(c);
 			await rememberProfile(c, profile);
@@ -1190,9 +1205,10 @@ export const user = actor({
 		 */
 		forgetChatgpt: async (c): Promise<void> => {
 			const profile = requireUser(c);
-			if (profile.demo) return;
+			if (profile.demo) { await logoutMachines(c); return; }
 			try {
 				await (await signIn(c)).logout();
+				await logoutMachines(c);
 				await c.vars.models.forget(c.db);
 				console.log(`[wlp] sign-in.forgotten uid=${profile.uid}`);
 			} catch (error) {
@@ -1551,14 +1567,15 @@ export const user = actor({
 			// A session this user does not have is handed nothing, of the account's either.
 			const session = c.vars.sessions.get(id);
 			if (!session) return { project: null, secrets: [], checks: [], account: { secrets: [], servers: [] } };
-			const kept = await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name");
+			const send = session.place.kind === "hosted" || await machineSecrets(c.db, session.place.machineId) === true;
+			const kept = send ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name") : [];
 			const account = {
 				secrets: kept.map((row) => ({ name: row.name, scope: row.scope === "agent" ? ("agent" as const) : ("setup" as const), sealed: row.sealed })),
 				servers: (await readServers(c.db)).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
 			};
 			const project = setupProjectKey(session.repository?.id);
 			if (project === null) return { project: null, secrets: [], checks: [], account };
-			const rows = await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project);
+			const rows = send ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
 			const { checks } = await readChecks(c.db, project);
 			return { project, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
@@ -1868,6 +1885,7 @@ export const user = actor({
 			requireService(c);
 			return answered(c, async () => {
 				await (await signIn(c)).logout();
+				await logoutMachines(c);
 				await c.vars.models.forget(c.db);
 				console.log(`[wlp] sign-in.forgotten uid=${c.key[0]}`);
 				return null;

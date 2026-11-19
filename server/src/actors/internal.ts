@@ -115,17 +115,21 @@ interface HasClient {
 	client(): any;
 }
 
-export function createGrant(uid: string, sessionId: string): string {
-	return issueServiceToken(`create:${uid}/${sessionId}`);
+function creationSubject(kind: string, key: readonly string[]): string {
+	return `create:${encodeURIComponent(kind)}:${key.map(encodeURIComponent).join("/")}`;
 }
 
-export function grantIsValid(grant: unknown, key: string[]): boolean {
+export function createGrant(kind: string, key: readonly string[]): string {
+	return issueServiceToken(creationSubject(kind, key));
+}
+
+export function grantIsValid(grant: unknown, key: readonly string[], kind = "agentSession"): boolean {
 	const caller = verifyToken(grant);
-	return caller?.kind === "service" && caller.subject === `create:${key[0]}/${key[1]}`;
+	return caller?.kind === "service" && caller.subject === creationSubject(kind, key);
 }
 
 export async function createSessionActor(c: HasClient, uid: string, sessionId: string, input: Omit<SessionCreateInput, "grant">): Promise<void> {
-	const full: SessionCreateInput = { ...input, grant: createGrant(uid, sessionId) };
+	const full: SessionCreateInput = { ...input, grant: createGrant("agentSession", [uid, sessionId]) };
 	await c.client().agentSession.create([uid, sessionId], { input: full, params: serviceParams() });
 }
 
