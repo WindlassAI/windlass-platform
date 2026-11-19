@@ -1,13 +1,15 @@
 import { createInterface } from "node:readline/promises";
+import { setTimeout as wait } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { count, is, nullable, object, optional, text } from "../../server/src/runner/check.js";
+import { REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
 import { PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
 import type { Socket } from "node:net";
 import { audit, showLog } from "./audit.js";
 import { category, control, pair } from "./control.js";
 import { Executor } from "./docker-executor.js";
 import { requestPair, waitForPair } from "./pair-command.js";
-import { forgetKey, save, loadPair, lock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
+import { forgetKey, save, loadPair, tryLock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
 
 const positiveInteger = is<number>(v => count(v) && v > 0);
 const snapshot = object({ machineId: nullable(text(64)), connection: text(2048), idleSuspendMs: nullable(count), runnerVersion: text(64), protocol: count,
@@ -27,14 +29,20 @@ async function main() {
 		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune] [--platform URL] [--max-sandboxes N] [--max-running N].");
 	const limits = { maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]) };
 	if (command === "log") return showLog();
-	// Orphaned commands may still be finishing when the control loop returns.
-	if (command === "pair" && serviceRunning()) return requestPair(values.platform);
 	const abort = new AbortController();
 	const stop = () => abort.abort();
 	process.on("SIGINT", stop); process.on("SIGTERM", stop);
 	try {
-		if (command !== "status") await lock(abort.signal);
-		if (abort.signal.aborted) return;
+		if (command !== "status" && !tryLock()) {
+			if (command === "pair") return requestPair(values.platform);
+			if (command === "prune") throw new RunnerError("The runner service or another command is using this state volume. Stop the runner container or finish the command, then run prune in a one-off runner container with the same state volume and Docker socket.");
+			// Docker's restart policy would immediately relaunch a service that exits here.
+			console.error("Another runner holds the state lock. Waiting to retry.");
+			do {
+				await wait(REFUSED_RETRY_MS, undefined, { signal: abort.signal }).catch(() => {});
+				if (abort.signal.aborted) return;
+			} while (!tryLock());
+		}
 		let paired = loadPair();
 		const stored = read("status.json");
 		if (stored !== undefined && !snapshot(stored)) throw new RunnerError("Invalid status.json. Repair or restore that file in the runner state volume.");

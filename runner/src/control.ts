@@ -13,6 +13,8 @@ import { Session } from "./session.js";
 import { RunnerError, VERSION, origin, storePair } from "./state.js";
 
 const epoch = randomUUID();
+const CONNECT_TIMEOUT_MS = 5_000;
+const MAX_BACKOFF_MS = 15_000;
 
 function proof(key: KeyObject, statement: string) {
 	return sign(null, Buffer.from(statement), key).toString("base64url");
@@ -30,9 +32,9 @@ export function category(error: unknown): string {
 	}
 	return "Connection or local I/O failed. Check the endpoint, Docker socket and state volume.";
 }
-async function post(platform: string, path: string, body: PairRequest | PairPoll | ConnectionRequest, signal: AbortSignal) {
+async function post(platform: string, path: string, body: PairRequest | PairPoll | ConnectionRequest, signal: AbortSignal, timeoutMs = 15_000) {
 	const response = await fetch(platform + path, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" },
-		redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) });
+		redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) });
 	// The platform is untrusted. Even an HTTP error body must not grow without a bound.
 	let bytes = 0;
 	const parts: Uint8Array[] = [];
@@ -87,7 +89,7 @@ export async function pair(platform: string, signal: AbortSignal, say: (message:
 }
 
 async function openSocket(opening: Promise<WebSocket>, signal: AbortSignal) {
-	const limit = AbortSignal.any([signal, AbortSignal.timeout(15_000)]);
+	const limit = AbortSignal.any([signal, AbortSignal.timeout(CONNECT_TIMEOUT_MS)]);
 	return new Promise<WebSocket>((resolve, reject) => {
 		let socket: WebSocket | undefined;
 		const done = () => { limit.removeEventListener("abort", abort); socket?.removeEventListener("open", opened); socket?.removeEventListener("close", closed); };
@@ -163,7 +165,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 					// correction only to the signed timestamp, not to its relative lifetime.
 					const started = Date.now();
 					const time = started + offset;
-					const response = await post(platform, RUNNER_CONNECTION_PATH, { uid, machineId, time, signature: proof(key, connectionProof(uid, machineId, time)) }, active);
+					const response = await post(platform, RUNNER_CONNECTION_PATH, { uid, machineId, time, signature: proof(key, connectionProof(uid, machineId, time)) }, active, CONNECT_TIMEOUT_MS);
 					if (response.status !== 200) {
 						const r = parseConnectionRefusal(response.value);
 						if (response.status === 403 && r?.reason === "clock" && correctClock) {
@@ -292,8 +294,9 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				mayMaintain = idle !== undefined;
 				status("Offline: " + reason);
 			}
-			await wait(refusal || slow ? REFUSED_RETRY_MS : Math.min(60_000, backoff * (0.8 + Math.random() * 0.4)), undefined, { signal }).catch(() => {});
-			backoff = Math.min(60_000, backoff * 2);
+			// Jitter the capped interval too, so runners behind one outage stay spread out.
+			await wait(refusal || slow ? REFUSED_RETRY_MS : backoff * (0.75 + Math.random() * 0.25), undefined, { signal }).catch(() => {});
+			backoff = Math.min(MAX_BACKOFF_MS, backoff * 2);
 		}
 	} finally { mayMaintain = false; clearInterval(timer); await stopSessions(); if (!removed) status("Stopped"); }
 }

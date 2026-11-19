@@ -124,7 +124,7 @@ export async function stub(storage: string) {
 
 	const pipes = new Set<Duplex>();
 	let credential: { token: string; expiresAt: number; validForMs: number } | null = null;
-	let offline = false;
+	let offline: "all" | "gateway" | undefined;
 	const proxy = http();
 	proxy.on("upgrade", (req, incoming, head) => {
 		if (offline) { incoming.destroy(); return; }
@@ -181,7 +181,7 @@ export async function stub(storage: string) {
 				if (Math.abs(now - p.time) > CLOCK_TOLERANCE_MS) { state.clockRefusals++; return answer(403, { reason: "clock", serverTime: now }); }
 				if (state.httpRefusal === "unknown") return answer(403, { reason: "unknown" });
 				if (state.httpRefusal === "removed") return answer(410, { reason: "removed", removeSandboxes: false });
-				if (offline) return answer(503, {});
+				if (offline === "all") return answer(503, {});
 				credential = state.gatewayLifetime ? { token: random(), expiresAt: Date.now() + state.gatewayLifetime, validForMs: state.gatewayLifetime } : null;
 				return answer(200, { endpoint: advertised, namespace: "default", token: credential });
 			}
@@ -200,8 +200,8 @@ export async function stub(storage: string) {
 		},
 		detach(s = sessionId) { wanted.delete(s); channel(s).detach(); },
 		reset(s = sessionId) { wanted.delete(s); channel(s).close(); channels.delete(s); },
-		cut() { offline = true; for (const p of pipes) p.destroy(); },
-		restore() { offline = false; },
+		cut(link: "all" | "gateway" = "all") { offline = link; for (const p of pipes) p.destroy(); },
+		restore() { offline = undefined; },
 		acks(enabled: boolean) { holdAcks = !enabled; }, corruptNext(value: typeof corrupt) { corrupt = value; },
 		async close() {
 			clearInterval(heartbeat); wanted.clear(); for (const ch of channels.values()) ch.close();

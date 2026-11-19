@@ -2,8 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createPrivateKey, randomUUID, type KeyObject } from "node:crypto";
 import { chmodSync, closeSync, existsSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { setTimeout as wait } from "node:timers/promises";
-import { MACHINE_ID, REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
+import { MACHINE_ID } from "../../server/src/runner/control.js";
 import { list, object, is, text, json, nullable } from "../../server/src/runner/check.js";
 import { NAME } from "../../server/src/sandbox/provider.js";
 import manifest from "../package.json";
@@ -75,23 +74,20 @@ export function storePair(current: Identity, key: KeyObject, platform: string) {
 
 // flock also works across Docker PID namespaces (two services can both be PID 1).
 // Keep the fd open until exit. The kernel releases it even on SIGKILL; the PID is diagnostic.
-export async function lock(signal: AbortSignal): Promise<void> {
+export function tryLock(): boolean {
 	mkdirSync(directory, { mode: 0o700, recursive: true });
 	chmodSync(directory, 0o700);
-	while (!signal.aborted) {
-		const fd = openSync(join(directory, "lock"), "a+", 0o600);
-		const result = spawnSync("flock", ["-n", "3"], { stdio: ["ignore", "ignore", "ignore", fd] });
-		if (result.status === 0) {
-			process.once("exit", () => closeSync(fd));
-			ftruncateSync(fd);
-			writeFileSync(fd, String(process.pid) + "\n");
-			return;
-		}
+	const fd = openSync(join(directory, "lock"), "a+", 0o600);
+	const result = spawnSync("flock", ["-n", "3"], { stdio: ["ignore", "ignore", "ignore", fd] });
+	if (result.status !== 0) {
 		closeSync(fd);
-		if (result.status !== 1) throw new RunnerError("The runner needs flock to lock its state.");
-		console.error("Another runner holds the state lock. Waiting to retry.");
-		await wait(REFUSED_RETRY_MS, undefined, { signal }).catch(() => {});
+		if (result.status === 1) return false;
+		throw new RunnerError("The runner needs flock to lock its state.");
 	}
+	process.once("exit", () => closeSync(fd));
+	ftruncateSync(fd);
+	writeFileSync(fd, String(process.pid) + "\n");
+	return true;
 }
 
 export function serviceRunning(): boolean {

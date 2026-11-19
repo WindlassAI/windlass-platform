@@ -1,4 +1,5 @@
-/** Build locally with scripts/runner-build.sh, then run: flock /tmp/wlp-test.lock server/node_modules/.bin/tsx scripts/runner-check.ts
+/** Build locally: cd server && ../scripts/locked.sh ../scripts/runner-build.sh
+ * Then run: cd server && ../scripts/locked.sh runner-check.ts
  * The five-minute Wi-Fi outage and two-minute laptop sleep are wall time.
  */
 import assert from "node:assert/strict";
@@ -115,6 +116,10 @@ async function realMachine() {
 			return current?.status === "online" && current.freeDiskBytes !== null;
 		}, "The real machine actor did not accept the runner's hello and report.", 60_000);
 		assert.match(output, /Paired with an account without a GitHub login/);
+		const pruneStarted = performance.now();
+		await assert.rejects(exec("docker", ["exec", name, "windlass-runner", "prune"], { timeout: 3_000 }),
+			(error: { code?: number; stderr?: string }) => error.code === 1 && !!error.stderr?.includes("run prune in a one-off runner container with the same state volume and Docker socket"));
+		ok(`Prune refused the running service in ${((performance.now() - pruneStarted) / 1000).toFixed(2)}s and explained how to prune after stopping it.`);
 		const publicKey = async () => createPublicKey(JSON.parse(await readFile(join(directory, "pair.json"), "utf8")).key).export({ type: "spki", format: "der" });
 		const formerKey = await publicKey();
 		await user.removeMachine({ machineId: machine.machineId, removeSandboxes: false });
@@ -215,11 +220,27 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 		assert.equal((await stat(state)).mode & 0o777, 0o700); assert.equal((await stat(join(state, "pair.json"))).mode & 0o777, 0o600);
 		assert.equal((await readFile(join(state, "lock"), "utf8")).trim(), String(service.child.pid));
 		assert.equal(srv.state.report!.docker.ok, true);
-		const locked = run();
-		await until(() => locked.output().split("Another runner holds the state lock").length >= 3, "Duplicate runner did not wait and retry.");
-		assert.equal(locked.child.exitCode, null);
-		await stop(locked.child);
 		ok("Pairing retries a 503, identifies the account, protects the key and lock, and corrects a 30-minute clock error.");
+		const waiting = "Another runner holds the state lock. Waiting to retry.";
+		const interrupted = run(state, undefined, bundle, {}, { flags: ["run"] });
+		await until(() => interrupted.output().includes(waiting), "Second service did not wait for the lock.");
+		const stopping = performance.now();
+		await stop(interrupted.child);
+		assert.equal(interrupted.child.exitCode, 0);
+		assert.ok(performance.now() - stopping < 3000, "Stopping a waiting service took too long.");
+
+		const standby = run();
+		await until(() => standby.output().includes(waiting), "Service started with --platform did not wait for the lock.");
+		await wait(4000); // Cross the test clock's 3.5-second retry while the first service is still online.
+		assert.equal(standby.output().trim(), waiting);
+		assert.equal(standby.child.exitCode, null);
+		assert.ok(srv.online());
+		assert.equal((await readFile(join(state, "lock"), "utf8")).trim(), String(service.child.pid));
+		await stop(service.child);
+		service = standby;
+		await until(() => service.output().includes("Online"), "The waiting service did not take over.", 10_000);
+		assert.equal((await readFile(join(state, "lock"), "utf8")).trim(), String(service.child.pid));
+		ok("A second service reports the held lock once, stays alive and takes over after the first stops. SIGTERM interrupts a waiting service.");
 		const second = join(tmp, "second");
 		await mkdir(second, { mode: 0o700 }); await copyFile(join(state, "pair.json"), join(second, "pair.json"));
 		const mismatch = run(second, undefined, bundle, {}, { platform: "http://127.0.0.1:1" });
@@ -239,6 +260,20 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 		assert.equal(duplicate.child.exitCode, null); assert.match(await cli("status", second), /key-in-use/);
 		await stop(duplicate.child);
 		ok("A second process with a copied key stays alive and the first stays online.");
+
+		// The join run lost the gateway while the HTTP route still answered. Also
+		// exercise immediate HTTP failures, when a tight loop would make the most attempts.
+		for (const link of ["gateway", "all", "gateway"] as const) {
+			const { connections, connectionRequests } = srv.state;
+			srv.cut(link);
+			await wait(30_000);
+			const attempts = srv.state.connectionRequests - connectionRequests;
+			const restored = performance.now();
+			srv.restore();
+			await until(() => srv.state.connections > connections, "Runner took over 20s to reconnect.", 20_000);
+			assert.ok(attempts >= 3 && attempts <= 5, `Made ${attempts} attempts during the cut.`);
+			ok(`Runner reconnected ${((performance.now() - restored) / 1000).toFixed(2)}s after a 30s ${link} cut, with ${attempts} attempts during the cut.`);
+		}
 
 		const missing = join(tmp, "missing.cjs");
 		await exec(process.execPath, ["runner/bundle.mjs", "sha256:" + randomBytes(32).toString("hex"), missing], { cwd: root });
