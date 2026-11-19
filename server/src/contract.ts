@@ -1194,6 +1194,16 @@ export interface Verdict {
 	flags: VerifiedFlag[];
 	acceptance: string[];
 	mergeable: boolean | null;
+	/** CI, and each of `flags` (in the same order), in a sentence as the server words them for the item's log and the pull request. */
+	said: { ci: string; flags: string[] };
+}
+
+/** The rounds of each kind a run allows (`ItemRun.rounds` counts them): after a stop on one, a person can let it go on. */
+export interface RoundCaps {
+	plan: number;
+	gate: number;
+	ci: number;
+	conflict: number;
 }
 
 /** An item as the user's index lists it. */
@@ -1227,8 +1237,8 @@ export interface ItemSummary {
 /** An item's page. */
 export interface ItemView extends ItemSummary {
 	task: ItemTask;
-	/** The run it is in, or ended last; null before it was started. */
-	run: ItemRun | null;
+	/** The run it is in, or ended last, with the rounds a run allows; null before it was started. */
+	run: (ItemRun & { caps: RoundCaps }) | null;
 	/** The commit pushed last. */
 	head: string | null;
 	/** Its log, oldest first: the runs and steps before the current one are read from it. */

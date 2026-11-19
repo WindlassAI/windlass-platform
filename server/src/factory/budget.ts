@@ -152,7 +152,7 @@ export function admit(input: AdmissionInput): Admission {
 	if (usage.leftSeconds !== null && usage.leftSeconds < usage.startSeconds) {
 		const allowance = spellSeconds(usage.allowanceSeconds ?? 0);
 		const until = spellSeconds(Math.max(60, Math.ceil((usage.resetsAt - at) / 60_000) * 60));
-		return wait("capacity", `Your ${allowance} of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${until}). Raise it on the Usage page.`, usage.resetsAt);
+		return wait("capacity", `Your ${allowance} of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${until}). The allowance is this deployment's setting, which its owner can raise.`, usage.resetsAt);
 	}
 	if (place.needsSandbox && usage.sandboxes.limit !== null && usage.sandboxes.kept >= usage.sandboxes.limit) {
 		return wait("capacity", `Waiting for a place among the ${plural(usage.sandboxes.limit, "sandbox", "sandboxes")} you may keep: all are in use. Free one on the Usage page, or it frees itself 3 days after its item is done.`);

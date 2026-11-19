@@ -5,7 +5,9 @@
  * live feeds (`UserFeed.onItems`) after every change, as `UserEvents.items` is.
  *
  * Every sentence an item shows is the server's (server/src/factory/blueprint.ts, budget.ts and
- * verdict.ts, server/src/actors/user-items.ts), copied here: the screens only display them. The seeded
+ * verdict.ts, server/src/actors/user-items.ts), copied here: the screens only display them. A verdict's
+ * `said` is made as the server makes it (`ciSentence`, `flagWords`), and a run's `caps` are the step
+ * machine's (`RULES`). The seeded
  * set has one item in each state, each wait sentence, each question of slice 1, and a review with each
  * verdict and each state of CI.
  *
@@ -29,6 +31,7 @@ import {
 	type ItemEvent,
 	type ItemQuestion,
 	type ItemRun,
+	type RoundCaps,
 	type ItemSummary,
 	type ItemView,
 	type SessionRepository,
@@ -69,6 +72,9 @@ export const MOCK_FACTORY_LIMITS: FactoryLimits = {
 	reviewCap: 6,
 	item: { tokens: 4_000_000, turns: 10, activeSeconds: 4 * 3600, hostedSeconds: 1.5 * 3600 },
 };
+
+/** The rounds a run allows (server/src/factory/blueprint.ts, `RULES`), as the server sends them in `ItemView.run.caps`. */
+const ROUND_CAPS: RoundCaps = { plan: 3, gate: 2, ci: 2, conflict: 1 };
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -133,7 +139,7 @@ interface Seed {
 	pr?: number;
 	run?: Omit<ItemRun, "startedAt" | "endedAt" | "step"> & { started: number; ended?: number; step: { n: number; kind: StepKind; attempt?: number; started: number; turn?: ItemRun["step"]["turn"] } };
 	events?: Array<[ago: number, said: string, step?: [run: number, n: number, kind: StepKind, attempt?: number], person?: boolean]>;
-	verdicts?: Array<Omit<Verdict, "id" | "item" | "head" | "at" | "place" | "attestedBy" | "acceptance"> & { ago: number }>;
+	verdicts?: Array<Omit<Verdict, "id" | "item" | "head" | "at" | "place" | "attestedBy" | "acceptance" | "said"> & { ago: number }>;
 	spent?: Partial<ItemBudget>;
 	budget?: Partial<ItemBudget>;
 }
@@ -532,30 +538,51 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 	}
 }
 
+const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "action_required", "error"];
+
+/** CI in a sentence (server/src/factory/verdict.ts, `ciSentence`): what `Verdict.said.ci` is. */
+function ciSentence(ci: Verdict["ci"]): string {
+	switch (ci.state) {
+		case "passed":
+			return `CI passed (${ci.runs.length} ${ci.runs.length === 1 ? "check" : "checks"}).`;
+		case "failed":
+			return `CI failed: ${ci.runs
+				.filter((run) => FAILING_CONCLUSIONS.includes(run.conclusion))
+				.map((run) => run.name)
+				.join(", ")}.`;
+		case "none":
+			return "No CI ran on this commit.";
+		case "timed_out":
+			return "CI had not finished when this was handed over.";
+		case "not_permitted":
+			return `CI was not read: GitHub does not let the platform see this repository's checks${ci.said ? ` (“${ci.said}”)` : ""}. The GitHub App needs read access to Checks, Commit statuses and Actions, accepted on the installation. The pull request's own page shows them.`;
+	}
+}
+
+/** A flag in words (server/src/verified.ts, `flagWords`): what each of `Verdict.said.flags` is. */
+function flagWords(kind: Verdict["flags"][number]["kind"]): string {
+	switch (kind) {
+		case "tests_removed":
+			return "Test files were deleted or renamed away";
+		case "tests_skipped":
+			return "Tests were newly skipped or disabled";
+		case "checks_changed":
+			return "What the checks run was changed in this work";
+		case "exit_ignored":
+			return "A check's command came to ignore an exit status (`|| true` or the like)";
+	}
+}
+
+/** A verdict's `said`, as `verdictOf` makes it. */
+const saidOf = (verdict: Pick<Verdict, "ci" | "flags">): Verdict["said"] => ({ ci: ciSentence(verdict.ci), flags: verdict.flags.map((flag) => flagWords(flag.kind)) });
+
 /** The verdict's sentence as the log has it (verdict.ts, `verdictWords`), for the seeds' gates. */
 function verdictSaid(verdict: Pick<Verdict, "result" | "gate" | "ci" | "flags" | "mergeable">): string {
 	const head = verdict.result === "pass" ? (verdict.flags.length > 0 ? "Needs a look." : "Ready for review.") : verdict.result === "fail" ? "Failing." : verdict.result === "incomplete" ? "Incomplete: the last turn did not finish." : "Not verified.";
 	const gate = verdict.gate.state === "none_set" ? "No check ran in the agent's turn 1: no checks are set for it." : verdict.gate.state === "stopped" ? "The agent's turn 1 was stopped before its checks finished." : "The 2 checks that applied passed when the agent's turn 1 ended.";
-	const runs = verdict.ci.runs;
-	const failed = runs.filter((run) => run.conclusion === "failure");
-	const ciWords =
-		verdict.ci.state === "passed"
-			? `CI passed (${runs.length} ${runs.length === 1 ? "check" : "checks"}).`
-			: verdict.ci.state === "failed"
-				? `CI failed: ${failed.map((run) => run.name).join(", ")}.`
-				: verdict.ci.state === "none"
-					? "No CI ran on this commit."
-					: verdict.ci.state === "timed_out"
-						? "CI had not finished when this was handed over."
-						: `CI was not read: GitHub does not let the platform see this repository's checks${verdict.ci.said ? ` (“${verdict.ci.said}”)` : ""}. The GitHub App needs read access to Checks, Commit statuses and Actions, accepted on the installation. The pull request's own page shows them.`;
-	const FLAG: Record<Verdict["flags"][number]["kind"], string> = {
-		tests_removed: "Test files were deleted or renamed away",
-		tests_skipped: "Tests were newly skipped or disabled",
-		checks_changed: "What the checks run was changed in this work",
-		exit_ignored: "A check's command came to ignore an exit status (`|| true` or the like)",
-	};
-	const flags = verdict.flags.map((flag) => `${FLAG[flag.kind]}: ${flag.where.join(", ")}.`);
-	return [head, gate, ciWords, ...flags, ...(verdict.mergeable === false ? ["GitHub says the pull request conflicts with its base."] : [])].join(" ");
+	const said = saidOf(verdict);
+	const flags = verdict.flags.map((flag, index) => `${said.flags[index]}: ${flag.where.join(", ")}.`);
+	return [head, gate, said.ci, ...flags, ...(verdict.mergeable === false ? ["GitHub says the pull request conflicts with its base."] : [])].join(" ");
 }
 
 function nextMidnight(at: number): number {
@@ -572,6 +599,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 	const repository = seed.on.repository;
 	const verdicts: Verdict[] = (seed.verdicts ?? []).map(({ ago: when, ...verdict }, index) => ({
 		...verdict,
+		said: saidOf(verdict),
 		id: `${id}:${verdict.run}:${index + 5}:1`,
 		item: id,
 		head: index === (seed.verdicts?.length ?? 0) - 1 && head !== null ? head : hex(seed.n * 10 + index),
@@ -583,7 +611,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 	const last = verdicts[verdicts.length - 1];
 	const question: ItemQuestion | null = seed.question ? { id: `${id}:q${seed.n + 3}`, kind: seed.question.kind, text: seed.question.text, choices: seed.question.choices, askedAt: ago(seed.question.asked) } : null;
 	const wait: Waiting | null = question ? { reason: question.kind === "budget" ? "budget" : "person", sentence: question.text, retryAt: null, since: question.askedAt } : seed.wait ? { reason: seed.wait.reason, sentence: seed.wait.sentence, retryAt: seed.wait.retryAt, since: ago(seed.wait.since) } : null;
-	const run: ItemRun | null = seed.run
+	const run: ItemView["run"] = seed.run
 		? {
 				n: seed.run.n,
 				startedAt: ago(seed.run.started),
@@ -591,6 +619,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 				stopReason: seed.run.stopReason,
 				rounds: seed.run.rounds,
 				step: { n: seed.run.step.n, kind: seed.run.step.kind, attempt: seed.run.step.attempt ?? 1, startedAt: ago(seed.run.step.started), turn: seed.run.step.turn ?? null, checks: 0, interruptions: 0 },
+				caps: ROUND_CAPS,
 			}
 		: null;
 	const events: ItemEvent[] = (seed.events ?? []).map(([when, said, step, person]) => ({ at: ago(when), by: person ? `person:${uid}` : "platform", step: step ? { run: step[0], n: step[1], kind: step[2], attempt: step[3] ?? 1 } : null, said }));
@@ -690,7 +719,7 @@ export function createMockItems(deps: MockItemsDeps) {
 	function beginRun(auth: AuthResult, item: ItemView, said: string): void {
 		const at = deps.now();
 		const before = item.run;
-		const run: ItemRun = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 } };
+		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 }, caps: ROUND_CAPS };
 		if (before && before.endedAt === null) Object.assign(before, { endedAt: at, stopReason: "retried" });
 		item.events.push({ at, by: `person:${auth.profile.uid}`, step: null, said });
 		change(auth, item, { state: "queued", wait: null, question: null, run }, [], "person");

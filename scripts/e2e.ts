@@ -177,6 +177,8 @@ class Server {
 			// two limits have a check of their own (usage-check.ts).
 			WLP_DAILY_SANDBOX_SECONDS: "unlimited",
 			WLP_MAX_KEPT_SANDBOXES: "unlimited",
+			// The checks of the limit on running sessions count to MAX_RUNNING_SESSIONS: a person's ceiling, WLP_FACTORY_RUNNING_TURNS, is set to it here.
+			WLP_FACTORY_RUNNING_TURNS: String(MAX_RUNNING_SESSIONS),
 			...extraEnv,
 		};
 		// The local engine asks browsers for no token. An admin token in the shell this is run from is some

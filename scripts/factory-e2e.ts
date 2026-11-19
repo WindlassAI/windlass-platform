@@ -253,6 +253,8 @@ try {
 		const session = sessions.find((one) => one.item?.id === first?.id);
 		assert(session !== undefined && session.id === first.sessionId, "the item's session is not in the sessions' index");
 		await refused(() => client.agentSession.get([auth.profile.uid, session.id], { params: { token: auth.token } }).prompt({ text: "hello" }), "item_session");
+		const kept = await refused(() => user.deleteSession(session.id), "item_session");
+		assert(kept.includes("“Write a short program”"), `the refusal says: ${kept}`);
 		return `${first.id}, session ${first.sessionId}; two tokens, the list holds no value`;
 	});
 
@@ -272,6 +274,7 @@ try {
 		const handed = await untilItem(user, id, "the handoff", (view) => view.state === "review", CI_WAIT_MS);
 		const verdict = handed.verdicts.at(-1);
 		assert(verdict && verdict.ci.state === "passed" && handed.verdict?.result === verdict.result, `the verdict is ${JSON.stringify(verdict)}`);
+		assert(verdict.said.ci === "CI passed (1 check)." && verdict.said.flags.length === verdict.flags.length, `the verdict says ${JSON.stringify(verdict.said)}`);
 		assert(pull.title === "Write a short program" || pull.title.length > 0, "the pull request has no title");
 		return `#${pull.number} from ${pull.head}; verdict ${verdict.result}, CI ${verdict.ci.state}; ${said(handed).slice(-3).join(" / ")}`;
 	});
@@ -284,16 +287,38 @@ try {
 	});
 
 	await check("gate: a required check that fails sends the agent back once, and the same failure again stops at once with a question", async () => {
-		await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "test", command: "npm run fail" }] });
+		// "build" in the check's name makes the fake layer replay a longer command in the fix turn, which names the check: long enough to look at it running.
+		await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "build", command: "npm run fail" }] });
 		const item = await user.createItem({ repository: { id: harbor.id }, title: "Fix the light", body: "Make the light work.", start: true });
-		const asked = await untilItem(user, item.id, "the question", (view) => view.question !== null, 90_000);
+		// The fix turn is delivered the moment the first turn ends, while that turn still settles its sandbox time: watched from the user's side meanwhile.
+		const samples: Array<{ held: number; kept: boolean }> = [];
+		let watching = true;
+		const watcher = (async () => {
+			while (watching) {
+				const [sessions, usage] = await Promise.all([user.listSessions(), user.usage()]).catch(() => [null, null] as const);
+				const session = sessions?.find((one) => one.item?.id === item.id);
+				if (session && usage && session.turns === 2 && session.status === "running") {
+					samples.push({ held: usage.today.find((row) => row.sessionId === session.id)?.heldSeconds ?? 0, kept: usage.kept.some((one) => one.sessionId === session.id) });
+				}
+				await sleep(50);
+			}
+		})();
+		const asked = await untilItem(user, item.id, "the question", (view) => view.question !== null, 90_000).finally(() => {
+			watching = false;
+		});
+		await watcher;
 		const sentBack = said(asked).filter((line) => line.startsWith("The checks failed")).length;
 		assert(asked.question?.kind === "rounds" && /same failure/.test(asked.question.text) && sentBack === 2, `${stateOf(asked)}; ${said(asked).join(" / ")}`);
-		assert(asked.run?.rounds.gate === 1, `gate rounds: ${asked.run?.rounds.gate}`);
+		assert(asked.run?.rounds.gate === 1 && asked.run.caps.gate === 2, `gate rounds: ${asked.run?.rounds.gate} of ${asked.run?.caps.gate}`);
+		// The hold race (finding 3): the next turn's hold and place survive the end of the turn before it, and its time is counted.
+		assert(samples.length > 0, "the fix turn was never seen running");
+		assert(samples.every((sample) => sample.held > 0 && sample.kept), `while the fix turn ran: ${JSON.stringify(samples.slice(0, 5))}`);
+		const counted = (await user.usage()).today.find((row) => row.sessionId === item.sessionId);
+		assert(counted !== undefined && counted.seconds + counted.heldSeconds > 0, `the session's time today: ${JSON.stringify(counted)}`);
 		await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [] });
 		const cancelled = await user.actOnItem({ id: item.id, action: { kind: "cancel" } });
 		await refused(() => user.actOnItem({ id: item.id, action: { kind: "start" } }), "item_conflict");
-		return `${asked.question.text} (choices ${asked.question.choices.map((one) => one.id).join(", ")}); then ${cancelled.state}`;
+		return `${asked.question.text} (choices ${asked.question.choices.map((one) => one.id).join(", ")}); the fix turn held time in all ${samples.length} samples, ${counted.seconds} s counted, ${counted.heldSeconds} s held; then ${cancelled.state}`;
 	});
 
 	await check("ci: a failing CI gets a fix turn, and the same CI failure again stops at once with a question", async () => {
@@ -329,9 +354,14 @@ try {
 		await main.start({ ...standin.env(), WLP_FACTORY_HOSTED_RUNNING: "20", WLP_FAKE_DELAY_MS: "25" });
 		const again = await untilItem(user, item.id, "attempt 2", (view) => (view.run?.step.attempt ?? 0) >= 2, 90_000);
 		const session = client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } });
-		const timeline = (await session.snapshot()).timeline;
-		const prompts = timeline.filter((entry) => entry.kind === "user").map((entry) => (entry.kind === "user" ? entry.text : ""));
-		assert(prompts.some((text) => text.startsWith("You were interrupted")), `the session was told ${JSON.stringify(prompts)}`);
+		// Attempt 2 is delivered, then waits for its slot: the session's timeline has it once the turn is taken.
+		let prompts: string[] = [];
+		await waitFor("the attempt's prompt in the session", async () => {
+			prompts = (await session.snapshot()).timeline.filter((entry) => entry.kind === "user").map((entry) => (entry.kind === "user" ? entry.text : ""));
+			return prompts.some((text) => text.startsWith("You were interrupted"));
+		}, 60_000, 400).catch(() => {
+			throw new Error(`the session was told ${JSON.stringify(prompts)}`);
+		});
 		return `step ${again.run?.step.kind} attempt ${again.run?.step.attempt}; ${said(again).filter((line) => /cut off|tried again/.test(line)).join(" / ")}`;
 	});
 } finally {

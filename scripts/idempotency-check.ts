@@ -99,6 +99,8 @@ async function startServer(): Promise<void> {
 		WLP_HTTP_PORT: String(HTTP_PORT),
 		WLP_FAKE_DELAY_MS: "15",
 		WLP_DAILY_SANDBOX_SECONDS: "unlimited",
+		// The refusal at MAX_RUNNING_SESSIONS busy sessions is checked: a person's ceiling, WLP_FACTORY_RUNNING_TURNS, is set to it here.
+		WLP_FACTORY_RUNNING_TURNS: String(MAX_RUNNING_SESSIONS),
 		WLP_MAX_KEPT_SANDBOXES: "unlimited",
 	};
 	// The local engine asks for no token; one in the shell this is run from is some other engine's.

@@ -178,6 +178,12 @@ import { VerificationLog, outputTail, withOutputs } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, countsSandboxTime, freedNote, holdDeadline, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { grantIsValid, type ReserveAnswer, secretsActor, type SessionCreateInput, userActor } from "./internal.js";
+import { type AgentReport, REPORT_REFUSED, REPORT_TAKEN, reportOf } from "../agent-publish.js";
+import type { Fact } from "../factory/types.js";
+import { DeploymentFull } from "../sandbox/api.js";
+import type { ItemPublishAnswer } from "./work-item.js";
+import { fetchBase } from "../github/publish.js";
+import { type InboxRow, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, markEnded, markTaken, queueMessage, receive, requestTurn, requeue, rowOfTurn, sendOutbox, turnFlags, withdrawWaiting } from "./session-inbox.js";
 
 // ---------------------------------------------------------------------------------------------
 // Limits
@@ -363,6 +369,10 @@ interface SessionMeta {
 	 * no message came to with a key.
 	 */
 	submissions?: Array<Submission & PromptAnswer>;
+	/** Set for a work item's session: its turns come from the item's deliveries (session-inbox.ts), and no person prompts it. Absent: a person's. */
+	origin?: { kind: "item"; itemId: string };
+	/** What the item's agent last filed with `report`: the pull request's title and description. */
+	report?: AgentReport | null;
 }
 
 /** What `prompt()` answers: the turn the message is in, and whether it was steered into one that ran. */
@@ -433,6 +443,12 @@ interface ActiveTurn {
 	publishes: Set<Promise<string>>;
 	/** True once the turn was stopped because its user's sandbox time for the day is used up: its sandbox is suspended when it has closed. */
 	outOfTime?: boolean;
+	/**
+	 * Set for a turn taken from the inbox: its row, with the slot the user's turn queue gave it; what the
+	 * agent reported in it; and, when the sandbox layer refused to start a sandbox because the
+	 * deployment's are all in use, that cap: the delivery then waits again instead of ending.
+	 */
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; full: number | null; started: boolean };
 }
 
 /**
@@ -582,6 +598,7 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		...(meta.sandbox !== "none" && typeof meta.envLists === "boolean" ? { envLists: meta.envLists } : {}),
 		...(meta.sandbox !== "none" && typeof meta.requiredChecks === "boolean" ? { requiredChecks: meta.requiredChecks } : {}),
 		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt ?? meta.updatedAt } } : {}),
+		...(meta.origin ? { item: { id: meta.origin.itemId } } : {}),
 	};
 }
 
@@ -2743,6 +2760,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		active.secrets = await readSecrets(c, meta, turn);
 		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
 		used = sandbox;
+		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn);
 		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
 		resumed = meta.windlassSessionId;
 		if (!signal.aborted) {
@@ -2790,6 +2808,18 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 					if (open) note(c, turn, "info", unaskedNote(str(call.server)), { code: "question_allowed", call: { messageId: str(call.messageId), callId: str(call.callId) } });
 				},
 				prompt: `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${text}`,
+				maxSteps: active.item?.row.maxSteps,
+				// A work item's agent files its report, which the platform puts on the pull request it pushes itself.
+				onReport: active.item
+					? (request) => {
+							const filed = reportOf(request.arguments, held.redactor);
+							if (filed === null) return REPORT_REFUSED;
+							if (active.item) active.item.report = filed;
+							meta.report = filed;
+							note(c, turn, "info", `The agent filed its report: “${filed.title}”.`);
+							return REPORT_TAKEN;
+						}
+					: undefined,
 				windlassSessionId: resumed ?? undefined,
 				model: meta.model,
 				effort: effort ?? undefined,
@@ -2810,7 +2840,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				},
 				// The agent may ask the platform to publish where there is a repository to publish to and an app to do it with.
 				onPublish:
-					meta.repo && githubApp()
+					meta.repo && githubApp() && !active.item
 						? (request, withdrawn) => {
 								const work = agentPublish(c, meta, active, sandbox, commandSandbox(profile), request, withdrawn);
 								active.publishes.add(work);
@@ -2818,10 +2848,16 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 								return work;
 							}
 						: undefined,
-				// Always given: a session is attended, by whoever has it open now or opens it in time.
-				onQuestion: (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
-				// The project's own MCP servers, which Windlass leaves stopped until the user says otherwise.
-				onServerQuestion: (question, withdrawn) => askServer(c, meta, active, servers, question, withdrawn),
+				// A person's session is attended, by whoever has it open now or opens it in time. A work item's turn is not:
+				// without the callback Windlass refuses a call that would ask, and tells the model.
+				onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
+				// The project's own MCP servers, which Windlass leaves stopped until the user says otherwise; nobody can say so in an item's turn.
+				onServerQuestion: active.item
+					? async (question) => {
+							note(c, turn, "info", `The project's MCP server “${str(question?.name)}” was not started: a work item's turn has nobody to approve it.`);
+							return false;
+						}
+					: (question, withdrawn) => askServer(c, meta, active, servers, question, withdrawn),
 				onServerApproved: (question, outcome) => {
 					const named = { name: str(question?.name), fingerprint: str(question?.fingerprint) };
 					const recalled = active.recalled.get(serverKey(named));
@@ -2844,6 +2880,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			if (unfinished && events > 0 && meta.setupUnfinished === unfinished) meta.setupUnfinished = null;
 		}
 	} catch (error) {
+		if (active.item && error instanceof DeploymentFull) active.item.full = error.limit;
 		if (!signal.aborted) {
 			// An error's text is the sandbox's or the provider's: the repository's saved values are taken out of it before it is logged or shown.
 			const clean = (text: string) => active.secrets?.redactor.text(text) ?? text;
@@ -2960,6 +2997,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		const unpushed = meta.repo && used ? await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null) : null;
 		// The agent had the platform publish in this turn, before the turn's checks ran, and nothing changed since: the pull request's description is told what they came to.
 		if (active.published && unpushed === false && used) await describeAfterTurn(c, meta, used, turn);
+		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, verified, used, unpushed, usage: usageOf(summary?.usage), checks: active.secrets?.checks ?? [] });
 		await persist(c);
 		await within(c.vars.reporting, REPORT_WAIT_MS);
 	} catch (error) {
@@ -3115,7 +3153,7 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 		const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId);
 		if (!claim.known || c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		if (!claim.ok) {
-			throw new UserError(`You already have ${MAX_RUNNING_SESSIONS} agents working. Wait for one to finish, or stop one.`, { code: "too_many_running" });
+			throw new UserError(`You already have ${claim.running} agents working, which is your limit. Wait for one to finish, or stop one.`, { code: "too_many_running" });
 		}
 		claimed = true;
 		// Time for the sandbox to run on, and a place for one the session does not have: refused here, before anything is started.
@@ -3160,6 +3198,143 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 }
 
 // ---------------------------------------------------------------------------------------------
+// A work item's turns (session-inbox.ts)
+// ---------------------------------------------------------------------------------------------
+
+/** Asks the user's turn queue for a slot for a waiting delivery, and takes the turn when it is granted at once. Never throws. */
+async function askForSlot(c: Ctx, meta: SessionMeta, row: InboxRow, deploymentFull: number | null = null): Promise<void> {
+	try {
+		const answer = await requestTurn(c, meta.uid, row, deploymentFull);
+		if (answer.granted) await takeDelivered(c, meta, row.key, answer.slot);
+	} catch (error) {
+		// The item asks again whether its turn runs; a delivery sent again asks again.
+		c.log.warn({ msg: "could not ask the user's turn queue for a slot", key: row.key, error: describeError(error) });
+	}
+}
+
+/** Gives a slot back to the queue, through the outbox. */
+async function giveBack(c: Ctx, meta: SessionMeta, key: string, slot: string): Promise<void> {
+	await serial(c, () => queueMessage(c.db, { to: "user", done: { slot, key } }));
+	await flushOutbox(c, meta.uid);
+}
+
+/**
+ * Takes the turn of a delivery the queue gave a slot to, as `takePrompt` takes a person's prompt: the
+ * grant is the running slot, so none is asked for. The receipt is one transaction: the inbox row says
+ * which turn took it and with which slot, with the session's meta and the turn's first item. A grant
+ * that finds nothing to take, or a session busy with something else, gives its slot back; a turn that
+ * cannot have its sandbox time gives it back and asks again, and waits with the queue's sentence.
+ * Never throws.
+ */
+async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: string): Promise<void> {
+	const row = await inboxRow(c.db, key);
+	if (row?.state === "started" && row.slot === slot) return;
+	if (row?.state !== "waiting" || c.vars.turn || c.vars.accepting || c.vars.publishing || c.vars.destroying) {
+		await giveBack(c, meta, key, slot);
+		return;
+	}
+	c.vars.accepting = true;
+	// The sandbox is this delivery's from here, and its turn's to the end, as for a person's prompt.
+	let release: (() => void) | null = takeSandbox(c);
+	try {
+		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
+		await holdSandbox(c, meta, true);
+		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
+		// Accepted. From here to the transaction nothing is awaited.
+		const turn = meta.turns + 1;
+		const now = Date.now();
+		meta.turns = turn;
+		meta.status = "starting";
+		meta.updatedAt = now;
+		meta.turnStartedAt = now;
+		const first = append(c, { turn, kind: "user", text: row.text, model: meta.model, effort: null });
+		publish(c);
+		const active: ActiveTurn = { number: turn, effort: null, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishCalls: new Set(), publishes: new Set(), item: { row: { ...row, state: "started", turn, slot }, report: null, full: null, started: false } };
+		c.vars.turn = active;
+		await serial(c, () =>
+			c.db.transaction(async (tx) => {
+				await tx.execute("INSERT OR REPLACE INTO timeline (seq, turn, kind, at, item) VALUES (?, ?, ?, ?, ?)", first.seq, first.turn, first.kind, first.at, JSON.stringify(first));
+				await markTaken(tx, key, turn, slot);
+				await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
+			}, { name: "inbox.take" }),
+		).catch((error) => c.log.error({ msg: "could not store the receipt of the item's turn; its end is stored with the turn", error: describeError(error) }));
+		active.done = c.keepAwake(runTurn(c, meta, active, row.text, release));
+		release = null;
+	} catch (error) {
+		if (!c.vars.turn && meta.status !== "idle") {
+			meta.status = "idle";
+			meta.turnStartedAt = null;
+		}
+		c.log.warn({ msg: "the item's turn could not start; its slot is given back", key, error: describeError(error) });
+		await giveBack(c, meta, key, slot);
+		// Refused for the user's sandbox time or kept sandboxes: asked again, the queue answers with the wait.
+		if (error instanceof UserError && ["allowance_used", "too_many_sandboxes", "usage_unavailable"].includes(String(error.code))) void c.keepAwake(askForSlot(c, meta, row));
+	} finally {
+		c.vars.accepting = false;
+		release?.();
+	}
+}
+
+/** The item's turn has its sandbox: the base is fetched for a turn that merges it, and the item is told the turn started. */
+async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, sandbox: SandboxHandle, turn: number): Promise<void> {
+	if (item.started) return;
+	item.started = true;
+	const app = githubApp();
+	if (item.row.fetchBase !== null && meta.repo && app) {
+		const base = meta.repo.branch;
+		try {
+			await fetchBase(app, await githubConnection(c, meta), meta.repo, sandbox);
+			note(c, turn, "info", `Fetched ${base} from GitHub into the workspace as origin/${base}, for the agent to merge.`);
+		} catch (error) {
+			note(c, turn, "warn", `${base} could not be fetched from GitHub for the agent to merge: ${error instanceof GithubProblem ? error.message : describeError(error)}`);
+		}
+	}
+	const fact: Fact = { kind: "turn_started", at: Date.now(), key: item.row.key };
+	await serial(c, () => queueMessage(c.db, { to: "item", itemId: item.row.itemId, fact }));
+	await flushOutbox(c, meta.uid);
+}
+
+/**
+ * The item's turn has ended: the item is told how, with what the gate needs (the turn's verification,
+ * the observations on its changes, whether there is anything to push, the agent's report, the tokens it
+ * used), and its slot is given back, both in one transaction with the meta. A turn whose sandbox could
+ * not be had because the deployment's are all in use waits for a slot again instead.
+ */
+async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, ended: { outcome: TurnOutcome; verified: Verified | null; used: SandboxHandle | null; unpushed: boolean | null; usage: TurnUsage | null; checks: RepositoryCheck[] }): Promise<void> {
+	const { row } = item;
+	if (item.full !== null && !item.started) {
+		await serial(c, () =>
+			c.db.transaction(async (tx) => {
+				await requeue(tx, row.key, row.slot);
+				await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
+			}, { name: "inbox.requeue" }),
+		);
+		await flushOutbox(c, meta.uid);
+		void c.keepAwake(askForSlot(c, meta, { ...row, state: "waiting", turn: null, slot: null }, item.full));
+		return;
+	}
+	const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.branch, ended.checks, ended.verified).catch(() => []) : [];
+	const report = item.report === null ? null : [item.report.title, item.report.description, item.report.concerns ? `Unsure of: ${item.report.concerns}` : ""].filter((part) => part !== "").join("\n\n");
+	// Not known (git said nothing): taken as changed, and the push says whether there was anything.
+	const fact = endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, ended.unpushed !== false, report, ended.usage);
+	await serial(c, () =>
+		c.db.transaction(async (tx) => {
+			await markEnded(tx, row, fact);
+			await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
+		}, { name: "inbox.end" }),
+	);
+	await flushOutbox(c, meta.uid);
+}
+
+/** A turn taken from the inbox that was cut off with its server: the item is told it was interrupted, and its slot is given back. */
+async function closeCutTurn(c: Ctx, meta: SessionMeta, row: InboxRow): Promise<Fact> {
+	const fact = endedFactOf(row.key, Date.now(), "interrupted", meta.verified ?? null, [], true, null, null);
+	await serial(c, () => c.db.transaction((tx) => markEnded(tx, row, fact), { name: "inbox.cut" }));
+	await flushOutbox(c, meta.uid);
+	return fact;
+}
+
+// ---------------------------------------------------------------------------------------------
 // The actor
 // ---------------------------------------------------------------------------------------------
 
@@ -3187,6 +3362,7 @@ export const agentSession = actor({
 				)
 			`);
 			await db.execute("CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK (id = 1), files TEXT NOT NULL, diff TEXT NOT NULL)");
+			for (const table of INBOX_TABLES) await db.execute(table);
 		},
 	}),
 
@@ -3218,6 +3394,7 @@ export const agentSession = actor({
 				cloned: false,
 				windlassSessionId: null,
 				turnStartedAt: null,
+				...(input.origin?.kind === "item" && typeof input.origin.itemId === "string" ? { origin: { kind: "item" as const, itemId: input.origin.itemId } } : {}),
 			};
 			await c.db.execute("INSERT OR REPLACE INTO meta (id, data) VALUES (1, ?)", JSON.stringify(meta));
 		} catch (error) {
@@ -3317,10 +3494,14 @@ export const agentSession = actor({
 			if (meta.backup) meta.memoryTurn = turn;
 			// A setup run that was going then has no ending item, and is not run again: the agent is told.
 			if (meta.setupRunning) meta.setupUnfinished = { command: meta.setupRunning.command, state: "interrupted", exitCode: null, limitMs: meta.setupRunning.limitMs, output: "" };
+			const taken = await rowOfTurn(c.db, turn);
+			if (taken) await closeCutTurn(c, meta, taken);
 			await persist(c);
 			publish(c);
 		}
 		meta.setupRunning = null;
+		// What the item or the turn queue was not told yet before the server stopped is sent now.
+		void c.keepAwake(sendOutbox(c, meta.uid));
 		// The sandbox may have been paused, removed or left running while the actor was away. A session
 		// from before the idle checks, or one whose check was lost, gets one here.
 		const use = useOf(meta);
@@ -3451,6 +3632,7 @@ export const agentSession = actor({
 		prompt: async (c, input: PromptInput): Promise<PromptAnswer> => {
 			requireUser(c);
 			const meta = liveMeta(c);
+			if (meta.origin) throw new UserError("This agent works for a work item, whose steps send its prompts. Answer the item, or send its work back with a note.", { code: "item_session" });
 			if (typeof input !== "object" || input === null || typeof input.text !== "string" || input.text.trim() === "") {
 				throw new UserError("Write what the agent should do.", { code: "empty_prompt" });
 			}
@@ -3718,6 +3900,85 @@ export const agentSession = actor({
 			} catch (error) {
 				c.log.error({ msg: "the idle check of the sandbox failed", error: describeError(error) });
 			}
+		},
+
+		// --- the work item's inbox (session-inbox.ts) ------------------------------------------------
+
+		internalDeliver: async (c, input: unknown): Promise<void> => {
+			requireService(c);
+			const meta = liveMeta(c);
+			const delivery = deliveryOf(input);
+			if (!delivery || meta.origin?.itemId !== delivery.itemId) throw new UserError("That delivery is not this session's.", { code: "bad_input" });
+			// Stored before the item is answered: from here the same delivery again adds nothing.
+			await serial(c, () => receive(c.db, delivery, Date.now()));
+			const row = await inboxRow(c.db, delivery.key);
+			if (row?.state !== "waiting") return;
+			// Answered once the queue holds the request too: a request that did not get there fails the delivery, which the item sends again.
+			const answer = await requestTurn(c, meta.uid, row);
+			if (answer.granted) void c.keepAwake(takeDelivered(c, meta, row.key, answer.slot));
+		},
+
+		internalGrant: (c, input: { key: string; slot: string }): void => {
+			requireService(c);
+			const meta = liveMeta(c);
+			if (typeof input?.key !== "string" || typeof input.slot !== "string") throw new UserError("A grant names a delivery and a slot.", { code: "bad_input" });
+			void c.keepAwake(takeDelivered(c, meta, input.key, input.slot));
+		},
+
+		internalWithdraw: async (c, key: string): Promise<void> => {
+			requireService(c);
+			const meta = liveMeta(c);
+			if (await serial(c, () => withdrawWaiting(c.db, String(key)))) {
+				await userActor(c, meta.uid).internalWithdrawTurn({ sessionId: meta.sessionId, key: String(key) });
+				return;
+			}
+			if (c.vars.turn?.item?.row.key === key) abortTurn(c, meta, c.vars.turn);
+		},
+
+		internalCheckTurn: async (c, input: { turn: string; check: string }): Promise<Fact | null> => {
+			requireService(c);
+			const meta = liveMeta(c);
+			const row = await inboxRow(c.db, String(input?.turn));
+			if (row?.state === "ended") return await endedFact(c.db, row.key);
+			if (row?.state !== "started") return null;
+			if (c.vars.turn?.item?.row.key === row.key) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
+			// Taken, and no turn of it runs here: the server stopped under it before its end was written.
+			return await closeCutTurn(c, meta, row);
+		},
+
+		internalPublish: async (c, input: { key: string; title: string; body: string }): Promise<ItemPublishAnswer> => {
+			requireService(c);
+			const meta = liveMeta(c);
+			const repo = meta.repo;
+			if (!repo) return { kind: "publish_failed", said: "the item's agent has no repository to push to", transient: false };
+			const blocked = publishBlocked(c, meta);
+			if (blocked) return { kind: "publish_failed", said: blocked, transient: true };
+			c.vars.publishing = true;
+			const release = takeSandbox(c);
+			try {
+				const report = meta.report;
+				const body = report ? [report.description, report.concerns ? `**What the agent is unsure of:** ${report.concerns}` : ""].filter((part) => part !== "").join("\n\n") : String(input?.body ?? "");
+				const result = await c.keepAwake(publishSession(c, meta, repo, { title: report?.title || String(input?.title ?? meta.title), body }));
+				const pull = result.state.pullRequest;
+				if (!pull) return { kind: "publish_failed", said: "GitHub opened no pull request", transient: true };
+				// The commit git said it pushed; where git says nothing (a sandbox layer without git), the branch names it.
+				return { kind: "published", head: meta.pushedHead ?? pull.branch, pr: { number: pull.number, url: pull.url } };
+			} catch (error) {
+				if (error instanceof UserError) return { kind: "publish_failed", said: error.message, transient: false };
+				return { kind: "publish_failed", said: describeError(error), transient: true };
+			} finally {
+				c.vars.publishing = false;
+				release();
+			}
+		},
+
+		[OUTBOX_ACTION]: async (c): Promise<void> => {
+			const fire = c.scheduledFire;
+			if (!fire) throw new UserError("This action is internal.", { code: "forbidden" });
+			// One line per firing, so that a late or lost schedule shows in the logs.
+			console.log(`[wlp] schedule.fired action=${OUTBOX_ACTION} session=${c.key[1]} late_ms=${fire.firedAt - fire.scheduledAt}`);
+			const meta = c.vars.meta;
+			if (meta) await sendOutbox(c, meta.uid);
 		},
 
 		// --- called by `user` only ---------------------------------------------------------------

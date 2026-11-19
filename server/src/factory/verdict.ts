@@ -100,7 +100,26 @@ export function verdictOf(input: VerdictInput): Verdict {
 		flags: input.gate?.flags ?? [],
 		acceptance: input.acceptance,
 		mergeable: input.mergeable,
+		said: { ci: ciSentence(input.ci), flags: (input.gate?.flags ?? []).map((flag) => flagWords(flag.kind)) },
 	};
+}
+
+const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "action_required", "error"];
+
+/** What the verdict says of CI, in a sentence: for the log, the pull request and the item's page alike. */
+export function ciSentence(ci: Verdict["ci"]): string {
+	switch (ci.state) {
+		case "passed":
+			return `CI passed (${ci.runs.length} ${ci.runs.length === 1 ? "check" : "checks"}).`;
+		case "failed":
+			return `CI failed: ${names(ci.runs.filter((run) => FAILING_CONCLUSIONS.includes(run.conclusion)))}.`;
+		case "none":
+			return "No CI ran on this commit.";
+		case "timed_out":
+			return "CI had not finished when this was handed over.";
+		case "not_permitted":
+			return `CI was not read: GitHub does not let the platform see this repository's checks${ci.said ? ` (“${ci.said}”)` : ""}. The GitHub App needs read access to Checks, Commit statuses and Actions, accepted on the installation. The pull request's own page shows them.`;
+	}
 }
 
 const names = (runs: Array<{ name: string }>) => runs.map((run) => run.name).join(", ");
@@ -118,18 +137,8 @@ export function verdictWords(verdict: Verdict, gate: GateEvidence | null): strin
 					? "Incomplete: the last turn did not finish."
 					: "Not verified.";
 	const gateSaid = gate?.verified ? verifiedHeadline(gate.verified, "your") : "Nothing the agent did was verified by checks.";
-	const failed = verdict.ci.runs.filter((run) => ["failure", "timed_out", "startup_failure", "action_required", "error"].includes(run.conclusion));
-	const ci =
-		verdict.ci.state === "passed"
-			? `CI passed (${verdict.ci.runs.length} ${verdict.ci.runs.length === 1 ? "check" : "checks"}).`
-			: verdict.ci.state === "failed"
-				? `CI failed: ${names(failed)}.`
-				: verdict.ci.state === "none"
-					? "No CI ran on this commit."
-					: verdict.ci.state === "timed_out"
-						? "CI had not finished when this was handed over."
-						: `CI was not read: GitHub does not let the platform see this repository's checks${verdict.ci.said ? ` (“${verdict.ci.said}”)` : ""}. The GitHub App needs read access to Checks, Commit statuses and Actions, accepted on the installation. The pull request's own page shows them.`;
-	const flags = verdict.flags.map((flag) => `${flagWords(flag.kind)}: ${flag.where.join(", ")}.`);
+	const ci = verdict.said.ci;
+	const flags = verdict.flags.map((flag, index) => `${verdict.said.flags[index] ?? flagWords(flag.kind)}: ${flag.where.join(", ")}.`);
 	const merge = verdict.mergeable === false ? ["GitHub says the pull request conflicts with its base."] : [];
 	return [head, gateSaid, ci, ...flags, ...merge].join(" ");
 }

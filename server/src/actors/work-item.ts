@@ -31,13 +31,16 @@
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { clientError, describeError, requireService } from "../auth.js";
-import { type ItemAction, type ItemEvent, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
-import { advance, currentKey } from "../factory/blueprint.js";
+import { type ItemAction, type ItemEvent, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
+import { RULES, advance, currentKey } from "../factory/blueprint.js";
 import type { Effect, Fact, FactoryItem } from "../factory/types.js";
 import { githubApp } from "../github/app.js";
 import { readCi } from "../github/ci.js";
 import { resolveRepository } from "../github/repos.js";
 import { grantIsValid, sessionActor, userActor } from "./internal.js";
+
+/** The rounds a run allows, as the blueprint stops on them (`RULES`), for the item's page. */
+const ROUND_CAPS: RoundCaps = { plan: RULES.planRounds, gate: RULES.gateRounds, ci: RULES.ciRounds, conflict: RULES.conflictRounds };
 
 /** What the item knows around the blueprint's `FactoryItem`. */
 export interface ItemMeta {
@@ -148,7 +151,7 @@ async function viewOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		...summaryOf(stored),
 		task: stored.item.task,
 		// What the gate and CI read stays here: the page shows the run as the contract has it.
-		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, step: run.step, rounds: run.rounds },
+		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, step: run.step, rounds: run.rounds, caps: ROUND_CAPS },
 		head: stored.item.head,
 		events: events.map((row) => JSON.parse(row.data) as ItemEvent),
 		verdicts: verdicts.map((row) => JSON.parse(row.data) as Verdict),
@@ -218,7 +221,7 @@ async function take(c: Ctx, fact: Fact): Promise<boolean> {
 					await tx.execute("INSERT OR REPLACE INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)", rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 				}
 				if (handoff) await tx.execute("INSERT OR REPLACE INTO verdicts (id, run, head, at, data) VALUES (?, ?, ?, ?, ?)", handoff.verdict.id, handoff.verdict.run, handoff.verdict.head, handoff.verdict.at, JSON.stringify(handoff.verdict));
-			}),
+			}, { name: "item.take" }),
 		);
 	} catch (error) {
 		// What is stored is what holds: the item is read again, and the fact is lost to whoever sends it again.
@@ -434,7 +437,7 @@ export const workItem = actor({
 				await tx.execute("INSERT INTO events (at, data) VALUES (?, ?)", input.meta.createdAt, JSON.stringify({ at: input.meta.createdAt, by: input.startedBy ?? "platform", step: null, said: `Filed from ${input.meta.source === "api" ? "the API" : "the web app"}.` } satisfies ItemEvent));
 				for (const event of events) await tx.execute("INSERT INTO events (at, data) VALUES (?, ?)", event.at, JSON.stringify(event));
 				for (const effect of effects) await tx.execute("INSERT INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)", rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
-			});
+			}, { name: "item.create" });
 		} catch (error) {
 			c.log.error({ msg: "could not initialise the work item", error: describeError(error) });
 		}

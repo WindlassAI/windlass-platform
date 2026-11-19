@@ -78,7 +78,7 @@
 import { MACHINE_ID } from "../runner/control.js";
 import type { MachineUpdate } from "./machine.js";
 import { launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
-import { ITEM_TABLES, type ItemsState, type MakeSession, QUEUE_ACTION, factorySlots, itemActions, loadItems, queueChanged } from "./user-items.js";
+import { ITEM_TABLES, type ItemsState, type MakeSession, QUEUE_ACTION, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
@@ -1312,6 +1312,8 @@ export const user = actor({
 			const profile = requireUser(c);
 			const existing = typeof id === "string" ? c.vars.sessions.get(id) : undefined;
 			if (!existing) throw new UserError("That agent does not exist.", { code: "session_not_found" });
+			const owned = itemSessionRefusal(c, existing);
+			if (owned) throw owned;
 
 			// Out of the index first, so a report the session sends while it shuts down is ignored.
 			c.vars.sessions.delete(id);

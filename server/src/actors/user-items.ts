@@ -428,6 +428,17 @@ export function queueChanged(c: ItemsCtx): void {
 	void c.keepAwake(runQueue(c).catch((error) => c.log.error({ msg: "the turn queue could not be run", error: String(error) })));
 }
 
+/**
+ * Why a session may not be deleted, when it is a work item's: the item owns it, and its steps would
+ * find it gone. The item is cancelled instead, which leaves the agent and its timeline to be read.
+ */
+export function itemSessionRefusal(c: { vars: { items: ItemsState } }, session: SessionSummary): UserError | null {
+	if (!session.item) return null;
+	const item = c.vars.items.items.get(session.item.id);
+	const name = item ? `“${item.title}”` : "a work item";
+	return new UserError(`This agent works for ${name}. Cancel the item instead; the agent and what it did stay readable.`, { code: "item_session" });
+}
+
 // ---------------------------------------------------------------------------------------------
 // API tokens
 // ---------------------------------------------------------------------------------------------
