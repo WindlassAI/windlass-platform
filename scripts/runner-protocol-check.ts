@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import { mock } from "node:test";
 import { ConversationLost, RunnerChannel, ServerChannel, type ChannelSocket } from "../server/src/runner/channel.js";
-import { ACK_MS, DEAD_MS, MAX_FRAME_BYTES, MAX_OPS_IN_FLIGHT, PING_MS, RUNNER_GRACE_MS, WINDOW_BYTES, parseFrame, type Operation } from "../server/src/runner/protocol.js";
+import { ACK_MS, DEAD_MS, MAX_FRAME_BYTES, MAX_MESSAGE_BYTES, MAX_OPS_IN_FLIGHT, OP_MS, PING_MS, RUNNER_GRACE_MS, WINDOW_BYTES, parseFrame, type Operation } from "../server/src/runner/protocol.js";
 
 let failures = 0;
 function expect(name: string, ok: boolean, detail = ""): void {
@@ -18,6 +18,13 @@ function expect(name: string, ok: boolean, detail = ""): void {
 	console.log(`${ok ? "ok  " : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 }
 const outcome = (p: Promise<unknown>) => p.then((v) => v, (e: Error) => e);
+/** What `p` has come to once everything already due has run: its value, its error, or "pending". */
+async function now(p: Promise<unknown>): Promise<unknown> {
+	let value: unknown = "pending";
+	void p.then((v) => { value = v; }, (e: unknown) => { value = e; });
+	await new Promise((resolve) => setImmediate(resolve));
+	return value;
+}
 const identity = { runnerVersion: "0.1.0", machineId: "m_check", ticket: "ticket", signature: "signature" };
 const box = { id: "box" };
 
@@ -73,21 +80,21 @@ function join(server: ServerChannel, runner: RunnerChannel) {
 	return link;
 }
 
-function server(accept = true) {
+function server(accept = true, onReset?: () => void) {
 	const resets: string[] = [];
-	return { ch: new ServerChannel({ accept: () => accept, onReset: (why) => resets.push(why) }), resets };
+	return { ch: new ServerChannel({ accept: () => accept, onReset: (why) => { resets.push(why); onReset?.(); } }), resets };
 }
 /** A runner whose operations wait in `held` unless `serve` answers them. */
-function runner(serve?: (ch: RunnerChannel, op: Operation) => void) {
+function runner(serve?: (ch: RunnerChannel, op: Operation) => void, hooks: { onDrain?(): void; onReset?(): void } = {}) {
 	const log = { ops: [] as string[], held: [] as Operation[], input: [] as string[], resets: [] as string[], refused: [] as string[], cancels: [] as string[], drains: 0 };
 	const ch: RunnerChannel = new RunnerChannel({
 		onOperation: (op) => { log.ops.push(op.name); if (serve) serve(ch, op); else log.held.push(op); },
 		onInput: (_, data) => log.input.push(data),
 		onCloseIn: () => log.input.push("EOF"),
 		onCancel: (id) => log.cancels.push(id),
-		onDrain: () => log.drains++,
+		onDrain: () => { log.drains++; hooks.onDrain?.(); },
 		onRefused: (why) => log.refused.push(why),
-		onReset: (why) => log.resets.push(why),
+		onReset: (why) => { log.resets.push(why); hooks.onReset?.(); },
 	});
 	return { ch, log };
 }
@@ -227,6 +234,29 @@ async function large(): Promise<void> {
 	expect("a 4.6 MB file crosses in frames under the limit, text intact", await put === null && saved === content && Math.max(link.s.largest, link.r.largest) <= MAX_FRAME_BYTES);
 	const error = await big;
 	expect("an answer over 8 MiB comes back as the runner's refusal", error instanceof Error && !(error instanceof ConversationLost) && error.message.includes("larger"));
+
+	const { ch: s2 } = server();
+	const { ch: r2, log } = runner();
+	const b = join(s2, r2);
+	const proc = s2.start({ ...box, tag: "t7", argv: ["windlass", "acp"] }, () => {});
+	const refused = outcome(s2.request("state", box));
+	const read = outcome(s2.request("readTextFile", { ...box, path: "/workspace/b" }));
+	b.flush();
+	const [start, state, file] = log.held;
+	r2.respond(start, null);
+	const huge = "e".repeat(MAX_MESSAGE_BYTES);
+	try { r2.end(start.id, { code: null, signal: null, error: new Error(huge) }); } catch {}
+	try { r2.refuse(state, { kind: "sandbox", message: huge }); } catch {}
+	b.flush();
+	const ended = await now(proc.ended) as { error?: Error }, no = await now(refused);
+	expect("an end or a refusal too large to send still arrives, with a short error", !!ended.error?.message.includes("larger") && no instanceof Error && no.message.includes("larger"));
+	// Exactly MAX_MESSAGE_BYTES, with the halves of one emoji in different parts.
+	const empty = JSON.stringify({ kind: "res", id: file.id, ok: true, value: "" });
+	const left = "a".repeat(MAX_FRAME_BYTES / 8 - 1 - (empty.indexOf('""') + 1));
+	const value = left + "😀" + "b".repeat(MAX_MESSAGE_BYTES - empty.length - left.length - 4);
+	r2.respond(file, value);
+	b.flush();
+	expect("an 8 MiB answer split inside a surrogate pair arrives", (await now(read)) === value);
 }
 
 async function untrusted(): Promise<void> {
@@ -262,6 +292,15 @@ async function untrusted(): Promise<void> {
 		`{"kind":"msg","seq":0,"ack":0,"body":{"kind":"in","id":"p","data":""}}`, `{"kind":"msg","seq":1,"ack":0,"body":{"kind":"out","id":"p","fd":3,"data":""}}`,
 		`{"kind":"msg","seq":1,"ack":0,"body":{"kind":"end","id":"p","code":"0","signal":null,"error":null}}`, " ".repeat(MAX_FRAME_BYTES + 1)];
 	expect("frames that are not the protocol are refused without throwing", hostile.every((v) => parseFrame(v) === null), `${hostile.length} cases`);
+
+	const { ch: s3 } = server();
+	const c = join(s3, runner(answer).ch);
+	const proc = s3.start({ ...box, tag: "t8", argv: ["windlass", "acp"] }, () => {});
+	c.flush();
+	c.cut(); // From here nothing the server sends is acknowledged.
+	let writes = 0;
+	while (writes < 100 && s3.write(proc.id, "x".repeat(4 * 1024 * 1024))) writes++;
+	expect("what is never acknowledged is bounded: the conversation ends", writes < 100 && !!(await proc.ended).error?.message.includes("acknowledge"), `${writes} writes of 4 MiB`);
 }
 
 async function mismatch(): Promise<void> {
@@ -311,10 +350,90 @@ function timers(): void {
 	expect("closing clears every heartbeat, grace, hello and request timer", count() === before);
 }
 
+async function order(): Promise<void> {
+	const { ch: s } = server();
+	const { ch: r, log } = runner();
+	const a = join(s, r);
+	const early = s.start({ ...box, tag: "t5", argv: ["windlass", "acp"] }, () => {});
+	s.write(early.id, "first");
+	s.closeIn(early.id);
+	a.flush(); // The runner's startup is still under way.
+	const before = log.input.length;
+	r.respond(log.held[0], null);
+	a.flush();
+	expect("stdin written before the runner answers start reaches the process, in order", before === 0 && log.input.join() === "first,EOF");
+	r.end(log.held[0].id, done);
+	s.close(); r.close();
+
+	let tail = () => {};
+	const { ch: s2 } = server();
+	const { ch: r2, log: log2 } = runner(undefined, { onDrain: () => tail() });
+	const b = join(s2, r2);
+	let sent = 0, got = 0;
+	const proc = s2.start({ ...box, tag: "t6", argv: ["windlass", "acp"] }, () => got++);
+	b.flush();
+	r2.respond(log2.held[0], null);
+	b.flush();
+	const id = log2.held[0].id;
+	do sent++; while (r2.output(id, 1, "a".repeat(100 * 1024)));
+	b.s.inbox.splice(1);
+	b.s.take(); // One chunk arrives before the link breaks, unacknowledged.
+	b.cut();
+	tail = () => { tail = () => {}; sent++; r2.output(id, 1, "tail"); };
+	const c = join(s2, r2);
+	r2.end(id, done);
+	c.flush();
+	expect("output written from onDrain on a resume goes after what is resent", (await proc.ended).code === 0 && got === sent);
+	s2.close(); r2.close();
+}
+
+async function expiry(): Promise<void> {
+	const { ch: s } = server();
+	const { ch: r, log } = runner();
+	const expired = outcome(s.request("state", box));
+	mock.timers.tick(OP_MS + RUNNER_GRACE_MS);
+	const error = await expired;
+	join(s, r);
+	expect("an operation that expired before the first socket never runs", error instanceof ConversationLost && log.ops.length === 0);
+	const long = await now(s.request("run", { ...box, command: "true", options: { timeoutMs: 25 * 24 * 60 * 60 * 1000 } }));
+	expect("a timeout past what a timer can hold is refused at once", long instanceof Error && long.message.includes("Invalid"));
+	s.close(); r.close();
+
+	const { ch: s2 } = server();
+	const { ch: r2 } = runner();
+	join(s2, r2).cut();
+	mock.timers.tick(RUNNER_GRACE_MS - 1);
+	const se = new End(), re = new End();
+	se.peer = re; re.peer = se;
+	s2.attach(se);
+	r2.attach(re, identity);
+	se.take(); // The server resumes; its welcome is on the way.
+	mock.timers.tick(1); // The runner's grace runs out first.
+	re.take();
+	expect("a welcome that comes after the runner gave up closes that socket on both ends", !re.open && !se.open && !s2.connected);
+	s2.close(); r2.close();
+}
+
+async function closing(): Promise<void> {
+	const { ch: s } = server(true, () => s.close());
+	join(s, runner().ch).s.close();
+	const c = join(s, runner().ch); // A new runner: the server's conversation ends, and its owner closes it.
+	const { ch: r } = runner(undefined, { onReset: () => r.close() });
+	join(server().ch, r).cut();
+	const d = join(server().ch, r); // A new server: the runner's conversation ends, and its owner closes it.
+	expect("closing from onReset during a handshake leaves both ends closed", !s.connected && !c.s.open && !r.connected && !d.r.open);
+
+	let late: Promise<unknown> = Promise.resolve();
+	const { ch: s2 } = server(true, () => { late = s2.request("state", box); });
+	join(s2, runner().ch);
+	s2.close();
+	expect("work asked for from onReset during close fails at once", (await now(late)) instanceof ConversationLost);
+}
+
 async function main(): Promise<void> {
 	mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1_000_000 });
 	try {
-		for (const check of [dropAndResume, actorWakes, runnerRestarts, grace, stream, large, untrusted, mismatch, liveness]) await check();
+		for (const check of [dropAndResume, actorWakes, runnerRestarts, grace, stream, large, untrusted, mismatch, liveness, order, expiry, closing]) await check();
 	} finally { mock.timers.reset(); }
 	timers();
 	console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");

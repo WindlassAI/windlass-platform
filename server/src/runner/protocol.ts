@@ -33,6 +33,12 @@ export const RUNNER_GRACE_MS = 600_000;
 /** What an operation without a `timeoutMs` of its own may take: `create` is `docker run` and `git init`. */
 export const OP_MS = 180_000;
 
+/**
+ * The longest wait an operation may name. Node fires a timer past 2^31 ms (24.8 days) after 1 ms, on
+ * either end; the platform's longest is the setup command's (WLP_SETUP_TIMEOUT_MS, ten minutes unless
+ * a deployment raises it), so a day refuses nothing real.
+ */
+const duration = is<number>((v) => count(v) && (v as number) <= 24 * 60 * 60 * 1000);
 const id = text(255);
 const tag = is<string>((v) => id(v) && RUN_TAG.test(v));
 const env = is<Record<string, string>>((v) => plain(v) && Object.entries(v).every(([k, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof value === "string"));
@@ -53,7 +59,7 @@ const operations = {
 	suspend: [object(sandbox), nil],
 	destroy: [object(sandbox), nil],
 	/** Its output streams as `out` with this operation's id; `cancel` is its abort signal. */
-	run: [object({ ...sandbox, command: string, options: optional(object({ ...startOptions, stdin: optional(string), timeoutMs: optional(count) })) }),
+	run: [object({ ...sandbox, command: string, options: optional(object({ ...startOptions, stdin: optional(string), timeoutMs: optional(duration) })) }),
 		object({ exitCode: nullable(integer), timedOut: boolean, aborted: boolean, stdout: string, stderr: string })],
 	readTextFile: [object({ ...sandbox, path: string }), string],
 	writeTextFile: [object({ ...sandbox, path: string, content: string }), nil],
@@ -61,10 +67,10 @@ const operations = {
 	start: [object({ ...sandbox, tag, argv: list(string), options: optional(object(startOptions)) }), nil],
 	signal: [object({ process: id, sig: oneOf("INT", "TERM", "KILL"), who: oneOf("leader", "all") }), nil],
 	killClient: [object({ process: id }), nil],
-	ask: [object({ ...sandbox, argv: list(string), options: optional(object({ env: optional(env), timeoutMs: optional(count) })) }),
+	ask: [object({ ...sandbox, argv: list(string), options: optional(object({ env: optional(env), timeoutMs: optional(duration) })) }),
 		nullable(object({ code: nullable(integer), stdout: string, stderr: string }))],
 	stopLeftovers: [object({ ...sandbox, program: string }), count],
-	sweep: [object({ ...sandbox, tag, options: optional(object({ waitMs: optional(count), files: optional(list(string)) })) }), count],
+	sweep: [object({ ...sandbox, tag, options: optional(object({ waitMs: optional(duration), files: optional(list(string)) })) }), count],
 	writeSecretFile: [object({ ...sandbox, path: string, content: string }), nil],
 	removeFiles: [object({ ...sandbox, paths: list(string) }), nil],
 	/** This operation's id names the hold that `releaseTurn` ends. */

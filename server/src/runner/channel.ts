@@ -41,6 +41,19 @@ interface Options {
 }
 /** A UTF-16 unit takes at most 6 bytes once escaped into a part's string. */
 const PART_UNITS = MAX_FRAME_BYTES / 8;
+/**
+ * More than an honest peer ever leaves unacknowledged: a full window and every operation in flight
+ * at the largest message, each up to twice its size once escaped into parts. A peer that lets more
+ * pile up is not acknowledging, so the next message ends the conversation instead of growing it.
+ */
+const HELD_BYTES = 2 * (WINDOW_BYTES + (MAX_OPS_IN_FLIGHT + 1) * MAX_MESSAGE_BYTES);
+
+/** The message as JSON. Throws when it is larger than MAX_MESSAGE_BYTES. */
+function measure(body: Body): string {
+	const json = JSON.stringify(body);
+	if (Buffer.byteLength(json) > MAX_MESSAGE_BYTES) throw new Error("The message is larger than the runner channel carries.");
+	return json;
+}
 
 abstract class Channel {
 	protected socket: ChannelSocket | null = null;
@@ -52,8 +65,10 @@ abstract class Channel {
 	private told = 0;
 	private backlog = new Map<number, { text: string; bytes: number }>();
 	private bytes = 0;
+	/** Messages made while there is no conversation, numbered when the next one starts. */
+	private unsent: Body[] = [];
 	private parts: string[] = [];
-	private partBytes = 0;
+	private partUnits = 0;
 	private heard = 0;
 	private spoke = 0;
 	private waiting = false;
@@ -82,8 +97,9 @@ abstract class Channel {
 
 	close(reason = "The runner channel is closed."): void {
 		if (this.closed) return;
-		this.reset(reason);
+		// Before the reset, so that what `onReset` asks of a closing channel is refused, not queued.
 		this.closed = true;
+		this.reset(reason);
 		this.detach();
 		this.dismiss();
 	}
@@ -99,7 +115,9 @@ abstract class Channel {
 			this.strangers.delete(socket);
 			const frame = parseFrame(data);
 			if (frame) introduce(frame);
-			else socket.close();
+			// One its introduction did not make current (refused, a resume that failed, or the owner
+			// closing the channel from `onReset` meanwhile) belongs to nobody.
+			if (this.socket !== socket) socket.close();
 		});
 		socket.onClose(() => {
 			if (this.socket === socket) this.detach();
@@ -125,6 +143,7 @@ abstract class Channel {
 
 	/** Makes `socket` the current one, after the introduction, and sends what the peer has not received. */
 	protected adopt(socket: ChannelSocket, introduction: Hello | Welcome | null, peerReceived: number): void {
+		if (this.closed) return; // The owner closed the channel from `onReset` during the introduction.
 		const old = this.socket;
 		this.socket = socket;
 		old?.close();
@@ -135,20 +154,29 @@ abstract class Channel {
 		this.heard = Date.now();
 		if (introduction) this.transmit(JSON.stringify(introduction));
 		this.told = this.received;
+		// Resent before the release can call `onDrain`, so new output cannot overtake what the peer lacks.
+		for (const [seq, frame] of this.backlog) if (seq > peerReceived) this.transmit(frame.text);
 		this.release(peerReceived);
-		for (const frame of this.backlog.values()) this.transmit(frame.text);
+		for (const body of this.unsent.splice(0)) this.send(body);
 	}
 
 	/** Queues a message, in one frame or several. Throws when it is larger than MAX_MESSAGE_BYTES. */
 	protected send(body: Body): void {
-		const json = JSON.stringify(body);
-		if (Buffer.byteLength(json) > MAX_MESSAGE_BYTES) throw new Error("The message is larger than the runner channel carries.");
+		const json = measure(body);
+		// Not numbered yet: what is withdrawn before a conversation starts must never reach the peer.
+		if (this.conversation === null) { this.unsent.push(body); return; }
+		if (this.bytes > HELD_BYTES) return this.fail("The other side does not acknowledge what it receives.");
 		const whole = JSON.stringify({ kind: "msg", seq: this.sent + 1, ack: this.received, body });
 		if (Buffer.byteLength(whole) <= MAX_FRAME_BYTES) { this.push(whole); return; }
 		for (let at = 0; at < json.length; at += PART_UNITS) {
 			const data = json.slice(at, at + PART_UNITS);
 			this.push(JSON.stringify({ kind: "part", seq: this.sent + 1, ack: this.received, data, last: at + PART_UNITS >= json.length }));
 		}
+	}
+
+	/** Takes back what was made for `id` and is still waiting for a conversation. */
+	protected withdraw(id: string): void {
+		this.unsent = this.unsent.filter((body) => body.id !== id);
 	}
 
 	/** Whether a stream's source may go on; when not, `onDrain` says when it may again. */
@@ -163,8 +191,9 @@ abstract class Channel {
 		const had = this.conversation !== null;
 		this.drop(reason);
 		this.conversation = null;
-		this.sent = this.acked = this.received = this.told = this.bytes = this.partBytes = 0;
+		this.sent = this.acked = this.received = this.told = this.bytes = this.partUnits = 0;
 		this.backlog.clear();
+		this.unsent = [];
 		this.parts = [];
 		this.waiting = false;
 		clearTimeout(this.grace);
@@ -219,13 +248,15 @@ abstract class Channel {
 			if (this.parts.length) return this.fail("A message ended before its last part.");
 			return this.deliver(frame.body);
 		}
-		this.partBytes += Buffer.byteLength(frame.data);
-		if (this.partBytes > MAX_MESSAGE_BYTES) return this.fail("A message is larger than the runner channel carries.");
+		// Counted in UTF-16 units, never more than the sender's bytes: a part can end inside a surrogate
+		// pair, whose halves Buffer.byteLength would count as three bytes each.
+		this.partUnits += frame.data.length;
+		if (this.partUnits > MAX_MESSAGE_BYTES) return this.fail("A message is larger than the runner channel carries.");
 		this.parts.push(frame.data);
 		if (!frame.last) return;
 		const body = parseBody(this.parts.join(""));
 		this.parts = [];
-		this.partBytes = 0;
+		this.partUnits = 0;
 		if (!body) return this.fail("A message could not be read.");
 		this.deliver(body);
 	}
@@ -241,7 +272,8 @@ abstract class Channel {
 }
 
 type Pending = { name: Name; resolve(value: unknown): void; reject(error: Error): void; output?: Output; timer: ReturnType<typeof setTimeout>; forget(): void };
-type Process = { output: Output; finish(end: ProcessEnd): void; open: boolean };
+/** `held` is stdin written before the runner answered `start`: it has nowhere to go until then. */
+type Process = { output: Output; finish(end: ProcessEnd): void; open: boolean; held: Body[] | null };
 
 /** The session actor's end. It lives as long as the actor's instance, in `c.vars`. */
 export class ServerChannel extends Channel {
@@ -259,13 +291,12 @@ export class ServerChannel extends Channel {
 		this.watch(socket, (hello) => {
 			if (hello.kind === "foreign") {
 				try { socket.send(JSON.stringify({ kind: "welcome", protocol: PROTOCOL_VERSION, refused: protocolRefusal(hello.protocol) })); } catch {}
-				socket.close();
 				return;
 			}
-			if (hello.kind !== "hello" || !this.accepts(hello)) { socket.close(); return; }
+			if (hello.kind !== "hello" || !this.accepts(hello)) return;
 			const resumes = hello.resume !== null && hello.resume.conversation === this.conversation && this.resumable(hello.resume.received);
 			// Only the runner that holds the conversation may replace a live socket: it has given up on that one.
-			if (this.socket && !resumes) { socket.close(); return; }
+			if (this.socket && !resumes) return;
 			if (!resumes) {
 				if (this.conversation) this.reset("The machine's runner restarted, or gave up on this session's work after a long disconnection.");
 				this.conversation = crypto.randomUUID();
@@ -287,7 +318,7 @@ export class ServerChannel extends Channel {
 	/** `ended` never rejects: a process that could not be started has ended with an error. */
 	start(args: Args<"start">, onOutput: Output): { id: string; ended: Promise<ProcessEnd> } {
 		const id = crypto.randomUUID();
-		const ended = new Promise<ProcessEnd>((finish) => this.processes.set(id, { output: onOutput, finish, open: true }));
+		const ended = new Promise<ProcessEnd>((finish) => this.processes.set(id, { output: onOutput, finish, open: true, held: [] }));
 		this.call(id, "start", args, {}).catch((error: Error) => this.finish(id, { code: null, signal: null, error }));
 		return { id, ended };
 	}
@@ -296,7 +327,7 @@ export class ServerChannel extends Channel {
 	write(process: string, data: string): boolean {
 		const p = this.processes.get(process);
 		if (!p?.open) return false;
-		this.send({ kind: "in", id: process, data });
+		this.input(p, { kind: "in", id: process, data });
 		return true;
 	}
 
@@ -304,7 +335,23 @@ export class ServerChannel extends Channel {
 		const p = this.processes.get(process);
 		if (!p?.open) return;
 		p.open = false;
-		this.send({ kind: "close-in", id: process });
+		this.input(p, { kind: "close-in", id: process });
+	}
+
+	private input(p: Process, body: Body): void {
+		if (!p.held) return this.send(body);
+		measure(body); // Too large throws now, as it would once sent.
+		p.held.push(body);
+	}
+
+	/** The runner has the process: what was written meanwhile goes, in order. */
+	private started(id: string): void {
+		const p = this.processes.get(id);
+		if (!p?.held) return;
+		const held = p.held;
+		p.held = null;
+		// A send can end the conversation, and the process with it; the rest then has nowhere to go.
+		for (const body of held) if (this.processes.has(id)) this.send(body);
 	}
 
 	private call(id: string, name: Name, args: unknown, { onOutput, signal }: { onOutput?: Output; signal?: AbortSignal }): Promise<unknown> {
@@ -327,6 +374,7 @@ export class ServerChannel extends Channel {
 		const p = this.pending.get(id);
 		if (!p) return;
 		this.pending.delete(id);
+		this.withdraw(id);
 		clearTimeout(p.timer);
 		p.forget();
 		if (outcome instanceof Error) p.reject(outcome);
@@ -347,6 +395,8 @@ export class ServerChannel extends Channel {
 				if (!p) return; // It stopped waiting.
 				if (!body.ok) return this.settle(body.id, body.error.kind === "user" ? new SandboxUserError(body.error.message) : new Error(body.error.message));
 				if (!validValue(p.name, body.value)) return this.settle(body.id, new Error(`The machine's answer to ${p.name} could not be read.`));
+				// Here, not when the promise settles: the process's own messages may follow in this same task.
+				if (p.name === "start") this.started(body.id);
 				return this.settle(body.id, { value: body.value });
 			}
 			case "out":
@@ -398,8 +448,8 @@ export class RunnerChannel extends Channel {
 		const text = JSON.stringify(hello);
 		if (parseFrame(text)?.kind !== "hello") throw new Error("Invalid runner identity.");
 		this.watch(socket, (welcome) => {
-			if (welcome.kind !== "welcome") { socket.close(); return; }
-			if ("refused" in welcome) { socket.close(); this.options.onRefused(welcome.refused); return; }
+			if (welcome.kind !== "welcome") return;
+			if ("refused" in welcome) return this.options.onRefused(welcome.refused);
 			if (welcome.resumed) {
 				if (welcome.conversation !== asked || asked !== this.conversation || !this.resumable(welcome.received)) {
 					return this.fail("The platform resumed a conversation this runner does not have.");
@@ -420,12 +470,11 @@ export class RunnerChannel extends Channel {
 		if (!validValue(name, value)) throw new Error(`Invalid result for ${name}.`);
 		this.serving.delete(op.id);
 		if (name === "start") this.processes.add(op.id);
-		try { this.send({ kind: "res", id: op.id, ok: true, value }); }
-		catch { this.send({ kind: "res", id: op.id, ok: false, error: { kind: "sandbox", message: `The answer to ${name} is larger than a runner can send.` } }); }
+		this.last({ kind: "res", id: op.id, ok: true, value }, { kind: "res", id: op.id, ok: false, error: { kind: "sandbox", message: `The answer to ${name} is larger than a runner can send.` } });
 	}
 
 	refuse(op: Operation, error: Failure): void {
-		if (this.serving.delete(op.id)) this.send({ kind: "res", id: op.id, ok: false, error });
+		if (this.serving.delete(op.id)) this.last({ kind: "res", id: op.id, ok: false, error }, { kind: "res", id: op.id, ok: false, error: { kind: error.kind, message: "The machine's error is larger than a runner can send." } });
 	}
 
 	/** Output of a `run` in progress or of a started process. False: stop reading until `onDrain`. */
@@ -436,7 +485,13 @@ export class RunnerChannel extends Channel {
 	}
 
 	end(process: string, end: ProcessEnd): void {
-		if (this.processes.delete(process)) this.send({ kind: "end", id: process, code: end.code, signal: end.signal, error: end.error?.message ?? null });
+		const body = { kind: "end", id: process, code: end.code, signal: end.signal } as const;
+		if (this.processes.delete(process)) this.last({ ...body, error: end.error?.message ?? null }, { ...body, error: "The process ended with an error larger than a runner can send." });
+	}
+
+	/** The message that settles something: its tracking is already gone, so one too large to send is replaced, never lost. */
+	private last(body: Body, instead: Body): void {
+		try { this.send(body); } catch { this.send(instead); }
 	}
 
 	protected deliver(body: Body): void {
