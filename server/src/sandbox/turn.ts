@@ -126,7 +126,7 @@ import type { WindlassEvent } from "../contract.js";
 import { isReservedServerName } from "../personal-servers.js";
 import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
 import { windlassChecks } from "../repository-checks.js";
-import { type ConfigServer, PLATFORM_SERVERS_FILE, WINDLASS_CONFIG_FILE, platformConfig, projectChecks } from "../windlass-config.js";
+import { type ConfigServer, type PlatformConfig, PLATFORM_SERVERS_FILE, WINDLASS_CONFIG_FILE, platformConfig, projectChecks } from "../windlass-config.js";
 import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnChecks, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass, WindlassFeatures } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
@@ -976,12 +976,9 @@ class Turn {
 	}
 
 	/** Makes the file and the list in the sandbox what `next` says. The list first: it may name more than the file holds, never less. */
-	private async storeConfiguration(next: { config: string | null; written: string | null; changed: boolean }, had: { written: string | null }): Promise<void> {
+	private async storeConfiguration(next: PlatformConfig, had: { written: string | null }): Promise<void> {
 		if (next.written !== null) await this.sandbox.writeTextFile(PLATFORM_SERVERS_FILE, next.written);
-		if (next.changed) {
-			if (next.config === null) await this.sandbox.removeFiles([WINDLASS_CONFIG_FILE]);
-			else await this.sandbox.writeTextFile(WINDLASS_CONFIG_FILE, next.config);
-		}
+		if (next.changed) await this.sandbox.writeTextFile(WINDLASS_CONFIG_FILE, next.config);
 		if (next.written === null && had.written !== null) await this.sandbox.removeFiles([PLATFORM_SERVERS_FILE]);
 	}
 

@@ -743,6 +743,8 @@ export interface SectionInput {
 	flags: readonly VerifiedFlag[] | null;
 	/** The turn that was running when this is pushed, whose checks have not run; null between turns. */
 	during: number | null;
+	/** A session on one of its user's machines: the checks ran there. */
+	machine?: { name: string | null };
 	/** The session's user as others know them: their GitHub login. */
 	login: string;
 }
@@ -758,6 +760,11 @@ export function verifiedSection(input: SectionInput): string {
 	const { verified, flags, during } = input;
 	const owner = `${input.login}'s`;
 	const parts: string[] = [];
+	if (input.machine) {
+		// The runner supplies the name. Keep it in one paragraph and quote inline Markdown characters.
+		const name = input.machine.name && inert(input.machine.name).replace(/\s+/g, " ").replace(/([\\`*_{}\[\]()<>!&~|@#:$.])/g, "\\$1");
+		parts.push(`These checks ran on ${owner} own machine${name ? `, “${name}”` : ""}; this is what that machine reported.`);
+	}
 	if (during !== null) parts.push(`This was pushed while the agent's turn ${during} was still running: what that turn changed had not been checked yet.`);
 	if (verified === null) {
 		if (during === null) parts.push("Nothing was verified: no turn of the agent's has ended in this session.");

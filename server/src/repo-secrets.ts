@@ -54,12 +54,41 @@ import {
 	type SecretReach,
 	type SecretScope,
 } from "./contract.js";
+import type { DefaultsDb } from "./repository-defaults.js";
 import type { Sealer } from "./signin/seal.js";
 
 /** How many secrets one user may have over all repositories. Reaching it refuses a new one: nothing is dropped to make room. */
 export const MAX_SECRETS_PER_USER = 2_000;
 
 export { MAX_SECRETS_PER_REPOSITORY };
+
+/** The database belongs to one user; the value is already sealed for uid, project and name. */
+export async function saveRepoSecret(
+	db: DefaultsDb,
+	{ project, label, name, sealed, scope, now }: { uid: string; project: string; label: string; name: string; sealed: string; scope: SecretScope; now: number },
+): Promise<"saved" | "replaced" | "repository_full" | "account_full"> {
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		// Keep the pre-write existence check so RETURNING can distinguish two concurrent saves of the same name.
+		const [saved] = await db.execute<{ replaced: number }>(
+			`WITH prior AS MATERIALIZED (SELECT EXISTS (SELECT 1 FROM repo_secret WHERE project = ? AND name = ?) AS present)
+			INSERT INTO repo_secret (project, name, label, scope, sealed, updated_at)
+			SELECT ?, ?, ?, ?, ?, ? FROM prior WHERE present OR (
+				(SELECT COUNT(*) FROM repo_secret WHERE project = ?) < ? AND (SELECT COUNT(*) FROM repo_secret) < ?)
+			ON CONFLICT (project, name) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END,
+				scope = excluded.scope, sealed = excluded.sealed, updated_at = excluded.updated_at
+			RETURNING (SELECT present FROM prior) AS replaced`,
+			project, name, project, name, label, scope, sealed, now, project, MAX_SECRETS_PER_REPOSITORY, MAX_SECRETS_PER_USER,
+		);
+		if (saved) return saved.replaced ? "replaced" : "saved";
+		const [counts] = await db.execute<{ here: number; total: number }>(
+			"SELECT (SELECT COUNT(*) FROM repo_secret WHERE project = ?) AS here, COUNT(*) AS total FROM repo_secret", project,
+		);
+		if (counts && counts.here >= MAX_SECRETS_PER_REPOSITORY) return "repository_full";
+		if (counts && counts.total >= MAX_SECRETS_PER_USER) return "account_full";
+		// A deletion freed a place between the refused write and the count. Try once more.
+	}
+	throw new Error("the repository secret could not be saved");
+}
 
 // ---------------------------------------------------------------------------------------------
 // What may be saved

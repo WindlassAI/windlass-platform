@@ -57,6 +57,8 @@ import type { ApprovalProject } from "./server-approvals.js";
 export interface ServerQuestionContext {
 	/** The profile the session's sandbox was made with. */
 	profile: SandboxProfile;
+	/** For a session on one of the user's machines: that machine, by the name kept at launch (null when not known). */
+	machine?: { name: string | null } | null;
 	/** A demo session: its turns are handed no access token. */
 	demo: boolean;
 	/** `Sandboxes.sessionsLiveInSandbox`: Windlass's data directory, and with it Windlass's own record of an approval, is on this sandbox's own disk. */
@@ -104,11 +106,13 @@ function machine(profile: SandboxProfile): string {
  * sandbox machine it is said of: this session's, in a question, and a session's, where it is said of
  * every session a server of the user's own runs in (`personalServerReach`).
  */
-function reach(question: Pick<TurnServerQuestion, "argv">, context: Pick<ServerQuestionContext, "profile" | "demo">, whose: "this session's" | "a session's" = "this session's"): string {
+function reach(question: Pick<TurnServerQuestion, "argv">, context: Pick<ServerQuestionContext, "profile" | "demo" | "machine">, whose: "this session's" | "a session's" = "this session's"): string {
 	const { profile, demo } = context;
-	const where = `${whose} ${machine(profile)}`;
+	const where = context.machine
+		? `${whose} container on your machine${context.machine.name ? ` "${context.machine.name}"` : ""}, with its network`
+		: `${whose} ${machine(profile)}`;
 	if (question.argv === null) {
-		return `Nothing is started: Windlass reaches it at that address from ${where}, outside its sandbox around commands, and what the agent sends it leaves the ${machine(profile)}.`;
+		return `Nothing is started: Windlass reaches it at that address from ${where}, outside its sandbox around commands, and what the agent sends it leaves ${context.machine ? "your machine" : `the ${machine(profile)}`}.`;
 	}
 	// Windlass's data directory: its record of the conversation, and the turn's access token file.
 	const data = "Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed";

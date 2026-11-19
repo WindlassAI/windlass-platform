@@ -20,6 +20,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import { MAX_SECRET_NAME_CHARS, MAX_SECRET_VALUE_BYTES, MIN_SECRET_VALUE_CHARS } from "../server/src/contract.js";
 import {
 	CREDENTIAL_RULE,
@@ -35,6 +37,7 @@ import {
 	listedSecrets,
 	looksLikeCredential,
 	openSecret,
+	saveRepoSecret,
 	sealSecret,
 	secretMark,
 	secretReach,
@@ -269,6 +272,41 @@ expect("the setup command is handed every secret", sorted(Object.keys(setupEnvir
 	parts[3] = `${parts[3]![0] === "A" ? "B" : "A"}${parts[3]!.slice(1)}`;
 	expect("nor after a change", opens(() => openSecret(sealer, "u_ada", "github:7101", "NPM_TOKEN", parts.join("."))) === "SealError:tampered");
 	expect("a value of several lines and of the greatest length comes back exactly", [`-----BEGIN-----\n${made(40)}\n-----END-----\n`, "é".repeat(MAX_SECRET_VALUE_BYTES / 2)].every((long) => openSecret(sealer, "u", "p", "N", sealSecret(sealer, "u", "p", "N", long)) === long));
+}
+
+// Let every database statement yield so saves started together overlap, including their limit checks.
+{
+	const sqlite = new DatabaseSync(":memory:");
+	sqlite.exec("CREATE TABLE repo_secret (project TEXT, name TEXT, label TEXT, scope TEXT, sealed TEXT, updated_at INTEGER, PRIMARY KEY (project, name))");
+	const db: DefaultsDb = {
+		async execute<Row extends Record<string, unknown>>(query: string, ...args: unknown[]): Promise<Row[]> {
+			await new Promise<void>((done) => setImmediate(done));
+			return sqlite.prepare(query).all(...(args as Array<string | number>)) as Row[];
+		},
+	};
+	const initial = { uid: "u_ada", project: "here", label: "acme/harbor", sealed: "fixture", scope: "setup" as const, now: 10 };
+	const save = (name: string) => saveRepoSecret(db, { ...initial, name });
+	const seed = sqlite.prepare("INSERT INTO repo_secret VALUES (?, ?, '', 'setup', 'fixture', 1)");
+	for (let i = 0; i < 49; i++) seed.run("here", `OLD_${i}`);
+	const count = (project?: string) => (project === undefined
+		? sqlite.prepare("SELECT COUNT(*) AS n FROM repo_secret").get()
+		: sqlite.prepare("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ?").get(project))?.n;
+	const pair = await Promise.all([save("NEW_0"), save("NEW_1")]);
+	expect("two concurrent saves at 49 leave 50 secrets and one repository refusal", count("here") === 50 && pair.sort().join() === "repository_full,saved");
+
+	sqlite.exec("DELETE FROM repo_secret WHERE name LIKE 'NEW%'");
+	for (let i = 0; i < 1950; i++) seed.run(`other_${Math.floor(i / 50)}`, `OLD_${i}`);
+	const many = await Promise.all(Array.from({ length: 20 }, (_, i) => save(`NEW_${i}`)));
+	expect("twenty saves at 49 in the repository and 1,999 in the account fill the last place once", count("here") === 50 && count() === 2000 && many.filter((r) => r === "saved").length === 1 && many.filter((r) => r === "repository_full").length === 19);
+	expect("a repository with room reports the account limit", await saveRepoSecret(db, { ...initial, project: "empty", name: "NEW" }) === "account_full" && count() === 2000);
+	const winner = `NEW_${many.indexOf("saved")}`;
+	const replaced = await saveRepoSecret(db, { ...initial, name: winner, label: "", sealed: "replacement", scope: "agent", now: 20 });
+	const row = sqlite.prepare("SELECT label, scope, updated_at, sealed = 'replacement' AS updated FROM repo_secret WHERE project = 'here' AND name = ?").get(winner);
+	expect("at both limits a replacement updates the value, scope and time and keeps the last known label", replaced === "replaced" && row?.label === initial.label && row.scope === "agent" && row.updated_at === 20 && row.updated === 1);
+	sqlite.exec("DELETE FROM repo_secret WHERE project = 'here'");
+	const same = await Promise.all([save("SAME"), save("SAME")]);
+	expect("concurrent saves of one new name report one creation and one replacement", same.sort().join() === "replaced,saved" && count("here") === 1);
+	sqlite.close();
 }
 
 // What a client is sent.

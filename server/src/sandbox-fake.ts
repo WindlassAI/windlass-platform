@@ -1179,10 +1179,6 @@ export function createFakeSandboxLayer(options: { signIns?: "actors" | "memory" 
 	const bucket = backupDir === "" ? null : new StandInObjectStore({ dir: backupDir });
 	// The sign-in steps and the token source are the real ones, over the stand-in for Windlass above.
 	const { logins, tokens } = options.signIns === "memory" ? memorySignIns({ commands: createFakeSignInCommands(), rows: new Map() }) : actorSignIns();
-	return fakeLayer(bucket, { logins, tokens });
-}
-
-function fakeLayer(bucket: StandInObjectStore | null, { logins, tokens }: Pick<SandboxLayer, "logins" | "tokens">): SandboxLayer {
 	const raw = Number.parseInt(process.env.WLP_FAKE_DELAY_MS ?? "", 10);
 	const eventDelayMs = Number.isFinite(raw) && raw >= 0 ? raw : 15;
 	const setting = (name: string) => {

@@ -425,6 +425,14 @@ expect(
 // ---- the section ---------------------------------------------------------------------------------
 
 const told = withOutputs(twice, new Map([["test", "ok 1 - adds\n# pass 1"]]));
+{
+	const evidence = { verified: told, during: 2, checks: [TEST], redact: (text: string) => text.replaceAll("private*label", "hidden") };
+	const firstParagraph = (machine: { name: string | null } | null) => evidenceSection({ ...evidence, machine }, null, "ada").section.split("\n\n")[2];
+	expect("the first paragraph credits the named machine that reported the checks", firstParagraph({ name: "nas" }) === "These checks ran on ada's own machine, “nas”; this is what that machine reported.");
+	expect("a machine whose name was not kept is still credited", firstParagraph({ name: null }) === "These checks ran on ada's own machine; this is what that machine reported.");
+	expect("a machine name is plain text, including Markdown, and its raw value is redacted first", firstParagraph({ name: "[**nas**](link)\nprivate*label" }) === "These checks ran on ada's own machine, “\\[\\*\\*nas\\*\\*\\]\\(link\\) hidden”; this is what that machine reported.");
+	expect("a hosted session goes straight to the evidence", firstParagraph(null)?.startsWith("This was pushed while") === true);
+}
 const section = verifiedSection({ verified: told, flags: workFlags(diff([{ status: "D", path: "test/sub.test.js" }]), []), during: null, login: "ada" });
 expect("the section names each check that ran, its command, whose it is, how it ended, how long it took and how often the agent was sent back", section.includes("- **test** (`npm test`), ada's check: passed in 4.2 s after the agent was sent back twice."), section);
 expect("the checks that did not run are named, with why", section.includes("Did not run: **types** (`npm run typecheck`). No changed file matches its patterns."), section);

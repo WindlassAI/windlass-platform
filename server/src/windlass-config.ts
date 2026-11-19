@@ -91,9 +91,9 @@ function writtenOf(text: string | null): Written {
 	return { names, replaced };
 }
 
-/** The file and the list as they are to be: null for one that is to be absent (the file never is: it has `wake`). */
+/** The configuration always has `wake`; the list is absent when no server was written. */
 export interface PlatformConfig {
-	config: string | null;
+	config: string;
 	written: string | null;
 	/** False when the file already says exactly that, however it is spelled: it need not be written. */
 	changed: boolean;

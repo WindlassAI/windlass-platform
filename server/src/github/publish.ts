@@ -133,6 +133,7 @@ export async function cloneRepository(app: GithubApp, connection: StoredConnecti
 
 /** What a pull request's description is to say was verified, as the session holds it (verified.ts). */
 export interface PublishEvidence {
+	machine?: { name: string | null } | null;
 	/** What the session's work rests on; null when no turn of the session has ended. */
 	verified: Verified | null;
 	/** The turn that is running while this is published, whose checks have not run; null between turns. */
@@ -151,8 +152,11 @@ export interface PublishEvidence {
  */
 export function evidenceSection(evidence: PublishEvidence, work: WorkDiff | null, login: string): { section: string; words: string } {
 	const flags = work === null ? null : workFlags(work, [...evidence.checks, ...(evidence.verified?.run?.checks ?? [])]);
+	const clean = (text: string) => redact(evidence.redact(text));
+	// Remove secrets from the raw name before Markdown quoting can split a saved value.
+	const machine = evidence.machine?.name ? { name: clean(evidence.machine.name) } : evidence.machine ?? undefined;
 	return {
-		section: redact(evidence.redact(verifiedSection({ verified: evidence.verified, flags, during: evidence.during, login }))),
+		section: clean(verifiedSection({ verified: evidence.verified, flags, during: evidence.during, login, machine })),
 		words: verifiedWords(evidence.verified, flags ?? [], evidence.during),
 	};
 }
