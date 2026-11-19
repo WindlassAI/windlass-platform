@@ -8,7 +8,7 @@ import { Home } from "./screens/Home";
 import { Item, ItemCrumb, useItem } from "./screens/Item";
 import { Machines, MachinesCrumb } from "./screens/Machines";
 import { NewAgent } from "./screens/NewAgent";
-import { Repository, RepositoryCrumb, useRepository } from "./screens/Repository";
+import { Repository, RepositoryCrumb, useRepository, type RepositoryTab } from "./screens/Repository";
 import { Session, SessionCrumb, useSessionMachine } from "./screens/Session";
 import { Settings, SettingsCrumb } from "./screens/Settings";
 import { MockAuthorize, SignIn } from "./screens/SignIn";
@@ -67,18 +67,19 @@ function ItemRoute({ itemId, theme, onToggleTheme }: { itemId: string; theme: Re
 	);
 }
 
-function RepositoryRoute({ repositoryId, launching, theme, onToggleTheme }: { repositoryId: number; launching: boolean; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
+/** `view`: the page's work, or its settings; the launch form opens over the one it was opened from. */
+function RepositoryRoute({ repositoryId, view, launching, theme, onToggleTheme }: { repositoryId: number; view: RepositoryTab; launching: boolean; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
 	const page = useRepository(repositoryId);
 	useEffect(() => {
-		document.title = `${page.name ?? "Repository"} · Windlass`;
-	}, [page.name]);
+		document.title = `${page.name ?? "Repository"}${view === "settings" ? " · Settings" : ""} · Windlass`;
+	}, [page.name, view]);
 	return (
 		<div className="app">
 			<TopBar theme={theme} onToggleTheme={onToggleTheme}>
 				<RepositoryCrumb name={page.name} />
 			</TopBar>
-			<Repository page={page} />
-			{launching ? <NewAgent repositoryId={repositoryId} /> : null}
+			<Repository page={page} view={view} />
+			{launching ? <NewAgent repositoryId={repositoryId} over={view === "settings" ? "settings" : undefined} /> : null}
 		</div>
 	);
 }
@@ -130,7 +131,7 @@ export function App() {
 
 	if (route.name === "item") return <ItemRoute key={route.id} itemId={route.id} theme={theme} onToggleTheme={toggleTheme} />;
 
-	if (repositoryId !== null) return <RepositoryRoute key={repositoryId} repositoryId={repositoryId} launching={route.name === "new"} theme={theme} onToggleTheme={toggleTheme} />;
+	if (repositoryId !== null) return <RepositoryRoute key={repositoryId} repositoryId={repositoryId} view={(route.name === "repository" ? route.view : route.name === "new" ? route.over : undefined) ?? "work"} launching={route.name === "new"} theme={theme} onToggleTheme={toggleTheme} />;
 
 	if (route.name === "usage") {
 		return (

@@ -126,8 +126,13 @@ a.agent-group-name:hover .agent-group-owner {
 .repo-link:hover {
 	color: var(--accent-strong);
 }
-.repo > .callout {
+.repo > .callout,
+.repo > [role="tabpanel"] > .callout {
 	margin-top: 16px;
+}
+/* A link to a section of the settings lands with its heading clear of the top bar. */
+.repo .usage-title {
+	scroll-margin-top: calc(var(--topbar) + 20px);
 }
 
 /* The agents: the list of the home screen, under the section's own rule. */

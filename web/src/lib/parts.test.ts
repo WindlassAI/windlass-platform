@@ -3,7 +3,7 @@ import { schedule } from "../api/feed";
 import { fixture } from "../api/fixtures";
 import { parseDiff } from "./diff";
 import { compact, countdown, duration, percent, relativeTime, shortId } from "./format";
-import { parseRoute } from "./router";
+import { href, parseRoute, sectionOf } from "./router";
 import type { ToolBlock } from "./timeline";
 import { formatInput, summarizeTool } from "./toolSummary";
 
@@ -163,6 +163,34 @@ describe("routes", () => {
 		expect(parseRoute("/agents")).toEqual({ name: "notfound" });
 		expect(parseRoute("/agents/a/b")).toEqual({ name: "notfound" });
 		expect(parseRoute("/nowhere")).toEqual({ name: "notfound" });
+	});
+
+	it("reads a repository's two views, and the launch form over each", () => {
+		expect(parseRoute("/repositories/7101")).toEqual({ name: "repository", id: 7101 });
+		expect(parseRoute("/repositories/7101/")).toEqual({ name: "repository", id: 7101 });
+		expect(parseRoute("/repositories/7101/settings")).toEqual({ name: "repository", id: 7101, view: "settings" });
+		expect(parseRoute("/repositories/7101/new")).toEqual({ name: "new", repository: 7101 });
+		expect(parseRoute("/repositories/7101/settings/new")).toEqual({ name: "new", repository: 7101, over: "settings" });
+		expect(parseRoute("/repositories/7101/work")).toEqual({ name: "notfound" });
+		expect(parseRoute("/repositories/0/settings")).toEqual({ name: "notfound" });
+		expect([sectionOf("#checks"), sectionOf("#forget"), sectionOf("#nothing"), sectionOf("")]).toEqual(["checks", "forget", null, null]);
+	});
+
+	it("writes a repository's addresses, a section of its settings as the fragment after the mock's query", () => {
+		const was = globalThis.location;
+		try {
+			globalThis.location = { search: "?mock=1" } as Location;
+			expect(href({ name: "repository", id: 7101 })).toBe("/repositories/7101?mock=1");
+			expect(href({ name: "repository", id: 7101, view: "settings" })).toBe("/repositories/7101/settings?mock=1");
+			// A section is on the settings whether or not the view is said.
+			expect(href({ name: "repository", id: 7101, section: "defaults" })).toBe("/repositories/7101/settings?mock=1#defaults");
+			expect(href({ name: "new", repository: 7101, over: "settings" })).toBe("/repositories/7101/settings/new?mock=1");
+			globalThis.location = { search: "" } as Location;
+			expect(href({ name: "repository", id: 7101, view: "settings", section: "checks" })).toBe("/repositories/7101/settings#checks");
+			for (const route of [{ name: "repository", id: 7101 }, { name: "repository", id: 7101, view: "settings" }, { name: "new", repository: 7101, over: "settings" }] as const) expect(parseRoute(href(route))).toEqual(route);
+		} finally {
+			globalThis.location = was;
+		}
 	});
 });
 

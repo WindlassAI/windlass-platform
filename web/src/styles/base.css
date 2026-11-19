@@ -651,6 +651,34 @@ strong {
 	white-space: nowrap;
 }
 
+/* ---- tabs: the views of one page, under its head (components/Tabs.tsx) ----------------------- */
+
+.tabs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0 24px;
+	border-bottom: 1px solid var(--line);
+}
+.tab {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: -1px;
+	padding: 12px 0 10px;
+	border-bottom: 2px solid transparent;
+	font-size: var(--size-small);
+	font-weight: 600;
+	color: var(--ink-dim);
+	text-decoration: none;
+}
+.tab:hover {
+	color: var(--ink);
+}
+.tab[aria-selected="true"] {
+	border-bottom-color: var(--accent);
+	color: var(--ink);
+}
+
 /* ---- callouts and chips --------------------------------------------------------------------- */
 
 .callout {

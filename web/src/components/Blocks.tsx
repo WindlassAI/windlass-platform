@@ -422,8 +422,10 @@ const SubagentRow = memo(function SubagentRow({ block, run }: { block: ToolBlock
 	const elapsed = running && run.startedAt !== null ? Math.max(0, now - run.startedAt) : null;
 	const work = run.work.turns[0] ?? EMPTY_TURN;
 	const calls = toolBlocks(work);
-	const { look, halted, word, asking } = subagentLook(block, run);
+	const { look, halted, word: stateWord, asking } = subagentLook(block, run);
 	const said = subagentSaid(block, run);
+	// Windlass's sentence under a failed or stopped one starts with how it ended ("It failed: …"): the row does not say it too.
+	const word = said !== null && (run.state === "failed" || run.state === "stopped") ? null : stateWord;
 	// A background subagent's call has returned already: only a call that waits for its subagent can be stopped.
 	const stopCall = block.state === "running" && !block.stopRequested ? (interactive?.stopCall ?? null) : null;
 	// Under the row, without opening it: what it is doing now.
@@ -492,7 +494,7 @@ function SubagentBody({ block, run, work }: { block: ToolBlock; run: SubagentRun
 						<h4 className="tool-part-title">answer</h4>
 						<CopyButton text={answer.text} label="Copy the subagent's answer" />
 					</div>
-					<Output text={answer.text} label="Answer of the subagent" />
+					<Markdown text={answer.text} copyCode />
 				</section>
 			) : null}
 		</div>

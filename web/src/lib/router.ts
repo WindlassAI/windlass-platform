@@ -7,10 +7,13 @@ import { useSyncExternalStore } from "react";
 
 export type Route =
 	| { name: "home" }
-	/** The launch form. With `repository`, GitHub's id for one, it opens over that repository's page with it chosen. */
-	| { name: "new"; repository?: number }
-	/** What is kept for one repository of the user's GitHub connection, and the agents on it. */
-	| { name: "repository"; id: number }
+	/** The launch form. With `repository`, GitHub's id for one, it opens over that repository's page with it chosen: over its settings with `over`. */
+	| { name: "new"; repository?: number; over?: "settings" }
+	/**
+	 * One repository of the user's GitHub connection: its work (the agents on it, its work items, its open pull requests),
+	 * or with `view: "settings"` what is kept for it. `section` opens the settings at one of theirs, as the address's fragment.
+	 */
+	| { name: "repository"; id: number; view?: "settings"; section?: RepositorySection }
 	/** The user's sandbox time and kept sandboxes. */
 	| { name: "usage" }
 	/** What the user keeps for their account, whatever the repository: defaults, their own MCP servers, and those servers' secrets. */
@@ -25,6 +28,15 @@ export type Route =
 	| { name: "mock-authorize" }
 	| { name: "notfound" };
 
+/** The sections of a repository's settings a link can open at, in the order the page has them. */
+export const REPOSITORY_SECTIONS = ["defaults", "setup", "checks", "secrets", "servers", "forget"] as const;
+export type RepositorySection = (typeof REPOSITORY_SECTIONS)[number];
+
+/** The section the address's fragment names, on a repository's settings; null when it names none. */
+export function sectionOf(hash: string): RepositorySection | null {
+	return REPOSITORY_SECTIONS.find((section) => `#${section}` === hash) ?? null;
+}
+
 export function parseRoute(pathname: string): Route {
 	const path = pathname.replace(/\/+$/, "") || "/";
 	if (path === "/") return { name: "home" };
@@ -35,8 +47,13 @@ export function parseRoute(pathname: string): Route {
 	if (path === "/machines/add") return { name: "machines", add: true };
 	if (path === "/signin") return { name: "signin" };
 	if (path === "/mock/authorize") return { name: "mock-authorize" };
-	const repository = /^\/repositories\/([1-9][0-9]{0,15})(\/new)?$/.exec(path);
-	if (repository?.[1]) return repository[2] ? { name: "new", repository: Number(repository[1]) } : { name: "repository", id: Number(repository[1]) };
+	const repository = /^\/repositories\/([1-9][0-9]{0,15})(\/new|\/settings|\/settings\/new)?$/.exec(path);
+	if (repository?.[1]) {
+		const id = Number(repository[1]);
+		if (repository[2] === "/new") return { name: "new", repository: id };
+		if (repository[2] === "/settings/new") return { name: "new", repository: id, over: "settings" };
+		return repository[2] === "/settings" ? { name: "repository", id, view: "settings" } : { name: "repository", id };
+	}
 	const session = /^\/agents\/([^/]+)$/.exec(path);
 	if (session?.[1]) return { name: "session", id: decodeURIComponent(session[1]) };
 	const item = /^\/items\/([^/]+)$/.exec(path);
@@ -49,9 +66,9 @@ function pathOf(route: Route): string {
 		case "home":
 			return "/";
 		case "new":
-			return route.repository === undefined ? "/new" : `/repositories/${route.repository}/new`;
+			return route.repository === undefined ? "/new" : `/repositories/${route.repository}${route.over === "settings" ? "/settings" : ""}/new`;
 		case "repository":
-			return `/repositories/${route.id}`;
+			return `/repositories/${route.id}${route.view === "settings" || route.section ? "/settings" : ""}`;
 		case "usage":
 			return "/usage";
 		case "settings":
@@ -73,7 +90,8 @@ function pathOf(route: Route): string {
 
 export function href(route: Route): string {
 	const mock = new URLSearchParams(location.search).get("mock");
-	return pathOf(route) + (mock !== null ? `?mock=${encodeURIComponent(mock)}` : "");
+	const fragment = route.name === "repository" && route.section ? `#${route.section}` : "";
+	return pathOf(route) + (mock !== null ? `?mock=${encodeURIComponent(mock)}` : "") + fragment;
 }
 
 const listeners = new Set<() => void>();
@@ -89,7 +107,7 @@ function subscribe(listener: () => void): () => void {
 
 export function navigate(route: Route, options: { replace?: boolean } = {}): void {
 	const target = href(route);
-	if (target === location.pathname + location.search) return;
+	if (target === location.pathname + location.search + location.hash) return;
 	if (options.replace) history.replaceState(null, "", target);
 	else history.pushState(null, "", target);
 	for (const listener of listeners) listener();
@@ -106,6 +124,20 @@ export function useRoute(): Route {
 		}
 		return cachedRoute;
 	});
+}
+
+function subscribeHash(listener: () => void): () => void {
+	const unsubscribe = subscribe(listener);
+	window.addEventListener("hashchange", listener);
+	return () => {
+		unsubscribe();
+		window.removeEventListener("hashchange", listener);
+	};
+}
+
+/** The address's fragment ("#checks"), as `navigate`, the back button or an edit of the address changes it. */
+export function useHash(): string {
+	return useSyncExternalStore(subscribeHash, () => location.hash);
 }
 
 /** Props for an anchor that navigates without a page load, and still opens in a new tab on a modified click. */

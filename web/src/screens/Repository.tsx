@@ -2,12 +2,12 @@
  * A repository's page: what the user's actor keeps for one repository of their GitHub connection,
  * gathered in one place, and the agents on it.
  *
- * The page is addressed by GitHub's id for the repository, which a rename does not change. It shows
- * the agents launched on it and the pull requests they opened that are still open, both from the
- * summaries the list of agents already has, each pull request with what its description says was
- * verified; what new agents on it start with; its setup command, its checks and its secrets, the
- * first and the last in the same components a session's panel has; and the approvals of its MCP
- * servers that are remembered, each with the way to forget it.
+ * The page is addressed by GitHub's id for the repository, which a rename does not change. Under one
+ * head it has two views, each with its own address, and tabs between them. Its work, the first: the
+ * agents launched on it, its work items, and the pull requests its agents opened that are still open,
+ * the agents and the pull requests from the summaries the list of agents already has, each pull
+ * request with what its description says was verified. Its settings (`/settings`, in
+ * RepositorySettings.tsx): what is kept for it, set once and seldom visited.
  *
  * Two things are asked, apart from each other. What is saved (`repository`) is the user's actor's
  * own and is there at once. Whether the repository can still be launched on (`githubRepository`) is
@@ -16,25 +16,21 @@
  * delete that, and with a plain sentence that no new agent can be launched on it.
  */
 import type { GithubRepository, RepositoryView, SessionSummary } from "@contract";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { hasReason } from "../api/client";
 import { AgentList } from "../components/Agents";
-import { ChecksEditor } from "../components/Checks";
-import { DefaultsSection } from "../components/Defaults";
-import { Dialog } from "../components/Dialog";
-import { ArrowLeftIcon, ExternalIcon, LockIcon, PlusIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, AskIcon, ExternalIcon, LockIcon, PlusIcon, WarnIcon } from "../components/Icons";
 import { PullState } from "../components/PullRequest";
-import { SecretsBlock } from "../components/Secrets";
-import { RepositoryApprovals } from "../components/Servers";
-import { SetupEditor } from "../components/SetupCommand";
+import { TabPanel, Tabs } from "../components/Tabs";
 import type { ConnectionState } from "../api/client";
 import { absoluteTime, plural, relativeTime } from "../lib/format";
-import { LONE_GROUP_SHOWN, checksStanding, layerChoices, openPulls, repositoryName, sessionsOn, startingChoices } from "../lib/repositories";
+import { LONE_GROUP_SHOWN, openPulls, repositoryName, sessionsOn } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useGithub, type Github } from "../state/github";
-import { useAccount, useModels, useNow, useSessions } from "../state/hooks";
-import { RepositoryItems } from "./Items";
+import { useNow, useSessions } from "../state/hooks";
+import { RepositoryItems, useItems } from "./Items";
+import { RepositorySettings } from "./RepositorySettings";
 
 /** Whether new agents can be launched on the repository, as GitHub says now. */
 export type RepositoryAccess =
@@ -207,7 +203,7 @@ function AccessNotice({ page, github }: { page: RepositoryPage; github: Github }
 				<div>
 					<p className="callout-title">This repository cannot be used for new agents.</p>
 					<p className="callout-text">
-						{access.why} What you saved for it is still here, and you can change it or delete it below.
+						{access.why} What you saved for it is still here, and you can change it or delete it under Settings.
 						{access.reason === "github_not_connected" ? (
 							<>
 								{" "}
@@ -283,121 +279,14 @@ function Pulls({ page, now }: { page: RepositoryPage; now: number }) {
 	);
 }
 
-/** What deleting everything saved takes with it, and what it leaves. */
-function ForgetDialog({ page, view, name, agents, onClose, onDone }: { page: RepositoryPage; view: RepositoryView; name: string; agents: number; onClose(): void; onDone(): void }) {
-	const { client, explain } = useApp();
-	const auth = useAuth();
-	const [busy, setBusy] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const parts = [
-		view.saved.setup ? "the setup command" : null,
-		view.saved.checks > 0 ? (view.saved.checks === 1 ? "its one check" : `its ${view.saved.checks} checks`) : null,
-		view.saved.secrets > 0 ? (view.saved.secrets === 1 ? "its one secret" : `its ${view.saved.secrets} secrets`) : null,
-		view.defaults.profile !== null || view.defaults.model !== null ? "the defaults for new agents" : null,
-		view.approvals.length > 0 ? (view.approvals.length === 1 ? "the remembered approval of one MCP server" : `the remembered approvals of ${view.approvals.length} MCP servers`) : null,
-	].filter((part): part is string => part !== null);
-	const listed = parts.length <= 1 ? (parts[0] ?? "") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-
-	const forget = async () => {
-		setBusy(true);
-		setError(null);
-		try {
-			page.replace(await client.user(auth).forgetRepository(page.id));
-			onDone();
-			onClose();
-		} catch (failure) {
-			setError(explain(failure));
-			setBusy(false);
-		}
-	};
-
-	return (
-		<Dialog
-			title="Delete what is saved?"
-			size="small"
-			onClose={onClose}
-			dismissable={!busy}
-			footer={
-				<>
-					<button type="button" className="button button-quiet" onClick={onClose} disabled={busy}>
-						Keep it
-					</button>
-					<button type="button" className="button button-danger" onClick={forget} disabled={busy}>
-						{busy ? "Deleting…" : "Delete"}
-					</button>
-				</>
-			}
-		>
-			<p>
-				What you saved for <strong>{name}</strong> is deleted: {listed}. This cannot be undone; a secret's value cannot be read back from here, so keep a copy of any you still need.
-			</p>
-			{agents > 0 ? (
-				<p>
-					{agents === 1 ? "The agent on it stays" : `The ${agents} agents on it stay`}, with {agents === 1 ? "its conversation and its workspace" : "their conversations and their workspaces"}. A sandbox made after this is set up without them, and{" "}
-					{agents === 1 ? "its" : "their"} MCP servers are asked about again.
-				</p>
-			) : null}
-			{error ? (
-				<p className="callout callout-bad" role="alert">
-					<WarnIcon />
-					<span>{error}</span>
-				</p>
-			) : null}
-		</Dialog>
-	);
-}
-
-export function Repository({ page }: { page: RepositoryPage }) {
-	const { client, platform } = useApp();
-	const auth = useAuth();
-	const github = useGithub();
-	// What the account says new agents start with: what a field left without a default here comes to.
-	const account = useAccount();
-	const models = useModels();
+/** The page's first view: the agents on the repository, its work items and its open pull requests. */
+function Work({ page }: { page: RepositoryPage }) {
 	const now = useNow(15_000);
-	const ids = { setup: useId(), checks: useId() };
-	const [forgetting, setForgetting] = useState(false);
-	/** Counted up when everything saved was deleted: the setup command and the secrets are read anew. */
-	const [generation, setGeneration] = useState(0);
-	const { view, access, sessions } = page;
+	const { access, sessions } = page;
 	const name = page.name ?? `Repository ${page.id}`;
-	const info = platform.info;
-	// What a secret reaches depends on the sandbox: the list is said for the one new agents here start in.
-	const accountChoices = startingChoices(account.settings?.defaults ?? null, info, models.list, "account");
-	const choices = layerChoices(startingChoices(view?.defaults ?? null, info, models.list), accountChoices);
-	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
 	const launchable = access.state !== "unusable";
-	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.approvals.length > 0);
-	const working = sessions?.filter((session) => session.status !== "idle").length ?? 0;
-
 	return (
-		<main className="home usage repo">
-			<header className="home-head">
-				<div className="repo-head">
-					<p className="eyebrow">
-						repository
-						{sessions === null ? "" : ` · ${plural(sessions.length, "agent")}${working > 0 ? ` · ${working} working` : ""}`}
-					</p>
-					<h1 className="display display-small repo-name">
-						{page.name !== null && page.name.includes("/") ? (
-							<>
-								<span className="repo-name-owner">{page.name.slice(0, page.name.indexOf("/") + 1)}</span>
-								{page.name.slice(page.name.indexOf("/") + 1)}
-							</>
-						) : (
-							name
-						)}
-					</h1>
-					{page.name === null && view !== null ? <p className="home-account">Nothing here says what it is called: no agent of yours is on it, and GitHub was not heard on it. {page.id} is GitHub's number for it.</p> : null}
-					<AccessLine page={page} github={github} />
-				</div>
-				<button type="button" className="button button-primary button-large" onClick={() => navigate({ name: "new", repository: page.id })} disabled={!launchable} title={launchable ? undefined : "No agent can be launched on this repository now"}>
-					<PlusIcon />
-					New agent
-				</button>
-			</header>
-
-			<AccessNotice page={page} github={github} />
+		<>
 			{page.connection === "reconnecting" ? (
 				<p className="callout callout-warn" role="status">
 					<WarnIcon />
@@ -430,113 +319,81 @@ export function Repository({ page }: { page: RepositoryPage }) {
 			<RepositoryItems repositoryId={page.id} name={name} base={access.state === "usable" ? access.repository.defaultBranch : null} launchable={launchable} now={now} />
 
 			<Pulls page={page} now={now} />
+		</>
+	);
+}
 
-			{view === null ? (
-				<section className="usage-section">
-					{page.error ? (
-						<div className="state state-error" role="alert">
-							<WarnIcon size={22} />
-							<h2>What is saved for this repository could not be loaded</h2>
-							<p>{page.error}</p>
-							<button type="button" className="button button-outline" onClick={page.reload}>
-								Try again
-							</button>
-						</div>
-					) : (
-						<div className="usage-loading" aria-busy="true" aria-label="Loading what is saved for this repository">
-							<span className="skeleton skeleton-title" style={{ width: "34%" }} />
-							<span className="skeleton skeleton-meta" style={{ width: "100%" }} />
-							<span className="skeleton skeleton-meta" style={{ width: "58%" }} />
-						</div>
-					)}
-				</section>
-			) : (
+/**
+ * The Work tab's name while Settings is shown, with the mark a row has when it waits for its person's
+ * answer, when an agent on the repository or one of its work items does.
+ */
+function WorkLabel({ repositoryId, sessions }: { repositoryId: number; sessions: SessionSummary[] | null }) {
+	const items = useItems();
+	const asks = (sessions ?? []).some((session) => session.status === "waiting") || (items.list ?? []).some((item) => item.repository.id === repositoryId && item.question !== null);
+	return (
+		<>
+			Work
+			{asks ? (
 				<>
-					{page.error ? (
-						<p className="callout callout-warn" role="status">
-							<WarnIcon />
-							<span>{page.error} What is shown may be behind.</span>
-						</p>
-					) : null}
-
-					<DefaultsSection
-						key={generation}
-						id="repo-defaults"
-						lede={`The launch form starts from these when ${name} is chosen. They can still be changed there for one agent, and an agent that exists keeps what it was launched with.`}
-						defaults={view.defaults}
-						whose="repository"
-						under={accountChoices}
-						models={models}
-						save={(change) => client.user(auth).saveRepositoryDefaults(page.id, change)}
-						onSaved={(next) => page.replace({ ...view, defaults: next })}
-					/>
-
-					<section className="usage-section repo-saved" aria-labelledby={ids.setup}>
-						<h2 className="usage-title" id={ids.setup}>
-							Setup command
-						</h2>
-						<SetupEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.setup} applies="A change applies to workspaces created after it: an agent that has one is not set up again." onSaved={page.reload} />
-					</section>
-
-					<section className="usage-section repo-saved" aria-labelledby={ids.checks}>
-						<h2 className="usage-title" id={ids.checks}>
-							Checks
-							{view.saved.checks > 0 ? <span className="usage-count">{view.saved.checks}</span> : null}
-						</h2>
-						<ChecksEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.checks} standing={checksStanding(sessions ?? [])} onSaved={page.reload} />
-					</section>
-
-					<section className="usage-section repo-saved" aria-labelledby="repo-secrets">
-						<SecretsBlock
-							key={generation}
-							repositoryId={page.id}
-							name={name}
-							profile={reachProfile?.id ?? null}
-							onChanged={page.reload}
-							title={(add) => (
-								<h2 className="usage-title" id="repo-secrets">
-									Secrets
-									{view.saved.secrets > 0 ? <span className="usage-count">{view.saved.secrets}</span> : null}
-									{add}
-								</h2>
-							)}
-						/>
-						{reachProfile && view.saved.secrets > 0 ? (
-							<p className="usage-note">
-								What each reaches is said for {reachProfile.name}, {choices.profile === reachProfile.id ? "the sandbox new agents here start in" : "the sandbox a new agent starts in when none is chosen"}. An agent's own panel says it for the sandbox that agent has.
-							</p>
-						) : null}
-					</section>
-
-					<section className="usage-section repo-saved" aria-labelledby="repo-servers">
-						<h2 className="usage-title" id="repo-servers">
-							MCP server approvals
-							{view.approvals.length > 0 ? <span className="usage-count">{view.approvals.length}</span> : null}
-						</h2>
-						<RepositoryApprovals repositoryId={page.id} name={name} approvals={view.approvals} forgetting={view.forgetting} now={now} onChanged={page.replace} />
-					</section>
-
-					<section className="usage-section" aria-labelledby="repo-forget">
-						<h2 className="usage-title" id="repo-forget">
-							Delete what is saved
-						</h2>
-						<p className="usage-lede">
-							{anything
-								? `Deletes the setup command, the checks, the secrets, the defaults and the remembered approvals saved for ${name}, all at once. Its agents are not deleted with them.`
-								: `Nothing is saved for ${name}.`}
-						</p>
-						{anything ? (
-							<p className="repo-forget">
-								<button type="button" className="button button-outline button-small" onClick={() => setForgetting(true)}>
-									Delete what is saved…
-								</button>
-							</p>
-						) : null}
-					</section>
-
-					{forgetting ? <ForgetDialog page={page} view={view} name={name} agents={sessions?.length ?? 0} onClose={() => setForgetting(false)} onDone={() => setGeneration((count) => count + 1)} /> : null}
+					<AskIcon size={14} className="status-glyph status-waiting" />
+					<span className="visually-hidden"> (something here waits for your answer)</span>
 				</>
-			)}
+			) : null}
+		</>
+	);
+}
+
+/** The two views of a repository's page: its work, and what is kept for it. */
+export type RepositoryTab = "work" | "settings";
+
+export function Repository({ page, view: tab }: { page: RepositoryPage; view: RepositoryTab }) {
+	const github = useGithub();
+	const { access, sessions } = page;
+	const name = page.name ?? `Repository ${page.id}`;
+	const launchable = access.state !== "unusable";
+	const working = sessions?.filter((session) => session.status !== "idle").length ?? 0;
+
+	return (
+		<main className="home usage repo">
+			<header className="home-head">
+				<div className="repo-head">
+					<p className="eyebrow">
+						repository
+						{sessions === null ? "" : ` · ${plural(sessions.length, "agent")}${working > 0 ? ` · ${working} working` : ""}`}
+					</p>
+					<h1 className="display display-small repo-name">
+						{page.name !== null && page.name.includes("/") ? (
+							<>
+								<span className="repo-name-owner">{page.name.slice(0, page.name.indexOf("/") + 1)}</span>
+								{page.name.slice(page.name.indexOf("/") + 1)}
+							</>
+						) : (
+							name
+						)}
+					</h1>
+					{page.name === null && page.view !== null ? <p className="home-account">Nothing here says what it is called: no agent of yours is on it, and GitHub was not heard on it. {page.id} is GitHub's number for it.</p> : null}
+					<AccessLine page={page} github={github} />
+				</div>
+				<button type="button" className="button button-primary button-large" onClick={() => navigate({ name: "new", repository: page.id, ...(tab === "settings" ? { over: "settings" as const } : {}) })} disabled={!launchable} title={launchable ? undefined : "No agent can be launched on this repository now"}>
+					<PlusIcon />
+					New agent
+				</button>
+			</header>
+
+			<Tabs
+				id="repo-views"
+				label={name}
+				selected={tab}
+				tabs={[
+					{ key: "work", label: tab === "settings" ? <WorkLabel repositoryId={page.id} sessions={sessions} /> : "Work", route: { name: "repository", id: page.id } },
+					{ key: "settings", label: "Settings", route: { name: "repository", id: page.id, view: "settings" } },
+				]}
+			/>
+
+			<AccessNotice page={page} github={github} />
+			<TabPanel id="repo-views" selected={tab}>
+				{tab === "settings" ? <RepositorySettings page={page} /> : <Work page={page} />}
+			</TabPanel>
 		</main>
 	);
 }

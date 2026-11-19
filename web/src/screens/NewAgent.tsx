@@ -135,6 +135,7 @@ function ChosenSandbox({ profile }: { profile: SandboxProfile }) {
  */
 function DefaultsNote({
 	repository,
+	repositoryId,
 	defaults,
 	used,
 	profileName,
@@ -145,6 +146,8 @@ function DefaultsNote({
 }: {
 	/** "owner/name" of the chosen repository; null when none is chosen. */
 	repository: string | null;
+	/** GitHub's id for it, for the way to its settings. */
+	repositoryId: number | null;
 	defaults: LayeredChoices;
 	used: { profile: boolean; model: boolean };
 	profileName: string | null;
@@ -181,7 +184,18 @@ function DefaultsNote({
 			) : null}
 			{left.repository.map((sentence) => (
 				<p key={sentence} className="field-note tone-warn">
-					{sentence} Change it on the repository's page.
+					{sentence}{" "}
+					{repositoryId === null ? (
+						"Change it in the repository's settings."
+					) : (
+						<>
+							Change it in{" "}
+							<a className="link" {...linkProps({ name: "repository", id: repositoryId, section: "defaults" })}>
+								the repository's settings
+							</a>
+							.
+						</>
+					)}
 				</p>
 			))}
 			{left.account.map((sentence) => (
@@ -240,8 +254,8 @@ function useDefaults(repositoryId: number | null): { defaults: RepositoryDefault
 	return { defaults: mine ? state.defaults : null, reading: repositoryId !== null && (!mine || (state.defaults === null && state.error === null)), error: mine ? state.error : null };
 }
 
-/** `repositoryId`: GitHub's id for the repository the form opens with, when it was opened from that repository's page. */
-export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
+/** `repositoryId`: GitHub's id for the repository the form opens with, when it was opened from that repository's page; `over`, the view of that page it was opened from. */
+export function NewAgent({ repositoryId, over }: { repositoryId?: number; over?: "settings" } = {}) {
 	const { client, platform, explain } = useApp();
 	const auth = useAuth();
 	const info = platform.info;
@@ -280,7 +294,7 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 		if (returned && info) document.getElementById(ids.repo)?.scrollIntoView({ block: "center" });
 	}, [returned, info, ids.repo]);
 
-	const close = () => navigate(repositoryId === undefined ? { name: "home" } : { name: "repository", id: repositoryId });
+	const close = () => navigate(repositoryId === undefined ? { name: "home" } : over === "settings" ? { name: "repository", id: repositoryId, view: "settings" } : { name: "repository", id: repositoryId });
 	const connection = github.enabled ? (github.status?.connection ?? null) : null;
 	const connected = connection !== null;
 
@@ -535,6 +549,7 @@ export function NewAgent({ repositoryId }: { repositoryId?: number } = {}) {
 						</div>
 						<DefaultsNote
 							repository={chosen ? `${chosen.repository.owner}/${chosen.repository.name}` : null}
+							repositoryId={chosen?.repository.id ?? null}
 							defaults={defaults}
 							used={fromDefaults}
 							profileName={info.profiles.find((candidate) => candidate.id === defaults.profile)?.name ?? null}
