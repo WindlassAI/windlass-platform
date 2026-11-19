@@ -1,465 +1,470 @@
 /**
- * Sequence 1 introduces an epoch. A new socket repeats that introduction with today's receipt;
- * only a matching pair of epochs can replay work. A replaced socket has no say in this one.
- * A receipt covers a contiguous prefix. A gap waits, a duplicate has no effect, and an operation
- * and its answer each take effect once, even when the socket broke between them.
- * The sender owns each frame until its receipt. A send that cannot fit takes nothing: the caller
- * stops its source and retries on onFull(false). There is always room for a receipt in each direction.
- * Losing a socket starts one grace period. Closing the channel settles its waiters and stops its clocks.
+ * A session's conversation with a runner, carried over whichever socket is current.
+ *
+ * The server names a conversation in `welcome`, and each side keeps it in memory only: the session
+ * actor's instance on one end, the runner process on the other. Within one, every message is numbered
+ * per direction, kept by its sender until acknowledged and sent again on the next socket, and taken
+ * once by its receiver, so a socket that drops loses nothing and runs nothing twice. When one side no
+ * longer has the conversation the other names (the actor slept or moved, the runner restarted, either
+ * side waited out the grace), both let it go: what was outstanding fails on the server and is left to
+ * the orphan rule on the runner, and a new conversation starts on the same socket. Nothing is carried
+ * into a new conversation, so an operation runs at most once, and on a lost conversation the server
+ * cannot know whether it ran.
+ *
+ * A replaced socket is not listened to, so frames arrive in order and a gap means a broken peer.
+ * Every method is synchronous: an actor's actions and socket handlers interleave around the channel,
+ * never inside it.
  */
+import { SandboxUserError } from "../sandbox/api.js";
 import type { ProcessEnd } from "../sandbox/provider.js";
 import {
-	ACK_MS, DEAD_MS, MAX_FRAME_BYTES, MAX_OUTPUT_BYTES, MAX_UNACKED_BYTES, MAX_UNACKED_FRAMES, PING_MS, PROTOCOL_VERSION, RUNNER_GRACE_MS,
-	parseFrame, validArgs, validResult, type Body, type Ending, type Failure, type Fragment, type Frame, type Hello,
-	type Name, type Operation, type Operations, type Resume, type Welcome,
+	ACK_MS, DEAD_MS, MAX_FRAME_BYTES, MAX_MESSAGE_BYTES, MAX_OPS_IN_FLIGHT, OP_MS, PING_MS, PROTOCOL_VERSION, RUNNER_GRACE_MS, WINDOW_BYTES, WINDOW_FRAMES,
+	isName, parseBody, parseFrame, protocolRefusal, validArgs, validValue,
+	type Args, type Body, type Failure, type Frame, type Hello, type Name, type Operation, type Value, type Welcome,
 } from "./protocol.js";
 
+/** What either side's WebSocket has to offer: RivetKit's raw socket in an actor, the standard one in the runner. */
 export interface ChannelSocket {
 	send(text: string): void;
-	onMessage(listener: (text: unknown) => void): void;
-	onClose(listener: () => void): void;
 	close(): void;
-	/** Raw Rivet sockets expose neither; on those the heartbeat is an ack. */
-	ping?(): void;
-	onPong?(listener: () => void): void;
+	onMessage(listener: (data: unknown) => void): void;
+	onClose(listener: () => void): void;
 }
 
-type Identity = Pick<Hello, "runnerVersion" | "machineId" | "signature" | "ticket">;
-type OutputListener = (fd: 1 | 2, data: string) => void;
+/** The conversation an operation was sent in has ended: whether it ran is unknown. */
+export class ConversationLost extends Error {}
+
+type Output = (fd: 1 | 2, data: string) => void;
 interface Options {
-	role: "runner" | "server";
-	epoch?: string;
-	onOperation?(op: Operation): void;
-	onInput?(id: string, data: string): void;
-	onCloseIn?(id: string): void;
-	onFull?(paused: boolean): void;
-	onGraceExpired?(): void;
-	onClose?(reason: string): void;
-	onWelcome?(answer: Welcome): void;
-	/** The owner checks the ticket and signature before any saved work is sent. */
-	acceptHello?(hello: Hello): boolean;
+	/** The conversation ended with `reason`; everything outstanding in it has been let go. */
+	onReset?(reason: string): void;
 }
-type Sent = { text: string; bytes: number };
-type Waiting = { name: Name; resolve(value: unknown): void; reject(error: Error): void; output?: OutputListener; timer?: ReturnType<typeof setTimeout> };
-const RECEIPT_BYTES = 128;
-const FULL = "The runner channel is full. Retry when the sender resumes.";
+/** A UTF-16 unit takes at most 6 bytes once escaped into a part's string. */
+const PART_UNITS = MAX_FRAME_BYTES / 8;
 
-function frameText(body: Body, seq: number, ack: number): Sent {
-	const text = JSON.stringify({ ...body, seq, ack });
-	return { text, bytes: Buffer.byteLength(text) };
-}
-
-/** Keep both halves of a character in the same message. */
-function split(text: string, at: number): [string, string] {
-	if (at > 0 && text.charCodeAt(at - 1) >= 0xd800 && text.charCodeAt(at - 1) <= 0xdbff) at--;
-	return [text.slice(0, at), text.slice(at)];
-}
-
-export class ReliableChannel {
-	readonly epoch: string;
-	private peer: string | null = null;
-	private socket: ChannelSocket | null = null;
-	private ready = false;
-	private closed = false;
-	private joined = false;
-	private sent = 1;
-	private transmitted = 0;
+abstract class Channel {
+	protected socket: ChannelSocket | null = null;
+	protected conversation: string | null = null;
+	protected closed = false;
+	private sent = 0;
+	private acked = 0;
 	private received = 0;
-	private acknowledged = 0;
-	private backlog = new Map<number, Sent>();
+	private told = 0;
+	private backlog = new Map<number, { text: string; bytes: number }>();
 	private bytes = 0;
-	private gaps = new Map<number, { frame: Frame; bytes: number }>();
-	private gapBytes = 0;
-	private piece: { first: Fragment; texts: string[]; bytes: number } | null = null;
-	private pending = new Map<string, Waiting>();
-	private streams = new Map<string, { output: OutputListener; finish(end: ProcessEnd): void }>();
-	private blocked: { bytes: number; count: number } | null = null;
-	private receipt = 0;
-	private lastRead = 0;
-	private lastPing = 0;
-	private receiptDue = false;
+	private parts: string[] = [];
+	private partBytes = 0;
+	private heard = 0;
+	private spoke = 0;
+	private waiting = false;
+	private strangers = new Map<ChannelSocket, ReturnType<typeof setTimeout>>();
 	private clock?: ReturnType<typeof setInterval>;
 	private grace?: ReturnType<typeof setTimeout>;
-	private deadline = 0;
 
-	constructor(private readonly options: Options) {
-		this.epoch = options.epoch ?? crypto.randomUUID();
-	}
+	constructor(private readonly base: Options & { onDrain?(): void }, private readonly graceReason: string) {}
 
-	get bufferedBytes(): number { return this.bytes; }
-	get bufferedFrames(): number { return this.backlog.size; }
-	/** Out-of-order input stays here until its missing prefix arrives. */
-	get reorderedBytes(): number { return this.gapBytes; }
-	get paused(): boolean { return this.blocked !== null; }
-	get resume(): Resume | null {
-		return this.options.role === "runner" && this.joined ? { runnerEpoch: this.epoch, serverEpoch: this.peer, lastReceived: this.received } : null;
-	}
+	get connected(): boolean { return this.socket !== null; }
+	/** What is held for the peer until it acknowledges it. */
+	get buffered(): { bytes: number; frames: number } { return { bytes: this.bytes, frames: this.backlog.size }; }
 
-	/** The runner supplies a new signature and ticket for each socket. The server waits for hello. */
-	attach(socket: ChannelSocket, identity?: Identity): void {
-		if (this.deadline && Date.now() >= this.deadline) this.expire();
-		if (this.closed || this.socket) { socket.close(); return; }
-		const runner = this.options.role === "runner";
-		if (runner && !identity) throw new Error("A runner socket needs a hello.");
-		this.socket = socket;
-		this.lastRead = this.lastPing = Date.now();
-		this.clock = setInterval(() => this.tick(), ACK_MS);
-		socket.onClose(() => { if (this.socket === socket) this.detach(Math.min(Date.now(), this.lastRead + DEAD_MS)); });
-		socket.onMessage((text) => {
-			if (this.socket !== socket || this.silent()) return;
-			const frame = parseFrame(text);
-			if (!frame) { this.invalid(); return; }
-			this.lastRead = Date.now();
-			try { this.receive(frame, Buffer.byteLength(text as string)); }
-			catch { this.invalid(); }
-		});
-		socket.onPong?.(() => { if (this.socket === socket && !this.silent()) this.lastRead = Date.now(); });
-		if (runner) {
-			const hello: Hello = { ...identity!, kind: "hello", protocol: PROTOCOL_VERSION, runnerEpoch: this.epoch, resume: this.resume };
-			this.joined = true;
-			this.introduce(hello);
-		}
-	}
+	protected abstract deliver(body: Body): void;
+	/** Lets go of everything outstanding in the conversation. */
+	protected abstract drop(reason: string): void;
 
-	private invalid(): void {
-		// An unrecognised visitor cannot end work waiting for the real runner.
-		if (!this.ready && this.options.role === "server") this.detach();
-		else this.close("Invalid runner conversation.");
-	}
-
-	private introduce(body: Hello | Welcome): void {
-		const frame = frameText(body, 1, this.received);
-		if (!parseFrame(frame.text)) { this.close("Invalid runner introduction."); return; }
-		this.send(frame.text, 1);
-	}
-
-	private handshake(frame: Frame): void {
-		const through = this.sent;
-		let welcome: Welcome | undefined;
-		if (frame.kind === "hello" && this.options.role === "server") {
-			if (this.options.acceptHello && !this.options.acceptHello(frame)) {
-				this.detach();
-				return;
-			}
-			const restarted = this.peer !== null && this.peer !== frame.runnerEpoch;
-			const lost = frame.resume?.serverEpoch != null && frame.resume.serverEpoch !== this.epoch;
-			const refused = frame.protocol !== PROTOCOL_VERSION ? "Update the machine's runner to a version that speaks protocol 1."
-				: restarted ? "The machine's runner restarted during the turn." : undefined;
-			const fresh = !this.peer || lost || !!refused;
-			if (!lost && !refused) this.checkReceipt(frame.ack);
-			this.received = Math.max(this.received, 1);
-			this.peer = frame.runnerEpoch;
-			const owned = new Set([...this.pending.keys(), ...this.streams.keys()]);
-			const answer: Welcome = { kind: "welcome", serverEpoch: this.epoch, lastReceived: this.received, ...(fresh ? { fresh: true } : { keep: [...owned] }), refused };
-			if (refused || lost) {
-				this.introduce(answer);
-				this.close(refused ?? "The session's server restarted.");
-				return;
-			}
-			welcome = answer;
-		} else if (frame.kind === "welcome" && this.options.role === "runner") {
-			this.options.onWelcome?.(frame);
-			if (frame.refused || (this.peer && (frame.serverEpoch !== this.peer || "fresh" in frame))) {
-				this.close(frame.refused ?? "The session's server restarted.");
-				return;
-			}
-			this.checkReceipt(frame.ack);
-			this.received = Math.max(this.received, 1);
-			this.peer = frame.serverEpoch;
-		} else throw new Error();
-		if (!this.socket || this.closed) return;
-		clearTimeout(this.grace);
-		this.deadline = 0;
-		this.ready = true;
-		if (welcome) this.introduce(welcome);
-		// Only these frames predate the join. A producer woken by this receipt sends its own.
-		this.acknowledge(frame.ack);
-		for (const [seq, held] of this.backlog) {
-			if (!this.ready || seq > through) break;
-			this.send(held.text, seq);
-		}
-	}
-
-	private checkReceipt(ack: number): void {
-		if (ack > this.transmitted || ack < this.acknowledged) throw new Error();
-	}
-
-	private receive(frame: Frame, bytes: number): void {
-		if (!this.ready) { this.handshake(frame); return; }
-		if (frame.ack > this.transmitted) throw new Error();
-		if (frame.kind === "hello" || frame.kind === "welcome") {
-			// The transport may deliver the same introduction twice.
-			if (frame.kind === "hello" ? frame.runnerEpoch !== this.peer : frame.serverEpoch !== this.peer) throw new Error();
-		} else if (frame.seq === 1) throw new Error();
-		this.acknowledge(frame.ack);
-		if (frame.seq <= this.received) return;
-		if (frame.seq > this.received + 1) {
-			if (!this.gaps.has(frame.seq)) {
-				if (frame.seq - this.received > MAX_UNACKED_FRAMES || this.gaps.size >= MAX_UNACKED_FRAMES || this.gapBytes + bytes > MAX_UNACKED_BYTES) throw new Error();
-				this.gaps.set(frame.seq, { frame, bytes });
-				this.gapBytes += bytes;
-			}
-			return;
-		}
-		for (;;) {
-			this.received = frame.seq;
-			if (frame.kind !== "ack") this.receiptDue = true;
-			this.deliver(frame);
-			const next = this.gaps.get(this.received + 1);
-			if (!next || this.closed) break;
-			this.gaps.delete(next.frame.seq);
-			this.gapBytes -= next.bytes;
-			frame = next.frame;
-		}
-	}
-
-	private deliver(body: Body): void {
-		if ("part" in body) {
-			this.fragment(body);
-			return;
-		}
-		if (this.piece && body.kind !== "ack") throw new Error();
-		switch (body.kind) {
-			case "op":
-				if (this.options.role !== "runner") throw new Error();
-				this.options.onOperation?.(body);
-				break;
-			case "res": {
-				if (this.options.role !== "server") throw new Error();
-				const waiting = this.pending.get(body.id);
-				if (!waiting) return;
-				if (body.ok && (!validResult(waiting.name, body.value) || (waiting.name === "start" && (body.value as { id: string }).id !== body.id))) throw new Error();
-				clearTimeout(waiting.timer);
-				this.pending.delete(body.id);
-				if (body.ok) waiting.resolve(body.value);
-				else waiting.reject(Object.assign(new Error(body.error.message), { kind: body.error.kind }));
-				break;
-			}
-			case "out":
-				if (this.options.role !== "server") throw new Error();
-				(this.streams.get(body.id)?.output ?? this.pending.get(body.id)?.output)?.(body.fd, body.data);
-				break;
-			case "end":
-				if (this.options.role !== "server") throw new Error();
-				this.streams.get(body.id)?.finish({ code: body.code, signal: body.signal, error: body.error === null ? null : new Error(body.error) });
-				this.streams.delete(body.id);
-				break;
-			case "in":
-				if (this.options.role !== "runner") throw new Error();
-				this.options.onInput?.(body.id, body.data);
-				break;
-			case "close-in":
-				if (this.options.role !== "runner") throw new Error();
-				this.options.onCloseIn?.(body.id);
-				break;
-		}
-	}
-
-	private fragment(body: Fragment): void {
-		const piece = this.piece ??= { first: body, texts: [], bytes: 0 };
-		const first = piece.first;
-		if (body.kind !== first.kind || body.id !== first.id || (first.kind === "op" && body.kind === "op" && first.name !== body.name)) throw new Error();
-		const text = body.kind === "op" ? body.args : body.value;
-		piece.bytes += Buffer.byteLength(text);
-		if (!text.length || piece.bytes > MAX_UNACKED_BYTES || piece.texts.length >= MAX_UNACKED_FRAMES) throw new Error();
-		piece.texts.push(text);
-		if (body.part === "more") return;
-		this.piece = null;
-		const value: unknown = JSON.parse(piece.texts.join(""));
-		if (body.kind === "op") {
-			if (!validArgs(body.name, value)) throw new Error();
-			this.deliver({ kind: "op", id: body.id, name: body.name, args: value } as Operation);
-		} else this.deliver({ kind: "res", id: body.id, ok: true, value });
-	}
-
-	private acknowledge(ack: number): void {
-		if (ack <= this.acknowledged) return;
-		this.acknowledged = ack;
-		for (const [seq, entry] of this.backlog) {
-			if (seq > ack) break;
-			this.bytes -= entry.bytes;
-			this.backlog.delete(seq);
-		}
-		if (this.blocked && this.fits(this.blocked.bytes, this.blocked.count)) {
-			this.blocked = null;
-			this.options.onFull?.(false);
-		}
-	}
-
-	private fits(bytes: number, count: number): boolean {
-		return this.bytes + bytes <= MAX_UNACKED_BYTES - RECEIPT_BYTES && this.backlog.size + count <= MAX_UNACKED_FRAMES - 1;
-	}
-
-	private send(text: string, seq: number): void {
-		this.transmitted = Math.max(this.transmitted, seq);
-		try { this.socket?.send(text); } catch { this.detach(); }
-	}
-
-	private enqueue(body: Exclude<Body, Hello | Welcome | Fragment>): boolean {
-		if (this.closed) throw new Error("The runner channel is closed.");
-		const parts: Sent[] = [];
-		let bytes = 0;
-		const add = (frame: Sent) => {
-			if (!parseFrame(frame.text)) throw new Error("Invalid outgoing runner frame.");
-			parts.push(frame);
-			bytes += frame.bytes;
-			if (bytes > MAX_UNACKED_BYTES - RECEIPT_BYTES || parts.length >= MAX_UNACKED_FRAMES) throw new Error("The runner message exceeds the replay buffer.");
-		};
-		const frame = frameText(body, this.sent + 1, this.received);
-		if (frame.bytes <= MAX_FRAME_BYTES && !(body.kind === "out" && Buffer.byteLength(body.data) > MAX_OUTPUT_BYTES)) {
-			add(frame);
-		} else if (body.kind === "in" || body.kind === "out" || body.kind === "op" || (body.kind === "res" && body.ok)) {
-			const data = body.kind === "op" ? JSON.stringify(body.args) : body.kind === "res" ? JSON.stringify(body.value) : body.data;
-			// Even a character escaped as six ASCII bytes fits in one of these pieces.
-			let rest = data;
-			while (rest.length) {
-				const [text, tail] = rest.length <= 16_384 ? [rest, ""] : split(rest, 16_384);
-				const part = tail ? "more" : "last";
-				const piece: Body = body.kind === "op" ? { ...body, part, args: text } : body.kind === "res" ? { ...body, part, value: text } : { ...body, data: text };
-				add(frameText(piece, this.sent + parts.length + 1, this.received));
-				rest = tail;
-			}
-		} else throw new Error("The runner frame is too large.");
-		if (!this.fits(bytes, parts.length)) {
-			this.pause(bytes, parts.length);
-			return false;
-		}
-		const start = this.sent;
-		this.bytes += bytes;
-		for (const part of parts) this.backlog.set(++this.sent, part);
-		this.receiptDue = false;
-		if (this.ready) {
-			for (let i = 0; i < parts.length && this.ready; i++) {
-				if (this.backlog.has(start + i + 1)) this.send(parts[i].text, start + i + 1);
-			}
-		}
-		if (!this.fits(1, 1)) this.pause(1, 1);
-		return true;
-	}
-
-	private pause(bytes: number, count: number): void {
-		const already = this.paused;
-		this.blocked = { bytes: Math.max(this.blocked?.bytes ?? 0, bytes), count: Math.max(this.blocked?.count ?? 0, count) };
-		if (!already) this.options.onFull?.(true);
-	}
-
-	request<N extends Name>(op: Operation<N>, output?: OutputListener, timeoutMs?: number): Promise<Operations[N]["value"]> {
-		return new Promise((resolve, reject) => {
-			if (this.pending.has(op.id)) throw new Error("Runner request id already in use.");
-			if (!validArgs(op.name, op.args)) throw new Error("Invalid runner operation.");
-			const fail = (error: Error) => {
-				if (op.name === "start") {
-					this.streams.get(op.id)?.finish({ code: null, signal: null, error });
-					this.streams.delete(op.id);
-				}
-				reject(error);
-			};
-			const waiting: Waiting = { name: op.name, resolve: (v) => resolve(v as Operations[N]["value"]), reject: fail, output };
-			this.pending.set(op.id, waiting);
-			try {
-				const timeout = timeoutMs ?? ((op.name === "ask" || op.name === "run") ? (op as Operation<"ask" | "run">).args.options?.timeoutMs : undefined);
-				if (timeout !== undefined) {
-					waiting.timer = setTimeout(() => {
-						this.pending.delete(op.id);
-						fail(new Error("The runner operation timed out."));
-					}, timeout + RUNNER_GRACE_MS);
-				}
-				if (!this.enqueue(op as Operation)) throw new Error(FULL);
-			} catch (error) {
-				clearTimeout(waiting.timer);
-				this.pending.delete(op.id);
-				fail(error instanceof Error ? error : new Error("Could not send the runner operation."));
-			}
-		});
-	}
-
-	respond<N extends Name>(op: Operation<N>, value: Operations[N]["value"]): boolean {
-		if (!validResult(op.name, value) || (op.name === "start" && (value as { id: string }).id !== op.id)) throw new Error("Invalid runner response.");
-		return this.enqueue({ kind: "res", id: op.id, ok: true, value });
-	}
-	refuse(id: string, error: Failure): boolean { return this.enqueue({ kind: "res", id, ok: false, error }); }
-
-	/** Subscribe before asking for start. Its request id is also the id of its stream. */
-	stream(id: string, output: OutputListener): Promise<ProcessEnd> {
-		if (this.closed || this.streams.has(id)) throw new Error("Cannot open this runner stream.");
-		return new Promise((finish) => this.streams.set(id, { output, finish }));
-	}
-	output(id: string, fd: 1 | 2, data: string): boolean { return this.enqueue({ kind: "out", id, fd, data }); }
-	end(id: string, end: ProcessEnd): boolean {
-		const wire: Ending = { code: end.code, signal: end.signal, error: end.error?.message ?? null };
-		return this.enqueue({ kind: "end", id, ...wire });
-	}
-	write(id: string, data: string): boolean { return this.enqueue({ kind: "in", id, data }); }
-	closeIn(id: string): boolean { return this.enqueue({ kind: "close-in", id }); }
-
-	private ack(): void {
-		// Both pipes can be full at once. Repeating an outstanding receipt with a newer ack frees either.
-		const seq = this.backlog.has(this.receipt) ? this.receipt : ++this.sent;
-		const frame = frameText({ kind: "ack" }, seq, this.received);
-		this.bytes += frame.bytes - (this.backlog.get(seq)?.bytes ?? 0);
-		this.receipt = seq;
-		this.backlog.set(seq, frame);
-		this.receiptDue = false;
-		this.send(frame.text, seq);
-	}
-	private silent(): boolean {
-		const now = Date.now();
-		if (this.deadline && now >= this.deadline) { this.expire(); return true; }
-		if (now - this.lastRead < DEAD_MS) return false;
-		this.detach(this.lastRead + DEAD_MS);
-		return true;
-	}
-
-	private tick(): void {
-		if (this.silent()) return;
-		const now = Date.now();
-		if (now - this.lastPing >= PING_MS) {
-			this.lastPing = now;
-			if (this.socket?.ping && this.socket.onPong) {
-				try { this.socket.ping(); } catch { this.detach(); return; }
-			}
-			// The other adapter may see data messages only, even when ours can send native pings.
-			if (this.ready) this.ack();
-		}
-		if (this.ready && this.receiptDue) this.ack();
-	}
-
-	detach(since = Date.now()): void {
+	/** The owner lets go of the socket; the conversation waits for the next one, up to the grace. */
+	detach(): void {
 		const socket = this.socket;
 		this.socket = null;
-		this.ready = false;
 		clearInterval(this.clock);
-		if (!this.closed && !this.deadline) {
-			this.deadline = since + RUNNER_GRACE_MS;
-			const left = this.deadline - Date.now();
-			if (left <= 0) this.expire();
-			else this.grace = setTimeout(() => this.expire(), left);
-		}
+		if (!this.grace && !this.closed && this.conversation) this.grace = setTimeout(() => { this.grace = undefined; this.reset(this.graceReason); }, RUNNER_GRACE_MS);
 		socket?.close();
-	}
-
-	private expire(): void {
-		if (this.closed) return;
-		this.close("The machine did not answer within the grace period.");
-		this.options.onGraceExpired?.();
 	}
 
 	close(reason = "The runner channel is closed."): void {
 		if (this.closed) return;
+		this.reset(reason);
 		this.closed = true;
-		clearTimeout(this.grace);
 		this.detach();
-		for (const waiting of this.pending.values()) {
-			clearTimeout(waiting.timer);
-			waiting.reject(new Error(reason));
+		this.dismiss();
+	}
+
+	/** Listens to a socket that has yet to introduce itself: its first frame goes to `introduce`, within DEAD_MS. */
+	protected watch(socket: ChannelSocket, introduce: (frame: Frame) => void): void {
+		this.strangers.set(socket, setTimeout(() => this.dismiss(socket), DEAD_MS));
+		socket.onMessage((data) => {
+			if (this.closed) return;
+			if (this.socket === socket) { this.receive(parseFrame(data)); return; }
+			if (!this.strangers.has(socket)) return;
+			clearTimeout(this.strangers.get(socket));
+			this.strangers.delete(socket);
+			const frame = parseFrame(data);
+			if (frame) introduce(frame);
+			else socket.close();
+		});
+		socket.onClose(() => {
+			if (this.socket === socket) this.detach();
+			else this.dismiss(socket);
+		});
+	}
+
+	/** Closes sockets that have not been adopted: one, or all of them. */
+	protected dismiss(socket?: ChannelSocket): void {
+		for (const s of socket ? [socket] : [...this.strangers.keys()]) {
+			const timer = this.strangers.get(s);
+			if (timer === undefined) continue;
+			clearTimeout(timer);
+			this.strangers.delete(s);
+			s.close();
 		}
-		for (const stream of this.streams.values()) stream.finish({ code: null, signal: null, error: new Error(reason) });
-		this.pending.clear();
-		this.streams.clear();
+	}
+
+	protected resumable(peerReceived: number): boolean {
+		return peerReceived >= this.acked && peerReceived <= this.sent;
+	}
+	protected get delivered(): number { return this.received; }
+
+	/** Makes `socket` the current one, after the introduction, and sends what the peer has not received. */
+	protected adopt(socket: ChannelSocket, introduction: Hello | Welcome | null, peerReceived: number): void {
+		const old = this.socket;
+		this.socket = socket;
+		old?.close();
+		clearTimeout(this.grace);
+		this.grace = undefined;
+		clearInterval(this.clock);
+		this.clock = setInterval(() => this.tick(), ACK_MS);
+		this.heard = Date.now();
+		if (introduction) this.transmit(JSON.stringify(introduction));
+		this.told = this.received;
+		this.release(peerReceived);
+		for (const frame of this.backlog.values()) this.transmit(frame.text);
+	}
+
+	/** Queues a message, in one frame or several. Throws when it is larger than MAX_MESSAGE_BYTES. */
+	protected send(body: Body): void {
+		const json = JSON.stringify(body);
+		if (Buffer.byteLength(json) > MAX_MESSAGE_BYTES) throw new Error("The message is larger than the runner channel carries.");
+		const whole = JSON.stringify({ kind: "msg", seq: this.sent + 1, ack: this.received, body });
+		if (Buffer.byteLength(whole) <= MAX_FRAME_BYTES) { this.push(whole); return; }
+		for (let at = 0; at < json.length; at += PART_UNITS) {
+			const data = json.slice(at, at + PART_UNITS);
+			this.push(JSON.stringify({ kind: "part", seq: this.sent + 1, ack: this.received, data, last: at + PART_UNITS >= json.length }));
+		}
+	}
+
+	/** Whether a stream's source may go on; when not, `onDrain` says when it may again. */
+	protected room(): boolean {
+		if (this.bytes < WINDOW_BYTES && this.backlog.size < WINDOW_FRAMES) return true;
+		this.waiting = true;
+		return false;
+	}
+
+	/** Ends the conversation (a lost peer, the grace, a broken message); the socket, if any, stays. */
+	protected reset(reason: string): void {
+		const had = this.conversation !== null;
+		this.drop(reason);
+		this.conversation = null;
+		this.sent = this.acked = this.received = this.told = this.bytes = this.partBytes = 0;
 		this.backlog.clear();
-		this.gaps.clear();
-		this.piece = this.blocked = null;
-		this.bytes = this.gapBytes = 0;
-		this.options.onClose?.(reason);
+		this.parts = [];
+		this.waiting = false;
+		clearTimeout(this.grace);
+		this.grace = undefined;
+		if (had) this.base.onReset?.(reason);
+	}
+
+	/** The peer broke the protocol: nothing it says can be trusted, so the conversation ends with the socket. */
+	protected fail(reason: string): void {
+		this.reset(reason);
+		this.detach();
+	}
+
+	private push(text: string): void {
+		const bytes = Buffer.byteLength(text);
+		this.backlog.set(++this.sent, { text, bytes });
+		this.bytes += bytes;
+		this.told = this.received;
+		if (this.socket) this.transmit(text);
+	}
+
+	private transmit(text: string): void {
+		try {
+			this.socket?.send(text);
+			this.spoke = Date.now();
+		} catch { this.detach(); }
+	}
+
+	private release(ack: number): void {
+		if (ack <= this.acked) return;
+		this.acked = ack;
+		for (const [seq, frame] of this.backlog) {
+			if (seq > ack) break;
+			this.bytes -= frame.bytes;
+			this.backlog.delete(seq);
+		}
+		if (this.waiting && this.bytes < WINDOW_BYTES && this.backlog.size < WINDOW_FRAMES) {
+			this.waiting = false;
+			this.base.onDrain?.();
+		}
+	}
+
+	private receive(frame: Frame | null): void {
+		this.heard = Date.now();
+		if (!frame || (frame.kind !== "msg" && frame.kind !== "part" && frame.kind !== "ack")) return this.fail("The other side sent a frame this conversation does not have.");
+		if (frame.ack > this.sent) return this.fail("The other side acknowledged what was never sent.");
+		this.release(frame.ack);
+		if (frame.kind === "ack" || frame.seq <= this.received) return;
+		if (frame.seq !== this.received + 1) return this.fail("A frame is missing.");
+		this.received = frame.seq;
+		if (frame.kind === "msg") {
+			if (this.parts.length) return this.fail("A message ended before its last part.");
+			return this.deliver(frame.body);
+		}
+		this.partBytes += Buffer.byteLength(frame.data);
+		if (this.partBytes > MAX_MESSAGE_BYTES) return this.fail("A message is larger than the runner channel carries.");
+		this.parts.push(frame.data);
+		if (!frame.last) return;
+		const body = parseBody(this.parts.join(""));
+		this.parts = [];
+		this.partBytes = 0;
+		if (!body) return this.fail("A message could not be read.");
+		this.deliver(body);
+	}
+
+	private tick(): void {
+		const now = Date.now();
+		if (now - this.heard >= DEAD_MS) { this.detach(); return; }
+		if (this.received > this.told || now - this.spoke >= PING_MS) {
+			this.told = this.received;
+			this.transmit(JSON.stringify({ kind: "ack", ack: this.received }));
+		}
+	}
+}
+
+type Pending = { name: Name; resolve(value: unknown): void; reject(error: Error): void; output?: Output; timer: ReturnType<typeof setTimeout>; forget(): void };
+type Process = { output: Output; finish(end: ProcessEnd): void; open: boolean };
+
+/** The session actor's end. It lives as long as the actor's instance, in `c.vars`. */
+export class ServerChannel extends Channel {
+	private pending = new Map<string, Pending>();
+	private processes = new Map<string, Process>();
+
+	/** `accept` checks a hello's ticket and signature before it can resume anything. */
+	constructor(private readonly options: Options & { accept(hello: Hello): boolean }) {
+		super(options, "The machine did not come back within ten minutes.");
+	}
+
+	/** A socket from the gateway. It counts once its hello is accepted; one that says nothing goes after DEAD_MS. */
+	attach(socket: ChannelSocket): void {
+		if (this.closed) { socket.close(); return; }
+		this.watch(socket, (hello) => {
+			if (hello.kind === "foreign") {
+				try { socket.send(JSON.stringify({ kind: "welcome", protocol: PROTOCOL_VERSION, refused: protocolRefusal(hello.protocol) })); } catch {}
+				socket.close();
+				return;
+			}
+			if (hello.kind !== "hello" || !this.accepts(hello)) { socket.close(); return; }
+			const resumes = hello.resume !== null && hello.resume.conversation === this.conversation && this.resumable(hello.resume.received);
+			// Only the runner that holds the conversation may replace a live socket: it has given up on that one.
+			if (this.socket && !resumes) { socket.close(); return; }
+			if (!resumes) {
+				if (this.conversation) this.reset("The machine's runner restarted, or gave up on this session's work after a long disconnection.");
+				this.conversation = crypto.randomUUID();
+			}
+			const welcome: Welcome = { kind: "welcome", protocol: PROTOCOL_VERSION, conversation: this.conversation!, received: this.delivered, resumed: resumes };
+			this.adopt(socket, welcome, resumes ? hello.resume!.received : 0);
+		});
+	}
+
+	private accepts(hello: Hello): boolean {
+		try { return this.options.accept(hello); } catch { return false; }
+	}
+
+	/** Rejects with ConversationLost when the conversation ends first, and with an Error for the runner's own failure. */
+	request<N extends Exclude<Name, "start">>(name: N, args: Args<N>, options: { onOutput?: Output; signal?: AbortSignal } = {}): Promise<Value<N>> {
+		return this.call(crypto.randomUUID(), name, args, options) as Promise<Value<N>>;
+	}
+
+	/** `ended` never rejects: a process that could not be started has ended with an error. */
+	start(args: Args<"start">, onOutput: Output): { id: string; ended: Promise<ProcessEnd> } {
+		const id = crypto.randomUUID();
+		const ended = new Promise<ProcessEnd>((finish) => this.processes.set(id, { output: onOutput, finish, open: true }));
+		this.call(id, "start", args, {}).catch((error: Error) => this.finish(id, { code: null, signal: null, error }));
+		return { id, ended };
+	}
+
+	/** False once the process has ended or its stdin was closed, as `SandboxProcess.write`. */
+	write(process: string, data: string): boolean {
+		const p = this.processes.get(process);
+		if (!p?.open) return false;
+		this.send({ kind: "in", id: process, data });
+		return true;
+	}
+
+	closeIn(process: string): void {
+		const p = this.processes.get(process);
+		if (!p?.open) return;
+		p.open = false;
+		this.send({ kind: "close-in", id: process });
+	}
+
+	private call(id: string, name: Name, args: unknown, { onOutput, signal }: { onOutput?: Output; signal?: AbortSignal }): Promise<unknown> {
+		return new Promise((resolve, reject) => {
+			if (this.closed) return reject(new ConversationLost("The runner channel is closed."));
+			if (!validArgs(name, args)) return reject(new Error(`Invalid arguments for the runner's ${name}.`));
+			if (this.pending.size >= MAX_OPS_IN_FLIGHT) return reject(new Error("Too many operations are waiting on the machine."));
+			const own = (args as { options?: { timeoutMs?: number } }).options?.timeoutMs;
+			const timer = setTimeout(() => this.settle(id, new ConversationLost("The machine did not answer in time.")), (own ?? OP_MS) + RUNNER_GRACE_MS);
+			const cancel = () => { if (this.pending.has(id)) this.send({ kind: "cancel", id }); };
+			signal?.addEventListener("abort", cancel, { once: true });
+			this.pending.set(id, { name, resolve, reject, output: onOutput, timer, forget: () => signal?.removeEventListener("abort", cancel) });
+			try { this.send({ kind: "op", id, name, args: args as Record<string, unknown> }); }
+			catch (error) { this.settle(id, error as Error); return; }
+			if (signal?.aborted) cancel();
+		});
+	}
+
+	private settle(id: string, outcome: { value: unknown } | Error): void {
+		const p = this.pending.get(id);
+		if (!p) return;
+		this.pending.delete(id);
+		clearTimeout(p.timer);
+		p.forget();
+		if (outcome instanceof Error) p.reject(outcome);
+		else p.resolve(outcome.value);
+	}
+
+	private finish(id: string, end: ProcessEnd): void {
+		const p = this.processes.get(id);
+		if (!p) return;
+		this.processes.delete(id);
+		p.finish(end);
+	}
+
+	protected deliver(body: Body): void {
+		switch (body.kind) {
+			case "res": {
+				const p = this.pending.get(body.id);
+				if (!p) return; // It stopped waiting.
+				if (!body.ok) return this.settle(body.id, body.error.kind === "user" ? new SandboxUserError(body.error.message) : new Error(body.error.message));
+				if (!validValue(p.name, body.value)) return this.settle(body.id, new Error(`The machine's answer to ${p.name} could not be read.`));
+				return this.settle(body.id, { value: body.value });
+			}
+			case "out":
+				(this.processes.get(body.id)?.output ?? this.pending.get(body.id)?.output)?.(body.fd, body.data);
+				return;
+			case "end":
+				return this.finish(body.id, { code: body.code, signal: body.signal, error: body.error === null ? null : new Error(body.error) });
+			default:
+				return this.fail("The machine's runner sent a message that only the platform sends.");
+		}
+	}
+
+	protected drop(reason: string): void {
+		for (const id of [...this.pending.keys()]) this.settle(id, new ConversationLost(reason));
+		for (const id of [...this.processes.keys()]) this.finish(id, { code: null, signal: null, error: new ConversationLost(reason) });
+	}
+}
+
+/** The runner's end, one per session it serves. */
+export class RunnerChannel extends Channel {
+	private serving = new Map<string, Name>();
+	private processes = new Set<string>();
+
+	/**
+	 * `onOperation` must answer each operation once with `respond` or `refuse`, and a `start` before
+	 * that process's output; `onReset` must stop what the ended conversation had running (the orphan rule).
+	 */
+	constructor(private readonly options: Options & {
+		onOperation(op: Operation): void;
+		onInput(process: string, data: string): void;
+		onCloseIn(process: string): void;
+		/** The abort signal of a `run` in progress. */
+		onCancel(id: string): void;
+		/** A stream's source may go on after `output` said to wait. */
+		onDrain(): void;
+		/** The platform will not talk to this runner: the sentence says why. Reconnecting will not help. */
+		onRefused(reason: string): void;
+	}) {
+		super(options, "The platform did not come back within ten minutes.");
+	}
+
+	/** A new socket, opened because the last one was given up on. Its ticket and signature are new. */
+	attach(socket: ChannelSocket, identity: Pick<Hello, "runnerVersion" | "machineId" | "ticket" | "signature">): void {
+		if (this.closed) { socket.close(); return; }
+		this.detach();
+		this.dismiss();
+		const asked = this.conversation;
+		const hello: Hello = { kind: "hello", protocol: PROTOCOL_VERSION, ...identity, resume: asked ? { conversation: asked, received: this.delivered } : null };
+		const text = JSON.stringify(hello);
+		if (parseFrame(text)?.kind !== "hello") throw new Error("Invalid runner identity.");
+		this.watch(socket, (welcome) => {
+			if (welcome.kind !== "welcome") { socket.close(); return; }
+			if ("refused" in welcome) { socket.close(); this.options.onRefused(welcome.refused); return; }
+			if (welcome.resumed) {
+				if (welcome.conversation !== asked || asked !== this.conversation || !this.resumable(welcome.received)) {
+					return this.fail("The platform resumed a conversation this runner does not have.");
+				}
+				return this.adopt(socket, null, welcome.received);
+			}
+			if (this.conversation) this.reset("The platform no longer has this session's work: its server restarted, or gave up after a long disconnection.");
+			this.conversation = welcome.conversation;
+			this.adopt(socket, null, 0);
+		});
+		try { socket.send(text); } catch { socket.close(); }
+	}
+
+	/** Throws for a value that is not the operation's result: that is the runner's own mistake. */
+	respond<O extends Operation>(op: O, value: Value<O["name"]>): void {
+		const name = this.serving.get(op.id);
+		if (!name) return; // Its conversation has ended.
+		if (!validValue(name, value)) throw new Error(`Invalid result for ${name}.`);
+		this.serving.delete(op.id);
+		if (name === "start") this.processes.add(op.id);
+		try { this.send({ kind: "res", id: op.id, ok: true, value }); }
+		catch { this.send({ kind: "res", id: op.id, ok: false, error: { kind: "sandbox", message: `The answer to ${name} is larger than a runner can send.` } }); }
+	}
+
+	refuse(op: Operation, error: Failure): void {
+		if (this.serving.delete(op.id)) this.send({ kind: "res", id: op.id, ok: false, error });
+	}
+
+	/** Output of a `run` in progress or of a started process. False: stop reading until `onDrain`. */
+	output(id: string, fd: 1 | 2, data: string): boolean {
+		if (!this.serving.has(id) && !this.processes.has(id)) return true;
+		this.send({ kind: "out", id, fd, data });
+		return this.room();
+	}
+
+	end(process: string, end: ProcessEnd): void {
+		if (this.processes.delete(process)) this.send({ kind: "end", id: process, code: end.code, signal: end.signal, error: end.error?.message ?? null });
+	}
+
+	protected deliver(body: Body): void {
+		switch (body.kind) {
+			case "op": {
+				if (this.serving.has(body.id) || this.processes.has(body.id)) return this.fail("The platform used an operation id twice.");
+				const refusal = !isName(body.name) || !validArgs(body.name, body.args) ? "This runner does not serve that operation."
+					: this.serving.size >= MAX_OPS_IN_FLIGHT ? "Too many operations are waiting on this machine." : null;
+				if (refusal) return this.send({ kind: "res", id: body.id, ok: false, error: { kind: "refused", message: refusal } });
+				this.serving.set(body.id, body.name as Name);
+				return this.options.onOperation(body as Operation);
+			}
+			case "in":
+				if (this.processes.has(body.id)) this.options.onInput(body.id, body.data);
+				return;
+			case "close-in":
+				if (this.processes.has(body.id)) this.options.onCloseIn(body.id);
+				return;
+			case "cancel":
+				if (this.serving.has(body.id)) this.options.onCancel(body.id);
+				return;
+			default:
+				return this.fail("The platform sent a message that only a runner sends.");
+		}
+	}
+
+	protected drop(): void {
+		this.serving.clear();
+		this.processes.clear();
 	}
 }

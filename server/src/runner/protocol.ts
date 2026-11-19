@@ -1,159 +1,179 @@
-/** One text message is one frame. Sizes on the wire are in UTF-8 bytes. */
-import type { SandboxProfile, SandboxProfileId } from "../contract.js";
-import type { CreateSandboxInput, ExecOptions, ExecResult, ListedSandbox, SandboxHandle, SandboxPrice } from "../sandbox/api.js";
-import type { Answer, ProcessEnd, SandboxProcess, StartOptions, TurnSandbox } from "../sandbox/provider.js";
+/**
+ * What the server and a runner say on a session's socket (Plans/2026-11-19 "bring your own computer",
+ * section 1.4). Every WebSocket message is one JSON frame of at most MAX_FRAME_BYTES:
+ *
+ *   hello    runner → server  first frame on every socket: who it is, and the conversation it resumes
+ *   welcome  server → runner  the answer: that conversation resumed, a new one, or a refusal to show
+ *   msg      either way       one numbered message (a `Body`)
+ *   part     either way       a numbered piece of a message too large for one frame
+ *   ack      either way       how far the sender has received; also the heartbeat
+ *
+ * Validation is here and nowhere else. A type and its check are one definition, so they cannot drift
+ * apart, and the `Same` assertions at the end tie the operations to the provider interfaces they carry.
+ */
+import type { SandboxProfileId } from "../contract.js";
+import type { ExecOptions, ExecResult } from "../sandbox/api.js";
+import { RUN_TAG, type Answer, type SandboxProcess, type StartOptions, type TurnSandbox } from "../sandbox/provider.js";
 
 export const PROTOCOL_VERSION = 1;
+/** Under the 256 KiB RivetKit takes per incoming message (registry.ts); the probe measures the gateway. */
 export const MAX_FRAME_BYTES = 128 * 1024;
-export const MAX_OUTPUT_BYTES = 64 * 1024;
-export const MAX_UNACKED_BYTES = 8 * 1024 * 1024;
-export const MAX_UNACKED_FRAMES = 10_000;
+/** The largest message, as JSON: a `run` result holds up to 4 MiB of output (sandboxes.ts, STDOUT_CAP). */
+export const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+/** Unacknowledged data past which a stream's source is asked to wait (`RunnerChannel.output`). */
+export const WINDOW_BYTES = 8 * 1024 * 1024;
+export const WINDOW_FRAMES = 10_000;
+/** Operations one side may have outstanding: this, times MAX_MESSAGE_BYTES, bounds the answers held. */
+export const MAX_OPS_IN_FLIGHT = 16;
 export const ACK_MS = 1_000;
 export const PING_MS = 15_000;
 export const DEAD_MS = 45_000;
 export const RUNNER_GRACE_MS = 600_000;
+/** What an operation without a `timeoutMs` of its own may take: `create` is `docker run` and `git init`. */
+export const OP_MS = 180_000;
 
-type Sandbox = { id: string };
-type Path = Sandbox & { path: string };
-type FileWrite = Path & { content: string };
-type Nothing = Record<string, never>;
-type Exec = Omit<ExecOptions, "onStdout" | "onStderr" | "signal">;
-type Start = Omit<StartOptions, "onStdout" | "onStderr">;
-type Call<A, V> = { args: A; value: V };
-export interface Operations {
-	create: Call<CreateSandboxInput, string>;
-	connect: Call<Sandbox, Pick<SandboxHandle, "id" | "cwd" | "profile"> | null>;
-	state: Call<Sandbox, "none" | "running" | "paused">;
-	suspend: Call<Sandbox, null>;
-	destroy: Call<Sandbox, null>;
-	list: Call<{ uid: string }, ListedSandbox[]>;
-	/** A provider can also answer these from the machine's last report. */
-	profiles: Call<Nothing, SandboxProfile[]>;
-	profile: Call<{ id: SandboxProfileId }, SandboxProfile>;
-	price: Call<Nothing, SandboxPrice | null>;
-	idleStopMs: Call<Nothing, number | null>;
-	sessionsLiveInSandbox: Call<Nothing, boolean>;
-	run: Call<Sandbox & { command: string; options?: Exec }, ExecResult>;
-	readTextFile: Call<Path, string>;
-	writeTextFile: Call<FileWrite, null>;
-	start: Call<Sandbox & { argv: string[]; options?: Start }, { id: string; tag: string }>;
-	signal: Call<{ id: string; sig: Parameters<SandboxProcess["signal"]>[0]; who: Parameters<SandboxProcess["signal"]>[1] }, null>;
-	killClient: Call<Sandbox, null>;
-	ask: Call<Sandbox & { argv: string[]; options?: Parameters<TurnSandbox["ask"]>[1] }, Answer | null>;
-	stopLeftovers: Call<Sandbox & { program: string }, number>;
-	sweep: Call<Sandbox & { tag: string; options?: Parameters<TurnSandbox["sweep"]>[1] }, number>;
-	writeSecretFile: Call<FileWrite, null>;
-	removeFiles: Call<Sandbox & { paths: string[] }, null>;
-	/** The request id names the hold, so two callers can release their own. */
-	holdForTurn: Call<Sandbox, null>;
-	releaseTurn: Call<Sandbox & { hold: string }, null>;
-	/** Remove this user's turn token files on the machine. The sign-in lives on the server. */
-	logout: Call<{ uid: string }, null>;
+// A check that is also a type.
+type Check<T> = (v: unknown) => v is T;
+type Optional<T> = Check<T | undefined> & { readonly optional: true };
+type Of<C> = C extends Check<infer T> ? T : never;
+type Fields = Record<string, Check<unknown>>;
+type Flat<T> = { [K in keyof T]: T[K] } & {};
+type Shape<F extends Fields> = Flat<
+	{ [K in keyof F as F[K] extends { optional: true } ? never : K]: Of<F[K]> } &
+	{ [K in keyof F as F[K] extends { optional: true } ? K : never]?: Exclude<Of<F[K]>, undefined> }
+>;
+const is = <T>(test: (v: unknown) => boolean) => test as Check<T>;
+const plain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const text = (max: number) => is<string>((v) => typeof v === "string" && v.length > 0 && v.length <= max);
+const string = is<string>((v) => typeof v === "string");
+const boolean = is<boolean>((v) => typeof v === "boolean");
+const integer = is<number>((v) => Number.isSafeInteger(v));
+const count = is<number>((v) => Number.isSafeInteger(v) && (v as number) >= 0);
+const nil = is<null>((v) => v === null);
+const anything = is<unknown>((v) => v !== undefined);
+const oneOf = <const T extends readonly (string | number | boolean)[]>(...values: T) => is<T[number]>((v) => values.includes(v as T[number]));
+const nullable = <T>(check: Check<T>) => is<T | null>((v) => v === null || check(v));
+const optional = <T>(check: Check<T>): Optional<T> => Object.assign(is<T | undefined>((v) => v === undefined || check(v)), { optional: true as const });
+const list = <T>(check: Check<T>) => is<T[]>((v) => Array.isArray(v) && v.every(check));
+const either = <A, B>(a: Check<A>, b: Check<B>) => is<A | B>((v) => a(v) || b(v));
+function object<F extends Fields>(fields: F): Check<Shape<F>> {
+	return is((v) => plain(v) && Object.keys(v).every((k) => Object.hasOwn(fields, k)) && Object.entries(fields).every(([k, check]) => check(v[k])));
 }
 
-export type Name = keyof Operations;
-export type Operation<N extends Name = Name> = { [K in N]: { kind: "op"; id: string; name: K; args: Operations[K]["args"] } }[N];
-export type Failure = { kind: "user" | "sandbox" | "refused"; message: string };
-export type Ending = Omit<ProcessEnd, "error"> & { error: string | null };
-export type Resume = { runnerEpoch: string; serverEpoch: string | null; lastReceived: number };
-export type Hello = { kind: "hello"; protocol: number; runnerVersion: string; machineId: string; signature: string; ticket?: string; runnerEpoch: string; resume: Resume | null };
-export type Welcome = { kind: "welcome"; serverEpoch: string; lastReceived: number; refused?: string } & ({ fresh: true } | { keep: string[] });
-export type Response = { kind: "res"; id: string } & ({ ok: true; value: unknown } | { ok: false; error: Failure });
-export type Output = { kind: "out"; id: string; fd: 1 | 2; data: string };
-export type End = { kind: "end"; id: string } & Ending;
-/** Consecutive pieces of one JSON argument or result. The operation runs only after the last. */
-export type Fragment = { part: "more" | "last"; id: string } & ({ kind: "op"; name: Name; args: string } | { kind: "res"; ok: true; value: string });
-export type Body = Hello | Welcome | Operation | Response | Fragment | Output | End | { kind: "in"; id: string; data: string } | { kind: "close-in"; id: string } | { kind: "ack" };
-export type Frame = Body & { seq: number; ack: number };
+const id = text(255);
+const tag = is<string>((v) => id(v) && RUN_TAG.test(v));
+const env = is<Record<string, string>>((v) => plain(v) && Object.entries(v).every(([k, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof value === "string"));
+/** A machine serves the two Docker profiles; E2B's and the rest are the deployment's. */
+const profile = oneOf("docker-windlass-sandbox", "docker-hardened");
+const sandbox = { id };
+const startOptions = { cwd: optional(string), env: optional(env), secretEnv: optional(env) };
 
-type Check = (v: unknown) => boolean;
-const str: Check = (v) => typeof v === "string";
-const nonempty: Check = (v) => typeof v === "string" && v.length > 0;
-const id: Check = (v) => typeof v === "string" && v.length > 0 && v.length <= 255;
-const bool: Check = (v) => typeof v === "boolean";
-const integer: Check = (v) => Number.isSafeInteger(v);
-const count: Check = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
-const nil: Check = (v) => v === null;
-const nullable = (check: Check): Check => (v) => v === null || check(v);
-const optional = (check: Check): Check => (v) => v === undefined || check(v);
-const list = (check: Check): Check => (v) => Array.isArray(v) && v.every(check);
-const one = (...values: (string | number | boolean)[]): Check => (v) => values.some((value) => v === value);
-const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
-function shape(fields: Record<string, Check>): Check {
-	return (v) => record(v) && Object.keys(v).every((k) => Object.hasOwn(fields, k)) && Object.entries(fields).every(([k, check]) => check(Object.hasOwn(v, k) ? v[k] : undefined));
-}
-const strings = list(str);
-const env = optional((v) => record(v) && Object.entries(v).every(([k, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && str(value)));
-const profileId = one("docker-windlass-sandbox", "docker-hardened", "e2b", "e2b-open", "daytona", "firecracker", "agentos");
-const profile = shape({ id: profileId, name: str, summary: str, layers: strings, approval: one("auto", "full"), commandNetwork: bool, commandsCanReadAccessToken: bool, available: bool, unavailableReason: optional(str) });
-const sandbox = shape({ id });
-const path = shape({ id, path: str });
-const writeFile = shape({ id, path: str, content: str });
-const nothing = shape({});
-const started = { cwd: optional(str), env, secretEnv: env };
-const endedCode = nullable(integer);
-const answer = { stdout: str, stderr: str };
-const calls: Record<Name, [Check, Check]> = {
-	create: [shape({ uid: id, sessionId: id, profile: profileId }), id],
-	connect: [sandbox, nullable(shape({ id, cwd: str, profile: profileId }))],
-	state: [sandbox, one("none", "running", "paused")],
-	suspend: [sandbox, nil], destroy: [sandbox, nil],
-	list: [shape({ uid: id }), list(shape({ id, sessionId: id, state: one("running", "paused") }))],
-	profiles: [nothing, list(profile)], profile: [shape({ id: profileId }), profile],
-	price: [nothing, nullable(shape({ usdPerSecond: (v) => typeof v === "number" && Number.isFinite(v) && v >= 0, basis: str }))],
-	idleStopMs: [nothing, nullable(count)], sessionsLiveInSandbox: [nothing, bool],
-	run: [shape({ id, command: str, options: optional(shape({ ...started, stdin: optional(str), timeoutMs: optional(count) })) }), shape({ ...answer, exitCode: endedCode, timedOut: bool, aborted: bool })],
-	readTextFile: [path, str], writeTextFile: [writeFile, nil],
-	start: [shape({ id, argv: strings, options: optional(shape(started)) }), shape({ id, tag: id })],
-	signal: [shape({ id, sig: one("INT", "TERM", "KILL"), who: one("leader", "all") }), nil],
-	killClient: [sandbox, nil],
-	ask: [shape({ id, argv: strings, options: optional(shape({ env, timeoutMs: optional(count) })) }), nullable(shape({ ...answer, code: endedCode }))],
-	stopLeftovers: [shape({ id, program: str }), count],
-	sweep: [shape({ id, tag: id, options: optional(shape({ waitMs: optional(count), files: optional(strings) })) }), count],
-	writeSecretFile: [writeFile, nil], removeFiles: [shape({ id, paths: strings }), nil],
-	holdForTurn: [sandbox, nil], releaseTurn: [shape({ id, hold: id }), nil], logout: [shape({ uid: id }), nil],
-};
-export function validResult(name: Name, value: unknown): boolean { return calls[name][1](value); }
-export function validArgs(name: Name, args: unknown): boolean { return calls[name][0](args); }
-const known = (v: unknown): v is Name => typeof v === "string" && Object.hasOwn(calls, v);
-const header = { seq: (v: unknown) => count(v) && v !== 0, ack: count, kind: str };
-const fields = (more: Record<string, Check>) => shape({ ...header, ...more });
-const resume = shape({ runnerEpoch: id, serverEpoch: nullable(id), lastReceived: count });
-const failure = shape({ kind: one("user", "sandbox", "refused"), message: str });
-const part = one("more", "last");
-const frames = {
-	hello: fields({ protocol: count, runnerVersion: id, machineId: id, signature: nonempty, ticket: optional(nonempty), runnerEpoch: id, resume: nullable(resume) }),
-	fresh: fields({ serverEpoch: id, lastReceived: count, fresh: one(true), refused: optional(str) }),
-	keep: fields({ serverEpoch: id, lastReceived: count, keep: list(id) }),
-	op: fields({ id, name: known, args: record }),
-	opPart: fields({ id, name: known, part, args: str }),
-	res: fields({ id, ok: one(true), value: (v) => v !== undefined && Object.values(calls).some(([, check]) => check(v)) }),
-	resPart: fields({ id, ok: one(true), part, value: str }),
-	error: fields({ id, ok: one(false), error: failure }),
-	out: fields({ id, fd: one(1, 2), data: (v) => typeof v === "string" && Buffer.byteLength(v) <= MAX_OUTPUT_BYTES }),
-	input: fields({ id, data: str }), closeIn: fields({ id }),
-	end: fields({ id, code: endedCode, signal: nullable(str), error: nullable(str) }),
-	ack: fields({}),
-};
+/**
+ * The methods of `Sandboxes`, `SandboxHandle`, `TurnSandbox` and `SandboxProcess` that cross to a
+ * machine, as [arguments, result]. `id` is a sandbox; `process` is the id of the `start` that made it.
+ * `profiles`, `list`, `price` and the other facts come from the machine's report, not from here.
+ */
+const operations = {
+	create: [object({ profile }), id],
+	connect: [object(sandbox), nullable(object({ cwd: string, profile }))],
+	state: [object(sandbox), oneOf("none", "running", "paused")],
+	suspend: [object(sandbox), nil],
+	destroy: [object(sandbox), nil],
+	/** Its output streams as `out` with this operation's id; `cancel` is its abort signal. */
+	run: [object({ ...sandbox, command: string, options: optional(object({ ...startOptions, stdin: optional(string), timeoutMs: optional(count) })) }),
+		object({ exitCode: nullable(integer), timedOut: boolean, aborted: boolean, stdout: string, stderr: string })],
+	readTextFile: [object({ ...sandbox, path: string }), string],
+	writeTextFile: [object({ ...sandbox, path: string, content: string }), nil],
+	/** The server names the tag, so a process has it before the runner answers. Its id is the process. */
+	start: [object({ ...sandbox, tag, argv: list(string), options: optional(object(startOptions)) }), nil],
+	signal: [object({ process: id, sig: oneOf("INT", "TERM", "KILL"), who: oneOf("leader", "all") }), nil],
+	killClient: [object({ process: id }), nil],
+	ask: [object({ ...sandbox, argv: list(string), options: optional(object({ env: optional(env), timeoutMs: optional(count) })) }),
+		nullable(object({ code: nullable(integer), stdout: string, stderr: string }))],
+	stopLeftovers: [object({ ...sandbox, program: string }), count],
+	sweep: [object({ ...sandbox, tag, options: optional(object({ waitMs: optional(count), files: optional(list(string)) })) }), count],
+	writeSecretFile: [object({ ...sandbox, path: string, content: string }), nil],
+	removeFiles: [object({ ...sandbox, paths: list(string) }), nil],
+	/** This operation's id names the hold that `releaseTurn` ends. */
+	holdForTurn: [object(sandbox), nil],
+	releaseTurn: [object({ ...sandbox, hold: id }), nil],
+} as const satisfies Record<string, readonly [Check<unknown>, Check<unknown>]>;
 
-/** Nothing from a refused message goes into a log or an error. */
-export function parseFrame(text: unknown): Frame | null {
-	if (typeof text !== "string" || text.length > MAX_FRAME_BYTES || Buffer.byteLength(text) > MAX_FRAME_BYTES) return null;
-	let v: unknown;
-	try { v = JSON.parse(text); } catch { return null; }
-	if (!record(v)) return null;
-	let valid: boolean;
-	switch (v.kind) {
-		case "hello": valid = frames.hello(v) && v.seq === 1 && (v.resume === null ? v.ack === 0 : record(v.resume) && v.resume.runnerEpoch === v.runnerEpoch && v.resume.lastReceived === v.ack && (v.resume.serverEpoch === null ? v.ack === 0 : v.ack !== 0)); break;
-		case "welcome": valid = (frames.fresh(v) || frames.keep(v)) && v.seq === 1 && v.lastReceived === v.ack; break;
-		case "op": valid = "part" in v ? frames.opPart(v) : frames.op(v) && known(v.name) && validArgs(v.name, v.args); break;
-		case "res": valid = "part" in v ? frames.resPart(v) : frames.res(v) || frames.error(v); break;
-		case "out": valid = frames.out(v); break;
-		case "in": valid = frames.input(v); break;
-		case "close-in": valid = frames.closeIn(v); break;
-		case "end": valid = frames.end(v); break;
-		case "ack": valid = frames.ack(v); break;
-		default: return null;
-	}
-	return valid && (v.seq !== 1 || v.kind === "hello" || v.kind === "welcome") ? v as Frame : null;
+export type Name = keyof typeof operations;
+export type Args<N extends Name> = Of<(typeof operations)[N][0]>;
+export type Value<N extends Name> = Of<(typeof operations)[N][1]>;
+export type Operation = { [N in Name]: { kind: "op"; id: string; name: N; args: Args<N> } }[Name];
+export const isName = (v: unknown): v is Name => typeof v === "string" && Object.hasOwn(operations, v);
+export const validArgs = <N extends Name>(name: N, args: unknown): args is Args<N> => operations[name][0](args);
+export const validValue = <N extends Name>(name: N, value: unknown): value is Value<N> => operations[name][1](value);
+
+/** `user` is a SandboxUserError, a sentence fit to show; `refused` is the runner's policy saying no. */
+const failure = object({ kind: oneOf("user", "sandbox", "refused"), message: string });
+export type Failure = Of<typeof failure>;
+
+/** The arguments of `op` and the value of `res` are checked against the operation by the receiver. */
+const body = either(
+	either(
+		object({ kind: oneOf("op"), id, name: string, args: is<Record<string, unknown>>(plain) }),
+		either(object({ kind: oneOf("res"), id, ok: oneOf(true), value: anything }), object({ kind: oneOf("res"), id, ok: oneOf(false), error: failure })),
+	),
+	either(
+		either(object({ kind: oneOf("out"), id, fd: oneOf(1, 2), data: string }), object({ kind: oneOf("end"), id, code: nullable(integer), signal: nullable(string), error: nullable(string) })),
+		either(object({ kind: oneOf("in"), id, data: string }), object({ kind: oneOf("close-in", "cancel"), id })),
+	),
+);
+export type Body = Of<typeof body>;
+
+const resume = object({ conversation: id, received: count });
+const hello = object({ kind: oneOf("hello"), protocol: oneOf(PROTOCOL_VERSION), runnerVersion: text(64), machineId: id, ticket: text(1024), signature: text(1024), resume: nullable(resume) });
+/** A refusal keeps this shape in every version, so a runner of any version can show it. */
+const refusal = object({ kind: oneOf("welcome"), protocol: integer, refused: text(1000) });
+const welcome = either(object({ kind: oneOf("welcome"), protocol: oneOf(PROTOCOL_VERSION), conversation: id, received: count, resumed: boolean }), refusal);
+const seq = is<number>((v) => count(v) && v !== 0);
+const frame = either(
+	either(hello, welcome),
+	either(either(object({ kind: oneOf("msg"), seq, ack: count, body }), object({ kind: oneOf("part"), seq, ack: count, data: text(MAX_FRAME_BYTES), last: boolean })), object({ kind: oneOf("ack"), ack: count })),
+);
+export type Hello = Of<typeof hello>;
+export type Welcome = Of<typeof welcome>;
+/** A hello in another protocol: only its number is read, to say why it is refused. */
+export type Foreign = { kind: "foreign"; protocol: number };
+export type Frame = Of<typeof frame> | Foreign;
+
+/** Null for anything that is not a frame of this protocol. Nothing of a refused frame is kept. */
+export function parseFrame(data: unknown): Frame | null {
+	if (typeof data !== "string" || data.length > MAX_FRAME_BYTES || Buffer.byteLength(data) > MAX_FRAME_BYTES) return null;
+	const v = json(data);
+	if (plain(v) && v.kind === "hello" && Number.isSafeInteger(v.protocol) && v.protocol !== PROTOCOL_VERSION) return { kind: "foreign", protocol: v.protocol as number };
+	return frame(v) ? v : null;
 }
+
+/** A message put back together from its parts. */
+export function parseBody(data: string): Body | null {
+	const v = json(data);
+	return body(v) ? v : null;
+}
+
+function json(data: string): unknown {
+	try { return JSON.parse(data); } catch { return undefined; }
+}
+
+export function protocolRefusal(runnerProtocol: number): string {
+	return runnerProtocol < PROTOCOL_VERSION
+		? `This machine's runner speaks protocol ${runnerProtocol}; the platform needs ${PROTOCOL_VERSION}. Update the runner.`
+		: `This machine's runner speaks protocol ${runnerProtocol}, newer than the platform's ${PROTOCOL_VERSION}. Use the runner release the Machines page names.`;
+}
+
+// The wire types are the provider's, without what cannot cross a socket (callbacks, an AbortSignal).
+type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type Assert<T extends true> = T;
+type Drift = [
+	Assert<Same<Args<"run">["options"], Omit<ExecOptions, "onStdout" | "onStderr" | "signal"> | undefined>>,
+	Assert<Same<Value<"run">, ExecResult>>,
+	Assert<Same<Args<"start">["options"], Omit<StartOptions, "onStdout" | "onStderr"> | undefined>>,
+	Assert<Same<Args<"ask">["options"], Parameters<TurnSandbox["ask"]>[1]>>,
+	Assert<Same<Value<"ask">, Answer | null>>,
+	Assert<Same<Args<"sweep">["options"], Parameters<TurnSandbox["sweep"]>[1]>>,
+	Assert<Same<Args<"signal">["sig"] | Args<"signal">["who"], Parameters<SandboxProcess["signal"]>[number]>>,
+	Assert<Same<Args<"create">["profile"], Extract<SandboxProfileId, `docker-${string}`>>>,
+];

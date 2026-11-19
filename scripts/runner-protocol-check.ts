@@ -1,351 +1,325 @@
 /**
- * Two channels, with every message held until the check delivers it. The clock moves by hand,
- * so the ten-minute grace and a silent socket take no longer to check than a lost receipt.
+ * The runner channel under the failures it will meet, on loopback sockets the check delivers by hand
+ * and a clock it moves by hand: a link cut in the middle of an operation with the server's end left
+ * half-open, a reconnect over it, late frames from the dead socket, frames delivered twice, the session
+ * actor waking with nothing, the runner restarting, the grace running out, a 20 MiB stream through a
+ * full window, messages larger than a frame, and input that is not the protocol.
  *
  *   cd server && npx tsx ../scripts/runner-protocol-check.ts
  */
 import { createHash } from "node:crypto";
 import { mock } from "node:test";
-import { ReliableChannel, type ChannelSocket } from "../server/src/runner/channel.js";
-import { ACK_MS, DEAD_MS, MAX_FRAME_BYTES, MAX_OUTPUT_BYTES, MAX_UNACKED_BYTES, MAX_UNACKED_FRAMES, PING_MS, RUNNER_GRACE_MS, parseFrame } from "../server/src/runner/protocol.js";
+import { ConversationLost, RunnerChannel, ServerChannel, type ChannelSocket } from "../server/src/runner/channel.js";
+import { ACK_MS, DEAD_MS, MAX_FRAME_BYTES, MAX_OPS_IN_FLIGHT, PING_MS, RUNNER_GRACE_MS, WINDOW_BYTES, parseFrame, type Operation } from "../server/src/runner/protocol.js";
 
 let failures = 0;
 function expect(name: string, ok: boolean, detail = ""): void {
 	if (!ok) failures++;
 	console.log(`${ok ? "ok  " : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 }
-const hello = { runnerVersion: "0.1.0", machineId: "machine", signature: "test signature" };
-const success = { code: 0, signal: null, error: null };
-const state = { kind: "op", id: "one", name: "state", args: { id: "box" } } as const;
-type Options = ConstructorParameters<typeof ReliableChannel>[0];
-const channels: ReliableChannel[] = [];
-function channel(options: Options): ReliableChannel {
-	const ch = new ReliableChannel(options);
-	channels.push(ch);
-	return ch;
-}
+const outcome = (p: Promise<unknown>) => p.then((v) => v, (e: Error) => e);
+const identity = { runnerVersion: "0.1.0", machineId: "m_check", ticket: "ticket", signature: "signature" };
+const box = { id: "box" };
 
-class Wire implements ChannelSocket {
-	peer!: Wire;
-	queue: string[] = [];
-	closed = false;
-	message: (text: unknown) => void = () => {};
-	private gone = () => {};
-	send(text: string): void { this.queue.push(text); }
-	onMessage(fn: (text: unknown) => void): void { this.message = fn; }
-	onClose(fn: () => void): void { this.gone = fn; }
+/** One end of a socket. Sent text waits in the peer's inbox until `flush`. */
+class End implements ChannelSocket {
+	peer!: End;
+	inbox: string[] = [];
+	open = true;
+	cut = false;
+	twice = false;
+	largest = 0;
+	private listener: (data: unknown) => void = () => {};
+	private closed = () => {};
+	send(text: string): void {
+		if (!this.open) throw new Error("closed");
+		this.largest = Math.max(this.largest, Buffer.byteLength(text));
+		if (!this.cut) this.peer.inbox.push(text);
+	}
+	onMessage(listener: (data: unknown) => void): void { this.listener = listener; }
+	onClose(listener: () => void): void { this.closed = listener; }
 	close(): void {
-		if (this.closed) return;
-		this.closed = true;
-		this.gone();
+		if (!this.open) return;
+		this.open = false;
+		this.closed();
+		// What was sent before a close still arrives before it.
+		if (this.peer && !this.cut) { this.peer.take(); this.peer.close(); }
 	}
-	drop(): void {
-		this.close();
-		this.peer.close();
+	/** Hands the inbox to the channel; numbered frames twice when `twice` is set. */
+	take(): boolean {
+		const texts = this.inbox.splice(0);
+		for (const text of texts) {
+			if (!this.open) break;
+			this.listener(text);
+			if (this.twice && text.includes('"seq"')) this.listener(text);
+		}
+		return texts.length > 0;
 	}
-	flush(): void {
-		for (const text of this.queue.splice(0)) this.peer.message(text);
-		if (this.closed) this.peer.close();
-	}
+	/** Late delivery: what a dead socket still had in flight. */
+	late(texts: string[]): void { for (const text of texts) this.listener(text); }
 }
-function join(server: ReliableChannel, runner: ReliableChannel, deliver = true) {
-	const s = new Wire();
-	const r = new Wire();
-	s.peer = r;
-	r.peer = s;
+function join(server: ServerChannel, runner: RunnerChannel) {
+	const s = new End(), r = new End();
+	s.peer = r; r.peer = s;
 	server.attach(s);
-	runner.attach(r, hello);
-	if (deliver) { r.flush(); s.flush(); r.flush(); }
-	return { s, r };
-}
-function stopped(promise: Promise<unknown>): Promise<string> {
-	return promise.then(() => "", (error: Error) => error.message);
+	runner.attach(r, identity);
+	const link = {
+		s, r,
+		flush() { while (s.take() || r.take()); },
+		/** The link breaks: what is in flight is lost, the runner notices, the server's end stays half-open. */
+		cut() { s.cut = r.cut = true; const lost = { toServer: s.inbox.splice(0), toRunner: r.inbox.splice(0) }; r.close(); return lost; },
+	};
+	link.flush();
+	return link;
 }
 
-async function replay(): Promise<void> {
-	const input: string[] = [];
-	const output: string[] = [];
-	let executions = 0;
-	let owned: string[] = [];
-	const server = channel({ role: "server" });
-	const runner = channel({
-		role: "runner",
-		onOperation(op) { executions++; if (op.name === "state") runner.respond(op, "running"); },
-		onInput: (_, data) => input.push(data), onCloseIn: () => input.push("EOF"),
-		onWelcome: (answer) => { if ("keep" in answer) owned = answer.keep; },
+function server(accept = true) {
+	const resets: string[] = [];
+	return { ch: new ServerChannel({ accept: () => accept, onReset: (why) => resets.push(why) }), resets };
+}
+/** A runner whose operations wait in `held` unless `serve` answers them. */
+function runner(serve?: (ch: RunnerChannel, op: Operation) => void) {
+	const log = { ops: [] as string[], held: [] as Operation[], input: [] as string[], resets: [] as string[], refused: [] as string[], cancels: [] as string[], drains: 0 };
+	const ch: RunnerChannel = new RunnerChannel({
+		onOperation: (op) => { log.ops.push(op.name); if (serve) serve(ch, op); else log.held.push(op); },
+		onInput: (_, data) => log.input.push(data),
+		onCloseIn: () => log.input.push("EOF"),
+		onCancel: (id) => log.cancels.push(id),
+		onDrain: () => log.drains++,
+		onRefused: (why) => log.refused.push(why),
+		onReset: (why) => log.resets.push(why),
 	});
-	const old = join(server, runner);
-	const ended = server.stream("process", (fd, text) => output.push(`${fd} ${text}`));
-	const result: Promise<"none" | "running" | "paused"> = server.request(state);
-	old.r.message(old.s.queue[0]);
-	old.s.flush();
-	const lost = old.r.queue.shift()!;
-	runner.output("process", 1, "first");
-	old.r.flush(); // The response before this output is still missing.
-	old.r.drop();
-	runner.output("process", 2, "second");
-	runner.end("process", success);
-	server.write("process", "answer");
-	server.closeIn("process");
-	const next = join(server, runner, false);
-	next.r.flush();
-	const welcome = next.s.queue.shift()!;
-	next.r.message(welcome);
-	expect("a resumed welcome names the open process and request", owned.includes("process") && owned.includes("one"));
-	old.s.message(lost);
-	old.r.message(welcome);
-	expect("late deliveries from the old socket cannot fill the gap", !output.length);
-	const replies = next.r.queue.splice(0);
-	expect("a lost response is resent once, with its original sequence", replies.filter((text) => text === lost).length === 1);
-	for (const text of replies.reverse()) { next.s.message(text); next.s.message(text); }
-	for (const text of next.s.queue.splice(0).reverse()) { next.r.message(text); next.r.message(text); }
-	expect("one request runs once and resolves with its lost answer", await result === "running" && executions === 1);
-	expect("both output streams arrive once, in order, before end", (await ended).code === 0 && output.join("|") === "1 first|2 second");
-	expect("a write held over the break precedes EOF, once each", input.join("|") === "answer|EOF");
+	return { ch, log };
+}
+const answer = (ch: RunnerChannel, op: Operation) => {
+	if (op.name === "state") ch.respond(op, "running");
+	else if (op.name === "readTextFile") ch.respond(op, "x".repeat(9 * 1024 * 1024));
+	else if (op.name === "start" || op.name === "writeTextFile") ch.respond(op, null);
+};
+const done = { code: 0, signal: null, error: null };
 
-	const second = join(server, channel({ role: "runner" }), false);
-	expect("a second socket cannot displace the live socket", second.s.closed && !next.s.closed);
+async function dropAndResume(): Promise<void> {
+	const { ch: s } = server();
+	const { ch: r, log } = runner();
+	const a = join(s, r);
+	const out: string[] = [];
+	const proc = s.start({ ...box, tag: "t1", argv: ["windlass", "acp"] }, (_, data) => out.push(data));
+	const state = s.request("state", box);
+	a.flush();
+	const [start, ask] = log.held;
+	r.respond(start, null);
+	r.output(start.id, 1, "one");
+	r.respond(ask, "running");
+	const lost = a.cut();
+	s.write(proc.id, "answer");
+	s.closeIn(proc.id);
+	r.output(start.id, 1, "two");
+	const b = join(s, r);
+	b.s.twice = b.r.twice = true;
+	b.flush();
+	a.s.late(lost.toServer);
+	r.end(start.id, done);
+	b.flush();
 	mock.timers.tick(ACK_MS);
-	next.r.flush(); next.s.flush();
-	expect("a quiet receiver sends its cumulative receipt", next.r.queue.length === 0 && runner.bufferedFrames <= 1 && server.bufferedFrames <= 1);
-	server.close(); runner.close();
+	b.flush();
+	expect("a reconnect over a half-open socket takes over the conversation", !a.s.open && s.connected && log.resets.length === 0);
+	expect("an answer lost with the link arrives once; the operation ran once", await state === "running" && log.ops.join() === "start,state");
+	expect("output across the break arrives once, in order, then the end", (await proc.ended).code === 0 && out.join() === "one,two");
+	expect("stdin written during the break arrives once, before its close", log.input.join() === "answer,EOF");
+	expect("lost receipts are made good: nothing is left buffered", s.buffered.frames === 0 && r.buffered.frames === 0);
 }
 
-async function epochs(): Promise<void> {
-	for (const who of ["server", "runner"] as const) {
-		const reasons: string[] = [];
-		const server = channel({ role: "server", onClose: (s) => reasons.push(s) });
-		const runner = channel({ role: "runner", onClose: (s) => reasons.push(s) });
-		const old = join(server, runner);
-		const result = stopped(server.request(state));
-		const ended = server.stream("process", () => {});
-		old.r.drop();
-		const next = channel({ role: who, onClose: (s) => reasons.push(s) });
-		const { r, s } = join(who === "server" ? next : server, who === "runner" ? next : runner, false);
-		r.flush();
-		const welcome = s.queue[0];
-		expect(`a changed ${who} epoch gets a fresh welcome before any saved work`, !!welcome && "fresh" in JSON.parse(welcome) && s.queue.length === 1);
-		s.flush();
-		const why = who === "runner" ? "runner restarted" : "server restarted";
-		expect(`both peers stop on the changed ${who} epoch`, reasons.length === 2 && reasons.every((reason) => reason.includes(why)));
-		if (who === "runner") expect("runner restart fails the waiting operation and ends its stream", (await result).includes(why) && (await ended).error?.message.includes(why) === true);
-		server.close(); runner.close(); next.close();
-		await result;
-	}
+async function actorWakes(): Promise<void> {
+	const { ch: s1 } = server();
+	const { ch: r, log } = runner();
+	const a = join(s1, r);
+	const running = outcome(s1.request("run", { ...box, command: "sleep 60" }));
+	const proc = s1.start({ ...box, tag: "t2", argv: ["windlass", "acp"] }, () => {});
+	a.flush();
+	s1.close("The session's actor went to sleep.");
+	expect("an actor that sleeps fails what it waited for as lost", (await running) instanceof ConversationLost && (await proc.ended).error instanceof ConversationLost);
+	const { ch: s2 } = server();
+	const early = s2.request("state", box);
+	const b = join(s2, r);
+	expect("the woken actor starts a new conversation; the runner lets the old one go", log.resets.length === 1 && log.ops.length === 3);
+	r.respond(log.held[0], { exitCode: 0, timedOut: false, aborted: false, stdout: "", stderr: "" });
+	const quiet = b.s.inbox.length === 0 && r.buffered.frames === 0;
+	r.respond(log.held[2], "paused");
+	b.flush();
+	expect("an answer from the old conversation goes nowhere; work queued before the socket runs", quiet && await early === "paused");
+}
 
-	const server = channel({ role: "server" });
-	const runner = channel({ role: "runner" });
-	const first = join(server, runner, false);
-	first.r.flush();
-	first.s.drop(); // Even the first welcome can get lost.
-	const next = join(server, runner);
-	expect("a lost first welcome can be recovered", !!runner.resume?.serverEpoch && !next.s.closed);
-	server.close(); runner.close();
+async function runnerRestarts(): Promise<void> {
+	const { ch: s } = server();
+	const old = runner();
+	const a = join(s, old.ch);
+	const waiting = outcome(s.request("state", box));
+	a.flush();
+	a.cut();
+	old.ch.close();
+	const fresh = runner(answer);
+	const b = join(s, fresh.ch);
+	expect("a second runner cannot displace a socket that still looks alive", !b.r.open && s.connected);
+	mock.timers.tick(DEAD_MS);
+	expect("45 s of silence drops the half-open socket", !a.s.open && !s.connected);
+	const c = join(s, fresh.ch);
+	const error = await waiting;
+	expect("the restarted runner's hello fails the old work as lost", error instanceof ConversationLost && error.message.includes("restarted"));
+	const next = s.request("state", box);
+	c.flush();
+	expect("and the new conversation serves", await next === "running");
+}
+
+async function grace(): Promise<void> {
+	const { ch: s, resets } = server();
+	const { ch: r, log } = runner();
+	const a = join(s, r);
+	const waiting = outcome(s.request("state", box));
+	a.flush();
+	a.s.close();
+	mock.timers.tick(RUNNER_GRACE_MS - 1);
+	s.attach(new End()); // A socket that never says hello earns no time.
+	const before = resets.length;
+	mock.timers.tick(1);
+	const error = await waiting;
+	expect("the grace is ten minutes, then the work fails on both sides", before === 0 && error instanceof ConversationLost && resets.length === 1 && log.resets.length === 1);
+	const b = join(s, r);
+	const next = s.request("state", box);
+	b.flush();
+	r.respond(log.held[1], "running");
+	b.flush();
+	expect("after the grace a new conversation starts on the next socket", await next === "running");
 }
 
 async function stream(): Promise<void> {
-	const received = createHash("sha256");
-	const sent = createHash("sha256");
-	const pauses: boolean[] = [];
-	const size = 20 * 1024 * 1024;
-	let bytes = 0, peakBytes = 0, peakFrames = 0, peakReordered = 0;
-	const server = channel({ role: "server" });
-	const runner = channel({ role: "runner", onFull: (paused) => pauses.push(paused) });
-	let link = join(server, runner);
-	const ended = server.stream("p", (_, data) => { received.update(data); bytes += Buffer.byteLength(data); });
-	for (let offset = 0; offset < size; offset += MAX_OUTPUT_BYTES) {
-		const data = String(offset).padEnd(MAX_OUTPUT_BYTES, "x");
-		if (!runner.output("p", 1, data)) {
-			expect("the source is paused with its unsent chunk still in hand", runner.paused);
-			link.r.drop();
-			link = join(server, runner, false);
-			link.r.flush(); link.s.flush();
-			for (const text of link.r.queue.splice(0).reverse()) {
-				link.s.message(text);
-				peakReordered = Math.max(peakReordered, server.reorderedBytes);
-			}
-			mock.timers.tick(ACK_MS);
-			link.s.flush(); link.r.flush();
-			if (!runner.output("p", 1, data)) throw new Error("sender did not resume");
-		}
+	const { ch: s } = server();
+	const { ch: r, log } = runner(answer);
+	let link = join(s, r);
+	const received = createHash("sha256"), sent = createHash("sha256");
+	let bytes = 0, peak = 0, waits = 0;
+	const proc = s.start({ ...box, tag: "t3", argv: ["windlass", "acp"] }, (_, data) => { received.update(data); bytes += data.length; });
+	link.flush();
+	const id = proc.id;
+	const size = 20 * 1024 * 1024, chunk = 64 * 1024;
+	for (let at = 0; at < size; at += chunk) {
+		const data = String(at).padEnd(chunk, "é");
 		sent.update(data);
-		peakBytes = Math.max(peakBytes, runner.bufferedBytes);
-		peakFrames = Math.max(peakFrames, runner.bufferedFrames);
+		const more = r.output(id, 1, data);
+		peak = Math.max(peak, r.buffered.bytes);
+		if (at % (5 * 1024 * 1024) === 0 && at) { link.cut(); link = join(s, r); }
+		if (!more) { waits++; link.flush(); mock.timers.tick(ACK_MS); link.flush(); }
 	}
-	runner.end("p", success);
-	link.r.flush();
-	expect("20 MiB arrives whole and in order across the drops", (await ended).code === 0 && bytes === size && received.digest("hex") === sent.digest("hex"), `${bytes} bytes`);
-	expect("the replay buffer stays within both caps and the source resumes", peakBytes <= MAX_UNACKED_BYTES && peakFrames <= MAX_UNACKED_FRAMES && pauses.join() === "true,false,true,false", `peak ${peakBytes} bytes in ${peakFrames} frames`);
-	expect("the receiver bounds a reversed window and releases it once the gap closes", peakReordered > 0 && peakReordered <= MAX_UNACKED_BYTES && server.reorderedBytes === 0, `peak ${peakReordered} bytes`);
-	server.close(); runner.close();
+	r.end(id, done);
+	link.flush();
+	expect("20 MiB arrives whole and in order across four broken links", (await proc.ended).code === 0 && bytes === size && received.digest("hex") === sent.digest("hex"));
+	expect("a full window stops the source and lets it go on", waits > 0 && log.drains === waits && peak < WINDOW_BYTES + 2 * MAX_FRAME_BYTES, `${waits} waits, peak ${peak} bytes`);
 }
 
-function full(): void {
-	let input = 0, output = 0;
-	const server = channel({ role: "server" });
-	const runner = channel({ role: "runner", onInput: () => input++ });
-	const link = join(server, runner);
-	void server.stream("p", () => output++);
-	for (let i = 0; i < MAX_UNACKED_FRAMES - 1; i++) {
-		if (!runner.output("p", 1, "x") || !server.write("p", "y")) throw new Error("paused early");
-	}
-	expect("a full frame window refuses the next write in either direction", !runner.output("p", 1, "x") && !server.write("p", "y") && runner.paused && server.paused);
-	link.s.flush(); link.r.flush();
-	mock.timers.tick(ACK_MS);
-	expect("even when both pipes are full a receipt fits", Math.max(server.bufferedFrames, runner.bufferedFrames) <= MAX_UNACKED_FRAMES);
-	link.s.flush(); link.r.flush();
-	expect("the full pipes drain without losing a frame or deadlocking", input === MAX_UNACKED_FRAMES - 1 && output === input && !server.paused && !runner.paused);
-	server.close(); runner.close();
-}
-
-async function files(): Promise<void> {
-	const file = ('雪\u0000"\\😀').repeat(55_000);
+async function large(): Promise<void> {
+	const { ch: s } = server();
 	let saved = "";
-	const server = channel({ role: "server" });
-	const runner = channel({ role: "runner", onOperation(op) {
-		if (op.name === "writeTextFile") { saved = op.args.content; runner.respond(op, null); }
-		if (op.name === "readTextFile") runner.respond(op, saved);
-	} });
-	const link = join(server, runner);
-	const put = server.request({ kind: "op", name: "writeTextFile", id: "write", args: { id: "box", path: "/workspace/a", content: file } });
-	const get = server.request({ kind: "op", name: "readTextFile", id: "read", args: { id: "box", path: "/workspace/a" } });
-	const bounded = (frames: string[]) => frames.length > 1 && frames.every((text) => Buffer.byteLength(text) <= MAX_FRAME_BYTES);
-	const writes = bounded(link.s.queue);
-	link.s.flush();
-	const reads = bounded(link.r.queue);
-	link.r.flush();
-	expect("large file arguments and results fit the wire and preserve escaped and multibyte text", await put === null && await get === file && saved === file && writes && reads);
-	server.close(); runner.close();
+	const { ch: r } = runner((ch, op) => { if (op.name === "writeTextFile") saved = op.args.content; answer(ch, op); });
+	const link = join(s, r);
+	const content = '雪\u0000"\\😀\ud800'.repeat(200_000);
+	const put = s.request("writeTextFile", { ...box, path: "/workspace/a", content });
+	const big = outcome(s.request("readTextFile", { ...box, path: "/workspace/a" }));
+	link.flush();
+	expect("a 4.6 MB file crosses in frames under the limit, text intact", await put === null && saved === content && Math.max(link.s.largest, link.r.largest) <= MAX_FRAME_BYTES);
+	const error = await big;
+	expect("an answer over 8 MiB comes back as the runner's refusal", error instanceof Error && !(error instanceof ConversationLost) && error.message.includes("larger"));
 }
 
-async function refusals(): Promise<void> {
-	const server = channel({ role: "server", acceptHello: (h) => h.signature === hello.signature });
-	const runner = channel({ role: "runner", onOperation(op) {
-		if (op.name === "start") runner.refuse(op.id, { kind: "sandbox", message: "Could not start." });
-		else if (op.name === "state") runner.respond(op, "paused");
-	} });
-	const link = join(server, runner);
-	const ended = server.stream("failed", () => {});
-	const refused = stopped(server.request({ kind: "op", name: "start", id: "failed", args: { id: "box", argv: ["true"] } }));
-	link.s.flush(); link.r.flush();
-	expect("a refused start settles its request and its process ending", (await refused) === "Could not start." && (await ended).error?.message === "Could not start.");
-	link.r.drop();
-	const waiting = server.request(state);
-	const visitor = channel({ role: "runner" });
-	const stray = join(server, visitor, false);
-	const forged = JSON.parse(stray.r.queue.shift()!);
-	stray.s.message(JSON.stringify({ ...forged, signature: "wrong" }));
-	expect("a refused introduction cannot read saved work", stray.s.closed && stray.s.queue.length === 0);
-	const again = join(server, runner);
-	again.s.flush(); again.r.flush();
-	expect("work survives a refused visitor and reaches the original runner", await waiting === "paused");
-	const bad = stopped(server.request({ ...state, id: "wrong-type" }));
-	again.s.message(JSON.stringify({ kind: "res", id: "wrong-type", ok: true, value: false, seq: runner.bufferedFrames + 100_000, ack: 1 }));
-	expect("an impossible receive gap ends the conversation", (await bad).includes("Invalid") && again.s.closed);
-	server.close(); runner.close(); visitor.close();
+async function untrusted(): Promise<void> {
+	const { ch: s } = server();
+	const { ch: r, log } = runner();
+	const link = join(s, r);
+	const bad = outcome(s.request("state", box));
+	const other = outcome(s.request("state", box));
+	link.flush();
+	const forge = (seq: number, body: unknown) => link.r.send(JSON.stringify({ kind: "msg", seq, ack: 2, body }));
+	forge(1, { kind: "res", id: log.held[0].id, ok: true, value: 42 });
+	link.flush();
+	const error = await bad;
+	expect("an answer of the wrong shape fails that operation only", error instanceof Error && !(error instanceof ConversationLost) && s.connected);
+	forge(2, { kind: "op", id: "x", name: "state", args: box });
+	link.flush();
+	expect("a message only the platform sends ends the conversation", (await other) instanceof ConversationLost && !s.connected);
+
+	const plain = runner();
+	const se = new End(), re = new End();
+	se.peer = re; re.peer = se;
+	plain.ch.attach(re, identity);
+	se.inbox = [];
+	se.send(JSON.stringify({ kind: "welcome", protocol: 1, conversation: "c", received: 0, resumed: false }));
+	se.send(JSON.stringify({ kind: "msg", seq: 1, ack: 0, body: { kind: "op", id: "y", name: "dockerRun", args: { image: "anything" } } }));
+	re.take();
+	const reply = parseFrame(se.inbox[0]);
+	expect("an operation the runner does not serve is refused, not run", !plain.log.ops.length && reply?.kind === "msg" && reply.body.kind === "res" && !reply.body.ok && reply.body.error.kind === "refused");
+	plain.ch.close();
+	const many = Array.from({ length: MAX_OPS_IN_FLIGHT + 1 }, () => outcome(s.request("state", box)));
+	expect("no more than 16 operations wait at once", (await many[MAX_OPS_IN_FLIGHT]) instanceof Error);
+	const hostile = [null, 7, "{", "[]", `{"kind":"__proto__"}`, `{"kind":"ack","ack":-1}`, `{"kind":"ack","ack":1,"extra":1}`,
+		`{"kind":"msg","seq":0,"ack":0,"body":{"kind":"in","id":"p","data":""}}`, `{"kind":"msg","seq":1,"ack":0,"body":{"kind":"out","id":"p","fd":3,"data":""}}`,
+		`{"kind":"msg","seq":1,"ack":0,"body":{"kind":"end","id":"p","code":"0","signal":null,"error":null}}`, " ".repeat(MAX_FRAME_BYTES + 1)];
+	expect("frames that are not the protocol are refused without throwing", hostile.every((v) => parseFrame(v) === null), `${hostile.length} cases`);
 }
 
-async function time(): Promise<void> {
-	let expired = 0;
-	const server = channel({ role: "server", onGraceExpired: () => expired++ });
-	const runner = channel({ role: "runner" });
-	const link = join(server, runner);
-	mock.timers.tick(PING_MS);
-	expect("the four-method socket sends a heartbeat after 15 seconds", link.s.queue.some((s) => JSON.parse(s).kind === "ack"));
-	const result = stopped(server.request(state));
-	mock.timers.tick(DEAD_MS - PING_MS);
-	expect("45 seconds of silence detaches the socket", link.s.closed);
-	mock.timers.tick(RUNNER_GRACE_MS - 1);
-	expect("the full grace is available after the socket dies", expired === 0);
-	join(server, runner, false); // A half-open replacement earns no extra time.
-	mock.timers.tick(1);
-	expect("the grace expires once and fails the waiting request", expired === 1 && (await result).includes("grace"));
-	const count = link.s.queue.length;
-	server.close(); runner.close();
-	mock.timers.tick(2 * RUNNER_GRACE_MS);
-	expect("closed channels send nothing and never expire again", expired === 1 && link.s.queue.length === count);
-
-	const a = channel({ role: "server" }), b = channel({ role: "runner" });
-	const { s } = join(a, b);
-	const timed = stopped(a.request({ kind: "op", name: "ask", id: "time", args: { id: "box", argv: ["true"], options: { timeoutMs: 70 } } }));
-	for (let ms = 0; ms < RUNNER_GRACE_MS; ms += PING_MS) {
-		mock.timers.tick(PING_MS);
-		s.flush(); s.peer.flush();
-	}
-	mock.timers.tick(70);
-	expect("an unanswered request with a timeout has its timeout plus the grace", (await timed).includes("timed out"));
-	a.close(); b.close();
+async function mismatch(): Promise<void> {
+	const { ch: s } = server();
+	const pending = outcome(s.request("state", box));
+	const { ch: r, log } = runner();
+	const se = new End(), re = new End();
+	se.peer = re; re.peer = se;
+	s.attach(se);
+	r.attach(re, identity);
+	se.inbox[0] = se.inbox[0].replace('"protocol":1', '"protocol":2');
+	se.take(); re.take();
+	let settled = false;
+	void pending.then(() => { settled = true; });
+	await Promise.resolve();
+	expect("a runner on another protocol is told why, apart from a broken link", log.refused.length === 1 && log.refused[0].includes("protocol 2") && !settled);
+	s.close();
 }
 
-function versionAndPong(): void {
-	const server = channel({ role: "server" });
-	const runner = channel({ role: "runner" });
-	const old = join(server, runner, false);
-	const frame = JSON.parse(old.r.queue.shift()!);
-	old.s.message(JSON.stringify({ ...frame, protocol: 0 }));
-	const welcome = parseFrame(old.s.queue[0]);
-	expect("an older protocol gets an update refusal in welcome", welcome?.kind === "welcome" && !!welcome.refused?.includes("Update") && old.s.closed);
-	server.close(); runner.close();
-
-	let pings = 0;
-	let pong = () => {};
-	const a = channel({ role: "server" }), b = channel({ role: "runner" });
-	const s = Object.assign(new Wire(), { ping: () => { pings++; pong(); }, onPong: (fn: () => void) => { pong = fn; } });
-	const r = new Wire();
-	s.peer = r; r.peer = s;
-	a.attach(s); b.attach(r, hello); r.flush(); s.flush();
-	for (let i = 0; i < 4; i++) { mock.timers.tick(PING_MS); s.flush(); r.flush(); }
-	expect("native pongs keep an otherwise quiet receiving socket alive", pings === 4 && !s.closed);
-	a.close(); b.close();
+async function liveness(): Promise<void> {
+	const { ch: s } = server();
+	const { ch: r, log } = runner();
+	const link = join(s, r);
+	for (let i = 0; i < 4; i++) { mock.timers.tick(PING_MS); link.flush(); }
+	expect("heartbeats keep an idle link open", s.connected && r.connected);
+	const stop = new AbortController();
+	void outcome(s.request("run", { ...box, command: "sleep 60" }, { signal: stop.signal }));
+	link.flush();
+	stop.abort();
+	link.flush();
+	expect("aborting a run reaches the runner", log.cancels.length === 1 && log.cancels[0] === log.held[0].id);
+	mock.timers.tick(DEAD_MS);
+	expect("a peer that goes quiet is dropped after 45 s", !s.connected && !r.connected);
+	s.close(); r.close();
 }
 
-function timerCleanup(): void {
-	const timers = () => process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
-	const before = timers();
-	const a = channel({ role: "server" }), b = channel({ role: "runner" });
-	const link = join(a, b);
-	void stopped(a.request(state, undefined, 100_000));
-	link.r.drop();
-	a.close(); b.close();
-	expect("closing clears the real heartbeat, grace and request timers", timers() === before);
-}
-
-function malformed(): void {
-	const header = { seq: 2, ack: 1 };
-	const bad = (body: unknown) => JSON.stringify({ ...header, ...(body as object) });
-	const inputs = [
-		null, {}, new Uint8Array(3), "[]", "{", "null", "0", bad({ kind: "__proto__" }), bad({ kind: "ack", seq: 1.1 }), bad({ kind: "ack", ack: -1 }),
-		bad({ kind: "ack", seq: Number.MAX_SAFE_INTEGER + 1 }), bad({ ...state, name: "toString" }), bad({ ...state, args: { id: 3 } }),
-		bad({ kind: "op", name: "run", id: "1", args: { id: "box", command: "true", options: { signal: {}, secretEnv: [] } } }),
-		bad({ kind: "res", ok: false, id: "1", error: { kind: "other", message: "x" } }), bad({ kind: "res", ok: true, id: "1", value: { unknown: true } }),
-		bad({ kind: "end", id: "1", code: "0", signal: null, error: null }), bad({ kind: "close-in", id: "1", extra: true }),
-		bad({ kind: "out", id: "1", fd: 3, data: "x" }), bad({ kind: "out", id: "1", fd: 1, data: "é".repeat(32769) }),
-		bad({ kind: "in", id: "1", data: "雪".repeat(50_000) }), " ".repeat(MAX_FRAME_BYTES + 1),
-		bad({ kind: "hello", ...hello, protocol: 1, runnerEpoch: "r", resume: null }),
-	];
-	expect("hostile frames are refused without throwing, including oversized UTF-8", inputs.every((v) => parseFrame(v) === null), `${inputs.length} cases`);
-	const raw = { ...header, kind: "in", id: "p", data: "" };
-	const padded = JSON.stringify({ ...raw, data: "x".repeat(MAX_FRAME_BYTES - JSON.stringify(raw).length) });
-	expect("exactly 128 KiB fits, one more byte does not", !!parseFrame(padded) && !parseFrame(padded + " "));
-	const server = channel({ role: "server" }), runner = channel({ role: "runner" });
-	const link = join(server, runner);
-	link.s.message(bad({ kind: "ack", ack: 123 }));
-	expect("a receipt for unsent work closes the conversation", link.s.closed);
-	server.close(); runner.close();
+function timers(): void {
+	const count = () => process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
+	const before = count();
+	const { ch: s } = server();
+	const { ch: r } = runner();
+	const link = join(s, r);
+	void outcome(s.request("run", { ...box, command: "true", options: { timeoutMs: 100_000 } }));
+	s.attach(new End());
+	link.cut();
+	s.close(); r.close();
+	expect("closing clears every heartbeat, grace, hello and request timer", count() === before);
 }
 
 async function main(): Promise<void> {
 	mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1_000_000 });
 	try {
-		await replay(); await epochs(); await stream(); full(); await files(); await refusals(); await time(); versionAndPong(); malformed();
-	} finally {
-		for (const ch of channels) ch.close();
-		mock.timers.reset();
-	}
-	timerCleanup();
+		for (const check of [dropAndResume, actorWakes, runnerRestarts, grace, stream, large, untrusted, mismatch, liveness]) await check();
+	} finally { mock.timers.reset(); }
+	timers();
 	console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 	process.exitCode = failures ? 1 : 0;
 }
 // An unresolved promise alone would let Node exit successfully before the last check.
-const watchdog = setTimeout(() => { console.error("FAIL  check did not finish"); process.exit(1); }, 30_000);
-main().catch((error: Error) => { console.error(`FAIL  ${error.message}`); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));
+const watchdog = setTimeout(() => { console.error("FAIL  check did not finish"); process.exit(1); }, 60_000);
+main().catch((error: Error) => { console.error(`FAIL  ${error.stack}`); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));
