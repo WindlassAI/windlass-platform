@@ -24,8 +24,12 @@ export interface ItemsState {
 	reload(): void;
 }
 
-/** The user's work items: read when the screen opens, then as the user's actor sends them, and again after the live feed was down. */
-export function useItems(): ItemsState {
+/**
+ * The user's work items: read when the screen opens, then as the user's actor sends them, and again
+ * after the live feed was down. `enabled` false asks nothing: for a deployment that offers no work
+ * items (`PlatformInfo.items`), and while its information loads.
+ */
+export function useItems(enabled = true): ItemsState {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [state, setState] = useState<{ list: ItemSummary[] | null; error: string | null }>({ list: null, error: null });
@@ -44,6 +48,7 @@ export function useItems(): ItemsState {
 	}, [client, auth, explain]);
 
 	useEffect(() => {
+		if (!enabled) return;
 		reload();
 		let connected = false;
 		const close = client.user(auth).watch({
@@ -63,7 +68,7 @@ export function useItems(): ItemsState {
 			asked.current += 1;
 			close();
 		};
-	}, [client, auth, reload]);
+	}, [client, auth, reload, enabled]);
 
 	return { ...state, reload };
 }
@@ -186,15 +191,18 @@ function Group({ state, items, now }: { state: ItemState; items: ItemSummary[]; 
 	);
 }
 
-/** The "Work items" section of a repository's page. `launchable`: new work can be filed on it now. */
+/** The "Work items" section of a repository's page, where the deployment offers them. `launchable`: new work can be filed on it now. */
 export function RepositoryItems({ repositoryId, name, base, launchable, now }: { repositoryId: number; name: string; base: string | null; launchable: boolean; now: number }) {
-	const items = useItems();
+	const { platform } = useApp();
+	const offered = Boolean(platform.info?.items);
+	const items = useItems(offered);
 	const [filing, setFiling] = useState(false);
 	const [open, setOpen] = useState(false);
 	const ended = useId();
 	const mine = items.list?.filter((item) => item.repository.id === repositoryId) ?? null;
 	const of = (state: ItemState) => mine?.filter((item) => item.state === state) ?? [];
 	const folded = FOLDED.flatMap((state) => of(state));
+	if (!offered) return null;
 
 	return (
 		<section className="usage-section" aria-labelledby="repo-items">
@@ -366,7 +374,8 @@ function NewItemDialog({ repositoryId, name, base, onClose }: { repositoryId: nu
 
 /** The items that ask their person something, across repositories, the longest waiting first. Nothing when there is none. */
 export function NeedsYou({ now }: { now: number }) {
-	const { list } = useItems();
+	const { platform } = useApp();
+	const { list } = useItems(Boolean(platform.info?.items));
 	const asking = (list ?? []).filter((item) => item.question !== null).sort((a, b) => (a.question?.askedAt ?? 0) - (b.question?.askedAt ?? 0));
 	if (asking.length === 0) return null;
 	return (

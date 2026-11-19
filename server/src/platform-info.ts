@@ -78,6 +78,7 @@ export async function platformInfo(): Promise<PlatformInfo> {
 	const app = githubInfo();
 	if (app) info.github = app;
 	if (config.machines) info.machines = { minRunnerVersion: MIN_RUNNER_VERSION, runnerImage: config.machines.runnerImage, platformUrl: config.machines.publicUrl };
+	if (config.items) info.items = true;
 	return info;
 }
 

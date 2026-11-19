@@ -12,6 +12,18 @@ const make = (items?: MockItemsState) => createMockClient({ pace: 0, items });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 describe("the mock's work items", () => {
+	it("offers work items unless told not to, and without them refuses every item and API token call but the limits", async () => {
+		expect((await make().info()).items).toBe(true);
+		const off = make("off");
+		expect((await off.info()).items).toBeUndefined();
+		const user = off.user(auth);
+		const calls = [user.listItems(), user.item("it_any"), user.createItem({ repository: { id: 1 }, title: "A", body: "" }), user.actOnItem("it_any", { kind: "cancel" }), user.apiTokens(), user.createApiToken({ name: "A", scopes: ["items:read"] }), user.revokeApiToken("tok_any")];
+		for (const call of calls) await expect(call).rejects.toMatchObject({ reason: "items_off" });
+		// The ceiling on running agents is every agent's, so it is still answered.
+		expect((await user.factoryLimits()).runningTurns).toBeGreaterThan(0);
+		off.dispose();
+	});
+
 	it("seeds every state, and a wait for every waiting item", async () => {
 		const mock = make();
 		const list = await mock.user(auth).listItems();

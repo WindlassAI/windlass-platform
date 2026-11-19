@@ -2,10 +2,12 @@
  * The usage page's part for work items: the factory's limits for the user, which the deployment's
  * owner sets and nobody can raise from here, and what each item has cost so far against its budget.
  * The limits are read once when the page opens; the items are the user's live list (`useItems`).
+ * Shown only where the deployment offers work items.
  */
 import { compact, count, plural, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useItems } from "../screens/Items";
+import { useApp } from "../state/app";
 import { useFactoryLimits } from "../state/hooks";
 
 /** A figure spent, and of how much: "1.2M of 4M". */
@@ -19,8 +21,11 @@ function Of({ spent, budget, spell }: { spent: number; budget: number; spell(val
 }
 
 export function FactoryUsage() {
-	const items = useItems();
-	const limits = useFactoryLimits();
+	const { platform } = useApp();
+	const offered = Boolean(platform.info?.items);
+	const items = useItems(offered);
+	const limits = useFactoryLimits(offered);
+	if (!offered) return null;
 	const { value } = limits;
 	const list = items.list;
 	return (

@@ -41,6 +41,14 @@
  *   WLP_USAGE_HOLD_SECONDS     how much of the day's allowance a running sandbox reserves at a time,
  *                              and so how often its session reports to the user's actor (default 300,
  *                              five minutes; from 5 to 3600). Shortened by the checks
+ *   WLP_ITEMS=1                offer work items, the software factory, to every user of the deployment
+ *                              (default off). Off, `/api/items` answers as an unknown route does, the
+ *                              user actor's item and API token actions throw `items_off`, and platform
+ *                              info has no `items`: each of those entry points reads `config.items`
+ *                              once, and nothing else does. The `workItem` actors and the tables are
+ *                              there either way, and an item that exists goes on with its steps, so
+ *                              turning it off and on again loses nothing; while it is off, nobody can
+ *                              file, read or act on an item
  *   WLP_FACTORY_RUNNING_TURNS  the software factory's limits for every user (factory/budget.ts; the
  *   WLP_FACTORY_TURNS          defaults are FACTORY_DEFAULTS there): turns of a user running at once,
  *   WLP_FACTORY_HOSTED_RUNNING the factory's and the user's own (default 6, also the ceiling of a
@@ -280,6 +288,8 @@ export interface Config {
 	usage: UsageLimits;
 	/** The software factory's limits, the same for every user (WLP_FACTORY_*). */
 	factory: FactoryLimits;
+	/** Whether users may file work items (WLP_ITEMS=1). */
+	items: boolean;
 }
 
 function readSandboxMode(): SandboxMode {
@@ -643,4 +653,5 @@ export const config: Config = {
 		holdSeconds: readCount("WLP_USAGE_HOLD_SECONDS", DEFAULT_HOLD_SECONDS, 5, 3_600, false) ?? DEFAULT_HOLD_SECONDS,
 	},
 	factory: readFactory(),
+	items: process.env.WLP_ITEMS === "1",
 };

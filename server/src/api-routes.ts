@@ -16,7 +16,7 @@
 import { createClient } from "rivetkit/client";
 import { bearerOf, tokenOwner } from "./api-tokens.js";
 import { describeError } from "./auth.js";
-import { ownEngineEndpoint } from "./config.js";
+import { config, ownEngineEndpoint } from "./config.js";
 import type { CreateItemInput } from "./contract.js";
 import type { Registry } from "./registry.js";
 import { issueServiceToken } from "./tokens.js";
@@ -50,7 +50,8 @@ async function readJson(request: Request): Promise<{ value: unknown } | Response
 export async function apiRoute(request: Request): Promise<Response | null> {
 	const { pathname } = new URL(request.url);
 	const one = /^\/api\/items\/([A-Za-z0-9_]{1,64})$/.exec(pathname);
-	if (pathname !== API_ITEMS_PATH && !one) return pathname.startsWith("/api/") ? json(404, { code: "not_found", message: "There is no such route." }) : null;
+	// Without work items on this deployment (WLP_ITEMS) these are unknown routes too, decided before any token is read.
+	if (!config.items || (pathname !== API_ITEMS_PATH && !one)) return pathname.startsWith("/api/") ? json(404, { code: "not_found", message: "There is no such route." }) : null;
 	const token = bearerOf(request) ?? "";
 	const owner = tokenOwner(token);
 	if (!owner) return json(401, { code: "invalid_token", message: "Send an API token: Authorization: Bearer wlp_…" });

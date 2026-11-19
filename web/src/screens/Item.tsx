@@ -82,8 +82,8 @@ interface ItemPage {
 	replace(view: ItemView): void;
 }
 
-/** One item: read when the page opens, and again when the user's feed says it changed or comes back after a drop. */
-export function useItem(id: string): ItemPage {
+/** One item: read when the page opens, and again when the user's feed says it changed or comes back after a drop. `enabled` false asks nothing, as `useItems`. */
+export function useItem(id: string, enabled = true): ItemPage {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [state, setState] = useState<{ view: ItemView | null; error: string | null; missing: boolean }>({ view: null, error: null, missing: false });
@@ -112,6 +112,7 @@ export function useItem(id: string): ItemPage {
 	}, []);
 
 	useEffect(() => {
+		if (!enabled) return;
 		reload();
 		let connected = false;
 		const close = client.user(auth).watch({
@@ -130,7 +131,7 @@ export function useItem(id: string): ItemPage {
 			asked.current += 1;
 			close();
 		};
-	}, [client, auth, id, reload]);
+	}, [client, auth, id, reload, enabled]);
 
 	return { ...state, reload, replace };
 }

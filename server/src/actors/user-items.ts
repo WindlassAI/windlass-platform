@@ -465,14 +465,21 @@ async function apiCaller(c: ItemsCtx, token: unknown, scope: ApiTokenScope): Pro
 // The actions
 // ---------------------------------------------------------------------------------------------
 
+/** The switch for work items (WLP_ITEMS), read by each of the person's actions on items and API tokens as the machines' are. */
+function enabled(): void {
+	if (!config.items) throw new UserError("Work items are not available on this platform.", { code: "items_off" });
+}
+
 export const itemActions = {
 	listItems: (c: ItemsCtx): ItemSummary[] => {
 		requireUser(c);
+		enabled();
 		return itemList(c.vars.items);
 	},
 
 	item: async (c: ItemsCtx, id: string): Promise<ItemView> => {
 		requireUser(c);
+		enabled();
 		knownItem(c, id);
 		try {
 			return await itemView(c, id);
@@ -481,16 +488,22 @@ export const itemActions = {
 		}
 	},
 
-	createItem: async (c: ItemsCtx, input: CreateItemInput, makeSession: MakeSession): Promise<ItemSummary> => fileItem(c, requireUser(c), input, "web", makeSession),
+	createItem: async (c: ItemsCtx, input: CreateItemInput, makeSession: MakeSession): Promise<ItemSummary> => {
+		const profile = requireUser(c);
+		enabled();
+		return fileItem(c, profile, input, "web", makeSession);
+	},
 
 	actOnItem: async (c: ItemsCtx, input: { id: string; action: ItemAction }): Promise<ItemView> => {
 		const profile = requireUser(c);
+		enabled();
 		knownItem(c, input?.id);
 		const view = await itemActor(c, profile.uid, input.id).internalAct({ action: input.action, by: `person:${profile.uid}` });
 		await noteItem(c, view);
 		return view;
 	},
 
+	// Answered with work items off too: the ceiling on running agents among these holds for a person's own agents as well.
 	factoryLimits: (c: ItemsCtx): FactoryLimits => {
 		requireUser(c);
 		return config.factory;
@@ -498,11 +511,13 @@ export const itemActions = {
 
 	apiTokens: async (c: ItemsCtx): Promise<ApiToken[]> => {
 		requireUser(c);
+		enabled();
 		return await listApiTokens(c.db);
 	},
 
 	createApiToken: async (c: ItemsCtx, input: { name: string; scopes: ApiTokenScope[] }): Promise<{ token: ApiToken; secret: string }> => {
 		const profile = requireUser(c);
+		enabled();
 		const made = await tokenInput(() => createApiToken(c.db, profile.uid, input, Date.now()));
 		console.log(`[wlp] api_token.created uid=${profile.uid} token=${made.token.id} scopes=${made.token.scopes.join(",")}`);
 		return made;
@@ -510,6 +525,7 @@ export const itemActions = {
 
 	revokeApiToken: async (c: ItemsCtx, id: string): Promise<ApiToken[]> => {
 		const profile = requireUser(c);
+		enabled();
 		await revokeApiToken(c.db, id);
 		console.log(`[wlp] api_token.revoked uid=${profile.uid} token=${String(id).slice(0, 40)}`);
 		return await listApiTokens(c.db);

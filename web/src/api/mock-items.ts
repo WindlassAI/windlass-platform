@@ -47,9 +47,11 @@ import { PlatformError, type UserApi, type UserFeed } from "./client";
  * How the user's work items stand when the page loads (`?items=`): "all" (the default: every state,
  * wait, question and verdict, on three repositories), "few" (three questions on two repositories and
  * little else), "none" (no item and no API token), "full" (all of them, and as many API tokens as an
- * account may have), "loading" (nothing is ever answered) and "failed" (nothing can be read).
+ * account may have), "loading" (nothing is ever answered), "failed" (nothing can be read) and "off"
+ * (the deployment offers no work items: platform info has no `items`, and every call here but
+ * `factoryLimits` is refused with `items_off`, as server/src/actors/user-items.ts refuses them without WLP_ITEMS).
  */
-export const MOCK_ITEMS_STATES = ["all", "few", "none", "full", "loading", "failed"] as const;
+export const MOCK_ITEMS_STATES = ["all", "few", "none", "full", "loading", "failed", "off"] as const;
 export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 
 export interface MockItemsDeps {
@@ -443,7 +445,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		},
 	];
 
-	if (state === "none" || state === "loading" || state === "failed") return [];
+	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
 	if (state === "few") return all.filter((seed) => [3, 18, 21, 22, 24].includes(seed.n));
 	return all;
 
@@ -676,7 +678,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 const summaryOf = ({ task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, ...summary }: ItemView): ItemSummary => summary;
 
 function seedTokens(state: MockItemsState, at: number): ApiToken[] {
-	if (state === "none" || state === "loading" || state === "failed") return [];
+	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
 	const seeded: ApiToken[] = [
 		{ id: "tok_ci", name: "Nightly triage script", scopes: ["items:create", "items:read"], createdAt: at - 9 * 24 * HOUR, usedAt: Math.floor((at - 3 * HOUR) / MINUTE) * MINUTE },
 		{ id: "tok_dash", name: "Status dashboard", scopes: ["items:read"], createdAt: at - 2 * 24 * HOUR, usedAt: null },
@@ -714,6 +716,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		if (state === "loading") await new Promise<never>(() => undefined);
 		await deps.latency(ms);
 		if (state === "failed") throw new PlatformError("network", "The platform could not be reached. Check your connection.");
+		if (state === "off") throw new PlatformError("user", "Work items are not available on this platform.", { reason: "items_off" });
 	}
 
 	function changed(auth: AuthResult): void {
@@ -867,8 +870,10 @@ export function createMockItems(deps: MockItemsDeps) {
 				act(auth, item, action);
 				return structuredClone(item);
 			},
+			// Answered without work items too, as the server answers it: the ceiling on running agents is every agent's.
 			async factoryLimits() {
-				await answer(160);
+				if (state === "off") await deps.latency(160);
+				else await answer(160);
 				return structuredClone(MOCK_FACTORY_LIMITS);
 			},
 			async apiTokens() {

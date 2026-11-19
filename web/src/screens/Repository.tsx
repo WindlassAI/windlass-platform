@@ -328,7 +328,8 @@ function Work({ page }: { page: RepositoryPage }) {
  * answer, when an agent on the repository or one of its work items does.
  */
 function WorkLabel({ repositoryId, sessions }: { repositoryId: number; sessions: SessionSummary[] | null }) {
-	const items = useItems();
+	const { platform } = useApp();
+	const items = useItems(Boolean(platform.info?.items));
 	const asks = (sessions ?? []).some((session) => session.status === "waiting") || (items.list ?? []).some((item) => item.repository.id === repositoryId && item.question !== null);
 	return (
 		<>

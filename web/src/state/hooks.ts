@@ -143,12 +143,13 @@ export function useChatgpt(): { status: ChatgptStatus | null; error: string | nu
 	return { status, error };
 }
 
-/** The factory's limits for the user, the deployment's settings: read once when the screen opens. */
-export function useFactoryLimits(): { value: FactoryLimits | null; error: string | null } {
+/** The factory's limits for the user, the deployment's settings: read once when the screen opens. `enabled` false asks nothing, as `useItems`. */
+export function useFactoryLimits(enabled = true): { value: FactoryLimits | null; error: string | null } {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [limits, setLimits] = useState<{ value: FactoryLimits | null; error: string | null }>({ value: null, error: null });
 	useEffect(() => {
+		if (!enabled) return;
 		let current = true;
 		client
 			.user(auth)
@@ -160,7 +161,7 @@ export function useFactoryLimits(): { value: FactoryLimits | null; error: string
 		return () => {
 			current = false;
 		};
-	}, [client, auth, explain]);
+	}, [client, auth, explain, enabled]);
 	return limits;
 }
 

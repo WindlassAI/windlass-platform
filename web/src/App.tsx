@@ -51,7 +51,10 @@ function SessionRoute({ sessionId, theme, onToggleTheme }: { sessionId: string; 
 /** A repository's page, and the launch form over it when the address asks for one with that repository chosen. */
 /** A work item's page, with the way back to its repository. */
 function ItemRoute({ itemId, theme, onToggleTheme }: { itemId: string; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
-	const page = useItem(itemId);
+	const { platform } = useApp();
+	// Asked once the deployment says it offers work items (without them the page is not found); until then it is loading, or says why it is not.
+	const item = useItem(itemId, Boolean(platform.info?.items));
+	const page = platform.info === null && platform.error ? { ...item, error: platform.error, reload: platform.reload } : item;
 	const title = page.view?.title ?? null;
 	const asks = Boolean(page.view?.question);
 	useEffect(() => {
@@ -92,6 +95,8 @@ export function App() {
 	const needsAuth = route.name === "home" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "machines" || route.name === "session" || route.name === "item" || route.name === "repository";
 	/** A deployment that does not offer machines has no such page. While its information loads, the page says it is loading. */
 	const noMachines = route.name === "machines" && auth !== null && platform.info !== null && !platform.info.machines;
+	/** Nor one that does not offer work items an item's page. */
+	const noItems = route.name === "item" && auth !== null && platform.info !== null && !platform.info.items;
 	/** The repository whose page is shown: its own address, or the launch form's over it. */
 	const repositoryId = route.name === "repository" ? route.id : route.name === "new" ? (route.repository ?? null) : null;
 	useEffect(() => {
@@ -100,12 +105,12 @@ export function App() {
 	}, [needsAuth, auth, route.name]);
 
 	useEffect(() => {
-		if (route.name !== "session" && route.name !== "item" && repositoryId === null) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : "Agents · Windlass";
-	}, [route.name, repositoryId, noMachines]);
+		if ((route.name !== "session" && route.name !== "item" && repositoryId === null) || noItems) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines || noItems ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : "Agents · Windlass";
+	}, [route.name, repositoryId, noMachines, noItems]);
 
 	if (route.name === "mock-authorize" && client.kind === "mock") return <MockAuthorize />;
 
-	if (route.name === "notfound" || route.name === "mock-authorize" || noMachines) {
+	if (route.name === "notfound" || route.name === "mock-authorize" || noMachines || noItems) {
 		return (
 			<div className="app">
 				<TopBar theme={theme} onToggleTheme={toggleTheme} />

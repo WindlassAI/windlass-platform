@@ -140,7 +140,7 @@ export function Settings() {
 				</section>
 			) : null}
 
-			<ApiTokens />
+			{info?.items ? <ApiTokens /> : null}
 		</main>
 	);
 }

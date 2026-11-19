@@ -75,6 +75,11 @@ export interface PlatformInfo {
 	 * when not: the web app then shows nothing of it, and /machines is not found.
 	 */
 	machines?: MachinesInfo;
+	/**
+	 * Set when users of this deployment may file work items (WLP_ITEMS=1). Absent when not: the web app
+	 * then shows nothing of them, and the item and API token actions are refused with `items_off`.
+	 */
+	items?: true;
 }
 
 /**

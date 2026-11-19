@@ -108,6 +108,8 @@ class Server {
 			WLP_HTTP_PORT: String(HTTP_PORT),
 			WLP_WEB_ORIGINS: ORIGIN,
 			WLP_FAKE_DELAY_MS: "10",
+			// Work items are off unless a deployment turns them on (config.ts): these servers do, but the last.
+			WLP_ITEMS: "1",
 			WLP_DAILY_SANDBOX_SECONDS: "unlimited",
 			WLP_MAX_KEPT_SANDBOXES: "unlimited",
 			...env,
@@ -268,6 +270,12 @@ try {
 		const kept = await refused(() => user.deleteSession(session.id), "item_session");
 		assert(kept.includes("“Write a short program”"), `the refusal says: ${kept}`);
 		return `${first.id}, session ${first.sessionId}; two tokens, the list holds no value`;
+	});
+
+	await check("on: with WLP_ITEMS=1 platform info says items are offered", async () => {
+		const info = (await (await fetch(`${API}/platform/info`)).json()) as { items?: unknown };
+		assert(info.items === true, `platform info has items: ${JSON.stringify(info.items)}`);
+		return "items: true";
 	});
 
 	await check("api: a machine place is refused with a sentence", async () => {
@@ -488,6 +496,37 @@ try {
 } finally {
 	await spent.stop();
 	spent.remove();
+}
+
+// With the switch off (WLP_ITEMS unset, the default): the routes are unknown, the actions refused, and platform info says nothing of items.
+const off = new Server();
+try {
+	const { user } = await world(off, standin, { WLP_ITEMS: "" });
+	await check("off: with WLP_ITEMS unset the routes are unknown, every item and API token action is refused, the limits are still answered, and platform info has no items", async () => {
+		const info = (await (await fetch(`${API}/platform/info`)).json()) as { items?: unknown };
+		assert(info.items === undefined, `platform info has items: ${JSON.stringify(info.items)}`);
+		// A token-shaped value: an unknown route answers before any token is looked at.
+		const shaped = `wlp_u_0123456789abcdef0123.${"A".repeat(43)}`;
+		const post = await api("/api/items", { method: "POST", body: "{}", token: shaped, key: "k" });
+		const get = await api("/api/items/i_0123456789abcdef", { token: shaped });
+		assert(post.status === 404 && post.body.code === "not_found" && get.status === 404 && get.body.code === "not_found", `the routes answered ${post.status} ${JSON.stringify(post.body)} and ${get.status} ${JSON.stringify(get.body)}`);
+		const said = await refused(() => user.listItems(), "items_off");
+		// The limits are still answered: the ceiling on running agents holds for a person's own agents too.
+		const limits = await user.factoryLimits();
+		assert(typeof limits.runningTurns === "number" && limits.runningTurns > 0, `the limits answered ${JSON.stringify(limits)}`);
+		await refused(() => user.apiTokens(), "items_off");
+		await refused(() => user.createApiToken({ name: "script", scopes: ["items:read"] }), "items_off");
+		await refused(() => user.revokeApiToken("tok_0123456789abcdef"), "items_off");
+		await refused(() => user.createItem({ repository: { id: harbor.id }, title: "Off", body: "Nothing.", start: true }), "items_off");
+		await refused(() => user.item("i_0123456789abcdef"), "items_off");
+		await refused(() => user.actOnItem({ id: "i_0123456789abcdef", action: { kind: "cancel" } }), "items_off");
+		const sessions = await user.listSessions();
+		assert(sessions.every((one) => !one.item), "a session of an item was made with the switch off");
+		return `routes 404 not_found; actions refused: “${said}”; platform info without items`;
+	});
+} finally {
+	await off.stop();
+	off.remove();
 	await standin.stop();
 }
 
