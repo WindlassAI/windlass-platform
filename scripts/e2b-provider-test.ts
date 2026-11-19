@@ -567,6 +567,7 @@ await section("settings and prices", async () => {
 	);
 	const set = readE2bSettings({ WLP_E2B_MAX_RUNNING: "1", WLP_E2B_DEPLOYMENT: "prod-1", WLP_E2B_IDLE_TIMEOUT_MS: "60000", WLP_E2B_PAUSE: "0", WLP_E2B_WINDLASS_SANDBOX: "1", WLP_TURN_TIMEOUT_MS: "600000", WLP_E2B_WINDLASS_VERSION: "0.1.1+abc" });
 	expect("every one of them is read from the environment", set.maxRunning === 1 && set.deployment === "prod-1" && set.idleTimeoutMs === 60_000 && !set.pause && set.windlassSandbox && set.turnLimitMs === 600_000 && set.windlassVersion === "0.1.1+abc");
+	expect("the turn limit is read as the server's own settings read it: the whole text as a number", readE2bSettings({ WLP_TURN_TIMEOUT_MS: "1e6" }).turnLimitMs === 1_000_000 && readE2bSettings({ WLP_TURN_TIMEOUT_MS: " 90000 " }).turnLimitMs === 90_000);
 	const rejects = (env: NodeJS.ProcessEnv) => {
 		try {
 			readE2bSettings(env);

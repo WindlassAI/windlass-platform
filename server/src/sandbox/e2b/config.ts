@@ -83,7 +83,9 @@ export function readE2bSettings(env: NodeJS.ProcessEnv = process.env): E2bSettin
 	if (!LABEL.test(deployment)) throw new Error(`WLP_E2B_DEPLOYMENT must be 1 to 64 letters, digits, "_" or "-"; got "${deployment}"`);
 	const template = (env.WLP_E2B_TEMPLATE ?? DEFAULT_TEMPLATE).trim();
 	if (template === "") throw new Error("WLP_E2B_TEMPLATE must not be empty");
-	const turnLimit = Number.parseInt(env.WLP_TURN_TIMEOUT_MS ?? "", 10);
+	// Read as config.ts reads it (`readDuration`): the whole text as a number, so "1e6" is a million here
+	// too and not 1. A value config.ts refuses stops the server before this matters.
+	const turnLimit = Math.floor(Number((env.WLP_TURN_TIMEOUT_MS ?? "").trim() || Number.NaN));
 	const version = (env.WLP_E2B_WINDLASS_VERSION ?? "").trim();
 	return {
 		template,
@@ -92,7 +94,7 @@ export function readE2bSettings(env: NodeJS.ProcessEnv = process.env): E2bSettin
 		idleTimeoutMs: integer(env, "WLP_E2B_IDLE_TIMEOUT_MS", DEFAULT_IDLE_TIMEOUT_MS, 30_000, 30 * 60_000),
 		turnLeaseMs: integer(env, "WLP_E2B_TURN_LEASE_MS", DEFAULT_TURN_LEASE_MS, 60_000, 30 * 60_000),
 		maxRuntimeMs: integer(env, "WLP_E2B_MAX_RUNTIME_MS", DEFAULT_MAX_RUNTIME_MS, 10 * 60_000, 24 * 60 * 60_000),
-		turnLimitMs: Number.isFinite(turnLimit) && turnLimit > 0 ? turnLimit : DEFAULT_TURN_LIMIT_MS,
+		turnLimitMs: Number.isFinite(turnLimit) && turnLimit >= 1_000 ? turnLimit : DEFAULT_TURN_LIMIT_MS,
 		pause: flag(env, "WLP_E2B_PAUSE", true),
 		windlassSandbox: flag(env, "WLP_E2B_WINDLASS_SANDBOX", false),
 		openProfile: flag(env, "WLP_E2B_OPEN_PROFILE", false),
