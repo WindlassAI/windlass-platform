@@ -1,0 +1,458 @@
+/** Build locally with scripts/runner-build.sh, then run: flock /tmp/wlp-test.lock server/node_modules/.bin/tsx scripts/runner-check.ts
+ * The five-minute Wi-Fi outage and two-minute laptop sleep are wall time.
+ */
+import assert from "node:assert/strict";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { createHash, createPublicKey, randomBytes, randomUUID } from "node:crypto";
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { setTimeout as wait } from "node:timers/promises";
+import { promisify } from "node:util";
+import { AcpConnection, LineSplitter } from "../server/src/sandbox/acp.js";
+import { docker, LABEL_ARG, MACHINE_LABEL } from "../server/src/sandbox/docker.js";
+import { containerName, DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
+import { tokenFilePath } from "../server/src/sandbox/token-file.js";
+import { PAIRING_TTL_MS, REFUSED_RETRY_MS, refuse, type Refusal } from "../server/src/runner/control.js";
+import { RUNNER_GRACE_MS } from "../server/src/runner/protocol.js";
+import { ConversationLost, ServerChannel } from "../server/src/runner/channel.js";
+import { stub, until } from "./runner-stub-server.js";
+
+const root = fileURLToPath(new URL("../", import.meta.url));
+const tmp = await mkdtemp(join(tmpdir(), "wlp-runner-check-"));
+const state = join(tmp, "state");
+const bundle = join(tmp, "runner.cjs");
+const exec = promisify(execFile);
+const ok = (s: string) => console.log("PASS  " + s);
+const children = new Set<ChildProcess>();
+const env = (dir: string) => ({ PATH: process.env.PATH, HOME: tmp, RIVET_LOG_LEVEL: "silent", WLP_RUNNER_STATE_DIR: dir });
+async function stop(p: ChildProcess, signal: NodeJS.Signals = "SIGTERM") {
+	if (p.exitCode !== null || p.signalCode) return;
+	const closed = new Promise<void>(resolve => p.once("exit", () => resolve()));
+	p.kill("SIGCONT"); p.kill(signal);
+	const timer = setTimeout(() => p.kill("SIGKILL"), 12_000);
+	try { await closed; } finally { clearTimeout(timer); }
+}
+async function scripted(ch: ServerChannel, id: string, interrupt: () => Promise<void>, resume?: string) {
+	const fixture = JSON.parse(await readFile(join(root, "fixtures/acp-probe/script.json"), "utf8"));
+	fixture.responses.shift(); // omit the network example; the shell step is local
+	const path = "/workspace/fixture.json";
+	await ch.request("writeTextFile", { id, path, content: JSON.stringify(fixture) });
+	const events: string[] = [], seq = new Set<number>();
+	let duplicates = 0;
+	let dropped: Promise<void> | undefined;
+	const acp = new AcpConnection(line => ch.write(process.id, line + "\n"), {
+		async request() { return { outcome: { outcome: "cancelled" } }; },
+		notification(method, params) {
+			if (method !== "_windlass/event") return;
+			const e = params.event as { type: string; seq?: number };
+			if (e.seq !== undefined) { if (seq.has(e.seq)) duplicates++; seq.add(e.seq); }
+			events.push(e.type);
+			if (!dropped && e.type === "tool.started") dropped = interrupt();
+		},
+	}, "windlass");
+	const lines = new LineSplitter(line => acp.receive(line));
+	const process = ch.start({ id, argv: ["windlass", "acp"], tag: "fixture", options: { env: { WINDLASS_ACP_SCRIPT: path } } }, (fd, s) => { if (fd === 1) lines.push(s); });
+	const call = <T>(method: string, params: Record<string, unknown>) => acp.request<T>(method, params, { timeoutMs: 430_000 });
+	await call("initialize", { protocolVersion: 1, clientInfo: { name: "runner-check", version: "1" }, clientCapabilities: { _meta: { windlass: { events: true, updates: false } } } });
+	const params = { cwd: "/workspace", mcpServers: [], _meta: { windlass: { approval: "full", attended: true } } };
+	const opened = await call<{ sessionId: string }>(resume ? "session/resume" : "session/new", { ...params, ...(resume ? { sessionId: resume } : {}) });
+	const sessionId = resume ?? opened.sessionId;
+	const result = await call<{ stopReason: string }>("session/prompt", { sessionId, prompt: [{ type: "text", text: "Run the local fixture." }] });
+	await dropped;
+	assert.ok(dropped); assert.ok(events.includes("execution.succeeded")); assert.equal(duplicates, 0); assert.equal(result.stopReason, "end_turn");
+	await call("session/close", { sessionId }); ch.closeIn(process.id);
+	assert.equal((await process.ended).code, 0);
+	return sessionId;
+}
+// One integration against the actual platform routes, user and machine actors. The demo
+// account has no GitHub link, so this also exercises the nullable login in PairStatus.
+async function realMachine() {
+	const port = 6900;
+	const endpoint = "http://127.0.0.1:" + port;
+	const platform = "http://127.0.0.1:" + (port + 20);
+	for (const n of [port, port + 1, port + 10, port + 20]) await new Promise<void>((resolve, reject) => {
+		const s = createServer(); s.once("error", reject); s.listen(n, "127.0.0.1", () => s.close(() => resolve()));
+	});
+	const node = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
+		cwd: join(root, "server"), stdio: "ignore",
+		env: { PATH: process.env.PATH, HOME: process.env.HOME, WLP_SECRET: randomBytes(32).toString("hex"),
+			WLP_MACHINES: "1", WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_PUBLIC_URL: platform,
+			WLP_HTTP_PORT: String(port + 20), RIVET_RUN_ENGINE_PORT: String(port),
+			RIVET_LOG_LEVEL: "silent", RIVETKIT_STORAGE_PATH: join(tmp, "real-engine") },
+	});
+	const directory = join(tmp, "real-runner");
+	const name = "wlp-check-runner-" + randomBytes(6).toString("hex");
+	let service: ChildProcess | undefined;
+	try {
+		await until(async () => {
+			if (node.exitCode !== null) throw Error("Local platform exited during startup.");
+			return (await fetch(platform + "/health").catch(() => null))?.ok === true;
+		}, "Local platform did not start.", 90_000);
+		const { createClient } = await import("../server/src/client.js");
+		const client = createClient<import("../server/src/client.js").Registry>({ endpoint, namespace: "default" });
+		const auth = await client.login.getOrCreate([randomUUID()]).demo();
+		const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
+		await mkdir(directory, { mode: 0o700 });
+		const socket = "/var/run/docker.sock";
+		service = spawn("docker", ["run", "--rm", "--pull", "never", "--name", name, "--label", LABEL_ARG,
+			"--log-driver", "none", "--network", "host", "--user", `${process.getuid!()}:${process.getgid!()}`,
+			"--group-add", String((await stat(socket)).gid), "-e", "HOME=/tmp",
+			"-v", socket + ":" + socket, "-v", directory + ":/var/lib/windlass-runner", "windlass-runner:dev", "--platform", platform],
+			{ stdio: ["ignore", "pipe", "pipe"] });
+		service.stderr!.resume();
+		let output = "";
+		service.stdout!.on("data", chunk => { output += chunk; });
+		await until(() => /enter [A-Z0-9]{4}-[A-Z0-9]{4}/.test(output), "Real platform did not start pairing.");
+		const code = /enter ([A-Z0-9]{4}-[A-Z0-9]{4})/.exec(output)![1];
+		await user.claimMachine({ code }); const machine = await user.confirmMachine({ code });
+		await until(async () => (await user.machines()).some(m => m.machineId === machine.machineId && m.status === "online" && m.freeDiskBytes !== null),
+			"The real machine actor did not accept the runner's hello and report.", 60_000);
+		assert.match(output, /Paired with an account without a GitHub login/);
+		const publicKey = async () => createPublicKey(JSON.parse(await readFile(join(directory, "pair.json"), "utf8")).key).export({ type: "spki", format: "der" });
+		const formerKey = await publicKey();
+		await user.removeMachine({ machineId: machine.machineId, removeSandboxes: false });
+		await until(() => output.includes("was removed"), "Real actor removal did not reach the runner.");
+		assert.equal(service.exitCode, null);
+		async function pairThroughService() {
+			output = "";
+			const pairing = exec("docker", ["exec", name, "windlass-runner", "pair"], { timeout: 60_000 });
+			await until(() => /enter [A-Z0-9]{4}-[A-Z0-9]{4}/.test(output), "The local pair command did not start a fresh pairing.");
+			const code = /enter ([A-Z0-9]{4}-[A-Z0-9]{4})/.exec(output)![1];
+			await user.claimMachine({ code });
+			const paired = await user.confirmMachine({ code });
+			assert.match((await pairing).stdout, /Paired with/);
+			await until(async () => (await user.machines()).some(m => m.machineId === paired.machineId && m.status === "online"),
+				"The new pairing did not reconnect.");
+			return paired.machineId;
+		}
+		const replacement = await pairThroughService();
+		assert.notEqual(replacement, machine.machineId); assert.ok(!formerKey.equals(await publicKey()));
+		assert.notEqual(await pairThroughService(), replacement);
+		const status = await exec("docker", ["exec", name, "windlass-runner", "status"]);
+		for (const id of [machine.machineId, replacement]) assert.ok(status.stdout.includes(id + " (previous pairing)"));
+		ok("The packaged runner pairs against the real actor, parks on removal, and accepts a local pair command both while parked and while online.");
+
+	} finally {
+		if (service) { await stop(service); await docker(["rm", "-f", name]); }
+		await stop(node);
+	}
+}
+async function check(image: string) {
+	const srv = await stub(join(tmp, "engine"));
+	const { machineId, uid, sessionId } = srv;
+	const hostedRaw = randomBytes(6).toString("hex");
+	const hostedName = containerName(hostedRaw);
+	const marker = "dev.windlass-platform.check=" + randomBytes(6).toString("hex");
+	const ownedFilters = ["--filter", "label=" + LABEL_ARG, "--filter", "label=" + MACHINE_LABEL + "=" + machineId];
+	const testClock = join(tmp, "owner-clock.cjs");
+	await writeFile(testClock, `const timers = require("node:timers/promises"); const wait = timers.setTimeout;
+timers.setTimeout = (ms, ...args) => wait(ms === ${REFUSED_RETRY_MS} ? 3500 : ms, ...args);
+const timeout = AbortSignal.timeout.bind(AbortSignal);
+AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
+	function run(dir = state, preload?: string, program = bundle, dockerEnv: NodeJS.ProcessEnv = {}) {
+		const child = spawn(process.execPath, ["--require", testClock, ...(preload ? ["--require", preload] : []), program, "--platform", srv.platform, "--max-running", "1", "--max-sandboxes", "2"], { env: { ...env(dir), ...dockerEnv }, stdio: ["ignore", "pipe", "pipe"] });
+		let output = "";
+		child.stdout.on("data", s => { output += s; }); child.stderr.on("data", s => { output += s; });
+		children.add(child); child.once("exit", () => children.delete(child));
+		return { child, output: () => output };
+	}
+	async function cli(command: string, dir = state) { return (await exec(process.execPath, [bundle, command], { env: env(dir), timeout: 20_000 })).stdout; }
+	let hosted = false;
+	try {
+		await mkdir(state, { mode: 0o700 });
+		const expiredAudit = join(state, "audit-2000-01-01.jsonl");
+		await writeFile(expiredAudit, "old", { mode: 0o600 });
+		srv.state.pairingMode = "refused";
+		let service = run();
+		await until(() => service.output().includes("Pairing was refused"), "Pairing refusal did not park the runner.");
+		assert.equal(service.child.exitCode, null); assert.match(await cli("status"), /restart the container/);
+		srv.state.pairingMode = "gone";
+		assert.match(await cli("pair"), /pairing code expired/);
+		srv.state.pairingMode = "waiting";
+		assert.match(await cli("pair"), /pairing code expired/);
+		const parkedStarts = srv.state.pairStarts;
+		const parkedPolls = srv.state.pollFailures;
+		await wait(7000);
+		assert.equal(srv.state.pairStarts, parkedStarts); assert.equal(srv.state.pollFailures, parkedPolls);
+		assert.match(await cli("log"), /pairing code expired/);
+		srv.state.pairingMode = "approve";
+		assert.match(await cli("pair"), /Paired with runner-check/);
+		ok("Refused start, expired code and polling deadline all park the service. Only the owner's pair command obtains another code.");
+		await until(() => !!srv.state.report, "The runner did not pair and report.", 75_000);
+		assert.match(service.output(), /Paired with runner-check\. If that is not you, run `windlass-runner pair` again\./);
+		assert.ok(srv.state.pollFailures >= 2 && srv.state.clockRefusals > 0);
+		await assert.rejects(stat(expiredAudit), { code: "ENOENT" });
+		assert.equal((await stat(state)).mode & 0o777, 0o700); assert.equal((await stat(join(state, "pair.json"))).mode & 0o777, 0o600);
+		assert.equal((await readFile(join(state, "lock"), "utf8")).trim(), String(service.child.pid));
+		assert.equal(srv.state.report!.docker.ok, true);
+		const locked = run(); await until(() => locked.child.exitCode !== null, "Duplicate local process did not finish.");
+		assert.equal(locked.child.exitCode, 1); assert.match(locked.output(), /state lock/);
+		ok("Pairing retries a 503, identifies the account, protects the key and lock, and corrects a 30-minute clock error.");
+		const second = join(tmp, "second");
+		await mkdir(second, { mode: 0o700 }); await copyFile(join(state, "pair.json"), join(second, "pair.json"));
+		const duplicate = run(second);
+		await until(() => duplicate.output().includes("key-in-use"), "Copied key was not refused.");
+		assert.equal(duplicate.child.exitCode, null); assert.match(await cli("status", second), /key-in-use/);
+		await stop(duplicate.child);
+		ok("A second process with a copied key stays alive and the first stays online.");
+
+		const missing = join(tmp, "missing.cjs");
+		await exec(process.execPath, ["runner/bundle.mjs", "sha256:" + randomBytes(32).toString("hex"), missing], { cwd: root });
+		const bin = join(tmp, "bin");
+		await mkdir(bin);
+		// Only the df reading is forced low. All other Docker calls use the actual daemon.
+		await writeFile(join(bin, "docker"), `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "df" ]; then printf 'Avail\\n4999999999\\n'; exit 0; fi
+done
+PATH="$CHECK_DOCKER_PATH" exec docker "$@"
+`, { mode: 0o700 });
+		for (const fault of ["daemon", "image", "disk"] as const) {
+			await stop(service.child); await until(() => !srv.online(), "Test runner did not disconnect.");
+			srv.state.report = null;
+			const dockerEnv = fault === "daemon" ? { DOCKER_HOST: "unix://" + join(tmp, "missing.sock") } :
+				fault === "disk" ? { PATH: bin + ":" + env(state).PATH, CHECK_DOCKER_PATH: env(state).PATH } : {};
+			service = run(state, undefined, fault === "image" ? missing : bundle, dockerEnv);
+			await until(() => !!srv.state.report, "Missing machine-health report.");
+			if (fault === "daemon") {
+				assert.equal(srv.state.report!.docker.ok, false);
+			} else {
+				await srv.attach();
+				await assert.rejects(srv.channel(sessionId).request("create", { profile: "docker-hardened" }),
+					fault === "disk" ? /at least 5 GB free/ : /pinned sandbox image is missing/);
+				assert.equal((await docker(["ps", "-aq", ...ownedFilters])).stdout.trim(), "");
+			}
+		}
+		await stop(service.child); await until(() => !srv.online(), "Fault fixture stayed connected.");
+		srv.state.report = null; service = run(); await until(() => !!srv.state.report, "Healthy runner did not report again.");
+		ok("An unavailable daemon is reported, and a missing pin or less than 5 GB free prevents sandbox creation.");
+		await srv.attach();
+		let ch = srv.channel(sessionId);
+		let id: string;
+		try {
+			id = await ch.request("create", { profile: "docker-windlass-sandbox" });
+			ok("Bubblewrap starts in the created sandbox.");
+		} catch (error) {
+			assert.match((error as Error).message, /Bubblewrap could not start in the new sandbox/);
+			assert.equal(srv.state.report!.commandSandbox.ok, false, "Startup probe must reflect this kernel's create-time result.");
+			assert.equal((await docker(["ps", "-aq", ...ownedFilters])).stdout.trim(), "");
+			ok("This kernel refused the create-time bubblewrap probe; the runner removed the failed sandbox.");
+			id = await ch.request("create", { profile: "docker-hardened" });
+		}
+		const raw = id.slice(-12); assert.equal(id, "m" + machineId + "-" + raw);
+		const name = containerName(raw);
+		const [inspection] = JSON.parse((await docker(["inspect", name], { check: true })).stdout);
+		assert.equal(inspection.Config.Labels[MACHINE_LABEL], machineId);
+		assert.equal(inspection.Config.Labels["dev.windlass-platform.uid"], uid);
+		assert.equal(inspection.Config.Labels["dev.windlass-platform.session"], sessionId);
+		assert.equal(inspection.Config.Image, image); assert.equal(inspection.Config.User, "agent");
+		assert.equal(inspection.HostConfig.Privileged, false); assert.equal(inspection.HostConfig.Memory, 1536 * 1024 ** 2);
+		assert.deepEqual(inspection.HostConfig.CapDrop, ["ALL"]); assert.equal(inspection.HostConfig.PidsLimit, 512);
+		assert.equal(inspection.Mounts.length, 1); assert.equal(inspection.Mounts[0].Type, "volume");
+		assert.notEqual(inspection.Mounts[0].Name, "wlp-user-" + uid);
+		await assert.rejects(ch.request("create", { profile: "docker-hardened" }), /limit on running/);
+		await ch.request("writeTextFile", { id, path: "/tmp/runner-file", content: "survives suspend" });
+		await ch.request("writeSecretFile", { id, path: "/tmp/private-fixture", content: "ordinary fixture" });
+		assert.equal((await ch.request("ask", { id, argv: ["stat", "-c", "%a", "/tmp/private-fixture"] }))?.stdout.trim(), "600");
+		assert.equal((await ch.request("run", { id, command: "pwd", options: { cwd: "/tmp" } })).stdout.trim(), "/tmp");
+		await ch.request("removeFiles", { id, paths: ["/tmp/private-fixture"] });
+		await assert.rejects(ch.request("readTextFile", { id, path: "/tmp/absent-file" }), /cannot read.*absent-file/);
+		assert.equal(srv.state.lastErrorKind, "sandbox");
+		const log = await cli("log");
+		assert.ok(!log.includes("ordinary fixture") && !log.includes("/tmp/private-fixture") && !log.includes("PRIVATE KEY"));
+		await ch.request("suspend", { id }); assert.equal(await ch.request("state", { id }), "paused");
+		assert.equal((await ch.request("connect", { id }))?.cwd, "/workspace");
+		assert.equal(await ch.request("readTextFile", { id, path: "/tmp/runner-file" }), "survives suspend");
+		ok("Create, read, write, ask, run, suspend and resume use the pinned image, local limits and labelled volume.");
+
+		await srv.attach(srv.other);
+		await assert.rejects(srv.channel(srv.other).request("run", { id, command: "touch /tmp/wrong-session" }), /another session/);
+		assert.equal(srv.state.lastErrorKind, "refused");
+		srv.corruptNext("unknown");
+		await assert.rejects(ch.request("run", { id, command: "touch /tmp/unknown-op" }), /does not serve/);
+		srv.corruptNext("create");
+		await assert.rejects(ch.request("create", { profile: "docker-hardened" }), /does not serve/);
+		assert.equal((await ch.request("run", { id, command: "test ! -e /tmp/wrong-session && test ! -e /tmp/unknown-op" })).exitCode, 0);
+		await docker(["run", "-d", "--name", hostedName, "--label", LABEL_ARG, "--label", marker, "--label", "dev.windlass-platform.uid=" + uid, image, "sleep", "infinity"], { check: true });
+		hosted = true;
+		const foreign = "m" + machineId + "-" + hostedRaw;
+		await assert.rejects(ch.request("destroy", { id: foreign }), /does not belong/);
+		await assert.rejects(ch.request("run", { id: foreign, command: "touch /tmp/touched" }), /owned/);
+		const hostedProvider = new DockerSandboxes({ machine: null, dataVolume: async () => { throw Error("unexpected create"); } });
+		assert.deepEqual((await hostedProvider.list(uid)).map(x => x.id), [hostedRaw]);
+		assert.ok(!(await cli("status")).includes(hostedRaw)); assert.equal((await docker(["exec", hostedName, "test", "!", "-e", "/tmp/touched"])).code, 0);
+		srv.detach(srv.other); srv.incompatible(srv.other);
+		srv.ticket(srv.other);
+		await until(async () => (await cli("log")).includes("speaks protocol 0"), "The session refusal was not logged.");
+		const opened = srv.opened.get(srv.other);
+		srv.ticket(srv.other); await wait(1500);
+		assert.equal(srv.opened.get(srv.other), opened);
+		ok("A protocol-refused session ignores subsequent tickets while the control socket stays online.");
+		ok("Cross-session, hosted and unknown operations are refused. Hosted and runner inventories are disjoint.");
+
+		let output = "";
+		const stopped = ch.start({ id, tag: "stopme", argv: ["sh", "-c", "echo ready; sleep 120"] }, (_, s) => { output += s; });
+		await until(() => output.includes("ready"), "The process did not stream output.");
+		await srv.attach(); // A new ticket takes over the live socket with this process still outstanding.
+		assert.ok((await ch.request("ask", { id, argv: ["wlp-run", "list", "stopme"] }))?.stdout.trim());
+		await ch.request("signal", { process: stopped.id, sig: "TERM", who: "all" }); await stopped.ended;
+		const abort = new AbortController();
+		const cancelled = await ch.request("run", { id, command: "echo ready; sleep 120" }, { signal: abort.signal, onOutput: () => abort.abort() });
+		assert.equal(cancelled.aborted, true); assert.equal(cancelled.timedOut, false);
+		ok("The server's tag identifies the process. Signalling stops it and cancel aborts a run.");
+
+		// The marker is after the final blocking write: it cannot exist while the runner's pipes are paused.
+		srv.acks(false);
+		const hash = createHash("sha256"); let bytes = 0;
+		const stream = ch.start({ id, tag: "pressure", argv: ["sh", "-c", "seq -f '%09.0f' 0 2097151; touch /tmp/writer-finished"] }, (_, data) => { hash.update(data); bytes += data.length; });
+		// The window counts encoded frames, including JSON escapes for these newlines.
+		// Observe the writer coming to rest without assuming eight MiB of payload fit.
+		let lastBytes = 0, changed = Date.now();
+		await until(() => {
+			if (bytes !== lastBytes) { lastBytes = bytes; changed = Date.now(); }
+			return bytes >= 4 * 1024 ** 2 && Date.now() - changed > 1200;
+		}, "The source did not stall with acknowledgements withheld.");
+		assert.equal((await docker(["exec", name, "test", "!", "-e", "/tmp/writer-finished"])).code, 0);
+		const peak = bytes; await wait(1000); assert.equal(bytes, peak);
+		srv.cut(); srv.acks(true); await wait(5000); srv.restore();
+		assert.equal((await stream.ended).code, 0); assert.equal(bytes, 20 * 1024 ** 2);
+		const expected = createHash("sha256");
+		for (let n = 0; n < 2_097_152; n++) expected.update(String(n).padStart(9, "0") + "\n");
+		assert.equal(hash.digest("hex"), expected.digest("hex"));
+		ok("Withheld receipts block the container writer. After a real TCP cut all 20 MiB arrive once and in order.");
+
+		const tokenPath = tokenFilePath(id);
+		await ch.request("writeTextFile", { id, path: tokenPath, content: "fixture" });
+		srv.send({ kind: "logout" });
+		await until(async () => (await ch.request("ask", { id, argv: ["test", "!", "-e", tokenPath] }))?.code === 0, "Logout left the token file.");
+		await ch.request("holdForTurn", { id });
+		let running = false;
+		const oldRun = ch.request("run", { id, command: "echo ready; sleep 3; touch /tmp/orphan-finished" }, { onOutput: () => { running = true; } });
+		const lost = assert.rejects(oldRun, ConversationLost);
+		const acp = ch.start({ id, tag: "orphan", argv: ["windlass", "acp"] }, () => {});
+		await until(async () => running && !!(await docker(["exec", name, "wlp-run", "list", "orphan"])).stdout.trim(), "Orphan fixture did not start.");
+		srv.reset(); await srv.attach(); ch = srv.channel(sessionId);
+		await lost; assert.ok((await acp.ended).error instanceof ConversationLost);
+		await until(async () => !(await docker(["exec", name, "wlp-run", "list", "orphan"])).stdout.trim(), "Reset left Windlass running.");
+		await until(async () => (await docker(["exec", name, "test", "-e", "/tmp/orphan-finished"])).code === 0, "Reset killed an independent run.");
+		ok("Control logout removes the turn file. A fresh conversation closes Windlass and lets an independent command finish.");
+
+		let windlass: string | undefined;
+		for (const [duration, freeze] of [[5000, false], [300_000, false], [120_000, true]] as const) {
+			windlass = await scripted(ch, id, async () => {
+				srv.cut();
+				if (freeze) { service.child.kill("SIGSTOP"); await docker(["pause", name], { check: true }); }
+				try { await wait(duration); }
+				finally { if (freeze) { await docker(["unpause", name], { check: true }); service.child.kill("SIGCONT"); } srv.restore(); }
+			}, windlass);
+			ok(`A scripted Windlass turn finished with unique events across a ${duration / 1000}s ${freeze ? "laptop sleep" : "network loss"}.`);
+		}
+
+		const crash = ch.start({ id, tag: "crash", argv: ["sh", "-c", "sleep 120 | windlass acp"] }, () => {});
+		await until(async () => !!(await docker(["exec", name, "wlp-run", "list", "crash"])).stdout.trim(), "Crash fixture did not start.");
+		const epoch = srv.state.epoch;
+		await stop(service.child, "SIGKILL"); await until(() => !srv.online(), "Killed runner stayed online.");
+		srv.state.report = null; srv.state.idleMs = 2000;
+		// Section 9 row 2 uses a one-minute grace. Shorten only that timer in the test
+		// process and restarted runner; the released runner has no timing override.
+		const clock = join(tmp, "grace.cjs");
+		await writeFile(clock, `const timer = global.setTimeout; global.setTimeout = (fn, ms, ...args) => timer(fn, ms === ${RUNNER_GRACE_MS} ? 60000 : ms, ...args);\n`);
+		service = run(state, clock);
+		await until(() => srv.state.epoch !== epoch && !!srv.state.report, "Restart did not report.");
+		assert.ok((await crash.ended).error instanceof ConversationLost);
+		assert.ok(srv.state.report!.sandboxes.some(b => b.id === id)); assert.ok(!srv.state.report!.sandboxes.some(b => b.id === foreign));
+		assert.ok(await ch.request("stopLeftovers", { id, program: "windlass" }) > 0);
+		assert.equal(await ch.request("readTextFile", { id, path: "/tmp/runner-file" }), "survives suspend");
+		const orphan = ch.start({ id, tag: "longloss", argv: ["windlass", "acp"] }, () => {});
+		await ch.request("holdForTurn", { id });
+		await until(async () => !!(await docker(["exec", name, "wlp-run", "list", "longloss"])).stdout.trim(), "Long-outage fixture did not start.");
+		const timer = globalThis.setTimeout;
+		globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) =>
+			timer(fn, ms === RUNNER_GRACE_MS ? 60_000 : ms, ...args)) as typeof setTimeout;
+		try {
+			srv.cut();
+			await wait(90_000);
+			assert.ok((await orphan.ended).error instanceof ConversationLost);
+			await until(async () => (await docker(["inspect", "-f", "{{.State.Status}}", name])).stdout.trim() === "exited",
+				"The expired conversation kept its turn hold or Windlass process.");
+		} finally { globalThis.setTimeout = timer; srv.restore(); }
+		await until(() => ch.connected, "Fresh socket did not attach after the expired grace.", 90_000);
+		await ch.request("connect", { id });
+		assert.equal((await ch.request("ask", { id, argv: ["wlp-run", "list", "longloss"] }))?.stdout.trim(), "");
+		await scripted(ch, id, async () => {}, windlass);
+		ok("After grace plus 30 seconds the turn is lost, the hold drops, idle stops the sandbox, and Windlass resumes its saved session.");
+		srv.detach();
+		await until(async () => (await docker(["inspect", "-f", "{{.State.Status}}", name])).stdout.trim() === "exited", "Welcome idle time was ignored.");
+		await srv.attach(); await ch.request("connect", { id }); await ch.request("destroy", { id });
+		assert.equal(await ch.request("state", { id }), "none");
+		ok("SIGKILL loses the conversation. Restart recovers only owned containers, the next turn can stop leftovers, and welcome controls idle suspension.");
+
+		const remove = await ch.request("create", { profile: "docker-hardened" }); srv.send({ kind: "remove", sandbox: remove });
+		await until(() => srv.state.removed === remove, "Control removal not acknowledged.");
+		await ch.request("create", { profile: "docker-hardened" });
+		for (const refusal of [refuse("outdated", { runnerVersion: "0.0.9" }), refuse("bad-frame"), refuse("unknown"), { kind: "refused", reason: "other", message: "Account unavailable." } as Refusal]) {
+			srv.send(refusal);
+			await until(() => service.output().includes(refusal.message), "The refusal was not logged.");
+			assert.equal(service.child.exitCode, null); assert.ok((await cli("status")).includes(refusal.message));
+			assert.ok((await cli("log")).includes(refusal.reason));
+			const count = srv.state.connectionRequests;
+			await wait(1500); assert.equal(srv.state.connectionRequests, count);
+			await until(() => srv.online(), "Runner missed its slow retry.", 12_000);
+		}
+		async function expectParked() {
+			await until(async () => (await cli("status")).includes("was removed"), "Removal did not appear in status.");
+			assert.match(await cli("log"), /windlass-runner pair.*new key/);
+			assert.ok(JSON.parse(await readFile(join(state, "pair.json"), "utf8")).key === null);
+			const attempts = srv.state.connectionRequests, starts = srv.state.pairStarts;
+			await wait(7500); // More than twice this process's test REFUSED_RETRY_MS.
+			assert.equal(srv.state.connectionRequests, attempts); assert.equal(srv.state.pairStarts, starts);
+			assert.equal(service.child.exitCode, null);
+		}
+		srv.send(refuse("removed", { removeSandboxes: true }));
+		await expectParked();
+		assert.equal((await docker(["volume", "ls", "-q", ...ownedFilters])).stdout.trim(), "");
+		assert.equal((await docker(["ps", "-aq", ...ownedFilters])).stdout.trim(), "");
+		assert.match(await cli("pair"), /Paired with runner-check/);
+		await until(() => srv.online(), "Pairing again left the runner idle."); await srv.attach();
+		const kept = await ch.request("create", { profile: "docker-hardened" });
+		await stop(service.child);
+		srv.state.httpRefusal = "unknown"; service = run();
+		await until(() => service.output().includes("HTTP 403"), "HTTP refusal was not reported.");
+		assert.equal(service.child.exitCode, null); assert.match(await cli("status"), /unknown/);
+		srv.state.httpRefusal = "removed"; await expectParked();
+		assert.match(await cli("log"), /HTTP 410/);
+		await stop(service.child);
+		ok("Recoverable refusals retry slowly. Both forms of removal erase the key and park until the owner acts.");
+
+		const prune = spawn(process.execPath, [bundle, "prune"], { env: env(state), stdio: ["pipe", "ignore", "ignore"] });
+		prune.stdin.end("yes\n");
+		assert.equal(await new Promise(resolve => prune.on("exit", resolve)), 0);
+		assert.equal((await docker(["ps", "-aq", ...ownedFilters])).stdout.trim(), "");
+		assert.equal((await docker(["volume", "ls", "-q", ...ownedFilters])).stdout.trim(), "");
+		assert.equal((await docker(["inspect", containerName(kept.slice(-12))])).code === 0, false);
+		assert.equal((await docker(["inspect", "-f", "{{.State.Running}}", hostedName])).stdout.trim(), "true");
+		ok("Queued removal is acknowledged. Confirmed prune removes the machine's containers and volume and leaves hosted Docker intact.");
+	} finally {
+		for (const p of children) await stop(p);
+		await srv.close();
+		if (hosted) await docker(["rm", "-f", hostedName], { check: true });
+		for (const id of (await docker(["ps", "-aq", ...ownedFilters])).stdout.trim().split(/\s+/).filter(Boolean)) await docker(["rm", "-fv", id], { check: true });
+		for (const v of (await docker(["volume", "ls", "-q", ...ownedFilters])).stdout.trim().split(/\s+/).filter(Boolean)) await docker(["volume", "rm", v], { check: true });
+	}
+}
+try {
+	const image = (await docker(["image", "inspect", "--format", "{{.Id}}", "windlass-platform-sandbox:latest"], { check: true })).stdout.trim();
+	await exec(process.execPath, ["runner/bundle.mjs", image, bundle], { cwd: root });
+	if (!process.argv.includes("--real-machine")) await check(image);
+	await realMachine();
+} catch (error) {
+	// Client exceptions can contain signed URLs. Identify the failing assertion without replaying its arguments.
+	const where = error instanceof Error ? /runner-check\.ts:(\d+)/.exec(error.stack ?? "")?.[1] : undefined;
+	console.error(`FAIL  runner-check.ts line ${where ?? "unknown"}`);
+	process.exitCode = 1;
+} finally { await rm(tmp, { recursive: true, force: true }); }
+// The in-process Rivet native runtime retains worker handles after registry.shutdown().
+process.exit(process.exitCode ?? 0);

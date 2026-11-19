@@ -1,0 +1,17 @@
+{
+  "name": "@windlass-platform/runner",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "rivetkit": "3.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "0.28.2",
+    "typescript": "^5.6.0"
+  }
+}

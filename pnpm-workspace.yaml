@@ -1,5 +1,6 @@
 packages:
   - server
+  - runner
   - web
 allowBuilds:
   esbuild: true
