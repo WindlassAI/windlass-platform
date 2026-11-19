@@ -451,8 +451,9 @@ another when its server stops, keeps every actor's SQLite data and runs every ac
 user or a session is kept on a server. Browsers reach the actors through the engine's gateway, never through a
 server, and so do the machines' runners once they are paired. A server's own port serves `GET /platform/info`,
 `GET /platform/connection`, `/health`, GitHub's callback (`GET /github/callback`), the three routes a
-machine's runner calls (`POST /runner/pair`, `POST /runner/pair/poll`, `POST /runner/connection`) and the
-API (`POST /api/items`, `GET /api/items/<id>`), and any server answers each.
+machine's runner calls (`POST /runner/pair`, `POST /runner/pair/poll`, `POST /runner/connection`) where
+machines are on, and the API (`POST /api/items`, `GET /api/items/<id>`) where work items are, and any
+server answers each.
 
 What every server needs, the same on all of them:
 
@@ -473,6 +474,7 @@ What every server needs, the same on all of them:
 | `WLP_DEMO`, `WLP_TURN_TIMEOUT_MS`, `WLP_QUESTION_TIMEOUT_MS`, `WLP_IDLE_SUSPEND_MS`, `WLP_IDLE_DESTROY_MS` | the same values everywhere: a session's limits are applied by whichever server holds its actor |
 | `WLP_DAILY_SANDBOX_SECONDS`, `WLP_MAX_KEPT_SANDBOXES`, `WLP_USAGE_HOLD_SECONDS` | the same values everywhere: a user's limits are applied by whichever server holds their `user` actor ("Usage and limits") |
 | `WLP_FACTORY_*` | the same values everywhere: the limits of work items and of a user's running turns are applied by whichever server holds the user's actor ("Work items") |
+| `WLP_ITEMS` | the same value everywhere, where users may file work items ("Work items"): a server without it answers the API's routes as unknown ones |
 | `WLP_MACHINES`, `WLP_PUBLIC_URL`, `WLP_RUNNER_IMAGE` | the same values everywhere, where users may pair machines of their own ("Machines of your own"). `WLP_PUBLIC_URL` is required then: it is the address runners are given |
 | `WLP_HTTP_PORT` or `PORT` | the port the load balancer sends `/platform/info` to |
 
@@ -725,6 +727,19 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   (`CONTROL_DEAD_MS`) is closed, and the machine is shown offline. An operation that is the same done twice
   is asked once more after a lost conversation, `create` included: the runner answers a second `create`
   for a session with the sandbox that session already has, so a lost answer never makes a second sandbox.
+- **When the runner cannot reach the platform.** It tries again at once, then after 1 s, 2 s, 4 s and so
+  on up to 15 s between attempts, each attempt given 5 s, and back to 1 s once connected; so a runner is
+  online again within seconds of its network being back. A control socket that sends no hello within 10
+  seconds of opening is closed as gone away (1001), not as refused, and the runner tries again in the same
+  way: a link that stalls right after a wake costs no turn. What the platform refuses is different: a
+  removed key (410), a key it does not know (403), a socket closed as a refusal (1008, or a code from 4000
+  to 4999), or another refusal of `POST /runner/connection` (any other 4xx). Then the runner ends its
+  sessions' conversations, so every turn running on the machine ends, says why in
+  `windlass-runner status`, and waits ten minutes (`REFUSED_RETRY_MS`) before it asks again; a removed
+  key it does not ask again with at all. A second runner started on the same state volume waits for the
+  first one's lock ("Another runner holds the state lock. Waiting to retry.") and looks again every ten
+  minutes, instead of exiting into Docker's restart loop; a second runner with a copy of the key on
+  another volume is refused at once, and the Machines page warns of it.
 - **When the runner restarts.** Its conversations with the sessions are in its process's memory, so a turn
   running then ends, not as done; the next turn stops what the old one left running in the sandbox, and
   runs.
@@ -746,7 +761,7 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   turn, not with the removal; from then on the banner says "This agent's machine was removed. Its files
   were there. Start a new agent to go on.", a prompt is answered with the same sentence, and the agents
   keep their timelines. If the machine's control connection was already down when it was removed, its
-  runner learns of the removal only when it next connects, at most a minute after its network is back, and
+  runner learns of the removal only when it next connects, within about twenty seconds of its network being back, and
   serves the sessions it already has until then. Deleting an agent on a machine records the removal of its sandbox with the
   machine's actor, and the runner removes it, at once when it is connected and when it next connects when
   not. A delete whose removal could not be recorded is refused (`machine_unreachable`: "The agent could
@@ -760,7 +775,9 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   is not told, and is not told later: the platform keeps no logout for it. A token in a file there, which a
   turn cut off by the machine going away can leave, lasts about an hour from when it was handed out, and
   whoever reads it cannot renew it. To remove such files sooner, the machine's owner removes the runner's
-  sandboxes and its data volume there with `prune`. It waits for the lock the running runner holds, so the
+  sandboxes and its data volume there with `prune`. It refuses to run while the runner does ("The runner
+  service or another command is using this state volume. Stop the runner container or finish the command,
+  then run prune in a one-off runner container with the same state volume and Docker socket."), so the
   runner is stopped first, and started again afterwards:
 
   ```sh
@@ -799,7 +816,19 @@ What is not there yet. No runner image is published, so the page has no command 
 `scripts/runner-build.sh [<sandbox image pin>]` builds `windlass-runner:dev` for the machine it runs on,
 from a local sandbox image (`windlass-platform-sandbox:latest` by default) whose id it pins, and with
 `WLP_RUNNER_PLATFORMS=linux/amd64,linux/arm64` it writes a two-architecture OCI archive instead. A new
-sandbox image means a new runner build. `docker-windlass-sandbox` is offered on a machine only where the
+sandbox image means a new runner build. Until `WLP_RUNNER_IMAGE` is set, the Machines page says that the
+runner is not published and shows no command; a runner built on the machine itself is started with the same
+command, naming the local image:
+
+```sh
+docker run -d --name windlass-runner --restart unless-stopped \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v windlass-runner:/var/lib/windlass-runner \
+  windlass-runner:dev --platform <WLP_PUBLIC_URL>
+```
+
+and paired by the code it prints, as above. Give it a sandbox image pinned by id, so that a rebuild of
+`windlass-platform-sandbox:latest` does not change what an existing runner runs. `docker-windlass-sandbox` is offered on a machine only where the
 runner's probe found that bubblewrap starts in a container there, which is the machine's kernel's to allow;
 elsewhere only `docker-hardened` is. And work items do not run on machines ("Work items").
 
@@ -1879,8 +1908,8 @@ top bar; `web/src/screens/Settings.tsx`): defaults for new sessions, MCP servers
 the secrets those servers read. All three are kept in the user's `user` actor, in tables of their own
 beside the repositories', and each is read and changed by its own actions (`account`,
 `saveAccountDefaults`, `savePersonalServer`, `deletePersonalServer`, `accountSecrets`,
-`saveAccountSecret`, `deleteAccountSecret`). The same page has the user's API tokens, with which a script
-files work items ("Work items").
+`saveAccountSecret`, `deleteAccountSecret`). Where the deployment offers work items, the same page has the
+user's API tokens, with which a script files them ("Work items").
 
 ### Defaults
 
@@ -2065,7 +2094,8 @@ stand (`server/src/usage.ts` has the rules, with no actor in it):
 Either takes `unlimited`. The time is counted and shown with or without a limit.
 
 A user may also have at most `WLP_FACTORY_RUNNING_TURNS` turns running at once (default 6), their own and
-their work items' together ("Work items"); the work items take at most `WLP_FACTORY_TURNS` of them
+their work items' together ("Work items"), and the ceiling holds for their own agents where work items are
+off too; the work items take at most `WLP_FACTORY_TURNS` of them
 (default 5), so one is always free for the person's own prompt. A prompt beyond the ceiling is refused before
 anything starts (`too_many_running`: "You already have 6 agents working, which is your limit. Wait for one
 to finish, or stop one."); a work item's turn waits instead.
@@ -2187,6 +2217,17 @@ item is filed on its repository's Work view ("New work item…") or through the 
 of its own (`/items/<id>`) with its step, its log, its verdicts and its cost. The home screen lists, under
 "Needs you", every item that asks its person something.
 
+Work items are off unless the deployment sets `WLP_ITEMS=1`. Off, the web app shows nothing of them (no
+work items on a repository's page, no "Needs you" for items, no API tokens on the Settings page, and an
+item's page is not found), the `user` actor's item and API token actions (`listItems`, `item`,
+`createItem`, `actOnItem`, `apiTokens`, `createApiToken`, `revokeApiToken`) refuse with `items_off`
+("Work items are not available on this platform."), `/api/items` answers 404, `not_found`, before any
+token is read, and platform info has no `items`. Two things are not switched: `factoryLimits` answers
+either way, since `WLP_FACTORY_RUNNING_TURNS` is also the ceiling on a person's own running agents
+("Usage and limits"); and the `workItem` actors and their tables stay, so an item that exists goes on
+with its steps while the switch is off, and turning it off and on again loses nothing. While it is off,
+nobody can file, read or act on an item.
+
 - **The sequence is fixed** (`server/src/factory/blueprint.ts`). Which step comes next is decided from what
   the platform observed, never from what the agent says. The agent implements the task in one turn. The
   turn's own verification, the user's checks for the repository ("A repository's checks"), decides what
@@ -2276,7 +2317,8 @@ answers 201 with the item's summary. `GET /api/items/<id>` answers 200 with the 
 The `Idempotency-Key` header is the creation's key, by the rules of "A message sent twice": the same key
 with the same body answers with the item the first attempt made, and with another body it is refused (409,
 `idempotency_key_reused`). A token that is not valid, or lacks the scope, is answered 401, `invalid_token`;
-every error is `{ code, message }`, with the codes of the web app's actions.
+every error is `{ code, message }`, with the codes of the web app's actions. Without `WLP_ITEMS=1` both
+routes answer 404, `not_found` ("There is no such route."), whatever the token.
 
 **CI needs the GitHub App's three read permissions** ("The GitHub App"). Without them, or before an
 installation has accepted them, an item waits for no CI: it is handed over saying that CI was not read.
@@ -2439,6 +2481,7 @@ caller.
 | `WLP_FACTORY_HOSTED_RUNNING` | how many of a user's hosted sandboxes may run at once for a work item's turn to start beside them (default 3) |
 | `WLP_FACTORY_REVIEW_CAP` | how many of a user's work items may be in review before new ones wait (default 6) |
 | `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_TURNS`, `WLP_FACTORY_ITEM_ACTIVE_SECONDS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | a new work item's budget: tokens, turns, seconds of working time and seconds of hosted sandbox time (defaults 4000000, 10, 14400 and 5400) |
+| `WLP_ITEMS` | `1`: every user of the deployment may file work items ("Work items"); default off. Off, `/api/items` answers as an unknown route does, the item and API token actions refuse with `items_off`, and platform info has no `items`. The `WLP_FACTORY_RUNNING_TURNS` ceiling holds either way |
 | `WLP_BUCKET_ENDPOINT`, `WLP_BUCKET_NAME`, `WLP_BUCKET_ACCESS_KEY_ID`, `WLP_BUCKET_SECRET_ACCESS_KEY` | the S3 bucket that keeps a copy of each agent's Windlass session where sandboxes are E2B's ("The agent's memory outlives its sandbox", which has the optional ones too). Unset: no copy is kept |
 | `WLP_BACKUP_MAX_BYTES` | the largest copy that is kept (default 64 MiB) |
 | `WLP_FAKE_BACKUP_DIR` | fake layer only: a directory that stands in for the bucket; the fake sandboxes then hold Windlass's sessions as E2B's do |
