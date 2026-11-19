@@ -189,6 +189,13 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 		}
 		const expiredAudit = join(state, "audit-2000-01-01.jsonl");
 		await writeFile(expiredAudit, "old", { mode: 0o600 });
+		// A runner died after docker run and before the workspace's git init.
+		const unfinishedRaw = randomBytes(6).toString("hex");
+		const unfinishedName = containerName(unfinishedRaw);
+		await docker(["run", "-d", "--pull", "never", "--name", unfinishedName, "--label", LABEL_ARG,
+			"--label", MACHINE_LABEL + "=" + machineId, "--label", "dev.windlass-platform.uid=" + uid,
+			"--label", "dev.windlass-platform.session=" + sessionId, "--label", "dev.windlass-platform.profile=docker-hardened",
+			image], { check: true });
 		srv.state.pairingMode = "refused";
 		let service = run();
 		await until(() => service.output().includes("Pairing was refused"), "Pairing refusal did not park the runner.");
@@ -221,6 +228,18 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 		assert.equal((await readFile(join(state, "lock"), "utf8")).trim(), String(service.child.pid));
 		assert.equal(srv.state.report!.docker.ok, true);
 		ok("Pairing retries a 503, identifies the account, protects the key and lock, and corrects a 30-minute clock error.");
+		assert.ok(reported("m" + machineId + "-" + unfinishedRaw));
+		await srv.attach();
+		const recoveryChannel = srv.channel(sessionId);
+		const [recovered, repeated] = await Promise.all([1, 2].map(() => recoveryChannel.request("create", { profile: "docker-hardened" })));
+		assert.notEqual(recovered, "m" + machineId + "-" + unfinishedRaw, "Create adopted the unfinished sandbox.");
+		assert.equal(repeated, recovered);
+		const recoveredName = containerName(recovered.slice(-12));
+		assert.equal(await containers(), recoveredName);
+		await docker(["exec", recoveredName, "test", "-e", "/workspace/.git"], { check: true });
+		await recoveryChannel.request("destroy", { id: recovered });
+		srv.detach();
+		ok("Concurrent creates replace a rediscovered unfinished sandbox once.");
 		const waiting = "Another runner holds the state lock. Waiting to retry.";
 		const interrupted = run(state, undefined, bundle, {}, { flags: ["run"] });
 		await until(() => interrupted.output().includes(waiting), "Second service did not wait for the lock.");
@@ -298,7 +317,8 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		for (const fault of ["daemon", "image", "disk"] as const) {
 			await stop(service.child); await until(() => !srv.online(), "Test runner did not disconnect.");
 			srv.state.report = null;
-			const missingHost = "unix://" + join(tmp, "absent-directory", "missing.sock");
+			// This socket never exists. Keep its path within the Unix socket limit even with a long TMPDIR.
+			const missingHost = `unix:///run/absent-directory-${machineId}/missing.sock`;
 			const dockerEnv = fault === "daemon" ? { DOCKER_HOST: missingHost, CHECK_PRIVATE_SETTING: "absent-directory" } :
 				fault === "disk" ? { ...wrappedDocker, CHECK_LOW_DISK: "1" } : {};
 			service = run(state, undefined, fault === "image" ? missing : bundle, dockerEnv);

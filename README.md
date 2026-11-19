@@ -696,7 +696,10 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   volume is on Docker. Each container has the limits a hosted Docker sandbox has (1.5 CPUs, 1536 MiB of
   memory, 512 processes, no capabilities), and none is made with less than 5 GB of free disk. It stops a
   sandbox that has not been used for the idle time the platform names (`WLP_IDLE_SUSPEND_MS`), never while
-  a command runs in it or the session's socket is connected, and it never removes one by itself.
+  a command runs in it or the session's socket is connected, and it removes one by itself in one case
+  only: a container it finds after a restart whose workspace was never set up (no `/workspace/.git`: the
+  runner stopped between starting it and preparing it) is removed when its session next asks for a
+  sandbox, and a fresh one is made.
 - **What the runner cannot do, and what the platform cannot do.** The runner cannot start a container of
   another image, run anything on the machine outside the containers it made, touch a container or a volume
   it did not make, or reach a session that did not hand it a ticket. It holds no sign-in: each turn is
@@ -733,10 +736,12 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   seconds of opening is closed as gone away (1001), not as refused, and the runner tries again in the same
   way: a link that stalls right after a wake costs no turn. What the platform refuses is different: a
   removed key (410), a key it does not know (403), a socket closed as a refusal (1008, or a code from 4000
-  to 4999), or another refusal of `POST /runner/connection` (any other 4xx). Then the runner ends its
-  sessions' conversations, so every turn running on the machine ends, says why in
-  `windlass-runner status`, and waits ten minutes (`REFUSED_RETRY_MS`) before it asks again; a removed
-  key it does not ask again with at all. A second runner started on the same state volume waits for the
+  to 4999), or another 4xx when it first asks `POST /runner/connection` (a renewal of its credential that
+  fails keeps the connection it has, and is tried again with the next session that attaches). Then the
+  runner ends its sessions' conversations, so every turn running on the machine ends, says why and when
+  it will try again in `windlass-runner status`, and waits ten minutes (`REFUSED_RETRY_MS`) before it
+  asks again; a removed key it does not ask again with at all. A removal it cannot carry out (Docker not
+  answering) it leaves unacknowledged, and the platform asks again when the runner next connects. A second runner started on the same state volume waits for the
   first one's lock ("Another runner holds the state lock. Waiting to retry.") and looks again every ten
   minutes, instead of exiting into Docker's restart loop; a second runner with a copy of the key on
   another volume is refused at once, and the Machines page warns of it.

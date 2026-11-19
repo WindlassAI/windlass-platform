@@ -5,8 +5,15 @@
  *
  *   cd server && npx tsx ../scripts/runner-control-check.ts
  */
+import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as wait } from "node:timers/promises";
+import type { Executor } from "../runner/src/docker-executor.js";
 import {
-	LIVE_MS, MAX_CONTROL_FRAME_BYTES, MIN_RUNNER_VERSION, parseConnectionRefusal, parsePairStatus, parseRunnerFrame, parseServerFrame, refuse, secondHello, versionAtLeast,
+	REFUSED_RETRY_MS, type ServerFrame, LIVE_MS, MAX_CONTROL_FRAME_BYTES, MIN_RUNNER_VERSION, parseConnectionRefusal, parsePairStatus, parseRunnerFrame, parseServerFrame, refuse, secondHello, versionAtLeast,
 } from "../server/src/runner/control.js";
 
 let failures = 0;
@@ -56,5 +63,149 @@ expect("the same runner process replaces its socket without a record", secondHel
 expect("another process while the first is live is refused", secondHello({ epoch: "a", heardAt: now - LIVE_MS }, { epoch: "b" }, now) === "refuse");
 expect("another process after the first went quiet replaces it", secondHello({ epoch: "a", heardAt: now - LIVE_MS - 1 }, { epoch: "b" }, now) === "replace");
 
+// Drive the real runner loop through HTTP answers and WebSocket events in memory.
+const sockets: CheckSocket[] = [];
+class CheckSocket extends EventTarget {
+	readyState = 1;
+	sent: { kind: string; sandbox?: string }[] = [];
+	constructor() { super(); sockets.push(this); }
+	send(text: string) {
+		const { kind, sandbox } = JSON.parse(text);
+		this.sent.push({ kind, sandbox });
+	}
+	frame(frame: ServerFrame) {
+		assert.equal(this.readyState, 1);
+		this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
+	}
+	close(code = 1000) {
+		if (this.readyState !== 1) return;
+		this.readyState = 3;
+		this.dispatchEvent(Object.assign(new Event("close"), { code }));
+	}
+}
+async function until(test: () => boolean) {
+	const end = performance.now() + 5000;
+	while (!test()) {
+		assert.ok(performance.now() < end, "The runner did not handle the test event.");
+		await wait(5);
+	}
+}
+
+const dir = mkdtempSync(join(tmpdir(), "runner-control-check-"));
+process.env.WLP_RUNNER_STATE_DIR = dir;
+const { control } = await import("../runner/src/control.js");
+const { RunnerError } = await import("../runner/src/state.js");
+const failedSandbox = "mm_0123456789abcdef-0123456789ab";
+const auditRows = (): { operation: string; sandbox: string | null; outcome: string }[] =>
+	readdirSync(dir).flatMap(file => readFileSync(join(dir, file), "utf8").trim().split("\n").map(line => JSON.parse(line)));
+const key = generateKeyPairSync("ed25519").privateKey;
+const lease = (validForMs?: number) => Response.json({ endpoint: null, namespace: "default",
+	token: validForMs === undefined ? null : { token: "fixture", validForMs, expiresAt: Date.now() + validForMs } });
+const answer = (status: number, body: unknown = {}) => Response.json(body, { status });
+
+async function withControl(answers: Response[], exercise: (runner: {
+	status: string[]; online(): Promise<CheckSocket>; expireLease(): void; now(): number; requests(): number;
+}) => Promise<void>) {
+	const abort = new AbortController();
+	const status: string[] = [];
+	const realNow = Date.now, realFetch = globalThis.fetch, realSocket = globalThis.WebSocket;
+	let clock = realNow(), requests = 0;
+	sockets.length = 0;
+	globalThis.WebSocket = CheckSocket as unknown as typeof WebSocket;
+	Date.now = () => clock;
+	globalThis.fetch = async () => answers[requests++] ?? answer(503);
+	const owner = {
+		identity: { uid: "u_check", machineId: "m_0123456789abcdef" },
+		serial: async <T>(work: () => Promise<T>) => work(),
+		welcome: async () => {}, report: () => plainReport,
+		requestedRemoval: async (id: string) => { if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox."); },
+		suspendAll: async () => {},
+	} as unknown as Executor;
+	const done = control(owner, key, "https://runner-check.invalid", abort.signal, s => status.push(s), undefined);
+	try {
+		await exercise({ status, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
+			async online() {
+				await until(() => sockets.length > 0);
+				const socket = sockets[0];
+				socket.frame({ kind: "challenge", nonce: "a".repeat(43) });
+				await until(() => socket.sent.some(f => f.kind === "hello"));
+				socket.frame({ kind: "welcome", idleSuspendMs: 60_000 });
+				await until(() => socket.sent.some(f => f.kind === "report"));
+				return socket;
+			} });
+	} finally {
+		abort.abort();
+		await done;
+		Date.now = realNow; globalThis.fetch = realFetch; globalThis.WebSocket = realSocket;
+	}
+}
+
+async function checkControl(name: string, run: () => Promise<void>) {
+	try { await run(); expect(name, true); }
+	catch (error) { expect(name, false); console.error(error instanceof Error ? error.message : "Runner check failed."); }
+}
+try {
+	await checkControl("a failed renewal preserves the control and session sockets and retries on the next attach", async () => {
+		const errors = [answer(429), answer(403, { reason: "removed", removeSandboxes: true }), answer(410, { reason: "unknown" }),
+			answer(403, { reason: "clock", serverTime: Date.now() + 60_000 })];
+		await withControl([lease(1000), ...errors, lease()], async r => {
+			const ws = await r.online();
+			ws.frame({ kind: "attach", sessionId: "s_live", ticket: "first" });
+			await until(() => sockets[1]?.sent.some(f => f.kind === "hello") === true);
+			r.expireLease();
+			for (const error of errors) {
+				const before = auditRows().length;
+				ws.frame({ kind: "attach", sessionId: "s_new", ticket: "retry" });
+				await until(() => auditRows().slice(before).some(row => row.operation === "attach" && row.outcome === "HTTP " + error.status));
+				assert.equal(ws.readyState, 1, "Renewal closed the control socket.");
+				assert.equal(sockets[1].readyState, 1, "Renewal closed the live session.");
+				assert.equal(sockets.length, 2, "The failed attach opened a session socket.");
+			}
+			ws.frame({ kind: "attach", sessionId: "s_new", ticket: "fresh" });
+			await until(() => sockets[2]?.sent.some(f => f.kind === "hello") === true);
+			assert.equal(r.requests(), 1 + errors.length + 1);
+			assert.equal(r.status.at(-1), "Online");
+		});
+		for (const refusal of [answer(403, { reason: "unknown" }), answer(410, { reason: "removed", removeSandboxes: false })]) {
+			await withControl([lease(1000), refusal], async r => {
+				const ws = await r.online();
+				r.expireLease();
+				ws.frame({ kind: "attach", sessionId: "s_new", ticket: "refused" });
+				await until(() => ws.readyState === 3);
+				assert.equal(sockets.length, 1);
+			});
+		}
+	});
+	await checkControl("a failed removal is audited and left unacknowledged on the live control socket", async () => {
+		await withControl([lease()], async r => {
+			const ws = await r.online();
+			ws.frame({ kind: "remove", sandbox: failedSandbox });
+			await until(() => ws.readyState !== 1 || auditRows().some(row =>
+				row.operation === "remove" && row.sandbox === failedSandbox && row.outcome === "Docker could not remove the sandbox."));
+			assert.equal(ws.readyState, 1, "Removal closed the control socket.");
+			const other = "mm_0123456789abcdef-111111111111";
+			ws.frame({ kind: "remove", sandbox: other });
+			await until(() => ws.sent.some(f => f.kind === "removed"));
+			assert.deepEqual(ws.sent.filter(f => f.kind === "removed").map(f => f.sandbox), [other]);
+			assert.equal(r.requests(), 1);
+		});
+	});
+	await checkControl("status and log give the ten-minute retry time for HTTP and socket refusals", async () => {
+		for (const code of [429, 1008, 4321]) {
+			await withControl([code === 429 ? answer(code) : lease()], async r => {
+				const reason = code === 429 ? "HTTP 429" : "socket close " + code;
+				if (code !== 429) (await r.online()).close(code);
+				await until(() => r.status.some(line => line.includes(reason)));
+				const line = r.status.at(-1)!;
+				assert.match(line, /try again in ten minutes/);
+				assert.ok(line.includes(new Date(r.now() + REFUSED_RETRY_MS).toUTCString()));
+				assert.ok(auditRows().some(row => row.operation === "control" && row.outcome === line));
+			});
+		}
+	});
+} finally {
+	for (const file of readdirSync(dir)) unlinkSync(join(dir, file));
+	rmdirSync(dir);
+}
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exitCode = failures ? 1 : 0;

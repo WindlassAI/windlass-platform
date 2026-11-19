@@ -2,7 +2,7 @@ import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/con
 import { type Operation } from "../../server/src/runner/protocol.js";
 import { SandboxUserError } from "../../server/src/sandbox/api.js";
 import { LABEL, LABEL_ARG, docker } from "../../server/src/sandbox/docker.js";
-import { BWRAP_PROBE, NAME } from "../../server/src/sandbox/provider.js";
+import { BWRAP_PROBE, NAME, WORKSPACE } from "../../server/src/sandbox/provider.js";
 import { containerName, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { audit, safeSentence } from "./audit.js";
@@ -10,7 +10,21 @@ import { bubblewrap, externalId, image, MachineDocker, rawId, type Limits, type 
 import { Refusal, RunnerError, type Identity } from "./state.js";
 
 type Lifecycle = Extract<Operation, { name: "connect" | "state" | "suspend" | "destroy" }>;
-export interface Box { raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; usedAt: number; busy: number }
+export interface Box { raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; usedAt: number; busy: number; workspaceChecked: boolean }
+
+// Docker's archive HEAD stats just the path, even in a stopped or paused container.
+// Use the CLI's daemon connection so this also respects the owner's Docker context.
+async function hasWorkspaceGit(raw: string) {
+	const path = `/containers/${containerName(raw)}/archive?path=${WORKSPACE}/.git`;
+	const result = await docker(["system", "dial-stdio"], {
+		stdin: `HEAD ${path} HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n`, timeoutMs: 30_000,
+	});
+	if (result.code === 0) {
+		if (result.stdout.startsWith("HTTP/1.1 200 ")) return true;
+		if (result.stdout.startsWith("HTTP/1.1 404 ")) return false;
+	}
+	throw new RunnerError("Docker could not check the sandbox workspace.");
+}
 
 // Health checks need Docker's diagnostic itself, without the CLI wrapper's command and exit status.
 async function dockerOutput(args: string[]) {
@@ -66,7 +80,7 @@ export class Executor extends MachineDocker {
 			if (!raw || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
 			const id = externalId(this.identity.machineId, raw);
 			found.add(id);
-			const box = this.boxes.get(id) ?? { raw, sessionId, profile, usedAt: Date.now(), busy: 0 };
+			const box = this.boxes.get(id) ?? { raw, sessionId, profile, usedAt: Date.now(), busy: 0, workspaceChecked: false };
 			this.boxes.set(id, Object.assign(box, { state: state === "running" || state === "restarting" ? "running" as const : "paused" as const }));
 		}
 		for (const [id, box] of this.boxes) {
@@ -127,6 +141,15 @@ export class Executor extends MachineDocker {
 		else return;
 		for (const [id, box] of this.boxes) {
 			if (box.sessionId === sessionId) {
+				if (!box.workspaceChecked) {
+					if (!await hasWorkspaceGit(box.raw)) {
+						await this.remove(id);
+						await this.discover(sessionId);
+						if (this.boxes.has(id)) throw new RunnerError("Docker could not remove the unfinished sandbox.");
+						continue;
+					}
+					box.workspaceChecked = true;
+				}
 				this.publishReport?.();
 				return id;
 			}
@@ -143,7 +166,7 @@ export class Executor extends MachineDocker {
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
 		const raw = await this.provider.create({ uid: this.identity.uid, sessionId, profile });
 		const id = externalId(this.identity.machineId, raw);
-		this.boxes.set(id, { raw, sessionId, profile, state: "running", usedAt: Date.now(), busy: 0 });
+		this.boxes.set(id, { raw, sessionId, profile, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
 		if (profile === bubblewrap) {
 			const result = await new DockerSandboxHandle(raw, profile, this.identity.uid).ask(BWRAP_PROBE, { timeoutMs: 20_000 });
 			if (result?.code !== 0) {

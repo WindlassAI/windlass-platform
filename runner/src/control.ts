@@ -160,7 +160,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 			const attempt = new AbortController();
 			const active = AbortSignal.any([signal, attempt.signal]);
 			try {
-				async function connectGateway(correctClock = true): Promise<{ refreshAt: number; client: ReturnType<typeof createClient> }> {
+				async function connectGateway(purpose: "connect" | "renew", correctClock = true): Promise<{ refreshAt: number; client: ReturnType<typeof createClient> }> {
 					// The lease ages even while a laptop is asleep. Apply server clock
 					// correction only to the signed timestamp, not to its relative lifetime.
 					const started = Date.now();
@@ -171,11 +171,11 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						if (response.status === 403 && r?.reason === "clock" && correctClock) {
 							offset = r.serverTime - Date.now();
 							audit(null, null, "control", "HTTP 403; signing with corrected time");
-							return connectGateway(false);
+							if (purpose === "connect") return connectGateway(purpose, false);
 						}
 						if (response.status === 410 && r?.reason === "removed") refusal = refuse("removed", r);
 						else if (response.status === 403 && r?.reason === "unknown") refusal = refuse("unknown");
-						slow = response.status >= 400 && response.status < 500;
+						if (purpose === "connect" && response.status >= 400 && response.status < 500) slow = true;
 						throw new RunnerError(`HTTP ${response.status}`);
 					}
 					const info = parseConnection(response.value);
@@ -185,11 +185,11 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 					return { refreshAt: info.token ? started + info.token.validForMs * 0.8 : Infinity,
 						client: createClient({ endpoint, namespace: info.namespace, token: info.token?.token, disableMetadataLookup: true }) };
 				}
-				let gateway = await connectGateway();
+				let gateway = await connectGateway("connect");
 				let refreshing: Promise<void> | undefined;
 				async function currentClient() {
 					if (Date.now() >= gateway.refreshAt) {
-						refreshing ??= connectGateway().then(next => { gateway = next; }).finally(() => { refreshing = undefined; });
+						refreshing ??= connectGateway("renew").then(next => { gateway = next; }).finally(() => { refreshing = undefined; });
 						await refreshing;
 					}
 					return gateway.client;
@@ -255,12 +255,14 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 							session.attach(socket, { machineId, runnerVersion: VERSION, ticket: f.ticket, signature: proof(key, sessionProof(uid, f.sessionId, machineId, f.ticket)) });
 						} catch (error) {
 							audit(f.sessionId, null, "attach", category(error));
-							if (refusal || slow) { reason = category(error); disconnect(); }
+							if (refusal) { reason = category(error); disconnect(); }
 						}
 						finally { if (attaching.get(f.sessionId) === f.ticket) attaching.delete(f.sessionId); }
 					} else if (f.kind === "remove") {
-						await owner.serial(() => owner.requestedRemoval(f.sandbox));
-						audit(null, /^mm_[0-9a-f]{16}-[0-9a-f]{12}$/.test(f.sandbox) ? f.sandbox : null, "remove", "done");
+						const sandbox = /^mm_[0-9a-f]{16}-[0-9a-f]{12}$/.test(f.sandbox) ? f.sandbox : null;
+						try { await owner.serial(() => owner.requestedRemoval(f.sandbox)); }
+						catch (error) { audit(null, sandbox, "remove", category(error)); return; }
+						audit(null, sandbox, "remove", "done");
 						if (ws.readyState === 1) send({ kind: "removed", sandbox: f.sandbox });
 					} else if (f.kind === "logout") { await owner.serial(() => owner.logout()); audit(null, null, "logout", "done"); }
 					else if (f.kind !== "heartbeat") { reason = "Unexpected control frame"; disconnect(); }
@@ -287,7 +289,8 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 					return "This machine was removed from its account, so run `windlass-runner pair` to pair it again with a new key." + warning;
 				}
 				if (refusal) reason = `${refusal.reason}: ${safeSentence(refusal.message)} (${reason})`;
-				status(reason);
+				const retryAt = new Date(Date.now() + REFUSED_RETRY_MS).toUTCString();
+				status(`${reason}. The runner will try again in ten minutes (${retryAt}).`);
 			} else {
 				// A restarted runner can lose the network before its first welcome. The last
 				// accepted idle time is still the dead-man switch for its existing containers.
