@@ -71,6 +71,7 @@ export class GithubError extends Error {
 		readonly status: number,
 		readonly said: string,
 		what: string,
+		readonly headers = new Headers(),
 	) {
 		super(`${what}: ${status === 0 ? said : `GitHub answered ${status}${said ? ` (${said})` : ""}`}`);
 		this.name = "GithubError";
@@ -87,7 +88,7 @@ export type PermissionLevel = "read" | "write";
 export interface TokenScope {
 	/** GitHub's id of the one repository the token is good for; omitted only to list the installation's repositories. */
 	repositoryId?: number;
-	permissions: { metadata: "read"; contents?: PermissionLevel; pull_requests?: PermissionLevel };
+	permissions: { metadata: "read"; contents?: PermissionLevel; pull_requests?: PermissionLevel; checks?: "read"; statuses?: "read"; actions?: "read" };
 }
 
 export interface InstallationToken {
@@ -123,6 +124,7 @@ export interface Pull {
 	number: number;
 	url: string;
 	state: "open" | "draft" | "merged" | "closed";
+	mergeable: boolean | null;
 	title: string;
 	/** Its description, as GitHub has it; "" when it has none. */
 	body: string;
@@ -220,31 +222,31 @@ export class GithubApp {
 
 	// ---- requests -----------------------------------------------------------------------------
 
-	private async call(call: Call): Promise<{ status: number; body: unknown; next: boolean }> {
+	private async request(call: Call, redirect: RequestRedirect): Promise<Response> {
 		const base = call.web ? this.settings.webUrl : this.settings.apiUrl;
 		const url = new URL(`${base}${call.path}`);
 		for (const [name, value] of Object.entries(call.query ?? {})) url.searchParams.set(name, String(value));
 		const headers: Record<string, string> = { accept: call.web ? "application/json" : "application/vnd.github+json", "user-agent": USER_AGENT };
 		if (!call.web) headers["x-github-api-version"] = GITHUB_API_VERSION;
-		const known = [...(call.secrets ?? [])];
 		if (call.auth && "bearer" in call.auth) {
 			headers.authorization = `Bearer ${call.auth.bearer}`;
-			known.push(call.auth.bearer);
 		} else if (call.auth) {
 			headers.authorization = `Basic ${Buffer.from(call.auth.basic, "utf8").toString("base64")}`;
-			known.push(call.auth.basic);
 		}
 		if (call.body !== undefined) headers["content-type"] = "application/json";
 
 		const limit = call.deadline === undefined ? REQUEST_TIMEOUT_MS : Math.min(REQUEST_TIMEOUT_MS, call.deadline - Date.now());
 		if (limit <= 0) throw new GithubError(0, "no time was left for it", `could not ${call.what}`);
-		let response: Response;
 		try {
-			response = await fetch(url, { method: call.method ?? "GET", headers, body: call.body === undefined ? undefined : JSON.stringify(call.body), signal: AbortSignal.timeout(limit), redirect: "follow" });
+			return await fetch(url, { method: call.method ?? "GET", headers, body: call.body === undefined ? undefined : JSON.stringify(call.body), signal: AbortSignal.timeout(limit), redirect });
 		} catch (error) {
 			const why = error instanceof Error && error.name === "TimeoutError" ? `no answer within ${Math.ceil(limit / 1000)} seconds` : "the request did not get through";
 			throw new GithubError(0, why, `could not ${call.what}`);
 		}
+	}
+
+	private async call(call: Call): Promise<{ status: number; body: unknown; next: boolean }> {
+		const response = await this.request(call, "follow");
 		const raw = await response.text().catch(() => "");
 		let body: unknown = null;
 		if (raw !== "") {
@@ -260,13 +262,15 @@ export class GithubApp {
 			const fields = record(body);
 			const errors = Array.isArray(fields.errors) ? fields.errors.map((entry) => text(record(entry).message) || text(entry)).filter((entry) => entry !== "") : [];
 			const said = [text(fields.message) || text(fields.error_description) || text(fields.error), ...errors].filter((part) => part !== "").join(": ");
-			throw new GithubError(refused && response.ok ? 400 : response.status, redact(said.replace(/\s+/g, " ").slice(0, 300), known), `could not ${call.what}`);
+			const known = [...(call.secrets ?? [])];
+			if (call.auth) known.push("bearer" in call.auth ? call.auth.bearer : call.auth.basic);
+			throw new GithubError(refused && response.ok ? 400 : response.status, redact(said.replace(/\s+/g, " ").slice(0, 300), known), `could not ${call.what}`, response.headers);
 		}
 		return { status: response.status, body, next: /rel="next"/.test(response.headers.get("link") ?? "") };
 	}
 
 	/** Every page of a listing, a hundred a page; `truncated` when there were more pages than are read. */
-	private async pages<T>(call: Omit<Call, "method" | "body">, read: (body: unknown) => T[]): Promise<{ items: T[]; truncated: boolean }> {
+	async pages<T>(call: Omit<Call, "method" | "body">, read: (body: unknown) => T[]): Promise<{ items: T[]; truncated: boolean }> {
 		const items: T[] = [];
 		for (let page = 1; page <= MAX_PAGES; page += 1) {
 			const answer = await this.call({ ...call, query: { ...call.query, per_page: 100, page } });
@@ -440,6 +444,15 @@ export class GithubApp {
 		return "none";
 	}
 
+	/** Job logs redirect to short-lived storage URLs. Start a fresh request there without the installation token. */
+	async jobLog(token: string, owner: string, name: string, jobId: number): Promise<Response> {
+		const response = await this.request({ path: `/repos/${owner}/${name}/actions/jobs/${jobId}/logs`, auth: { bearer: token }, what: "read the job log" }, "manual");
+		const location = response.headers.get("location");
+		if (response.status < 300 || response.status >= 400 || !location) return response;
+		await response.body?.cancel();
+		return fetch(new URL(location, response.url), { headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+	}
+
 	// ---- pull requests ------------------------------------------------------------------------
 
 	private pullOf(value: unknown): Pull | null {
@@ -448,7 +461,7 @@ export class GithubApp {
 		if (number === 0) return null;
 		const merged = fields.merged === true || (fields.merged_at !== null && fields.merged_at !== undefined);
 		const state = merged ? "merged" : text(fields.state) === "closed" ? "closed" : fields.draft === true ? "draft" : "open";
-		return { number, url: text(fields.html_url), state, title: text(fields.title), body: text(fields.body), head: text(record(fields.head).ref), base: text(record(fields.base).ref) };
+		return { number, url: text(fields.html_url), state, mergeable: typeof fields.mergeable === "boolean" ? fields.mergeable : null, title: text(fields.title), body: text(fields.body), head: text(record(fields.head).ref), base: text(record(fields.base).ref) };
 	}
 
 	async createPull(token: string, owner: string, name: string, input: { title: string; body: string; head: string; base: string }): Promise<Pull> {

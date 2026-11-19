@@ -7,7 +7,7 @@
  *                      `/<owner>/<name>.git`, served by `git http-backend` from real bare repositories
  *   GitHub's API       under `/api/v3`, as GitHub Enterprise Server has it: the installation token
  *                      endpoints, a user's installations, an installation's repositories, a user's
- *                      permission in a repository, branches and pull requests
+ *                      permission in a repository, branches, pull requests, commit CI and job logs
  *
  * It checks what GitHub checks, as far as the platform depends on it: the app's JWT (RS256 against the
  * app's public key, issuer, `exp` no more than ten minutes ahead), a code that works once and only with
@@ -58,6 +58,8 @@ export interface StandinRepository {
 	access: Map<string, Level>;
 	/** Branch name patterns (`*` matches anything) a push to which is refused. */
 	protectedBranches: string[];
+	ci: Map<string, { runs: unknown[]; statuses: unknown[] }>;
+	jobLogs: Map<number, string>;
 }
 
 export interface StandinPull {
@@ -69,6 +71,7 @@ export interface StandinPull {
 	base: string;
 	state: "open" | "closed";
 	merged: boolean;
+	mergeable: boolean | null;
 	draft: boolean;
 }
 
@@ -162,6 +165,7 @@ export class GithubStandin {
 	appPermissions: Permissions = { metadata: "read", contents: "write", pull_requests: "write" };
 	/** Set to make every API call fail as an unreachable GitHub would. */
 	down = false;
+	ciRateLimit: { status: 403 | 429; headers: Record<string, string>; message: string } | null = null;
 	private readonly codes = new Map<string, { user: number; challenge: string | null; used: boolean }>();
 	private nextId = 1000;
 	private server: Server | null = null;
@@ -245,7 +249,7 @@ export class GithubStandin {
 		git(["config", "http.receivepack", "true"], path);
 		writeFileSync(join(path, "hooks", "pre-receive"), PRE_RECEIVE);
 		chmodSync(join(path, "hooks", "pre-receive"), 0o755);
-		const repository: StandinRepository = { id: (this.nextId += 1), owner: input.owner, name: input.name, private: input.private ?? false, archived: false, defaultBranch, path, access: new Map(), protectedBranches: [] };
+		const repository: StandinRepository = { id: (this.nextId += 1), owner: input.owner, name: input.name, private: input.private ?? false, archived: false, defaultBranch, path, access: new Map(), protectedBranches: [], ci: new Map(), jobLogs: new Map() };
 		this.repositories.set(repository.id, repository);
 		this.commit(repository, defaultBranch, input.files ?? { "README.md": `# ${input.name}\n` }, "Initial commit");
 		input.installation?.repositories.add(repository.id);
@@ -470,6 +474,7 @@ export class GithubStandin {
 			state: pull.state,
 			draft: pull.draft,
 			merged: pull.merged,
+			mergeable: pull.mergeable,
 			merged_at: pull.merged ? new Date().toISOString() : null,
 			title: pull.title,
 			body: pull.body,
@@ -515,6 +520,18 @@ export class GithubStandin {
 			entry.status = status;
 			json(response, status, payload, headers);
 		};
+
+		const storage = /^\/storage\/(\d+)\/(\d+)$/.exec(path);
+		if (storage && request.method === "GET") {
+			// Keep storage on the same origin so even an automatic redirect would reveal a forwarded credential.
+			if (request.headers.authorization !== undefined) return answer(403, { message: "Log storage received an Authorization header" });
+			const log = this.repositories.get(Number(storage[1]))?.jobLogs.get(Number(storage[2]));
+			if (log === undefined) return answer(404, { message: "Not Found" });
+			entry.status = 200;
+			response.writeHead(200, { "content-type": "text/plain" });
+			response.end(log);
+			return;
+		}
 
 		if (path === "/login/oauth/access_token" && request.method === "POST") {
 			const fields = (body ?? {}) as Record<string, string>;
@@ -583,13 +600,15 @@ export class GithubStandin {
 			return answer(204, null);
 		}
 
-		if (api === "/installation/repositories" && method === "GET") {
+		const pageOf = <T>(key: string, items: T[], format: (item: T) => unknown = (item) => item) => {
 			const page = Number(url.searchParams.get("page") ?? "1");
 			const size = Number(url.searchParams.get("per_page") ?? "30");
+			const link = page * size < items.length ? { link: `<${this.url}${path}?per_page=${size}&page=${page + 1}>; rel="next"` } : undefined;
+			return answer(200, { total_count: items.length, [key]: items.slice((page - 1) * size, page * size).map(format) }, link);
+		};
+		if (api === "/installation/repositories" && method === "GET") {
 			const all = [...installation.repositories].map((id) => this.repositories.get(id) as StandinRepository).filter((repository) => !token.repositories || token.repositories.includes(repository.id));
-			const slice = all.slice((page - 1) * size, page * size);
-			const link = page * size < all.length ? { link: `<${this.apiUrl}/installation/repositories?per_page=${size}&page=${page + 1}>; rel="next"` } : undefined;
-			return answer(200, { total_count: all.length, repositories: slice.map((repository) => this.repositoryJson(repository)) }, link);
+			return pageOf("repositories", all, (repository) => this.repositoryJson(repository));
 		}
 
 		const scoped = /^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/.exec(api);
@@ -601,6 +620,21 @@ export class GithubStandin {
 			const denied = () => answer(403, { message: "Resource not accessible by integration" });
 
 			if (rest === "" && method === "GET") return answer(200, this.repositoryJson(repository));
+
+			const commitCi = /^\/commits\/([^/]+)\/(check-runs|status)$/.exec(rest);
+			const jobLog = /^\/actions\/jobs\/(\d+)\/logs$/.exec(rest);
+			if (method === "GET" && (commitCi || jobLog)) {
+				const permission = jobLog ? "actions" : commitCi?.[2] === "check-runs" ? "checks" : "statuses";
+				if (!this.allows(token, repository, permission, "read")) return denied();
+				if (this.ciRateLimit) return answer(this.ciRateLimit.status, { message: this.ciRateLimit.message }, this.ciRateLimit.headers);
+				if (commitCi) {
+					const ci = repository.ci.get(decodeURIComponent(commitCi[1]));
+					return permission === "checks" ? pageOf("check_runs", ci?.runs ?? []) : pageOf("statuses", ci?.statuses ?? []);
+				}
+				const id = Number(jobLog?.[1]);
+				if (!repository.jobLogs.has(id)) return answer(404, { message: "Not Found" });
+				return answer(302, null, { location: `${this.url}/storage/${repository.id}/${id}` });
+			}
 
 			const permission = /^\/collaborators\/([^/]+)\/permission$/.exec(rest);
 			if (permission && method === "GET") {
@@ -635,7 +669,7 @@ export class GithubStandin {
 				if (this.pulls.some((pull) => pull.repository === repository.id && pull.state === "open" && pull.head === head && pull.base === base)) {
 					return answer(422, { message: "Validation Failed", errors: [{ resource: "PullRequest", code: "custom", message: `A pull request already exists for ${repository.owner}:${head}.` }] });
 				}
-				const pull: StandinPull = { number: this.pulls.filter((other) => other.repository === repository.id).length + 1, repository: repository.id, title: String(fields.title ?? ""), body: String(fields.body ?? ""), head, base, state: "open", merged: false, draft: false };
+				const pull: StandinPull = { number: this.pulls.filter((other) => other.repository === repository.id).length + 1, repository: repository.id, title: String(fields.title ?? ""), body: String(fields.body ?? ""), head, base, state: "open", merged: false, mergeable: null, draft: false };
 				this.pulls.push(pull);
 				return answer(201, this.pullJson(pull));
 			}

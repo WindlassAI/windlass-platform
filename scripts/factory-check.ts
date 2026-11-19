@@ -9,15 +9,11 @@
  * asked for, in order. Every table is driven twice: as written, and with every fact delivered a second
  * time right after itself, which must change nothing and ask for nothing (§2.5).
  *
- * The CI reader is run against scripts/github-standin.ts, which mints the installation tokens, behind a
- * small server that plays GitHub's CI endpoints (the stand-in has none) and checks every token it is
- * shown against the stand-in's own.
+ * The CI reader runs against the GitHub stand-in, with real scoping of its installation tokens.
  */
 
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UsageNumbers, Verified, VerifiedCheck } from "../server/src/contract.js";
@@ -438,68 +434,11 @@ await standin.start();
 standin.addUser("ada");
 const installation = standin.addInstallation("ada", "User");
 const repo = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation });
-const HEAD = H(9).replace(/9/g, "a");
-
-/** GitHub's CI, as the front of the stand-in plays it. */
-const world = {
-	runs: [] as unknown[],
-	statuses: [] as unknown[],
-	logs: new Map<number, string>(),
-	refuse: null as null | { status: number; headers: Record<string, string>; message: string },
-	paths: [] as string[],
-	/** What each request to the log storage carried as authorization. */
-	storageAuth: [] as Array<string | null>,
-};
-
-function tokenAllows(request: IncomingMessage, permission: "checks" | "statuses" | "actions"): boolean {
-	const value = /^Bearer (.+)$/.exec(request.headers.authorization ?? "")?.[1];
-	const token = value === undefined ? undefined : standin.tokens.get(value);
-	return token !== undefined && token.kind === "installation" && !token.revoked && token.expiresAt > Date.now() && token.permissions?.[permission] === "read" && token.repositories?.includes(repo.id) === true;
-}
-
-function page(response: ServerResponse, url: URL, key: string, all: unknown[]): void {
-	const size = Number(url.searchParams.get("per_page") ?? "30");
-	const number = Number(url.searchParams.get("page") ?? "1");
-	const link = number * size < all.length ? { link: `<${url.origin}${url.pathname}?per_page=${size}&page=${number + 1}>; rel="next"` } : {};
-	response.writeHead(200, { "content-type": "application/json", ...link });
-	response.end(JSON.stringify({ total_count: all.length, [key]: all.slice((number - 1) * size, number * size) }));
-}
-
-const front = createServer(async (request, response) => {
-	const url = new URL(request.url ?? "/", "http://127.0.0.1");
-	url.host = request.headers.host ?? url.host;
-	world.paths.push(url.pathname + url.search);
-	const json = (status: number, body: unknown, headers: Record<string, string> = {}) => {
-		response.writeHead(status, { "content-type": "application/json", ...headers });
-		response.end(JSON.stringify(body));
-	};
-	const storage = /^\/storage\/(\d+)$/.exec(url.pathname);
-	if (storage) {
-		world.storageAuth.push(request.headers.authorization ?? null);
-		response.writeHead(200, { "content-type": "text/plain" });
-		response.end(world.logs.get(Number(storage[1])) ?? "");
-		return;
-	}
-	const at = new RegExp(`^/api/v3/repos/ada/harbor/(commits/${HEAD}/(check-runs|status)|actions/jobs/(\\d+)/logs)$`).exec(url.pathname);
-	if (at) {
-		if (world.refuse) return json(world.refuse.status, { message: world.refuse.message }, world.refuse.headers);
-		if (at[2] === "check-runs") return tokenAllows(request, "checks") ? page(response, url, "check_runs", world.runs) : json(403, { message: "Resource not accessible by integration" });
-		if (at[2] === "status") return tokenAllows(request, "statuses") ? page(response, url, "statuses", world.statuses) : json(403, { message: "Resource not accessible by integration" });
-		if (!tokenAllows(request, "actions")) return json(403, { message: "Resource not accessible by integration" });
-		response.writeHead(302, { location: `${url.origin}/storage/${at[3]}` });
-		response.end();
-		return;
-	}
-	// Everything else is the stand-in's: the installation tokens above all.
-	const chunks: Buffer[] = [];
-	for await (const chunk of request) chunks.push(chunk as Buffer);
-	const forwarded = await fetch(`${standin.url}${url.pathname}${url.search}`, { method: request.method, headers: { authorization: request.headers.authorization ?? "", "content-type": request.headers["content-type"] ?? "application/json", accept: "application/json" }, body: chunks.length > 0 ? Buffer.concat(chunks) : undefined });
-	response.writeHead(forwarded.status, { "content-type": forwarded.headers.get("content-type") ?? "application/json" });
-	response.end(Buffer.from(await forwarded.arrayBuffer()));
-});
-await new Promise<void>((resolve) => front.listen(0, "127.0.0.1", resolve));
-const frontUrl = `http://127.0.0.1:${(front.address() as AddressInfo).port}`;
-const app = new GithubApp({ appId: standin.appId, slug: standin.slug, clientId: standin.clientId, apiUrl: `${frontUrl}/api/v3`, webUrl: standin.url }, { clientSecret: () => standin.clientSecret, privateKey: () => standin.privateKeyPem });
+const HEAD = standin.branchHead(repo, repo.defaultBranch)!;
+const ciData = { runs: [] as unknown[], statuses: [] as unknown[] };
+repo.ci.set(HEAD, ciData);
+const secrets = { clientSecret: () => standin.clientSecret, privateKey: () => standin.privateKeyPem };
+const app = new GithubApp({ appId: standin.appId, slug: standin.slug, clientId: standin.clientId, apiUrl: standin.apiUrl, webUrl: standin.url }, secrets);
 const target = { installationId: installation.id, repositoryId: repo.id, owner: "ada", name: "harbor", head: HEAD };
 const granted = { ...standin.appPermissions, checks: "read" as const, statuses: "read" as const, actions: "read" as const };
 
@@ -507,18 +446,18 @@ const checkRun = (id: number, name: string, conclusion: string | null) => ({ id,
 
 try {
 	standin.appPermissions = granted;
-	world.runs = Array.from({ length: 250 }, (_, index) => checkRun(5000 + index, `job-${index}`, index === 137 ? "failure" : "success"));
-	world.statuses = [{ context: "ci/legacy", state: "success", description: "ok", target_url: "https://ci.invalid/1" }];
+	ciData.runs = Array.from({ length: 250 }, (_, index) => checkRun(5000 + index, `job-${index}`, index === 137 ? "failure" : "success"));
+	ciData.statuses = [{ context: "ci/legacy", state: "success", description: "ok", target_url: "https://ci.invalid/1" }];
 	const lines = Array.from({ length: 5000 }, (_, index) => `2026-11-19T20:0${index % 10}:00.1234567Z \x1b[31mline ${index}\x1b[0m`);
 	lines.push("2026-11-19T20:09:59.0000000Z Error: expected 3, got -1 (token ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789)");
-	world.logs.set(5137, lines.join("\n"));
+	repo.jobLogs.set(5137, lines.join("\n"));
 
 	const read = await readCi(app, target);
 	const minted = standin.minted.at(-1);
 	expect("a reading's token is asked for with this repository and the three CI read permissions only", JSON.stringify(minted?.permissions) === JSON.stringify({ metadata: "read", checks: "read", statuses: "read", actions: "read" }) && minted?.repositoryIds?.join() === String(repo.id));
 	expect(
 		"every page of check runs is read, and the statuses",
-		read.kind === "read" && read.runs.length === 251 && !read.truncated && world.paths.filter((path) => path.includes("check-runs")).length === 3,
+		read.kind === "read" && read.runs.length === 251 && !read.truncated && standin.requests.filter(({ path }) => path.includes("check-runs")).length === 3,
 		read.kind === "read" ? `${read.runs.length} runs` : read.kind,
 	);
 	expect("one failing job makes CI failed", ciState(read) === "failed");
@@ -530,31 +469,36 @@ try {
 		`${tail.split("\n").length} lines, ${tail.length} characters`,
 	);
 	expect("without GitHub's timestamps, terminal codes or a token", !/2026-11-19T|\x1b|ghs_/.test(tail));
-	expect("the log's storage is fetched without the token", world.storageAuth.length === 1 && world.storageAuth[0] === null);
+	const downloads = standin.requests.filter(({ path }) => path.startsWith("/storage/"));
+	expect("the log's storage is fetched without the token", downloads.length === 1 && downloads[0].auth === "none" && downloads[0].status === 200);
 
-	world.logs.set(5137, "x".repeat(17 * 1024 * 1024));
+	repo.jobLogs.set(5137, "x".repeat(17 * 1024 * 1024));
 	const huge = await readCi(app, target);
 	const hugeLog = huge.kind === "read" ? huge.logs[0] : undefined;
 	expect("a log larger than the most that is read is not read to its end, and says so", hugeLog !== undefined && hugeLog.text === null && "why" in hugeLog && /larger than 16 MiB/.test(hugeLog.why), hugeLog && "why" in hugeLog ? hugeLog.why : "");
 
-	world.runs = [checkRun(1, "build", null)];
-	world.statuses = [];
+	ciData.runs = [checkRun(1, "build", null)];
+	ciData.statuses = [];
 	expect("a job still running: pending", ciState(await readCi(app, target)) === "pending");
-	world.runs = [];
+	ciData.runs = [];
 	expect("nothing reported yet: none", ciState(await readCi(app, target)) === "none");
 
-	world.refuse = { status: 403, headers: {}, message: "Resource not accessible by integration" };
-	const forbidden = await readCi(app, target);
-	expect("a 403 is not permitted, not 'no checks'", forbidden.kind === "not_permitted" && ciState(forbidden) === "not_permitted" && forbidden.said === "Resource not accessible by integration", JSON.stringify(forbidden));
+	const withoutChecks = new (class extends GithubApp {
+		override installationToken() {
+			return super.installationToken(installation.id, { repositoryId: repo.id, permissions: { metadata: "read", statuses: "read", actions: "read" } });
+		}
+	})(app.settings, secrets);
+	const forbidden = await readCi(withoutChecks, target);
+	expect("a token scoped without checks gets not_permitted from the check-runs endpoint", forbidden.kind === "not_permitted" && ciState(forbidden) === "not_permitted" && forbidden.said === "Resource not accessible by integration" && standin.requests.at(-1)?.status === 403, forbidden.kind);
 	const reset = Math.floor(Date.now() / 1000) + 600;
-	world.refuse = { status: 403, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset) }, message: "API rate limit exceeded for installation ID 1." };
+	standin.ciRateLimit = { status: 403, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset) }, message: "API rate limit exceeded for installation ID 1." };
 	const limited = await readCi(app, target);
 	expect("a 403 for the rate limit is a wait until its reset", limited.kind === "rate_limited" && limited.retryAt === reset * 1000 && ciState(limited) === "retry", JSON.stringify(limited));
-	world.refuse = { status: 429, headers: { "retry-after": "30" }, message: "You have exceeded a secondary rate limit." };
+	standin.ciRateLimit = { status: 429, headers: { "retry-after": "30" }, message: "You have exceeded a secondary rate limit." };
 	const before = Date.now();
 	const secondary = await readCi(app, target);
 	expect("a secondary limit waits as long as GitHub says", secondary.kind === "rate_limited" && secondary.retryAt >= before + 30_000 && secondary.retryAt <= Date.now() + 30_000);
-	world.refuse = null;
+	standin.ciRateLimit = null;
 
 	standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write" };
 	const ungranted = await readCi(app, target);
@@ -578,8 +522,6 @@ try {
 	expect("GitHub unreachable: failed, tried again at the next poll", down.kind === "failed" && ciState(down) === "retry", JSON.stringify(down));
 	standin.down = false;
 } finally {
-	front.closeAllConnections();
-	await new Promise<void>((resolve) => front.close(() => resolve()));
 	await standin.stop();
 }
 

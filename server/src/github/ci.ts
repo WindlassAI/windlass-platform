@@ -20,12 +20,6 @@
  * LOG_TAIL_LINES lines and LOG_TAIL_CHARS characters. It is read as a stream, keeping only its end, and
  * no further than LOG_MAX_BYTES.
  *
- * Why this file makes its own requests instead of `GithubApp`'s: that client (app.ts) returns parsed
- * JSON without the response's headers and follows redirects with the token attached. A reading needs
- * the rate-limit headers to tell a limit from a refusal, and a log is a redirect to storage outside
- * GitHub that must be fetched without the token. Everything else is the client's: the same API address,
- * version, user agent and error type, and `withToken` for the token.
- *
  * The polling intervals of the factory (slice 1) are here as data (`CI_POLLING`), not timers: the item
  * actor schedules its polls itself.
  *
@@ -36,7 +30,7 @@
  *   rate limits       https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api (403 or 429; `x-ratelimit-remaining: 0` with `x-ratelimit-reset`, or `retry-after`)
  */
 
-import { GITHUB_API_VERSION, type GithubApp, GithubError } from "./app.js";
+import { type GithubApp, GithubError } from "./app.js";
 import { redact } from "./redact.js";
 
 /** How often the factory looks at CI, and how long it waits for it (slice 1's brief, §2.1 steps 4 and 8, §4.2 "GitHub API"). */
@@ -58,18 +52,11 @@ export function ciPollEvery(openItems: number): number {
 	return openItems > CI_POLLING.crowdedAbove ? CI_POLLING.crowdedEveryMs : CI_POLLING.everyMs;
 }
 
-/** The permissions a reading's token is asked for. `TokenScope` names only those the rest of the platform uses, so this is assigned to it rather than written in it. */
-const CI_PERMISSIONS = { metadata: "read", checks: "read", statuses: "read", actions: "read" } as const;
-
 export const LOG_TAIL_LINES = 200;
 export const LOG_TAIL_CHARS = 16_000;
 export const LOG_MAX_BYTES = 16 * 1024 * 1024;
 /** Logs are read for at most this many failing jobs per reading. */
 export const LOGS_PER_READING = 3;
-const PAGE_SIZE = 100;
-const MAX_PAGES = 10;
-const REQUEST_TIMEOUT_MS = 20_000;
-const USER_AGENT = "windlass-platform";
 
 /** One check run or commit status of the head. */
 export interface CiRun {
@@ -120,56 +107,18 @@ function plain(value: string): string {
 }
 const short = (value: string, max: number) => (value.length > max ? `${value.slice(0, max - 1)}…` : value);
 
-/** Thrown inside a reading to end it with an outcome other than "read". */
-class Ended {
-	constructor(readonly reading: Exclude<CiReading, { kind: "read" }>) {}
-}
-
-function refusal(status: number, headers: Headers, said: string, now: number): Ended {
+function refusal({ status, headers, said }: GithubError): CiReading {
+	if (status === 0) return { kind: "failed", said: "GitHub could not be reached" };
+	const now = Date.now();
 	const retryAfter = Number(headers.get("retry-after"));
 	const reset = Number(headers.get("x-ratelimit-reset"));
 	const limited = status === 429 || (status === 403 && (headers.get("x-ratelimit-remaining") === "0" || headers.has("retry-after") || /rate limit/i.test(said)));
 	if (limited) {
 		const retryAt = Number.isFinite(retryAfter) && retryAfter > 0 ? now + retryAfter * 1000 : Number.isFinite(reset) && reset > 0 ? reset * 1000 : now + CI_POLLING.everyMs;
-		return new Ended({ kind: "rate_limited", retryAt: Math.max(retryAt, now), said });
+		return { kind: "rate_limited", retryAt: Math.max(retryAt, now), said };
 	}
-	if (status === 403) return new Ended({ kind: "not_permitted", said });
-	return new Ended({ kind: "failed", said: `GitHub answered ${status}${said ? ` (${said})` : ""}` });
-}
-
-async function get(app: GithubApp, token: string, path: string, query: Record<string, string | number>): Promise<{ body: unknown; next: boolean }> {
-	const url = new URL(`${app.settings.apiUrl}${path}`);
-	for (const [name, value] of Object.entries(query)) url.searchParams.set(name, String(value));
-	let response: Response;
-	try {
-		response = await fetch(url, { headers: headers(token), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-	} catch {
-		throw new Ended({ kind: "failed", said: "GitHub could not be reached" });
-	}
-	const raw = await response.text().catch(() => "");
-	let body: unknown = null;
-	try {
-		body = raw === "" ? null : JSON.parse(raw);
-	} catch {
-		body = null;
-	}
-	if (!response.ok) throw refusal(response.status, response.headers, redact(short(text(record(body).message).replace(/\s+/g, " "), 300), [token]), Date.now());
-	return { body, next: /rel="next"/.test(response.headers.get("link") ?? "") };
-}
-
-function headers(token: string): Record<string, string> {
-	return { accept: "application/vnd.github+json", "user-agent": USER_AGENT, "x-github-api-version": GITHUB_API_VERSION, authorization: `Bearer ${token}` };
-}
-
-/** Every page of a listing, up to MAX_PAGES; `truncated` when there were more. */
-async function pages(app: GithubApp, token: string, path: string, read: (body: unknown) => unknown[]): Promise<{ items: unknown[]; truncated: boolean }> {
-	const items: unknown[] = [];
-	for (let page = 1; page <= MAX_PAGES; page += 1) {
-		const answer = await get(app, token, path, { per_page: PAGE_SIZE, page });
-		items.push(...read(answer.body));
-		if (!answer.next) return { items, truncated: false };
-	}
-	return { items, truncated: true };
+	if (status === 403) return { kind: "not_permitted", said };
+	return { kind: "failed", said: `GitHub answered ${status}${said ? ` (${said})` : ""}` };
 }
 
 function checkRunOf(value: unknown): CiRun | null {
@@ -218,12 +167,7 @@ async function readLog(app: GithubApp, token: string, owner: string, name: strin
 	const none = (why: string): CiLog => ({ name: run.name, untrusted: true, text: null, why });
 	let response: Response;
 	try {
-		response = await fetch(`${app.settings.apiUrl}/repos/${owner}/${name}/actions/jobs/${run.jobId}/logs`, { headers: headers(token), redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-		const location = response.headers.get("location");
-		if (response.status >= 300 && response.status < 400 && location) {
-			await response.body?.cancel();
-			response = await fetch(new URL(location, app.settings.apiUrl), { headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-		}
+		response = await app.jobLog(token, owner, name, run.jobId);
 	} catch {
 		return none("the log could not be fetched");
 	}
@@ -274,14 +218,15 @@ export interface CiTarget {
 /** Reads the CI of a commit. Never throws for anything GitHub answers: every outcome is a `CiReading`. */
 export async function readCi(app: GithubApp, target: CiTarget): Promise<CiReading> {
 	try {
-		return await app.withToken(target.installationId, { repositoryId: target.repositoryId, permissions: CI_PERMISSIONS }, async (token) => {
+		return await app.withToken(target.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", checks: "read", statuses: "read", actions: "read" } }, async (token) => {
 			try {
 				const base = `/repos/${target.owner}/${target.name}/commits/${target.head}`;
-				const checks = await pages(app, token, `${base}/check-runs`, (body) => {
+				const auth = { bearer: token };
+				const checks = await app.pages({ path: `${base}/check-runs`, auth, what: "list check runs" }, (body) => {
 					const list = record(body).check_runs;
 					return Array.isArray(list) ? list : [];
 				});
-				const statuses = await pages(app, token, `${base}/status`, (body) => {
+				const statuses = await app.pages({ path: `${base}/status`, auth, what: "read commit statuses" }, (body) => {
 					const list = record(body).statuses;
 					return Array.isArray(list) ? list : [];
 				});
@@ -291,7 +236,7 @@ export async function readCi(app: GithubApp, target: CiTarget): Promise<CiReadin
 				for (const run of failing) logs.push(await readLog(app, token, target.owner, target.name, run));
 				return { kind: "read", head: target.head, runs, truncated: checks.truncated || statuses.truncated, logs } satisfies CiReading;
 			} catch (error) {
-				if (error instanceof Ended) return error.reading;
+				if (error instanceof GithubError) return refusal(error);
 				throw error;
 			}
 		});
