@@ -1,0 +1,239 @@
+/*
+ * The Machines page: its rows are the kept sandboxes' (usage.css), with the state in words and what
+ * the runner reported folded under each. The dialogs are the app's own (base.css).
+ */
+
+.machines-add {
+	display: grid;
+	justify-items: end;
+	gap: 2px;
+}
+
+.machine-row {
+	grid-template-columns: minmax(0, 1fr) auto auto;
+	align-items: start;
+}
+.machine-row > .machine-state {
+	margin-top: 4px;
+}
+.machine-name {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 8px;
+	min-width: 0;
+}
+.machine-name h3 {
+	min-width: 0;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono);
+	font-weight: 700;
+}
+/* A line of facts wraps between them, not inside one. */
+.machine-row .agent-meta > span {
+	white-space: nowrap;
+}
+.machine-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	font-weight: 400;
+	color: var(--ink-dim);
+	text-decoration: none;
+}
+.machine-toggle:hover:not(:disabled) {
+	color: var(--ink);
+}
+.machine-chevron {
+	transition: transform 140ms var(--ease);
+}
+.machine-toggle[aria-expanded="true"] .machine-chevron {
+	transform: rotate(90deg);
+}
+
+/* Where a machine is: the sandbox state's dot, in the tone of the state. */
+.machine-state-online .sandbox-state-dot {
+	border-color: var(--accent);
+	background: var(--accent);
+}
+.machine-state-waiting .sandbox-state-dot {
+	border-style: dashed;
+	border-color: var(--accent);
+}
+.machine-state-outdated {
+	color: var(--warn);
+}
+.machine-state-outdated .sandbox-state-dot {
+	border-color: var(--warn);
+}
+
+/* Under the row, the width of it: what needs the user, then what the runner reported. */
+.machine-notes,
+.machine-details {
+	grid-column: 1 / -1;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 10px;
+	min-width: 0;
+	margin-top: 10px;
+}
+.machine-notes > .usage-note {
+	margin-top: 0;
+}
+.machine-details {
+	gap: 16px;
+	padding: 14px 0 6px;
+	border-top: 1px dashed var(--line);
+}
+.machine-details[hidden] {
+	display: none;
+}
+.machine-details .usage-lede {
+	margin-top: 4px;
+}
+.machine-label {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	font-weight: 400;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--ink-faint);
+}
+.machine-sandboxes {
+	display: grid;
+	gap: 6px;
+	margin-top: 8px;
+}
+.machine-sandboxes li {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 2px 14px;
+	font-size: var(--size-small);
+}
+.machine-used {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+}
+.machine-facts {
+	display: grid;
+	gap: 6px;
+	font-size: var(--size-small);
+}
+.machine-facts > div {
+	display: grid;
+	grid-template-columns: 220px minmax(0, 1fr);
+	column-gap: 16px;
+}
+.machine-facts dt {
+	color: var(--ink-dim);
+}
+.machine-facts dd {
+	overflow-wrap: anywhere;
+}
+
+/* A command to run on the machine: the text as it is pasted, and the copy control, always shown. */
+.machine-command {
+	position: relative;
+	margin-top: 8px;
+}
+.machine-dialog .machine-command {
+	margin-top: 0;
+}
+.machine-command pre {
+	padding: 10px 40px 10px 12px;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-m);
+	background: var(--bg-sunk);
+	font-size: var(--size-mono-small);
+	line-height: 1.6;
+	color: var(--ink);
+	white-space: pre-wrap;
+	/* The image's digest is one long word: it fills each line rather than leaving a ragged one. */
+	word-break: break-all;
+}
+.machine-command > .copy {
+	position: absolute;
+	top: 7px;
+	right: 7px;
+}
+.machine-command .copy-button {
+	opacity: 1;
+	background: var(--bg-sunk);
+}
+
+/* The dialogs: one column of steps' parts, and what the machine says of itself. */
+.machine-dialog {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 16px;
+	font-size: var(--size-text);
+}
+.machine-dialog > .callout {
+	margin: 0;
+}
+.machine-code {
+	max-width: 17ch;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+}
+.machine-code::placeholder {
+	letter-spacing: 0.12em;
+}
+.machine-claim {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 6px 20px;
+	margin-top: 8px;
+	padding: 10px 0;
+	border-top: 1px solid var(--line);
+	border-bottom: 1px solid var(--line);
+	font-size: var(--size-small);
+}
+.machine-claim dt {
+	color: var(--ink-dim);
+}
+.machine-claim dd {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono);
+	overflow-wrap: anywhere;
+}
+.machine-remove-check {
+	margin-top: 14px;
+}
+
+@media (max-width: 760px) {
+	.machine-row {
+		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-areas:
+			"main remove"
+			"state remove";
+		row-gap: 6px;
+	}
+	.machine-row > .usage-kept-main {
+		grid-area: main;
+	}
+	.machine-row > .machine-state {
+		grid-area: state;
+		margin-top: 0;
+		white-space: normal;
+	}
+	.machine-row > .machine-remove {
+		grid-area: remove;
+		align-self: start;
+	}
+	.machine-notes,
+	.machine-details {
+		grid-column: 1 / -1;
+	}
+	.machine-facts > div {
+		grid-template-columns: minmax(0, 1fr);
+		row-gap: 2px;
+	}
+	/* The head's button is the width of the page here, as on the other pages; the note under it starts where it does. */
+	.machines-add {
+		width: 100%;
+		justify-items: stretch;
+	}
+}

@@ -20,6 +20,8 @@ import type {
 	GithubStatus,
 	LiveDelta,
 	LoginStart,
+	MachineClaim,
+	MachineSummary,
 	ModelList,
 	PendingQuestion,
 	PlatformInfo,
@@ -106,6 +108,8 @@ export interface UserFeed {
 	onSessions(sessions: SessionSummary[]): void;
 	/** Today's sandbox time and the count of kept sandboxes, whenever either changes. */
 	onUsage?(numbers: UsageNumbers): void;
+	/** The user's machines, whenever one is paired or removed or its status, warnings or secrets switch changes. */
+	onMachines?(machines: MachineSummary[]): void;
 	onConnection?(state: ConnectionState, error?: PlatformError): void;
 }
 
@@ -193,6 +197,16 @@ export interface UserApi {
 	usage(): Promise<UsageView>;
 	/** Frees one agent's sandbox to make room: its workspace files go, the agent and its conversation stay. Throws with reason `sandbox_busy` while it works. */
 	freeSandbox(sessionId: string): Promise<UsageView>;
+	/** The user's machines, the first paired first. The machine calls throw with reason `machines_off` where the deployment has none (`PlatformInfo.machines`). */
+	machines(): Promise<MachineSummary[]>;
+	/** What the machine whose runner printed `code` says of itself. Throws with reason `pairing_not_found`, `too_many_claims` or `too_many_machines`. */
+	claimMachine(input: { code: string }): Promise<MachineClaim>;
+	/** Pairs the machine of a code this user looked up. Throws as `claimMachine` does. */
+	confirmMachine(input: { code: string }): Promise<MachineSummary>;
+	/** Removes a machine; with `removeSandboxes` its runner also removes the agents' sandboxes on it. Throws with reason `machine_not_found`. */
+	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
+	/** Turns the sending of saved secrets to a machine's agents on or off. Throws as `removeMachine` does. */
+	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
 	/** Opens the live list of sessions. Returns the function that closes it. */
 	watch(feed: UserFeed): () => void;
 }

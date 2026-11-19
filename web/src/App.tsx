@@ -5,6 +5,7 @@ import { TopBar } from "./components/TopBar";
 import { linkProps, navigate, useRoute } from "./lib/router";
 import { useTheme } from "./lib/theme";
 import { Home } from "./screens/Home";
+import { Machines, MachinesCrumb } from "./screens/Machines";
 import { NewAgent } from "./screens/NewAgent";
 import { Repository, RepositoryCrumb, useRepository } from "./screens/Repository";
 import { Session, SessionCrumb } from "./screens/Session";
@@ -63,10 +64,12 @@ function RepositoryRoute({ repositoryId, launching, theme, onToggleTheme }: { re
 
 export function App() {
 	const route = useRoute();
-	const { auth, client } = useApp();
+	const { auth, client, platform } = useApp();
 	const [theme, toggleTheme] = useTheme();
 
-	const needsAuth = route.name === "home" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "session" || route.name === "repository";
+	const needsAuth = route.name === "home" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "machines" || route.name === "session" || route.name === "repository";
+	/** A deployment that does not offer machines has no such page. While its information loads, the page says it is loading. */
+	const noMachines = route.name === "machines" && auth !== null && platform.info !== null && !platform.info.machines;
 	/** The repository whose page is shown: its own address, or the launch form's over it. */
 	const repositoryId = route.name === "repository" ? route.id : route.name === "new" ? (route.repository ?? null) : null;
 	useEffect(() => {
@@ -75,12 +78,12 @@ export function App() {
 	}, [needsAuth, auth, route.name]);
 
 	useEffect(() => {
-		if (route.name !== "session" && repositoryId === null) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : "Agents · Windlass";
-	}, [route.name, repositoryId]);
+		if (route.name !== "session" && repositoryId === null) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : "Agents · Windlass";
+	}, [route.name, repositoryId, noMachines]);
 
 	if (route.name === "mock-authorize" && client.kind === "mock") return <MockAuthorize />;
 
-	if (route.name === "notfound" || route.name === "mock-authorize") {
+	if (route.name === "notfound" || route.name === "mock-authorize" || noMachines) {
 		return (
 			<div className="app">
 				<TopBar theme={theme} onToggleTheme={toggleTheme} />
@@ -113,6 +116,17 @@ export function App() {
 					<UsageCrumb />
 				</TopBar>
 				<Usage />
+			</div>
+		);
+	}
+
+	if (route.name === "machines") {
+		return (
+			<div className="app">
+				<TopBar theme={theme} onToggleTheme={toggleTheme}>
+					<MachinesCrumb />
+				</TopBar>
+				<Machines adding={route.add === true} />
 			</div>
 		);
 	}

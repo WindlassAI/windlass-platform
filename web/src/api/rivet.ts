@@ -34,6 +34,7 @@ import {
 	type AgentSessionEvents,
 	type AuthResult,
 	type LoginActions,
+	type MachineSummary,
 	type SessionSnapshot,
 	type SessionSummary,
 	type TimelineItem,
@@ -342,6 +343,11 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			allowance: () => act("allowance"),
 			usage: () => act("usage"),
 			freeSandbox: (sessionId) => act("freeSandbox", sessionId),
+			machines: () => act("machines"),
+			claimMachine: (input) => act("claimMachine", input),
+			confirmMachine: (input) => act("confirmMachine", input),
+			removeMachine: (input) => act("removeMachine", input),
+			setMachineSecrets: (input) => act("setMachineSecrets", input),
 			watch(feed: UserFeed) {
 				let live = false;
 				const feedConn = feedConnection(
@@ -365,6 +371,9 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 						}),
 						conn.on("usage" satisfies keyof UserEvents, (numbers: UsageNumbers) => {
 							if (live) feed.onUsage?.(numbers);
+						}),
+						conn.on("machines" satisfies keyof UserEvents, (machines: MachineSummary[]) => {
+							if (live) feed.onMachines?.(machines);
 						}),
 					],
 				);

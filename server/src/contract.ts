@@ -1004,6 +1004,8 @@ export interface MachineSummary {
 	commandSandbox: MachineProbe | null;
 	/** Free space where Docker keeps the sandboxes, as last reported; null when not known. */
 	freeDiskBytes: number | null;
+	/** The sandbox profiles this machine offers, for the launch form: every one, available or not; empty until its runner first reported. */
+	profiles: SandboxProfile[];
 	/** Whether the repository's and the account's saved secrets are sent to this machine's agents (on for a new machine). */
 	sendSecrets: boolean;
 	warnings: MachineWarning[];

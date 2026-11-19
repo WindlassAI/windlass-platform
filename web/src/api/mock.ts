@@ -76,6 +76,7 @@ import {
 	MAX_CHECK_TIMEOUT_SECONDS,
 	MIN_SECRET_VALUE_CHARS,
 	MAX_TITLE_CHARS,
+	MAX_MACHINES,
 	type RepositoryCheck,
 	type RepositoryChecks,
 	type Verified,
@@ -93,6 +94,7 @@ import {
 	type GithubStatus,
 	type LiveDelta,
 	type LoginStart,
+	type MachineSummary,
 	type ModelChoice,
 	type ModelList,
 	type PendingQuestion,
@@ -151,6 +153,8 @@ export interface MockOptions {
 	account?: "empty" | "seeded";
 	/** "unavailable" plays a signed-in user whose plan's models could not be read: the stand-in list, which says so. Default "account": the plan's own. */
 	models?: "account" | "unavailable";
+	/** How the user's machines stand when the page loads (`MockMachineState`). Default "online". */
+	machine?: MockMachineState;
 }
 
 /**
@@ -159,6 +163,24 @@ export interface MockOptions {
  * "full" (the user keeps as many sandboxes as they may, and an agent without one is refused its first prompt).
  */
 export type MockUsageState = "plenty" | "low" | "used" | "full";
+
+/**
+ * The user's own machines, for looking at each state of the Machines page by hand (`?machine=`):
+ * "none" (no machine yet), "online", "offline", "pairing" (confirmed, its runner not connected yet),
+ * "outdated" (its runner is older than the platform serves), "docker" (its runner cannot reach Docker),
+ * "clock" (its clock is minutes off), "key" (its key was used from a second place), "full" (as many
+ * machines as an account may have), "unpublished" (no runner image is published yet, and no machine),
+ * "stale" (the list is read once, then reading it again fails), "failed" (it cannot be read at all),
+ * "loading" (it is never answered), and "off" (the deployment offers no machines). In the add dialog any
+ * well-formed code is found, except ZZZZ-ZZZZ.
+ */
+export const MOCK_MACHINE_STATES = ["none", "online", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off"] as const;
+export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
+
+/** What the mock's runners say they are, and what its platform asks of them. */
+const MOCK_RUNNER_VERSION = "0.2.1";
+const MOCK_MIN_RUNNER_VERSION = "0.2.0";
+const MOCK_RUNNER_IMAGE = "registry.example.com/windlass-runner@sha256:6b1f0c2d9e4a8b7c3f5e1d0a9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b";
 
 /** What the next call about GitHub fails with, for looking at each failure by hand. */
 export type MockGithubFailure =
@@ -2392,11 +2414,206 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		serversChanged(world, session);
 	}
 
+	// ---- the user's own machines ------------------------------------------------------------------
+
+	/** One user's machines and the codes they looked up, made the first time either is asked about. */
+	interface MockMachines {
+		list: MachineSummary[];
+		/** The codes this user looked up, normalised, with the machine confirming one made. */
+		claims: Map<string, string | null>;
+		/** When this user looked a code up, for the limit of five in ten minutes. */
+		lookups: number[];
+		/** For `stale`: whether the user's connection dropped yet, after which the list can no longer be read. */
+		dropped: "no" | "soon" | "yes";
+	}
+
+	const machineState: MockMachineState = options.machine ?? "online";
+	const machineSets = new Map<string, MockMachines>();
+
+	function machinesOf(auth: AuthResult): MockMachines {
+		const world = worldOf(auth);
+		let set = machineSets.get(world.profile.uid);
+		if (!set) {
+			set = { list: seedMachines(machineState), claims: new Map(), lookups: [], dropped: "no" };
+			machineSets.set(world.profile.uid, set);
+		}
+		return set;
+	}
+
+	/** The list as the server answers it: each sandbox named by its agent's title now, none for an agent that was deleted. */
+	function machinesView(auth: AuthResult): MachineSummary[] {
+		const world = worldOf(auth);
+		return machinesOf(auth).list.map((machine) => ({ ...machine, warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
+	}
+
+	function machinesChanged(auth: AuthResult): void {
+		const list = machinesView(auth);
+		for (const feed of worldOf(auth).feeds) feed.onMachines?.(list);
+	}
+
+	function machineOf(auth: AuthResult, machineId: string): MachineSummary {
+		const machine = machinesOf(auth).list.find((one) => one.machineId === machineId);
+		if (!machine) throw new PlatformError("user", "That machine is not one of yours. It may have been removed in another tab.", { reason: "machine_not_found" });
+		return machine;
+	}
+
+	/** The user's live feeds drop and come back, as `simulateDrop` does for everything. */
+	function dropUserFeeds(auth: AuthResult): void {
+		const world = worldOf(auth);
+		for (const feed of world.feeds) feed.onConnection?.("reconnecting");
+		later(600, () => {
+			for (const feed of world.feeds) {
+				feed.onConnection?.("connected");
+				feed.onSessions(listOf(world));
+			}
+		});
+	}
+
+	function machinesOn(): void {
+		if (machineState === "off") throw new PlatformError("user", "This deployment does not run agents on machines of your own.", { reason: "machines_off" });
+	}
+
+	/** The machines a state starts with. Their sandboxes name the seeded agents; titles are looked up when the list is read. */
+	function seedMachines(state: MockMachineState): MachineSummary[] {
+		const at = realNow();
+		const nas = (patch: Partial<MachineSummary>): MachineSummary => ({
+			machineId: "m_nas",
+			name: "nas",
+			os: "Linux",
+			arch: "arm64",
+			runnerVersion: MOCK_RUNNER_VERSION,
+			status: "online",
+			since: at - 3 * HOUR,
+			agents: 3,
+			sandboxes: [
+				{ sessionId: "headers", title: null, state: "running", usedAt: at - 2 * MINUTE },
+				{ sessionId: "probe", title: null, state: "paused", usedAt: at - 2 * HOUR },
+				{ sessionId: "gone", title: null, state: "paused", usedAt: at - 4 * 24 * HOUR },
+			],
+			commandSandbox: { ok: true },
+			freeDiskBytes: 61.4e9,
+			// The launch form does not offer machines yet: when it does, the mock names their profiles here.
+			profiles: [],
+			sendSecrets: true,
+			warnings: [],
+			...patch,
+		});
+		switch (state) {
+			case "none":
+			case "unpublished":
+			case "off":
+				return [];
+			case "offline":
+				return [nas({ status: "offline", since: at - 47 * MINUTE })];
+			case "pairing":
+				return [nas({ status: "waiting", since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null })];
+			case "outdated":
+				return [nas({ status: "offline", since: at - 12 * MINUTE, runnerVersion: "0.1.0", warnings: [{ kind: "outdated" }] })];
+			case "docker":
+				return [nas({ warnings: [{ kind: "docker", reason: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" }] })];
+			case "clock":
+				return [nas({ warnings: [{ kind: "clock", offsetSeconds: 7 * 60 + 12 }] })];
+			case "key":
+				return [nas({ warnings: [{ kind: "key", at: at - 25 * MINUTE }] })];
+			case "full":
+				return [
+					nas({}),
+					nas({ machineId: "m_workshop", name: "workshop", arch: "x64", status: "offline", since: at - 2 * 24 * HOUR, agents: 1, sandboxes: [{ sessionId: "suite", title: null, state: "paused", usedAt: at - 2 * 24 * HOUR }], commandSandbox: { ok: false, reason: "Unprivileged user namespaces are turned off on this kernel (kernel.apparmor_restrict_unprivileged_userns=1), so bubblewrap cannot start." }, freeDiskBytes: 3.2e9, sendSecrets: false }),
+					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9 }),
+				];
+			default:
+				return [nas({})];
+		}
+	}
+
+	/** A code as the server reads it: case, spaces and dashes do not matter, O reads as 0 and I and L as 1. */
+	const pairingCode = (code: string) => code.toUpperCase().replace(/[\s-]/g, "").replace(/O/g, "0").replace(/[IL]/g, "1");
+
+	function lookUp(auth: AuthResult, code: string): string {
+		const set = machinesOf(auth);
+		const clean = pairingCode(code);
+		// Asked again for a code that made a machine, the answer is that machine.
+		if (set.claims.get(clean)) return clean;
+		if (set.list.length >= MAX_MACHINES) throw new PlatformError("user", `An account can connect up to ${MAX_MACHINES} machines. Remove one to add another.`, { reason: "too_many_machines" });
+		if (set.claims.has(clean)) return clean;
+		const at = realNow();
+		set.lookups = set.lookups.filter((when) => when > at - 10 * MINUTE);
+		if (set.lookups.length >= 5) throw new PlatformError("user", "Five codes were tried in the last ten minutes. Wait a few minutes, then try again.", { reason: "too_many_claims" });
+		set.lookups.push(at);
+		if (!/^[0-9A-HJKMNP-TV-Z]{8}$/.test(clean) || clean === "ZZZZZZZZ") throw new PlatformError("user", "No machine is waiting with that code. A code lasts ten minutes: check the one the runner printed last.", { reason: "pairing_not_found" });
+		set.claims.set(clean, null);
+		return clean;
+	}
+
+	/** The calls of the Machines page. A machine paired here waits for its runner, which connects a few seconds later. */
+	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineSecrets"> {
+		return {
+			async machines() {
+				machinesOn();
+				const set = machinesOf(auth);
+				if (machineState === "loading") await new Promise<never>(() => undefined);
+				await latency(260);
+				if (machineState === "failed" || set.dropped === "yes") throw new PlatformError("network", "The platform could not be reached. Check your connection.");
+				// The list is read; then the user's connection drops for a moment, and reading it again after that fails.
+				if (machineState === "stale" && set.dropped === "no") {
+					set.dropped = "soon";
+					later(1500, () => {
+						set.dropped = "yes";
+						dropUserFeeds(auth);
+					});
+				}
+				return machinesView(auth);
+			},
+			async claimMachine({ code }) {
+				machinesOn();
+				await latency(420);
+				lookUp(auth, code);
+				return { name: "workstation", os: "Linux", arch: "x64", runnerVersion: MOCK_RUNNER_VERSION };
+			},
+			async confirmMachine({ code }) {
+				machinesOn();
+				await latency(520);
+				const set = machinesOf(auth);
+				const clean = lookUp(auth, code);
+				const made = set.claims.get(clean);
+				if (made) return machinesView(auth).find((one) => one.machineId === made) ?? machineOf(auth, made);
+				const machineId = `m_${hex(12)}`;
+				set.claims.set(clean, machineId);
+				set.list.push({ machineId, name: "workstation", os: "Linux", arch: "x64", runnerVersion: MOCK_RUNNER_VERSION, status: "waiting", since: realNow(), agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [], sendSecrets: true, warnings: [] });
+				machinesChanged(auth);
+				later(4000, () => {
+					const machine = machinesOf(auth).list.find((one) => one.machineId === machineId);
+					if (!machine || machine.status !== "waiting") return;
+					Object.assign(machine, { status: "online", since: realNow(), commandSandbox: { ok: true }, freeDiskBytes: 212e9 });
+					machinesChanged(auth);
+				});
+				return machinesView(auth).find((one) => one.machineId === machineId) as MachineSummary;
+			},
+			async removeMachine({ machineId }) {
+				machinesOn();
+				await latency(380);
+				machineOf(auth, machineId);
+				const set = machinesOf(auth);
+				set.list = set.list.filter((one) => one.machineId !== machineId);
+				machinesChanged(auth);
+				return machinesView(auth);
+			},
+			async setMachineSecrets({ machineId, send }) {
+				machinesOn();
+				await latency(240);
+				machineOf(auth, machineId).sendSecrets = send;
+				machinesChanged(auth);
+				return machinesView(auth);
+			},
+		};
+	}
+
 	// ---- the interface --------------------------------------------------------------------------
 
 	function userApi(auth: AuthResult): UserApi {
 		const world = () => worldOf(auth);
 		return {
+			...machineCalls(auth),
 			async me() {
 				await latency();
 				return world().profile;
@@ -2969,7 +3186,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		endpoint: null,
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
-			return { demoEnabled: true, windlassVersion: "0.3.0", profiles, ...(githubOn ? { github: GITHUB } : {}) };
+			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, platformUrl: origin } };
+			return { demoEnabled: true, windlassVersion: "0.3.0", profiles, ...(githubOn ? { github: GITHUB } : {}), ...machines };
 		},
 		login: {
 			async start(): Promise<LoginStart> {

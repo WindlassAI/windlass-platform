@@ -117,7 +117,7 @@ function AccountMenu() {
 }
 
 function SignedInMenu() {
-	const { auth, signOut, client } = useApp();
+	const { auth, signOut, client, platform } = useApp();
 	const github = useGithub();
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
@@ -165,7 +165,12 @@ function SignedInMenu() {
 					{auth.profile.demo ? <p className="menu-note">The demo runs a scripted model with real tool calls. It has no ChatGPT account.</p> : <ChatgptLine />}
 					{client.kind === "mock" ? <p className="menu-note">Mock backend: nothing leaves this page.</p> : null}
 					{github.enabled ? <GithubBlock github={github} /> : null}
-					{/* The account's own page: closing the menu is the link's doing, the way there is the router's. */}
+					{/* The account's own pages: closing the menu is the link's doing, the way there is the router's. */}
+					{platform.info?.machines ? (
+						<a className="button button-quiet menu-action" {...linkProps({ name: "machines" })} onClickCapture={() => setOpen(false)}>
+							Machines
+						</a>
+					) : null}
 					<a className="button button-quiet menu-action" {...linkProps({ name: "settings" })} onClickCapture={() => setOpen(false)}>
 						Settings
 					</a>
