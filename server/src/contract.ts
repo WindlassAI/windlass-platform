@@ -1521,6 +1521,13 @@ export interface SessionSnapshot {
 	pending: LiveDelta[];
 	/** The question the turn in progress waits on, if any. */
 	question: PendingQuestion | null;
+	/**
+	 * For a session on one of the user's machines, what its banner says of the machine: whether it
+	 * answered when the session last needed it, and since when. "not_answering": a turn waits on a
+	 * machine that stopped answering, and goes on when it is back or ends ten minutes after `since`.
+	 * Null until the session needed its machine since its actor last woke; absent for a hosted session.
+	 */
+	machine?: { state: "answering" | "not_answering" | "offline" | "removed"; since: number } | null;
 }
 
 export interface PromptInput {

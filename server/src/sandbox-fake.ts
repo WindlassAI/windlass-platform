@@ -1162,17 +1162,6 @@ export function createFakeSandboxLayer(options: { signIns?: "actors" | "memory" 
 	return fakeLayer(bucket, { logins, tokens });
 }
 
-let fakeMachine: SandboxLayer | null = null;
-
-/**
- * The fake deployment's machine: sandboxes of its own, apart from the hosted ones, and no bucket, as
- * on a real machine. Its turns use the hosted sign-ins. One machine serves every user here.
- */
-export function fakeMachineLayer(hosted: SandboxLayer): SandboxLayer {
-	fakeMachine ??= fakeLayer(null, hosted);
-	return fakeMachine;
-}
-
 function fakeLayer(bucket: StandInObjectStore | null, { logins, tokens }: Pick<SandboxLayer, "logins" | "tokens">): SandboxLayer {
 	const raw = Number.parseInt(process.env.WLP_FAKE_DELAY_MS ?? "", 10);
 	const eventDelayMs = Number.isFinite(raw) && raw >= 0 ? raw : 15;

@@ -714,10 +714,7 @@ async function main(server: Server | null): Promise<void> {
 	await userConn.me();
 
 	await check("createSession refuses bad input", async () => {
-		const unknown = await refused(() => userConn.createSession({ place: { kind: "machine", machineId: FAKE ? "m_missing" : "m_fake" }, profile: "docker-hardened" }), "sandbox_error");
-		assert(unknown.includes("That machine is not known"), `unknown machine: ${unknown}`);
 		await refused(() => userConn.createSession({ place: null as never, profile: "docker-hardened" }), "bad_input");
-		if (FAKE) await refused(() => userConn.createSession({ place: { kind: "machine", machineId: "m_fake" }, profile: "e2b" }), "profile_unavailable");
 		await refused(() => userConn.createSession({ profile: "nope" as never }), "bad_profile");
 		await refused(() => userConn.createSession({ profile: "e2b" }), "profile_unavailable");
 		await refused(() => userConn.createSession({ profile: "e2b-open" }), "profile_unavailable");
@@ -728,39 +725,6 @@ async function main(server: Server | null): Promise<void> {
 		assert((await userConn.listSessions()).length === 0, "a refused createSession left a session behind");
 		return "profile, model, repository address";
 	});
-
-	if (FAKE) {
-		await check("a hosted sandbox and a machine sandbox run for the same user; only the hosted one counts", async () => {
-			const { profile: { uid }, token } = await demoSignIn();
-			const user = client.user.getOrCreate([uid], { params: { token } });
-			const machine = await user.createSession({ place: { kind: "machine", machineId: "m_fake" }, profile: "docker-hardened" });
-			const hosted = await user.createSession({ place: { kind: "hosted" }, profile: "docker-hardened" });
-			for (const session of [machine, hosted]) {
-				const watch = new Watch(client, uid, session.id, token);
-				try {
-					const snapshot = await watch.conn.snapshot();
-					const place = snapshot.summary.place;
-					assert(session === machine ? place.kind === "machine" && place.machineId === "m_fake" : place.kind === "hosted", `session place: ${plain(place)}`);
-					const { turn } = await watch.conn.prompt({ text: "Write the primes" });
-					const ended = await watch.untilEnded(turn);
-					assert(ended.outcome === "succeeded", `turn on ${place.kind} ended ${ended.outcome}`);
-					const usage = await user.usage();
-					if (session === machine) {
-						assert(usage.usedSeconds === 0 && usage.heldSeconds === 0 && usage.today.length === 0, "the machine used or held sandbox time");
-						assert(usage.sandboxes.kept === 0 && usage.kept.length === 0, "the machine took a kept place");
-					} else {
-						assert(usage.today.length === 1 && usage.today[0]?.sessionId === hosted.id && usage.today[0].heldSeconds > 0, "the hosted sandbox did not take the only hold");
-						assert(usage.sandboxes.kept === 1 && usage.kept.length === 1 && usage.kept[0]?.sessionId === hosted.id, "the hosted sandbox did not take the only kept place");
-					}
-				} finally {
-					await watch.conn.dispose();
-				}
-			}
-			await user.deleteSession(machine.id);
-			await user.deleteSession(hosted.id);
-			return "two successful turns; zero holds or kept places on m_fake, one of each on hosted";
-		});
-	}
 
 	let session: SessionSummary | null = null;
 	await check("createSession", async () => {

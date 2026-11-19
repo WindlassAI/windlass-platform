@@ -151,6 +151,7 @@ import { GithubProblem, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, standInModels } from "../account-models.js";
 import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
+import { RUNNER_SOCKET, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
 import { runSetupCommand, stopLeftoverSetup } from "../sandbox/setup.js";
 import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
 import { unaskedNote } from "../personal-servers.js";
@@ -487,6 +488,11 @@ interface SessionVars {
 	metering: Promise<unknown>;
 	/** The id of a hold that was asked for and not answered: asked for again under the same id, so it is one hold. */
 	meterAsked: string | null;
+	/**
+	 * For a session on one of its user's machines: the conversation with the machine's runner, over its
+	 * socket to this actor. This instance's alone, never stored: one that wakes starts a new one.
+	 */
+	runner: RunnerLink | null;
 }
 
 /** What the helpers below need of an actor context; every hook's and action's `c` fits. */
@@ -517,7 +523,24 @@ const UNREADABLE_SESSION =
 class TurnProblem extends Error {}
 
 function layerOf(c: Ctx, meta: SessionMeta): Promise<SandboxLayer> {
-	return layerFor(meta.place, c.key[0]!);
+	return layerFor(meta.place, c.key[0]!, meta.place.kind === "machine" ? runnerLink(c, meta.place.machineId) : null);
+}
+
+/** The session's link to its machine's runner, made the first time the session needs the machine. */
+function runnerLink(c: Ctx, machineId: string): RunnerLink {
+	if (!c.vars.runner) {
+		const [uid, sessionId] = c.key as [string, string];
+		const client = c.client();
+		c.vars.runner = new RunnerLink({ uid, sessionId, machineId }, machineActor(() => client, uid, machineId), (reason) => {
+			console.log(`[wlp] runner.conversation_ended session=${sessionId} machine=${machineId}: ${reason}`);
+		});
+	}
+	return c.vars.runner;
+}
+
+/** The runner's own socket to the session: it proves itself in its first frame, not with a user's token. */
+function isRunnerSocket(request: Request | undefined): boolean {
+	return request !== undefined && new URL(request.url).pathname === `/websocket/${RUNNER_SOCKET}`;
 }
 
 function summaryOf(meta: SessionMeta): SessionSummary {
@@ -2417,10 +2440,19 @@ function lastUsed(meta: SessionMeta): number {
 	return meta.lastUsedAt ?? meta.updatedAt;
 }
 
+/**
+ * Whether a sandbox nobody used for long is removed. Not on one of the user's machines (design
+ * decision 4): it costs the platform nothing there, and it is the user's to remove.
+ */
+function removedWhenIdle(meta: SessionMeta): boolean {
+	return meta.place.kind === "hosted";
+}
+
 /** When the sandbox is next due: to be suspended while it runs, to be removed while it exists. Null when there is none. */
 function idleDue(meta: SessionMeta): number | null {
 	if (!meta.sandboxId) return null;
-	return lastUsed(meta) + (meta.sandbox === "running" ? config.idleSuspendMs : config.idleDestroyMs);
+	if (meta.sandbox === "running") return lastUsed(meta) + config.idleSuspendMs;
+	return removedWhenIdle(meta) ? lastUsed(meta) + config.idleDestroyMs : null;
 }
 
 /**
@@ -2461,7 +2493,7 @@ async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 	const id = meta.sandboxId;
 	const since = lastUsed(meta);
 	const now = Date.now();
-	const remove = id !== null && now >= since + config.idleDestroyMs;
+	const remove = id !== null && removedWhenIdle(meta) && now >= since + config.idleDestroyMs;
 	const suspend = id !== null && !remove && meta.sandbox === "running" && now >= since + config.idleSuspendMs;
 	let retry = 0;
 	if (id && (remove || suspend)) {
@@ -3071,6 +3103,7 @@ export const agentSession = actor({
 			meterTimer: null,
 			metering: Promise.resolve(),
 			meterAsked: null,
+			runner: null,
 		};
 	},
 
@@ -3176,6 +3209,8 @@ export const agentSession = actor({
 		// A paused sandbox is due for removal later: the schedule wakes the actor for it.
 		await within(Promise.all([armIdle(c, meta), c.vars.reporting, sleepMeter(c, meta)]), SETTLE_WAIT_MS);
 		await persist(c);
+		// Last: the turn was stopped and the sandbox suspended through it. The runner lets go of what it ran for this instance.
+		c.vars.runner?.close();
 	},
 
 	onDestroy: async (c) => {
@@ -3197,6 +3232,7 @@ export const agentSession = actor({
 		await leaveUsage(c, meta);
 		// After the sandbox, which is what uploads: nothing can put the copy back once it is removed.
 		await removeBackup(c, meta);
+		c.vars.runner?.close();
 	},
 
 	events: {
@@ -3208,8 +3244,20 @@ export const agentSession = actor({
 
 	onBeforeConnect: (c, params: unknown) => {
 		assertOrigin(c);
-		authenticate(c.key, params);
+		if (!isRunnerSocket(c.request)) authenticate(c.key, params);
 		if (!c.vars.meta) throw new UserError("That agent does not exist.", { code: "session_not_found" });
+	},
+
+	// The machine's runner, which this instance asked to attach. Its hello is checked by the channel,
+	// synchronously (runner/ticket.ts); a socket this instance did not ask for has no ticket it knows.
+	onWebSocket: (c, ws) => {
+		assertOrigin(c);
+		const link = c.vars.runner;
+		if (!isRunnerSocket(c.request) || !link || c.vars.stopping) {
+			ws.close(1008, "Not expected");
+			return;
+		}
+		link.socket(ws);
 	},
 
 	actions: {
@@ -3234,6 +3282,7 @@ export const agentSession = actor({
 						timeline,
 						pending: [...c.vars.pending],
 						question: c.vars.turn?.question?.pending ?? null,
+						...(meta.place.kind === "machine" ? { machine: c.vars.runner?.reach() ?? null } : {}),
 					};
 				});
 			} catch (error) {

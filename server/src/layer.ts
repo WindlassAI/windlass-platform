@@ -7,7 +7,8 @@
 
 import { config } from "./config.js";
 import type { SandboxPlace } from "./contract.js";
-import { type SandboxLayer, SandboxUserError } from "./sandbox/api.js";
+import type { SandboxLayer } from "./sandbox/api.js";
+import type { RunnerLink } from "./sandbox/runner-layer.js";
 
 let loading: Promise<SandboxLayer> | null = null;
 
@@ -41,14 +42,14 @@ export function getLayer(): Promise<SandboxLayer> {
 
 /**
  * The layer of a session's place. A machine is addressed by its owner and its id, and its layer is
- * made from those alone on whichever server asks, so no server has to have been told of the machine.
- * Only a fake deployment has a machine so far: `m_fake`, which every user has.
+ * made from those, in the session's link to the machine's runner, on whichever server asks, so no
+ * server has to have been told of the machine. Making it calls nothing and never throws: a session on
+ * a machine that is offline or removed stays readable, and its operations say why they fail
+ * (sandbox/runner-layer.ts).
  */
-export async function layerFor(place: SandboxPlace, uid: string): Promise<SandboxLayer> {
+export async function layerFor(place: SandboxPlace, uid: string, link: RunnerLink | null): Promise<SandboxLayer> {
 	if (place.kind === "hosted") return getLayer();
-	if (config.sandbox === "fake" && place.machineId === "m_fake") {
-		const { fakeMachineLayer } = await import("./sandbox-fake.js");
-		return fakeMachineLayer(await getLayer());
-	}
-	throw new SandboxUserError("That machine is not known.");
+	if (link === null || link.who.uid !== uid || link.who.machineId !== place.machineId) throw new Error("A machine's layer is its session's: pass the session's link.");
+	const { machineLayer } = await import("./sandbox/runner-layer.js");
+	return machineLayer(link, await getLayer());
 }
