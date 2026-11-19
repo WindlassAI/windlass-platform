@@ -275,13 +275,19 @@ async function check() {
 			await eventually(() => ws.readyState === 1);
 			return ws;
 		};
+		const codes: number[] = [];
 		const quiet = await silent();
+		quiet.addEventListener("close", e => codes.push(e.code));
 		const opened = Date.now();
 		const quieter = await silent();
+		quieter.addEventListener("close", e => codes.push(e.code));
 		await eventually(() => quiet.readyState === 3, 3000);
 		await eventually(() => quieter.readyState === 3, 20_000);
 		const lasted = Date.now() - opened;
 		assert(lasted >= 8000 && lasted < 14_000, `a silent control socket lasted ${lasted} ms`);
+		// Neither close is a refusal (1008), which a runner would answer by dropping its sessions and waiting ten minutes.
+		await eventually(() => codes.length === 2);
+		assert.deepEqual(codes, [1001, 1001], `silent control sockets were closed with ${codes.join(", ")}`);
 		assert.equal(back.ws.readyState, 1);
 		assert.equal(await fixture().e2eWaitingForHello(), false, "the actor kept the expired greeting");
 		step("a silent control socket marks the machine offline on the person's list by its deadline");

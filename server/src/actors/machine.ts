@@ -174,11 +174,13 @@ export const machine = actor({
 				if (raw.readyState === raw.OPEN) raw.close(code, reason);
 			},
 		};
-		let deadline = setTimeout(() => ws.close(1008, "No hello"), HELLO_WAIT_MS);
+		// 1001, not 1008: the runner reads 1008 as a refusal, ends its sessions' conversations and waits ten minutes,
+		// and a hello held up on a stalled link (or a socket replaced before its hello) is no refusal.
+		let deadline = setTimeout(() => ws.close(1001, "No hello"), HELLO_WAIT_MS);
 		const heartbeat = setInterval(() => {
 			if (c.vars.live?.ws === ws) ws.send({ kind: "heartbeat" });
 		}, CONTROL_HEARTBEAT_MS);
-		c.vars.greeting?.close(1008, "Replaced before its hello");
+		c.vars.greeting?.close(1001, "Replaced before its hello");
 		c.vars.greeting = ws;
 		const fail = (error: unknown) => { machineError("machine control socket", error); ws.close(1011, "Control socket failed"); };
 		raw.addEventListener("close", gone);
