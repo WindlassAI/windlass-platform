@@ -39,7 +39,7 @@ import { CHECKS_TABLE, type ChecksDb, ChecksProblem, cleanChecks, readChecks, sa
 import { DEFAULTS_TABLE } from "../server/src/repository-defaults.js";
 import type { TurnChecks } from "../server/src/sandbox/api.js";
 import { VerificationLog, type WorkDiff, checkScripts, isCheckOutputPath, isTestPath, outputTail, verifiedSection, verifiedWords, withOutputs, withVerifiedSection, workFlags } from "../server/src/verified.js";
-import { platformConfig, projectChecks } from "../server/src/windlass-config.js";
+import { PLATFORM_WAKE, platformConfig, projectChecks } from "../server/src/windlass-config.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
@@ -105,10 +105,10 @@ const config = JSON.parse(written?.config ?? "{}") as Record<string, unknown>;
 expect("the user's checks go into Windlass's own file as its checks, and what the file had under checks and verify goes", plain(config.checks) === plain([{ name: "test", command: "npm test" }]) && !("verify" in config) && written?.changed === true);
 expect("whatever else the file holds is kept", config.model === "gpt-6-luna" && plain(config.mcp) === plain({ servers: { mine: { command: "x" } } }));
 const withdrawn = platformConfig(written?.config ?? null, written?.written ?? null, []);
-expect("with none to hand over, the file has no checks, and a file that held nothing else is removed", !("checks" in JSON.parse(withdrawn?.config ?? "{}")) && platformConfig(JSON.stringify({ checks: [{ name: "a", command: "b" }] }), null, [])?.config === null);
+expect("with none to hand over, the file has no checks, and a file that held nothing else keeps only the platform's wake-ups off", !("checks" in JSON.parse(withdrawn?.config ?? "{}")) && platformConfig(JSON.stringify({ checks: [{ name: "a", command: "b" }] }), null, [])?.config === `${JSON.stringify({ wake: PLATFORM_WAKE }, null, 2)}\n`);
 expect("a file that is not Windlass's is left alone", platformConfig("not json", null, [], windlassChecks([TEST])) === null);
 const strays = platformConfig(JSON.stringify({ model: "gpt-6-luna", checks: [{ name: "left", command: "true" }], requiredChecks: [{ name: "planted", command: "true" }], verify: { maxRounds: 1 } }), null, []);
-expect("where the checks are named when the session is opened the file gets none, and required checks or a verify setting a command left there go too", strays?.config === `${JSON.stringify({ model: "gpt-6-luna" }, null, 2)}\n` && strays.changed);
+expect("where the checks are named when the session is opened the file gets none, and required checks or a verify setting a command left there go too", strays?.config === `${JSON.stringify({ model: "gpt-6-luna", wake: PLATFORM_WAKE }, null, 2)}\n` && strays.changed);
 expect(
 	"what a repository's own file says about checks is read, and nothing else of it",
 	plain(projectChecks(JSON.stringify({ checks: [{ name: "smoke", command: "true" }], mcp: {} }))) === plain({ checks: 1, verify: null }) &&

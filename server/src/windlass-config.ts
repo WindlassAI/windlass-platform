@@ -27,6 +27,13 @@
  * none they go into the same file the same way, as its `checks`: Windlass takes its user's checks
  * from there, runs them before a turn ends and sends the agent back with what fails.
  *
+ * The file also turns wake-ups off (`wake.enabled: false`, Windlass's docs/wake-ups.md,
+ * "Configuration"), for every session: a wake-up fires only while a Windlass server process runs,
+ * and a session's sandbox is paused between turns, so nothing would ever deliver one, and a model
+ * offered `wake_create` promises to come back and never does. Windlass decides it when a session
+ * starts, so the setting is in the file before any session is opened, and stays there: `wake` is the
+ * platform's alone, and a repository's file can only tighten it.
+ *
  * Either way `checks`, `requiredChecks` and `verify` in this file are the platform's alone: whatever
  * the file had under them goes, so that what Windlass holds to be its user's checks is what the user
  * saved and nothing a command left there, and its own defaults decide what is done with them (the
@@ -50,6 +57,9 @@ import { PUBLISH_SERVER } from "./agent-publish.js";
 export const WINDLASS_CONFIG_FILE = "/home/agent/.config/windlass/config.json";
 /** The platform's list of the servers it wrote into that file, beside the directory the tool to publish keeps its answers in. */
 export const PLATFORM_SERVERS_FILE = "/home/agent/.local/state/windlass-platform-servers.json";
+
+/** The file's `wake` section: no session the platform opens is offered the wake-up tools. */
+export const PLATFORM_WAKE = { enabled: false } as const;
 
 /** A server as it goes into the file: its key in `mcp.servers`, and its definition as Windlass takes it. */
 export interface ConfigServer {
@@ -81,7 +91,7 @@ function writtenOf(text: string | null): Written {
 	return { names, replaced };
 }
 
-/** The file and the list as they are to be: null for one that is to be absent. */
+/** The file and the list as they are to be: null for one that is to be absent (the file never is: it has `wake`). */
 export interface PlatformConfig {
 	config: string | null;
 	written: string | null;
@@ -105,7 +115,8 @@ function same(a: unknown, b: unknown): boolean {
  * and the list as the sandbox has them, null for one that is not there. What an earlier turn wrote is taken out first, and what it stood in for is put back;
  * then each server is written, the later of two of one name last, and a definition the file had
  * under its name is kept in the list. With no server and no check, that is the file as it was before
- * the platform wrote anything, less `checks`, `requiredChecks` and `verify`, and no list.
+ * the platform wrote anything, less `checks`, `requiredChecks` and `verify`, and no list; it always
+ * has the platform's `wake`, so it is never absent.
  *
  * Null when the file is there and is not what Windlass reads (not JSON, or `mcp` or `mcp.servers` is
  * not an object): it is left alone then, and nothing is written.
@@ -140,14 +151,14 @@ export function platformConfig(text: string | null, written: string | null, serv
 	}
 
 	const { servers: _servers, ...restOfMcp } = mcp;
-	// `checks`, `requiredChecks` and `verify` are the platform's: what the file had under them goes.
-	const { mcp: _mcp, checks: _checks, requiredChecks: _required, verify: _verify, ...rest } = config;
+	// `checks`, `requiredChecks`, `verify` and `wake` are the platform's: what the file had under them goes.
+	const { mcp: _mcp, checks: _checks, requiredChecks: _required, verify: _verify, wake: _wake, ...rest } = config;
 	const mcpNow = Object.keys(next).length > 0 ? { ...restOfMcp, servers: next } : restOfMcp;
-	const configNow = { ...rest, ...(Object.keys(mcpNow).length > 0 ? { mcp: mcpNow } : {}), ...(checks.length > 0 ? { checks } : {}) };
+	const configNow = { ...rest, ...(Object.keys(mcpNow).length > 0 ? { mcp: mcpNow } : {}), ...(checks.length > 0 ? { checks } : {}), wake: PLATFORM_WAKE };
 	return {
-		config: Object.keys(configNow).length === 0 ? null : `${JSON.stringify(configNow, null, 2)}\n`,
+		config: `${JSON.stringify(configNow, null, 2)}\n`,
 		written: now.names.length === 0 ? null : `${JSON.stringify(now)}\n`,
-		// A file that is there and says nothing is left where it is.
+		// A file that already says all of it is left where it is.
 		changed: !same(config, configNow),
 	};
 }

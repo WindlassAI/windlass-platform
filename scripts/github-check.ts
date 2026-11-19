@@ -625,10 +625,12 @@ await section("the agent asks: what a request may hold, and what becomes of an o
 	expect("the server's name for a call is read from its progress, and only a name it could have made", asks.publishRequestId("windlass_platform/publish: 0/1 handed to the platform as request 0123456789abcdef01234567") === "0123456789abcdef01234567" && asks.publishRequestId("request ../../etc/passwd") === null && asks.publishRequestId(undefined) === null);
 
 	// Windlass's configuration file in the sandbox: the server goes in beside what is there, and out again (server/src/windlass-config.ts).
-	const { platformConfig } = await import("../server/src/windlass-config.js");
+	const { PLATFORM_WAKE, platformConfig } = await import("../server/src/windlass-config.js");
 	const definition = asks.publishServerDefinition(10 * 60_000);
 	const tool = [{ name: asks.PUBLISH_SERVER, definition }];
 	const held = JSON.stringify({ approval: { untrustedPaths: ["**"] }, mcp: { servers: { tracker: { command: "tracker-mcp" } } } });
+	/** `held` as the platform leaves it: with wake-ups off. */
+	const heldNow = JSON.stringify({ ...JSON.parse(held), wake: PLATFORM_WAKE });
 	const alone = platformConfig(null, null, tool);
 	const beside = platformConfig(held, null, tool);
 	expect(
@@ -640,10 +642,10 @@ await section("the agent asks: what a request may hold, and what becomes of an o
 	const emptied = platformConfig(alone?.config ?? null, alone?.written ?? null, []);
 	const restored = platformConfig(beside?.config ?? null, beside?.written ?? null, []);
 	expect(
-		"taken out again, a file that held nothing else goes, and one that held more keeps it",
-		emptied?.config === null && emptied.written === null && emptied.changed && restored?.config != null && JSON.stringify(JSON.parse(restored.config)) === held && restored.written === null && platformConfig("{}", null, [])?.changed === false && platformConfig("{ not json", null, []) === null,
+		"taken out again, a file that held nothing else keeps only wake-ups off, and one that held more keeps it",
+		emptied?.config != null && JSON.stringify(JSON.parse(emptied.config)) === JSON.stringify({ wake: PLATFORM_WAKE }) && emptied.written === null && emptied.changed && restored?.config != null && JSON.stringify(JSON.parse(restored.config)) === heldNow && restored.written === null && platformConfig(heldNow, null, [])?.changed === false && platformConfig("{ not json", null, []) === null,
 	);
-	expect("a server left under the tool's name by a turn that was cut off goes, whether or not the platform's list names it", platformConfig(beside?.config ?? null, null, [])?.config != null && JSON.stringify(JSON.parse(platformConfig(beside?.config ?? null, null, [])?.config as string)) === held);
+	expect("a server left under the tool's name by a turn that was cut off goes, whether or not the platform's list names it", platformConfig(beside?.config ?? null, null, [])?.config != null && JSON.stringify(JSON.parse(platformConfig(beside?.config ?? null, null, [])?.config as string)) === heldNow);
 
 	// What a request may hold.
 	const fine = asks.publishRequest({ title: "  Fix   the\tlight ", description: "It was off.\r\n\r\nNow it is on.\u001b[31m", commit_message: undefined }, where, NO_REDACTION);

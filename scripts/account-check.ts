@@ -53,7 +53,7 @@ import { type OpenedSecret, SecretRedactor, openSecret, sealSecret, secretReach,
 import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import { personalServerReach, serverQuestionWords } from "../server/src/server-question.js";
 import { createSealer } from "../server/src/signin/seal.js";
-import { platformConfig } from "../server/src/windlass-config.js";
+import { PLATFORM_WAKE, platformConfig } from "../server/src/windlass-config.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
@@ -458,6 +458,8 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 	const publish = { name: PUBLISH_SERVER, definition: publishServerDefinition(600_000) };
 	const tracker = { name: "tracker", definition: { command: "tracker-mcp" } };
 	const docs = { name: "docs", definition: { url: "https://docs.example.com/mcp" } };
+	/** What the file holds when the platform has nothing in it but its own setting: wake-ups off. */
+	const wakeOnly = `${JSON.stringify({ wake: PLATFORM_WAKE }, null, 2)}\n`;
 
 	const first = platformConfig(null, null, [tracker, docs, publish]);
 	expect("the user's servers and the platform's own go into a file that is not there", first !== null && plain(Object.keys(servers(first.config))) === plain(["tracker", "docs", PUBLISH_SERVER]) && first.changed && first.written !== null);
@@ -466,23 +468,24 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 	const second = platformConfig(first?.config ?? null, first?.written ?? null, [tracker]);
 	expect("a sandbox that has the file from an earlier turn gets the list as it is now: a deleted server is gone, and so is the platform's when it is not offered", second !== null && plain(Object.keys(servers(second.config))) === plain(["tracker"]));
 	const none = platformConfig(second?.config ?? null, second?.written ?? null, []);
-	expect("with nothing to write, a file that held nothing else goes, and the platform's list with it", none !== null && none.config === null && none.written === null && none.changed);
-	expect("and a sandbox that never had anything is left as it is", plain(platformConfig(null, null, [])) === plain({ config: null, written: null, changed: false }));
+	expect("with nothing to write, a file that held nothing else keeps only the platform's wake-ups off, and the platform's list goes", none !== null && none.config === wakeOnly && none.written === null && none.changed);
+	expect("a sandbox that never had the file gets one that turns wake-ups off, and that file is not written again", plain(platformConfig(null, null, [])) === plain({ config: wakeOnly, written: null, changed: true }) && platformConfig(wakeOnly, null, [])?.changed === false);
 
 	// A file that is not the platform's alone: a setup command wrote one.
 	const theirs = JSON.stringify({ approval: { untrustedPaths: ["**"] }, mcp: { servers: { local: { command: "local-mcp" }, tracker: { command: "their-tracker" } } } });
 	const beside = platformConfig(theirs, null, [tracker, publish]);
 	expect("what the file holds besides is kept, and a server of the same name gives way to the account's for the turn", beside !== null && plain(Object.entries(servers(beside.config)).map(([name, definition]) => [name, definition.command])) === plain([["local", "local-mcp"], ["tracker", "tracker-mcp"], [PUBLISH_SERVER, "python3"]]) && (JSON.parse(beside.config as string) as { approval: unknown }).approval !== undefined);
 	const after = platformConfig(beside?.config ?? null, beside?.written ?? null, []);
-	expect("taken out again, the file is what it was, with the server that gave way back in its place", after !== null && plain(JSON.parse(after.config as string)) === plain(JSON.parse(theirs)) && after.written === null);
-	expect("a file the platform has nothing in, and nothing to add to, is not written again", platformConfig(theirs, null, [])?.changed === false);
+	expect("taken out again, the file is what it was, with the server that gave way back in its place, and wake-ups off", after !== null && plain(JSON.parse(after.config as string)) === plain({ ...JSON.parse(theirs), wake: PLATFORM_WAKE }) && after.written === null);
+	expect("a file the platform has nothing in, and nothing to add to, is not written again", platformConfig(after?.config ?? null, null, [])?.changed === false);
+	expect("whatever a command left under wake, the file turns wake-ups off", JSON.parse(platformConfig(JSON.stringify({ wake: { enabled: true, maxActive: 10 } }), null, [])?.config ?? "{}").wake?.enabled === false);
 
 	// A user's server cannot take the platform's name, by any way.
 	const impostor = { name: PUBLISH_SERVER, definition: { command: "impostor" } };
 	const tried = platformConfig(null, null, [impostor, publish]);
 	expect("whatever is written under the platform's own name before it, the platform's own is what the file has", servers(tried?.config)[PUBLISH_SERVER]?.command === "python3" && Object.keys(servers(tried?.config)).length === 1);
 	const planted = JSON.stringify({ mcp: { servers: { [PUBLISH_SERVER]: { command: "planted" } } } });
-	expect("a server planted under that name in the sandbox's file goes when the platform's is not offered, and is not put back after one that is", plain(servers(platformConfig(planted, null, [tracker])?.config)) === plain({ tracker: { command: "tracker-mcp" } }) && platformConfig(platformConfig(planted, null, [publish])?.config ?? null, platformConfig(planted, null, [publish])?.written ?? null, [])?.config === null);
+	expect("a server planted under that name in the sandbox's file goes when the platform's is not offered, and is not put back after one that is", plain(servers(platformConfig(planted, null, [tracker])?.config)) === plain({ tracker: { command: "tracker-mcp" } }) && platformConfig(platformConfig(planted, null, [publish])?.config ?? null, platformConfig(planted, null, [publish])?.written ?? null, [])?.config === wakeOnly);
 
 	// The platform's list is in the sandbox, where a command that runs unsandboxed can write it: nothing is assumed of it.
 	const forged = [JSON.stringify({ names: ["local"], replaced: { local: "not a definition", [PUBLISH_SERVER]: { command: "forged" } } }), "{ not json", "[]", JSON.stringify({ names: "local" })];

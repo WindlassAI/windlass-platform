@@ -46,12 +46,12 @@ import type { SandboxProfileId, WindlassEvent } from "../server/src/contract.js"
 import { type AccessToken, type AccessTokens, type RunTurnResult, type ScriptedModel, SandboxUserError, type TurnAnswer, type TurnControl, type TurnQuestion, type Windlass } from "../server/src/sandbox/api.js";
 import { AcpConnection, AcpError, LineSplitter } from "../server/src/sandbox/acp.js";
 import { DEMO_SCENARIOS, DEMO_SPARE_ANSWERS } from "../server/src/sandbox/demo.js";
-import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, PROCESS_MARK, docker, helperFlags, randomId, runHelper, tmpName } from "../server/src/sandbox/docker.js";
+import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, PROCESS_MARK, docker, helperFlags, randomId, runHelper, tmpName } from "../server/src/sandbox/docker.js";
 import { ACCESS_TOKEN_FILE_ENV, NOT_SIGNED_IN, OUTDATED_SANDBOX, SIGN_IN_EXPIRED, SignInRefreshError, TOKEN_REJECTED, TOKEN_REPLACE_LEAD_MS, TOKEN_VALID_FOR_MS, loginTokenCommand } from "../server/src/sandbox/handoff.js";
 import { createSandboxLayer } from "../server/src/sandbox/index.js";
-import type { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
+import { type DockerSandboxHandle, DockerSandboxes, containerName } from "../server/src/sandbox/sandboxes.js";
 import { TOKEN_REMOVED, tokenFilePath } from "../server/src/sandbox/token-file.js";
-import { ensureAuthVolume } from "../server/src/sandbox/volumes.js";
+import { ensureAuthVolume, ensureDataVolume } from "../server/src/sandbox/volumes.js";
 import type { SignInMaterial } from "../server/src/signin/material.js";
 import { DockerWindlass } from "../server/src/sandbox/windlass.js";
 import { warnAboutWindlass } from "../server/src/startup.js";
@@ -758,6 +758,58 @@ async function main(): Promise<void> {
 		await throwsAny("create() refuses an invalid uid", () => layer.sandboxes.create({ uid: "../etc", sessionId: "s", profile: "docker-hardened" }));
 	});
 
+	await section("provider", async () => {
+		// A runner's provider on the same daemon, for the same user: its containers and the hosted ones never meet.
+		const machine = `m_${randomId(8)}`;
+		const volume = `wlp-machine-chk-${run}`;
+		const own = new DockerSandboxes({ machine, dataVolume: async () => (await ensureDataVolume(volume, { [MACHINE_LABEL]: machine }), volume) });
+		let theirs: string | null = null;
+		try {
+			const hosted = await layer.sandboxes.create({ uid, sessionId: "check-provider", profile: "docker-hardened" });
+			createdSandboxes.add(hosted);
+			everySandbox.add(hosted);
+			theirs = await own.create({ uid, sessionId: "check-provider", profile: "docker-hardened" });
+			everySandbox.add(theirs);
+			const hostedList = (await layer.sandboxes.list(uid)).map((box) => box.id);
+			const ownList = (await own.list(uid)).map((box) => box.id);
+			expect(
+				"a runner's provider and the hosted one on one daemon each list, find and reach only their own containers",
+				hostedList.includes(hosted) && !hostedList.includes(theirs) && ownList.includes(theirs) && !ownList.includes(hosted) && (await layer.sandboxes.state(theirs)) === "none" && (await own.state(hosted)) === "none" && (await layer.sandboxes.connect(theirs)) === undefined,
+				`hosted ${hostedList.join(" ")}; runner ${ownList.join(" ")}`,
+			);
+			expect("the runner's container mounts its own data volume", (await mountsOf(containerName(theirs))) === `${volume}:${DATA_DIR}`, await mountsOf(containerName(theirs)));
+
+			const handle = (await layer.sandboxes.connect(hosted)) as DockerSandboxHandle;
+			// Names the docker client reads itself, and a value no shell quoting may change.
+			const values: Record<string, string> = { DOCKER_HOST: "unix:///nowhere.sock", LD_PRELOAD: "/nowhere.so", HTTPS_PROXY: "http://127.0.0.1:9", CHECK_VALUE: "two words\n'q' \"$HOME\" `id` \\ %s" };
+			let printed = "";
+			const tag = `rchk${run}`;
+			const shown = handle.start(["sh", "-c", 'for n in "$@"; do printf "%s=" "$n"; printenv "$n" | base64 -w0; echo; done; echo "aliases=$(env | grep -c "^WLP_SECRET_")"; echo "tag=$WLP_RUN_TAG"', "sh", ...Object.keys(values)], { secretEnv: values, onStdout: (text) => (printed += text) }, tag);
+			const end = await shown.ended;
+			const seen = Object.fromEntries(printed.split("\n").filter((line) => line.includes("=")).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+			const exact = Object.entries(values).every(([name, value]) => seen[name] !== undefined && Buffer.from(seen[name]!, "base64").toString("utf8") === `${value}\n`);
+			expect(
+				"secrets reach the program under their own names, whole, though the docker client reads such names; no alias is left, and the run has the caller's tag",
+				end.code === 0 && end.error === null && exact && seen.aliases === "0" && seen.tag === tag && shown.tag === tag,
+				`exit ${end.code}; ${Object.keys(seen).join(", ")}`,
+			);
+			await throwsAny("a secret may not be named as the aliases are", async () => handle.start(["true"], { secretEnv: { WLP_SECRET_0: "x" } }));
+
+			let got = 0;
+			const big = handle.start(["sh", "-c", "head -c 4194304 /dev/zero | tr '\\0' x"], { onStdout: (text) => (got += text.length) });
+			big.pauseOutput(true);
+			await wait(1500);
+			const whilePaused = got;
+			const heldBack = !big.hasEnded;
+			big.pauseOutput(false);
+			const bigEnd = await big.ended;
+			expect("pauseOutput holds the program back until it is resumed, and nothing is lost", heldBack && whilePaused < 2 * 1024 * 1024 && got === 4194304 && bigEnd.code === 0, `${whilePaused} bytes read while paused, ${got} in all`);
+		} finally {
+			if (theirs !== null) await own.destroy(theirs);
+			await docker(["volume", "rm", "-f", volume]);
+		}
+	});
+
 	await section("protocol client", async () => {
 		// Two ends joined in memory: what one writes, the other receives.
 		const agentSaw: string[] = [];
@@ -867,6 +919,17 @@ async function main(): Promise<void> {
 				JSON.stringify(t1.result.summary),
 			);
 			expect("turn 1 reports Windlass's session id", /^ses_/.test(t1.result.windlassSessionId ?? ""), String(t1.result.windlassSessionId));
+			// Nothing delivers a wake-up to a paused sandbox, so the platform's sessions are not offered the tools
+			// (windlass-config.ts). The same Windlass in the same sandbox without the platform's file offers them.
+			const toolsOf = (events: WindlassEvent[]) => ((dataOf(ofType(events, "baseline.set")[0]).tools ?? []) as { name?: string }[]).map((tool) => String(tool.name));
+			const offered = toolsOf(t1.events);
+			const bare = await handle.run(`d=$(mktemp -d) && mkdir $d/config $d/data $d/work && printf '%s' '${JSON.stringify({ responses: [say("ok")] })}' > $d/script.json && cd $d/work && XDG_CONFIG_HOME=$d/config XDG_DATA_HOME=$d/data WINDLASS_ACP_SCRIPT=$d/script.json windlass --json hi; rm -rf $d`);
+			const bareOffered = toolsOf(bare.stdout.split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as WindlassEvent));
+			expect(
+				"the platform's session is offered no wake-up tool, where Windlass without the platform's file offers wake_create",
+				offered.includes("shell") && !offered.some((name) => name.startsWith("wake_")) && bareOffered.includes("wake_create"),
+				`platform: ${offered.filter((name) => name.startsWith("wake_")).join(" ") || "no wake_*"}; without its file: ${bareOffered.filter((name) => name.startsWith("wake_")).join(" ") || `none (exit ${bare.exitCode})`}`,
+			);
 			const seqs = t1.events.filter((e) => typeof e.seq === "number").map((e) => e.seq as number);
 			expect("every stored event of the turn arrives once and in order", seqs.length > 10 && seqs.every((seq, index) => seq === index + 1), `seq 1 to ${seqs[seqs.length - 1]}`);
 			expect("text arrives as deltas before the turn ends", t1.events.some((e) => e.type === "text.delta") && t1.events.findIndex((e) => e.type === "text.delta") < t1.events.length - 3);
