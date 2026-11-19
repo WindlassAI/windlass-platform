@@ -512,8 +512,9 @@ export interface RunTurnResult {
 	/**
 	 * Set when the turn could not be run or broke off, with a sentence about it. Reasons Windlass names,
 	 * with its own sentence: `session_not_found` (the session to continue is gone), `session_in_use`
-	 * (another process holds it), `execution_failed` (the turn failed; the events say how),
-	 * `invalid_request`, `unknown_model`, `unknown_effort`, ... Reasons of this layer:
+	 * (another process holds it), `unreadable_session` (the session holds a record this Windlass does
+	 * not read, as when a later one has worked in it), `execution_failed` (the turn failed; the events
+	 * say how), `invalid_request`, `unknown_model`, `unknown_effort`, ... Reasons of this layer:
 	 *
 	 *   `auth_required`      the user has to sign in with ChatGPT (again): there is no sign-in (also when
 	 *                        it was forgotten while the turn ran), it expired or was withdrawn (it could
@@ -537,6 +538,11 @@ export interface RunTurnResult {
 	 *                        says the same). Or only this sandbox is behind, made from an older image than
 	 *                        the one in use: its Windlass reads no handed-in token, and the sentence says
 	 *                        to start a new agent
+	 *   `open_refused`       the engine answered the opening of the session to continue with an
+	 *                        internal error (JSON-RPC -32603) and no reason of its own. A Windlass from
+	 *                        before `unreadable_session` (0.2.0 and earlier) answers so for a session
+	 *                        it cannot read, and for anything else that goes wrong there; the sentence
+	 *                        is Windlass's ("Internal error")
 	 *   `engine`             the process could not be started or died
 	 *
 	 * Null otherwise, and null when `aborted` is true.

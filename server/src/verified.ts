@@ -13,11 +13,18 @@
  *   checks.finished        the evidence of one run: each check's name, command, status, exit code,
  *                          duration, and the file its output is kept in; from a Windlass with
  *                          required checks also whose it is (`origin`), whether it is required,
- *                          and the end of its output (`outputTail`)
- *   synthetic.appended     with `origin: "check_report"`: the agent was sent back with what failed
+ *                          the end of its output (`outputTail`) and why it could not be started
+ *                          (`startError`); from a later one also what the run's changes are
+ *                          measured from (`since`) and the session's required checks
+ *   synthetic.appended     with `origin: "check_report"`: what failed, as the harness tells the agent
+ *   step.started           a model call: after such a message, the agent was sent back with it.
+ *                          Windlass writes the message with an ending that leaves checks
+ *                          unresolved too, for whoever continues the session: nobody is sent back
  *   snapshot.taken         the workspace's state by id: the one the checks ran on, and every later one
  *   tool.started           a call's `effect`, where no snapshot says whether files changed
- *   execution.succeeded    `verification`: how the gate ended
+ *   execution.succeeded    `verification`: how the gate ended; where no check was needed, from a
+ *                          Windlass that says so, why (`reason`) and which verified state the work
+ *                          is on (`since`)
  *   execution.failed, execution.interrupted
  *   notice                 with `kind: "checks_not_run"`: Windlass could not run checks in the sandbox
  *
@@ -41,6 +48,10 @@
  *
  * Either way anything else is the repository's: a check is never presented as the user's when it
  * may not be.
+ *
+ * A key of the evidence or of an ending that is not read here is passed over, and an ending is never
+ * compared whole: a later Windlass adds to both. What an older one does not say is not made up: a
+ * record without `reason` or `since` is told as it was before there were any.
  *
  * This file has no actor, no sandbox and no GitHub in it: the session's actor feeds it events and
  * stores what it answers, github/publish.ts puts the section into a pull request, and
@@ -75,17 +86,34 @@ interface RanCheck {
 	required: boolean;
 	/** The end of its output as the evidence carries it (`outputTail.text`), "" where it carries none. */
 	tail: string;
+	/** It was not started: its command could not be run at all, so it has no exit code and says nothing about the code. A command the shell did not find has one (126, 127), and ran. */
+	notStarted: boolean;
+	/** Why, as the evidence says it (`startError`), "" where it does not. */
+	startError: string;
 }
+
+/** Why a turn ended with no check needed, as a Windlass that says so says it (`reason` of a `not_needed` ending). */
+const UNNEEDED = ["turn_unchanged", "state_unchanged", "not_covered"] as const;
+/** How much of Windlass's reason for a check that was not started is kept. */
+const START_ERROR_CHARS = 400;
 
 /**
  * What one turn's events say about its checks. `note` takes every event of the turn, in order;
  * `verified` then says what the session's work rests on after it.
  */
 export class VerificationLog {
-	/** The turn's last run of checks that finished: its checks, when, and the workspace it ran on. */
-	private run: { at: number; checks: RanCheck[]; snapshot: string | null } | null = null;
+	/**
+	 * The turn's last run of checks that finished: its checks, when, where in Windlass's log, and the
+	 * workspace it ran on. `apart` says that its Windlass keeps a check it could not start apart from
+	 * the ones that failed, and sends the agent back for those alone: one whose evidence says what the
+	 * run's changes are measured from, or names the session's required checks. An older one sends the
+	 * agent back over such a check as over any other, and says none of that.
+	 */
+	private run: { at: number; seq: number | null; checks: RanCheck[]; snapshot: string | null; apart: boolean } | null = null;
 	/** By check name: how many times the agent was sent back while it failed. */
 	private readonly sentBack = new Map<string, number>();
+	/** The checks the harness's latest message named as not passed, until a model call follows it: only then was the agent sent back with them. */
+	private reported: string[] = [];
 	/** The workspace's state when the checks last ended, until `checks.finished` takes it. */
 	private checksEnd: string | null = null;
 	private firstSnapshot: string | null = null;
@@ -134,18 +162,25 @@ export class VerificationLog {
 							origin: text(check.origin),
 							required: check.required === true,
 							tail: isRecord(check.outputTail) ? text(check.outputTail.text) : "",
+							notStarted: status === "could_not_start" && typeof check.exitCode !== "number",
+							startError: text(check.startError),
 						},
 					];
 				});
-				this.run = { at: typeof event.time === "number" ? event.time : Date.now(), checks, snapshot: this.checksEnd };
+				this.run = { at: typeof event.time === "number" ? event.time : Date.now(), seq: typeof event.seq === "number" ? event.seq : null, checks, snapshot: this.checksEnd, apart: isRecord(evidence.since) || Array.isArray(evidence.requiredChecks) };
 				this.checksEnd = null;
 				this.movedSinceRun = false;
 				this.effectsSinceRun = false;
 				return;
 			}
 			case "synthetic.appended":
-				// The harness's own message with the failing checks: the agent is sent back with it.
-				if (data.origin === "check_report" && this.run !== null) for (const check of this.run.checks) if (check.status !== "passed" && check.status !== "interrupted") this.sentBack.set(check.name, (this.sentBack.get(check.name) ?? 0) + 1);
+				// The harness's own message with the checks that did not pass. Written before the model is called again, and with an ending that leaves them unresolved.
+				if (data.origin === "check_report" && this.run !== null) this.reported = this.run.checks.filter((check) => check.status !== "passed" && check.status !== "interrupted").map((check) => check.name);
+				return;
+			case "step.started":
+				// The model is called with that message before it: the agent was sent back.
+				for (const name of this.reported) this.sentBack.set(name, (this.sentBack.get(name) ?? 0) + 1);
+				this.reported = [];
 				return;
 			case "notice":
 				if (data.kind === "checks_not_run") this.noSandbox = true;
@@ -184,6 +219,10 @@ export class VerificationLog {
 	 * whose a check is, whether it is required and what it printed, and the repository's file
 	 * replaces nothing. Otherwise the platform works out whose a check is from the two files, as
 	 * Windlass merges them, and reads what it printed from the sandbox afterwards (`outputs`).
+	 *
+	 * A turn that ended with no check needed on a state verified earlier, as a Windlass that says so
+	 * says it (`reason` and `since` of the ending), rests on the run that state rests on: a run of
+	 * the turn's own was of another state, and only what did not pass in it is kept (`putBack`).
 	 */
 	verified(turn: number, saved: readonly RepositoryCheck[], handed: TurnChecks | undefined, previous: Verified | null): Verified {
 		const project = handed?.project ?? null;
@@ -192,12 +231,15 @@ export class VerificationLog {
 		const mine = told ? (check: RanCheck) => check.origin === "session" : (check: RanCheck) => !replaced && handed?.handed === true && saved.some((own) => own.name === check.name && own.command === check.command);
 		const verification = this.ending?.kind === "succeeded" ? this.ending.verification : null;
 		const status = text(verification?.status);
+		const reason = text(verification?.reason);
+		// Whether the turn's Windlass keeps a check it could not start apart from the ones that failed: its run says so, or the turn ended over nothing but such checks.
+		const apart = this.run?.apart === true || (status === "unresolved" && reason === "not_started");
 
 		let state: Verified["state"];
 		if (this.ending?.kind === "failed") state = "failed";
 		else if (this.ending?.kind !== "succeeded") state = "stopped";
-		// Required checks that no sandbox could run are in the run as not started, and the turn ends with them failing: nothing was verified.
-		else if (status === "unresolved" && this.noSandbox) state = "no_sandbox";
+		// From a Windlass that sends the agent back over them: required checks that no sandbox could run are in the run as not started, and the turn ends with them failing. Nothing was verified. A later one ends the turn at once and says why (`not_started`).
+		else if (status === "unresolved" && this.noSandbox && reason !== "not_started") state = "no_sandbox";
 		else if (status === "passed" || status === "unresolved" || status === "not_needed") state = status;
 		else if (saved.length === 0 && !(project !== null && (project.checks ?? 0) > 0)) state = "none_set";
 		else if (project?.verify === "off") state = "off";
@@ -206,12 +248,13 @@ export class VerificationLog {
 		else if (saved.length > 0 && handed?.handed !== true) state = "not_handed";
 		else state = "not_in_force";
 
-		const run: Verified["run"] =
+		const own: Verified["run"] =
 			this.run === null
-				? (previous?.run ?? null)
+				? null
 				: {
 						turn,
 						at: this.run.at,
+						...(this.run.seq === null ? {} : { seq: this.run.seq }),
 						checks: this.run.checks.map(
 							(check): VerifiedCheck => ({
 								name: check.name,
@@ -221,25 +264,47 @@ export class VerificationLog {
 								status: check.status,
 								exitCode: check.exitCode,
 								durationMs: check.durationMs,
-								sentBack: this.sentBack.get(check.name) ?? 0,
+								// Such a Windlass names a check it could not start in the message it sends the agent back with, and asks nothing of the agent for it.
+								sentBack: apart && check.notStarted ? 0 : (this.sentBack.get(check.name) ?? 0),
 								...(check.carried ? { carried: true } : {}),
+								...(apart && check.notStarted ? { startError: check.startError.slice(0, START_ERROR_CHARS) } : {}),
 							}),
 						),
 					};
+		let run = own ?? previous?.run ?? null;
+		let changedAfter = own === null ? previous !== null && previous.run !== null && (previous.changedAfter || this.changed) : this.changed;
+		let putBack: VerifiedCheck[] = [];
+		const why = status === "not_needed" ? UNNEEDED.find((known) => known === reason) : undefined;
+		let on: NonNullable<Verified["unneeded"]>["on"] = null;
+		if (why === "state_unchanged" || why === "not_covered") {
+			// The work is on a state verified earlier, or differs from it only in files no check covers. The run that state rests on is the one Windlass names, where the platform holds it: the session's last before this turn.
+			const since = isRecord(verification?.since) ? verification.since : {};
+			const passed = isRecord(since.run) && typeof since.run.seq === "number" ? since.run.seq : null;
+			const held = previous !== null && previous.run !== null && passed !== null && previous.run.seq === passed ? previous : null;
+			on = held !== null ? "run" : since.run === null ? "start" : null;
+			// A run of this turn's own was of another state, and so is an earlier one that state does not rest on.
+			if (own !== null || on !== null) {
+				run = held === null ? null : held.run;
+				// Of the state that run passed on, files no check covers may differ: this ending says so, or an earlier one that moved the verified state on from the run's did.
+				changedAfter = held !== null && (why === "not_covered" || (held.changedAfter && since.seq !== passed));
+				putBack = (own?.checks ?? []).filter((check) => check.status !== "passed");
+			}
+		}
 		// What the evidence carries of a check's output: Windlass kept it for one that did not pass, and for one whose entry asks.
-		const tails = new Map((told ? (this.run?.checks ?? []) : []).map((check): [string, string] => [check.name, outputTail(check.tail)]).filter(([, kept]) => kept !== "").slice(0, OUTPUTS_SHOWN));
-		const reason = text(verification?.reason);
+		const tails = new Map((told && run === own ? (this.run?.checks ?? []) : []).map((check): [string, string] => [check.name, outputTail(check.tail)]).filter(([, kept]) => kept !== "").slice(0, OUTPUTS_SHOWN));
 		const acknowledgement = isRecord(verification?.acknowledgement) ? text(verification.acknowledgement.reason) : "";
 		return withOutputs(
 			{
 				turn,
 				state,
-				...(state === "unresolved" && (reason === "acknowledged" || reason === "max_rounds" || reason === "report_mode") ? { unresolved: { reason, said: reason === "acknowledged" && acknowledgement !== "" ? acknowledgement.slice(0, 400) : null } } : {}),
+				...(state === "unresolved" && (reason === "acknowledged" || reason === "max_rounds" || reason === "report_mode" || reason === "not_started") ? { unresolved: { reason, said: reason === "acknowledged" && acknowledgement !== "" ? acknowledgement.slice(0, 400) : null } } : {}),
+				...(why === undefined ? {} : { unneeded: { reason: why, on } }),
+				...(putBack.length === 0 ? {} : { putBack }),
 				run,
-				unrun: saved.filter((own) => !(run?.checks ?? []).some((check) => check.whose === "user" && check.name === own.name && check.command === own.command)).map(({ name, command }) => ({ name, command })),
+				unrun: saved.filter((kept) => ![...(run?.checks ?? []), ...putBack].some((check) => check.whose === "user" && check.name === kept.name && check.command === kept.command)).map(({ name, command }) => ({ name, command })),
 				replaced,
 				...(told && saved.length > 0 && project !== null && (project.checks !== null || project.verify !== null) ? { overruled: true } : {}),
-				changedAfter: this.run === null ? previous !== null && previous.run !== null && (previous.changedAfter || this.changed) : this.changed,
+				changedAfter,
 			},
 			tails,
 		);
@@ -510,6 +575,7 @@ function took(ms: number): string {
 
 /** How one check ended, in a clause: "passed in 4.2 s after the agent was sent back once". */
 export function checkWords(check: VerifiedCheck): string {
+	if (check.startError !== undefined) return `was not started${check.startError === "" ? "" : `: ${check.startError}`}`;
 	const how =
 		check.status === "passed"
 			? "passed"
@@ -533,22 +599,39 @@ export function checkWords(check: VerifiedCheck): string {
 export function verifiedHeadline(verified: Verified, owner: string): string {
 	const turn = `turn ${verified.turn}`;
 	const here = verified.run !== null && verified.run.turn === verified.turn ? verified.run.checks : [];
-	const failing = here.filter((check) => check.status !== "passed");
+	// A check that was not started did not fail: where Windlass keeps the two apart, so does the sentence.
+	const unstarted = here.filter((check) => check.startError !== undefined);
+	const failing = here.filter((check) => check.status !== "passed" && check.startError === undefined);
 	const file = "the repository's `.windlass/config.json`";
+	const one = unstarted.length === 1;
 	switch (verified.state) {
 		case "passed":
 			return `${here.length === 1 ? "The check that applied" : `The ${here.length} checks that applied`} passed when the agent's ${turn} ended.`;
 		case "unresolved": {
+			if (failing.length === 0 && unstarted.length > 0) {
+				const fix = `That says nothing about the code, so the agent was not sent back to change anything: what there is to fix is the reason given with ${one ? "the check" : "each"} below.`;
+				if (unstarted.length < here.length) return `The agent's ${turn} ended with ${one ? "a check" : `${unstarted.length} checks`} that ${one ? "was" : "were"} not started. ${fix}`;
+				return `Nothing was verified in the agent's ${turn}: ${one ? "the check that applied was" : `the ${unstarted.length} checks that applied were`} not started. ${fix}`;
+			}
 			const why =
 				verified.unresolved?.reason === "acknowledged"
 					? `the agent reported that it could not make ${failing.length === 1 ? "it" : "them"} pass${verified.unresolved.said ? ` ("${verified.unresolved.said}")` : ""}`
 					: verified.unresolved?.reason === "report_mode"
 						? `${file} sets verification to report only, so the agent was not sent back`
 						: "the agent had been sent back as often as a turn allows";
-			return `The agent's ${turn} ended with ${failing.length === 1 ? "a check" : `${failing.length} checks`} still failing: ${why}.`;
+			const besides = unstarted.length === 0 ? "" : ` ${one ? "Another check was" : `${unstarted.length} other checks were`} not started, which says nothing about the code: the agent was not asked to change anything for ${one ? "it" : "them"}, and what there is to fix is the reason given with ${one ? "it" : "each"} below.`;
+			return `The agent's ${turn} ended with ${failing.length === 1 ? "a check" : `${failing.length} checks`} still failing: ${why}.${besides}`;
 		}
-		case "not_needed":
-			return `No check ran in the agent's ${turn}: it changed nothing the checks cover.`;
+		case "not_needed": {
+			const { unneeded, run } = verified;
+			if (unneeded === undefined) return `No check ran in the agent's ${turn}: it changed nothing the checks cover.`;
+			const none = verified.putBack ? `No check was run again when the agent's ${turn} ended` : `No check ran in the agent's ${turn}`;
+			const passed = unneeded.on === "run" && run !== null ? `, at the end of turn ${run.turn}` : null;
+			if (unneeded.reason === "turn_unchanged") return `${none}: the turn changed no file.`;
+			if (unneeded.reason === "state_unchanged")
+				return `${none}: ${passed !== null ? `the files the checks cover are again as they were when the checks last passed${passed}` : unneeded.on === "start" ? "the files the checks cover are again as they were when the session started, a state no check has verified" : "the turn changed files and left them as they were before"}.`;
+			return `${none}: no check covers the files that ${passed !== null ? `differ from the state the checks last passed on${passed}` : unneeded.on === "start" ? "differ from the state the session started from, which no check has verified" : "changed"}.`;
+		}
 		case "none_set":
 			return "Nothing was verified: no checks are set for this repository.";
 		case "off":
@@ -566,6 +649,12 @@ export function verifiedHeadline(verified: Verified, owner: string): string {
 		case "failed":
 			return `The agent's ${turn} failed before its checks had run.`;
 	}
+}
+
+/** For a turn in which a run of checks did not pass and the agent then put the files back (`Verified.putBack`): what that run was, and that it does not stand. "" where there was none. */
+export function putBackWords(verified: Verified, name: (check: VerifiedCheck) => string): string {
+	if (!verified.putBack) return "";
+	return `A run of checks earlier in turn ${verified.turn} did not pass (${verified.putBack.map((check) => `${name(check)} ${checkWords(check)}`).join("; ")}). The agent then changed the files back, so that run says nothing about the work as it is now.`;
 }
 
 /** For a turn whose user's checks were required ones while the repository's file had a say about checks: whom that held for, in a sentence. */
@@ -597,7 +686,8 @@ export function flagWords(kind: VerifiedFlag["kind"]): string {
 /** What became of the session's checks, in a few words, for a list: "2 checks passed", "nothing verified, 1 thing to look at". */
 export function verifiedWords(verified: Verified | null, flags: readonly VerifiedFlag[], during: number | null): string {
 	const here = verified !== null && verified.run !== null && verified.run.turn === verified.turn ? verified.run.checks : [];
-	const failing = here.filter((check) => check.status !== "passed").length;
+	const unstarted = here.filter((check) => check.startError !== undefined).length;
+	const failing = here.filter((check) => check.status !== "passed").length - unstarted;
 	const whose = here.length > 0 && here.every((check) => check.whose === "repository") ? " (the repository's own)" : "";
 	const base =
 		during !== null
@@ -607,9 +697,15 @@ export function verifiedWords(verified: Verified | null, flags: readonly Verifie
 				: verified.state === "passed"
 					? `${plural(here.length, "check")} passed${whose}`
 					: verified.state === "unresolved"
-						? `${failing} of ${plural(here.length, "check")} failing${whose}`
+						? failing > 0
+							? `${failing} of ${plural(here.length, "check")} failing${whose}${unstarted > 0 ? `, ${unstarted} not started` : ""}`
+							: unstarted === here.length
+								? `nothing verified, ${plural(unstarted, "check")} not started${whose}`
+								: `${unstarted} of ${plural(here.length, "check")} not started${whose}`
 						: verified.state === "not_needed"
-							? "no check was needed"
+							? verified.unneeded?.reason === "not_covered"
+								? "no check covers what changed"
+								: "no check was needed"
 							: verified.state === "stopped" || verified.state === "failed"
 								? "checks did not run"
 								: "nothing verified";
@@ -653,8 +749,8 @@ export interface SectionInput {
 
 /**
  * The section of a pull request's description that says what the work was verified with: how the
- * gate ended, each check that ran with whose it is and how it went, the user's checks that did not
- * run and why, whom the repository's own settings held for where the user's checks are required
+ * gate ended, a run that did not pass before the agent put the files back, each check that ran with
+ * whose it is and how it went (or why it was not started), the user's checks that did not run and why, whom the repository's own settings held for where the user's checks are required
  * ones, the observations, and the output that was kept, folded. Plain sentences and no mark
  * of approval: it reports what ran. The caller takes saved secrets out of it (`Redactor`).
  */
@@ -669,9 +765,10 @@ export function verifiedSection(input: SectionInput): string {
 		const run = verified.run;
 		const earlier = run !== null && run.turn !== verified.turn;
 		parts.push(during !== null ? `Before it: ${verifiedHeadline(verified, owner)}` : verifiedHeadline(verified, owner));
+		if (verified.putBack) parts.push(inert(putBackWords(verified, (check) => `**${check.name}**`)));
 		if (run !== null && run.checks.length > 0) {
-			const list = run.checks.map((check) => `- **${inert(check.name)}** (${code(check.command)}), ${check.whose === "user" ? `${owner} ${check.required ? "required check" : "check"}` : "from the repository's `.windlass/config.json`"}: ${checkWords(check)}.`).join("\n");
-			parts.push(earlier ? `Checks last ran when turn ${run.turn} ended:\n\n${list}` : list);
+			const list = run.checks.map((check) => `- **${inert(check.name)}** (${code(check.command)}), ${check.whose === "user" ? `${owner} ${check.required ? "required check" : "check"}` : "from the repository's `.windlass/config.json`"}: ${inert(checkWords(check))}.`).join("\n");
+			parts.push(earlier ? `${verified.putBack ? "The checks as they passed" : "Checks last ran"} when turn ${run.turn} ended:\n\n${list}` : list);
 		}
 		if (verified.unrun.length > 0) {
 			const reason = unrunReason(verified, owner);

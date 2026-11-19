@@ -16,7 +16,9 @@
  * A turn that is handed checks (`RunTurnInput.checks`) ends with one run of them, as the gate of a
  * Windlass that takes them as required checks would report it: each is the session's and required,
  * a check whose command has the word "fail" in it fails, with the end of its output in the evidence,
- * and the turn ends `unresolved`; any other passes.
+ * and the turn ends `unresolved`; any other passes. The evidence names what the run's changes are
+ * measured from (`since`: the session's start until a run has passed, then that run) and the
+ * session's required checks, as such a Windlass does.
  *
  * Switches in the prompt reach every other ending:
  *
@@ -30,6 +32,8 @@
  *                     command's `--valid-for`): "windlass_outdated", no events
  *   "(session-gone)"  Windlass no longer has the session to continue: "session_not_found", no events
  *   "(session-busy)"  another process holds the session: "session_in_use", no events
+ *   "(session-unread)" the session holds a record this Windlass does not read, as when a later one
+ *                     has worked in it: "unreadable_session", with Windlass's sentence, no events
  *   "(exec-fail)"     the model call fails for good: outcome `failed`, "execution_failed"
  *   "(lose-sandbox)"  the sandbox is gone when the turn ends, as if its container had been removed
  *   "(big-memory)"    Windlass's session grows by two mebibytes in this turn, for a copy that is over
@@ -206,6 +210,8 @@ interface FakeSession {
 	turns: number;
 	/** Bytes the session's data is larger by than the few it really has: "(big-memory)". */
 	padding: number;
+	/** The run of checks that last passed, as Windlass names it where a later run says what it rests on (`since.run`); absent until one has. */
+	passed?: { seq: number; run: number };
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -623,6 +629,12 @@ class FakeWindlass implements Windlass {
 			};
 		}
 
+		if (text.includes("(session-unread)")) {
+			const id = input.windlassSessionId ?? "ses_fake0000000000000000";
+			const message = `that session holds a record this version of Windlass does not read (session ${id} state.laterKey: expected no such key, got 1). A later version wrote it, or the file is damaged: open the session with the version that wrote it, or a later one.`;
+			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: { reason: "unreadable_session", message } };
+		}
+
 		const none = { exitCode: null, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "" };
 		if (text.includes("(old-windlass)")) return { ...none, failure: { reason: "windlass_outdated", message: outdatedWindlass("0.0.0-fake", "windlass-platform-sandbox:latest") } };
 		// A turn that is not scripted runs on its user's sign-in: it is handed that user's access token before anything starts.
@@ -960,10 +972,12 @@ class FakeWindlass implements Windlass {
 				if (recorded.type === "cli.summary") continue;
 				// The checks the turn was handed, as Windlass would run them before it lets the turn end: one run, and the gate's verdict on it.
 				if (recorded.type === "execution.succeeded" && handed.length > 0) {
-					const evidence = { run: 1, afterSeq: seq, changedFiles: [`notes/turn-${turn}.md`], checks: handed.map((check) => fakeCheck(check)) };
+					const since = { seq: session.passed?.seq ?? 1, run: session.passed ?? null };
+					const evidence = { run: 1, afterSeq: seq, changedFiles: [`notes/turn-${turn}.md`], checks: handed.map((check) => fakeCheck(check)), since, requiredChecks: handed.map((check) => ({ name: check.name, definition: "fake" })) };
 					const failing = evidence.checks.filter((check) => check.status !== "passed").map((check) => check.name);
 					emit({ type: "checks.started", v: 1, data: { run: 1, checks: handed.map((check) => check.name) }, seq: 0, time: 0 });
 					emit({ type: "checks.finished", v: 1, data: { run: 1, evidence }, seq: 0, time: 0 });
+					if (failing.length === 0) session.passed = { seq, run: 1 };
 					const verification = failing.length === 0 ? { status: "passed", evidence } : { status: "unresolved", reason: "max_rounds", failing, acknowledgement: null, evidence };
 					recorded = { ...recorded, data: { ...dataOf(recorded), verification } };
 				}

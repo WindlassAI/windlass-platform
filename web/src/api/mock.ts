@@ -1729,9 +1729,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const none = { unrun: saved.map(({ name, command }) => ({ name, command })), replaced: false, changedAfter: before?.run != null };
 		if (outcome !== "succeeded" && outcome !== "unresolved") return { turn, state: outcome === "interrupted" || outcome === "stopped" ? "stopped" : "failed", run: before?.run ?? null, ...none };
 		if (saved.length === 0) return { turn, state: "none_set", run: before?.run ?? null, ...none };
-		if (ran.length === 0) return { turn, state: "not_needed", run: before?.run ?? null, ...none, changedAfter: before?.changedAfter ?? false };
+		// As a Windlass with required checks says why: the turn changed files, and none that a check covers. Without a run so far, the state they are measured from is the session's start.
+		if (ran.length === 0) return { turn, state: "not_needed", ...(session.summary.requiredChecks === false ? {} : { unneeded: { reason: "not_covered" as const, on: before?.run == null ? ("start" as const) : null } }), run: before?.run ?? null, ...none, changedAfter: before?.changedAfter ?? false };
 		const failing = outcome === "unresolved";
-		// A turn whose script shows the agent being sent back with a failing check says how often, as the server counts it: by the harness's own reports.
+		// A turn whose script shows the agent being sent back with a failing check says how often, as the server counts it: by the harness's own messages, each of which a model call follows in these recordings.
 		const reports = session.timeline.filter((item) => item.kind === "windlass" && item.turn === turn && item.event.type === "synthetic.appended" && item.event.data?.origin === "check_report").length;
 		return {
 			turn,
@@ -1756,7 +1757,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					: verified.state === "unresolved"
 						? `${here.filter((check) => check.status !== "passed").length} of ${count} failing`
 						: verified.state === "not_needed"
-							? "no check was needed"
+							? verified.unneeded?.reason === "not_covered"
+								? "no check covers what changed"
+								: "no check was needed"
 							: verified.state === "stopped" || verified.state === "failed"
 								? "checks did not run"
 								: "nothing verified";

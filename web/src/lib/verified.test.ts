@@ -2,7 +2,7 @@
 import type { Verified, VerifiedCheck } from "@contract";
 import { describe, expect, it } from "vitest";
 import { applyItem, emptyView } from "./timeline";
-import { checkLine, gateWord, overruledLine, ranEarlier, runCount, unresolvedLine, unrunLine } from "./verified";
+import { checkLine, gateWord, overruledLine, ranEarlier, runCount, unneededLine, unresolvedLine, unrunLine } from "./verified";
 
 const check = (fields: Partial<VerifiedCheck> = {}): VerifiedCheck => ({ name: "test", command: "npm test", whose: "user", status: "passed", exitCode: 0, durationMs: 4200, sentBack: 0, ...fields });
 const verified = (fields: Partial<Verified> = {}): Verified => ({ turn: 3, state: "passed", run: { turn: 3, at: 0, checks: [check()] }, unrun: [], replaced: false, changedAfter: false, ...fields });
@@ -51,6 +51,35 @@ describe("a turn's checks, in words", () => {
 		expect(ranEarlier(verified({ turn: 5 }))).toBe("last ran in turn 3");
 		expect(runCount(verified({ run: { turn: 3, at: 0, checks: [check(), check({ name: "lint", status: "failed" })] } }))).toBe("1 of 2 checks failing");
 		expect(runCount(verified({ run: null }))).toBeNull();
+	});
+
+	it("says why no check was needed where Windlass says it, and which state the files are back on", () => {
+		const earlier = { turn: 1, at: 0, seq: 36, checks: [check({ required: true })] };
+		const answered = verified({ state: "not_needed", unneeded: { reason: "turn_unchanged", on: null }, run: earlier });
+		expect([gateWord(answered), unneededLine(answered)]).toEqual(["checks not needed", null]);
+		const uncovered = verified({ state: "not_needed", unneeded: { reason: "not_covered", on: "run" }, run: earlier, changedAfter: true });
+		expect([gateWord(uncovered), unneededLine(uncovered), ranEarlier(uncovered)]).toEqual(["no check covers the changes", "no check covers the files that differ from the state the checks last passed on, in turn 1", "last ran in turn 1"]);
+		expect(unneededLine(verified({ state: "not_needed", unneeded: { reason: "not_covered", on: "start" }, run: null }))).toBe("no check covers the files that differ from the state the session started from, which no check has verified");
+		const back = verified({ state: "not_needed", unneeded: { reason: "state_unchanged", on: "run" }, run: earlier, putBack: [check({ required: true, status: "failed", exitCode: 1, durationMs: 80, sentBack: 1 })] });
+		expect([gateWord(back), unneededLine(back), ranEarlier(back)]).toEqual(["checks not needed", "the files the checks cover are again as they were when the checks last passed, in turn 1", "as they passed in turn 1"]);
+		expect(back.putBack?.map(checkLine)).toEqual(["failed, exit 1 after 80ms (yours, required, sent back once)"]);
+		expect(unneededLine(verified({ state: "not_needed", unneeded: { reason: "state_unchanged", on: "start" }, run: null }))).toBe("the files the checks cover are again as they were when the session started, a state no check has verified");
+		expect(unneededLine(verified({ state: "not_needed", unneeded: { reason: "state_unchanged", on: null }, run: null }))).toBe("the turn changed files and left them as they were before");
+		// A Windlass that says neither: as it was.
+		expect([gateWord(verified({ state: "not_needed" })), unneededLine(verified({ state: "not_needed" }))]).toEqual(["checks not needed", null]);
+	});
+
+	it("keeps a check that was not started apart from one that failed", () => {
+		const unstarted = check({ name: "lint", required: true, status: "could_not_start", exitCode: null, durationMs: 0, startError: "the sandbox is unavailable" });
+		expect(checkLine(unstarted)).toBe("was not started (yours, required): the sandbox is unavailable");
+		expect(checkLine({ ...unstarted, startError: "" })).toBe("was not started (yours, required)");
+		// From a Windlass that sends the agent back over it: as it was.
+		expect(checkLine(check({ status: "could_not_start", exitCode: null, durationMs: 0, sentBack: 3, required: true }))).toBe("could not be started after 0ms (yours, required, sent back 3 times)");
+		const alone = verified({ state: "unresolved", unresolved: { reason: "not_started", said: null }, run: { turn: 3, at: 0, checks: [unstarted] } });
+		expect(unresolvedLine(alone)).toBe("nothing was verified: a check that was not started says nothing about the code: the agent was not sent back over it, and what there is to fix is the reason given with it");
+		const beside = verified({ state: "unresolved", unresolved: { reason: "max_rounds", said: null }, run: { turn: 3, at: 0, checks: [check({ status: "failed", exitCode: 1, sentBack: 3 }), unstarted] } });
+		expect(unresolvedLine(beside)).toBe("the agent had been sent back as often as a turn allows; a check that was not started says nothing about the code: the agent was not sent back over it, and what there is to fix is the reason given with it");
+		expect(unresolvedLine(verified({ state: "unresolved", unresolved: { reason: "not_started", said: null }, run: { turn: 3, at: 0, checks: [check(), unstarted] } }))).not.toContain("nothing was verified");
 	});
 
 	it("is carried by the turn's end in the timeline, and is absent on a turn from before the platform kept it", () => {

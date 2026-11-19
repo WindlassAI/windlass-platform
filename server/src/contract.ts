@@ -497,6 +497,13 @@ export interface VerifiedCheck {
 	carried?: boolean;
 	/** The end of what it printed, at most CHECK_OUTPUT_CHARS: kept for one that did not pass, and for one whose user asked (`RepositoryCheck.showOutput`; of the repository's own, its file's `outputTail`). */
 	output?: string;
+	/**
+	 * Set for a check that was not started (`could_not_start` with no exit code), where the turn's
+	 * Windlass keeps such a check apart from the ones that failed: why its command could not be
+	 * started, in Windlass's words (the evidence's `startError`), "" where it gave none. Such a check
+	 * says nothing about the code, and the agent was not sent back for it.
+	 */
+	startError?: string;
 }
 
 /**
@@ -506,8 +513,9 @@ export interface VerifiedCheck {
  * `state` is how the gate ended in `turn`:
  *
  *   passed          every check that applied passed
- *   unresolved      checks still failed and the turn ended anyway (`unresolved` says why)
- *   not_needed      checks are set and none ran: the turn changed nothing they cover
+ *   unresolved      checks did not pass and the turn ended anyway (`unresolved` says why)
+ *   not_needed      checks are set and none was needed: the turn changed nothing they cover
+ *                   (`unneeded` says more, where the turn's Windlass does)
  *   none_set        no check is set, neither by the user nor by the repository's file
  *   off             the repository's file turns verification off
  *   emptied         the repository's file names an empty list, which stands in for the user's
@@ -521,11 +529,38 @@ export interface VerifiedCheck {
 export interface Verified {
 	turn: number;
 	state: "passed" | "unresolved" | "not_needed" | "none_set" | "off" | "emptied" | "no_sandbox" | "not_handed" | "not_in_force" | "stopped" | "failed";
-	/** For "unresolved": why the turn was let end, and for "acknowledged" what the agent gave as its reason. */
-	unresolved?: { reason: "acknowledged" | "max_rounds" | "report_mode"; said: string | null };
-	/** The session's last run of checks that finished, with the turn it was in and when; null when none has. */
-	run: { turn: number; at: number; checks: VerifiedCheck[] } | null;
-	/** The user's checks, as saved when `turn` started, that are not among `run`'s. */
+	/**
+	 * For "unresolved": why the turn was let end, and for "acknowledged" what the agent gave as its
+	 * reason. "not_started": no check that did not pass was started (`VerifiedCheck.startError`), so
+	 * the turn ended at once and the agent was not sent back.
+	 */
+	unresolved?: { reason: "acknowledged" | "max_rounds" | "report_mode" | "not_started"; said: string | null };
+	/**
+	 * For "not_needed", where the turn's Windlass says why no check was needed (the ending's `reason`):
+	 *
+	 *   turn_unchanged    the turn changed no file
+	 *   state_unchanged   the turn changed files, and they are again as they were in the state Windlass
+	 *                     measures changes from
+	 *   not_covered       files differ from that state, and no check covers any of them
+	 *
+	 * and, for the last two, which state that is (the ending's `since`): "run", the one `run` passed
+	 * on, give or take files no check covers; "start", what the session started from, which no check
+	 * has verified; null where Windlass does not say, or names a run the platform no longer holds.
+	 */
+	unneeded?: { reason: "turn_unchanged" | "state_unchanged" | "not_covered"; on: "run" | "start" | null };
+	/**
+	 * The checks that did not pass in a run of `turn` whose result does not stand: the agent then put
+	 * the files back, and the turn ended with no check needed (`unneeded`). They are not `run`'s.
+	 */
+	putBack?: VerifiedCheck[];
+	/**
+	 * The session's last run of checks that finished, with the turn it was in, when, and where in
+	 * Windlass's log (`seq`, of its `checks.finished`; absent in a record from before it was kept);
+	 * null when none has. After a turn that ended on a state verified earlier (`unneeded`) it is the
+	 * run that state rests on, or null.
+	 */
+	run: { turn: number; at: number; seq?: number; checks: VerifiedCheck[] } | null;
+	/** The user's checks, as saved when `turn` started, that are neither among `run`'s nor among `putBack`. */
 	unrun: Array<{ name: string; command: string }>;
 	/** True when the repository's file named a list of its own in `turn`, so the user's did not apply. Never where the user's were required checks. */
 	replaced: boolean;

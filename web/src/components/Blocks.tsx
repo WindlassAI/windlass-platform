@@ -8,7 +8,7 @@ import { codeText, toolCopyLabels, toolInputText, toolOutputText } from "../lib/
 import { reasoningTitle, renderMarkdown } from "../lib/markdown";
 import { callKey, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
 import { formatInput, summarizeTool } from "../lib/toolSummary";
-import { checkLine, gateWord, overruledLine, ranEarlier, unresolvedLine, unrunLine } from "../lib/verified";
+import { checkLine, gateWord, overruledLine, ranEarlier, unneededLine, unresolvedLine, unrunLine } from "../lib/verified";
 import { useNow } from "../state/hooks";
 import { CopyButton, useLatest } from "./Copy";
 import { DiffHunks } from "./DiffView";
@@ -465,25 +465,29 @@ const SetupRow = memo(function SetupRow({ block }: { block: SetupBlock }) {
 
 function Checks({ block }: { block: ChecksBlock }) {
 	const [open, setOpen] = useState(false);
-	const failing = block.results.filter((result) => result.status !== "passed");
+	// A check whose command could not be run at all has no exit code: it did not fail, it was not started.
+	const unstarted = block.results.filter((result) => result.status === "could_not_start" && result.exitCode === null).map((result) => result.name);
+	const failing = block.results.filter((result) => result.status !== "passed" && !unstarted.includes(result.name)).map((result) => result.name);
 	const words =
 		block.state === "running"
 			? "running"
 			: block.state === "passed"
 				? `${plural(block.results.length, "check")} passed`
 				: block.state === "failed"
-					? `${failing.map((result) => result.name).join(", ")} failed`
+					? [...(failing.length > 0 ? [`${failing.join(", ")} failed`] : []), ...(unstarted.length > 0 ? [`${unstarted.join(", ")} not started`] : [])].join(", ")
 					: (block.message ?? "did not finish");
 	const expandable = block.results.length > 0 || block.report !== null;
+	// A run in which nothing failed and a check was not started is marked as a warning, like one that did not finish: nothing in it speaks against the code.
+	const failed = block.state === "failed" && failing.length > 0;
 	const row = (
 		<>
 			<span className="line-glyph">
-				{block.state === "running" ? <Mark size={15} turning className="tone-accent" /> : block.state === "passed" ? <CheckIcon size={14} className="tone-accent settle" /> : block.state === "failed" ? <CrossIcon size={14} className="tone-bad settle" /> : <WarnIcon size={14} className="tone-warn settle" />}
+				{block.state === "running" ? <Mark size={15} turning className="tone-accent" /> : block.state === "passed" ? <CheckIcon size={14} className="tone-accent settle" /> : failed ? <CrossIcon size={14} className="tone-bad settle" /> : <WarnIcon size={14} className="tone-warn settle" />}
 			</span>
 			<span className="tool-name">checks</span>
 			<span className="tool-target">{block.names.join(", ")}</span>
 			<span className="tool-facts">
-				<span className={block.state === "failed" ? "tone-bad" : block.state === "error" ? "tone-warn" : undefined}>{words}</span>
+				<span className={failed ? "tone-bad" : block.state === "passed" || block.state === "running" ? undefined : "tone-warn"}>{words}</span>
 				<span>run {block.run}</span>
 			</span>
 		</>
@@ -620,23 +624,41 @@ const VERIFICATION_WORD: Record<string, string> = {
 
 /**
  * Under a turn's closing line: what its work rests on, as the platform recorded it from Windlass's
- * checks. Each check of the last run with how it ended and whose it is, the user's checks that did
- * not run and why, whom the repository's own settings held for, and whether files changed after. The same facts a pull request's description is
- * given. Nothing is drawn for a turn that had no checks and none before it.
+ * checks. Which state the files are back on where no check was needed for that, a run that did not
+ * pass before the agent changed them back, each check of the last run with how it ended and whose it
+ * is, the user's checks that did not run and why, whom the repository's own settings held for, and
+ * whether files changed after. The same facts a pull request's description is given. Nothing is
+ * drawn for a turn that had no checks and none before it.
  */
 function VerifiedLines({ verified }: { verified: Verified }) {
 	const checks = verified.run?.checks ?? [];
 	const earlier = ranEarlier(verified);
+	const unneeded = unneededLine(verified);
 	const unresolved = unresolvedLine(verified);
 	const unrun = unrunLine(verified);
 	const overruled = overruledLine(verified);
 	return (
 		<>
+			{unneeded ? (
+				<p className="turn-end-line turn-end-sub">
+					<span>{unneeded}</span>
+				</p>
+			) : null}
+			{verified.putBack ? (
+				<p className="turn-end-line turn-end-sub">
+					<span>did not pass earlier in this turn, before the agent changed the files back</span>
+					{verified.putBack.map((check) => (
+						<span key={check.name}>
+							<code>{check.name}</code> {checkLine(check)}
+						</span>
+					))}
+				</p>
+			) : null}
 			{checks.length > 0 ? (
 				<p className="turn-end-line turn-end-sub">
 					<span>checks{earlier ? `, ${earlier}` : ""}</span>
 					{checks.map((check) => (
-						<span key={check.name} className={check.status === "passed" ? undefined : "tone-bad"}>
+						<span key={check.name} className={check.status === "passed" ? undefined : check.startError !== undefined ? "tone-warn" : "tone-bad"}>
 							<code>{check.name}</code> {checkLine(check)}
 						</span>
 					))}

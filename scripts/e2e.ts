@@ -1710,6 +1710,10 @@ async function main(server: Server | null): Promise<void> {
 			assert(busy.outcome === "error" && busy.message?.includes("another Windlass process"), `session-busy: ${plain(busy)}`);
 			const kept = (await scratchWatch.conn.snapshot()).windlassSessionId;
 			assert(typeof kept === "string" && kept.startsWith("ses_"), `the Windlass session after the failures so far is ${kept}`);
+			// A session the sandbox's Windlass does not read: its own sentence, what the user can do about it, and the session is kept for a Windlass that reads it.
+			const unread = await run("please (session-unread)");
+			assert(unread.outcome === "error" && unread.message?.includes(`session ${kept}`) && unread.message.includes("does not read") && unread.message.includes("free this agent's sandbox under Usage") && unread.message.includes("Or start a new agent"), `session-unread: ${plain(unread)}`);
+			assert((await scratchWatch.conn.snapshot()).windlassSessionId === kept, "a session Windlass could not read was given up");
 			const gone = await run("please (session-gone)");
 			assert(gone.outcome === "error" && gone.message?.includes(kept) && gone.message.includes("starts a new Windlass session"), `session-gone: ${plain(gone)}`);
 			assert((await scratchWatch.conn.snapshot()).windlassSessionId === null, "the lost Windlass session is still stored");
@@ -1721,7 +1725,7 @@ async function main(server: Server | null): Promise<void> {
 			assert(scratchWatch.items.filter((item) => item.kind === "platform" && item.text.startsWith("Cloning")).length === 1, "the repository was cloned more than once");
 			dense(scratchWatch.items);
 			assert(scratch.model === models.at(-1) && scratch.repoUrl === "https://example.com/org/project.git", "the session's model or repository is off");
-			return `crash: "${crashed.message?.split("\n")[0]}"; throw: "${thrown.message}"; auth-fail: "${signedOut.message}"; old-windlass: "${outdated.message?.slice(0, 96)}…"; exec-fail: failed, the events say how; session-busy: "${busy.message}"; session-gone: "${gone.message?.split("\n").join(" / ")}"; then succeeded in a new Windlass session`;
+			return `crash: "${crashed.message?.split("\n")[0]}"; throw: "${thrown.message}"; auth-fail: "${signedOut.message}"; old-windlass: "${outdated.message?.slice(0, 96)}…"; exec-fail: failed, the events say how; session-busy: "${busy.message}"; session-unread: "${unread.message?.split("\n")[1]?.slice(0, 80)}…"; session-gone: "${gone.message?.split("\n").join(" / ")}"; then succeeded in a new Windlass session`;
 		});
 		await scratchWatch.conn.dispose();
 		await userConnTwo.deleteSession(scratch.id);
@@ -2884,6 +2888,8 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			assert(ended.outcome === "succeeded" && ended.verified?.state === "passed" && ended.verified.run?.turn === first.turn && ran === "test:user:required:passed:0,lint:user:required:passed:0" && ended.verified.unrun.length === 0 && !ended.verified.replaced, `the turn ended ${ended.outcome} with ${plain(ended.verified)}`);
 			assert((await user.listSessions()).find((one) => one.id === sessionId)?.requiredChecks === true, "the session's summary does not say that its sandbox's Windlass takes required checks");
 			assert(watch.windlass(first.turn, "checks.finished").length === 1, "the timeline has no run of checks");
+			// The record keeps where that run is in Windlass's log: a later ending that needs no check names the run it rests on by it.
+			assert(typeof ended.verified.run?.seq === "number" && ended.verified.run.seq > 0, `the record of the run is ${plain(ended.verified.run)}`);
 			const pushed = await handle.publish({ message: { title: "With its checks", body: "" } });
 			const described = standin.pulls.at(-1)?.body ?? "";
 			assert(pushed.state.pullRequest?.verified === "2 checks passed", `the pull request says "${pushed.state.pullRequest?.verified}"`);

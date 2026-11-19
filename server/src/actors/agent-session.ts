@@ -291,6 +291,13 @@ interface SessionMeta {
 	/** What the session's work rests on since its last turn ended (verified.ts): what a pull request's description is given. */
 	verified?: Verified | null;
 	/**
+	 * True once a Windlass that takes required checks ended a turn of the current Windlass session with
+	 * checks in force. What it records of that, a Windlass without them (0.2.0 and earlier) does not
+	 * read: it refuses the whole session, with an internal error and no reason. This is what tells that
+	 * refusal from any other (`UNREADABLE_SESSION`).
+	 */
+	checksRecorded?: boolean;
+	/**
 	 * Whether the agent may have the platform publish without the user being asked each time
 	 * (`SessionSummary.publishUnasked`). Absent or false: each request is put to the user.
 	 */
@@ -477,6 +484,10 @@ type NewItem =
 	| Omit<Extract<TimelineItem, { kind: "windlass" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "setup" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "turn.ended" }>, "seq" | "at">;
+
+/** What a user can do when the Windlass in a session's sandbox does not read the session, after the sentence that says so. */
+const UNREADABLE_SESSION =
+	"Nothing in the session was changed, and it opens again in a sandbox whose Windlass is the one that last worked in it, or a later one. Once the server's sandbox image is built from that Windlass, free this agent's sandbox under Usage and send the prompt again; what was not pushed goes with the sandbox, so publish it first. Or start a new agent: this one's files stay in its workspace.";
 
 /** A failure of a turn whose message is fit to show as it is. */
 class TurnProblem extends Error {}
@@ -702,6 +713,8 @@ function onWindlassEvent(c: Ctx, meta: SessionMeta, turn: number, event: Windlas
 	if (typeof event.sessionId === "string" && event.sessionId !== "" && meta.windlassSessionId !== event.sessionId) {
 		// Remembered at once: if this turn is lost, the next one can still continue Windlass's session.
 		meta.windlassSessionId = event.sessionId;
+		// Another session of Windlass's: nothing is recorded in it yet.
+		meta.checksRecorded = false;
 	}
 	if (DELTA_TYPES.has(event.type)) {
 		const delta: LiveDelta = { turn, event };
@@ -2660,6 +2673,11 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				outcome = "error";
 				meta.windlassSessionId = null;
 				message = `${said || "Windlass no longer has the session this agent was working in."}\nThe next prompt starts a new Windlass session; the files in the workspace are still there.`;
+			} else if (failure?.reason === "unreadable_session" || (failure?.reason === "open_refused" && meta.requiredChecks === false && meta.checksRecorded === true)) {
+				// The sandbox's Windlass does not read the session: it says so itself, or it is one without required checks, asked to open a session
+				// in which one with them recorded checks, which such a Windlass refuses with an internal error and nothing else. The session is kept.
+				outcome = "error";
+				message = `${failure.reason === "unreadable_session" && said ? said : "The Windlass in this agent's sandbox is older than the one that last worked in this session, and does not read what that one recorded about checks."}\n${UNREADABLE_SESSION}`;
 			} else if (reported !== undefined && WINDLASS_OUTCOMES.includes(reported)) {
 				// Windlass's own outcome stands. If the turn failed, its events in the timeline say how.
 				outcome = reported;
@@ -2704,6 +2722,8 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		// The end of what the checks printed is in Windlass's record where it keeps it there, and `verified` has it; where it keeps only files in the sandbox, they are read.
 		if (used && active.secrets && !c.vars.stopping && !c.vars.destroying) verified = withOutputs(verified, await readCheckOutputs(c, used, active.checks.outputs(saved, result?.checks), active.secrets.redactor));
 		meta.verified = verified;
+		// A run of checks, or an ending with checks in force, on a Windlass that takes required checks: an older one no longer opens this session.
+		if (result?.checks?.required === true && (verified.run?.turn === turn || verified.state === "passed" || verified.state === "unresolved" || verified.state === "not_needed")) meta.checksRecorded = true;
 
 		c.vars.pending = [];
 		append(c, {

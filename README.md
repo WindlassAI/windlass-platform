@@ -1040,10 +1040,20 @@ session on it.
   on. The session's summary carries the answer (`SessionSummary.requiredChecks`), and the repository's
   page says under the checks which of the two holds in the sandboxes of the user's agents on it, as far
   as they have said. A session made under 0.2.0 carries on in a sandbox with the newer Windlass. The
-  other way about it does not: once the newer Windlass has recorded a run of checks in a session, 0.2.0
-  refuses to open it (the record has fields 0.2.0 does not know), and a turn in a sandbox made from an
-  older image ends with Windlass's "Internal error". So an image is not to be rebuilt from an older
-  Windlass while such sessions are in use.
+  other way about it does not: once the newer Windlass has recorded anything about checks in a session
+  (a run of them, or the ending of a turn with checks in force), 0.2.0 refuses to open it, whole: the
+  record has fields 0.2.0 does not know. So an image is not to be rebuilt from an older Windlass while
+  such sessions are in use. A turn that meets this ends with what the user can do about it instead of
+  Windlass's "Internal error": the session is unchanged and opens again in a sandbox with the Windlass
+  that last worked in it, so the image is to be built from that one, the agent's sandbox freed (what
+  was not pushed goes with it) and the prompt sent again; or a new agent started. The platform says so
+  on a structured fact and never on a message's words. A Windlass that refuses such a session with a
+  reason (`unreadable_session`, with a sentence that names the record) is taken at its word. 0.2.0
+  gives none, only JSON-RPC's internal error, which the sandbox layer hands on as that
+  (`open_refused`); the session's actor then goes by what it knows: this sandbox's Windlass takes no
+  required checks, and one that does ended a turn of this very Windlass session with checks in
+  force (`checksRecorded`), which is exactly what 0.2.0 does not read. Any other internal error at
+  the open stays "Internal error".
 - **With required checks: named when the session is opened.** A session reads the checks from the user's
   actor when a turn starts, with its repository's secrets, and the sandbox layer names them to Windlass in
   the metadata it opens the session with (`_meta.windlass.requiredChecks` on `session/new` and
@@ -1069,8 +1079,16 @@ session on it.
     their file patterns are relative to it. A `.windlass/config.json` further down in the repository
     does not move them.
   - Where commands are sandboxed and no sandbox can run, a required check cannot be run either.
-    Windlass records it as one that could not be started and ends the turn as unresolved, with the
-    agent sent back meanwhile; the platform then says that nothing was verified, and lists the check.
+    Windlass records it as one that could not be started, with the reason, and ends the turn at
+    once as unresolved (`not_started`). The agent is not sent back: nothing it changes in the code
+    starts a check. The platform then says that nothing was verified and that the agent was not
+    asked to change anything, and shows the reason with the check as the thing to fix. The same
+    holds for any check whose command could not be started at all; beside checks that failed on
+    the code, the agent is sent back for those alone, and the platform counts and words the two
+    apart.
+  - A check the user adds, or whose command, time limit or patterns the user changes, does not
+    stand on what was verified without it: Windlass runs it at the end of the session's next turn
+    that changes a file, whatever the file, and from then on for what its patterns cover.
   - A subagent's turn runs no check; the session's own turn, which the platform sees end, runs them
     over everything the subagent changed in the workspace.
   - `checks`, `requiredChecks` and `verify` in Windlass's own configuration file in the sandbox are
@@ -1091,7 +1109,7 @@ session on it.
   | names `checks: []` | runs nothing, and reports that no checks are configured | runs the user's |
   | sets `verify.mode` to `off` | runs nothing, and reports that no checks are configured | runs the user's, and none of the repository's own |
   | is written or changed by the agent during a turn | changes nothing in that turn; from the next turn on it is followed as above | changes nothing for the user's checks, in that turn or later |
-  | cannot run checks: commands are sandboxed and there is no sandbox | runs nothing, says so, and calls the turn done | records the user's checks as not started, and ends the turn as unresolved |
+  | cannot run checks: commands are sandboxed and there is no sandbox | runs nothing, says so, and calls the turn done | records the user's checks as not started, and ends the turn as unresolved, at once |
 
   Both columns were tried against the real thing, the released 0.2.0 and a build of the branch with
   required checks (`scripts/verified-check.ts --docker`). 0.2.0's record of a run does not say which file
@@ -1114,7 +1132,9 @@ cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/verified-check.ts --doc
 The web app's mock has two checks saved for acme/harbor (`?mock=1`, `/repositories/7101`), one of them with
 file patterns that the mock's turns never match. Its sandboxes have a Windlass with required checks, except
 the one of "Make add() pass its checks", which keeps an older one; the fake sandbox layer's Windlass has them
-too.
+too, and its evidence of a run names what the run's changes are measured from and the session's required
+checks, as the real one's does. A mock turn on a repository whose checks all have patterns ends with no
+check needed because none covers what changed, said as that.
 
 ## What a pull request shows was verified
 
@@ -1161,11 +1181,45 @@ To look at:
   most). And when nothing was verified, one plain sentence: "Nothing was verified: no checks are
   set for this repository.", or which file turned verification off, or that the turn was stopped before
   its checks had run. There is no badge and no tick in it, and it ends by saying that it is not a review.
+- **What a turn that needed no check rests on, and a check that was not started.** A Windlass later
+  than the first with required checks says more in two places, and the platform says it after it
+  (`Verified.unneeded`, `putBack`, `VerifiedCheck.startError`). A Windlass that does not say it is
+  told as before, word for word: nothing is worked out in its place.
+  - *Why no check was needed* (`reason` of the ending). "The turn changed no file." is told apart
+    from "no check covers the files that differ from the state the checks last passed on, at the end
+    of turn 1", and from a turn that changed files and put them back.
+  - *A check failed, and the agent put the files back.* Windlass then runs nothing more, and its
+    ending names the verified state the files are in again and the run that last passed on the way
+    to it (`since`). The section says so: "No check was run again when the agent's turn 2 ended: the
+    files the checks cover are again as they were when the checks last passed, at the end of turn
+    1.", one sentence about the run that did not pass ("A run of checks earlier in turn 2 did not
+    pass (**test** failed with exit code 1 after 80 ms, and the agent was sent back once). The agent
+    then changed the files back, so that run says nothing about the work as it is now."), and that
+    earlier run's checks under "The checks as they passed when turn 1 ended:". The failed run is not
+    listed as a result, its output is not shown, and nothing is flagged as changed after the checks
+    unless a file no check covers differs from what that run passed on. Where no run has passed,
+    the state is the one the session started from: "a state no check has verified", and no run is
+    listed. The run is found by where it is in Windlass's log (`seq`), which the record keeps for
+    the session's last run. A run the platform does not hold (an earlier turn left a check failing
+    since) is not made up: the sentence then names no turn and no run is listed.
+  - *A check that was not started* (`could_not_start` with no exit code, and `startError`) did not
+    fail. When every check that did not pass is one of those, Windlass ends the turn at once
+    (`not_started`): "Nothing was verified in the agent's turn 1: the check that applied was not
+    started. That says nothing about the code, so the agent was not sent back to change anything:
+    what there is to fix is the reason given with the check below.", and the check's line is "was
+    not started:" with Windlass's reason. Beside checks that failed on the code the sentence counts
+    those alone and adds that another was not started; the agent was sent back for the failing ones
+    only, and the line of the other says no number of times. A check whose command the shell did
+    not find (exit code 126 or 127) ran, and is told as before.
 - **Where the facts come from.** Windlass's own events of the turn, each decision on a field of them and
   none on a sentence: `checks.finished` has the evidence of a run (each check's name, command, status,
   exit code, duration and the file its output is kept in); a message the harness appends with the origin
-  `check_report` is the agent being sent back; `execution.succeeded` has how the gate ended and why a turn
-  was let end with a check failing; `snapshot.taken` names each state of the workspace. The session's
+  `check_report`, followed by a model call (`step.started`), is the agent being sent back (Windlass
+  writes the same message with an ending that leaves checks unresolved, for whoever continues the
+  session, and that one sends nobody back); `execution.succeeded` has how the gate ended, why a turn
+  was let end with a check failing, and from a later Windlass why no check was needed and on what;
+  `snapshot.taken` names each state of the workspace. A key of the evidence or of an ending that the
+  platform does not know is passed over, and an ending is never compared whole. The session's
   actor keeps what they come to (`Verified`) on the item that ends the turn, and in its own state for the
   next push. A turn in which no check ran keeps what the last run found, with the turn it was in.
 - **One record, two sources.** Three of those facts have another source on a Windlass with required
@@ -1190,7 +1244,7 @@ To look at:
   | Tests were newly skipped or disabled | a test's file gained more of these than it lost: `it.skip`, `test.skip`, `describe.skip`, `.todo`, `xit(`, `xdescribe(`, `@pytest.mark.skip`, `skipif`, `xfail`, `@unittest.skip`, `pytest.skip(`, `@Disabled`, `@Ignore`, `#[ignore]`, `t.Skip(`. A marker that was there before and still is, and a marker in other code, are not listed. A test that was commented out or deleted from its file is not seen |
   | What the checks run was changed in this work | the repository's `.windlass/config.json` says something else about `checks` or `verify` than on the base branch; or a script that a check's command runs was changed (a file run by itself, handed to a shell, or handed to an interpreter as the program; not a file the command only names, and not a test's file, which the two flags above are for); or the `package.json` script that a check's command runs through `npm`, `pnpm`, `yarn` or `bun run` was changed. The checks are the user's and the ones that ran |
   | A check's command came to ignore an exit status | one of those three (a command in the repository's own list, the script, the file a command names) has more of `\|\| true`, `\|\| :`, `\|\| exit 0`, a closing `; true` or `; exit 0`, or `set +e` than before. A user's own command that always had one is not this work's, and is not listed |
-  | Files changed after the checks last ran | Windlass recorded another state of the workspace after the last run of checks than the one they ran on: a turn stopped between a failing run and the next, or a later turn that changed files and ran no check. Where Windlass took no snapshots, that a call which can change files started after the run |
+  | Files changed after the checks last ran | Windlass recorded another state of the workspace after the last run of checks than the one they ran on: a turn stopped between a failing run and the next, or a later turn that changed files and ran no check. Where Windlass took no snapshots, that a call which can change files started after the run. Not where Windlass says that the files are again as they were when the listed run passed |
 
   When git could not be asked, the section says that nothing was looked for.
 - **Replaceable by the platform alone.** The section stands between two comment lines, at the end of the
@@ -1213,11 +1267,16 @@ To look at:
   changed files after the push, the description stays as it is until the next push.
 - **In the session.** The turn's closing line in the timeline has the same facts for that turn: the
   checks with how each ended, whose it is ("yours", "yours, required", "the repository's file") and how
-  often the agent was sent back, the user's checks that did not run and why, whom the repository's own
+  often the agent was sent back (or why it was not started), the user's checks that did not run and why, whom the repository's own
   settings held for, and that files changed after the checks last ran. The line of a push says what the
   description reports, in a few words, and the repository's page lists them beside each open pull request
   (`PullRequestInfo.verified`): "2 checks passed", "1 of 2 checks failing", "nothing verified",
-  "1 check passed (the repository's own)", with "1 thing to look at" where the section lists some.
+  "1 check passed (the repository's own)", "no check was needed", "no check covers what changed",
+  "nothing verified, 1 check not started", "1 of 2 checks failing, 1 not started", with "1 thing to
+  look at" where the section lists some. The turn's closing line also says which state the files are
+  back on, lists what did not pass before the agent changed them back apart from the checks the work
+  rests on, and gives the reason a check was not started with it. Windlass's own run of checks in
+  the timeline says "not started" of such a check, not "failed".
 - **What it cannot say.** That the checks are good ones. That a check which passed tested what changed.
   On a Windlass without required checks, what the repository's file did in a turn the platform could
   not read it in. And where commands are not

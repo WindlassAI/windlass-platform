@@ -774,7 +774,9 @@ class Turn {
 			const opened = await this.unlessAborted(this.open());
 			if (opened === "aborted" || this.abortRequested) return;
 		} catch (error) {
-			this.refused(error);
+			// An internal error with no reason of Windlass's, for a session that exists: among other things, what a Windlass from before
+			// `unreadable_session` answers for a session it cannot read. Said as that, so that whoever knows more of the session can tell.
+			this.refused(error, input.windlassSessionId !== undefined && error instanceof AcpError && error.code === -32603 ? "open_refused" : "engine");
 			return;
 		}
 
