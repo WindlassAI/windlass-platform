@@ -142,7 +142,11 @@ function rowWhy(item: ItemSummary): string | null {
 	return null;
 }
 
-/** One item as a row of a list. `repository`: the row stands under no repository's name, so it says which. */
+/**
+ * One item as a row of a list. `repository`: the row stands under no repository's name, so it says which.
+ * The item's agent session is part of it and is in no list of agents: the row leads to it, once the
+ * item has started, as the place to see what the agent did.
+ */
 export function ItemRow({ item, now, repository = false, why }: { item: ItemSummary; now: number; repository?: boolean; why?: ReactNode }) {
 	const asks = item.question !== null;
 	const line = why ?? rowWhy(item);
@@ -174,6 +178,13 @@ export function ItemRow({ item, now, repository = false, why }: { item: ItemSumm
 						</span>
 					) : null}
 					{item.source === "api" ? <span>from the API</span> : null}
+					{item.state === "draft" ? null : (
+						<span>
+							<a className="item-pull" {...linkProps({ name: "session", id: item.sessionId })} title="What its agent did, turn by turn" aria-label={`The agent of ${item.title}`}>
+								its agent
+							</a>
+						</span>
+					)}
 				</p>
 			</div>
 			<div className="agent-state">{item.verdict ? <VerdictWord verdict={item.verdict} /> : null}</div>

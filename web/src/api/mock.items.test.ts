@@ -47,6 +47,29 @@ describe("the mock's work items", () => {
 		mock.dispose();
 	});
 
+	it("gives each item an agent session of its own, listed with the user's sessions and marked as the item's, as the server does", async () => {
+		const mock = make();
+		const user = mock.user(auth);
+		const items = await user.listItems();
+		const sessions = await user.listSessions();
+		expect(new Set(items.map((item) => item.sessionId)).size).toBe(items.length);
+		for (const item of items) {
+			const session = sessions.find((one) => one.id === item.sessionId);
+			expect(session?.item).toEqual({ id: item.id });
+			expect(session?.title).toBe(item.title);
+			expect(session?.repository?.id).toBe(item.repository.id);
+			expect(session?.status !== "idle").toBe(item.state === "working");
+		}
+		// The user's own agents are not any item's.
+		expect(sessions.filter((session) => session.item).length).toBe(items.length);
+		expect(sessions.some((session) => session.id === "harbor-build" && session.item === undefined)).toBe(true);
+		// One filed here is the item's from the start, and is at work once it starts.
+		const filed = await user.createItem({ repository: { id: 7101 }, title: "Log the release's checksum", body: "", start: true });
+		await new Promise((resolve) => setTimeout(resolve, 2700));
+		expect((await user.listSessions()).find((session) => session.id === filed.sessionId)).toMatchObject({ item: { id: filed.id }, status: "running" });
+		mock.dispose();
+	});
+
 	it("answers an item's page with its log and verdicts, and refuses one that is not the user's", async () => {
 		const mock = make();
 		const user = mock.user(auth);

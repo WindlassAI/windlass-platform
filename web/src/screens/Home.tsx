@@ -6,13 +6,18 @@
  *
  * Under the groups, the repositories something is saved for that have no agent: their pages are
  * where what was saved is changed or deleted, and nothing else leads there.
+ *
+ * The sessions of work items are not listed: each is part of its item, and is opened from the item's
+ * row and page. A repository that has only work items keeps its heading, with how many, so that its
+ * page is still a click away. The count of what is at work is the server's, against the ceiling on
+ * running turns, and says how much of it is work items'.
  */
 import { USAGE_LOW_SHARE, type SavedRepository, type UsageNumbers } from "@contract";
 import { useEffect, useId, useState } from "react";
 import { AgentList } from "../components/Agents";
 import { Mark, PlusIcon, WarnIcon } from "../components/Icons";
 import { count, localTime, plural, sandboxTime } from "../lib/format";
-import { NO_REPOSITORY, groupSessions, shownLimit, type SessionGroup } from "../lib/repositories";
+import { NO_REPOSITORY, groupSessions, ownAgents, shownLimit, workingCounts, workingWords, type SessionGroup } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { NeedsYou } from "./Items";
@@ -36,17 +41,18 @@ function Group({ group, limit, headed, now }: { group: SessionGroup; limit: numb
 						<span className="agent-group-name">{name}</span>
 					)}
 					<span className="agent-group-count">
-						{plural(group.sessions.length, "agent")}
-						{group.working > 0 ? ` · ${group.working} working` : ""}
+						{[group.sessions.length > 0 ? plural(group.sessions.length, "agent") : null, group.working > 0 ? `${group.working} working` : null, group.items > 0 ? plural(group.items, "work item") : null].filter((part) => part !== null).join(" · ")}
 					</span>
 				</h2>
 			) : null}
-			<AgentList sessions={group.sessions} limit={limit} foldKey={`home:${group.key}`} label={repository ? `Your agents on ${name}, the most recently used first` : "Your agents on no connected repository, the most recently used first"} grouped={repository !== null} now={now} />
+			{group.sessions.length > 0 ? (
+				<AgentList sessions={group.sessions} limit={limit} foldKey={`home:${group.key}`} label={repository ? `Your agents on ${name}, the most recently used first` : "Your agents on no connected repository, the most recently used first"} grouped={repository !== null} now={now} />
+			) : null}
 		</section>
 	);
 }
 
-/** The repositories something is saved for and no agent is on: asked when the screen opens and when an agent is added or deleted. */
+/** The repositories something is saved for and no session is on (one with only work items has its heading): asked when the screen opens and when a session is added or deleted. */
 function useSavedWithoutAgents(sessions: ReturnType<typeof useSessions>["sessions"]): SavedRepository[] {
 	const { client } = useApp();
 	const auth = useAuth();
@@ -128,17 +134,17 @@ function UsageLine({ numbers }: { numbers: UsageNumbers | null }) {
 export function Home() {
 	const { sessions, connection, error } = useSessions();
 	const now = useNow(15_000);
+	const agents = sessions === null ? null : ownAgents(sessions);
 	const working = sessions?.filter((session) => session.status !== "idle").length ?? 0;
-	// The ceiling on working agents is the deployment's, and only the platform's agents count against it.
+	// The ceiling on running turns is the deployment's: the user's agents on the platform's sandboxes and every work item's turn count against it.
 	const ceiling = useFactoryLimits().value?.runningTurns ?? null;
-	const onMachines = sessions?.filter((session) => session.status !== "idle" && session.place.kind === "machine").length ?? 0;
-	const hosted = working - onMachines;
-	// Asked again when an agent starts or stops working, and when one is added or deleted.
+	const counts = workingCounts(sessions ?? []);
+	// Asked again when a session starts or stops working, and when one is added or deleted.
 	const usage = useAllowance(`${working}:${sessions?.length ?? 0}`);
 
 	const groups = sessions === null ? [] : groupSessions(sessions);
 	const saved = useSavedWithoutAgents(sessions);
-	const waiting = sessions?.filter((session) => session.status === "waiting").length ?? 0;
+	const waiting = agents?.filter((session) => session.status === "waiting").length ?? 0;
 	const launch = () => navigate({ name: "new" });
 
 	return (
@@ -146,7 +152,7 @@ export function Home() {
 			<header className="home-head">
 				<div>
 					<p className="eyebrow">
-						{sessions === null ? "agents" : `${plural(sessions.length, "agent")} · ${ceiling === null ? hosted : `${hosted} of ${ceiling}`} working${onMachines > 0 ? ` · ${onMachines}\u00a0on\u00a0your\u00a0machines` : ""}`}
+						{agents === null ? "agents" : `${plural(agents.length, "agent")} · ${workingWords(counts, ceiling)}${counts.onMachines > 0 ? ` · ${counts.onMachines}\u00a0on\u00a0your\u00a0machines` : ""}`}
 						{waiting > 0 ? <span className="eyebrow-waiting"> · {waiting} {waiting === 1 ? "needs" : "need"} you</span> : null}
 					</p>
 					<h1 className="display">Agents</h1>
@@ -189,7 +195,7 @@ export function Home() {
 						</li>
 					))}
 				</ul>
-			) : sessions.length === 0 ? (
+			) : groups.length === 0 ? (
 				<div className="state state-empty">
 					<Mark size={56} />
 					<h2>No agents yet</h2>

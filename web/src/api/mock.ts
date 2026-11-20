@@ -93,6 +93,7 @@ import {
 	type GithubStatus,
 	type LiveDelta,
 	type LoginStart,
+	type ItemView,
 	type MachineSummary,
 	type ModelChoice,
 	type ModelList,
@@ -1057,6 +1058,8 @@ interface Run {
 
 interface MockSession {
 	summary: SessionSummary;
+	/** A seeded work item's turn, played when its page is first opened rather than with every user's seeds (`seedItemSession`). */
+	seededTurn?: () => void;
 	/** The title was given by hand, so the first prompt does not replace it. */
 	titled: boolean;
 	windlassSessionId: string | null;
@@ -1201,6 +1204,16 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		later,
 		feeds: (auth) => worldOf(auth).feeds,
 		session: (auth, { profile, ...input }) => userApi(auth).createSession({ ...input, profile: profile ?? (profiles.find((candidate) => candidate.available) ?? profiles[0])?.id ?? "docker-windlass-sandbox" }),
+		seededSession: (auth, item) => seedItemSession(auth, item),
+		itemChanged: (auth, item) => {
+			const world = worldOf(auth);
+			const session = world.sessions.get(item.sessionId);
+			if (!session) return;
+			// A turn of the item runs while it works; its prompts are the item's, so nothing else starts one here.
+			const status = item.state === "working" ? "running" : "idle";
+			if (session.summary.item?.id === item.id && session.summary.status === status) return;
+			setSummary(world, session, { item: { id: item.id }, status, ...(status === "running" && session.summary.sandbox === "none" ? { sandbox: "running" as const } : {}) });
+		},
 		machines: (auth) => (machineState === "off" ? null : { list: machinesOf(auth).list, minRunnerVersion: MOCK_MIN_RUNNER_VERSION }),
 	});
 
@@ -1221,6 +1234,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
 			worlds.set(uid, world);
 			seed(world);
+			// The items, each with its agent session, are there with the agents (`seedItemSession`).
+			items.prepare(auth);
 		}
 		return world;
 	}
@@ -1369,6 +1384,51 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			price: MOCK_PRICE,
 			memory: "copied",
 		};
+	}
+
+	/**
+	 * A seeded work item's own agent session, as the server makes one for every item
+	 * (`SessionSummary.item`): titled as the item, on its repository and its place, with one turn
+	 * played for an item that has run. Only the sandbox of an item at work is kept, and only those
+	 * counted sandbox time today, so that the agents' own figures stay as they were seeded.
+	 */
+	function seedItemSession(auth: AuthResult, item: ItemView): string {
+		const world = worldOf(auth);
+		const id = `item-${item.id.slice(3)}`;
+		clock = item.createdAt;
+		const session = addSession(world, { id, title: item.title, titled: true, profile: "docker-windlass-sandbox", model: MODELS[0] as string, repoUrl: null, repository: githubOn ? item.repository : undefined });
+		if (item.place.kind === "machine") {
+			const { machineId } = item.place;
+			const machine = machinesOf(auth).list.find((one) => one.machineId === machineId);
+			const profile = machine?.profiles.find((one) => one.available) ?? (profiles[0] as SandboxProfile);
+			session.summary = { ...session.summary, place: { kind: "machine", machineId } };
+			session.machine = { profile, reach: machine ? null : { state: "removed", since: item.updatedAt } };
+		}
+		clock = null;
+		const working = item.state === "working";
+		// The pull request the item's publish step opened is its session's, as the server's session keeps it; it is merged once the item is done.
+		const pull: PullRequestInfo | null =
+			item.pullRequest && session.summary.repository && item.state !== "cancelled" && item.state !== "failed"
+				? { number: item.pullRequest.number, url: item.pullRequest.url, state: item.state === "done" ? "merged" : "open", title: item.title, branch: branchFor(session), base: item.repository.branch, pushedAt: item.updatedAt }
+				: null;
+		const settle = () => {
+			if (session.pauseTimer !== null) cancel(session.pauseTimer);
+			session.pauseTimer = null;
+			session.summary = { ...session.summary, item: { id: item.id }, status: working ? "running" : "idle", sandbox: working ? "running" : "none", updatedAt: Math.max(session.summary.updatedAt, item.updatedAt), ...(pull ? { pullRequest: pull } : {}) };
+		};
+		settle();
+		const run = item.run;
+		if (run !== null && item.spent.turns > 0) {
+			// What the list says of it is there at once; the turn itself is played when its page is opened.
+			session.summary = { ...session.summary, turns: 1, lastOutcome: "succeeded" };
+			session.seededTurn = () => {
+				session.summary = { ...session.summary, turns: 0, lastOutcome: null };
+				playInstantly(plan(world, session, { text: item.task.body || item.title }, SCRIPTS.answer), run.startedAt);
+				settle();
+			};
+		}
+		if (working && item.place.kind === "hosted") world.spent.set(id, Math.min(item.spent.hostedSeconds, 4 * 60));
+		return id;
 	}
 
 	function addSession(world: World, input: { id: string; title: string; titled: boolean; profile: SessionSummary["profile"]; model: string; repoUrl: string | null; repository?: SessionRepository | null; publishUnasked?: boolean }): MockSession {
@@ -3224,6 +3284,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			const world = worldOf(auth);
 			const session = world.sessions.get(id);
 			if (!session) throw new PlatformError("not_found", "There is no agent at this address.");
+			const turn = session.seededTurn;
+			if (turn) {
+				delete session.seededTurn;
+				turn();
+			}
 			return { world, session };
 		};
 		return {
@@ -3282,7 +3347,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				}
 				// The ceiling on working agents is the deployment's (`FactoryLimits.runningTurns`) and the platform's sandboxes': one on the user's machine is neither counted nor refused.
 				const hosted = session.summary.place.kind === "hosted";
-				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle" && other.summary.place.kind === "hosted").length;
+				// A work item's turn counts wherever it runs (server/src/actors/user.ts, `internalAcquireRun`).
+				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle" && (other.summary.item !== undefined || other.summary.place.kind === "hosted")).length;
 				if (hosted && running >= MOCK_FACTORY_LIMITS.runningTurns) throw new PlatformError("user", `You already have ${running} ${running === 1 ? "agent" : "agents"} working, which is your limit. Wait for one to finish, or stop one.`, { reason: "too_many_running" });
 				const models = modelsFor(world.profile);
 				if (input.model !== undefined) checkModel(models, input.model);

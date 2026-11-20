@@ -1,7 +1,7 @@
 /** How the list of agents is grouped and folded, which pull requests a repository's page lists, and what a new agent on a repository starts with. */
 import { describe, expect, it } from "vitest";
 import type { ModelList, PlatformInfo, SandboxProfile, SessionRepository, SessionSummary } from "@contract";
-import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, checksStanding, foldGroup, groupSessions, layerChoices, openPulls, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile } from "./repositories";
+import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, checksStanding, foldGroup, groupSessions, layerChoices, openPulls, ownAgents, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile, workingCounts, workingWords } from "./repositories";
 
 const repository = (id: number, owner: string, name: string, branch = "main"): SessionRepository => ({ provider: "github", id, owner, name, branch, private: true, url: `https://github.com/${owner}/${name}` });
 const harbor = repository(7101, "acme", "harbor");
@@ -39,6 +39,24 @@ describe("the list of agents, grouped", () => {
 		const [group] = groupSessions([session({ repository: harbor, status: "running" }), session({ repository: harbor, status: "waiting" }), session({ repository: harbor })]);
 		expect([group?.working, group?.waiting]).toEqual([2, 1]);
 		expect(groupSessions([])).toEqual([]);
+	});
+
+	it("leaves out the sessions of work items, counts them, and keeps the group of a repository that has only them", () => {
+		const sessions = [
+			session({ id: "mine", repository: harbor, updatedAt: 100, status: "running" }),
+			session({ id: "item-harbor", repository: harbor, updatedAt: 900, status: "running", item: { id: "it_1" } }),
+			session({ id: "item-tides", repository: tides, updatedAt: 500, item: { id: "it_2" } }),
+			session({ id: "item-tides-2", repository: tides, updatedAt: 50, item: { id: "it_3" } }),
+		];
+		expect(ownAgents(sessions).map((one) => one.id)).toEqual(["mine"]);
+		const groups = groupSessions(sessions);
+		expect(groups.flatMap((group) => group.sessions.map((one) => one.id))).toEqual(["mine"]);
+		// Its agent says when harbor was used; tide-tables, with no agent, by its newest item's session.
+		expect(groups.map((group) => [group.key, group.sessions.length, group.items, group.working, group.usedAt])).toEqual([
+			["github:7102", 0, 2, 0, 500],
+			["github:7101", 1, 1, 1, 100],
+		]);
+		expect(groups[0]?.repository).toEqual(tides);
 	});
 
 	it("stays readable with twenty repositories and a hundred agents: every agent in exactly one group, in a stable order", () => {
@@ -196,5 +214,27 @@ describe("what a new agent on a repository starts with", () => {
 		expect([startingProfile(null, none, info), startingModel("", none, models)]).toEqual(["docker-windlass-sandbox", "gpt-6.1-sol"]);
 		expect(startingChoices({ profile: "docker-hardened", model: "gpt-6-luna", updatedAt: 1 }, null, null)).toEqual(none);
 		expect([startingProfile(null, none, null), startingModel("", none, null)]).toEqual([null, ""]);
+	});
+});
+
+describe("what is at work", () => {
+	it("counts what the server counts against the ceiling: the user's agents on hosted sandboxes, and every work item's turn wherever it runs", () => {
+		const machine = { kind: "machine" as const, machineId: "m_nas" };
+		const sessions = [
+			session({ status: "running" }),
+			session({ status: "waiting" }),
+			session({ status: "running", place: machine }),
+			session({ status: "running", item: { id: "it_1" } }),
+			session({ status: "starting", place: machine, item: { id: "it_2" } }),
+			session({ item: { id: "it_3" } }),
+			session(),
+		];
+		expect(workingCounts(sessions)).toEqual({ ceilinged: 4, items: 2, onMachines: 1 });
+		expect(workingWords(workingCounts(sessions), 6)).toBe("4 of 6 working, 2 of them work items");
+		expect(workingWords(workingCounts(sessions), null)).toBe("4 working, 2 of them work items");
+		expect(workingWords({ ceilinged: 1, items: 0 }, 6)).toBe("1 of 6 working");
+		expect(workingWords({ ceilinged: 1, items: 1 }, 6)).toBe("1 of 6 working, a work item");
+		expect(workingWords({ ceilinged: 3, items: 3 }, 6)).toBe("3 of 6 working, all work items");
+		expect(workingWords({ ceilinged: 3, items: 1 }, 6)).toBe("3 of 6 working, 1 of them a work item");
 	});
 });

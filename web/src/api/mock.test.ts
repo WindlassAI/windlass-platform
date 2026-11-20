@@ -104,9 +104,11 @@ describe("what the mock serves", () => {
 	});
 
 	it("has sessions in different states, newest first, one of them at work", async () => {
-		const sessions = await after(500, client.user(auth).listSessions());
+		const listed = await after(500, client.user(auth).listSessions());
+		expect(listed.map((session) => session.createdAt)).toEqual([...listed.map((session) => session.createdAt)].sort((a, b) => b - a));
+		// The user's own agents: the work items' sessions are among them in the list, as the server's are (mock.items.test.ts).
+		const sessions = listed.filter((session) => !session.item);
 		expect(sessions.length).toBeGreaterThanOrEqual(6);
-		expect(sessions.map((session) => session.createdAt)).toEqual([...sessions.map((session) => session.createdAt)].sort((a, b) => b - a));
 		expect(sessions[0]).toMatchObject({ id: "harbor-build", turns: 1 });
 		expect(sessions.find((session) => session.id === "headers")).toMatchObject({ status: "waiting", turns: 1 });
 		expect(["starting", "running"]).toContain(sessions[0]?.status);

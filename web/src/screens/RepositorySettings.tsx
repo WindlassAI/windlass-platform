@@ -14,7 +14,7 @@ import { WarnIcon } from "../components/Icons";
 import { SecretsBlock } from "../components/Secrets";
 import { RepositoryApprovals } from "../components/Servers";
 import { SetupEditor } from "../components/SetupCommand";
-import { checksStanding, layerChoices, startingChoices } from "../lib/repositories";
+import { checksStanding, layerChoices, ownAgents, startingChoices } from "../lib/repositories";
 import { sectionOf, useHash, type RepositorySection } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useAccount, useModels, useNow } from "../state/hooks";
@@ -24,7 +24,8 @@ import type { RepositoryPage } from "./Repository";
 export const sectionHeading = (section: RepositorySection) => `repo-${section}`;
 
 /** What deleting everything saved takes with it, and what it leaves. */
-function ForgetDialog({ page, view, name, agents, onClose, onDone }: { page: RepositoryPage; view: RepositoryView; name: string; agents: number; onClose(): void; onDone(): void }) {
+/** `agents`: the user's own agents on it; `items`: the sessions of its work items, which stay with their items. */
+function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { page: RepositoryPage; view: RepositoryView; name: string; agents: number; items: number; onClose(): void; onDone(): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [busy, setBusy] = useState(false);
@@ -71,10 +72,13 @@ function ForgetDialog({ page, view, name, agents, onClose, onDone }: { page: Rep
 			<p>
 				What you saved for <strong>{name}</strong> is deleted: {listed}. This cannot be undone; a secret's value cannot be read back from here, so keep a copy of any you still need.
 			</p>
-			{agents > 0 ? (
+			{agents + items > 0 ? (
 				<p>
-					{agents === 1 ? "The agent on it stays" : `The ${agents} agents on it stay`}, with {agents === 1 ? "its conversation and its workspace" : "their conversations and their workspaces"}. A sandbox made after this is set up without them, and{" "}
-					{agents === 1 ? "its" : "their"} MCP servers are asked about again.
+					{[agents === 0 ? null : agents === 1 ? "The agent on it" : `The ${agents} agents on it`, items === 0 ? null : items === 1 ? "the agent of its work item" : `the agents of its ${items} work items`]
+						.filter((part) => part !== null)
+						.join(" and ")
+						.replace(/^t/, "T")}{" "}
+					{agents + items === 1 ? "stays" : "stay"}, with {agents + items === 1 ? "its conversation and its workspace" : "their conversations and their workspaces"}. A sandbox made after this is set up without them, and {agents + items === 1 ? "its" : "their"} MCP servers are asked about again.
 				</p>
 			) : null}
 			{error ? (
@@ -236,7 +240,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						) : null}
 					</section>
 
-					{forgetting ? <ForgetDialog page={page} view={view} name={name} agents={sessions?.length ?? 0} onClose={() => setForgetting(false)} onDone={() => setGeneration((count) => count + 1)} /> : null}
+					{forgetting ? <ForgetDialog page={page} view={view} name={name} agents={ownAgents(sessions ?? []).length} items={(sessions ?? []).length - ownAgents(sessions ?? []).length} onClose={() => setForgetting(false)} onDone={() => setGeneration((count) => count + 1)} /> : null}
 				</>
 			)}
 		</>

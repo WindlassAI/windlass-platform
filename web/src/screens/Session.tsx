@@ -37,13 +37,13 @@ export function useSessionMachine(place: SandboxPlace | undefined): MachineSumma
 	return list.find((machine) => machine.machineId === machineId) ?? null;
 }
 
-/** What the top bar shows for a session: the way back, its title and state. */
-export function SessionCrumb({ title, status, place, machine }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null }) {
+/** What the top bar shows for a session: the way back, its title and state. A work item's session is part of its item, and the way back is to the item. */
+export function SessionCrumb({ title, status, place, machine, item }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: { id: string } }) {
 	return (
 		<nav className="crumb" aria-label="Where you are">
-			<a className="crumb-back" {...linkProps({ name: "home" })}>
+			<a className="crumb-back" {...linkProps(item ? { name: "item", id: item.id } : { name: "home" })}>
 				<ArrowLeftIcon size={14} />
-				<span>Agents</span>
+				<span>{item ? "Work item" : "Agents"}</span>
 			</a>
 			{title !== null ? (
 				<>

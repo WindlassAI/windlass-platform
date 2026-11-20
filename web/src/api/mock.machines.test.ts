@@ -116,7 +116,8 @@ describe("the mock's machines", () => {
 			};
 			// Hosted agents fill the deployment's ceiling, beside the seeds' that are at work.
 			const hosted = async () => (await settle(user.createSession({ profile: "docker-windlass-sandbox" }))).id;
-			const working = (await settle(user.listSessions())).filter((session) => session.status !== "idle" && session.place.kind === "hosted").length;
+			// A work item's turn counts wherever it runs (server/src/actors/user.ts, `internalAcquireRun`).
+			const working = (await settle(user.listSessions())).filter((session) => session.status !== "idle" && (session.item !== undefined || session.place.kind === "hosted")).length;
 			const { runningTurns } = await settle(user.factoryLimits());
 			for (let filled = working; filled < runningTurns; filled++) await settle(mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." }));
 			const refused = expect(mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." })).rejects.toMatchObject({ reason: "too_many_running" });

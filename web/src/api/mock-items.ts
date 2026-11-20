@@ -73,6 +73,13 @@ export interface MockItemsDeps {
 	feeds(auth: AuthResult): Iterable<UserFeed>;
 	/** Makes the item's agent, as `createSession` does: on this platform's first sandbox unless `profile` says which. */
 	session(auth: AuthResult, input: Omit<CreateSessionInput, "profile"> & { profile?: SandboxProfileId }): Promise<SessionSummary>;
+	/** Makes a seeded item's own agent session, with its turns so far, and answers its id. */
+	seededSession(auth: AuthResult, item: ItemView): string;
+	/**
+	 * The item changed: its session says it is the item's (`SessionSummary.item`), as the server's does
+	 * from the start, and is at work while a turn of the item runs.
+	 */
+	itemChanged(auth: AuthResult, item: ItemView): void;
 	/** The user's machines as the mock lists them now, and the runner release the platform takes; null where the deployment offers no machines. */
 	machines(auth: AuthResult): { list: MachineSummary[]; minRunnerVersion: string } | null;
 }
@@ -93,10 +100,10 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
 const repository = (id: number, owner: string, name: string, isPrivate: boolean): SessionRepository => ({ provider: "github", id, owner, name, branch: "main", private: isPrivate, url: `https://github.com/${owner}/${name}` });
-/** Repositories of the mock's GitHub connection (mock.ts), with the seeded agent each item's session stands for. */
-const HARBOR = { repository: repository(7101, "acme", "harbor", true), session: "harbor-build" };
-const TIDES = { repository: repository(7102, "ada", "tide-tables", false), session: "add-test" };
-const DOCS = { repository: repository(7103, "acme", "lighthouse-docs", false), session: "changelog" };
+/** Repositories of the mock's GitHub connection (mock.ts). Each item has an agent session of its own, made with the seeded items (`seededSession`). */
+const HARBOR = { repository: repository(7101, "acme", "harbor", true) };
+const TIDES = { repository: repository(7102, "ada", "tide-tables", false) };
+const DOCS = { repository: repository(7103, "acme", "lighthouse-docs", false) };
 
 /** The choices' labels (blueprint.ts, `CHOICES`). */
 const CHOICES: Record<ChoiceId, string> = {
@@ -846,7 +853,8 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		verdict: last ? { result: last.result, flags: last.flags, ci: last.ci.state } : null,
 		budget,
 		spent,
-		sessionId: seed.on.session,
+		// Made with the seeded items (`keptOf`), once there is a user to make it for.
+		sessionId: "",
 		createdAt: ago(seed.filed),
 		updatedAt,
 		revision: events.length + 1,
@@ -891,6 +899,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				.sort((a, b) => b.createdAt - a.createdAt);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };
 			kept.set(auth.profile.uid, found);
+			for (const item of items) item.sessionId = deps.seededSession(auth, item);
 		}
 		return found;
 	}
@@ -922,6 +931,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		for (const line of said) item.events.push({ at, by: by === "person" ? `person:${auth.profile.uid}` : "platform", step, said: line });
 		item.revision += 1;
 		item.updatedAt = at;
+		deps.itemChanged(auth, item);
 		changed(auth);
 	}
 
@@ -1102,7 +1112,10 @@ export function createMockItems(deps: MockItemsDeps) {
 				mine.items.unshift(item);
 				if (typeof idempotencyKey === "string") mine.made.set(idempotencyKey, { content, id });
 				if (input.start) beginRun(auth, item, "Started.");
-				else changed(auth);
+				else {
+					deps.itemChanged(auth, item);
+					changed(auth);
+				}
 				return summaryOf(item);
 			},
 			async actOnItem(id, action) {
@@ -1155,6 +1168,8 @@ export function createMockItems(deps: MockItemsDeps) {
 		return machine;
 	}
 
-	return { calls, machinesChanged };
+	/** Seeds the user's items, and with them their sessions, before anything is asked of either. */
+	const prepare = (auth: AuthResult): void => void keptOf(auth);
+	return { calls, machinesChanged, prepare };
 }
 

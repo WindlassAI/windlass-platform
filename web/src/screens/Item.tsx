@@ -840,7 +840,7 @@ export function Item({ page }: { page: ItemPage }) {
 								<ExternalIcon size={11} />
 							</a>
 						) : null}
-						<a className="repo-link" {...linkProps({ name: "session", id: view.sessionId })}>
+						<a className="repo-link" {...linkProps({ name: "session", id: view.sessionId })} title="What its agent did, turn by turn">
 							Open the agent
 						</a>
 						<span className="repo-fact tone-dim" title={absoluteTime(view.createdAt)}>

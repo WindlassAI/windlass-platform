@@ -6,7 +6,9 @@
  * head it has two views, each with its own address, and tabs between them. Its work, the first: the
  * agents launched on it, its work items, and the pull requests its agents opened that are still open,
  * the agents and the pull requests from the summaries the list of agents already has, each pull
- * request with what its description says was verified. Its settings (`/settings`, in
+ * request with what its description says was verified. A work item's session is not among the agents:
+ * it is part of its item, and is opened from the item's row, and a pull request it opened is named
+ * after its item. Its settings (`/settings`, in
  * RepositorySettings.tsx): what is kept for it, set once and seldom visited.
  *
  * Two things are asked, apart from each other. What is saved (`repository`) is the user's actor's
@@ -24,7 +26,7 @@ import { PullState } from "../components/PullRequest";
 import { TabPanel, Tabs } from "../components/Tabs";
 import type { ConnectionState } from "../api/client";
 import { absoluteTime, plural, relativeTime } from "../lib/format";
-import { LONE_GROUP_SHOWN, openPulls, repositoryName, sessionsOn } from "../lib/repositories";
+import { LONE_GROUP_SHOWN, openPulls, ownAgents, repositoryName, sessionsOn } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useGithub, type Github } from "../state/github";
@@ -51,7 +53,7 @@ export interface RepositoryPage {
 	/** Why what is saved could not be read. */
 	error: string | null;
 	access: RepositoryAccess;
-	/** The user's agents on it, the most recently used first; null until the list of agents arrived. */
+	/** The user's sessions on it, the most recently used first, their work items' among them (`ownAgents` leaves those out); null until the list arrived. */
 	sessions: SessionSummary[] | null;
 	connection: ConnectionState;
 	/** Reads what is saved again. */
@@ -261,9 +263,15 @@ function Pulls({ page, now }: { page: RepositoryPage; now: number }) {
 										</span>
 										<span>
 											by{" "}
-											<a className="repo-pull-agent" {...linkProps({ name: "session", id: session.id })}>
-												{session.title}
-											</a>
+											{session.item ? (
+												<a className="repo-pull-agent" {...linkProps({ name: "item", id: session.item.id })}>
+													work item {session.title}
+												</a>
+											) : (
+												<a className="repo-pull-agent" {...linkProps({ name: "session", id: session.id })}>
+													{session.title}
+												</a>
+											)}
 										</span>
 										<span title={absoluteTime(pull.pushedAt)}>pushed {relativeTime(pull.pushedAt, now)}</span>
 										{pull.verified ? <span title="What its description said was verified when the platform last wrote it">{pull.verified}</span> : null}
@@ -282,7 +290,8 @@ function Pulls({ page, now }: { page: RepositoryPage; now: number }) {
 /** The page's first view: the agents on the repository, its work items and its open pull requests. */
 function Work({ page }: { page: RepositoryPage }) {
 	const now = useNow(15_000);
-	const { access, sessions } = page;
+	const { access } = page;
+	const sessions = page.sessions === null ? null : ownAgents(page.sessions);
 	const name = page.name ?? `Repository ${page.id}`;
 	const launchable = access.state !== "unusable";
 	return (
@@ -330,7 +339,7 @@ function Work({ page }: { page: RepositoryPage }) {
 function WorkLabel({ repositoryId, sessions }: { repositoryId: number; sessions: SessionSummary[] | null }) {
 	const { platform } = useApp();
 	const items = useItems(Boolean(platform.info?.items));
-	const asks = (sessions ?? []).some((session) => session.status === "waiting") || (items.list ?? []).some((item) => item.repository.id === repositoryId && item.question !== null);
+	const asks = ownAgents(sessions ?? []).some((session) => session.status === "waiting") || (items.list ?? []).some((item) => item.repository.id === repositoryId && item.question !== null);
 	return (
 		<>
 			Work
@@ -349,7 +358,8 @@ export type RepositoryTab = "work" | "settings";
 
 export function Repository({ page, view: tab }: { page: RepositoryPage; view: RepositoryTab }) {
 	const github = useGithub();
-	const { access, sessions } = page;
+	const { access } = page;
+	const sessions = page.sessions === null ? null : ownAgents(page.sessions);
 	const name = page.name ?? `Repository ${page.id}`;
 	const launchable = access.state !== "unusable";
 	const working = sessions?.filter((session) => session.status !== "idle").length ?? 0;
@@ -386,7 +396,7 @@ export function Repository({ page, view: tab }: { page: RepositoryPage; view: Re
 				label={name}
 				selected={tab}
 				tabs={[
-					{ key: "work", label: tab === "settings" ? <WorkLabel repositoryId={page.id} sessions={sessions} /> : "Work", route: { name: "repository", id: page.id } },
+					{ key: "work", label: tab === "settings" ? <WorkLabel repositoryId={page.id} sessions={page.sessions} /> : "Work", route: { name: "repository", id: page.id } },
 					{ key: "settings", label: "Settings", route: { name: "repository", id: page.id, view: "settings" } },
 				]}
 			/>

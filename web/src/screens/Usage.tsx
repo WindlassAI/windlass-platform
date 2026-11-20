@@ -7,8 +7,13 @@
  * actor says something changed, and once a minute. Lengths of time in the tables are written as
  * h:mm:ss so that they line up; a day is a UTC day, and the time it ends is said in the viewer's own
  * time zone.
+ *
+ * A work item's agent session is part of its item. Its sandbox time today is not listed by agent: the
+ * work items' is one row of the day's table, with the way to the items' own costs (FactoryUsage.tsx),
+ * which say what each item has spent in all against its budget. Which sessions are items' is read from
+ * the summaries the page's own live feed sends.
  */
-import { USAGE_HISTORY_DAYS, type KeptSandbox, type UsageView } from "@contract";
+import { USAGE_HISTORY_DAYS, type KeptSandbox, type SessionSummary, type UsageView } from "@contract";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog } from "../components/Dialog";
 import { FactoryUsage } from "../components/FactoryUsage";
@@ -41,12 +46,13 @@ export function UsageCrumb() {
 	);
 }
 
-/** The page's numbers, read again when the user's actor says they changed and once a minute. */
-function useUsage(): { view: UsageView | null; error: string | null; reload(): void; replace(view: UsageView): void } {
+/** The page's numbers, read again when the user's actor says they changed and once a minute; and which of the user's sessions are work items', by session. */
+function useUsage(): { view: UsageView | null; error: string | null; items: Map<string, string> | null; reload(): void; replace(view: UsageView): void } {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [view, setView] = useState<UsageView | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
 	const reading = useRef(false);
 	const again = useRef(false);
 
@@ -79,14 +85,15 @@ function useUsage(): { view: UsageView | null; error: string | null; reload(): v
 	useEffect(() => {
 		read();
 		const timer = setInterval(read, 60_000);
-		const close = client.user(auth).watch({ onSessions: () => undefined, onUsage: read });
+		const close = client.user(auth).watch({ onSessions: setSessions, onUsage: read });
 		return () => {
 			clearInterval(timer);
 			close();
 		};
 	}, [client, auth, read]);
 
-	return { view, error, reload: read, replace: setView };
+	const items = sessions === null ? null : new Map(sessions.flatMap((session) => (session.item ? [[session.id, session.item.id] as const] : [])));
+	return { view, error, items, reload: read, replace: setView };
 }
 
 /** What freeing a sandbox takes with it and what it leaves, for the agent it belongs to. */
@@ -179,7 +186,7 @@ function Meter({ view }: { view: UsageView }) {
 }
 
 export function Usage() {
-	const { view, error, reload, replace } = useUsage();
+	const { view, error, items, reload, replace } = useUsage();
 	const now = useNow(15_000);
 	const [freeing, setFreeing] = useState<KeptSandbox | null>(null);
 
@@ -220,6 +227,10 @@ export function Usage() {
 	const cost = (seconds: number) => (price === null ? null : usd(seconds * price.usdPerSecond));
 	const running = view.today.filter((row) => row.heldSeconds > 0).length;
 	const unreported = view.today.reduce((sum, row) => sum + row.unreportedSeconds, 0);
+	// The agents' rows, and the work items' sessions' together in one.
+	const agentRows = view.today.filter((row) => !items?.has(row.sessionId));
+	const itemRows = view.today.filter((row) => items?.has(row.sessionId));
+	const itemTotal = itemRows.reduce((sum, row) => ({ seconds: sum.seconds + row.seconds, held: sum.held + row.heldSeconds, unreported: sum.unreported + row.unreportedSeconds }), { seconds: 0, held: 0, unreported: 0 });
 	const { kept, limit } = view.sandboxes;
 	const most = Math.max(allowance ?? 0, ...view.days.map((day) => day.seconds), 1);
 	const historyTotal = view.days.reduce((sum, day) => sum + day.seconds, 0);
@@ -322,7 +333,7 @@ export function Usage() {
 							</tr>
 						</thead>
 						<tbody>
-							{view.today.map((row) => (
+							{agentRows.map((row) => (
 								<tr key={row.sessionId}>
 									<th scope="row">
 										{row.title === null ? (
@@ -344,6 +355,24 @@ export function Usage() {
 									{price === null ? null : <td className="usage-number">{cost(row.seconds)}</td>}
 								</tr>
 							))}
+							{itemRows.length > 0 ? (
+								<tr>
+									<th scope="row">
+										<a className="usage-agent" href="#usage-items">
+											{plural(itemRows.length, "work item")}
+										</a>
+										{itemTotal.unreported > 0 ? (
+											<span className="usage-mark" title="Counted in full: see the note below">
+												{" "}
+												*
+											</span>
+										) : null}
+									</th>
+									<td className="usage-number">{sandboxClock(itemTotal.seconds)}</td>
+									<td className="usage-number usage-wide">{itemTotal.held > 0 ? sandboxClock(itemTotal.held) : <span className="tone-faint">–</span>}</td>
+									{price === null ? null : <td className="usage-number">{cost(itemTotal.seconds)}</td>}
+								</tr>
+							) : null}
 						</tbody>
 						<tfoot>
 							<tr>
@@ -355,6 +384,7 @@ export function Usage() {
 						</tfoot>
 					</table>
 				)}
+				{itemRows.length > 0 ? <p className="usage-note">The work items' row is their agents' sandboxes together, today. What each item has spent in all, against its budget, is under Work items below.</p> : null}
 				{unreported > 0 ? (
 					<p className="usage-note">
 						* {sandboxTime(unreported)} of this were counted in full without a measurement: the server an agent was on stopped while its sandbox ran, so nobody saw when the sandbox stopped. It ran that long at most.
@@ -386,11 +416,12 @@ export function Usage() {
 									{sandbox.title === null ? (
 										<span className="usage-kept-title tone-dim">Left behind by an agent that no longer exists</span>
 									) : (
-										<a className="usage-kept-title usage-agent" {...linkProps({ name: "session", id: sandbox.sessionId })}>
+										<a className="usage-kept-title usage-agent" {...linkProps(items?.has(sandbox.sessionId) ? { name: "item", id: items.get(sandbox.sessionId) as string } : { name: "session", id: sandbox.sessionId })}>
 											{sandbox.title}
 										</a>
 									)}
 									<p className="agent-meta">
+										{items?.has(sandbox.sessionId) ? <span>work item</span> : null}
 										{sandbox.repository ? <span className="agent-repo">{sandbox.repository}</span> : <span>no repository at GitHub</span>}
 										{sandbox.repository ? <span>{sandbox.pushed ? "work pushed" : "nothing pushed"}</span> : null}
 										{sandbox.usedAt !== null ? <span title={absoluteTime(sandbox.usedAt)}>used {relativeTime(sandbox.usedAt, now)}</span> : null}

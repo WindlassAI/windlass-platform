@@ -9,19 +9,60 @@
  */
 import type { ModelList, PlatformInfo, PullRequestInfo, RepositoryDefaults, SandboxProfileId, SessionRepository, SessionSummary } from "@contract";
 
+// ---- the user's own agents, and the sessions of their work items -------------------------------------
+
+/**
+ * The user's own agents: their sessions that are not a work item's. Each work item has a session of
+ * its own among the user's sessions (`SessionSummary.item`); it is part of its item, and is reached
+ * from the item's row and page, so no list of agents shows it a second time.
+ */
+export const ownAgents = (sessions: readonly SessionSummary[]): SessionSummary[] => sessions.filter((session) => session.item === undefined);
+
+/**
+ * What is at work, in the parts the home page names. `ceilinged` is what the server counts against
+ * the ceiling on running turns (`FactoryLimits.runningTurns`, server/src/actors/user.ts,
+ * `internalAcquireRun`): the user's own agents at work on this platform's sandboxes, and every work
+ * item's turn wherever it runs. `items` is how many of those are work items'. `onMachines`: the user's
+ * own agents at work on their machines, which are not counted against it.
+ */
+export function workingCounts(sessions: readonly SessionSummary[]): { ceilinged: number; items: number; onMachines: number } {
+	let ceilinged = 0;
+	let items = 0;
+	let onMachines = 0;
+	for (const session of sessions) {
+		if (session.status === "idle") continue;
+		if (session.item !== undefined) {
+			ceilinged += 1;
+			items += 1;
+		} else if (session.place.kind === "machine") onMachines += 1;
+		else ceilinged += 1;
+	}
+	return { ceilinged, items, onMachines };
+}
+
+/** "3 of 6 working, 2 of them work items": what `workingCounts` counts against the ceiling, said of the whole when it is known. */
+export function workingWords({ ceilinged, items }: { ceilinged: number; items: number }, ceiling: number | null): string {
+	const head = `${ceiling === null ? ceilinged : `${ceilinged} of ${ceiling}`} working`;
+	if (items === 0) return head;
+	if (items === ceilinged) return `${head}, ${items === 1 ? "a work item" : "all work items"}`;
+	return `${head}, ${items} of them ${items === 1 ? "a work item" : "work items"}`;
+}
+
 // ---- the list of agents, grouped -------------------------------------------------------------------
 
 /** The agents on one repository of the user's GitHub connection, or those on none. */
 export interface SessionGroup {
 	/** "github:<GitHub's id>", or "none" for the agents that are not on a repository of the connection. */
 	key: string;
-	/** The repository as the group's newest agent has it: a rename shows once an agent is launched after it. Null for the group "none". */
+	/** The repository as the group's newest session has it: a rename shows once one is launched after it. Null for the group "none". */
 	repository: SessionRepository | null;
-	/** The most recently used first: by the last prompt or turn end. */
+	/** The user's own agents on it (`ownAgents`), the most recently used first: by the last prompt or turn end. */
 	sessions: SessionSummary[];
-	/** When the group was last used: its first session's time. */
+	/** How many work items' sessions are on it. They are not in `sessions`; a repository that has only them still has its group, which leads to its page. */
+	items: number;
+	/** When the group was last used: its first agent's time, or its newest work item session's where it has no agent. */
 	usedAt: number;
-	/** How many of them are at work, and how many of those wait on their user. */
+	/** How many of its agents are at work, and how many of those wait on their user. */
 	working: number;
 	waiting: number;
 }
@@ -33,25 +74,33 @@ const byUse = (a: SessionSummary, b: SessionSummary) => b.updatedAt - a.updatedA
 /**
  * The agents under their repositories: the repository that was used last comes first, and the agents
  * that are on no repository of the GitHub connection (none at all, or a pasted address) come last, as
- * a group of their own. Within a group the agent that was used last comes first.
+ * a group of their own. Within a group the agent that was used last comes first. The sessions of work
+ * items are not among a group's agents, and are only counted (`SessionGroup.items`).
  */
 export function groupSessions(sessions: readonly SessionSummary[]): SessionGroup[] {
 	const groups = new Map<string, SessionGroup>();
-	/** When the agent a group's repository is named after was launched. */
+	/** When the session a group's repository is named after was launched. */
 	const namedAt = new Map<string, number>();
 	for (const session of [...sessions].sort(byUse)) {
 		const repository = session.repository ?? null;
 		const key = repository ? `github:${repository.id}` : NO_REPOSITORY;
+		const ofItem = session.item !== undefined;
 		let group = groups.get(key);
 		if (!group) {
-			group = { key, repository, sessions: [], usedAt: session.updatedAt, working: 0, waiting: 0 };
+			group = { key, repository, sessions: [], items: 0, usedAt: session.updatedAt, working: 0, waiting: 0 };
 			groups.set(key, group);
 			namedAt.set(key, session.createdAt);
 		} else if (repository && session.createdAt > (namedAt.get(key) ?? 0)) {
-			// The name a repository goes by is the one its newest agent was launched under.
+			// The name a repository goes by is the one its newest session was launched under.
 			group.repository = repository;
 			namedAt.set(key, session.createdAt);
 		}
+		if (ofItem) {
+			group.items += 1;
+			continue;
+		}
+		// The sessions come most recently used first: the first agent is when the group was used.
+		if (group.sessions.length === 0) group.usedAt = session.updatedAt;
 		group.sessions.push(session);
 		if (session.status !== "idle") group.working += 1;
 		if (session.status === "waiting") group.waiting += 1;
@@ -84,7 +133,7 @@ export const shownLimit = (groups: number) => (groups <= 1 ? LONE_GROUP_SHOWN : 
 /** "owner/name". */
 export const repositoryName = (repository: Pick<SessionRepository, "owner" | "name">) => `${repository.owner}/${repository.name}`;
 
-/** The user's agents on one repository, the most recently used first. */
+/** The user's sessions on one repository, their work items' among them (`ownAgents` leaves those out), the most recently used first. */
 export function sessionsOn(sessions: readonly SessionSummary[], repositoryId: number): SessionSummary[] {
 	return sessions.filter((session) => session.repository?.id === repositoryId).sort(byUse);
 }

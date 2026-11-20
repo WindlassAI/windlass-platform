@@ -180,7 +180,7 @@ describe("the mock's repository page", () => {
 		expect((await user.savedRepositories()).some((repository) => repository.id === 7190)).toBe(false);
 		// The agents on a repository stay when what is saved for it goes.
 		await user.forgetRepository(7101);
-		expect((await user.listSessions()).filter((session) => session.repository?.id === 7101)).toHaveLength(2);
+		expect((await user.listSessions()).filter((session) => session.repository?.id === 7101 && !session.item)).toHaveLength(2);
 		expect(await make({ github: false }).user(ada).savedRepositories()).toEqual([]);
 		mock.dispose();
 	});
