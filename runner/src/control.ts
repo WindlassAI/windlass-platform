@@ -288,7 +288,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				try { if (active.aborted) disconnect(); await closed; }
 				finally { clearInterval(heartbeat); active.removeEventListener("abort", disconnect); }
 			} catch (error) { reason = category(error); }
-			finally { attempt.abort(); owner.publishReport = undefined; await login.close(); }
+			finally { attempt.abort(); owner.publishReport = undefined; await login.close().catch((error) => audit(null, null, "control", `the pending Claude sign-in could not be cleaned up: ${category(error)}`)); }
 			if (signal.aborted) break;
 			if (refusal || slow) {
 				mayMaintain = false; idle = undefined;

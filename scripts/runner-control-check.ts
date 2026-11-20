@@ -128,7 +128,7 @@ const lease = (validForMs?: number) => Response.json({ endpoint: null, namespace
 const answer = (status: number, body: unknown = {}) => Response.json(body, { status });
 
 async function withControl(answers: Response[], exercise: (runner: {
-	status: string[]; online(): Promise<CheckSocket>; expireLease(): void; now(): number; requests(): number;
+	status: string[]; online(socketIndex?: number): Promise<CheckSocket>; expireLease(): void; now(): number; requests(): number;
 }) => Promise<void>) {
 	const abort = new AbortController();
 	const status: string[] = [];
@@ -147,19 +147,20 @@ async function withControl(answers: Response[], exercise: (runner: {
 	} as unknown as Executor;
 	const done = control(owner, key, "https://runner-check.invalid", abort.signal, s => status.push(s), undefined);
 	try {
-		await exercise({ status, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
-			async online() {
-				await until(() => sockets.length > 0);
-				const socket = sockets[0];
+		const test = exercise({ status, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
+			async online(socketIndex = 0) {
+				await until(() => sockets.length > socketIndex);
+				const socket = sockets[socketIndex];
 				socket.frame({ kind: "challenge", nonce: "a".repeat(43) });
 				await until(() => socket.sent.some(f => f.kind === "hello"));
 				socket.frame({ kind: "welcome", idleSuspendMs: 60_000 });
 				await until(() => socket.sent.some(f => f.kind === "report"));
 				return socket;
-			} });
+			} }).finally(() => abort.abort());
+		const [loop, checks] = await Promise.allSettled([done, test]);
+		if (loop.status === "rejected") throw loop.reason;
+		if (checks.status === "rejected") throw checks.reason;
 	} finally {
-		abort.abort();
-		await done;
 		Date.now = realNow; globalThis.fetch = realFetch; globalThis.WebSocket = realSocket;
 	}
 }
@@ -219,6 +220,39 @@ try {
 				assert.equal(sockets.length, 1);
 			});
 		}
+	});
+	await checkControl("failed pending sign-in cleanup is audited once and the runner reconnects with its session open", async () => {
+		const { PageLogin } = await import("../runner/src/page-login.js");
+		let pending: InstanceType<typeof PageLogin> | undefined;
+		const failure = "Could not remove the Claude setup container.";
+		const request = mock.method(PageLogin.prototype, "request", async function (this: InstanceType<typeof PageLogin>) {
+			pending = this;
+			return started.result;
+		});
+		const close = mock.method(PageLogin.prototype, "close", async function (this: InstanceType<typeof PageLogin>) {
+			if (this === pending) {
+				pending = undefined;
+				throw new RunnerError(failure);
+			}
+		});
+		try {
+			await withControl([lease(), lease()], async r => {
+				const ws = await r.online();
+				ws.frame({ kind: "attach", sessionId: "s_live", ticket: "first" });
+				await until(() => sockets[1]?.sent.some(f => f.kind === "hello") === true);
+				const session = sockets[1];
+				ws.frame({ kind: "harnessLogin.start", requestId });
+				await until(() => ws.sent.some(f => f.kind === "harnessLogin.result"));
+				assert.ok(pending);
+				const before = auditRows().length;
+				ws.close();
+				await r.online(2);
+				assert.equal(session.readyState, 1, "Disconnect stopped the live session.");
+				const failures = auditRows().slice(before).filter(row => row.operation === "control" && row.outcome.includes(failure));
+				assert.equal(failures.length, 1);
+				assert.match(failures[0].outcome, /pending Claude sign-in/);
+			});
+		} finally { close.mock.restore(); request.mock.restore(); }
 	});
 	await checkControl("a failed removal is audited and left unacknowledged on the live control socket", async () => {
 		await withControl([lease()], async r => {
