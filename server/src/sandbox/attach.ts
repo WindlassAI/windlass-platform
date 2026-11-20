@@ -5,9 +5,12 @@ import { fakeBucket } from "../bucket/stand-in.js";
 import type { ObjectStore } from "../bucket/store.js";
 import { backupConfig, config } from "../config.js";
 import type { ItemAttachment } from "../contract.js";
-import { attachmentKey, pngHeader, type ShotRequest } from "../factory/attachments.js";
+import { pngHeader, type ShotRequest } from "../factory/attachments.js";
 import type { SandboxHandle } from "./api.js";
-import { LINK_TTL_MS } from "./backup.js";
+
+// curl gets 25 seconds inside a 30-second sandbox step.
+export const ATTACHMENT_PUT_TTL_MS = 60_000;
+const STEP_TIMEOUT_MS = 30_000;
 
 export const ATTACH_PACK = `set -eu
 export PATH=/usr/bin:/bin
@@ -75,7 +78,7 @@ export function attachmentStore(): ObjectStore | null {
 
 type Owner = { by: ItemAttachment["by"]; uid: string; sessionId: string; itemId: string; key: string };
 export type Reservation = { sessionId: string; itemId: string; key: string; sha256: string; bytes: number };
-export type ReserveResult = { id: string; width: number; height: number } | { refused: "item" | "account" | "item_ended" };
+export type ReserveResult = { id: string; width: number; height: number; key: string; at: number } | { refused: "item" | "account" | "item_ended" };
 export interface AttachmentLedger {
 	internalReserveAttachment(input: Reservation): Promise<ReserveResult>;
 	internalRecordAttachment(input: { id: string; width: number; height: number }): Promise<void>;
@@ -85,7 +88,7 @@ export interface AttachmentLedger {
 }
 
 async function step(sandbox: SandboxHandle, name: string, script: string, env: Record<string, string>, signal?: AbortSignal, stdin?: string): Promise<string[]> {
-	const result = await sandbox.run(script, { cwd: "/", env: { WLP_ATTACH_STEP: name, ...env }, timeoutMs: 30_000, signal, stdin });
+	const result = await sandbox.run(script, { cwd: "/", env: { WLP_ATTACH_STEP: name, ...env }, timeoutMs: STEP_TIMEOUT_MS, signal, stdin });
 	if (result.timedOut || result.aborted || result.exitCode !== 0) throw new Error("The screenshot step did not finish.");
 	const lines = result.stdout.trim().split("\n");
 	if (
@@ -98,12 +101,6 @@ async function step(sandbox: SandboxHandle, name: string, script: string, env: R
 	)
 		throw new Error("The screenshot step gave no usable answer.");
 	return lines;
-}
-
-export async function discardAttachment(ledger: AttachmentLedger, store: ObjectStore, row: { id: string; key: string }): Promise<void> {
-	// Keep the reservation charged and sweepable while storage is unavailable.
-	await store.remove(row.key);
-	await ledger.internalReleaseAttachment(row.id);
 }
 
 export async function uploadShots(
@@ -146,7 +143,7 @@ export async function uploadShots(
 				problem("Capture a nonempty PNG within the size limit and file it again.");
 				continue;
 			}
-			let pending: { id: string; key: string } | null = null;
+			let pending: string | null = null;
 			try {
 				const reservation = await ledger.internalReserveAttachment({ sessionId: owner.sessionId, itemId: owner.itemId, key: owner.key, bytes, sha256 });
 				if ("refused" in reservation) {
@@ -156,9 +153,11 @@ export async function uploadShots(
 				const { id } = reservation;
 				let { width, height } = reservation;
 				if (!width) {
-					const key = attachmentKey(backupConfig().prefix, owner.uid, owner.itemId, id);
-					pending = { id, key };
-					const link = await store.linkToPut(key, { size: bytes, contentType: "image/png", ttlMs: LINK_TTL_MS });
+					pending = id;
+					const { key, at } = reservation;
+					const link = await store.linkToPut(key, { size: bytes, contentType: "image/png", ttlMs: ATTACHMENT_PUT_TTL_MS });
+					// A delayed reservation reply must never hand out a link beyond the ledger's cleanup window.
+					if (link.expiresAt > at + ATTACHMENT_PUT_TTL_MS + STEP_TIMEOUT_MS) throw new Error("The upload reservation is stale.");
 					if (/["\\\s]/.test(link.url)) throw new Error("Unusable link.");
 					const [answer] = await step(sandbox, "upload", ATTACH_UPLOAD, { WLP_ATTACH_PATH: path, WLP_ATTACH_SHA: sha256 }, signal, `url = "${link.url}"\n`);
 					if (answer !== "http 200") {
@@ -201,7 +200,7 @@ export async function uploadShots(
 			} catch {
 				problem("Storage could not confirm this screenshot. File it again.");
 			} finally {
-				if (pending) await discardAttachment(ledger, store, pending).catch(() => {});
+				if (pending) await ledger.internalReleaseAttachment(pending).catch(() => {});
 			}
 		}
 	} catch {

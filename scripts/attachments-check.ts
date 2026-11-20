@@ -174,7 +174,7 @@ async function cases() {
 		}
 		assert.equal(await local.readStart(key, 33), null);
 	}
-	const { ATTACH_PACK, ATTACH_CLEAN, ATTACH_UPLOAD, attachmentStore, discardAttachment, uploadShots } = await import("../server/src/sandbox/attach.js");
+	const { ATTACH_PACK, ATTACH_CLEAN, ATTACH_UPLOAD, attachmentStore, uploadShots } = await import("../server/src/sandbox/attach.js");
 	const top = join(root, "clone"),
 		dir = join(top, ".wlp-shots");
 	mkdirSync(dir, { recursive: true });
@@ -346,13 +346,13 @@ async function cases() {
 		assert.equal(taken, 1);
 	});
 	const settle = (keep: string[]) => ledger.internalSettleAttachments({ sessionId, key, keep });
-	const rows = () => sql.prepare("SELECT * FROM attachments").all() as Array<{ id: string; key: string; state: string }>;
+	const rows = () => sql.prepare("SELECT * FROM attachments").all() as Array<{ id: string; key: string; state: string; at: number }>;
 	const reset = () => {
 		sql.exec("DELETE FROM attachments");
 		handle.sandbox.shots.clear();
 		handle.sandbox.shots.set(name, one);
 	};
-	await check("accepted PNG, deduplication on another filing, replaced report releases object and quota", async () => {
+	await check("accepted PNG, deduplication on another filing, replaced report discards its object", async () => {
 		reset();
 		const a = await file(),
 			b = await file();
@@ -368,8 +368,8 @@ async function cases() {
 		assert.equal(handle.sandbox.copies.size, 0);
 		const [abandoned] = await settle([]);
 		assert.equal(abandoned.id, a.screenshots[0].id);
-		await discardAttachment(ledger, bucket, abandoned);
-		assert.equal(rows()[0].state, "removed");
+		await ledger.internalReleaseAttachment(abandoned.id);
+		assert.equal(rows()[0].state, "discarded");
 		assert.equal(await bucket.size(abandoned.key), null);
 	});
 	await check("signed-in item links, scoped API link, and page-only GitHub comment", async () => {
@@ -431,7 +431,7 @@ async function cases() {
 			assert.equal(r.screenshots.length, 0);
 			assert.ok(r.problems[0].includes(name));
 			assert.equal(handle.sandbox.copies.size, 0);
-			assert.ok(rows().every((r) => r.state === "removed"));
+			assert.ok(rows().every((r) => r.state === "discarded"));
 		});
 	await check("expired link returns 403, releases reservation, cleans copy", async () => {
 		reset();
@@ -442,7 +442,7 @@ async function cases() {
 			const r = await file();
 			assert.equal(r.screenshots.length, 0);
 			assert.ok(r.problems[0].includes(name));
-			assert.equal(rows()[0].state, "removed");
+			assert.equal(rows()[0].state, "discarded");
 			assert.equal(handle.sandbox.copies.size, 0);
 		} finally {
 			bucket.linkToPut = original;
@@ -455,7 +455,7 @@ async function cases() {
 		try {
 			const r = await file();
 			assert.equal(r.screenshots.length, 0);
-			assert.equal(rows()[0].state, "removed");
+			assert.equal(rows()[0].state, "discarded");
 		} finally {
 			bucket.size = orig;
 		}
@@ -496,6 +496,129 @@ async function cases() {
 		delete c.scheduledFire;
 	};
 	const day = 86_400_000;
+	const cleanupDelay = 60_000 + 5 * 60_000;
+	// Observe the signer directly. Exercise the object-store contract without exposing a URL in the check output.
+	const signedFiling = async () => {
+		let url = "";
+		let ttlMs = 0;
+		let expiresAt = 0;
+		const sign = bucket.linkToPut.bind(bucket);
+		bucket.linkToPut = async (key, options) => {
+			const link = await sign(key, options);
+			({ url, expiresAt } = link);
+			ttlMs = options.ttlMs;
+			return link;
+		};
+		try {
+			const result = await file();
+			assert.ok(url);
+			const putAgain = (body: Buffer, now: number) => {
+				const peer = new StandInObjectStore({ secret: signing, dir: join(root, "store"), now: () => now });
+				return peer.use(url, "PUT", body, { "content-type": "image/png" }).status;
+			};
+			return { result, ttlMs, expiresAt, putAgain };
+		} finally {
+			bucket.linkToPut = sign;
+		}
+	};
+	await check("screenshot PUT is signed for 60 seconds", async () => {
+		reset();
+		const { ttlMs, expiresAt, putAgain } = await signedFiling();
+		assert.equal(ttlMs, 60_000);
+		assert.equal(putAgain(one, expiresAt - 1), 200);
+		assert.equal(putAgain(one, expiresAt), 403);
+	});
+	await check("sweep removes a re-PUT after discard and preserves a same-digest retry", async () => {
+		reset();
+		const bad = Buffer.alloc(one.length);
+		handle.sandbox.shots.set(name, bad);
+		const { result, expiresAt, putAgain } = await signedFiling();
+		assert.equal(result.screenshots.length, 0);
+		const [discarded] = rows();
+		assert.equal(await bucket.size(discarded.key), null);
+		assert.equal(putAgain(bad, expiresAt - 1), 200);
+		await sweep(discarded.at + cleanupDelay - 1);
+		assert.equal(rows()[0].state, "discarded");
+		assert.equal(await bucket.size(discarded.key), bad.length);
+		const retry = await ledger.internalReserveAttachment({ itemId, sessionId, key, sha256: digest(bad), bytes: bad.length });
+		assert.ok("id" in retry && retry.id !== discarded.id);
+		await sweep(discarded.at + cleanupDelay);
+		assert.equal(await bucket.size(discarded.key), null);
+		assert.equal(rows().find(r => r.id === discarded.id)?.state, "removed");
+		assert.equal(rows().find(r => r.id === retry.id)?.state, "reserved");
+	});
+	await check("discarded bytes stay charged until a successful final deletion", async () => {
+		reset();
+		const limit = config.factory.attachments.accountBytes;
+		const remove = bucket.remove.bind(bucket);
+		config.factory.attachments.accountBytes = 10;
+		try {
+			const held = await reserve(1, 10);
+			assert.ok("id" in held);
+			bucket.remove = async () => { throw Error("offline"); };
+			await ledger.internalReleaseAttachment(held.id);
+			assert.deepEqual(await reserve(2, 1), { refused: "account" });
+			const due = rows()[0].at + cleanupDelay;
+			await sweep(due);
+			assert.equal(rows()[0].state, "discarded");
+			assert.deepEqual(await reserve(2, 1), { refused: "account" });
+			bucket.remove = remove;
+			await sweep(due + 1);
+			assert.ok("id" in (await reserve(2, 10)));
+		} finally {
+			bucket.remove = remove;
+			config.factory.attachments.accountBytes = limit;
+		}
+	});
+	await check("retrying an unfinished reservation protects the newly issued PUT from the stale-reservation sweep", async () => {
+		reset();
+		const first = await ledger.internalReserveAttachment({ itemId, sessionId, key, sha256: digest(one), bytes: one.length });
+		assert.ok("id" in first);
+		sql.prepare("UPDATE attachments SET at=? WHERE id=?").run(Date.now() - 3 * 3600_000, first.id);
+		const { result } = await signedFiling();
+		assert.equal(result.screenshots[0]?.id, first.id);
+		await sweep(Date.now());
+		const [retried] = rows();
+		assert.equal(retried.state, "reserved");
+		assert.equal(await bucket.size(retried.key), one.length);
+	});
+	await check("deleting an item keeps its recently signed key sweepable", async () => {
+		reset();
+		try {
+			const { result, expiresAt, putAgain } = await signedFiling();
+			await settle([result.screenshots[0].id]);
+			await ledger.internalDeleteItemAttachments(itemId);
+			const [discarded] = rows();
+			assert.equal(discarded.state, "discarded");
+			assert.equal(await bucket.size(discarded.key), null);
+			assert.equal(putAgain(one, expiresAt - 1), 200);
+			await sweep(discarded.at + cleanupDelay - 1);
+			assert.equal(await bucket.size(discarded.key), one.length);
+			await sweep(discarded.at + cleanupDelay);
+			assert.equal(await bucket.size(discarded.key), null);
+			assert.equal(rows()[0].state, "removed");
+		} finally {
+			state.items.set(itemId, summary);
+		}
+	});
+	await check("migration reconciles legacy removed keys once", async () => {
+		reset();
+		await file();
+		const [old] = rows();
+		sql.exec("UPDATE attachments SET state='removed'");
+		sql.exec("DROP INDEX IF EXISTS attachments_active_digest"); // The schema before delayed cleanup.
+		const active = await reserve(1, 1);
+		assert.ok("id" in active);
+		sql.prepare("UPDATE attachments SET at=? WHERE id=?").run(Date.now() - 3 * 3600_000, active.id);
+		ITEM_TABLES.forEach(q => sql.exec(q));
+		assert.equal(rows()[0].state, "discarded");
+		await sweep(Date.now());
+		assert.equal(rows().find(r => r.id === active.id)?.state, "reserved");
+		await sweep(rows()[0].at + cleanupDelay);
+		assert.equal(await bucket.size(old.key), null);
+		ITEM_TABLES.forEach(q => sql.exec(q));
+		assert.equal(rows()[0].state, "removed");
+	});
 	await check("3-hour reservation, 179/181-day ended item, owner-only links and deletion retry", async () => {
 		reset();
 		await file();
@@ -505,13 +628,13 @@ async function cases() {
 		assert.equal(await bucket.size(row.key), null);
 		assert.equal(rows()[0].state, "removed");
 		const filed = await file();
-		row = rows()[0];
-		await settle([filed.screenshots[0].id]);
+		row = rows().find(r => r.id === filed.screenshots[0].id)!;
+		await settle([row.id]);
 		const end = Date.now();
 		await itemActions.internalItemChanged(c, { ...summary, state: "done", revision: 2, updatedAt: end });
 		assert.deepEqual(await reserve(3, 1), { refused: "item_ended" });
 		await sweep(end + 179 * day);
-		assert.equal(rows()[0].state, "kept");
+		assert.equal(rows().find(r => r.id === row.id)?.state, "kept");
 		const profile = { uid, email: null, demo: false };
 		c.conn!.params = { token: issueUserToken(profile) };
 		assert.equal((await itemActions.itemAttachmentLinks(c, itemId)).length, 1);
@@ -527,22 +650,25 @@ async function cases() {
 		try {
 			await sweep(end + 181 * day);
 			assert.equal(deletes, 1);
-			assert.equal(rows()[0].state, "kept");
+			assert.equal(rows().find(r => r.id === row.id)?.state, "kept");
 		} finally {
 			bucket.remove = remove;
 		}
 		await sweep(end + 181 * day + 1);
 		assert.equal(await bucket.size(row.key), null);
-		assert.equal(rows()[0].state, "removed");
+		assert.equal(rows().find(r => r.id === row.id)?.state, "removed");
 		c.conn!.params = { token: issueUserToken(profile) };
 		assert.equal((await itemActions.itemAttachmentLinks(c, itemId)).length, 0);
 		c.conn!.params = serviceParams();
 		state.items.set(itemId, summary);
 		const again = await file();
-		await settle([again.screenshots[0].id]);
+		const fresh = rows().find(r => r.id === again.screenshots[0].id)!;
+		await settle([fresh.id]);
 		await ledger.internalDeleteItemAttachments(itemId);
-		assert.equal(await bucket.size(row.key), null);
-		assert.equal(rows()[0].state, "removed");
+		assert.equal(await bucket.size(fresh.key), null);
+		assert.equal(rows().find(r => r.id === fresh.id)?.state, "discarded");
+		await sweep(fresh.at + day);
+		assert.equal(rows().find(r => r.id === fresh.id)?.state, "removed");
 	});
 	sql.close();
 	await check("commit excludes new and previously staged screenshots", () => {

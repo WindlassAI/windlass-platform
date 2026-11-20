@@ -30,7 +30,7 @@ import { readAccountDefaults } from "../account-defaults.js";
 import { API_TOKENS_TABLE, ApiTokenProblem, createApiToken, listApiTokens, revokeApiToken, tokenOwner, useApiToken } from "../api-tokens.js";
 import { clientError, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { attachmentKey } from "../factory/attachments.js";
-import { attachmentStore, type AttachmentLedger, type Reservation, type ReserveResult } from "../sandbox/attach.js";
+import { ATTACHMENT_PUT_TTL_MS, attachmentStore, type AttachmentLedger, type Reservation, type ReserveResult } from "../sandbox/attach.js";
 import { backupConfig, config } from "../config.js";
 import {
 	type GithubId,
@@ -69,8 +69,11 @@ declare module "./internal.js" { interface UserInternal extends AttachmentLedger
 
 export const ATTACHMENT_SWEEP_ACTION = "internalAttachmentSweep";
 const DAY = 86_400_000;
+// A margin past the PUT link's life, for a transfer still in flight when the link expired.
+const ATTACHMENT_DRAIN_MS = ATTACHMENT_PUT_TTL_MS + 5 * 60_000;
 export const ITEM_TABLES = [
 	"CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, item TEXT NOT NULL, session TEXT NOT NULL, step_key TEXT NOT NULL, sha256 TEXT NOT NULL, key TEXT NOT NULL, bytes INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL, ended_at INTEGER)",
+	"CREATE INDEX IF NOT EXISTS attachments_active_digest ON attachments(item, step_key, sha256) WHERE state IN ('reserved','kept')",
 	"CREATE INDEX IF NOT EXISTS attachments_item ON attachments(item, state)",
 	"CREATE TABLE IF NOT EXISTS attachment_sweep (id INTEGER PRIMARY KEY CHECK(id=1), schedule TEXT NOT NULL, at INTEGER NOT NULL)",
 	"CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, summary TEXT NOT NULL, key TEXT, sent TEXT)",
@@ -608,29 +611,38 @@ async function reserveAttachment(c: ItemsCtx, input: Reservation): Promise<Reser
 	const limits = config.factory.attachments;
 	if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > limits.bytes || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid screenshot size or digest.");
 	await armSweep(c, Date.now());
-	const id = "a_" + hex16(itemId + key + sha256);
 	return c.db.transaction(async tx => {
-		const [same] = await tx.execute<{ bytes: number; width: number; height: number }>("SELECT bytes,width,height FROM attachments WHERE id=? AND state!='removed'", id);
+		// Reuse active reservations and kept images. A discarded key belongs to its final sweep.
+		const [same] = await tx.execute<{ id: string; key: string; at: number; bytes: number; width: number; height: number }>(
+			"SELECT id,key,at,bytes,width,height FROM attachments WHERE item=? AND step_key=? AND sha256=? AND state IN ('reserved','kept') AND ended_at IS NOT 0 LIMIT 1",
+			itemId, key, sha256,
+		);
 		if (!c.vars.items.items.has(itemId) || ended(c.vars.items.items.get(itemId)!)) return { refused: "item_ended" } as const;
 		if (same) {
 			if (same.bytes !== bytes) throw new Error("The file size differs from its recorded digest.");
-			return { id, width: same.width, height: same.height };
+			// Retrying an unfinished upload can issue a fresh link even if the first reservation is old.
+			const at = same.width ? same.at : Date.now();
+			if (!same.width) await tx.execute("UPDATE attachments SET at=? WHERE id=?", at, same.id);
+			return { id: same.id, key: same.key, at, width: same.width, height: same.height };
 		}
-		const [usage] = await tx.execute<{ count: number; total: number }>("SELECT COUNT(CASE WHEN item=? THEN 1 END) AS count, COALESCE(SUM(bytes),0) AS total FROM attachments WHERE state!='removed'", itemId);
+		const [usage] = await tx.execute<{ count: number; total: number }>("SELECT COUNT(CASE WHEN item=? AND state!='discarded' THEN 1 END) AS count, COALESCE(SUM(bytes),0) AS total FROM attachments WHERE state!='removed'", itemId);
 		if (usage.count >= limits.perItem) return { refused: "item" } as const;
 		if (usage.total + bytes > limits.accountBytes) return { refused: "account" } as const;
-		await tx.execute("INSERT OR REPLACE INTO attachments VALUES(?,?,?,?,?,?,?,0,0,'reserved',?,NULL)", id, itemId, sessionId, key, sha256, attachmentKey(backupConfig().prefix, c.key[0], itemId, id), bytes, Date.now());
-		return { id, width: 0, height: 0 };
+		const id = "a_" + randomBytes(8).toString("hex");
+		const objectKey = attachmentKey(backupConfig().prefix, c.key[0], itemId, id);
+		const at = Date.now();
+		await tx.execute("INSERT INTO attachments VALUES(?,?,?,?,?,?,?,0,0,'reserved',?,NULL)", id, itemId, sessionId, key, sha256, objectKey, bytes, at);
+		return { id, key: objectKey, at, width: 0, height: 0 };
 	}, { name: "attachments.reserve" });
 }
 
-async function removeRows(c: ItemsCtx, rows: Array<{ id: string; key: string }>) {
+async function removeRows(c: ItemsCtx, rows: Array<{ id: string; key: string }>, final: boolean) {
 	const store = attachmentStore();
 	if (!store) return;
 	for (const row of rows) {
 		try {
 			await store.remove(row.key);
-			await c.db.execute("UPDATE attachments SET state='removed' WHERE id=?", row.id);
+			if (final) await c.db.execute("UPDATE attachments SET state='removed' WHERE id=?", row.id);
 		} catch {
 			c.log.warn({ msg: "A screenshot could not be removed. The daily sweep will retry." });
 		}
@@ -659,7 +671,10 @@ export const itemActions = {
 	},
 	async internalReleaseAttachment(c: ItemsCtx, id: string) {
 		requireService(c);
-		await attachmentWrite(c, async () => { await c.db.execute("UPDATE attachments SET state='removed' WHERE id=? AND state='reserved'", id); });
+		await attachmentWrite(c, async () => {
+			const rows = await c.db.execute<{ id: string; key: string }>("UPDATE attachments SET state='discarded', at=? WHERE id=? AND state='reserved' RETURNING id,key", Date.now(), id);
+			await removeRows(c, rows, false);
+		});
 	},
 	internalSettleAttachments(c: ItemsCtx, input: { sessionId: string; key: string; keep: string[] }) {
 		requireService(c);
@@ -671,12 +686,12 @@ export const itemActions = {
 	internalDeleteItemAttachments(c: ItemsCtx, itemId: string) {
 		requireService(c);
 		return attachmentWrite(c, async () => {
-			await c.db.transaction(async tx => {
-				await tx.execute("UPDATE attachments SET ended_at=0 WHERE item=? AND state!='removed'", itemId);
+			const rows = await c.db.transaction(async tx => {
 				await tx.execute("DELETE FROM items WHERE id=?", itemId);
+				return tx.execute<{ id: string; key: string }>("UPDATE attachments SET ended_at=0, state='discarded', at=? WHERE item=? AND state IN ('reserved','kept') RETURNING id,key", Date.now(), itemId);
 			}, { name: "attachments.deleteItem" });
 			c.vars.items.items.delete(itemId);
-			await removeRows(c, await c.db.execute("SELECT id,key FROM attachments WHERE item=? AND state!='removed'", itemId));
+			await removeRows(c, rows, false);
 		});
 	},
 	internalAttachmentSweep(c: ItemsCtx) {
@@ -686,7 +701,11 @@ export const itemActions = {
 			const [alarm] = await c.db.execute<{ schedule: string }>("SELECT schedule FROM attachment_sweep WHERE id=1");
 			if (alarm?.schedule !== fire.id) return;
 			await armSweep(c, fire.firedAt);
-			await removeRows(c, await c.db.execute("SELECT id,key FROM attachments WHERE state!='removed' AND (ended_at=0 OR (state='reserved' AND at<?) OR (state='kept' AND ended_at<?))", fire.firedAt - 2 * 3600_000, fire.firedAt - config.factory.attachments.days * DAY));
+			const rows = await c.db.execute<{ id: string; key: string }>(
+				"SELECT id,key FROM attachments WHERE state!='removed' AND at<=? AND (state='discarded' OR ended_at=0 OR (state='reserved' AND at<?) OR (state='kept' AND ended_at<?))",
+				fire.firedAt - ATTACHMENT_DRAIN_MS, fire.firedAt - 2 * 3600_000, fire.firedAt - config.factory.attachments.days * DAY,
+			);
+			await removeRows(c, rows, true);
 		});
 	},
 	itemAttachmentLinks(c: ItemsCtx, id: string) {

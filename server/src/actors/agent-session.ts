@@ -191,7 +191,7 @@ import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { grantIsValid, type ReserveAnswer, secretsActor, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentReport } from "../agent-publish.js";
-import { attachmentStore, discardAttachment, uploadShots } from "../sandbox/attach.js";
+import { attachmentStore, uploadShots } from "../sandbox/attach.js";
 import { REPORT_TAKEN } from "../agent-publish.js";
 import { fileReport } from "../factory/review.js";
 import type { Fact } from "../factory/types.js";
@@ -3703,8 +3703,7 @@ async function finishItemTurn(c: Ctx, meta: SessionMeta, row: InboxRow, fallback
 			const ledger = userActor(c, meta.uid);
 			const keep = typeof fact.report === "object" && fact.report ? fact.report.screenshots.map(shot=>shot.id) : [];
 			const abandoned = await ledger.internalSettleAttachments({ sessionId: meta.sessionId, key: row.key, keep });
-			const store = attachmentStore();
-			if (store) for (const entry of abandoned) await discardAttachment(ledger, store, entry).catch(() => {});
+			for (const entry of abandoned) await ledger.internalReleaseAttachment(entry.id).catch(() => {});
 		}
 		await c.db.transaction(async tx => {
 			await markEnded(tx, row, fact);
