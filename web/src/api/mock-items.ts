@@ -33,6 +33,7 @@ import {
 	type CreateSessionInput,
 	type FactoryLimits,
 	type ItemAction,
+	type ItemAttachment,
 	type ItemBudget,
 	type ItemEvent,
 	type ItemQuestion,
@@ -901,6 +902,8 @@ export function createMockItems(deps: MockItemsDeps) {
 	const state: MockItemsState = deps.state ?? "all";
 	const kept = new Map<string, Kept>();
 
+	let linksAsked = 0;
+
 	function keptOf(auth: AuthResult): Kept {
 		let found = kept.get(auth.profile.uid);
 		if (!found) {
@@ -912,7 +915,10 @@ export function createMockItems(deps: MockItemsDeps) {
 			kept.set(auth.profile.uid, found);
 			for (const item of items) {
 				item.sessionId = deps.seededSession(auth, item);
-				if (item.report) item.report.sessionId = item.sessionId;
+				if (item.report) {
+					item.report.sessionId = item.sessionId;
+					for (const shot of item.report.screenshots) shot.sessionId = item.sessionId;
+				}
 			}
 		}
 		return found;
@@ -1058,7 +1064,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		}
 	}
 
-	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "item" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
+	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "item" | "itemAttachmentLinks" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
 		return {
 			async listItems() {
 				await answer(240);
@@ -1067,6 +1073,21 @@ export function createMockItems(deps: MockItemsDeps) {
 			async item(id) {
 				await answer(220);
 				return structuredClone(itemOf(auth, id));
+			},
+			// As the server's `links`: the kept screenshots only, each a fresh ten-minute link. The mock's are the
+			// fixtures under web/public/mock/, with a query that differs on every answer as a signed link does.
+			async itemAttachmentLinks(itemId) {
+				await answer(140);
+				const item = itemOf(auth, itemId);
+				linksAsked += 1;
+				const expiresAt = deps.now() + 10 * MINUTE;
+				return (item.report?.screenshots ?? [])
+					.filter((shot) => shot.state === "kept")
+					.map((shot) => {
+						const file = MOCK_SHOT_FILES.get(shot.id);
+						// A link the store does not answer: the page asks again once, then says it could not be loaded.
+						return { id: shot.id, url: file ? `/mock/${file}?link=${linksAsked}` : `/mock/gone-${shot.id}.png?link=${linksAsked}`, expiresAt };
+					});
 			},
 			async createItem({ idempotencyKey, ...input }: CreateItemInput) {
 				await answer(420);
@@ -1212,10 +1233,39 @@ const HOSTILE = [
 	fence(40),
 ].join("\n");
 
-const SEEDED_REPORTS: Record<number, { run?: number; title: string; blocks: MockBlock[] }> = {
-	// Every kind of block the page renders in R1 (screenshots come with R2), with references the record bears out.
+/**
+ * A screenshot filed with a seeded report (Reviewer slice R2-C). `file` is its fixture under
+ * web/public/mock/ (pictures of this mock's own pages, made with agent-browser), or null for one whose
+ * link the store does not answer.
+ */
+interface MockShot {
+	file: string | null;
+	width: number;
+	height: number;
+	bytes: number;
+	caption: string;
+	shows?: "after" | "before";
+	page?: string;
+	removed?: boolean;
+}
+
+/** Each seeded screenshot's fixture, by its attachment id: what `itemAttachmentLinks` links to. */
+const MOCK_SHOT_FILES = new Map<string, string>();
+
+const AGENTS_1280: Omit<MockShot, "caption"> = { file: "agents-1280.png", width: 1280, height: 800, bytes: 83_653, shows: "after", page: "/" };
+const AGENTS_390: Omit<MockShot, "caption"> = { file: "agents-390.png", width: 390, height: 844, bytes: 54_328, shows: "after", page: "/" };
+const ITEM_FULL_PAGE: Omit<MockShot, "caption"> = { file: "item-full-page.png", width: 1280, height: 6000, bytes: 92_550, shows: "after", page: "/items/it_8c76c0007d0f, the whole page" };
+
+const SEEDED_REPORTS: Record<number, { run?: number; title: string; blocks: MockBlock[]; shots?: MockShot[] }> = {
+	// Every kind of block the page renders, with references the record bears out, and three screenshots:
+	// a desktop page, the same page on a phone, and a tall full-page shot.
 	41: {
 		title: "Remove the CSV export and its tests",
+		shots: [
+			{ ...AGENTS_1280, caption: "The agents page with the export entry gone from the menu" },
+			{ ...AGENTS_390, caption: "The same page on a phone: the menu fits without the entry" },
+			{ ...ITEM_FULL_PAGE, caption: "A whole item page, top to bottom, to check nothing below the fold moved" },
+		],
 		blocks: [
 			{ kind: "summary", text: "Removed the CSV export from the menu and the API, with its tests. Nothing else in the repository reads the exporter." },
 			{
@@ -1255,18 +1305,29 @@ const SEEDED_REPORTS: Record<number, { run?: number; title: string; blocks: Mock
 			{ kind: "text", heading: "Where to look", text: "`scripts/release.ts`, the `collect` function.", refs: [] },
 		],
 	},
-	// A description only.
+	// A description only, and a screenshot whose link the store does not answer.
 	37: {
 		title: "Put the request id in every error line",
+		shots: [{ file: null, width: 1280, height: 800, bytes: 61_204, caption: "The error page before the change, without the request id", shows: "before", page: "/errors/500" }],
 		blocks: [{ kind: "text", heading: "What it did", text: "The error logger now takes the request from the handler's context and writes its id first on every line.", refs: [] }],
 	},
 	// Hostile text: links, images, HTML, a heading, and fences of 40 and 70 lines, all kept as typed.
 	38: {
 		title: "Cache the station list <b>once</b> [per run](https://e.example)",
+		shots: [{ ...AGENTS_1280, shows: undefined, caption: "See [x](https://e.example) and <b>this</b> ![](https://e.example/a.png)", page: "javascript:alert(1)" }],
 		blocks: [
 			{ kind: "text", heading: "What it did", text: HOSTILE, refs: [] },
 			{ kind: "text", heading: "Where to look", text: `The whole loader, all of it:\n\n${fence(70)}`, refs: [] },
 			{ kind: "risk", text: "<a href=\"https://e.example\">click</a> and `<script>` in a code span.", at: [{ path: "src/<b>stations</b>.ts", lines: { start: 3, end: 3 } }] },
+		],
+	},
+	// Ended a while ago: retention removed its screenshots.
+	32: {
+		title: "Write the release checklist page",
+		blocks: [{ kind: "text", heading: "What it did", text: "Added `docs/release.md` with the twelve steps of a release, in order.", refs: [] }],
+		shots: [
+			{ ...AGENTS_1280, caption: "The docs' sidebar with the new page", removed: true },
+			{ ...AGENTS_390, caption: "The new page on a phone", removed: true },
 		],
 	},
 	// Sent back, and the second run filed no report: the page shows the first run's.
@@ -1300,17 +1361,37 @@ function withSeededReport(view: ItemView, n: number): ItemView {
 	const refs = [...new Set(seeded.blocks.flatMap((block) => ("refs" in block ? block.refs.map((ref) => ref.ref) : [])))];
 	// Filed as the turn ended, a little before the verdict.
 	const at = (verdict?.at ?? view.updatedAt) - 2 * MINUTE;
+	const head = verdict?.head ?? view.head;
+	const screenshots = (seeded.shots ?? []).map((shot, index): ItemAttachment => {
+		const id = `a_${hex(n * 10 + index, 16)}`;
+		if (shot.file) MOCK_SHOT_FILES.set(id, shot.file);
+		return {
+			id,
+			by: "builder",
+			sessionId: view.sessionId,
+			head: head ?? hex(n),
+			width: shot.width,
+			height: shot.height,
+			bytes: shot.bytes,
+			sha256: hex(n * 10 + index, 64),
+			caption: shot.caption,
+			shows: shot.shows ?? null,
+			page: shot.page ?? null,
+			state: shot.removed ? "removed" : "kept",
+		};
+	});
 	const report: MockReport = {
 		by: "builder",
 		sessionId: view.sessionId,
 		run,
 		key: `${view.id}:${run}:1:1`,
-		head: verdict?.head ?? view.head,
+		head,
 		at,
 		title: seeded.title,
-		blocks: seeded.blocks,
+		// As review.ts `reportBlocks` files them: a screenshot block for each, after the author's words.
+		blocks: [...seeded.blocks, ...screenshots.map((shot): MockBlock => ({ kind: "screenshot", attachment: shot.id }))],
 		records: refs.flatMap((ref) => seededRecord(ref, verdict)),
-		screenshots: [],
+		screenshots,
 	};
 	return { ...view, report };
 }

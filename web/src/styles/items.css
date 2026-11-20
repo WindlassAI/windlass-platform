@@ -350,6 +350,124 @@
 	margin-top: 4px;
 }
 
+/* Screenshots under a report: small pictures in a row, each with its caption, and full size in a dialog. */
+.item-shots {
+	padding: 12px 8px 4px 12px;
+}
+.item-shots-label {
+	font-size: var(--size-small);
+	font-weight: 600;
+}
+.item-shots .usage-gloss {
+	margin-top: 2px;
+}
+.item-shots-list {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(200px, 240px));
+	gap: 16px;
+	margin-top: 10px;
+}
+.item-shot figure {
+	margin: 0;
+	min-width: 0;
+}
+.item-shot-frame {
+	display: block;
+	width: 100%;
+	max-height: 320px;
+	overflow: hidden;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-m);
+	background: var(--bg-sunk);
+}
+.item-shot-open {
+	padding: 0;
+	cursor: zoom-in;
+	transition: border-color 120ms ease;
+}
+.item-shot-open:hover {
+	border-color: var(--line-strong);
+}
+/* The stored size keeps the place before the image arrives; a tall page shows its top. */
+.item-shot-open img {
+	display: block;
+	width: 100%;
+	height: auto;
+	max-height: 318px;
+	object-fit: cover;
+	object-position: top;
+}
+.item-shot-waiting {
+	max-height: 160px;
+}
+.item-shot-missing {
+	padding: 10px 12px;
+	border: 1px dashed var(--line-strong);
+	border-radius: var(--radius-m);
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.item-shot figcaption {
+	display: grid;
+	gap: 2px;
+	margin-top: 6px;
+	font-size: var(--size-small);
+	line-height: 1.45;
+}
+.item-shot-caption {
+	overflow-wrap: anywhere;
+}
+.item-shot-meta,
+.item-shot-page {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+}
+.item-shot-meta {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 0 10px;
+}
+.item-shot-page {
+	display: block;
+	overflow-wrap: anywhere;
+}
+.item-shot-meta > span {
+	min-width: 0;
+}
+.item-shot-meta > span + span::before {
+	content: "·";
+	margin-right: 10px;
+	color: var(--ink-faint);
+}
+.dialog-lede .item-shot-caption,
+.dialog-lede .item-shot-meta {
+	display: flex;
+	margin-top: 2px;
+}
+.item-shot-shows {
+	color: var(--ink-dim);
+}
+/* Full size: the image at its own pixels, scrolling inside the dialog both ways, never the page. */
+.dialog-body:has(> .item-shot-full) {
+	padding: 0;
+	overflow: auto;
+	background: var(--bg-sunk);
+}
+.item-shot-full {
+	width: max-content;
+	min-width: 100%;
+}
+.item-shot-full img {
+	display: block;
+	max-width: none;
+	height: auto;
+}
+.item-shot-full .item-shot-missing {
+	margin: 20px 24px;
+	border: 0;
+}
+
 /* Cost: each figure against its budget, with a thin bar. */
 .item-cost > div {
 	grid-template-columns: 132px 220px minmax(0, 1fr);
@@ -469,6 +587,17 @@
 	}
 	.item-raise-fields {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	.item-shots {
+		padding-left: 4px;
+		padding-right: 4px;
+	}
+	.item-shots-list {
+		grid-template-columns: minmax(0, 1fr);
+	}
+	.item-shot-frame,
+	.item-shot-open img {
+		max-height: 420px;
 	}
 	.item-event {
 		grid-template-columns: 52px minmax(0, 1fr);

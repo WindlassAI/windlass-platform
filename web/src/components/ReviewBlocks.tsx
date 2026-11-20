@@ -6,10 +6,12 @@
  * Agent text goes through `ReviewText` alone: paragraphs, "- " bullets, `code` spans and fenced code,
  * as React text nodes. Nothing in it becomes a link, an image or markup: `InlineMarkdown` is never
  * used here. A block's reference to a platform record shows the platform's record beside the author's
- * claim, and says plainly when they disagree.
+ * claim, and says plainly when they disagree. Its `screenshot` blocks are gathered under the blocks as
+ * one group (Screenshots.tsx), in the order filed.
  */
-import { REVIEW_LIMITS, type CheckStatus, type ReviewBlock, type ReviewLocation, type ReviewRecord, type ReviewRef, type Verdict } from "@contract";
+import { REVIEW_LIMITS, type CheckStatus, type ItemAttachment, type ReviewBlock, type ReviewLocation, type ReviewRecord, type ReviewRef, type Verdict } from "@contract";
 import type { ReactNode } from "react";
+import { Screenshots, type ScreenshotLinks } from "./Screenshots";
 
 /** A run's conclusions that are a failure (server/src/factory/verdict.ts, `FAILING_CONCLUSIONS`): `error` is a commit status that errored. */
 export const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "action_required", "error"];
@@ -356,9 +358,8 @@ function Block({ block, records, verdict, author }: { block: ReviewBlock; record
 			body = <Excerpt block={block} />;
 			break;
 		case "screenshot":
-			label = "Screenshot";
-			body = <p className="tone-dim">A screenshot was filed; screenshots are not shown on this platform yet.</p>;
-			break;
+			// Shown together under the blocks (`ReviewBlocks`), not as a row.
+			return null;
 	}
 	return (
 		<div className={`review-block review-block-${block.kind}`}>
@@ -368,17 +369,34 @@ function Block({ block, records, verdict, author }: { block: ReviewBlock; record
 	);
 }
 
+/** The screenshots an author's blocks name: the item's records of them (`ItemReport.screenshots`), and their links. */
+export interface BlockScreenshots {
+	shots: ItemAttachment[];
+	links: ScreenshotLinks;
+	/** The deployment's retention, when known, for the line said when they were removed. */
+	days?: number;
+}
+
 /**
  * The author's blocks, in the order filed, as rows of the page's facts. A reference is read from
  * `records` (the platform's records as they were when the text was filed), else from `verdict`;
- * `author` names who wrote them as a sentence starts ("The agent").
+ * `author` names who wrote them as a sentence starts ("The agent"). The `screenshot` blocks follow as one
+ * group, each resolved from `screenshots`; one the records do not have is left out.
  */
-export function ReviewBlocks({ blocks, records, verdict, author }: { blocks: ReviewBlock[]; records: ReviewRecord[]; verdict: Verdict | null; author: string }) {
+export function ReviewBlocks({ blocks, records, verdict, author, screenshots }: { blocks: ReviewBlock[]; records: ReviewRecord[]; verdict: Verdict | null; author: string; screenshots?: BlockScreenshots }) {
+	const shots = blocks.flatMap((block) => {
+		const shot = block.kind === "screenshot" ? screenshots?.shots.find((one) => one.id === block.attachment) : undefined;
+		return shot ? [shot] : [];
+	});
+	const first = shots[0];
 	return (
-		<dl className="usage-facts item-facts review-blocks">
-			{blocks.map((block, index) => (
-				<Block key={index} block={block} records={records} verdict={verdict} author={author} />
-			))}
-		</dl>
+		<>
+			<dl className="usage-facts item-facts review-blocks">
+				{blocks.map((block, index) => (
+					<Block key={index} block={block} records={records} verdict={verdict} author={author} />
+				))}
+			</dl>
+			{first && screenshots ? <Screenshots by={first.by} head={first.head} shots={shots} links={screenshots.links} days={screenshots.days} /> : null}
+		</>
 	);
 }

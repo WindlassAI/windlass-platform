@@ -27,6 +27,7 @@ import { Dialog } from "../components/Dialog";
 import { InlineMarkdown } from "../components/Blocks";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, WarnIcon } from "../components/Icons";
 import { CHECK_TONE, CHECK_WORD, conclusionTone, conclusionWord, ReviewBlocks } from "../components/ReviewBlocks";
+import { useScreenshotLinks } from "../components/Screenshots";
 import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
@@ -667,6 +668,8 @@ function Report({ view, report, now }: { view: ItemView; report: ItemReport; now
 	const latest = view.verdicts[view.verdicts.length - 1];
 	const earlierRun = view.run !== null && report.run !== view.run.n;
 	const earlierCommit = !earlierRun && report.head !== null && latest !== undefined && latest.head !== report.head;
+	const shots = report.screenshots ?? [];
+	const links = useScreenshotLinks(view.id, shots);
 	return (
 		<section className="usage-section" aria-labelledby="item-report">
 			<h2 className="usage-title" id="item-report">
@@ -685,7 +688,7 @@ function Report({ view, report, now }: { view: ItemView; report: ItemReport; now
 						{earlierCommit ? <span>an earlier commit than the verdict's</span> : null}
 					</span>
 				</p>
-				<ReviewBlocks blocks={report.blocks} records={report.records ?? []} verdict={verdictFor(report, view.verdicts)} author="The agent" />
+				<ReviewBlocks blocks={report.blocks} records={report.records ?? []} verdict={verdictFor(report, view.verdicts)} author="The agent" screenshots={{ shots, links }} />
 			</article>
 		</section>
 	);

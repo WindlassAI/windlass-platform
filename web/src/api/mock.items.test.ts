@@ -329,9 +329,9 @@ describe("the agent's report on an item's page", () => {
 		expect(view.report?.by).toBe("builder");
 		const kinds: ReviewBlock["kind"][] = ["summary", "text", "finding", "earlier", "risk", "question", "excerpt"];
 		for (const kind of kinds) expect(html).toContain(`review-block-${kind}`);
-		// A screenshot (R2) says it is not shown, and shows nothing it could fetch.
+		// A screenshot block is no row of its own: they are gathered under the blocks (Screenshots.test.ts), and without their records nothing is shown.
 		const shot = renderToStaticMarkup(createElement(ReviewBlocks, { blocks: [{ kind: "screenshot", attachment: "a_1" }], records: [], verdict: null, author: "The agent" }));
-		expect(shot).toContain("screenshots are not shown on this platform yet");
+		expect(shot).toBe('<dl class="usage-facts item-facts review-blocks"></dl>');
 		for (const out of [html, shot]) {
 			expect(out).not.toMatch(/<a[\s>]|<img|<script|<h[1-6]|<strong|<em/);
 			expect(out.toLowerCase()).not.toContain("reviewer");
@@ -408,6 +408,53 @@ describe("the agent's report on an item's page", () => {
 		const none = await rendered("Make the station parser accept tabs");
 		expect(none.view).toMatchObject({ state: "review", report: null });
 		const only = await rendered("Log the request id with each error");
-		expect(only.view.report?.blocks.map((block) => block.kind)).toEqual(["text"]);
+		expect(only.view.report?.blocks.map((block) => block.kind)).toEqual(["text", "screenshot"]);
+	});
+});
+
+describe("the screenshots on an item's page", () => {
+	async function itemNamed(user: ReturnType<ReturnType<typeof make>["user"]>, title: string) {
+		const summary = (await user.listItems()).find((item) => item.title === title) as ItemSummary;
+		return user.item(summary.id);
+	}
+
+	it("seeds a report with each kind: pictures of a page, a tall one, one whose link fails, and some removed", async () => {
+		const mock = make();
+		const user = mock.user(auth);
+		const shown = await itemNamed(user, "Drop the legacy export");
+		const shots = shown.report?.screenshots ?? [];
+		expect(shots.map((shot) => [shot.width, shot.height, shot.shows, shot.state, shot.by])).toEqual([
+			[1280, 800, "after", "kept", "builder"],
+			[390, 844, "after", "kept", "builder"],
+			[1280, 6000, "after", "kept", "builder"],
+		]);
+		for (const shot of shots) expect(shot.id).toMatch(/^a_[0-9a-f]{16}$/);
+		// Each one is named by a screenshot block, after the agent's words, as the server files them.
+		expect(shown.report?.blocks.filter((block) => block.kind === "screenshot")).toEqual(shots.map((shot) => ({ kind: "screenshot", attachment: shot.id })));
+		const removed = await itemNamed(user, "Document the release checklist");
+		expect(removed.report?.screenshots.map((shot) => shot.state)).toEqual(["removed", "removed"]);
+		mock.dispose();
+	});
+
+	it("links the kept ones only, to the fixtures, with a new address on every answer, and refuses an item that is not the user's", async () => {
+		const mock = make();
+		const user = mock.user(auth);
+		const shown = await itemNamed(user, "Drop the legacy export");
+		const first = await user.itemAttachmentLinks(shown.id);
+		expect(first.map((link) => link.id)).toEqual(shown.report?.screenshots.map((shot) => shot.id));
+		expect(first.map((link) => link.url.replace(/\?.*/, ""))).toEqual(["/mock/agents-1280.png", "/mock/agents-390.png", "/mock/item-full-page.png"]);
+		for (const link of first) expect(link.expiresAt).toBeGreaterThan(Date.now() + 9 * 60_000);
+		const again = await user.itemAttachmentLinks(shown.id);
+		expect(again.map((link) => link.url)).not.toEqual(first.map((link) => link.url));
+		// The one whose link the store does not answer still gets a link: the page finds out when it loads.
+		const failing = await itemNamed(user, "Log the request id with each error");
+		expect((await user.itemAttachmentLinks(failing.id)).map((link) => link.url.replace(/\?.*/, ""))).toEqual([`/mock/gone-${failing.report?.screenshots[0]?.id}.png`]);
+		const removed = await itemNamed(user, "Document the release checklist");
+		expect(await user.itemAttachmentLinks(removed.id)).toEqual([]);
+		await expect(user.itemAttachmentLinks("it_any")).rejects.toMatchObject({ reason: "item_not_found" });
+		mock.dispose();
+		const off = make("off");
+		await expect(off.user(auth).itemAttachmentLinks("it_any")).rejects.toMatchObject({ reason: "items_off" });
+		off.dispose();
 	});
 });

@@ -351,6 +351,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			setMachineSecrets: (input) => act("setMachineSecrets", input),
 			listItems: () => act("listItems"),
 			item: (id) => act("item", id),
+			itemAttachmentLinks: (itemId) => act("itemAttachmentLinks", itemId),
 			createItem: (input) => act("createItem", input),
 			actOnItem: (id, action) => act("actOnItem", { id, action }),
 			factoryLimits: () => act("factoryLimits"),

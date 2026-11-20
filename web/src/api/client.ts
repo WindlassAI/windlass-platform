@@ -52,6 +52,7 @@ import type {
 	TimelineItem,
 	UsageNumbers,
 	UsageView,
+	UserActions,
 	UserProfile,
 	WorkspaceFile,
 } from "@contract";
@@ -102,6 +103,9 @@ export function errorMessage(error: unknown): string {
 	if (error instanceof Error && error.message !== "") return error.message;
 	return "Something went wrong.";
 }
+
+/** A link to one of an item's screenshots (`UserActions.itemAttachmentLinks`): a secret until `expiresAt`, so never logged or stored. */
+export type AttachmentLink = Awaited<ReturnType<UserActions["itemAttachmentLinks"]>>[number];
 
 export type ConnectionState =
 	| "connecting"
@@ -223,6 +227,8 @@ export interface UserApi {
 	listItems(): Promise<ItemSummary[]>;
 	/** One item's page. Throws with reason `item_not_found` for one that is not the user's. */
 	item(id: string): Promise<ItemView>;
+	/** Links to the item's kept screenshots, each working for ten minutes; a removed one has none. Throws with reason `item_not_found`. Never kept beyond the page's memory. */
+	itemAttachmentLinks(itemId: string): Promise<AttachmentLink[]>;
 	/** Files a work item, with its own agent on the repository. With `idempotencyKey`, the same call again answers with the item the first one made. Throws as `createSession` does, and with reason `bad_input`. */
 	createItem(input: CreateItemInput): Promise<ItemSummary>;
 	/** Starts, cancels, retries, sends back or answers an item. Throws with reason `item_conflict` where its state does not allow it, with why. */
