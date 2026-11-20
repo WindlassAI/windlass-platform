@@ -28,12 +28,25 @@ import { type WorkDiff, verifiedSection, verifiedWords, withVerifiedSection, wor
 import { type GithubApp, GithubError, type Pull } from "./app.js";
 import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, commitWork, outgoingPatch, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
 import { redact } from "./redact.js";
-import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveRepository } from "./repos.js";
+import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveBoundRepository, resolveRepository } from "./repos.js";
 
 /** What a session keeps of the repository it was launched on. */
 export interface StoredRepository extends SessionRepository {
+	/** Set only by issue intake, outside the agent's publish message. */
+	closesIssue?: number;
 	/** The installation that covered it when the session was made. A hint: the connection is asked again each time. */
 	installationId: GithubId;
+}
+
+function sessionRepository(app: GithubApp, connection: StoredConnection, repo: StoredRepository, need: "read" | "write") {
+	return repo.closesIssue ? resolveBoundRepository(app, connection, repo.id, repo.installationId, need) : resolveRepository(app, connection, repo.id, need);
+}
+
+function pullBody(repo: StoredRepository, body: string, section: string) {
+	if (!repo.closesIssue) return withVerifiedSection(body, section);
+	const footer = `\n\nCloses #${repo.closesIssue}.`;
+	const text = body.trimEnd();
+	return withVerifiedSection(text.endsWith(footer) ? text.slice(0, -footer.length) : text, section) + footer;
 }
 
 const fullName = (repository: { owner: string; name: string }) => `${repository.owner}/${repository.name}`;
@@ -110,7 +123,7 @@ export interface Cloned {
  */
 export async function cloneRepository(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, sandbox: SandboxHandle, signal?: AbortSignal, work?: string, pinnedBase?: string): Promise<Cloned | false> {
 	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
-	const resolved = await resolveRepository(app, connection, repository.id, "read");
+	const resolved = await sessionRepository(app, connection, repository, "read");
 	const name = fullName(resolved.repository);
 	const account = resolved.installation.account.login;
 	let outcome: GitOutcome;
@@ -276,7 +289,7 @@ function commitMessage(message: PublishMessage): string {
  */
 export async function pushWork(input: PushInput, message: string): Promise<Pushed> {
 	if (!input.connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
-	return commitAndPush(input, await resolveRepository(input.app, input.connection, input.repository.id, "write"), message);
+	return commitAndPush(input, await sessionRepository(input.app, input.connection, input.repository, "write"), message);
 }
 
 async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<typeof resolveRepository>>, message: string): Promise<Pushed> {
@@ -365,7 +378,7 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 	const { app, connection, repository, sandbox, branch } = input;
 	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
 	// Asked before anything is committed: a user who may not push gets no commit made in their name.
-	const resolved = await resolveRepository(app, connection, repository.id, "write");
+	const resolved = await sessionRepository(app, connection, repository, "write");
 	const { installation } = resolved;
 	const name = fullName(resolved.repository);
 	const account = installation.account.login;
@@ -386,7 +399,7 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 	const now = Date.now();
 	const pushed = !nothingNew;
 	const title = input.message.title.trim();
-	const body = withVerifiedSection(input.message.body, said.section);
+	const body = pullBody(repository, input.message.body, said.section);
 	try {
 		// Contents too, to read: GitHub opens no pull request for a token that cannot see the two branches
 		// ("not all refs are readable"), whatever it may do with pull requests.
@@ -404,7 +417,7 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 					}
 					if (!pushed && !input.shownIsEnough) throw nothingToPush();
 					// A push from the panel leaves the description as it is at GitHub, where its user may have edited it, but for the section.
-					const described = withVerifiedSection(current.body, said.section);
+					const described = pullBody(repository, current.body, said.section);
 					const kept = input.retitle || current.body.trim() === described ? current : await app.updatePull(token, owner, repo, current.number, { title: current.title, body: described });
 					return { pull: infoOf(kept, at, said.words), opened: false, pushed, retitled: false, head, committedFiles };
 				}
@@ -419,7 +432,7 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 				if (error instanceof GithubError && error.status === 422 && /already exists/i.test(error.said)) {
 					const existing = await app.openPull(token, owner, repo, branch, repository.branch);
 					if (existing) {
-						const described = input.shownIsEnough && input.retitle ? { title, body } : { title: existing.title, body: withVerifiedSection(existing.body, said.section) };
+						const described = input.shownIsEnough && input.retitle ? { title, body } : { title: existing.title, body: pullBody(repository, existing.body, said.section) };
 						const kept = existing.title === described.title && existing.body.trim() === described.body ? existing : await app.updatePull(token, owner, repo, existing.number, described);
 						return { pull: infoOf(kept, now, said.words), opened: false, pushed, retitled: false, head, committedFiles };
 					}
@@ -451,11 +464,11 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 export async function openFromPushed(input: { app: GithubApp; connection: StoredConnection | null; repository: StoredRepository; branch: string; message: PublishMessage; evidence: PublishEvidence }): Promise<PullRequestInfo> {
 	const { app, connection, repository, branch } = input;
 	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
-	const resolved = await resolveRepository(app, connection, repository.id, "write");
+	const resolved = await sessionRepository(app, connection, repository, "write");
 	const name = fullName(resolved.repository);
 	const account = resolved.installation.account.login;
 	const said = evidenceSection(input.evidence, null, connection.user.login);
-	const body = withVerifiedSection(input.message.body, said.section);
+	const body = pullBody(repository, input.message.body, said.section);
 	try {
 		return await app.withToken(resolved.installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read", pull_requests: "write" } }, async (token) => {
 			const { owner, name: repo } = resolved.repository;
@@ -482,7 +495,7 @@ export async function openFromPushed(input: { app: GithubApp; connection: Stored
  */
 export async function fetchBase(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, sandbox: SandboxHandle, work: string | null = null): Promise<void> {
 	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
-	const resolved = await resolveRepository(app, connection, repository.id, "read");
+	const resolved = await sessionRepository(app, connection, repository, "read");
 	const name = fullName(resolved.repository);
 	const account = resolved.installation.account.login;
 	let fetched: GitOutcome;
@@ -508,12 +521,12 @@ export async function describePull(input: { app: GithubApp; connection: StoredCo
 	if (!connection || !isOpen(pull)) return null;
 	try {
 		const said = evidenceSection(input.evidence, await readWork(input.sandbox, repository.branch), connection.user.login);
-		const resolved = await resolveRepository(app, connection, repository.id, "write");
+		const resolved = await sessionRepository(app, connection, repository, "write");
 		const { owner, name } = resolved.repository;
 		return await app.withToken(resolved.installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read", pull_requests: "write" } }, async (token) => {
 			const current = await app.pull(token, owner, name, pull.number);
 			if (current.state !== "open" && current.state !== "draft") return null;
-			const described = withVerifiedSection(current.body, said.section);
+			const described = pullBody(repository, current.body, said.section);
 			const kept = current.body.trim() === described ? current : await app.updatePull(token, owner, name, current.number, { title: current.title, body: described });
 			return infoOf(kept, pull.pushedAt, said.words);
 		});
@@ -530,7 +543,7 @@ export async function describePull(input: { app: GithubApp; connection: StoredCo
 export async function refreshPull(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, pull: PullRequestInfo): Promise<PullRequestInfo> {
 	if (!connection) return pull;
 	try {
-		const resolved = await resolveRepository(app, connection, repository.id, "read");
+		const resolved = await sessionRepository(app, connection, repository, "read");
 		const current = await app.withToken(resolved.installation.id, { repositoryId: repository.id, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, resolved.repository.owner, resolved.repository.name, pull.number));
 		return infoOf(current, pull.pushedAt, pull.verified);
 	} catch (error) {

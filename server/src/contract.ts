@@ -1392,8 +1392,9 @@ export interface ItemSummary {
 	/** The repository of the user's GitHub connection it is on; `branch` is the base its pull request goes into. */
 	repository: SessionRepository;
 	place: SandboxPlace;
-	/** How it was filed: from the web app, or with an API token (`ApiToken`). */
-	source: "web" | "api";
+	/** How the item was filed. Older stored summaries have a null origin. */
+	source: "web" | "api" | "github";
+	origin: { issue: { number: number; url: string; author: string; trusted: boolean }; sender: string } | null;
 	state: ItemState;
 	/** Set exactly when `state` is "waiting". */
 	wait: Waiting | null;

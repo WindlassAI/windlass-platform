@@ -21,6 +21,9 @@
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
+import { githubIntake } from "./github-intake.js";
+import type { IntakeTrigger, IssueBinding } from "../factory/intake.js";
+import type { StoredConnection } from "../github/repos.js";
 import { isGithubId } from "../github/ids.js";
 import { createHash, randomBytes } from "node:crypto";
 import { UserError } from "rivetkit";
@@ -81,6 +84,7 @@ export const ITEM_TABLES = [
 	// A creation's key and the digest of what it asked for, written before either of its actors is made: a creation tried
 	// again under that key with another body is refused even when the first never reached the index.
 	"CREATE TABLE IF NOT EXISTS item_keys (key TEXT PRIMARY KEY, sent TEXT NOT NULL, id TEXT NOT NULL)",
+	"CREATE TABLE IF NOT EXISTS github_item_keys (key TEXT PRIMARY KEY, sent TEXT NOT NULL, id TEXT NOT NULL, draft INTEGER NOT NULL)",
 	// A turn of an item's session waiting for a slot: `wait` is what it was last told, `attempt` how often it waited.
 	"CREATE TABLE IF NOT EXISTS turn_request (key TEXT PRIMARY KEY, session TEXT NOT NULL, item TEXT NOT NULL, title TEXT NOT NULL, starts_run INTEGER NOT NULL, at INTEGER NOT NULL, attempt INTEGER NOT NULL, full INTEGER, full_until INTEGER, wait TEXT)",
 	// A slot given to the turn of `key`: released by its id, or when `expires_at` has passed.
@@ -137,15 +141,19 @@ const KEYED = "work item";
 /** The action the turn queue's schedule fires (factory-e2e.ts checks it is registered under this name). */
 export const QUEUE_ACTION = "internalTurnQueue";
 
+const scopedKey = (github: boolean, key: string) => (github ? "github:" : "user:") + key;
+
 export async function loadItems(db: RawAccess): Promise<ItemsState> {
 	const items = new Map<string, ItemSummary>();
 	const created = new Map<string, Submission & { id: string }>();
 	for (const row of await db.execute<{ summary: string; key: string | null; sent: string | null }>("SELECT summary, key, sent FROM items")) {
 		const summary = JSON.parse(row.summary) as ItemSummary;
+		summary.origin ??= null;
 		items.set(summary.id, summary);
-		if (row.key !== null && row.sent !== null) created.set(row.key, { key: row.key, sent: row.sent, id: summary.id });
+		if (row.key !== null && row.sent !== null) created.set(scopedKey(summary.source === "github", row.key), { key: row.key, sent: row.sent, id: summary.id });
 	}
-	for (const row of await db.execute<{ key: string; sent: string; id: string }>("SELECT key, sent, id FROM item_keys")) created.set(row.key, row);
+	for (const row of await db.execute<{ key: string; sent: string; id: string }>("SELECT key, sent, id FROM item_keys")) created.set(scopedKey(false, row.key), row);
+	for (const row of await db.execute<{ key: string; sent: string; id: string }>("SELECT key, sent, id FROM github_item_keys")) created.set(scopedKey(true, row.key), row);
 	const requests = new Map<string, Request>();
 	type RequestRow = { key: string; session: string; item: string; title: string; starts_run: number; at: number; attempt: number; full: number | null; full_until: number | null; wait: string | null };
 	for (const row of await db.execute<RequestRow>("SELECT key, session, item, title, starts_run, at, attempt, full, full_until, wait FROM turn_request")) {
@@ -171,7 +179,7 @@ export interface ItemFacts {
 
 /** What the factory's functions need of the user actor's context. */
 export interface ItemsCtx {
-	vars: { items: ItemsState; machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; usage: UsageBook; profile: UserProfile | null };
+	vars: { github?: StoredConnection | null; items: ItemsState; machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; usage: UsageBook; profile: UserProfile | null };
 	db: RawAccess;
 	key: string[];
 	log: { warn(entry: unknown): void; error(entry: unknown): void };
@@ -185,7 +193,7 @@ export interface ItemsCtx {
 }
 
 /** `makeSession` of user.ts: makes the item's session under the id given, with the item as its origin, and puts it in the index. */
-export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer" }) => Promise<SessionSummary>;
+export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer"; issue?: { number: number; installationId: GithubId } }) => Promise<SessionSummary>;
 
 // ---------------------------------------------------------------------------------------------
 // The index
@@ -198,7 +206,7 @@ function itemList(state: ItemsState): ItemSummary[] {
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
 function summaryFields(item: ItemSummary): ItemSummary {
 	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
-	return { id, title, repository, place, source, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision };
+	return { id, title, repository, place, source, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision };
 }
 
 /** Takes a summary the item reported when it is newer than the one held: reports can arrive out of order. */
@@ -219,6 +227,7 @@ function knownItem(c: ItemsCtx, id: unknown): ItemSummary {
 	return summary;
 }
 
+const githubItemId = (uid: string, key: string) => `i_${hex16(JSON.stringify(["github", uid, key]))}`;
 const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
 /** The input of a new item, checked. */
@@ -273,50 +282,63 @@ async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxPr
  * before anything is asked of the engine, and one that exists already is taken as made: a creation
  * that is tried again after a lost answer, or after the server stopped half way, finishes the first.
  */
-async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession): Promise<ItemSummary> {
+async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
 	const uid = profile.uid;
-	const itemId = `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`;
+	const itemId = github && submission ? githubItemId(uid, submission.key) : `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`;
 	const sessionId = `s_${hex16(`item\n${itemId}`)}`;
+	const issue = github && { number: github.origin.issue.number, installationId: github.installationId };
 	let summary: ItemSummary;
 	// Set just before the session is made: a refusal before that made nothing, and leaves the key unused.
 	let begun = false;
 	if (submission) {
 		// The key is this body's from here, before anything is made: in memory now, so that a second attempt is judged by it at
 		// once, and stored before the first actor, so that it holds across a restart too.
-		c.vars.items.created.set(submission.key, { ...submission, id: itemId });
-		await c.db.execute("INSERT OR IGNORE INTO item_keys (key, sent, id) VALUES (?, ?, ?)", submission.key, submission.sent, itemId);
+		c.vars.items.created.set(scopedKey(!!github, submission.key), { ...submission, id: itemId });
+		if (github) await c.db.execute("INSERT OR IGNORE INTO github_item_keys VALUES(?,?,?,?)", submission.key, submission.sent, itemId, Number(!input.start));
+		else await c.db.execute("INSERT OR IGNORE INTO item_keys (key, sent, id) VALUES (?, ?, ?)", submission.key, submission.sent, itemId);
 	}
 	try {
 		const existing = c.vars.sessions.get(sessionId);
 		const sandbox = existing ? null : await itemProfile(c, input.repository.id, input.profile, input.place);
 		begun = true;
-		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder" }));
+		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue }));
 		const repository = session.repository;
 		if (!repository) throw new Error("the item's session has no repository");
 		const reviewer = !config.factory.reviewer ? { off: "deployment" } as const :
 			session.place.kind === "hosted" && reviewerAllowed(session.place, (await getLayer()).sandboxes.profile(session.profile)) ? { on: true } as const : { off: "profile" } as const;
 		const reviewerSessionId = "on" in reviewer ? `s_${hex16(`review\n${itemId}`)}` : null;
 		if (reviewerSessionId && !c.vars.sessions.has(reviewerSessionId)) {
-			await makeSession(c, profile, { title: input.title, profile: session.profile, model: session.model, repository: { id: repository.id, branch: repository.branch } }, null, { sessionId: reviewerSessionId, itemId, role: "reviewer" });
+			await makeSession(c, profile, { title: input.title, profile: session.profile, model: session.model, repository: { id: repository.id, branch: repository.branch } }, null, { sessionId: reviewerSessionId, itemId, role: "reviewer", issue });
 		}
 		const now = Date.now();
-		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
+		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
 		const item = createItem({ id: itemId, reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: config.factory.item });
 		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
 	} catch (error) {
 		// Nothing was made: the key is unused again, as a refused attempt leaves it. Once anything may exist, it stays this body's.
 		if (submission && !begun) {
-			c.vars.items.created.delete(submission.key);
-			await c.db.execute("DELETE FROM item_keys WHERE key = ?", submission.key).catch(() => undefined);
+			c.vars.items.created.delete(scopedKey(!!github, submission.key));
+			await c.db.execute(github ? "DELETE FROM github_item_keys WHERE key = ?" : "DELETE FROM item_keys WHERE key = ?", submission.key).catch(() => undefined);
 		}
 		throw clientError(c.log, error, "The item could not be filed. Try again.");
 	}
 	// In one step with the item: from here a creation with this key answers with it.
 	c.vars.items.items.set(summary.id, summary);
-	if (submission) c.vars.items.created.set(submission.key, { ...submission, id: summary.id });
-	await c.db.execute("INSERT INTO items (id, created_at, summary, key, sent) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET summary = excluded.summary", summary.id, summary.createdAt, JSON.stringify(summary), submission?.key ?? null, submission?.sent ?? null);
+	if (submission) c.vars.items.created.set(scopedKey(!!github, submission.key), { ...submission, id: summary.id });
+	const index = (db: Pick<RawAccess, "execute">) => db.execute("INSERT INTO items (id, created_at, summary, key, sent) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET summary = excluded.summary", summary.id, summary.createdAt, JSON.stringify(summary), submission?.key ?? null, submission?.sent ?? null);
+	if (github && submission) {
+		try {
+			await c.db.transaction(async tx => {
+				await index(tx);
+				await tx.execute("DELETE FROM github_item_keys WHERE key=?", submission.key);
+			});
+		} catch (error) {
+			c.vars.items.items.delete(summary.id);
+			throw error;
+		}
+	} else await index(c.db);
 	c.broadcast("items", itemList(c.vars.items));
 	console.log(`[wlp] item.created uid=${uid} item=${summary.id} session=${sessionId} source=${source}`);
 	if (summary.place.kind === "machine" && !c.vars.machines.has(summary.place.machineId)) {
@@ -327,17 +349,18 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 }
 
 /** `createItem`, keyed or not, as `createSession` is: the same key answers with the item it made. */
-async function fileItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], makeSession: MakeSession): Promise<ItemSummary> {
+async function fileItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], makeSession: MakeSession, github?: IssueBinding): Promise<ItemSummary> {
 	if (typeof raw !== "object" || raw === null) throw new UserError("Say what the item is.", { code: "bad_input" });
 	let attempt: Promise<ItemSummary>;
 	try {
 		const { idempotencyKey, ...asked } = raw as CreateItemInput;
-		const submission = submissionOf(idempotencyKey, asked);
+		const submission = submissionOf(idempotencyKey, github ? { asked, github } : asked);
 		if (submission === null) return await makeItem(c, profile, asked, source, null, makeSession);
-		const made = c.vars.items.created.get(submission.key);
+		const key = scopedKey(!!github, submission.key);
+		const made = c.vars.items.created.get(key);
 		const item = made && isRepeat(made, submission, KEYED) ? c.vars.items.items.get(made.id) : undefined;
 		if (item) return item;
-		attempt = c.vars.items.creating.run(submission, KEYED, () => makeItem(c, profile, asked, source, submission, makeSession));
+		attempt = c.vars.items.creating.run({ ...submission, key }, KEYED, () => makeItem(c, profile, asked, source, submission, makeSession, github));
 	} catch (error) {
 		if (error instanceof SubmissionProblem) throw new UserError(error.message, { code: error.code });
 		throw error;
@@ -671,7 +694,17 @@ async function links(c: ItemsCtx, item: string, ttlMs: number, only?: string) {
 	return Promise.all(rows.map(async row => ({ id: row.id, ...await store.linkToGet(row.key, { ttlMs, contentType: "image/png", disposition: "inline" }) })));
 }
 
+const intakeWrites = new WeakMap<ItemsState, Promise<unknown>>();
 export const itemActions = {
+	internalGithubIntake(c: ItemsCtx, trigger: IntakeTrigger, makeSession: MakeSession) {
+		requireServiceFor(c, "call");
+		// All installations share this user's budget. The durable claim makes interruption replayable.
+		const next = (intakeWrites.get(c.vars.items) ?? Promise.resolve()).then(() => githubIntake(c, trigger,
+			key => githubItemId(c.key[0]!, key),
+			(profile, filing) => fileItem(c, profile, filing.input, "github", makeSession, filing.binding)));
+		intakeWrites.set(c.vars.items, next.catch(() => {}));
+		return next;
+	},
 	internalReserveAttachment(c: ItemsCtx, input: Reservation) {
 		requireService(c);
 		return attachmentWrite(c, () => reserveAttachment(c, input));

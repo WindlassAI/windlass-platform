@@ -30,6 +30,7 @@ async function testNode() {
 	// This probe deliberately has no action-level guard, so it observes the connection hook alone.
 	for (const definition of [githubAccount, githubRepository, githubInbox, githubHooks])
 		Object.assign(definition.config.actions!, { checkConnection: () => true });
+	const { config } = await import("../server/src/config.js");
 	const { CI_POLLING } = await import("../server/src/github/ci.js");
 	const { workItem } = await import("../server/src/actors/work-item.js");
 	const { agentSession } = await import("../server/src/actors/agent-session.js");
@@ -78,6 +79,10 @@ async function testNode() {
 		},
 	});
 	Object.assign(githubHooks.config.actions!, {
+		checkDailyLimit: (c: Ctx, limit: number) => {
+			requireServiceFor(c, "call");
+			config.factory.githubItemsPerDay = limit;
+		},
 		checkFallback: (c: Ctx, ms: number | null) => {
 			requireServiceFor(c, "call");
 			if (ms === null) delete process.env.WLP_GITHUB_POLL_FALLBACK;
@@ -142,12 +147,14 @@ async function run() {
 	};
 	const failed: string[] = [];
 	const check = async (name: string, fn: () => Promise<void> | void) => {
+		if (process.env.WEBHOOK_ONLY && !name.startsWith(process.env.WEBHOOK_ONLY)) return;
 		try { await fn(); console.log("PASS " + name); }
 		catch (error) {
 			failed.push(name);
 			// Assertion messages can include the actual body or headers. Print only the check location.
 			const location = error instanceof Error ? /webhook-check\.ts:(\d+:\d+)/.exec(error.stack ?? "")?.[1] : undefined;
-			console.error("FAIL " + name + (location ? " at webhook-check.ts:" + location : ""));
+			const timeout = error instanceof Error && error.message.startsWith("timed out waiting for ") ? " (" + error.message + ")" : "";
+			console.error("FAIL " + name + timeout + (location ? " at webhook-check.ts:" + location : ""));
 		}
 	};
 	const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "--node"], {
@@ -314,6 +321,226 @@ async function run() {
 				assert.equal(countReads(item.head), 1);
 				assert.equal(standin.deliveries.length, sent);
 			} finally { await clock.checkFallback(null); }
+		});
+		const { taskOfIssue } = await import("../server/src/factory/intake.js");
+		const writer = standin.users.get(owner)!;
+		const reader = standin.addUser("g3-reader"), peer = standin.addUser("g3-writer"), stranger = standin.addUser("g3-stranger");
+		projectG2.access.set(reader.login, "read"); projectG2.access.set(peer.login, "write"); projectG2.access.set(stranger.login, "write");
+		const readerAccount = await connectUser(reader.login), peerAccount = await connectUser(peer.login);
+		standin.appPermissions.issues = "write";
+		const make = (number: number, author = writer) => standin.addIssue(projectG2, number, author);
+		type Issue = ReturnType<typeof make>;
+		const payload = (issue: Issue, sender = writer) => ({ issue: { number: issue.number, title: "Decoy title", body: "Decoy body", user: sender, author_association: "OWNER" }, sender: { ...sender, type: "User" } });
+		const notify = (issue: Issue, action: string, sender = writer, installationId = installation.id) => delivered("issues", { ...payload(issue, sender), action, label: { name: "windlass" } }, installationId);
+		const change = async (issue: Issue, action: string, sender = writer) => { standin.issueEvent(issue, action, sender); await notify(issue, action, sender); };
+		const mention = (issue: Issue, id: bigint, sender = writer) => delivered("issue_comment", { ...payload(issue, sender), action: "created",
+			comment: { id, body: "@windlass-fk4w payload words", author_association: "OWNER", user: sender } });
+		const items = async (issue: Issue, account = g2User) => (await account.listItems()).filter(i => i.origin?.issue.number === issue.number);
+		const newWriter = async (login: string) => {
+			const person = standin.addUser(login); projectG2.access.set(login, "write");
+			return { person, account: (await connectUser(login)).user };
+		};
+		const bots = (issue: Issue) => issue.comments.filter(c => c.user.login.endsWith("[bot]"));
+		await check("G3 snapshot strips hidden text, bounds task, identifies author and fences third-party text", () => {
+			const issue = make(40, reader);
+			const input = { title: "T".repeat(81), body: "<!-- hidden -->\u200dfirst\u202e\n" + Array.from({ length: 25 }, (_, i) => "- [ ] task " + i).join("\n") + "\n" + "X".repeat(30_000),
+				number: issue.number, url: standin.url + "/owner/factory/issues/40", author: reader, sender: writer, note: "choose blue" };
+			const { task, trusted } = taskOfIssue(input);
+			assert.equal(trusted, false); assert.equal(task.title.length, 80); assert.ok(task.body.length <= 20_000);
+			assert.doesNotMatch(task.body, /hidden|\u200d|\u202e/); assert.match(task.body, /written by @g3-reader/);
+			assert.match(task.body, /> first/); assert.equal(task.acceptance.length, 20);
+			assert.doesNotMatch(task.body, /task 19/); assert.match(task.body, /task 24/); assert.match(task.body, /\(cut: the issue is longer\)/);
+			assert.ok(task.body.endsWith("The person adds: choose blue")); assert.equal(taskOfIssue({ ...input, author: writer }).trusted, true);
+		});
+		await check("G3 before the installation accepts Issues permission a signed label has no effect", async () => {
+			delete standin.appPermissions.issues;
+			try {
+				const issue = make(39); await change(issue, "labeled");
+				assert.deepEqual(await items(issue), []); assert.deepEqual(bots(issue), []);
+			} finally { standin.appPermissions.issues = "write"; }
+		});
+		await check("G3 owner label starts the owner's item and snapshots the fetched issue", async () => {
+			const issue = make(41);
+			const webItem = await g2User.createItem({ title: "From the form", body: "A separate submission.", repository: { id: projectG2.id }, idempotencyKey: `github:${projectG2.id}#41:1` });
+			assert.equal(webItem.source, "web"); assert.equal(webItem.origin, null);
+			await change(issue, "labeled");
+			const [item] = await items(issue); assert.ok(item); assert.notEqual(item.state, "draft"); assert.equal(item.source, "github");
+			assert.equal(item.title, issue.title); assert.deepEqual(item.origin, { issue: { number: 41, url: standin.url + "/" + owner + "/factory/issues/41", author: owner, trusted: true }, sender: owner });
+			const view = await g2User.item(item.id); assert.ok(view.run); assert.match(view.task.body, /Add a short program/);
+			assert.doesNotMatch(view.task.body, /Decoy/);
+		});
+		await check("G3 stranger's issue is a labelled draft until its owner starts it", async () => {
+			const issue = make(42, reader); await change(issue, "labeled");
+			const [item] = await items(issue); assert.ok(item); assert.equal(item.state, "draft");
+			const view = await g2User.item(item.id); assert.equal(view.run, null); assert.equal(view.origin?.issue.trusted, false);
+			assert.match(view.task.body, /written by @g3-reader/); assert.equal(view.spent.turns, 0);
+			await until("draft comment", async () => bots(issue).some(c => c.body.includes("Filed as a draft for @" + owner)));
+			issue.body = "New words"; issue.updated_at = new Date().toISOString(); await notify(issue, "edited");
+			const edited = await g2User.item(item.id); assert.deepEqual(edited.task, view.task); assert.ok(edited.events.some(e => e.said.includes("issue was edited")));
+			await change(issue, "closed", reader); assert.equal((await g2User.item(item.id)).state, "draft");
+			await change(issue, "reopened"); await change(issue, "unlabeled"); assert.equal((await g2User.item(item.id)).state, "cancelled");
+		});
+		await check("G3 read-only command stops after permission, including a payload claiming OWNER", async () => {
+			// Fresh principal, so an uncached request shows the entire GitHub cost.
+			const other = standin.addUser("g3-comment-reader"); projectG2.access.set(other.login, "read");
+			const isolated = standin.addRepository({ owner, name: "permission-cost", installation });
+			isolated.access.set(other.login, "read");
+			const account = await connectUser(other.login);
+			const issue = standin.addIssue(isolated, 43, writer), msg = standin.issueComment(issue, other, "@windlass-fk4w file this");
+			const start = standin.requests.length;
+			await delivered("issue_comment", { ...payload(issue, other), repository: { id: isolated.id }, action: "created",
+				comment: { id: msg.id, body: "@windlass-fk4w", author_association: "OWNER" } });
+			const requests = standin.requests.slice(start).filter(r => r.path.includes("permission-cost") || r.path.includes("/repositories/" + isolated.id)
+				|| (r.body as { repository_ids?: number[] })?.repository_ids?.includes(isolated.id));
+			assert.deepEqual(requests.map(r => r.method + " " + r.path), [`POST /api/v3/app/installations/${installation.id}/access_tokens`, `GET /api/v3/repos/${owner}/permission-cost/collaborators/${other.login}/permission`]);
+			assert.equal((await account.user.listItems()).length, 0); assert.equal(bots(issue).length, 0);
+		});
+		await check("G3 forged sender, wrong thread, unaddressed fetched text and foreign installation are inert", async () => {
+			const issue = make(44), elsewhere = make(45);
+			const actual = standin.issueComment(issue, reader, "@windlass-fk4w");
+			await mention(issue, actual.id, writer);
+			await mention(issue, standin.issueComment(elsewhere, writer, "@windlass-fk4w file this").id);
+			await mention(issue, standin.issueComment(issue, writer, "talk about @windlass-fk4w").id);
+			standin.issueEvent(issue, "labeled", reader); await notify(issue, "labeled", writer);
+			standin.issueEvent(issue, "labeled", writer); await notify(issue, "labeled", writer, neighbour.id);
+			assert.equal((await items(issue)).length, 0); assert.equal(bots(issue).length, 0);
+		});
+		await check("G3 refuses fetched issues, comments and label events older than three days", async () => {
+			const issue = make(46); const old = new Date(Date.now() - 4 * DAY).toISOString();
+			issue.created_at = old; await change(issue, "labeled"); assert.deepEqual(await items(issue), []);
+			issue.created_at = new Date().toISOString(); issue.events.at(-1)!.created_at = old; await notify(issue, "labeled");
+			const msg = standin.issueComment(issue, writer, "@windlass-fk4w"); msg.created_at = old;
+			await mention(issue, msg.id); assert.deepEqual(await items(issue), []); assert.equal(bots(issue).length, 0);
+		});
+		await check("G3 two labels and a mention file once; handled IDs survive cancellation and a new generation", async () => {
+			const issue = make(47, reader); standin.issueEvent(issue, "labeled", writer);
+			const guid = randomUUID(), fields = { ...payload(issue), installation: { id: installation.id }, repository: { id: projectG2.id }, action: "labeled", label: { name: "windlass" } };
+			assert.deepEqual(await (await standin.deliver(web, "issues", fields, { secret, guid })).json(), { taken: true });
+			assert.deepEqual(await (await standin.deliver(web, "issues", fields, { secret, guid })).json(), { taken: "duplicate" });
+			await notify(issue, "labeled"); await change(issue, "labeled");
+			const msg = standin.issueComment(issue, writer, "@windlass-fk4w again"); await mention(issue, msg.id);
+			const first = await items(issue); assert.equal(first.length, 1);
+			await g2User.actOnItem({ id: first[0].id, action: { kind: "cancel" } });
+			await mention(issue, msg.id); await notify(issue, "labeled"); assert.equal((await items(issue)).length, 1);
+			const next = standin.issueComment(issue, writer, "@windlass-fk4w actual note"); await mention(issue, next.id);
+			const all = await items(issue); assert.equal(all.length, 2);
+			const second = all.find(i => i.id !== first[0].id)!;
+			assert.ok((await g2User.item(second.id)).task.body.endsWith("The person adds: actual note"));
+			assert.equal((await directory().internalFind({ issue: 47 }))[0].generation, 2);
+		});
+		await check("G3 marked issue comment links to the item, edits in place; real PR ends in Closes", async () => {
+			const issue = make(48); await change(issue, "labeled"); const [item] = await items(issue); assert.ok(item);
+			const pull = await until("issue PR", async () => {
+				const view = await g2User.item(item.id);
+				return standin.pulls.find(p => p.repository === projectG2.id && p.number === view.pullRequest?.number);
+			}, 45_000);
+			assert.ok(pull.body.trimEnd().endsWith("Closes #48."));
+			await until("issue link updated with PR", async () => bots(issue).some(c => c.body.includes(`Pull request #${pull.number}.`)));
+			assert.equal(bots(issue).length, 1); const first = bots(issue)[0];
+			assert.ok(first.body.startsWith(`<!-- windlass-issue:${item.id} -->\n`)); assert.ok(first.body.includes(origin + "/items/" + item.id));
+			await change(issue, "closed"); assert.equal((await g2User.item(item.id)).state, "cancelled");
+			await until("updated to cancelled", async () => bots(issue)[0]?.body.includes("cancelled"));
+			assert.deepEqual(bots(issue).map(c => c.id), [first.id]);
+		});
+		await check("G3 unlinked writer, linked reader refusal once, competing owner and removed label", async () => {
+			const issue = make(49);
+			await change(issue, "labeled", stranger); assert.equal(bots(issue).length, 0);
+			assert.ok(logs.includes(`github.intake.unlinked installation=${installation.id} delivery=${standin.deliveries[0].guid}`));
+			await change(issue, "labeled", reader); await change(issue, "labeled", reader); assert.equal(bots(issue).length, 1);
+			assert.match(bots(issue)[0].body, /read access/); assert.equal((await readerAccount.user.listItems()).length, 0);
+			const second = make(50, stranger); await change(second, "labeled"); await change(second, "labeled", peer);
+			assert.ok(bots(second).some(c => c.body.includes("another Windlass user"))); assert.equal((await peerAccount.user.listItems()).length, 0);
+			const removed = make(51); standin.issueEvent(removed, "labeled", writer); standin.issueEvent(removed, "unlabeled", peer); await notify(removed, "labeled");
+			assert.deepEqual(await items(removed), []);
+		});
+		await check("G3 a linked writer's fetched command starts their own issue on their own budget", async () => {
+			const issue = make(55, peer);
+			const msg = standin.issueComment(issue, peer, "@windlass-fk4w check the blue button");
+			await mention(issue, msg.id, peer);
+			const [item] = (await peerAccount.user.listItems()).filter(i => i.origin?.issue.number === 55);
+			assert.ok(item); assert.equal(item.origin?.sender, peer.login); assert.equal(item.origin?.issue.trusted, true);
+			const view = await peerAccount.user.item(item.id);
+			assert.ok(view.run); assert.ok(view.task.body.endsWith("The person adds: check the blue button"));
+			assert.deepEqual(await items(issue), []);
+		});
+		await check("G3 another connected installation cannot mint a token for an already bound issue", async () => {
+			const issue = make(56, reader); await change(issue, "labeled");
+			const [item] = await items(issue); assert.equal(item?.state, "draft");
+			const other = standin.addInstallation("g3-org", "Organization");
+			other.repositories.add(projectG2.id);
+			const connect = await g2User.githubConnect({ origin });
+			const back = await fetch(standin.authorize(owner, connect.url), { redirect: "manual" });
+			await g2User.githubComplete(back.headers.get("location")!.split("#github=")[1]);
+			assert.ok((await client.githubAccount.get([String(writer.id)], service()).internalWho())?.installations.includes(other.id));
+			const before = standin.minted.length;
+			await notify(issue, "labeled", writer, other.id);
+			await notify(issue, "unlabeled", writer, other.id);
+			assert.ok(!standin.minted.slice(before).some(t => t.installation === other.id));
+			assert.equal((await g2User.item(item.id)).state, "draft");
+		});
+		await check("G3 owner closure while working withdraws the actual turn", async () => {
+			const { person, account } = await newWriter("g3-close");
+			const issue = make(52, person); issue.body = "Build this carefully (slow)."; await change(issue, "labeled", person);
+			const [item] = await items(issue, account); assert.ok(item);
+			await until("running issue turn", async () => (await account.listSessions()).some(s => s.id === item.sessionId && s.status === "running"), 30_000);
+			await change(issue, "closed", person);
+			assert.equal((await account.item(item.id)).state, "cancelled");
+			await until("issue session interrupted", async () => (await account.listSessions()).find(s => s.id === item.sessionId)?.lastOutcome === "interrupted");
+		});
+		await check("G3 a fetched merge ends the issue item; a fresh label files generation two", async () => {
+			const clock = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkFallback(ms: number | null): Promise<void> };
+			await clock.checkFallback(3500);
+			try {
+				const { person, account } = await newWriter("g3-merge");
+				const issue = make(53, person); await change(issue, "labeled", person); const [item] = await items(issue, account); assert.ok(item);
+				const published = await until("published issue item", async () => { const v = await account.item(item.id); return v.pullRequest && v.head ? { head: v.head, pr: v.pullRequest.number } : null; }, 45_000);
+				ci(published.head, "success");
+				await until("issue in review", async () => (await account.item(item.id)).state === "review", 20_000);
+				const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === published.pr)!;
+				pull.state = "closed"; pull.merged = true;
+				await delivered("pull_request", { action: "closed", pull_request: { number: published.pr, merged: true, head: { sha: published.head } } });
+				await until("issue done", async () => (await account.item(item.id)).state === "done", 20_000);
+				await until("done comment", async () => bots(issue).some(c => c.body.includes("work item is done")));
+				await notify(issue, "labeled", person); assert.equal((await items(issue, account)).length, 1);
+				await change(issue, "labeled", person); assert.equal((await items(issue, account)).length, 2);
+				assert.equal((await directory().internalFind({ issue: 53 }))[0].generation, 2);
+			} finally { await clock.checkFallback(null); }
+		});
+		await check("G3 a failed item retries only for its own writer with a fresh GitHub subject", async () => {
+			const { person, account } = await newWriter("g3-retry");
+			await account.saveRepositoryChecks({ repositoryId: projectG2.id, checks: [{ name: "build", command: "npm run fail" }] });
+			const issue = make(54, person);
+			await change(issue, "labeled", person);
+			const [item] = await items(issue, account); assert.ok(item);
+			const fail = async () => {
+				const question = await until("repeated required check failure", async () => (await account.item(item.id)).question, 90_000);
+				assert.equal(question.kind, "rounds");
+				const v = await account.actOnItem({ id: item.id, action: { kind: "answer", question: question.id, choice: "give_up" } });
+				assert.equal(v.state, "failed");
+			};
+			await fail();
+			await change(issue, "labeled", peer); assert.equal((await account.item(item.id)).state, "failed");
+			const msg = standin.issueComment(issue, person, "@windlass-fk4w retry");
+			await mention(issue, msg.id, person); assert.equal((await account.item(item.id)).run?.n, 2);
+			await fail(); await mention(issue, msg.id, person);
+			assert.equal((await account.item(item.id)).state, "failed"); assert.equal((await items(issue, account)).length, 1);
+		});
+		await check("G3 twenty drafts use the writer's daily budget; the 21st gets one refusal", async () => {
+			const quotaUser = standin.addUser("g3-quota"); projectG2.access.set(quotaUser.login, "write");
+			const account = await connectUser(quotaUser.login);
+			for (let n = 100; n < 120; n++) await change(make(n, stranger), "labeled", quotaUser);
+			const filed = await account.user.listItems();
+			assert.equal(filed.length, 20); assert.ok(filed.every(i => i.source === "github" && i.state === "draft"));
+			const extra = make(120, stranger); await change(extra, "labeled", quotaUser); await change(extra, "labeled", quotaUser);
+			assert.equal((await account.user.listItems()).length, 20); assert.equal(bots(extra).length, 1);
+			assert.match(bots(extra)[0].body, /20 work items from GitHub today/);
+			const settings = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkDailyLimit(n: number): Promise<void> };
+			await settings.checkDailyLimit(21);
+			try {
+				const another = make(121, stranger); await change(another, "labeled", quotaUser);
+				assert.match(bots(another)[0].body, /20 of your work items from GitHub are drafts/);
+				assert.equal((await account.user.listItems()).length, 20);
+			} finally { await settings.checkDailyLimit(20); }
 		});
 		await check("unlinked status creates no inbox, installation lifecycle events are admitted", async () => {
 			const id = 93333, guid = randomUUID();

@@ -609,13 +609,15 @@ function readHttpLimits() {
 	};
 }
 
-function readFactory(): FactoryLimits & { reviewer: boolean; attachments: { bytes: number; perItem: number; accountBytes: number; days: number } } {
+function readFactory(): FactoryLimits & { githubItemsPerDay: number; githubDrafts: number; reviewer: boolean; attachments: { bytes: number; perItem: number; accountBytes: number; days: number } } {
 	const d = FACTORY_DEFAULTS;
 	const count = (name: string, fallback: number, max: number) => readCount(name, fallback, 1, max, false) ?? fallback;
 	const runningTurns = count("WLP_FACTORY_RUNNING_TURNS", d.runningTurns, 100);
 	// The factory's share leaves the person at least one turn of their own.
 	const factoryTurns = Math.min(count("WLP_FACTORY_TURNS", d.factoryTurns, 100), Math.max(1, runningTurns - 1));
 	return {
+		githubItemsPerDay: count("WLP_FACTORY_GITHUB_ITEMS_PER_DAY", 20, 1_000_000),
+		githubDrafts: count("WLP_FACTORY_GITHUB_DRAFTS", 20, 1_000_000),
 		reviewer: process.env.WLP_FACTORY_REVIEWER === "on",
 		attachments: {
 			bytes: count("WLP_FACTORY_ATTACHMENT_BYTES", ATTACHMENT_LIMITS.bytes, ATTACHMENT_LIMITS.bytes),

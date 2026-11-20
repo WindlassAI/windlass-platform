@@ -90,10 +90,12 @@ export type PermissionLevel = "read" | "write";
 export interface TokenScope {
 	/** GitHub's id of the one repository the token is good for; omitted only to list the installation's repositories. */
 	repositoryId?: GithubId;
-	permissions: { metadata: "read"; contents?: PermissionLevel; pull_requests?: PermissionLevel; checks?: "read"; statuses?: "read"; actions?: "read" };
+	permissions: { metadata: "read"; issues?: PermissionLevel; contents?: PermissionLevel; pull_requests?: PermissionLevel; checks?: "read"; statuses?: "read"; actions?: "read" };
 }
 
 export interface InstallationToken {
+	/** Repository returned by GitHub for a token requested by one numeric ID. */
+	repository?: Repository;
 	/** A secret. */
 	token: string;
 	expiresAt: number;
@@ -160,6 +162,13 @@ interface Call {
 const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {});
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 const whole = (value: unknown): number => (typeof value === "number" && Number.isSafeInteger(value) ? value : 0);
+
+function githubPerson(value: unknown, allowBot = false): GithubUser | null {
+	const row = record(value), id = githubId(row.id), login = text(row.login);
+	const person = row.type === "User" && /^[a-z0-9][a-z0-9_.-]{0,99}$/i.test(login);
+	const bot = allowBot && row.type === "Bot" && /^[a-z0-9][a-z0-9_.-]{0,99}\[bot\]$/i.test(login);
+	return id && (person || bot) ? { id, login } : null;
+}
 
 export class GithubApp {
 	private key: KeyObject | null = null;
@@ -321,7 +330,9 @@ export class GithubApp {
 		const token = text(fields.token);
 		const expiresAt = Date.parse(text(fields.expires_at));
 		if (token === "") throw new GithubError(answer.status, "the answer holds no token", "could not get a token for the installation");
-		return { token, expiresAt: Number.isFinite(expiresAt) ? expiresAt : Date.now() + 60 * 60 * 1000 };
+		const repository = scope.repositoryId && Array.isArray(fields.repositories)
+			? fields.repositories.map(r => this.repositoryOf(r)).find(r => r?.id === scope.repositoryId) : null;
+		return { token, ...(repository && { repository }), expiresAt: Number.isFinite(expiresAt) ? expiresAt : Date.now() + 60 * 60 * 1000 };
 	}
 
 	/** Revokes an installation token. Never throws: a token that could not be revoked runs out within its hour. */
@@ -546,23 +557,78 @@ export class GithubApp {
 		await this.call({ method: "POST", path: `/repos/${owner}/${name}/pulls/${number}/requested_reviewers`, body: { reviewers: logins }, auth: { bearer: token }, what: "request a review" });
 	}
 
-	async issueComments(token: string, owner: string, name: string, number: number) {
-		const { items } = await this.pages({ path: `/repos/${owner}/${name}/issues/${number}/comments`, auth: { bearer: token }, what: "list the pull request's comments" }, body => {
+	/** A scoped permission preflight by database ID needs no delivery-supplied name. Verify the principal too. */
+	async issuePermission(installation: GithubId, repositoryId: GithubId, user: GithubUser) {
+		try {
+			// A token requested with repository_ids returns its repositories. No separate metadata read
+			// is needed to deny a reader. The subject lookup below resolves the ID again at acceptance.
+			const { token, repository } = await this.installationToken(installation, { repositoryId, permissions: { metadata: "read" } });
+			if (!repository) return "none";
+			const { body } = await this.call({ path: `/repos/${repository.owner}/${repository.name}/collaborators/${encodeURIComponent(user.login)}/permission`, auth: { bearer: token }, what: "check the issue sender's permission" });
+			const row = record(body), level = row.permission;
+			if (githubId(record(row.user).id) !== user.id) return "none";
+			return level === "admin" || level === "write" || level === "maintain" ? "write" : level === "read" ? "read" : "none";
+		} catch (error) {
+			if (error instanceof GithubError && [404, 410, 422].includes(error.status)) return "none";
+			throw error;
+		}
+	}
+
+	// https://docs.github.com/en/rest/issues/issues#get-an-issue
+	async issue(token: string, repo: Repository, number: number) {
+		const path = `/repos/${repo.owner}/${repo.name}/issues/${number}`;
+		const { body } = await this.call({ path, auth: { bearer: token }, what: "read the issue" });
+		const row = record(body), id = decimalId(row.id), author = githubPerson(row.user, true);
+		if (!id || !author || row.number !== number || row.url !== this.settings.apiUrl + path || row.pull_request || !Array.isArray(row.labels)) return null;
+		return { id, author, number, title: text(row.title), body: text(row.body), url: this.repositoryUrl(repo.owner, repo.name) + "/issues/" + number,
+			state: text(row.state), labels: row.labels.map(v => record(v).name), created: Date.parse(text(row.created_at)), updated: Date.parse(text(row.updated_at)) };
+	}
+
+	// https://docs.github.com/en/rest/issues/comments#get-an-issue-comment
+	async issueCommand(token: string, repo: Repository, number: number, id: string) {
+		if (typeof id !== "string" || decimalId(id) !== id) return null;
+		const base = `/repos/${repo.owner}/${repo.name}/issues`;
+		const { body } = await this.call({ path: `${base}/comments/${id}`, auth: { bearer: token }, what: "read the addressed issue comment" });
+		const row = record(body), author = githubPerson(row.user);
+		if (!author || decimalId(row.id) !== id || row.issue_url !== `${this.settings.apiUrl}${base}/${number}`) return null;
+		return { id: "comment:" + id, author, body: text(row.body), at: Date.parse(text(row.created_at)) };
+	}
+
+	// Issue webhooks carry no labeler's event ID. Use the latest relevant transition in the issue's own history.
+	// https://docs.github.com/en/rest/issues/events#list-issue-events
+	async issueTransition(token: string, repo: Repository, number: number, action: string) {
+		const label = action === "labeled" || action === "unlabeled";
+		const { items, truncated } = await this.pages({ path: `/repos/${repo.owner}/${repo.name}/issues/${number}/events`, auth: { bearer: token }, what: "read the issue's events" }, body => {
+			if (!Array.isArray(body)) throw new Error("GitHub returned no issue event list");
+			return body.map(record);
+		});
+		if (truncated) return null;
+		const last = items.filter(r => label ? (r.event === "labeled" || r.event === "unlabeled") && record(r.label).name === "windlass"
+			: r.event === action || (action === "closed" && r.event === "reopened")).at(-1);
+		if (!last || last.event !== action) return null;
+		const id = decimalId(last.id), author = githubPerson(last.actor);
+		return id && author ? { id: "event:" + id, author, at: Date.parse(text(last.created_at)) } : null;
+	}
+
+	async issueComments(token: string, owner: string, name: string, number: number, requireComplete = false) {
+		const { items, truncated } = await this.pages({ path: `/repos/${owner}/${name}/issues/${number}/comments`, auth: { bearer: token }, what: "list the issue or pull request comments" }, body => {
 			if (!Array.isArray(body)) throw new Error("GitHub returned no comment list");
 			return body.map(entry => {
 				const fields = record(entry);
 				return { id: decimalId(fields.id), body: text(fields.body), author: text(record(fields.user).login) };
 			});
 		});
+		if (requireComplete && truncated) throw new Error("GitHub returned more issue comments than could be checked for the marker");
 		return items;
 	}
 
-	async createIssueComment(token: string, owner: string, name: string, number: number, body: string): Promise<void> {
-		await this.call({ method: "POST", path: `/repos/${owner}/${name}/issues/${number}/comments`, body: { body }, auth: { bearer: token }, what: "post the verdict comment" });
+	async createIssueComment(token: string, owner: string, name: string, number: number, body: string, what = "post the verdict comment") {
+		const answer = await this.call({ method: "POST", path: `/repos/${owner}/${name}/issues/${number}/comments`, body: { body }, auth: { bearer: token }, what });
+		return decimalId(record(answer.body).id);
 	}
 
-	async updateIssueComment(token: string, owner: string, name: string, id: string, body: string): Promise<void> {
-		await this.call({ method: "PATCH", path: `/repos/${owner}/${name}/issues/comments/${id}`, body: { body }, auth: { bearer: token }, what: "edit the verdict comment" });
+	async updateIssueComment(token: string, owner: string, name: string, id: string, body: string, what = "edit the verdict comment"): Promise<void> {
+		await this.call({ method: "PATCH", path: `/repos/${owner}/${name}/issues/comments/${id}`, body: { body }, auth: { bearer: token }, what });
 	}
 
 	/** Gives an open pull request another title and description. */

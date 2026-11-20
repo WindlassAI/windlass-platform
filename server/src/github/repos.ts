@@ -277,6 +277,19 @@ export async function resolveRepository(app: GithubApp, connection: StoredConnec
 	return { installation, repository, described: described(repository, level) };
 }
 
+/** An issue belongs to one installation. Do not follow a transfer into another installation,
+ * or use a cached name to clone, push or comment after a repository rename. */
+export async function resolveBoundRepository(app: GithubApp, connection: StoredConnection, repositoryId: GithubId, installationId: GithubId, need: "read" | "write") {
+	const installation = connection.installations.find(i => i.id === installationId);
+	if (!installation) throw new GithubProblem("github_gone", "The item's GitHub installation is no longer connected.");
+	return app.withToken(installationId, { repositoryId, permissions: { metadata: "read" } }, async token => {
+		const repository = await app.repositoryById(token, repositoryId);
+		const level = ownAccount(connection, installation) ? "admin" : await app.permission(token, repository.owner, repository.name, connection.user.login);
+		if (!allows(level, need) || (need === "write" && repository.archived)) throw new GithubProblem("github_denied", "GitHub no longer permits this action on the item's repository.");
+		return { installation, repository, described: described(repository, level) };
+	});
+}
+
 /** A repository's branch names, the default first. The connected user must be able to read it. */
 export async function listBranches(app: GithubApp, connection: StoredConnection, repositoryId: GithubId): Promise<{ branches: string[]; defaultBranch: string; more: boolean }> {
 	const { installation, repository } = await resolveRepository(app, connection, repositoryId, "read");

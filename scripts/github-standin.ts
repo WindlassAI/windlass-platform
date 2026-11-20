@@ -62,6 +62,12 @@ export interface StandinRepository {
 	jobLogs: Map<string, string>;
 }
 
+export interface StandinIssue {
+	id: number; number: number; repository: number; title: string; body: string; state: string; created_at: string; updated_at: string;
+	user: StandinUser; labels: string[]; events: { id: number; actor: StandinUser; event: string; label?: { name: string }; created_at: string }[];
+	comments: { id: bigint; user: { id?: number; login: string; type?: string }; body: string; created_at: string }[];
+}
+
 export interface StandinPull {
 	number: number;
 	repository: number;
@@ -163,6 +169,7 @@ export class GithubStandin {
 	readonly installations = new Map<number, StandinInstallation>();
 	readonly repositories = new Map<number, StandinRepository>();
 	readonly pulls: StandinPull[] = [];
+	readonly issues: StandinIssue[] = [];
 	readonly tokens = new Map<string, Token>();
 	readonly requests: StandinRequest[] = [];
 	readonly deliveries: { id: string; guid: string; installation_id: number | bigint | null; delivered_at: string; status_code: number; redelivery: boolean }[] = [];
@@ -287,6 +294,28 @@ export class GithubStandin {
 		this.commit(repository, defaultBranch, input.files ?? { "README.md": `# ${input.name}\n` }, "Initial commit");
 		input.installation?.repositories.add(repository.id);
 		return repository;
+	}
+
+	addIssue(repo: StandinRepository, number: number, user: StandinUser): StandinIssue {
+		const at = new Date().toISOString();
+		const issue: StandinIssue = { id: ++this.nextId, repository: repo.id, number, user, title: "A task from GitHub", body: "Add a short program.", state: "open",
+			created_at: at, updated_at: at, labels: [], events: [], comments: [] };
+		this.issues.push(issue);
+		return issue;
+	}
+
+	issueEvent(issue: StandinIssue, event: string, actor: StandinUser) {
+		const label = ["labeled", "unlabeled"].includes(event);
+		if (label) issue.labels = event === "labeled" ? ["windlass"] : [];
+		if (event === "closed" || event === "reopened") issue.state = event === "closed" ? "closed" : "open";
+		issue.updated_at = new Date().toISOString();
+		issue.events.push({ id: ++this.nextId, event, actor, ...(label && { label: { name: "windlass" } }), created_at: issue.updated_at });
+	}
+
+	issueComment(issue: StandinIssue, user: StandinUser, body: string) {
+		const comment = { id: ++this.nextCommentId, user: { ...user, type: "User" }, body, created_at: new Date().toISOString() };
+		issue.comments.push(comment);
+		return comment;
 	}
 
 	/** Adds a commit to a branch of a repository, as someone pushing to GitHub would. Returns the commit. */
@@ -626,7 +655,7 @@ export class GithubStandin {
 			const value = `ghs_${this.appId}_${randomBytes(30).toString("base64url")}`;
 			this.tokens.set(value, { kind: "installation", value, installation: installation.id, repositories: ids ?? undefined, permissions: fields.permissions, expiresAt: Date.now() + 3600_000, revoked: false });
 			this.minted.push({ installation: installation.id, repositoryIds: ids, permissions: fields.permissions ?? null, token: value });
-			return answer(201, { token: value, expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: fields.permissions ?? this.appPermissions, repository_selection: ids ? "selected" : "all" });
+			return answer(201, { token: value, expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: fields.permissions ?? this.appPermissions, ...(ids && { repositories: ids.map(id => this.repositoryJson(this.repositories.get(id)!)) }), repository_selection: ids ? "selected" : "all" });
 		}
 
 		const forget = /^\/applications\/([^/]+)\/token$/.exec(api);
@@ -717,7 +746,7 @@ export class GithubStandin {
 				const login = decodeURIComponent(permission[1] as string);
 				if (!this.users.has(login)) return answer(404, { message: "Not Found" });
 				const level = this.levelOf(repository, login);
-				return answer(200, { permission: level, role_name: level, user: { login } });
+				return answer(200, { permission: level, role_name: level, user: this.users.get(login) });
 			}
 
 			if (rest === "/branches" && method === "GET") {
@@ -767,6 +796,32 @@ export class GithubStandin {
 				if (logins.some((login) => !this.users.has(login) || this.levelOf(repository, login) === "none")) return answer(422, { message: "Reviewers must be collaborators" });
 				pull.requestedReviewers = [...new Set([...pull.requestedReviewers, ...logins])];
 				return answer(201, this.pullJson(pull));
+			}
+			const resource = /^\/issues\/(\d+)(?:\/(events|comments))?$/.exec(rest);
+			const issue = resource && this.issues.find(i => i.repository === repository.id && i.number === Number(resource[1]));
+			const base = `${this.apiUrl}/repos/${repository.owner}/${repository.name}/issues`;
+			if (issue) {
+				if (!this.allows(token, repository, "issues", method === "GET" ? "read" : "write")) return denied();
+				if (!resource[2] && method === "GET") return answer(200, { ...issue, url: base + "/" + issue.number, user: { ...issue.user, type: "User" }, labels: issue.labels.map(name => ({ name })) });
+				if (resource[2] === "events" && method === "GET") return answer(200, issue.events.map(e => ({ ...e, actor: { ...e.actor, type: "User" } })));
+				if (resource[2] === "comments" && method === "GET") return answer(200, issue.comments);
+				if (resource[2] === "comments" && method === "POST") {
+					if (this.commentFault === "refuse") return denied();
+					const comment = { id: ++this.nextCommentId, body: (body as { body: string }).body, user: { login: this.slug + "[bot]", type: "Bot" }, created_at: new Date().toISOString() };
+					issue.comments.push(comment);
+					if (this.commentFault === "lose_reply") return void response.destroy();
+					return answer(201, comment);
+				}
+			}
+			const commentResource = /^\/issues\/comments\/(\d+)$/.exec(rest);
+			if (commentResource) {
+				for (const i of this.issues.filter(i => i.repository === repository.id)) {
+					const comment = i.comments.find(one => String(one.id) === commentResource[1]);
+					if (!comment) continue;
+					if (!this.allows(token, repository, "issues", method === "GET" ? "read" : "write")) return denied();
+					if (method === "PATCH") comment.body = (body as { body: string }).body;
+					return answer(200, { ...comment, issue_url: base + "/" + i.number });
+				}
 			}
 			const comments = /^\/issues\/(\d+)\/comments$/.exec(rest);
 			if (comments && (method === "GET" || method === "POST")) {

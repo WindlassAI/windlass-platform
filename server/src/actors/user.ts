@@ -127,7 +127,7 @@ import { setGithubInstallations, updateGithubAccount } from "./github-account.js
 import { githubApp, type GithubApp } from "../github/app.js";
 import { isBranchName } from "../github/git.js";
 import type { StoredRepository } from "../github/publish.js";
-import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches, listRepositories, resolveRepository } from "../github/repos.js";
+import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches, listRepositories, resolveBoundRepository, resolveRepository } from "../github/repos.js";
 import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../account-defaults.js";
@@ -918,7 +918,7 @@ const KEYED = "agent";
  * several of those, and other calls run meanwhile; the session is in the index, and its key with it,
  * in one synchronous step at the end, or the call is refused and nothing of it is kept.
  */
-async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: { sessionId: string; itemId: string; role: "builder" | "reviewer" }): Promise<SessionSummary> {
+async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4]): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
 	let repoUrl = cleanRepoUrl(input.repoUrl);
 	const givenTitle = input.title === undefined || input.title === null ? null : cleanTitle(input.title);
@@ -939,7 +939,10 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (!isGithubId(id) || (branch !== undefined && branch !== null && !isBranchName(branch))) throw new UserError("Choose one of the listed repositories and one of its branches.", { code: "bad_input" });
 		const app = requireGithub();
 		try {
-			const { installation, repository } = await resolveRepository(app, requireConnection(c), id, "read");
+			const connection = requireConnection(c);
+			const { installation, repository } = item?.issue
+				? await resolveBoundRepository(app, connection, id, item.issue.installationId, "read")
+				: await resolveRepository(app, connection, id, "read");
 			repo = {
 				provider: "github",
 				id: repository.id,
@@ -949,6 +952,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 				private: repository.private,
 				url: app.repositoryUrl(repository.owner, repository.name),
 				installationId: installation.id,
+				...(item?.issue && { closesIssue: item.issue.number }),
 			};
 			repoUrl = app.cloneUrl(repository.owner, repository.name);
 		} catch (error) {
@@ -1273,6 +1277,7 @@ export const user = actor({
 		internalApiItemAttachment: (c, input: { token: string; id: string; attachment: string }) => itemActions.internalApiItemAttachment(c, input),
 		listItems: (c): ItemSummary[] => itemActions.listItems(c),
 		item: (c, id: string): Promise<ItemView> => itemActions.item(c, id),
+		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) => itemActions.internalGithubIntake(c, input, itemSession(c)),
 		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),
 		actOnItem: (c, input: { id: string; action: ItemAction }): Promise<ItemView> => itemActions.actOnItem(c, input),
 		factoryLimits: (c): FactoryLimits => itemActions.factoryLimits(c),

@@ -78,7 +78,35 @@ async function nudgeItems(d: Delivery, c: Ctx): Promise<"no item" | void> {
 	if (retry) throw new Error("A work item could not be reached");
 	if (!waiting) return "no item";
 }
+async function issueDelivery(d: Delivery, c: Ctx): Promise<"no item" | void> {
+	if (!d.repositoryId || (d.event !== "issues" && d.event !== "issue_comment")) return "no item";
+	const { sender, issue } = d.data;
+	const params = { params: serviceParams() };
+	if (d.event === "issue_comment" || d.action === "labeled") {
+		if (d.event === "issue_comment" && (d.data.isPullRequest || !["OWNER", "MEMBER", "COLLABORATOR"].includes(sender.association))) return "no item";
+		let link;
+		try { link = await c.client().githubAccount.get([String(sender.id)], params).internalWho(); }
+		catch (error) { if (!missingActor(error)) throw error; }
+		if (!link?.installations.includes(d.installationId)) {
+			console.log(`github.intake.unlinked installation=${d.installationId} delivery=${d.guid}`);
+			return "no item";
+		}
+		await c.client().user.get([link.uid], params).internalGithubIntake({ installationId: d.installationId, repositoryId: d.repositoryId, issue, senderId: sender.id,
+			...(d.event === "issue_comment" ? { via: "mention", commentId: d.data.commentId } : { via: "label" }) });
+		return;
+	}
+	if (d.action === "reopened") return "no item";
+	const directory = c.client().githubRepository.get([String(d.repositoryId)], params);
+	try {
+		const matches = await directory.internalFind({ issue, installationId: d.installationId });
+		for (const { uid, itemId } of matches) await c.client().workItem.get([uid, itemId], params).internalGithubIssue({
+			installationId: d.installationId, repositoryId: d.repositoryId, issue, action: d.action, senderId: sender.id });
+		if (!matches.length) return "no item";
+	} catch (error) { if (missingActor(error)) return "no item"; throw error; }
+}
 export const HANDLERS: Partial<Record<Delivery["event"], (delivery: Delivery, c: Ctx) => void | Promise<void | "no item">>> = {
+	issues: issueDelivery,
+	issue_comment: issueDelivery,
 	check_run: nudgeItems,
 	check_suite: nudgeItems,
 	status: nudgeItems,
