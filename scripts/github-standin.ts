@@ -512,7 +512,7 @@ export class GithubStandin {
 			title: pull.title,
 			body: pull.body,
 			head: { ref: pull.head },
-			base: { ref: pull.base },
+			base: { ref: pull.base, sha: this.branchHead(repository, pull.base) },
 		};
 	}
 
@@ -677,6 +677,19 @@ export class GithubStandin {
 			const denied = () => answer(403, { message: "Resource not accessible by integration" });
 
 			if (rest === "" && method === "GET") return answer(200, this.repositoryJson(repository));
+
+			if (method === "GET" && rest.startsWith("/contents/")) {
+				if (!this.allows(token, repository, "contents", "read")) return denied();
+				const ref = url.searchParams.get("ref") ?? "";
+				const path = decodeURIComponent(rest.slice("/contents/".length));
+				if (/^[0-9a-f]{40}$/.test(ref)) {
+					try {
+						const data = execFileSync("git", ["cat-file", "blob", `${ref}:${path}`], { cwd: repository.path, stdio: ["ignore", "pipe", "ignore"] });
+						return answer(200, { type: "file", encoding: "base64", path, content: data.toString("base64") });
+					} catch { /* No file at that revision. */ }
+				}
+				return answer(404, { message: "Not Found" });
+			}
 
 			const commitCi = /^\/commits\/([^/]+)\/(check-runs|status)$/.exec(rest);
 			const jobLog = /^\/actions\/jobs\/(\d+)\/logs$/.exec(rest);

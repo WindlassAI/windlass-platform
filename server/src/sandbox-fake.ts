@@ -107,6 +107,8 @@
  * Nothing here is told by the words of a message; the switches above are this layer's own.
  */
 
+import { hostToolsMeta, sessionOpenParams, turnHostTools } from "./sandbox/turn.js";
+import { REVIEW_TOOL } from "./factory/reviewer-task.js";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -197,6 +199,7 @@ const PROFILES: SandboxProfile[] = [
 ];
 
 interface FakeSandbox {
+	privateData: boolean;
 	id: string;
 	uid: string;
 	sessionId: string;
@@ -305,6 +308,12 @@ class FakeHandle implements SandboxHandle {
 	/** Understands the few commands the platform runs; anything else succeeds with no output. */
 	private interpret(command: string): ExecResult {
 		const files = this.sandbox.files;
+		const head = process.env.WLP_FAKE_REVIEW_HEAD;
+		if (head && command.includes('base64 -w0 "$patch"')) return ok("0\n");
+		if (head && command.includes('echo "wlp:committed $committed"')) return ok(`wlp:committed 1\nwlp:head ${head}\n`);
+		if (head && command.includes('echo "wlp:pushed $sha"')) return ok(`wlp:pushed ${head}\n`);
+		if (head && command.includes('echo "wlp:review ')) return !process.env.WLP_FAKE_REVIEW_MISSING && command.includes("git checkout -q -f --detach " + head) ? ok("wlp:review " + head) : { ...ok("wlp:missing"), exitCode: 1 };
+		if (head && command.includes("git diff --no-ext-diff --no-renames --name-only -z")) return ok("web/home.tsx\0");
 		if (/\bgit clone\b/.test(command)) {
 			if (command.includes("fail-clone")) {
 				return { exitCode: 128, timedOut: false, aborted: false, stdout: "", stderr: "fatal: repository 'https://example.com/fail-clone.git/' not found\n" };
@@ -434,7 +443,7 @@ class FakeSandboxes implements Sandboxes {
 		if (!this.profile(input.profile).available) throw new Error(`sandbox profile ${input.profile} is not available`);
 		await delay(20);
 		const id = `fake-${randomBytes(6).toString("hex")}`;
-		this.all.set(id, { id, uid: input.uid, sessionId: input.sessionId, profile: input.profile, state: "running", files: new Map(), windlass: new Map(), packed: null, shots: new Map(), copies: new Map() });
+		this.all.set(id, { id, privateData: input.privateData === true, uid: input.uid, sessionId: input.sessionId, profile: input.profile, state: "running", files: new Map(), windlass: new Map(), packed: null, shots: new Map(), copies: new Map() });
 		if (this.settings.createFails > 0) {
 			this.settings.createFails -= 1;
 			throw new Error("fake layer: the sandbox was made and the answer was lost (WLP_FAKE_CREATE_FAILS)");
@@ -1063,6 +1072,28 @@ class FakeWindlass implements Windlass {
 				// The platform's own tools the prompt names, called once before the turn ends, as a model calls a host tool: the call is the platform's to answer.
 				if (TERMINAL.has(recorded.type) && !platformCalled) {
 					platformCalled = true;
+					const offered = turnHostTools(input);
+					const params = sessionOpenParams(sandbox.cwd, hostToolsMeta(offered, input.reportScreenshots));
+					if (input.onReview || input.onReport) emit({ type: "fake.session_open", data: { method: continued ? "session/resume" : "session/new", params }, seq: 0 });
+					if (input.onReview) {
+						if (!this.sandboxes.all.get(sandbox.id)?.privateData || input.onPublish || input.onPush || input.onReport || input.onFetchBase || input.servers?.length || input.checks?.length || Object.keys(input.secrets?.env ?? {}).length || input.onQuestion || input.maxSteps !== 40) throw new Error("Reviewer received builder privileges.");
+						const ids = { messageId: "review_step", callId: "shell_1" };
+						emit({ type: "tool.called", data: { ...ids, name: "shell", input: JSON.stringify({ command: "pwd" }) }, seq: 0 });
+						emit({ type: "tool.settled", data: { ...ids, outcome: "success", output: "/workspace", display: { exitCode: 0 } }, seq: 0 });
+						const ask = (args: Record<string, unknown>) => offered.get(REVIEW_TOOL)!({ ...ids, callId: "filing", arguments: args }, signal ?? new AbortController().signal);
+						const available = await ask({ commands: true });
+						const ref = available.split(", ").at(-1)?.split(" ").at(-1);
+						const picture = text.includes("## screenshots");
+						const file = ".wlp-shots/home.png";
+						if (picture && process.env.WLP_FAKE_ATTACHMENT_PNG) this.sandboxes.all.get(sandbox.id)!.shots.set(file, Buffer.from(process.env.WLP_FAKE_ATTACHMENT_PNG, "base64"));
+						const blocks = [{ kind: "summary", text: "Checked the change in my own checkout." }, { kind: "text", text: "Ran pwd.", refs: [{ ref }] }];
+						if (!picture && text.includes("(try-disabled-shot)")) {
+							const refusal = await ask({ recommendation: "approve", blocks: [...blocks, { kind: "screenshot", file, caption: "Home" }] });
+							emit({ type: "fake.review_reply", data: { refusal }, seq: 0 });
+						}
+						const answer = await ask({ recommendation: "approve", blocks: [...blocks, ...(picture ? [{ kind: "screenshot", file, caption: "Reviewed home page" }] : [])] });
+						emit({ type: "fake.review_reply", data: { answer }, seq: 0 });
+					}
 					for (const [word, name, run] of [
 						["(fetch)", "fetch_base", input.onFetchBase],
 						["(push)", "push", input.onPush],

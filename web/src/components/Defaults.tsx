@@ -11,7 +11,7 @@
  * user's, is shown as it was saved and said to be ignored. The models are the user's own
  * (`useModels`), and a line under the field says whose list it is.
  */
-import type { RepositoryDefaults, SandboxProfileId } from "@contract";
+import type { AccountDefaults, SandboxProfileId } from "@contract";
 import { useId, useState } from "react";
 import { modelIds, modelsNote } from "../lib/models";
 import { type StartingChoices, startingChoices } from "../lib/repositories";
@@ -32,15 +32,16 @@ export function DefaultsSection({
 	id: string;
 	/** What these defaults are for, in a sentence. */
 	lede: string;
-	defaults: RepositoryDefaults;
+	/** A sandbox and a model: a repository's defaults carry more (`screenshots`), which this section neither shows nor saves. */
+	defaults: AccountDefaults;
 	whose: "repository" | "account";
 	/** The defaults of the level below that can be used: the account's, on a repository's page. Null on the account's own page. */
 	under: Pick<StartingChoices, "profile" | "model"> | null;
 	/** The models the user may choose, as the page read them. */
 	models: ModelsState;
 	/** Saves the fields the change names and answers with what is saved then. */
-	save(change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
-	onSaved(next: RepositoryDefaults): void;
+	save(change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
+	onSaved(next: AccountDefaults): void;
 }) {
 	const { platform, explain } = useApp();
 	const ids = { profile: useId(), model: useId(), profileNote: useId(), modelNote: useId() };

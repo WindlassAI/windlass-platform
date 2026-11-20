@@ -213,6 +213,95 @@ const installation = standin.addInstallation("ada", "User");
 const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation });
 standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "read", statuses: "read", actions: "read" };
 
+if (!only.length || only.some(name => name.startsWith("reviewer"))) {
+	const server = new Server();
+	try {
+		const head = "a".repeat(40);
+		setCi(harbor, head, "success");
+		const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=";
+		const { config } = await import("../server/src/config.js");
+		const { client, user, auth } = await world(server, standin, { WLP_SECRET: config.secret.toString(), WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_BACKUP_DIR: join(server.storage, "shots"), WLP_FAKE_BUCKET_SIGNING_SECRET: randomBytes(32).toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_IDLE_SUSPEND_MS: "1000" });
+		await check("reviewer: actual turn offer, independent filing, head, comment, ownership and both ledgers", async () => {
+			const profile = "docker-windlass-sandbox";
+			await user.saveRepositorySecret({ repositoryId: harbor.id, profile, name: "BUILD_ONLY", scope: "agent", value: "fixture-builder-only-value" });
+			await user.saveRepositorySecret({ repositoryId: harbor.id, profile, name: "SETUP_ONLY", scope: "setup", value: "fixture-setup-only-value" });
+			await user.saveAccountSecret({ profile, name: "ACCOUNT_ONLY", scope: "agent", value: "fixture-account-only-value" });
+			await user.savePersonalServer({ name: "builder-notes", definition: { command: "cat" } });
+			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "build", command: "true" }] });
+			await user.saveRepositorySetup({ repositoryId: harbor.id, command: "true" });
+			const item = await user.createItem({ repository: { id: harbor.id }, title: "Review the homepage", body: "Change the homepage. (report)", start: true });
+			const view = await untilItem(user, item.id, "the second review handoff", v => v.state === "review", CI_WAIT_MS);
+			assert(view.reviewerSessionId, "missing reviewer session");
+			const keys = [auth.profile.uid, view.reviewerSessionId];
+			const session = client.agentSession.get(keys, { params: { token: auth.token } });
+			const snapshot = await session.snapshot();
+			const event = snapshot.timeline.find(e => e.kind === "windlass" && e.event.type === "fake.session_open");
+			const open = event?.kind === "windlass" ? event.event.data as { method: string; params: { _meta: { windlass: { hostTools: Array<{ name: string; timeoutSeconds?: number; effect: string; untrustedResult: boolean }> } } } } : null;
+			const tools = open?.params._meta.windlass.hostTools;
+			assert(open?.method === "session/new" && tools?.length === 1 && tools[0].name === "file_review" && tools[0].timeoutSeconds === 180 && tools[0].effect === "read" && !tools[0].untrustedResult, `actual reviewer session/new: ${JSON.stringify(open)}`);
+			const setup = snapshot.timeline.find(e => e.kind === "platform" && e.text.includes("as environment variables"));
+			assert(setup?.kind === "platform" && setup.text.includes("SETUP_ONLY") && !setup.text.includes("BUILD_ONLY") && !setup.text.includes("ACCOUNT_ONLY"), "reviewer setup secret scopes differ");
+			assert(view.review?.state === "filed" && view.review.recommendation === "approve" && view.reviews.length === 1, "missing filed recommendation");
+			const [r] = view.reviews;
+			const [shot] = r.screenshots;
+			assert(r.head === head && r.base === standin.branchHead(harbor, "main") && r.by.sessionId === view.reviewerSessionId && r.verdictId === view.verdicts[0]?.id && view.verdicts.length === 1, "review provenance or strip differs");
+			assert(r.blocks.some(b => b.kind === "text" && b.refs[0]?.ref === "command/review_step/shell_1") && r.records.some(record => record.kind === "command" && record.command === "pwd" && record.exitCode === 0), "missing reviewer command");
+			assert(shot?.by === "reviewer" && shot.sessionId === view.reviewerSessionId && shot.head === r.head && shot.width === 1 && shot.state === "kept" && r.blocks.some(b => b.kind === "screenshot" && b.attachment === shot.id) && (await user.itemAttachmentLinks(item.id)).some(link => link.id === shot.id), "missing reviewer screenshot");
+			const pull = standin.pulls.find(p => p.repository === harbor.id && p.number === view.pullRequest?.number)!;
+			const comment = await waitFor("review comment", () => pull.comments[0]?.body, 30000);
+			assert(comment.includes("Second review at aaaaaaa: approves.") && comment.indexOf("Builder's report") > comment.indexOf("Second review at") && comment.includes("1 screenshot"), "comment order or review text incorrect");
+			const own = (await user.listSessions()).filter(s => s.item?.id === item.id);
+			assert(snapshot.summary.item?.id === item.id && snapshot.summary.item.role === "reviewer" && own.some(s => s.id === item.sessionId && s.item?.role === "builder"), "sessions do not belong to the item");
+			assert(!own.some(s => s.id === view.reviewerSessionId), "reviewer was listed as an agent");
+			await refused(() => session.prompt({ text: "another prompt" }), "item_session");
+			const { serviceParams } = await import("../server/src/auth.js");
+			await refused(() => client.agentSession.get(keys, { params: serviceParams() }).internalPublish({ key: "test", title: "No", body: "" }), "reviewer");
+			const receipt = await client.agentSession.get(keys, { params: serviceParams() }).internalCheckTurn({ turn: r.id, check: "replay" });
+			assert(receipt?.kind === "review_ended" && receipt.review?.id === r.id, "review receipt was lost");
+			await client.workItem.get([auth.profile.uid, view.id], { params: serviceParams() }).internalFact(receipt);
+			const replay = await user.item(view.id);
+			assert(replay.reviews.length === 1 && replay.verdicts.length === 1 && replay.spent.turns === 2 && replay.revision === view.revision, "duplicate review receipt changed the item");
+			const ledger = (await user.usage()).today.filter(r => r.sessionId === view.sessionId || r.sessionId === view.reviewerSessionId);
+			assert(ledger.length === 2 && ledger.every(row => row.seconds > 0) && view.spent.hostedSeconds === ledger.reduce((n, row) => n + row.seconds, 0), `item ${view.spent.hostedSeconds}s; ledger ${JSON.stringify(ledger)}`);
+			return `file_review alone; one verdict, one review, a verified PNG and ${view.spent.hostedSeconds}s across two sessions`;
+		});
+		await check("reviewer: networked commands hand over with the profile reason", async () => {
+			const item = await user.createItem({ repository: { id: harbor.id }, profile: "docker-hardened", title: "Networked profile", body: "Change the homepage.", start: true });
+			const view = await untilItem(user, item.id, "the handoff without a reviewer", v => v.state === "review", CI_WAIT_MS);
+			assert(view.reviewerSessionId === null && !view.reviews.length && view.review?.state === "off" && view.reviewNone?.includes("commands would run with the network"), "networked commands admitted a reviewer");
+			return view.reviewNone ?? undefined;
+		});
+		await check("reviewer: repository screenshot opt-out reaches both agents", async () => {
+			await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: false });
+			const item = await user.createItem({ repository: { id: harbor.id }, title: "Review without pictures", body: "Change the homepage. (report) (screenshot) (try-disabled-shot)", start: true });
+			const v = await untilItem(user, item.id, "the text-only review", v => v.state === "review", CI_WAIT_MS);
+			const timeline = async (id: string) => JSON.stringify((await client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } }).snapshot()).timeline);
+			const builder = await timeline(item.sessionId), reviewer = await timeline(v.reviewerSessionId!);
+			assert(!v.report && builder.includes("Screenshots are turned off") && !builder.includes("Screenshots: files you saved"), "builder offered or accepted screenshots");
+			assert(v.reviews[0]?.screenshots.length === 0 && reviewer.includes("Screenshots are turned off") && !reviewer.includes("## Screenshots"), "reviewer offered or accepted screenshots");
+			return "both filings enforced repository settings";
+		});
+	} finally { await server.stop(); server.remove(); }
+}
+await check("reviewer: a pull ref missing the expected commit hands over before Windlass starts", async () => {
+	const server = new Server();
+	try {
+		const head = "a".repeat(40);
+		setCi(harbor, head, "success");
+		const { user, client, auth } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_REVIEW_MISSING: "1" });
+		const item = await user.createItem({ repository: { id: harbor.id }, title: "Review the pushed commit", body: "Change the homepage.", start: true });
+		const view = await untilItem(user, item.id, "the refused checkout", v => v.state === "review", CI_WAIT_MS);
+		assert(view.reviewerSessionId && view.review?.state === "none" && !view.reviews.length && view.reviewNone?.includes("checkout of aaaaaaa failed"), "missing a reason for the unavailable head");
+		const snapshot = await client.agentSession.get([auth.profile.uid, view.reviewerSessionId], { params: { token: auth.token } }).snapshot();
+		assert(!snapshot.timeline.some(e => e.kind === "windlass" && e.event.type === "fake.session_open"), "Windlass started on the wrong head");
+		return view.reviewNone ?? undefined;
+	} finally { await server.stop(); server.remove(); }
+});
+if (only.length && only.every(name => name.startsWith("reviewer"))) {
+	await standin.stop();
+	process.exit(failed ? 1 : 0);
+}
+
 // The actions the factory's schedules fire are looked up by name when they fire: each must be registered under that name.
 await check("schedules: every action the factory schedules is registered under the name it is scheduled by", async () => {
 	process.env.WLP_SECRET ??= randomBytes(24).toString("hex");
@@ -290,7 +379,7 @@ async function drained(jobs: Promise<unknown>[]): Promise<void> {
 async function memoryChecks(): Promise<void> {
 	process.env.WLP_SECRET ??= randomBytes(24).toString("hex");
 	process.env.WLP_SANDBOX = "fake";
-	const { workItem, REPORTS_TABLE } = await import("../server/src/actors/work-item.js");
+	const { workItem, REPORTS_TABLE, REVIEWS_TABLE } = await import("../server/src/actors/work-item.js");
 	const { advance, createItem, currentKey } = await import("../server/src/factory/blueprint.js");
 	const { FACTORY_DEFAULTS } = await import("../server/src/factory/budget.js");
 	const { serviceParams } = await import("../server/src/auth.js");
@@ -323,7 +412,7 @@ async function memoryChecks(): Promise<void> {
 	});
 	/** An item driven through the blueprint by hand, as its actor would be. */
 	const machine = () => {
-		let item: Item = createItem({ id: "i_memory", task: { title: "T", body: "B", acceptance: [], base: "main" }, place: { kind: "hosted" }, budget: { ...FACTORY_DEFAULTS.item } });
+		let item: Item = createItem({ id: "i_memory", reviewer: { off: "deployment" }, task: { title: "T", body: "B", acceptance: [], base: "main" }, place: { kind: "hosted" }, budget: { ...FACTORY_DEFAULTS.item } });
 		let at = T;
 		return {
 			get item() {
@@ -346,7 +435,8 @@ async function memoryChecks(): Promise<void> {
 		await db.execute("CREATE TABLE effects (id TEXT PRIMARY KEY, effect TEXT, due_at INTEGER, attempts INTEGER)");
 		await db.execute("CREATE TABLE verdicts (id TEXT PRIMARY KEY, run INTEGER, head TEXT, at INTEGER, data TEXT)");
 		await db.execute(REPORTS_TABLE);
-		const meta = { uid: "u", sessionId: "s", repository: { id: 1 }, source: "web", createdAt: T, updatedAt: T, verdict: null, ledger: { seconds: 0, holds: [] } };
+		await db.execute(REVIEWS_TABLE);
+		const meta = { uid: "u", sessionId: "s", reviewerSessionId: null, reviewBase: null, handoffReview: null, repository: { id: 1 }, source: "web", createdAt: T, updatedAt: T, verdict: null, ledger: { seconds: 0, holds: [] } };
 		await db.execute("INSERT INTO item VALUES (1, ?, ?, NULL)", item.revision, JSON.stringify({ item, meta }));
 		const jobs: Promise<unknown>[] = [];
 		const schedules: number[] = [];
@@ -858,7 +948,7 @@ async function memoryChecks(): Promise<void> {
 		m.send({ kind: "start" });
 		m.send({ kind: "turn_started" });
 		// The first turn's 80 s leave the ledger's window before the second's 30 s are counted: the ledger alone would say 30.
-		const reads = [[{ hold: "h_first", seconds: 80 }], [{ hold: "h_second", seconds: 30 }]];
+		const reads = [[{ hold: "h_first", session: "s", seconds: 80 }], [{ hold: "h_second", session: "s", seconds: 30 }]];
 		const actor = await itemActor(m.item, { facts: async () => ({ entries: reads.shift() ?? [], openItems: 1 }) });
 		const failing = { turn: 1, state: "unresolved", run: { turn: 1, at: T, checks: [{ name: "test", command: "npm test", whose: "user", required: true, status: "failed", exitCode: 1, durationMs: 1, sentBack: 3, output: "expected 3" }] }, unrun: [], replaced: false, changedAfter: false };
 		// Two different checks fail, so the second failure is no repeat of the first and the budget is what decides.
@@ -878,9 +968,9 @@ async function memoryChecks(): Promise<void> {
 		m.send({ kind: "turn_started" });
 		// The second answer is older than the first, and lists one hold fewer; the third is as the first.
 		const reads = [
-			[{ hold: "h_one", seconds: 50 }, { hold: "h_two", seconds: 20 }],
-			[{ hold: "h_one", seconds: 50 }],
-			[{ hold: "h_one", seconds: 50 }, { hold: "h_two", seconds: 20 }],
+			[{ hold: "h_one", session: "s", seconds: 50 }, { hold: "h_two", session: "s", seconds: 20 }],
+			[{ hold: "h_one", session: "s", seconds: 50 }],
+			[{ hold: "h_one", session: "s", seconds: 50 }, { hold: "h_two", session: "s", seconds: 20 }],
 		];
 		const actor = await itemActor(m.item, { facts: async () => ({ entries: reads.shift() ?? [], openItems: 1 }) });
 		const failing = { turn: 1, state: "unresolved", run: { turn: 1, at: T, checks: [{ name: "test", command: "npm test", whose: "user", required: true, status: "failed", exitCode: 1, durationMs: 1, sentBack: 3, output: "expected 3" }] }, unrun: [], replaced: false, changedAfter: false };
@@ -959,8 +1049,8 @@ async function memoryChecks(): Promise<void> {
 		m.send({ kind: "start" });
 		m.send({ kind: "turn_started" });
 		// The turn ends before its last stretch is settled; the push that follows reads it.
-		const reads = [[], [{ hold: "h_final", seconds: 28 }]];
-		const actor = await itemActor(m.item, { facts: async () => ({ entries: reads.shift() ?? [{ hold: "h_final", seconds: 28 }], openItems: 1 }) });
+		const reads = [[], [{ hold: "h_final", session: "s", seconds: 28 }]];
+		const actor = await itemActor(m.item, { facts: async () => ({ entries: reads.shift() ?? [{ hold: "h_final", session: "s", seconds: 28 }], openItems: 1 }) });
 		await actions.internalFact(actor.c, { kind: "turn_ended", at: Date.now(), key: currentKey(m.item), outcome: "succeeded", verified: null, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
 		await actor.drain();
 		const page = await actions.internalView(actor.c);
@@ -1015,7 +1105,7 @@ async function machineChecks(): Promise<void> {
 	const server = new Server();
 	const runner = new StandInRunner(API, ENDPOINT);
 	try {
-		const { user } = await world(server, standin, { WLP_MACHINES: "1", WLP_PUBLIC_URL: API, WLP_FACTORY_HOSTED_RUNNING: "1", WLP_FACTORY_ITEM_HOSTED_SECONDS: "1" });
+		const { user } = await world(server, standin, { WLP_MACHINES: "1", WLP_FACTORY_REVIEWER: "on", WLP_PUBLIC_URL: API, WLP_FACTORY_HOSTED_RUNNING: "1", WLP_FACTORY_ITEM_HOSTED_SECONDS: "1" });
 		await runner.pair(user);
 		const place = { kind: "machine" as const, machineId: runner.id.machineId };
 		const task = { repository: { id: harbor.id }, title: "On my machine", body: "Write a short program.", place };
@@ -1063,6 +1153,7 @@ async function machineChecks(): Promise<void> {
 			setCi(harbor, standin.pulls.find(p => p.repository === harbor.id && p.number === pushed.pullRequest!.number)!.head, "success");
 			const review = await untilItem(user, item.id, "review after reconnection", view => view.state === "review", CI_WAIT_MS);
 			assert([...runner.boxes.values()].some(box => box.sessionId === item.sessionId && box.profile === "docker-windlass-sandbox"), "missing fallback to the machine's first available profile");
+			assert(review.reviewerSessionId === null && review.review?.state === "off" && review.reviews.length === 0, "a machine item admitted a second reviewer");
 			assert(review.spent.turns === 1 && review.spent.hostedSeconds === 0, JSON.stringify(review.spent));
 			return waiting.wait.sentence;
 		});
@@ -1274,6 +1365,7 @@ try {
 			standin.commentFault = null;
 		}
 		const original = checkHandoff(pull, handed);
+		assert(handed.review?.state === "off" && !handed.reviews.length && handed.reviewerSessionId === null && handed.spent.turns === 1, "reviewer-off item must hand over after its builder alone");
 		const blocks = handed.report?.blocks;
 		assert(blocks?.length === 2 && blocks[0].kind === "text" && blocks[0].heading === "What it did" && blocks[0].text === "What the fake agent did." && blocks[1].kind === "text" && blocks[1].heading === "Where to look" && blocks[1].text === "notes/turn-1.md", "the reviewed page lost the filed blocks after restart");
 		assert(original.body.includes("What the fake agent did\\.") && original.body.includes("notes/turn-1\\.md"), "the marked comment is missing the builder’s report");

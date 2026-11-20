@@ -135,12 +135,11 @@ export function Home() {
 	const { sessions, connection, error } = useSessions();
 	const now = useNow(15_000);
 	const agents = sessions === null ? null : ownAgents(sessions);
-	const working = sessions?.filter((session) => session.status !== "idle").length ?? 0;
 	// The ceiling on running turns is the deployment's: the user's agents on the platform's sandboxes and every work item's turn count against it.
 	const ceiling = useFactoryLimits().value?.runningTurns ?? null;
 	const counts = workingCounts(sessions ?? []);
 	// Asked again when a session starts or stops working, and when one is added or deleted.
-	const usage = useAllowance(`${working}:${sessions?.length ?? 0}`);
+	const usage = useAllowance(`${counts.ceilinged + counts.onMachines}:${sessions?.length ?? 0}`);
 
 	const groups = sessions === null ? [] : groupSessions(sessions);
 	const saved = useSavedWithoutAgents(sessions);

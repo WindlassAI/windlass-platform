@@ -134,6 +134,7 @@ export interface Pull {
 	head: string;
 	/** The commit its branch is at, as GitHub has it; "" when GitHub did not say. */
 	headSha: string;
+	baseSha: string;
 	base: string;
 	requestedReviewers: string[];
 }
@@ -508,7 +509,7 @@ export class GithubApp {
 		const merged = fields.merged === true || (fields.merged_at !== null && fields.merged_at !== undefined);
 		const state = merged ? "merged" : text(fields.state) === "closed" ? "closed" : fields.draft === true ? "draft" : "open";
 		const requestedReviewers = Array.isArray(fields.requested_reviewers) ? fields.requested_reviewers.map((user) => text(record(user).login)) : [];
-		return { number, requestedReviewers, url: text(fields.html_url), state, mergeable: typeof fields.mergeable === "boolean" ? fields.mergeable : null, title: text(fields.title), body: text(fields.body), head: text(record(fields.head).ref), headSha: text(record(fields.head).sha), base: text(record(fields.base).ref) };
+		return { number, requestedReviewers, url: text(fields.html_url), state, mergeable: typeof fields.mergeable === "boolean" ? fields.mergeable : null, title: text(fields.title), body: text(fields.body), head: text(record(fields.head).ref), headSha: text(record(fields.head).sha), baseSha: text(record(fields.base).sha), base: text(record(fields.base).ref) };
 	}
 
 	async createPull(token: string, owner: string, name: string, input: { title: string; body: string; head: string; base: string }): Promise<Pull> {
@@ -523,6 +524,15 @@ export class GithubApp {
 		const pull = this.pullOf(answer.body);
 		if (!pull) throw new GithubError(answer.status, "the answer describes no pull request", `could not read pull request #${number} of ${owner}/${name}`);
 		return pull;
+	}
+
+	async fileAt(token: string, owner: string, name: string, path: string, sha: string): Promise<string> {
+		if (!/^[0-9a-f]{40}$/.test(sha) || path.split("/").some(part => !part || part === "." || part === "..")) throw new Error("Invalid file location.");
+		const encoded = path.split("/").map(encodeURIComponent).join("/");
+		const answer = await this.call({ path: `/repos/${owner}/${name}/contents/${encoded}`, query: { ref: sha }, auth: { bearer: token }, what: "read the reviewed file" });
+		const file = record(answer.body);
+		if (file.type !== "file" || file.encoding !== "base64" || typeof file.content !== "string" || file.path !== path) throw new Error("GitHub did not return the file contents.");
+		return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(file.content, "base64"));
 	}
 
 	async requestReviewers(token: string, owner: string, name: string, number: number, logins: string[]): Promise<void> {

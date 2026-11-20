@@ -123,6 +123,7 @@
  * stays as Windlass reported it.
  */
 
+import { REVIEW_TOOL } from "../factory/reviewer-task.js";
 import { FETCH_BASE_TOOL, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools } from "../agent-publish.js";
 import { config } from "../config.js";
 import type { WindlassEvent } from "../contract.js";
@@ -137,6 +138,29 @@ import { demoScript } from "./demo.js";
 import { ACCESS_TOKEN_FILE_ENV, type Failure, OUTDATED_SANDBOX, WindlassOutdatedError, handedInFailure, handedInProblem, handedInProblemInWords, tokenRanOut, tokenSourceFailure } from "./handoff.js";
 import { type ProcessEnd, type SandboxProcess, type TurnSandbox, isTurnSandbox, randomId } from "./provider.js";
 import { TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
+
+export function turnHostTools(input: RunTurnInput) {
+	const tools = new Map<string, (call: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>>();
+	if (input.onReview) {
+		tools.set(REVIEW_TOOL, input.onReview);
+		return tools;
+	}
+	if (input.onPublish) tools.set(PUBLISH_TOOL, input.onPublish);
+	else if (input.onReport) tools.set(REPORT_TOOL, input.onReport);
+	if (input.onPush && input.onFetchBase) {
+		tools.set(PUSH_TOOL, input.onPush);
+		tools.set(FETCH_BASE_TOOL, input.onFetchBase);
+	}
+	return tools;
+}
+
+export function sessionOpenParams(cwd: string, meta: Record<string, unknown>) {
+	return { cwd, mcpServers: [], _meta: { windlass: meta } };
+}
+
+export function hostToolsMeta(tools: ReturnType<typeof turnHostTools>, screenshots?: boolean) {
+	return { hostTools: platformTools({ publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL), review: tools.has(REVIEW_TOOL), screenshots }, config.questionTimeoutMs) };
+}
 
 /** The key of Windlass's extensions in `_meta` and in an error's `data`, and the prefix of its methods. */
 const NS = "windlass";
@@ -537,7 +561,7 @@ class Turn {
 	/** The extension methods this engine serves, as the same answer lists them. */
 	private methods: string[] = [];
 	/** The platform's tools this turn declares, by name, each with its callback; empty for an engine that takes none. */
-	private readonly hostTools = new Map<string, (call: TurnPublishRequest, signal: AbortSignal) => Promise<string> | string>();
+	private hostTools = new Map<string, (call: TurnPublishRequest, signal: AbortSignal) => Promise<string> | string>();
 	/** True while this turn has servers or checks of its own in that file: they are taken out when it ends. */
 	private configWritten = false;
 	/** What Windlass had for checks when its session was opened; null until the file was dealt with. */
@@ -608,6 +632,8 @@ class Turn {
 				const env = {
 					// A server that lives for one turn must not start other sessions' wake-up turns, as the command line's one-prompt runs do not.
 					WINDLASS_WAKE: "off",
+					// A base setup may have written a user config with auto-start MCP servers.
+					...(input.onReview ? { XDG_CONFIG_HOME: `/tmp/wlp-review-config-${randomId(16)}` } : {}),
 					// Only warnings and errors on stderr: that is what `stderrTail` is for.
 					WINDLASS_ACP_LOG: "warn",
 					...(scriptPath === null ? {} : { WINDLASS_ACP_SCRIPT: scriptPath }),
@@ -770,15 +796,13 @@ class Turn {
 			}
 			this.openKeys = openKeysIn(init);
 			this.methods = methodsIn(init);
+			if (input.onReview && ["agent", "children", "requiredChecks", "hostTools"].some(key => !this.openKeys.includes(key))) {
+				this.failure = { reason: "engine", message: "This Windlass cannot open a restricted reviewer session with file_review." };
+				return;
+			}
 			// Declared only to an engine that takes them: one that does not would leave the key unread, and a call could never come.
 			if (this.openKeys.includes("hostTools")) {
-				const { onPublish, onReport, onPush, onFetchBase } = input;
-				if (onPublish !== undefined) this.hostTools.set(PUBLISH_TOOL, onPublish);
-				if (onReport !== undefined && onPublish === undefined) this.hostTools.set(REPORT_TOOL, onReport);
-				if (onPush !== undefined && onFetchBase !== undefined) {
-					this.hostTools.set(PUSH_TOOL, onPush);
-					this.hostTools.set(FETCH_BASE_TOOL, onFetchBase);
-				}
+				this.hostTools = turnHostTools(input);
 			}
 			// An engine that does not take the list leaves it unread, and its commands would get what its environment holds.
 			const withheld = input.secrets?.withholdEnv ?? [];
@@ -845,6 +869,7 @@ class Turn {
 			...(input.model === undefined ? {} : { model: input.model }),
 			...(input.effort === undefined ? {} : { effort: input.effort }),
 			approval: this.approval,
+			...(input.onReview ? { agent: "none", children: false } : {}),
 			// Whether anyone can answer a question. Without someone, a call that would ask is refused at once and the model is told.
 			attended: input.onQuestion !== undefined,
 			unattended: "deny",
@@ -857,11 +882,11 @@ class Turn {
 			...(this.openKeys.includes("requiredChecks") ? { requiredChecks: windlassChecks(input.checks ?? [], true) } : {}),
 			// The platform's own tools: not stored with the session either, so declared at every open, an empty list too.
 			...(this.openKeys.includes("hostTools")
-				? { hostTools: platformTools({ publish: this.hostTools.has(PUBLISH_TOOL), report: this.hostTools.has(REPORT_TOOL), push: this.hostTools.has(PUSH_TOOL) }, config.questionTimeoutMs) }
+				? hostToolsMeta(this.hostTools, input.reportScreenshots)
 				: {}),
 		};
 		if (input.windlassSessionId === undefined) {
-			const made = await peer.request<{ sessionId?: unknown }>("session/new", { cwd: this.sandbox.cwd, mcpServers: [], _meta: { [NS]: meta } }, { timeoutMs: OPEN_TIMEOUT_MS });
+			const made = await peer.request<{ sessionId?: unknown }>("session/new", sessionOpenParams(this.sandbox.cwd, meta), { timeoutMs: OPEN_TIMEOUT_MS });
 			if (typeof made?.sessionId !== "string") throw new AcpError("the engine opened a session without naming it", 0, null);
 			this.adopt(made.sessionId);
 			return;

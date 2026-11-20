@@ -23,6 +23,7 @@
  *   WLP_CHECK_SECTIONS=connect,publish   run only the sections whose names start with one of these
  */
 
+import { checkoutReview, reviewCheckoutScript } from "../server/src/github/git.js";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -1243,6 +1244,9 @@ await section("docker: the same git commands in a container of the sandbox image
 		expect("nothing of the push is left in /tmp", !/wlp-push|wlp-publish|wlp-message/.test(search.stdout));
 		const arguments_ = execFileSync("ps", ["-eo", "args"], { encoding: "utf8" });
 		expect("and the server's own process list never had one either", tokens.every((token) => !arguments_.includes(token)));
+		const reviewDir = "/tmp/reviewer-workspace";
+		await sandbox.run(`mkdir -p ${reviewDir}`);
+		await verifyReviewCheckout({ ...sandbox, cwd: reviewDir, run: (command, options) => sandbox.run(command, { cwd: reviewDir, ...options }) });
 	} finally {
 		try {
 			docker(["rm", "-f", name]);
@@ -1347,6 +1351,35 @@ await section("a replaced sandbox: the setup command runs on the base, never on 
 		`${head} ${pushed.head} | ${seen.stdout.split("\n").join(" | ")}`,
 	);
 });
+
+async function verifyReviewCheckout(box: SandboxHandle) {
+	const repository = stored(harbor, adaInstallation);
+	const base = standin.branchHead(harbor, "main")!;
+	standin.commit(harbor, `review-fixture-${base.slice(0, 10)}`, { "review.txt": "review me\n" }, "Head under review", "main");
+	const head = standin.branchHead(harbor, `review-fixture-${base.slice(0, 10)}`)!;
+	execFileSync("git", ["update-ref", "refs/pull/987/head", head], { cwd: harbor.path });
+	standin.commit(harbor, "main", { "base-moved": "later" }, "Base moved after pinning");
+	const refs = () => execFileSync("git", ["ls-remote", harbor.path], { encoding: "utf8" });
+	const before = refs();
+	const at = (sha: string) => app.withToken(adaInstallation.id, { repositoryId: harbor.id, permissions: { contents: "read", metadata: "read" } }, token => app.fileAt(token, harbor.owner, harbor.name, "review.txt", sha));
+	expect("GitHub supplies the exact contents at the requested commit", await at(head) === "review me\n" && await at(base).then(() => false, () => true));
+	await publish.cloneRepository(app, adaConnection, repository, box, undefined, undefined, base);
+	await box.run("mkdir -p node_modules; echo node_modules/ >> .git/info/exclude; git rev-parse HEAD > node_modules/setup-at");
+	const fetch = () => app.withToken(adaInstallation.id, { repositoryId: harbor.id, permissions: { contents: "read", metadata: "read" } }, token =>
+		checkoutReview(box, app.cloneUrl(harbor.owner, harbor.name), token, ".", 987, head), { revokeAfter: true });
+	await fetch();
+	const inspect = async (cmd: string) => (await box.run(cmd)).stdout.trim();
+	expect("review setup ran on the pinned base despite branch movement", await inspect("cat node_modules/setup-at") === base);
+	expect("review head is exact and detached", await inspect("git rev-parse HEAD") === head && (await box.run("git symbolic-ref -q HEAD")).exitCode !== 0);
+	await box.run("mkdir -p .wlp-shots; touch .wlp-shots/one.png; echo edited > review.txt");
+	await fetch();
+	expect("repeat checkout resets edits and removes screenshots", await inspect("cat review.txt") === "review me" && (await box.run("test ! -e .wlp-shots")).exitCode === 0);
+	const missing = await box.run(reviewCheckoutScript(".", base));
+	expect("another existing commit cannot stand in for the pull head", missing.exitCode !== 0 && missing.stdout.includes("wlp:missing"));
+	expect("review leaves every remote ref unchanged", before === refs());
+}
+
+await section("review checkout: pinned setup, exact pull ref, detached clean workspace and read-only remote", () => verifyReviewCheckout(localSandbox("review-checkout")));
 
 await section("secrets: nothing that was printed or thrown holds one", async () => {
 	const tokens = [...standin.tokens.keys()];

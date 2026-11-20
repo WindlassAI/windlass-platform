@@ -116,15 +116,41 @@ export function locationText(at: ReviewLocation): string {
 	return `${at.path}${lines}${at.side === "base" ? " (base)" : ""}`;
 }
 
-function Locations({ at }: { at: ReviewLocation[] }) {
+/** Where a place is on GitHub, as the platform builds it: null when there is no commit to pin it to. */
+export type LinkTo = (at: ReviewLocation) => string | null;
+
+const SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * A place's address on GitHub, built by the platform from the repository, the pinned commit and the
+ * path: `https://github.com/<owner>/<name>/blob/<sha>/<path>#L<a>-L<b>`. Null for a path the contract
+ * does not allow (`ReviewLocation.path`) or a commit that is not a full SHA: such a place is shown as text.
+ */
+export function blobLink(repository: { owner: string; name: string }, sha: string, at: ReviewLocation): string | null {
+	const { path } = at;
+	if (!SHA.test(sha) || path === "" || path.length > REVIEW_LIMITS.pathChars || path.startsWith("/") || /[\u0000-\u001f\u007f\\]/.test(path)) return null;
+	const segments = path.split("/");
+	if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return null;
+	const lines = at.lines ? (at.lines.end > at.lines.start ? `#L${at.lines.start}-L${at.lines.end}` : `#L${at.lines.start}`) : "";
+	return `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/blob/${sha}/${segments.map(encodeURIComponent).join("/")}${lines}`;
+}
+
+function Locations({ at, linkTo }: { at: ReviewLocation[]; linkTo?: LinkTo }) {
 	if (at.length === 0) return null;
 	return (
 		<p className="review-at">
-			{at.map((one, index) => (
-				<code key={index} className="item-paths">
-					{locationText(one)}
-				</code>
-			))}
+			{at.map((one, index) => {
+				const href = linkTo?.(one) ?? null;
+				return href ? (
+					<a key={index} className="item-paths review-at-link" href={href} target="_blank" rel="noreferrer">
+						{locationText(one)}
+					</a>
+				) : (
+					<code key={index} className="item-paths">
+						{locationText(one)}
+					</code>
+				);
+			})}
 		</p>
 	);
 }
@@ -227,6 +253,19 @@ function RecordWords({ record, verdict }: { record: ReviewRecord; verdict: Verdi
 	}
 }
 
+/** A command's last lines, as the platform kept them (redacted, at most 20), folded. */
+function Tail({ record }: { record: ReviewRecord }) {
+	if (record.kind !== "command" || !record.tail) return null;
+	return (
+		<details className="review-tail">
+			<summary className="tone-dim">its last lines</summary>
+			<pre tabIndex={0}>
+				<code>{record.tail}</code>
+			</pre>
+		</details>
+	);
+}
+
 /** What a block names of the platform's records, each beside the author's claim; a claim the record does not bear out is said so plainly. */
 function Refs({ refs, records, verdict, author }: { refs: ReviewRef[]; records: ReviewRecord[]; verdict: Verdict | null; author: string }) {
 	if (refs.length === 0) return null;
@@ -248,6 +287,7 @@ function Refs({ refs, records, verdict, author }: { refs: ReviewRef[]; records: 
 								{author} says {SAYS[ref.says]}; the platform's record:
 							</span>{" "}
 							<RecordWords record={record} verdict={verdict} />.
+							<Tail record={record} />
 						</li>
 					);
 				return (
@@ -255,14 +295,7 @@ function Refs({ refs, records, verdict, author }: { refs: ReviewRef[]; records: 
 						<span className="tone-dim">The platform's record: </span>
 						<RecordWords record={record} verdict={verdict} />
 						{ref.says ? <span className="tone-dim">, as {author.toLowerCase()} says</span> : null}
-						{record.kind === "command" && record.tail ? (
-							<details className="review-tail">
-								<summary className="tone-dim">its last lines</summary>
-								<pre tabIndex={0}>
-									<code>{record.tail}</code>
-								</pre>
-							</details>
-						) : null}
+						<Tail record={record} />
 					</li>
 				);
 			})}
@@ -275,13 +308,13 @@ function Refs({ refs, records, verdict, author }: { refs: ReviewRef[]; records: 
 const SEVERITY: Record<Extract<ReviewBlock, { kind: "finding" }>["severity"], string> = { blocking: "Blocking", should_fix: "Should fix", note: "Note" };
 const EARLIER: Record<Extract<ReviewBlock, { kind: "earlier" }>["status"], string> = { fixed: "fixed", not_fixed: "not fixed", withdrawn: "withdrawn" };
 
-function Excerpt({ block }: { block: Extract<ReviewBlock, { kind: "excerpt" }> }) {
+function Excerpt({ block, linkTo }: { block: Extract<ReviewBlock, { kind: "excerpt" }>; linkTo?: LinkTo }) {
 	const lines = block.code.replace(/\r\n?/g, "\n").split("\n").slice(0, REVIEW_LIMITS.excerptLines);
 	const first = block.at.lines?.start ?? 1;
 	const width = String(first + lines.length - 1).length;
 	return (
 		<>
-			<Locations at={[block.at]} />
+			<Locations at={[block.at]} linkTo={linkTo} />
 			<pre className="review-excerpt" tabIndex={0}>
 				<code>
 					{lines.map((line, index) => (
@@ -300,8 +333,8 @@ function Excerpt({ block }: { block: Extract<ReviewBlock, { kind: "excerpt" }> }
 	);
 }
 
-/** One block as a row of the page's facts: its kind on the left, the author's words on the right. */
-function Block({ block, records, verdict, author }: { block: ReviewBlock; records: ReviewRecord[]; verdict: Verdict | null; author: string }) {
+/** One block as a row of the page's facts: its kind on the left, the author's words on the right. `linkTo` makes its places links to GitHub. */
+export function Block({ block, records, verdict, author, linkTo, named }: { block: ReviewBlock; records: ReviewRecord[]; verdict: Verdict | null; author: string; linkTo?: LinkTo; named?: (finding: string) => string | null }) {
 	let label: ReactNode;
 	let body: ReactNode;
 	switch (block.kind) {
@@ -323,7 +356,13 @@ function Block({ block, records, verdict, author }: { block: ReviewBlock; record
 			body = (
 				<>
 					<p className="review-title">{block.title}</p>
-					<Locations at={block.at} />
+					{block.root !== block.id ? (
+						<p className="review-continues tone-dim">
+							Raised in an earlier round as <code className="item-paths">{block.root}</code>
+							{named?.(block.root) ? <>: {named(block.root)}</> : null}
+						</p>
+					) : null}
+					<Locations at={block.at} linkTo={linkTo} />
 					<ReviewText text={block.text} />
 					<Refs refs={block.refs} records={records} verdict={verdict} author={author} />
 				</>
@@ -336,6 +375,7 @@ function Block({ block, records, verdict, author }: { block: ReviewBlock; record
 					<p className="review-title">
 						<code className="item-paths">{block.finding}</code> <span className="review-severity">{EARLIER[block.status]}</span>
 					</p>
+					{named?.(block.finding) ? <p className="review-continues tone-dim">{named(block.finding)}</p> : null}
 					{block.text ? <ReviewText text={block.text} /> : null}
 				</>
 			);
@@ -344,7 +384,7 @@ function Block({ block, records, verdict, author }: { block: ReviewBlock; record
 			label = "Unsure of";
 			body = (
 				<>
-					<Locations at={block.at} />
+					<Locations at={block.at} linkTo={linkTo} />
 					<ReviewText text={block.text} />
 				</>
 			);
@@ -355,7 +395,7 @@ function Block({ block, records, verdict, author }: { block: ReviewBlock; record
 			break;
 		case "excerpt":
 			label = "Excerpt";
-			body = <Excerpt block={block} />;
+			body = <Excerpt block={block} linkTo={linkTo} />;
 			break;
 		case "screenshot":
 			// Shown together under the blocks (`ReviewBlocks`), not as a row.

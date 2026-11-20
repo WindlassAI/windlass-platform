@@ -2,6 +2,7 @@
  * The mock's machines: what the Machines page is looked at with, by hand and here. It answers as the
  * server's user actor says it does (contract.ts, `UserActions.machines` and the four calls after it).
  */
+import { workingCounts } from "../lib/repositories";
 import { MAX_MACHINES, type MachineSummary } from "@contract";
 import { describe, expect, it, vi } from "vitest";
 import { createMockClient, MOCK_MACHINE_STATES, type MockMachineSession } from "./mock";
@@ -117,7 +118,7 @@ describe("the mock's machines", () => {
 			// Hosted agents fill the deployment's ceiling, beside the seeds' that are at work.
 			const hosted = async () => (await settle(user.createSession({ profile: "docker-windlass-sandbox" }))).id;
 			// A work item's turn counts wherever it runs (server/src/actors/user.ts, `internalAcquireRun`).
-			const working = (await settle(user.listSessions())).filter((session) => session.status !== "idle" && (session.item !== undefined || session.place.kind === "hosted")).length;
+			const working = workingCounts(await settle(user.listSessions())).ceilinged;
 			const { runningTurns } = await settle(user.factoryLimits());
 			for (let filled = working; filled < runningTurns; filled++) await settle(mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." }));
 			const refused = expect(mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." })).rejects.toMatchObject({ reason: "too_many_running" });

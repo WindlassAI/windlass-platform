@@ -412,3 +412,8 @@ a.agent-group-name:hover .agent-group-owner {
 		flex: 1 1 100%;
 	}
 }
+
+/* Whether the work items' agents take screenshots: the one setting under its lede. */
+.repo-screenshots .check {
+	margin-top: 12px;
+}

@@ -90,6 +90,8 @@ export interface SandboxHandle {
 }
 
 export interface CreateSandboxInput {
+	/** An item's reviewer keeps Windlass data inside its own sandbox, including approval records. */
+	privateData?: boolean;
 	uid: string;
 	sessionId: string;
 	profile: SandboxProfileId;
@@ -488,7 +490,9 @@ export interface RunTurnInput {
 	 */
 	onPublish?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 	/** A work item's agent files its report; returns what the agent is told. Not given with `onPublish`. */
-	onReport?: (request: TurnPublishRequest) => string;
+	onReport?: (request: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
+	onReview?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
+	reportScreenshots?: boolean;
 	/** The agent pushes the session's branch (`push`). Given with `onFetchBase`. */
 	onPush?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 	/** The agent has the session's base branch fetched into the workspace (`fetch_base`). Given with `onPush`. */

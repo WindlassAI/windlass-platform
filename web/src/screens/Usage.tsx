@@ -92,7 +92,12 @@ function useUsage(): { view: UsageView | null; error: string | null; items: Map<
 		};
 	}, [client, auth, read]);
 
-	const items = sessions === null ? null : new Map(sessions.flatMap((session) => (session.item ? [[session.id, session.item.id] as const] : [])));
+	const items = sessions === null ? null : new Map<string, string>();
+	for (const session of sessions ?? []) {
+		if (!session.item) continue;
+		items?.set(session.id, session.item.id);
+		if (session.item.reviewer) items?.set(session.item.reviewer.id, session.item.id);
+	}
 	return { view, error, items, reload: read, replace: setView };
 }
 
@@ -359,7 +364,7 @@ export function Usage() {
 								<tr>
 									<th scope="row">
 										<a className="usage-agent" href="#usage-items">
-											{plural(itemRows.length, "work item")}
+											{plural(new Set(itemRows.map(row => items?.get(row.sessionId))).size, "work item")}
 										</a>
 										{itemTotal.unreported > 0 ? (
 											<span className="usage-mark" title="Counted in full: see the note below">

@@ -21,7 +21,9 @@
 import type { RawAccess } from "rivetkit/db";
 import type { RepositoryCheck, TurnOutcome, TurnUsage, Verified } from "../contract.js";
 import { turnTokens } from "../factory/budget.js";
-import type { Fact } from "../factory/types.js";
+import type { ItemReview } from "../contract.js";
+import type { ReviewerTaskReport } from "../factory/reviewer-task.js";
+import type { Fact, ReviewerInput } from "../factory/types.js";
 import { readWork } from "../github/git.js";
 import type { SandboxHandle } from "../sandbox/api.js";
 import { workFlags } from "../verified.js";
@@ -38,6 +40,7 @@ export const INBOX_TABLES = [
 		agent TEXT,
 		max_steps INTEGER NOT NULL,
 		fetch_base TEXT,
+		checkout TEXT,
 		starts_run INTEGER NOT NULL,
 		state TEXT NOT NULL,
 		turn INTEGER,
@@ -56,7 +59,13 @@ export const INBOX_TABLES = [
 export const OUTBOX_ACTION = "internalOutbox";
 
 /** What the item's `deliver` effect hands the session. */
+export interface ReviewDelivery extends ReviewerInput {
+	baseSha: string;
+	report: ReviewerTaskReport | null;
+}
+
 export interface Delivery {
+	checkout?: ReviewDelivery | null;
 	key: string;
 	itemId: string;
 	/** The item's title, for the sentence of a wait ("… running (“Fix the light”)"). */
@@ -109,13 +118,13 @@ interface InboxCtx {
 	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
 }
 
-type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
+type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; checkout: string | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
 
 function rowOf(row: Row): InboxRow {
-	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
+	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, checkout: row.checkout ? JSON.parse(row.checkout) as ReviewDelivery : null, startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
 }
 
-const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, starts_run, state, turn, slot, ended FROM inbox";
+const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, starts_run, state, turn, slot, ended FROM inbox";
 
 export async function inboxRow(db: RawAccess, key: string): Promise<InboxRow | null> {
 	const [row] = await db.execute<Row>(`${SELECT} WHERE key = ?`, key);
@@ -135,8 +144,10 @@ export function deliveryOf(input: unknown): Delivery | null {
 	const key = text(given.key);
 	const itemId = text(given.itemId);
 	const body = text(given.text);
-	if (!key || !itemId || body === null || body.trim() === "" || typeof given.maxSteps !== "number" || !Number.isInteger(given.maxSteps) || given.maxSteps < 1) return null;
-	return { key, itemId, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true };
+	if (!key || !itemId || body === null || (body.trim() === "" && !given.checkout) || typeof given.maxSteps !== "number" || !Number.isInteger(given.maxSteps) || given.maxSteps < 1) return null;
+	const checkout = given.checkout as ReviewDelivery | undefined;
+	if (checkout && (!/^[0-9a-f]{40}$/.test(checkout.head) || !/^[0-9a-f]{40}$/.test(checkout.baseSha) || !Number.isSafeInteger(checkout.pr) || checkout.pr < 1)) return null;
+	return { key, itemId, checkout, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true };
 }
 
 /** Writes the delivery's row, in one statement. False when a row of that key was there: the delivery came before. */
@@ -144,7 +155,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 	const before = await inboxRow(db, delivery.key);
 	if (before) return false;
 	await db.execute(
-		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
+		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
 		delivery.key,
 		delivery.itemId,
 		delivery.title,
@@ -152,6 +163,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 		delivery.agent,
 		delivery.maxSteps,
 		delivery.fetchBase,
+		delivery.checkout ? JSON.stringify(delivery.checkout) : null,
 		delivery.startsRun ? 1 : 0,
 		now,
 	);
@@ -190,7 +202,7 @@ export async function markTaken(tx: RawAccess, key: string, turn: number, slot: 
 }
 
 /** The statements that end the row's turn, for the caller's transaction with the session's meta: the fact for the item, and the slot back to the queue. */
-export async function markEnded(tx: RawAccess, row: InboxRow, fact: Extract<Fact, { kind: "turn_ended" }>): Promise<void> {
+export async function markEnded(tx: RawAccess, row: InboxRow, fact: EndedFact): Promise<void> {
 	await tx.execute("UPDATE inbox SET state = 'ended', ended = ? WHERE key = ?", JSON.stringify(fact), row.key);
 	await queueMessage(tx, { to: "item", itemId: row.itemId, fact });
 	if (row.slot) await queueMessage(tx, { to: "user", done: { slot: row.slot, key: row.key } });
@@ -298,4 +310,10 @@ export async function turnFlags(sandbox: SandboxHandle, base: string, checks: Re
 /** The fact of a turn's end, for the item. `hostedSeconds` is the ledger's, which the item reads from the user's actor. */
 export function endedFactOf(key: string, at: number, outcome: TurnOutcome, verified: Verified | null, flags: Extract<Fact, { kind: "turn_ended" }>["flags"], changes: boolean, report: Extract<Fact, { kind: "turn_ended" }>["report"], usage: TurnUsage | null): Extract<Fact, { kind: "turn_ended" }> {
 	return { kind: "turn_ended", at, key, outcome, verified, flags, changes, report, spend: { tokens: turnTokens(usage), hostedSeconds: 0 } };
+}
+
+export type EndedFact = Extract<Fact, { kind: "turn_ended" | "review_ended" }>;
+
+export function reviewEndedFactOf(key: string, outcome: TurnOutcome, review: ItemReview | undefined, said: string | null, refused: string | null, usage: TurnUsage | null): Extract<Fact, { kind: "review_ended" }> {
+	return { kind: "review_ended", key, at: Date.now(), outcome, review: review?.id === key ? review : null, said, refused, spend: { tokens: turnTokens(usage), hostedSeconds: 0 } };
 }

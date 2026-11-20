@@ -588,13 +588,14 @@ function readCount(name: string, fallback: number, min: number, max: number, unl
 	return fallback;
 }
 
-function readFactory(): FactoryLimits & { attachments: { bytes: number; perItem: number; accountBytes: number; days: number } } {
+function readFactory(): FactoryLimits & { reviewer: boolean; attachments: { bytes: number; perItem: number; accountBytes: number; days: number } } {
 	const d = FACTORY_DEFAULTS;
 	const count = (name: string, fallback: number, max: number) => readCount(name, fallback, 1, max, false) ?? fallback;
 	const runningTurns = count("WLP_FACTORY_RUNNING_TURNS", d.runningTurns, 100);
 	// The factory's share leaves the person at least one turn of their own.
 	const factoryTurns = Math.min(count("WLP_FACTORY_TURNS", d.factoryTurns, 100), Math.max(1, runningTurns - 1));
 	return {
+		reviewer: process.env.WLP_FACTORY_REVIEWER === "on",
 		attachments: {
 			bytes: count("WLP_FACTORY_ATTACHMENT_BYTES", ATTACHMENT_LIMITS.bytes, ATTACHMENT_LIMITS.bytes),
 			perItem: count("WLP_FACTORY_ATTACHMENTS_PER_ITEM", ATTACHMENT_LIMITS.perItem, 1_000_000),

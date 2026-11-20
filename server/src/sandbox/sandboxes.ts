@@ -443,8 +443,8 @@ export class DockerSandboxes implements Sandboxes {
 		const profile = findProfile(input.profile);
 		const flags = PROFILE_RUN_FLAGS[input.profile];
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
-		// The user's data volume, and only that one. It holds no sign-in: that is in the user's actor (signin/).
-		const volume = await this.dataVolume(input.uid);
+		// The reviewer cannot share transcripts or project-wide MCP approvals with the user's other sessions.
+		const volume = input.privateData ? null : await this.dataVolume(input.uid);
 		const id = randomId(6);
 		const name = containerName(id);
 		const result = await docker(
@@ -466,8 +466,7 @@ export class DockerSandboxes implements Sandboxes {
 				...(this.machine === "" ? [] : ["--label", `${MACHINE_LABEL}=${this.machine}`]),
 				...COMMON_RUN_FLAGS,
 				...flags,
-				"-v",
-				`${volume}:${DATA_DIR}`,
+				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
 				this.image,
 			],
 			{ timeoutMs: 120_000 },

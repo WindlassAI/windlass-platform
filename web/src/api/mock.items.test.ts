@@ -58,10 +58,17 @@ describe("the mock's work items", () => {
 		expect(new Set(items.map((item) => item.sessionId)).size).toBe(items.length);
 		for (const item of items) {
 			const session = sessions.find((one) => one.id === item.sessionId);
-			expect(session?.item).toEqual({ id: item.id });
+			const view = await user.item(item.id);
+			expect(session?.item).toMatchObject({ id: item.id, role: "builder" });
+			if (view.reviewerSessionId) {
+				expect(session?.item?.reviewer?.id).toBe(view.reviewerSessionId);
+				expect(sessions.some(one => one.id === view.reviewerSessionId)).toBe(false);
+				await expect(mock.session(auth, view.reviewerSessionId).prompt({ text: "Hello" })).rejects.toMatchObject({ reason: "item_session" });
+			}
+			if (item.place.kind === "machine") expect(view.reviewerSessionId).toBeNull();
 			expect(session?.title).toBe(item.title);
 			expect(session?.repository?.id).toBe(item.repository.id);
-			expect(session?.status !== "idle").toBe(item.state === "working");
+			expect(session?.status !== "idle").toBe(view.run?.step.turn === "started" && view.run.step.kind !== "review");
 		}
 		// The user's own agents are not any item's.
 		expect(sessions.filter((session) => session.item).length).toBe(items.length);
@@ -144,7 +151,8 @@ describe("the mock's work items", () => {
 		const mock = make();
 		const user = mock.user(auth);
 		const views = await Promise.all((await user.listItems()).map((item) => user.item(item.id)));
-		const handoffs = views.flatMap((view) => view.events.filter((event) => event.step?.kind === "handoff").map((event) => event.said));
+		// The handing over says why there was no second review, where there was none, before the verdict's own line.
+		const handoffs = views.flatMap((view) => view.events.filter((event) => event.step?.kind === "handoff" && !event.said.startsWith("No second review: ")).map((event) => event.said));
 		const seeded = seededVerdicts().map(verdictSaid);
 		for (const said of handoffs) expect(seeded).toContain(said);
 		// The gate's line is the server's: no checks set is pushed for CI, never "published as unverified".
@@ -441,14 +449,16 @@ describe("the screenshots on an item's page", () => {
 		const user = mock.user(auth);
 		const shown = await itemNamed(user, "Drop the legacy export");
 		const first = await user.itemAttachmentLinks(shown.id);
-		expect(first.map((link) => link.id)).toEqual(shown.report?.screenshots.map((shot) => shot.id));
-		expect(first.map((link) => link.url.replace(/\?.*/, ""))).toEqual(["/mock/agents-1280.png", "/mock/agents-390.png", "/mock/item-full-page.png"]);
+		// The builder's, then the second reviewer's: one answer has both.
+		expect(first.map((link) => link.id)).toEqual([...(shown.report?.screenshots ?? []), ...shown.reviews.flatMap((review) => review.screenshots)].map((shot) => shot.id));
+		expect(first.map((link) => link.url.replace(/\?.*/, ""))).toEqual(["/mock/agents-1280.png", "/mock/agents-390.png", "/mock/item-full-page.png", "/mock/agents-390.png", "/mock/item-full-page.png"]);
 		for (const link of first) expect(link.expiresAt).toBeGreaterThan(Date.now() + 9 * 60_000);
 		const again = await user.itemAttachmentLinks(shown.id);
 		expect(again.map((link) => link.url)).not.toEqual(first.map((link) => link.url));
 		// The one whose link the store does not answer still gets a link: the page finds out when it loads.
 		const failing = await itemNamed(user, "Log the request id with each error");
-		expect((await user.itemAttachmentLinks(failing.id)).map((link) => link.url.replace(/\?.*/, ""))).toEqual([`/mock/gone-${failing.report?.screenshots[0]?.id}.png`]);
+		const failingLinks = await user.itemAttachmentLinks(failing.id);
+		expect(failingLinks.filter((link) => link.id === failing.report?.screenshots[0]?.id).map((link) => link.url.replace(/\?.*/, ""))).toEqual([`/mock/gone-${failing.report?.screenshots[0]?.id}.png`]);
 		const removed = await itemNamed(user, "Document the release checklist");
 		expect(await user.itemAttachmentLinks(removed.id)).toEqual([]);
 		await expect(user.itemAttachmentLinks("it_any")).rejects.toMatchObject({ reason: "item_not_found" });

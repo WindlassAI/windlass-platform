@@ -55,7 +55,7 @@ export interface CiProgress {
 	/** The id of the verdict handed over for `head`, made again when the pull request moves after it. */
 	handed: string | null;
 	/** Original handoff, restored if the PR returns to the reviewed head. */
-	secondReview?: HandoffReview;
+	secondReview: HandoffReview | null;
 }
 
 /** One attempt of the blueprint (§1.2 `runs`): what the contract shows (`ItemRun`), and what the gate and CI read. */
@@ -80,6 +80,7 @@ export interface FactoryItem {
 	task: Task;
 	/** §3.2: "approve" runs step 0 first. */
 	plan: "none" | "approve";
+	/** Absent on items persisted before second review was available. */
 	reviewer?: { on: true } | { off: "deployment" | "profile" };
 	place: SandboxPlace;
 	machineRemoved: boolean;

@@ -2370,6 +2370,23 @@ or hand over the commit the run already pushed.
   the item's page and the usage page. A machine item has zero hosted seconds and has only the first three limits. Working time leaves out what it waited for. A budget used up is a
   question, and "Raise the limit and go on" takes the person's new figures for that item.
 
+### The second review
+
+With `WLP_FACTORY_REVIEWER=on`, each new item on a hosted profile that isolates
+individual commands gets a second session. After CI, the reviewer runs setup on
+the pinned base in its own sandbox and checks out the exact pushed commit detached.
+It reads the task, the platform's evidence and the builder's filed claims. The
+builder's conversation stays in the builder's session. Setup receives only
+setup-scoped repository secrets. Reviewer commands run without network, MCP
+servers or saved secrets. Its sole platform tool, `file_review`, files findings,
+command evidence, excerpts and screenshots. Both sessions count toward the item budget.
+
+The review is advisory. Every recommendation hands the item to its owner, with a
+summary in the pull request comment and the full filing on the item's page. A
+repository's `screenshots` setting defaults to true and applies to both agents
+from their next turn. Images require configured storage. The reviewer defaults
+to off for new items unless the deployment enables it.
+
 The limits are the deployment's, the same for every user, set by its owner; a user cannot raise them. A
 setting that is not a whole number in its range stops the server when it starts.
 
@@ -2379,7 +2396,7 @@ setting that is not a whole number in its range stops the server when it starts.
 | Of those, the items' | `WLP_FACTORY_TURNS` | 5; one set higher is held to one less than `WLP_FACTORY_RUNNING_TURNS`, and to 1 at least |
 | The user's hosted sandboxes running at once beside which an item's turn may start | `WLP_FACTORY_HOSTED_RUNNING` | 3 |
 | Items in review at which new items wait | `WLP_FACTORY_REVIEW_CAP` | 6 |
-| A new item's budget: tokens, turns, working seconds, hosted sandbox seconds | `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_TURNS`, `WLP_FACTORY_ITEM_ACTIVE_SECONDS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | 4,000,000 tokens, 10 turns, 14400 (4 hours), 5400 (1.5 hours) |
+| A new item's budget: tokens, turns, working seconds, hosted sandbox seconds | `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_TURNS`, `WLP_FACTORY_ITEM_ACTIVE_SECONDS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | 6,000,000 tokens, 14 turns, 14400 (4 hours), 7200 (2 hours) |
 
 An item's hosted sandbox counts against the user's daily allowance and kept sandboxes as any other ("Usage
 and limits"), whose defaults are sized for a few agents by hand, not for many items a day.

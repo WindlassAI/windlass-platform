@@ -53,7 +53,7 @@ describe("the mock's repository page", () => {
 		expect(await user.saveRepositoryDefaults(7103, { profile: "docker-hardened" })).toMatchObject({ profile: "docker-hardened", model: "gpt-6-luna" });
 		expect(await user.saveRepositoryDefaults(7103, {})).toMatchObject({ profile: "docker-hardened", model: "gpt-6-luna" });
 		expect(await user.saveRepositoryDefaults(7103, { model: null })).toMatchObject({ profile: "docker-hardened", model: null });
-		expect(await user.saveRepositoryDefaults(7103, { profile: null })).toEqual({ profile: null, model: null, updatedAt: null });
+		expect(await user.saveRepositoryDefaults(7103, { profile: null })).toEqual({ screenshots: true, profile: null, model: null, updatedAt: null });
 		expect((await user.savedRepositories()).some((repository) => repository.id === 7103)).toBe(false);
 		// Something saved for a repository no agent is on is listed under the name GitHub has for it.
 		await user.saveRepositoryDefaults(7110, { model: "gpt-6-luna" });
@@ -178,7 +178,7 @@ describe("the mock's repository page", () => {
 		expect((await user.repositorySetup(7190)).command).toBe("");
 		expect((await user.repositorySecrets(7190, "docker-windlass-sandbox")).secrets).toEqual([]);
 		expect((await user.savedRepositories()).some((repository) => repository.id === 7190)).toBe(false);
-		// The agents on a repository stay when what is saved for it goes.
+		// The two independent agents stay when the repository settings are forgotten.
 		await user.forgetRepository(7101);
 		expect((await user.listSessions()).filter((session) => session.repository?.id === 7101 && !session.item)).toHaveLength(2);
 		expect(await make({ github: false }).user(ada).savedRepositories()).toEqual([]);

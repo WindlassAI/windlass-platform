@@ -27,7 +27,8 @@ import { Dialog } from "../components/Dialog";
 import { InlineMarkdown } from "../components/Blocks";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, WarnIcon } from "../components/Icons";
 import { CHECK_TONE, CHECK_WORD, conclusionTone, conclusionWord, ReviewBlocks } from "../components/ReviewBlocks";
-import { useScreenshotLinks } from "../components/Screenshots";
+import { useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
+import { reviewShots, SecondReview } from "../components/SecondReview";
 import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
@@ -57,10 +58,11 @@ const STEP_DOING: Partial<Record<StepKind, string>> = {
 	conflict: "Its agent merges the base into its branch.",
 	gate: "The platform reads what the checks of the last turn found.",
 	publish: "The platform pushes the work and opens or updates the pull request.",
+	review: "A second agent reviews the pushed commit in its own sandbox.",
 };
 
 /** Steps that are a turn of the agent, or a push: a second attempt of one is worth saying. Waits on GitHub count every poll as an attempt, which is not. */
-const TRIED: ReadonlySet<StepKind> = new Set(["refine", "implement", "ci_fix", "conflict", "publish"]);
+const TRIED: ReadonlySet<StepKind> = new Set(["refine", "implement", "ci_fix", "conflict", "publish", "review"]);
 
 const ORDINAL = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
 const ordinal = (n: number) => ORDINAL[n - 1] ?? `${n}th`;
@@ -665,12 +667,11 @@ function verdictFor(report: ItemReport, verdicts: Verdict[]): Verdict | null {
 }
 
 /** The agent that made the change, in its own words: below the verdict, labelled as its own, and never what the verdict rests on. */
-function Report({ view, report, now }: { view: ItemView; report: ItemReport; now: number }) {
+function Report({ view, report, links, now }: { view: ItemView; report: ItemReport; links: ScreenshotLinks; now: number }) {
 	const latest = view.verdicts[view.verdicts.length - 1];
 	const earlierRun = view.run !== null && report.run !== view.run.n;
 	const earlierCommit = !earlierRun && report.head !== null && latest !== undefined && latest.head !== report.head;
 	const shots = report.screenshots ?? [];
-	const links = useScreenshotLinks(view.id, shots);
 	return (
 		<section className="usage-section" aria-labelledby="item-report">
 			<h2 className="usage-title" id="item-report">
@@ -823,6 +824,8 @@ export function Item({ page }: { page: ItemPage }) {
 	const now = useNow(30_000);
 	const { view } = page;
 	const acting = useActing(view?.id ?? "", page.replace);
+	// Both agents' screenshots, the builder's and the second reviewer's: their links are asked in one question.
+	const links = useScreenshotLinks(view?.id ?? "", view ? [...(view.report?.screenshots ?? []), ...view.reviews.flatMap(reviewShots)] : []);
 	const [dialog, setDialog] = useState<"cancel" | "send_back" | null>(null);
 	// Undefined for a hosted item and while the list is read; null once its machine is known to be removed.
 	const machine = useSessionMachine(view?.place);
@@ -883,6 +886,11 @@ export function Item({ page }: { page: ItemPage }) {
 						<a className="repo-link" {...linkProps({ name: "session", id: view.sessionId })} title="What its agent did, turn by turn">
 							Open the agent
 						</a>
+						{view.reviewerSessionId ? (
+							<a className="repo-link" {...linkProps({ name: "session", id: view.reviewerSessionId })}>
+								Open the reviewer
+							</a>
+						) : null}
 						<span className="repo-fact tone-dim" title={absoluteTime(view.createdAt)}>
 							filed {relativeTime(view.createdAt, now)}
 						</span>
@@ -927,7 +935,8 @@ export function Item({ page }: { page: ItemPage }) {
 			</section>
 
 			<Verdicts view={view} now={now} />
-			{view.report ? <Report view={view} report={view.report} now={now} /> : null}
+			<SecondReview view={view} links={links} when={(at) => <When at={at} now={now} />} />
+			{view.report ? <Report view={view} report={view.report} links={links} now={now} /> : null}
 			<Cost view={view} />
 
 			<section className="usage-section" aria-labelledby="item-task">

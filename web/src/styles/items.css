@@ -350,6 +350,76 @@
 	margin-top: 4px;
 }
 
+/* The second review: the agent's words, set as the builder's report is; its recommendation a quiet word, never a pill. */
+.item-row-review {
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+	white-space: nowrap;
+}
+.review-says {
+	color: var(--ink-dim);
+}
+.review-word {
+	font-weight: 600;
+	color: var(--ink);
+}
+.review-model {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+}
+.review-notes {
+	display: grid;
+	gap: 2px;
+	padding: 0 8px 8px 12px;
+}
+.review-state {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 14px;
+	margin-top: 14px;
+	padding: 0 8px 0 12px;
+	color: var(--ink-dim);
+	overflow-wrap: anywhere;
+}
+.review-session {
+	font-size: var(--size-small);
+}
+.review-asks {
+	display: grid;
+	gap: 6px;
+	margin: 2px 8px 10px 12px;
+	padding: 2px 0 2px 12px;
+	border-left: 2px solid var(--line-strong);
+}
+.review-asks-label {
+	font-size: var(--size-small);
+	font-weight: 600;
+}
+.review-asks .usage-gloss {
+	margin-top: 0;
+}
+.review-continues {
+	margin: 1px 0 4px;
+	font-size: var(--size-small);
+	overflow-wrap: anywhere;
+}
+.review-at-link {
+	font-family: var(--font-mono);
+	color: var(--code);
+	text-decoration: underline;
+	text-decoration-color: var(--line-strong);
+	text-decoration-thickness: 1px;
+	text-underline-offset: 3px;
+}
+.review-at-link:hover {
+	color: var(--accent-strong);
+	text-decoration-color: currentColor;
+}
+.review-article + .review-article {
+	margin-top: 22px;
+}
+
 /* Screenshots under a report: small pictures in a row, each with its caption, and full size in a dialog. */
 .item-shots {
 	padding: 12px 8px 4px 12px;
@@ -591,6 +661,15 @@
 	.item-shots {
 		padding-left: 4px;
 		padding-right: 4px;
+	}
+	.review-notes,
+	.review-state {
+		padding-left: 4px;
+		padding-right: 4px;
+	}
+	.review-asks {
+		margin-left: 4px;
+		margin-right: 4px;
 	}
 	.item-shots-list {
 		grid-template-columns: minmax(0, 1fr);

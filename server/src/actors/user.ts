@@ -96,6 +96,7 @@ import {
 	type GithubRepository,
 	type GithubRepositoryList,
 	type GithubStatus,
+	listedSessions,
 	type KeptSandbox,
 	MAX_ACCOUNT_SECRETS,
 	MAX_PERSONAL_SERVERS,
@@ -315,7 +316,7 @@ interface UserCtx {
 }
 
 function sessionList(vars: UserVars): SessionSummary[] {
-	return [...vars.sessions.values()].sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+	return listedSessions([...vars.sessions.values()]).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
 }
 
 function broadcastSessions(c: UserCtx): void {
@@ -932,7 +933,7 @@ const KEYED = "agent";
  * several of those, and other calls run meanwhile; the session is in the index, and its key with it,
  * in one synchronous step at the end, or the call is refused and nothing of it is kept.
  */
-async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: { sessionId: string; itemId: string }): Promise<SessionSummary> {
+async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: { sessionId: string; itemId: string; role: "builder" | "reviewer" }): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
 	let repoUrl = cleanRepoUrl(input.repoUrl);
 	const givenTitle = input.title === undefined || input.title === null ? null : cleanTitle(input.title);
@@ -1003,10 +1004,10 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			turns: 0,
 			lastOutcome: null,
 			sandbox: "none",
-			...(item ? { item: { id: item.itemId } } : {}),
+			...(item ? { item: { id: item.itemId, role: item.role } } : {}),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
-			...(item ? { origin: { kind: "item" as const, itemId: item.itemId } } : {}),
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role } } : {}),
 			title: summary.title,
 			titleIsDefault: givenTitle === null,
 			place: summary.place,
@@ -1138,6 +1139,7 @@ export const user = actor({
 			// Tables made before a server had its setting and a secret its scope lack the column: those servers' tools ask, and those secrets are for MCP servers only, as they were.
 			// And the sessions made before a session could be created with a key have none (submissions.ts): `key`, and `sent`, the digest of what was asked for under it.
 			for (const [table, column, definition] of [
+				["repository_defaults", "screenshots", "INTEGER NOT NULL DEFAULT 1"],
 				["personal_server", "unasked", "INTEGER NOT NULL DEFAULT 0"],
 				["account_secret", "scope", "TEXT NOT NULL DEFAULT 'setup'"],
 				["sessions", "key", "TEXT"],
@@ -1297,7 +1299,7 @@ export const user = actor({
 		internalApiCreateItem: (c, input: { token: string; item: CreateItemInput }): Promise<ItemSummary> => itemActions.internalApiCreateItem(c, input, itemSession(c)),
 		internalApiItem: (c, input: { token: string; id: string }): Promise<ItemView> => itemActions.internalApiItem(c, input),
 		internalItemChanged: (c, summary: ItemSummary): Promise<void> => itemActions.internalItemChanged(c, summary),
-		internalItemFacts: (c, sessionId: string): ItemFacts => itemActions.internalItemFacts(c, sessionId),
+		internalItemFacts: (c, ids: string[] | string): ItemFacts => itemActions.internalItemFacts(c, typeof ids === "string" ? [ids] : ids),
 		internalRequestTurn: (c, request: TurnRequest): Promise<TurnAnswer> => itemActions.internalRequestTurn(c, request),
 		internalTurnDone: (c, input: TurnRelease): Promise<void> => itemActions.internalTurnDone(c, input),
 		internalWithdrawTurn: (c, input: { sessionId: string; key: string }): Promise<void> => itemActions.internalWithdrawTurn(c, input),
@@ -1709,7 +1711,7 @@ export const user = actor({
 			if (project === null) return { project: null, secrets: [], checks: [], account };
 			const rows = send ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
 			const { checks } = await readChecks(c.db, project);
-			return { project, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
+			return { project, screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
 		// --- a repository's page ----------------------------------------------------------------------
@@ -1746,7 +1748,7 @@ export const user = actor({
 			return found;
 		},
 
-		saveRepositoryDefaults: async (c, input: { repositoryId: GithubId; profile?: string | null; model?: string | null }): Promise<RepositoryDefaults> => {
+		saveRepositoryDefaults: async (c, input: { repositoryId: GithubId; screenshots?: boolean; profile?: string | null; model?: string | null }): Promise<RepositoryDefaults> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			let change: DefaultsChange;

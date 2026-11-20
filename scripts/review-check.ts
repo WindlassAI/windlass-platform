@@ -1,7 +1,7 @@
 /** The report tool before a session calls it. No actor, network, or sandbox. cd server && npx tsx ../scripts/review-check.ts */
 import assert from "node:assert/strict";
 import type { ItemReport, ReviewRecord, Verdict } from "../server/src/contract.js";
-import { checkReview, itemComment, reportBlocks, reportOf, type ReviewContext } from "../server/src/factory/review.js";
+import { fileReview, ReviewCommands, checkReview, itemComment, reportBlocks, reportOf, type ReviewContext } from "../server/src/factory/review.js";
 import { verdictWords } from "../server/src/factory/verdict.js";
 import { SecretRedactor } from "../server/src/repo-secrets.js";
 import { flagWords, verifiedSection, workFlags, type WorkDiff } from "../server/src/verified.js";
@@ -68,7 +68,6 @@ for (const [name, input, rule] of [
 	["no supplied code", review({ ...excerpt, code: "forged" }), 'blocks[1]: unknown field "code"'], ["no supplied id", review({ ...finding, id: "r2.f8" }), 'blocks[1]: unknown field "id"'],
 	["severity", review({ ...finding, severity: "mild" }), "blocks[1].severity: must be one of blocking, should_fix, note"],
 	["status", review({ ...earlier, status: "ok" }), "blocks[1].status: must be one of fixed, not_fixed, withdrawn"],
-	["shows", review({ ...shot, shows: 2 }), "blocks[1].shows: must be one of after, before"],
 	["locations array", review({ ...risk, at: {} }), "blocks[1].at: must be an array"], ["location", review({ ...risk, at: [null] }), "blocks[1].at[0]: must be a location"],
 	["side", review({ ...risk, at: [{ path: "a", side: null }] }), "blocks[1].at[0].side: must be one of head, base"],
 	["refs array", review({ ...prose, refs: null }), "blocks[1].refs: must be an array"], ["ref object", review({ ...prose, refs: ["ci/0"] }), "blocks[1].refs[0]: must be a reference"],
@@ -82,7 +81,7 @@ test("name ten problems and retain their block indices", () => {
 });
 
 type Block = Record<string, unknown> & { kind: string };
-const textFields: [Block, string, number][] = [[summary, "text", 1500], [prose, "text", 4000], [prose, "heading", 80], [finding, "title", 160], [finding, "text", 2000], [earlier, "text", 600], [risk, "text", 1000], [question, "text", 600], [excerpt, "note", 4000], [shot, "caption", 200], [shot, "page", 300], [shot, "file", 300]];
+const textFields: [Block, string, number][] = [[summary, "text", 1500], [prose, "text", 4000], [prose, "heading", 80], [finding, "title", 160], [finding, "text", 2000], [earlier, "text", 600], [risk, "text", 1000], [question, "text", 600], [excerpt, "note", 4000]];
 const fragments = ["@octocat", "[x](https://e.example)", "![](https://e.example/a.png)", "<script>alert(1)</script>", "# Heading"];
 const markup = fragments.join(" ");
 const hostile = `\u0001${secret}\u2028\r\n${markup}  \t`;
@@ -97,12 +96,11 @@ for (const [block, key, max] of textFields) {
 	};
 	test(`field: ${block.kind}.${key} at ${max} and one over after cleaning`, () => {
 		const fit = input("x".repeat(max) + "\u0001\u2028 \t");
-		if (block.kind === "screenshot") assert.deepEqual(problems(fit), ["blocks[1]: screenshots are not taken on this platform yet"]);
-		else take(fit, ctx);
+		take(fit, ctx);
 		refuse(input("x".repeat(max + 1)), `${field}: ${(max + 1).toLocaleString("en-US")} characters; the limit is ${max.toLocaleString("en-US")}`, ctx);
 		refuse(input(null), `${field}: must be text`, ctx);
 	});
-	if (block.kind !== "screenshot") test(`plain text: ${block.kind}.${key}`, () => {
+	test(`plain text: ${block.kind}.${key}`, () => {
 		// An 80-character heading gets the same hostile strings in separate filings.
 		const samples = key === "heading" ? fragments.map((part) => [`\u0001${secret}\u2028\r\n${part}  \t`, `${saved}\n${part}`]) : [[hostile, cleaned]];
 		for (const [raw, expected] of samples) assert.equal((take(input(raw), ctx).blocks[i] as Block)[key], expected);
@@ -142,8 +140,7 @@ test("fenced lines at 60 and 61, including a fence open at the end", () => {
 for (const [block, max, name] of [[prose, 60, "blocks"], [finding, 30, "findings"], [risk, 10, "risks"], [question, 5, "questions"], [excerpt, 10, "excerpts"], [shot, 8, "screenshots"]] as const) {
 	test(`count: ${name} at ${max} and one over`, () => {
 		const input = (n: number) => review(...repeat(name === "blocks" ? n - 1 : n, () => block));
-		if (name === "screenshots") assert.deepEqual(problems(input(max)), repeat(max, (i) => `blocks[${i + 1}]: screenshots are not taken on this platform yet`));
-		else take(input(max));
+		take(input(max));
 		refuse(input(max + 1), `blocks: ${max} ${name} at most; this has ${max + 1}`);
 	});
 }
@@ -326,4 +323,44 @@ test("the flag appears in a person's verified section and turns a pass into Need
 	assert.ok(verdictWords(flagged, null).startsWith("Needs a look."));
 	assert.equal(itemComment(flagged, verdictWords(flagged, null), itemReport).split("\n")[2], "**Windlass at abc1234: Needs a look**");
 });
+test("command refs require this turn's settled shell event pair and retain redacted evidence", () => {
+	const commands = new ReviewCommands(redactor);
+	for (const [name, callId] of [["shell", "shell1"], ["write", "other"]]) {
+		commands.note({ type: "tool.called", data: { messageId: "m", callId, name, input: JSON.stringify({ command: "test " + secret }) } });
+		commands.note({ type: "tool.settled", data: { messageId: "m", callId, outcome: "error", output: "ignored\n".repeat(23) + secret, display: { exitCode: 7 } } });
+	}
+	const ctx = { ...context, commands: commands.records() };
+	const cite = (ref: string) => review({ ...prose, refs: [{ ref }] });
+	const record = take(cite("command/m/shell1"), ctx).records[0];
+	assert.ok(record.kind === "command" && record.exitCode === 7 && record.tail.endsWith(saved) && record.tail.split("\n").length === 20 && !JSON.stringify(record).includes(secret));
+	for (const id of ["command/m/other", "command/m/invented"]) refuse(cite(id), `blocks[1].refs[0]: no record "${id}"`, ctx);
+	refuse(cite("command/m/shell1"), 'blocks[1].refs[0]: no record "command/m/shell1"', { ...ctx, commands: new ReviewCommands(redactor).records() });
+});
+
+const good = { kind: "screenshot", file: ".wlp-shots/home.png", caption: "Home" };
+for (const invalid of [{ shows: 2 }, { caption: null }, { caption: "x".repeat(201) }, { page: "x".repeat(301) }, { file: "../x.png" }, { unknown: true }]) {
+	test(`invalid screenshot ${Object.keys(invalid)[0]} is omitted; the summary survives`, () => {
+		const accepted = take(review({ ...good, ...invalid }));
+		assert.equal(accepted.shots.length, 0);
+		assert.deepEqual(accepted.blocks, [summary]);
+		assert.ok(accepted.notes[0]?.includes("omitted"));
+	});
+}
+const input = review(good, { ...good, file: "../x.png" }, excerpt);
+const base = "a".repeat(40), head = "b".repeat(40);
+const fileAt = async (path: string, sha: string) => { assert.equal(path, "file"); assert.equal(sha, head); return secret + "\n"; };
+const upload = async (shots: Array<{ file: string }>) => {
+	assert.deepEqual(shots.map(s => s.file), [good.file]);
+	return { files: [good.file], problems: [], screenshots: [{ id: "a_shot", sessionId: "s_review", by: "reviewer" as const, head, width: 1, height: 1, bytes: 68, sha256: "c".repeat(64), caption: "Home", shows: null, page: null, state: "kept" as const }] };
+};
+const filed = await fileReview(input, context, base, head, true, fileAt, upload);
+test("review keeps the good screenshot, drops an unsafe file, and takes excerpt text from GitHub", () => {
+	assert.deepEqual(filed.filing?.blocks.slice(1), [{ kind: "screenshot", attachment: "a_shot" }, { kind: "excerpt", at: { ...excerpt.at, side: "head" }, code: saved, note: null }]);
+	assert.equal(filed.filing.screenshots[0].by, "reviewer");
+	assert.match(filed.answer, /Screenshot in blocks\[2\] omitted/);
+});
+const disabled = await fileReview(input, context, base, head, false, fileAt, upload);
+test("repository screenshot opt-out refuses the filing before reading a file or uploading", () => assert.ok(!disabled.filing && disabled.answer.includes("turned off for this repository")));
+const retry = await fileReview(review(excerpt), context, base, head, true, async () => { throw Error(); }, null);
+test("a GitHub read failure takes no filing", () => assert.ok(!retry.filing && retry.retryFree));
 console.log(`\n${passed} passed`);

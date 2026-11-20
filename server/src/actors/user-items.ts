@@ -57,6 +57,7 @@ import {
 import { createItem } from "../factory/blueprint.js";
 import { admit, retryAt } from "../factory/budget.js";
 import { getLayer } from "../layer.js";
+import { reviewerAllowed } from "../factory/review.js";
 import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { type UsageBook, dayOf, hostedLimitsApply } from "../usage.js";
@@ -164,7 +165,7 @@ export async function loadItems(db: RawAccess): Promise<ItemsState> {
  * items not done, failed or cancelled.
  */
 export interface ItemFacts {
-	entries: Array<{ hold: string; seconds: number }>;
+	entries: Array<{ hold: string; session: string; seconds: number }>;
 	openItems: number;
 }
 
@@ -184,7 +185,7 @@ export interface ItemsCtx {
 }
 
 /** `makeSession` of user.ts: makes the item's session under the id given, with the item as its origin, and puts it in the index. */
-export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string }) => Promise<SessionSummary>;
+export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer" }) => Promise<SessionSummary>;
 
 // ---------------------------------------------------------------------------------------------
 // The index
@@ -196,8 +197,8 @@ function itemList(state: ItemsState): ItemSummary[] {
 
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
 function summaryFields(item: ItemSummary): ItemSummary {
-	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
-	return { id, title, repository, place, source, state, wait, question, pullRequest, verdict, budget, spent, sessionId, createdAt, updatedAt, revision };
+	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
+	return { id, title, repository, place, source, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision };
 }
 
 /** Takes a summary the item reported when it is newer than the one held: reports can arrive out of order. */
@@ -290,12 +291,18 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const existing = c.vars.sessions.get(sessionId);
 		const sandbox = existing ? null : await itemProfile(c, input.repository.id, input.profile, input.place);
 		begun = true;
-		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId }));
+		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder" }));
 		const repository = session.repository;
 		if (!repository) throw new Error("the item's session has no repository");
+		const reviewer = !config.factory.reviewer ? { off: "deployment" } as const :
+			session.place.kind === "hosted" && reviewerAllowed(session.place, (await getLayer()).sandboxes.profile(session.profile)) ? { on: true } as const : { off: "profile" } as const;
+		const reviewerSessionId = "on" in reviewer ? `s_${hex16(`review\n${itemId}`)}` : null;
+		if (reviewerSessionId && !c.vars.sessions.has(reviewerSessionId)) {
+			await makeSession(c, profile, { title: input.title, profile: session.profile, model: session.model, repository: { id: repository.id, branch: repository.branch } }, null, { sessionId: reviewerSessionId, itemId, role: "reviewer" });
+		}
 		const now = Date.now();
-		const meta: ItemMeta = { uid, sessionId, repository, source, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
-		const item = createItem({ id: itemId, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: config.factory.item });
+		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
+		const item = createItem({ id: itemId, reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: config.factory.item });
 		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
 	} catch (error) {
@@ -339,10 +346,11 @@ async function fileItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 }
 
 async function attachmentStates(c: ItemsCtx, view: ItemView): Promise<ItemView> {
-	if (!view.report?.screenshots.length) return view;
+	const shots = [...view.report?.screenshots ?? [], ...view.reviews.flatMap(review => review.screenshots)];
+	if (!shots.length) return view;
 	const rows = await c.db.execute<{ id: string }>("SELECT id FROM attachments WHERE item=? AND state='kept' AND ended_at IS NOT 0", view.id);
 	const live = new Set(rows.map(row => row.id));
-	for (const shot of view.report.screenshots) shot.state = live.has(shot.id) ? "kept" : "removed";
+	for (const shot of shots) shot.state = live.has(shot.id) ? "kept" : "removed";
 	return view;
 }
 
@@ -806,13 +814,13 @@ export const itemActions = {
 	},
 
 	/** What an item reads of its user: the hosted sandbox seconds the ledger has for its session, and the user's open items. */
-	internalItemFacts: (c: ItemsCtx, sessionId: string): ItemFacts => {
+	internalItemFacts: (c: ItemsCtx, sessionIds: string[]): ItemFacts => {
 		requireService(c);
 		const today = dayOf(Date.now());
 		const entries = Array.from({ length: USAGE_HISTORY_DAYS }, (_, back) => c.vars.usage.entriesOn(today - back))
 			.flat()
-			.filter((entry) => entry.session === String(sessionId))
-			.map((entry) => ({ hold: entry.hold, seconds: entry.seconds }));
+			.filter((entry) => sessionIds.includes(entry.session))
+			.map(({ hold, session, seconds }) => ({ hold, session, seconds }));
 		const openItems = [...c.vars.items.items.values()].filter((item) => item.state !== "done" && item.state !== "failed" && item.state !== "cancelled").length;
 		return { entries, openItems };
 	},

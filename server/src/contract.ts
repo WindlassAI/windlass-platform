@@ -305,7 +305,16 @@ export interface SessionSummary {
 	 */
 	servers?: { count: number; changedAt: number };
 	/** Set for the session of a work item: the item it works for (`ItemSummary`). Its prompts come from the item; a person may still read it. */
-	item?: { id: string; role?: "builder" | "reviewer" };
+	item?: { id: string; role?: "builder" | "reviewer"; reviewer?: { id: string; status: SessionStatus } };
+}
+
+/** The user index keeps one builder per item. Its reviewer is reachable from the item and counts toward its usage. */
+export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
+	const reviewers = new Map(sessions.flatMap(s => s.item?.role === "reviewer" ? [[s.item.id, { id: s.id, status: s.status }] as const] : []));
+	return sessions.filter(s => s.item?.role !== "reviewer").map(session => {
+		const reviewer = session.item && reviewers.get(session.item.id);
+		return session.item && reviewer ? { ...session, item: { ...session.item, reviewer } } : session;
+	});
 }
 
 export interface CreateSessionInput {
@@ -718,6 +727,8 @@ export interface RepositorySecrets {
  * not used.
  */
 export interface RepositoryDefaults {
+	/** Allow item agents to file screenshots for this repository. Defaults to true. */
+	screenshots: boolean;
 	/** The sandbox profile, by its id; null when none is saved. */
 	profile: SandboxProfileId | null;
 	/** The model; null when none is saved. */
@@ -775,7 +786,7 @@ export interface SavedRepository {
  * deployment no longer offers, or a model the account no longer does, is not used, and whoever reads
  * it says so.
  */
-export type AccountDefaults = RepositoryDefaults;
+export type AccountDefaults = Omit<RepositoryDefaults, "screenshots">;
 
 /**
  * An MCP server of the user's own: Windlass starts it, or reaches it, in every session of theirs,
@@ -1339,6 +1350,7 @@ export interface ItemReport {
 
 /** A review of one pushed head. Its id is the review step attempt's key. */
 export interface ItemReview {
+	screenshots: ItemAttachment[];
 	id: string;
 	run: number;
 	round: number;
@@ -1411,8 +1423,8 @@ export interface ItemSummary {
 	pullRequest: { number: number; url: string } | null;
 	/** The latest verdict's result and flags; null before the first. */
 	verdict: { result: Verdict["result"]; flags: VerifiedFlag[]; ci: Verdict["ci"]["state"] } | null;
-	/** Absent on items served by a platform predating reviewer sessions. */
-	review?: { state: "waiting" | "running" | "filed" | "none" | "off"; recommendation: ReviewRecommendation | null } | null;
+	/** The second review for this run, or null before one is due. */
+	review: { state: "waiting" | "running" | "filed" | "none" | "off"; recommendation: ReviewRecommendation | null } | null;
 	budget: ItemBudget;
 	spent: ItemBudget;
 	/** The item's agent session, among the user's sessions. */
@@ -1428,9 +1440,10 @@ export interface ItemSummary {
 export interface ItemView extends ItemSummary {
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
 	report: ItemReport | null;
-	/** Last ten, oldest first. Older item views omit both reviewer fields. */
-	reviews?: ItemReview[];
-	reviewerSessionId?: string | null;
+	/** Last ten, oldest first. */
+	reviews: ItemReview[];
+	reviewerSessionId: string | null;
+	reviewNone: string | null;
 	task: ItemTask;
 	/** The run it is in, or ended last, with the rounds a run allows; null before it was started. */
 	run: (ItemRun & { caps: RoundCaps }) | null;
@@ -1575,7 +1588,7 @@ export interface UserActions {
 	 * null saves none for it. Throws a UserError with code `bad_input` for a sandbox this deployment
 	 * does not offer or cannot run, and `bad_model` for a model that is not among the user's.
 	 */
-	saveRepositoryDefaults(input: { repositoryId: GithubId; profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(input: { repositoryId: GithubId; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
 	/**
 	 * Forgets the user's remembered approvals of that MCP server for a repository, whatever its
 	 * definition was (`RepositoryView.forgetting` says what stays). Resolves when nothing was remembered, too.

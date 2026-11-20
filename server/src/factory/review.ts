@@ -1,20 +1,28 @@
 /** The report tool's trust boundary. The page reads these strings as text. Only platform records supply facts and links. */
-import { MAX_ACCEPTANCE_CRITERIA, MAX_NOTE_CHARS, MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS as limit, type ItemReport, type ReviewBlock, type ReviewLocation, type ReviewRecommendation, type ReviewRecord, type ReviewRef, type Verdict } from "../contract.js";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_NOTE_CHARS, MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS as limit, type SandboxPlace, type SandboxProfile, type WindlassEvent, type ItemReview, type ItemReport, type ReviewBlock, type ReviewLocation, type ReviewRecommendation, type ReviewRecord, type ReviewRef, type Verdict } from "../contract.js";
 import { type AgentReport, CONTROL, REPORT_TAKEN } from "../agent-publish.js";
 import { shotRequest, textOf, type TextRedactor, type ShotRequest } from "./attachments.js";
+import { commandSandbox } from "../repo-secrets.js";
 import { config } from "../config.js";
 import { verdictWords } from "./verdict.js";
 
 
+export const REVIEW_PROFILE_REASON = "in this sandbox the reviewer's commands would run with the network";
+
+export function reviewerAllowed(place: SandboxPlace, profile: SandboxProfile): boolean {
+	return place.kind === "hosted" && commandSandbox(profile) === "windlass";
+}
+
 export interface ReviewContext {
 	records: ReviewRecord[];
+	commands?: ReviewRecord[];
 	earlier: Array<{ id: string; severity: string; root?: string }>;
 	round: number;
 	redactor: TextRedactor;
 }
 
 type Refusal = { ok: false; problems: string[] };
-type CheckedReview = Refusal | { ok: true; recommendation: ReviewRecommendation; blocks: ReviewBlock[]; records: ReviewRecord[] };
+type CheckedReview = Refusal | { ok: true; recommendation: ReviewRecommendation; blocks: ReviewBlock[]; records: ReviewRecord[]; shots: ShotRequest[]; notes: string[] };
 
 const number = (n: number) => n.toLocaleString("en-US");
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -131,8 +139,10 @@ export function checkReview(input: unknown, context: ReviewContext): CheckedRevi
 	read.count("blocks", "screenshots", counts.screenshot, limit.screenshots);
 	if (counts.summary !== 1) read.problem("", `a review has exactly one summary; this has ${counts.summary}`);
 
+	const shots: ShotRequest[] = [];
+	const notes: string[] = [];
 	const paths = new Set<string>();
-	const records = new Map(context.records.map((record) => [record.ref, record]));
+	const records = new Map([...context.records.filter(r => r.kind !== "command"), ...(context.commands ?? []).filter(r => r.kind === "command")].map((record) => [record.ref, record]));
 	const referenced = new Set<string>();
 	const earlier = new Map(context.earlier.map((one) => [one.id, one]));
 	const answers = new Map<string, number>();
@@ -152,9 +162,10 @@ export function checkReview(input: unknown, context: ReviewContext): CheckedRevi
 		if (typeof value.path === "string" && !path.trim()) read.problem(name, "must not be empty");
 		if (path.startsWith("/") || /^[a-z]:\/|^[a-z][a-z0-9+.-]*:\/\//i.test(path)) read.problem(name, "must be repository-relative");
 		if (path.split("/").includes("..")) read.problem(name, 'has ".."');
+		if (path.split("/").includes(".") || path.split("/").includes("")) read.problem(name, "must use canonical path segments");
 		if (path.includes("\\")) read.problem(name, "has a backslash");
 		if (/[\n\t]/.test(path)) read.problem(name, "must not contain a line break or tab");
-		paths.add(path);
+		paths.add(`${value.side ?? "head"}:${path}`);
 		const at: ReviewLocation = { path, side: value.side === undefined ? "head" : read.choice(value.side, `${field}.side`, ["head", "base"]) };
 		if (value.lines === undefined && !excerpt) return at;
 		const range = `${field}.lines`;
@@ -184,7 +195,7 @@ export function checkReview(input: unknown, context: ReviewContext): CheckedRevi
 		const ref = read.text(value.ref, `${field}.ref`, limit.totalChars, false);
 		referenced.add(ref);
 		const record = records.get(ref);
-		if (typeof value.ref === "string" && (!record || record.kind === "command" || !ref.startsWith(`${record.kind}/`))) read.problem(field, `no record ${read.shown(ref)}`);
+		if (typeof value.ref === "string" && (!record || !ref.startsWith(`${record.kind}/`))) read.problem(field, `no record ${read.shown(ref)}`);
 		return value.says === undefined ? { ref } : { ref, says: read.choice(value.says, `${field}.says`, ["passed", "failed", "ran", "not_run"]) };
 	}
 
@@ -205,7 +216,7 @@ export function checkReview(input: unknown, context: ReviewContext): CheckedRevi
 			read.problem(`${field}.kind`, typeof kind === "string" ? `unknown kind ${read.shown(kind)}` : "must name a block kind");
 			continue;
 		}
-		read.keys(block, field, ["kind", ...blockFields[kind as keyof typeof blockFields]]);
+		if (kind !== "screenshot") read.keys(block, field, ["kind", ...blockFields[kind as keyof typeof blockFields]]);
 		const text = (key: string, max: number) => read.text(block[key], `${field}.${key}`, max);
 		const optional = (key: string, max: number) => block[key] === undefined ? null : text(key, max);
 		const locations = () => block.at === undefined ? [] : read.list(block.at, `${field}.at`, "locations", limit.locationsPerBlock).map((one, i) => location(one, `${field}.at[${i}]`, false));
@@ -240,13 +251,20 @@ export function checkReview(input: unknown, context: ReviewContext): CheckedRevi
 			case "excerpt":
 				blocks.push({ kind, at: location(block.at, `${field}.at`, true), code: "", note: optional("note", limit.textChars) });
 				break;
-			case "screenshot":
-				text("file", limit.pathChars);
-				text("caption", limit.captionChars);
-				optional("page", limit.pageChars);
-				if (block.shows !== undefined) read.choice(block.shows, `${field}.shows`, ["after", "before"]);
-				read.problem(field, "screenshots are not taken on this platform yet");
+			case "screenshot": {
+				const { kind: _, ...request } = block;
+				const checked = shotRequest([request], context.redactor);
+				if ("problems" in checked) {
+					notes.push(`Screenshot in ${field} omitted: ${checked.problems.join(" ")}`);
+				} else if (shots.some(shot => shot.file === checked[0].file)) {
+					notes.push(`Screenshot in ${field} omitted: duplicate file.`);
+				} else {
+					read.chars += checked[0].file.length + checked[0].caption.length + (checked[0].page?.length ?? 0);
+					shots.push(checked[0]);
+					blocks.push({ kind, attachment: checked[0].file });
+				}
 				break;
+			}
 		}
 	}
 	read.count("blocks", "distinct paths", paths.size, limit.paths);
@@ -262,7 +280,83 @@ export function checkReview(input: unknown, context: ReviewContext): CheckedRevi
 		if (n > 1) read.problem("blocks", `${id} is blocking and has ${n} "earlier" blocks`);
 	}
 	if (read.problems.length) return { ok: false, problems: read.problems };
-	return { ok: true, recommendation, blocks, records: Array.from(referenced, (ref) => structuredClone(records.get(ref)!)) };
+	return { ok: true, recommendation, blocks, shots, notes, records: Array.from(referenced, (ref) => structuredClone(records.get(ref)!)) };
+}
+
+/** Per-turn durable events only. Never treat a tool's text as another tool call. */
+export class ReviewCommands {
+	private readonly called = new Map<string, string>();
+	private readonly ended = new Map<string, Extract<ReviewRecord, { kind: "command" }>>();
+	constructor(private readonly redactor: TextRedactor) {}
+
+	note(event: WindlassEvent) {
+		const data = event.data;
+		if (!data || ![data.messageId, data.callId].every(id => typeof id === "string" && /^[\w.-]{1,128}$/.test(id))) return;
+		const ref = `command/${data.messageId}/${data.callId}`;
+		if (event.type === "tool.called" && data.name === "shell" && typeof data.input === "string") {
+			try {
+				const command = JSON.parse(data.input)?.command;
+				if (typeof command === "string") this.called.set(ref, textOf(command, this.redactor).slice(0, 1000));
+			} catch { /* Malformed inputs supply no evidence. */ }
+		}
+		if (event.type !== "tool.settled" || !this.called.has(ref)) return;
+		const exit = isObject(data.display) ? data.display.exitCode : null;
+		const output = textOf(typeof data.output === "string" ? data.output : "", this.redactor);
+		this.ended.set(ref, { kind: "command", ref, command: this.called.get(ref)!, exitCode: typeof exit === "number" ? exit : null,
+			outcome: typeof data.outcome === "string" ? this.redactor.text(data.outcome).slice(0, 80) : "unknown", tail: output.trimEnd().split("\n").slice(-20).join("\n").slice(-1200) });
+	}
+
+	records() { return [...this.called.keys()].flatMap(ref => this.ended.has(ref) ? [this.ended.get(ref)!] : []); }
+}
+
+export const NO_REPO_SHOTS = "Screenshots are turned off for this repository. File without screenshots.";
+
+type Filing = Pick<ItemReview, "recommendation" | "blocks" | "records" | "screenshots" | "notes">;
+type FilingResult = { answer: string; retryFree?: boolean; filing?: Filing };
+
+export async function fileReview(input: unknown, context: ReviewContext, base: string, head: string, screenshots: boolean,
+	fileAt: (path: string, sha: string) => Promise<string>, upload: UploadShots | null): Promise<FilingResult> {
+	if (!screenshots && isObject(input) && Array.isArray(input.blocks) && input.blocks.some(block => isObject(block) && block.kind === "screenshot")) {
+		return { answer: "Not filed: " + (upload ? NO_REPO_SHOTS : "This deployment does not store screenshots. File without screenshots.") };
+	}
+	const checked = checkReview(input, context);
+	if (!checked.ok) return { answer: "Not filed: " + checked.problems.join("\n") + " Fix them and call file_review again." };
+	const files = new Map<string, string[]>();
+	let excerptChars = 0;
+	for (const block of checked.blocks) {
+		const locations = block.kind === "excerpt" ? [block.at] : block.kind === "finding" || block.kind === "risk" ? block.at : [];
+		for (const loc of locations) {
+			const sha = loc.side === "base" ? base : head;
+			const key = sha + "/" + loc.path;
+			let lines = files.get(key);
+			if (!lines) {
+				try {
+					const text = await fileAt(loc.path, sha);
+					lines = text.length ? text.replace(/\n$/, "").split(/\r?\n/) : [];
+					files.set(key, lines);
+				} catch {
+					return { answer: `Not filed: could not read ${JSON.stringify(loc.path)} at ${sha.slice(0, 7)} from GitHub; try again.`, retryFree: true };
+				}
+			}
+			if (loc.lines && loc.lines.end > lines.length) return { answer: `Not filed: the line range for ${JSON.stringify(loc.path)} exceeds the file's ${lines.length} lines.` };
+			if (block.kind === "excerpt" && loc.lines) {
+				const selected = lines.slice(loc.lines.start - 1, loc.lines.end);
+				if (selected.some(line => line.length > limit.excerptLineChars)) return { answer: `Not filed: a line of the excerpt exceeds ${limit.excerptLineChars} characters. Use a location instead.` };
+				block.code = context.redactor.text(selected.join("\n"));
+				excerptChars += block.code.length;
+				if (excerptChars > limit.totalChars) return { answer: "Not filed: the excerpts are too long. Cite a shorter range." };
+			}
+		}
+	}
+	const kept = checked.shots.length && upload ? await upload(checked.shots) : { screenshots: [], files: [], problems: [] };
+	const ids = new Map(kept.files.map((file, i) => [file, kept.screenshots[i].id]));
+	const blocks = checked.blocks.flatMap((block): ReviewBlock[] => block.kind !== "screenshot" ? [block] : ids.has(block.attachment) ? [{ ...block, attachment: ids.get(block.attachment)! }] : []);
+	const notes = [...checked.notes, ...kept.problems];
+	const blocking = blocks.filter(b => b.kind === "finding" && b.severity === "blocking").length;
+	const filing = { recommendation: checked.recommendation, blocks, records: checked.records, screenshots: kept.screenshots, notes };
+	if (Buffer.byteLength(JSON.stringify(filing)) > limit.inputBytes) return { answer: "Not filed: the resolved review is too large. Use fewer excerpts or references." };
+	return { filing,
+		answer: [`Filed as the review of ${head.slice(0, 7)}: ${checked.recommendation.replaceAll("_", " ")}, ${blocking} blocking findings, ${kept.screenshots.length} screenshots.`, ...notes, "End your turn now."].join(" ") };
 }
 
 export function reportOf(input: unknown, redactor: TextRedactor): Refusal | { ok: true; report: AgentReport; shots: ShotRequest[] } {
@@ -320,13 +414,44 @@ function commentText(value: string, max: number): string {
 	return bounded.replace(/([\\`*_{}\[\]()<>!&~|@#:$.])/g, "\\$1").replace(/^([-+=])/, "\\$1");
 }
 
-export function itemComment(verdict: Verdict, words: string, report: ItemReport | null): string {
+type CommentReview = { filed: ItemReview | null; reason: string | null; owner: string; name: string };
+
+function reviewParagraphs(item: string, review: CommentReview): string[] {
+	const r = review.filed;
+	if (!r?.recommendation) return review.reason ? [`No second review: ${commentText(review.reason.replace(/\.$/, ""), 500)}.`] : [];
+	const words = { approve: "approves", changes_requested: "asks for changes", needs_person: "needs you" };
+	const summary = r.blocks.find(block => block.kind === "summary");
+	const paragraphs = [`Second review at ${r.head.slice(0, 7)}: ${words[r.recommendation]}. ${commentText(summary?.text ?? "", 1500)}`.trimEnd()];
+	const rank = { blocking: 0, should_fix: 1, note: 2 };
+	const labels = { blocking: "Blocking", should_fix: "Should fix", note: "Note" };
+	const findings = r.blocks.filter(block => block.kind === "finding").sort((a,b) => rank[a.severity] - rank[b.severity]);
+	const component = (s: string) => encodeURIComponent(s).replace(/[!'()*]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+	const lines = findings.slice(0, 15).map(f => {
+		const at = f.at[0];
+		let location = "";
+		if (at) {
+			const sha = at.side === "base" ? r.base : r.head;
+			const path = at.path.split("/").map(component).join("/");
+			const anchor = at.lines ? `#L${at.lines.start}-L${at.lines.end}` : "";
+			location = `[${commentText(at.path, 300)}${at.lines ? ":" + at.lines.start : ""}](https://github.com/${component(review.owner)}/${component(review.name)}/blob/${sha}/${path}${anchor}) · `;
+		}
+		return `- ${labels[f.severity]} · ${location}${commentText(f.title, limit.findingTitleChars)}`;
+	});
+	if (findings.length > lines.length) lines.push(`and ${findings.length - lines.length} more on the item's page`);
+	if (lines.length) paragraphs.push(lines.join("\n"));
+	const n = r.screenshots.length;
+	paragraphs.push(`The whole review${n ? ` and ${n} screenshot${n === 1 ? "" : "s"}` : ""}: ${config.origins[0]}/items/${item} (opens for the item's owner only)`);
+	return paragraphs;
+}
+
+export function itemComment(verdict: Verdict, words: string, report: ItemReport | null, review?: CommentReview): string {
 	// The marker is an HTML comment GitHub must find byte for byte. Only a platform id belongs there.
 	if (!/^[\w-]{1,128}$/.test(verdict.item) || verdict.item.includes("--")) throw new Error("Invalid item id for the verdict comment.");
 	const headline = verdictWords(verdict, null).split(".", 1)[0];
 	const paragraphs = [`<!-- windlass-item:${verdict.item} -->`, `**Windlass at ${commentText(verdict.head.slice(0, 7), 7)}: ${headline}**`, commentText(words, MAX_NOTE_CHARS)];
 	const criteria = verdict.acceptance.slice(0, MAX_ACCEPTANCE_CRITERIA).map((one) => `- ${commentText(one, 1000)}`);
 	if (criteria.length) paragraphs.push(`Acceptance criteria left to you:\n\n${criteria.join("\n")}`);
+	if (review) paragraphs.push(...reviewParagraphs(verdict.item, review));
 	if (report) {
 		// Every agent field occupies one escaped line with a platform label, after the complete verdict.
 		paragraphs.push(`Builder's report: ${commentText(report.title, MAX_PUBLISH_TITLE_CHARS)}`);

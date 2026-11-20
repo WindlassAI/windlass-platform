@@ -37,7 +37,10 @@ import {
 	type ItemBudget,
 	type ItemEvent,
 	type ItemQuestion,
+	type ItemReview,
 	type ItemRun,
+	type ReviewRecommendation,
+	type ReviewRecord,
 	type RoundCaps,
 	type ItemSummary,
 	type ItemView,
@@ -91,7 +94,7 @@ export const MOCK_FACTORY_LIMITS: FactoryLimits = {
 	factoryTurns: 5,
 	hostedRunning: 3,
 	reviewCap: 6,
-	item: { tokens: 4_000_000, turns: 10, activeSeconds: 4 * 3600, hostedSeconds: 1.5 * 3600 },
+	item: { tokens: 6_000_000, turns: 14, activeSeconds: 4 * 3600, hostedSeconds: 2 * 3600 },
 };
 
 /** The rounds a run allows (server/src/factory/blueprint.ts, `RULES`), as the server sends them in `ItemView.run.caps`. */
@@ -160,7 +163,9 @@ interface Seed {
 	wait?: { reason: Waiting["reason"]; sentence: string; since: number; retryAt: number | null };
 	question?: Omit<ItemQuestion, "id" | "askedAt"> & { asked: number };
 	pr?: number;
-	run?: Omit<ItemRun, "startedAt" | "endedAt" | "step"> & { started: number; ended?: number; step: { n: number; kind: StepKind; attempt?: number; started: number; turn?: ItemRun["step"]["turn"] } };
+	run?: Omit<ItemRun, "startedAt" | "endedAt" | "step"> & { started: number; ended?: number; step: { n: number; kind: StepKind; attempt?: number; started: number; turn?: ItemRun["step"]["turn"]; interruptions?: number } };
+	/** Where its second review is (`ItemSummary.review`); null when left out. */
+	review?: ItemSummary["review"];
 	events?: Array<[ago: number, said: string, step?: [run: number, n: number, kind: StepKind, attempt?: number], person?: boolean]>;
 	/**
 	 * `repositoryChecks`: how many of the repository's own checks ran beside the user's (`gate.required`);
@@ -367,6 +372,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 		},
 		{
 			n: 23,
+			budget: { tokens: 4_000_000 },
 			title: "Migrate the docs search to the new index",
 			body: "Move the docs search to the new search index and remove the old index's build step.",
 			on: DOCS,
@@ -420,7 +426,14 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 		review(41, "Drop the legacy export", HARBOR, 69, { body: "Remove the CSV export that nobody has used since 2.0, with its tests.", acceptance: ["The CSV export is gone from the menu and the API."] }, { result: "pass", gate: noChecks, ci: ci.passed(3), flags: [{ kind: "tests_removed", where: ["test/export-csv.test.ts"] }], mergeable: true, run: 1, ago: 18 }),
 		// CI ran and every check in it was skipped: nothing of CI passed, and the user's checks decide.
 		review(43, "Trim the docs' trailing spaces", DOCS, 16, { body: "Remove the trailing spaces from every page of the docs.", acceptance: [] }, { result: "pass", gate: { state: "passed", required: userChecks(["docs build", "passed"]) }, ci: ci.skipped(), flags: [], mergeable: true, run: 1, ago: 40 }),
+		// Handed over without a second review: the reviewer could not take its tool, and an older push named no commit (Reviewer slice R3-D).
+		review(47, "Quote the artefact names in the upload log", HARBOR, 70, { body: "Put each artefact's name in quotes in the upload log, so that a name with spaces reads as one.", acceptance: [] }, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 21 }),
+		review(48, "Mention the docs site in the README", DOCS, 17, { body: "Link the docs site from the README's first paragraph.", acceptance: [] }, { result: "pass", gate: noChecks, ci: ci.passed(1), flags: [], mergeable: true, run: 1, ago: 44 }),
 		sentBack(31, "Add a health check endpoint", HARBOR, 60),
+		// At the second review: a second agent reads the change, waits for a sandbox, and was cut off once and is tried again.
+		reviewing(44, "Paginate the artefact list", HARBOR, 71, "running", { turn: "started", interruptions: 0 }),
+		reviewing(45, "Sort the station list by name", HARBOR, 72, "waiting", { turn: "delivered", interruptions: 0 }, `Waiting for one of the 20 sandboxes you may keep to review ${short(hex(45))}: all are in use. Free one on the Usage page, or it frees itself 3 days after its item is done.`),
+		reviewing(46, "Round the tide heights to centimetres", TIDES, 60, "waiting", { turn: "delivered", interruptions: 1 }),
 		// Ended.
 		{
 			n: 32,
@@ -546,6 +559,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			const head = hex(53);
 			made.push({
 				n: 53,
+				budget: { turns: 10 },
 				title: "Generate the API reference from the doc comments",
 				body: "Replace the hand-written API page with one generated from the doc comments at build time.",
 				on: DOCS,
@@ -660,6 +674,40 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			],
 			verdicts: [verdict],
 			spent: { tokens: 1_000_000 + n * 31_000, turns: 1, activeSeconds: 45 * 60, hostedSeconds: 45 * 60 },
+		};
+	}
+
+	/**
+	 * An item at its second review (Reviewer slice R3-D): CI passed on the pushed commit, its verdict is stored, and a second
+	 * agent reads the change, or waits for a sandbox to (`wait`), or was cut off and is tried again (`interruptions`).
+	 */
+	function reviewing(n: number, title: string, on: typeof HARBOR, pr: number, state: "running" | "waiting", step: { turn: ItemRun["step"]["turn"]; interruptions: number }, wait?: string): Seed {
+		const head = hex(n);
+		const verdict: SeedVerdict = { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 6 };
+		return {
+			n,
+			title,
+			on,
+			state: wait ? "waiting" : "working",
+			filed: 80,
+			pr,
+			body: `${title}.`,
+			acceptance: [],
+			...(wait ? { wait: { reason: "capacity" as const, sentence: wait, since: 5, retryAt: at + 2 * MINUTE } } : {}),
+			run: { n: 1, started: 79, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 5, kind: "review", started: 6, turn: step.turn, interruptions: step.interruptions } },
+			events: [
+				[79, "Started.", undefined, true],
+				[78, "The turn started.", [1, 1, "implement"]],
+				[40, "The checks passed.", [1, 2, "gate"]],
+				[39, `Pushed ${short(head)} to pull request #${pr}.`, [1, 3, "publish"]],
+				[7, "CI passed.", [1, 4, "ci", 4]],
+				[6, `A second agent reviews ${short(head)}.`, [1, 5, "review"]],
+				...(wait ? [[5, wait, [1, 5, "review"]] as [number, string, [number, number, StepKind]]] : []),
+				...(step.interruptions > 0 ? [[3, "The review was interrupted.", [1, 5, "review"]] as [number, string, [number, number, StepKind]]] : []),
+			],
+			verdicts: [verdict],
+			review: { state, recommendation: null },
+			spent: { tokens: 1_300_000, turns: 1, activeSeconds: 40 * 60, hostedSeconds: 40 * 60 },
 		};
 	}
 
@@ -837,7 +885,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 				endedAt: seed.run.ended === undefined ? null : ago(seed.run.ended),
 				stopReason: seed.run.stopReason,
 				rounds: seed.run.rounds,
-				step: { n: seed.run.step.n, kind: seed.run.step.kind, attempt: seed.run.step.attempt ?? 1, startedAt: ago(seed.run.step.started), turn: seed.run.step.turn ?? null, checks: 0, interruptions: 0 },
+				step: { n: seed.run.step.n, kind: seed.run.step.kind, attempt: seed.run.step.attempt ?? 1, startedAt: ago(seed.run.step.started), turn: seed.run.step.turn ?? null, checks: 0, interruptions: seed.run.step.interruptions ?? 0 },
 				caps: ROUND_CAPS,
 			}
 		: null;
@@ -854,6 +902,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		question,
 		pullRequest: seed.pr === undefined ? null : { number: seed.pr, url: `${repository.url}/pull/${seed.pr}` },
 		verdict: last ? { result: last.result, flags: last.flags, ci: last.ci.state } : null,
+		review: place.kind === "machine" ? { state: "off", recommendation: null } : seed.review ?? null,
 		budget,
 		spent,
 		// Made with the seeded items (`keptOf`), once there is a user to make it for.
@@ -866,6 +915,9 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		head,
 		events,
 		verdicts,
+		reviews: [],
+		reviewerSessionId: seed.review ? reviewerSessionOf(id) : null,
+		reviewNone: place.kind === "machine" ? "in this sandbox the reviewer's commands would run with the network" : null,
 		report: seed.n === 24 ? {
 			by: "builder", sessionId: "", run: 1, key: `${id}:1:1:1`, head: null, at: ago(50),
 			title: "Log the SHA-256 after each upload", records: [], screenshots: [],
@@ -878,7 +930,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 	};
 }
 
-const summaryOf = ({ task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, report: _report, ...summary }: ItemView): ItemSummary => summary;
+const summaryOf = ({ task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => summary;
 
 function seedTokens(state: MockItemsState, at: number): ApiToken[] {
 	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
@@ -909,7 +961,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		if (!found) {
 			const at = deps.now();
 			const items = seeds(state, at, deps.machines(auth)?.list ?? null)
-				.map((seed) => withSeededReport(viewOf(seed, at, auth.profile.uid), seed.n))
+				.map((seed) => withSeededReview(withSeededReport(viewOf(seed, at, auth.profile.uid), seed.n), seed.n))
 				.sort((a, b) => b.createdAt - a.createdAt);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };
 			kept.set(auth.profile.uid, found);
@@ -1002,7 +1054,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 }, caps: ROUND_CAPS };
 		if (before && before.endedAt === null) Object.assign(before, { endedAt: at, stopReason: "retried" });
 		item.events.push({ at, by: `person:${auth.profile.uid}`, step: null, said });
-		change(auth, item, { state: "queued", wait: null, question: null, run, report: null }, [], "person");
+		change(auth, item, { state: "queued", wait: null, question: null, run, report: null, review: null, reviewNone: null }, [], "person");
 		deps.later(2500, () => {
 			if (item.run !== run || item.state !== "queued") return;
 			startTurn(auth, item);
@@ -1081,7 +1133,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				const item = itemOf(auth, itemId);
 				linksAsked += 1;
 				const expiresAt = deps.now() + 10 * MINUTE;
-				return (item.report?.screenshots ?? [])
+				return [...(item.report?.screenshots ?? []), ...item.reviews.flatMap((review) => review.screenshots)]
 					.filter((shot) => shot.state === "kept")
 					.map((shot) => {
 						const file = MOCK_SHOT_FILES.get(shot.id);
@@ -1144,6 +1196,10 @@ export function createMockItems(deps: MockItemsDeps) {
 					events: [],
 					verdicts: [],
 					report: null,
+					review: place.kind === "machine" ? { state: "off", recommendation: null } : null,
+					reviews: [],
+					reviewerSessionId: null,
+					reviewNone: place.kind === "machine" ? "in this sandbox the reviewer's commands would run with the network" : null,
 				};
 				mine.items.unshift(item);
 				if (typeof idempotencyKey === "string") mine.made.set(idempotencyKey, { content, id });
@@ -1395,3 +1451,259 @@ function withSeededReport(view: ItemView, n: number): ItemView {
 	};
 	return { ...view, report };
 }
+
+// ---- the second review on the item's page (Reviewer slice R3-D) -------------------------------------
+// As the reports above: an item listed here gets these reviews, its `review` state and the log's lines for
+// them, whatever `viewOf` gave it. The reasons there was none are the server's (blueprint.ts, `afterCi`,
+// `reviewEnded`, `handoff`); the refusal and the failed checkout are worded as R3-C words them for now.
+
+type MockReview = ItemReview;
+type MockRecord = ReviewRecord;
+
+/** Each seeded review belongs to the session of that item. */
+const reviewerSessionOf = (itemId: string) => `review-${itemId}`;
+
+/** A command the reviewer ran in its turn, as the platform keeps it (`command/<message>/<call>`). */
+const command = (id: string, line: string, exitCode: number | null, tail: string): MockRecord => ({ ref: `command/${id}`, kind: "command", command: line, exitCode, outcome: exitCode === null ? "was stopped" : "ended", tail });
+
+interface SeededReview {
+	/** The run it reviews; the item's run when left out. */
+	run?: number;
+	round?: number;
+	/** Null: no review was filed in the turn, and `said` says why. */
+	recommendation: ReviewRecommendation | null;
+	said?: string;
+	blocks?: MockBlock[];
+	shots?: MockShot[];
+	commands?: MockRecord[];
+	notes?: string[];
+	/** Minutes before the verdict's handing over it was filed. */
+	before?: number;
+}
+
+/** Each seeded item's second review: the reviews kept, or the reason the log gives for none. */
+const SEEDED_REVIEWS: Record<number, { state: "filed" | "none" | "off"; reviews?: SeededReview[]; none?: string }> = {
+	// Approves, with one picture of its own and the test run it cites.
+	24: {
+		state: "filed",
+		reviews: [
+			{
+				recommendation: "approve",
+				shots: [{ ...AGENTS_1280, caption: "The release log after an upload, each line ending with the artefact's SHA-256" }],
+				commands: [command("msg_4/call_2", "pnpm test", 0, " ✓ test/upload.test.ts (12 tests)\n ✓ test/log.test.ts (4 tests)\n\n Test Files  2 passed (2)\n      Tests  16 passed (16)")],
+				blocks: [
+					{ kind: "summary", text: "The upload logs the SHA-256 after the name, as the task asks. The tests pass in my checkout, and I read the change line by line." },
+					{ kind: "finding", id: "r1.f1", root: "r1.f1", severity: "note", title: "The checksum is computed twice for a retried upload", text: "Harmless: a retry is rare and the file is small. It could be kept from the first attempt.", at: [{ path: "src/upload.ts", lines: { start: 41, end: 47 } }], refs: [] },
+					{ kind: "text", heading: "What I ran", text: "The whole test suite, once, in my own checkout of the commit.", refs: [{ ref: "command/msg_4/call_2", says: "passed" }] },
+				],
+			},
+		],
+	},
+	// Asks for changes: findings filed out of order (blocking ones are shown first), a claim the record does not bear out,
+	// a command that failed with its last lines, an excerpt, and two pictures of its own.
+	41: {
+		state: "filed",
+		reviews: [
+			{
+				recommendation: "changes_requested",
+				notes: ["One more screenshot was filed and not kept: it was not a PNG the platform could read."],
+				shots: [
+					{ ...AGENTS_390, caption: "The menu on a phone: the export entry is gone, and so is the divider under it" },
+					{ ...ITEM_FULL_PAGE, caption: "The settings page, top to bottom: the export section still has its heading" },
+				],
+				commands: [command("msg_3/call_1", "pnpm vitest run test/menu.test.ts", 1, " ❯ test/menu.test.ts (3 tests | 1 failed)\n   × keeps the divider between the groups\n     → expected 2 dividers, got 1\n\n Test Files  1 failed (1)\n      Tests  1 failed | 2 passed (3)")],
+				blocks: [
+					{ kind: "finding", id: "r1.f3", root: "r1.f3", severity: "note", title: "The 410 answer could name the version", text: "As the builder asks too: one line in the body would help a script's author.", at: [{ path: "src/api/routes.ts", lines: { start: 88, end: 88 } }], refs: [] },
+					{ kind: "summary", text: "The export is gone from the API, but the menu lost its divider with it, and the settings page still shows the export's heading over an empty section. Both are visible to every user." },
+					{
+						kind: "finding",
+						id: "r1.f1",
+						root: "r1.f1",
+						severity: "blocking",
+						title: "The menu's divider went with the export entry",
+						text: "The entry and the divider after it were one element. Removing it joined the File and Help groups.\n\nThe menu test that checks the dividers fails in my checkout.",
+						at: [{ path: "src/menu.ts", lines: { start: 30, end: 36 } }],
+						refs: [{ ref: "command/msg_3/call_1", says: "failed" }],
+					},
+					{ kind: "finding", id: "r1.f4", root: "r1.f4", severity: "should_fix", title: "The changelog does not mention the removal", text: "A user upgrading finds the entry gone with no note.", at: [{ path: "CHANGELOG.md", lines: { start: 1, end: 12 } }], refs: [] },
+					{
+						kind: "finding",
+						id: "r1.f2",
+						root: "r1.f2",
+						severity: "blocking",
+						title: "The settings page keeps the export's heading",
+						text: "`ExportSection` still renders its heading when it has no rows.",
+						at: [{ path: "src/settings/ExportSection.tsx", lines: { start: 12, end: 19 } }, { path: "src/settings/index.tsx", lines: { start: 54, end: 54 } }],
+						refs: [{ ref: "ci/0", says: "failed" }],
+					},
+					{ kind: "risk", text: "Scripts that call `/export.csv` now get 410. I found none in the repository, but the README's example uses it.", at: [{ path: "README.md", lines: { start: 140, end: 146 } }] },
+					{
+						kind: "excerpt",
+						at: { path: "src/menu.ts", lines: { start: 30, end: 36 } },
+						code: ["export const MENU = [", '\t{ group: "File", items: [open, save] },', "\t// The divider was the export entry's own bottom border.", '\t{ group: "Help", items: [docs, about] },', "];", "", "export const DIVIDERS = MENU.length - 1;"].join("\n"),
+						note: "The groups as they stand at this commit.",
+					},
+					{ kind: "text", heading: "What I ran", text: "The menu test, and the app in its own server to take the two screenshots.", refs: [{ ref: "command/msg_3/call_1", says: "failed" }, { ref: "flag/tests_removed" }] },
+				],
+			},
+		],
+	},
+	// Needs its person: it cannot tell from the task whether loosening the lint check was wanted.
+	36: {
+		state: "filed",
+		reviews: [
+			{
+				recommendation: "needs_person",
+				blocks: [
+					{ kind: "summary", text: "The change does what the task says, by changing the repository's own check file. Whether that is acceptable is your call, not mine." },
+					{ kind: "question", text: "The change makes lint warnings pass by setting `ignoreExit` on the lint check in `.windlass/config.json`. Is it fine that a lint run that crashes now passes too?" },
+					{ kind: "question", text: "Should warnings still be counted somewhere, for example in the job summary?" },
+					{ kind: "risk", text: "With the exit code ignored, a lint configuration error would go unnoticed.", at: [{ path: ".windlass/config.json", lines: { start: 8, end: 12 } }] },
+					{ kind: "text", heading: "What the platform flagged", text: "Both flags are about the same line.", refs: [{ ref: "flag/checks_changed" }, { ref: "flag/exit_ignored" }] },
+				],
+			},
+		],
+	},
+	// Hostile text: links, images, HTML, mentions, a fence of 70 lines, a path that is not allowed and one that is odd but allowed.
+	38: {
+		state: "filed",
+		reviews: [
+			{
+				recommendation: "changes_requested",
+				shots: [{ ...AGENTS_1280, shows: undefined, caption: "@octocat see [x](https://e.example) <img src=x onerror=alert(1)>", page: "javascript:alert(1)" }],
+				blocks: [
+					{ kind: "summary", text: HOSTILE },
+					{ kind: "finding", id: "r1.f1", root: "r1.f1", severity: "blocking", title: "<script>alert(1)</script> [click](https://e.example)", text: `Read all of it:\n\n${fence(70)}`, at: [{ path: "../../etc/passwd", lines: { start: 1, end: 1 } }, { path: "src/<b>stations</b>.ts", lines: { start: 3, end: 9 } }], refs: [] },
+					{ kind: "question", text: "@octocat, merge this? ![](https://e.example/q.png)" },
+				],
+			},
+		],
+	},
+	// Approves, with eight pictures: as many as a review may file.
+	37: {
+		state: "filed",
+		reviews: [
+			{
+				recommendation: "approve",
+				shots: Array.from({ length: 8 }, (_, index) => ({ ...[AGENTS_1280, AGENTS_390, ITEM_FULL_PAGE][index % 3]!, caption: `Error page ${index + 1} of 8: the request id is the first thing on the line` })),
+				blocks: [{ kind: "summary", text: "Every error page I could reach shows the request id first. I took a picture of each of the eight." }],
+			},
+		],
+	},
+	// Sent back after a review that asked for changes; the second run's review answers the first's findings.
+	31: {
+		state: "filed",
+		reviews: [
+			{
+				run: 1,
+				recommendation: "changes_requested",
+				blocks: [
+					{ kind: "summary", text: "It answers 200 while migrations run, which the task's second criterion rules out." },
+					{ kind: "finding", id: "r1.f1", root: "r1.f1", severity: "blocking", title: "GET /healthz answers 200 during a migration", text: "The handler pings the database and nothing else.", at: [{ path: "src/health.ts", lines: { start: 9, end: 20 } }], refs: [] },
+					{ kind: "finding", id: "r1.f2", root: "r1.f2", severity: "note", title: "The version is read from package.json at every request", text: "It could be read once at start.", at: [{ path: "src/health.ts", lines: { start: 4, end: 4 } }], refs: [] },
+				],
+			},
+			{
+				run: 2,
+				round: 2,
+				recommendation: "approve",
+				blocks: [
+					{ kind: "summary", text: "The first review's blocking finding is fixed: during a migration it now answers 503 and says so in the body." },
+					{ kind: "earlier", finding: "r1.f1", status: "fixed", text: "`migrating()` is checked before the ping, and a test covers it." },
+					{ kind: "earlier", finding: "r1.f2", status: "not_fixed", text: "Still read at every request; it stays a note." },
+					{ kind: "finding", id: "r2.f1", root: "r1.f2", severity: "note", title: "The version is still read at every request", text: "As before: harmless, and cheap to change.", at: [{ path: "src/health.ts", lines: { start: 4, end: 4 } }], refs: [] },
+				],
+			},
+		],
+	},
+	// On ada/tide-tables, whose agents take no screenshots: a review with none, and no screenshot area on the page.
+	25: {
+		state: "filed",
+		reviews: [
+			{
+				recommendation: "approve",
+				blocks: [
+					{ kind: "summary", text: "Tabs and spaces are both read as separators, and a mixed file reads the same as either. The parser's tests cover the three cases." },
+					{ kind: "text", heading: "Not checked", text: "This repository's agents take no screenshots, and nothing here shows in a page.", refs: [] },
+				],
+			},
+		],
+	},
+	// Each reason there was none.
+	26: { state: "none", none: "handed over as it is, as you asked" },
+	28: { state: "off", none: "turned off for this deployment" },
+	29: { state: "off", none: "in this sandbox the reviewer's commands would run with the network" },
+	39: { state: "none", none: "the pull request moved after the agent pushed" },
+	40: { state: "none", reviews: [{ recommendation: null, said: "The reviewer did not file a review the platform could read." }] },
+	43: { state: "none", reviews: [{ recommendation: null, said: `The reviewer's checkout of ${short(hex(43))} failed: GitHub no longer has that commit.` }] },
+	47: { state: "none", reviews: [{ recommendation: null, said: "The reviewer's sandbox has a Windlass that cannot offer it the review tool. A sandbox made from the current image can." }] },
+	48: { state: "none", none: "the push did not identify the commit to review" },
+};
+
+/** A seeded item with its second review: the reviews kept, the state the list shows, and the log's lines for them. */
+function withSeededReview(view: ItemView, n: number): ItemView {
+	const seeded = SEEDED_REVIEWS[n];
+	if (!seeded) return view;
+	const reviewerSessionId = seeded.state === "off" ? null : reviewerSessionOf(view.id);
+	const reviews = (seeded.reviews ?? []).map((one, index): MockReview => {
+		const run = one.run ?? view.run?.n ?? 1;
+		const verdict = view.verdicts.findLast((candidate) => candidate.run === run);
+		const head = verdict?.head ?? view.head ?? hex(n);
+		const key = `${view.id}:${run}:5:1`;
+		const refs = [...new Set((one.blocks ?? []).flatMap((block) => ("refs" in block ? block.refs.map((ref) => ref.ref) : [])))];
+		const screenshots = (one.shots ?? []).map((shot, at): ItemAttachment => {
+			const id = `a_${hex(n * 100 + index * 10 + at + 7, 16)}`;
+			if (shot.file) MOCK_SHOT_FILES.set(id, shot.file);
+			return { id, by: "reviewer", sessionId: reviewerSessionId ?? "s_reviewer", head, width: shot.width, height: shot.height, bytes: shot.bytes, sha256: hex(n * 100 + at, 64), caption: shot.caption, shows: shot.shows ?? null, page: shot.page ?? null, state: shot.removed ? "removed" : "kept" };
+		});
+		const records = refs.flatMap((ref) => (ref.startsWith("command/") ? (one.commands ?? []).filter((record) => record.ref === ref) : seededRecord(ref, verdict)));
+		return {
+			id: key,
+			run,
+			round: one.round ?? 1,
+			head,
+			base: hex(n * 7 + 3),
+			verdictId: verdict?.id ?? key,
+			by: { sessionId: reviewerSessionId ?? "s_reviewer", model: "gpt-6.1-sol" },
+			at: (verdict?.at ?? view.updatedAt) - (one.before ?? 1) * MINUTE,
+			state: one.recommendation ? "filed" : "none",
+			said: one.said ?? null,
+			recommendation: one.recommendation,
+			// As the platform keeps a filing: a screenshot block for each picture it took, after its words.
+			blocks: [...(one.blocks ?? []), ...screenshots.map((shot): MockBlock => ({ kind: "screenshot", attachment: shot.id }))],
+			records,
+			notes: one.notes ?? [],
+			screenshots,
+		};
+	});
+	const last = reviews[reviews.length - 1];
+	// The log's lines, before each handing over: "A second agent reviews …" and what came of it, or why there was none.
+	const events = [...view.events];
+	const handoffs = events.flatMap((event, index) => (event.step?.kind === "handoff" ? [index] : []));
+	for (const [index, at] of [...handoffs.entries()].reverse()) {
+		const event = events[at];
+		if (!event?.step) continue;
+		const review = reviews.find((one) => one.run === event.step?.run);
+		const sha = short(view.verdicts.findLast((one) => one.run === event.step?.run)?.head ?? view.head ?? "");
+		const step = { ...event.step, kind: "review" as const };
+		const lines: ItemEvent[] = review
+			? [
+					{ at: review.at - 12 * MINUTE, by: "platform", step, said: `A second agent reviews ${sha}.` },
+					{ at: review.at, by: "platform", step, said: review.recommendation ? `The second review of ${sha}: ${REVIEW_WORDS[review.recommendation](review)}.` : `No second review: ${(review.said ?? "").replace(/^The /, "the ").replace(/\.$/, "")}.` },
+				]
+			: index === handoffs.length - 1 && seeded.none
+				? [{ at: event.at, by: "platform", step: event.step, said: `No second review: ${seeded.none}.` }]
+				: [];
+		events.splice(at, 0, ...lines);
+	}
+	// The reason the server hands over with (blueprint.ts, `HandoffReview.reviewNone`), as it was given.
+	const reviewNone = seeded.state === "filed" ? null : (seeded.none ?? last?.said ?? null);
+	return { ...view, events, reviews, reviewerSessionId, reviewNone, review: { state: seeded.state, recommendation: seeded.state === "filed" ? (last?.recommendation ?? null) : null } };
+}
+
+/** What the log says of a filed review (blueprint.ts, `reviewEnded`). */
+const REVIEW_WORDS: Record<ReviewRecommendation, (review: MockReview) => string> = {
+	approve: () => "approves",
+	changes_requested: (review) => `asks for changes (${review.blocks.filter((block) => block.kind === "finding" && block.severity === "blocking").length} blocking)`,
+	needs_person: () => "needs you",
+};

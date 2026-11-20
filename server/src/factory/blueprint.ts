@@ -73,7 +73,7 @@ export interface NewItem {
 	task: Task;
 	/** §3.2: "none" unless asked for. */
 	plan?: "none" | "approve";
-	reviewer?: FactoryItem["reviewer"];
+	reviewer: NonNullable<FactoryItem["reviewer"]>;
 	place: FactoryItem["place"];
 	budget: ItemBudget;
 }
@@ -87,7 +87,7 @@ export function createItem(input: NewItem): FactoryItem {
 		wait: null,
 		task: input.task,
 		plan: input.plan ?? "none",
-		...(input.reviewer && { reviewer: input.reviewer }),
+		reviewer: input.reviewer,
 		place: input.place,
 		machineRemoved: false,
 		budget: input.budget,
@@ -227,9 +227,12 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "start" | "retry" | "se
 		case "turn_waiting": {
 			if (fact.key !== key || step.turn !== "delivered") return false;
 			const now = c.item.wait;
-			if (now !== null && now.reason === fact.wait.reason && now.sentence === fact.wait.sentence && now.retryAt === fact.wait.retryAt) return false;
-			if (now?.reason !== fact.wait.reason) c.say(fact.wait.sentence);
-			c.state("waiting", fact.wait);
+			const wait = step.kind === "review" && run.review
+				? { ...fact.wait, sentence: `Second review of ${shortSha(run.review.head)}. ${fact.wait.sentence}` }
+				: fact.wait;
+			if (now !== null && now.reason === wait.reason && now.sentence === wait.sentence && now.retryAt === wait.retryAt) return false;
+			if (now?.reason !== wait.reason) c.say(wait.sentence);
+			c.state("waiting", wait);
 			return true;
 		}
 		case "turn_started":
@@ -438,7 +441,7 @@ function published(c: Change, fact: Extract<Fact, { kind: "published" }>): void 
 	c.say(`Pushed ${shortSha(fact.head)} to pull request #${fact.pr.number}.`);
 	c.enter("ci");
 	// The gate this commit rests on is kept with it: a later turn's gate is not about it until it is pushed.
-	run.ci = { head: fact.head, since: c.at, last: null, mergeable: null, gate: run.gate, moved: null, handed: null };
+	run.ci = { head: fact.head, since: c.at, last: null, mergeable: null, gate: run.gate, moved: null, handed: null, secondReview: null };
 	if (item.machineRemoved) return askRemoved(c);
 	pollCi(c, fact.openItems, null, `Waiting for CI to start on ${shortSha(fact.head)}.`);
 }

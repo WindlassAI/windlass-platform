@@ -185,7 +185,7 @@ export interface UserApi {
 	 */
 	githubRepository(repositoryId: GithubId): Promise<GithubRepository>;
 	/** Saves what new agents on a repository start with: a field left out stays, null saves none. Throws with reason `bad_input` or `bad_model` for what the deployment does not offer. */
-	saveRepositoryDefaults(repositoryId: GithubId, change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(repositoryId: GithubId, change: { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
 	/** Forgets the remembered approvals of that MCP server for a repository. */
 	forgetRepositoryApproval(repositoryId: GithubId, name: string): Promise<RepositoryView>;
 	/** Deletes everything kept for a repository: setup command, checks, secrets, defaults and remembered approvals. The agents on it stay. */

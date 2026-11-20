@@ -30,6 +30,7 @@
  * the words of the question, of the timeline's lines and of what the agent is told.
  */
 
+import { REVIEW_TOOL } from "./factory/reviewer-task.js";
 import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS, type ItemAttachment, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
 import type { CommandSandbox, Redactor } from "./repo-secrets.js";
 
@@ -77,10 +78,10 @@ const DESCRIPTION = [
 	"The result says what was published and gives the pull request's address, or says why nothing was published. Tell the user what it says, and do not try another way to publish.",
 ].join(" ");
 
-const REPORT_DESCRIPTION = [
+const reportDescription = (screenshots: boolean) => [
 	"File your report on this turn's work, for the person who reviews it: a title and a description for the pull request, where the reader should look, and what you are unsure of.",
 	"Call it once, at the end of your turn, after the work is done; a later call replaces the report. The platform opens the pull request itself once your turn has ended, and pushes whatever you did not push with `push`.",
-	"Screenshots: files you saved with `wlp-shot` under `.wlp-shots/`; they are shown on the item's page to the person, labelled as yours.",
+	...(screenshots ? ["Screenshots: files you saved with `wlp-shot` under `.wlp-shots/`; they are shown on the item's page to the person, labelled as yours."] : []),
 	"Whether the work is ready is decided from the checks and CI, not from the report: say plainly what you did not finish or could not verify.",
 ].join(" ");
 
@@ -146,6 +147,8 @@ export interface PlatformToolOffer {
 	publish: boolean;
 	report: boolean;
 	push: boolean;
+	review?: boolean;
+	screenshots?: boolean;
 }
 
 /**
@@ -185,9 +188,17 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		untrustedResult: false,
 		...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
 	});
+	if (offer.review) return [tool(REVIEW_TOOL,
+		"File a recommendation and typed review blocks for this commit. To see completed shell command refs in execution order, call with {commands:true}; this lookup does not use a filing.",
+		{ type: "object", properties: {
+			commands: { type: "boolean" },
+			recommendation: { type: "string", enum: ["approve", "changes_requested", "needs_person"] },
+			blocks: { type: "array", items: { type: "object" } },
+		}, additionalProperties: false }, 180)];
+	const { screenshots, ...textFields } = REPORT_SCHEMA.properties;
 	return [
 		...(offer.publish ? [tool(PUBLISH_TOOL, DESCRIPTION, INPUT_SCHEMA, publishSeconds)] : []),
-		...(offer.report ? [tool(REPORT_TOOL, REPORT_DESCRIPTION, REPORT_SCHEMA, 180)] : []),
+		...(offer.report ? [tool(REPORT_TOOL, reportDescription(offer.screenshots !== false), offer.screenshots === false ? { ...REPORT_SCHEMA, properties: textFields } : REPORT_SCHEMA, 180)] : []),
 		...(offer.push ? [tool(PUSH_TOOL, PUSH_DESCRIPTION, PUSH_SCHEMA, PUBLISHING_SECONDS), tool(FETCH_BASE_TOOL, FETCH_BASE_DESCRIPTION, { type: "object", properties: {} }, PUBLISHING_SECONDS)] : []),
 	];
 }

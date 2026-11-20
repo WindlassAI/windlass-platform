@@ -38,7 +38,7 @@ export interface SessionCreateInput {
 	demo: boolean;
 	createdAt: number;
 	/** Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's. */
-	origin?: { kind: "item"; itemId: string };
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer" };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
@@ -92,7 +92,7 @@ export interface UserInternal {
 	/** A work item's summary changed (user-items.ts). */
 	internalItemChanged(summary: ItemSummary): Promise<void>;
 	/** What an item reads of its user: its session's hosted seconds in the ledger, and the user's open items. */
-	internalItemFacts(sessionId: string): Promise<ItemFacts>;
+	internalItemFacts(sessionIds: string[]): Promise<ItemFacts>;
 	/** An item session asks for a running slot for the turn of a delivery: granted now, or queued (`SessionInternal.internalGrant` later). */
 	internalRequestTurn(request: TurnRequest): Promise<TurnAnswer>;
 	/** The turn a slot was given to ended, or could not start: the slot, by its id, is free. */
@@ -103,6 +103,7 @@ export interface UserInternal {
 
 /** A repository's secrets, and what the user keeps for their account, on their way to a session: each value as the `user` actor stores it, sealed (repo-secrets.ts). */
 export interface SealedSecrets {
+	screenshots?: boolean;
 	/** What the secrets are saved for; null when the session has no repository of the GitHub connection. */
 	project: string | null;
 	secrets: Array<{ name: string; scope: SecretScope; sealed: string }>;

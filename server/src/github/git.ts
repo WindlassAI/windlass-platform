@@ -187,7 +187,8 @@ function saveBase(base: string, revision: string): string {
  *
  * `wlp:dir <directory>` says where the clone is, relative to the workspace: "." or `directory`.
  */
-export function cloneScript(url: string, branch: string, directory: string, work?: string): string {
+export function cloneScript(url: string, branch: string, directory: string, work?: string, pinnedBase?: string): string {
+	if (pinnedBase !== undefined && !/^[0-9a-f]{40}$/.test(pinnedBase)) throw new Error("Invalid review base SHA.");
 	const lines = [
 		"set -eu",
 		READ_TOKEN,
@@ -198,9 +199,10 @@ export function cloneScript(url: string, branch: string, directory: string, work
 		"else",
 		`	target=${shellQuote(directory)}`,
 		"fi",
-		`wlp_git clone --quiet --branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`,
+		`wlp_git clone --quiet ${pinnedBase ? "--single-branch " : ""}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`,
 		`echo "wlp:dir $target"`,
 		PLAIN_GIT,
+		...(pinnedBase ? ["WLP_T=", `plain_git -C "$target" checkout -q --detach ${pinnedBase}`] : []),
 		`(cd "$target" && {
 ${saveBase(branch, "plain_git rev-parse --verify HEAD")}
 })`,
@@ -254,25 +256,62 @@ export function fetchBaseScript(url: string, base: string, work: string | null =
 		`if (cd "$tmp" && wlp_git --git-dir="$tmp/repo" fetch --quiet -- ${shellQuote(url)} ${shellQuote(`+refs/heads/${work}:refs/heads/${work}`)}) 2>/dev/null; then has_work=1; else has_work=0; fi`,
 	];
 	return [
-		"set -eu",
-		READ_TOKEN,
-		tokenGit(hostOf(url)),
-		PLAIN_GIT,
-		"here=$(pwd)",
-		"tmp=$(mktemp -d /tmp/wlp-fetch.XXXXXXXX)",
-		`trap 'rm -rf "$tmp"' EXIT`,
-		`plain_git init --quiet --bare --template= "$tmp/repo"`,
-		`(cd "$tmp" && wlp_git --git-dir="$tmp/repo" fetch --quiet -- ${shellQuote(url)} ${shellQuote(`+refs/heads/${base}:refs/heads/${base}`)})`,
-		...workRefs,
-		"WLP_T=",
-		`cd "$here"`,
-		WORKSPACE_GUARD,
-		"wlp_guard",
+		...fetchPrefix(url, `+refs/heads/${base}:refs/heads/${base}`, workRefs, "."),
 		`plain_git fetch --quiet --no-tags "$tmp/repo" ${shellQuote(`+refs/heads/${base}:refs/remotes/origin/${base}`)}`,
 		...(work === null ? [] : [`if [ "$has_work" = 1 ]; then plain_git fetch --quiet --no-tags "$tmp/repo" ${shellQuote(`+refs/heads/${work}:refs/remotes/origin/${work}`)}; echo "wlp:fetchedwork"; fi`]),
 		saveBase(base, `plain_git --git-dir="$tmp/repo" rev-parse --verify ${shellQuote(`refs/heads/${base}^{commit}`)}`),
 		`echo "wlp:fetched"`,
 	].join("\n");
+}
+
+function fetchPrefix(url: string, ref: string, extra: string[], directory: string): string[] {
+	return [
+		"set -eu",
+		READ_TOKEN,
+		tokenGit(hostOf(url)),
+		PLAIN_GIT,
+		`here="$(pwd)"/${shellQuote(directory)}`,
+		"tmp=$(mktemp -d /tmp/wlp-fetch.XXXXXXXX)",
+		`trap 'rm -rf "$tmp"' EXIT`,
+		`plain_git init --quiet --bare --template= "$tmp/repo"`,
+		`(cd "$tmp" && wlp_git --git-dir="$tmp/repo" fetch --quiet -- ${shellQuote(url)} ${shellQuote(ref)})`,
+		...extra,
+		"WLP_T=",
+		`cd "$here"`,
+		WORKSPACE_GUARD,
+		"wlp_guard",
+	];
+}
+
+/** Fetch only the pull ref, with a read token isolated from the workspace. */
+export function fetchHeadScript(url: string, pr: number, directory = "."): string {
+	if (!Number.isSafeInteger(pr) || pr < 1) throw new Error("Invalid pull request number.");
+	return [...fetchPrefix(url, `+refs/pull/${pr}/head:refs/wlp/review`, [], directory),
+		'plain_git fetch --quiet --no-tags "$tmp/repo" +refs/wlp/review:refs/wlp/review',
+	].join("\n");
+}
+
+export function reviewCheckoutScript(directory: string, head: string): string {
+	if (!/^[0-9a-f]{40}$/.test(head)) throw new Error("Invalid review head SHA.");
+	return ["set -eu", `cd ${shellQuote(directory)}`, PLAIN_START,
+		`[ "$(git rev-parse --verify 'refs/wlp/review^{commit}')" = ${head} ] && git cat-file -e '${head}^{commit}' || { echo wlp:missing; exit 1; }`,
+		`git checkout -q -f --detach ${head}`, `git reset -q --hard ${head}`, "git clean -q -fd", "rm -rf -- .wlp-shots",
+		'echo "wlp:review $(git rev-parse --verify HEAD)"',
+	].join("\n");
+}
+
+export async function checkoutReview(sandbox: SandboxHandle, url: string, token: string, directory: string, pr: number, head: string, signal?: AbortSignal) {
+	const fetch = await run(sandbox, fetchHeadScript(url, pr, directory), { stdin: token + "\n", timeoutMs: PUSH_TIMEOUT_MS, secrets: [token], signal });
+	if (!fetch.ok) throw new Error("the pull request head could not be fetched");
+	const checkout = await run(sandbox, reviewCheckoutScript(directory, head), { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS, signal });
+	if (!checkout.ok || checkout.marks.get("review") !== head) throw new Error("the pull ref does not identify the expected commit or its checkout failed");
+}
+
+export async function changedReviewPaths(sandbox: SandboxHandle, directory: string, base: string, head: string): Promise<string[]> {
+	if (![base, head].every(sha => /^[0-9a-f]{40}$/.test(sha))) throw new Error("Invalid review SHA.");
+	const result = await sandbox.run([`cd ${shellQuote(directory)} || exit 1`, PLAIN_START, `git diff --no-ext-diff --no-renames --name-only -z ${base}...${head} --`].join("\n"), { timeoutMs: COMMIT_TIMEOUT_MS });
+	if (result.exitCode !== 0 || result.timedOut || result.aborted || (result.stdout && !result.stdout.endsWith("\0"))) throw new Error("could not read the changed paths");
+	return result.stdout.split("\0").filter(Boolean);
 }
 
 /** Fetches the base branch with `token`, which is given to the command on its standard input and to nothing else. */
@@ -498,8 +537,8 @@ async function run(sandbox: SandboxHandle, script: string, options: { stdin: str
 }
 
 /** Clones with `token`, which is given to the command on its standard input and to nothing else. */
-export function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; signal?: AbortSignal }): Promise<GitOutcome> {
-	return run(sandbox, cloneScript(input.url, input.branch, input.directory, input.work), { stdin: `${token}\n`, timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
+export function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; pinnedBase?: string; signal?: AbortSignal }): Promise<GitOutcome> {
+	return run(sandbox, cloneScript(input.url, input.branch, input.directory, input.work, input.pinnedBase), { stdin: `${token}\n`, timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
 }
 
 // commitAndPush passes the same handle to both steps. Pin the scan to this commit even if HEAD moves.

@@ -20,6 +20,7 @@ import { AskIcon, ChevronIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRe
 import { absoluteTime, count, plural, relativeTime } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
+import { RECOMMENDATION_WORD } from "../components/SecondReview";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { clockTime, useMachines } from "./Machines";
@@ -112,6 +113,14 @@ export function VerdictWord({ verdict }: { verdict: NonNullable<ItemSummary["ver
 	return <span className={`outcome item-verdict tone-${tone}`}>{word}</span>;
 }
 
+/** The second reviewer's recommendation, in a quiet word beside the verdict: the agent's, never the verdict's. */
+export function ReviewWord({ item }: { item: Pick<ItemSummary, "review"> }) {
+	const review = item.review;
+	if (review?.state === "running") return <span className="item-row-review">being reviewed</span>;
+	if (review?.state !== "filed" || !review.recommendation) return null;
+	return <span className="item-row-review">reviewed: {RECOMMENDATION_WORD[review.recommendation]}</span>;
+}
+
 /** Where an item is, as a glyph: still unless a turn of it runs, and in the calm hue when it asks its person. */
 export function ItemGlyph({ item }: { item: Pick<ItemSummary, "state" | "question"> }) {
 	switch (item.state) {
@@ -187,7 +196,10 @@ export function ItemRow({ item, now, repository = false, why }: { item: ItemSumm
 					)}
 				</p>
 			</div>
-			<div className="agent-state">{item.verdict ? <VerdictWord verdict={item.verdict} /> : null}</div>
+			<div className="agent-state">
+				{item.verdict ? <VerdictWord verdict={item.verdict} /> : null}
+				<ReviewWord item={item} />
+			</div>
 			<time className="agent-time" dateTime={new Date(item.updatedAt).toISOString()} title={absoluteTime(item.updatedAt)}>
 				{relativeTime(item.updatedAt, now)}
 			</time>

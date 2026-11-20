@@ -7,7 +7,7 @@
  * sessions, as their actor broadcasts them, the deployment's own information, and the user's models.
  * Nothing is asked of GitHub or of a sandbox to draw a list.
  */
-import type { GithubId, ModelList, PlatformInfo, PullRequestInfo, RepositoryDefaults, SandboxProfileId, SessionRepository, SessionSummary } from "@contract";
+import type { AccountDefaults, GithubId, ModelList, PlatformInfo, PullRequestInfo, SandboxProfileId, SessionRepository, SessionSummary } from "@contract";
 
 // ---- the user's own agents, and the sessions of their work items -------------------------------------
 
@@ -30,7 +30,7 @@ export function workingCounts(sessions: readonly SessionSummary[]): { ceilinged:
 	let items = 0;
 	let onMachines = 0;
 	for (const session of sessions) {
-		if (session.status === "idle") continue;
+		if (session.status === "idle" && (!session.item?.reviewer || session.item.reviewer.status === "idle")) continue;
 		if (session.item !== undefined) {
 			ceilinged += 1;
 			items += 1;
@@ -189,7 +189,7 @@ export interface StartingChoices {
  * is left out, and `ignored` says so in words: of a list that only stands in for the plan's, that the
  * model is left out for now.
  */
-export function startingChoices(defaults: RepositoryDefaults | null, info: Pick<PlatformInfo, "profiles"> | null, models: ModelList | null, whose: "repository" | "account" = "repository"): StartingChoices {
+export function startingChoices(defaults: AccountDefaults | null, info: Pick<PlatformInfo, "profiles"> | null, models: ModelList | null, whose: "repository" | "account" = "repository"): StartingChoices {
 	const choices: StartingChoices = { profile: null, model: null, ignored: { profile: null, model: null } };
 	if (defaults === null) return choices;
 	const the = whose === "account" ? "Your account's default" : "The default";

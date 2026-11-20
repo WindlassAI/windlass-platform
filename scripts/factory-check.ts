@@ -113,12 +113,22 @@ const published = (head: string): Row["fact"] => (k) => ({ kind: "published", ke
 const ci = (head: string, reading: CiReading, mergeable: boolean | null = true): Row["fact"] => (k) => ({ kind: "ci_read", prHead: null, key: k.key, head, reading: reading.kind === "read" ? { ...reading, head } : reading, mergeable, openItems: 1 });
 const answer = (choice: Extract<Fact, { kind: "answer" }>["choice"], more: { note?: string; budget?: Partial<FactoryItem["budget"]> } = {}): Row["fact"] => (k) => ({ kind: "answer", by: "person:u1", question: k.question, choice, ...more });
 
+const { reviewerAllowed } = await import("../server/src/factory/review.js");
+const { e2bProfile, e2bOpenProfile, PROFILES } = await import("../server/src/sandbox/profiles.js");
+for (const [label, place, profile, allowed] of [
+	["hosted e2b", { kind: "hosted" }, e2bProfile({ windlassSandbox: true }), true],
+	["unconfirmed e2b", { kind: "hosted" }, e2bProfile({ windlassSandbox: false }), false],
+	["e2b-open", { kind: "hosted" }, e2bOpenProfile({ offered: true }), false],
+	["docker-hardened", { kind: "hosted" }, PROFILES.find(p => p.id === "docker-hardened")!, false],
+	["personal machine", { kind: "machine", machineId: "machine" }, e2bProfile({ windlassSandbox: true }), false],
+] as const) expect(`reviewer profile: ${label}`, reviewerAllowed(place, profile) === allowed);
+
 function newItem(more: { reviewer?: FactoryItem["reviewer"]; plan?: "approve"; budget?: Partial<FactoryItem["budget"]> } = {}): FactoryItem {
 	return createItem({
 		id: "i_00000000000000aa",
 		task: { title: "Fix add()", body: "add(1, 2) returns -1.", acceptance: ["add(1, 2) is 3"], base: "main" },
 		plan: more.plan,
-		reviewer: "reviewer" in more ? more.reviewer : { off: "deployment" },
+		reviewer: more.reviewer ?? { off: "deployment" },
 		place: { kind: "hosted" },
 		budget: { ...FACTORY_DEFAULTS.item, ...more.budget },
 	});
@@ -292,7 +302,7 @@ function filing(recommendation: ReviewRecommendation, id = publishedVerdict): It
 	if (recommendation === "needs_person") blocks.push({ kind: "question", text: "Should the range include its end?" });
 	return {
 		id, run: 1, round: 1, head: reviewHead, base: H(2), verdictId: publishedVerdict, by: { sessionId: "second", model: "test" }, at: T0 + 7 * MINUTE,
-		state: "filed", said: null, recommendation, records: [], notes: [],
+		state: "filed", said: null, recommendation, records: [], notes: [], screenshots: [],
 		blocks,
 	};
 }
@@ -321,7 +331,6 @@ function handoverWithout(fact: Row["fact"], reason: string): Row {
 for (const [name, reviewer, reason] of [
 	["deployment off", { off: "deployment" }, "turned off for this deployment"],
 	["profile off", { off: "profile" }, "in this sandbox the reviewer's commands would run with the network"],
-	["item made before R3", undefined, "this item was created before second reviews were available"],
 ] as const) {
 	drive(`review: ${name}`, newItem({ reviewer }), [...toCi, handoverWithout(ci(reviewHead, ciPassed), reason)]);
 }
@@ -667,8 +676,8 @@ for (const [name, input, reason, words, when] of admissions) {
 	expect(`admission: ${name}`, (got?.reason ?? null) === reason && (words === null || words.test(got?.sentence ?? "")) && (got?.retryAt ?? null) === when, got ? `${got.reason}: ${got.sentence}` : "starts");
 }
 expect("retries are spaced 30 s, 60 s, … up to 5 min", [0, 1, 2, 3, 4].map((attempt) => retryAt(0, attempt)).join() === "30000,60000,120000,240000,300000");
-const spentAll = { tokens: 4_000_000, turns: 3, activeSeconds: 600, hostedSeconds: 9000 };
-expect("a budget: tokens used up, said with the numbers", budgetStop(FACTORY_DEFAULTS.item, spentAll, { kind: "hosted" })?.sentence === "This item has used 4M of its 4M tokens.");
+const spentAll = { tokens: 6_000_000, turns: 3, activeSeconds: 600, hostedSeconds: 9000 };
+expect("a budget: tokens used up, said with the numbers", budgetStop(FACTORY_DEFAULTS.item, spentAll, { kind: "hosted" })?.sentence === "This item has used 6M of its 6M tokens.");
 expect("hosted sandbox seconds are no limit on a machine", budgetStop(FACTORY_DEFAULTS.item, { ...spentAll, tokens: 0 }, { kind: "machine", machineId: "m1" }) === null && budgetStop(FACTORY_DEFAULTS.item, { ...spentAll, tokens: 0 }, { kind: "hosted" })?.cause === "hostedSeconds");
 
 const machineItem = { ...newItem(), place: { kind: "machine" as const, machineId: "m1" } };

@@ -1,6 +1,6 @@
 /**
  * A repository's settings, the second view of its page (Repository.tsx): what new agents on it start
- * with, its setup command, its checks and its secrets, the first and the last in the same components a
+ * with, whether its work items' agents take screenshots, its setup command, its checks and its secrets, the first and the last in the same components a
  * session's panel has; the approvals of its MCP servers that are remembered, each with the way to
  * forget it; and the way to delete everything saved for it at once. Nothing here is read until the
  * view is shown. An address's fragment (`#checks`) opens it at that section once what is saved was read.
@@ -23,6 +23,58 @@ import type { RepositoryPage } from "./Repository";
 /** The id of a section's heading: where a link to it lands. */
 export const sectionHeading = (section: RepositorySection) => `repo-${section}`;
 
+/**
+ * Whether the agents of the repository's work items, the one that makes the change and the second
+ * reviewer, take screenshots of the app for their reports (`RepositoryDefaults.screenshots`, on unless
+ * turned off). Saved as soon as it is changed; read by each agent at its next turn.
+ */
+export function ScreenshotsSetting({ page, view }: { page: Pick<RepositoryPage, "id" | "replace">; view: RepositoryView }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [busy, setBusy] = useState(false);
+	const [said, setSaid] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
+	const on = view.defaults.screenshots;
+	const set = async (screenshots: boolean) => {
+		if (busy) return;
+		setBusy(true);
+		setSaid(null);
+		try {
+			const defaults = await client.user(auth).saveRepositoryDefaults(page.id, { screenshots });
+			page.replace({ ...view, defaults });
+			setSaid({ tone: "good", text: "Saved." });
+		} catch (failure) {
+			setSaid({ tone: "bad", text: explain(failure) });
+		} finally {
+			setBusy(false);
+		}
+	};
+	return (
+		<section className="usage-section repo-saved repo-screenshots" aria-labelledby="repo-screenshots">
+			<h2 className="usage-title" id="repo-screenshots">
+				Screenshots
+			</h2>
+			<p className="usage-lede">Whether the agents of this repository's work items take screenshots of the app and attach them to their reports: the agent that makes the change, and the second reviewer. Each picture costs the sandbox a little memory and time.</p>
+			<label className={`check${on ? " check-on" : ""}`}>
+				<input className="check-input" type="checkbox" checked={on} disabled={busy} onChange={(event) => set(event.target.checked)} />
+				<span className="check-box" aria-hidden="true" />
+				<span className="check-text">
+					<span className="check-name">Take screenshots for work items</span>
+					<span className="check-means">
+						{on
+							? "Where a change shows in the app, the agents take pictures of it and you see them on the item's page. Turned off, they take none, from each agent's next turn."
+							: "The agents take no screenshots, and an item's page shows none. Turned on, they take them again from each agent's next turn."}
+					</span>
+				</span>
+			</label>
+			{said ? (
+				<p className={`field-note tone-${said.tone}`} role={said.tone === "bad" ? "alert" : "status"}>
+					{said.text}
+				</p>
+			) : null}
+		</section>
+	);
+}
+
 /** What deleting everything saved takes with it, and what it leaves. */
 /** `agents`: the user's own agents on it; `items`: the sessions of its work items, which stay with their items. */
 function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { page: RepositoryPage; view: RepositoryView; name: string; agents: number; items: number; onClose(): void; onDone(): void }) {
@@ -35,6 +87,7 @@ function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { pa
 		view.saved.checks > 0 ? (view.saved.checks === 1 ? "its one check" : `its ${view.saved.checks} checks`) : null,
 		view.saved.secrets > 0 ? (view.saved.secrets === 1 ? "its one secret" : `its ${view.saved.secrets} secrets`) : null,
 		view.defaults.profile !== null || view.defaults.model !== null ? "the defaults for new agents" : null,
+		view.defaults.screenshots ? null : "the choice to take no screenshots",
 		view.approvals.length > 0 ? (view.approvals.length === 1 ? "the remembered approval of one MCP server" : `the remembered approvals of ${view.approvals.length} MCP servers`) : null,
 	].filter((part): part is string => part !== null);
 	const listed = parts.length <= 1 ? (parts[0] ?? "") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
@@ -109,7 +162,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 	const accountChoices = startingChoices(account.settings?.defaults ?? null, info, models.list, "account");
 	const choices = layerChoices(startingChoices(view?.defaults ?? null, info, models.list), accountChoices);
 	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
-	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.approvals.length > 0);
+	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.defaults.profile !== null || view.defaults.model !== null || !view.defaults.screenshots || view.approvals.length > 0);
 
 	// Opened at a section: it is gone to once the sections stand, which is when what is saved was read. The sections
 	// above it read their own lists after that and grow: it is kept in view while they do, until its person scrolls.
@@ -174,8 +227,10 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						under={accountChoices}
 						models={models}
 						save={(change) => client.user(auth).saveRepositoryDefaults(page.id, change)}
-						onSaved={(next) => page.replace({ ...view, defaults: next })}
+						onSaved={(next) => page.replace({ ...view, defaults: { ...view.defaults, ...next } })}
 					/>
+
+					<ScreenshotsSetting page={page} view={view} />
 
 					<section className="usage-section repo-saved" aria-labelledby={ids.setup}>
 						<h2 className="usage-title" id={ids.setup}>
@@ -228,7 +283,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						</h2>
 						<p className="usage-lede">
 							{anything
-								? `Deletes the setup command, the checks, the secrets, the defaults and the remembered approvals saved for ${name}, all at once. Its agents are not deleted with them.`
+								? `Deletes the setup command, the checks, the secrets, the defaults (screenshots are taken again) and the remembered approvals saved for ${name}, all at once. Its agents are not deleted with them.`
 								: `Nothing is saved for ${name}.`}
 						</p>
 						{anything ? (

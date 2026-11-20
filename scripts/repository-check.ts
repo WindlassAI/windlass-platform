@@ -52,6 +52,7 @@ function refused(raw: unknown): { code: string; message: string } | null {
 expect("a sandbox this deployment can run and one of the user's models are taken", plain(cleanDefaults({ profile: "docker-hardened", model: "gpt-6-luna" }, PROFILES, MODELS)) === plain({ profile: "docker-hardened", model: "gpt-6-luna" }));
 expect("a field that is left out is not part of the change", plain(cleanDefaults({ model: "gpt-6-luna" }, PROFILES, MODELS)) === plain({ model: "gpt-6-luna" }) && plain(cleanDefaults({}, PROFILES, MODELS)) === "{}");
 expect("null saves none for a field", plain(cleanDefaults({ profile: null, model: null }, PROFILES, MODELS)) === plain({ profile: null, model: null }));
+expect("screenshots must be a boolean", [null, 0, "false"].every(screenshots => refused({ screenshots })?.code === "bad_input"));
 expect("nothing else a client sends is kept", plain(cleanDefaults({ repositoryId: 7, model: "gpt-6-luna", publishUnasked: true, setupCommand: "rm -rf /" }, PROFILES, MODELS)) === plain({ model: "gpt-6-luna" }));
 expect("a sandbox this deployment does not have is refused", refused({ profile: "firecracker" })?.code === "bad_input" && refused({ profile: 7 })?.code === "bad_input" && refused({ profile: "" })?.code === "bad_input");
 expect("a sandbox it cannot run is refused, and the sentence says why", refused({ profile: "e2b" })?.code === "bad_input" && (refused({ profile: "e2b" })?.message ?? "").includes("It needs an E2B key."), refused({ profile: "e2b" })?.message);
@@ -79,8 +80,10 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 
 {
 	const { db, rows } = database();
-	expect("nothing is kept for a repository nobody saved anything for", plain(await readDefaults(db, HARBOR)) === plain({ profile: null, model: null, updatedAt: null }) && rows().length === 0);
+	expect("nothing is kept for a repository nobody saved anything for", plain(await readDefaults(db, HARBOR)) === plain({ screenshots: true, profile: null, model: null, updatedAt: null }) && rows().length === 0);
 	expect("a change that names no field keeps nothing either", values(await saveDefaults(db, HARBOR, "acme/harbor", {}, 1)) === plain([null, null]) && rows().length === 0);
+	expect("screenshot opt-out is stored without other defaults", !(await saveDefaults(db, HARBOR, "", cleanDefaults({ screenshots: false }, PROFILES, MODELS), 2)).screenshots && !(await readDefaults(db, HARBOR)).screenshots);
+	expect("opting back in restores the repository default", (await saveDefaults(db, HARBOR, "", { screenshots: true }, 3)).screenshots === true && rows().length === 0);
 	const first = await saveDefaults(db, HARBOR, "acme/harbor", { profile: "docker-hardened" }, 10);
 	expect("a sandbox saved alone leaves the model as none, and says when", values(first) === plain(["docker-hardened", null]) && first.updatedAt === 10, plain(first));
 	const second = await saveDefaults(db, HARBOR, "", { model: "gpt-6-luna" }, 20);
@@ -93,7 +96,7 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 	const cleared = await saveDefaults(db, HARBOR, "", { profile: null }, 50);
 	expect("clearing one field keeps the other", values(cleared) === plain([null, "gpt-6.1-sol"]) && rows().length === 2);
 	const gone = await saveDefaults(db, HARBOR, "", { model: null }, 60);
-	expect("clearing the last one leaves no row", plain(gone) === plain({ profile: null, model: null, updatedAt: null }) && rows().length === 1 && rows()[0]?.project === QUAY, plain(rows()));
+	expect("clearing the last one leaves no row", plain(gone) === plain({ screenshots: true, profile: null, model: null, updatedAt: null }) && rows().length === 1 && rows()[0]?.project === QUAY, plain(rows()));
 }
 
 // ---- two saves at once ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ export const FACTORY_DEFAULTS: FactoryLimits = {
 	factoryTurns: 5,
 	hostedRunning: 3,
 	reviewCap: 6,
-	item: { tokens: 4_000_000, turns: 10, activeSeconds: 4 * 3600, hostedSeconds: 1.5 * 3600 },
+	item: { tokens: 6_000_000, turns: 14, activeSeconds: 4 * 3600, hostedSeconds: 2 * 3600 },
 };
 
 /** A turn that waits at a place is tried again after 30 s, then twice as long each time, up to 5 min. */
@@ -46,9 +46,9 @@ export function turnTokens(usage: TurnUsage | null): number {
 	return usage === null ? 0 : usage.inputTokens + usage.outputTokens;
 }
 
-/** The hosted sandbox seconds the ledger has counted for one session: an item's, which runs nothing else. */
-export function ledgerSeconds(entries: readonly UsageEntry[], session: string): number {
-	return entries.reduce((sum, entry) => (entry.session === session ? sum + entry.seconds : sum), 0);
+/** Settled hosted seconds for all sessions belonging to the item. */
+export function ledgerSeconds(entries: readonly Pick<UsageEntry, "session" | "seconds">[], sessions: readonly string[]): number {
+	return entries.reduce((sum, entry) => (sessions.includes(entry.session) ? sum + entry.seconds : sum), 0);
 }
 
 /** "4M", "3.9M", "850k", "120". */

@@ -3434,7 +3434,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			const offered = (await user.models()).models.map((candidate) => candidate.id);
 			const [model, other] = [offered[0], offered[1] ?? offered[0]];
 			const unavailable = info.profiles.find((candidate) => !candidate.available);
-			const NONE = { profile: null, model: null, updatedAt: null };
+			const NONE = { screenshots: true, profile: null, model: null, updatedAt: null };
 
 			// Nothing is kept until something is saved: the page is there all the same, named after the agent on it.
 			const empty = await user.repository(harbor.id);

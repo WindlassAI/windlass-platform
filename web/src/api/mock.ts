@@ -127,6 +127,7 @@ import {
 	type TurnOutcome,
 	type TurnUsage,
 	type UsageNumbers,
+	listedSessions,
 	type UsageView,
 	type UserProfile,
 	type WindlassEvent,
@@ -1002,6 +1003,9 @@ function mockDefinitionReads(definition: Record<string, unknown>): string[] {
 }
 
 /** What forgetting does and leaves, as the server says it where Windlass's own record stays in the sandbox. */
+/** The repositories seeded with screenshots turned off: ada/tide-tables, whose items' pages show no screenshot area. */
+export const MOCK_NO_SCREENSHOTS = [7102];
+
 export const MOCK_FORGETTING = "Forgetting holds for the next session or sandbox. Where the server already started, Windlass's own record still starts it, and a running one is not stopped.";
 
 /** How long ago, as the server's lines say it: "a moment ago", "5 minutes ago", "3 days ago". */
@@ -1140,6 +1144,8 @@ interface World {
 	secrets: Map<GithubId, Map<string, { scope: SecretScope; updatedAt: number }>>;
 	/** What new agents on a repository start with, where the user said so, by GitHub's id for it. */
 	defaults: Map<GithubId, { profile: SandboxProfileId | null; model: string | null; updatedAt: number }>;
+	/** The repositories whose work items' agents take no screenshots, with when that was saved: every other one takes them (`RepositoryDefaults.screenshots`). */
+	noScreenshots: Map<GithubId, number>;
 	/** What a repository was called when something was last saved for it or GitHub was last asked: what names one that has no session. */
 	names: Map<GithubId, string>;
 	/** What the user keeps for their account, whatever the repository. A secret's value is not kept at all. */
@@ -1215,9 +1221,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			const session = world.sessions.get(item.sessionId);
 			if (!session) return;
 			// A turn of the item runs while it works; its prompts are the item's, so nothing else starts one here.
-			const status = item.state === "working" ? "running" : "idle";
+			const status = item.state === "working" && item.run?.step.kind !== "review" ? "running" : "idle";
 			if (session.summary.item?.id === item.id && session.summary.status === status) return;
-			setSummary(world, session, { item: { id: item.id }, status, ...(status === "running" && session.summary.sandbox === "none" ? { sandbox: "running" as const } : {}) });
+			setSummary(world, session, { item: { id: item.id, role: "builder" }, status, ...(status === "running" && session.summary.sandbox === "none" ? { sandbox: "running" as const } : {}) });
 		},
 		machines: (auth) => (machineState === "off" ? null : { list: machinesOf(auth).list, minRunnerVersion: MOCK_MIN_RUNNER_VERSION }),
 	});
@@ -1233,7 +1239,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), names: new Map(), account: { defaults: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), created: new Map() };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), noScreenshots: new Map(MOCK_NO_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), created: new Map() };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -1312,7 +1318,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	const profileOf = (session: MockSession): SandboxProfile => session.machine?.profile ?? profiles.find((profile) => profile.id === session.summary.profile) ?? (MOCK_PROFILES[0] as SandboxProfile);
 
-	const listOf = (world: World): SessionSummary[] => [...world.sessions.values()].map((session) => session.summary).sort((a, b) => b.createdAt - a.createdAt);
+	const listOf = (world: World): SessionSummary[] => listedSessions([...world.sessions.values()].map((session) => session.summary)).sort((a, b) => b.createdAt - a.createdAt);
 
 	function setSummary(world: World, session: MockSession, patch: Partial<SessionSummary>): void {
 		session.summary = { ...session.summary, ...patch };
@@ -1410,7 +1416,21 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			session.machine = { profile, reach: machine ? null : { state: "removed", since: item.updatedAt } };
 		}
 		clock = null;
-		const working = item.state === "working";
+		const working = item.run?.step.turn === "started" && item.run.step.kind !== "review";
+		if (item.reviewerSessionId) {
+			const reviewer = addSession(world, { id: item.reviewerSessionId, title: item.title, titled: true, profile: session.summary.profile, model: session.summary.model, repoUrl: null, repository: session.summary.repository });
+			const running = item.review?.state === "running";
+			reviewer.summary = { ...reviewer.summary, item: { id: item.id, role: "reviewer" }, status: running ? "running" : "idle", sandbox: running ? "running" : "none" };
+			const last = item.reviews.at(-1);
+			if (last) {
+				reviewer.seededTurn = () => {
+					playInstantly(plan(world, reviewer, { text: "Review the pushed commit against the task, and file one review." }, SCRIPTS.parallel), last.at);
+					if (reviewer.pauseTimer !== null) cancel(reviewer.pauseTimer);
+					reviewer.pauseTimer = null;
+					reviewer.summary = { ...reviewer.summary, sandbox: "none" };
+				};
+			}
+		}
 		// The pull request the item's publish step opened is its session's, as the server's session keeps it; it is merged once the item is done.
 		const pull: PullRequestInfo | null =
 			item.pullRequest && session.summary.repository && item.state !== "cancelled" && item.state !== "failed"
@@ -1419,7 +1439,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const settle = () => {
 			if (session.pauseTimer !== null) cancel(session.pauseTimer);
 			session.pauseTimer = null;
-			session.summary = { ...session.summary, item: { id: item.id }, status: working ? "running" : "idle", sandbox: working ? "running" : "none", updatedAt: Math.max(session.summary.updatedAt, item.updatedAt), ...(pull ? { pullRequest: pull } : {}) };
+			session.summary = { ...session.summary, item: { id: item.id, role: "builder" }, status: working ? "running" : "idle", sandbox: working ? "running" : "none", updatedAt: Math.max(session.summary.updatedAt, item.updatedAt), ...(pull ? { pullRequest: pull } : {}) };
 		};
 		settle();
 		const run = item.run;
@@ -2523,7 +2543,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	function defaultsOf(world: World, repositoryId: GithubId): RepositoryDefaults {
 		const saved = world.defaults.get(repositoryId);
-		return { profile: saved?.profile ?? null, model: saved?.model ?? null, updatedAt: saved?.updatedAt ?? null };
+		const off = world.noScreenshots.get(repositoryId);
+		const updatedAt = saved || off !== undefined ? Math.max(saved?.updatedAt ?? 0, off ?? 0) : null;
+		return { screenshots: off === undefined, profile: saved?.profile ?? null, model: saved?.model ?? null, updatedAt };
 	}
 
 	function repositoryViewOf(world: World, repositoryId: GithubId): RepositoryView {
@@ -2545,10 +2567,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** Saves as the server does (server/src/repository-defaults.ts): the same refusals in the same words, and only the fields that are named. */
-	function saveDefaults(world: World, repositoryId: GithubId, change: { profile?: SandboxProfileId | null; model?: string | null }): RepositoryDefaults {
+	function saveDefaults(world: World, repositoryId: GithubId, { screenshots, ...change }: { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null }): RepositoryDefaults {
+		if (screenshots !== undefined && typeof screenshots !== "boolean") throw new PlatformError("user", "Screenshots must be true or false.", { reason: "bad_input" });
 		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change, modelsFor(world.profile));
 		if (next === null) world.defaults.delete(repositoryId);
 		else world.defaults.set(repositoryId, next);
+		if (screenshots === true) world.noScreenshots.delete(repositoryId);
+		if (screenshots === false) world.noScreenshots.set(repositoryId, now());
 		return defaultsOf(world, repositoryId);
 	}
 
@@ -3087,7 +3112,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				world().names.set(repositoryId, `${found.owner}/${found.name}`);
 				return describeRepository(found);
 			},
-			async saveRepositoryDefaults(repositoryId: GithubId, change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults> {
+			async saveRepositoryDefaults(repositoryId: GithubId, change: { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults> {
 				await latency(300);
 				nameAtSave(world(), repositoryId);
 				return saveDefaults(world(), repositoryId, change);
@@ -3109,6 +3134,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				current.setups.delete(repositoryId);
 				current.checks.delete(repositoryId);
 				current.defaults.delete(repositoryId);
+				current.noScreenshots.delete(repositoryId);
 				current.approvals = current.approvals.filter((approval) => approval.project !== `github:${repositoryId}`);
 				current.names.delete(repositoryId);
 				return repositoryViewOf(current, repositoryId);
@@ -3175,7 +3201,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const current = world();
 				// A deployment that never had a GitHub App has nothing saved for a repository.
 				if (!githubOn) return [];
-				const ids = new Set<GithubId>([...current.setups.keys(), ...current.checks.keys(), ...current.secrets.keys(), ...current.defaults.keys()]);
+				const ids = new Set<GithubId>([...current.setups.keys(), ...current.checks.keys(), ...current.secrets.keys(), ...current.defaults.keys(), ...current.noScreenshots.keys()]);
 				for (const approval of current.approvals) {
 					const id = githubId(/^github:([1-9][0-9]*)$/.exec(approval.project)?.[1]);
 					if (id !== null && approval.expiresAt > now()) ids.add(id);

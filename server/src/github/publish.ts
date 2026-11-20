@@ -108,7 +108,7 @@ export interface Cloned {
  * pushed to, for a sandbox made in place of a lost one: the clone says at which commit GitHub has it
  * (`workAt`), and the workspace stays on the base until `putOnWork`, after the setup command.
  */
-export async function cloneRepository(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, sandbox: SandboxHandle, signal?: AbortSignal, work?: string): Promise<Cloned | false> {
+export async function cloneRepository(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, sandbox: SandboxHandle, signal?: AbortSignal, work?: string, pinnedBase?: string): Promise<Cloned | false> {
 	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
 	const resolved = await resolveRepository(app, connection, repository.id, "read");
 	const name = fullName(resolved.repository);
@@ -118,7 +118,7 @@ export async function cloneRepository(app: GithubApp, connection: StoredConnecti
 		outcome = await app.withToken(
 			resolved.installation.id,
 			{ repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } },
-			(token) => cloneWithToken(sandbox, token, { url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), branch: repository.branch, directory: resolved.repository.name, work, signal }),
+			(token) => cloneWithToken(sandbox, token, { url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), branch: repository.branch, directory: resolved.repository.name, work, signal, pinnedBase }),
 			{ revokeAfter: true },
 		);
 	} catch (error) {

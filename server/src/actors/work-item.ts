@@ -28,12 +28,15 @@
  * item, with an id derived from the item's, so a creation tried again reaches the same two actors.
  */
 
+import type { ItemReview } from "../contract.js";
+import { ledgerSeconds } from "../factory/budget.js";
+import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { clientError, describeError, requireService } from "../auth.js";
 import { type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
 import { RULES, advance, currentKey } from "../factory/blueprint.js";
-import { itemComment, reportBlocks } from "../factory/review.js";
+import { itemComment, reportBlocks, REVIEW_PROFILE_REASON } from "../factory/review.js";
 import type { Effect, Fact, FactoryItem } from "../factory/types.js";
 import { githubApp, GithubError } from "../github/app.js";
 import { readCi } from "../github/ci.js";
@@ -46,6 +49,9 @@ const ROUND_CAPS: RoundCaps = { plan: RULES.planRounds, gate: RULES.gateRounds, 
 
 /** What the item knows around the blueprint's `FactoryItem`. */
 export interface ItemMeta {
+	reviewerSessionId: string | null;
+	reviewBase: { head: string; sha: string } | null;
+	handoffReview: { recommendation: ItemReview["recommendation"]; reason: string | null } | null;
 	uid: string;
 	sessionId: string;
 	/** The repository of the user's GitHub connection; `branch` is the base. */
@@ -128,6 +134,13 @@ function startsRun(key: string): boolean {
 // The summary and the page
 // ---------------------------------------------------------------------------------------------
 
+function secondReview(item: FactoryItem, meta: ItemMeta): ItemSummary["review"] {
+	if (!item.reviewer || "off" in item.reviewer) return { state: "off", recommendation: null };
+	if (meta.handoffReview) return { state: meta.handoffReview.reason ? "none" : "filed", recommendation: meta.handoffReview.reason ? null : meta.handoffReview.recommendation };
+	if (item.run?.step.kind !== "review") return null;
+	return { state: item.run.step.turn === "started" ? "running" : "waiting", recommendation: null };
+}
+
 function summaryOf({ item, meta }: Stored): ItemSummary {
 	const { repository } = meta;
 	return {
@@ -141,6 +154,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, askedAt: item.question.askedAt },
 		pullRequest: item.pr,
 		verdict: meta.verdict,
+		review: secondReview(item, meta),
 		budget: item.budget,
 		spent: item.spent,
 		sessionId: meta.sessionId,
@@ -164,6 +178,8 @@ function viewOf(c: Ctx): Promise<ItemView> {
 }
 
 /** The report and its reference snapshots share one JSON value and one transaction with the turn. */
+export const REVIEWS_TABLE = "CREATE TABLE IF NOT EXISTS reviews (id TEXT PRIMARY KEY, run INTEGER NOT NULL, head TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)";
+
 export const REPORTS_TABLE = "CREATE TABLE IF NOT EXISTS reports (key TEXT PRIMARY KEY, run INTEGER NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)";
 
 export async function storeReport(db: Pick<RawAccess, "execute">, item: FactoryItem, sessionId: string, fact: Extract<Fact, { kind: "turn_ended" }>): Promise<void> {
@@ -186,6 +202,9 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 	const verdicts = await c.db.execute<{ data: string }>("SELECT data FROM verdicts ORDER BY at, id");
 	return {
 		...summaryOf(stored),
+		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
+		reviewNone: stored.meta.handoffReview?.reason ?? (!stored.item.reviewer ? "this item was created before second reviews were available" : "off" in stored.item.reviewer ? stored.item.reviewer.off === "profile" ? REVIEW_PROFILE_REASON : "turned off for this deployment" : null),
+		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),
 		task: stored.item.task,
 		// What the gate and CI read stays here: the page shows the run as the contract has it.
 		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, step: run.step, rounds: run.rounds, caps: ROUND_CAPS },
@@ -229,12 +248,24 @@ function queued<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 	return run;
 }
 
+/** Both receipt paths charge the same settled holds, including a replay after a restart. */
+async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void> {
+	if (fact.kind === "turn_ended" || fact.kind === "review_ended") {
+		const hostedSeconds = stored.item.place.kind === "hosted"
+			? lifetimeSeconds(stored.meta, await userActor(c, stored.meta.uid).internalItemFacts(sessionsOf(stored.meta)))
+			: 0;
+		await take(c, { ...fact, spend: { tokens: fact.spend?.tokens ?? 0, hostedSeconds } });
+	} else {
+		await take(c, fact);
+	}
+}
+
 /**
  * The item after `fact`, stored with its effects and events in one transaction over the revision it
  * was decided from, and then performed. Resolves once it is stored, with whether the fact changed
  * anything: an action that answers after this has answered for what is durable.
  */
-async function take(c: Ctx, fact: Fact): Promise<boolean> {
+async function take(c: Ctx, fact: Fact, baseSha?: string | null): Promise<boolean> {
 	const stored = c.vars.stored;
 	if (!stored) return false;
 	// From here to the write being queued nothing is awaited: the decision is one step.
@@ -244,7 +275,16 @@ async function take(c: Ctx, fact: Fact): Promise<boolean> {
 	stored.item = outcome.item;
 	stored.meta.updatedAt = fact.at;
 	const handoff = outcome.effects.find((effect): effect is Extract<Effect, { kind: "handoff" }> => effect.kind === "handoff");
-	if (handoff) stored.meta.verdict = { result: handoff.verdict.result, flags: handoff.verdict.flags, ci: handoff.verdict.ci.state };
+	const strip = handoff ?? outcome.storeVerdict;
+	if (strip) stored.meta.verdict = { result: strip.verdict.result, flags: strip.verdict.flags, ci: strip.verdict.ci.state };
+	if (outcome.item.run?.n !== before.run?.n) {
+		stored.meta.handoffReview = null;
+		stored.meta.reviewBase = null;
+	}
+	if (outcome.storeVerdict && baseSha && /^[0-9a-f]{40}$/.test(baseSha)) stored.meta.reviewBase = { head: outcome.storeVerdict.verdict.head, sha: baseSha };
+	const filing = fact.kind === "review_ended" && fact.review?.id === outcome.item.run?.ci?.secondReview?.review ? fact.review : null;
+	if (filing) stored.meta.handoffReview = { recommendation: filing.recommendation, reason: null };
+	if (handoff) stored.meta.handoffReview = { recommendation: stored.meta.handoffReview?.recommendation ?? null, reason: handoff.reviewNone };
 	// The item, its revision and its data are taken from this decision now: a later decision, made while this
 	// one waits for its write, changes `stored` and must not be written beside this one's data.
 	const next = outcome.item;
@@ -266,7 +306,11 @@ async function take(c: Ctx, fact: Fact): Promise<boolean> {
 					await tx.execute("INSERT OR REPLACE INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)", rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 				}
 				if (fact.kind === "turn_ended") await storeReport(tx, before, stored.meta.sessionId, fact);
-				if (handoff) await tx.execute("INSERT OR REPLACE INTO verdicts (id, run, head, at, data) VALUES (?, ?, ?, ?, ?)", handoff.verdict.id, handoff.verdict.run, handoff.verdict.head, handoff.verdict.at, JSON.stringify(handoff.verdict));
+				if (filing) {
+					const r = filing;
+					await tx.execute("INSERT OR REPLACE INTO reviews (id, run, head, at, data) VALUES (?, ?, ?, ?, ?)", r.id, r.run, r.head, r.at, JSON.stringify(r));
+				}
+				if (strip) await tx.execute("INSERT OR REPLACE INTO verdicts (id, run, head, at, data) VALUES (?, ?, ?, ?, ?)", strip.verdict.id, strip.verdict.run, strip.verdict.head, strip.verdict.at, JSON.stringify(strip.verdict));
 			}, { name: "item.take" }),
 		);
 	} catch (error) {
@@ -403,7 +447,8 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 
 			action = "post the verdict comment";
 			const marker = `<!-- windlass-item:${verdict.item} -->`;
-			const body = itemComment(verdict, effect.words, await latestReport(c.db, verdict.run));
+			const [reviewRow] = effect.review ? await c.db.execute<{ data: string }>("SELECT data FROM reviews WHERE id = ?", effect.review) : [];
+			const body = itemComment(verdict, effect.words, await latestReport(c.db, verdict.run), { filed: reviewRow ? JSON.parse(reviewRow.data) as ItemReview : null, reason: effect.reviewNone, owner, name });
 			// Every page, so that on a busy pull request a comment past the first hundred is edited, not posted a second time.
 			const comments = await app.issueComments(token, owner, name, number);
 			const own = comments.find((one) => one.author.toLowerCase() === `${app.settings.slug.toLowerCase()}[bot]` && one.body.split("\n", 1)[0] === marker);
@@ -423,18 +468,22 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
  * counted once, whenever it is seen, and kept after the ledger has let it go. Decided synchronously on
  * the stored meta, which the next write of the item stores.
  */
+function sessionsOf(meta: ItemMeta): string[] {
+	return meta.reviewerSessionId ? [meta.sessionId, meta.reviewerSessionId] : [meta.sessionId];
+}
+
 function lifetimeSeconds(meta: ItemMeta, facts: ItemFacts): number {
 	const seen = new Set(meta.ledger.holds);
 	const fresh = facts.entries.filter((entry) => !seen.has(entry.hold));
 	// Every hold ever counted is kept: an older answer that comes back after a newer one would otherwise drop a hold, which the
 	// next answer would count again. An item's life holds few of them (its hosted budget, in holds of minutes).
-	meta.ledger = { seconds: meta.ledger.seconds + fresh.reduce((sum, entry) => sum + entry.seconds, 0), holds: [...meta.ledger.holds, ...fresh.map((entry) => entry.hold)] };
+	meta.ledger = { seconds: meta.ledger.seconds + ledgerSeconds(fresh, sessionsOf(meta)), holds: [...meta.ledger.holds, ...fresh.map((entry) => entry.hold)] };
 	return meta.ledger.seconds;
 }
 
 /** The user's facts for the item, and the item's hosted time taken in when it has grown: settled after a turn, it would otherwise be missed. */
 async function factsOf(c: Ctx, meta: ItemMeta): Promise<ItemFacts> {
-	const facts = await userActor(c, meta.uid).internalItemFacts(meta.sessionId);
+	const facts = await userActor(c, meta.uid).internalItemFacts(sessionsOf(meta));
 	const stored = c.vars.stored;
 	if (stored?.item.place.kind === "hosted") {
 		const seconds = lifetimeSeconds(stored.meta, facts);
@@ -483,11 +532,25 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 	// Checked in the step that sends it: a cancel stored since the row was read leaves it undone.
 	if (!stored || !live(stored.item, effect)) return false;
 	const { item, meta } = stored;
-	const session = sessionActor(c, meta.uid, meta.sessionId);
+	const sessionId = "to" in effect && effect.to === "review" ? meta.reviewerSessionId : meta.sessionId;
+	if (!sessionId) throw new Error("Review delivery has no reviewer session.");
+	const session = sessionActor(c, meta.uid, sessionId);
 	switch (effect.kind) {
-		case "deliver":
-			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text: effect.text, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key) });
+		case "deliver": {
+			let checkout: ReviewDelivery | null = null;
+			if (effect.to === "review") {
+				if (!effect.checkout || !effect.reviewerInput || !meta.reviewBase || meta.reviewBase.head !== effect.checkout.head) {
+					await take(c, { kind: "review_ended", key: effect.key, at: Date.now(), outcome: "error", refused: "GitHub did not identify the base commit for this review", review: null, said: null, spend: { tokens: 0, hostedSeconds: item.spent.hostedSeconds } });
+					return true;
+				}
+				const report = await latestReport(c.db, item.run!.n);
+				const prose = (heading: string) => report?.blocks.find(b => b.kind === "text" && b.heading === heading);
+				const description = prose("What it did"), lookAt = prose("Where to look"), risk = report?.blocks.find(b => b.kind === "risk");
+				checkout = { ...effect.reviewerInput, baseSha: meta.reviewBase.sha, report: report ? { title: report.title, description: description?.kind === "text" ? description.text : "", lookAt: lookAt?.kind === "text" ? lookAt.text : "", concerns: risk?.text ?? "", screenshots: report.screenshots.map(s => ({ file: s.id, caption: s.caption })) } : null };
+			}
+			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text: effect.text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key) });
 			return true;
+		}
 		case "withdraw":
 			await session.internalWithdraw(effect.key);
 			return true;
@@ -495,7 +558,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 			const fact = await session.internalCheckTurn({ turn: effect.turn, check: effect.key });
 			// A turn still waiting for its slot is not running at the session: it is still in the session's hands, and looked at again.
 			if (fact === null && item.run?.step.turn === "delivered") await take(c, { kind: "turn_running", at: Date.now(), key: effect.key });
-			else if (fact !== null) await take(c, fact);
+			else if (fact !== null) await takeSessionFact(c, stored, fact);
 			return true;
 		}
 		case "publish": {
@@ -519,11 +582,11 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 				// GitHub works out whether a pull request can merge after a push, and says null until it has. Its head is the
 				// commit it holds now, which may be one pushed after the agent's.
 				const pull = await hub.pull(number).catch(() => null);
-				return { reading, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
+				return { reading, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
 			};
-			const { reading, mergeable, prHead } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, mergeable: null, prHead: null }));
+			const { reading, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, mergeable: null, prHead: null, baseSha: null }));
 			const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
-			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, mergeable, prHead, openItems });
+			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, mergeable, prHead, openItems }, baseSha);
 			return true;
 		}
 		case "poll_pr": {
@@ -610,6 +673,7 @@ export const workItem = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS effects (id TEXT PRIMARY KEY, effect TEXT NOT NULL, due_at INTEGER NOT NULL, attempts INTEGER NOT NULL)");
 			await db.execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, data TEXT NOT NULL)");
 			await db.execute(REPORTS_TABLE);
+			await db.execute(REVIEWS_TABLE);
 			await db.execute("CREATE TABLE IF NOT EXISTS verdicts (id TEXT PRIMARY KEY, run INTEGER NOT NULL, head TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)");
 		},
 	}),
@@ -695,14 +759,8 @@ export const workItem = actor({
 			requireService(c);
 			const stored = c.vars.stored;
 			if (!stored || typeof fact?.kind !== "string" || typeof fact.at !== "number") return;
-			if (fact.kind !== "machine_removed" && fact.kind !== "turn_ended" && fact.kind !== "turn_started" && fact.kind !== "turn_running" && fact.kind !== "turn_waiting") return;
-			if (fact.kind === "turn_ended") {
-				// The sandbox time the item's session has used so far is the ledger's, which the user's actor keeps.
-				const hostedSeconds = stored.item.place.kind === "hosted" ? lifetimeSeconds(stored.meta, await userActor(c, stored.meta.uid).internalItemFacts(stored.meta.sessionId)) : 0;
-				await take(c, { ...fact, spend: { tokens: fact.spend?.tokens ?? 0, hostedSeconds } });
-				return;
-			}
-			await take(c, fact);
+			if (fact.kind !== "machine_removed" && fact.kind !== "turn_ended" && fact.kind !== "review_ended" && fact.kind !== "turn_started" && fact.kind !== "turn_running" && fact.kind !== "turn_waiting") return;
+			await takeSessionFact(c, stored, fact);
 		},
 
 		// --- called by the actor's own schedule only ------------------------------------------------

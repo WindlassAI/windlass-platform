@@ -601,24 +601,6 @@ async function cases() {
 			state.items.set(itemId, summary);
 		}
 	});
-	await check("migration reconciles legacy removed keys once", async () => {
-		reset();
-		await file();
-		const [old] = rows();
-		sql.exec("UPDATE attachments SET state='removed'");
-		sql.exec("DROP INDEX IF EXISTS attachments_active_digest"); // The schema before delayed cleanup.
-		const active = await reserve(1, 1);
-		assert.ok("id" in active);
-		sql.prepare("UPDATE attachments SET at=? WHERE id=?").run(Date.now() - 3 * 3600_000, active.id);
-		ITEM_TABLES.forEach(q => sql.exec(q));
-		assert.equal(rows()[0].state, "discarded");
-		await sweep(Date.now());
-		assert.equal(rows().find(r => r.id === active.id)?.state, "reserved");
-		await sweep(rows()[0].at + cleanupDelay);
-		assert.equal(await bucket.size(old.key), null);
-		ITEM_TABLES.forEach(q => sql.exec(q));
-		assert.equal(rows()[0].state, "removed");
-	});
 	await check("3-hour reservation, 179/181-day ended item, owner-only links and deletion retry", async () => {
 		reset();
 		await file();
