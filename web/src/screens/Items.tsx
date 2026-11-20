@@ -177,6 +177,7 @@ function rowWhy(item: ItemSummary): string | null {
 
 /**
  * One item as a row of a list. `repository`: the row stands under no repository's name, so it says which.
+ * An item filed from a GitHub issue links to it, beside its pull request.
  * The item's agent session is part of it and is in no list of agents: the row leads to it, once the
  * item has started, as the place to see what the agent did.
  */
@@ -206,6 +207,14 @@ export function ItemRow({ item, now, repository = false, why }: { item: ItemSumm
 						<span>
 							<a className="item-pull" href={item.pullRequest.url} target="_blank" rel="noreferrer">
 								#{item.pullRequest.number}
+								<ExternalIcon size={10} />
+							</a>
+						</span>
+					) : null}
+					{item.origin ? (
+						<span>
+							<a className="item-pull" href={item.origin.issue.url} target="_blank" rel="noreferrer" aria-label={`Issue #${item.origin.issue.number} on GitHub`}>
+								issue #{item.origin.issue.number}
 								<ExternalIcon size={10} />
 							</a>
 						</span>

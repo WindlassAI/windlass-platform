@@ -15,6 +15,11 @@
  * Retry (a failed item), Send back (in review), and the open question's answers. The server refuses
  * one the item no longer allows with `item_conflict` and says why; that sentence is shown.
  *
+ * An item filed from a GitHub issue says so under its title, with the issue's link, who filed it and,
+ * where someone else wrote the issue, who wrote it. A draft of such an item (`origin.issue.trusted`
+ * false) holds a snapshot of that person's text: its page shows the task first, as plain text, with
+ * one line that says whose words they are, and Start stands under it rather than in the header.
+ *
  * An item on one of the user's machines (`place`) says which, from the user's live list of machines.
  * Hosted sandbox time is no limit of such an item: its cost and the new budget for "Raise the limit"
  * leave it out. Once its machine was removed, the item can only be handed over or given up: the page
@@ -25,7 +30,7 @@ import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type R
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown } from "../components/Blocks";
-import { ArrowLeftIcon, ChevronIcon, ExternalIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { CHECK_TONE, CHECK_WORD, conclusionTone, conclusionWord, ReviewBlocks } from "../components/ReviewBlocks";
 import { useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
 import { reviewShots, SecondReview } from "../components/SecondReview";
@@ -287,7 +292,7 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 	let when: ReactNode = null;
 	switch (view.state) {
 		case "draft":
-			text = "A draft: nothing runs until you start it.";
+			text = readFirst(view) ? "A draft: read its task below, then start it." : "A draft: nothing runs until you start it.";
 			break;
 		case "queued":
 			text = "Started: it waits for its first turn.";
@@ -815,6 +820,74 @@ function Log({ view, now }: { view: ItemView; now: number }) {
 	);
 }
 
+// ---- where it came from, and what it asks the agent to do ---------------------------------------
+
+/** A draft from an issue someone else wrote: its task is that person's text, which its person reads before starting it. */
+const readFirst = (item: Pick<ItemView, "state" | "origin">) => item.state === "draft" && item.origin?.issue.trusted === false;
+
+/** The issue an item was filed from, under its title: its link, who filed it, and who wrote it where that is someone else. */
+function IssueOrigin({ origin }: { origin: NonNullable<ItemView["origin"]> }) {
+	const { issue, sender } = origin;
+	return (
+		<p className="home-account item-origin">
+			<span>
+				From{" "}
+				<a className="item-link" href={issue.url} target="_blank" rel="noreferrer">
+					issue #{issue.number}
+					<ExternalIcon size={10} />
+				</a>
+				, {issue.trusted ? `filed by @${sender}.` : `written by @${issue.author} and filed by @${sender}.`}
+			</span>
+		</p>
+	);
+}
+
+/** What the agent is given, as it is given it: plain text, never Markdown or links. */
+function TaskText({ task }: { task: ItemView["task"] }) {
+	return (
+		<>
+			{task.body ? <p className="item-body-text">{task.body}</p> : <p className="usage-empty">Only the title was given.</p>}
+			{task.acceptance.length > 0 ? (
+				<>
+					<p className="machine-label item-task-label">Acceptance criteria</p>
+					<ul className="item-criteria-list">
+						{task.acceptance.map((line) => (
+							<li key={line}>{line}</li>
+						))}
+					</ul>
+				</>
+			) : null}
+		</>
+	);
+}
+
+/** A draft's task in someone else's words: whose they are, the text itself, and Start under it. */
+function ReadFirst({ view, acting }: { view: ItemView; acting: Acting }) {
+	const author = view.origin?.issue.author ?? "";
+	return (
+		<section className="usage-section" aria-labelledby="item-task">
+			<h2 className="usage-title" id="item-task">
+				The task
+			</h2>
+			<div className="item-read">
+				<p className="callout callout-info">
+					<InfoIcon />
+					<span>The text below was written by @{author} on GitHub, not by you. Starting the item gives the agent this text, as it is shown here.</span>
+				</p>
+				<div className="item-snapshot">
+					<TaskText task={view.task} />
+				</div>
+				<div className="item-choices">
+					<button type="button" className="button button-primary" onClick={() => acting.act({ kind: "start" })} disabled={acting.busy !== null}>
+						{acting.busy === "start" ? "Starting…" : "Start"}
+					</button>
+				</div>
+				<Failure error={acting.error} />
+			</div>
+		</section>
+	);
+}
+
 // ---- the page -----------------------------------------------------------------------------------
 
 export function Item({ page }: { page: ItemPage }) {
@@ -861,12 +934,13 @@ export function Item({ page }: { page: ItemPage }) {
 	const ended = view.state === "done" || view.state === "cancelled";
 	const busy = acting.busy !== null;
 	const { repository } = view;
+	const reading = readFirst(view);
 
 	return (
 		<main className="home usage repo item">
 			<header className="home-head">
 				<div className="repo-head">
-					<p className="eyebrow">work item · {view.source === "api" ? "from the API" : "from the web"}</p>
+					<p className="eyebrow">work item · {view.source === "github" ? "from GitHub" : view.source === "api" ? "from the API" : "from the web"}</p>
 					<h1 className="display display-small item-title">{view.title}</h1>
 					<p className="home-account repo-facts">
 						<a className="repo-link" {...linkProps({ name: "repository", id: repository.id })}>
@@ -892,9 +966,10 @@ export function Item({ page }: { page: ItemPage }) {
 							filed {relativeTime(view.createdAt, now)}
 						</span>
 					</p>
+					{view.origin ? <IssueOrigin origin={view.origin} /> : null}
 				</div>
 				<div className="item-actions">
-					{view.state === "draft" ? (
+					{view.state === "draft" && !reading ? (
 						<button type="button" className="button button-primary" onClick={() => acting.act({ kind: "start" })} disabled={busy}>
 							{acting.busy === "start" ? "Starting…" : "Start"}
 						</button>
@@ -923,7 +998,7 @@ export function Item({ page }: { page: ItemPage }) {
 					<span>{page.error} What is shown may be behind.</span>
 				</p>
 			) : null}
-			{dialog === null && !view.question ? <Failure error={acting.error} /> : null}
+			{dialog === null && !view.question && !reading ? <Failure error={acting.error} /> : null}
 
 			<section className="usage-section item-where" aria-label="Where it is">
 				{/* A question is where the item is: its own block says so, with when it was asked. */}
@@ -931,27 +1006,21 @@ export function Item({ page }: { page: ItemPage }) {
 				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
 			</section>
 
+			{reading ? <ReadFirst view={view} acting={acting} /> : null}
+
 			<Verdicts view={view} now={now} />
 			<SecondReview view={view} links={links} when={(at) => <When at={at} now={now} />} />
 			{view.report ? <Report view={view} report={view.report} links={links} now={now} /> : null}
 			<Cost view={view} />
 
-			<section className="usage-section" aria-labelledby="item-task">
-				<h2 className="usage-title" id="item-task">
-					The task
-				</h2>
-				{view.task.body ? <p className="item-body-text">{view.task.body}</p> : <p className="usage-empty">Only the title was given.</p>}
-				{view.task.acceptance.length > 0 ? (
-					<>
-						<p className="machine-label item-task-label">Acceptance criteria</p>
-						<ul className="item-criteria-list">
-							{view.task.acceptance.map((line) => (
-								<li key={line}>{line}</li>
-							))}
-						</ul>
-					</>
-				) : null}
-			</section>
+			{reading ? null : (
+				<section className="usage-section" aria-labelledby="item-task">
+					<h2 className="usage-title" id="item-task">
+						The task
+					</h2>
+					<TaskText task={view.task} />
+				</section>
+			)}
 
 			<Log view={view} now={now} />
 

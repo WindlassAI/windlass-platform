@@ -355,8 +355,10 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 		{
 			n: 22,
 			title: "Stop the station import from timing out",
-			body: "The station import times out on the full list. Import the stations in batches of 500.",
+			body: `From issue #37 of acme/harbor. ${HARBOR.repository.url}/issues/37\n\nThe station import times out on the full list. Import the stations in batches of 500.`,
 			on: HARBOR,
+			source: "github",
+			origin: { issue: { number: 37, url: `${HARBOR.repository.url}/issues/37`, author: "ada", trusted: true }, sender: "ada" },
 			state: "waiting",
 			filed: 300,
 			pr: 49,

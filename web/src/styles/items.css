@@ -559,6 +559,31 @@
 	background: var(--warn);
 }
 
+/* Where it came from: one quiet line under the facts, the issue's number the one thing in ink. */
+.item-origin {
+	margin-top: 6px;
+}
+.item-origin .item-link {
+	color: var(--ink);
+}
+.item-origin .item-link:hover {
+	color: var(--accent-strong);
+}
+
+/* A draft in someone else's words: whose they are, the text as the agent gets it, then Start. */
+.item-read {
+	display: grid;
+	gap: 12px;
+	max-width: 74ch;
+	margin-top: 10px;
+}
+.item-snapshot {
+	padding: 2px 14px 12px;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-m);
+	background: var(--bg-sunk);
+}
+
 .item-body-text {
 	max-width: 74ch;
 	margin-top: 10px;
