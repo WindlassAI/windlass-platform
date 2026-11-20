@@ -125,7 +125,8 @@ export const offeredHarnesses = (machine: MachineSummary | null): ReportedHarnes
 /**
  * "Agent: Windlass · Claude Code", for an agent on a machine that offers another harness: a segmented
  * choice of the two, the harness's sign-in on the machine where it is not known to be signed in, and,
- * once it is chosen, the one line that says what it does differently. `hardened`: whether the machine
+ * once it is chosen, the one line that says what it does differently. Its mode is chosen under it
+ * (components/Modes.tsx, `ModeChoice`). `hardened`: whether the machine
  * can make the container it runs in; without one it cannot be chosen.
  */
 export function HarnessChoice({ machine, chosen, hardened, disabled = false, onChoose }: { machine: MachineSummary; chosen: HarnessId; hardened: boolean; disabled?: boolean; onChoose(harness: HarnessId): void }) {
@@ -149,7 +150,7 @@ export function HarnessChoice({ machine, chosen, hardened, disabled = false, onC
 			{offered.map((harness) => (
 				<HarnessState key={harness.id} harness={harness} machine={machine} hardened={hardened} />
 			))}
-			{chosen === "claude" ? <p className="field-note">Claude Code runs in this container without asking before commands, with your Claude subscription. It does not run this repository's checks; CI's result is on the pull request.</p> : null}
+			{chosen === "claude" ? <p className="field-note">Claude Code runs in this container with your Claude subscription, in the mode chosen below. It does not run this repository's checks; CI's result is on the pull request.</p> : null}
 		</div>
 	);
 }

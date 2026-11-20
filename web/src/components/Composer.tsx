@@ -15,13 +15,18 @@
  * An agent of another harness (Claude Code, `harness`) has the models and efforts that harness offered
  * (`SessionSummary.harnessModels`): a picker is drawn only when there is a choice to make, and otherwise
  * one quiet word says the harness's default is used. Where that harness takes no message while a turn
- * runs, the server says so, and the message is held here and sent as the next prompt once the turn ends.
+ * runs, the server says so (`steer_unavailable`), and the message is held here and sent as the next
+ * prompt once the turn ends.
+ *
+ * The agent's mode sits before the model (components/Modes.tsx): its list is the session's, and what it
+ * shows is the live summary's, so a mode the agent changes itself shows at once. A change made while a
+ * turn runs applies from the next prompt, and a few words beside the picker say so until the turn ends.
  *
  * A work item's agent takes no prompt from a person: the item's steps send them, and the server
  * refuses any other (`item_session`). Its page has `ItemNote` in the composer's place: one quiet line
  * that says so and links to the item, with Stop beside it while a turn runs, which the server allows.
  */
-import { MAX_PROMPT_CHARS, type ModelList, type PromptInput, type SessionStatus } from "@contract";
+import { MAX_PROMPT_CHARS, type ModelList, type PromptInput, type SessionMode, type SessionStatus } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { errorMessage, hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
@@ -30,6 +35,7 @@ import { effortsOf, modelIds, modelsNote, modelsNoteShort } from "../lib/models"
 import { linkProps } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { ChevronIcon, SendIcon, SteerIcon, StopIcon, WarnIcon } from "./Icons";
+import { ModePicker } from "./Modes";
 
 export interface ComposerProps {
 	status: SessionStatus;
@@ -39,7 +45,7 @@ export interface ComposerProps {
 	models: ModelList | null;
 	/** The model the session is on. */
 	model: string;
-	/** Rejects with what the client threw: a `turn_running` refusal is shown briefly and the text kept. */
+	/** Rejects with what the client threw: a `turn_running` or `steer_unavailable` refusal is shown briefly and the text kept. */
 	onSend(input: PromptInput): Promise<void>;
 	onStop(): Promise<void>;
 	/**
@@ -55,6 +61,12 @@ export interface ComposerProps {
 	closed?: string | null;
 	/** The name of the harness the agent runs when it is not Windlass ("Claude Code"): its pickers are drawn only where it offers a choice. */
 	harness?: string | null;
+	/** The modes the agent can be put in; no picker without them. */
+	modes?: SessionMode[];
+	/** The mode its next prompt runs in, as the live summary says. */
+	mode?: string | null;
+	/** Puts the agent in a mode from its next prompt; rejects with what the client threw. */
+	onMode?(mode: string): Promise<void>;
 }
 
 /** Why nothing can be sent right now. */
@@ -66,8 +78,8 @@ const REASON: Partial<Record<SessionStatus, string>> = {
 /** How long a refusal to take a steer stays. */
 const TRANSIENT_MS = 6000;
 
-/** The server's refusal of a message to a running turn whose harness takes none then (server/src/sandbox/acp-harness.ts): it is sent when the turn ends. */
-export const heldForTurnEnd = (failure: unknown): boolean => hasReason(failure, "turn_running") && /\bit is sent when the turn ends\b/i.test(errorMessage(failure));
+/** The server's refusal of a message to a running turn that cannot take it now (`steer_unavailable`): another harness's message is sent when the turn ends. */
+export const steerUnavailable = (failure: unknown): boolean => hasReason(failure, "steer_unavailable");
 
 /** The way to the usage page, after a sentence about a limit. */
 function UsageLink() {
@@ -133,7 +145,7 @@ export function ItemNote({ item, status, online, onStop }: { item: { id: string;
 	);
 }
 
-export function Composer({ status, online, models, model, onSend, onStop, initial, suggestion, limitNote, closed, harness = null }: ComposerProps) {
+export function Composer({ status, online, models, model, onSend, onStop, initial, suggestion, limitNote, closed, harness = null, modes = [], mode = null, onMode }: ComposerProps) {
 	const [text, setText] = useState(initial?.text ?? "");
 	const [error, setError] = useState<string | null>(initial?.error ?? null);
 	/** Whether `error` is a refusal by one of the user's limits. */
@@ -144,6 +156,10 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 	const [effort, setEffort] = useState("");
 	const [sending, setSending] = useState(false);
 	const [stopping, setStopping] = useState(false);
+	/** The mode chosen here, until the summary says it is the session's (or the choice was refused). */
+	const [pendingMode, setPendingMode] = useState<string | null>(null);
+	/** Whether a mode was chosen while the running turn keeps its own: said beside the picker until the turn ends. */
+	const [modeLater, setModeLater] = useState(false);
 	/** The message that was sent and not taken, with its key: the same text again is another attempt of it. */
 	const untaken = useRef<Submission | null>(initial?.idempotencyKey ? { content: initial.text, idempotencyKey: initial.idempotencyKey } : null);
 	/** A message the running turn's harness could not take: sent, with its key, once the turn ends. */
@@ -194,7 +210,24 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 		if (idle && !wasIdle.current && (document.activeElement === document.body || document.activeElement?.closest(".composer"))) area.current?.focus();
 		wasIdle.current = idle;
 		if (idle) setStopping(false);
+		if (idle) setModeLater(false);
 	}, [idle]);
+
+	// The summary's mode is the session's: a choice made here is shown until it arrives there.
+	useEffect(() => setPendingMode(null), [mode]);
+
+	const shownMode = pendingMode ?? mode;
+	const chooseMode = (next: string) => {
+		if (!onMode || next === shownMode) return;
+		setPendingMode(next);
+		setError(null);
+		if (!idle) setModeLater(true);
+		onMode(next).catch((failure: unknown) => {
+			setPendingMode(null);
+			setModeLater(false);
+			setError(failure instanceof Error ? errorMessage(failure) : "The mode could not be changed.");
+		});
+	};
 
 	// The held message goes as the next prompt once the turn has ended; refused then, it is back in the field.
 	useEffect(() => {
@@ -227,11 +260,12 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 			untaken.current = null;
 			setText("");
 		} catch (failure) {
-			if (steering && heldForTurnEnd(failure) && held === null) {
+			// Another harness's message waits for the turn's end; Windlass's turn is asked again by its user.
+			if (steering && harness !== null && steerUnavailable(failure) && held === null) {
 				setHeld({ content, idempotencyKey });
 				untaken.current = null;
 				setText("");
-			} else if (hasReason(failure, "turn_running")) setNotice(errorMessage(failure));
+			} else if (hasReason(failure, "turn_running") || steerUnavailable(failure)) setNotice(errorMessage(failure));
 			else {
 				setError(failure instanceof Error ? errorMessage(failure) : "The message could not be sent.");
 				setLimited(isLimitRefusal(failure));
@@ -345,6 +379,16 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 			</div>
 			<div className="composer-foot">
 				<div className="composer-selects">
+					{modes.length > 0 && shownMode !== null ? (
+						<>
+							<ModePicker modes={modes} current={shownMode} onChoose={chooseMode} disabled={!online || !!closed || !onMode} title={idle ? undefined : "For the next prompt; the running turn keeps its mode"} />
+							{modeLater && !idle ? (
+								<span className="mini-note" role="status">
+									applies from the next prompt
+								</span>
+							) : null}
+						</>
+					) : null}
 					{modelPicker ? (
 						<label className="mini-select" htmlFor={ids.model}>
 							<span>model</span>

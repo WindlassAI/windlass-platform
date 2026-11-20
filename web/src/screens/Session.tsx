@@ -23,6 +23,7 @@ import { Conversation } from "../components/Conversation";
 import { ArrowLeftIcon, Mark, WarnIcon } from "../components/Icons";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
 import { acpHarnessName, harnessModelsOf } from "../lib/acp";
+import { sessionModes } from "../lib/modes";
 import { SidePanel } from "../components/SidePanel";
 import { StatusBadge } from "../components/Status";
 import { localTime, sandboxTime } from "../lib/format";
@@ -129,6 +130,17 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 		},
 		[api, explain],
 	);
+	const setMode = useCallback(
+		async (mode: string) => {
+			try {
+				await api.setMode(mode);
+			} catch (failure) {
+				explain(failure);
+				throw failure;
+			}
+		},
+		[api, explain],
+	);
 	const stop = useCallback(async () => {
 		try {
 			await api.stop();
@@ -227,6 +239,9 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 						models={harness === null ? models.list : harnessModelsOf(summary)}
 						model={summary.model}
 						harness={harness}
+						modes={sessionModes(summary, profile)}
+						mode={summary.mode}
+						onMode={setMode}
 						initial={handover}
 						suggestion={suggestion}
 						limitNote={summary.place.kind === "machine" ? null : limitNote(allowance, summary)}
@@ -236,7 +251,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 								await api.prompt(input);
 							} catch (failure) {
 								setRefusals((value) => value + 1);
-								// `explain` signs out on a refused token; the composer reads the rest itself (`turn_running`).
+								// `explain` signs out on a refused token; the composer reads the rest itself (`turn_running`, `steer_unavailable`).
 								explain(failure);
 								throw failure;
 							}

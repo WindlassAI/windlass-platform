@@ -3,8 +3,11 @@
  * The mock's Claude Code agent on "nas" (api/mock.ts, `nas-claude`): its page draws the turn in the
  * platform's own blocks and leaves out what Claude Code does not do. The composer offers only the
  * pickers the harness gave a choice for, and a call has no stop button of its own.
+ *
+ * And every agent's mode on its page: the composer's picker before the model, which follows the live
+ * summary, the panel's line, and none on a work item's agent, whose mode is its profile's.
  */
-import type { AuthResult, ModelList } from "@contract";
+import type { AuthResult, ModelList, SessionSummary } from "@contract";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -36,7 +39,8 @@ function Page({ id }: { id: string }) {
 	return createElement(Session, { sessionId: id, state: useSession(id) });
 }
 
-async function open(id: string): Promise<void> {
+/** Opens the agent `id`, or the one `pick` chooses of the user's agents. */
+async function open(id: string | ((sessions: SessionSummary[]) => SessionSummary | undefined)): Promise<void> {
 	client = createMockClient({ origin: "http://localhost:5173" });
 	const begun = client.login.start();
 	await vi.advanceTimersByTimeAsync(1000);
@@ -45,7 +49,15 @@ async function open(id: string): Promise<void> {
 	await vi.advanceTimersByTimeAsync(1000);
 	auth = await finished;
 	saveAuth("mock", auth);
-	act(() => root.render(createElement(AppProvider, { client, children: createElement(Page, { id }) })));
+	if (typeof id !== "string") {
+		const listed = client.user(auth).listSessions();
+		await vi.advanceTimersByTimeAsync(1000);
+		const found = id(await listed);
+		expect(found).toBeDefined();
+		id = (found as SessionSummary).id;
+	}
+	const shown = id;
+	act(() => root.render(createElement(AppProvider, { client, children: createElement(Page, { id: shown }) })));
 	await wait();
 }
 
@@ -89,7 +101,7 @@ describe("a Claude Code agent's page", () => {
 
 	it("has no effort picker, since Claude Code offered no thought_level, and the model picker its models", async () => {
 		await open("nas-claude");
-		expect(pickers()).toEqual(["model"]);
+		expect(pickers()).toEqual(["mode", "model"]);
 		expect([...host.querySelectorAll(".composer-selects option")].map((option) => option.textContent)).toEqual(["default", "opus", "haiku"]);
 	});
 
@@ -108,6 +120,75 @@ describe("a Claude Code agent's page", () => {
 		await act(async () => (asked.querySelector(".q-choice") as HTMLButtonElement).click());
 		await until(() => second()?.querySelector(".turn-end") != null);
 		expect(second()?.querySelector(".tool-stop")).toBeNull();
+	});
+});
+
+describe("an agent's mode on its page", () => {
+	const picker = () => host.querySelector(".mode-picker .mini-pick") as HTMLButtonElement | null;
+	const panelMode = () => {
+		const facts = [...host.querySelectorAll("#panel-session ~ .kv dt")].find((term) => term.textContent === "mode");
+		return facts?.nextElementSibling?.textContent ?? null;
+	};
+	const pick = async (name: string) => {
+		await act(async () => picker()?.click());
+		await act(async () => ([...host.querySelectorAll(".mode-menu .mode-option")] as HTMLElement[]).find((option) => option.querySelector(".mode-option-name")?.textContent === name)?.click());
+	};
+	/** The agent's mode as the mock holds it. */
+	const modeOf = async () => {
+		const listed = client.user(auth).listSessions();
+		await vi.advanceTimersByTimeAsync(1000);
+		return (await listed).find((session) => session.id === "nas-claude")?.mode;
+	};
+
+	it("has Claude Code's picker on Auto, whose choice the composer sends, and the panel says it", async () => {
+		await open("nas-claude");
+		expect(picker()?.textContent).toBe("Auto");
+		expect(panelMode()).toBe("Auto");
+		await pick("Plan");
+		await wait(2);
+		expect(await modeOf()).toBe("plan");
+		expect(picker()?.textContent).toBe("Plan");
+		expect(panelMode()).toBe("Plan");
+		expect(host.querySelector("#panel-sandbox")?.closest("section")?.querySelector(".facts")?.textContent).toContain("approvalPlanPlan the work before editing.");
+	});
+
+	it("follows the mode Claude Code changes itself: a current_mode_update in the turn moves the picker and the panel", async () => {
+		await open("nas-claude");
+		await pick("Plan");
+		await wait(2);
+		expect(picker()?.textContent).toBe("Plan");
+		// The recorded scenario leaves Plan for Accept edits, then asks before a command.
+		await act(async () => void client.session(auth, "nas-claude").prompt({ text: "leaveplan" }));
+		await until(() => picker()?.textContent === "Accept edits");
+		expect(panelMode()).toBe("Accept edits");
+		expect(await modeOf()).toBe("acceptEdits");
+	});
+
+	it("says in the panel's sandbox that commands can read the Claude login, and nothing of ChatGPT", async () => {
+		await open("nas-claude");
+		const sandbox = host.querySelector("#panel-sandbox")?.closest("section")?.textContent ?? "";
+		expect(sandbox).toContain("commands in this container can read your Claude login token");
+		expect(sandbox).toContain("approvalAutoAutomatically assess tool permissions.");
+		expect(sandbox).not.toContain("ChatGPT");
+		expect(sandbox).not.toContain("access token");
+		expect(sandbox).not.toContain("runs every call without asking");
+	});
+
+	it("gives a Windlass agent the picker of its sandbox's two modes, and its sandbox's facts as before", async () => {
+		await open((sessions) => sessions.find((session) => session.item === undefined && session.harness !== "claude" && session.profile === "docker-windlass-sandbox"));
+		expect(picker()?.textContent).toBe("Auto");
+		await act(async () => picker()?.click());
+		expect([...host.querySelectorAll(".mode-menu .mode-option-name")].map((name) => name.textContent)).toEqual(["Ask", "Auto"]);
+		expect(panelMode()).toBe("Auto");
+		expect(host.querySelector("#panel-sandbox")?.closest("section")?.textContent).toContain("your ChatGPT sign-in is never in the sandbox");
+	});
+
+	it("draws no picker for a work item's agent, and says its profile's mode in the panel", async () => {
+		await open((sessions) => sessions.find((session) => session.item?.role === "builder"));
+		expect(host.querySelector(".item-note")).not.toBeNull();
+		expect(host.querySelector(".mode-picker")).toBeNull();
+		expect(host.querySelector(".mode-menu")).toBeNull();
+		expect(panelMode()).toBe("Auto");
 	});
 });
 

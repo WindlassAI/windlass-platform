@@ -1018,7 +1018,7 @@ interface AcpScript {
 }
 
 /** The fake ACP agent's scenarios that a prompt to a Claude Code agent can name, to see each played as it was recorded. */
-const ACP_SCENARIOS = ["plain", "tools", "plan", "ask", "usage"] as const;
+const ACP_SCENARIOS = ["plain", "tools", "plan", "ask", "usage", "leaveplan"] as const;
 
 // ---------------------------------------------------------------------------------------------
 // State
@@ -1052,7 +1052,8 @@ interface Run {
 	/** Set after a call was stopped: what the model says next instead of what the recording says. */
 	replaceText: string | null;
 	/** A Claude Code turn's: the platform's record of its ACP updates, and the context's fill it last said. */
-	acp?: { recorder: ReturnType<typeof acpRecorder>; context: AcpContext | null };
+	/** `modeQueued`: a mode was chosen during the turn, so the agent's own mode changes no longer move the session's (server/src/actors/agent-session.ts). */
+	acp?: { recorder: ReturnType<typeof acpRecorder>; context: AcpContext | null; modeQueued?: boolean };
 }
 
 interface MockSession {
@@ -2294,6 +2295,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						const state = session.run?.acp;
 						if (!state) return;
 						if (update.sessionUpdate === "usage_update" && typeof update.used === "number" && typeof update.size === "number") state.context = { used: update.used, size: update.size, cost: (update.cost as AcpContext["cost"] | undefined) ?? null };
+						// Claude Code changed its own mode (leaving Plan, say): the session's follows, unless its user chose one during the turn.
+						if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string" && !state.modeQueued && session.summary.mode !== update.currentModeId) setSummary(world, session, { mode: update.currentModeId });
 						state.recorder.update(update);
 						entry.then?.();
 					},
@@ -3816,6 +3819,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency();
 				const { world, session } = find();
 				if (session.summary.item || !session.summary.availableModes.some(m => m.id === mode)) throw new PlatformError("user", "Choose a mode offered by this agent.", { reason: "bad_input" });
+				if (session.run?.acp) session.run.acp.modeQueued = true;
 				setSummary(world, session, { mode });
 				return session.summary;
 			},

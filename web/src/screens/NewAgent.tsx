@@ -40,12 +40,19 @@
  * (components/PlaceChoice.tsx, `HarnessChoice`). Chosen, the agent runs in the hardened container,
  * on Claude Code's default model, and the form leaves out what Claude Code is not given here: the
  * model's choice, publishing without asking, and the repository's secrets.
+ *
+ * Under the agent is its mode (components/Modes.tsx, lib/modes.ts): Claude Code's five, on Auto, or
+ * for Windlass Ask and the approval the chosen sandbox was built for, on the latter. Where the form
+ * offers no choice of agent, the mode stands alone before the sandbox. For Claude Code the sandbox's
+ * line says that mode in place of the profile's approval, and that its commands can read the Claude
+ * login it runs with.
  */
 import { type GithubId, type HarnessId, MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type UsageNumbers } from "@contract";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
-import { Layers, ProfileFacts } from "../components/Layers";
+import { Layers, ProfileFacts, type ClaudeFacts } from "../components/Layers";
+import { ModeChoice } from "../components/Modes";
 import { HARNESS_PROFILE, HarnessChoice, PlaceChoice, machineUnusable, offeredHarnesses } from "../components/PlaceChoice";
 import { HARNESS_NAMES } from "../lib/acp";
 import { RepositoryPicker, type PickedRepository } from "../components/RepositoryPicker";
@@ -55,6 +62,7 @@ import { SetupField, useSetupDraft } from "../components/SetupCommand";
 import { isLimitRefusal } from "../api/errors";
 import { localTime, sandboxTime } from "../lib/format";
 import { modelsNote } from "../lib/models";
+import { OPEN_MODES, launchModes } from "../lib/modes";
 import { layerChoices, startingChoices, startingModel, startingProfile, type DefaultSource, type LayeredChoices } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
@@ -64,7 +72,7 @@ import { handOver } from "../state/handover";
 import { submissionOf, type Submission } from "../lib/submission";
 import { clockTime, useMachines } from "./Machines";
 
-function ProfileCard({ profile, name, checked, onChoose }: { profile: SandboxProfile; name: string; checked: boolean; onChoose(id: SandboxProfileId): void }) {
+function ProfileCard({ profile, name, checked, claude = null, onChoose }: { profile: SandboxProfile; name: string; checked: boolean; claude?: ClaudeFacts | null; onChoose(id: SandboxProfileId): void }) {
 	const id = useId();
 	const reasonId = `${id}-reason`;
 	return (
@@ -78,7 +86,7 @@ function ProfileCard({ profile, name, checked, onChoose }: { profile: SandboxPro
 			<span className="profile-summary">{profile.summary}</span>
 			<Layers profile={profile} compact={!profile.available} />
 			{profile.available ? (
-				<ProfileFacts profile={profile} />
+				<ProfileFacts profile={profile} claude={claude} />
 			) : (
 				<span className="profile-reason" id={reasonId}>
 					<strong>Why not yet.</strong> {profile.unavailableReason ?? "This deployment cannot run it."}
@@ -89,14 +97,22 @@ function ProfileCard({ profile, name, checked, onChoose }: { profile: SandboxPro
 }
 
 /** The chosen sandbox in one line: its name and the three facts of `ProfileFacts`, each in a few words. What is open is said in the warning tone. */
-function ChosenSandbox({ profile }: { profile: SandboxProfile }) {
+function ChosenSandbox({ profile, claude = null }: { profile: SandboxProfile; claude?: ClaudeFacts | null }) {
 	return (
 		<span className="sandbox-chosen-text">
 			<span className="sandbox-chosen-name">{profile.name}</span>
 			<span className="sandbox-chosen-facts">
-				<span className={profile.approval === "full" ? "fact-open" : undefined}>{profile.approval === "auto" ? "runs what the sandbox contains, refuses the rest" : "runs every call without asking"}</span>
+				{claude ? (
+					<span className={OPEN_MODES.has(claude.mode.id) ? "fact-open" : undefined}>runs in {claude.mode.name} mode</span>
+				) : (
+					<span className={profile.approval === "full" ? "fact-open" : undefined}>{profile.approval === "auto" ? "runs what the sandbox contains, refuses the rest" : "runs every call without asking"}</span>
+				)}
 				<span className={profile.commandNetwork ? "fact-open" : undefined}>{profile.commandNetwork ? "commands can reach the network" : "commands have no network"}</span>
-				<span className={profile.commandsCanReadAccessToken ? "fact-open" : undefined}>{profile.commandsCanReadAccessToken ? "commands can read the session's access token" : "commands cannot read the session's access token"}</span>
+				{claude ? (
+					<span className="fact-open">commands can read your Claude login token</span>
+				) : (
+					<span className={profile.commandsCanReadAccessToken ? "fact-open" : undefined}>{profile.commandsCanReadAccessToken ? "commands can read the session's access token" : "commands cannot read the session's access token"}</span>
+				)}
 			</span>
 		</span>
 	);
@@ -261,6 +277,8 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 	const [placeChoice, setPlace] = useState<string | null>(null);
 	// The agent on that machine: Windlass, or another harness its runner reported.
 	const [harnessChoice, setHarness] = useState<HarnessId>("windlass");
+	// The agent's mode, once its user chose one: a mode the agent or its sandbox does not offer goes back to the default.
+	const [modeChoice, setMode] = useState<string | null>(null);
 	const [busy, setBusy] = useState<"creating" | "prompting" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
@@ -334,6 +352,9 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 	const canCreate = info !== null && profile !== null && !repoInvalid && busy === null && !saved.reading && !accountReading && !models.reading && !(opening.reading && source === "github" && picked === null);
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 	const chosenProfile = placeProfiles.find((candidate) => candidate.id === profile) ?? null;
+	const modes = launchModes(harness, chosenProfile);
+	const mode = modes ? (modes.modes.find((candidate) => candidate.id === modeChoice) ?? modes.modes.find((candidate) => candidate.id === modes.default) ?? null) : null;
+	const claude: ClaudeFacts | null = harness === "claude" && mode ? { mode } : null;
 
 	/** The agent that was asked for and not answered with, with its key: launching the same again is another attempt of it. */
 	const asked = useRef<Submission | null>(null);
@@ -350,6 +371,7 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 				place: chosenMachine ? { kind: "machine" as const, machineId: chosenMachine.machineId } : undefined,
 				...(other ? { harness } : {}),
 				profile,
+				mode: mode?.id,
 				// Another harness starts on its own default model.
 				model: other ? undefined : model || undefined,
 				repoUrl: repo || undefined,
@@ -609,7 +631,12 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 								</p>
 							) : null}
 							{chosenMachine && offeredHarnesses(chosenMachine).length > 0 ? <HarnessChoice machine={chosenMachine} chosen={harness} hardened={hardened} disabled={busy !== null} onChoose={setHarness} /> : null}
+							{modes && mode ? <ModeChoice modes={modes.modes} chosen={mode.id} disabled={busy !== null} onChoose={setMode} /> : null}
 						</PlaceChoice>
+					) : modes && mode ? (
+						<div className="new-agent-section mode-alone">
+							<ModeChoice modes={modes.modes} chosen={mode.id} disabled={busy !== null} onChoose={setMode} />
+						</div>
 					) : null}
 					<fieldset className="new-agent-section sandbox-pick">
 						<legend className="label">Sandbox</legend>
@@ -620,7 +647,7 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 							</p>
 						) : null}
 						<div className="sandbox-chosen">
-							{chosenProfile ? <ChosenSandbox profile={chosenProfile} /> : <span className="sandbox-chosen-text">None chosen</span>}
+							{chosenProfile ? <ChosenSandbox profile={chosenProfile} claude={claude} /> : <span className="sandbox-chosen-text">None chosen</span>}
 							<button type="button" className="link" aria-expanded={profilesOpen} aria-controls={ids.profiles} onClick={() => setProfilesOpen((open) => !open)}>
 								{profilesOpen ? "Hide" : available.length > 1 ? "Change" : "Details"}
 							</button>
@@ -629,7 +656,7 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 							<p className="section-text">Where the agent's files live and its commands run. The boxes show what isolates it, outermost first.{other ? ` ${other} runs in this one only.` : ""}</p>
 							<div className="profiles">
 								{available.map((candidate) => (
-									<ProfileCard key={candidate.id} profile={candidate} name={group} checked={profile === candidate.id} onChoose={setProfile} />
+									<ProfileCard key={candidate.id} profile={candidate} name={group} checked={profile === candidate.id} claude={claude} onChoose={setProfile} />
 								))}
 							</div>
 							{unavailable.length > 0 ? (

@@ -273,7 +273,17 @@ describe("the launch form's agent picker", () => {
 
 	const text = () => host.textContent ?? "";
 	const place = (value: string) => act(() => (host.querySelector(`input[type="radio"][value="${value}"]`) as HTMLInputElement).click());
-	const segments = () => [...host.querySelectorAll(".segmented .segment")].map((segment) => segment.textContent);
+	// The agent's choice; the mode under it is a segmented choice too (`modeSegments`).
+	const segments = () => [...host.querySelectorAll(".harness-pick:not(.mode-pick) .segment")].map((segment) => segment.textContent);
+	const agentPicker = () => host.querySelector(".harness-pick:not(.mode-pick) .segmented");
+	const modeSegments = () => [...host.querySelectorAll(".mode-pick .segment")].map((segment) => ({ name: segment.textContent, chosen: (segment.querySelector("input") as HTMLInputElement).checked }));
+	const modeSelect = () => host.querySelector(".mode-pick select") as HTMLSelectElement | null;
+	const modeNote = () => host.querySelector(".mode-pick .field-note")?.textContent;
+	const sandboxLine = () => [...host.querySelectorAll(".sandbox-pick .sandbox-chosen-facts")].at(-1)?.textContent ?? "";
+	const launchIt = async () => {
+		await act(async () => (document.querySelector('button[type="submit"]') as HTMLButtonElement).click());
+		await wait();
+	};
 	const LOGIN = "Claude Code: not signed in on “workshop”. Run windlass-runner login claude there.";
 
 	it("offers Windlass or Claude Code on a machine that reports it, and its sign-in where it is not signed in", async () => {
@@ -290,23 +300,23 @@ describe("the launch form's agent picker", () => {
 
 	it("shows no picker on a machine that reports no other harness, nor on this platform", async () => {
 		await open();
-		expect(host.querySelector(".segmented")).toBeNull();
+		expect(agentPicker()).toBeNull();
 		expect(text()).not.toContain("Claude Code");
 		// The picker there is on nas, and it goes with the machine.
 		place("m_nas");
 		expect(segments()).toEqual(["Windlass", "Claude Code"]);
 		place("m_build");
 		expect(host.querySelector(".sandbox-chosen-name")?.textContent).toBe("build-box");
-		expect(host.querySelector(".segmented")).toBeNull();
+		expect(agentPicker()).toBeNull();
 		place("platform");
-		expect(host.querySelector(".segmented")).toBeNull();
+		expect(agentPicker()).toBeNull();
 	});
 
 	it("launches Claude Code in the hardened container, on its default model, with the line that says what that means", async () => {
 		await open();
 		place("m_nas");
 		place("claude");
-		expect(text()).toContain("Claude Code runs in this container without asking before commands, with your Claude subscription. It does not run this repository's checks; CI's result is on the pull request.");
+		expect(text()).toContain("Claude Code runs in this container with your Claude subscription, in the mode chosen below. It does not run this repository's checks; CI's result is on the pull request.");
 		// The place's line, then the sandbox's.
 		expect([...host.querySelectorAll(".sandbox-chosen-name")].map((name) => name.textContent)).toEqual(["nas", 'Hardened Docker on your machine "nas"']);
 		// No model to choose at launch: Claude Code's default.
@@ -317,5 +327,73 @@ describe("the launch form's agent picker", () => {
 		expect(created).toHaveLength(1);
 		expect(created[0]).toMatchObject({ harness: "claude", profile: "docker-hardened", place: { kind: "machine", machineId: "m_nas" } });
 		expect(created[0]?.model).toBeUndefined();
+	});
+
+	it("starts Claude Code on Auto, of its five modes, each said under the choice; another is sent when chosen", async () => {
+		await open();
+		place("m_nas");
+		place("claude");
+		const select = modeSelect() as HTMLSelectElement;
+		expect([...select.options].map((option) => option.textContent)).toEqual(["Manual", "Accept edits", "Plan", "Auto", "Bypass permissions"]);
+		expect(select.value).toBe("auto");
+		expect(modeNote()).toBe("Automatically assess tool permissions.");
+		act(() => {
+			select.value = "plan";
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		expect(modeNote()).toBe("Plan the work before editing.");
+		await launchIt();
+		expect(created[0]).toMatchObject({ harness: "claude", mode: "plan" });
+	});
+
+	it("starts Windlass on the chosen sandbox's approval, of Ask and that one", async () => {
+		await open();
+		// This platform's first sandbox has Windlass's command sandbox: Ask and Auto, on Auto.
+		expect(modeSelect()).toBeNull();
+		expect(modeSegments()).toEqual([
+			{ name: "Ask", chosen: false },
+			{ name: "Auto", chosen: true },
+		]);
+		expect(modeNote()).toBe("Use Windlass’s command sandbox and ask when needed.");
+		// The hardened container has none: Ask and Full, on Full.
+		place("docker-hardened");
+		expect(modeSegments()).toEqual([
+			{ name: "Ask", chosen: false },
+			{ name: "Full", chosen: true },
+		]);
+		await launchIt();
+		expect(created[0]).toMatchObject({ profile: "docker-hardened", mode: "full" });
+	});
+
+	it("keeps a choice of Ask across sandboxes and agents, and stands on the default where the choice is not offered", async () => {
+		await open();
+		place("m_nas");
+		place("ask");
+		// Claude Code has no Ask: Auto, its default.
+		place("claude");
+		expect(modeSelect()?.value).toBe("auto");
+		place("windlass");
+		expect(modeSegments().find((segment) => segment.chosen)?.name).toBe("Ask");
+		place("platform");
+		expect(modeSegments().find((segment) => segment.chosen)?.name).toBe("Ask");
+		await launchIt();
+		expect(created[0]?.mode).toBe("ask");
+	});
+
+	it("says Claude Code's mode and its Claude login in the sandbox's facts, and Windlass's as before", async () => {
+		await open();
+		expect(sandboxLine()).toContain("runs what the sandbox contains, refuses the rest");
+		expect(sandboxLine()).toContain("commands cannot read the session's access token");
+		place("m_nas");
+		place("claude");
+		expect(sandboxLine()).toContain("runs in Auto mode");
+		expect(sandboxLine()).toContain("commands can read your Claude login token");
+		expect(sandboxLine()).not.toContain("access token");
+		expect(sandboxLine()).not.toContain("without asking");
+		const facts = host.querySelector(".sandbox-cards .facts")?.textContent ?? "";
+		expect(facts).toContain("approvalAutoAutomatically assess tool permissions.");
+		expect(facts).toContain("commands in this container can read your Claude login token");
+		expect(facts).not.toContain("ChatGPT");
+		expect(facts).not.toContain("runs every call without asking");
 	});
 });

@@ -8,10 +8,15 @@
  * An agent of another harness (Claude Code) reports no token counts and has no prompt cache to chart:
  * in their place the panel says how full its context is, and what it has cost so far when the harness
  * says. Its saved secrets are not handed to it, so they are not listed as if they were.
+ *
+ * The session's facts include the mode its next prompt runs in, for every agent, a work item's too,
+ * which keeps its profile's. For Claude Code the sandbox's facts say that mode in place of the
+ * profile's approval, and that its commands can read the Claude login it runs with.
  */
 import type { PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
 import { useCallback, useEffect, useState } from "react";
 import { acpHarnessName, contextWords, costWords } from "../lib/acp";
+import { currentMode } from "../lib/modes";
 import { absoluteTime, compact, count, percent, plural, shortId } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { cachedShare, lastTurn, sessionUsage, turnUsage, type ModelCall, type SessionView } from "../lib/timeline";
@@ -26,9 +31,10 @@ import { SecretsSection } from "./Secrets";
 import { SetupSection } from "./SetupCommand";
 import { SandboxState, StatusBadge } from "./Status";
 
-function Facts({ summary, view }: { summary: SessionSummary; view: SessionView }) {
+function Facts({ summary, profile, view }: { summary: SessionSummary; profile: SandboxProfile; view: SessionView }) {
 	const id = view.windlassSessionId;
 	const harness = acpHarnessName(summary);
+	const mode = currentMode(summary, profile);
 	return (
 		<section className="panel-section" aria-labelledby="panel-session">
 			<h2 className="panel-title" id="panel-session">
@@ -53,6 +59,8 @@ function Facts({ summary, view }: { summary: SessionSummary; view: SessionView }
 				) : null}
 				<dt>model</dt>
 				<dd>{harness && summary.model === "default" ? `${harness}'s default` : summary.model}</dd>
+				<dt>mode</dt>
+				<dd title={mode.description ?? undefined}>{mode.name}</dd>
 				<dt>turns</dt>
 				<dd>{summary.turns}</dd>
 				{summary.repository ? (
@@ -90,7 +98,7 @@ function Sandbox({ summary, profile }: { summary: SessionSummary; profile: Sandb
 			</h2>
 			<p className="panel-lede">{profile.name}</p>
 			<Layers profile={profile} />
-			<ProfileFacts profile={profile} />
+			<ProfileFacts profile={profile} claude={summary.harness === "claude" ? { mode: currentMode(summary, profile) } : null} />
 		</section>
 	);
 }
@@ -387,7 +395,7 @@ export function SidePanel({ sessionId, summary, profile, view, turnsEnded, quest
 	const harness = acpHarnessName(summary);
 	return (
 		<aside className="panel" id="details" aria-label="Session details">
-			<Facts summary={summary} view={view} />
+			<Facts summary={summary} profile={profile} view={view} />
 			<Sandbox summary={summary} profile={profile} />
 			{harness ? (
 				<Context view={view} harness={harness} />

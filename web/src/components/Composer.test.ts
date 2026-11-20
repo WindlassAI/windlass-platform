@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { AuthResult, PromptInput } from "@contract";
+import { CLAUDE_LAUNCH_MODES, type AuthResult, type PromptInput } from "@contract";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -157,8 +157,8 @@ describe("the composer's submissions", () => {
 });
 
 describe("a message to a running turn whose harness takes none then", () => {
-	// The server's words when Claude Code's adapter offers no steering (server/src/sandbox/acp-harness.ts, through `steerTurn`).
-	const notNow = () => new PlatformError("user", "The running turn could not take the message. This Claude Code takes no message during a turn; it is sent when the turn ends. Try again in a moment.", { reason: "turn_running" });
+	// The server's refusal of a steer (server/src/actors/agent-session.ts, `steerTurn`): known by its code, whatever its words.
+	const notNow = () => new PlatformError("user", "The running turn could not take the message. Try again in a moment.", { reason: "steer_unavailable" });
 
 	it("is held with “Sent when this turn ends.”, and sent once the turn ends, with the key it had", async () => {
 		show({ status: "running", harness: "Claude Code", model: "default" });
@@ -183,5 +183,86 @@ describe("a message to a running turn whose harness takes none then", () => {
 		await act(async () => (host.querySelector(".composer-held button") as HTMLButtonElement).click());
 		expect(field().value).toBe("Also update the changelog");
 		expect(host.querySelector(".composer-held")).toBeNull();
+	});
+
+	it("is not held for Windlass: the refusal is shown briefly and the message stays in the field", async () => {
+		show({ status: "running" });
+		write("Also update the changelog");
+		answers.push(notNow());
+		await send();
+		expect(host.querySelector(".composer-held")).toBeNull();
+		expect(host.querySelector(".composer-notice")?.textContent).toContain("could not take the message");
+		expect(host.querySelector('[role="alert"]')).toBeNull();
+		expect(field().value).toBe("Also update the changelog");
+	});
+});
+
+describe("the composer's mode", () => {
+	const WINDLASS = [
+		{ id: "ask", name: "Ask", description: "Ask before writes, commands, network access and MCP calls." },
+		{ id: "auto", name: "Auto", description: "Use Windlass’s command sandbox and ask when needed." },
+	];
+	let chosen: string[];
+	let refuse: Error | null;
+	const onMode = async (mode: string) => {
+		chosen.push(mode);
+		if (refuse) throw refuse;
+	};
+	beforeEach(() => {
+		chosen = [];
+		refuse = null;
+	});
+	const picker = () => host.querySelector(".mode-picker .mini-pick") as HTMLButtonElement;
+	const options = () => [...host.querySelectorAll(".mode-menu .mode-option")] as HTMLElement[];
+	const pick = async (name: string) => {
+		await act(async () => picker().click());
+		await act(async () => options().find((option) => option.querySelector(".mode-option-name")?.textContent === name)?.click());
+	};
+
+	it("sits before the model, and opens to each mode with what it does", async () => {
+		show({ modes: WINDLASS, mode: "auto", onMode });
+		expect([...host.querySelectorAll(".composer-selects .mini-select > span:first-child")].map((label) => label.textContent)).toEqual(["mode", "model", "effort"]);
+		expect(picker().textContent).toBe("Auto");
+		await act(async () => picker().click());
+		expect(picker().getAttribute("aria-expanded")).toBe("true");
+		expect(options().map((option) => option.textContent)).toEqual(["AskAsk before writes, commands, network access and MCP calls.", "AutoUse Windlass’s command sandbox and ask when needed."]);
+		expect(options().map((option) => option.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+	});
+
+	it("calls setMode with the chosen mode and shows it, then follows the summary", async () => {
+		show({ modes: [...CLAUDE_LAUNCH_MODES], mode: "auto", onMode, harness: "Claude Code", model: "default" });
+		await pick("Plan");
+		expect(chosen).toEqual(["plan"]);
+		expect(picker().textContent).toBe("Plan");
+		expect(host.querySelector(".mode-menu")).toBeNull();
+		// The summary says so, and later says the agent left Plan by itself.
+		show({ modes: [...CLAUDE_LAUNCH_MODES], mode: "plan", onMode, harness: "Claude Code", model: "default" });
+		expect(picker().textContent).toBe("Plan");
+		show({ modes: [...CLAUDE_LAUNCH_MODES], mode: "acceptEdits", onMode, harness: "Claude Code", model: "default" });
+		expect(picker().textContent).toBe("Accept edits");
+		// Choosing the mode it is in asks nothing.
+		await pick("Accept edits");
+		expect(chosen).toEqual(["plan"]);
+	});
+
+	it("says a mode chosen while a turn runs applies from the next prompt, until the turn ends", async () => {
+		show({ status: "running", modes: WINDLASS, mode: "auto", onMode });
+		expect(picker().disabled).toBe(false);
+		await pick("Ask");
+		expect(chosen).toEqual(["ask"]);
+		expect(host.querySelector(".composer-selects")?.textContent).toContain("applies from the next prompt");
+		show({ status: "idle", modes: WINDLASS, mode: "ask", onMode });
+		expect(host.querySelector(".composer-selects")?.textContent).not.toContain("applies from the next prompt");
+		// Chosen while idle, it is for the next prompt anyway: nothing to say.
+		await pick("Auto");
+		expect(host.querySelector(".composer-selects")?.textContent).not.toContain("applies from the next prompt");
+	});
+
+	it("goes back to the summary's mode and says why when the choice is refused", async () => {
+		refuse = new PlatformError("user", "Choose a mode offered by this agent.", { reason: "bad_input" });
+		show({ modes: WINDLASS, mode: "auto", onMode });
+		await pick("Ask");
+		expect(picker().textContent).toBe("Auto");
+		expect(host.querySelector('[role="alert"]')?.textContent).toContain("Choose a mode offered by this agent.");
 	});
 });

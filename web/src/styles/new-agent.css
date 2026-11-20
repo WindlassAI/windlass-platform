@@ -87,6 +87,14 @@
 .harness-login .machine-command {
 	margin-top: 6px;
 }
+/* The agent's mode, under the agent; standing alone where there is no choice of agent. */
+.mode-alone > .mode-pick {
+	margin-top: 0;
+}
+.mode-select {
+	width: auto;
+	min-width: min(260px, 100%);
+}
 .segmented {
 	display: inline-flex;
 	gap: 2px;
