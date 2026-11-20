@@ -7,7 +7,7 @@ import { platformConnection } from "./platform-info.js";
 import type { Registry } from "./registry.js";
 import { codeDigest, digest, machineError, newPairCode, publicSpki } from "./runner-keys.js";
 import { AddressBudget, clientAddress, rateLimited } from "./http-limits.js";
-import { CLOCK_TOLERANCE_MS, PAIRING_TTL_MS, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, connectionProof, parseConnectionRequest, parsePairPoll, parsePairRequest } from "./runner/control.js";
+import { CLOCK_TOLERANCE_MS, PAIRING_TTL_MS, RUNNER_CONNECTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, connectionProof, parseConnectionRequest, parsePairPoll, parsePairRequest } from "./runner/control.js";
 
 const polls = new AddressBudget(config.httpLimits.runnerPoll);
 const connections = new AddressBudget(config.httpLimits.runnerConnection);
@@ -39,14 +39,19 @@ export async function runnerResponse(request: Request): Promise<Response> {
 	try { assertOrigin({ request }); } catch { return json(403, { code: "origin_not_allowed" }); }
 	if (request.method !== "POST") return json(405, { code: "method_not_allowed" });
 	const { pathname } = new URL(request.url);
+	const address = clientAddress(request);
 	if (pathname !== RUNNER_PAIR_PATH) {
 		const budget = pathname === RUNNER_PAIR_POLL_PATH ? polls : connections;
-		const admission = budget.take(clientAddress(request));
+		const admission = budget.take(address);
 		if (admission) return rateLimited(admission, "This address has reached its runner request limit. Try again later.");
+	}
+	function refusedConnection(response: Response): Response {
+		const retry = address === null && pathname === RUNNER_CONNECTION_PATH ? connections.refusal(address) : 0;
+		return retry ? rateLimited(retry, "Too many refused runner connections. Try again later.") : response;
 	}
 	try {
 		const body = await readBody(request);
-		if (body instanceof Response) return body;
+		if (body instanceof Response) return refusedConnection(body);
 		const client = createClient<Registry>({ endpoint: ownEngineEndpoint() });
 		const params = serviceParams();
 		if (pathname === RUNNER_PAIR_PATH) {
@@ -71,13 +76,14 @@ export async function runnerResponse(request: Request): Promise<Response> {
 			} catch (error) { if (isActorGone(error)) return json(200, { state: "gone" }); throw error; }
 		}
 		const input = parseConnectionRequest(body.value);
-		if (!input) return json(400, { code: "bad_input" });
+		if (!input) return refusedConnection(json(400, { code: "bad_input" }));
 		const now = Date.now();
 		if (Math.abs(now - input.time) > CLOCK_TOLERANCE_MS) return json(403, { reason: "clock", serverTime: now });
 		const { uid, machineId, signature, time } = input;
-		const result = await client.machine.get([uid, machineId], { params }).internalConnection(connectionProof(uid, machineId, time), signature)
+		const result = await client.machine.get([uid, machineId], { params }).internalConnection(connectionProof(uid, machineId, time), signature, address === null)
 			.catch(error => { if (isActorGone(error)) return "unknown" as const; throw error; });
-		if (result === "unknown") return json(403, { reason: "unknown" });
+		if (result === "unknown") return refusedConnection(json(403, { reason: "unknown" }));
+		if (typeof result === "object" && "retryAfter" in result) return rateLimited(result.retryAfter, "This machine has reached its connection limit. Try again later.");
 		if (result !== "active") return json(410, { reason: "removed", removeSandboxes: result.removeSandboxes });
 		const connection = await platformConnection();
 		return json(200, { ...connection, endpoint: connection.endpoint ?? (config.engine.remote ? null : ownEngineEndpoint()) });

@@ -32,7 +32,6 @@ const MAX_BODY_BYTES = 128 * 1024;
 const json = (status: number, body: unknown) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 
 const STATUS: Record<string, number> = {
-	invalid_token: 401,
 	missing_scope: 403,
 	item_not_found: 404,
 	idempotency_key_reused: 409,
@@ -64,11 +63,16 @@ export async function apiRoute(request: Request): Promise<Response | null> {
 	// Reserve before looking up a user. Concurrent slow misses must fit in the same budget.
 	const lookup = await failures.lookup(address);
 	if (typeof lookup === "number") return rateLimited(lookup, "This address has reached its token lookup limit. Try again later.");
+	// Without an address, charge only a known refusal, after checking the credential.
+	function invalidToken(message: string) {
+		const retry = address === null ? failures.refusal(address) : 0;
+		return retry ? rateLimited(retry, "Too many invalid API tokens. Try again later.") : json(401, { code: "invalid_token", message });
+	}
 	const token = bearerOf(request) ?? "";
 	const owner = tokenOwner(token);
 	if (!owner) {
 		lookup(true);
-		return json(401, { code: "invalid_token", message: "Send an API token: Authorization: Bearer wlp_…" });
+		return invalidToken("Send an API token: Authorization: Bearer wlp_…");
 	}
 	let invalid = false;
 	try {
@@ -93,7 +97,7 @@ export async function apiRoute(request: Request): Promise<Response | null> {
 		// A token that names a user with no actor is a token that is not valid: the same answer as any other, and nothing logged.
 		if (isActorGone(error)) {
 			invalid = true;
-			return json(401, { code: "invalid_token", message: "That API token is not valid, or may not do this." });
+			return invalidToken("That API token is not valid, or may not do this.");
 		}
 		const { code, message } = (typeof error === "object" && error !== null ? error : {}) as { code?: unknown; message?: unknown };
 		invalid = code === "invalid_token";
@@ -102,7 +106,9 @@ export async function apiRoute(request: Request): Promise<Response | null> {
 			return rateLimited(metadata?.retryAfter ?? 60, message, code);
 		}
 		// A UserError of the user's actor says what is wrong in its words; an error of the engine's own (group "actor") does not.
-		if (typeof code === "string" && code !== "internal_error" && typeof message === "string" && (error as { group?: unknown }).group !== "actor") return json(STATUS[code] ?? 400, { code, message });
+		if (typeof code === "string" && code !== "internal_error" && typeof message === "string" && (error as { group?: unknown }).group !== "actor") {
+			return invalid ? invalidToken(message) : json(STATUS[code] ?? 400, { code, message });
+		}
 		// The user's actor was never reached, or failed: nothing of the token or the body is said.
 		console.error(`[wlp] api.failed path=${pathname}: ${attachment ? "attachment request failed" : describeError(error)}`);
 		return json(500, { code: "internal_error", message: "The request could not be handled. Try again." });

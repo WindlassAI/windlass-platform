@@ -19,7 +19,8 @@ let throttled = 0;
 
 // One trailing summary even when the burst stops. Keep only counts, shared by this node.
 function refuse(request: Request, status: number, code: string, message: string): Response {
-	const admission = refusals.take(clientAddress(request));
+	const address = clientAddress(request);
+	const admission = refusals.refusal(address);
 	if (refused++ === 0) setTimeout(() => {
 		console.warn(`github.webhook.refused count=${refused} bad_signature=${badSignatures} rate_limited=${throttled}`);
 		refused = badSignatures = throttled = 0;
@@ -27,7 +28,7 @@ function refuse(request: Request, status: number, code: string, message: string)
 	if (code === "bad_signature") badSignatures++;
 	if (admission) {
 		throttled++;
-		return rateLimited(admission, "This address has sent too many refused webhook requests. Try again later.");
+		return rateLimited(admission, address === null ? "Too many refused webhook requests. Try again later." : "This address has sent too many refused webhook requests. Try again later.");
 	}
 	return error(status, code, message);
 }

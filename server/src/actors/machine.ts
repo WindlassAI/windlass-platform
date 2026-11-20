@@ -5,6 +5,7 @@ import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, requireServiceFor, serviceParams } from "../auth.js";
 import { config } from "../config.js";
 import { MACHINE_EXPIRY_MS, type MachineClaim, type MachineStatus, type MachineWarning } from "../contract.js";
+import { MINUTE_MS } from "../http-limits.js";
 import { machineError, signed } from "../runner-keys.js";
 import { CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
 import { grantIsValid } from "./internal.js";
@@ -112,6 +113,7 @@ export const machine = actor({
 	db: db({ onMigrate: async db => {
 		await db.execute(`CREATE TABLE IF NOT EXISTS machine (id INTEGER PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL,
 			public_key TEXT NOT NULL, created INTEGER NOT NULL, seen INTEGER, removed_at INTEGER, remove_sandboxes INTEGER NOT NULL DEFAULT 0, offset INTEGER NOT NULL DEFAULT 0, duplicate INTEGER, report TEXT)`);
+		await db.execute("CREATE TABLE IF NOT EXISTS connection_budget (id INTEGER PRIMARY KEY, minute INTEGER NOT NULL, used INTEGER NOT NULL)");
 		await db.execute("CREATE TABLE IF NOT EXISTS pending (sandbox TEXT PRIMARY KEY)");
 	} }),
 	createVars: (): Vars => ({ live: null, work: Promise.resolve(), greeting: null }),
@@ -256,11 +258,20 @@ export const machine = actor({
 			const facts = update(c, r);
 			return { name: r.name, status: r.removed_at !== null ? "removed" : facts.status, publicKey: r.public_key, report: facts.report };
 		},
-		internalConnection: async (c, proof: string, signature: string): Promise<"unknown" | "active" | { removeSandboxes: boolean }> => {
+		internalConnection: async (c, proof: string, signature: string, limitByMachine = false): Promise<"unknown" | "active" | { removeSandboxes: boolean } | { retryAfter: number }> => {
 			requireServiceFor(c, "call");
 			const r = await record(c);
 			if (!r || !signed(r.public_key, proof, signature)) return "unknown";
-			return r.removed_at === null ? "active" : { removeSandboxes: !!r.remove_sandboxes };
+			if (r.removed_at !== null) return { removeSandboxes: !!r.remove_sandboxes };
+			if (limitByMachine) {
+				const now = Date.now();
+				const minute = Math.floor(now / MINUTE_MS);
+				const admitted = await c.db.execute(`INSERT INTO connection_budget VALUES (1, ?, 1)
+					ON CONFLICT(id) DO UPDATE SET minute = excluded.minute, used = CASE WHEN minute = excluded.minute THEN used + 1 ELSE 1 END
+					WHERE minute != excluded.minute OR used < ? RETURNING id`, minute, config.httpLimits.runnerConnection);
+				if (!admitted.length) return { retryAfter: Math.ceil(((minute + 1) * MINUTE_MS - now) / 1000) };
+			}
+			return "active";
 		},
 		internalAttach: async (c, input: { sessionId: string; ticket: string }): Promise<Attachment> => {
 			requireServiceFor(c, "call");

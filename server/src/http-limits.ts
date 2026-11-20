@@ -5,9 +5,10 @@ export const MINUTE_MS = 60_000;
 
 // registry.listen passes application.fetch the ordinary headers, without the socket peer.
 // Only an ingress that overwrites a header on EVERY path to this port can supply an address.
-export function clientAddress(request: Request): string {
+export function clientAddress(request: Request): string | null {
 	const name = config.httpLimits.ipHeader;
-	const ip = name && request.headers.get(name);
+	if (!name) return null; // Address limits are disabled. An invalid configured header still uses the "" bucket.
+	const ip = request.headers.get(name);
 	if (!ip || ip.includes("%")) return "";
 	switch (isIP(ip)) {
 		case 4: return ip;
@@ -26,7 +27,7 @@ interface Count {
 	wake?: () => void;
 }
 
-/** One minute of admission counts on this listener. New addresses share an overflow budget
+/** One minute of admission counts on this listener. New keys share an overflow budget
  * once full; an influx of new addresses cannot evict a live counter. */
 export class AddressBudget {
 	private counts = new Map<string, Count>();
@@ -34,12 +35,12 @@ export class AddressBudget {
 
 	constructor(private readonly limit: number) {}
 
-	private counter(address: string, now: number): Count {
+	private counter(key: string, now: number): Count {
 		if (now >= this.until) {
 			this.counts.clear();
 			this.until = now + MINUTE_MS;
 		}
-		const key = this.counts.size >= 4096 && !this.counts.has(address) ? "" : address;
+		if (this.counts.size >= 4096 && !this.counts.has(key)) key = "";
 		let count = this.counts.get(key);
 		if (!count) {
 			count = { used: 0, pending: 0 };
@@ -49,20 +50,27 @@ export class AddressBudget {
 	}
 
 	/** Zero when admitted, otherwise seconds until this window ends. */
-	take(address: string): number {
+	take(key: string | null): number {
+		if (key === null) return 0;
 		const now = Date.now();
-		const count = this.counter(address, now);
+		const count = this.counter(key, now);
 		if (count.used >= this.limit) return Math.ceil((this.until - now) / 1000);
 		count.used++;
 		return 0;
 	}
 
+	/** Call only after rejection. Without a trusted address, refusals share one counter. */
+	refusal(address: string | null): number {
+		return this.take(address ?? "refused");
+	}
+
 	/** Reserve capacity before an expensive lookup. When slots are merely in flight, wait
 	 * for their outcomes: concurrent successful requests must not count as failures. */
-	async lookup(address: string): Promise<number | ((invalid: boolean) => void)> {
+	async lookup(key: string | null): Promise<number | ((invalid: boolean) => void)> {
+		if (key === null) return () => {};
 		for (;;) {
 			const now = Date.now();
-			const count = this.counter(address, now);
+			const count = this.counter(key, now);
 			if (count.used >= this.limit) return Math.ceil((this.until - now) / 1000);
 			if (count.used + count.pending < this.limit) {
 				count.pending++;

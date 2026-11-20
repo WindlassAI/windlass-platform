@@ -499,30 +499,30 @@ and the web app is then built with its address in `VITE_WLP_ENDPOINT`.
 ### Public HTTP rate limits
 
 RivetKit gives these HTTP routes a web `Request` with ordinary headers and no socket peer address.
-By default, all callers share each node's address budgets, including on Rivet Cloud. Client-supplied
-`Forwarded`, `X-Forwarded-For` and `X-Real-IP` have no authority. For separate client budgets,
-set `WLP_CLIENT_IP_HEADER` only on nodes reachable exclusively through an ingress that strips
-the caller's value and writes one verified IP on **every** request. For example, such an ingress
-can write `X-Ingress-IP` and set `WLP_CLIENT_IP_HEADER=x-ingress-ip` on the server. Missing values,
-lists and malformed addresses share the unknown-address bucket. Equivalent IPv6 spellings and
-IPv4-mapped IPv6 addresses identify the same client as their canonical addresses.
+With `WLP_CLIENT_IP_HEADER` unset (the default, including on Rivet Cloud), the server skips
+all per-address limits. Client-supplied `Forwarded`, `X-Forwarded-For` and `X-Real-IP` have
+no authority. With a trusted ingress, set `WLP_CLIENT_IP_HEADER` to the header it writes,
+for example `x-ingress-ip`. Every path to the node must go through an ingress that strips the
+caller's value and writes one verified IP. When configured, missing values, lists and malformed
+addresses share the unknown-address bucket. Equivalent IPv6 spellings and IPv4-mapped IPv6
+addresses identify the same client as their canonical addresses.
 
-| Route | Key | Default and setting | Where the limit is kept and why |
-|---|---|---|---|
-| `POST /api/items`, `GET /api/items/<id>` | Address, both routes together | 240 requests/min, `WLP_API_ADDRESS_PER_MINUTE` | Each HTTP node, before body parsing or actor lookup, to cap the work reaching that node |
-| Same items routes | Authorized token, both scopes together | 60 calls/UTC minute, `WLP_API_TOKEN_PER_MINUTE` | The token row in the owning user actor's SQLite database, so concurrent calls, another node and actor sleep all share one counter |
-| Same items routes | Address, failed token lookups | 12 failures/min, `WLP_API_FAILURES_PER_MINUTE` | Each HTTP node, before lookup. Malformed, missing, unknown, revoked and out-of-scope tokens spend the allowance. In-flight lookups reserve slots. Other calls wait for pending results and successful authorization releases its slot |
-| `POST /github/webhook` | Address, refused deliveries and wrong methods | 30 refusals/min, `WLP_WEBHOOK_REFUSALS_PER_MINUTE` | Each HTTP node, where the refusal and its log originate. A signed, accepted delivery continues to pass even after refusals from the same address |
-| `POST /runner/pair` | Canonical public key and its secret-derived bucket | 3 starts/key and 16/bucket in 10 minutes, 64 buckets | Existing shared pairing directory in SQLite. Starts allocate actors and codes, so moving to another node must preserve the quota |
-| `POST /runner/pair/poll` | Address | 240 polls/min, `WLP_RUNNER_POLLS_PER_MINUTE` | Each HTTP node, before the pairing lookup. A runner normally polls 30 times/min |
-| `POST /runner/connection` | Address | 120 attempts/min, `WLP_RUNNER_CONNECTIONS_PER_MINUTE` | Each HTTP node, before looking up a machine or checking its signature. Polls have a separate allowance so they cannot exhaust reconnects |
+| Route and setting | Without a trusted header | With a trusted header |
+|---|---|---|
+| Items API requests, `WLP_API_ADDRESS_PER_MINUTE` (240/min) | No address limit | Each node limits requests per address before body parsing or actor lookup |
+| Items API authorization, `WLP_API_TOKEN_PER_MINUTE` (60/UTC minute) | Each authorized token has one allowance across routes, scopes and nodes, stored in the owning user's database | Same per-token limit |
+| Items API invalid tokens, `WLP_API_FAILURES_PER_MINUTE` (12/min) | Each node counts refusals only after it identifies a missing, malformed, unknown, revoked or out-of-scope token. Excess refusals receive 429. Valid tokens can still proceed | Each node reserves a slot per address before lookup. Concurrent calls wait for pending results. Successful checks release their slots. Once the address exhausts the failure allowance, all its items API calls receive 429 until reset |
+| `POST /github/webhook`, `WLP_WEBHOOK_REFUSALS_PER_MINUTE` (30/min) | Each node counts refused webhook requests, including wrong methods, across all callers | Each node counts those refusals per address. In both modes an accepted delivery bypasses the refusal limit |
+| `POST /runner/pair` | The shared pairing directory allows 3 starts per canonical public key and 16 per secret-derived bucket in 10 minutes, across 64 buckets | Same pairing limits |
+| `POST /runner/pair/poll`, `WLP_RUNNER_POLLS_PER_MINUTE` (240/min) | No poll limit | Each node limits polls per address before the pairing lookup |
+| `POST /runner/connection`, `WLP_RUNNER_CONNECTIONS_PER_MINUTE` (120/min) | Each active machine has its own allowance per UTC minute, stored by the machine actor and charged only after signature verification. Each node also has a separate allowance at the same rate for malformed bodies, unknown machines and bad signatures | Each node limits attempts per address before looking up the machine or checking its signature |
 
-Use the same settings on every node. Each per-minute setting accepts a whole number from 1 to
-1,000,000. Address windows last 60 seconds and reset on node restart. With *N* nodes, an address
-can spend up to *N* node allowances in the same period. Clients behind one NAT or in the
-unknown-address bucket share that node's allowance. Each address table keeps up to 4,096 keys
-plus one shared overflow bucket per window. Once an address exhausts its token lookup allowance, its
-API calls wait until the next window to retry.
+The items limits cover item creation, item reads and attachment downloads. Use the same settings
+on every node. Each per-minute setting accepts a whole number from 1 to 1,000,000. Node-local
+windows last 60 seconds and reset on restart. With *N* nodes a caller can spend up to *N*
+node-local allowances in the same period. When address limits are enabled, clients behind one
+NAT share an allowance. Each address table keeps up to 4,096 keys plus one shared overflow
+bucket per window.
 
 An exhausted limit returns HTTP 429 with a JSON `message` and an integer `Retry-After` in
 seconds. Each node logs one `github.webhook.refused` summary one minute after the first refusal,
@@ -2322,7 +2322,7 @@ out), and `start: true` starts the item at once; without it the item is a draft 
 answers 201 with the item's summary. `GET /api/items/<id>` answers 200 with the item's page (`ItemView`).
 The `Idempotency-Key` header is the creation's key, by the rules of "A message sent twice": the same key
 with the same body answers with the item the first attempt made, and with another body it is refused (409,
-`idempotency_key_reused`). Invalid or out-of-scope tokens receive 401, `invalid_token`, within the address allowance.
+`idempotency_key_reused`). Invalid or out-of-scope tokens receive 401, `invalid_token`, within the applicable rate limits.
 Rate limits return 429 with `Retry-After`. Every error carries `{ code, message }`.
 See [Public HTTP rate limits](#public-http-rate-limits). Without `WLP_ITEMS=1` both
 routes answer 404, `not_found` ("There is no such route."), whatever the token.

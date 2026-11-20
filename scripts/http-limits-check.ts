@@ -75,7 +75,7 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 			method: create ? "POST" : "GET", body: create ? JSON.stringify(task) : undefined,
 			headers: { authorization: "Bearer " + bearer, "x-ingress-ip": ip, "x-forwarded-for": ip },
 		});
-		const hook = async (ip: string, valid: boolean) => fetch(primary + "/github/webhook", {
+		const hook = async (ip: string, valid: boolean, host = primary) => fetch(host + "/github/webhook", {
 			method: "POST", body: "{}", headers: { "x-ingress-ip": ip, "x-github-delivery": randomUUID(), "x-github-event": "ping",
 				"x-github-hook-installation-target-id": github.appId,
 				"x-hub-signature-256": "sha256=" + createHmac("sha256", valid ? secret : "fixture").update("{}").digest("hex") },
@@ -115,10 +115,15 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 			const reads = await Promise.all(Array.from({ length: 3 }, () => api(valid, "192.0.2.9")));
 			assert.deepEqual(reads.map(r => r.status), [200, 200, 200]);
 		});
-		await t.test("default listener ignores claimed addresses on token failures", async () => {
+		await t.test("without a trusted header, the failure limit only refuses invalid tokens", async () => {
 			assert.equal((await api("malformed", "192.0.2.10", peer)).status, 401);
-			assert.equal((await api("malformed", "192.0.2.11", peer)).status, 401);
+			const wrongSecret = "wlp_" + auth.profile.uid + "." + "x".repeat(43);
+			assert.equal((await api(wrongSecret, "192.0.2.11", peer)).status, 401);
 			await limited(await api("malformed", "192.0.2.12", peer));
+			await limited(await api(wrongSecret, "192.0.2.10", peer));
+			assert.equal((await api(await token(), "192.0.2.10", peer)).status, 200);
+		});
+		await t.test("malformed configured address headers share the unknown address allowance", async () => {
 			// Even the configured header must contain one address, never a forwarding chain.
 			assert.equal((await api("malformed", "192.0.2.13, 192.0.2.14")).status, 401);
 			assert.equal((await api("malformed", "invalid")).status, 401);
@@ -132,22 +137,35 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 			await limited(await post(peer, "/runner/pair", runner.details), "too_many_pairings");
 			await new FakeRunner().pair(peer);
 		});
-		await t.test("runner polls stop after two on one node", async () => {
+		await t.test("only the listener with a configured header limits polls by address", async () => {
 			for (let i = 0; i < 2; i++) assert.deepEqual(await runner.poll(primary, pair), { state: "waiting" });
 			await limited(await post(primary, "/runner/pair/poll", { pairing: pair.pairing, pollSecret: pair.pollSecret }));
-			assert.deepEqual(await runner.poll(peer, pair), { state: "waiting" });
+			for (let i = 0; i < 3; i++) assert.deepEqual(await runner.poll(peer, pair), { state: "waiting" });
 			const other = await fetch(primary + "/runner/pair/poll", { method: "POST", headers: { "x-ingress-ip": "192.0.2.15" },
 				body: JSON.stringify({ pairing: pair.pairing, pollSecret: pair.pollSecret }) });
 			assert.equal(other.status, 200);
 			assert.deepEqual(await other.json(), { state: "waiting" });
 		});
-		await t.test("a paired runner connects until its separate connection limit", async () => {
-			await user.claimMachine({ code: pair.code });
-			const { machineId } = await user.confirmMachine({ code: pair.code });
-			const id = { uid: auth.profile.uid, machineId };
+		await user.claimMachine({ code: pair.code });
+		const { machineId } = await user.confirmMachine({ code: pair.code });
+		const id = { uid: auth.profile.uid, machineId };
+		await t.test("a paired runner connects until the configured address limit", async () => {
 			for (let i = 0; i < 2; i++) assert.equal((await runner.connection(primary, id)).status, 200);
 			await limited(await runner.connection(primary, id));
-			assert.equal((await runner.connection(peer, id)).status, 200);
+		});
+		await t.test("without a trusted header, only a verified signature spends the machine allowance", async () => {
+			// The two signed connections must land in the same machine UTC minute.
+			if (Date.now() % 60_000 > 50_000) await wait(60_000 - Date.now() % 60_000);
+			const other = new FakeRunner();
+			assert.equal((await other.connection(peer, id)).status, 403);
+			assert.equal((await post(peer, "/runner/connection", {})).status, 400);
+			await limited(await other.connection(peer, id));
+			for (let i = 0; i < 2; i++) assert.equal((await runner.connection(peer, id)).status, 200);
+			await limited(await runner.connection(peer, id));
+			const otherPair = await other.pair(peer);
+			await user.claimMachine({ code: otherPair.code });
+			const otherId = await user.confirmMachine({ code: otherPair.code });
+			assert.equal((await other.connection(peer, { uid: id.uid, machineId: otherId.machineId })).status, 200);
 		});
 		await t.test("one trailing webhook summary for five refusals, then the address budget recovers", async () => {
 			const deadline = Date.now() + 65_000;
@@ -157,6 +175,12 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 			assert.equal(lines.filter(line => line.includes("github.webhook.refused")).length, 1);
 			assert.ok(lines.some(line => line.includes("github.webhook.refused count=5 bad_signature=5 rate_limited=2")));
 			assert.equal((await hook("192.0.2.1", false)).status, 401);
+		});
+		await t.test("without a trusted header, webhook refusals leave signed deliveries available", async () => {
+			assert.equal((await hook("192.0.2.1", false, peer)).status, 401);
+			assert.equal((await hook("192.0.2.2", false, peer)).status, 401);
+			await limited(await hook("192.0.2.3", false, peer));
+			assert.equal((await hook("192.0.2.1", true, peer)).status, 202);
 		});
 	} finally {
 		for (const child of nodes.reverse()) {
