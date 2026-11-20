@@ -44,6 +44,7 @@ COPY web web
 COPY server/src/contract.ts server/src/contract.ts
 COPY server/src/github/ids.ts server/src/github/ids.ts
 COPY server/src/verified.ts server/src/verified.ts
+COPY server/src/sandbox/profiles.ts server/src/sandbox/profiles.ts
 COPY fixtures fixtures
 # `vite build` alone: the web app's own `build` type-checks first, tests included, and those reach into the server's sources.
 RUN pnpm --filter @windlass-platform/web exec vite build
