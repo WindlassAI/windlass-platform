@@ -271,7 +271,7 @@ class FakeHandle implements SandboxHandle {
 		if (!this.exists()) throw new Error(`fake sandbox ${this.sandbox.id} does not exist`);
 		const env = options.env ?? {};
 		if (env.WLP_ATTACH_STEP) return this.attachStep(env, options.stdin ?? "");
-		if (command.includes("git rev-parse --verify 'HEAD^{commit}'") && !command.includes("\n")) return ok("a".repeat(40));
+		if (command.endsWith("\ngit rev-parse --verify 'HEAD^{commit}'")) return ok("a".repeat(40));
 		const step = options.env?.[BACKUP_ENV.step];
 		const result = step === undefined ? this.interpret(command) : this.backupStep(step, options.env ?? {}, options.stdin ?? "");
 		if (result.stdout) options.onStdout?.(result.stdout);

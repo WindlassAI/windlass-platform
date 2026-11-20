@@ -663,6 +663,7 @@ async function cases() {
 		run("git", ["add", "--", name], repo);
 		writeFileSync(join(repo, ".wlp-shots/new.png"), one);
 		const sessionId = "r2-test-" + randomBytes(8).toString("hex");
+		const handover = "/tmp/wlp-git-attempt-" + sessionId;
 		try {
 			run(
 				"bash",
@@ -670,10 +671,10 @@ async function cases() {
 				repo,
 				"normal change\n",
 			);
-			assert.equal(run("git", ["ls-tree", "-r", "--name-only", "HEAD"], repo), "normal");
+			assert.equal(run("git", ["--git-dir=" + join(handover, "repo"), "ls-tree", "-r", "--name-only", "HEAD"], repo), "normal");
 			assert.ok(existsSync(join(repo, name)));
 		} finally {
-			rmSync("/tmp/wlp-publish-" + sessionId, { force: true });
+			rmSync(handover, { recursive: true, force: true });
 		}
 	});
 }

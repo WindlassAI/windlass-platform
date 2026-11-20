@@ -26,7 +26,7 @@ import type { GithubId, PublishMessage, PullRequestInfo, SessionRepository, Veri
 import type { SandboxHandle } from "../sandbox/api.js";
 import { type WorkDiff, verifiedSection, verifiedWords, withVerifiedSection, workFlags } from "../verified.js";
 import { type GithubApp, GithubError, type Pull } from "./app.js";
-import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, commitWork, outgoingPatch, undoCommit, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
+import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, commitWork, outgoingPatch, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
 import { redact } from "./redact.js";
 import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveRepository } from "./repos.js";
 
@@ -200,6 +200,8 @@ export interface PushInput {
 
 /** What `pushWork` did. */
 export interface Pushed {
+	/** The push arrived but the local refs or index could not be synchronized. */
+	workspaceChanged?: boolean;
 	/** True when something was pushed; false when GitHub had everything in the workspace already. */
 	pushed: boolean;
 	/** True when the push replaced the platform's own last push (a rebased branch). */
@@ -297,11 +299,10 @@ async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<type
 	if (committed.marks.has("nothing")) return { pushed: false, forced: false, head, committedFiles };
 
 	// Nothing that holds the value of a saved secret leaves the sandbox: a setup command may have written one into a file,
-	// and the agent's push is never asked about. The platform's own commit is undone, so the workspace is as it was.
+	// and the agent's push is never asked about. The proposed commit stays private until the scan and push succeed.
 	const leaking = input.redact ? secretFiles(await outgoingPatch(sandbox, repository.branch, input.pushed), input.redact) : null;
 	if (leaking !== null && leaking.files.length > 0) {
 		await discardHandover(sandbox, input.sessionId);
-		if (committedFiles !== null && committedFiles > 0) await undoCommit(sandbox);
 		throw new GithubProblem("github_failed", secretRefusal(leaking));
 	}
 
@@ -328,7 +329,7 @@ async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<type
 		}
 		throw gitProblem(pushed, "push", name, account, branch);
 	}
-	return { pushed: true, forced: pushed.marks.has("forced"), head: pushed.marks.get("pushed") || head, committedFiles };
+	return { pushed: true, workspaceChanged: pushed.marks.has("workspacechanged"), forced: pushed.marks.has("forced"), head: pushed.marks.get("pushed") || head, committedFiles };
 }
 
 /**
@@ -371,6 +372,7 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 
 	// The section's redaction is the session's: what it would take out of the pull request is not pushed either.
 	const work = await commitAndPush({ ...input, redact: input.redact ?? input.evidence.redact }, resolved, commitMessage(input.message));
+	if (work.workspaceChanged) throw new PullProblem(new GithubProblem("github_failed", `GitHub has ${work.head} on ${branch}. The workspace Git state could not be synchronized after the push. Fetch and reconcile the branch before publishing again.`), work.head);
 	const nothingNew = !work.pushed;
 	const open = isOpen(input.pull) ? input.pull : null;
 	const nothingToPush = () => new GithubProblem("github_failed", `There is nothing to push: ${branch} at GitHub already has everything in the workspace.`);

@@ -23,7 +23,7 @@
  *   WLP_CHECK_SECTIONS=connect,publish   run only the sections whose names start with one of these
  */
 
-import { checkoutReview, reviewCheckoutScript } from "../server/src/github/git.js";
+import { changedReviewPaths, checkoutReview, reviewCheckoutScript } from "../server/src/github/git.js";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -860,6 +860,102 @@ await section("husky configuration works for the session and the platform push",
 	expect("a local LFS filter is still refused", !probe.ok && probe.marks.get("unsafe") === "filter.lfs.required");
 });
 
+await section("private git captures file content and modes", async () => {
+	const { STATUS_COMMAND, DIFF_COMMAND } = await import("../server/src/actors/agent-session.js");
+	const repository = stored(harbor, adaInstallation);
+	const sandbox = localSandbox("private-content");
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const branch = "windlass/private-content";
+	const prepared = await sandbox.run([
+		"set -eu",
+		"mv README.md MANUAL.md",
+		"rm src/add.ts",
+		"printf 'payload\\n' > upload.data",
+		"printf '*.data filter=undefined-fixture\\n' > .gitattributes",
+		"printf '#!/bin/sh\\n' > tool && chmod +x tool",
+		"printf 'outside the worktree' > ../outside",
+		"ln -s ../outside link && ln -s ../home directory-link",
+	].join("\n"));
+	const status = await sandbox.run(STATUS_COMMAND);
+	const diff = await sandbox.run(DIFF_COMMAND);
+	const dirty = await publish.hasUnpushedWork(sandbox, "main", null);
+	expect("private status, diff and probe see edits, removals and links", prepared.exitCode === 0 && status.stdout.includes("upload.data") && status.stdout.includes("src/add.ts") && diff.stdout.includes("+../outside") && !diff.stdout.includes("outside the worktree") && dirty === true);
+	const result = await publish.pushWork({ app, connection: adaConnection, repository, sandbox, branch, sessionId: "private-content", pushed: null }, "Snapshot content");
+	const tree = execFileSync("git", ["--git-dir", harbor.path, "ls-tree", "-r", branch], { encoding: "utf8" });
+	const mode = (path: string) => tree.split("\n").find((entry) => entry.endsWith(`\t${path}`))?.split(" ")[0];
+	expect("the pushed tree contains the rename and deletion and preserves exact file bytes with an undefined filter",
+		result.head === standin.branchHead(harbor, branch) && standin.fileOn(harbor, branch, "README.md") === null && standin.fileOn(harbor, branch, "MANUAL.md") === standin.fileOn(harbor, "main", "README.md") && standin.fileOn(harbor, branch, "src/add.ts") === null && standin.fileOn(harbor, branch, "upload.data") === "payload\n" && mode("upload.data") === "100644");
+	expect("executable files and links to an external file and directory have Git's executable and symlink modes",
+		mode("tool") === "100755" && mode("link") === "120000" && mode("directory-link") === "120000" && standin.fileOn(harbor, branch, "link") === "../outside" && standin.fileOn(harbor, branch, "directory-link") === "../home");
+	const local = await sandbox.run("git rev-parse HEAD; git status --porcelain");
+	expect("the workspace HEAD and index agree with the pushed tree", local.exitCode === 0 && local.stdout === result.head + "\n");
+});
+
+/** Run a second command concurrently, pausing the platform at the guard boundary. */
+function swapAfterGuard(sandbox: Local): Promise<ExecResult> {
+	const localRun = sandbox.run.bind(sandbox);
+	// Rendezvous at the check/use boundary so the competing command wins the swap on every run.
+	sandbox.run = (script, options) => localRun(script.replace("\nwlp_guard\n", "\nwlp_guard\ntouch ../guard-done\ntimeout 10 bash -c 'until test -e ../swap-done; do sleep .01; done'\n"), options);
+	return localRun("set -eu; timeout 10 bash -c 'until test -e ../guard-done; do sleep .01; done'; mv .git ../original; mv ../replacement .git; touch ../swap-done");
+}
+
+await section("private git survives a workspace .git replacement during push", async () => {
+	const repository = stored(harbor, adaInstallation);
+	const sandbox = localSandbox("concurrent-push");
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const branch = "windlass/concurrent-push";
+	writeFileSync(join(sandbox.cwd, ".gitattributes"), "*.data filter=fixture\n");
+	writeFileSync(join(sandbox.cwd, "work.data"), "content from the worktree\n");
+	// An inert control: this repository requires a driver that does not exist. Any add
+	// using its config must fail. A ref file is also a marker for an accidental branch update.
+	const prepare = await sandbox.run("set -eu; cp -R .git ../replacement; git --git-dir=../replacement config filter.fixture.required true; cp -R ../replacement ../control");
+	const control = await sandbox.run(`git --git-dir=../control branch ${branch} HEAD && git --git-dir=../control --work-tree=. add -- work.data`);
+	expect("ordinary Git creates the control branch marker and the required filter rejects the file",
+		prepare.exitCode === 0 && existsSync(join(sandbox.cwd, "../control/refs/heads", branch)) && control.exitCode !== 0 && control.stderr.includes("filter"));
+	const swap = swapAfterGuard(sandbox);
+	const [result, swapped] = await Promise.all([
+		publish.pushWork({ app, connection: adaConnection, repository, sandbox, branch, sessionId: "concurrent-push", pushed: null, redact: (value) => value }, "Concurrent push"),
+		swap,
+	]);
+	const marker = join(sandbox.cwd, ".git/refs/heads", branch);
+	expect("a concurrent swap after the guard leaves no branch marker in the replacement and the scanned content reaches GitHub",
+		swapped.exitCode === 0 && result.workspaceChanged === true && result.head === standin.branchHead(harbor, branch) && standin.fileOn(harbor, branch, "work.data") === "content from the worktree\n" && !existsSync(marker));
+});
+
+await section("private git refuses to install fetched refs into a replacement", async () => {
+	const remote = standin.addRepository({ owner: "ada", name: "fetch-race", private: true, installation: adaInstallation });
+	repos.forgetGithubCaches();
+	const repository = stored(remote, adaInstallation);
+	const sandbox = localSandbox("concurrent-fetch");
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const initial = standin.branchHead(remote, "main");
+	const next = standin.commit(remote, "main", { "new.txt": "fetched\n" }, "Advance the base");
+	const prepared = await sandbox.run("cp -R .git ../replacement");
+	const localRun = sandbox.run.bind(sandbox);
+	const [refused, swapped] = await Promise.all([
+		problem(() => publish.fetchBase(app, adaConnection, repository, sandbox)),
+		swapAfterGuard(sandbox),
+	]);
+	const tracking = await localRun("git rev-parse origin/main");
+	expect("a fetch racing a .git replacement leaves its origin/main at the original tip",
+		prepared.exitCode === 0 && swapped.exitCode === 0 && refused !== null && tracking.stdout.trim() === initial);
+	sandbox.run = localRun;
+	await publish.fetchBase(app, adaConnection, repository, sandbox);
+	const retried = await localRun("git rev-parse origin/main; git show origin/main:new.txt");
+	expect("a retry installs the new ref and objects in the current workspace", retried.exitCode === 0 && retried.stdout === next + "\nfetched\n");
+});
+
+await section("screenshots in an earlier local commit stay off the remote", async () => {
+	const sandbox = localSandbox("committed-screenshots");
+	const repository = stored(harbor, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const branch = "windlass/committed-screenshots";
+	const prepared = await sandbox.run("set -eu; mkdir .wlp-shots; echo shot > .wlp-shots/one.png; git add -f .wlp-shots; git commit -qm screenshot; git rm -qr .wlp-shots; git commit -qm removed");
+	if (prepared.exitCode !== 0) throw new Error("could not prepare screenshot history");
+	const refused = await problem(() => publish.pushWork({ app, connection: adaConnection, repository, sandbox, branch, sessionId: "committed-screenshots", pushed: null }, "Fixture"));
+	expect("a later deletion cannot publish a screenshot in history", refused?.message.includes("contains .wlp-shots") === true && standin.branchHead(harbor, branch) === null);
+});
+
 await section("outgoing history is checked before the push transport", async () => {
 	const repository = stored(harbor, adaInstallation);
 	const value = "history-check-fixture";
@@ -1241,7 +1337,7 @@ await section("docker: the same git commands in a container of the sandbox image
 		const grep = docker(["exec", "-i", name, "bash", "-c", `while IFS= read -r t; do grep -r -l -F -- "$t" /workspace /home/agent /tmp 2>/dev/null; done; echo searched`], `${tokens.join("\n")}\n`);
 		expect("two tokens went into the container, on standard input", used.length === 2, `${used.length} of ${tokens.length} issued`);
 		expect("no file in the workspace, the home directory or /tmp holds one, and the watcher saw none in any process's arguments or environment", grep.trim() === "searched" && search.stdout.includes("searched") && /^[1-9]\d{3,}\n[1-9]/.test(search.stdout.trim()), `the watcher recorded ${search.stdout.trim().split("\n")[0]} bytes and saw git's own processes ${search.stdout.trim().split("\n")[1]} times; files holding a token: ${grep.trim() === "searched" ? "none" : grep.trim()}`);
-		expect("nothing of the push is left in /tmp", !/wlp-push|wlp-publish|wlp-message/.test(search.stdout));
+		expect("nothing of the push is left in /tmp", !/wlp-push|wlp-publish|wlp-message|wlp-git[.-]/.test(search.stdout));
 		const arguments_ = execFileSync("ps", ["-eo", "args"], { encoding: "utf8" });
 		expect("and the server's own process list never had one either", tokens.every((token) => !arguments_.includes(token)));
 		const reviewDir = "/tmp/reviewer-workspace";
@@ -1369,6 +1465,7 @@ async function verifyReviewCheckout(box: SandboxHandle) {
 		checkoutReview(box, app.cloneUrl(harbor.owner, harbor.name), token, ".", 987, head), { revokeAfter: true });
 	await fetch();
 	const inspect = async (cmd: string) => (await box.run(cmd)).stdout.trim();
+	expect("the private diff reports the changed paths from the pinned base", JSON.stringify(await changedReviewPaths(box, ".", base, head)) === JSON.stringify(["review.txt"]));
 	expect("review setup ran on the pinned base despite branch movement", await inspect("cat node_modules/setup-at") === base);
 	expect("review head is exact and detached", await inspect("git rev-parse HEAD") === head && (await box.run("git symbolic-ref -q HEAD")).exitCode !== 0);
 	await box.run("mkdir -p .wlp-shots; touch .wlp-shots/one.png; echo edited > review.txt");

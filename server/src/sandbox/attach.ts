@@ -6,6 +6,7 @@ import type { ObjectStore } from "../bucket/store.js";
 import { backupConfig, config } from "../config.js";
 import type { ItemAttachment } from "../contract.js";
 import { pngHeader, type ShotRequest } from "../factory/attachments.js";
+import { WORKSPACE_HEAD_COMMAND } from "../github/git.js";
 import type { SandboxHandle } from "./api.js";
 
 // curl gets 25 seconds inside a 30-second sandbox step.
@@ -120,7 +121,7 @@ export async function uploadShots(
 	const clean = () => step(sandbox, "clean", ATTACH_CLEAN, {});
 	try {
 		await clean();
-		const headResult = await sandbox.run("GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git rev-parse --verify 'HEAD^{commit}'", { cwd: top, timeoutMs: 5000, signal });
+		const headResult = await sandbox.run(WORKSPACE_HEAD_COMMAND, { cwd: top, timeoutMs: STEP_TIMEOUT_MS, signal });
 		const head = headResult.stdout.trim();
 		if (headResult.exitCode !== 0 || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) throw new Error("Cannot read the checkout.");
 		const lines = await step(

@@ -1119,11 +1119,9 @@ Three credentials exist, and none is stored, logged, or put in a timeline item, 
 - That git runs with an empty environment, the system's own programs, without the system's and the user's git
   configuration and without hooks, so nothing writes the token down: a clone's `.git/config` holds the plain
   address, and there is no credential store, no temporary file, no remote with a token in it.
-- A push never runs in the workspace's repository, whose configuration and hooks the agent can write: a
-  remote rewritten to another host, a credential helper or a `pre-push` hook there would be handed the
-  token. The commit is made in the workspace by a command that has no token. The push runs in an empty
-  repository the script makes for it outside the workspace, which borrows the workspace's objects and nothing
-  else, and is removed afterwards.
+- The platform stages and scans the work in a private repository in the container's outer `/tmp`.
+  The authenticated push uses that same object database and the remote address chosen by the platform.
+  After Git exits, a separate command installs the objects, branch and index in the workspace.
 
 **What an agent's command can still observe.** That the platform cloned and pushed, the addresses and the
 branch names. A command the agent runs afterwards finds the token nowhere. A process the agent left running,
@@ -1184,16 +1182,22 @@ platform does the git and GitHub work with the code and the tokens of the panel'
     branch. It refuses the push if the session's redaction finds a saved secret value, or if the history
     read reaches 8 MB. Encoded values can escape redaction.
     When it refuses the push, changes from the platform's own commit stay in the workspace.
-  - The platform's Git runs outside Windlass's sandbox. Before each workspace Git operation, its guard
-    checks the workspace as it stands. It refuses a redirected Git directory, a gitlink in the index
-    (including an unpopulated submodule), a nested `.git` found in the work tree, or a scan it cannot
-    finish. It skips Git-ignored `node_modules` directories. It also refuses local configuration for
-    filters and other program or transport settings checked by `wlp_guard` in `server/src/github/git.ts`.
-    The platform disables hooks and filesystem monitors and ignores home and system Git configuration.
-    Repositories using Git LFS cannot be pushed by the platform yet. During the agent's own `push`
-    or `fetch_base`, a concurrent command can still change `.git` between the guard and Git's use of it.
-    The platform still uses the workspace's Git directory for its commit. A private Git directory for
-    the platform commit has yet to be implemented.
+  - Concurrent changes to the workspace's `.git` during `push` or `fetch_base` can no longer make
+    platform Git run a workspace-defined program. Status, diff, probe, commit, history scan, fetch
+    and push use an explicit private Git directory. The platform copies the agent's objects, refs
+    and index as data to preserve its commits, merges and rebases. It captures tracked and unignored
+    files using directory-relative reads that refuse to traverse symlinks. A symlink contributes its
+    target text. Git loads only platform configuration, with hooks and filesystem monitors disabled.
+    A work-tree `.gitattributes` can name a filter, but the private repository defines no such driver.
+    Windlass gives sandboxed commands a different `/tmp`. In profiles that run commands directly as
+    the platform's Unix user, that user can also access the outer temporary directory.
+  - The guard still refuses a redirected Git directory, program or transport settings in the
+    workspace configuration, gitlinks, nested repositories and incomplete scans. Git-ignored
+    `node_modules` directories are skipped. Repositories using Git LFS cannot be pushed yet.
+    After a successful push or fetch, the platform installs objects and updates refs with file
+    operations. It checks the original repository, refs and index under Git's locks before
+    advancing them. If another command changed them, the agent keeps its local state and receives
+    the remote push result so it can fetch and reconcile the branch.
   - `publish` is put to the user unless the session lets the agent publish without asking (below).
   - A push or a fetch may take five minutes; a publish may wait for the user's answer first, and is declared
     with that time added, at most an hour. One at a time: a push or publish asked for while another is being

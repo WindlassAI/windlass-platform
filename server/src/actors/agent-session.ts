@@ -159,7 +159,7 @@ import {
 	type WorkspaceFile,
 } from "../contract.js";
 import { GithubError, githubApp } from "../github/app.js";
-import { WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutReview } from "../github/git.js";
+import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutReview } from "../github/git.js";
 import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, problemOf, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
@@ -928,12 +928,12 @@ function cloneCommand(repoUrl: string): string {
 	const name = (repoUrl.replace(/\/+$/, "").split("/").pop() ?? "repo").replace(/\.git$/, "").replace(/[^A-Za-z0-9._-]/g, "-") || "repo";
 	return [
 		"set -e",
-		WORKSPACE_GIT_START,
+		CLONE_GIT_START,
 		`if [ -z "$(ls -A | grep -v '^\\.git$' || true)" ]; then`,
 		"  rm -rf .git",
-		`  git clone --quiet -- ${url} .`,
+		`  git clone --quiet -- ${url} "$(pwd -P)"`,
 		"else",
-		`  git clone --quiet -- ${url} ${shellQuote(name)}`,
+		`  git clone --quiet -- ${url} "$(pwd -P)"/${shellQuote(name)}`,
 		"fi",
 	].join("\n");
 }
@@ -947,17 +947,11 @@ export const STATUS_COMMAND = `${WORKSPACE_GIT_START}\ngit --no-optional-locks s
 
 /**
  * `git diff` against the last commit with new files included. The equivalent of `git add -N .` is done
- * on a copy of the index, so the workspace's own index is left as the agent has it.
+ * in the private repository, using its copy of the files and index.
  */
 export const DIFF_COMMAND = [
 	WORKSPACE_GIT_START,
-	"set -e",
-	"tmp=$(mktemp)",
-	`trap 'rm -f "$tmp" "$tmp.lock"' EXIT`,
-	"index=$(git rev-parse --git-path index)",
-	`if [ -f "$index" ]; then cp "$index" "$tmp"; else rm -f "$tmp"; fi`,
-	`export GIT_INDEX_FILE="$tmp"`,
-	"git add -N . >/dev/null 2>&1 || true",
+	"git add -N . >/dev/null",
 	// Without a commit there is nothing to compare with but the empty tree.
 	"if git rev-parse -q --verify HEAD >/dev/null; then base=HEAD; else base=4b825dc642cb6eb9a060e54bf8d69288fbee4904; fi",
 	`git --no-pager diff --no-color --no-ext-diff --no-textconv --ignore-submodules=all "$base" | head -c ${MAX_DIFF_CHARS}`,
@@ -2426,6 +2420,12 @@ async function agentPush(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox:
 	try {
 		const pushed = await pushWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pushed: meta.pushedHead ?? null, lease, redact: (text) => (active.secrets?.redactor ?? NO_REDACTION).text(text) }, checked.commit);
 		if (pushed.pushed && pushed.head) pushed.pushed = recordPushHead(meta, sandbox, pushed.head);
+		if (pushed.workspaceChanged) {
+			const line = `GitHub has ${pushed.head} on ${branch}. The workspace Git state could not be synchronized after the push. Use fetch_base and reconcile the branch before pushing again.`;
+			active.published = true;
+			note(c, turn, "warn", line);
+			return line;
+		}
 		if (!pushed.pushed) {
 			note(c, turn, "info", `The agent asked to push; ${branch} at GitHub already had everything in the workspace.`);
 			return nothingToPush(branch);
