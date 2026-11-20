@@ -2,7 +2,8 @@
  * The usage page's part for work items: the factory's limits for the user, which the deployment's
  * owner sets and nobody can raise from here, and what each item has cost so far against its budget.
  * The limits are read once when the page opens; the items are the user's live list (`useItems`).
- * Shown only where the deployment offers work items.
+ * Shown only where the deployment offers work items. Hosted sandbox time is a limit only of an item on a
+ * hosted sandbox: an item on one of the user's machines shows none.
  */
 import { compact, count, plural, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
@@ -28,6 +29,7 @@ export function FactoryUsage() {
 	if (!offered) return null;
 	const { value } = limits;
 	const list = items.list;
+	const machines = Boolean(platform.info?.machines);
 	return (
 		<section className="usage-section" aria-labelledby="usage-items">
 			<h2 className="usage-title" id="usage-items">
@@ -47,7 +49,7 @@ export function FactoryUsage() {
 					<div>
 						<dt>Running turns</dt>
 						<dd className="usage-number">{count(value.runningTurns)}</dd>
-						<dd className="usage-gloss">of yours at once: the factory's and your own prompts, not counting your machines</dd>
+						<dd className="usage-gloss">of yours at once: the factory's and your own prompts; your own agents on your machines are not counted</dd>
 					</div>
 					<div>
 						<dt>Factory turns</dt>
@@ -68,7 +70,7 @@ export function FactoryUsage() {
 						<dt>Each item</dt>
 						<dd className="usage-number">{compact(value.item.tokens)} tokens</dd>
 						<dd className="usage-gloss">
-							and {plural(value.item.turns, "turn")}, {sandboxTime(value.item.activeSeconds)} of work and {sandboxTime(value.item.hostedSeconds)} of hosted sandbox time; when one is used up, the item asks you
+							and {plural(value.item.turns, "turn")}, {sandboxTime(value.item.activeSeconds)} of work and {sandboxTime(value.item.hostedSeconds)} of hosted sandbox time{machines ? " (none on your machines)" : ""}; when one is used up, the item asks you
 						</dd>
 					</div>
 				</dl>
@@ -117,7 +119,7 @@ export function FactoryUsage() {
 									<Of spent={item.spent.activeSeconds} budget={item.budget.activeSeconds} spell={sandboxTime} />
 								</td>
 								<td className="usage-number">
-									<Of spent={item.spent.hostedSeconds} budget={item.budget.hostedSeconds} spell={sandboxTime} />
+									{item.place.kind === "hosted" ? <Of spent={item.spent.hostedSeconds} budget={item.budget.hostedSeconds} spell={sandboxTime} /> : <span className="tone-faint">your machine</span>}
 								</td>
 							</tr>
 						))}

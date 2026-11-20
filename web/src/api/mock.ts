@@ -1193,7 +1193,16 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** The time a request takes. */
 	const latency = (ms = 140) => new Promise<void>((resolve) => later(ms, resolve));
 	// Work items, API tokens and the factory's limits live in mock-items.ts; an item's agent is made here, as `createSession` makes one.
-	const items = createMockItems({ state: options.items, now: () => realNow(), latency, later, feeds: (auth) => worldOf(auth).feeds, session: (auth, input) => userApi(auth).createSession({ ...input, profile: (profiles.find((profile) => profile.available) ?? profiles[0])?.id ?? "docker-windlass-sandbox" }) });
+	// On one of the user's machines, it takes the machines as they are listed now, and is told of every change of them.
+	const items = createMockItems({
+		state: options.items,
+		now: () => realNow(),
+		latency,
+		later,
+		feeds: (auth) => worldOf(auth).feeds,
+		session: (auth, { profile, ...input }) => userApi(auth).createSession({ ...input, profile: profile ?? (profiles.find((candidate) => candidate.available) ?? profiles[0])?.id ?? "docker-windlass-sandbox" }),
+		machines: (auth) => (machineState === "off" ? null : { list: machinesOf(auth).list, minRunnerVersion: MOCK_MIN_RUNNER_VERSION }),
+	});
 
 	// ---- identity -------------------------------------------------------------------------------
 
@@ -2643,6 +2652,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	function machinesChanged(auth: AuthResult): void {
 		const list = machinesView(auth);
 		for (const feed of worldOf(auth).feeds) feed.onMachines?.(list);
+		items.machinesChanged(auth);
 	}
 
 	function machineOf(auth: AuthResult, machineId: string): MachineSummary {

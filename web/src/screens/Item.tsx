@@ -14,6 +14,11 @@
  * Actions are offered where `ItemAction` allows them: Start (a draft), Cancel (anything not ended),
  * Retry (a failed item), Send back (in review), and the open question's answers. The server refuses
  * one the item no longer allows with `item_conflict` and says why; that sentence is shown.
+ *
+ * An item on one of the user's machines (`place`) says which, from the user's live list of machines.
+ * Hosted sandbox time is no limit of such an item: its cost and the new budget for "Raise the limit"
+ * leave it out. Once its machine was removed, the item can only be handed over or given up: the page
+ * offers neither Retry nor Send back, and no note to an agent that cannot work any more.
  */
 import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemView, type StepKind, type Verdict } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
@@ -26,6 +31,7 @@ import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { ItemGlyph, STATE_WORD, VerdictWord } from "./Items";
+import { useSessionMachine } from "./Session";
 
 /** The steps in words. Planning is not offered yet; the rest are every step a run goes through. */
 const STEP_WORD: Record<StepKind, string> = {
@@ -383,18 +389,22 @@ const BUDGET_FIELDS: Array<{ key: keyof ItemBudget; label: string; unit: string;
 	{ key: "hostedSeconds", label: "Hosted sandbox time", unit: "hours", toInput: (value) => String(Number((value / 3600).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 3600), spelled: sandboxTime },
 ];
 
+/** The figures of an item's budget that limit it: hosted sandbox time only for an item on a hosted sandbox. */
+const budgetFields = (view: Pick<ItemView, "place">) => BUDGET_FIELDS.filter((field) => field.key !== "hostedSeconds" || view.place.kind === "hosted");
+
 /** The new budget, for "Raise the limit and go on" on a budget question: each figure as it is, to be raised where it was reached. */
 function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: boolean; onRaise(budget: Partial<ItemBudget>): void; onBack(): void }) {
-	const [values, setValues] = useState(() => Object.fromEntries(BUDGET_FIELDS.map((field) => [field.key, field.toInput(view.budget[field.key])])) as Record<keyof ItemBudget, string>);
+	const fields = budgetFields(view);
+	const [values, setValues] = useState(() => Object.fromEntries(fields.map((field) => [field.key, field.toInput(view.budget[field.key])])) as Record<keyof ItemBudget, string>);
 	const base = useId();
-	const parsed = BUDGET_FIELDS.map((field) => ({ field, value: field.fromInput(values[field.key]) }));
+	const parsed = fields.map((field) => ({ field, value: field.fromInput(values[field.key]) }));
 	const bad = parsed.some(({ value }) => !Number.isFinite(value) || value <= 0);
 	const short = parsed.filter(({ field, value }) => view.spent[field.key] >= view.budget[field.key] && value <= view.spent[field.key]);
 	const changed = Object.fromEntries(parsed.filter(({ field, value }) => value !== view.budget[field.key]).map(({ field, value }) => [field.key, value])) as Partial<ItemBudget>;
 	return (
 		<div className="item-raise">
-			<div className="item-raise-fields">
-				{BUDGET_FIELDS.map((field) => {
+			<div className={`item-raise-fields${fields.length === 3 ? " item-raise-fields-three" : ""}`}>
+				{fields.map((field) => {
 					const reached = view.spent[field.key] >= view.budget[field.key];
 					return (
 						<div key={field.key}>
@@ -425,11 +435,13 @@ function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: bo
 
 /** The open question: its text, its answers, and a note to the agent with any of them. */
 function Question({ view, question, acting, now }: { view: ItemView; question: ItemQuestion; acting: Acting; now: number }) {
+	// No agent is left to read a note once its machine was removed.
+	const noted = question.kind !== "machine_removed";
 	const [note, setNote] = useState("");
 	const [raising, setRaising] = useState(false);
 	const ids = { title: useId(), note: useId() };
 	const busy = acting.busy !== null;
-	const answer = (choice: ChoiceId, budget?: Partial<ItemBudget>) => acting.act({ kind: "answer", question: question.id, choice, ...(note.trim() === "" ? {} : { note: note.trim() }), ...(budget ? { budget } : {}) });
+	const answer = (choice: ChoiceId, budget?: Partial<ItemBudget>) => acting.act({ kind: "answer", question: question.id, choice, ...(!noted || note.trim() === "" ? {} : { note: note.trim() }), ...(budget ? { budget } : {}) });
 	return (
 		<section className="item-question" aria-labelledby={ids.title}>
 			<p className="item-question-head" id={ids.title}>
@@ -443,12 +455,14 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 				<RaiseBudget view={view} busy={acting.busy === "raise"} onRaise={(budget) => answer("raise", budget)} onBack={() => setRaising(false)} />
 			) : (
 				<>
-					<div>
-						<label className="label" htmlFor={ids.note}>
-							A note to the agent<span className="label-optional">optional</span>
-						</label>
-						<textarea id={ids.note} className="input textarea item-note" value={note} maxLength={MAX_NOTE_CHARS} onChange={(event) => setNote(event.target.value)} readOnly={busy} />
-					</div>
+					{noted ? (
+						<div>
+							<label className="label" htmlFor={ids.note}>
+								A note to the agent<span className="label-optional">optional</span>
+							</label>
+							<textarea id={ids.note} className="input textarea item-note" value={note} maxLength={MAX_NOTE_CHARS} onChange={(event) => setNote(event.target.value)} readOnly={busy} />
+						</div>
+					) : null}
 					<div className="item-choices">
 						{question.choices.map((choice, index) => (
 							<button
@@ -644,7 +658,8 @@ function Verdicts({ view, now }: { view: ItemView; now: number }) {
 // ---- what it cost -------------------------------------------------------------------------------
 
 function Cost({ view }: { view: ItemView }) {
-	const rows = BUDGET_FIELDS.filter((field) => field.key !== "hostedSeconds" || view.place.kind === "hosted");
+	const rows = budgetFields(view);
+	const hosted = view.place.kind === "hosted";
 	return (
 		<section className="usage-section" aria-labelledby="item-cost">
 			<h2 className="usage-title" id="item-cost">
@@ -671,7 +686,11 @@ function Cost({ view }: { view: ItemView }) {
 					);
 				})}
 			</dl>
-			<p className="usage-note">Working time counts only while the item works: waiting for a turn, for CI or for you does not.</p>
+			<p className="usage-note">
+				{hosted
+					? "Working time counts only while the item works: waiting for a turn, for CI or for you does not."
+					: "Working time counts only while the item works: waiting for a turn, for your machine, for CI or for you does not. On your machine it costs no hosted time."}
+			</p>
 		</section>
 	);
 }
@@ -765,6 +784,8 @@ export function Item({ page }: { page: ItemPage }) {
 	const { view } = page;
 	const acting = useActing(view?.id ?? "", page.replace);
 	const [dialog, setDialog] = useState<"cancel" | "send_back" | null>(null);
+	// Undefined for a hosted item and while the list is read; null once its machine is known to be removed.
+	const machine = useSessionMachine(view?.place);
 
 	if (view === null) {
 		return (
@@ -812,6 +833,7 @@ export function Item({ page }: { page: ItemPage }) {
 							{repository.owner}/{repository.name}
 						</a>
 						<span className="repo-fact">into {view.task.base}</span>
+						{view.place.kind === "machine" ? <span className="repo-fact">{machine === null ? "on a machine that was removed" : machine ? `on your machine “${machine.name}”` : "on your machine"}</span> : null}
 						{view.pullRequest ? (
 							<a className="repo-link" href={view.pullRequest.url} target="_blank" rel="noreferrer">
 								Pull request #{view.pullRequest.number}
@@ -832,12 +854,12 @@ export function Item({ page }: { page: ItemPage }) {
 							{acting.busy === "start" ? "Starting…" : "Start"}
 						</button>
 					) : null}
-					{view.state === "failed" ? (
+					{view.state === "failed" && machine !== null ? (
 						<button type="button" className="button button-primary" onClick={() => acting.act({ kind: "retry" })} disabled={busy}>
 							{acting.busy === "retry" ? "Starting…" : "Retry"}
 						</button>
 					) : null}
-					{view.state === "review" ? (
+					{view.state === "review" && machine !== null ? (
 						<button type="button" className="button button-outline" onClick={() => setDialog("send_back")} disabled={busy}>
 							Send back…
 						</button>

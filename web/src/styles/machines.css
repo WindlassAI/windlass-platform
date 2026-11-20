@@ -209,6 +209,17 @@
 .sandbox-chosen + .callout {
 	margin-top: 10px;
 }
+/* A place's card: a long state ("Offline since 18 Nov, 07:44") goes under the name, to the right, rather than against it. */
+.place .profile-head {
+	flex-wrap: wrap;
+	row-gap: 4px;
+}
+.place .profile-name {
+	flex: 1 0 auto;
+}
+.place .profile-head .machine-state {
+	margin-left: auto;
+}
 
 @media (max-width: 760px) {
 	.machine-row {

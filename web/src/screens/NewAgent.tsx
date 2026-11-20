@@ -41,6 +41,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
 import { Layers, ProfileFacts } from "../components/Layers";
+import { PlaceChoice, machineUnusable } from "../components/PlaceChoice";
 import { RepositoryPicker, type PickedRepository } from "../components/RepositoryPicker";
 import { SecretsField } from "../components/Secrets";
 import { PublishUnaskedCheck, publishAlwaysAsked } from "../components/PullRequest";
@@ -55,7 +56,7 @@ import { allowanceState, useAccount, useAllowance, useModels, useNow } from "../
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 import { submissionOf, type Submission } from "../lib/submission";
-import { MachineState, clockTime, useMachines } from "./Machines";
+import { clockTime, useMachines } from "./Machines";
 
 function ProfileCard({ profile, name, checked, onChoose }: { profile: SandboxProfile; name: string; checked: boolean; onChoose(id: SandboxProfileId): void }) {
 	const id = useId();
@@ -75,38 +76,6 @@ function ProfileCard({ profile, name, checked, onChoose }: { profile: SandboxPro
 			) : (
 				<span className="profile-reason" id={reasonId}>
 					<strong>Why not yet.</strong> {profile.unavailableReason ?? "This deployment cannot run it."}
-				</span>
-			)}
-		</label>
-	);
-}
-
-/** Why a machine cannot be chosen; null when it can. An offline machine can: its agent is created and waits for it. */
-function unusable(machine: MachineSummary, minRunnerVersion: string): string | null {
-	if (machine.warnings.some((warning) => warning.kind === "outdated")) return `Its runner is ${machine.runnerVersion}; the platform needs ${minRunnerVersion} or later. Update it on the machine.`;
-	if (machine.profiles.length === 0) return machine.status === "waiting" ? "Its runner has not connected since the machine was added." : "Its runner has not said yet which sandboxes it can make.";
-	return null;
-}
-
-/** One place an agent can run: this platform (`machine` null) or one of the user's machines, as a card like a sandbox's. */
-function PlaceCard({ machine, why, name, checked, now, onChoose }: { machine: MachineSummary | null; why: string | null; name: string; checked: boolean; now: number; onChoose(machineId: string | null): void }) {
-	const id = useId();
-	const reasonId = `${id}-reason`;
-	return (
-		<label className={`profile place${checked ? " profile-chosen" : ""}${why === null ? "" : " profile-unavailable"}`} htmlFor={id}>
-			<input id={id} className="profile-radio" type="radio" name={name} value={machine?.machineId ?? "platform"} checked={checked} disabled={why !== null} onChange={() => onChoose(machine?.machineId ?? null)} aria-describedby={why === null ? undefined : reasonId} />
-			<span className="profile-head">
-				<span className="profile-pick" aria-hidden="true" />
-				<span className="profile-name">{machine ? machine.name : "This platform"}</span>
-				{machine ? <MachineState machine={machine} now={now} /> : null}
-			</span>
-			<span className="profile-summary">{machine ? `Your ${machine.os} ${machine.arch} machine. The platform's limits do not apply.` : "A sandbox the platform makes and controls. It counts against your daily sandbox time."}</span>
-			{why === null ? null : (
-				<span className="profile-reason" id={reasonId}>
-					<strong>Why not yet.</strong> {why}{" "}
-					<a className="link" {...linkProps({ name: "machines" })}>
-						Machines
-					</a>
 				</span>
 			)}
 		</label>
@@ -261,8 +230,7 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: number; over?:
 	const auth = useAuth();
 	const info = platform.info;
 	const group = useId();
-	const ids = { model: useId(), modelNote: useId(), repo: useId(), repoLabel: useId(), title: useId(), prompt: useId(), repoNote: useId(), profiles: useId(), places: useId() };
-	const placeGroup = useId();
+	const ids = { model: useId(), modelNote: useId(), repo: useId(), repoLabel: useId(), title: useId(), prompt: useId(), repoNote: useId(), profiles: useId() };
 	const github = useGithub();
 	const limit = launchLimit(useAllowance());
 	// What the form held before its user left to connect GitHub, once.
@@ -285,7 +253,6 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: number; over?:
 	const [profilesOpen, setProfilesOpen] = useState(false);
 	// Where it runs: this platform (null) or one of the user's machines, folded as the sandboxes are.
 	const [placeChoice, setPlace] = useState<string | null>(null);
-	const [placesOpen, setPlacesOpen] = useState(false);
 	const [busy, setBusy] = useState<"creating" | "prompting" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
@@ -343,7 +310,7 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: number; over?:
 	const machines = useMachines(machinesInfo !== null);
 	const now = useNow(30_000);
 	const mine = machinesInfo === null ? [] : (machines.list ?? []);
-	const why = (machine: MachineSummary) => unusable(machine, machinesInfo?.minRunnerVersion ?? "");
+	const why = (machine: MachineSummary) => machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "agent");
 	// A machine that was removed or can no longer be chosen while the form is open leaves the agent on this platform, which the line then says.
 	const chosenMachine = mine.find((machine) => machine.machineId === placeChoice && why(machine) === null) ?? null;
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
@@ -598,32 +565,7 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: number; over?:
 						</div>
 					</div>
 					{mine.length > 0 ? (
-						<fieldset className="new-agent-section sandbox-pick">
-							<legend className="label">Where it runs</legend>
-							<div className="sandbox-chosen">
-								<span className="sandbox-chosen-text">
-									<span className="sandbox-chosen-name">{chosenMachine ? chosenMachine.name : "This platform"}</span>
-									<span className="sandbox-chosen-facts">
-										{chosenMachine ? (
-											<>
-												<MachineState machine={chosenMachine} now={now} />
-												<span>
-													your {chosenMachine.os} {chosenMachine.arch} machine
-												</span>
-												<span>the platform's limits do not apply</span>
-											</>
-										) : (
-											<>
-												<span>a sandbox the platform makes and controls</span>
-												<span>counts against your daily sandbox time</span>
-											</>
-										)}
-									</span>
-								</span>
-								<button type="button" className="link" aria-expanded={placesOpen} aria-controls={ids.places} onClick={() => setPlacesOpen((open) => !open)}>
-									{placesOpen ? "Hide" : "Change"}
-								</button>
-							</div>
+						<PlaceChoice machines={mine} chosen={chosenMachine} minRunnerVersion={machinesInfo?.minRunnerVersion ?? ""} now={now} purpose="agent" onChoose={setPlace}>
 							{chosenMachine?.status === "offline" ? (
 								<p className="callout callout-warn" role="status">
 									<WarnIcon />
@@ -643,30 +585,7 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: number; over?:
 									</span>
 								</p>
 							) : null}
-							<div id={ids.places} className="sandbox-cards" hidden={!placesOpen}>
-								<p className="section-text">Where the agent's sandbox is made: by this platform, or by the runner on one of your machines.</p>
-								<div className="profiles places">
-									<PlaceCard machine={null} why={null} name={placeGroup} checked={chosenMachine === null} now={now} onChoose={setPlace} />
-									{mine
-										.filter((machine) => why(machine) === null)
-										.map((machine) => (
-											<PlaceCard key={machine.machineId} machine={machine} why={null} name={placeGroup} checked={chosenMachine?.machineId === machine.machineId} now={now} onChoose={setPlace} />
-										))}
-								</div>
-								{mine.some((machine) => why(machine) !== null) ? (
-									<>
-										<p className="profiles-divider">Listed, but not usable now</p>
-										<div className="profiles profiles-unavailable">
-											{mine
-												.filter((machine) => why(machine) !== null)
-												.map((machine) => (
-													<PlaceCard key={machine.machineId} machine={machine} why={why(machine)} name={placeGroup} checked={false} now={now} onChoose={setPlace} />
-												))}
-										</div>
-									</>
-								) : null}
-							</div>
-						</fieldset>
+						</PlaceChoice>
 					) : null}
 					<fieldset className="new-agent-section sandbox-pick">
 						<legend className="label">Sandbox</legend>

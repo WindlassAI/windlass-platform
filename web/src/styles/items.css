@@ -75,6 +75,13 @@
 .item-body {
 	min-height: 140px;
 }
+/* "Where it runs" in the narrower dialog: one fact a line, as on a phone, so no line begins with the dot between facts. */
+.item-form .sandbox-chosen-facts {
+	flex-direction: column;
+}
+.item-form .sandbox-chosen-facts > span + span::before {
+	content: none;
+}
 .item-criteria {
 	min-height: 72px;
 }
@@ -209,6 +216,10 @@
 	display: grid;
 	grid-template-columns: repeat(4, minmax(0, 1fr));
 	gap: 12px;
+}
+/* An item on a machine: no hosted sandbox time to raise. */
+.item-raise-fields-three {
+	grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 /* A verdict. */

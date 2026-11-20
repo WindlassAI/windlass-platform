@@ -10,7 +10,12 @@
  * machine's (`RULES`). The seeded
  * set has one item in each state, each wait sentence, each question, and a review with each verdict,
  * each state of CI and each way CI decides (with and without the user's checks), and one verdict stored
- * before verdicts carried their sentences (no `said`).
+ * before verdicts carried their sentences (no `said`). Where the deployment offers machines, it also has
+ * items on the user's machines, made from the machines the mock lists: one at work on an online
+ * machine, one waiting for an offline one, one stopped on a budget, and one asked about a machine that
+ * was removed. An item on a machine is filed, started, held and asked about as the server does it
+ * (user-items.ts `itemProfile`, user-machines.ts `launchMachineProfiles`, budget.ts `admit`,
+ * blueprint.ts `askRemoved`): `machinesChanged` is told of every change of the machines.
  *
  * mock.ts wires it in with one hook: `createMockItems(…)` once, and `...items.calls(auth)` in the user's interface.
  */
@@ -35,6 +40,9 @@ import {
 	type RoundCaps,
 	type ItemSummary,
 	type ItemView,
+	type MachineSummary,
+	type SandboxPlace,
+	type SandboxProfileId,
 	type SessionRepository,
 	type SessionSummary,
 	type StepKind,
@@ -63,8 +71,10 @@ export interface MockItemsDeps {
 	later(ms: number, action: () => void): unknown;
 	/** The user's open live feeds. */
 	feeds(auth: AuthResult): Iterable<UserFeed>;
-	/** Makes the item's agent, as `createSession` does. */
-	session(auth: AuthResult, input: Omit<CreateSessionInput, "profile">): Promise<SessionSummary>;
+	/** Makes the item's agent, as `createSession` does: on this platform's first sandbox unless `profile` says which. */
+	session(auth: AuthResult, input: Omit<CreateSessionInput, "profile"> & { profile?: SandboxProfileId }): Promise<SessionSummary>;
+	/** The user's machines as the mock lists them now, and the runner release the platform takes; null where the deployment offers no machines. */
+	machines(auth: AuthResult): { list: MachineSummary[]; minRunnerVersion: string } | null;
 }
 
 /** The deployment's limits (server/src/factory/budget.ts, `FACTORY_DEFAULTS`). */
@@ -137,6 +147,8 @@ interface Seed {
 	acceptance?: string[];
 	/** Minutes ago it was filed. */
 	filed: number;
+	/** Left out: hosted. */
+	place?: SandboxPlace;
 	wait?: { reason: Waiting["reason"]; sentence: string; since: number; retryAt: number | null };
 	question?: Omit<ItemQuestion, "id" | "askedAt"> & { asked: number };
 	pr?: number;
@@ -183,8 +195,11 @@ const userChecks = (...statuses: Array<[name: string, status: Verdict["gate"]["r
 const passingGate: Verdict["gate"] = { state: "passed", required: userChecks(["unit tests", "passed"], ["lint", "passed"]) };
 
 
-/** The seeded set for a state, relative to `at`. */
-function seeds(state: MockItemsState, at: number): Seed[] {
+/** A machine that was removed: no list has it. */
+export const REMOVED_MACHINE_ID = "m_removed";
+
+/** The seeded set for a state, relative to `at`, with items on `machines` (null where the deployment offers none). */
+function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | null): Seed[] {
 	const all: Seed[] = [
 		{ n: 1, title: "Add a --dry-run flag to the release script", on: HARBOR, state: "draft", filed: 40, body: "Print what the release script would upload and tag, without doing it.", acceptance: ["Nothing is uploaded or tagged with --dry-run."] },
 		{
@@ -488,7 +503,84 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 
 	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
 	if (state === "few") return all.filter((seed) => [3, 18, 21, 22, 24].includes(seed.n));
-	return all;
+	return [...all, ...onMachines()];
+
+	/** The items on the user's machines: each on a machine of the list that fits it, and left out where none does. */
+	function onMachines(): Seed[] {
+		if (machines === null) return [];
+		const usable = machines.filter((machine) => !machine.warnings.some((warning) => warning.kind === "outdated") && machine.profiles.some((profile) => profile.available));
+		const online = usable.find((machine) => machine.status === "online");
+		const away = usable.find((machine) => machine.status === "offline");
+		const on = (machine: MachineSummary): SandboxPlace => ({ kind: "machine", machineId: machine.machineId });
+		const made: Seed[] = [];
+		if (online) {
+			made.push({
+				n: 50,
+				title: "Cache the downloaded tide predictions",
+				body: "Every page load downloads the week's predictions again. Keep them on disk for a day, keyed by station.",
+				on: TIDES,
+				place: on(online),
+				state: "working",
+				filed: 31,
+				run: { n: 1, started: 30, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 29, turn: "started" } },
+				events: [
+					[30, "Started.", undefined, true],
+					[29, "The turn started.", [1, 1, "implement"]],
+				],
+				spent: { tokens: 640_000, turns: 0, activeSeconds: 29 * 60 },
+			});
+		}
+		if (away) {
+			const sentence = `Waiting for your machine "${away.name}" to come back online.`;
+			made.push({ ...waitingFor(51, "Import the harbour authority's station list", "Read the stations from the harbour authority's CSV export instead of the list we keep by hand.", TIDES, "machine", sentence, 35, at + 2 * MINUTE), place: on(away) });
+		}
+		if (usable[0]) {
+			const head = hex(53);
+			made.push({
+				n: 53,
+				title: "Generate the API reference from the doc comments",
+				body: "Replace the hand-written API page with one generated from the doc comments at build time.",
+				on: DOCS,
+				place: on(usable[0]),
+				state: "waiting",
+				filed: 260,
+				pr: 64,
+				question: { kind: "budget", text: "This item has used 10 of its 10 turns.", choices: choices("raise", "retry", "hand_over", "give_up"), asked: 20 },
+				run: { n: 1, started: 259, stopReason: null, rounds: { plan: 0, gate: 2, ci: 2, conflict: 0 }, step: { n: 12, kind: "ci_fix", started: 21 } },
+				events: [
+					[259, "Started.", undefined, true],
+					[258, "The turn started.", [1, 1, "implement"]],
+					[200, "The checks passed.", [1, 2, "gate"]],
+					[199, `Pushed ${short(head)} to pull request #64.`, [1, 3, "publish"]],
+					[150, "CI failed: docs.", [1, 4, "ci", 6]],
+					[21, "Asked: This item has used 10 of its 10 turns.", [1, 12, "ci_fix"]],
+				],
+				spent: { tokens: 2_900_000, turns: 10, activeSeconds: 3 * 3600 + 5 * 60 },
+			});
+		}
+		const removed = "Your machine was removed. This item can no longer work on it.";
+		made.push({
+			n: 52,
+			title: "Show the tide height in feet as well",
+			body: "Next to every height in metres, show it in feet, rounded to a tenth.",
+			on: TIDES,
+			place: { kind: "machine", machineId: REMOVED_MACHINE_ID },
+			state: "waiting",
+			filed: 190,
+			pr: 58,
+			question: { kind: "machine_removed", text: removed, choices: choices("hand_over", "give_up"), asked: 44 },
+			run: { n: 1, started: 189, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 4, kind: "ci", attempt: 9, started: 60 } },
+			events: [
+				[189, "Started.", undefined, true],
+				[188, "The turn started.", [1, 1, "implement"]],
+				[61, "The checks passed.", [1, 2, "gate"]],
+				[60, `Pushed ${short(hex(52))} to pull request #58.`, [1, 3, "publish"]],
+				[44, `Asked: ${removed}`, [1, 4, "ci", 9]],
+			],
+			spent: { tokens: 1_100_000, turns: 1, activeSeconds: 2 * 3600 + 7 * 60 },
+		});
+		return made;
+	}
 
 	function waitingFor(n: number, title: string, body: string, on: typeof HARBOR, reason: Waiting["reason"], sentence: string, since: number, retryAt: number): Seed {
 		return {
@@ -697,7 +789,7 @@ export function verdictSaid(verdict: Pick<Verdict, "result" | "gate" | "ci" | "f
 
 /** Every verdict of the seeded set, as seeded: for the test that holds them to the server's rule and words. */
 export function seededVerdicts(): SeedVerdict[] {
-	return seeds("all", 0).flatMap((seed) => seed.verdicts ?? []);
+	return seeds("all", 0, null).flatMap((seed) => seed.verdicts ?? []);
 }
 
 function nextMidnight(at: number): number {
@@ -712,6 +804,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 	const spent: ItemBudget = { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0, ...seed.spent };
 	const head = seed.pr === undefined ? null : hex(seed.n);
 	const repository = seed.on.repository;
+	const place: SandboxPlace = seed.place ?? { kind: "hosted" };
 	const verdicts = (seed.verdicts ?? []).map(({ ago: when, repositoryChecks: _, ...verdict }, index) => ({
 		...verdict,
 		moved: null,
@@ -720,8 +813,8 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		item: id,
 		head: index === (seed.verdicts?.length ?? 0) - 1 && head !== null ? head : hex(seed.n * 10 + index),
 		at: ago(when),
-		place: "hosted",
-		attestedBy: "platform",
+		place: place.kind,
+		attestedBy: place.kind === "hosted" ? "platform" : `machine:${place.machineId}`,
 		acceptance: seed.acceptance ?? [],
 	})) as Verdict[];
 	const last = verdicts[verdicts.length - 1];
@@ -744,7 +837,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		id,
 		title: seed.title,
 		repository,
-		place: { kind: "hosted" },
+		place,
 		source: seed.source ?? "web",
 		state: seed.state,
 		wait,
@@ -793,7 +886,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		let found = kept.get(auth.profile.uid);
 		if (!found) {
 			const at = deps.now();
-			const items = seeds(state, at)
+			const items = seeds(state, at, deps.machines(auth)?.list ?? null)
 				.map((seed) => viewOf(seed, at, auth.profile.uid))
 				.sort((a, b) => b.createdAt - a.createdAt);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };
@@ -832,6 +925,46 @@ export function createMockItems(deps: MockItemsDeps) {
 		changed(auth);
 	}
 
+	/** Where an item on a machine stands with it now: null for a hosted item. */
+	function machineOfItem(auth: AuthResult, item: ItemView): { machine: MachineSummary | null } | null {
+		if (item.place.kind !== "machine") return null;
+		const { machineId } = item.place;
+		return { machine: deps.machines(auth)?.list.find((one) => one.machineId === machineId) ?? null };
+	}
+
+	/** The question of an item whose machine was removed (blueprint.ts, `askRemoved`): hand over what the run pushed, or give up. */
+	function askRemoved(auth: AuthResult, item: ItemView): void {
+		const text = "Your machine was removed. This item can no longer work on it.";
+		const at = deps.now();
+		const question: ItemQuestion = { id: `${item.id}:q${item.revision + 1}`, kind: "machine_removed", text, choices: item.head !== null && item.pullRequest !== null ? choices("hand_over", "give_up") : choices("give_up"), askedAt: at };
+		change(auth, item, { state: "waiting", question, wait: { reason: "person", sentence: text, retryAt: null, since: at } }, [`Asked: ${text}`], "platform");
+	}
+
+	/** The first turn of a run, or of an item that waited for its machine: on a machine that is away it waits instead (budget.ts, `admit`). */
+	function startTurn(auth: AuthResult, item: ItemView): void {
+		const where = machineOfItem(auth, item);
+		if (where?.machine === null) return askRemoved(auth, item);
+		if (where?.machine && where.machine.status !== "online") {
+			const sentence = `Waiting for your machine "${where.machine.name}" to come back online.`;
+			const at = deps.now();
+			return change(auth, item, { state: "waiting", wait: { reason: "machine", sentence, retryAt: at + 30_000, since: at } }, item.wait?.reason === "machine" ? [] : [sentence], "platform");
+		}
+		const run = item.run;
+		change(auth, item, { state: "working", wait: null, ...(run ? { run: { ...run, step: { ...run.step, turn: "started" } } } : {}) }, ["The turn started."], "platform");
+	}
+
+	/** The machines changed (mock.ts tells every change): items whose machine was removed ask their person, and those waiting for one that is back go on. */
+	function machinesChanged(auth: AuthResult): void {
+		const mine = kept.get(auth.profile.uid);
+		if (!mine) return;
+		for (const item of mine.items) {
+			const where = machineOfItem(auth, item);
+			if (where === null || ["done", "failed", "cancelled"].includes(item.state) || item.question?.kind === "machine_removed") continue;
+			if (where.machine === null) askRemoved(auth, item);
+			else if (item.state === "waiting" && item.wait?.reason === "machine" && where.machine.status === "online") startTurn(auth, item);
+		}
+	}
+
 	/** A new run, queued for its first turn; its turn starts a moment later. */
 	function beginRun(auth: AuthResult, item: ItemView, said: string): void {
 		const at = deps.now();
@@ -842,7 +975,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		change(auth, item, { state: "queued", wait: null, question: null, run }, [], "person");
 		deps.later(2500, () => {
 			if (item.run !== run || item.state !== "queued") return;
-			change(auth, item, { state: "working", run: { ...run, step: { ...run.step, turn: "started" } } }, ["The turn started."], "platform");
+			startTurn(auth, item);
 		});
 	}
 
@@ -851,6 +984,15 @@ export function createMockItems(deps: MockItemsDeps) {
 
 	function act(auth: AuthResult, item: ItemView, action: ItemAction): void {
 		const now = STATE_WORDS[item.state];
+		// An item whose machine was removed can only be handed over, given up or cancelled (blueprint.ts, `apply`), in the server's words.
+		if (machineOfItem(auth, item)?.machine === null) {
+			if (action.kind === "retry") throw conflict("Only an item that failed can be retried.");
+			if (action.kind === "send_back") throw conflict("Only an item in review can be sent back.");
+			if (action.kind === "start" && item.state === "draft") {
+				item.events.push({ at: deps.now(), by: `person:${auth.profile.uid}`, step: null, said: "Started." });
+				return askRemoved(auth, item);
+			}
+		}
 		switch (action.kind) {
 			case "start":
 				if (item.state !== "draft") throw conflict(`This item is ${now}: only a draft can be started.`);
@@ -919,8 +1061,17 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (input.body.length > MAX_ITEM_BODY_CHARS) throw new PlatformError("user", `What to do is at most ${MAX_ITEM_BODY_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
 				if (acceptance.length > MAX_ACCEPTANCE_CRITERIA) throw new PlatformError("user", `An item takes at most ${MAX_ACCEPTANCE_CRITERIA} acceptance criteria.`, { reason: "bad_input" });
 				if (acceptance.some((line) => line.length > MAX_NOTE_CHARS)) throw new PlatformError("user", `An acceptance criterion is at most ${MAX_NOTE_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
-				if (input.place?.kind === "machine") throw new PlatformError("user", "Work items run on hosted sandboxes for now.", { reason: "bad_input" });
-				const session = await deps.session(auth, { title, repository: input.repository });
+				// On a machine, its first available sandbox unless the one asked for is available (user-items.ts, `itemProfile`).
+				const place: SandboxPlace = input.place?.kind === "machine" ? { kind: "machine", machineId: input.place.machineId } : { kind: "hosted" };
+				let profile: SandboxProfileId | undefined;
+				if (place.kind === "machine") {
+					const machine = machineFor(auth, place.machineId);
+					const available = machine.profiles.filter((one) => one.available);
+					const chosen = available.find((one) => one.id === input.profile) ?? available[0];
+					if (!chosen) throw new PlatformError("user", `Your machine "${machine.name}" offers no available sandbox profile for this item.`, { reason: "bad_profile" });
+					profile = chosen.id;
+				}
+				const session = await deps.session(auth, { title, repository: input.repository, ...(place.kind === "machine" ? { place, profile } : {}) });
 				const repository = session.repository;
 				if (!repository) throw new PlatformError("user", "Work items need a repository of your GitHub connection.", { reason: "bad_input" });
 				const at = deps.now();
@@ -929,7 +1080,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					id,
 					title,
 					repository,
-					place: { kind: "hosted" },
+					place,
 					source: "web",
 					state: "draft",
 					wait: null,
@@ -991,6 +1142,19 @@ export function createMockItems(deps: MockItemsDeps) {
 		};
 	}
 
-	return { calls };
+	/** The machine an item is filed on, refused as user-machines.ts refuses it (`launchMachineProfiles`), in its words. */
+	function machineFor(auth: AuthResult, machineId: string): MachineSummary {
+		const machines = deps.machines(auth);
+		if (machines === null) throw new PlatformError("user", "Machines are not available on this platform.", { reason: "machines_off" });
+		const machine = machines.list.find((one) => one.machineId === machineId);
+		if (!machine) throw new PlatformError("user", "That machine is not in your account.", { reason: "machine_not_found" });
+		if (machine.warnings.some((warning) => warning.kind === "outdated")) {
+			throw new PlatformError("user", `The runner on "${machine.name}" is older than this platform takes: update it to ${machines.minRunnerVersion} or later, then start the agent again.`, { reason: "runner_outdated" });
+		}
+		if (machine.profiles.length === 0) throw new PlatformError("user", `"${machine.name}" has not connected yet. Start its runner, and once the Machines page shows it online, start the agent again.`, { reason: "machine_not_connected" });
+		return machine;
+	}
+
+	return { calls, machinesChanged };
 }
 

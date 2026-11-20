@@ -6,15 +6,23 @@
  * says an item changed (the user's live feed, `onItems`), and read again when that feed comes back
  * after a drop, since what was said meanwhile is lost. Nothing is asked on a timer. Every sentence a
  * row shows of why an item waits is the server's (`Waiting.sentence`), shown as it was written.
+ *
+ * Filing one, where the deployment offers machines and the user has one, says where it runs as the
+ * launch form of an agent does (components/PlaceChoice.tsx): this platform, or one of the user's
+ * machines. On a machine the server gives it that machine's first available sandbox.
  */
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemState, type ItemSummary } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
+import { PlaceChoice, machineUnusable } from "../components/PlaceChoice";
 import { AskIcon, ChevronIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRequestIcon, RingIcon, StopIcon, WarnIcon } from "../components/Icons";
 import { absoluteTime, count, plural, relativeTime } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { useApp, useAuth } from "../state/app";
+import { useNow } from "../state/hooks";
+import { clockTime, useMachines } from "./Machines";
 
 export interface ItemsState {
 	/** Null until it was read, and when it could not be. */
@@ -270,10 +278,21 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now }: {
 	);
 }
 
-/** Filing a work item: what to do, and what a person will check. It runs on a hosted sandbox. */
-function NewItemDialog({ repositoryId, name, base, onClose }: { repositoryId: number; name: string; base: string | null; onClose(): void }) {
-	const { client, explain } = useApp();
+/** The refusals of a machine that the list of machines may be behind on: it is read again. */
+const MACHINE_REFUSALS = ["machine_not_found", "machine_not_connected", "runner_outdated", "bad_profile"];
+
+/** Filing a work item: what to do, and what a person will check. It runs on a hosted sandbox, or on one of the user's machines where they have one. */
+export function NewItemDialog({ repositoryId, name, base, onClose }: { repositoryId: number; name: string; base: string | null; onClose(): void }) {
+	const { client, explain, platform } = useApp();
 	const auth = useAuth();
+	// Where it runs: offered where the deployment has both work items and machines, and the user has a machine.
+	const machinesInfo = platform.info?.items ? (platform.info.machines ?? null) : null;
+	const machines = useMachines(machinesInfo !== null);
+	const now = useNow(30_000);
+	const mine = machinesInfo === null ? [] : (machines.list ?? []);
+	const [placeChoice, setPlace] = useState<string | null>(null);
+	// A machine that was removed or can no longer be chosen while the form is open leaves the item on this platform, which the line then says.
+	const chosenMachine = mine.find((machine) => machine.machineId === placeChoice && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
 	const [title, setTitle] = useState("");
 	const [body, setBody] = useState("");
 	const [criteria, setCriteria] = useState("");
@@ -293,7 +312,7 @@ function NewItemDialog({ repositoryId, name, base, onClose }: { repositoryId: nu
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}) };
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;
@@ -307,6 +326,7 @@ function NewItemDialog({ repositoryId, name, base, onClose }: { repositoryId: nu
 		} catch (failure) {
 			setError(explain(failure));
 			setBusy(false);
+			if (MACHINE_REFUSALS.some((reason) => hasReason(failure, reason))) machines.reload();
 		}
 	};
 
@@ -315,7 +335,7 @@ function NewItemDialog({ repositoryId, name, base, onClose }: { repositoryId: nu
 			title="New work item"
 			lede={
 				<>
-					On {name}, as a pull request into {base ?? "its default branch"}. It runs on a hosted sandbox.
+					On {name}, as a pull request into {base ?? "its default branch"}.{mine.length > 0 ? null : " It runs on a hosted sandbox."}
 				</>
 			}
 			onClose={onClose}
@@ -358,12 +378,29 @@ function NewItemDialog({ repositoryId, name, base, onClose }: { repositoryId: nu
 								: "One per line. The agent is given them, and the verdict lists them for you to check: no machine checks them."}
 					</p>
 				</div>
+				{mine.length > 0 ? (
+					<PlaceChoice machines={mine} chosen={chosenMachine} minRunnerVersion={machinesInfo?.minRunnerVersion ?? ""} now={now} purpose="item" onChoose={setPlace}>
+						{chosenMachine ? (
+							<p className="field-note place-note">
+								It runs without asking on “{chosenMachine.name}”, inside its container, and costs no hosted time.{" "}
+								{chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${chosenMachine.name}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}
+								{chosenMachine.profiles.find((profile) => profile.available)?.id === "docker-hardened" ? " This machine cannot sandbox each command, so the agent's commands can reach the machine's network and its access token." : ""}
+							</p>
+						) : null}
+					</PlaceChoice>
+				) : null}
 				<label className={`check${start ? " check-on" : ""}`}>
 					<input className="check-input" type="checkbox" checked={start} disabled={busy} onChange={(event) => setStart(event.target.checked)} />
 					<span className="check-box" aria-hidden="true" />
 					<span className="check-text">
 						<span className="check-name">Start now</span>
-						<span className="check-means">{start ? "It starts as soon as one of your factory turns and a sandbox are free; until then it waits, and says for what." : "It is kept as a draft until you start it from its page."}</span>
+						<span className="check-means">
+							{start
+								? chosenMachine
+									? `It starts as soon as one of your factory turns is free and “${chosenMachine.name}” is online; until then it waits, and says for what.`
+									: "It starts as soon as one of your factory turns and a sandbox are free; until then it waits, and says for what."
+								: "It is kept as a draft until you start it from its page."}
+						</span>
 					</span>
 				</label>
 				{error ? (

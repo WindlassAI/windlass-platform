@@ -6,11 +6,11 @@ import { MAX_API_TOKENS, type ItemSummary, type Verdict, type Verified, type Ver
 import { describe, expect, it } from "vitest";
 import type { GateEvidence } from "../../../server/src/factory/types";
 import { ciSentence as serverCiSentence, verdictOf, verdictWords } from "../../../server/src/factory/verdict";
-import { createMockClient } from "./mock";
-import { ciSentence, seededVerdicts, verdictSaid, type MockItemsState, type SeedVerdict } from "./mock-items";
+import { createMockClient, type MockMachineState } from "./mock";
+import { REMOVED_MACHINE_ID, ciSentence, seededVerdicts, verdictSaid, type MockItemsState, type SeedVerdict } from "./mock-items";
 
 const auth = { token: "mock:chatgpt:u_items:ada@example.com", profile: { uid: "u_items", email: "ada@example.com", demo: false } };
-const make = (items?: MockItemsState) => createMockClient({ pace: 0, items });
+const make = (items?: MockItemsState, machine?: MockMachineState) => createMockClient({ pace: 0, items, machine });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 /** What the gate would have recorded for a seeded verdict: the user's checks as listed, and the repository's own beside them. */
@@ -42,7 +42,7 @@ describe("the mock's work items", () => {
 		for (const item of list) expect(item.wait !== null).toBe(item.state === "waiting");
 		// A question is always a wait for the person, with the question's text.
 		for (const item of list.filter((one) => one.question)) expect(item.wait).toMatchObject({ reason: item.question?.kind === "budget" ? "budget" : "person", sentence: item.question?.text, retryAt: null });
-		expect(new Set(list.flatMap((item) => (item.question ? [item.question.kind] : [])))).toEqual(new Set(["no_change", "publish_refused", "ci_timeout", "rounds", "budget", "turn_refused"]));
+		expect(new Set(list.flatMap((item) => (item.question ? [item.question.kind] : [])))).toEqual(new Set(["no_change", "publish_refused", "ci_timeout", "rounds", "budget", "turn_refused", "machine_removed"]));
 		expect(new Set(list.flatMap((item) => (item.verdict ? [item.verdict.result] : [])))).toEqual(new Set(["pass", "fail", "incomplete", "unverified"]));
 		mock.dispose();
 	});
@@ -141,7 +141,6 @@ describe("the mock's work items", () => {
 		expect(first).toMatchObject({ state: "queued", source: "web", place: { kind: "hosted" } });
 		expect(seen.at(-1)?.map((item) => item.id)).toEqual([first.id]);
 		await expect(user.createItem({ ...input, title: "Another" })).rejects.toMatchObject({ reason: "idempotency_key_reused" });
-		await expect(user.createItem({ ...input, idempotencyKey: undefined, place: { kind: "machine", machineId: "m_nas" } })).rejects.toMatchObject({ reason: "bad_input" });
 		close();
 		mock.dispose();
 	});
@@ -175,6 +174,106 @@ describe("the mock's work items", () => {
 		expect(await full.user(auth).apiTokens()).toHaveLength(MAX_API_TOKENS);
 		await expect(full.user(auth).createApiToken({ name: "One more", scopes: ["items:read"] })).rejects.toMatchObject({ reason: "too_many_tokens" });
 		full.dispose();
+	});
+
+	it("seeds items on the user's machines where the deployment offers them, each on a machine that fits it", async () => {
+		const mock = make("all", "full");
+		const user = mock.user(auth);
+		const machines = await user.machines();
+		const all = await user.listItems();
+		// Every seed is its own item.
+		expect(new Set(all.map((item) => item.id)).size).toBe(all.length);
+		const onMachines = all.filter((item) => item.place.kind === "machine");
+		const machineOf = ({ place }: ItemSummary) => (place.kind === "machine" ? machines.find((one) => one.machineId === place.machineId) : undefined);
+		const working = onMachines.find((item) => item.state === "working") as ItemSummary;
+		expect(machineOf(working)?.status).toBe("online");
+		// A machine item never spends hosted time.
+		for (const item of onMachines) expect(item.spent.hostedSeconds).toBe(0);
+		const waiting = onMachines.find((item) => item.wait?.reason === "machine") as ItemSummary;
+		expect(machineOf(waiting)).toMatchObject({ name: "workshop", status: "offline" });
+		expect(waiting.wait?.sentence).toBe('Waiting for your machine "workshop" to come back online.');
+		expect(onMachines.find((item) => item.question?.kind === "budget")?.question?.text).toBe("This item has used 10 of its 10 turns.");
+		const removed = onMachines.find((item) => item.question?.kind === "machine_removed") as ItemSummary;
+		expect(removed.place).toEqual({ kind: "machine", machineId: REMOVED_MACHINE_ID });
+		expect(machineOf(removed)).toBeUndefined();
+		expect(removed.question).toMatchObject({ text: "Your machine was removed. This item can no longer work on it.", choices: [{ id: "hand_over" }, { id: "give_up" }] });
+		expect(removed.wait).toMatchObject({ reason: "person", retryAt: null });
+		mock.dispose();
+		// Without machines, every item is hosted; with only an online one, nothing waits for a machine.
+		const off = make("all", "off");
+		expect((await off.user(auth).listItems()).every((item) => item.place.kind === "hosted")).toBe(true);
+		off.dispose();
+		const online = make("all", "online");
+		const kinds = (await online.user(auth).listItems()).filter((item) => item.place.kind === "machine");
+		expect(kinds.some((item) => item.wait?.reason === "machine")).toBe(false);
+		expect(kinds.some((item) => item.state === "working")).toBe(true);
+		online.dispose();
+	});
+
+	it("files an item on a machine as the server does: on its first available sandbox, and waiting while the machine is away", async () => {
+		const mock = make("none", "full");
+		const user = mock.user(auth);
+		const input = { repository: { id: 7101 }, title: "Cache the station list", body: "Once per run.", start: true };
+		// The sandbox asked for is not the machine's: its first available one is taken.
+		const made = await user.createItem({ ...input, place: { kind: "machine", machineId: "m_nas" }, profile: "e2b" });
+		expect(made).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, state: "queued" });
+		const session = (await user.listSessions()).find((one) => one.id === made.sessionId);
+		expect(session).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-windlass-sandbox" });
+		await tick();
+		expect((await user.item(made.id)).state).toBe("working");
+		// Asked for the machine's other sandbox, it is given that one.
+		const hardened = await user.createItem({ ...input, title: "Hardened", place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened" });
+		expect((await user.listSessions()).find((one) => one.id === hardened.sessionId)?.profile).toBe("docker-hardened");
+		// An offline machine can be chosen: the item waits for it, in the server's words, and spends nothing.
+		const away = await user.createItem({ ...input, title: "Away", place: { kind: "machine", machineId: "m_workshop" } });
+		await tick();
+		const waiting = await user.item(away.id);
+		expect(waiting).toMatchObject({ state: "waiting", wait: { reason: "machine", sentence: 'Waiting for your machine "workshop" to come back online.' } });
+		expect(waiting.events.at(-1)?.said).toBe('Waiting for your machine "workshop" to come back online.');
+		expect(waiting.spent).toEqual({ tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 });
+		// Without a place, it is hosted, as before.
+		expect((await user.createItem({ ...input, title: "Hosted" })).place).toEqual({ kind: "hosted" });
+		mock.dispose();
+	});
+
+	it("refuses a machine an item cannot run on, with the server's reason and sentence", async () => {
+		const input = { repository: { id: 7101 }, title: "On a machine", body: "", place: { kind: "machine" as const, machineId: "m_nas" } };
+		const cases: Array<[MockMachineState, string, string, string]> = [
+			["online", "m_gone", "machine_not_found", "That machine is not in your account."],
+			["outdated", "m_nas", "runner_outdated", 'The runner on "nas" is older than this platform takes: update it to 0.2.0 or later, then start the agent again.'],
+			["pairing", "m_nas", "machine_not_connected", '"nas" has not connected yet. Start its runner, and once the Machines page shows it online, start the agent again.'],
+			["docker", "m_nas", "bad_profile", 'Your machine "nas" offers no available sandbox profile for this item.'],
+			["off", "m_nas", "machines_off", "Machines are not available on this platform."],
+		];
+		for (const [machine, machineId, reason, message] of cases) {
+			const mock = make("none", machine);
+			const refused = mock.user(auth).createItem({ ...input, place: { kind: "machine", machineId } });
+			await expect(refused, machine).rejects.toMatchObject({ reason, message });
+			// Nothing was filed.
+			expect(await mock.user(auth).listItems()).toEqual([]);
+			mock.dispose();
+		}
+	});
+
+	it("asks the person when an item's machine is removed, and then offers only handing over or giving up", async () => {
+		const mock = make("none", "full");
+		const user = mock.user(auth);
+		const made = await user.createItem({ repository: { id: 7101 }, title: "On build-box", body: "", place: { kind: "machine", machineId: "m_build" }, start: true });
+		await tick();
+		expect((await user.item(made.id)).state).toBe("working");
+		await user.removeMachine({ machineId: "m_build", removeSandboxes: false });
+		const asked = await user.item(made.id);
+		// Nothing was pushed, so there is nothing to hand over.
+		expect(asked).toMatchObject({ state: "waiting", question: { kind: "machine_removed", text: "Your machine was removed. This item can no longer work on it.", choices: [{ id: "give_up" }] }, wait: { reason: "person" } });
+		expect(asked.events.at(-1)?.said).toBe("Asked: Your machine was removed. This item can no longer work on it.");
+		const failed = await user.actOnItem(made.id, { kind: "answer", question: asked.question?.id ?? "", choice: "give_up" });
+		expect(failed.state).toBe("failed");
+		await expect(user.actOnItem(made.id, { kind: "retry" })).rejects.toMatchObject({ reason: "item_conflict", message: "Only an item that failed can be retried." });
+		// A draft on a removed machine asks when it is started.
+		const draft = await user.createItem({ repository: { id: 7101 }, title: "Draft on nas", body: "", place: { kind: "machine", machineId: "m_nas" } });
+		await user.removeMachine({ machineId: "m_nas", removeSandboxes: false });
+		expect((await user.item(draft.id)).question?.kind).toBe("machine_removed");
+		mock.dispose();
 	});
 
 	it("fails every read in the failed state", async () => {
