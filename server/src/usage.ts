@@ -362,8 +362,9 @@ export class UsageBook {
 	 */
 	claim(now: number, session: string): { ok: boolean; change: UsageChange } {
 		const change = noChange();
-		if (this.claims.has(session)) return { ok: true, change };
-		if (this.atCap(session)) return { ok: false, change };
+		// A place it has already is claimed anew, from now: a sandbox is about to be made for it, and a reconcile
+		// meanwhile must count the claim as one just made (`CLAIM_SETTLING_MS`), not drop it for its old age.
+		if (this.atCap(session) && !this.claims.has(session)) return { ok: false, change };
 		const claim = { session, since: now };
 		this.claims.set(session, claim);
 		change.kept.push(claim);

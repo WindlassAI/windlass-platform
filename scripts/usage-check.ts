@@ -194,7 +194,10 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 	const refused = book.claim(at(0), "z");
 	expect("a claim at the cap is refused and takes nothing", !refused.ok && refused.change.kept.length === 0 && !book.keeps("z") && book.kept().length === 2);
 	const again = book.claim(at(1), "x");
-	expect("a session that has its place claims it again and changes nothing", again.ok && again.change.kept.length === 0 && book.kept().length === 2 && book.kept().find((k) => k.session === "x")?.since === at(-3600));
+	expect("a session that has its place claims it again, from now, and the claim is stored anew; nothing else changes", again.ok && again.change.kept.length === 1 && again.change.kept[0]?.since === at(1) && book.kept().length === 2 && book.kept().find((k) => k.session === "x")?.since === at(1));
+	// Its sandbox is being made when another session's reconcile runs: the provider has no sandbox for it yet, and its place stays.
+	const reconciled = book.reconcile(at(2), ["y"]);
+	expect("a place claimed anew for a sandbox being made is not dropped by a reconcile meanwhile, though it was first claimed long ago", book.keeps("x") && !reconciled.dropped.includes("x"), reconciled.dropped.join(","));
 	book.release("y");
 	const taken = book.claim(at(2), "z");
 	expect("a free place is taken in the same step", taken.ok && taken.change.kept.length === 1 && book.keeps("z") && book.atCap("w"));

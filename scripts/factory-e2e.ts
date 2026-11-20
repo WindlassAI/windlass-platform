@@ -337,7 +337,7 @@ try {
 		const sentBack = said(asked).filter((line) => line.startsWith("The checks failed")).length;
 		assert(asked.question?.kind === "rounds" && /same failure/.test(asked.question.text) && sentBack === 2, `${stateOf(asked)}; ${said(asked).join(" / ")}`);
 		assert(asked.run?.rounds.gate === 1 && asked.run.caps.gate === 2, `gate rounds: ${asked.run?.rounds.gate} of ${asked.run?.caps.gate}`);
-		// The hold race (finding 3): the next turn's hold and place survive the end of the turn before it, and its time is counted.
+		// The next turn's hold and place survive the end of the turn before it, and its time is counted.
 		assert(samples.length > 0, "the fix turn was never seen running");
 		assert(samples.every((sample) => sample.held > 0 && sample.kept), `while the fix turn ran: ${JSON.stringify(samples.slice(0, 5))}`);
 		const counted = (await user.usage()).today.find((row) => row.sessionId === item.sessionId);

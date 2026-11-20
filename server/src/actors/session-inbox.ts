@@ -176,10 +176,10 @@ export async function markEnded(tx: RawAccess, row: InboxRow, fact: Extract<Fact
 
 /** A waiting row is withdrawn: true when it was waiting, so the queue's request goes too. */
 export async function withdrawWaiting(db: RawAccess, key: string): Promise<boolean> {
-	const row = await inboxRow(db, key);
-	if (row?.state !== "waiting") return false;
-	await db.execute("UPDATE inbox SET state = 'withdrawn' WHERE key = ? AND state = 'waiting'", key);
-	return true;
+	// Reserve an absent key first so a delivery arriving between the two statements cannot start it.
+	await db.execute("INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, starts_run, state, turn, slot, ended, at) VALUES (?, '', '', '', NULL, 1, NULL, 0, 'withdrawn', NULL, NULL, NULL, ?)", key, Date.now());
+	const rows = await db.execute("UPDATE inbox SET state = 'withdrawn' WHERE key = ? AND state = 'waiting' RETURNING key", key);
+	return rows.length > 0;
 }
 
 /** The row whose turn has this number, if one was taken from the inbox. */

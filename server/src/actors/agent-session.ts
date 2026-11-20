@@ -538,6 +538,8 @@ interface SessionVars {
 	arming: Promise<void>;
 	/** True while the platform commits and pushes the workspace: no turn starts under it, and no second push. */
 	publishing: boolean;
+	/** The key of the delivery `takeDelivered` is taking, while it does: the same delivery sent again meanwhile leaves its slot alone. */
+	delivering?: string | null;
 	/** When GitHub was last asked about the session's pull request. */
 	pullCheckedAt: number;
 	/** Whether the workspace has commits GitHub lacks, as last read from the sandbox, and what it was read for. */
@@ -801,11 +803,12 @@ function publish(c: Ctx): void {
 	void report(c);
 }
 
-function noteSandbox(c: Ctx, meta: SessionMeta, state: SessionMeta["sandbox"]): void {
+function noteSandbox(c: Ctx, meta: SessionMeta, state: SessionMeta["sandbox"], use: string | null = useOf(meta)): void {
 	if (meta.sandbox === state) return;
 	meta.sandbox = state;
 	// Found stopped without the session having stopped it: the stretch being counted ended with it. A turn settles when it closes.
-	if (state !== "running" && meta.meter && !c.vars.turn && !c.vars.accepting) void closeMeter(c, meta, "found", useOf(meta));
+	// `use` is the meter's when the state was asked for: a hold taken while the answer came is not the one found stopped.
+	if (state !== "running" && meta.meter && !c.vars.turn && !c.vars.accepting) void closeMeter(c, meta, "found", use);
 	publish(c);
 	void persist(c);
 }
@@ -984,8 +987,15 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 			if (!place.ok) throw new TurnProblem("numbers" in place ? sandboxRefusal(place.numbers) : "The agent was deleted.");
 		}
 		note(c, turn, "info", "Creating sandbox");
+		// Held before the wait: a delete that finished meanwhile leaves no actor state to read (`c.vars` throws once it has
+		// stopped), and the sandbox would be left behind, paused and holding one of the person's places. So it goes first.
+		const vars = c.vars;
 		const id = await layer.sandboxes.create({ uid: meta.uid, sessionId: meta.sessionId, profile: meta.profile });
 		console.log(`[wlp] sandbox.created id=${id} session=${meta.sessionId}`);
+		if (vars.destroying) {
+			await layer.sandboxes.destroy(id);
+			throw new TurnProblem("The agent was deleted.");
+		}
 		meta.sandboxId = id;
 		sandboxChanged(c);
 		meta.sandbox = "running";
@@ -1328,11 +1338,13 @@ async function refreshSandbox(c: Ctx, meta: SessionMeta): Promise<void> {
 	const id = meta.sandboxId;
 	if (!id) return;
 	const gen = c.vars.sandboxGen;
+	// The stretch the answer is about: a read or a push that takes a fresh hold meanwhile has its own, which this answer does not close.
+	const use = useOf(meta);
 	try {
 		const { sandboxes } = await layerOf(c, meta);
 		const state = await sandboxes.state(id);
 		// A prompt that woke the actor may have resumed the sandbox while this was asked: "paused" is then the sandbox it was, not the one that runs.
-		if (c.vars.sandboxGen === gen) noteSandbox(c, meta, state);
+		if (c.vars.sandboxGen === gen) noteSandbox(c, meta, state, use);
 	} catch (error) {
 		c.log.warn({ msg: "could not read the sandbox's state", error: describeError(error) });
 	}
@@ -1634,6 +1646,8 @@ async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, f
 	// ran still holds while it is paused, so a paused sandbox is not started to be asked again.
 	if (meta.unpushed?.key === key) return meta.unpushed.value;
 	let value: boolean | null = null;
+	// Under the sandbox's guard from the read of its state to the end: an idle suspend in between would be undone by the connect, uncounted.
+	const release = takeSandbox(c);
 	try {
 		const { sandboxes } = await layerOf(c, meta);
 		if (!c.vars.idling && (!hostedLimitsApply(meta.place) || meta.meter) && (await sandboxes.state(meta.sandboxId)) === "running") {
@@ -1643,6 +1657,8 @@ async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, f
 		}
 	} catch (error) {
 		c.log.warn({ msg: "could not read whether the workspace has commits to push", error: describeError(error) });
+	} finally {
+		release();
 	}
 	if (value !== null) {
 		c.vars.unpushed = { key, value };
@@ -3530,19 +3546,30 @@ async function giveBack(c: Ctx, meta: SessionMeta, key: string, slot: string): P
 async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: string): Promise<void> {
 	const row = await inboxRow(c.db, key);
 	if (row?.state === "started" && row.slot === slot) return;
+	// The same delivery sent again (a call that failed is sent again) while this session takes or runs it: the slot is that turn's, and stays.
+	if (c.vars.delivering === key || c.vars.turn?.item?.row.key === key) return;
 	if (row?.state !== "waiting" || c.vars.turn || c.vars.accepting || c.vars.publishing || c.vars.destroying) {
 		await giveBack(c, meta, key, slot);
 		return;
 	}
 	c.vars.accepting = true;
+	c.vars.delivering = key;
 	// The sandbox is this delivery's from here, and its turn's to the end, as for a person's prompt.
 	let release: (() => void) | null = takeSandbox(c);
 	try {
 		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
-		// Accepted. From here to the transaction nothing is awaited.
+		// The row is claimed before anything of the turn is: a withdrawal that came while the sandbox was being had leaves no
+		// waiting row to claim, and the slot goes back with nothing started. Nothing else takes a turn meanwhile (`accepting`).
 		const turn = meta.turns + 1;
+		const claimed = await c.db.execute<{ key: string }>("UPDATE inbox SET state = 'started', turn = ?, slot = ? WHERE key = ? AND state = 'waiting' RETURNING key", turn, slot, key);
+		if (claimed.length === 0) {
+			console.log(`[wlp] inbox.withdrawn_while_taken session=${meta.sessionId} key=${key}`);
+			await giveBack(c, meta, key, slot);
+			return;
+		}
+		// Accepted. From here to the transaction nothing is awaited.
 		const now = Date.now();
 		meta.turns = turn;
 		meta.status = "starting";
@@ -3572,6 +3599,7 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		if (error instanceof UserError && ["allowance_used", "too_many_sandboxes", "usage_unavailable"].includes(String(error.code))) void c.keepAwake(askForSlot(c, meta, row));
 	} finally {
 		c.vars.accepting = false;
+		c.vars.delivering = null;
 		release?.();
 	}
 }
