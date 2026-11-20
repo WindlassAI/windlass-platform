@@ -3411,6 +3411,8 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 	// The sandbox is this prompt's from here, and its turn's to the end: no idle check takes it meanwhile.
 	let release: (() => void) | null = takeSandbox(c);
 	let claimed = false;
+	/** The running slot's claim, by the name (a generation) the user's actor gave it; null where there is no lease (a machine's session). */
+	let claimName: number | null = null;
 	try {
 		// A suspend or removal of the idle sandbox finishes first; the turn then resumes or recreates it.
 		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
@@ -3439,9 +3441,10 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 		const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId);
 		if (!claim.known || c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		if (!claim.ok) {
-			throw new UserError(`You already have ${claim.running} agents working, which is your limit. Wait for one to finish, or stop one.`, { code: "too_many_running" });
+			throw new UserError(`You already have ${claim.running === 1 ? "1 agent" : `${claim.running} agents`} working, which is your limit. Wait for one to finish, or stop one.`, { code: "too_many_running" });
 		}
 		claimed = true;
+		claimName = claim.claim ?? null;
 		// Time for the sandbox to run on, and a place for one the session does not have: refused here, before anything is started.
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
@@ -3473,9 +3476,21 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 			meta.status = "idle";
 			meta.turnStartedAt = null;
 		}
-		// Hands back the place among the user's running sessions, if one was taken.
-		if (claimed) publish(c);
-		else if (!(error instanceof UserError)) void report(c);
+		if (claimed) {
+			publish(c);
+			// The place among the user's running sessions is handed back now (`internalReleaseRun`), by the claim's name, so that
+			// a late one cannot free a newer claim. One that does not arrive (an older server, the user's actor away) leaves it
+			// to the launch check, a minute after the claim.
+			if (claimName !== null) {
+				const released = userActor(c, meta.uid)
+					.internalReleaseRun({ sessionId: meta.sessionId, claim: claimName, summary: summaryOf(meta) })
+					.then(
+						() => undefined,
+						(failure: unknown) => c.log.warn({ msg: "could not give back the running slot", error: describeError(failure) }),
+					);
+				if (!c.vars.stopping) void c.keepAwake(released);
+			}
+		} else if (!(error instanceof UserError)) void report(c);
 		throw clientError(c.log, error, "The prompt could not be started. Try again.");
 	} finally {
 		c.vars.accepting = false;

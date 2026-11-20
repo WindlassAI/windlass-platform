@@ -353,7 +353,12 @@ async function serviceUser(server: Server, uid: string) {
 	// Signed with the server's secret: this process has it as WLP_SECRET (`Server`'s constructor).
 	assert(process.env.WLP_SECRET === server.secret, "this process does not have the server's secret");
 	const { serviceParams } = await import("../server/src/auth.js");
-	return newClient().user.get([uid], { params: serviceParams() }) as unknown as { internalRelease(sessionId: string): Promise<void>; internalSessionChanged(summary: SessionSummary): Promise<void> };
+	return newClient().user.get([uid], { params: serviceParams() }) as unknown as {
+		internalRelease(sessionId: string): Promise<void>;
+		internalSessionChanged(summary: SessionSummary): Promise<void>;
+		internalAcquireRun(sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until?: number | null; claim?: number | null }>;
+		internalReleaseRun(input: { sessionId: string; claim: number; summary: SessionSummary }): Promise<{ released: boolean }>;
+	};
 }
 
 /** Puts a session's actor to sleep through the control plane, as the lifecycle documentation describes. */
@@ -681,7 +686,8 @@ async function main(server: Server | null): Promise<void> {
 		const fake: SessionSummary = { id: "s_x", title: "x", place: { kind: "hosted" }, profile: "docker-hardened", model: "m", repoUrl: null, createdAt: 0, updatedAt: 0, status: "idle", turns: 0, lastOutcome: null, sandbox: "none" };
 		await refused(() => userHandle.internalSessionChanged(fake), "forbidden");
 		await refused(() => userHandle.internalAcquireRun("s_x"), "forbidden");
-		return "user.internalSessionChanged, user.internalAcquireRun";
+		await refused(() => userHandle.internalReleaseRun({ sessionId: "s_x", claim: 1, summary: fake }), "forbidden");
+		return "user.internalSessionChanged, user.internalAcquireRun, user.internalReleaseRun";
 	});
 	await check("auth: an actor made by an unauthenticated call does not stay", async () => {
 		const stranger = `u_${randomBytes(10).toString("hex")}`;
@@ -2297,6 +2303,7 @@ async function main(server: Server | null): Promise<void> {
 		"a sandbox made by a create whose answer was lost is removed by its session's delete",
 		"a sandbox found gone is replaced only with a place of its own: at the cap the replacement is refused",
 		"a free with a prompt sent at the same moment: the prompt's sandbox and its place survive",
+		"a prompt refused for a place gives its running slot back at once, and a late release leaves a newer claim",
 	];
 	if (server && FAKE) {
 		// Removing a sandbox takes PROVIDER_MS here, so that a prompt sent during a free arrives while the session removes it.
@@ -2387,6 +2394,51 @@ async function main(server: Server | null): Promise<void> {
 				return `the old sandbox freed, the prompt's ${made} kept with its place`;
 			} finally {
 				await theirs.deleteSession(freed.id).catch(() => undefined);
+			}
+		});
+
+		await check(OWNER_CHECKS[3], async () => {
+			const holder = await theirs.createSession({ profile: availableProfile as never, title: "Holds the one place" });
+			const refusedOne = await theirs.createSession({ profile: availableProfile as never, title: "Refused a place" });
+			try {
+				assert((await turnOf(holder.id, "Write a short program")).outcome === "succeeded", "the first turn failed");
+				// No sandbox yet, and the one place is taken: the slot is claimed, then the place is refused (holdSandbox).
+				const session = client.agentSession.get([someone.profile.uid, refusedOne.id], { params: { token: someone.token } });
+				await refused(() => session.prompt({ text: "Write a short program" }), "too_many_sandboxes");
+				const listed = async () => (await theirs.listSessions()).find((entry) => entry.id === refusedOne.id)?.status;
+				const at = Date.now();
+				// Without the release it is listed as starting until the launch check, LAUNCH_LEASE_MS (60 s) after the claim.
+				await waitFor("the refused session to be listed idle again", async () => (await listed()) === "idle", 5_000, 100);
+				const freedAfter = Date.now() - at;
+				// The user's actor stores the idle summary before it writes its log line: the line is waited for too.
+				const released = () => lines(`\\[wlp\\] run\\.released uid=\\S+ session=${refusedOne.id}`).length;
+				await waitFor("the release to be logged", async () => released() > 0, 5_000, 100);
+				assert(released() === 1, "the release was not logged once");
+
+				// Two claims, and the first one's release arriving late: it leaves the second alone.
+				const service = await serviceUser(server, someone.profile.uid);
+				const first = await service.internalAcquireRun(refusedOne.id);
+				const second = await service.internalAcquireRun(refusedOne.id);
+				assert(first.ok && second.ok && typeof first.claim === "number" && typeof second.claim === "number" && second.claim > first.claim, `claims ${plain(first)} then ${plain(second)}`);
+				const summary = (await session.snapshot()).summary;
+				const late = await service.internalReleaseRun({ sessionId: refusedOne.id, claim: first.claim, summary });
+				assert(!late.released && (await listed()) === "starting", `the late release ${plain(late)} left it ${await listed()}`);
+				const own = await service.internalReleaseRun({ sessionId: refusedOne.id, claim: second.claim, summary });
+				assert(own.released && (await listed()) === "idle", `its own release ${plain(own)} left it ${await listed()}`);
+				const again = await service.internalReleaseRun({ sessionId: refusedOne.id, claim: second.claim, summary });
+				assert(!again.released, "a second release of the same claim released something");
+				// Acquire, release, acquire, as fast as the actor takes them (one millisecond, often): the new claim has a name of its own,
+				// so a late release of the one before it frees nothing.
+				const third = await service.internalAcquireRun(refusedOne.id);
+				await service.internalReleaseRun({ sessionId: refusedOne.id, claim: third.claim as number, summary });
+				const fourth = await service.internalAcquireRun(refusedOne.id);
+				const stale = await service.internalReleaseRun({ sessionId: refusedOne.id, claim: third.claim as number, summary });
+				assert(fourth.claim !== third.claim && !stale.released && (await listed()) === "starting", `claims ${third.claim}, ${fourth.claim}; the late release ${plain(stale)}`);
+				await service.internalReleaseRun({ sessionId: refusedOne.id, claim: fourth.claim as number, summary });
+				return `listed idle ${freedAfter} ms after the refusal; a late release kept the newer claim, its own freed it`;
+			} finally {
+				await theirs.deleteSession(holder.id).catch(() => undefined);
+				await theirs.deleteSession(refusedOne.id).catch(() => undefined);
 			}
 		});
 	} else {

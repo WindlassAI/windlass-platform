@@ -175,6 +175,14 @@ interface UserVars {
 	sessions: Map<string, SessionSummary>;
 	launchUntil: Map<string, number>;
 	/**
+	 * The name of each session's outstanding launch claim (`internalAcquireRun`), what `internalReleaseRun`
+	 * is given back: a generation from a counter stored with the actor (`launch_counter`), so two claims
+	 * never share one, not even made in one millisecond or across a reload. Goes with the claim's lease.
+	 */
+	launchClaim: Map<string, number>;
+	/** The last generation handed out, as `launch_counter` has it. */
+	launchGen: number;
+	/**
 	 * The sessions that were created with a key (submissions.ts), by that key: the digest of what was
 	 * asked for, and the session it made. As the `sessions` table has them, one for each such session
 	 * and for as long as that session exists: a `createSession` with one of these keys answers with
@@ -332,6 +340,7 @@ async function storeReport(c: UserCtx, summary: SessionSummary, checkedAt = 0): 
 		summary = { ...summary, status: "starting" };
 	} else {
 		c.vars.launchUntil.delete(summary.id);
+		c.vars.launchClaim.delete(summary.id);
 	}
 	c.vars.sessions.set(summary.id, summary);
 	await c.db.execute("UPDATE sessions SET summary = ?, launch_until = ? WHERE id = ?", JSON.stringify(summary), c.vars.launchUntil.get(summary.id) ?? null, summary.id);
@@ -1124,10 +1133,13 @@ export const user = actor({
 				["sessions", "key", "TEXT"],
 				["sessions", "sent", "TEXT"],
 				["sessions", "launch_until", "INTEGER"],
+				["sessions", "launch_claim", "INTEGER"],
 			] as const) {
 				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
 				if (!columns.some((found) => found.name === column)) await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 			}
+			// The last launch claim's generation (`UserVars.launchClaim`): kept on its own, so that it only ever grows.
+			await db.execute("CREATE TABLE IF NOT EXISTS launch_counter (id INTEGER PRIMARY KEY CHECK (id = 1), last INTEGER NOT NULL)");
 			// The deleted sessions whose copy in the bucket is still to be removed: how often this actor
 			// tried, when it tries next, and the schedule that is to do it.
 			await db.execute(`
@@ -1174,15 +1186,18 @@ export const user = actor({
 
 	createVars: async (c): Promise<UserVars> => {
 		const [row] = await c.db.execute<{ uid: string; email: string | null; demo: number }>("SELECT uid, email, demo FROM profile WHERE id = 1");
-		const rows = await c.db.execute<{ summary: string; key: string | null; sent: string | null; launch_until: number | null }>("SELECT summary, key, sent, launch_until FROM sessions");
+		const rows = await c.db.execute<{ summary: string; key: string | null; sent: string | null; launch_until: number | null; launch_claim: number | null }>("SELECT summary, key, sent, launch_until, launch_claim FROM sessions");
 		const launchUntil = new Map<string, number>();
+		const launchClaim = new Map<string, number>();
+		const [counter] = await c.db.execute<{ last: number }>("SELECT last FROM launch_counter WHERE id = 1");
 		const sessions = new Map<string, SessionSummary>();
 		const created = new Map<string, Submission & { id: string }>();
-		for (const { summary, key, sent, launch_until } of rows) {
+		for (const { summary, key, sent, launch_until, launch_claim } of rows) {
 			const parsed = JSON.parse(summary) as SessionSummary;
 			if (parsed.place === undefined) parsed.place = { kind: "hosted" };
 			sessions.set(parsed.id, parsed);
 			if (launch_until !== null) launchUntil.set(parsed.id, launch_until);
+			if (launch_until !== null && launch_claim !== null) launchClaim.set(parsed.id, launch_claim);
 			if (key !== null && sent !== null) created.set(key, { key, sent, id: parsed.id });
 		}
 		// An actor that holds a sign-in is a user's, also before that user's own token was seen here.
@@ -1190,7 +1205,7 @@ export const user = actor({
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, launchUntil, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, items: await loadItems(c.db) };
+		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, items: await loadItems(c.db) };
 	},
 
 	events: {
@@ -1365,6 +1380,7 @@ export const user = actor({
 				}
 			}
 			c.vars.launchUntil.delete(id);
+			c.vars.launchClaim.delete(id);
 			await c.db.execute("DELETE FROM sessions WHERE id = ?", id);
 		// The key it was created with went with its row: the same key makes a new session from here.
 		for (const [key, made] of c.vars.created) if (made.id === id) c.vars.created.delete(key);
@@ -2066,7 +2082,7 @@ export const user = actor({
 			queueChanged(c);
 		},
 
-		internalAcquireRun: async (c, sessionId: string): Promise<{ ok: boolean; running: number; known: boolean }> => {
+		internalAcquireRun: async (c, sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until?: number | null; claim?: number | null }> => {
 			requireService(c);
 			const uid = c.key[0];
 			// An item session's turn holds a slot of the turn queue (user-items.ts), counted here instead of by its summary.
@@ -2102,14 +2118,43 @@ export const user = actor({
 			const running = others().length;
 			if (hostedLimitsApply(entry.place) && atLimit()) return { ok: false, running: running + factorySlots(c), known: true };
 			const claimed: SessionSummary = { ...entry, turns: own?.turns ?? entry.turns, status: entry.status === "idle" ? "starting" : entry.status };
-			const until = hostedLimitsApply(entry.place) ? Date.now() + LAUNCH_LEASE_MS : null;
+			// The lease lapses at `until` (`internalCheckLaunch`); the claim is named by its generation (`internalReleaseRun`), one more
+			// than any claim before it, taken in this same step: the time names nothing, since two claims can share a millisecond.
+			const until = hostedLimitsApply(entry.place) ? Math.max(Date.now() + LAUNCH_LEASE_MS, (c.vars.launchUntil.get(sessionId) ?? 0) + 1) : null;
+			const claim = until === null ? null : ++c.vars.launchGen;
 			if (until !== null) c.vars.launchUntil.set(sessionId, until);
+			if (claim !== null) c.vars.launchClaim.set(sessionId, claim);
 			c.vars.sessions.set(sessionId, claimed);
 
+			if (claim !== null) await c.db.execute("INSERT INTO launch_counter (id, last) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET last = MAX(last, excluded.last)", claim);
 			if (until !== null) await c.schedule.at(until, "internalCheckLaunch", sessionId, until);
-			await c.db.execute("UPDATE sessions SET summary = ?, launch_until = ? WHERE id = ?", JSON.stringify(claimed), until, sessionId);
+			await c.db.execute("UPDATE sessions SET summary = ?, launch_until = ?, launch_claim = ? WHERE id = ?", JSON.stringify(claimed), until, claim, sessionId);
 			broadcastSessions(c);
-			return { ok: true, running: running + factorySlots(c) + 1, known: true };
+			return { ok: true, running: running + factorySlots(c) + 1, known: true, until, claim };
+		},
+
+		/**
+		 * Gives back the running slot `internalAcquireRun` claimed for a prompt that the session then refused
+		 * (its sandbox time or its place, or a delete meanwhile), so that the user's other agents are not kept
+		 * from starting until the launch check, a minute later. Only the claim named by `claim` is given back:
+		 * a release that arrives after a newer claim of the same session, or after a report or the launch
+		 * check settled this one, finds another name or none, and changes nothing. `summary` is the session's
+		 * own after the refusal. A release that never arrives leaves the claim to the launch check, as before.
+		 */
+		internalReleaseRun: async (c, input: { sessionId: string; claim: number; summary: SessionSummary }): Promise<{ released: boolean }> => {
+			requireService(c);
+			const sessionId = input?.sessionId;
+			if (typeof sessionId !== "string" || typeof input.claim !== "number" || input.summary?.id !== sessionId) {
+				throw new UserError("A session, its claim and its summary are needed.", { code: "bad_request" });
+			}
+			// From the check to the delete nothing is awaited: a claim made meanwhile cannot be the one released.
+			if (c.vars.launchClaim.get(sessionId) !== input.claim) return { released: false };
+			c.vars.launchUntil.delete(sessionId);
+			c.vars.launchClaim.delete(sessionId);
+			await storeReport(c, input.summary);
+			queueChanged(c);
+			console.log(`[wlp] run.released uid=${c.key[0]} session=${sessionId}`);
+			return { released: true };
 		},
 
 		// --- sandbox time and kept sandboxes, for the user's sessions (usage.ts) --------------------
