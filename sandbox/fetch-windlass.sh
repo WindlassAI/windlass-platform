@@ -21,9 +21,9 @@ set -eu
 
 case "${1:-}" in
   "")
-    RELEASE=v0.3.0
-    SUM_x64=2adc2fd31e255751e2ed8a95b0a3d87aac83986d3f45e25df3d9d6390ca31609
-    SUM_arm64=32638370f63812bbc71180e6ecac5143647a726e36df392a4b6a00cb9d09bc97
+    RELEASE=v0.4.0
+    SUM_x64=89cd02784e86223c50670267dacd0f417dad7112b6876918ed56ca73a1215a4c
+    SUM_arm64=a511c3edaba0301d77d96d965552d42adf00a07ff750a720e3c1385b573ff35a
     ;;
   older)
     RELEASE=v0.2.0

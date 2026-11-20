@@ -12,7 +12,7 @@ conversation and drives a Windlass process inside a sandbox.
 
 ## Run it
 
-You need Node 22 or later, pnpm and Docker. The Windlass the platform runs is the released 0.3.0, which the
+You need Node 22 or later, pnpm and Docker. The Windlass the platform runs is the released 0.4.0, which the
 build scripts fetch by themselves (`sandbox/fetch-windlass.sh`: the release is pinned there by tag and by the
 SHA-256 of each executable, and a file that does not match is not installed).
 
