@@ -45,17 +45,20 @@ function Empty({ summary, profile, onSuggest }: { summary: SessionSummary; profi
 				) : (
 					", in an empty repository"
 				)}
-				. The sandbox is created when you send the first prompt.
+				. The sandbox is created when {summary.item ? "its work item sends" : "you send"} the first prompt.
 			</p>
-			<ul className="starters" aria-label="Prompts to start with">
-				{STARTERS.map((text) => (
-					<li key={text}>
-						<button type="button" className="starter" onClick={() => onSuggest(text)}>
-							{text}
-						</button>
-					</li>
-				))}
-			</ul>
+			{/* A work item's agent takes its prompts from the item's steps, never from here. */}
+			{summary.item ? null : (
+				<ul className="starters" aria-label="Prompts to start with">
+					{STARTERS.map((text) => (
+						<li key={text}>
+							<button type="button" className="starter" onClick={() => onSuggest(text)}>
+								{text}
+							</button>
+						</li>
+					))}
+				</ul>
+			)}
 		</div>
 	);
 }

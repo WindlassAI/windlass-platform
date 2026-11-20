@@ -1260,6 +1260,30 @@ button.output-more:hover {
 	color: var(--ink-dim);
 }
 
+/*
+ * A work item's agent has this line in the composer's place: its prompts are the item's. Ruled above
+ * and quiet, in the hint's ink, with Stop at its end while a turn runs.
+ */
+.composer-item {
+	padding-top: 0;
+}
+.item-note {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px 16px;
+	min-height: 46px;
+	padding: 10px 4px 0;
+	border-top: 1px solid var(--line);
+}
+.item-note-text {
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.item-note .button {
+	flex: none;
+}
+
 /* ---- side panel ----------------------------------------------------------------------------- */
 
 /*

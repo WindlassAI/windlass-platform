@@ -11,6 +11,10 @@
  * again unchanged goes with the key it was sent with first, so the server takes it once even when
  * the first attempt did arrive and only its answer was lost. A message whose text changed is a new
  * submission, with a key of its own (lib/submission.ts).
+ *
+ * A work item's agent takes no prompt from a person: the item's steps send them, and the server
+ * refuses any other (`item_session`). Its page has `ItemNote` in the composer's place: one quiet line
+ * that says so and links to the item, with Stop beside it while a turn runs, which the server allows.
  */
 import { MAX_PROMPT_CHARS, type ModelList, type PromptInput, type SessionStatus } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
@@ -61,6 +65,51 @@ function UsageLink() {
 		<a className="link" {...linkProps({ name: "usage" })}>
 			Usage
 		</a>
+	);
+}
+
+/** In the composer's place on a work item's agent: what sends its prompts, the way to the item, and Stop while a turn runs. */
+export function ItemNote({ item, status, online, onStop }: { item: { id: string }; status: SessionStatus; online: boolean; onStop(): Promise<void> }) {
+	const [error, setError] = useState<string | null>(null);
+	const [stopping, setStopping] = useState(false);
+	const idle = status === "idle";
+	useEffect(() => {
+		if (idle) setStopping(false);
+	}, [idle]);
+	const stop = async () => {
+		setStopping(true);
+		setError(null);
+		try {
+			await onStop();
+		} catch (failure) {
+			setError(failure instanceof Error ? failure.message : "The turn could not be stopped.");
+			setStopping(false);
+		}
+	};
+	return (
+		<div className="composer composer-item">
+			{error ? (
+				<p className="composer-error" role="alert">
+					<WarnIcon size={14} />
+					<span>{error}</span>
+				</p>
+			) : null}
+			<div className="item-note">
+				<p className="item-note-text">
+					This agent works for a{" "}
+					<a className="link" {...linkProps({ name: "item", id: item.id })}>
+						work item
+					</a>
+					, whose steps send its prompts.
+				</p>
+				{!idle ? (
+					<button type="button" className="button button-stop button-small" onClick={stop} disabled={status === "stopping" || stopping || !online} title="The item tries this step again. To end its work, cancel the item.">
+						<StopIcon size={13} />
+						<span>{status === "stopping" || stopping ? "Stopping" : "Stop the turn"}</span>
+					</button>
+				) : null}
+			</div>
+		</div>
 	);
 }
 

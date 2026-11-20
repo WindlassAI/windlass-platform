@@ -10,6 +10,10 @@
  * question about that is Question.tsx's). Whether that is asked about each time is the session's own
  * setting, which stands here under the button and, for a session that is being launched, in the
  * launch form: one check box and one sentence.
+ *
+ * A work item's agent files a `report` and never asks to publish: the item's own step pushes and
+ * opens or updates the pull request. The setting means nothing there, so its place has one line that
+ * says whose the pull request is. "Open pull request" stays, as the server takes it for any session.
  */
 import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, type PublishState, type PullRequestInfo, type SandboxProfile, type SessionSummary } from "@contract";
 import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
@@ -321,7 +325,7 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 					</button>
 				</>
 			)}
-			<AgentPublishing sessionId={sessionId} summary={summary} profile={profile} />
+			{summary.item ? <p className="panel-empty gh-item-note">The work item's steps push the work and open or update the pull request.</p> : <AgentPublishing sessionId={sessionId} summary={summary} profile={profile} />}
 			{dialog && state ? (
 				<PublishDialog
 					sessionId={sessionId}

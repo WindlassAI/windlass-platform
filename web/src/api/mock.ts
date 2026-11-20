@@ -678,6 +678,9 @@ const SCRIPTS = {
 
 type ScriptName = keyof typeof SCRIPTS;
 
+/** The server's refusal of a prompt to a work item's agent (`prompt` in agent-session.ts), word for word. */
+export const ITEM_SESSION_PROMPT = "This agent works for a work item, whose steps send its prompts. Answer the item, or send its work back with a note.";
+
 /** What an unrecognised prompt plays, in turn. */
 const ROTATION: ScriptName[] = ["fix", "parallel", "checks", "steps", "build", "answer"];
 
@@ -3321,6 +3324,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			async prompt(input: PromptInput) {
 				await latency(180);
 				const { world, session } = find();
+				// As the server: a work item's agent takes its prompts from the item's steps only, and this is asked before anything else.
+				if (session.summary.item) throw new PlatformError("user", ITEM_SESSION_PROMPT, { reason: "item_session" });
 				const text = input.text.trim();
 				if (text === "") throw new PlatformError("user", "Write something for the agent to do.");
 				if (text.length > MAX_PROMPT_CHARS) throw new PlatformError("user", `A prompt can be at most ${MAX_PROMPT_CHARS.toLocaleString("en")} characters.`);

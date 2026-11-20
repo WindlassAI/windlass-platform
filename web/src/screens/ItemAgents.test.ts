@@ -8,15 +8,19 @@ import type { AuthResult, ItemSummary, SessionSummary } from "@contract";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMockClient, type MockClient } from "../api/mock";
-import { saveAuth } from "../lib/authStore";
+import { ITEM_SESSION_PROMPT, createMockClient, type MockClient } from "../api/mock";
+import { loadAuth, saveAuth } from "../lib/authStore";
 import { AppProvider } from "../state/app";
 import { Home } from "./Home";
 import { Item, useItem } from "./Item";
 import { Repository, useRepository } from "./Repository";
+import { Session, useSessionMachine } from "./Session";
+import { useSession } from "../state/hooks";
 import { Usage } from "./Usage";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+// jsdom lays nothing out: the conversation's scrolling to its end has nothing to do.
+Element.prototype.scrollTo ??= () => {};
 
 let host: HTMLElement;
 let root: Root;
@@ -125,5 +129,55 @@ describe("a work item's agent session", () => {
 		const clock = (text: string | null | undefined) => (text ?? "").split(":").reduce((sum, part) => sum * 60 + Number(part), 0);
 		const counted = [...table.querySelectorAll("tbody tr")].reduce((sum, tr) => sum + clock(tr.querySelector("td")?.textContent), 0);
 		expect(counted).toBe(clock(table.querySelector("tfoot td")?.textContent));
+	});
+
+	it("has no prompt box on its page: one line says its item's steps send its prompts, with the way to the item, and the server's controls stay", async () => {
+		let shown = "";
+		await render(() => {
+			const working = items.find((one) => one.state === "working" && sessions.some((session) => session.id === one.sessionId && session.status === "running")) as ItemSummary;
+			shown = working.sessionId as string;
+			const state = useSession(shown);
+			return createElement(Session, { sessionId: shown, state, machine: useSessionMachine(state.summary?.place) });
+		});
+		const item = items.find((one) => one.sessionId === shown) as ItemSummary;
+		expect(host.querySelector("main.session")).not.toBeNull();
+		// No field, no Send or Steer, no model or effort to choose, no prompts to start with.
+		expect(host.querySelector(".session-main textarea")).toBeNull();
+		expect(host.querySelector(".composer-box, .composer-foot, .starters")).toBeNull();
+		expect([...host.querySelectorAll("button")].map((button) => button.textContent)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^(Send|Steer)/)]));
+		const note = host.querySelector(".item-note") as HTMLElement;
+		expect(note.querySelector(".item-note-text")?.textContent).toBe("This agent works for a work item, whose steps send its prompts.");
+		expect(linksTo(note, `/items/${item.id}`).map((link) => link.textContent)).toEqual(["work item"]);
+		// Stop is the server's to allow, and it does: while the item's turn runs it is there, and says what stopping means for an item.
+		const stop = [...note.querySelectorAll("button")].find((button) => button.textContent === "Stop the turn") as HTMLButtonElement;
+		expect(stop).toBeDefined();
+		expect(stop.title).toBe("The item tries this step again. To end its work, cancel the item.");
+		// The panel: the pull request is the item's to open, and the setting to publish unasked, which its agent never asks, is not there.
+		const panel = host.querySelector("aside#details") as HTMLElement;
+		expect(panel.textContent).not.toContain("Let the agent publish without asking");
+		expect(panel.querySelector(".gh-item-note")?.textContent).toBe("The work item's steps push the work and open or update the pull request.");
+		// And the server would refuse a prompt in any case: the mock does, in its words.
+		const auth = loadAuth("mock") as AuthResult;
+		const sent = client.session(auth, shown).prompt({ text: "Do something else" }).then(
+			() => null,
+			(error: unknown) => error,
+		);
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(await sent).toMatchObject({ message: ITEM_SESSION_PROMPT, reason: "item_session" });
+		expect(ITEM_SESSION_PROMPT).toBe("This agent works for a work item, whose steps send its prompts. Answer the item, or send its work back with a note.");
+	});
+
+	it("says on an idle item agent's page what sends its prompts, with no Stop", async () => {
+		let shown = "";
+		await render(() => {
+			const idle = sessions.find((session) => session.item !== undefined && session.status === "idle") as SessionSummary;
+			shown = idle.id;
+			const state = useSession(shown);
+			return createElement(Session, { sessionId: shown, state, machine: useSessionMachine(state.summary?.place) });
+		});
+		const note = host.querySelector(".item-note") as HTMLElement;
+		expect(note.textContent).toBe("This agent works for a work item, whose steps send its prompts.");
+		expect(note.querySelector("button")).toBeNull();
+		expect(host.querySelector(".session-main textarea")).toBeNull();
 	});
 });

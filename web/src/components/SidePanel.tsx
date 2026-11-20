@@ -271,7 +271,7 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 				) : null}
 			</h2>
 			{!hasSandbox ? (
-				<p className="panel-empty">The sandbox is created on the first prompt. Files the agent changes will be listed here.</p>
+				<p className="panel-empty">The sandbox is created on {summary.item ? "the work item's first prompt" : "the first prompt"}. Files the agent changes will be listed here.</p>
 			) : error ? (
 				<p className="panel-empty tone-bad" role="alert">
 					<WarnIcon size={13} /> {error}

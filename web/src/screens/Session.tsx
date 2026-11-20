@@ -6,10 +6,15 @@
  * last found is in its snapshot (`SessionSnapshot.machine`) and then in its `machine` event, each time
  * that changes. Whether the machine is offline or gone is also in the user's live list of machines,
  * which is read for such a session only.
+ *
+ * A work item's agent (`SessionSummary.item`) is the item's: the server takes no prompt for it, so
+ * the page has no composer, and says in its place that the item's steps send its prompts, with the
+ * way to the item (`ItemNote`). What the server does allow there stays: Stop while a turn runs, a tool
+ * call's stop, the answers to its questions, and the panel's pull request and servers.
  */
 import { USAGE_LOW_SHARE, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
 import { useCallback, useMemo, useState } from "react";
-import { Composer } from "../components/Composer";
+import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
 import { ArrowLeftIcon, Mark, WarnIcon } from "../components/Icons";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
@@ -66,8 +71,8 @@ export function SessionCrumb({ title, status, place, machine, item }: { title: s
  * says what the session last found, the live list whether the machine is offline now or gone; a machine
  * the list says came back after what the snapshot found is not reported.
  */
-function machineNote(reach: SessionSnapshot["machine"], machine: MachineSummary | null | undefined, sandbox: SessionSummary["sandbox"], now: number): { text: string; removed: boolean } | null {
-	if (reach?.state === "removed" || machine === null) return { removed: true, text: "This agent's machine was removed. Its files were there. Start a new agent to go on." };
+function machineNote(reach: SessionSnapshot["machine"], machine: MachineSummary | null | undefined, sandbox: SessionSummary["sandbox"], now: number, item = false): { text: string; removed: boolean } | null {
+	if (reach?.state === "removed" || machine === null) return { removed: true, text: `This agent's machine was removed. Its files were there.${item ? "" : " Start a new agent to go on."}` };
 	const named = machine ? `Your machine "${machine.name}"` : "Your machine";
 	const back = reach != null && machine?.status === "online" && machine.since >= reach.since;
 	if (reach?.state === "not_answering" && !back) {
@@ -75,7 +80,7 @@ function machineNote(reach: SessionSnapshot["machine"], machine: MachineSummary 
 	}
 	const offline = machine?.status === "offline" ? machine.since : reach?.state === "offline" && !back ? reach.since : null;
 	if (offline === null) return null;
-	return { removed: false, text: `${named} is offline since ${clockTime(offline, now)}.${sandbox === "none" ? "" : " The agent's files are there."} Send a prompt once it is back.` };
+	return { removed: false, text: `${named} is offline since ${clockTime(offline, now)}.${sandbox === "none" ? "" : " The agent's files are there."}${item ? "" : " Send a prompt once it is back."}` };
 }
 
 /** What the composer says about the user's limits before a prompt runs into one; null while there is nothing to say. */
@@ -117,6 +122,13 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 		},
 		[api, explain],
 	);
+	const stop = useCallback(async () => {
+		try {
+			await api.stop();
+		} catch (failure) {
+			throw new Error(explain(failure));
+		}
+	}, [api, explain]);
 	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online ? stopCall : null }), [flow, stopCall, online]);
 
 	if (state.phase === "missing") {
@@ -168,7 +180,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 	}
 
 	const { summary, profile, view } = state;
-	const reach = summary.place.kind === "machine" ? machineNote(state.machine, machine, summary.sandbox, Date.now()) : null;
+	const reach = summary.place.kind === "machine" ? machineNote(state.machine, machine, summary.sandbox, Date.now(), summary.item !== undefined) : null;
 
 	return (
 		<main className="session">
@@ -197,33 +209,31 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 					</p>
 				) : null}
 				<QuestionDock flow={flow} />
-				<Composer
-					status={summary.status}
-					online={online}
-					models={models.list}
-					model={summary.model}
-					initial={handover}
-					suggestion={suggestion}
-					limitNote={summary.place.kind === "machine" ? null : limitNote(allowance, summary)}
-					closed={reach?.removed ? "Its machine was removed, so this agent cannot run again." : null}
-					onSend={async (input) => {
-						try {
-							await api.prompt(input);
-						} catch (failure) {
-							setRefusals((value) => value + 1);
-							// `explain` signs out on a refused token; the composer reads the rest itself (`turn_running`).
-							explain(failure);
-							throw failure;
-						}
-					}}
-					onStop={async () => {
-						try {
-							await api.stop();
-						} catch (failure) {
-							throw new Error(explain(failure));
-						}
-					}}
-				/>
+				{summary.item ? (
+					<ItemNote item={summary.item} status={summary.status} online={online} onStop={stop} />
+				) : (
+					<Composer
+						status={summary.status}
+						online={online}
+						models={models.list}
+						model={summary.model}
+						initial={handover}
+						suggestion={suggestion}
+						limitNote={summary.place.kind === "machine" ? null : limitNote(allowance, summary)}
+						closed={reach?.removed ? "Its machine was removed, so this agent cannot run again." : null}
+						onSend={async (input) => {
+							try {
+								await api.prompt(input);
+							} catch (failure) {
+								setRefusals((value) => value + 1);
+								// `explain` signs out on a refused token; the composer reads the rest itself (`turn_running`).
+								explain(failure);
+								throw failure;
+							}
+						}}
+						onStop={stop}
+					/>
+				)}
 				<a className="to-details" href="#details">
 					Session details, tokens and changes
 				</a>

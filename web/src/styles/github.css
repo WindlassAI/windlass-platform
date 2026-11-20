@@ -427,6 +427,10 @@
 .gh-agent .panel-empty {
 	margin-top: 6px;
 }
+/* A work item's agent: in the setting's place, whose the pull request is. */
+.gh-item-note {
+	margin-top: 14px;
+}
 
 /* ---- the dialog a push is confirmed in ------------------------------------------------------------- */
 
