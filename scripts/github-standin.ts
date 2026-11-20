@@ -668,6 +668,11 @@ export class GithubStandin {
 			return pageOf("repositories", all, (repository) => this.repositoryJson(repository));
 		}
 
+		const byId = /^\/repositories\/(\d+)$/.exec(api);
+		if (byId && method === "GET") {
+			const repository = [...this.repositories.values()].find(repo => String(repo.id) === byId[1]);
+			return repository && this.allows(token, repository, "metadata", "read") ? answer(200, this.repositoryJson(repository)) : answer(404, { message: "Not Found" });
+		}
 		const scoped = /^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/.exec(api);
 		if (scoped) {
 			const repository = [...this.repositories.values()].find((candidate) => candidate.owner.toLowerCase() === (scoped[1] as string).toLowerCase() && candidate.name.toLowerCase() === (scoped[2] as string).toLowerCase());

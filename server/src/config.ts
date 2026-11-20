@@ -386,6 +386,7 @@ export function backupConfig(env: NodeJS.ProcessEnv = process.env): BackupConfig
 
 /** What `githubConfig` found: the GitHub App's public settings when all of it is configured. */
 export interface GithubConfig {
+	pollFallback: boolean;
 	webhook: { secrets: string[] } | null;
 	/** Null when the feature is off. Holds no secret: the client secret and the private key are read where they are used. */
 	app: { appId: string; slug: string; clientId: string; apiUrl: string; webUrl: string } | null;
@@ -410,7 +411,10 @@ export function githubConfig(env: NodeJS.ProcessEnv = process.env): GithubConfig
 	};
 	const current = webhookSecret("WLP_GITHUB_WEBHOOK_SECRET");
 	const previous = webhookSecret("WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS");
-	if (missing.length > 0) return { app: null, webhook: null, missing: missing.length === GITHUB_REQUIRED.length ? [] : missing };
+	const fallback = env.WLP_GITHUB_POLL_FALLBACK;
+	if (fallback !== undefined && fallback !== "1") throw new Error("WLP_GITHUB_POLL_FALLBACK must be 1 or unset");
+	if (fallback && !current) throw new Error("WLP_GITHUB_POLL_FALLBACK requires WLP_GITHUB_WEBHOOK_SECRET");
+	if (missing.length > 0) return { app: null, webhook: null, pollFallback: false, missing: missing.length === GITHUB_REQUIRED.length ? [] : missing };
 	const appId = read("WLP_GITHUB_APP_ID");
 	if (!/^[0-9]{1,20}$/.test(appId)) throw new Error("WLP_GITHUB_APP_ID must be the app's numeric id");
 	const slug = read("WLP_GITHUB_APP_SLUG");
@@ -433,7 +437,7 @@ export function githubConfig(env: NodeJS.ProcessEnv = process.env): GithubConfig
 	const webhook = current ? { secrets: previous ? [current, previous] : [current] } : null;
 	// Keep configuration dumps and JSON responses free of credentials.
 	if (webhook) Object.defineProperty(webhook, "secrets", { enumerable: false });
-	return { app: { appId, slug, clientId, apiUrl: address("WLP_GITHUB_API_URL", "https://api.github.com"), webUrl: address("WLP_GITHUB_URL", "https://github.com") }, webhook, missing: [] };
+	return { app: { appId, slug, clientId, apiUrl: address("WLP_GITHUB_API_URL", "https://api.github.com"), webUrl: address("WLP_GITHUB_URL", "https://github.com") }, webhook, pollFallback: fallback === "1", missing: [] };
 }
 
 /** The GitHub App's client secret, or null. Like the admin token it is not part of any configuration object. */

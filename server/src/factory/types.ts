@@ -36,6 +36,9 @@ export interface GateEvidence {
 
 /** CI of the head that was pushed last. */
 export interface CiProgress {
+	/** Older item rows predate webhook polling. */
+	webhooks?: boolean;
+	lastReadState?: CiState;
 	head: string;
 	/** When it was pushed: CI's waits (CI_POLLING) count from here. */
 	since: number;
@@ -64,7 +67,7 @@ export interface Run extends ItemRun {
 	lastFailure: string | null;
 	gate: GateEvidence | null;
 	ci: CiProgress | null;
-	review: { verdictId: string; head: string; refiles: number } | null;
+	review: { verdictId: string; head: string; refiles: number; prReads?: number } | null;
 }
 
 /** The work as the item was given it (`ItemTask`). */
@@ -181,12 +184,12 @@ export type Fact =
 	  }
 	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; review: ItemReview | null; said: string | null; refused?: string | null; spend: TurnSpend }
 	/** `openItems`: the user's items not done, failed or cancelled; it sets how often CI is polled. */
-	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string }; openItems: number }
+	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string }; openItems: number; webhooks: boolean }
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */
 	| { kind: "publish_failed"; at: number; key: string; said: string; transient: boolean }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
-	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; mergeable: boolean | null; prHead: string | null; openItems: number }
-	| { kind: "pr_read"; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null }
+	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
+	| { kind: "pr_read"; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
 	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
 	| { kind: "spent"; at: number; hostedSeconds: number };
 
@@ -205,7 +208,7 @@ export type Effect =
 	| { kind: "check_turn"; key: string; turn: string; at: number; to?: "review" }
 	/** Commit and push the session's branch, then open or update its pull request with the agent's report and the verified section. */
 	| { kind: "publish"; key: string; at?: number }
-	| { kind: "poll_ci"; key: string; head: string; at: number }
+	| { kind: "poll_ci"; key: string; head: string; at: number; notBefore?: number }
 	| { kind: "poll_pr"; key: string; pr: number; at: number }
 	/** Record the question and show it ("Needs you"). */
 	| { kind: "ask"; question: Question }

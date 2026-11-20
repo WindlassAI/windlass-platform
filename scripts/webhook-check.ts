@@ -32,12 +32,29 @@ async function testNode() {
 	// This probe deliberately has no action-level guard, so it observes the connection hook alone.
 	for (const definition of [githubAccount, githubRepository, githubInbox, githubHooks])
 		Object.assign(definition.config.actions!, { checkConnection: () => true });
+	const { CI_POLLING } = await import("../server/src/github/ci.js");
+	const { workItem } = await import("../server/src/actors/work-item.js");
+	const { agentSession } = await import("../server/src/actors/agent-session.js");
+	const session = agentSession.config.actions!;
+	const publish = session.internalPublish;
+	// The fake sandbox pushes a branch without a git SHA. Give each published test PR a stable full head.
+	session.internalPublish = async (c, input) => {
+		const answer = await publish(c, input);
+		return answer.kind === "published" ? { ...answer, head: answer.pr.number.toString(16).padStart(40, "0") } : answer;
+	};
+	type ItemCtx = Parameters<NonNullable<typeof workItem.config.actions>["internalView"]>[0];
+	Object.assign(workItem.config.actions!, {
+		checkPoll: async (c: ItemCtx) => {
+			requireServiceFor(c, "call");
+			return (await c.db.execute("SELECT id, due_at, effect FROM effects WHERE id LIKE 'poll_%'"))[0] ?? null;
+		},
+	});
 	const actions = githubInbox.config.actions!;
 	type Ctx = Parameters<typeof actions.internalReceive>[0];
 	const original = HANDLERS.installation!;
 	const failures = new Map<string, number>();
-	HANDLERS.installation = d => {
-		if (d.installationId !== RETRY_INSTALLATION) return original(d);
+	HANDLERS.installation = (d, c) => {
+		if (d.installationId !== RETRY_INSTALLATION) return original(d, c);
 		const tried = failures.get(d.guid) ?? 0;
 		failures.set(d.guid, tried + 1);
 		if (d.action === "suspended" || tried < 3) throw new Error("injected failure");
@@ -63,6 +80,12 @@ async function testNode() {
 		},
 	});
 	Object.assign(githubHooks.config.actions!, {
+		checkFallback: (c: Ctx, ms: number | null) => {
+			requireServiceFor(c, "call");
+			if (ms === null) delete process.env.WLP_GITHUB_POLL_FALLBACK;
+			else process.env.WLP_GITHUB_POLL_FALLBACK = "1";
+			Object.assign(CI_POLLING, { webhookEveryMs: ms ?? 300_000 });
+		},
 		checkStarted: async (c: Ctx) => {
 			requireServiceFor(c, "call");
 			const [r] = await c.db.execute<{ at: number }>("SELECT at FROM timer");
@@ -84,7 +107,7 @@ async function until<T>(label: string, probe: () => Promise<T>, timeout = 12_000
 
 async function run() {
 	const storage = mkdtempSync(join(tmpdir(), "wlp-webhook-check-"));
-	const standin = new GithubStandin({ callbackUrl: api + "/github/callback", slug: "windlass-fk4w" });
+	const standin = new GithubStandin({ callbackUrl: api + "/github/callback", slug: "windlass-fk4w", strictBranches: false });
 	await standin.start(checkPort(3433));
 	const secret = randomBytes(32).toString("hex"), previous = randomBytes(32).toString("hex");
 	const bodyMarker = "private-issue-" + randomUUID();
@@ -93,7 +116,7 @@ async function run() {
 		WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS: previous, WLP_SANDBOX: "fake", WLP_DEMO: "1", WLP_HTTP_PORT: String(checkPort(3431)),
 		RIVETKIT_STORAGE_PATH: storage, RIVET_RUN_ENGINE_PORT: String(engine), WLP_WEB_ORIGINS: origin, RIVET_LOG_LEVEL: "silent",
 	});
-	for (const key of ["RIVET_ADMIN_TOKEN", "RIVET_ENDPOINT", "RIVET_ENGINE", "PORT"]) delete process.env[key];
+	for (const key of ["RIVET_ADMIN_TOKEN", "RIVET_ENDPOINT", "RIVET_ENGINE", "PORT", "WLP_GITHUB_POLL_FALLBACK"]) delete process.env[key];
 	const { updateGithubAccount } = await import("../server/src/actors/github-account.js");
 	const { webhookRoute } = await import("../server/src/github/webhook.js");
 	const { createClient } = await import("../server/src/client.js");
@@ -102,7 +125,7 @@ async function run() {
 	const client = createClient<import("../server/src/registry.js").Registry>({ endpoint: base(engine) });
 	const service = () => ({ params: serviceParams() });
 	const inbox = (id: number | string) => client.githubInbox.getOrCreate([String(id)], service());
-	type Row = { data: string; repository: string | null; state: string; said: string; attempts: number; next_at: number };
+	type Row = { data: string; repository: string | null; state: string; said: string; attempts: number; next_at: number; received_at: number };
 	const fixture = (id: number | string) => inbox(id) as unknown as { checkRow(guid: string): Promise<Row | null>; checkFixture(op: string, guid: string): Promise<void> };
 	const shaPayload = { installation: { id: 91234 }, repository: { id: 123 }, sha: HEAD, state: "success", description: bodyMarker };
 	const web = api + "/github/webhook";
@@ -127,7 +150,7 @@ async function run() {
 		}
 	};
 	const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "--node"], {
-		cwd: fileURLToPath(new URL("../server", import.meta.url)), env: process.env, stdio: ["ignore", "pipe", "pipe"],
+		cwd: fileURLToPath(new URL("../server", import.meta.url)), env: { ...process.env, WLP_ITEMS: "1", WLP_FAKE_DELAY_MS: "10" }, stdio: ["ignore", "pipe", "pipe"],
 	});
 	let logs = "";
 	child.stdout.on("data", b => { logs += b.toString(); });
@@ -158,6 +181,138 @@ async function run() {
 		const accountContext = { client: () => client };
 		await updateGithubAccount(accountContext, "fixture", null, connection([91234, 92222, 92123, 92678]));
 		const absent = (e: unknown) => (e as { group?: string; code?: string })?.group === "actor" && (e as { code: string }).code === "not_found";
+		const owner = "g2-owner";
+		standin.addUser(owner);
+		const installation = standin.addInstallation(owner, "User");
+		const projectG2 = standin.addRepository({ owner, name: "factory", installation });
+		Object.assign(standin.appPermissions, { checks: "read", statuses: "read", actions: "read" });
+		const connectUser = async (login: string) => {
+			const auth = await client.login.getOrCreate([randomUUID()]).demo();
+			const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
+			const connect = await user.githubConnect({ origin });
+			const back = await fetch(standin.authorize(login, connect.url), { redirect: "manual" });
+			await user.githubComplete(back.headers.get("location")!.split("#github=")[1]);
+			return { uid: auth.profile.uid, user };
+		};
+		const { uid, user: g2User } = await connectUser(owner);
+		standin.addUser("g2-neighbour");
+		const neighbour = standin.addInstallation("g2-neighbour", "User");
+		standin.addRepository({ owner: "g2-neighbour", name: "other", installation: neighbour });
+		await connectUser("g2-neighbour");
+		const directory = () => client.githubRepository.getOrCreate([String(projectG2.id)], service());
+		const push = async () => {
+			const item = await g2User.createItem({ repository: { id: projectG2.id }, title: "A webhook check", body: "Add a short program.", start: true });
+			const handle = () => client.workItem.get([uid, item.id], service());
+			const poll = () => (handle() as unknown as { checkPoll(): Promise<{ id: string; due_at: number; effect: string } | null> }).checkPoll();
+			const published = await until("registered push", async () => {
+				const view = await g2User.item(item.id);
+				if (view.head && view.pullRequest && (await directory().internalFind({ head: view.head, installationId: installation.id })).some(r => r.itemId === item.id)) return { head: view.head, pr: view.pullRequest.number };
+			}, 45_000);
+			return { ...published, id: item.id, handle, poll, view: () => g2User.item(item.id) };
+		};
+		const delivered = async (event: string, fields: object, id: number | string = installation.id) => {
+			const guid = randomUUID();
+			const res = await standin.deliver(web, event, { installation: { id }, repository: { id: projectG2.id, name: "decoy", owner: { login: "decoy" } }, ...fields }, { secret, guid });
+			assert.deepEqual(await res.json(), { taken: true });
+			return until("handled " + event, async () => {
+				const row = await fixture(id).checkRow(guid);
+				return row && ["done", "ignored"].includes(row.state) ? row : null;
+			});
+		};
+		const countReads = (head: string) => standin.requests.filter(r => r.path.includes("/commits/" + head + "/check-runs")).length;
+		const ci = (head: string, state: string) => projectG2.ci.set(head, { runs: [], statuses: [{ context: "required", state }] });
+		await check("G2 signed CI and PR nudges, coalescing, installation isolation and live readings", async () => {
+			const item = await push();
+			const first = await item.poll(); assert.ok(first);
+			const initial = await item.view();
+			assert.equal(first.due_at - initial.events.find(e => e.said.startsWith("Pushed "))!.at, 60_000);
+			const suite = (head: string) => ({ action: "completed", check_suite: { head_sha: head, conclusion: "success" } });
+			const foreign = neighbour.id;
+			await directory().internalRegister({ uid, itemId: "i_missing", head: "f".repeat(40), installationId: installation.id });
+			const calls = standin.requests.length;
+			assert.equal((await delivered("check_suite", suite("f".repeat(40)))).said, "no item");
+			assert.deepEqual(await directory().internalFind({ head: "f".repeat(40) }), []);
+			assert.equal((await delivered("check_suite", suite(item.head), foreign)).said, "no item");
+			assert.deepEqual(await directory().internalFind({ head: item.head, installationId: foreign }), []);
+			const target = { kind: "ci" as const, repositoryId: projectG2.id, installationId: installation.id, head: item.head };
+			assert.equal(await item.handle().internalGithubNudge({ ...target, installationId: foreign }), false);
+			assert.equal(await item.handle().internalGithubNudge({ ...target, head: "f".repeat(40) }), false);
+			assert.deepEqual(await item.poll(), first);
+			assert.equal((await item.view()).revision, initial.revision);
+			assert.equal(standin.requests.length, calls);
+			console.log("PASS G2 other SHA and linked foreign installation leave the waiting row intact and make zero GitHub calls");
+
+			projectG2.name = "renamed-factory";
+			ci(item.head, "pending");
+			const sent = Date.now();
+			const handled = await delivered("check_suite", suite(item.head));
+			assert.equal(handled.state, "done");
+			const early = await item.poll(); assert.ok(early);
+			assert.deepEqual({ ...early, due_at: first.due_at }, first);
+			assert.ok(early.due_at <= Date.now() + 15_000 && early.due_at < first.due_at);
+			assert.equal((await item.view()).revision, initial.revision);
+			await until("one pending live CI read", async () => (await item.view()).wait?.sentence.includes("0 of 1"), 20_000);
+			assert.equal(countReads(item.head), 1);
+			assert.ok(Date.now() - sent < 20_000);
+			assert.ok(standin.requests.some(r => r.path.endsWith("/repositories/" + projectG2.id) && r.status === 200));
+			assert.ok(standin.requests.some(r => r.path.includes("/renamed-factory/commits/" + item.head) && r.status === 200));
+			console.log(`PASS G2 signed suite caused one CI read in ${Date.now() - sent} ms; claimed success, GitHub pending`);
+
+			const began = Date.now();
+			const guids = Array.from({ length: 30 }, () => randomUUID());
+			const burst = guids.map(guid => standin.deliver(web, "check_run", { installation: { id: installation.id }, repository: { id: projectG2.id },
+				action: "completed", check_run: { head_sha: item.head, conclusion: "failure" } }, { secret, guid }));
+			for (const res of await Promise.all(burst)) assert.deepEqual(await res.json(), { taken: true });
+			const receipts = await Promise.all(guids.map(guid => fixture(installation.id).checkRow(guid)));
+			const times = receipts.map(row => { assert.ok(row); return row.received_at; });
+			assert.ok(Math.max(...times) - Math.min(...times) <= 2000);
+			const coalesced = await item.poll(); assert.ok(coalesced);
+			assert.ok(coalesced.due_at >= began + 15_000 && coalesced.due_at <= Date.now() + 15_000);
+			await until("burst CI read", async () => countReads(item.head) >= 2, 20_000);
+			await until("next CI poll stored", async () => { const row = await item.poll(); return row && row.id !== coalesced.id; });
+			assert.equal(countReads(item.head), 2);
+			assert.ok((await item.poll())!.due_at > Date.now() + 20_000);
+			assert.equal(logs.split("factory.ci.nudge_found item=" + item.id).length - 1, 1);
+			console.log("PASS G2 thirty signed check runs coalesced into one more read");
+
+			ci(item.head, "success");
+			assert.equal((await delivered("status", { sha: item.head, state: "failure" })).state, "done");
+			const review = await until("live CI passed", async () => { const v = await item.view(); return v.state === "review" ? v : null; }, 20_000);
+			assert.equal(review.verdict?.ci, "passed");
+			const closed = { action: "closed", pull_request: { number: item.pr, merged: true, head: { sha: item.head } } };
+			const prPoll = await item.poll(); assert.ok(prPoll);
+			await delivered("pull_request", closed);
+			await until("live PR still open", async () => (await item.poll())?.id !== prPoll.id, 20_000);
+			assert.equal((await item.view()).state, "review");
+			const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === item.pr)!;
+			pull.state = "closed"; pull.merged = true;
+			const mergedAt = Date.now();
+			await delivered("pull_request", closed);
+			await until("fetched merge", async () => (await item.view()).state === "done", 20_000);
+			assert.ok(Date.now() - mergedAt < 20_000);
+			await until("directory removal", async () => !(await directory().internalFind({ pr: item.pr })).length);
+			const rev = (await item.view()).revision;
+			assert.equal(await item.handle().internalGithubNudge(target), false);
+			assert.equal((await delivered("pull_request", closed)).said, "no item");
+			assert.equal((await item.view()).revision, rev);
+			console.log("PASS G2 open PR stayed in review; fetched merge ended item and removed its binding");
+		});
+		await check("G2 webhook fallback reaches review with zero deliveries", async () => {
+			const clock = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkFallback(ms: number | null): Promise<void> };
+			await clock.checkFallback(3500);
+			try {
+				const sent = standin.deliveries.length;
+				projectG2.name = "factory";
+				const item = await push();
+				const first = await item.poll(); assert.ok(first);
+				const view = await item.view();
+				assert.equal(first.due_at - view.events.find(e => e.said.startsWith("Pushed "))!.at, 3500);
+				ci(item.head, "success");
+				await until("fallback read hands off", async () => (await item.view()).verdict?.ci === "passed", 12_000);
+				assert.equal(countReads(item.head), 1);
+				assert.equal(standin.deliveries.length, sent);
+			} finally { await clock.checkFallback(null); }
+		});
 		await check("unlinked status creates no inbox, installation lifecycle events are admitted", async () => {
 			const id = 93333, guid = randomUUID();
 			const res = await send({ ...shaPayload, installation: { id } }, guid);
@@ -234,11 +389,11 @@ async function run() {
 				assert.equal(review ? data.reviewId : data.commentId, "9007199254740995");
 			}
 		});
-		await check("good signature and ignored G1 state", async () => {
+		await check("signed status without a waiting item is ignored", async () => {
 			const guid = randomUUID(), r = await send(shaPayload, guid);
 			assert.equal(r.status, 202); assert.deepEqual(await r.json(), { taken: true }); assert.equal(await known(guid), true);
 			const row = await until("ignored", async () => { const r = await fixture(91234).checkRow(guid); return r?.state === "ignored" ? r : null; });
-			assert.equal(row.said, "no handler yet"); assert.equal(row.attempts, 1);
+			assert.equal(row.said, "no item"); assert.equal(row.attempts, 1);
 		});
 		await check("installation events finish with one metadata log", async () => {
 			for (const event of ["installation", "installation_repositories"]) {
@@ -284,6 +439,12 @@ async function run() {
 				delete process.env.WLP_GITHUB_APP_ID;
 				assert.equal((await local()).status, 404);
 			} finally { process.env.WLP_GITHUB_WEBHOOK_SECRET = secret; process.env.WLP_GITHUB_APP_ID = standin.appId; }
+		});
+		await check("fallback accepts only 1 with a current webhook secret", () => {
+			assert.equal(githubConfig().pollFallback, false);
+			assert.equal(githubConfig({ ...process.env, WLP_GITHUB_POLL_FALLBACK: "1" }).pollFallback, true);
+			assert.throws(() => githubConfig({ WLP_GITHUB_POLL_FALLBACK: "1" }), /requires WLP_GITHUB_WEBHOOK_SECRET/);
+			assert.throws(() => githubConfig({ WLP_GITHUB_POLL_FALLBACK: "0" }), /1 or unset/);
 		});
 		await check("invalid short secrets name only the setting", () => {
 			for (const name of ["WLP_GITHUB_WEBHOOK_SECRET", "WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS"]) {
@@ -395,6 +556,15 @@ async function run() {
 			for (const key of [{ issue: 12 }, { pr: 13 }, { head: HEAD }]) assert.equal((await repo.internalFind(key))[0]?.itemId, "item");
 			await assert.rejects(repo.internalRegister({ ...row, uid: "two", itemId: "another" }));
 			await repo.internalForget("item"); assert.equal((await repo.internalFind({ issue: 12 })).length, 0);
+		});
+		await check("64-bit installation bindings distinguish adjacent IDs and a new head replaces the old one", async () => {
+			const a = "9007199254740995", b = "9007199254740996", row = { itemId: "wide-item", uid: "one", pr: 14, installationId: a };
+			await repo.internalRegister({ ...row, head: HEAD });
+			await repo.internalRegister({ ...row, head: "b".repeat(40) });
+			assert.equal((await repo.internalFind({ pr: 14, installationId: a })).length, 1);
+			assert.deepEqual(await repo.internalFind({ pr: 14, installationId: b }), []);
+			assert.deepEqual(await repo.internalFind({ head: HEAD }), []);
+			await repo.internalForget(row.itemId);
 		});
 		await check("connect, replace, old disconnect, current disconnect", async () => {
 			const connect = async () => {

@@ -48,7 +48,41 @@ const TIMER = "CREATE TABLE IF NOT EXISTS timer (singleton INTEGER PRIMARY KEY C
 function logInstallation(d: Delivery) {
 	console.log(`github.installation event=${d.event}.${d.action} installation=${d.installationId} delivery=${d.guid}`);
 }
-export const HANDLERS: Partial<Record<Delivery["event"], (delivery: Delivery) => void | Promise<void>>> = {
+function missingActor(error: unknown): boolean {
+	const e = error as { group?: string; code?: string } | null;
+	return e?.group === "actor" && e.code === "not_found";
+}
+
+async function nudgeItems(d: Delivery, c: Ctx): Promise<"no item" | void> {
+	if (!d.repositoryId || !(d.event === "check_run" || d.event === "check_suite" || d.event === "status" || d.event === "pull_request")) return "no item";
+	const subject = d.event === "pull_request" ? { kind: "pr" as const, pr: d.data.pr } : { kind: "ci" as const, head: d.data.head };
+	const directory = c.client().githubRepository.get([String(d.repositoryId)], { params: serviceParams() });
+	let matches: { uid: string; itemId: string }[];
+	try {
+		matches = await directory.internalFind({ ...subject, installationId: d.installationId });
+	} catch (error) {
+		if (missingActor(error)) return "no item";
+		throw error;
+	}
+	let waiting = false;
+	let retry = false;
+	for (const { uid, itemId } of matches) {
+		const item = c.client().workItem.get([uid, itemId], { params: serviceParams() });
+		try {
+			if (await item.internalGithubNudge({ ...subject, repositoryId: d.repositoryId, installationId: d.installationId })) waiting = true;
+		} catch (error) {
+			if (missingActor(error) || (error as { code?: string })?.code === "item_not_found") await directory.internalForget(itemId);
+			else retry = true;
+		}
+	}
+	if (retry) throw new Error("A work item could not be reached");
+	if (!waiting) return "no item";
+}
+export const HANDLERS: Partial<Record<Delivery["event"], (delivery: Delivery, c: Ctx) => void | Promise<void | "no item">>> = {
+	check_run: nudgeItems,
+	check_suite: nudgeItems,
+	status: nudgeItems,
+	pull_request: nudgeItems,
 	installation: logInstallation,
 	installation_repositories: logInstallation,
 };
@@ -89,7 +123,8 @@ async function drainDue(c: Ctx) {
 			if (handler) {
 				// Older inbox rows have safe numeric comment and review IDs.
 				const data = JSON.parse(row.data, (key, value) => key === "commentId" || key === "reviewId" ? decimalId(value) : value);
-				await handler({ guid: row.guid, event: row.event, action: row.action, installationId: githubId(c.key[0])!, repositoryId: githubId(row.repository), data, at: row.received_at });
+				const ignored = await handler({ guid: row.guid, event: row.event, action: row.action, installationId: githubId(c.key[0])!, repositoryId: githubId(row.repository), data, at: row.received_at }, c);
+				if (ignored) { state = "ignored"; said = ignored; }
 			} else { state = "ignored"; said = "no handler yet"; }
 		} catch {
 			said = "handler failed"; // thrown errors can contain delivery text
@@ -97,7 +132,7 @@ async function drainDue(c: Ctx) {
 			next = Date.now() + Math.min(30 * 60_000, FIRST_RETRY * 2 ** (attempts - 1));
 		}
 		await queued(c, () => c.db.execute("UPDATE deliveries SET state = ?, said = ?, next_at = ?, attempts = ? WHERE guid = ?", state, said, next, attempts, row.guid));
-		if (state === "ignored") console.log(`github.delivery.ignored(no handler yet) event=${row.event} installation=${c.key[0]} delivery=${row.guid}`);
+		if (state === "ignored") console.log(`github.delivery.ignored(${said}) event=${row.event} installation=${c.key[0]} delivery=${row.guid}`);
 		if (state === "failed") console.warn(`github.delivery.failed event=${row.event} installation=${c.key[0]} delivery=${row.guid}`);
 	}
 }

@@ -33,12 +33,14 @@ import { ledgerSeconds } from "../factory/budget.js";
 import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
-import { clientError, describeError, requireService } from "../auth.js";
-import { type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
-import { RULES, advance, currentKey } from "../factory/blueprint.js";
+import { clientError, describeError, requireService, requireServiceFor, serviceParams } from "../auth.js";
+import { githubConfig } from "../config.js";
+import { githubId } from "../github/ids.js";
+import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
+import { RULES, advance, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
 import { itemComment, reportBlocks, REVIEW_PROFILE_REASON } from "../factory/review.js";
-import type { Effect, Fact, FactoryItem } from "../factory/types.js";
-import { githubApp, GithubError } from "../github/app.js";
+import type { Effect as BlueprintEffect, Fact, FactoryItem } from "../factory/types.js";
+import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { readCi } from "../github/ci.js";
 import { resolveRepository, type StoredConnection } from "../github/repos.js";
 import { grantIsValid, sessionActor, userActor } from "./internal.js";
@@ -119,6 +121,9 @@ const EFFECT_RETRY_MOST_MS = 5 * 60_000;
 export const DUE_ACTION = "internalDue";
 /** The item's page shows at most this many entries of its log, the newest. */
 const VIEW_EVENTS = 500;
+
+type Effect = BlueprintEffect | { kind: "register"; key: string; pr: number; head: string } | { kind: "forget"; key: string };
+type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
 
 type EffectRow = { id: string; effect: string; due_at: number; attempts: number };
 
@@ -265,7 +270,7 @@ async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void
  * was decided from, and then performed. Resolves once it is stored, with whether the fact changed
  * anything: an action that answers after this has answered for what is durable.
  */
-async function take(c: Ctx, fact: Fact, baseSha?: string | null): Promise<boolean> {
+async function take(c: Ctx, fact: Fact, { baseSha, nudged }: { baseSha?: string | null; nudged?: boolean } = {}): Promise<boolean> {
 	const stored = c.vars.stored;
 	if (!stored) return false;
 	// From here to the write being queued nothing is awaited: the decision is one step.
@@ -290,12 +295,14 @@ async function take(c: Ctx, fact: Fact, baseSha?: string | null): Promise<boolea
 	const next = outcome.item;
 	const data = JSON.stringify({ item: next, meta: stored.meta });
 	// An `ask` is the question on the item itself, which reaches the index with the summary: nothing is left to perform.
-	const effects = outcome.effects.filter((effect) => effect.kind !== "ask");
+	const effects: Effect[] = outcome.effects.filter((effect) => effect.kind !== "ask");
 	// A cut-off review may have left its checkout paused while the item waited for its owner.
 	// Keep cleanup in the outbox, independently of GitHub and of a withdrawal still stopping a turn.
 	if (stored.meta.reviewerSessionId && next.run && before.state !== next.state && (next.state === "review" || ENDED.has(next.state))) {
 		effects.push({ kind: "release_review", key: String(next.run.n), run: next.run.n, to: "review" });
 	}
+	if (fact.kind === "published") effects.push({ kind: "register", key: fact.key, pr: fact.pr.number, head: fact.head });
+	if (ENDED.has(next.state) && !ENDED.has(before.state)) effects.push({ kind: "forget", key: String(next.revision) });
 	try {
 		await queued(c, () =>
 			c.db.transaction(async (tx) => {
@@ -322,6 +329,12 @@ async function take(c: Ctx, fact: Fact, baseSha?: string | null): Promise<boolea
 		// What is stored is what holds: the item is read again, and the fact is lost to whoever sends it again.
 		c.vars.stored = await load(c.db).catch(() => c.vars.stored);
 		throw error;
+	}
+	if (nudged && fact.kind === "ci_read") {
+		const state = next.run?.ci?.lastReadState;
+		const previous = before.run?.ci?.lastReadState ?? before.run?.ci?.last?.state;
+		if (state && state !== "retry" && state !== previous)
+			console.log(`[wlp] factory.ci.nudge_found item=${next.id} head=${fact.head.slice(0, 7)} state=${state}`);
 	}
 	for (const event of outcome.events) console.log(`[wlp] item.event uid=${stored.meta.uid} item=${before.id} revision=${next.revision}: ${event.said.replace(/\s+/g, " ").slice(0, 200)}`);
 	report(c);
@@ -389,7 +402,11 @@ async function performRow(c: Ctx, row: EffectRow): Promise<void> {
  * One schedule, at the earliest effect still to perform; the one before it is cancelled. A stored
  * schedule whose time has passed is not armed: its firing may have been cut off after RivetKit took it.
  */
-async function armDue(c: Ctx): Promise<void> {
+function armDue(c: Ctx): Promise<void> {
+	return queued(c, () => armDueInQueue(c));
+}
+
+async function armDueInQueue(c: Ctx): Promise<void> {
 	// An effect being performed now counts as due EFFECT_RETRY_FIRST_MS from now, not at its own time: armed "now" for it, the
 	// schedule would fire again and again while a slow push goes on; left out, a server that stops under the push would
 	// leave nothing to wake the item.
@@ -401,8 +418,51 @@ async function armDue(c: Ctx): Promise<void> {
 	if (at === null || (due !== null && due.at === at && due.at > Date.now())) return;
 	const id = await c.schedule.at(Math.max(at, Date.now()), DUE_ACTION);
 	c.vars.due = { id, at };
-	await queued(c, () => c.db.execute("UPDATE item SET due = ? WHERE id = 1", JSON.stringify(c.vars.due)));
+	await c.db.execute("UPDATE item SET due = ? WHERE id = 1", JSON.stringify(c.vars.due));
 	if (due !== null) await c.schedule.cancel(due.id).catch(() => false);
+}
+
+async function binding(c: Ctx): Promise<GithubId | null> {
+	const [row] = await c.db.execute<{ installation: string }>("SELECT installation FROM github_binding WHERE id = 1");
+	return githubId(row?.installation);
+}
+
+/** Under the item's write queue. A directory lookup may race a new push, a cancel, or a transfer. */
+async function nudge(c: Ctx, input: GithubNudge): Promise<boolean> {
+	const stored = await load(c.db);
+	if (!stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
+	const { item, meta } = stored;
+	if (ENDED.has(item.state) || input.repositoryId !== meta.repository.id || input.installationId !== await binding(c)) return false;
+	const id = `poll_${input.kind}:${input.kind === "pr" ? prPollKey(item) : currentKey(item)}`;
+	const [row] = await c.db.execute<EffectRow>("SELECT * FROM effects WHERE id = ?", id);
+	if (!row || c.vars.performing.has(row.id)) return false;
+	const poll: Effect = JSON.parse(row.effect);
+	const matches = input.kind === "ci" ? poll.kind === "poll_ci" && poll.head === input.head : poll.kind === "poll_pr" && poll.pr === input.pr;
+	if (!matches || !live(item, poll)) return false;
+	// Pre-webhook CI rows did not retain GitHub's retry floor. Honor their scheduled read once.
+	const legacyBackoff = item.run?.ci?.webhooks === undefined && item.wait?.sentence.includes("GitHub asked the platform to wait until");
+	const floor = poll.kind === "poll_ci" ? poll.notBefore ?? (legacyBackoff ? poll.at : 0) : 0;
+	const at = Math.max(Date.now() + 15_000, floor);
+	if (row.due_at > at) {
+		await c.db.execute("UPDATE effects SET due_at = ? WHERE id = ?", at, id);
+		console.log(`[wlp] factory.${input.kind}.nudged item=${item.id}${input.kind === "ci" ? " head=" + input.head.slice(0, 7) : ""}`);
+	}
+	// Also repairs a crash between the update and the timer write.
+	await armDueInQueue(c);
+	return true;
+}
+
+/** A poll of a registered item stays within its binding, including after a repository rename. */
+async function readBoundRepository(app: GithubApp, connection: StoredConnection, repositoryId: GithubId, installationId: GithubId) {
+	const installation = connection.installations.find(entry => entry.id === installationId);
+	if (!installation) throw new Error("The item's GitHub installation is no longer connected");
+	const repository = await app.withToken(installationId, { repositoryId, permissions: { metadata: "read" } }, async token => {
+		const repo = await app.repositoryById(token, repositoryId);
+		const own = installation.account.type === "User" && installation.account.id === connection.user.id;
+		if (!own && await app.permission(token, repo.owner, repo.name, connection.user.login) === "none") throw new Error("The user cannot read the item's repository");
+		return repo;
+	});
+	return { installation, repository };
 }
 
 /** The repository as the user's connection reaches it now, and the app: what a poll of GitHub needs. */
@@ -411,10 +471,33 @@ async function github(c: Ctx, meta: ItemMeta) {
 	if (!app) throw new Error("the deployment has no GitHub App");
 	const connection: StoredConnection | null = await userActor(c, meta.uid).internalGithubConnection();
 	if (!connection) throw new Error("the user's GitHub connection is gone");
-	const resolved = await resolveRepository(app, connection, meta.repository.id, "read");
+	const installationId = await binding(c) ?? (await resolveRepository(app, connection, meta.repository.id, "read")).installation.id;
+	const resolved = await readBoundRepository(app, connection, meta.repository.id, installationId);
 	const { owner, name } = resolved.repository;
 	const pull = (number: number) => app.withToken(resolved.installation.id, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, owner, name, number));
 	return { app, installationId: resolved.installation.id, owner, name, pull, login: connection.user.login };
+}
+
+function repositoryDirectory(c: Ctx, meta: ItemMeta) {
+	return c.client().githubRepository.getOrCreate([String(meta.repository.id)], { params: serviceParams() });
+}
+
+async function updateDirectory(c: Ctx, meta: ItemMeta, effect: Extract<Effect, { kind: "register" | "forget" }>): Promise<boolean> {
+	const directory = repositoryDirectory(c, meta);
+	const installation = effect.kind === "register" ? (await github(c, meta)).installationId : null;
+	// Order directory writes with local decisions, outside any SQLite transaction.
+	return queued(c, async () => {
+		const durable = await load(c.db);
+		if (!durable || !live(durable.item, effect)) return false;
+		if (effect.kind === "register" && installation !== null) {
+			await c.db.execute("INSERT OR REPLACE INTO github_binding VALUES (1, ?)", String(installation));
+			await directory.internalRegister({ uid: meta.uid, itemId: durable.item.id, installationId: installation, pr: effect.pr, head: effect.head });
+		} else {
+			await directory.internalForget(durable.item.id);
+			await c.db.execute("DELETE FROM github_binding");
+		}
+		return true;
+	});
 }
 
 type Handoff = Extract<Effect, { kind: "handoff" }>;
@@ -510,6 +593,8 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
  * it. A withdrawal is always wanted: it is what a cancel leaves.
  */
 function live(item: FactoryItem, effect: Effect): boolean {
+	if (effect.kind === "forget") return ENDED.has(item.state) || !item.run?.ci;
+	if (effect.kind === "register") return !ENDED.has(item.state) && item.head === effect.head && item.pr?.number === effect.pr;
 	if (effect.kind === "release_review" || effect.kind === "withdraw" || effect.kind === "ask") return true;
 	const run = item.run;
 	if (item.question?.kind === "machine_removed" || ENDED.has(item.state) || run === null) return false;
@@ -524,7 +609,7 @@ function live(item: FactoryItem, effect: Effect): boolean {
 		case "poll_ci":
 			return effect.key === key && (run.step.kind === "ci" || run.step.kind === "handoff") && item.pr !== null;
 		case "poll_pr":
-			return effect.key === key && run.step.kind === "merged";
+			return effect.key === prPollKey(item) && effect.pr === item.pr?.number;
 		case "handoff":
 			return run.n === effect.verdict.run && item.pr !== null;
 	}
@@ -544,6 +629,9 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 	if (!sessionId) throw new Error("Review delivery has no reviewer session.");
 	const session = sessionActor(c, meta.uid, sessionId);
 	switch (effect.kind) {
+		case "register":
+		case "forget":
+			return updateDirectory(c, meta, effect);
 		case "deliver": {
 			let checkout: ReviewDelivery | null = null;
 			if (effect.to === "review") {
@@ -579,7 +667,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 			const now = c.vars.stored;
 			if (!now || !live(now.item, effect)) return false;
 			const answer = await session.internalPublish({ key: effect.key, title: item.task.title, body: item.task.body });
-			await take(c, { ...answer, at: Date.now(), key: effect.key, ...(answer.kind === "published" ? { openItems } : {}) } as Fact);
+			const receipt = { at: Date.now(), key: effect.key };
+			await take(c, answer.kind === "published" ? { ...answer, ...receipt, openItems, webhooks: githubConfig().pollFallback } : { ...answer, ...receipt });
 			return true;
 		}
 		case "poll_ci": {
@@ -597,14 +686,14 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 			};
 			const { reading, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, mergeable: null, prHead: null, baseSha: null }));
 			const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
-			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, mergeable, prHead, openItems }, baseSha);
+			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
 			return true;
 		}
 		case "poll_pr": {
 			// In review, too: the last turn's sandbox time is settled while the person reviews.
 			await factsOf(c, meta);
 			const pull = await (await github(c, meta)).pull(effect.pr);
-			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, state: pull.state, prHead: pull.headSha || null });
+			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, state: pull.state, prHead: pull.headSha || null, webhooks: githubConfig().pollFallback });
 			return true;
 		}
 		case "handoff": {
@@ -685,6 +774,17 @@ export const workItem = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, data TEXT NOT NULL)");
 			await db.execute(REPORTS_TABLE);
 			await db.execute(REVIEWS_TABLE);
+			await db.execute("CREATE TABLE IF NOT EXISTS github_binding (id INTEGER PRIMARY KEY CHECK (id = 1), installation TEXT NOT NULL)");
+			// Backfill items published before G2 on their next wake.
+			const stored = await load(db);
+			if (stored?.item.run?.step.kind === "review" && stored.item.pr && !ENDED.has(stored.item.state)) {
+				const poll = nextPrPoll(stored.item, Date.now());
+				await db.execute("INSERT OR IGNORE INTO effects VALUES (?, ?, ?, 0)", rowId(poll), JSON.stringify(poll), poll.at);
+			}
+			if (stored?.item.pr && stored.item.head && !ENDED.has(stored.item.state) && !(await db.execute("SELECT 1 FROM github_binding")).length) {
+				const effect: Effect = { kind: "register", key: `existing:${stored.item.revision}`, pr: stored.item.pr.number, head: stored.item.head };
+				await db.execute("INSERT OR IGNORE INTO effects SELECT ?, ?, 0, 0 WHERE NOT EXISTS (SELECT 1 FROM effects WHERE id LIKE 'register:%')", rowId(effect), JSON.stringify(effect));
+			}
 			await db.execute("CREATE TABLE IF NOT EXISTS verdicts (id TEXT PRIMARY KEY, run INTEGER NOT NULL, head TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)");
 		},
 	}),
@@ -720,7 +820,10 @@ export const workItem = actor({
 
 	onDestroy: async (c) => {
 		const stored = c.vars.stored;
-		if (stored) await userActor(c, stored.meta.uid).internalDeleteItemAttachments(stored.item.id);
+		if (stored) await Promise.all([
+			queued(c, () => repositoryDirectory(c, stored.meta).internalForget(stored.item.id)),
+			userActor(c, stored.meta.uid).internalDeleteItemAttachments(stored.item.id),
+		]);
 	},
 
 	onWake: (c) => {
@@ -761,6 +864,11 @@ export const workItem = actor({
 			}
 			if (!changed) throw new UserError(CONFLICT[input.action.kind], { code: "item_conflict" });
 			return await viewOf(c);
+		},
+
+		internalGithubNudge: async (c, input: GithubNudge): Promise<boolean> => {
+			requireServiceFor(c, "call");
+			return queued(c, () => nudge(c, input));
 		},
 
 		// --- called by the item's session and by `user` -----------------------------------------

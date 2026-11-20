@@ -266,7 +266,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "start" | "retry" | "se
 			ciRead(c, fact);
 			return true;
 		case "pr_read":
-			if (step.kind !== "merged" || fact.key !== key) return false;
+			if (fact.key !== prPollKey(c.item)) return false;
 			prRead(c, fact);
 			return true;
 	}
@@ -441,7 +441,7 @@ function published(c: Change, fact: Extract<Fact, { kind: "published" }>): void 
 	c.say(`Pushed ${shortSha(fact.head)} to pull request #${fact.pr.number}.`);
 	c.enter("ci");
 	// The gate this commit rests on is kept with it: a later turn's gate is not about it until it is pushed.
-	run.ci = { head: fact.head, since: c.at, last: null, mergeable: null, gate: run.gate, moved: null, handed: null, secondReview: null };
+	run.ci = { webhooks: fact.webhooks, head: fact.head, since: c.at, last: null, mergeable: null, gate: run.gate, moved: null, handed: null, secondReview: null };
 	if (item.machineRemoved) return askRemoved(c);
 	pollCi(c, fact.openItems, null, `Waiting for CI to start on ${shortSha(fact.head)}.`);
 }
@@ -459,9 +459,9 @@ function publishFailed(c: Change, fact: Extract<Fact, { kind: "publish_failed" }
 }
 
 function pollCi(c: Change, openItems: number, notBefore: number | null, sentence: string): void {
-	const at = Math.max(c.at + ciPollEvery(openItems), notBefore ?? 0);
+	const at = Math.max(c.at + ciPollEvery(openItems, c.run.ci?.webhooks), notBefore ?? 0);
 	c.state("waiting", { reason: "ci", sentence, retryAt: at });
-	c.effects.push({ kind: "poll_ci", key: c.key, head: c.run.ci?.head ?? "", at });
+	c.effects.push({ kind: "poll_ci", key: c.key, head: c.run.ci?.head ?? "", at, ...(notBefore !== null ? { notBefore } : {}) });
 }
 
 function ciWaitSentence(head: string, reading: CiReading): string {
@@ -508,6 +508,8 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	const reading: CiReading =
 		fact.reading.kind === "read" && isSha(ci.head) && fact.reading.head !== ci.head ? { kind: "failed", said: `GitHub answered for commit ${shortSha(fact.reading.head)}, not ${shortSha(ci.head)}` } : fact.reading;
 	const state = ciState(reading);
+	ci.lastReadState = state;
+	ci.webhooks = fact.webhooks;
 	// The poll is used up, whatever follows: the same reading again names an earlier one.
 	run.step.attempt += 1;
 	ci.mergeable = fact.mergeable;
@@ -614,10 +616,11 @@ function afterCi(c: Change, ci: CiProgress): void {
 	if (!isSha(ci.head)) return handoff(c, skippedReview("the push did not identify the commit to review"));
 	c.enter("review");
 	ci.handed = c.key;
-	run.review = { verdictId: c.key, head: ci.head, refiles: 0 };
+	run.review = { verdictId: c.key, head: ci.head, refiles: 0, prReads: 0 };
 	const { verdict, words } = verdictAt(c, ci);
 	c.storeVerdict = { kind: "verdict", verdict, words };
 	nextTurn(c, reviewPlan(c));
+	c.effects.push(nextPrPoll(item, c.at));
 }
 
 function reviewPlan(c: Change): TurnPlan {
@@ -627,7 +630,8 @@ function reviewPlan(c: Change): TurnPlan {
 }
 
 function reviewerInput(c: Change, ci: CiProgress, pr: number): ReviewerInput {
-	const { verdict, words } = c.storeVerdict ?? verdictAt(c, ci);
+	// A refile gets the verdict originally pinned to the checkout, even if a PR read since observed a move.
+	const { verdict, words } = c.storeVerdict ?? verdictAt(c, { ...ci, moved: null });
 	const records: ReviewRecord[] = [
 		...verdict.gate.required.map(({ name, status }, i) => ({ kind: "check" as const, ref: `check/${i}`, name, status })),
 		...verdict.ci.runs.map((run, i) => ({ kind: "ci" as const, ref: `ci/${i}`, ...run })),
@@ -677,7 +681,7 @@ function handoff(c: Change, review: HandoffReview): void {
 	run.endedAt ??= c.at;
 	c.state("review");
 	c.enter("merged");
-	c.effects.push({ kind: "poll_pr", key: c.key, pr: item.pr.number, at: c.at + CI_POLLING.prEveryMs });
+	c.effects.push(nextPrPoll(item, c.at));
 }
 
 /**
@@ -699,24 +703,50 @@ function handVerdict(c: Change, ci: CiProgress, review: HandoffReview, reviewDon
 	c.say(record.words);
 }
 
+/** A PR read during the pinned review has its own attempt, independent of reviewer deliveries and refilings. */
+export function prPollKey(item: FactoryItem): string | null {
+	if (item.state === "failed" || FINAL.has(item.state)) return null;
+	const run = item.run;
+	if (run?.step.kind === "merged") return currentKey(item);
+	if (run?.step.kind === "review" && run.review) return `${run.review.verdictId}/pr${run.review.prReads ?? 0}`;
+	return null;
+}
+
+export function nextPrPoll(item: FactoryItem, at: number): Extract<Effect, { kind: "poll_pr" }> {
+	const key = prPollKey(item);
+	if (!key || !item.pr) throw new Error("A PR poll needs a review and a published pull request");
+	return { kind: "poll_pr", key, pr: item.pr.number, at: at + (item.run?.ci?.webhooks ? CI_POLLING.webhookPrEveryMs : CI_POLLING.prEveryMs) };
+}
+
 function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
-	if (fact.state === "merged") {
-		c.say("The pull request was merged.");
-		return c.state("done");
+	const { run } = c;
+	if (fact.state === "merged" || fact.state === "closed") {
+		if (run.step.kind === "review") {
+			if (run.step.turn) c.effects.push({ kind: "withdraw", key: c.key, to: "review" });
+			run.step.turn = null;
+			run.endedAt = c.at;
+			c.item.question = null;
+		}
+		c.say(fact.state === "merged" ? "The pull request was merged." : "The pull request was closed without merging.");
+		return c.state(fact.state === "merged" ? "done" : "cancelled");
 	}
-	if (fact.state === "closed") {
-		c.say("The pull request was closed without merging.");
-		return c.state("cancelled");
+	const ci = run.ci;
+	if (ci) ci.webhooks = fact.webhooks;
+	if (run.step.kind === "review" && run.review) {
+		run.review.prReads = (run.review.prReads ?? 0) + 1;
+		// Keep the filing tied to the reviewed head. Handover rereads CI and the PR before exposing it.
+		if (ci && fact.prHead !== null) ci.moved = movedFrom(ci.head, fact.prHead);
+		c.effects.push(nextPrPoll(c.item, c.at));
+		return;
 	}
-	c.run.step.attempt += 1;
-	// Pushed to after it was handed over: the verdict is made again for what the pull request holds, and is never a pass of it.
-	const ci = c.run.ci;
+	run.step.attempt += 1;
+	// After handover, a move replaces the public verdict.
 	if (ci !== null && fact.prHead !== null && movedFrom(ci.head, fact.prHead) !== ci.moved) {
 		ci.moved = movedFrom(ci.head, fact.prHead);
 		c.say(ci.moved === null ? `The pull request is back at ${shortSha(ci.head)}, the commit this run pushed.` : `The pull request moved to ${shortSha(ci.moved)} after it was handed over.`);
 		return readForHandoff(c, ci);
 	}
-	c.effects.push({ kind: "poll_pr", key: c.key, pr: c.item.pr?.number ?? 0, at: c.at + CI_POLLING.prEveryMs });
+	c.effects.push(nextPrPoll(c.item, c.at));
 }
 
 function cancel(c: Change): void {

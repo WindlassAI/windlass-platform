@@ -7,7 +7,7 @@ import { githubIdKey } from "../github/events.js";
 import { internalConnection, requireServiceFor } from "../auth.js";
 import { githubApp, GithubError } from "../github/app.js";
 
-type Item = { itemId: string; uid: string; issue?: number; generation?: number; pr?: number; head?: string; live?: boolean };
+type Item = { itemId: string; uid: string; installationId?: GithubId; issue?: number; generation?: number; pr?: number; head?: string; live?: boolean };
 type Match = { itemId: string; uid: string; issue: number | null; generation: number | null; pr: number | null; head: string | null };
 type Level = "admin" | "write" | "read" | "none";
 type Permission = { installationId: GithubId; owner: string; name: string; userId: GithubId; login: string; associations: string };
@@ -18,6 +18,8 @@ export const githubRepository = actor({
 	onCreate: c => { if (!githubIdKey(c.key)) c.destroy(); },
 	db: db({ onMigrate: async db => {
 		await db.execute("CREATE TABLE IF NOT EXISTS items (item_id TEXT PRIMARY KEY, uid TEXT NOT NULL, issue INTEGER, generation INTEGER, pr INTEGER, head TEXT, live INTEGER NOT NULL)");
+		const columns = await db.execute<{ name: string }>("PRAGMA table_info(items)");
+		if (!columns.some(column => column.name === "installation")) await db.execute("ALTER TABLE items ADD COLUMN installation TEXT");
 		await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS live_issue ON items(issue) WHERE live = 1");
 		await db.execute("CREATE TABLE IF NOT EXISTS access (github_user_id INTEGER PRIMARY KEY, level TEXT NOT NULL, at INTEGER NOT NULL)");
 	} }),
@@ -25,19 +27,21 @@ export const githubRepository = actor({
 		internalRegister: async (c, row: Item) => {
 			requireServiceFor(c, "call");
 			// Publishing updates pr/head without dropping the issue registration made at intake.
-			await c.db.execute(`INSERT INTO items VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET
-				issue = coalesce(excluded.issue, items.issue), generation = coalesce(excluded.generation, items.generation),
+			await c.db.execute(`INSERT INTO items (item_id, uid, issue, generation, pr, head, live, installation) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET
+				installation = coalesce(excluded.installation, items.installation), issue = coalesce(excluded.issue, items.issue), generation = coalesce(excluded.generation, items.generation),
 				pr = coalesce(excluded.pr, items.pr), head = coalesce(excluded.head, items.head), live = excluded.live`,
-				row.itemId, row.uid, row.issue ?? null, row.generation ?? null, row.pr ?? null, row.head ?? null, Number(row.live ?? true));
+				row.itemId, row.uid, row.issue ?? null, row.generation ?? null, row.pr ?? null, row.head ?? null, Number(row.live ?? true), row.installationId == null ? null : String(row.installationId));
 		},
 		internalForget: async (c, itemId: string) => {
 			requireServiceFor(c, "call");
 			await c.db.execute("DELETE FROM items WHERE item_id = ?", itemId);
 		},
-		internalFind: async (c, key: { issue: number } | { pr: number } | { head: string }): Promise<Match[]> => {
+		internalFind: async (c, key: ({ issue: number } | { pr: number } | { head: string }) & { installationId?: GithubId }): Promise<Match[]> => {
 			requireServiceFor(c, "call");
 			const [column, value] = "issue" in key ? ["issue", key.issue] : "pr" in key ? ["pr", key.pr] : ["head", key.head];
-			return await c.db.execute<Match>(`SELECT item_id AS itemId, uid, issue, generation, pr, head FROM items WHERE live = 1 AND ${column} = ? ORDER BY item_id`, value);
+			const installation = key.installationId === undefined ? null : String(key.installationId);
+			return await c.db.execute<Match>(`SELECT item_id AS itemId, uid, issue, generation, pr, head FROM items
+				WHERE live = 1 AND ${column} = ? AND (? IS NULL OR installation = ?) ORDER BY item_id`, value, installation, installation);
 		},
 		internalPermission: async (c, input: Permission): Promise<Level> => {
 			requireServiceFor(c, "call");

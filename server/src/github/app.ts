@@ -435,6 +435,13 @@ export class GithubApp {
 		return { repositories: items.map((item) => this.repositoryOf(item)).filter((item): item is Repository => item !== null), truncated };
 	}
 
+	async repositoryById(token: string, id: GithubId): Promise<Repository> {
+		const answer = await this.call({ path: `/repositories/${id}`, auth: { bearer: token }, what: "resolve the repository by id" });
+		const found = this.repositoryOf(answer.body);
+		if (found?.id !== id) throw new Error("GitHub did not return the requested repository");
+		return found;
+	}
+
 	async repository(token: string, owner: string, name: string, deadline?: number): Promise<Repository> {
 		const answer = await this.call({ path: `/repos/${owner}/${name}`, auth: { bearer: token }, what: `read ${owner}/${name}`, deadline });
 		const found = this.repositoryOf(answer.body);
@@ -522,7 +529,7 @@ export class GithubApp {
 	async pull(token: string, owner: string, name: string, number: number): Promise<Pull> {
 		const answer = await this.call({ path: `/repos/${owner}/${name}/pulls/${number}`, auth: { bearer: token }, what: `read pull request #${number} of ${owner}/${name}` });
 		const pull = this.pullOf(answer.body);
-		if (!pull) throw new GithubError(answer.status, "the answer describes no pull request", `could not read pull request #${number} of ${owner}/${name}`);
+		if (pull?.number !== number) throw new GithubError(answer.status, "the answer does not describe the requested pull request", `could not read pull request #${number} of ${owner}/${name}`);
 		return pull;
 	}
 

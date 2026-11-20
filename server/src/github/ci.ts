@@ -49,9 +49,13 @@ export const CI_POLLING = {
 	timeoutMs: 90 * 60_000,
 	/** While an item is in review: is its pull request merged or closed. */
 	prEveryMs: 10 * 60_000,
+	webhookEveryMs: 5 * 60_000,
+	webhookCrowdedEveryMs: 10 * 60_000,
+	webhookPrEveryMs: 30 * 60_000,
 } as const;
 
-export function ciPollEvery(openItems: number): number {
+export function ciPollEvery(openItems: number, webhooks = false): number {
+	if (webhooks) return openItems > CI_POLLING.crowdedAbove ? CI_POLLING.webhookCrowdedEveryMs : CI_POLLING.webhookEveryMs;
 	return openItems > CI_POLLING.crowdedAbove ? CI_POLLING.crowdedEveryMs : CI_POLLING.everyMs;
 }
 

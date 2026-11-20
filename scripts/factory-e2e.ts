@@ -412,6 +412,7 @@ async function memoryChecks(): Promise<void> {
 	Object.assign(app, {
 		installationToken: async () => ({ token: "", expiresAt: Date.now() + 3_600_000 }),
 		installationRepositories: async () => ({ repositories: [repository], truncated: false }),
+		repositoryById: async (_token: string, id: number) => { assert(id === repository.id, "wrong repository id"); return repository; },
 		withToken: async (_installation: number, _scope: unknown, step: (token: string) => Promise<unknown>) => step(""),
 	});
 	/** An item driven through the blueprint by hand, as its actor would be. */
@@ -437,6 +438,7 @@ async function memoryChecks(): Promise<void> {
 		await db.execute("CREATE TABLE item (id INTEGER PRIMARY KEY, revision INTEGER, data TEXT, due TEXT)");
 		await db.execute("CREATE TABLE events (seq INTEGER PRIMARY KEY, at INTEGER, data TEXT)");
 		await db.execute("CREATE TABLE effects (id TEXT PRIMARY KEY, effect TEXT, due_at INTEGER, attempts INTEGER)");
+		await db.execute("CREATE TABLE github_binding (id INTEGER PRIMARY KEY, installation TEXT NOT NULL)");
 		await db.execute("CREATE TABLE verdicts (id TEXT PRIMARY KEY, run INTEGER, head TEXT, at INTEGER, data TEXT)");
 		await db.execute(REPORTS_TABLE);
 		await db.execute(REVIEWS_TABLE);
@@ -454,13 +456,17 @@ async function memoryChecks(): Promise<void> {
 				return answers.publish ? answers.publish() : { kind: "published", head: HEAD, pr: { number: 1, url: "local" } };
 			},
 		};
-		const user = { internalItemChanged: async () => undefined, internalItemFacts: answers.facts ?? (async () => ({ hostedSeconds: 0, openItems: 1, entries: [] })) };
+		const user = { internalItemChanged: async () => undefined, internalGithubConnection: async (): Promise<typeof connection | null> => connection, internalItemFacts: answers.facts ?? (async () => ({ hostedSeconds: 0, openItems: 1, entries: [] })) };
 		const c = {
 			key: ["u", "i_memory"],
 			conn: { params: serviceParams() },
 			db,
 			log: { error: () => undefined, warn: () => undefined },
-			client: () => ({ agentSession: { get: (keys: string[]) => ({ ...session, internalFreeSandbox: (run: number) => answers.freeReviewer?.(keys[1], run) }) }, user: { get: () => user } }),
+			client: () => ({
+				agentSession: { get: (keys: string[]) => ({ ...session, internalFreeSandbox: (run: number) => answers.freeReviewer?.(keys[1], run) }) },
+				user: { get: () => user },
+				githubRepository: { getOrCreate: () => ({ internalRegister: async () => undefined, internalForget: async () => undefined }) },
+			}),
 			keepAwake<P>(promise: Promise<P>) {
 				jobs.push(promise);
 				return promise;
@@ -477,16 +483,18 @@ async function memoryChecks(): Promise<void> {
 		const m = machine();
 		m.send({ kind: "start" });
 		m.send({ kind: "turn_ended", outcome: "succeeded", verified: null, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
-		m.send({ kind: "published", head: HEAD, pr: { number: 1, url: "local" }, openItems: 1 });
+		m.send({ kind: "published", webhooks: false, head: HEAD, pr: { number: 1, url: "local" }, openItems: 1 });
 		return m;
 	};
-	const cleanCi = { kind: "ci_read", head: HEAD, reading: { kind: "read", head: HEAD, runs: [{ name: "build", app: "ci", state: "passed", conclusion: "success", url: "", summary: "", jobId: null }], truncated: false, logs: [] }, mergeable: true, prHead: HEAD, openItems: 1 };
+	const cleanCi = { kind: "ci_read", webhooks: false, head: HEAD, reading: { kind: "read", head: HEAD, runs: [{ name: "build", app: "ci", state: "passed", conclusion: "success", url: "", summary: "", jobId: null }], truncated: false, logs: [] }, mergeable: true, prHead: HEAD, openItems: 1 };
 
 	await check("memory: loading a pre-reviewer item in review preserves its run and defaults its reviewer", async () => {
 		const m = publishedItem();
 		m.send(cleanCi);
 		assert(m.item.state === "review", "fixture did not reach review");
 		delete m.item.reviewer;
+		delete m.item.run!.ci!.webhooks;
+		delete m.item.run!.ci!.lastReadState;
 		const actor = await itemActor(m.item);
 		const view = await actions.internalView(actor.c);
 		assert(view.state === "review" && view.revision === m.item.revision && view.reviewNone === "turned off for this deployment", "missing deployment default on the stored review");
@@ -497,6 +505,26 @@ async function memoryChecks(): Promise<void> {
 		const row = actor.raw.prepare("SELECT json_extract(data, '$.item.reviewer.off') AS reason FROM item").get();
 		assert(row?.reason === "deployment", "the next store lost the default");
 		return "original run, revision and deployment default survived reload";
+	});
+
+	await check("memory: a PR delivery during second review advances only its PR poll", async () => {
+		const m = publishedItem();
+		m.item.reviewer = { on: true };
+		const review = m.send(cleanCi);
+		const actor = await itemActor(m.item);
+		await actor.db.execute("INSERT INTO github_binding VALUES (1, '9')");
+		for (const effect of review.effects) {
+			if ("key" in effect) await actor.db.execute("INSERT INTO effects VALUES (?, ?, ?, 0)", `${effect.kind}:${effect.key}`, JSON.stringify(effect), "at" in effect ? effect.at ?? 0 : 0);
+		}
+		const rows = () => actor.raw.prepare("SELECT id, due_at FROM effects ORDER BY id").all() as { id: string; due_at: number }[];
+		const before = rows();
+		const target = { repositoryId: 1, installationId: 9 };
+		assert(!await actions.internalGithubNudge(actor.c, { ...target, kind: "ci", head: HEAD }), "CI nudged the review");
+		assert(await actions.internalGithubNudge(actor.c, { ...target, kind: "pr", pr: 1 }), "PR delivery missed the review's poll");
+		const after = rows();
+		assert(after.some(row => row.id.startsWith("poll_pr:")) && after.every((row, i) => row.id === before[i].id &&
+			(row.id.startsWith("poll_pr:") ? row.due_at < before[i].due_at : row.due_at === before[i].due_at)), "delivery rescheduled the reviewer");
+		return "same delivery and watchdog, earlier PR read";
 	});
 
 	for (const end of ["handoff", "cancel"] as const) {
@@ -735,8 +763,8 @@ async function memoryChecks(): Promise<void> {
 			const m = machine();
 			m.send({ kind: "start" });
 			m.send({ kind: "turn_ended", outcome: "succeeded", verified: null, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
-			m.send({ kind: "published", head: HEAD, pr: { number: 1, url: "local" }, openItems: 1 });
-			const handed = m.send({ kind: "ci_read", prHead: null, head: HEAD, reading: { kind: "read", head: HEAD, runs: [{ name: "build", app: "ci", state: "passed", conclusion: "success", url: "", summary: "", jobId: null }], logs: [], truncated: false }, mergeable: true, openItems: 1 });
+			m.send({ kind: "published", webhooks: false, head: HEAD, pr: { number: 1, url: "local" }, openItems: 1 });
+			const handed = m.send({ kind: "ci_read", webhooks: false, prHead: null, head: HEAD, reading: { kind: "read", head: HEAD, runs: [{ name: "build", app: "ci", state: "passed", conclusion: "success", url: "", summary: "", jobId: null }], logs: [], truncated: false }, mergeable: true, openItems: 1 });
 			const handoff = { ...(handed.effects.find((effect) => effect.kind === "handoff") as object), reviewDone: true } as unknown as { key: string };
 			const actor = await itemActor(m.item);
 			withGithub(actor, true);
@@ -755,7 +783,7 @@ async function memoryChecks(): Promise<void> {
 		const m = machine();
 		m.send({ kind: "start" });
 		m.send({ kind: "turn_ended", outcome: "succeeded", verified: null, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
-		const pushed = m.send({ kind: "published", head: HEAD, pr: { number: 1, url: "local" }, openItems: 1 });
+		const pushed = m.send({ kind: "published", webhooks: false, head: HEAD, pr: { number: 1, url: "local" }, openItems: 1 });
 		const poll = pushed.effects.find((effect) => effect.kind === "poll_ci") as { key: string; at: number };
 		const actor = await itemActor(m.item);
 		// The person's GitHub connection is gone: no reading can be had at all.
@@ -779,8 +807,8 @@ async function memoryChecks(): Promise<void> {
 		const m = machine();
 		m.send({ kind: "start" });
 		m.send({ kind: "turn_ended", outcome: "succeeded", verified: null, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
-		m.send({ kind: "published", head: HEAD, pr: { number: 1, url: "local" }, openItems: 1 });
-		const review = m.send({ kind: "ci_read", head: HEAD, reading: { kind: "read", head: HEAD, runs: [{ name: "build", app: "ci", state: "passed", conclusion: "success", url: "", summary: "", jobId: null }], truncated: false, logs: [] }, mergeable: true, prHead: HEAD, openItems: 1 });
+		m.send({ kind: "published", webhooks: false, head: HEAD, pr: { number: 1, url: "local" }, openItems: 1 });
+		const review = m.send({ kind: "ci_read", webhooks: false, head: HEAD, reading: { kind: "read", head: HEAD, runs: [{ name: "build", app: "ci", state: "passed", conclusion: "success", url: "", summary: "", jobId: null }], truncated: false, logs: [] }, mergeable: true, prHead: HEAD, openItems: 1 });
 		const poll = review.effects.find((effect) => effect.kind === "poll_pr") as { key: string; at: number };
 		assert(m.item.state === "review" && poll, `the item is ${m.item.state}`);
 		const actor = await itemActor(m.item);

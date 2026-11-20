@@ -79,6 +79,7 @@ const MIDNIGHT = Date.UTC(2026, 10, 20, 0, 0);
 
 interface Keys {
 	key: string;
+	prPoll: string;
 	/** The key of the last `check_turn`. */
 	check: string;
 	question: string;
@@ -109,8 +110,8 @@ const ended = (outcome: "succeeded" | "unresolved" | "interrupted" | "stopped", 
 	report: more.report ?? null,
 	spend: { tokens: more.tokens ?? 100_000, hostedSeconds: 0 },
 });
-const published = (head: string): Row["fact"] => (k) => ({ kind: "published", key: k.key, head, pr: { number: 7, url: "https://github.invalid/pull/7" }, openItems: 1 });
-const ci = (head: string, reading: CiReading, mergeable: boolean | null = true): Row["fact"] => (k) => ({ kind: "ci_read", prHead: null, key: k.key, head, reading: reading.kind === "read" ? { ...reading, head } : reading, mergeable, openItems: 1 });
+const published = (head: string): Row["fact"] => (k) => ({ kind: "published", webhooks: false, key: k.key, head, pr: { number: 7, url: "https://github.invalid/pull/7" }, openItems: 1 });
+const ci = (head: string, reading: CiReading, mergeable: boolean | null = true): Row["fact"] => (k) => ({ kind: "ci_read", webhooks: false, prHead: null, key: k.key, head, reading: reading.kind === "read" ? { ...reading, head } : reading, mergeable, openItems: 1 });
 const answer = (choice: Extract<Fact, { kind: "answer" }>["choice"], more: { note?: string; budget?: Partial<FactoryItem["budget"]> } = {}): Row["fact"] => (k) => ({ kind: "answer", by: "person:u1", question: k.question, choice, ...more });
 
 const { reviewerAllowed } = await import("../server/src/factory/review.js");
@@ -139,10 +140,11 @@ function drive(name: string, start: FactoryItem, rows: Row[]): void {
 		let item = start;
 		let at = T0;
 		let lastCheck = "";
+		let prPoll = "";
 		let ok = true;
 		for (const [index, row] of rows.entries()) {
 			at = row.at ?? at + (row.after ?? MINUTE);
-			const keys: Keys = { key: currentKey(item) ?? "", check: lastCheck, question: item.question?.id ?? "" };
+			const keys: Keys = { prPoll, key: currentKey(item) ?? "", check: lastCheck, question: item.question?.id ?? "" };
 			const fact = { at, ...row.fact(keys) } as Fact;
 			const outcome = advance(item, fact);
 			const kinds = [...(outcome.storeVerdict ? [outcome.storeVerdict.kind] : []), ...outcome.effects.map((effect) => effect.kind)];
@@ -166,7 +168,10 @@ function drive(name: string, start: FactoryItem, rows: Row[]): void {
 					break;
 				}
 			}
-			for (const effect of outcome.effects) if (effect.kind === "check_turn") lastCheck = effect.key;
+			for (const effect of outcome.effects) {
+				if (effect.kind === "check_turn") lastCheck = effect.key;
+				if (effect.kind === "poll_pr") prPoll = effect.key;
+			}
 			item = outcome.item;
 		}
 		if (ok) expect(`${name}${doubled ? " (every fact twice)" : ""}`, true, `${rows.length} facts`);
@@ -201,13 +206,40 @@ const toReview: Row[] = [
 	},
 ];
 
+for (const webhooks of [false, true]) {
+	for (const openItems of [10, 11]) {
+		const ciMs = MINUTE * (webhooks ? openItems > 10 ? 10 : 5 : openItems > 10 ? 3 : 1);
+		const prMs = MINUTE * (webhooks ? 30 : 10);
+		const timing = (kind: "poll_ci" | "poll_pr", ms: number) => (o: Outcome) => holds(effect(o, kind)?.at === T0 + ms, `${kind} is due in ${ms} ms`);
+		const settings = { webhooks };
+		drive(`poll cadence, webhooks ${webhooks}, ${openItems} open items`, newItem(), [
+			{ fact: () => ({ kind: "start", by: "person:u1" }), at: T0, state: "queued", effects: ["deliver", "check_turn"] },
+			{ ...toReview[0], at: T0 },
+			{ ...toReview[1], at: T0, fact: k => ({ ...published(H(1))(k), openItems, ...settings }), also: timing("poll_ci", ciMs) },
+			{ ...toReview[2], at: T0, fact: k => ({ ...toReview[2].fact(k), openItems, ...settings }), also: timing("poll_ci", ciMs) },
+			{ ...toReview[3], at: T0, fact: k => ({ ...toReview[3].fact(k), ...settings }), also: timing("poll_pr", prMs) },
+			{ fact: k => ({ kind: "pr_read", key: k.key, state: "open", prHead: H(1), ...settings }), at: T0, state: "review", effects: ["poll_pr"], also: timing("poll_pr", prMs) },
+		]);
+	}
+}
+
+drive("polls pick up the fallback switch on the next GitHub reading", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), at: T0, state: "queued", effects: ["deliver", "check_turn"] },
+	{ ...toReview[0], at: T0 },
+	{ ...toReview[1], at: T0 },
+	{ ...toReview[2], at: T0, fact: k => ({ ...toReview[2].fact(k), webhooks: true }), also: o => holds(effect(o, "poll_ci")?.at === T0 + 5 * MINUTE, "CI switched to five minutes") },
+	{ ...toReview[3], at: T0, fact: k => ({ ...toReview[3].fact(k), webhooks: true }), also: o => holds(effect(o, "poll_pr")?.at === T0 + 30 * MINUTE, "PR started at thirty minutes") },
+	{ fact: k => ({ kind: "pr_read", key: k.key, state: "open", prHead: H(1), webhooks: false }), at: T0, state: "review", effects: ["poll_pr"],
+		also: o => holds(effect(o, "poll_pr")?.at === T0 + 10 * MINUTE, "PR returned to ten minutes") },
+]);
+
 drive("the plain run: implement, checks pass, publish, CI passes, review, merged", newItem(), [
 	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.text.includes("add(1, 2) is 3") === true && effect(o, "deliver")?.maxSteps === 60, "the task and its criteria go to the agent, with 60 steps") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: (k) => ({ kind: "turn_running", key: k.check }), after: 5 * MINUTE, state: "working", effects: ["check_turn"] },
 	...toReview,
-	{ fact: (k) => ({ kind: "pr_read", prHead: null, key: k.key, state: "open" }), after: 10 * MINUTE, state: "review", effects: ["poll_pr"] },
-	{ fact: (k) => ({ kind: "pr_read", prHead: null, key: k.key, state: "merged" }), after: 10 * MINUTE, state: "done", effects: [] },
+	{ fact: (k) => ({ kind: "pr_read", webhooks: false, prHead: null, key: k.key, state: "open" }), after: 10 * MINUTE, state: "review", effects: ["poll_pr"] },
+	{ fact: (k) => ({ kind: "pr_read", webhooks: false, prHead: null, key: k.key, state: "merged" }), after: 10 * MINUTE, state: "done", effects: [] },
 ]);
 
 drive("a required check fails at first and passes after a fix turn", newItem(), [
@@ -264,7 +296,7 @@ const publishedVerdict = `${newItem().id}:1:5:1`;
 
 function reviewStarts(reading: CiReading, after = MINUTE): Row {
 	return {
-		fact: ci(reviewHead, reading), after, state: "working", effects: ["verdict", "deliver", "check_turn"],
+		fact: ci(reviewHead, reading), after, state: "working", effects: ["verdict", "deliver", "check_turn", "poll_pr"],
 		also: (o) => {
 			const saved = o.storeVerdict;
 			const delivery = effect(o, "deliver");
@@ -334,7 +366,7 @@ for (const [name, reviewer, reason] of [
 ] as const) {
 	drive(`review: ${name}`, newItem({ reviewer }), [...toCi, handoverWithout(ci(reviewHead, ciPassed), reason)]);
 }
-const movedReading: Row["fact"] = ({ key }) => ({ kind: "ci_read", key, head: reviewHead, reading: { ...emptyCi, head: reviewHead }, mergeable: true, openItems: 1, prHead: H(2) });
+const movedReading: Row["fact"] = ({ key }) => ({ kind: "ci_read", webhooks: false, key, head: reviewHead, reading: { ...emptyCi, head: reviewHead }, mergeable: true, openItems: 1, prHead: H(2) });
 drive("review: a machine item hands over after CI without a reviewer turn", { ...reviewerOn(), place: { kind: "machine", machineId: "local" } }, [
 	...toCi, handoverWithout(freshCi, "in this sandbox the reviewer's commands would run with the network"),
 ]);
@@ -380,7 +412,7 @@ drive("review: refusal hands over even on an error outcome", reviewerOn(), [...r
 	refresh(endReview({ outcome: "error", refused: "This sandbox cannot run the reviewer." })), handoverWithout(freshCi, "This sandbox cannot run the reviewer."),
 ]);
 
-const budgetReview: Row = { fact: ci(reviewHead, ciPassed), state: "waiting", wait: "budget", effects: ["verdict", "ask"], also: o =>
+const budgetReview: Row = { fact: ci(reviewHead, ciPassed), state: "waiting", wait: "budget", effects: ["verdict", "ask", "poll_pr"], also: o =>
 	holds(o.storeVerdict?.verdict.id === publishedVerdict && o.item.question?.cause === "turns" && o.item.question.choices.some(c => c.id === "hand_over"), "expected the pinned verdict and budget question before delivery") };
 const tight = () => newItem({ reviewer: { on: true }, budget: { turns: 1 } });
 drive("review: out of budget can hand over", tight(), [...toCi, budgetReview, ...personHandover()]);
@@ -410,7 +442,25 @@ drive("review: a rounds question can hand over failing CI", reviewerOn(), [...be
 	{ fact: ci(H(2), failingCi("build failed")), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.cause === "repeated", "expected a rounds question") },
 	...personHandover(ci(H(2), failingCi("build failed"))),
 ]);
-const prAt = (sha: string): Row["fact"] => ({ key }) => ({ kind: "pr_read", key, state: "open", prHead: sha });
+const prAt = (sha: string): Row["fact"] => ({ key }) => ({ kind: "pr_read", webhooks: false, key, state: "open", prHead: sha });
+const duringReview = (state: "open" | "merged" | "closed", prHead: string): Row["fact"] => k =>
+	({ kind: "pr_read", key: k.prPoll, state, prHead, webhooks: true });
+drive("review: PR reads leave the turn pinned while the branch moves", reviewerOn(), [...reviewing,
+	{ fact: duringReview("open", H(2)), state: "working", effects: ["poll_pr"], also: o =>
+		holds(currentKey(o.item) === publishedVerdict && o.item.run?.review?.head === reviewHead &&
+			o.item.run.ci?.moved === H(2), "the reviewer and its verdict stay on the published head") },
+	{ ...refile, also: o => holds(effect(o, "deliver")?.reviewerInput?.verdictWords.startsWith("Ready for review.") === true &&
+		effect(o, "deliver")?.checkout?.head === reviewHead, "refiling uses the original verdict and head") },
+	refresh(k => endReview({ review: filing("approve", k.key) })(k)),
+	{ fact: movedReading, state: "review", effects: ["handoff", "poll_pr"], also: o =>
+		holds(effect(o, "handoff")?.review === null && effect(o, "handoff")?.verdict.moved === H(2), "handover rereads and marks the moved PR unverified") },
+]);
+for (const state of ["merged", "closed"] as const) {
+	drive(`review: fetched ${state} withdraws the running reviewer`, reviewerOn(), [...reviewing,
+		{ fact: duringReview(state, H(2)), state: state === "merged" ? "done" : "cancelled", effects: ["withdraw"],
+			also: o => holds(effect(o, "withdraw")?.to === "review" && effect(o, "withdraw")?.key === publishedVerdict, "withdraws the pinned turn") },
+	]);
+}
 drive("review: moving away and back updates the same verdict", reviewerOn(), [...reviewing,
 	refresh(endReview({ review: filing("approve") })),
 	{ fact: freshCi, state: "review", effects: ["handoff", "poll_pr"] },
@@ -458,8 +508,8 @@ print("\n== blueprint (continued)");
 		blocks: [{ kind: "text", heading: "What it did", text: description, refs: [] }, { kind: "text", heading: "Where to look", text: lookAt, refs: [] }, { kind: "risk", text: concerns, at: [] }],
 	}));
 	expect("a new run has no report until filed", (await latestReport(db, 2)) === null);
-	const published = advance(outcome.item, { kind: "published", key: currentKey(outcome.item)!, head: H(1), pr: { number: 1, url: "" }, at: T0 + 2, openItems: 1 });
-	const done = advance(published.item, { ...ci(H(1), ciRead([{ name: "build", state: "passed" }]))({ key: currentKey(published.item)!, question: "", check: "" }), at: T0 + MINUTE } as Fact);
+	const published = advance(outcome.item, { kind: "published", webhooks: false, key: currentKey(outcome.item)!, head: H(1), pr: { number: 1, url: "" }, at: T0 + 2, openItems: 1 });
+	const done = advance(published.item, { ...ci(H(1), ciRead([{ name: "build", state: "passed" }]))({ key: currentKey(published.item)!, question: "", check: "", prPoll: "" }), at: T0 + MINUTE } as Fact);
 	const handoff = effect(done, "handoff")!;
 	const platform = itemComment(handoff.verdict, handoff.words, null);
 	const comment = itemComment(handoff.verdict, handoff.words, report);
@@ -789,13 +839,13 @@ function walk(item: FactoryItem, facts: Array<Record<string, unknown>>, from = T
 	return { item, last };
 }
 const turnEnded = (outcome: "succeeded" | "unresolved", evidence: Verified | null) => ({ kind: "turn_ended", outcome, verified: evidence, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
-const ciFact = (reading: CiReading, head = H(1), prHead: string | null = head) => ({ kind: "ci_read", head, reading, mergeable: true, prHead, openItems: 1 });
+const ciFact = (reading: CiReading, head = H(1), prHead: string | null = head) => ({ kind: "ci_read", webhooks: false, head, reading, mergeable: true, prHead, openItems: 1 });
 const passedCi = ciRead([{ name: "build", state: "passed" }]);
-const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", PASSED), { kind: "published", head, pr: { number: 7, url: "" }, openItems: 1 }];
+const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", PASSED), { kind: "published", webhooks: false, head, pr: { number: 7, url: "" }, openItems: 1 }];
 
 {
 	// Run 1 passed its gate and CI at H(1); run 2 was sent back, its checks failed twice, and it pushed nothing.
-	const reviewed = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", prHead: null, head: H(1), reading: passedCi, mergeable: true, openItems: 1 }]);
+	const reviewed = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: passedCi, mergeable: true, openItems: 1 }]);
 	const first = effect(reviewed.last, "handoff");
 	const resent = walk(reviewed.item, [{ kind: "send_back", note: "Try another change" }, { kind: "turn_started" }, turnEnded("unresolved", FAILING), { kind: "turn_started" }, turnEnded("unresolved", FAILING)]);
 	const offered = resent.item.question?.choices.map((one) => one.id) ?? [];
@@ -806,7 +856,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	);
 	// Within one run: H(1) pushed with its checks passing, CI failed, the fix turn's checks then failed twice. Handed over, the
 	// verdict is H(1)'s: its own gate and CI, not the unpushed turn's.
-	const fixing = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", prHead: null, head: H(1), reading: failingCi("expected 3"), mergeable: true, openItems: 1 }, { kind: "turn_started" }, turnEnded("unresolved", FAILING), { kind: "turn_started" }, turnEnded("unresolved", FAILING)]);
+	const fixing = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: failingCi("expected 3"), mergeable: true, openItems: 1 }, { kind: "turn_started" }, turnEnded("unresolved", FAILING), { kind: "turn_started" }, turnEnded("unresolved", FAILING)]);
 	const handed = walk(fixing.item, [{ kind: "answer", choice: "hand_over" }, ciFact(failingCi("expected 3"))]);
 	const verdict = effect(handed.last, "handoff")?.verdict;
 	expect(
@@ -818,7 +868,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 
 {
 	// GitHub never answered a reading: 91 minutes on, the person has it handed over. That is not "no CI".
-	const waited = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", prHead: null, head: H(1), reading: { kind: "failed", said: "GitHub answered 503" }, mergeable: null, openItems: 1, at: T0 + 95 * MINUTE }]);
+	const waited = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: { kind: "failed", said: "GitHub answered 503" }, mergeable: null, openItems: 1, at: T0 + 95 * MINUTE }]);
 	const handed = walk(waited.item, [{ kind: "answer", choice: "hand_over" }, ciFact({ kind: "failed", said: "GitHub answered 503" })], T0 + 96 * MINUTE);
 	const ci = effect(handed.last, "handoff")?.verdict;
 	expect("CI that was never read, handed over, is said to be unread, not absent", waited.item.question?.kind === "ci_timeout" && ci?.ci.state === "unread" && /could not be read/.test(ci.said.ci), `${ci?.ci.state}: ${ci?.said.ci}`);
@@ -828,8 +878,8 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	// One empty reading a minute after the push, then GitHub not answering until the wait ran out. CI may well
 	// have run since: handed over, that is "could not be read", never "no CI ran".
 	const empty: CiReading = { kind: "read", head: "", runs: [], truncated: false, logs: [] };
-	const early = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", prHead: null, head: H(1), reading: empty, mergeable: null, openItems: 1 }]);
-	const waited = walk(early.item, [{ kind: "ci_read", prHead: null, head: H(1), reading: { kind: "failed", said: "GitHub answered 503" }, mergeable: null, openItems: 1, at: T0 + 95 * MINUTE }], T0 + 94 * MINUTE);
+	const early = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: empty, mergeable: null, openItems: 1 }]);
+	const waited = walk(early.item, [{ kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: { kind: "failed", said: "GitHub answered 503" }, mergeable: null, openItems: 1, at: T0 + 95 * MINUTE }], T0 + 94 * MINUTE);
 	const handed = walk(waited.item, [{ kind: "answer", choice: "hand_over" }, ciFact({ kind: "failed", said: "GitHub answered 503" })], T0 + 96 * MINUTE);
 	const verdict = effect(handed.last, "handoff")?.verdict;
 	expect("an early empty reading followed by readings that failed is handed over as unread, not as no CI", early.item.run?.ci?.last === null && verdict?.ci.state === "unread", `kept ${JSON.stringify(early.item.run?.ci?.last)}; handed over as ${verdict?.ci.state}`);
@@ -837,8 +887,8 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	// CI ran, and every check was skipped. Not a pass; waited for as "no CI" is, then said as itself.
 	const skipped = ciRead([{ name: "deploy", state: "neutral" }, { name: "release", state: "neutral" }]);
 	expect("CI whose every check was skipped, cancelled or neutral is skipped, not passed", ciState(skipped) === "skipped" && ciState(ciRead([{ name: "build", state: "passed" }, { name: "deploy", state: "neutral" }])) === "passed", ciState(skipped));
-	const soon = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", prHead: null, head: H(1), reading: skipped, mergeable: true, openItems: 1 }]);
-	const later = walk(soon.item, [{ kind: "ci_read", prHead: null, head: H(1), reading: skipped, mergeable: true, openItems: 1, at: T0 + 95 * MINUTE }], T0 + 94 * MINUTE);
+	const soon = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: skipped, mergeable: true, openItems: 1 }]);
+	const later = walk(soon.item, [{ kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: skipped, mergeable: true, openItems: 1, at: T0 + 95 * MINUTE }], T0 + 94 * MINUTE);
 	const said = effect(later.last, "handoff")?.verdict;
 	expect(
 		"a skipped CI is waited for, then handed over as skipped: the person's checks passing decide the result, and the words say CI ran",
@@ -848,26 +898,26 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	// The pull request's branch moved to another commit after the agent pushed: CI passing on the agent's commit is not a pass
 	// of what the pull request holds. Handed over as it is, saying so, never as ready; with the branch where the agent left it, a pass.
 	const movedTo = H(2);
-	const moved = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", head: H(1), reading: passedCi, mergeable: true, prHead: movedTo, openItems: 1 }]);
+	const moved = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, head: H(1), reading: passedCi, mergeable: true, prHead: movedTo, openItems: 1 }]);
 	const movedVerdict = effect(moved.last, "handoff")?.verdict;
-	const stayed = effect(walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", head: H(1), reading: passedCi, mergeable: true, prHead: H(1), openItems: 1 }]).last, "handoff")?.verdict;
+	const stayed = effect(walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, head: H(1), reading: passedCi, mergeable: true, prHead: H(1), openItems: 1 }]).last, "handoff")?.verdict;
 	expect(
 		"a pull request moved past the verified commit is handed over not verified, saying so; one still at it passes",
 		moved.item.state === "review" && movedVerdict?.result === "unverified" && movedVerdict.moved === movedTo && movedVerdict.said.ci.includes(`now at ${movedTo.slice(0, 7)}`) && effect(moved.last, "handoff")?.words.startsWith("Not verified: the pull request has a newer commit.") === true && stayed?.result === "pass" && stayed.moved === null,
 		`${moved.item.state}, ${movedVerdict?.result}: ${effect(moved.last, "handoff")?.words}; unmoved ${stayed?.result}`,
 	);
 	// A reading GitHub gave for another commit than the one asked of it is no reading of the agent's commit.
-	const other = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", head: H(1), reading: { ...passedCi, head: H(2) }, mergeable: true, prHead: null, openItems: 1 }]);
+	const other = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, head: H(1), reading: { ...passedCi, head: H(2) }, mergeable: true, prHead: null, openItems: 1 }]);
 	expect("a reading answered for another commit is waited past, not taken for CI of the commit asked", other.item.state === "waiting" && effect(other.last, "handoff") === undefined && other.item.run?.ci?.last === null, `${other.item.state}; last ${JSON.stringify(other.item.run?.ci?.last)}`);
 	// After the handover, a push to the branch makes the verdict again, in place of the first: not verified while it holds the other
 	// commit, a pass again if it comes back; the same head read twice changes nothing.
-	const reviewing = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", head: H(1), reading: passedCi, mergeable: true, prHead: H(1), openItems: 1 }]);
+	const reviewing = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, head: H(1), reading: passedCi, mergeable: true, prHead: H(1), openItems: 1 }]);
 	const first = effect(reviewing.last, "handoff");
-	const movedRead = walk(reviewing.item, [{ kind: "pr_read", state: "open", prHead: movedTo }]);
+	const movedRead = walk(reviewing.item, [{ kind: "pr_read", webhooks: false, state: "open", prHead: movedTo }]);
 	const pushedOver = walk(movedRead.item, [ciFact(passedCi, H(1), movedTo)]);
 	const again = effect(pushedOver.last, "handoff");
-	const readTwice = walk(pushedOver.item, [{ kind: "pr_read", state: "open", prHead: movedTo }]);
-	const returned = walk(readTwice.item, [{ kind: "pr_read", state: "open", prHead: H(1) }]);
+	const readTwice = walk(pushedOver.item, [{ kind: "pr_read", webhooks: false, state: "open", prHead: movedTo }]);
+	const returned = walk(readTwice.item, [{ kind: "pr_read", webhooks: false, state: "open", prHead: H(1) }]);
 	const back = effect(walk(returned.item, [ciFact(failingCi("new failure"))]).last, "handoff");
 	expect(
 		"a push to the pull request after its handover replaces the verdict with one not verified, once, and a return to the commit uses its new CI",
@@ -876,7 +926,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	);
 	// A listing cut short of which nothing usable was read is not "no CI".
 	const cutEmpty: CiReading = { kind: "read", head: H(1), runs: [], truncated: true, logs: [] };
-	const cutVerdict = effect(walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", head: H(1), reading: cutEmpty, mergeable: true, prHead: null, openItems: 1 }]).last, "handoff")?.verdict;
+	const cutVerdict = effect(walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, head: H(1), reading: cutEmpty, mergeable: true, prHead: null, openItems: 1 }]).last, "handoff")?.verdict;
 	expect("a listing cut short with nothing usable read is unread, not no CI", ciState(cutEmpty) === "incomplete" && cutVerdict?.ci.state === "unread" && !/No CI/.test(cutVerdict.said.ci), `${ciState(cutEmpty)}; ${cutVerdict?.ci.state}: ${cutVerdict?.said.ci}`);
 	const unchecked = verdictOf({ id: "v", item: "i", run: 1, head: H(1), at: T0, place: { kind: "hosted" }, gate: { outcome: "succeeded", verified: verified("none_set", []), flags: [] }, ci: { state: "skipped", runs: [{ name: "deploy", app: "ci", conclusion: "skipped", url: "" }], said: null }, acceptance: [], mergeable: true });
 	expect("with no checks set, a CI where nothing passed is not verified", unchecked.result === "unverified", unchecked.result);
@@ -1018,7 +1068,7 @@ try {
 		try {
 			ciData.runs = blocked.map((one) => one.check);
 			const only = await readCi(app, target);
-			const item = walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", verified("none_set", [])), { kind: "published", head: HEAD, pr: { number: 7, url: "" }, openItems: 1 }]).item;
+			const item = walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", verified("none_set", [])), { kind: "published", webhooks: false, head: HEAD, pr: { number: 7, url: "" }, openItems: 1 }]).item;
 			const waiting = walk(item, [ciFact(only, HEAD)]);
 			const timeout = walk(waiting.item, [{ ...ciFact(only, HEAD), at: T0 + 96 * MINUTE }]);
 			const ask = timeout.item.question;
@@ -1076,8 +1126,8 @@ try {
 	const partial = await readCi(app, target);
 	expect("a listing cut short with no failure among what was read is incomplete, not passed", partial.kind === "read" && partial.truncated && ciState(partial) === "incomplete", partial.kind === "read" ? `${partial.runs.length} read, truncated ${partial.truncated}` : partial.kind);
 	const cut = advance(
-		advance(advance(advance(advance(newItem(), { kind: "start", at: T0, by: "person:u1" }).item, { kind: "turn_started", at: T0, key: "i_00000000000000aa:1:1:1" }).item, { ...(ended("succeeded", PASSED)({ key: "i_00000000000000aa:1:1:1", check: "", question: "" }) as Extract<Fact, { kind: "turn_ended" }>), at: T0 }).item, { kind: "published", at: T0, key: "i_00000000000000aa:1:3:1", head: HEAD, pr: { number: 1, url: "" }, openItems: 1 }).item,
-		{ kind: "ci_read", prHead: null, at: T0 + MINUTE, key: "i_00000000000000aa:1:4:1", head: HEAD, reading: partial, mergeable: null, openItems: 1 },
+		advance(advance(advance(advance(newItem(), { kind: "start", at: T0, by: "person:u1" }).item, { kind: "turn_started", at: T0, key: "i_00000000000000aa:1:1:1" }).item, { ...(ended("succeeded", PASSED)({ key: "i_00000000000000aa:1:1:1", check: "", prPoll: "", question: "" }) as Extract<Fact, { kind: "turn_ended" }>), at: T0 }).item, { kind: "published", webhooks: false, at: T0, key: "i_00000000000000aa:1:3:1", head: HEAD, pr: { number: 1, url: "" }, openItems: 1 }).item,
+		{ kind: "ci_read", webhooks: false, prHead: null, at: T0 + MINUTE, key: "i_00000000000000aa:1:4:1", head: HEAD, reading: partial, mergeable: null, openItems: 1 },
 	);
 	const said = effect(cut, "handoff")?.verdict;
 	expect("handed over, it says CI was not read in full, and claims no pass of it", said?.ci.state === "unread" && /not read in full|could not be read in full/.test(said.said.ci) && !/CI passed/.test(said.said.ci), `${said?.ci.state}: ${said?.said.ci}`);
@@ -1114,15 +1164,15 @@ try {
 	const ungranted = await readCi(app, target);
 	expect("an app without the CI permissions (decision 2 not granted): not permitted, with GitHub's reason", ungranted.kind === "not_permitted" && /permissions/.test(ungranted.said), JSON.stringify(ungranted));
 	const handed = advance(
-		advance(advance(advance(advance(newItem(), { kind: "start", at: T0, by: "person:u1" }).item, { kind: "turn_started", at: T0, key: "i_00000000000000aa:1:1:1" }).item, { ...(ended("succeeded", PASSED)({ key: "i_00000000000000aa:1:1:1", check: "", question: "" }) as Extract<Fact, { kind: "turn_ended" }>), at: T0 }).item, {
-			kind: "published",
+		advance(advance(advance(advance(newItem(), { kind: "start", at: T0, by: "person:u1" }).item, { kind: "turn_started", at: T0, key: "i_00000000000000aa:1:1:1" }).item, { ...(ended("succeeded", PASSED)({ key: "i_00000000000000aa:1:1:1", check: "", prPoll: "", question: "" }) as Extract<Fact, { kind: "turn_ended" }>), at: T0 }).item, {
+			kind: "published", webhooks: false,
 			at: T0,
 			key: "i_00000000000000aa:1:3:1",
 			head: HEAD,
 			pr: { number: 1, url: "" },
 			openItems: 1,
 		}).item,
-		{ kind: "ci_read", prHead: null, at: T0 + MINUTE, key: "i_00000000000000aa:1:4:1", head: HEAD, reading: ungranted, mergeable: null, openItems: 1 },
+		{ kind: "ci_read", webhooks: false, prHead: null, at: T0 + MINUTE, key: "i_00000000000000aa:1:4:1", head: HEAD, reading: ungranted, mergeable: null, openItems: 1 },
 	);
 	expect("that reading, given to the blueprint, hands the item over saying CI was not read", handed.item.state === "review" && effect(handed, "handoff")?.verdict.ci.state === "not_permitted");
 	standin.appPermissions = granted;
