@@ -6,6 +6,7 @@ import { DockerSandboxHandle, type DockerProcess, type StartOptions } from "../.
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { audit, safeSentence } from "./audit.js";
 import { type Box, Executor } from "./docker-executor.js";
+import { shotsImage } from "./policy.js";
 import { Refusal } from "./state.js";
 
 // run() uses this same start() internally. Capture its pipes without reimplementing the
@@ -59,8 +60,10 @@ class Conversation {
 			case "create": {
 				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session); });
 				if (existing) return existing;
-				await o.ensureImage();
-				return o.serial(() => { this.requireActive(); return o.create(this.session, op.args.profile); });
+				const screenshots = op.args.screenshots === true && o.screenshots;
+				await o.ensureImage(); // The disk-space helper always uses the base pin.
+				if (screenshots) await o.ensureImage(shotsImage);
+				return o.serial(() => { this.requireActive(); return o.create(this.session, op.args.profile, screenshots); });
 			}
 			case "connect": case "suspend": case "destroy": case "state":
 				return o.serial(async () => {

@@ -52,6 +52,7 @@ import { type DockerSandboxHandle, DockerSandboxes, containerName } from "../ser
 import { TOKEN_REMOVED, tokenFilePath } from "../server/src/sandbox/token-file.js";
 import { ensureDataVolume } from "../server/src/sandbox/volumes.js";
 import type { SignInMaterial } from "../server/src/signin/material.js";
+import { sessionSandboxInput } from "../server/src/actors/internal.js";
 import { DockerWindlass } from "../server/src/sandbox/windlass.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -687,11 +688,11 @@ async function standInRequests(_user: string): Promise<string[]> {
 
 async function main(): Promise<void> {
 	console.log(`sandbox-check run ${run} on ${process.arch}`);
-	const checkBuild = !only.length || only.some(prefix => "image".startsWith(prefix));
+	const checkBuild = !only.length || only.some(prefix => "image".startsWith(prefix) || "screenshot images".startsWith(prefix));
 	let built;
 	if (checkBuild) {
 		createdImages.add(baseTag);
-		built = spawnSync(join(root, "sandbox/build.sh"), { env: { ...process.env, WLP_SANDBOX_IMAGE: baseTag }, encoding: "utf8" });
+		built = spawnSync(join(root, "sandbox/build.sh"), { env: { ...process.env, WLP_SANDBOX_VARIANT: "base", WLP_SANDBOX_IMAGE: baseTag }, encoding: "utf8" });
 		if (built.status !== 0) throw new Error(built.stderr);
 	}
 	await useImage(checkBuild ? baseTag : IMAGE);
@@ -717,6 +718,31 @@ async function main(): Promise<void> {
 			info(`image size ${(Number(size.stdout.trim()) / 1e6).toFixed(0)} MB`);
 		});
 	}
+
+	await section("screenshot images", async () => {
+		const shotsTag = `windlass-platform-sandbox:chk-${run}-shots`;
+		createdImages.add(shotsTag);
+		execFileSync(join(root, "sandbox/build.sh"), { env: { ...process.env, WLP_SANDBOX_VARIANT: "shots", WLP_SANDBOX_IMAGE: shotsTag } });
+		const shotsImage = await imageId(shotsTag);
+		const { sandboxes } = createSandboxLayer({ image, shotsImage, signIns: "memory", tokenNetwork: "none" });
+		for (const role of ["builder", "reviewer", undefined] as const) {
+			for (const enabled of [false, true]) {
+				const origin = role && { kind: "item" as const, itemId: "item", role };
+				const args = sessionSandboxInput({ uid, sessionId: "check-selection", profile: "docker-hardened", origin }, enabled);
+				const id = await sandboxes.create(args);
+				createdSandboxes.add(id);
+				everySandbox.add(id);
+				const chosen = (await docker(["inspect", "-f", "{{.Config.Image}}", containerName(id)], { check: true })).stdout.trim();
+				const expected = enabled && role ? shotsImage : image;
+				expect(`Docker creates ${role ?? "personal"} on ${expected} with repository screenshots ${enabled}`, chosen === expected, chosen);
+				const hasBrowser = expected === shotsImage;
+				const files = hasBrowser ? "test -x /usr/local/bin/wlp-shot && test -x /usr/local/bin/wlp-headless-shell"
+					: "test ! -e /usr/local/bin/wlp-shot && test ! -e /usr/local/bin/wlp-headless-shell && test ! -d /opt/wlp-browser";
+				await docker(["exec", containerName(id), "sh", "-c", files], { check: true });
+				await sandboxes.destroy(id);
+			}
+		}
+	});
 
 	await section("profiles", async () => {
 		const profiles = layer.sandboxes.profiles();

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds the E2B template sessions' sandboxes are made from, `windlass-platform-sandbox`, from the same
-# Dockerfile and helpers as the Docker image (sandbox/Dockerfile, wlp-run, wlp-shot) and the x86_64
+# Dockerfile and helpers as the Docker image (sandbox/Dockerfile, wlp-run and, for shots, wlp-shot) and the x86_64
 # Windlass. It is to E2B what sandbox/build.sh is to Docker.
 #
 #   E2B_API_KEY=e2b_... sandbox/e2b/build.sh       build it at E2B (uses the account: a template build,
@@ -12,6 +12,8 @@
 #                                                  Windlass that sandbox/fetch-windlass.sh pins and
 #                                                  fetches; sandbox/e2b/build-windlass-x64.sh makes one
 #                                                  from a local checkout, for a Windlass not released yet)
+#   WLP_SANDBOX_VARIANT=shots                     build the screenshots template (default variant: base)
+#   WLP_E2B_SHOTS_TEMPLATE=<name>                  override windlass-platform-sandbox-shots
 #   WLP_E2B_TEMPLATE=<name>                        another name than windlass-platform-sandbox; the server
 #                                                  reads the same variable
 #   WLP_E2B_CPU, WLP_E2B_MEMORY_MB                 the size of every sandbox made from it (default 1 vCPU,
@@ -43,7 +45,8 @@ fi
 # The same small build context as sandbox/build.sh makes for Docker.
 context=$(mktemp -d "${TMPDIR:-/tmp}/wlp-e2b-build.XXXXXX")
 trap 'rm -rf "$context"' EXIT INT TERM
-cp "$here/../Dockerfile" "$here/../wlp-run" "$here/../wlp-shot" "$context/"
+cp "$here/../Dockerfile" "$here/../wlp-run" "$context/"
+if [ "${WLP_SANDBOX_VARIANT:-base}" = shots ]; then cp "$here/../wlp-shot" "$context/"; fi
 ln "$binary" "$context/windlass" 2>/dev/null || cp "$binary" "$context/windlass"
 
 echo "build.sh: the E2B template, with $binary" >&2

@@ -8,6 +8,7 @@
  * signin/directory.ts makes them with a client of its own.
  */
 
+import type { CreateSandboxInput } from "../sandbox/api.js";
 import type { ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -39,6 +40,12 @@ export interface SessionCreateInput {
 	createdAt: number;
 	/** Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's. */
 	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer" };
+}
+
+/** The repository setting selects an image only for work item sessions, at sandbox creation. */
+export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "origin">, screenshots = false): CreateSandboxInput {
+	const { uid, sessionId, profile, origin } = session;
+	return { uid, sessionId, profile, privateData: origin?.role === "reviewer", screenshots: origin?.kind === "item" && screenshots };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */

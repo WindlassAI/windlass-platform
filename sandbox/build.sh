@@ -1,9 +1,10 @@
 #!/bin/sh
-# Builds the sandbox image, windlass-platform-sandbox:latest. Idempotent: an unchanged Dockerfile and binary reuse the cache.
+# Builds the base sandbox image or its screenshots variant. Idempotent: an unchanged Dockerfile and binary reuse the cache.
 #
 # From server/, publish the local image or supply a run-private tag:
 #   WINDLASS_BINARY=/path/to/windlass-linux-<arch> ../sandbox/build.sh
 #   WLP_SANDBOX_IMAGE=<name:tag> ../sandbox/build.sh
+#   WLP_SANDBOX_VARIANT=shots ../sandbox/build.sh
 #
 # Without WINDLASS_BINARY it takes the released Windlass that sandbox/fetch-windlass.sh pins and fetches.
 # A build of your own is for trying a Windlass that is not released yet:
@@ -11,8 +12,17 @@
 # Prints the installed Windlass version on its last line.
 set -eu
 
-IMAGE="${WLP_SANDBOX_IMAGE:-windlass-platform-sandbox:latest}"
+variant=${WLP_SANDBOX_VARIANT:-base}
+case "$variant" in
+  base) tag=latest ;;
+  shots) tag=shots ;;
+  *) echo "WLP_SANDBOX_VARIANT must be base or shots" >&2; exit 2 ;;
+esac
+IMAGE="${WLP_SANDBOX_IMAGE:-windlass-platform-sandbox:$tag}"
 if [ -n "${WLP_SANDBOX_IMAGE:-}" ]; then
+  case "$IMAGE" in
+    windlass-platform-sandbox:shots) echo "build.sh: omit WLP_SANDBOX_IMAGE to publish :shots" >&2; exit 2 ;;
+  esac
   case "${IMAGE##*/}" in
     *:latest) echo "build.sh: omit WLP_SANDBOX_IMAGE to publish :latest" >&2; exit 2 ;;
     *:*) ;;
@@ -44,11 +54,12 @@ fi
 # A small build context of its own: the Dockerfile, the helpers and the binary (hard-linked when possible).
 context=$(mktemp -d "${TMPDIR:-/tmp}/wlp-build.XXXXXX")
 trap 'rm -rf "$context"' EXIT INT TERM
-cp "$here/Dockerfile" "$here/wlp-run" "$here/wlp-shot" "$context/"
+cp "$here/Dockerfile" "$here/wlp-run" "$context/"
+if [ "$variant" = shots ]; then cp "$here/wlp-shot" "$context/"; fi
 ln "$binary" "$context/windlass" 2>/dev/null || cp "$binary" "$context/windlass"
 
 echo "build.sh: building $IMAGE with $binary" >&2
-docker build --progress=plain --label "$LABEL" --tag "$IMAGE" "$context" >&2
+docker build --target "$variant" --progress=plain --label "$LABEL" --tag "$IMAGE" "$context" >&2
 
 version=$(docker run --rm --label "$LABEL" --name "wlp-build-$$" --network none "$IMAGE" windlass --version)
 echo "build.sh: installed $version" >&2

@@ -24,6 +24,7 @@ pnpm install
 # Build the sandbox image, with the released Windlass. For a Windlass that is not released yet:
 # WINDLASS_BINARY=/path/to/windlass-linux-<arch> sandbox/build.sh
 sandbox/build.sh
+WLP_SANDBOX_VARIANT=shots sandbox/build.sh  # browser image for opted-in work items
 
 scripts/dev.sh                              # the server: Rivet endpoint on http://localhost:6420, its own routes on :6440, demo sign-in on
 pnpm --filter @windlass-platform/web dev    # the web app on http://localhost:5173
@@ -542,6 +543,11 @@ cd server && E2B_API_KEY=e2b_... npx tsx ../scripts/e2b-check.ts    # one sandbo
 WLP_SANDBOX=e2b E2B_API_KEY=e2b_... WLP_WINDLASS_BIN=/path/to/windlass npx tsx src/index.ts
 ```
 
+The default template is `windlass-platform-sandbox`. Build `windlass-platform-sandbox-shots` with
+`WLP_SANDBOX_VARIANT=shots sandbox/e2b/build.sh` for repositories that enable screenshots.
+`WLP_E2B_TEMPLATE` and `WLP_E2B_SHOTS_TEMPLATE` override their respective names for both build and server.
+Use `--print` with either variant to inspect it locally.
+
 `sandbox/e2b/build.sh --print` shows what E2B would be asked to build and needs no key. The template is made
 from the Docker image's own `sandbox/Dockerfile`, so a microVM has what a container has: the user `agent`,
 `/workspace`, Windlass's data directory, `wlp-run`, git, bubblewrap and Windlass. A server on E2B needs no
@@ -667,8 +673,7 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   with the machine's key too.
 - **What the runner does.** What the server's Docker layer does, on the machine's Docker, and only what its
   protocol names: it makes a session's container, runs the platform's commands in it, starts and stops
-  it, and removes it when asked. It runs one sandbox image, pinned by digest when the runner is built, and
-  never pulls another. It touches only containers it labelled for its own machine
+  it, and removes it when asked. It runs the base sandbox image and can optionally run the screenshots image. Both pins come from the runner build. It touches only containers it labelled for its own machine
   (`dev.windlass-platform.machine=<machine id>`) and one data volume of its own,
   `wlp-machine-<machine id>`, which is Windlass's data directory for the machine's sessions, as the user's
   volume is on Docker. Each container has the limits a hosted Docker sandbox has (1.5 CPUs, 1536 MiB of
@@ -815,7 +820,20 @@ docker run -d --name windlass-runner --restart unless-stopped \
   <runner-image-id> --platform <WLP_PUBLIC_URL>
 ```
 
-and paired by the code it prints, as above. Give it a sandbox image pinned by id, so that a rebuild of
+Pair using the code it prints. To offer screenshots on this machine, build the second runner and start
+the same Docker command with `<screenshots-runner-image-id> --screenshots --platform <WLP_PUBLIC_URL>`.
+From `server/`, after building both sandbox variants, build the two runners with:
+
+```sh
+../scripts/runner-build.sh
+../scripts/runner-build.sh --screenshots
+```
+
+The second build pins both local image IDs. For a release, pass the base digest as the first
+argument after `--screenshots` and the screenshots digest as the second. An unflagged runner
+uses the base image even when a repository enables screenshots. Its builder can file a text report.
+
+Give it a sandbox image pinned by id, so that a rebuild of
 `windlass-platform-sandbox:latest` does not change what an existing runner runs. `docker-windlass-sandbox` is offered on a machine only where the
 runner's probe found that bubblewrap starts in a container there, which is the machine's kernel's to allow;
 elsewhere only `docker-hardened` is. Work items can use either available profile ("Work items").
@@ -904,6 +922,17 @@ The last two read the bucket's settings from the variables above, or from `R2_EN
 from an E2B sandbox to R2, for a session of one turn (24 kB): a save takes 1.3 seconds, a restore one.
 
 ## Screenshots on work items
+
+Screenshots are off by default. Enable **Take screenshots for work items** in the repository’s
+Settings tab. New builder and reviewer sandboxes then use `windlass-platform-sandbox:shots`
+on Docker or `windlass-platform-sandbox-shots` on E2B. The shots image extends the base with
+Chrome headless shell, Playwright core, fonts and `wlp-shot`. Personal agents and items with
+screenshots off use `windlass-platform-sandbox:latest` or the `windlass-platform-sandbox` template.
+
+Each turn reads the current setting. Turning it off stops new screenshot filings on the next turn.
+Turning it on while an item runs leaves its builder in its original sandbox. A builder created
+without a browser keeps working without screenshots. Each new review gets a fresh sandbox
+chosen with the current setting. Previously filed pictures stay on the item.
 
 A builder can file up to four PNGs saved by `wlp-shot` in its clone’s `.wlp-shots/` directory. The platform uploads a private copy directly from the sandbox to the configured backup bucket. Each upload link covers one object, its exact length and its PNG content type. The platform checks the stored length and the first 33 bytes. The sandbox receives the link on standard input. Storage credentials stay on the server.
 
@@ -2258,8 +2287,7 @@ command evidence, excerpts and screenshots. Both sessions count toward the item 
 
 The review is advisory. Every recommendation hands the item to its owner, with a
 summary in the pull request comment and the full filing on the item's page. A
-repository's `screenshots` setting defaults to true and applies to both agents
-from their next turn. Images require configured storage. The reviewer defaults
+repository’s `screenshots` setting defaults to false. Enable it to give new work item sandboxes a browser. Images require configured storage. The reviewer defaults
 to off for new items unless the deployment enables it.
 
 The limits are the deployment's, the same for every user, set by its owner; a user cannot raise them. A
@@ -2480,7 +2508,8 @@ tag and remove that tag after use. Run the host-wide `sandbox/cleanup.sh` manual
 | `WLP_PUBLIC_URL` | the platform's address for runners: an `https://` origin, or `http://` on a loopback address. Required with `WLP_MACHINES=1` and a remote engine; with the local one, default `http://localhost:<WLP_HTTP_PORT>` |
 | `WLP_RUNNER_IMAGE` | the runner image the Machines page names, `<name>@sha256:<64 hex>`; unset: none is published yet |
 | `WINDLASS_BINARY` | the executable `sandbox/build.sh` puts in the image (default: the local build with `login token --valid-for`, see "Run it") |
-| `WLP_SANDBOX_IMAGE` | Sandbox image for the Docker layer, or the private output tag for `sandbox/build.sh`; defaults to `windlass-platform-sandbox:latest` |
+| `WLP_SANDBOX_IMAGE` | Base image for the Docker layer, or the private output tag for either variant of `sandbox/build.sh`. By default the build publishes `windlass-platform-sandbox:latest` for base or `windlass-platform-sandbox:shots` for shots |
+| `WLP_SANDBOX_SHOTS_IMAGE` | Screenshots image for the Docker layer and local runner builds. Defaults to `windlass-platform-sandbox:shots` |
 | `VITE_WLP_ENDPOINT` | the Rivet endpoint the web app connects to when the server names none, as a development server does (default `http://localhost:6420`). A server with `WLP_PUBLIC_ENDPOINT` names its own, and this is not needed |
 | `VITE_WLP_API` | where the web app asks for `/platform/info` and `/platform/connection` (default: the endpoint's host on port 6440 when the endpoint is on 6420, else `http://localhost:6440`) |
 | `VITE_WLP_MOCK` | `1`: the web app runs on its mock, with no server |
@@ -2539,7 +2568,7 @@ users' actors go with the actor data.
 - **A machine's sandboxes are not removed by the platform.** Their disk is the machine's: the runner stops
   an idle sandbox and removes one only when asked, with its agent, with the machine's removal, or by
   `prune`.
-- **The runner pins one sandbox image, and no runner image is published.** A new sandbox image means a
+- **Runner builds pin their sandbox images.** A new sandbox image means a
   new runner build, and until one is published a machine runs only a runner built there from a local
   sandbox image (`scripts/runner-build.sh`).
 - **A day's allowance at the time it was used is not kept.** The history marks a day as at the limit by

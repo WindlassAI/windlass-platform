@@ -197,6 +197,7 @@ const PROFILES: SandboxProfile[] = [
 interface FakeSandbox {
 	reviewCloneFailed?: boolean;
 	privateData: boolean;
+	screenshots: boolean;
 	id: string;
 	uid: string;
 	sessionId: string;
@@ -265,6 +266,7 @@ class FakeHandle implements SandboxHandle {
 		await delay(/\bgit clone\b/.test(command) && command.includes("slow-clone") ? SLOW_CLONE_MS : 5, options.signal);
 		if (options.signal?.aborted) return { exitCode: null, timedOut: false, aborted: true, stdout: "", stderr: "" };
 		if (!this.exists()) throw new Error(`fake sandbox ${this.sandbox.id} does not exist`);
+		if (command === "test -x /usr/local/bin/wlp-shot") return { ...ok(), exitCode: this.sandbox.screenshots ? 0 : 1 };
 		const env = options.env ?? {};
 		if (env.WLP_ATTACH_STEP) return this.attachStep(env, options.stdin ?? "");
 		if (command.endsWith("\ngit rev-parse --verify 'HEAD^{commit}'")) return ok("a".repeat(40));
@@ -444,7 +446,7 @@ class FakeSandboxes implements Sandboxes {
 		if (!this.profile(input.profile).available) throw new Error(`sandbox profile ${input.profile} is not available`);
 		await delay(20);
 		const id = `fake-${randomBytes(6).toString("hex")}`;
-		this.all.set(id, { id, privateData: input.privateData === true, uid: input.uid, sessionId: input.sessionId, profile: input.profile, state: "running", files: new Map(), windlass: new Map(), packed: null, shots: new Map(), copies: new Map() });
+		this.all.set(id, { id, privateData: input.privateData === true, screenshots: input.screenshots === true, uid: input.uid, sessionId: input.sessionId, profile: input.profile, state: "running", files: new Map(), windlass: new Map(), packed: null, shots: new Map(), copies: new Map() });
 		if (this.settings.createFails > 0) {
 			this.settings.createFails -= 1;
 			throw new Error("fake layer: the sandbox was made and the answer was lost (WLP_FAKE_CREATE_FAILS)");

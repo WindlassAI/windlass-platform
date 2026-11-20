@@ -509,7 +509,7 @@ export class E2bSandboxes implements Sandboxes {
 		let connection: E2bConnection;
 		try {
 			connection = await this.client.create({
-				template: this.settings.template,
+				template: input.screenshots ? this.settings.shotsTemplate : this.settings.template,
 				timeoutMs: this.settings.idleTimeoutMs,
 				metadata: { [META.deployment]: this.settings.deployment, [META.uid]: input.uid, [META.session]: input.sessionId.slice(0, 200), [META.profile]: input.profile },
 				envs: SANDBOX_ENVS,

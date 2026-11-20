@@ -145,6 +145,8 @@ const report = object({
 	docker: probe,
 	/** The bubblewrap probe (BWRAP_PROBE) in a container of the "docker-windlass-sandbox" profile. */
 	commandSandbox: probe,
+	/** The runner was started with --screenshots and has a pinned screenshots image. */
+	screenshots: optional(boolean),
 	freeDiskBytes: nullable(count),
 	/** `usedAt` by the runner's clock: the actor corrects it by the offset from the hello. */
 	sandboxes: list(object({ id: sandboxId, sessionId: name, state: oneOf("running", "paused"), usedAt: count }), MAX_REPORTED_SANDBOXES),

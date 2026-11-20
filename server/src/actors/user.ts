@@ -1128,7 +1128,7 @@ export const user = actor({
 			// Before the column checks below: the API token table is one of them.
 			for (const table of ITEM_TABLES) await db.execute(table);
 			for (const [table, column, definition] of [
-				["repository_defaults", "screenshots", "INTEGER NOT NULL DEFAULT 1"],
+				["repository_defaults", "screenshots", "INTEGER NOT NULL DEFAULT 0"],
 				["api_token", "window_count", "INTEGER NOT NULL DEFAULT 0"],
 				["sessions", "launch_claim", "INTEGER"],
 			] as const) {

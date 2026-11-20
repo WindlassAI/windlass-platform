@@ -315,9 +315,9 @@ type Filing = Pick<ItemReview, "recommendation" | "blocks" | "records" | "screen
 type FilingResult = { answer: string; retryFree?: boolean; filing?: Filing };
 
 export async function fileReview(input: unknown, context: ReviewContext, base: string, head: string, screenshots: boolean,
-	fileAt: (path: string, sha: string) => Promise<string>, upload: UploadShots | null): Promise<FilingResult> {
+	fileAt: (path: string, sha: string) => Promise<string>, upload: UploadShots | null, unavailable = upload ? NO_REPO_SHOTS : "This deployment does not store screenshots. File without screenshots."): Promise<FilingResult> {
 	if (!screenshots && isObject(input) && Array.isArray(input.blocks) && input.blocks.some(block => isObject(block) && block.kind === "screenshot")) {
-		return { answer: "Not filed: " + (upload ? NO_REPO_SHOTS : "This deployment does not store screenshots. File without screenshots.") };
+		return { answer: "Not filed: " + unavailable };
 	}
 	const checked = checkReview(input, context);
 	if (!checked.ok) return { answer: "Not filed: " + checked.problems.join("\n") + " Fix them and call file_review again." };

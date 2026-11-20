@@ -25,6 +25,8 @@ export interface E2bConfig {
 	apiKey: string;
 	/** WLP_E2B_TEMPLATE: the template's name or id. */
 	template: string;
+	/** WLP_E2B_SHOTS_TEMPLATE: template for items that take screenshots. */
+	shotsTemplate: string;
 	/** WLP_E2B_DEPLOYMENT: marks every sandbox of this deployment (`wlp_deployment`), so they are listed, counted and removed together. Servers of one deployment share it. */
 	deployment: string;
 	/** WLP_E2B_MAX_RUNNING: how many of the deployment's sandboxes may run at once. */
@@ -81,6 +83,8 @@ function flag(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean 
 export function readE2bSettings(env: NodeJS.ProcessEnv = process.env): E2bSettings {
 	const deployment = (env.WLP_E2B_DEPLOYMENT ?? "default").trim();
 	if (!LABEL.test(deployment)) throw new Error(`WLP_E2B_DEPLOYMENT must be 1 to 64 letters, digits, "_" or "-"; got "${deployment}"`);
+	const shotsTemplate = (env.WLP_E2B_SHOTS_TEMPLATE ?? DEFAULT_TEMPLATE + "-shots").trim();
+	if (!shotsTemplate) throw new Error("WLP_E2B_SHOTS_TEMPLATE must not be empty");
 	const template = (env.WLP_E2B_TEMPLATE ?? DEFAULT_TEMPLATE).trim();
 	if (template === "") throw new Error("WLP_E2B_TEMPLATE must not be empty");
 	// Read as config.ts reads it (`readDuration`): the whole text as a number, so "1e6" is a million here
@@ -89,6 +93,7 @@ export function readE2bSettings(env: NodeJS.ProcessEnv = process.env): E2bSettin
 	const version = (env.WLP_E2B_WINDLASS_VERSION ?? "").trim();
 	return {
 		template,
+		shotsTemplate,
 		deployment,
 		maxRunning: integer(env, "WLP_E2B_MAX_RUNNING", DEFAULT_MAX_RUNNING, 1, 1100),
 		idleTimeoutMs: integer(env, "WLP_E2B_IDLE_TIMEOUT_MS", DEFAULT_IDLE_TIMEOUT_MS, 30_000, 30 * 60_000),

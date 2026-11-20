@@ -955,8 +955,8 @@ function mockDefinitionReads(definition: Record<string, unknown>): string[] {
 }
 
 /** What forgetting does and leaves, as the server says it where Windlass's own record stays in the sandbox. */
-/** The repositories seeded with screenshots turned off: ada/tide-tables, whose items' pages show no screenshot area. */
-export const MOCK_NO_SCREENSHOTS = [7102];
+/** The demo repository whose items show example screenshots has opted in. */
+export const MOCK_SCREENSHOTS = [7101];
 
 export const MOCK_FORGETTING = "Forgetting holds for the next session or sandbox. Where the server already started, Windlass's own record still starts it, and a running one is not stopped.";
 
@@ -1096,8 +1096,8 @@ interface World {
 	secrets: Map<GithubId, Map<string, { scope: SecretScope; updatedAt: number }>>;
 	/** What new agents on a repository start with, where the user said so, by GitHub's id for it. */
 	defaults: Map<GithubId, { profile: SandboxProfileId | null; model: string | null; updatedAt: number }>;
-	/** The repositories whose work items' agents take no screenshots, with when that was saved: every other one takes them (`RepositoryDefaults.screenshots`). */
-	noScreenshots: Map<GithubId, number>;
+	/** The repositories whose work items' agents can take screenshots, with when that was saved (`RepositoryDefaults.screenshots`). */
+	screenshotsEnabled: Map<GithubId, number>;
 	/** What a repository was called when something was last saved for it or GitHub was last asked: what names one that has no session. */
 	names: Map<GithubId, string>;
 	/** What the user keeps for their account, whatever the repository. A secret's value is not kept at all. */
@@ -1191,7 +1191,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), noScreenshots: new Map(MOCK_NO_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), created: new Map() };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), created: new Map() };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -2492,9 +2492,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	function defaultsOf(world: World, repositoryId: GithubId): RepositoryDefaults {
 		const saved = world.defaults.get(repositoryId);
-		const off = world.noScreenshots.get(repositoryId);
-		const updatedAt = saved || off !== undefined ? Math.max(saved?.updatedAt ?? 0, off ?? 0) : null;
-		return { screenshots: off === undefined, profile: saved?.profile ?? null, model: saved?.model ?? null, updatedAt };
+		const enabled = world.screenshotsEnabled.get(repositoryId);
+		const updatedAt = saved || enabled !== undefined ? Math.max(saved?.updatedAt ?? 0, enabled ?? 0) : null;
+		return { screenshots: enabled !== undefined, profile: saved?.profile ?? null, model: saved?.model ?? null, updatedAt };
 	}
 
 	function repositoryViewOf(world: World, repositoryId: GithubId): RepositoryView {
@@ -2521,8 +2521,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change, modelsFor(world.profile));
 		if (next === null) world.defaults.delete(repositoryId);
 		else world.defaults.set(repositoryId, next);
-		if (screenshots === true) world.noScreenshots.delete(repositoryId);
-		if (screenshots === false) world.noScreenshots.set(repositoryId, now());
+		if (screenshots === false) world.screenshotsEnabled.delete(repositoryId);
+		if (screenshots === true) world.screenshotsEnabled.set(repositoryId, now());
 		return defaultsOf(world, repositoryId);
 	}
 
@@ -3082,7 +3082,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				current.setups.delete(repositoryId);
 				current.checks.delete(repositoryId);
 				current.defaults.delete(repositoryId);
-				current.noScreenshots.delete(repositoryId);
+				current.screenshotsEnabled.delete(repositoryId);
 				current.approvals = current.approvals.filter((approval) => approval.project !== `github:${repositoryId}`);
 				current.names.delete(repositoryId);
 				return repositoryViewOf(current, repositoryId);
@@ -3149,7 +3149,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const current = world();
 				// A deployment that never had a GitHub App has nothing saved for a repository.
 				if (!githubOn) return [];
-				const ids = new Set<GithubId>([...current.setups.keys(), ...current.checks.keys(), ...current.secrets.keys(), ...current.defaults.keys(), ...current.noScreenshots.keys()]);
+				const ids = new Set<GithubId>([...current.setups.keys(), ...current.checks.keys(), ...current.secrets.keys(), ...current.defaults.keys(), ...current.screenshotsEnabled.keys()]);
 				for (const approval of current.approvals) {
 					const id = githubId(/^github:([1-9][0-9]*)$/.exec(approval.project)?.[1]);
 					if (id !== null && approval.expiresAt > now()) ids.add(id);

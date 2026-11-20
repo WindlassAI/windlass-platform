@@ -426,6 +426,7 @@ class RunnerHandle implements TurnSandbox {
 		readonly id: string,
 		readonly profile: SandboxProfileId,
 		readonly cwd: string,
+		readonly runnerScreenshots: boolean,
 	) {
 		this.approval = findProfile(profile).approval;
 		markTurnSandbox(this);
@@ -529,13 +530,15 @@ class RunnerSandboxes implements Sandboxes {
 		if (input.uid !== link.who.uid || input.sessionId !== link.who.sessionId) throw new Error("A machine's sandbox is made only for the session whose socket asks for it.");
 		if (input.profile !== "docker-windlass-sandbox" && input.profile !== "docker-hardened") throw new SandboxUserError(`${findProfile(input.profile).name} does not run on a machine of yours.`);
 		// A `create` lost with its conversation may have made the sandbox: the runner answers the repeat with that one.
-		return await link.again("create", { profile: input.profile });
+		// Request the screenshots image only when this runner offers it.
+		const screenshots = input.screenshots && (await link.facts()).report?.screenshots;
+		return await link.again("create", { profile: input.profile, ...(screenshots ? { screenshots: true } : {}) });
 	}
 
 	async connect(id: string): Promise<TurnSandbox | undefined> {
 		const { link } = this;
 		const found = await link.again("connect", { id });
-		return found ? new RunnerHandle(link, id, found.profile, found.cwd) : undefined;
+		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true) : undefined;
 	}
 
 	/** On a machine that cannot be reached, what its last report said. */

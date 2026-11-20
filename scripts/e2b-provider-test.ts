@@ -35,6 +35,7 @@ import { FakeE2b, type FakeMachine, ScriptedMachine } from "../server/src/sandbo
 import { createE2bSandboxLayer } from "../server/src/sandbox/e2b/index.js";
 import { describeUsage, estimatedCostUsd } from "../server/src/sandbox/e2b/pricing.js";
 import { ACCOUNT_LIMIT, E2bSandboxHandle, E2bSandboxes, META, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
+import { sessionSandboxInput } from "../server/src/actors/internal.js";
 import { describeTemplate } from "../server/src/sandbox/e2b/template.js";
 import { OPEN_PROFILE_NOT_OFFERED, PROFILES, PROFILE_RUN_FLAGS, e2bProfile, profilesFor } from "../server/src/sandbox/profiles.js";
 import { BWRAP_PROBE, DATA_DIR, isTurnSandbox, randomId, shellQuote } from "../server/src/sandbox/provider.js";
@@ -79,6 +80,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const MINUTE = 60_000;
 const SETTINGS: E2bSettings = {
 	template: "windlass-platform-sandbox",
+	shotsTemplate: "windlass-platform-sandbox-shots",
 	deployment: "test",
 	maxRunning: 2,
 	idleTimeoutMs: 2 * MINUTE,
@@ -183,6 +185,17 @@ await section("create", async () => {
 	let invalid = "";
 	await sandboxes.create({ uid: "../x", sessionId: "s", profile: "e2b" }).catch((error: unknown) => (invalid = error instanceof Error ? error.message : String(error)));
 	expect("create() refuses an invalid user id before it asks E2B anything", /invalid user id/.test(invalid) && callsOf(fake, "create").length === 1);
+
+	for (const role of ["builder", "reviewer", undefined] as const) {
+		for (const enabled of [false, true]) {
+			const origin = role && { kind: "item" as const, itemId: "item", role };
+			const args = sessionSandboxInput({ uid: "u", sessionId: "selection", profile: "e2b", origin }, enabled);
+			const box = await sandboxes.create(args);
+			const expected = enabled && role ? SETTINGS.shotsTemplate : SETTINGS.template;
+			expect(`E2B creates ${role ?? "personal"} on ${expected} with repository screenshots ${enabled}`, fake.sandboxes.get(box)?.template === expected);
+			await sandboxes.destroy(box);
+		}
+	}
 
 	const broken = world({}, { machine: () => imageLike((command) => (command.includes("git init") ? { exitCode: 128, stderr: "fatal: not a git repository" } : undefined)) });
 	let why = "";
@@ -606,10 +619,12 @@ await section("the template", async () => {
 		writeFileSync(join(context, "wlp-shot"), readFileSync(join(root, "sandbox/wlp-shot"), "utf8"));
 		writeFileSync(join(context, "windlass"), "not a real binary\n");
 		const text = describeTemplate(context);
+		const shots = describeTemplate(context, true);
 		const lines = text.split("\n");
 		expect("the template is the Docker image's Dockerfile: Ubuntu 24.04, the same packages", /^FROM ubuntu:24\.04/m.test(text) && /bubblewrap git ripgrep/.test(text), lines[0]);
 		expect("it has the user agent, the workspace and Windlass's data directory", /useradd --create-home --uid 1000 --shell \/bin\/bash agent/.test(text) && /mkdir -p \/workspace \/home\/agent\/\.local\/share\/windlass/.test(text));
-		expect("it copies the Windlass binary, wlp-run and wlp-shot into place", /COPY .*windlass \/usr\/local\/bin\/windlass/.test(text) && /COPY .*wlp-run \/usr\/local\/bin\/wlp-run/.test(text) && /COPY .*wlp-shot \/usr\/local\/bin\/wlp-shot/.test(text), lines.filter((line) => line.startsWith("COPY")).join(" | "));
+		expect("the base installs Windlass and wlp-run without a browser", /COPY .*windlass \/usr\/local\/bin\/windlass/.test(text) && /COPY .*wlp-run \/usr\/local\/bin\/wlp-run/.test(text) && !/playwright-core|wlp-shot|headless.shell/i.test(text), lines.filter((line) => line.startsWith("COPY")).join(" | "));
+		expect("the screenshots template adds the pinned browser, fonts, driver and helper", ["HEADLESS_SHELL_ARM64_SHA256", "fonts-liberation", "playwright-core", "/usr/local/bin/wlp-shot"].every(word => shots.includes(word)) && shots.includes("COPY windlass /usr/local/bin/windlass"));
 		const users = lines.filter((line) => /^USER /.test(line));
 		const workdirs = lines.filter((line) => /^WORKDIR /.test(line));
 		expect("commands run as agent in /workspace by default", users.at(-1) === "USER agent" && workdirs.at(-1) === "WORKDIR /workspace", `${users.at(-1)} | ${workdirs.at(-1)}`);

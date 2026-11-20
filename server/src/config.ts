@@ -98,6 +98,7 @@
  *   WLP_E2B_TEMPLATE           the template sandboxes are made from (default windlass-platform-sandbox,
  *                              which sandbox/e2b/build.sh builds). A sandbox has its template's size:
  *                              1 vCPU and 1024 MiB unless the template was built otherwise
+ *   WLP_E2B_SHOTS_TEMPLATE     the template for opted-in work items (default windlass-platform-sandbox-shots)
  *   WLP_E2B_DEPLOYMENT         marks every sandbox of this deployment in its metadata, so they are
  *                              counted, listed and removed together (default "default"). The same on
  *                              every server of a deployment; different for another deployment that

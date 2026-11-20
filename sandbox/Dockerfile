@@ -1,6 +1,6 @@
 # The sandbox image of windlass-platform: one container per agent session.
 # Built by sandbox/build.sh, which puts the Windlass binary into the build context as ./windlass.
-FROM ubuntu:24.04
+FROM ubuntu:24.04 AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -45,6 +45,50 @@ RUN set -eu; cd /tmp; \
     rm -rf /tmp/* /root/.npm; \
     node --version; npm --version; pnpm --version; bun --version; uv --version
 
+# A non-root user. The data directory exists in the image owned by `agent`, so an empty named volume
+# mounted there takes that ownership.
+#
+# Windlass's command sandbox lets a command write in the workspace and in /tmp, and under the home
+# directory only what is not there yet (a home of the session's own).
+# The package managers keep their caches in the home directory: in a read-only one npm and uv fail, pip
+# goes without a cache and pnpm puts its store into the project, and a cache that a command outside the
+# sandbox made there (the repository's setup command) is read-only for the sandboxed ones. So each is
+# told, in its own configuration file, to keep its cache under /tmp/.cache, which a command can write
+# with the sandbox and without it.
+RUN useradd --create-home --uid 1000 --shell /bin/bash agent \
+ && mkdir -p /workspace /home/agent/.local/share/windlass /home/agent/.config/pnpm /etc/uv /usr/local/etc \
+ && chmod 700 /home/agent/.local/share/windlass \
+ && printf 'cache=/tmp/.cache/npm\nupdate-notifier=false\n' > /usr/local/etc/npmrc \
+ && printf '[global]\ncache-dir = /tmp/.cache/pip\n' > /etc/pip.conf \
+ && printf 'cache-dir = "/tmp/.cache/uv"\n' > /etc/uv/uv.toml \
+ && printf '[install.cache]\ndir = "/tmp/.cache/bun"\n' > /home/agent/.bunfig.toml \
+ && printf 'cacheDir: /tmp/.cache/pnpm\nstateDir: /tmp/.cache/pnpm-state\nstoreDir: /tmp/.cache/pnpm-store\n' > /home/agent/.config/pnpm/config.yaml \
+ && chown -R agent:agent /workspace /home/agent
+
+COPY --chmod=0755 windlass /usr/local/bin/windlass
+# Check the executable on the target architecture, before the image can be tagged.
+RUN version="$(windlass --version)" && \
+    release="$(echo "$version" | awk '$1 == "Windlass" { sub(/\+.*/, "", $2); if ($2 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) print $2 }')" && \
+    { dpkg --compare-versions "$release" ge 0.4.0 || { echo "Windlass 0.4.0 or later is required; found $version" >&2; exit 1; }; }
+COPY --chmod=0755 wlp-run /usr/local/bin/wlp-run
+
+USER agent
+ENV HOME=/home/agent \
+    LANG=C.UTF-8 \
+    NO_COLOR=1
+RUN git config --global user.name "Windlass agent" \
+ && git config --global user.email "agent@windlass-platform.invalid" \
+ && git config --global init.defaultBranch main \
+ && git config --global advice.detachedHead false
+
+WORKDIR /workspace
+LABEL dev.windlass-platform=1
+CMD ["sleep", "infinity"]
+
+FROM base AS shots
+USER root
+ENV HOME=/root
+ARG DEBIAN_FRONTEND=noninteractive
 # Chrome's headless shell as paired by playwright-core. Playwright supplies the Linux arm64 build,
 # Chrome for Testing the amd64 build. The digests pin the two release archives byte for byte.
 ARG HEADLESS_SHELL_VERSION=149.0.7827.55
@@ -73,45 +117,7 @@ RUN set -eu; cd /tmp; \
     printf 'export WLP_BROWSER=%s\n' "$WLP_BROWSER" > /etc/profile.d/wlp-browser.sh; \
     npm install -g --no-fund --no-audit "playwright-core@${PLAYWRIGHT_CORE_VERSION}"; \
     wlp-headless-shell --version; \
-    npm cache clean --force; find /var/lib/apt/lists /tmp /root/.npm -mindepth 1 -delete
-
-# A non-root user. The data directory exists in the image owned by `agent`, so an empty named volume
-# mounted there takes that ownership.
-#
-# Windlass's command sandbox lets a command write in the workspace and in /tmp, and under the home
-# directory only what is not there yet (a home of the session's own).
-# The package managers keep their caches in the home directory: in a read-only one npm and uv fail, pip
-# goes without a cache and pnpm puts its store into the project, and a cache that a command outside the
-# sandbox made there (the repository's setup command) is read-only for the sandboxed ones. So each is
-# told, in its own configuration file, to keep its cache under /tmp/.cache, which a command can write
-# with the sandbox and without it.
-RUN useradd --create-home --uid 1000 --shell /bin/bash agent \
- && mkdir -p /workspace /home/agent/.local/share/windlass /home/agent/.config/pnpm /etc/uv /usr/local/etc \
- && chmod 700 /home/agent/.local/share/windlass \
- && printf 'cache=/tmp/.cache/npm\nupdate-notifier=false\n' > /usr/local/etc/npmrc \
- && printf '[global]\ncache-dir = /tmp/.cache/pip\n' > /etc/pip.conf \
- && printf 'cache-dir = "/tmp/.cache/uv"\n' > /etc/uv/uv.toml \
- && printf '[install.cache]\ndir = "/tmp/.cache/bun"\n' > /home/agent/.bunfig.toml \
- && printf 'cacheDir: /tmp/.cache/pnpm\nstateDir: /tmp/.cache/pnpm-state\nstoreDir: /tmp/.cache/pnpm-store\n' > /home/agent/.config/pnpm/config.yaml \
- && chown -R agent:agent /workspace /home/agent
-
-COPY --chmod=0755 windlass /usr/local/bin/windlass
-# Check the executable on the target architecture, before the image can be tagged.
-RUN version="$(windlass --version)" && \
-    release="$(echo "$version" | awk '$1 == "Windlass" { sub(/\+.*/, "", $2); if ($2 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) print $2 }')" && \
-    { dpkg --compare-versions "$release" ge 0.4.0 || { echo "Windlass 0.4.0 or later is required; found $version" >&2; exit 1; }; }
-COPY --chmod=0755 wlp-run /usr/local/bin/wlp-run
+    npm cache clean --force; rm -rf /root/.npm; find /var/lib/apt/lists /tmp -mindepth 1 -delete
 COPY --chmod=0755 wlp-shot /usr/local/bin/wlp-shot
-
 USER agent
-ENV HOME=/home/agent \
-    LANG=C.UTF-8 \
-    NO_COLOR=1
-RUN git config --global user.name "Windlass agent" \
- && git config --global user.email "agent@windlass-platform.invalid" \
- && git config --global init.defaultBranch main \
- && git config --global advice.detachedHead false
-
-WORKDIR /workspace
-LABEL dev.windlass-platform=1
-CMD ["sleep", "infinity"]
+ENV HOME=/home/agent

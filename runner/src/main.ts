@@ -7,6 +7,7 @@ import { PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
 import type { Socket } from "node:net";
 import { audit, showLog } from "./audit.js";
 import { category, control, pair } from "./control.js";
+import { shotsImage } from "./policy.js";
 import { Executor } from "./docker-executor.js";
 import { requestPair, waitForPair } from "./pair-command.js";
 import { forgetKey, save, loadPair, tryLock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
@@ -22,11 +23,12 @@ function limit(flag: string, value: string | undefined) {
 }
 async function main() {
 	const { positionals, values } = parseArgs({ allowPositionals: true, options: {
-		platform: { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
+		platform: { type: "string" }, screenshots: { type: "boolean", default: false }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
 	} });
 	const command = positionals[0] ?? "run";
 	if (positionals.length > 1 || !["run", "pair", "status", "log", "prune"].includes(command))
-		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune] [--platform URL] [--max-sandboxes N] [--max-running N].");
+		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune] [--platform URL] [--max-sandboxes N] [--max-running N] [--screenshots].");
+	if (values.screenshots && !shotsImage) throw new RunnerError("--screenshots requires a runner built with a pinned screenshots sandbox image.");
 	const limits = { maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]) };
 	if (command === "log") return showLog();
 	const abort = new AbortController();
@@ -116,7 +118,7 @@ async function main() {
 				});
 				let removed: string | undefined;
 				try {
-					removed = await control(new Executor(paired.current, limits), paired.key, platform, active, saveStatus,
+					removed = await control(new Executor(paired.current, limits, values.screenshots), paired.key, platform, active, saveStatus,
 						status?.machineId === paired.current.machineId ? status.idleSuspendMs ?? undefined : undefined);
 				} finally { connection.abort(); }
 				const request = await local;

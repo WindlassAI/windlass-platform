@@ -11,6 +11,7 @@ export { DATA_DIR, WORKSPACE, randomId };
 
 /** Use the local published image by default. Checks pass their pinned image ID to child servers. */
 export const IMAGE = process.env.WLP_SANDBOX_IMAGE || "windlass-platform-sandbox:latest";
+export const SHOTS_IMAGE = process.env.WLP_SANDBOX_SHOTS_IMAGE || "windlass-platform-sandbox:shots";
 /** Every resource the platform creates carries `dev.windlass-platform=1`. */
 export const LABEL = "dev.windlass-platform";
 export const LABEL_ARG = `${LABEL}=1`;

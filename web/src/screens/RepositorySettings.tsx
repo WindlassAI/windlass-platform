@@ -25,8 +25,7 @@ export const sectionHeading = (section: RepositorySection) => `repo-${section}`;
 
 /**
  * Whether the agents of the repository's work items, the one that makes the change and the second
- * reviewer, take screenshots of the app for their reports (`RepositoryDefaults.screenshots`, on unless
- * turned off). Saved as soon as it is changed; read by each agent at its next turn.
+ * reviewer, take screenshots of the app for their reports (`RepositoryDefaults.screenshots`, off by default). Saved as soon as it is changed; read by each agent at its next turn.
  */
 export function ScreenshotsSetting({ page, view }: { page: Pick<RepositoryPage, "id" | "replace">; view: RepositoryView }) {
 	const { client, explain } = useApp();
@@ -53,7 +52,7 @@ export function ScreenshotsSetting({ page, view }: { page: Pick<RepositoryPage, 
 			<h2 className="usage-title" id="repo-screenshots">
 				Screenshots
 			</h2>
-			<p className="usage-lede">Whether the agents of this repository's work items take screenshots of the app and attach them to their reports: the agent that makes the change, and the second reviewer. Each picture costs the sandbox a little memory and time.</p>
+			<p className="usage-lede">Let builders and reviewers attach pictures of the app to their work item reports. Screenshots are off by default.</p>
 			<label className={`check${on ? " check-on" : ""}`}>
 				<input className="check-input" type="checkbox" checked={on} disabled={busy} onChange={(event) => set(event.target.checked)} />
 				<span className="check-box" aria-hidden="true" />
@@ -61,8 +60,8 @@ export function ScreenshotsSetting({ page, view }: { page: Pick<RepositoryPage, 
 					<span className="check-name">Take screenshots for work items</span>
 					<span className="check-means">
 						{on
-							? "Where a change shows in the app, the agents take pictures of it and you see them on the item's page. Turned off, they take none, from each agent's next turn."
-							: "The agents take no screenshots, and an item's page shows none. Turned on, they take them again from each agent's next turn."}
+							? "New work item sandboxes include a browser where available. Turning this off stops screenshot filing from the next turn."
+							: "Turning this on gives new work item sandboxes a browser where available. An existing builder keeps its sandbox."}
 					</span>
 				</span>
 			</label>
@@ -87,7 +86,7 @@ function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { pa
 		view.saved.checks > 0 ? (view.saved.checks === 1 ? "its one check" : `its ${view.saved.checks} checks`) : null,
 		view.saved.secrets > 0 ? (view.saved.secrets === 1 ? "its one secret" : `its ${view.saved.secrets} secrets`) : null,
 		view.defaults.profile !== null || view.defaults.model !== null ? "the defaults for new agents" : null,
-		view.defaults.screenshots ? null : "the choice to take no screenshots",
+		view.defaults.screenshots ? "the choice to take screenshots" : null,
 		view.approvals.length > 0 ? (view.approvals.length === 1 ? "the remembered approval of one MCP server" : `the remembered approvals of ${view.approvals.length} MCP servers`) : null,
 	].filter((part): part is string => part !== null);
 	const listed = parts.length <= 1 ? (parts[0] ?? "") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
@@ -162,7 +161,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 	const accountChoices = startingChoices(account.settings?.defaults ?? null, info, models.list, "account");
 	const choices = layerChoices(startingChoices(view?.defaults ?? null, info, models.list), accountChoices);
 	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
-	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.defaults.profile !== null || view.defaults.model !== null || !view.defaults.screenshots || view.approvals.length > 0);
+	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.defaults.screenshots || view.approvals.length > 0);
 
 	// Opened at a section: it is gone to once the sections stand, which is when what is saved was read. The sections
 	// above it read their own lists after that and grow: it is kept in view while they do, until its person scrolls.
@@ -283,7 +282,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						</h2>
 						<p className="usage-lede">
 							{anything
-								? `Deletes the setup command, the checks, the secrets, the defaults (screenshots are taken again) and the remembered approvals saved for ${name}, all at once. Its agents are not deleted with them.`
+								? `Deletes the setup command, the checks, the secrets, the defaults (screenshots return to off) and the remembered approvals saved for ${name}, all at once. Its agents are not deleted with them.`
 								: `Nothing is saved for ${name}.`}
 						</p>
 						{anything ? (

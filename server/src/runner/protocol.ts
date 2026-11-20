@@ -53,8 +53,8 @@ const startOptions = { cwd: optional(string), env: optional(env), secretEnv: opt
  * `profiles`, `list`, `price` and the other facts come from the machine's report, not from here.
  */
 const operations = {
-	create: [object({ profile }), id],
-	connect: [object(sandbox), nullable(object({ cwd: string, profile }))],
+	create: [object({ profile, screenshots: optional(boolean) }), id],
+	connect: [object(sandbox), nullable(object({ cwd: string, profile, screenshots: optional(boolean) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],
 	suspend: [object(sandbox), nil],
 	destroy: [object(sandbox), nil],

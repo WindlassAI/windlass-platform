@@ -5,6 +5,8 @@ import { BWRAP_PROBE, DATA_DIR } from "../../server/src/sandbox/provider.js";
 import { Refusal, RunnerError, type Identity } from "./state.js";
 
 declare const SANDBOX_IMAGE: string;
+declare const SHOTS_IMAGE_PIN: string;
+export const shotsImage = SHOTS_IMAGE_PIN;
 export const image = SANDBOX_IMAGE;
 export const bubblewrap = "docker-windlass-sandbox";
 export type Profile = Args<"create">["profile"];
@@ -48,11 +50,15 @@ export class MachineDocker {
 		return runHelper([...this.flags(name, "docker-hardened"),
 			...(mount ? ["--mount", `type=volume,src=${this.volume},dst=/data,volume-nocopy`] : [])], name, argv, { image });
 	}
-	private preparingImage?: Promise<void>;
-	ensureImage() {
-		return this.preparingImage ??= this.fetchImage().finally(() => { this.preparingImage = undefined; });
+	private preparing = new Map<string, Promise<void>>();
+	ensureImage(pin = image) {
+		const pending = this.preparing.get(pin);
+		if (pending) return pending;
+		const fetch = this.fetchImage(pin).finally(() => this.preparing.delete(pin));
+		this.preparing.set(pin, fetch);
+		return fetch;
 	}
-	private async fetchImage() {
+	private async fetchImage(image: string) {
 		if ((await docker(["image", "inspect", image, "--format", "{{.Id}}"])).code === 0) return;
 		if (!image.includes("@") || (await docker(["pull", image], { timeoutMs: 30 * 60_000 })).code !== 0)
 			throw new RunnerError("The pinned sandbox image is missing and could not be pulled.");

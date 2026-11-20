@@ -32,7 +32,7 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { SandboxProfile, SandboxProfileId } from "../contract.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "./api.js";
-import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, WORKSPACE, docker, randomId } from "./docker.js";
+import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, WORKSPACE, docker, randomId } from "./docker.js";
 import { COMMON_RUN_FLAGS, PROFILE_RUN_FLAGS, findProfile, profilesFor } from "./profiles.js";
 import { type Answer, type InternalExecResult, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, markTurnSandbox } from "./provider.js";
 import { tokenFilePath } from "./token-file.js";
@@ -366,6 +366,7 @@ async function forgetTokenFile(id: string): Promise<void> {
 export interface DockerSandboxOptions {
 	/** The sandbox image; windlass-platform-sandbox:latest when left out. */
 	image?: string;
+	shotsImage?: string;
 	/**
 	 * Null for the hosted provider. A runner's machine id: every container it makes carries it as
 	 * MACHINE_LABEL, and each provider lists and acts on only the containers whose machine label is its
@@ -383,12 +384,14 @@ export interface DockerSandboxOptions {
 
 export class DockerSandboxes implements Sandboxes {
 	private readonly image: string;
+	private readonly shotsImage: string;
 	private readonly machine: string;
 	private readonly dataVolume: (uid: string) => Promise<string>;
 
 	constructor(options: DockerSandboxOptions) {
 		if (options.machine !== null && !NAME.test(options.machine)) throw new Error("invalid machine id");
 		this.image = options.image ?? IMAGE;
+		this.shotsImage = options.shotsImage ?? SHOTS_IMAGE;
 		// A container without the label reads as "" (Go templates), which is the hosted provider's.
 		this.machine = options.machine ?? "";
 		this.dataVolume = options.dataVolume;
@@ -440,6 +443,7 @@ export class DockerSandboxes implements Sandboxes {
 
 	async create(input: CreateSandboxInput): Promise<string> {
 		assertUid(input.uid);
+		const image = input.screenshots ? this.shotsImage : this.image;
 		const profile = findProfile(input.profile);
 		const flags = PROFILE_RUN_FLAGS[input.profile];
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
@@ -467,14 +471,14 @@ export class DockerSandboxes implements Sandboxes {
 				...COMMON_RUN_FLAGS,
 				...flags,
 				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
-				this.image,
+				image,
 			],
 			{ timeoutMs: 120_000 },
 		);
 		if (result.code !== 0) {
 			await docker(["rm", "-f", name]);
 			const message = result.stderr.trim();
-			if (/No such image|pull access denied|not found/i.test(message)) throw new Error(`the sandbox image ${this.image} is missing; run sandbox/build.sh (${message})`);
+			if (/No such image|pull access denied|not found/i.test(message)) throw new Error(`the sandbox image ${image} is missing; run ${input.screenshots ? "WLP_SANDBOX_VARIANT=shots " : ""}sandbox/build.sh (${message})`);
 			throw new Error(`could not create the sandbox: ${message}`);
 		}
 		const init = await docker(["exec", "-w", WORKSPACE, name, "sh", "-c", 'git init -q && git commit -q --allow-empty -m "Empty workspace"'], { timeoutMs: 60_000 });

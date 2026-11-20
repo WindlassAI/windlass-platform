@@ -6,7 +6,7 @@ import { BWRAP_PROBE, NAME, WORKSPACE } from "../../server/src/sandbox/provider.
 import { containerName, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { audit, safeSentence } from "./audit.js";
-import { bubblewrap, externalId, image, MachineDocker, rawId, type Limits, type Profile } from "./policy.js";
+import { bubblewrap, externalId, image, shotsImage, MachineDocker, rawId, type Limits, type Profile } from "./policy.js";
 import { Refusal, RunnerError, type Identity } from "./state.js";
 
 type Lifecycle = Extract<Operation, { name: "connect" | "state" | "suspend" | "destroy" }>;
@@ -53,9 +53,9 @@ export class Executor extends MachineDocker {
 	private commandSandbox: Report["commandSandbox"] = { ok: false, reason: "The Windlass sandbox probe has not run." };
 	private freeDiskBytes: number | null = null;
 
-	constructor(identity: Identity, private readonly limits: Limits) {
+	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false) {
 		super(identity);
-		this.provider = new DockerSandboxes({ machine: identity.machineId, image, dataVolume: async () => {
+		this.provider = new DockerSandboxes({ machine: identity.machineId, image, shotsImage, dataVolume: async () => {
 			await this.ownedVolume(true);
 			return this.volume;
 		} });
@@ -124,6 +124,7 @@ export class Executor extends MachineDocker {
 	}
 	report(): Report {
 		return { kind: "report", docker: this.dockerHealth,
+			...(this.screenshots ? { screenshots: true } : {}),
 			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes,
 			sandboxes: [...this.boxes.entries()].slice(0, MAX_REPORTED_SANDBOXES).map(([id, { sessionId, state, usedAt }]) => ({ id, sessionId, state, usedAt })),
 			...(this.limits.maxRunning !== undefined ? { maxRunning: this.limits.maxRunning } : {}),
@@ -155,7 +156,7 @@ export class Executor extends MachineDocker {
 			}
 		}
 	}
-	async create(sessionId: string, profile: Profile) {
+	async create(sessionId: string, profile: Profile, screenshots = false) {
 		// Another create could have finished while this one waited for the image.
 		const existing = await this.existing(sessionId);
 		if (existing) return existing;
@@ -164,7 +165,7 @@ export class Executor extends MachineDocker {
 		this.room();
 		this.freeDiskBytes = await this.disk();
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
-		const raw = await this.provider.create({ uid: this.identity.uid, sessionId, profile });
+		const raw = await this.provider.create({ uid: this.identity.uid, sessionId, profile, screenshots: this.screenshots && screenshots });
 		const id = externalId(this.identity.machineId, raw);
 		this.boxes.set(id, { raw, sessionId, profile, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
 		if (profile === bubblewrap) {
@@ -222,7 +223,7 @@ export class Executor extends MachineDocker {
 			const handle = await this.provider.connect(box.raw);
 			this.noteState(id, box, handle ? "running" : "none");
 			if (!handle) return null;
-			return { cwd: handle.cwd, profile: box.profile };
+			return { cwd: handle.cwd, profile: box.profile, ...(this.screenshots ? { screenshots: true } : {}) };
 		}
 		// The server names the token by the external sandbox id; the provider knows the raw id.
 		if (box.state === "running") {

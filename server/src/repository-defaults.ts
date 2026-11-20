@@ -3,9 +3,8 @@
  * with, where its user said so (README, "A repository's page").
  *
  * Whose they are. The user's, kept in their `user` actor, one row per repository of their GitHub
- * connection, under the key the setup command and secrets use. A repository permits factory
- * screenshots by default. Its agents read that setting when a turn starts. Clearing every
- * override, including restoring screenshots, removes the row.
+ * connection, under the key the setup command and secrets use. Factory screenshots need an explicit
+ * opt-in. Agents read that setting when a turn starts. Clearing the last override removes the row.
  *
  * The launch form reads the profile and model. A save checks the sandbox against what this
  * deployment offers then, the model against the user's own models then (account-models.ts). Both can
@@ -81,7 +80,7 @@ export const DEFAULTS_TABLE = `
 	CREATE TABLE IF NOT EXISTS repository_defaults (
 		project TEXT PRIMARY KEY,
 		label TEXT NOT NULL,
-		screenshots INTEGER NOT NULL DEFAULT 1,
+		screenshots INTEGER NOT NULL DEFAULT 0,
 		profile TEXT,
 		model TEXT,
 		updated_at INTEGER NOT NULL
@@ -91,7 +90,7 @@ export const DEFAULTS_TABLE = `
 /** The defaults saved for a project; none when there is no row. */
 export async function readDefaults(db: DefaultsDb, project: string): Promise<RepositoryDefaults> {
 	const [row] = await db.execute<{ profile: string | null; model: string | null; screenshots: number; updated_at: number }>("SELECT profile, model, screenshots, updated_at FROM repository_defaults WHERE project = ?", project);
-	return { screenshots: row?.screenshots !== 0, profile: (row?.profile ?? null) as SandboxProfileId | null, model: row?.model ?? null, updatedAt: row?.updated_at ?? null };
+	return { screenshots: row?.screenshots === 1, profile: (row?.profile ?? null) as SandboxProfileId | null, model: row?.model ?? null, updatedAt: row?.updated_at ?? null };
 }
 
 /**
@@ -109,10 +108,10 @@ export async function saveDefaults(db: DefaultsDb, project: string, label: strin
 			label,
 			change.profile ?? null,
 			change.model ?? null,
-			change.screenshots === false ? 0 : 1,
+			change.screenshots === true ? 1 : 0,
 			now,
 		);
-		await db.execute("DELETE FROM repository_defaults WHERE project = ? AND profile IS NULL AND model IS NULL AND screenshots = 1", project);
+		await db.execute("DELETE FROM repository_defaults WHERE project = ? AND profile IS NULL AND model IS NULL AND screenshots = 0", project);
 		// Somebody who saves for one repository after another leaves no more than this many rows.
 		await db.execute("DELETE FROM repository_defaults WHERE project NOT IN (SELECT project FROM repository_defaults ORDER BY updated_at DESC, project LIMIT ?)", MAX_REPOSITORY_DEFAULTS);
 	}

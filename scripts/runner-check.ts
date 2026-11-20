@@ -1,4 +1,5 @@
 /** Run: cd server && npx tsx ../scripts/runner-check.ts
+ * Use --screenshots-only to check the runner flag and both image pins.
  * The five-minute Wi-Fi outage and two-minute laptop sleep are wall time.
  */
 import { imageId } from "./check-image.js";
@@ -13,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as wait } from "node:timers/promises";
 import { promisify } from "node:util";
 import { AcpConnection, LineSplitter } from "../server/src/sandbox/acp.js";
-import { docker, LABEL_ARG, MACHINE_LABEL } from "../server/src/sandbox/docker.js";
+import { docker, LABEL_ARG, MACHINE_LABEL, SHOTS_IMAGE } from "../server/src/sandbox/docker.js";
 import { containerName, DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
 import { PAIRING_TTL_MS, REFUSED_RETRY_MS, refuse, type Refusal } from "../server/src/runner/control.js";
@@ -155,7 +156,7 @@ async function realMachine(runnerImage: string) {
 		await stop(node);
 	}
 }
-async function check(image: string) {
+async function check(image: string, shotsPin?: string) {
 	const srv = await stub(join(tmp, "engine"));
 	const { machineId, uid, sessionId } = srv;
 	const hostedRaw = randomBytes(6).toString("hex");
@@ -180,6 +181,36 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 	let hosted = false;
 	try {
 		await mkdir(state, { mode: 0o700 });
+		if (shotsPin) {
+			const baseOnly = join(tmp, "base-only.cjs");
+			await exec(process.execPath, ["runner/bundle.mjs", image, baseOnly], { cwd: root });
+			await assert.rejects(exec(process.execPath, [baseOnly, "--screenshots"], { env: env(state) }),
+				(error: { stderr?: string }) => !!error.stderr?.includes("requires a runner built with a pinned screenshots sandbox image"));
+			ok("The base-only runner explains which image --screenshots needs.");
+			for (const enabled of [false, true]) {
+				srv.state.report = null;
+				const service = run(state, undefined, bundle, {}, { flags: enabled ? ["--screenshots"] : [] });
+				const report = () => srv.state.report;
+				await until(() => !!report(), "Runner did not report its screenshot capability.", 75_000);
+				assert.equal(report()?.screenshots === true, enabled);
+				await srv.attach();
+				const channel = srv.channel(sessionId);
+				for (const screenshots of [false, true]) {
+					const id = await channel.request("create", { profile: "docker-hardened", screenshots });
+					const name = containerName(id.slice(-12));
+					assert.equal((await channel.request("connect", { id }))?.screenshots === true, enabled);
+					const actual = await docker(["inspect", "-f", "{{.Config.Image}}", name], { check: true });
+					assert.equal(actual.stdout.trim(), enabled && screenshots ? shotsPin : image);
+					assert.equal(await channel.request("create", { profile: "docker-hardened", screenshots: !screenshots }), id);
+					await channel.request("destroy", { id });
+				}
+				srv.detach();
+				await stop(service.child);
+				await until(() => !srv.online(), "Runner did not disconnect.");
+				ok(`Runner ${enabled ? "with" : "without"} --screenshots reports its capability and selects the right pin for both repository settings.`);
+			}
+			return;
+		}
 		for (const [flag, value] of [["--max-running", "0"], ["--max-sandboxes", "1.5"]]) {
 			await assert.rejects(exec(process.execPath, [bundle, "status", flag, value], { env: env(state) }),
 				(error: { code?: number; stderr?: string }) => error.code === 1 && error.stderr?.trim() === `Give ${flag} a positive whole number.`);
@@ -664,15 +695,21 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 const privateTag = process.env.WLP_RUNNER_CHECK_IMAGE ? undefined : `windlass-runner:chk-${randomUUID()}`;
 try {
 	const image = await imageId();
-	if (privateTag) {
-		await exec(join(root, "scripts/runner-build.sh"), [image], { env: { ...process.env, WLP_RUNNER_BUILD_TAG: privateTag, WLP_RUNNER_PLATFORMS: "" } });
+	if (process.argv.includes("--screenshots-only")) {
+		const shots = await imageId(SHOTS_IMAGE);
+		await exec(process.execPath, ["runner/bundle.mjs", image, bundle, shots], { cwd: root });
+		await check(image, shots);
+	} else {
+		if (privateTag) {
+			await exec(join(root, "scripts/runner-build.sh"), [image], { env: { ...process.env, WLP_RUNNER_BUILD_TAG: privateTag, WLP_RUNNER_PLATFORMS: "" } });
+		}
+		const runnerImage = await imageId(privateTag ?? process.env.WLP_RUNNER_CHECK_IMAGE);
+		if (!process.argv.includes("--real-machine")) {
+			await exec(process.execPath, ["runner/bundle.mjs", image, bundle], { cwd: root });
+			await check(image);
+		}
+		await realMachine(runnerImage);
 	}
-	const runnerImage = await imageId(privateTag ?? process.env.WLP_RUNNER_CHECK_IMAGE);
-	if (!process.argv.includes("--real-machine")) {
-		await exec(process.execPath, ["runner/bundle.mjs", image, bundle], { cwd: root });
-		await check(image);
-	}
-	await realMachine(runnerImage);
 } catch (error) {
 	// Client exceptions can contain signed URLs. Identify the failing assertion without replaying its arguments.
 	const where = error instanceof Error ? /runner-check\.ts:(\d+)/.exec(error.stack ?? "")?.[1] : undefined;

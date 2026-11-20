@@ -27,6 +27,7 @@ export interface DockerSandboxLayer extends SandboxLayer {
 export interface SandboxLayerOptions {
 	/** Another image than windlass-platform-sandbox:latest. */
 	image?: string;
+	shotsImage?: string;
 	/**
 	 * "memory": the users' sign-ins are kept in this process instead of in the server's `user` actors,
 	 * and Windlass's sign-in commands run in helper containers of `image`. For a check that uses the
@@ -57,6 +58,7 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 		// The hosted provider: its containers carry no machine, and mount the user's volume of this machine.
 		sandboxes: new DockerSandboxes({
 			image,
+			shotsImage: options.shotsImage,
 			machine: null,
 			dataVolume: async (uid) => {
 				await ensureUserData(uid);

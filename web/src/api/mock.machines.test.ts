@@ -100,9 +100,12 @@ describe("the mock's machines", () => {
 		const mock = createMockClient({ pace: 0, machineSession: "not_answering" });
 		const seen: string[] = [];
 		const close = mock.session(auth, "nas-tests").open({ onSnapshot: (snapshot) => seen.push(`snapshot ${snapshot.machine?.state}`), onMachine: (machine) => seen.push(machine.state), onItem: () => undefined, onDelta: () => undefined, onSummary: () => undefined, onQuestion: () => undefined, onConnection: () => undefined });
-		await vi.waitFor(() => expect(seen).toEqual(["snapshot answering", "not_answering", "answering"]));
-		close();
-		mock.dispose();
+		try {
+			await vi.waitFor(() => expect(seen).toEqual(["snapshot answering", "not_answering", "answering"]));
+		} finally {
+			close();
+			mock.dispose();
+		}
 	});
 
 	it("starts a turn on a machine when the hosted agents working are at the ceiling", async () => {

@@ -190,7 +190,7 @@ import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } 
 import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
-import { grantIsValid, type ReserveAnswer, secretsActor, type SessionCreateInput, userActor } from "./internal.js";
+import { grantIsValid, type ReserveAnswer, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
 import { REPORT_TAKEN } from "../agent-publish.js";
@@ -993,7 +993,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		// Held before the wait: a delete that finished meanwhile leaves no actor state to read (`c.vars` throws once it has
 		// stopped), and the sandbox would be left behind, paused and holding one of the person's places. So it goes first.
 		const vars = c.vars;
-		const id = await layer.sandboxes.create({ uid: meta.uid, sessionId: meta.sessionId, profile: meta.profile, privateData: meta.origin?.role === "reviewer" });
+		const id = await layer.sandboxes.create(sessionSandboxInput(meta, secrets?.screenshots));
 		console.log(`[wlp] sandbox.created id=${id} session=${meta.sessionId}`);
 		if (vars.destroying) {
 			await layer.sandboxes.destroy(id);
@@ -1432,7 +1432,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 	if (meta.origin?.role === "reviewer" && (closed.length || shut.length || sealed.project !== project?.key)) throw new TurnProblem("The platform could not read all saved secrets to redact this review.");
 	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
 	return {
-		screenshots: sealed.screenshots !== false,
+		screenshots: sealed.screenshots === true,
 		opened,
 		account,
 		servers: (sealed.account?.servers ?? []).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
@@ -3095,7 +3095,12 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			// What the panel says of the account's secrets goes by this sandbox, as the list of the repository's does.
 			meta.accountSecrets = accountSecretsNote(profile);
 			const store = item ? attachmentStore() : null;
-			const screenshots = held.screenshots && !!store;
+			// A builder can reconnect to a sandbox created before a setting changed.
+			const browser = !!item && held.screenshots
+				&& (meta.place.kind !== "machine" || sandbox.runnerScreenshots === true)
+				&& (await sandbox.run("test -x /usr/local/bin/wlp-shot", { signal, timeoutMs: 5000 })).exitCode === 0;
+			const unavailable = held.screenshots ? "Screenshots are unavailable in this sandbox. File without screenshots." : NO_REPO_SHOTS;
+			const screenshots = browser && !!store;
 			const listed: ReviewRecord[] = [];
 			const commands = new ReviewCommands(held.redactor);
 			let uiChanged = false;
@@ -3156,7 +3161,7 @@ fi`, { signal, timeoutMs: 5000 });
 				},
 				prompt: reviewer ? text : `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${onBase ? setupOnBaseNote(onBase) : ""}${text}`,
 				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
-				reportScreenshots: !store || held.screenshots,
+				reportScreenshots: browser,
 				onReview: reviewer && item && checkout && filingFiles ? (request, withdrawn) => {
 					const openFiles = filingFiles;
 					const file = async () => {
@@ -3172,7 +3177,7 @@ fi`, { signal, timeoutMs: 5000 });
 						const top = meta.cloneDirectory === "." ? sandbox.cwd : `${sandbox.cwd}/${meta.cloneDirectory}`;
 						const files = openFiles();
 						const result = await fileReview(args, { records: listed, commands: commands.records(), earlier: [], round: checkout.round, redactor: held.redactor }, checkout.baseSha, checkout.head, screenshots, files.read,
-							store ? shots => uploadShots(sandbox, top, shots, owner, userActor(c, meta.uid), store, withdrawn) : null).finally(files.close);
+							store ? shots => uploadShots(sandbox, top, shots, owner, userActor(c, meta.uid), store, withdrawn) : null, browser ? undefined : unavailable).finally(files.close);
 						if (result.retryFree) calls--;
 						if (!open || withdrawn.aborted) return "The review call ended.";
 						if (result.filing) {
@@ -3190,7 +3195,7 @@ fi`, { signal, timeoutMs: 5000 });
 				onReport: item && !reviewer ? (request, withdrawn) => {
 					const file = async () => {
 						if (!open || withdrawn.aborted) return "The report call ended. File it again.";
-						if (store && !held.screenshots && Array.isArray(request.arguments?.screenshots) && request.arguments.screenshots.length) return NO_REPO_SHOTS;
+						if (!browser && Array.isArray(request.arguments?.screenshots) && request.arguments.screenshots.length) return unavailable;
 						const top = meta.cloneDirectory === "." ? sandbox.cwd : `${sandbox.cwd}/${meta.cloneDirectory}`;
 						const owner = { by: "builder" as const, uid: meta.uid, sessionId: meta.sessionId, itemId: item.row.itemId, key: item.row.key };
 						return fileReport(request.arguments, held.redactor, (filed, answer) => {

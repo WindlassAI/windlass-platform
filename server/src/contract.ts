@@ -706,7 +706,7 @@ export interface RepositorySecrets {
  * not used.
  */
 export interface RepositoryDefaults {
-	/** Allow item agents to file screenshots for this repository. Defaults to true. */
+	/** Allow item agents to file screenshots for this repository. Defaults to false. */
 	screenshots: boolean;
 	/** The sandbox profile, by its id; null when none is saved. */
 	profile: SandboxProfileId | null;

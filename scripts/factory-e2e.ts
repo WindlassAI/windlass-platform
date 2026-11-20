@@ -221,6 +221,7 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 		const { client, user, auth } = await world(server, standin, { WLP_SECRET: config.secret.toString(), WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_BACKUP_DIR: join(server.storage, "shots"), WLP_FAKE_BUCKET_SIGNING_SECRET: randomBytes(32).toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_IDLE_SUSPEND_MS: "1000" });
 		await check("reviewer: actual turn offer, independent filing, head, comment, ownership and both ledgers", async () => {
 			const profile = "docker-windlass-sandbox";
+			await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: true });
 			await user.saveRepositorySecret({ repositoryId: harbor.id, profile, name: "BUILD_ONLY", scope: "agent", value: "fixture-builder-only-value" });
 			await user.saveRepositorySecret({ repositoryId: harbor.id, profile, name: "SETUP_ONLY", scope: "setup", value: "fixture-setup-only-value" });
 			await user.saveAccountSecret({ profile, name: "ACCOUNT_ONLY", scope: "agent", value: "fixture-account-only-value" });
@@ -1208,6 +1209,7 @@ async function machineChecks(): Promise<void> {
 		await waitFor("available machine profiles", async () => (await user.machines())[0]?.profiles.some(p => p.available), 15_000);
 
 		await check("machine: a machine turn and a hosted turn overlap with one hosted slot, and machine review costs zero hosted seconds", async () => {
+			await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: true });
 			const token = (await user.createApiToken({ name: "machine", scopes: ["items:create"] })).secret;
 			const filed = await api("/api/items", { method: "POST", body: JSON.stringify({ ...task, profile: "docker-hardened", body: "Write a program (slow).", start: true }), token, key: "machine-slot" });
 			assert(filed.status === 201, JSON.stringify(filed.body));
@@ -1222,6 +1224,7 @@ async function machineChecks(): Promise<void> {
 			const review = await untilItem(user, item.id, "review", view => view.state === "review", CI_WAIT_MS);
 			assert([...runner.boxes.values()].some(box => box.sessionId === item.sessionId && box.profile === "docker-hardened"), "runner did not serve the requested profile");
 			const open = runner.opens.get(item.sessionId);
+			assert(JSON.stringify(open?.hostTools ?? []).includes("Screenshots are unavailable in this sandbox"), "an unflagged runner offered screenshots to an opted-in builder");
 			assert(open?.approval === "full" && open.attended === false && open.unattended === "deny", "the hardened container was not opened in unattended full mode");
 			assert(review.verdicts.at(-1)?.attestedBy === `machine:${place.machineId}` && review.spent.turns === 1 && review.spent.hostedSeconds === 0, JSON.stringify(review.spent));
 			return "overlapping turns, one machine-attested verdict, zero hosted seconds";
@@ -1429,6 +1432,7 @@ try {
 	});
 
 	await check("sleep: an item waiting on its CI schedule while the server is stopped and started again proceeds when the time comes", async () => {
+		await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: true });
 		const item = await user.createItem({ repository: { id: harbor.id }, title: "Across a restart", body: "Add a small program to the repository. (report) (screenshot)", start: true });
 		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null && view.wait?.reason === "ci", 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === pushed.pullRequest?.number);
@@ -1540,6 +1544,7 @@ try {
 		return `${waiting.wait.sentence} → ${started.state}`;
 	});
 	await check("screenshots: the item serves the builder’s PNG to its owner and links GitHub to the page", async () => {
+		await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: true });
 		const item = await user.createItem({ repository: { id: harbor.id }, title: "Screenshot", body: "Change the home page. (report) (screenshot)", start: true });
 		const view = await untilItem(user, item.id, "the report and push", v => !!v.report && !!v.pullRequest);
 		const shot = view.report!.screenshots[0];

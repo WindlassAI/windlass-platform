@@ -278,32 +278,32 @@ describe("the repository's screenshots setting", () => {
 		saveAuth("mock", null);
 	});
 
-	it("is on unless turned off, seeded off for ada/tide-tables, and saved and read back when changed", async () => {
+	it("is off by default and remembers an opt-in until the repository settings are cleared", async () => {
 		const user = client.user(auth);
 		expect((await user.repository(7101)).defaults.screenshots).toBe(true);
 		expect((await user.repository(7102)).defaults.screenshots).toBe(false);
-		let view: RepositoryView = await user.repository(7101);
+		let view: RepositoryView = await user.repository(7102);
 		const replace = vi.fn((next: RepositoryView) => {
 			view = next;
 		});
-		const render = () => act(async () => root.render(createElement(AppProvider, { client, children: createElement(ScreenshotsSetting, { page: { id: 7101, replace }, view }) })));
+		const render = () => act(async () => root.render(createElement(AppProvider, { client, children: createElement(ScreenshotsSetting, { page: { id: 7102, replace }, view }) })));
 		await render();
 		const box = () => host.querySelector<HTMLInputElement>("input.check-input");
 		expect(host.querySelector("h2")?.textContent).toBe("Screenshots");
-		expect(host.textContent).toContain("Whether the agents of this repository's work items take screenshots of the app and attach them to their reports: the agent that makes the change, and the second reviewer. Each picture costs the sandbox a little memory and time.");
-		expect(box()?.checked).toBe(true);
+		expect(host.textContent).toContain("Screenshots are off by default.");
+		expect(box()?.checked).toBe(false);
 		await act(async () => {
 			box()?.click();
 			await new Promise((resolve) => setTimeout(resolve, 50));
 		});
 		expect(replace).toHaveBeenCalled();
-		expect(view.defaults.screenshots).toBe(false);
-		expect((await user.repository(7101)).defaults.screenshots).toBe(false);
+		expect(view.defaults.screenshots).toBe(true);
+		expect((await user.repository(7102)).defaults.screenshots).toBe(true);
 		await render();
-		expect(box()?.checked).toBe(false);
-		expect(host.textContent).toContain("The agents take no screenshots, and an item's page shows none.");
+		expect(box()?.checked).toBe(true);
+		expect(host.textContent).toContain("New work item sandboxes include a browser");
 		expect(host.querySelector("[role=status]")?.textContent).toBe("Saved.");
-		// Deleting what is saved turns them on again.
-		expect((await user.forgetRepository(7101)).defaults.screenshots).toBe(true);
+		// Deleting what is saved restores the default.
+		expect((await user.forgetRepository(7102)).defaults.screenshots).toBe(false);
 	});
 });

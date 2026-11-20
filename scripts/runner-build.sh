@@ -6,10 +6,18 @@
 # WLP_RUNNER_PLATFORMS=linux/amd64,linux/arm64 writes an OCI archive instead of loading one platform.
 set -eu
 cd "$(dirname "$0")/.."
+# --screenshots pins both images so personal sessions can still use the base.
+screenshots=false
+if [ "${1:-}" = --screenshots ]; then screenshots=true; shift; fi
 pin=${1:-$(docker image inspect "${WLP_SANDBOX_IMAGE:-windlass-platform-sandbox:latest}" --format '{{.Id}}')}
 context=$(mktemp -d)
 trap 'rm -rf "$context"' EXIT
-set --
+if [ "$screenshots" = true ]; then
+  shots=${2:-$(docker image inspect "${WLP_SANDBOX_SHOTS_IMAGE:-windlass-platform-sandbox:shots}" --format '{{.Id}}')}
+  set -- "$shots"
+else
+  set --
+fi
 set -f
 for harness in ${WLP_RUNNER_HARNESSES:-}; do
   case "$harness" in

@@ -83,6 +83,8 @@ export interface SandboxHandle {
 	readonly id: string;
 	/** The workspace directory inside the sandbox: "/workspace". */
 	readonly cwd: string;
+	/** On a personal machine, the connected runner's permission to use its browser. */
+	readonly runnerScreenshots?: boolean;
 	readonly profile: SandboxProfileId;
 	run(command: string, options?: ExecOptions): Promise<ExecResult>;
 	readTextFile(path: string): Promise<string>;
@@ -92,6 +94,8 @@ export interface SandboxHandle {
 export interface CreateSandboxInput {
 	/** An item's reviewer keeps Windlass data inside its own sandbox, including approval records. */
 	privateData?: boolean;
+	/** Request the browser image when creating this work item sandbox. */
+	screenshots?: boolean;
 	uid: string;
 	sessionId: string;
 	profile: SandboxProfileId;
