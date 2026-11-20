@@ -48,6 +48,7 @@ export function modelsNoteShort(list: ModelList): string {
 /** What a machine's runner may report of a harness's options beside it: read as optional, so that a runner that reports none, and a summary without the field, read as nothing. */
 interface ReportedOptions {
 	models?: ModelChoice[];
+	defaultModel?: string;
 	modes?: SessionMode[];
 	checkedAt?: number;
 }
@@ -64,5 +65,7 @@ export function harnessOptions(machine: MachineSummary | null, harness: HarnessI
 	const modes = reported?.modes && reported.modes.length > 0 ? reported.modes : null;
 	const first = reported?.models?.[0];
 	if (!reported?.models || first === undefined) return { models: null, modes };
-	return { models: { source: "harness", models: reported.models, defaultModel: first.id, fetchedAt: reported.checkedAt ?? null }, modes };
+	// The runner reports the adapter's own default; the first listed model stands in only when it names none it lists.
+	const defaultModel = reported.models.some((model) => model.id === reported.defaultModel) ? (reported.defaultModel as string) : first.id;
+	return { models: { source: "harness", models: reported.models, defaultModel, fetchedAt: reported.checkedAt ?? null }, modes };
 }

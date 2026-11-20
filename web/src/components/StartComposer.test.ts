@@ -245,7 +245,7 @@ describe("each picker of the start composer", () => {
 	});
 
 	it("offers Claude Code's models and efforts as its machine's runner reported them, and sends the ones chosen", async () => {
-		const reported = { models: [{ id: "opus", name: "Opus", efforts: ["low", "high"] }, { id: "haiku", name: null, efforts: [] }], modes: [], checkedAt: 1 };
+		const reported = { models: [{ id: "opus", name: "Opus", efforts: ["low", "high"] }, { id: "haiku", name: null, efforts: [] }], defaultModel: "opus", modes: [], checkedAt: 1 };
 		await show({ machines: (list) => list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map((harness) => ({ ...harness, options: reported })) })) });
 		open("on");
 		pick("m_nas");
