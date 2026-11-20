@@ -25,6 +25,8 @@ import type { ConfirmedConnection } from "./state.js";
 
 /** A user's connection as their `user` actor stores it. */
 export interface StoredConnection extends ConfirmedConnection {
+	/** Directory updates must also be cleared if webhooks have since been switched off. */
+	webhookLinked?: boolean;
 	connectedAt: number;
 }
 

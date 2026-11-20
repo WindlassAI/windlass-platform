@@ -1,16 +1,15 @@
 /** githubAccount[githubUserId]. Only a service action can populate, read or clear the link. */
 import { actor } from "rivetkit";
 import { db } from "rivetkit/db";
-import { requireServiceFor, serviceParams } from "../auth.js";
+import { githubIdKey } from "../github/events.js";
+import { internalConnection, requireServiceFor, serviceParams } from "../auth.js";
 import type { StoredConnection } from "../github/repos.js";
-
-// A deployment that has never enabled webhooks performs no directory calls. The marker lives
-// with the connection so disabling webhooks can still remove a link previously written.
-type DirectoryConnection = StoredConnection & { webhookLinked?: boolean };
 
 type Link = { uid: string; login: string; installations: number[]; at: number };
 
 export const githubAccount = actor({
+	onBeforeConnect: internalConnection,
+	onCreate: c => { if (!githubIdKey(c.key)) c.destroy(); },
 	db: db({ onMigrate: async db => {
 		await db.execute("CREATE TABLE IF NOT EXISTS link (id INTEGER PRIMARY KEY CHECK (id = 1), uid TEXT NOT NULL, login TEXT NOT NULL, installations TEXT NOT NULL, at INTEGER NOT NULL)");
 	} }),
@@ -36,8 +35,21 @@ export const githubAccount = actor({
 	},
 });
 
-/** The next connect repairs a missed link. Directory availability never fails the ticket flow. */
-export async function updateGithubAccount(c: { client(): any }, uid: string, previous: DirectoryConnection | null, next: DirectoryConnection | null) {
+export async function setGithubInstallations(c: { client(): any }, uid: string, ids: number[]) {
+	await c.client().githubHooks.getOrCreate(["app"], { params: serviceParams() }).internalSetInstallations(uid, ids);
+}
+
+/** Revoke removed installations before committing the user's change and admit new ones only after.
+ * An interrupted grant is repaired from the saved connection on wake. */
+export async function updateGithubAccount(c: { client(): any }, uid: string, previous: StoredConnection | null, next: StoredConnection | null, save?: () => Promise<void>) {
+	const ids = next?.webhookLinked ? next.installations.map(i => i.id) : [];
+	if (previous?.webhookLinked) {
+		const retained = previous.installations.filter(i => ids.includes(i.id));
+		if (retained.length !== previous.installations.length || !next?.webhookLinked)
+			await setGithubInstallations(c, uid, retained.map(i => i.id));
+	}
+	await save?.();
+	if (next?.webhookLinked) await setGithubInstallations(c, uid, ids);
 	const account = (id: number) => c.client().githubAccount.getOrCreate([String(id)], { params: serviceParams() });
 	if (previous?.webhookLinked && (!next?.webhookLinked || previous.user.id !== next.user.id)) {
 		try { await account(previous.user.id).internalUnlink(uid); }
@@ -45,7 +57,7 @@ export async function updateGithubAccount(c: { client(): any }, uid: string, pre
 	}
 	if (next?.webhookLinked) {
 		try {
-			await account(next.user.id).internalLink({ uid, login: next.user.login, installations: next.installations.map(i => i.id), at: next.connectedAt } satisfies Link);
+			await account(next.user.id).internalLink({ uid, login: next.user.login, installations: ids, at: next.connectedAt } satisfies Link);
 		} catch { console.warn(`github.account.link_failed github=${next.user.id} uid=${uid}`); }
 	}
 }

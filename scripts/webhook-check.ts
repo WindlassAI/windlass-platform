@@ -27,6 +27,11 @@ const second = base(checkPort(3432)) + "/github/webhook";
 async function testNode() {
 	const { githubInbox, HANDLERS, githubHooks } = await import("../server/src/actors/github-inbox.js");
 	const { requireServiceFor } = await import("../server/src/auth.js");
+	const { githubAccount } = await import("../server/src/actors/github-account.js");
+	const { githubRepository } = await import("../server/src/actors/github-repository.js");
+	// This probe deliberately has no action-level guard, so it observes the connection hook alone.
+	for (const definition of [githubAccount, githubRepository, githubInbox, githubHooks])
+		Object.assign(definition.config.actions!, { checkConnection: () => true });
 	const actions = githubInbox.config.actions!;
 	type Ctx = Parameters<typeof actions.internalReceive>[0];
 	const original = HANDLERS.installation!;
@@ -89,6 +94,7 @@ async function run() {
 		RIVETKIT_STORAGE_PATH: storage, RIVET_RUN_ENGINE_PORT: String(engine), WLP_WEB_ORIGINS: origin, RIVET_LOG_LEVEL: "silent",
 	});
 	for (const key of ["RIVET_ADMIN_TOKEN", "RIVET_ENDPOINT", "RIVET_ENGINE", "PORT"]) delete process.env[key];
+	const { updateGithubAccount } = await import("../server/src/actors/github-account.js");
 	const { webhookRoute } = await import("../server/src/github/webhook.js");
 	const { createClient } = await import("../server/src/client.js");
 	const { serviceParams } = await import("../server/src/auth.js");
@@ -145,6 +151,35 @@ async function run() {
 			return (await fetch(api + "/platform/info").catch(() => null))?.ok;
 		}, 90_000);
 		const known = (guid: string, id = shaPayload.installation.id) => inbox(id).internalKnows(guid);
+		const connection = (ids: number[]) => ({
+			webhookLinked: true, connectedAt: Date.now(), user: { id: 7, login: "fixture" },
+			installations: ids.map(id => ({ id, account: { id, login: "fixture", type: "Organization" as const }, htmlUrl: "" })),
+		});
+		const accountContext = { client: () => client };
+		await updateGithubAccount(accountContext, "fixture", null, connection([91234, 92222, 92123, 92678]));
+		const absent = (e: unknown) => (e as { group?: string; code?: string })?.group === "actor" && (e as { code: string }).code === "not_found";
+		await check("unlinked status creates no inbox, installation lifecycle events are admitted", async () => {
+			const id = 93333, guid = randomUUID();
+			const res = await send({ ...shaPayload, installation: { id } }, guid);
+			assert.equal(res.status, 202); assert.deepEqual(await res.json(), { taken: false });
+			await assert.rejects(client.githubInbox.get([String(id)]).resolve(), absent);
+			for (const event of ["installation", "installation_repositories"]) {
+				const lifecycle = await standin.deliver(web, event, { action: "created", installation: { id } }, { secret });
+				assert.deepEqual(await lifecycle.json(), { taken: true });
+			}
+			assert.equal(await known(guid, id), false);
+		});
+		await check("changing a user's installation list removes its old memberships", async () => {
+			const before = connection([94444, 95555]), after = connection([95555]);
+			const payload = { ...shaPayload, installation: { id: 94444 } };
+			await updateGithubAccount(accountContext, "changing", null, before);
+			assert.deepEqual(await (await send(payload)).json(), { taken: true });
+			await updateGithubAccount(accountContext, "changing", before, after);
+			const guid = randomUUID();
+			assert.deepEqual(await (await send(payload, guid)).json(), { taken: false });
+			assert.equal(await known(guid, 94444), false);
+			await updateGithubAccount(accountContext, "changing", after, null);
+		});
 		await check("edge table and its excluded neighbours", () => {
 			const user = { id: 5, login: "ada", type: "User" };
 			const subject = { id: 7, user, author_association: "OWNER", body: "@windlass-fk4w fix", commit_id: HEAD, path: "src/a", line: 9 };
@@ -244,6 +279,14 @@ async function run() {
 		await check("two MiB body limit", async () => {
 			const guid = randomUUID(), large = JSON.stringify(shaPayload).padEnd(2 * 1024 * 1024 + 1);
 			assert.equal((await local({ body: large, guid })).status, 413); assert.equal(await known(guid), false);
+		});
+		await check("listener rejects a chunked body over three MiB before webhook header validation", async () => {
+			const cap = 3 * 1024 * 1024;
+			assert.equal((await fetch(web, { method: "POST", body: new Uint8Array(cap) })).status, 400);
+			const body = new ReadableStream({ start(c) { c.enqueue(new Uint8Array(cap)); c.enqueue(Uint8Array.of(1)); c.close(); } });
+			const request: RequestInit & { duplex: "half" } = { method: "POST", body, duplex: "half" };
+			const res = await fetch(web, request);
+			assert.equal(res.status, 413); assert.equal(await res.text(), "Payload Too Large");
 		});
 		await check("invalid JSON", async () => {
 			assert.equal((await local({ body: "{" })).status, 400);
@@ -347,10 +390,12 @@ async function run() {
 				return { user, uid: auth.profile.uid };
 			};
 			const account = client.githubAccount.getOrCreate([String(ada.id)], service());
-			const a = await connect(); assert.deepEqual(await account.internalWho(), { uid: a.uid, installations: [install.id] });
+			const payload = { ...shaPayload, installation: { id: install.id } };
+			const taken = async () => (await (await send(payload)).json()).taken;
+			const a = await connect(); assert.equal(await taken(), true); assert.deepEqual(await account.internalWho(), { uid: a.uid, installations: [install.id] });
 			const b = await connect(); assert.deepEqual(await account.internalWho(), { uid: b.uid, installations: [install.id] });
-			await a.user.githubDisconnect(); assert.equal((await account.internalWho())?.uid, b.uid);
-			await b.user.githubDisconnect(); assert.equal(await account.internalWho(), null);
+			await a.user.githubDisconnect(); assert.equal((await account.internalWho())?.uid, b.uid); assert.equal(await taken(), true);
+			await b.user.githubDisconnect(); assert.equal(await account.internalWho(), null); assert.equal(await taken(), false);
 		});
 		await check("service-only actors", async () => {
 			await assert.rejects(client.githubAccount.getOrCreate(["1"]).internalWho());
@@ -358,13 +403,33 @@ async function run() {
 			await assert.rejects(client.githubRepository.getOrCreate(["1"]).internalFind({ pr: 1 }));
 			await assert.rejects(client.githubHooks.getOrCreate(["app"]).internalSweep());
 		});
+		for (const [name, valid, invalid] of [
+			["githubInbox", ["1"], ["1", "2"]], ["githubAccount", ["1"], ["01"]],
+			["githubRepository", ["1"], ["9007199254740992"]], ["githubHooks", ["app"], ["other"]],
+		] as const) {
+			const actors = client[name];
+			const probe = (handle: unknown) => (handle as { checkConnection(): Promise<boolean> }).checkConnection();
+			await check(name + " refuses external connections before dispatch", async () => {
+				assert.equal(await probe(actors.getOrCreate([...valid], service())), true);
+				await assert.rejects(probe(actors.get([...valid])), (e: { code: string }) => e.code === "unauthorized");
+			});
+			await check(name + " destroys a bad getOrCreate key", async () => {
+				const handle = actors.getOrCreate([...invalid], service());
+				await handle.resolve();
+				await until("bad key to disappear", () => actors.get([...invalid]).resolve().then(() => false, e => {
+					if (!absent(e)) throw e;
+					return true;
+				}), 2500);
+			});
+		}
 		await check("sweep skips known, redelivers failed GUID once", async () => {
 			// Only these two failures belong to this scenario. Both are real signed HTTP attempts.
 			standin.deliveries.length = 0;
-			const existing = randomUUID(), missing = randomUUID();
+			const existing = randomUUID(), missing = randomUUID(), unlinked = 96666;
 			assert.equal((await send(shaPayload, existing)).status, 202);
 			try {
 				offline = true;
+				await send({ ...shaPayload, installation: { id: unlinked } }, randomUUID(), second);
 				for (const id of [existing, missing]) assert.equal((await send(shaPayload, id, second)).status, 503);
 			} finally { offline = false; }
 			const hooks = client.githubHooks.getOrCreate(["app"], service());
@@ -373,6 +438,7 @@ async function run() {
 			await hooks.internalSweep();
 			assert.deepEqual(standin.deliveries.filter(d => d.redelivery).map(d => [d.guid, d.status_code]), [[missing, 202]]);
 			assert.equal(await known(missing), true);
+			await assert.rejects(client.githubInbox.get([String(unlinked)]).resolve(), absent);
 			// The four-day receipt itself must suppress a repeat, even after a missing inbox row.
 			await fixture(91234).checkFixture("expire", missing);
 			await inbox(91234).internalDue();
@@ -380,17 +446,21 @@ async function run() {
 			assert.equal(standin.requests.filter(r => r.path.endsWith("/attempts")).length, 1);
 			assert.ok(standin.requests.some(r => r.auth === "jwt" && r.path.includes("status=failure") && r.path.includes("per_page=100")));
 		});
-		await check("sweep page and redelivery budgets resume on the next sweep", async () => {
+		await check("sweep shares 50 attempts across installations and resumes its three-page scan", async () => {
 			const hooks = client.githubHooks.getOrCreate(["app"], service());
 			await hooks.internalStart();
 			standin.deliveries.length = 0;
 			try {
 				offline = true;
-				for (let i = 0; i < 51; i++) await standin.deliver(second, "push", {}, { secret });
+				// Newest first at GitHub: the quiet installation is behind a full page of failures.
+				await standin.deliver(second, "push", { installation: { id: 92222 } }, { secret });
+				for (let i = 0; i < 101; i++) await standin.deliver(second, "push", { installation: { id: 91234 } }, { secret });
 			} finally { offline = false; }
 			const attempts = () => standin.deliveries.filter(d => d.redelivery).length;
 			await hooks.internalSweep(); assert.equal(attempts(), 50);
-			await hooks.internalSweep(); assert.equal(attempts(), 51);
+			assert.ok(standin.deliveries.some(d => d.redelivery && d.installation_id === 92222), "quiet installation redelivered on first sweep");
+			await hooks.internalSweep(); assert.equal(attempts(), 100);
+			await hooks.internalSweep(); assert.equal(attempts(), 102);
 			const remembered = standin.deliveries.find(d => d.redelivery)!;
 			standin.deliveries.length = 0;
 			for (let i = 0; i < 301; i++)

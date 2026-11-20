@@ -121,7 +121,7 @@ import {
 	type UsageView,
 	type UserProfile,
 } from "../contract.js";
-import { updateGithubAccount } from "./github-account.js";
+import { setGithubInstallations, updateGithubAccount } from "./github-account.js";
 import { githubApp, type GithubApp } from "../github/app.js";
 import { isBranchName } from "../github/git.js";
 import type { StoredRepository } from "../github/publish.js";
@@ -199,6 +199,7 @@ interface UserVars {
 	approvals: ApprovalBook;
 	/** The user's GitHub connection; null when there is none. */
 	github: StoredConnection | null;
+	githubWriting: Promise<void>;
 	/** The models of the user's ChatGPT plan, as the table has them, and the listing that runs now. */
 	models: AccountModels;
 	/** The user's sandbox time and kept sandboxes, as the tables have them. */
@@ -395,6 +396,19 @@ function requireGithub(): GithubApp {
 function requireConnection(c: { vars: UserVars }): StoredConnection {
 	if (!c.vars.github) throw new UserError("GitHub is not connected. Connect GitHub first.", { code: "github_not_connected" });
 	return c.vars.github;
+}
+
+function saveGithubConnection(c: UserCtx & { client(): any }, uid: string, next: StoredConnection | null) {
+	const write = c.vars.githubWriting.then(() => updateGithubAccount(c, uid, c.vars.github, next, async () => {
+		if (next) {
+			await c.db.execute("INSERT OR REPLACE INTO github (id, connection, updated_at) VALUES (1, ?, ?)", JSON.stringify(next), next.connectedAt);
+		} else {
+			await c.db.execute("DELETE FROM github");
+		}
+		c.vars.github = next;
+	}));
+	c.vars.githubWriting = write.catch(() => {});
+	return write;
 }
 
 function githubStatus(vars: UserVars): GithubStatus {
@@ -1200,7 +1214,7 @@ export const user = actor({
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items: await loadItems(c.db) };
+		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items: await loadItems(c.db) };
 	},
 
 	events: {
@@ -1229,6 +1243,14 @@ export const user = actor({
 	},
 
 	onWake: async (c) => {
+		// Backfill saved connections on upgrade and repair a grant interrupted after the local write.
+		const connection = c.vars.github;
+		if (connection && githubConfig().webhook) {
+			try {
+				if (connection.webhookLinked) await setGithubInstallations(c, c.key[0], connection.installations.map(i => i.id));
+				else await saveGithubConnection(c, c.key[0], { ...connection, webhookLinked: true });
+			} catch { console.warn(`github.installations.sync_failed uid=${c.key[0]}`); }
+		}
 		// Turn requests that waited while the actor was away are tried, and their schedule set again (user-items.ts).
 		queueChanged(c);
 		await notifyRemovedMachines(c);
@@ -1505,11 +1527,8 @@ export const user = actor({
 				installations: confirmed.installations.slice(0, MAX_GITHUB_ACCOUNTS).map(({ id, account, htmlUrl }) => ({ id, account: { id: account.id, login: account.login, type: account.type }, htmlUrl })),
 				connectedAt: Date.now(),
 			};
-			await c.db.execute("INSERT INTO github (id, connection, updated_at) VALUES (1, ?, ?) ON CONFLICT (id) DO UPDATE SET connection = excluded.connection, updated_at = excluded.updated_at", JSON.stringify(connection), connection.connectedAt);
-			const linked = updateGithubAccount(c, profile.uid, c.vars.github, connection);
-			c.vars.github = connection;
+			await saveGithubConnection(c, profile.uid, connection);
 			c.vars.reached = true;
-			await linked;
 			console.log(`[wlp] github.connected uid=${profile.uid} github=${connection.user.login} installations=${connection.installations.map((installation) => installation.id).join(",")}`);
 			return githubStatus(c.vars);
 		},
@@ -1518,14 +1537,12 @@ export const user = actor({
 		githubDisconnect: async (c): Promise<GithubStatus> => {
 			const profile = requireUser(c);
 			requireGithub();
-			await c.db.execute("DELETE FROM github");
 			// A connection that was begun and not finished ends here too. The tickets that were taken stay
 			// on the list until they would have expired: one of them must not bring the connection back.
 			await c.db.execute("DELETE FROM github_nonce WHERE kind = 'state'");
-			if (c.vars.github) console.log(`[wlp] github.disconnected uid=${profile.uid}`);
-			const unlinked = updateGithubAccount(c, profile.uid, c.vars.github, null);
-			c.vars.github = null;
-			await unlinked;
+			const wasConnected = c.vars.github !== null;
+			await saveGithubConnection(c, profile.uid, null);
+			if (wasConnected) console.log(`[wlp] github.disconnected uid=${profile.uid}`);
 			return githubStatus(c.vars);
 		},
 

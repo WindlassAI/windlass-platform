@@ -3,10 +3,10 @@
  */
 import { actor } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
-import { requireServiceFor, serviceParams } from "../auth.js";
+import { internalConnection, requireServiceFor, serviceParams } from "../auth.js";
 import { githubConfig } from "../config.js";
 import { githubApp, GithubError } from "../github/app.js";
-import type { Delivery } from "../github/events.js";
+import { githubIdKey, type Delivery } from "../github/events.js";
 
 // https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks
 // Redeliveries have "the same" delivery GUID. This is the inbox primary key.
@@ -120,6 +120,8 @@ function runDrain(c: Ctx) {
 }
 
 export const githubInbox = actor({
+	onBeforeConnect: internalConnection,
+	onCreate: c => { if (!githubIdKey(c.key)) c.destroy(); },
 	db: db({ onMigrate: async db => {
 		await db.execute("CREATE TABLE IF NOT EXISTS deliveries (guid TEXT PRIMARY KEY, event TEXT NOT NULL, action TEXT NOT NULL, repository INTEGER, data TEXT NOT NULL, received_at INTEGER NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL, next_at INTEGER NOT NULL, said TEXT NOT NULL)");
 		await db.execute("CREATE INDEX IF NOT EXISTS delivery_due ON deliveries(state, next_at)");
@@ -168,6 +170,10 @@ export const githubInbox = actor({
 	},
 });
 
+async function linked(db: RawAccess, installation: number) {
+	return (await db.execute("SELECT 1 FROM installation_links WHERE installation = ? LIMIT 1", installation)).length > 0;
+}
+
 async function sweep(c: Ctx) {
 	const app = githubApp();
 	if (!app || !githubConfig().webhook) return;
@@ -175,36 +181,72 @@ async function sweep(c: Ctx) {
 	if (!window) return;
 	const now = Date.now();
 	const started = window.started_at || now;
-	if (!window.started_at) await c.db.execute("UPDATE sweeps SET started_at = ?", started);
+	const since = Math.max(window.last_at - 60_000, now - 3 * DAY);
 	await c.db.execute("DELETE FROM redelivered WHERE at <= ?", now - 4 * DAY);
+	await c.db.execute("DELETE FROM pending_redelivery WHERE at <= ?", now - 3 * DAY);
 	let cursor = window.cursor ?? undefined;
-	let posted = 0;
 	for (let page = 0; page < 3; page++) {
 		const batch = await app.hookDeliveries({ cursor, status: "failure" });
-		let pastWindow = false;
-		for (const d of batch.deliveries) {
-			if (d.at < window.last_at - 60_000) { pastWindow = true; continue; }
-			if ((await c.db.execute("SELECT 1 FROM redelivered WHERE guid = ?", d.guid)).length) continue;
-			if (d.installationId && await c.client().githubInbox.getOrCreate([String(d.installationId)], { params: serviceParams() }).internalKnows(d.guid)) continue;
-			if (posted === 50) return; // resume this page; its acknowledged requests are remembered
-			// Reserve before POST: a timeout or deploy after GitHub accepts it must not send it twice.
-			await c.db.execute("INSERT INTO redelivered VALUES (?, ?)", d.guid, Date.now());
-			try {
-				await app.redeliver(d.id);
-			} catch (error) {
-				if (error instanceof GithubError && error.status >= 400 && error.status < 500)
-					await c.db.execute("DELETE FROM redelivered WHERE guid = ?", d.guid);
-				throw error;
-			}
-			posted++;
-		}
-		if (!batch.cursor || pastWindow) {
-			await c.db.execute("UPDATE sweeps SET last_at = ?, started_at = 0, cursor = NULL", started);
-			return;
-		}
-		cursor = batch.cursor;
-		await c.db.execute("UPDATE sweeps SET cursor = ?, started_at = ?", cursor, started);
+		const inWindow = batch.deliveries.filter(d => d.at >= since);
+		const next = inWindow.length === batch.deliveries.length ? batch.cursor : null;
+		// Advance the cursor with the durable candidates. A full installation cannot pin the scan
+		// to its own page, and excess work survives a restart between ten-minute ticks.
+		await c.db.transaction(async tx => {
+			await tx.execute(`INSERT OR IGNORE INTO pending_redelivery (guid, delivery, installation, at)
+				SELECT d.value ->> 'guid', d.value ->> 'id', d.value ->> 'installationId', d.value ->> 'at'
+				FROM json_each(?) d
+				WHERE EXISTS (SELECT 1 FROM installation_links WHERE installation = d.value ->> 'installationId')
+				AND NOT EXISTS (SELECT 1 FROM redelivered WHERE guid = d.value ->> 'guid')`, JSON.stringify(inWindow));
+			if (next) await tx.execute("UPDATE sweeps SET cursor = ?, started_at = ?", next, started);
+			else await tx.execute("UPDATE sweeps SET last_at = ?, started_at = 0, cursor = NULL", started);
+		});
+		if (!next) break;
+		cursor = next;
 	}
+
+	// One candidate per installation before any installation gets a second. Continue after
+	// the last installation served so even more than 50 active installations get a turn.
+	const candidates = await c.db.execute<{ guid: string; delivery: number; installation: number }>(`
+		SELECT guid, delivery, installation FROM pending_redelivery
+		ORDER BY row_number() OVER (PARTITION BY installation ORDER BY at, delivery),
+			installation <= coalesce((SELECT installation FROM redelivery_turn), 0), installation
+		LIMIT 50`);
+	const unavailable = new Set<number>();
+	for (const d of candidates) {
+		if (unavailable.has(d.installation)) continue;
+		if (!await linked(c.db, d.installation)) continue;
+		const inbox = c.client().githubInbox.getOrCreate([String(d.installation)], { params: serviceParams() });
+		await c.db.execute("INSERT OR REPLACE INTO redelivery_turn VALUES (1, ?)", d.installation);
+		let known: boolean;
+		try { known = await inbox.internalKnows(d.guid); }
+		catch {
+			unavailable.add(d.installation);
+			continue;
+		}
+		if (known) {
+			await c.db.execute("DELETE FROM pending_redelivery WHERE guid = ?", d.guid);
+			continue;
+		}
+		// Reserve before POST. Recheck membership after the actor call, in the same transaction.
+		const reserved = await c.db.transaction(async tx => {
+			if (!await linked(tx, d.installation)) return false;
+			return (await tx.execute("INSERT OR IGNORE INTO redelivered VALUES (?, ?) RETURNING guid", d.guid, now)).length > 0;
+		});
+		if (reserved) {
+			try {
+				await app.redeliver(d.delivery);
+			} catch (error) {
+				unavailable.add(d.installation);
+				if (error instanceof GithubError && error.status >= 400 && error.status < 500) {
+					await c.db.execute("DELETE FROM redelivered WHERE guid = ?", d.guid);
+					continue; // GitHub refused this request. Leave it for the next sweep.
+				}
+				// An ambiguous response keeps its reservation in case the POST reached GitHub.
+			}
+		}
+		await c.db.execute("DELETE FROM pending_redelivery WHERE guid = ?", d.guid);
+	}
+	if (unavailable.size) console.warn(`github.webhook.redelivery_unavailable installations=${unavailable.size}`);
 }
 
 async function runSweep(c: Ctx) {
@@ -218,9 +260,16 @@ async function runSweep(c: Ctx) {
 }
 
 export const githubHooks = actor({
+	onBeforeConnect: internalConnection,
+	onCreate: c => { if (c.key.length !== 1 || c.key[0] !== "app") c.destroy(); },
 	db: db({ onMigrate: async db => {
 		await db.execute(TIMER);
 		await db.execute("CREATE TABLE IF NOT EXISTS sweeps (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), last_at INTEGER NOT NULL, started_at INTEGER NOT NULL, cursor TEXT)");
+		await db.execute("CREATE TABLE IF NOT EXISTS installation_links (installation INTEGER NOT NULL, uid TEXT NOT NULL, PRIMARY KEY (installation, uid))");
+		await db.execute("CREATE INDEX IF NOT EXISTS links_by_user ON installation_links(uid)");
+		await db.execute("CREATE TABLE IF NOT EXISTS pending_redelivery (guid TEXT PRIMARY KEY, delivery INTEGER NOT NULL, installation INTEGER NOT NULL, at INTEGER NOT NULL)");
+		await db.execute("CREATE INDEX IF NOT EXISTS pending_by_installation ON pending_redelivery(installation, at, delivery)");
+		await db.execute("CREATE TABLE IF NOT EXISTS redelivery_turn (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), installation INTEGER NOT NULL)");
 		await db.execute("CREATE TABLE IF NOT EXISTS redelivered (guid TEXT PRIMARY KEY, at INTEGER NOT NULL)");
 	} }),
 	createVars: vars,
@@ -230,6 +279,21 @@ export const githubHooks = actor({
 		if (!timer || timer.at <= Date.now()) void c.keepAwake(runSweep(c).catch(() => console.warn("github.webhook.sweep_failed")));
 	},
 	actions: {
+		internalSetInstallations: async (c, uid: string, ids: number[]) => {
+			requireServiceFor(c, "call");
+			await c.db.transaction(async tx => {
+				const old = await tx.execute<{ installation: number }>("DELETE FROM installation_links WHERE uid = ? RETURNING installation", uid);
+				await tx.execute("INSERT OR IGNORE INTO installation_links SELECT value, ? FROM json_each(?)", uid, JSON.stringify(ids));
+				for (const { installation } of old) {
+					await tx.execute(`DELETE FROM pending_redelivery WHERE installation = ?
+						AND NOT EXISTS (SELECT 1 FROM installation_links WHERE installation = ?)`, installation, installation);
+				}
+			});
+		},
+		internalLinked: async (c, installation: number) => {
+			requireServiceFor(c, "call");
+			return linked(c.db, installation);
+		},
 		internalStart: async c => {
 			requireServiceFor(c, "call");
 			if (c.key.length !== 1 || c.key[0] !== "app") throw new Error("Wrong webhook sweep key.");

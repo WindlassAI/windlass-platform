@@ -1,7 +1,8 @@
 /** githubRepository[repositoryId]. Every action requires the platform service credential. */
 import { actor } from "rivetkit";
 import { db } from "rivetkit/db";
-import { requireServiceFor } from "../auth.js";
+import { githubIdKey } from "../github/events.js";
+import { internalConnection, requireServiceFor } from "../auth.js";
 import { githubApp, GithubError } from "../github/app.js";
 
 type Item = { itemId: string; uid: string; issue?: number; generation?: number; pr?: number; head?: string; live?: boolean };
@@ -11,6 +12,8 @@ type Permission = { installationId: number; owner: string; name: string; userId:
 const TTL = 10 * 60_000;
 
 export const githubRepository = actor({
+	onBeforeConnect: internalConnection,
+	onCreate: c => { if (!githubIdKey(c.key)) c.destroy(); },
 	db: db({ onMigrate: async db => {
 		await db.execute("CREATE TABLE IF NOT EXISTS items (item_id TEXT PRIMARY KEY, uid TEXT NOT NULL, issue INTEGER, generation INTEGER, pr INTEGER, head TEXT, live INTEGER NOT NULL)");
 		await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS live_issue ON items(issue) WHERE live = 1");

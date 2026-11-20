@@ -82,6 +82,11 @@ export function requireServiceFor(c: HasCaller, subject: string): void {
 	if (caller.kind !== "service" || caller.subject !== subject) throw new UserError("This action is internal.", { code: "forbidden" });
 }
 
+export function internalConnection(c: HasRequest & { key: string[] }, params: unknown) {
+	assertOrigin(c);
+	requireServiceFor({ key: c.key, conn: { params } }, "call");
+}
+
 /** For `canSubscribe`: true only for the actor's own user. */
 export function maySubscribe(c: HasCaller): boolean {
 	try {

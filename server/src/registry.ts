@@ -16,6 +16,8 @@ import { workItem } from "./actors/work-item.js";
 
 export const registry = setup({
 	use: { login, user, agentSession, machine, machinePairing, pairingDirectory, workItem, githubInbox, githubAccount, githubRepository, githubHooks },
+	// The native HTTP listener bounds the body before copying it into a JavaScript Request.
+	serverless: { maxStartPayloadBytes: 3 * 1024 * 1024 },
 	// A prompt may be 20,000 characters, and a snapshot carries a session's whole timeline.
 	maxIncomingMessageSize: 256 * 1024,
 	maxOutgoingMessageSize: 12 * 1024 * 1024,

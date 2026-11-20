@@ -971,7 +971,12 @@ platform is served at, `https://<name>.onrivet.dev` below:
 | Webhook | "Active" not selected: the platform listens to nothing |
 | Repository permissions | Contents: read and write. Pull requests: read and write. Checks: read-only. Commit statuses: read-only. Actions: read-only. Metadata: read-only (GitHub adds it). Nothing else |
 | Organization and account permissions | none |
-| Where can this GitHub App be installed? | "Any account", for users other than the app's owner |
+| Where can this GitHub App be installed? | Choose "Only on this account" for a single-owner deployment. Choose "Any account" if other accounts need to install the App. |
+
+When webhooks are active, Windlass acknowledges ordinary deliveries from installations outside every
+platform user's GitHub connection with HTTP 202 and `{"taken":false}`. It stores no delivery and skips
+that installation during redelivery sweeps. The endpoint still accepts `installation` and
+`installation_repositories` events so it can track changes to links.
 
 Then, on the app's page: note the App ID and the Client ID, generate a client secret, and generate a private
 key (a `.pem` file is downloaded).

@@ -1,7 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { actor, UserError } from "rivetkit";
 import { db } from "rivetkit/db";
-import { assertOrigin, requireServiceFor, serviceParams } from "../auth.js";
+import { internalConnection, requireServiceFor, serviceParams } from "../auth.js";
 import { config } from "../config.js";
 import type { MachineClaim } from "../contract.js";
 import { PAIRING_TTL_MS, type PairStatus } from "../runner/control.js";
@@ -15,11 +15,6 @@ export const pairingGone = () => new UserError("That code was not found. Check t
 const STARTS_PER_KEY = 3;
 const BUCKETS = 64;
 const STARTS_PER_BUCKET = 16;
-
-function internalConnection(c: { request?: Request; key: string[] }, params: unknown) {
-	assertOrigin(c);
-	requireServiceFor({ key: c.key, conn: { params } }, "call");
-}
 
 // Only starts and code lookups share this actor. Polls go directly to the random pairing id.
 // The index doubles as the sliding-window budget, including starts whose caller disconnected.

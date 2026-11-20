@@ -25,6 +25,12 @@ const id = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v
 const sha = (v: unknown) => typeof v === "string" && /^[a-f\d]{40}$/i.test(v) ? v : "";
 const cut = (s: string) => s.length > 16_000 ? s.slice(0, 15_999) + "…" : s;
 
+/** Actor keys use the canonical decimal spelling of a positive GitHub id. */
+export function githubIdKey(key: string[]): boolean {
+	const n = Number(key[0]);
+	return key.length === 1 && id(n) !== null && String(n) === key[0];
+}
+
 /** null means unaddressed; an address by itself has an empty note. */
 export function isAddressed(body: string, slug: string): string | null {
 	const words = /^(\S+)(?:\s+([\s\S]*))?$/.exec(body.trimStart());

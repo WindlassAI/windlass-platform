@@ -17,10 +17,17 @@ async function receive(delivery: Delivery) {
 		disableMetadataLookup: true,
 		fetch: (url, init) => fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal }),
 	});
-	const inbox = client.githubInbox.getOrCreate([String(delivery.installationId)], { params: serviceParams() });
-	// The client may retry or wait between fetches. Bound the whole call too.
+	const options = { params: serviceParams() };
+	async function admit() {
+		if (delivery.event !== "installation" && delivery.event !== "installation_repositories") {
+			const hooks = client.githubHooks.getOrCreate(["app"], options);
+			if (!await hooks.internalLinked(delivery.installationId)) return "unlinked";
+		}
+		return client.githubInbox.getOrCreate([String(delivery.installationId)], options).internalReceive(delivery);
+	}
+	// Bound directory lookup and inbox admission together, including client retries.
 	return Promise.race([
-		inbox.internalReceive(delivery),
+		admit(),
 		new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(new Error("inbox timeout")), { once: true })),
 	]);
 }
@@ -83,6 +90,7 @@ export async function webhookRoute(request: Request): Promise<Response | null> {
 	}
 	try {
 		const result = await receive(delivery);
+		if (result === "unlinked") return json(202, { taken: false });
 		if (result !== "busy") return json(202, { taken: result === "duplicate" ? "duplicate" : true });
 	} catch { /* A lost reply can be retried under the same GUID. */ }
 	return error(503, "inbox_unavailable", "The inbox could not take the delivery. Try again.");
