@@ -306,6 +306,22 @@ try {
 		return `#${pull.number} from ${pull.head}; verdict ${verdict.result}, CI ${verdict.ci.state}; ${said(handed).slice(-3).join(" / ")}`;
 	});
 
+	await check("ci: on a repository with no checks, CI that passes on the pushed commit makes it ready for review", async () => {
+		await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [] });
+		// No word here may choose the fake layer's recording in which checks run ("check", "verify"): its others run none.
+		const item = await user.createItem({ repository: { id: harbor.id }, title: "A short note", body: "Add a short note to the repository.", start: true });
+		const published = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null, 60_000);
+		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === published.pullRequest?.number);
+		assert(pull, "the stand-in has no such pull request");
+		setCi(harbor, pull.head, "success");
+		const handed = await untilItem(user, item.id, "the handoff", (view) => view.state === "review", CI_WAIT_MS);
+		const verdict = handed.verdicts.at(-1);
+		const words = said(handed).find((line) => /^(Ready for review|Needs a look|Not verified|Failing)\./.test(line)) ?? "";
+		assert(verdict?.gate.state === "none_set" && verdict.gate.required.length === 0, `the gate recorded ${verdict?.gate.state} with ${verdict?.gate.required.length} checks of the user's`);
+		assert(verdict.result === "pass" && words.startsWith("Ready for review.") && said(handed).includes("No checks are set for this repository: the work is pushed for CI to verify."), `${verdict.result}: “${words}”`);
+		return words;
+	});
+
 	await check("person: a prompt in a session of the person's own is not held back by factory work", async () => {
 		const own = await user.createSession({ profile: (await user.listSessions())[0]?.profile ?? ("fake" as never), title: "Mine" });
 		const handle = client.agentSession.get([auth.profile.uid, own.id], { params: { token: auth.token } });

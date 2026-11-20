@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UsageNumbers, Verified, VerifiedCheck } from "../server/src/contract.js";
 import type { CiReading } from "../server/src/github/ci.js";
-import type { Effect, Fact, FactoryItem, ItemState, Outcome, WaitReason } from "../server/src/factory/types.js";
+import type { Effect, Fact, FactoryItem, ItemState, Outcome, Verdict, WaitReason } from "../server/src/factory/types.js";
 import { GithubStandin } from "./github-standin.js";
 
 const scratch = mkdtempSync(join(tmpdir(), "wlp-factory-check-"));
@@ -468,6 +468,45 @@ expect("verdict: no CI, the user's checks passed → pass", verdict(PASSED, "non
 expect("verdict: no CI, only the repository's own checks → unverified", verdict(repositoryOnly, "none").result === "unverified");
 expect("verdict: on a machine it is the machine's", verdict(PASSED, "passed").attestedBy === "machine:m1");
 const unread = verdict(PASSED, "not_permitted");
+
+// CI decides, and the person's checks are optional: their pass stands in for CI that did not pass. Every combination of what the checks came
+// to and what CI came to, with the result and the verdict's first words.
+{
+	const checksOf = {
+		none: verified("none_set", []),
+		passed: PASSED,
+		failed: FAILING,
+		"changed after": verified("passed", [check("test", "passed"), check("lint", "passed")], { changedAfter: true }),
+	} as const;
+	type CiState = Verdict["ci"]["state"];
+	const CI: CiState[] = ["passed", "failed", "none", "skipped", "timed_out", "not_permitted", "unread"];
+	const expected: Record<keyof typeof checksOf, Record<CiState, Verdict["result"]>> = {
+		none: { passed: "pass", failed: "fail", none: "unverified", skipped: "unverified", timed_out: "unverified", not_permitted: "unverified", unread: "unverified" },
+		passed: { passed: "pass", failed: "fail", none: "pass", skipped: "pass", timed_out: "pass", not_permitted: "pass", unread: "pass" },
+		failed: { passed: "fail", failed: "fail", none: "fail", skipped: "fail", timed_out: "fail", not_permitted: "fail", unread: "fail" },
+		"changed after": { passed: "pass", failed: "fail", none: "unverified", skipped: "unverified", timed_out: "unverified", not_permitted: "unverified", unread: "unverified" },
+	};
+	// A pass whose CI has not spoken says both halves in its first words; every other pass is ready.
+	const headline = (result: Verdict["result"], state: CiState) =>
+		result === "pass" && state === "unread" ? "Your checks passed; CI has not been read." : result === "pass" && state === "timed_out" ? "Your checks passed; CI had not finished." : { pass: "Ready for review.", fail: "Failing.", incomplete: "Incomplete: the last turn did not finish.", unverified: "Not verified." }[result];
+	const wrong: string[] = [];
+	for (const [name, evidence] of Object.entries(checksOf) as Array<[keyof typeof checksOf, Verified]>) {
+		for (const state of CI) {
+			const gate = { outcome: "succeeded" as const, verified: evidence, flags: [] };
+			const made = verdictOf({ id: "v", item: "i", run: 1, head: H(1), at: T0, place: { kind: "hosted" }, gate, ci: { state, runs: state === "passed" ? [{ name: "build", app: "ci", conclusion: "success", url: "" }] : state === "skipped" ? [{ name: "build", app: "ci", conclusion: "skipped", url: "" }] : [], said: null }, acceptance: [], mergeable: true });
+			const words = verdictWords(made, gate);
+			const want = expected[name][state];
+			if (made.result !== want || !words.startsWith(headline(want, state))) wrong.push(`checks ${name} × CI ${state}: ${made.result}, “${words.slice(0, 60)}”; wanted ${want}`);
+		}
+	}
+	expect("verdict: the table of checks × CI, CI passed on the head is a pass with or without checks", wrong.length === 0, wrong.join("; "));
+	const unset = verdictOf({ id: "v", item: "i", run: 1, head: H(1), at: T0, place: { kind: "hosted" }, gate: { outcome: "succeeded", verified: checksOf.none, flags: [] }, ci: { state: "passed", runs: [{ name: "build", app: "ci", conclusion: "success", url: "" }], said: null }, acceptance: [], mergeable: true });
+	expect("verdict: no checks set is said plainly, with CI deciding", verdictWords(unset, { outcome: "succeeded", verified: checksOf.none, flags: [] }) === "Ready for review. No checks are set for this repository; CI decides. CI passed (1 check).", verdictWords(unset, { outcome: "succeeded", verified: checksOf.none, flags: [] }));
+	const flagged = verdictOf({ id: "v", item: "i", run: 1, head: H(1), at: T0, place: { kind: "hosted" }, gate: { outcome: "succeeded", verified: checksOf.none, flags: [{ kind: "tests_removed", where: ["test/add.test.ts"] }] }, ci: { state: "passed", runs: [], said: null }, acceptance: [], mergeable: true });
+	expect("verdict: CI passing with tests removed is a pass that needs a look, never ready", flagged.result === "pass" && verdictWords(flagged, null).startsWith("Needs a look."));
+	const cut = verdictOf({ id: "v", item: "i", run: 1, head: H(1), at: T0, place: { kind: "hosted" }, gate: { outcome: "interrupted", verified: checksOf.none, flags: [] }, ci: { state: "passed", runs: [], said: null }, acceptance: [], mergeable: true });
+	expect("verdict: a turn cut short stays incomplete, CI passed or not", cut.result === "incomplete");
+}
 expect("verdict: CI not readable is said in plain words, apart from no CI", /CI was not read/.test(verdictWords(unread, null)) && /No CI ran/.test(verdictWords(verdict(PASSED, "none"), null)));
 
 // ---------------------------------------------------------------------------------------------

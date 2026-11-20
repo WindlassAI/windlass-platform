@@ -208,8 +208,11 @@ async function take(c: Ctx, fact: Fact): Promise<boolean> {
 	stored.item = outcome.item;
 	stored.meta.updatedAt = fact.at;
 	const handoff = outcome.effects.find((effect): effect is Extract<Effect, { kind: "handoff" }> => effect.kind === "handoff");
-	if (handoff) stored.meta.verdict = { result: handoff.verdict.result, flags: handoff.verdict.flags };
-	const data = JSON.stringify({ item: stored.item, meta: stored.meta });
+	if (handoff) stored.meta.verdict = { result: handoff.verdict.result, flags: handoff.verdict.flags, ci: handoff.verdict.ci.state };
+	// The item, its revision and its data are taken from this decision now: a later decision, made while this
+	// one waits for its write, changes `stored` and must not be written beside this one's data.
+	const next = outcome.item;
+	const data = JSON.stringify({ item: next, meta: stored.meta });
 	// An `ask` is the question on the item itself, which reaches the index with the summary: nothing is left to perform.
 	const effects = outcome.effects.filter((effect) => effect.kind !== "ask");
 	try {

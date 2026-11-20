@@ -7,7 +7,7 @@
  * after a drop, since what was said meanwhile is lost. Nothing is asked on a timer. Every sentence a
  * row shows of why an item waits is the server's (`Waiting.sentence`), shown as it was written.
  */
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemState, type ItemSummary, type Verdict, type VerifiedFlag } from "@contract";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemState, type ItemSummary } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Dialog } from "../components/Dialog";
 import { AskIcon, ChevronIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRequestIcon, RingIcon, StopIcon, WarnIcon } from "../components/Icons";
@@ -78,11 +78,17 @@ export function useItems(enabled = true): ItemsState {
 /** The groups of a repository's page, in the plan's words, in the order they stand. */
 export const STATE_WORD: Record<ItemState, string> = { draft: "Draft", queued: "Queued", working: "Working", waiting: "Waiting", review: "In review", done: "Done", failed: "Failed", cancelled: "Cancelled" };
 
-/** A verdict in one or two words (server/src/factory/verdict.ts, `verdictWords`): a pass with flags needs a look, never "ready". */
-export function verdictWord(verdict: Pick<Verdict, "result"> & { flags: VerifiedFlag[] }): { word: string; tone: "good" | "warn" | "bad" | "dim" } {
+/**
+ * A verdict in a few words (server/src/factory/verdict.ts, `verdictWords`): a pass with flags needs a look, and a pass whose CI
+ * was not read or had not finished says so; neither is "ready".
+ */
+export function verdictWord(verdict: NonNullable<ItemSummary["verdict"]>): { word: string; tone: "good" | "warn" | "bad" | "dim" } {
 	switch (verdict.result) {
 		case "pass":
-			return verdict.flags.length > 0 ? { word: "Needs a look", tone: "warn" } : { word: "Ready for review", tone: "good" };
+			if (verdict.flags.length > 0) return { word: "Needs a look", tone: "warn" };
+			if (verdict.ci === "unread") return { word: "Your checks passed; CI not read", tone: "warn" };
+			if (verdict.ci === "timed_out") return { word: "Your checks passed; CI unfinished", tone: "warn" };
+			return { word: "Ready for review", tone: "good" };
 		case "fail":
 			return { word: "Failing", tone: "bad" };
 		case "incomplete":
@@ -213,7 +219,7 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now }: {
 					New work item…
 				</button>
 			</h2>
-			<p className="usage-lede">An agent works on each by itself: your checks and CI verify the work, and it is handed to you as a pull request with what the verdict rests on. Merging it is yours.</p>
+			<p className="usage-lede">An agent works on each by itself. CI on its pull request decides whether the work passes; your checks for the repository, where you set them, run first and send the agent back when one fails. It is handed to you as a pull request with what the verdict rests on. Merging it is yours.</p>
 			{mine === null ? (
 				items.error ? (
 					<div className="state state-error" role="alert">

@@ -33,7 +33,7 @@
 import { type GithubApp, GithubError } from "./app.js";
 import { redact } from "./redact.js";
 
-/** How often the factory looks at CI, and how long it waits for it (slice 1's brief, §2.1 steps 4 and 8, §4.2 "GitHub API"). */
+/** How often the factory looks at CI, and how long it waits for it (Plans "software factory" §2.1 steps 4 and 8, §4.2 "GitHub API"). */
 export const CI_POLLING = {
 	/** While an item waits for CI. */
 	everyMs: 60_000,
@@ -82,16 +82,26 @@ export type CiReading =
 	| { kind: "rate_limited"; retryAt: number; said: string }
 	| { kind: "failed"; said: string };
 
-/** What a reading comes to for the factory. "retry": nothing was learnt, look again later. */
-export type CiState = "passed" | "failed" | "pending" | "none" | "not_permitted" | "retry";
+/**
+ * What a reading comes to for the factory. "retry": nothing was learnt, look again later.
+ * "incomplete": every run read has finished and none failed, but GitHub listed more than are read
+ * (`truncated`): a failure may be among the rest, so it is not a pass. "skipped": CI ran, every run has
+ * finished, none failed and none passed (all skipped, cancelled or neutral): nothing in it verified the
+ * work, which is not the same as no CI.
+ */
+export type CiState = "passed" | "failed" | "pending" | "none" | "skipped" | "not_permitted" | "incomplete" | "retry";
 
 export function ciState(reading: CiReading): CiState {
 	if (reading.kind === "not_permitted") return "not_permitted";
 	if (reading.kind !== "read") return "retry";
-	if (reading.runs.length === 0) return "none";
+	// Nothing usable read of a listing cut short is not "no CI": the rest of it was never seen.
+	if (reading.runs.length === 0) return reading.truncated ? "incomplete" : "none";
+	// A failure that was read stands, however much was not.
 	if (reading.runs.some((run) => run.state === "failed")) return "failed";
 	if (reading.runs.some((run) => run.state === "pending")) return "pending";
-	return "passed";
+	if (reading.truncated) return "incomplete";
+	// A pass needs a check that passed: a run of nothing but skipped or cancelled jobs verified nothing.
+	return reading.runs.some((run) => run.state === "passed") ? "passed" : "skipped";
 }
 
 /** Conclusions of a completed check run that say the code failed something. "cancelled", "skipped", "stale" and "neutral" do not. */

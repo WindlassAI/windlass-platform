@@ -5,19 +5,29 @@
  * Windlass's events: verified.ts), the observations on the changes (`workFlags`), and what GitHub says
  * of CI at the head (github/ci.ts).
  *
- * `result`, in this order:
+ * CI decides: its result on the pushed head is what the verdict rests on first. The person's own checks
+ * are optional: a loop before the push, whose failure sends the agent back and whose pass can stand in
+ * for CI that did not run, or did not speak.
+ * `result`, the first that holds:
  *
  *   fail         a check of the gate's run failed (started, and did not pass), or CI failed
  *   incomplete   the turn was stopped, failed, or was cut off
- *   unverified   no check verified the state the work is in: none set, verification off or emptied,
- *                no sandbox for checks, not handed or not in force; "not needed" that does not rest on a
- *                run that passed; a check that could not start and none that failed; files changed after
- *                the checks ran; or CI did not pass (none, unfinished, or not readable) and none of the
- *                checks that ran is the user's
- *   pass         otherwise
+ *   pass         CI passed on the pushed head: it ran on the final files, so files changed after the
+ *                checks ran do not count against it, and no check need be set at all; or, CI not having
+ *                passed, the user's own checks passed in the gate's run with nothing changed after it
+ *                ("not needed" counts where it rests on such a run). Never while the pull request holds
+ *                a commit pushed after the head (`moved`): nothing verified that one
+ *   unverified   nothing verified this state of the work: CI did not pass (none ran, nothing in it
+ *                passed, unfinished when it was handed over, not readable, not permitted, unread) and no
+ *                run of the user's checks that passed stands behind it, or the pull request moved on.
+ *                The repository's own checks alone do not stand behind it
  *
- * Flags never change `result`: a pass with flags is shown as "needs a look", never "ready". A verdict
- * never merges anything.
+ * A pass whose CI was not read, or had not finished, says so in its first words ("Your checks passed;
+ * CI has not been read."), not "Ready for review."
+ *
+ * Flags never change `result`: a pass with flags is shown as "needs a look", never "ready". That
+ * matters the more as CI passes happily when tests were deleted or skipped. A verdict never merges
+ * anything.
  *
  * Also here: the fingerprint of a failure (§2.1 step 5), by which a fix that brings back the same
  * failure stops the run at once (§2.4).
@@ -58,7 +68,10 @@ export function gateResult(outcome: TurnOutcome, verified: Verified | null): Ver
 /** What the verdict says of CI, from the item's last reading. CI still running when the person had the work handed over is "timed_out". */
 export function verdictCi(progress: CiProgress | null): Verdict["ci"] {
 	const last = progress?.last ?? null;
-	if (last === null) return { state: "none", runs: [], said: null };
+	// Never read at all (GitHub did not answer): unknown, which is not "no CI".
+	if (last === null) return { state: "unread", runs: [], said: null };
+	if (last.state === "incomplete")
+		return { state: "unread", runs: last.runs, said: last.runs.length === 0 ? "GitHub cut its list of the checks short before any of them could be read" : "GitHub listed more checks than the platform reads, and none of those it read failed" };
 	return { state: last.state === "pending" ? "timed_out" : last.state, runs: last.runs, said: last.said };
 }
 
@@ -73,15 +86,22 @@ export interface VerdictInput {
 	ci: Verdict["ci"];
 	acceptance: string[];
 	mergeable: boolean | null;
+	/** The pull request's commit, when it has moved past `head`. */
+	moved?: string | null;
 }
+
+/** What a verdict says of a pull request that holds a commit after the one verified. */
+export const movedSentence = (head: string, moved: string) => `The pull request is now at ${moved.slice(0, 7)}, a commit pushed after ${head.slice(0, 7)}: nothing verified it.`;
 
 export function verdictOf(input: VerdictInput): Verdict {
 	const verified = input.gate?.verified ?? null;
 	const checks = verified?.run?.checks ?? [];
 	const gate = input.gate === null ? "unverified" : gateResult(input.gate.outcome, verified);
 	const usersRan = checks.some((check) => check.whose === "user");
-	const result: Verdict["result"] =
-		gate === "fail" || input.ci.state === "failed" ? "fail" : gate === "incomplete" ? "incomplete" : gate === "unverified" || (input.ci.state !== "passed" && !usersRan) ? "unverified" : "pass";
+	const moved = input.moved ?? null;
+	// A pass is of the commit verified: a pull request that holds another one is not passed, whatever its earlier commit came to.
+	const passed = moved === null && (input.ci.state === "passed" || (gate === "pass" && usersRan));
+	const result: Verdict["result"] = gate === "fail" || input.ci.state === "failed" ? "fail" : gate === "incomplete" ? "incomplete" : passed ? "pass" : "unverified";
 	return {
 		id: input.id,
 		item: input.item,
@@ -100,7 +120,8 @@ export function verdictOf(input: VerdictInput): Verdict {
 		flags: input.gate?.flags ?? [],
 		acceptance: input.acceptance,
 		mergeable: input.mergeable,
-		said: { ci: ciSentence(input.ci), flags: (input.gate?.flags ?? []).map((flag) => flagWords(flag.kind)) },
+		moved,
+		said: { ci: moved === null ? ciSentence(input.ci) : `${ciSentence(input.ci)} ${movedSentence(input.head, moved)}`, flags: (input.gate?.flags ?? []).map((flag) => flagWords(flag.kind)) },
 	};
 }
 
@@ -115,8 +136,12 @@ export function ciSentence(ci: Verdict["ci"]): string {
 			return `CI failed: ${names(ci.runs.filter((run) => FAILING_CONCLUSIONS.includes(run.conclusion)))}.`;
 		case "none":
 			return "No CI ran on this commit.";
+		case "skipped":
+			return `CI ran, and nothing in it passed: ${ci.runs.length === 1 ? "its one check was" : `its ${ci.runs.length} checks were`} skipped, cancelled or neutral.`;
 		case "timed_out":
 			return "CI had not finished when this was handed over.";
+		case "unread":
+			return `CI could not be read${ci.said ? ` in full: ${ci.said}` : ": GitHub did not answer while the platform waited for it"}. The pull request's own page shows its CI.`;
 		case "not_permitted":
 			return `CI was not read: GitHub does not let the platform see this repository's checks${ci.said ? ` (“${ci.said}”)` : ""}. The GitHub App needs read access to Checks, Commit statuses and Actions, accepted on the installation. The pull request's own page shows them.`;
 	}
@@ -130,13 +155,22 @@ export function verdictWords(verdict: Verdict, gate: GateEvidence | null): strin
 		verdict.result === "pass"
 			? verdict.flags.length > 0
 				? "Needs a look."
-				: "Ready for review."
+				: // A pass on the person's checks while CI has not spoken: the first words say both halves, not "ready".
+					verdict.ci.state === "unread"
+					? "Your checks passed; CI has not been read."
+					: verdict.ci.state === "timed_out"
+						? "Your checks passed; CI had not finished."
+						: "Ready for review."
 			: verdict.result === "fail"
 				? "Failing."
 				: verdict.result === "incomplete"
 					? "Incomplete: the last turn did not finish."
-					: "Not verified.";
-	const gateSaid = gate?.verified ? verifiedHeadline(gate.verified, "your") : "Nothing the agent did was verified by checks.";
+					: verdict.moved !== null
+						? "Not verified: the pull request has a newer commit."
+						: "Not verified.";
+	// No checks set is no shortcoming: checks are the person's choice, and CI decides without them.
+	const gateSaid =
+		!gate?.verified ? "The turn left no record of its checks; CI decides." : gate.verified.state === "none_set" ? "No checks are set for this repository; CI decides." : verifiedHeadline(gate.verified, "your");
 	const ci = verdict.said.ci;
 	const flags = verdict.flags.map((flag, index) => `${verdict.said.flags[index] ?? flagWords(flag.kind)}: ${flag.where.join(", ")}.`);
 	const merge = verdict.mergeable === false ? ["GitHub says the pull request conflicts with its base."] : [];

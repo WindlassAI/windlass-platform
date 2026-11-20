@@ -1204,11 +1204,23 @@ export interface Verdict {
 		required: Array<{ name: string; status: CheckStatus; sentBack: number }>;
 		unneeded?: Verified["unneeded"];
 	};
-	/** "not_permitted": GitHub would not show the platform this repository's CI (`said` is GitHub's words); "timed_out": still running when the work was handed over. */
-	ci: { state: "passed" | "failed" | "none" | "timed_out" | "not_permitted"; runs: VerdictRun[]; said: string | null };
+	/**
+	 * "not_permitted": GitHub would not show the platform this repository's CI (`said` is GitHub's words);
+	 * "timed_out": still running when the work was handed over; "unread": the platform could not read it
+	 * (GitHub did not answer while it waited), or not all of it (more checks than it reads: `said`
+	 * says so), so nothing is claimed of what was not read. "none" only when GitHub was read and
+	 * listed no CI at all; "skipped": CI ran and finished, and none of its checks passed (all skipped,
+	 * cancelled or neutral).
+	 */
+	ci: { state: "passed" | "failed" | "none" | "skipped" | "timed_out" | "not_permitted" | "unread"; runs: VerdictRun[]; said: string | null };
 	flags: VerifiedFlag[];
 	acceptance: string[];
 	mergeable: boolean | null;
+	/**
+	 * The commit the pull request held when the verdict was made, when it is not `head`: pushed to its branch after the agent's
+	 * work, and verified by nothing. Such a verdict is never a pass; `said.ci` says so.
+	 */
+	moved: string | null;
 	/** CI, and each of `flags` (in the same order), in a sentence as the server words them for the item's log and the pull request. */
 	said: { ci: string; flags: string[] };
 }
@@ -1237,7 +1249,7 @@ export interface ItemSummary {
 	question: ItemQuestion | null;
 	pullRequest: { number: number; url: string } | null;
 	/** The latest verdict's result and flags; null before the first. */
-	verdict: { result: Verdict["result"]; flags: VerifiedFlag[] } | null;
+	verdict: { result: Verdict["result"]; flags: VerifiedFlag[]; ci: Verdict["ci"]["state"] } | null;
 	budget: ItemBudget;
 	spent: ItemBudget;
 	/** The item's agent session, among the user's sessions. */

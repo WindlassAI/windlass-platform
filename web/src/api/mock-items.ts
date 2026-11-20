@@ -8,8 +8,9 @@
  * verdict.ts, server/src/actors/user-items.ts), copied here: the screens only display them. A verdict's
  * `said` is made as the server makes it (`ciSentence`, `flagWords`), and a run's `caps` are the step
  * machine's (`RULES`). The seeded
- * set has one item in each state, each wait sentence, each question of slice 1, and a review with each
- * verdict and each state of CI.
+ * set has one item in each state, each wait sentence, each question, and a review with each verdict,
+ * each state of CI and each way CI decides (with and without the user's checks), and one verdict stored
+ * before verdicts carried their sentences (no `said`).
  *
  * mock.ts wires it in with one hook: `createMockItems(…)` once, and `...items.calls(auth)` in the user's interface.
  */
@@ -141,19 +142,37 @@ interface Seed {
 	pr?: number;
 	run?: Omit<ItemRun, "startedAt" | "endedAt" | "step"> & { started: number; ended?: number; step: { n: number; kind: StepKind; attempt?: number; started: number; turn?: ItemRun["step"]["turn"] } };
 	events?: Array<[ago: number, said: string, step?: [run: number, n: number, kind: StepKind, attempt?: number], person?: boolean]>;
-	/** `repositoryChecks`: how many of the repository's own checks ran beside the user's (`gate.required`); none when left out. */
-	verdicts?: Array<Omit<Verdict, "id" | "item" | "head" | "at" | "place" | "attestedBy" | "acceptance" | "said"> & { ago: number; repositoryChecks?: number }>;
+	/**
+	 * `repositoryChecks`: how many of the repository's own checks ran beside the user's (`gate.required`);
+	 * none when left out.
+	 */
+	verdicts?: SeedVerdict[];
 	spent?: Partial<ItemBudget>;
 	budget?: Partial<ItemBudget>;
 }
+
+/** The mock seeds no pull request that moved past its verified commit: `moved` is null on every one. */
+export type SeedVerdict = Omit<Verdict, "id" | "item" | "head" | "at" | "place" | "attestedBy" | "acceptance" | "said" | "moved"> & { ago: number; repositoryChecks?: number };
 
 const ci = {
 	passed: (count = 3): Verdict["ci"] => ({ state: "passed", runs: ciRuns(count, "success"), said: null }),
 	failed: (): Verdict["ci"] => ({ state: "failed", runs: [...ciRuns(2, "success"), { name: "lint", app: "github-actions", conclusion: "failure", url: "https://github.com/acme/harbor/actions/runs/9120" }], said: null }),
 	none: (): Verdict["ci"] => ({ state: "none", runs: [], said: null }),
+	/** CI ran, and every check in it was skipped, cancelled or neutral. */
+	skipped: (): Verdict["ci"] => ({ state: "skipped", runs: ciRuns(2, "skipped"), said: null }),
 	timedOut: (): Verdict["ci"] => ({ state: "timed_out", runs: [...ciRuns(1, "success"), { name: "e2e", app: "github-actions", conclusion: "", url: "https://github.com/acme/harbor/actions/runs/9188" }], said: null }),
 	notPermitted: (): Verdict["ci"] => ({ state: "not_permitted", runs: [], said: "Resource not accessible by integration" }),
+	/** Never read: GitHub did not answer while the platform waited (verdict.ts, `verdictCi`). */
+	unread: (): Verdict["ci"] => ({ state: "unread", runs: [], said: null }),
+	/** Read, but not in full: more checks than the platform reads, none of those it read failed. */
+	unreadPartly: (): Verdict["ci"] => ({ state: "unread", runs: ciRuns(3, "success"), said: "GitHub listed more checks than the platform reads, and none of those it read failed" }),
 };
+
+const noChecks: Verdict["gate"] = { state: "none_set", required: [] };
+
+/** Why a turn does not run in a sandbox from before the platform's tools (server/src/agent-publish.ts, `OLD_SANDBOX`): the one refusal an item is handed. */
+const OLD_SANDBOX =
+	"This agent's sandbox is from an older version of the platform, whose Windlass cannot give the agent the platform's tools, so nothing was run. Start a new agent.";
 
 function ciRuns(count: number, conclusion: string): VerdictRun[] {
 	const names = ["build", "test (node 22)", "test (node 24)", "typecheck", "docs"];
@@ -347,6 +366,20 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 			],
 			spent: { tokens: 4_100_000, turns: 3, activeSeconds: 3 * 3600 + 10 * 60, hostedSeconds: 1.5 * 3600 },
 		},
+		{
+			n: 42,
+			title: "Count the tide stations per region",
+			body: "On the regions page, show how many stations each region has.",
+			on: TIDES,
+			state: "waiting",
+			filed: 12,
+			question: { kind: "turn_refused", text: `The agent's turn could not start. ${OLD_SANDBOX}`, choices: choices("again", "give_up"), asked: 11 },
+			run: { n: 1, started: 11, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 11 } },
+			events: [
+				[12, "Started.", undefined, true],
+				[11, `Asked: The agent's turn could not start. ${OLD_SANDBOX}`, [1, 1, "implement"]],
+			],
+		},
 		// In review: each verdict, and each state of CI.
 		review(24, "Show the upload's checksum in the log", HARBOR, 61, { body: "After each upload, log the artefact's SHA-256 next to its name.", acceptance: ["The log has each uploaded artefact's SHA-256, next to its name."] }, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 20 }),
 		review(25, "Make the station parser accept tabs", TIDES, 58, { body: "Some station files separate their columns with tabs. Accept tabs as well as spaces between columns.", acceptance: ["A station file with tabs between its columns reads the same as one with spaces.", "A file that mixes tabs and spaces is read too."] }, { result: "pass", gate: passingGate, ci: ci.passed(4), flags: [{ kind: "tests_skipped", where: ["src/parse.test.ts"] }], mergeable: true, run: 1, ago: 38 }),
@@ -356,6 +389,14 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		review(29, "Read the port from the environment", HARBOR, 63, { body: "Read the server's port from PORT, and fall back to 8080.", acceptance: ["With PORT set, the server listens on it.", "Without it, the server listens on 8080."] }, { result: "pass", gate: passingGate, ci: ci.notPermitted(), flags: [], mergeable: null, run: 1, ago: 24 }),
 		review(30, "Upgrade the test runner", HARBOR, 64, { body: "Move to the test runner's next major release and fix what it breaks.", acceptance: ["Every test that ran before still runs."] }, { result: "unverified", gate: { state: "passed", required: [] }, repositoryChecks: 1, ci: ci.timedOut(), flags: [{ kind: "checks_changed", where: [".windlass/config.json"] }, { kind: "tests_removed", where: ["test/legacy.test.ts", "test/old-api.test.ts"] }], mergeable: false, run: 1, ago: 33 }, "CI has not finished 1 h 30 min after the push."),
 		review(36, "Stop lint failing on warnings", HARBOR, 65, { body: "The lint check fails the build on warnings. Only errors should fail it.", acceptance: ["A warning is printed and does not fail the check."] }, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [{ kind: "checks_changed", where: [".windlass/config.json"] }, { kind: "exit_ignored", where: [".windlass/config.json"] }], mergeable: true, run: 1, ago: 16 }),
+		// CI decides: no checks set and CI passed is a pass; checks that passed stand in for CI not read; nothing passed is not verified.
+		review(37, "Log the request id with each error", HARBOR, 66, { body: "Put the request's id in every error the server logs, so that a report can be matched to its request.", acceptance: ["Every error line in the log has the request id."] }, { result: "pass", gate: noChecks, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 14 }),
+		review(38, "Cache the station list", HARBOR, 67, { body: "Read the station list once per run instead of on every lookup.", acceptance: ["The station list is read once per run."] }, { result: "pass", gate: passingGate, ci: ci.unread(), flags: [], mergeable: true, run: 1, ago: 22 }),
+		review(39, "Rename the tide table columns", HARBOR, 68, { body: "Rename the tide table's columns from t and h to time and height.", acceptance: [] }, { result: "unverified", gate: noChecks, ci: ci.unread(), flags: [], mergeable: true, run: 1, ago: 27 }),
+		review(40, "Split the importer into two files", TIDES, 59, { body: "The importer is one file of 1,400 lines. Split the parsing from the writing.", acceptance: ["The importer's behaviour is unchanged."] }, { result: "unverified", gate: noChecks, ci: ci.unreadPartly(), flags: [], mergeable: true, run: 1, ago: 31 }),
+		review(41, "Drop the legacy export", HARBOR, 69, { body: "Remove the CSV export that nobody has used since 2.0, with its tests.", acceptance: ["The CSV export is gone from the menu and the API."] }, { result: "pass", gate: noChecks, ci: ci.passed(3), flags: [{ kind: "tests_removed", where: ["test/export-csv.test.ts"] }], mergeable: true, run: 1, ago: 18 }),
+		// CI ran and every check in it was skipped: nothing of CI passed, and the user's checks decide.
+		review(43, "Trim the docs' trailing spaces", DOCS, 16, { body: "Remove the trailing spaces from every page of the docs.", acceptance: [] }, { result: "pass", gate: { state: "passed", required: userChecks(["docs build", "passed"]) }, ci: ci.skipped(), flags: [], mergeable: true, run: 1, ago: 40 }),
 		sentBack(31, "Add a health check endpoint", HARBOR, 60),
 		// Ended.
 		{
@@ -374,7 +415,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 				[25 * 60 + 40, "The checks passed.", [1, 2, "gate"]],
 				[25 * 60 + 39, `Pushed ${short(hex(32))} to pull request #11.`, [1, 3, "publish"]],
 				[25 * 60 + 20, "CI passed.", [1, 4, "ci", 5]],
-				[25 * 60 + 20, "Ready for review. The 2 checks that applied passed when the agent's turn 1 ended. CI passed (3 checks).", [1, 5, "handoff"]],
+				[25 * 60 + 20, verdictSaid({ result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true }), [1, 5, "handoff"]],
 				[23 * 60, "The pull request was merged.", [1, 6, "merged", 4]],
 			],
 			verdicts: [{ result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 25 * 60 + 20 }],
@@ -411,7 +452,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 				[48 * 60, "The checks passed.", [1, 2, "gate"]],
 				[48 * 60 - 1, `Pushed ${short(hex(34))} to pull request #40.`, [1, 3, "publish"]],
 				[47 * 60, "CI passed.", [1, 4, "ci", 6]],
-				[47 * 60, "Needs a look. The 2 checks that applied passed when the agent's turn 1 ended. CI passed (3 checks). Test files were deleted or renamed away: test/importer.test.ts.", [1, 5, "handoff"]],
+				[47 * 60, verdictSaid({ result: "pass", gate: passingGate, ci: ci.passed(3), flags: [{ kind: "tests_removed", where: ["test/importer.test.ts"] }], mergeable: true }), [1, 5, "handoff"]],
 				[30 * 60, "The pull request was closed without merging.", [1, 6, "merged", 9]],
 			],
 			verdicts: [{ result: "pass", gate: passingGate, ci: ci.passed(3), flags: [{ kind: "tests_removed", where: ["test/importer.test.ts"] }], mergeable: true, run: 1, ago: 47 * 60 }],
@@ -488,7 +529,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 		};
 	}
 
-	function review(n: number, title: string, on: typeof HARBOR, pr: number, task: { body: string; acceptance: string[] }, verdict: NonNullable<Seed["verdicts"]>[number], asked?: string): Seed {
+	function review(n: number, title: string, on: typeof HARBOR, pr: number, task: { body: string; acceptance: string[] }, verdict: SeedVerdict, asked?: string): Seed {
 		const ago = verdict.ago;
 		const started = ago + 70;
 		// Handed over by the person, at a question that stopped the run.
@@ -512,7 +553,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 			events: [
 				[started, "Started.", undefined, true],
 				[started - 1, "The turn started.", [1, 1, "implement"]],
-				[ago + 30, verdict.gate.state === "none_set" ? "No check verified this work; it is published as unverified." : "The checks passed.", [1, 2, "gate"]],
+				[ago + 30, gateSaid(verdict.gate), [1, 2, "gate"]],
 				[ago + 29, `Pushed ${short(hex(n))} to pull request #${pr}.`, [1, 3, "publish"]],
 				...handedOver,
 				[ago, verdictSaid(verdict), [1, 5, "handoff"]],
@@ -524,8 +565,8 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 
 	/** An item handed over, sent back with a note, and handed over again: its page shows the earlier run in its log. */
 	function sentBack(n: number, title: string, on: typeof HARBOR, pr: number): Seed {
-		const first: NonNullable<Seed["verdicts"]>[number] = { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 200 };
-		const second: NonNullable<Seed["verdicts"]>[number] = { result: "pass", gate: { state: "passed", required: userChecks(["unit tests", "passed", 1], ["lint", "passed"]) }, ci: ci.passed(3), flags: [], mergeable: true, run: 2, ago: 12 };
+		const first: SeedVerdict = { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 200 };
+		const second: SeedVerdict = { result: "pass", gate: { state: "passed", required: userChecks(["unit tests", "passed", 1], ["lint", "passed"]) }, ci: ci.passed(3), flags: [], mergeable: true, run: 2, ago: 12 };
 		return {
 			n,
 			title,
@@ -561,7 +602,7 @@ function seeds(state: MockItemsState, at: number): Seed[] {
 const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "action_required", "error"];
 
 /** CI in a sentence (server/src/factory/verdict.ts, `ciSentence`): what `Verdict.said.ci` is. */
-function ciSentence(ci: Verdict["ci"]): string {
+export function ciSentence(ci: Verdict["ci"]): string {
 	switch (ci.state) {
 		case "passed":
 			return `CI passed (${ci.runs.length} ${ci.runs.length === 1 ? "check" : "checks"}).`;
@@ -572,8 +613,12 @@ function ciSentence(ci: Verdict["ci"]): string {
 				.join(", ")}.`;
 		case "none":
 			return "No CI ran on this commit.";
+		case "skipped":
+			return `CI ran, and nothing in it passed: ${ci.runs.length === 1 ? "its one check was" : `its ${ci.runs.length} checks were`} skipped, cancelled or neutral.`;
 		case "timed_out":
 			return "CI had not finished when this was handed over.";
+		case "unread":
+			return `CI could not be read${ci.said ? ` in full: ${ci.said}` : ": GitHub did not answer while the platform waited for it"}. The pull request's own page shows its CI.`;
 		case "not_permitted":
 			return `CI was not read: GitHub does not let the platform see this repository's checks${ci.said ? ` (“${ci.said}”)` : ""}. The GitHub App needs read access to Checks, Commit statuses and Actions, accepted on the installation. The pull request's own page shows them.`;
 	}
@@ -596,19 +641,59 @@ function flagWords(kind: Verdict["flags"][number]["kind"]): string {
 /** A verdict's `said`, as `verdictOf` makes it. */
 const saidOf = (verdict: Pick<Verdict, "ci" | "flags">): Verdict["said"] => ({ ci: ciSentence(verdict.ci), flags: verdict.flags.map((flag) => flagWords(flag.kind)) });
 
-/** The verdict's sentence as the log has it (verdict.ts, `verdictWords`), for the seeds' gates: the checks that applied are the user's and the repository's own. */
-function verdictSaid(verdict: Pick<Verdict, "result" | "gate" | "ci" | "flags" | "mergeable"> & { repositoryChecks?: number }): string {
-	const head = verdict.result === "pass" ? (verdict.flags.length > 0 ? "Needs a look." : "Ready for review.") : verdict.result === "fail" ? "Failing." : verdict.result === "incomplete" ? "Incomplete: the last turn did not finish." : "Not verified.";
+/**
+ * What the item's log says after the gate (blueprint.ts, `turnEnded`), for the seeds' gates: the checks
+ * passed, or the work is pushed for CI to verify. A turn cut short is tried again instead.
+ */
+function gateSaid(gate: Verdict["gate"]): string {
+	switch (gate.state) {
+		case "passed":
+			return "The checks passed.";
+		case null:
+			return "The turn left no record of its checks: the work is pushed for CI to verify.";
+		case "none_set":
+			return "No checks are set for this repository: the work is pushed for CI to verify.";
+		case "stopped":
+			return "The turn was stopped; the step is tried again.";
+		case "failed":
+			return "The turn failed; the step is tried again.";
+		default:
+			return "The checks verified nothing in this turn: the work is pushed for CI to verify.";
+	}
+}
+
+/**
+ * The verdict's sentence as the log has it (verdict.ts, `verdictWords`), for the seeds' gates: the checks
+ * that applied are the user's and the repository's own, in the agent's turn 1.
+ */
+export function verdictSaid(verdict: Pick<Verdict, "result" | "gate" | "ci" | "flags" | "mergeable"> & { repositoryChecks?: number }): string {
+	const head =
+		verdict.result === "pass"
+			? verdict.flags.length > 0
+				? "Needs a look."
+				: verdict.ci.state === "unread"
+					? "Your checks passed; CI has not been read."
+					: verdict.ci.state === "timed_out"
+						? "Your checks passed; CI had not finished."
+						: "Ready for review."
+			: verdict.result === "fail" ? "Failing." : verdict.result === "incomplete" ? "Incomplete: the last turn did not finish." : "Not verified.";
 	const applied = verdict.gate.required.length + (verdict.repositoryChecks ?? 0);
 	const gate =
-		verdict.gate.state === "none_set"
-			? "No check ran in the agent's turn 1: no checks are set for it."
-			: verdict.gate.state === "stopped"
-				? "The agent's turn 1 was stopped before its checks finished."
-				: `${applied === 1 ? "The check that applied" : `The ${applied} checks that applied`} passed when the agent's turn 1 ended.`;
+		verdict.gate.state === null
+			? "The turn left no record of its checks; CI decides."
+			: verdict.gate.state === "none_set"
+				? "No checks are set for this repository; CI decides."
+				: verdict.gate.state === "stopped"
+					? "The agent's turn 1 was stopped before its checks had run."
+					: `${applied === 1 ? "The check that applied" : `The ${applied} checks that applied`} passed when the agent's turn 1 ended.`;
 	const said = saidOf(verdict);
 	const flags = verdict.flags.map((flag, index) => `${said.flags[index]}: ${flag.where.join(", ")}.`);
 	return [head, gate, said.ci, ...flags, ...(verdict.mergeable === false ? ["GitHub says the pull request conflicts with its base."] : [])].join(" ");
+}
+
+/** Every verdict of the seeded set, as seeded: for the test that holds them to the server's rule and words. */
+export function seededVerdicts(): SeedVerdict[] {
+	return seeds("all", 0).flatMap((seed) => seed.verdicts ?? []);
 }
 
 function nextMidnight(at: number): number {
@@ -623,8 +708,9 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 	const spent: ItemBudget = { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0, ...seed.spent };
 	const head = seed.pr === undefined ? null : hex(seed.n);
 	const repository = seed.on.repository;
-	const verdicts: Verdict[] = (seed.verdicts ?? []).map(({ ago: when, repositoryChecks: _, ...verdict }, index) => ({
+	const verdicts = (seed.verdicts ?? []).map(({ ago: when, repositoryChecks: _, ...verdict }, index) => ({
 		...verdict,
+		moved: null,
 		said: saidOf(verdict),
 		id: `${id}:${verdict.run}:${index + 5}:1`,
 		item: id,
@@ -633,7 +719,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		place: "hosted",
 		attestedBy: "platform",
 		acceptance: seed.acceptance ?? [],
-	}));
+	})) as Verdict[];
 	const last = verdicts[verdicts.length - 1];
 	const question: ItemQuestion | null = seed.question ? { id: `${id}:q${seed.n + 3}`, kind: seed.question.kind, text: seed.question.text, choices: seed.question.choices, askedAt: ago(seed.question.asked) } : null;
 	const wait: Waiting | null = question ? { reason: question.kind === "budget" ? "budget" : "person", sentence: question.text, retryAt: null, since: question.askedAt } : seed.wait ? { reason: seed.wait.reason, sentence: seed.wait.sentence, retryAt: seed.wait.retryAt, since: ago(seed.wait.since) } : null;
@@ -660,7 +746,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		wait,
 		question,
 		pullRequest: seed.pr === undefined ? null : { number: seed.pr, url: `${repository.url}/pull/${seed.pr}` },
-		verdict: last ? { result: last.result, flags: last.flags } : null,
+		verdict: last ? { result: last.result, flags: last.flags, ci: last.ci.state } : null,
 		budget,
 		spent,
 		sessionId: seed.on.session,
@@ -793,7 +879,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				}
 				if (action.choice === "hand_over") {
 					const verdict = item.verdicts[item.verdicts.length - 1];
-					return change(auth, item, { state: "review", wait: null, question: null, run: run ? { ...run, endedAt: deps.now() } : null, verdict: verdict ? { result: verdict.result, flags: verdict.flags } : { result: "unverified", flags: [] } }, [said], "person");
+					return change(auth, item, { state: "review", wait: null, question: null, run: run ? { ...run, endedAt: deps.now() } : null, verdict: verdict ? { result: verdict.result, flags: verdict.flags, ci: verdict.ci.state } : { result: "unverified", flags: [], ci: "unread" } }, [said], "person");
 				}
 				if (action.choice === "wait") return change(auth, item, { state: "waiting", question: null, wait: { reason: "ci", sentence: `Waiting for CI on ${short(item.head ?? "")}, as you asked.`, retryAt: deps.now() + 60_000, since: deps.now() } }, [said], "person");
 				const budget = action.choice === "raise" && action.budget ? { ...item.budget, ...Object.fromEntries(Object.entries(action.budget).filter(([, value]) => typeof value === "number" && value > 0)) } : item.budget;

@@ -340,7 +340,16 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		c.say(`The checks failed: ${failing}.`);
 		return nextTurn(c, { kind, text: `Your turn ended with checks still failing: ${failing}. Continue fixing until they pass.`, newStep: true, charge: "gate", fingerprint: gateFingerprint(fact.verified), fetchBase: null });
 	}
-	c.say(result === "pass" ? "The checks passed." : "No check verified this work; it is published as unverified.");
+	// What is true of the checks: none set is no shortcoming (CI decides); a turn with no record of them says so, whatever is set.
+	const said =
+		result === "pass"
+			? "The checks passed."
+			: fact.verified === null
+				? "The turn left no record of its checks: the work is pushed for CI to verify."
+				: fact.verified.state === "none_set"
+					? "No checks are set for this repository: the work is pushed for CI to verify."
+					: "The checks verified nothing in this turn: the work is pushed for CI to verify.";
+	c.say(said);
 	publish(c);
 }
 
@@ -430,7 +439,11 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	// The poll is used up, whatever follows: the same reading again names an earlier one.
 	run.step.attempt += 1;
 	ci.mergeable = fact.mergeable;
-	if (reading.kind === "read" && state !== "retry" && state !== "not_permitted") ci.last = { state, runs: reading.runs.map(({ name, app, conclusion, url }) => ({ name, app, conclusion, url })), said: null };
+	const since = c.at - ci.since;
+	// "No CI" and "nothing passed" are kept as what CI came to only once the wait for it is over: an early empty reading followed
+	// by readings that failed would otherwise be handed over as "no CI ran", when CI may well have run since.
+	const settled = (state !== "none" && state !== "skipped") || since >= CI_POLLING.noneAfterMs;
+	if (reading.kind === "read" && state !== "retry" && state !== "not_permitted" && settled) ci.last = { state, runs: reading.runs.map(({ name, app, conclusion, url }) => ({ name, app, conclusion, url })), said: null };
 	if (reading.kind === "not_permitted") ci.last = { state: "not_permitted", runs: [], said: reading.said };
 
 	if (fact.mergeable === false) {
@@ -445,13 +458,15 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			fetchBase: base,
 		});
 	}
-	const since = c.at - ci.since;
 	switch (state) {
 		case "passed":
 			c.say("CI passed.");
 			return handoff(c);
 		case "not_permitted":
 			c.say("CI could not be read: GitHub does not let the platform see it.");
+			return handoff(c);
+		case "incomplete":
+			c.say(reading.kind === "read" && reading.runs.length === 0 ? "GitHub cut its list of CI's checks short before any could be read." : "CI has more checks than the platform reads; none of those it read failed.");
 			return handoff(c);
 		case "failed":
 			if (reading.kind !== "read") return;
@@ -460,6 +475,13 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		case "none":
 			if (since >= CI_POLLING.noneAfterMs) {
 				c.say(`No CI ran within ${spellSeconds(CI_POLLING.noneAfterMs / 1000)} of the push.`);
+				return handoff(c);
+			}
+			break;
+		case "skipped":
+			// Waited for as "no CI" is: a job that needs another may not be listed yet.
+			if (since >= CI_POLLING.noneAfterMs) {
+				c.say(`CI ran, and nothing in it passed within ${spellSeconds(CI_POLLING.noneAfterMs / 1000)} of the push: every check was skipped, cancelled or neutral.`);
 				return handoff(c);
 			}
 			break;

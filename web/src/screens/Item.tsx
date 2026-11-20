@@ -1,8 +1,9 @@
 /**
  * A work item's page: where a person decides whether to trust a pull request they did not watch being
  * made. It says, each at a glance: where the item is and what it waits for, what it asks, what ran
- * (the run and its step, and the log), what the verdict rests on (the user's checks, CI, the flags,
- * the criteria left to the person), and what it cost against its budget.
+ * (the run and its step, and the log), what the verdict rests on (CI first, which decides; the user's
+ * checks where they set any; the flags; the criteria left to the person), and what it cost against its
+ * budget.
  *
  * Everything is the user's actor's (`ItemView`): read when the page opens, and again when the item's
  * revision in the user's live feed (`onItems`) is higher than the one shown, and when that feed comes
@@ -474,11 +475,17 @@ const CHECK_WORD: Record<Verdict["gate"]["required"][number]["status"], string> 
 const CHECK_TONE: Record<Verdict["gate"]["required"][number]["status"], string> = { passed: "good", failed: "bad", timed_out: "bad", could_not_start: "warn", interrupted: "warn" };
 const times = (count: number) => (count === 1 ? "once" : count === 2 ? "twice" : `${count} times`);
 
+/** A run's conclusions that are a failure (server/src/factory/verdict.ts, `FAILING_CONCLUSIONS`): `error` is a commit status that errored. */
+const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "action_required", "error"];
+
+/** CI's tone: a failure is bad; CI that was not read, or not in full, or had not finished is a quiet warning; passed and none are plain facts. */
+const CI_TONE: Partial<Record<Verdict["ci"]["state"], string>> = { failed: "tone-bad", not_permitted: "tone-warn", timed_out: "tone-warn", unread: "tone-warn" };
+
 /** What the gate said when none of the user's checks is listed. */
 function gateWords(gate: Verdict["gate"]): string {
 	switch (gate.state) {
 		case null:
-			return "Nothing the agent did was verified by checks.";
+			return "No record of the checks for this commit.";
 		case "passed":
 			return "None of yours ran; the repository's own checks passed.";
 		case "unresolved":
@@ -486,7 +493,7 @@ function gateWords(gate: Verdict["gate"]): string {
 		case "not_needed":
 			return gate.unneeded?.on === "run" ? "No check needed to run again: they had passed on this state of the work." : "No check verified this state of the work.";
 		case "none_set":
-			return "You have saved no checks for this repository, so nothing the agent did was checked.";
+			return "None saved for this repository. CI decides.";
 		case "off":
 			return "The repository's own file turned verification off.";
 		case "emptied":
@@ -506,10 +513,11 @@ function gateWords(gate: Verdict["gate"]): string {
 
 function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView; now: number }) {
 	const { gate, ci } = verdict;
+	const { said } = verdict;
 	return (
 		<article className="item-verdict-block">
 			<p className="item-verdict-head">
-				<VerdictWord verdict={verdict} />
+				<VerdictWord verdict={{ result: verdict.result, flags: verdict.flags, ci: verdict.ci.state }} />
 				<span className="agent-meta">
 					<span>at {verdict.head.slice(0, 7)}</span>
 					<span>
@@ -519,6 +527,26 @@ function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView
 				</span>
 			</p>
 			<dl className="usage-facts item-facts">
+				<div>
+					<dt>CI</dt>
+					<dd>
+						<InlineMarkdown className={CI_TONE[ci.state]} text={said.ci} />
+						{ci.runs.length > 0 ? (
+							<ul className="item-checks">
+								{ci.runs.map((run) => (
+									<li key={`${run.app}/${run.name}`}>
+										<a className="item-check-name item-link" href={run.url} target="_blank" rel="noreferrer">
+											{run.name}
+											<ExternalIcon size={10} />
+										</a>{" "}
+										<span className={run.conclusion === "success" ? "tone-good" : run.conclusion === "" ? "tone-dim" : FAILING_CONCLUSIONS.includes(run.conclusion) ? "tone-bad" : "tone-dim"}>{run.conclusion === "" ? "still running" : run.conclusion.replace(/_/g, " ")}</span>
+										{run.app === "github-actions" ? null : <span className="tone-dim"> · {run.app === "status" ? "a commit status" : run.app}</span>}
+									</li>
+								))}
+							</ul>
+						) : null}
+					</dd>
+				</div>
 				<div>
 					<dt>Your checks</dt>
 					<dd>
@@ -536,26 +564,6 @@ function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView
 						)}
 					</dd>
 				</div>
-				<div>
-					<dt>CI</dt>
-					<dd>
-						<InlineMarkdown className={ci.state === "failed" ? "tone-bad" : ci.state === "not_permitted" || ci.state === "timed_out" ? "tone-warn" : undefined} text={verdict.said.ci} />
-						{ci.runs.length > 0 ? (
-							<ul className="item-checks">
-								{ci.runs.map((run) => (
-									<li key={`${run.app}/${run.name}`}>
-										<a className="item-check-name item-link" href={run.url} target="_blank" rel="noreferrer">
-											{run.name}
-											<ExternalIcon size={10} />
-										</a>{" "}
-										<span className={run.conclusion === "success" ? "tone-good" : run.conclusion === "" ? "tone-dim" : ["failure", "timed_out", "startup_failure", "action_required"].includes(run.conclusion) ? "tone-bad" : "tone-dim"}>{run.conclusion === "" ? "still running" : run.conclusion.replace(/_/g, " ")}</span>
-										{run.app === "github-actions" ? null : <span className="tone-dim"> · {run.app === "status" ? "a commit status" : run.app}</span>}
-									</li>
-								))}
-							</ul>
-						) : null}
-					</dd>
-				</div>
 				{verdict.flags.length > 0 ? (
 					<div>
 						<dt>To look at</dt>
@@ -564,7 +572,7 @@ function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView
 								{verdict.flags.map((flag, index) => (
 									<li key={flag.kind}>
 										<span className="tone-warn">
-											<InlineMarkdown text={verdict.said.flags[index] ?? ""} />:
+											<InlineMarkdown text={said.flags[index] ?? flag.kind} />:
 										</span> <code className="item-paths">{flag.where.join(", ")}</code>
 									</li>
 								))}
@@ -606,7 +614,7 @@ function Verdicts({ view, now }: { view: ItemView; now: number }) {
 			<h2 className="usage-title" id="item-verdict">
 				Verdict
 			</h2>
-			<p className="usage-lede">What the pushed work rests on: your checks, CI and what was seen in the changes, never the agent's words. A verdict merges nothing.</p>
+			<p className="usage-lede">What the pushed work rests on: CI on the pushed commit, your checks where you set them, and what was seen in the changes; never the agent's words. A verdict merges nothing.</p>
 			{latest === undefined ? (
 				<p className="usage-empty">None yet: a verdict is made when the work is handed over.</p>
 			) : (

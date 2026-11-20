@@ -72,7 +72,9 @@ export function checksWhose(standing: "required" | "replaceable" | "mixed" | nul
  * agents on it; `onSaved` hears of a save.
  */
 export function ChecksEditor({ repositoryId, name, labelledBy, standing, onSaved }: { repositoryId: number; name: string; labelledBy: string; standing: "required" | "replaceable" | "mixed" | null; onSaved?(): void }) {
-	const { client, explain } = useApp();
+	const { client, explain, platform } = useApp();
+	// Said only where the deployment offers work items, as every other word of them is.
+	const items = Boolean(platform.info?.items);
 	const auth = useAuth();
 	const note = useId();
 	const [saved, setSaved] = useState<RepositoryCheck[] | null>(null);
@@ -142,7 +144,7 @@ export function ChecksEditor({ repositoryId, name, labelledBy, standing, onSaved
 
 	return (
 		<>
-			{drafts.length === 0 ? <p className="usage-empty">No checks are set for {name}: an agent's turn ends without anything being run, and a pull request says that nothing was verified.</p> : null}
+			{drafts.length === 0 ? <p className="usage-empty">No checks are set for {name}. An agent's turn ends without anything being run, and a pull request says that nothing was verified{items ? "; a work item's verdict then rests on CI alone" : ""}.</p> : null}
 			<ul className="verify-list" aria-labelledby={labelledBy} aria-describedby={note}>
 				{drafts.map((draft, index) => (
 					<li key={draft.key} className="verify-check">

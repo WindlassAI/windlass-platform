@@ -2319,9 +2319,14 @@ nobody can file, read or act on an item.
   "Retry from scratch", "Hand it over as it is" once there is a pull request, "Give up").
 - **The verdict** is what the work at the pushed commit rests on, made from what the session's gate
   recorded, the observations on the changes ("What a pull request shows was verified") and CI at that
-  commit, never from the agent's words (`server/src/factory/verdict.ts`). `fail`: a check of the gate's
-  run or CI failed; `incomplete`: the turn was stopped, failed or was cut off; `unverified`: nothing
-  verified this state of the work; `pass` otherwise. A pass with observations is shown as needing a look.
+  commit, never from the agent's words (`server/src/factory/verdict.ts`). CI decides; the user's checks
+  are optional. `fail`: a check of the gate's run or CI failed; `incomplete`: the turn was stopped, failed
+  or was cut off; `pass`: CI passed on the pushed commit, or, CI not having passed, the user's own checks
+  passed in the gate's run with nothing changed after them; `unverified`: nothing verified this state of
+  the work (no CI, CI in which nothing passed, CI unfinished or unread, and no run of the user's checks
+  behind it). A pass with observations is shown as needing a look. A pass on the user's checks while CI was
+  not read begins "Your checks passed; CI has not been read." ("…CI had not finished." while it ran), never
+  "Ready for review."
 - **Limits are waits.** Nothing is refused for lack of room. An item that cannot go on now waits and says
   for what, with its numbers ("Waiting for one of your 5 factory turns; 5 are running (…)."): a free turn,
   a free place among the kept sandboxes, the day's allowance (until 00:00 UTC), one of the user's hosted
