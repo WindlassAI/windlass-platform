@@ -40,8 +40,10 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json web/
 RUN pnpm install --frozen-lockfile --filter @windlass-platform/web
 COPY web web
-# The one file the web app shares with the server, and the recorded runs its mock replays.
+# The files the web app shares with the server, and the recorded runs its mock replays.
 COPY server/src/contract.ts server/src/contract.ts
+COPY server/src/github/ids.ts server/src/github/ids.ts
+COPY server/src/verified.ts server/src/verified.ts
 COPY fixtures fixtures
 # `vite build` alone: the web app's own `build` type-checks first, tests included, and those reach into the server's sources.
 RUN pnpm --filter @windlass-platform/web exec vite build
