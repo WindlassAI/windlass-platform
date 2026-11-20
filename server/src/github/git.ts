@@ -178,9 +178,12 @@ function saveBase(base: string, revision: string): string {
  *
  * With `work`, the branch the platform pushed the session's work to: the clone is of a sandbox made in
  * place of a lost one, and what was pushed is all that is left of the work. The clone has that branch
- * too (it fetches every branch), so the workspace is put on it, as GitHub has it now: `wlp:work <commit>`.
- * `wlp:nowork` when GitHub no longer has the branch (deleted, say, after its pull request was merged):
- * the workspace then stays on `branch`. That step needs no token and gets none.
+ * too (it fetches every branch), and says at which commit: `wlp:haswork <commit>`, or `wlp:nowork`
+ * when GitHub no longer has it (deleted, say, after its pull request was merged). The workspace stays
+ * on `branch` all the same: the repository's setup command runs there first, on what the session was
+ * launched from, never on what the session pushed (that tree is the agent's, and the command runs with
+ * the network and every secret saved for the repository). `workCheckoutScript` puts it on the branch
+ * afterwards. Neither step needs a token, and neither gets one.
  *
  * `wlp:dir <directory>` says where the clone is, relative to the workspace: "." or `directory`.
  */
@@ -203,19 +206,40 @@ ${saveBase(branch, "plain_git rev-parse --verify HEAD")}
 })`,
 	];
 	if (work !== undefined && work !== branch) {
-		const remote = shellQuote(`refs/remotes/origin/${work}`);
 		lines.push(
 			"WLP_T=",
-			PLAIN_GIT,
-			`if plain_git -C "$target" rev-parse -q --verify ${shellQuote(`refs/remotes/origin/${work}^{commit}`)} >/dev/null 2>&1; then`,
-			`	plain_git -C "$target" -c core.hooksPath=/dev/null checkout --quiet -B ${shellQuote(work)} ${remote}`,
-			`	echo "wlp:work $(plain_git -C "$target" rev-parse HEAD)"`,
+			`if at=$(plain_git -C "$target" rev-parse -q --verify ${shellQuote(`refs/remotes/origin/${work}^{commit}`)} 2>/dev/null); then`,
+			`	echo "wlp:haswork $at"`,
 			"else",
 			`	echo "wlp:nowork"`,
 			"fi",
 		);
 	}
 	return lines.join("\n");
+}
+
+/**
+ * Puts the clone in `directory` on the session's branch `work`, at the commit the clone fetched, once
+ * the setup command has run on the base (`cloneScript`). The repository's hooks are not run, and git
+ * reads no configuration but the clone's own. `-f` on purpose: what the setup did to tracked files (a
+ * lockfile an install rewrote) goes, since the workspace must hold what the session pushed and nothing
+ * else; what it made beside them (`node_modules`) stays. `wlp:work <commit>`.
+ */
+export function workCheckoutScript(directory: string, work: string): string {
+	return [
+		"set -eu",
+		// Check the platform's clone itself, also when it was made under a nonempty workspace.
+		`cd ${shellQuote(directory)}`,
+		PLAIN_START,
+		PLAIN_GIT,
+		`plain_git checkout --quiet -f -B ${shellQuote(work)} ${shellQuote(`refs/remotes/origin/${work}`)}`,
+		`echo "wlp:work $(plain_git rev-parse HEAD)"`,
+	].join("\n");
+}
+
+/** Runs `workCheckoutScript`. */
+export function checkoutWork(sandbox: SandboxHandle, directory: string, work: string): Promise<GitOutcome> {
+	return run(sandbox, workCheckoutScript(directory, work), { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });
 }
 
 /**

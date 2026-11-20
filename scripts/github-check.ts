@@ -772,7 +772,7 @@ await section("the agent pushes: the session's branch only, no pull request, and
 	const after = standin.commit(harbor, branch, { "AFTER.md": "pushed after the platform\n" }, "Someone else, again");
 	const replaced = localSandbox("pushes-replaced");
 	const cloned = await publish.cloneRepository(app, adaConnection, repository, replaced, undefined, branch);
-	const headThere = cloned !== false ? cloned.work : null;
+	const headThere = cloned !== false ? await publish.putOnWork(replaced, cloned.directory, branch) : null;
 	// What the session does then (agent-session.ts putWorkspaceOnWork): what GitHub has is the new tip; the lease is untouched.
 	pushedHead = headThere;
 	await replaced.run("git reset --quiet --hard HEAD~1 && echo dropped > DROPPED.md && git add -A && git commit --quiet -m 'Drops their commit'");
@@ -1269,18 +1269,20 @@ await section("a replaced sandbox: the workspace goes back on the session's bran
 
 	const replaced = localSandbox("replaced");
 	const cloned = await publish.cloneRepository(app, adaConnection, repository, replaced, undefined, branch);
+	const onBase = await replaced.run("git symbolic-ref --short HEAD");
+	const head = cloned !== false && cloned.workAt !== null ? await publish.putOnWork(replaced, cloned.directory, branch) : null;
 	const seen = await replaced.run("git symbolic-ref --short HEAD; git rev-parse HEAD; ls; cat .git/config");
 	expect(
-		"the clone puts the new workspace on the session's branch, at the commit GitHub has",
-		cloned !== false && cloned.work === pushed.head && cloned.work === standin.branchHead(harbor, branch) && !cloned.workGone && seen.stdout.startsWith(`${branch}\n${pushed.head}\n`),
-		seen.stdout.slice(0, 160),
+		"the clone stays on the base and names the commit GitHub has the session's branch at; put on it, the workspace is there",
+		cloned !== false && onBase.stdout === "main\n" && cloned.workAt === pushed.head && head === pushed.head && cloned.workAt === standin.branchHead(harbor, branch) && !cloned.workGone && seen.stdout.startsWith(`${branch}\n${pushed.head}\n`),
+		`${onBase.stdout.trim()} | ${seen.stdout.slice(0, 160)}`,
 	);
 	expect("what was pushed is in it, and what was not is not", seen.stdout.includes("KEPT.md") && !seen.stdout.includes("LOST.md"));
 	expect("the repository's configuration holds no token", !/x-access-token|ghs_|gh[a-z]_/.test(seen.stdout));
-	expect("nothing in it is something GitHub lacks", cloned !== false && (await publish.hasUnpushedWork(replaced, "main", cloned.work)) === false);
+	expect("nothing in it is something GitHub lacks", (await publish.hasUnpushedWork(replaced, "main", head)) === false);
 
 	writeFileSync(join(replaced.cwd, "AFTER.md"), "written in the new sandbox\n");
-	const next = await publish.publishWork({ ...input, sandbox: replaced, pull: pushed.pull, pushed: cloned ? cloned.work : null, message: { title: "After the replacement", body: "" } });
+	const next = await publish.publishWork({ ...input, sandbox: replaced, pull: pushed.pull, pushed: head, message: { title: "After the replacement", body: "" } });
 	expect(
 		"a push from the new sandbox goes on top of what was there, to the same pull request",
 		!next.opened && next.pull.number === pushed.pull.number && standin.lastCommit(harbor, branch).message.startsWith("After the replacement") && standin.fileOn(harbor, branch, "KEPT.md") !== null && standin.fileOn(harbor, branch, "AFTER.md") !== null,
@@ -1288,26 +1290,63 @@ await section("a replaced sandbox: the workspace goes back on the session's bran
 
 	// A branch someone else pushed to since: the workspace has their commit, and the next push starts from it.
 	const other = localSandbox("someone-else");
-	await publish.cloneRepository(app, adaConnection, repository, other, undefined, branch);
+	const otherClone = await publish.cloneRepository(app, adaConnection, repository, other, undefined, branch);
+	if (otherClone !== false) await publish.putOnWork(other, otherClone.directory, branch);
 	writeFileSync(join(other.cwd, "THEIRS.md"), "pushed by someone else\n");
 	const theirs = await publish.publishWork({ ...input, sandbox: other, pull: next.pull, pushed: next.head, message: { title: "Someone else's commit", body: "" } });
 	const later = localSandbox("replaced-later");
 	const caught = await publish.cloneRepository(app, adaConnection, repository, later, undefined, branch);
-	expect("a commit pushed to the branch since is in the workspace, and is what the session counts as pushed", caught !== false && caught.work === theirs.head && existsSync(join(later.cwd, "THEIRS.md")));
+	const caughtHead = caught !== false ? await publish.putOnWork(later, caught.directory, branch) : null;
+	expect("a commit pushed to the branch since is in the workspace, and is what the session counts as pushed", caught !== false && caught.workAt === theirs.head && caughtHead === theirs.head && existsSync(join(later.cwd, "THEIRS.md")));
 
 	// The branch deleted at GitHub, as after a merge.
 	execFileSync("git", ["update-ref", "-d", `refs/heads/${branch}`], { cwd: harbor.path });
 	const after = localSandbox("replaced-gone");
 	const gone = await publish.cloneRepository(app, adaConnection, repository, after, undefined, branch);
 	const where = await after.run("git symbolic-ref --short HEAD; ls");
-	expect("when GitHub no longer has the branch, the workspace stays on the branch the session started from, and the clone says so", gone !== false && gone.work === null && gone.workGone && where.stdout.startsWith("main\n") && !where.stdout.includes("KEPT.md"), where.stdout.slice(0, 120));
+	expect("when GitHub no longer has the branch, the workspace stays on the branch the session started from, and the clone says so", gone !== false && gone.workAt === null && gone.workGone && where.stdout.startsWith("main\n") && !where.stdout.includes("KEPT.md"), where.stdout.slice(0, 120));
 
 	const plain = localSandbox("replaced-first");
 	const first = await publish.cloneRepository(app, adaConnection, repository, plain);
-	expect("a session that never pushed is cloned as before", first !== false && first.work === null && !first.workGone);
+	expect("a session that never pushed is cloned as before", first !== false && first.workAt === null && !first.workGone);
 });
 
 // ---------------------------------------------------------------------------------------------
+
+await section("a replaced sandbox: the setup command runs on the base, never on what the session pushed", async () => {
+	const repository = stored(harbor, adaInstallation);
+	const session = "s_5e7a95e7a95e7a95";
+	const branch = publish.branchFor("Setup on the base", session);
+	// The base's setup script, and the branch's, which the agent rewrote to read the setup's secret.
+	standin.commit(harbor, "main", { "setup.sh": 'echo "base"\n', ".gitignore": "node_modules/\n" }, "The setup script");
+	const first = localSandbox("setup-first");
+	await publish.cloneRepository(app, adaConnection, repository, first);
+	writeFileSync(join(first.cwd, "setup.sh"), 'echo "branch $CHECK_SETUP_SECRET"\n');
+	writeFileSync(join(first.cwd, "BRANCH_ONLY.md"), "only on the branch\n");
+	const input = { evidence: NOTHING_VERIFIED, app, connection: adaConnection, repository, sessionId: session, branch };
+	const pushed = await publish.publishWork({ ...input, sandbox: first, pull: null, pushed: null, message: { title: "Setup on the base", body: "" } });
+
+	const replaced = localSandbox("setup-replaced");
+	const cloned = await publish.cloneRepository(app, adaConnection, repository, replaced, undefined, branch);
+	// As runSetupCommand runs the saved command: in the clone, with the repository's secrets in its environment.
+	const setup = await replaced.run("bash ./setup.sh; ls", { env: { CHECK_SETUP_SECRET: "s3cr3t-setup-value-0451" } });
+	expect(
+		"the setup command runs on the base: it runs main's setup.sh, not the branch's, and the branch's files are not there yet",
+		setup.stdout.startsWith("base\n") && !setup.stdout.includes("s3cr3t-setup-value-0451") && !setup.stdout.includes("BRANCH_ONLY.md"),
+		setup.stdout.split("\n").slice(0, 2).join(" | "),
+	);
+	// What a setup does: a tracked file rewritten (a lockfile), an untracked one made (node_modules).
+	writeFileSync(join(replaced.cwd, "README.md"), "rewritten by the setup\n");
+	mkdirSync(join(replaced.cwd, "node_modules"), { recursive: true });
+	writeFileSync(join(replaced.cwd, "node_modules/kept.txt"), "installed\n");
+	const head = cloned !== false && cloned.workAt !== null ? await publish.putOnWork(replaced, cloned.directory, branch).catch((error: unknown) => String(error)) : null;
+	const seen = await replaced.run("git symbolic-ref --short HEAD; cat README.md; ls node_modules BRANCH_ONLY.md");
+	expect(
+		"then the workspace is on the session's branch at the commit GitHub has, the setup's edit to a tracked file gone, its untracked file kept, and nothing counted as unpushed",
+		head === pushed.head && seen.stdout.startsWith(`${branch}\n`) && !seen.stdout.includes("rewritten by the setup") && seen.stdout.includes("kept.txt") && seen.stdout.includes("BRANCH_ONLY.md") && (await publish.hasUnpushedWork(replaced, "main", head)) === false,
+		`${head} ${pushed.head} | ${seen.stdout.split("\n").join(" | ")}`,
+	);
+});
 
 await section("secrets: nothing that was printed or thrown holds one", async () => {
 	const tokens = [...standin.tokens.keys()];

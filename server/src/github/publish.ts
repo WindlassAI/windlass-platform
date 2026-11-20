@@ -26,7 +26,7 @@ import type { PublishMessage, PullRequestInfo, SessionRepository, Verified } fro
 import type { SandboxHandle } from "../sandbox/api.js";
 import { type WorkDiff, verifiedSection, verifiedWords, withVerifiedSection, workFlags } from "../verified.js";
 import { type GithubApp, GithubError, type Pull } from "./app.js";
-import { CLONE_MINUTES, type GitOutcome, cloneWithToken, commitWork, outgoingPatch, undoCommit, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
+import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, commitWork, outgoingPatch, undoCommit, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
 import { redact } from "./redact.js";
 import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveRepository } from "./repos.js";
 
@@ -90,10 +90,10 @@ function gitProblem(outcome: GitOutcome, what: "clone" | "push", repository: str
 	}
 }
 
-/** How a clone ended, for a session that had pushed work before: where the workspace is now. */
+/** How a clone ended, for a session that had pushed work before. The workspace is on the base branch either way. */
 export interface Cloned {
-	/** The commit of the session's branch the workspace was put on; null when it is on the base branch. */
-	work: string | null;
+	/** The commit GitHub has the session's branch at, for `putOnWork` once the setup command has run; null when none was asked for or GitHub has none. */
+	workAt: string | null;
 	/** The session's branch was asked for and GitHub no longer has it. */
 	workGone: boolean;
 	/** Where the clone is, relative to the workspace: "." unless the workspace already held something. */
@@ -104,7 +104,8 @@ export interface Cloned {
  * Clones the session's repository into its new sandbox. Resolves with `false` when it was aborted,
  * and throws GithubProblem when it could not be done. The token is good for reading this one
  * repository, and is revoked when the clone has ended. `work` names the branch the session's work was
- * pushed to, for a sandbox made in place of a lost one: the workspace is put on it (github/git.ts).
+ * pushed to, for a sandbox made in place of a lost one: the clone says at which commit GitHub has it
+ * (`workAt`), and the workspace stays on the base until `putOnWork`, after the setup command.
  */
 export async function cloneRepository(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, sandbox: SandboxHandle, signal?: AbortSignal, work?: string): Promise<Cloned | false> {
 	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
@@ -124,7 +125,20 @@ export async function cloneRepository(app: GithubApp, connection: StoredConnecti
 	}
 	if (outcome.failure === "aborted") return false;
 	if (!outcome.ok) throw gitProblem(outcome, "clone", name, account, repository.branch);
-	return { work: outcome.marks.get("work") || null, workGone: outcome.marks.has("nowork"), directory: outcome.marks.get("dir") || "." };
+	return { workAt: outcome.marks.get("haswork") || null, workGone: outcome.marks.has("nowork"), directory: outcome.marks.get("dir") || "." };
+}
+
+/**
+ * Puts the clone in `directory` on the session's branch `work`, once the setup command has run on the
+ * base (git.ts `workCheckoutScript`); resolves with the commit it is on. Throws when git could not.
+ */
+export async function putOnWork(sandbox: SandboxHandle, directory: string, work: string): Promise<string> {
+	const outcome = await checkoutWork(sandbox, directory, work);
+	const unsafe = outcome.marks.get("unsafe");
+	if (unsafe !== undefined) throw new Error(unsafeWorkspace(unsafe));
+	const head = outcome.marks.get("work") || "";
+	if (!outcome.ok || !/^[0-9a-f]{40,64}$/.test(head)) throw new Error(`the workspace could not be put on ${work}${outcome.said ? `: ${outcome.said}` : ""}`);
+	return head;
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -1210,11 +1210,16 @@ start. Send the prompt again."
 
 ### When a sandbox is replaced
 
-A sandbox made in place of a lost one has a fresh workspace. Where the session's work was pushed, the clone puts
-the workspace on the session's branch as GitHub has it now, not on the branch the session started from: what was
-pushed is back, with anything pushed to that branch since, and what was only in the old sandbox is not. If GitHub
-no longer has the branch (deleted after a merge, say), the workspace starts from the base branch again and the
-timeline says so. The agent is told with its next prompt that the workspace is a fresh one.
+A sandbox made in place of a lost one has a fresh workspace. It is cloned at the branch the session started
+from, and the repository's setup command runs there ("A repository's setup command"). Only then, where the
+session's work was pushed, is the workspace put on the session's branch as GitHub has it now: what was pushed
+is back, with anything pushed to that branch since, and what was only in the old sandbox is not. Where a setup
+command ran, the timeline says "Put the workspace on windlass/fix-the-light-3f9a2c at 1a2b3c4. The setup command
+ran on main before that, so what the branch changed in its dependencies is not installed.", and the agent is
+told the same with its next prompt. The setup command never runs on what a session pushed: that is the agent's
+work, and the command runs with the network and every secret saved for the repository. If GitHub no longer has
+the branch (deleted after a merge, say), the workspace stays on the base branch and the timeline says so. The
+agent is told with its next prompt that the workspace is a fresh one.
 
 ### When it does not work
 
@@ -1282,7 +1287,8 @@ in place, and its own commands stay sandboxed.
   (GitHub's id for it, so a rename keeps it), and a session reads it from there at the moment its sandbox is
   new. It is never read from the repository: it runs with the network and outside Windlass's sandbox, so a
   command taken from a repository's content would let a repository run code unasked. Nothing in a clone
-  (`package.json` scripts, a `setup.sh`, `.windlass/`) is looked at for it. A session on a pasted address or
+  (`package.json` scripts, a `setup.sh`, `.windlass/`) is looked at for it, and it runs only on the branch the
+  session was launched from. A session on a pasted address or
   with no repository has no setup.
 - **Where the user sets it.** In the launch form, once a repository is chosen: the field shows what is saved
   for that repository, and what it holds is saved with the launch. And in a session's side panel, under
@@ -1296,7 +1302,13 @@ in place, and its own commands stay sandboxed.
   `WLP_SETUP_TIMEOUT_MS` (ten minutes), after which it is stopped.
 - **Once per sandbox, not once per turn.** The clone marks the setup as due; the session marks it as done
   before the command starts, so a server that stops under it does not make the next turn run it twice. A
-  sandbox made in place of a lost one is cloned into again and set up again.
+  sandbox made in place of a lost one is cloned into again at the branch the session started from, set up
+  there, and only then put on the session's branch ("When a sandbox is replaced"). The setup command never runs
+  on what a session pushed: that is the agent's work, and the command runs with the network and the
+  repository's secrets. What the branch changed in its dependencies is not installed by it; the agent is told,
+  and installs them with its own commands (without the secrets that are for setup alone). A command that cannot
+  be read from the user's actor when it is due refuses the turn, and nothing is started: the agent never works
+  in a sandbox whose setup is still to run.
 - **What the user sees.** The run is in the session's timeline, where the clone's line is: the command, what
   it prints as it arrives, how it ended and how long it took. It is one item when it starts and one when it
   has ended (`kind: "setup"`), with `setup.output` deltas in between on the feed the model's streaming text
