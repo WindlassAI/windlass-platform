@@ -56,7 +56,7 @@ function AgentRow({ session, profileName, now, grouped, onDelete }: { session: S
 	const active = session.status !== "idle";
 	const waiting = session.status === "waiting";
 	return (
-		<li className={`agent-row${active ? " agent-row-active" : ""}${waiting ? " agent-row-waiting" : ""}`} data-status={session.status}>
+		<li className={`agent-row${active && !waiting ? " agent-row-active" : ""}`} data-status={session.status}>
 			<span className="agent-glyph">
 				<StatusGlyph status={session.status} />
 			</span>

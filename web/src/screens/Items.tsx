@@ -22,6 +22,7 @@ import { absoluteTime, count, plural, relativeTime } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { RECOMMENDATION_WORD } from "../components/SecondReview";
+import { StatusBadge } from "../components/Status";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { clockTime, useMachines } from "./Machines";
@@ -200,7 +201,7 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 	const asks = item.question !== null;
 	const line = why ?? rowWhy(item);
 	return (
-		<li className={`agent-row item-row${item.state === "working" || asks ? " agent-row-active" : ""}${asks ? " agent-row-waiting" : ""}`}>
+		<li className={`agent-row item-row${item.state === "working" ? " agent-row-active" : ""}`}>
 			<span className="agent-glyph">
 				<ItemGlyph item={item} />
 			</span>
@@ -247,6 +248,7 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 				</p>
 			</div>
 			<div className="agent-state">
+				{asks ? <StatusBadge status="waiting" /> : null}
 				<ItemStanding item={item} reviewer={reviewer} />
 			</div>
 			<time className="agent-time" dateTime={new Date(item.updatedAt).toISOString()} title={absoluteTime(item.updatedAt)}>

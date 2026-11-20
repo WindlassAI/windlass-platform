@@ -60,7 +60,8 @@
 .agent-row:focus-within {
 	background: color-mix(in srgb, var(--bg-hover) 60%, transparent);
 }
-/* A working agent is marked down its left edge. */
+/* A working agent is marked down its left edge. One waiting on its user is a plain row: its glyph and its
+ * "needs you" pill say so, as the session's own bar does, never a filled row. */
 .agent-row::before {
 	content: "";
 	position: absolute;
@@ -75,18 +76,6 @@
 }
 .agent-row-active::before {
 	opacity: 1;
-}
-/* An agent waiting on the user: its edge and its row in the calm hue, so it is found at a glance. */
-.agent-row-waiting {
-	background: var(--info-wash);
-}
-.agent-row-waiting:hover,
-.agent-row-waiting:focus-within {
-	background: color-mix(in srgb, var(--info) 14%, transparent);
-}
-.agent-row-waiting::before {
-	width: 3px;
-	background: var(--info);
 }
 .eyebrow-waiting {
 	color: var(--info);
