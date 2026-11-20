@@ -85,8 +85,8 @@
  *   allowance_used      `prompt()`, `changes()`, `diff()`, `publish()`: too little of the user's sandbox time is left today for a turn or a paused sandbox to start
  *   too_many_sandboxes  `prompt()`: the session needs a sandbox and its user keeps as many as they may
  *   usage_unavailable   the same four: the user's sandbox time could not be checked, so nothing was started
- *   turn_running        `prompt()`: a turn is in progress and cannot take the message now
- *                       (also `stopCall()`: the session's machine is not answering, so nothing was sent)
+ *   steer_unavailable   `prompt()`: a turn is in progress and cannot take the message now
+ *   turn_running        `prompt()` during a push, or `stopCall()` when the session’s machine is not answering
  *   bad_idempotency_key, idempotency_key_reused   `prompt()`: its key is no key, or came with another text before
  *   bad_answer, note_too_long   `answer()`: its input
  *   no_question         `answer()`: that question is not pending (any more)
@@ -204,6 +204,7 @@ import type { Fact } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
+import { initialSessionModes } from "../sandbox/profiles.js";
 import { CLAUDE, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import type { ItemPublishAnswer } from "./work-item.js";
@@ -289,6 +290,8 @@ interface SessionMeta {
 	place: SandboxPlace;
 	profile: SandboxProfileId;
 	model: string;
+	mode: string;
+	availableModes: SessionSummary["availableModes"];
 	repoUrl: string | null;
 	createdAt: number;
 	updatedAt: number;
@@ -440,6 +443,8 @@ type PublishAnswer =
 	| { kind: "withdrawn" };
 
 interface ActiveTurn {
+	/** A user choice queued for the next prompt takes precedence over this turn’s ACP updates. */
+	modeQueued?: boolean;
 	number: number;
 	effort: string | null;
 	controller: AbortController;
@@ -673,6 +678,8 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		place: meta.place,
 		profile: meta.profile,
 		model: meta.model,
+		mode: meta.mode,
+		availableModes: meta.availableModes,
 		repoUrl: meta.repoUrl,
 		...(meta.repo ? { repository: repositoryOf(meta.repo), pullRequest: meta.pull ?? null, publishUnasked: meta.publishUnasked === true } : {}),
 		createdAt: meta.createdAt,
@@ -3099,6 +3106,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 	const startedAt = Date.now();
 	const turn = active.number;
 	const effort = active.effort;
+	const mode = meta.origin ? undefined : meta.mode;
 	const reviewer = meta.origin?.role === "reviewer";
 	const checkout = active.item?.row.checkout;
 	const signal = active.controller.signal;
@@ -3158,7 +3166,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			void persist(c);
 		}
 		const common: RunTurnInput = {
-			prompt: text, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
+			prompt: text, mode, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
 			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 			onControl: control => { if (open) active.control = control; },
 		};
@@ -3166,7 +3174,23 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			result = await harness.runTurn(sandbox, {
 				...common,
 				secrets: { env: {}, withholdEnv: [], passEnv: [], redactor: active.secrets.redactor },
-				onAcpUpdate: update => { if (open) acpTimeline.update(update); },
+				onAcpModes: (chosen, offered, fallbackFrom) => {
+					if (!open) return;
+					meta.availableModes = offered;
+					if (!active.modeQueued) meta.mode = chosen;
+					if (fallbackFrom !== undefined) note(c, turn, "info", `Claude Code does not offer “${fallbackFrom}” here. Using its current mode “${chosen}”.`);
+					publish(c);
+					void persist(c);
+				},
+				onAcpUpdate: update => {
+					if (!open) return;
+					acpTimeline.update(update);
+					if (update.sessionUpdate === "current_mode_update" && !active.modeQueued && meta.mode !== update.currentModeId) {
+						meta.mode = update.currentModeId;
+						publish(c);
+						void persist(c);
+					}
+				},
 			});
 		} else if (!signal.aborted) {
 			// Told once: with the first prompt Windlass takes in the new sandbox.
@@ -3618,21 +3642,21 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
 	const stopping = meta.status === "stopping" || active?.controller.signal.aborted === true || active?.closed === true;
 	if (!active || !control || stopping || (meta.status !== "running" && meta.status !== "waiting")) {
 		const state = stopping ? "is being stopped" : "is still starting";
-		throw new UserError(`The turn ${state} and cannot take a message right now. Try again in a moment.`, { code: "turn_running" });
+		throw new UserError(`The turn ${state} and cannot take a message right now. Try again in a moment.`, { code: "steer_unavailable" });
 	}
 	// Refused before anything is sent or kept: queued behind a dead link, the message would arrive whenever the machine is back.
-	if (machineAway(c, meta)) throw new UserError("Your machine is not answering, so the message was not sent. Send it again when it is back.", { code: "turn_running" });
+	if (machineAway(c, meta)) throw new UserError("Your machine is not answering, so the message was not sent. Send it again when it is back.", { code: "steer_unavailable" });
 	try {
 		await control.steer(message);
 	} catch (error) {
 		if (error instanceof AcpPromptRequired) return next(active.number);
 		c.log.warn({ msg: "a running turn did not take a steered message", session: meta.sessionId, turn: active.number, error: describeError(error) });
 		const why = isSandboxUserError(error) ? ` ${error.message}` : "";
-		throw new UserError(`The running turn could not take the message.${why} Try again in a moment.`, { code: "turn_running" });
+		throw new UserError(`The running turn could not take the message.${why} Try again in a moment.`, { code: "steer_unavailable" });
 	}
 	if (active.closed && meta.harness !== "claude") {
 		// The turn ended while Windlass was taking the message; nothing can be added to a closed turn.
-		throw new UserError("The turn ended just as the message arrived. Try again in a moment.", { code: "turn_running" });
+		throw new UserError("The turn ended just as the message arrived. Try again in a moment.", { code: "steer_unavailable" });
 	}
 	const shown = capabilitiesOf(meta.harness).events === "acp" ? active.secrets?.redactor.text(message) ?? message : message;
 	append(c, { turn: active.number, kind: "user", text: shown, model: meta.model, effort: active.effort, steer: true });
@@ -4010,6 +4034,8 @@ export const agentSession = actor({
 				machineName: typeof input.machineName === "string" ? input.machineName : null,
 				harness: input.harness,
 				profile: input.profile,
+				...initialSessionModes(input.profile, input.harness, !!input.origin),
+				...(input.mode !== undefined && { mode: input.mode }),
 				model: String(input.model),
 				repoUrl: typeof input.repoUrl === "string" ? input.repoUrl : null,
 				repo: typeof input.repo === "object" && input.repo !== null ? input.repo : null,
@@ -4279,6 +4305,22 @@ export const agentSession = actor({
 			} catch (error) {
 				throw clientError(c.log, error, "The agent's timeline could not be read.");
 			}
+		},
+
+		setMode: async (c, input: { mode: string }): Promise<SessionSummary> => {
+			requireUser(c);
+			const meta = liveMeta(c);
+			if (meta.origin) throw new UserError("A work item and its reviewer use the profile’s approval mode.", { code: "bad_input" });
+			const mode = input?.mode;
+			const beforeClaudeOpen = meta.harness === "claude" && !meta.availableModes.length;
+			if (typeof mode !== "string" || !mode.trim() || (!beforeClaudeOpen && !meta.availableModes.some(m => m.id === mode))) {
+				throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
+			}
+			if (c.vars.turn) c.vars.turn.modeQueued = true;
+			meta.mode = mode;
+			publish(c);
+			await persist(c);
+			return summaryOf(meta);
 		},
 
 		prompt: async (c, input: PromptInput): Promise<PromptAnswer> => {

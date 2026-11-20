@@ -85,6 +85,33 @@ async function freshSession(profile: "docker-windlass-sandbox" | "docker-hardene
 }
 
 describe("what the mock serves", () => {
+	it.each([
+		["claude", "docker-hardened", "auto", ["default", "acceptEdits", "plan", "auto", "bypassPermissions"]],
+		["windlass", "docker-windlass-sandbox", "auto", ["ask", "auto"]],
+		["windlass", "docker-hardened", "full", ["ask", "full"]],
+	] as const)("serves and changes %s modes on %s", async (harness, profile, mode, ids) => {
+		const place = harness === "claude" ? { kind: "machine" as const, machineId: "m_nas" } : undefined;
+		const summary = await after(500, client.user(auth).createSession({ harness, profile, place }));
+		expect(summary.mode).toBe(mode);
+		expect(summary.availableModes.map(m => m.id)).toEqual(ids);
+		expect(summary.availableModes.every(m => m.name && m.description)).toBe(true);
+		const api = client.session(auth, summary.id);
+		expect((await after(500, api.setMode(ids[0]))).mode).toBe(ids[0]);
+		const refused = expect(api.setMode("unavailable")).rejects.toMatchObject({ reason: "bad_input" });
+		await after(500, refused);
+	});
+
+	it.each([["e2b", "auto", "full"], ["e2b-open", "full", "auto"]] as const)("limits %s to its profile choices", async (profile, mode, refusedMode) => {
+		client.dispose();
+		client = createMockClient({ sandbox: "e2b" });
+		const user = client.user(auth);
+		const session = await after(500, user.createSession({ profile }));
+		expect(session.mode).toBe(mode);
+		expect(session.availableModes.map(m => m.id)).toEqual(["ask", mode]);
+		await after(500, expect(user.createSession({ profile, mode: refusedMode })).rejects.toMatchObject({ reason: "bad_input" }));
+		expect((await after(500, user.createSession({ profile, mode: "ask" }))).mode).toBe("ask");
+	});
+
 	it("lists seven sandbox profiles: two available, five not, each with its reason", async () => {
 		const info = await after(500, client.info());
 		expect(info.demoEnabled).toBe(true);
@@ -241,12 +268,12 @@ describe("a turn played from a recording", () => {
 		expect(record.view?.turns[0]?.end?.outcome).toBe("succeeded");
 	});
 
-	it("refuses a message while the sandbox is starting, as turn_running", async () => {
+	it("refuses a message while the sandbox is starting, as steer_unavailable", async () => {
 		const { api } = await freshSession();
 		await after(200, api.prompt({ text: "Run the full build." }));
 		const failure = await after(200, api.prompt({ text: "And another thing" }).catch((error: unknown) => error));
 		expect(failure).toBeInstanceOf(PlatformError);
-		expect(failure).toMatchObject({ code: "user", reason: "turn_running" });
+		expect(failure).toMatchObject({ code: "user", reason: "steer_unavailable" });
 		expect(await after(400, api.prompt({ text: "   " }).catch((error: unknown) => error))).toMatchObject({ code: "user" });
 	});
 });

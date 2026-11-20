@@ -1160,6 +1160,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					const made = taken && mine.items.find((one) => one.id === taken.id);
 					if (made) return summaryOf(made);
 				}
+				if ("mode" in input && input.mode !== undefined) throw new PlatformError("user", "A work item and its reviewer use the profile’s approval mode.", { reason: "bad_input" });
 				const title = input.title.trim();
 				const acceptance = (input.acceptance ?? []).map((line) => line.trim()).filter((line) => line !== "");
 				if (title === "") throw new PlatformError("user", "A work item needs a title.", { reason: "bad_input" });

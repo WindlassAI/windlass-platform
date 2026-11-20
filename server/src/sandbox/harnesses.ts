@@ -6,14 +6,13 @@ export interface AcpProfile {
 	command: string[];
 	leftovers: string;
 	profiles: SandboxProfileId[];
-	mode: string;
 	steering: string;
 	signedOutCodes: number[];
 }
 
 export const CLAUDE: AcpProfile = {
 	id: "claude", name: "Claude Code", command: ["wlp-claude-acp"], leftovers: "claude-agent-acp",
-	profiles: ["docker-hardened"], mode: "bypassPermissions", steering: "_session/steering", signedOutCodes: [-32000],
+	profiles: ["docker-hardened"], steering: "_session/steering", signedOutCodes: [-32000],
 };
 
 export function initialHarnessModels(): ModelList {

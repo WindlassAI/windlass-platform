@@ -59,6 +59,8 @@
  * The world is rebuilt from the token on every page load, so the seeded sessions keep their IDs
  * across a reload and sessions created by hand do not survive one.
  */
+import { initialHarnessModels } from "../../../server/src/sandbox/harnesses.js";
+import { initialSessionModes } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
 import {
 	MAX_IDEMPOTENCY_KEY_CHARS,
@@ -77,6 +79,7 @@ import {
 	MIN_SECRET_VALUE_CHARS,
 	MAX_TITLE_CHARS,
 	MAX_MACHINES,
+	CLAUDE_LAUNCH_MODES,
 	type RepositoryCheck,
 	type RepositoryChecks,
 	type Verified,
@@ -1175,7 +1178,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			// A turn of the item runs while it works; its prompts are the item's, so nothing else starts one here.
 			const status = item.state === "working" && item.run?.step.kind !== "review" ? "running" : "idle";
 			if (session.summary.item?.id === item.id && session.summary.status === status) return;
-			setSummary(world, session, { item: { id: item.id, role: "builder" }, status, ...(status === "running" && session.summary.sandbox === "none" ? { sandbox: "running" as const } : {}) });
+			setSummary(world, session, { availableModes: [], item: { id: item.id, role: "builder" }, status, ...(status === "running" && session.summary.sandbox === "none" ? { sandbox: "running" as const } : {}) });
 		},
 		machines: (auth) => (machineState === "off" ? null : { list: machinesOf(auth).list, minRunnerVersion: MOCK_MIN_RUNNER_VERSION }),
 	});
@@ -1372,7 +1375,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		if (item.reviewerSessionId) {
 			const reviewer = addSession(world, { id: item.reviewerSessionId, title: item.title, titled: true, profile: session.summary.profile, model: session.summary.model, repoUrl: null, repository: session.summary.repository });
 			const running = item.review?.state === "running";
-			reviewer.summary = { ...reviewer.summary, item: { id: item.id, role: "reviewer" }, status: running ? "running" : "idle", sandbox: running ? "running" : "none" };
+			reviewer.summary = { ...reviewer.summary, availableModes: [], item: { id: item.id, role: "reviewer" }, status: running ? "running" : "idle", sandbox: running ? "running" : "none" };
 			const last = item.reviews.at(-1);
 			if (last) {
 				reviewer.seededTurn = () => {
@@ -1392,7 +1395,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const settle = () => {
 			if (session.pauseTimer !== null) cancel(session.pauseTimer);
 			session.pauseTimer = null;
-			session.summary = { ...session.summary, item: { id: item.id, role: "builder" }, status: working ? "running" : "idle", sandbox: working ? "running" : "none", updatedAt: Math.max(session.summary.updatedAt, item.updatedAt), ...(pull ? { pullRequest: pull } : {}) };
+			session.summary = { ...session.summary, availableModes: [], item: { id: item.id, role: "builder" }, status: working ? "running" : "idle", sandbox: working ? "running" : "none", updatedAt: Math.max(session.summary.updatedAt, item.updatedAt), ...(pull ? { pullRequest: pull } : {}) };
 		};
 		settle();
 		const run = item.run;
@@ -1409,7 +1412,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		return id;
 	}
 
-	function addSession(world: World, input: { id: string; title: string; titled: boolean; profile: SessionSummary["profile"]; model: string; repoUrl: string | null; repository?: SessionRepository | null; publishUnasked?: boolean }): MockSession {
+	function addSession(world: World, input: { id: string; title: string; titled: boolean; profile: SessionSummary["profile"]; harness?: SessionSummary["harness"]; modes?: Pick<SessionSummary, "mode" | "availableModes">; model: string; repoUrl: string | null; repository?: SessionRepository | null; publishUnasked?: boolean }): MockSession {
 		const at = now();
 		const repository = input.repository ?? null;
 		const session: MockSession = {
@@ -1418,6 +1421,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				title: input.title,
 				place: { kind: "hosted" },
 				profile: input.profile,
+				harness: input.harness ?? "windlass",
+				...(input.modes ?? initialSessionModes(input.profile, input.harness)),
 				model: input.model,
 				repoUrl: repository ? `${repository.url}.git` : input.repoUrl,
 				...(repository ? { repository, pullRequest: null, publishUnasked: input.publishUnasked === true } : {}),
@@ -2801,7 +2806,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				return [nas({ status: "offline", since: at - 47 * MINUTE })];
 			// The agent on "nas" finds it offline: the machine went offline after the agent last used it.
 			case "online":
-				return [machineSession === "offline" ? nas({ status: "offline", since: at - 12 * MINUTE }) : nas({})];
+				return [nas({
+					harnesses: [{ id: "claude", adapter: "0.109.0", image: "windlass-runner-claude", signIn: "token" }],
+					...(machineSession === "offline" && { status: "offline", since: at - 12 * MINUTE }),
+				})];
 			case "pairing":
 				return [nas({ status: "waiting", since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [] })];
 			case "outdated":
@@ -2953,7 +2961,16 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const profile = (machine ? machine.profiles : profiles).find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
 				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());
-				const models = modelsFor(world().profile);
+				if (input.harness === "claude" && (profile.id !== "docker-hardened" || !machine?.harnesses?.some(h => h.id === "claude"))) {
+					throw new PlatformError("user", "Claude Code requires a machine offering it and the docker-hardened profile.", { reason: "bad_input" });
+				}
+				const modes = initialSessionModes(profile.id, input.harness);
+				if (input.harness === "claude") modes.availableModes = [...CLAUDE_LAUNCH_MODES];
+				if (input.mode !== undefined) {
+					if (!modes.availableModes.some(m => m.id === input.mode)) throw new PlatformError("user", "Choose a mode offered by this agent.", { reason: "bad_input" });
+					modes.mode = input.mode;
+				}
+				const models = input.harness === "claude" ? initialHarnessModels() : modelsFor(world().profile);
 				if (input.model !== undefined) checkModel(models, input.model);
 				const repoUrl = input.repoUrl?.trim() || null;
 				if (repoUrl !== null && !/^https:\/\/\S+$/.test(repoUrl)) throw new PlatformError("user", "The repository must be an https address.");
@@ -2967,7 +2984,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const title = input.title?.trim() ?? "";
 				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
 				if (repository && input.setupCommand !== undefined) saveSetup(world(), repository.id, input.setupCommand);
-				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, model: input.model ?? models.defaultModel, repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
+				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, harness: input.harness, modes, model: input.model ?? models.defaultModel, repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
 				if (machine) {
 					session.summary = { ...session.summary, place: { kind: "machine", machineId: machine.machineId } };
 					session.machine = { profile, reach: null };
@@ -3312,8 +3329,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					return answer;
 				};
 				const status = session.summary.status;
-				if (status === "starting") throw new PlatformError("user", "The agent is still starting. Send this again once it is working.", { reason: "turn_running" });
-				if (status === "stopping") throw new PlatformError("user", "The turn is stopping. Send this again once it has stopped.", { reason: "turn_running" });
+				if (status === "starting") throw new PlatformError("user", "The agent is still starting. Send this again once it is working.", { reason: "steer_unavailable" });
+				if (status === "stopping") throw new PlatformError("user", "The turn is stopping. Send this again once it has stopped.", { reason: "steer_unavailable" });
 				if ((status === "running" || status === "waiting") && session.run) {
 					// A message to a running turn steers it: stored as a steer, delivered at the next step.
 					const turn = session.run.turn;
@@ -3329,7 +3346,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				// A work item's turn counts wherever it runs (server/src/actors/user.ts, `internalAcquireRun`).
 				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle" && (other.summary.item !== undefined || other.summary.place.kind === "hosted")).length;
 				if (hosted && running >= MOCK_FACTORY_LIMITS.runningTurns) throw new PlatformError("user", `You already have ${running} ${running === 1 ? "agent" : "agents"} working, which is your limit. Wait for one to finish, or stop one.`, { reason: "too_many_running" });
-				const models = modelsFor(world.profile);
+				const models = session.summary.harness === "claude" ? initialHarnessModels() : modelsFor(world.profile);
 				if (input.model !== undefined) checkModel(models, input.model);
 				// An effort is held against the ones the turn's model accepts; of a model the list does not have nothing is said.
 				const efforts = models.models.find((candidate) => candidate.id === (input.model ?? session.summary.model))?.efforts;
@@ -3502,6 +3519,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (!fromPushed) session.pushedHead = hex(40);
 				setSummary(world, session, { pullRequest: pull, updatedAt: now() });
 				return { state: publishStateOf(session), opened: !open };
+			},
+			async setMode(mode: string): Promise<SessionSummary> {
+				await latency();
+				const { world, session } = find();
+				if (session.summary.item || !session.summary.availableModes.some(m => m.id === mode)) throw new PlatformError("user", "Choose a mode offered by this agent.", { reason: "bad_input" });
+				setSummary(world, session, { mode });
+				return session.summary;
 			},
 			async setPublishUnasked(unasked: boolean): Promise<SessionSummary> {
 				await latency();

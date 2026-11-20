@@ -1,4 +1,4 @@
-import type { AcpContent, AcpUpdate, ModelList } from "../contract.js";
+import type { AcpContent, AcpUpdate, ModelList, SessionMode } from "../contract.js";
 import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { SandboxUserError, type RunTurnInput, type RunTurnResult, type SandboxHandle } from "./api.js";
@@ -172,7 +172,7 @@ export class AcpHarness implements Harness {
 
 	async runTurn(handle: SandboxHandle, input: RunTurnInput): Promise<RunTurnResult> {
 		const profile = this.profile;
-		const acp: NonNullable<RunTurnResult["acp"]> = { stopReason: null, usage: null, modes: [], models: null };
+		const acp: NonNullable<RunTurnResult["acp"]> = { stopReason: null, usage: null, models: null };
 		const result: RunTurnResult = { exitCode: null, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: null, acp };
 		const refused = unsupported(input);
 		if (refused) {
@@ -237,9 +237,13 @@ export class AcpHarness implements Harness {
 			const prior = input.windlassSessionId;
 			// Enable updates synchronously at the open reply. Replay preceding a load reply is
 			// ignored, while updates in the very same stdout read after that reply are live.
+			let offered: SessionMode[] = [];
+			let currentMode = "";
 			const accept = (previous?: string) => (opened: Fields) => {
 				result.windlassSessionId = previous ?? text(opened.sessionId);
-				acp.modes = objects(object(opened.modes).availableModes).map(mode => text(mode.id));
+				const modes = object(opened.modes);
+				currentMode = text(modes.currentModeId);
+				offered = objects(modes.availableModes).map(m => ({ id: text(m.id), name: text(m.name), description: typeof m.description === "string" ? m.description : null }));
 				configs = optionsOf(opened.configOptions);
 				acp.models = configs.list;
 			};
@@ -258,8 +262,11 @@ export class AcpHarness implements Harness {
 			if (!result.windlassSessionId) await request("session/new", settings, accept());
 			const sessionId = result.windlassSessionId;
 			if (!sessionId) throw new Error(`${profile.name} returned no session id.`);
-			if (!acp.modes.includes(profile.mode)) throw new Error(`${profile.name} would not run without asking here (its permission mode is not offered). Check that the image runs as a user other than root.`);
-			await request("session/set_mode", { sessionId, modeId: profile.mode });
+			const requested = input.mode ?? "auto";
+			const modeId = offered.some(m => m.id === requested) ? requested : currentMode;
+			if (!modeId) throw new Error(`${profile.name} did not report its current permission mode.`);
+			input.onAcpModes?.(modeId, offered, modeId === requested ? undefined : requested);
+			await request("session/set_mode", { sessionId, modeId });
 			for (const key of ["model", "effort"] as const) {
 				const value = input[key];
 				if (!value) continue;

@@ -73,6 +73,8 @@ class Engine {
 				this.session = String(m.params?.session);
 				return reply({ sessionId: this.session, cwd: "/workspace" });
 			case "session/resume":
+				this.onOpen((m.params?._meta as { windlass?: Record<string, unknown> })?.windlass ?? {});
+				return reply({});
 			case "session/close":
 				return reply({});
 			case "session/prompt": {

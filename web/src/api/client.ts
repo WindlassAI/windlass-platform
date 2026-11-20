@@ -73,12 +73,12 @@ export type PlatformErrorCode =
 
 /**
  * Codes the server gives a UserError that the screens act on (contract.ts): `no_question` from
- * `answer()` (that question is no longer pending), `turn_running` from `prompt()` (a turn that is
+ * `answer()` (that question is no longer pending), `steer_unavailable` from `prompt()` (a turn that is
  * starting or stopping cannot take a message), and the two limits a user can run into, which the
  * screens answer with the way to the usage page: `allowance_used` (too little of the day's sandbox
  * time is left) and `too_many_sandboxes` (the user keeps as many sandboxes as they may).
  */
-export type PlatformErrorReason = "no_question" | "turn_running" | "allowance_used" | "too_many_sandboxes" | (string & {});
+export type PlatformErrorReason = "no_question" | "turn_running" | "steer_unavailable" | "allowance_used" | "too_many_sandboxes" | (string & {});
 
 export class PlatformError extends Error {
 	readonly code: PlatformErrorCode;
@@ -268,6 +268,7 @@ export interface SessionApi {
 	/** Commits, pushes, and opens the pull request when none is open. It can take a minute. */
 	publish(message: PublishMessage): Promise<PublishResult>;
 	/** Sets whether the agent may have the platform publish without the user being asked each time (`SessionSummary.publishUnasked`). */
+	setMode(mode: string): Promise<SessionSummary>;
 	setPublishUnasked(unasked: boolean): Promise<SessionSummary>;
 	/** The MCP servers the session's project names, each as the session last heard of it, with the remembered approval where there is one. */
 	servers(): Promise<SessionServers>;

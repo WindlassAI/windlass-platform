@@ -578,7 +578,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 		const launch = { place, profile, harness: "claude" } as const;
 		await until("the second machine's report", async () => (await user.machines()).find(m => m.machineId === place.machineId && m.commandSandbox));
 		const session = await user.createSession(launch);
-		const watch = new Watch(client, uid, session.id, token);
+		let watch = new Watch(client, uid, session.id, token);
 		const snapshot = () => watch.conn.snapshot();
 		const play = async (text: string, model?: string, effort?: string) => {
 			const { turn } = await watch.conn.prompt({ text, model, effort });
@@ -613,6 +613,66 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				assert(deltas.length === 8 && new Set(deltas.map(d => "messageKey" in d && d.messageKey)).size === 2, "expected eight deltas across two keys");
 				assert(!(await snapshot()).pending.length && end.outcome === "succeeded" && end.verified === null && end.usage === null && end.cachedShare === null, JSON.stringify(end));
 				return "eight live chunks, two stored items, no pending chunks or verification";
+			});
+			const sentModes = (since: number) => runner.acpInput.slice(since).map(line => JSON.parse(line)).filter(f => f.method === "session/set_mode").map(f => f.params.modeId);
+			await check("Claude defaults to auto and stores the adapter’s offered list", async () => {
+				const { summary } = await snapshot();
+				assert(sentModes(0)[0] === "auto", JSON.stringify(sentModes(0)));
+				assert(summary.mode === "auto" && summary.availableModes.map(m => m.id).join() === "default,acceptEdits,plan,auto,bypassPermissions" && summary.availableModes.every(m => m.name && m.description), JSON.stringify(summary));
+				return "auto on session/new, five described choices";
+			});
+			await check("Claude keeps a mid-turn choice for both subsequent prompts, including after actor sleep", async () => {
+				const { turn } = await watch.conn.prompt({ text: "latechange" });
+				await waitDuring(turn, "fixture waiting for follow-up", () => watch.deltas.find(d => d.turn === turn));
+				const before = runner.acpInput.length;
+				try { await watch.conn.setMode({ mode: "plan" }); }
+				finally { await watch.conn.prompt({ text: "finish" }); await watch.untilEnded(turn); }
+				assert((await snapshot()).summary.mode === "plan", "an update from the active turn replaced the queued mode");
+				assert(!sentModes(before).length, "mode was applied to the running prompt");
+				await play("plain");
+				await watch.conn.dispose();
+				await forceSleep(session.id);
+				watch = new Watch(client, uid, session.id, token);
+				await play("plain");
+				assert(sentModes(before).join() === "plan,plan", JSON.stringify(sentModes(before)));
+				return "plan sent on both resumed prompts";
+			});
+			await check("Claude’s own mode change is visible during its turn and carried into the next open", async () => {
+				const { turn } = await watch.conn.prompt({ text: "leaveplan" });
+				const q = await waitDuring(turn, "permission after mode change", async () => (await snapshot()).question);
+				try { assert((await snapshot()).summary.mode === "acceptEdits", "live summary did not follow current_mode_update"); }
+				finally { await watch.conn.answer({ questionId: q.id, choice: q.choices[0]!.id }); await watch.untilEnded(turn); }
+				const before = runner.acpInput.length;
+				await play("plain");
+				assert(sentModes(before).join() === "acceptEdits", JSON.stringify(sentModes(before)));
+				await watch.conn.setMode({ mode: "auto" });
+				return "acceptEdits published while waiting and sent on resume";
+			});
+			await check("Claude uses an explicit launch mode on its first prompt and validates later choices", async () => {
+				const other = await user.createSession({ ...launch, mode: "plan" });
+				const seen = new Watch(client, uid, other.id, token);
+				try {
+					const before = runner.acpInput.length;
+					const { turn } = await seen.conn.prompt({ text: "plain" });
+					await seen.untilEnded(turn);
+					assert(other.mode === "plan" && sentModes(before).join() === "plan", JSON.stringify(sentModes(before)));
+					assert(await refusal(seen.conn.setMode({ mode: "unknown" })) === "bad_input", "accepted an unlisted mode");
+					assert((await seen.conn.snapshot()).summary.mode === "plan", "refusal changed the selected mode");
+				} finally { await seen.conn.dispose(); await user.deleteSession(other.id); }
+				return "plan on session/new, bad_input for an unlisted change";
+			});
+			await check("Claude explains an unavailable launch choice once and keeps the adapter default", async () => {
+				const other = await user.createSession({ ...launch, mode: "no-longer-offered" });
+				const seen = new Watch(client, uid, other.id, token);
+				try {
+					for (let i = 0; i < 2; i++) {
+						const { turn } = await seen.conn.prompt({ text: "plain" });
+						await seen.untilEnded(turn);
+					}
+					const notes = seen.items.filter(i => i.kind === "platform" && i.text.includes("no-longer-offered") && i.text.includes("default"));
+					assert(notes.length === 1 && (await seen.conn.snapshot()).summary.mode === "default", JSON.stringify(notes));
+				} finally { await seen.conn.dispose(); await user.deleteSession(other.id); }
+				return "one fallback line across two opens";
 			});
 			await check("Claude tools preserve call order, output, diff and failed edit", async () => {
 				const { updates } = await play("tools");
@@ -715,7 +775,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				assert(summary.harnessModels?.models.some(m => m.id === "opus" && m.efforts.includes("high")), "missing model or efforts");
 				const { end } = await play("usage", "opus", "high");
 				const state = JSON.parse(readFileSync((await acpSession()).file, "utf8"));
-				assert(state.model === "opus" && state.effort === "high" && state.mode === "bypassPermissions", "fixture configuration differs");
+				assert(state.model === "opus" && state.effort === "high" && state.mode === "auto", "fixture configuration differs");
 				assert(JSON.stringify(end.context) === JSON.stringify({ used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } }), JSON.stringify(end));
 				return JSON.stringify(end.context);
 			});
@@ -768,6 +828,26 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 					assert((await seen.untilEnded(turn)).outcome === "succeeded" && seen.windlass(turn) > 0 && !seen.items.some(i => i.kind === "acp") && watch.items.some(i => i.kind === "acp") && !watch.items.some(i => i.kind === "windlass"), "mixed or missing engine events");
 				} finally { await seen.conn.dispose(); }
 				return "both engines isolated";
+			});
+			await check("Windlass sends the selected approval on open and resume", async () => {
+				const other = await user.createSession({ place, profile, mode: "ask" });
+				const seen = new Watch(client, uid, other.id, token);
+				try {
+					for (const [method, expected] of [["new", "ask"], ["resume", "ask"], ["resume", "full"]]) {
+						if (expected === "full") await seen.conn.setMode({ mode: expected });
+						runner.opens.delete(other.id);
+						const { turn } = await seen.conn.prompt({ text: "plain" });
+						await seen.untilEnded(turn);
+						assert(runner.opens.get(other.id)?.approval === expected, `session/${method}: ${JSON.stringify(runner.opens.get(other.id))}`);
+					}
+				} finally { await seen.conn.dispose(); await user.deleteSession(other.id); }
+				return "ask on new and resume, full on the next resume after setMode";
+			});
+			await check("work items refuse a mode at creation", async () => {
+				const raw = { title: "Inspect", body: "Read the repo", repository: { id: repo.id }, mode: "ask" };
+				const code = await refusal(user.createItem(raw));
+				assert(code === "bad_input", String(code));
+				return code;
 			});
 			await check("work items and their builder and reviewer sessions refuse Claude", async () => {
 				const raw = { title: "Inspect", body: "Read the repo", repository: { id: repo.id }, harness: "claude" };
@@ -1016,7 +1096,7 @@ async function main(): Promise<void> {
 				]);
 				const ms = Date.now() - at;
 				runner.attachMode = "serve";
-				assert(said.code === "turn_running" && said.message === "Your machine is not answering, so the message was not sent. Send it again when it is back.", `the message sent with the machine away: ${String(said.code)} after ${ms} ms ${said.message}`);
+				assert(said.code === "steer_unavailable" && said.message === "Your machine is not answering, so the message was not sent. Send it again when it is back.", `the message sent with the machine away: ${String(said.code)} after ${ms} ms ${said.message}`);
 				assert(ms < 3_000, `refused after ${ms} ms`);
 				const ended = await watch.untilEnded(number);
 				assert(ended.outcome === "succeeded", `the turn ended ${ended.outcome} once the machine was back: ${ended.message}`);

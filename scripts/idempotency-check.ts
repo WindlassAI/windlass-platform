@@ -446,7 +446,7 @@ async function main(): Promise<void> {
 		const unkeyed = await lost("prompt", () => plainSession.prompt({ text: LONG }));
 		const plainAfter = await idle(plainSession, 1);
 		// What the second delivery finds depends on how far the first has come: a turn still starting refuses it, a running one takes it as a second message.
-		const mended = "code" in unkeyed.answer ? unkeyed.answer.code === "turn_running" : unkeyed.answer.value.steered === true;
+		const mended = "code" in unkeyed.answer ? unkeyed.answer.code === "steer_unavailable" : unkeyed.answer.value.steered === true;
 		expect(
 			"without a key, one prompt that RivetKit sends twice is answered as the second delivery fared: a refusal for a prompt that was taken, or a second message",
 			unkeyed.deliveries === 2 && mended && plainAfter.summary.turns === 1,

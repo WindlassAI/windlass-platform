@@ -21,10 +21,11 @@ const initialize = {
 };
 
 const availableModes = [
-	{ id: "default", name: "Manual" },
-	{ id: "acceptEdits", name: "Accept edits" },
-	{ id: "plan", name: "Plan" },
-	{ id: "bypassPermissions", name: "Bypass permissions" },
+	{ id: "default", name: "Manual", description: "Ask before using tools." },
+	{ id: "acceptEdits", name: "Accept edits", description: "Allow file edits." },
+	{ id: "plan", name: "Plan", description: "Plan the work before editing." },
+	{ id: "auto", name: "Auto", description: "Automatically assess tool permissions." },
+	{ id: "bypassPermissions", name: "Bypass permissions", description: "Run tools without permission prompts." },
 ];
 
 function config(id, name, category, values, currentValue) {
@@ -181,6 +182,7 @@ export class FixturePeer {
 			answer = undefined;
 			if (done) return this.finish(turn, value?.error ? value : { result: { stopReason: value ?? "end_turn" } });
 			if (value.sessionUpdate) {
+				if (value.sessionUpdate === "current_mode_update") this.save(turn.sessionId, { ...this.sessions.get(turn.sessionId), mode: value.currentModeId });
 				this.update(turn.sessionId, value);
 			} else if (value.line) {
 				this.say(value.line + "\n");

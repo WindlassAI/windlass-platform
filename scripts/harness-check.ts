@@ -131,7 +131,7 @@ async function configure(client: Client) {
 	const { sessionId, modes, configOptions } = await client.result(client.request("session/new", openParams));
 	assert(typeof sessionId === "string" && sessionId);
 	assert.equal(modes.currentModeId, "default");
-	assert.deepEqual(modes.availableModes.map((m: { id: string }) => m.id), ["default", "acceptEdits", "plan", "bypassPermissions"]);
+	assert.deepEqual(modes.availableModes.map((m: { id: string }) => m.id), ["default", "acceptEdits", "plan", "auto", "bypassPermissions"]);
 	checkChoices(configOptions, "default", "default");
 	const set = client.request("session/set_mode", { sessionId, modeId: "bypassPermissions" });
 	assert.equal((await client.update(sessionId, "current_mode_update")).currentModeId, "bypassPermissions");
@@ -298,7 +298,7 @@ async function clientCheck(state: string) {
 	}
 	ok(`all ${guards.length} unsupported inputs are refused before the sandbox is touched`);
 
-	let variant: "normal" | "load" | "wrong-version" | "no-mode" | "adapter-default" = "normal";
+	let variant: "normal" | "load" | "wrong-version" | "without-auto" | "adapter-default" = "normal";
 	let duringShutdown: (() => void) | undefined;
 	const methods: string[] = [];
 	const updates: AcpUpdate[] = [];
@@ -322,7 +322,14 @@ async function clientCheck(state: string) {
 					if (variant === "load") delete frame.result.agentCapabilities.sessionCapabilities.resume;
 					if (variant === "wrong-version") frame.result.protocolVersion = 2;
 				}
-				if (frame.result?.modes && variant === "no-mode") frame.result.modes.availableModes = [];
+				if (frame.result?.modes && variant === "load") frame.result.modes.availableModes = [
+					{ id: "plan", name: "Plan on this machine", description: "A description from the load reply." },
+					{ id: "auto", name: "Automatic" },
+				];
+				if (frame.result?.modes && variant === "without-auto") {
+					frame.result.modes.availableModes = frame.result.modes.availableModes.filter((m: { id: string }) => m.id !== "auto");
+					frame.result.modes.currentModeId = "plan";
+				}
 				if (variant === "adapter-default" && frame.result?.modes) frame.result.configOptions = [
 					{ id: "model", category: "model", type: "select", currentValue: "opus", options: [{ value: "opus", name: "Opus" }] },
 				];
@@ -396,13 +403,24 @@ async function clientCheck(state: string) {
 
 	variant = "load";
 	updates.length = 0;
-	const loaded = await harness.runTurn(handle, { prompt: "ask", windlassSessionId: first.windlassSessionId!, onAcpUpdate: u => updates.push(u) });
+	let loadModes: unknown;
+	const loaded = await harness.runTurn(handle, {
+		prompt: "ask", mode: "plan", windlassSessionId: first.windlassSessionId!,
+		onAcpModes: (id, offered) => { loadModes = { id, offered }; },
+		onAcpUpdate: u => updates.push(u),
+	});
 	assert.equal(loaded.resumed, true);
 	assert(methods.includes("session/load"));
 	assert(!JSON.stringify(updates).includes("old transcript"));
 	assert(updates.some(update => update.text === "after load"));
 	assert(JSON.stringify(updates).includes("Permission answered: reject."));
 	ok("load suppresses replay and unattended permission uses reject_once");
+	assert.deepEqual(loadModes, { id: "plan", offered: [
+		{ id: "plan", name: "Plan on this machine", description: "A description from the load reply." },
+		{ id: "auto", name: "Automatic", description: null },
+	] });
+	assert(updates.some(u => u.sessionUpdate === "current_mode_update" && u.currentModeId === "plan"));
+	ok("session/load uses the chosen mode and preserves the adapter’s current order, labels and optional descriptions");
 
 	variant = "adapter-default";
 	methods.length = 0;
@@ -414,14 +432,28 @@ async function clientCheck(state: string) {
 	assert.match(unavailable.failure?.message ?? "", /does not offer effort/);
 	ok("the first prompt uses the adapter's default and an unsupported effort is refused");
 
-	for (const [setting, sentence] of [["wrong-version", /ACP v1/], ["no-mode", /permission mode is not offered/]] as const) {
-		variant = setting;
-		methods.length = 0;
-		const result = await harness.runTurn(handle, { prompt: "plain" });
-		assert.match(result.failure?.message ?? "", sentence);
-		assert(!methods.includes("session/prompt"));
+	variant = "without-auto";
+	for (const mode of [undefined, "unavailable"]) {
+		const opened: string[] = [];
+		updates.length = 0;
+		const result = await harness.runTurn(handle, { prompt: "plain", mode,
+			onAcpModes: (chosen, offered, fallback) => {
+				assert.deepEqual(offered.map(m => m.id), ["default", "acceptEdits", "plan", "bypassPermissions"]);
+				opened.push(chosen, fallback ?? "");
+			},
+			onAcpUpdate: u => updates.push(u),
+		});
+		assert.equal(result.failure, null);
+		assert(updates.some(u => u.sessionUpdate === "current_mode_update" && u.currentModeId === "plan"), JSON.stringify(updates));
+		assert.deepEqual(opened, ["plan", mode ?? "auto"]);
 	}
-	ok("wrong protocol version and missing permission mode both prevent prompting");
+	ok("absent auto and an unavailable requested mode both select the advertised current mode and report one fallback");
+	variant = "wrong-version";
+	methods.length = 0;
+	const wrongVersion = await harness.runTurn(handle, { prompt: "plain" });
+	assert.match(wrongVersion.failure?.message ?? "", /ACP v1/);
+	assert(!methods.includes("session/prompt"));
+	ok("wrong protocol version prevents prompting");
 }
 
 const state = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".fake-acp-check-"));

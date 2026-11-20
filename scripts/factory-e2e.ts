@@ -219,6 +219,18 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 		const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=";
 		const { config } = await import("../server/src/config.js");
 		const { client, user, auth } = await world(server, standin, { WLP_SECRET: config.secret.toString(), WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_BACKUP_DIR: join(server.storage, "shots"), WLP_FAKE_BUCKET_SIGNING_SECRET: randomBytes(32).toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_IDLE_SUSPEND_MS: "1000" });
+		await check("reviewer: builder and reviewer keep their profile mode", async () => {
+			const item = await user.createItem({ repository: { id: harbor.id }, title: "Fixed modes", body: "Read the repository.", start: false });
+			const view = await user.item(item.id);
+			assert(view.reviewerSessionId, "missing reviewer session");
+			for (const id of [view.sessionId, view.reviewerSessionId]) {
+				const agent = client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } });
+				await refused(() => agent.setMode({ mode: "ask" }), "bad_input");
+				const { summary } = await agent.snapshot();
+				assert(summary.mode === "auto" && summary.availableModes.length === 0, JSON.stringify(summary));
+			}
+			return "both sessions refused setMode and retained auto";
+		});
 		await check("reviewer: actual turn offer, independent filing, head, comment, ownership and both ledgers", async () => {
 			const profile = "docker-windlass-sandbox";
 			await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: true });

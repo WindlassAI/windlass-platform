@@ -395,7 +395,7 @@ class Tally {
 
 /** One turn: the process, the connection, and everything that has to be told apart while it runs. */
 class Turn {
-	private readonly approval: "auto" | "full";
+	private readonly approval: "ask" | "auto" | "full";
 	private readonly reviewerAgent: string | null;
 	private process: SandboxProcess | null = null;
 	private readonly peer: AcpConnection;
@@ -493,7 +493,9 @@ class Turn {
 	) {
 		// A scripted turn calls no model: it is handed no token.
 		this.tokenFile = input.script === undefined ? new TokenFile(sandbox, tokens, options.tokenFile) : null;
-		this.approval = sandbox.approval;
+		const mode = input.mode ?? sandbox.approval;
+		if (mode !== "ask" && mode !== sandbox.approval) throw new Error("This sandbox profile does not offer that approval mode.");
+		this.approval = mode;
 		// A project definition takes precedence over a named user agent. Choose the name after checkout, on every open.
 		this.reviewerAgent = input.onReview ? `wlp-review-${randomId(16)}` : null;
 		this.redactor = input.secrets?.redactor ?? NO_REDACTION;

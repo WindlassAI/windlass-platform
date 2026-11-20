@@ -52,6 +52,15 @@ export const scenarios = {
 		yield thought("Waiting for the turn-end race.");
 		yield { steer: "promptRequired" };
 	},
+	*latechange() {
+		yield thought("Waiting for a follow-up.");
+		yield { steer: true };
+		yield { sessionUpdate: "current_mode_update", currentModeId: "acceptEdits" };
+	},
+	*leaveplan() {
+		yield { sessionUpdate: "current_mode_update", currentModeId: "acceptEdits" };
+		yield* scenarios.ask();
+	},
 	*plan() {
 		const tasks = ["Read the file", "Make the edit", "Check the result"];
 		for (let current = 0; current <= tasks.length; current++) {

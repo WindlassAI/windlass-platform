@@ -131,6 +131,7 @@ import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches,
 import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../account-defaults.js";
+import { initialSessionModes } from "../sandbox/profiles.js";
 import { initialHarnessModels } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
@@ -982,6 +983,11 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
 		const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
+		const modes = initialSessionModes(chosen.id, harness, !!item);
+		if (input.mode !== undefined) {
+			if (typeof input.mode !== "string" || !input.mode.trim() || (harness === "windlass" && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
+			modes.mode = input.mode;
+		}
 		const models = harness === "claude" ? initialHarnessModels() : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model));
 
@@ -995,6 +1001,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			place,
 			harness,
 			profile: chosen.id,
+			...modes,
 			model,
 			repoUrl,
 			...(repo ? { repository: { provider: repo.provider, id: repo.id, owner: repo.owner, name: repo.name, branch: repo.branch, private: repo.private, url: repo.url }, pullRequest: null, publishUnasked: input.publishUnasked === true } : {}),
@@ -1014,6 +1021,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			harness,
 			...(machine ? { machineName: machine.name } : {}),
 			profile: summary.profile,
+			mode: input.mode,
 			model,
 			repoUrl,
 			repo,

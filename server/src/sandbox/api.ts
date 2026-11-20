@@ -30,7 +30,7 @@
  * are three durations that belong together: handoff.ts has them and says why.
  */
 
-import type { AcpContext, AcpUpdate, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
+import type { AcpContext, AcpUpdate, SessionMode, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
 import type { Redactor } from "../repo-secrets.js";
 import type { HarnessId } from "./harness.js";
 import type { ProjectChecks } from "../windlass-config.js";
@@ -338,6 +338,10 @@ export interface TurnControl {
 }
 
 export interface RunTurnInput {
+	/** Selection captured when the prompt was accepted. Absent uses the harness or profile default. */
+	mode?: string;
+	/** The effective ACP mode and choices on open. fallbackFrom names a requested mode the agent no longer offers. */
+	onAcpModes?: (mode: string, offered: SessionMode[], fallbackFrom?: string) => void;
 	prompt: string;
 	/** Windlass's own session to continue (`session/resume`); omitted for the first turn. */
 	windlassSessionId?: string;
@@ -470,7 +474,7 @@ export interface TurnChecks {
 }
 
 export interface RunTurnResult {
-	acp?: { stopReason: string | null; usage: AcpContext | null; modes: string[]; models: ModelList | null };
+	acp?: { stopReason: string | null; usage: AcpContext | null; models: ModelList | null };
 	/** Whether the ACP session could be continued when a previous id was supplied. */
 	resumed?: boolean;
 	/** The exit code of the Windlass process that served the turn: 0 after any orderly end, whatever the turn's outcome; null when it was killed. */
@@ -534,7 +538,7 @@ export interface Windlass {
 	 */
 	problem(): Promise<string | null>;
 	/**
-	 * Runs one prompt to its end with the profile's approval mode. It speaks the Agent Client Protocol
+	 * Runs one prompt to its end with the selected approval mode. It speaks the Agent Client Protocol
 	 * to a `windlass acp` process that lives for this one turn (see fixtures/acp-probe/), so the turn
 	 * can ask questions and be steered; aborting `signal` cancels the turn through the protocol first.
 	 *

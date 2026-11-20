@@ -251,7 +251,27 @@ export type TurnOutcome =
 
 export type HarnessId = "windlass" | "claude";
 
+export interface SessionMode {
+	id: string;
+	name: string;
+	/** ACP agents may omit the description. */
+	description: string | null;
+}
+
+/** Launch choices for the pinned Claude adapter. Once opened, the session reports its actual list. */
+export const CLAUDE_LAUNCH_MODES: readonly SessionMode[] = [
+	{ id: "default", name: "Manual", description: "Ask before using tools." },
+	{ id: "acceptEdits", name: "Accept edits", description: "Allow file edits." },
+	{ id: "plan", name: "Plan", description: "Plan the work before editing." },
+	{ id: "auto", name: "Auto", description: "Automatically assess tool permissions." },
+	{ id: "bypassPermissions", name: "Bypass permissions", description: "Run tools without permission prompts." },
+];
+
 export interface SessionSummary {
+	/** The mode selected for the next prompt. */
+	mode: string;
+	/** For Claude, the most recent open's choices (empty before first open). Empty for item sessions. */
+	availableModes: SessionMode[];
 	harness?: HarnessId;
 	harnessModels?: ModelList | null;
 	id: string;
@@ -309,6 +329,8 @@ export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
 }
 
 export interface CreateSessionInput {
+	/** Windlass defaults to the profile approval. Claude prefers auto when offered. */
+	mode?: string;
 	harness?: HarnessId;
 	/** Defaults to "New agent"; replaced by the first prompt's opening words when left unset. */
 	title?: string;
@@ -2078,13 +2100,15 @@ export interface WorkspaceFile {
 }
 
 export interface AgentSessionActions {
+	/** Select the mode for the next prompt. An unavailable choice or item session returns bad_input. */
+	setMode(input: { mode: string }): Promise<SessionSummary>;
 	snapshot(): Promise<SessionSnapshot>;
 	/**
 	 * Starts a turn and returns as soon as it is accepted; the work arrives as events. While a turn is
 	 * running it steers that turn instead: the message is stored as a `user` item with `steer: true`,
 	 * the model reads it at its next step, and `steered` is true (`model` and `effort` are ignored
 	 * then). Throws a UserError when the text is empty, when the user must sign in to ChatGPT first,
-	 * or when a running turn cannot take the message (code `turn_running`: it is starting or stopping).
+	 * or when a running turn cannot take the message (code `steer_unavailable`).
 	 * A turn that would start is also held to its user's two limits (`UsageNumbers`), before a sandbox is
 	 * created or started: code `allowance_used` when too little of the day's sandbox time is left, and
 	 * `too_many_sandboxes` when the session needs a sandbox and its user keeps as many as they may. Each

@@ -408,6 +408,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			diff: () => act("diff"),
 			publishState: () => act("publishState"),
 			publish: (message) => act("publish", { message }),
+			setMode: (mode) => act("setMode", { mode }),
 			setPublishUnasked: (unasked) => act("setPublishUnasked", { unasked }),
 			servers: () => act("servers"),
 			approveServer: (name, fingerprint) => act("approveServer", { name, fingerprint }),
@@ -534,7 +535,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
  *    missing field is read as `null`). A "question" event that arrives while the snapshot is on its way
  *    is dropped (see 7). `answer`, `stopCall` and the steering `prompt` are actions with these names and
  *    one object argument each, as contract.ts declares them; `prompt` resolves with `{ turn, steered }`.
- * 10. Error codes. A UserError thrown with a code (`no_question`, `turn_running`) arrives with
+ * 10. Error codes. A UserError thrown with a code (`no_question`, `steer_unavailable`) arrives with
  *    `group: "user"` and that `code`; the web app keeps it as `PlatformError.reason` and acts on those
  *    two. Since `toPlatformError` checks UNAUTHORIZED_CODES first, a UserError must not use those codes.
  */

@@ -10,7 +10,7 @@
  * profile does in which the microVM is the only isolation.
  */
 
-import type { SandboxProfile, SandboxProfileId } from "../contract.js";
+import type { HarnessId, SandboxProfile, SandboxProfileId, SessionMode, SessionSummary } from "../contract.js";
 
 /** What every session container gets: non-root, no privilege gain, no capabilities, limits for a 2-CPU host. */
 export const COMMON_RUN_FLAGS = [
@@ -207,6 +207,24 @@ export function profilesFor(provider: "docker" | "e2b", e2b: { windlassSandbox: 
 		}
 		return { ...profile, layers: [...profile.layers] };
 	});
+}
+
+/** Windlass can always ask. Its other mode is the approval policy this profile was built for. */
+export function windlassModes(approval: SandboxProfile["approval"]): SessionMode[] {
+	return [
+		{ id: "ask", name: "Ask", description: "Ask before writes, commands, network access and MCP calls." },
+		approval === "auto"
+			? { id: "auto", name: "Auto", description: "Use Windlass’s command sandbox and ask when needed." }
+			: { id: "full", name: "Full", description: "Allow commands to run directly in the sandbox machine." },
+	];
+}
+
+export function initialSessionModes(profile: SandboxProfileId, harness?: HarnessId, fixed = false): Pick<SessionSummary, "mode" | "availableModes"> {
+	const approval = findProfile(profile).approval;
+	return {
+		mode: harness === "claude" ? "auto" : approval,
+		availableModes: fixed || harness === "claude" ? [] : windlassModes(approval),
+	};
 }
 
 export function findProfile(id: SandboxProfileId): SandboxProfile {

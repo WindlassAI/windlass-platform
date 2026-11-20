@@ -10,7 +10,7 @@ const tides = repository(7102, "ada", "tide-tables");
 let made = 0;
 function session(patch: Partial<SessionSummary> = {}): SessionSummary {
 	made += 1;
-	return { id: `s${made}`, title: `Agent ${made}`, place: { kind: "hosted" }, profile: "docker-windlass-sandbox", model: "gpt-6.1-sol", repoUrl: null, createdAt: made, updatedAt: made, status: "idle", turns: 0, lastOutcome: null, sandbox: "none", ...patch };
+	return { id: `s${made}`, title: `Agent ${made}`, place: { kind: "hosted" }, profile: "docker-windlass-sandbox", model: "gpt-6.1-sol", mode: "auto", availableModes: [], repoUrl: null, createdAt: made, updatedAt: made, status: "idle", turns: 0, lastOutcome: null, sandbox: "none", ...patch };
 }
 
 describe("the list of agents, grouped", () => {

@@ -679,7 +679,7 @@ async function main(server: Server | null): Promise<void> {
 		return "no token, bad token, another user's key";
 	});
 	await check("auth: internal actions refuse a user's token", async () => {
-		const fake: SessionSummary = { id: "s_x", title: "x", place: { kind: "hosted" }, profile: "docker-hardened", model: "m", repoUrl: null, createdAt: 0, updatedAt: 0, status: "idle", turns: 0, lastOutcome: null, sandbox: "none" };
+		const fake: SessionSummary = { id: "s_x", title: "x", place: { kind: "hosted" }, profile: "docker-hardened", model: "m", mode: "full", availableModes: [], repoUrl: null, createdAt: 0, updatedAt: 0, status: "idle", turns: 0, lastOutcome: null, sandbox: "none" };
 		await refused(() => userHandle.internalSessionChanged(fake), "forbidden");
 		await refused(() => userHandle.internalAcquireRun("s_x"), "forbidden");
 		await refused(() => userHandle.internalReleaseRun({ sessionId: "s_x", claim: 1, summary: fake }), "forbidden");
@@ -781,6 +781,23 @@ async function main(server: Server | null): Promise<void> {
 		assert((await userConn.listSessions()).length === 0, "a refused createSession left a session behind");
 		return "profile, model, repository address";
 	});
+
+	await check("Windlass refuses full on a command-sandbox profile at creation", async () => {
+		return await refused(() => userConn.createSession({ profile: "docker-windlass-sandbox", mode: "full" }), "bad_input");
+	});
+
+	for (const [profile, expected] of [["docker-windlass-sandbox", "auto"], ["docker-hardened", "full"]] as const) {
+		await check(`Windlass offers ask and ${expected} on ${profile} and validates changes`, async () => {
+			const made = await userConn.createSession({ profile });
+			try {
+				assert(made.mode === expected && plain(made.availableModes.map(m => m.id)) === plain(["ask", expected]), plain(made));
+				const agent = client.agentSession.get([uid, made.id], { params: { token } });
+				await refused(() => agent.setMode({ mode: expected === "auto" ? "full" : "auto" }), "bad_input");
+				assert((await agent.setMode({ mode: "ask" })).mode === "ask" && (await agent.snapshot()).summary.mode === "ask", "mode was not saved");
+				return `default ${expected}, saved ask`;
+			} finally { await userConn.deleteSession(made.id); }
+		});
+	}
 
 	let session: SessionSummary | null = null;
 	await check("createSession", async () => {
@@ -1754,7 +1771,7 @@ async function main(server: Server | null): Promise<void> {
 	await check("a message sent while the turn is starting is refused; one sent while it runs steers it", async () => {
 		const { turn, steered } = await steerWatch.conn.prompt({ text: LONG });
 		assert(turn === 1 && steered === false, `prompt() returned ${plain({ turn, steered })}`);
-		const early = await refused(() => steerWatch.conn.prompt({ text: "Too early" }), "turn_running");
+		const early = await refused(() => steerWatch.conn.prompt({ text: "Too early" }), "steer_unavailable");
 		assert(/try again in a moment/i.test(early), `the refusal does not say to try again: "${early}"`);
 		assert((await steerWatch.conn.snapshot()).summary.status === "starting", "the turn was not starting when the message was refused");
 
@@ -1812,7 +1829,7 @@ async function main(server: Server | null): Promise<void> {
 			const { turn } = await steerWatch.conn.prompt({ text: "Wait for the slow build (slow) (slow-stop)" });
 			await waitFor("the command to start", () => steerWatch.windlass(turn, "tool.started")[0], TURN_MS);
 			await steerWatch.conn.stop();
-			const late = await refused(() => steerWatch.conn.prompt({ text: "Too late" }), "turn_running");
+			const late = await refused(() => steerWatch.conn.prompt({ text: "Too late" }), "steer_unavailable");
 			assert(/being stopped/.test(late) && /try again in a moment/i.test(late), `the refusal is "${late}"`);
 			await refused(() => steerWatch.conn.prompt({ text: "   " }), "empty_prompt");
 			const ended = await steerWatch.untilEnded(turn);
