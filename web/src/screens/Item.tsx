@@ -20,12 +20,13 @@
  * leave it out. Once its machine was removed, the item can only be handed over or given up: the page
  * offers neither Retry nor Send back, and no note to an agent that cannot work any more.
  */
-import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemView, type StepKind, type Verdict } from "@contract";
+import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemView, type StepKind, type Verdict } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown } from "../components/Blocks";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, WarnIcon } from "../components/Icons";
+import { CHECK_TONE, CHECK_WORD, conclusionTone, conclusionWord, ReviewBlocks } from "../components/ReviewBlocks";
 import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
@@ -485,12 +486,7 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 
 // ---- what the verdict rests on ------------------------------------------------------------------
 
-const CHECK_WORD: Record<Verdict["gate"]["required"][number]["status"], string> = { passed: "passed", failed: "failed", timed_out: "timed out", could_not_start: "could not start", interrupted: "was interrupted" };
-const CHECK_TONE: Record<Verdict["gate"]["required"][number]["status"], string> = { passed: "good", failed: "bad", timed_out: "bad", could_not_start: "warn", interrupted: "warn" };
 const times = (count: number) => (count === 1 ? "once" : count === 2 ? "twice" : `${count} times`);
-
-/** A run's conclusions that are a failure (server/src/factory/verdict.ts, `FAILING_CONCLUSIONS`): `error` is a commit status that errored. */
-const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "action_required", "error"];
 
 /** CI's tone: a failure is bad; CI that was not read, or not in full, or had not finished is a quiet warning; passed and none are plain facts. */
 const CI_TONE: Partial<Record<Verdict["ci"]["state"], string>> = { failed: "tone-bad", not_run: "tone-warn", not_permitted: "tone-warn", timed_out: "tone-warn", unread: "tone-warn" };
@@ -544,7 +540,8 @@ function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView
 				<div>
 					<dt>CI</dt>
 					<dd>
-						<InlineMarkdown className={CI_TONE[ci.state]} text={said.ci} />
+						{/* "not_permitted" quotes GitHub's own words: shown as text, never read as Markdown. */}
+						{ci.state === "not_permitted" ? <span className={CI_TONE[ci.state]}>{said.ci}</span> : <InlineMarkdown className={CI_TONE[ci.state]} text={said.ci} />}
 						{ci.runs.length > 0 ? (
 							<ul className="item-checks">
 								{ci.runs.map((run) => (
@@ -553,7 +550,7 @@ function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView
 											{run.name}
 											<ExternalIcon size={10} />
 										</a>{" "}
-										<span className={run.conclusion === "success" ? "tone-good" : run.conclusion === "not_run" ? "tone-warn" : run.conclusion === "" ? "tone-dim" : FAILING_CONCLUSIONS.includes(run.conclusion) ? "tone-bad" : "tone-dim"}>{run.conclusion === "" ? "still running" : run.conclusion.replace(/_/g, " ")}</span>
+										<span className={conclusionTone(run.conclusion)}>{conclusionWord(run.conclusion)}</span>
 										{run.app === "github-actions" ? null : <span className="tone-dim"> · {run.app === "status" ? "a commit status" : run.app}</span>}
 									</li>
 								))}
@@ -634,6 +631,7 @@ function Verdicts({ view, now }: { view: ItemView; now: number }) {
 			) : (
 				<>
 					<VerdictBlock verdict={latest} view={view} now={now} />
+					<p className="usage-note">From the platform's own records.</p>
 					{before.length > 0 ? (
 						<>
 							<p className="agents-fold items-fold">
@@ -651,6 +649,44 @@ function Verdicts({ view, now }: { view: ItemView; now: number }) {
 					) : null}
 				</>
 			)}
+			{view.report === null && view.state === "review" ? <p className="usage-note">The agent that made the change filed no report.</p> : null}
+		</section>
+	);
+}
+
+// ---- what the agent says ------------------------------------------------------------------------
+
+/** The verdict a report's references are read against: the one at the commit it was filed at, else its run's last, else none. */
+function verdictFor(report: ItemReport, verdicts: Verdict[]): Verdict | null {
+	const at = report.head === null ? undefined : verdicts.findLast((verdict) => verdict.head === report.head);
+	return at ?? verdicts.findLast((verdict) => verdict.run === report.run) ?? null;
+}
+
+/** The agent that made the change, in its own words: below the verdict, labelled as its own, and never what the verdict rests on. */
+function Report({ view, report, now }: { view: ItemView; report: ItemReport; now: number }) {
+	const latest = view.verdicts[view.verdicts.length - 1];
+	const earlierRun = view.run !== null && report.run !== view.run.n;
+	const earlierCommit = !earlierRun && report.head !== null && latest !== undefined && latest.head !== report.head;
+	return (
+		<section className="usage-section" aria-labelledby="item-report">
+			<h2 className="usage-title" id="item-report">
+				From the agent that made the change
+			</h2>
+			<p className="usage-lede">{earlierRun ? `From its report in the ${ordinal(report.run)} run. ` : ""}Its own words, filed with its report: the verdict above does not rest on them.</p>
+			<article className="item-verdict-block">
+				<p className="item-verdict-head">
+					<span className="item-report-title">{report.title}</span>
+					<span className="agent-meta">
+						<span>
+							filed <When at={report.at} now={now} />
+						</span>
+						{earlierRun ? <span>the {ordinal(report.run)} run</span> : null}
+						{report.head !== null ? <span>at {report.head.slice(0, 7)}</span> : <span>before a push</span>}
+						{earlierCommit ? <span>an earlier commit than the verdict's</span> : null}
+					</span>
+				</p>
+				<ReviewBlocks blocks={report.blocks} records={report.records ?? []} verdict={verdictFor(report, view.verdicts)} author="The agent" />
+			</article>
 		</section>
 	);
 }
@@ -887,6 +923,7 @@ export function Item({ page }: { page: ItemPage }) {
 			</section>
 
 			<Verdicts view={view} now={now} />
+			{view.report ? <Report view={view} report={view.report} now={now} /> : null}
 			<Cost view={view} />
 
 			<section className="usage-section" aria-labelledby="item-task">

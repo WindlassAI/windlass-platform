@@ -417,8 +417,8 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 				if (error instanceof GithubError && error.status === 422 && /already exists/i.test(error.said)) {
 					const existing = await app.openPull(token, owner, repo, branch, repository.branch);
 					if (existing) {
-						const described = withVerifiedSection(existing.body, said.section);
-						const kept = existing.body.trim() === described ? existing : await app.updatePull(token, owner, repo, existing.number, { title: existing.title, body: described });
+						const described = input.shownIsEnough && input.retitle ? { title, body } : { title: existing.title, body: withVerifiedSection(existing.body, said.section) };
+						const kept = existing.title === described.title && existing.body.trim() === described.body ? existing : await app.updatePull(token, owner, repo, existing.number, described);
 						return { pull: infoOf(kept, now, said.words), opened: false, pushed, retitled: false, head, committedFiles };
 					}
 				}

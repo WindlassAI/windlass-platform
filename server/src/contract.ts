@@ -646,7 +646,7 @@ export interface Verified {
  * from the changes: `Verified.changedAfter`.
  */
 export interface VerifiedFlag {
-	kind: "tests_removed" | "tests_skipped" | "checks_changed" | "exit_ignored";
+	kind: "tests_removed" | "tests_skipped" | "checks_changed" | "exit_ignored" | "agent_instructions_changed";
 	/** What it was seen in: paths, at most a few. */
 	where: string[];
 }
@@ -1229,6 +1229,129 @@ export interface Verdict {
 	said: { ci: string; flags: string[] };
 }
 
+// ---------------------------------------------------------------------------------------------
+// Reviews and reports: what an agent writes for the item's page (Plans "reviewer and its page" §2.2).
+// In R1 the builder's report is the only author; the reviewer files ReviewInput from R3 on.
+// ---------------------------------------------------------------------------------------------
+
+/** What a reviewer recommends. It never changes `Verdict.result`. */
+export type ReviewRecommendation = "approve" | "changes_requested" | "needs_person";
+
+/**
+ * Plain text the web app renders itself: paragraphs (blank lines), lines starting "- " as bullets,
+ * `code` spans, and fenced code blocks of at most REVIEW_LIMITS.fenceLines lines. Nothing else is
+ * interpreted: no links, no images, no HTML, no headings, no emphasis. Saved secrets and control
+ * characters are removed before it is stored.
+ */
+export type ReviewText = string;
+
+/** A place in the repository: a path at the head (or at the base, for removed lines). */
+export interface ReviewLocation {
+	/** Repository-relative: no "..", no leading "/", no NUL, at most REVIEW_LIMITS.pathChars. */
+	path: string;
+	/** Default "head". */
+	side?: "head" | "base";
+	/** 1-based, `end >= start`, at most REVIEW_LIMITS.locationLines lines. */
+	lines?: { start: number; end: number };
+}
+
+/**
+ * A record of the platform's, by the id the platform gave it: `check/<n>` (Verdict.gate.required[n]),
+ * `ci/<n>` (Verdict.ci.runs[n]), `flag/<kind>` (one of Verdict.flags), `command/<id>` (a command the
+ * reviewer ran in its turn, by Windlass's "<message>/<call>"; from R3). `says` is the author's claim
+ * of it; the page shows the platform's record beside the claim.
+ */
+export interface ReviewRef {
+	ref: string;
+	says?: "passed" | "failed" | "ran" | "not_run";
+}
+
+/** The blocks as a reviewer files them (R3). */
+export type ReviewBlockInput =
+	| { kind: "summary"; text: ReviewText }
+	| { kind: "text"; heading?: string; text: ReviewText; refs?: ReviewRef[] }
+	| { kind: "finding"; severity: "blocking" | "should_fix" | "note"; title: string; text: ReviewText; at?: ReviewLocation[]; refs?: ReviewRef[]; /** An earlier round's finding id (r1.f2) this one continues. */ continues?: string }
+	| { kind: "earlier"; finding: string; status: "fixed" | "not_fixed" | "withdrawn"; text?: ReviewText }
+	| { kind: "risk"; text: ReviewText; at?: ReviewLocation[] }
+	| { kind: "question"; text: ReviewText }
+	| { kind: "excerpt"; at: ReviewLocation & { lines: { start: number; end: number } }; note?: ReviewText }
+	| { kind: "screenshot"; file: string; caption: string; shows?: "after" | "before"; page?: string };
+
+export interface ReviewInput {
+	recommendation: ReviewRecommendation;
+	blocks: ReviewBlockInput[];
+}
+
+/** One of the platform's records as it was when the text was filed: what a `ReviewRef` shows. */
+export type ReviewRecord =
+	| { ref: string; kind: "check"; name: string; status: CheckStatus }
+	| { ref: string; kind: "ci"; name: string; app: string; conclusion: string; url: string }
+	| { ref: string; kind: "flag"; flag: VerifiedFlag }
+	| { ref: string; kind: "command"; command: string; exitCode: number | null; outcome: string; /** At most 20 lines, redacted. */ tail: string };
+
+/** The blocks as stored and shown: ids assigned, references resolved, code fetched (R3), files stored (R2). */
+export type ReviewBlock =
+	| { kind: "summary"; text: string }
+	| { kind: "text"; heading: string | null; text: string; refs: ReviewRef[] }
+	| { kind: "finding"; id: string; root: string; severity: "blocking" | "should_fix" | "note"; title: string; text: string; at: ReviewLocation[]; refs: ReviewRef[] }
+	| { kind: "earlier"; finding: string; status: "fixed" | "not_fixed" | "withdrawn"; text: string | null }
+	| { kind: "risk"; text: string; at: ReviewLocation[] }
+	| { kind: "question"; text: string }
+	| { kind: "excerpt"; at: ReviewLocation; code: string; note: string | null }
+	| { kind: "screenshot"; attachment: string };
+
+/**
+ * What the agent that made the change filed with `report`, as the item's page shows it: its own words,
+ * labelled as the author's. Turned into blocks by the platform (review.ts `reportBlocks`): a `text`
+ * block "What it did" (the description), a `text` block "Where to look" (`look_at`), and a `risk` for
+ * what it is unsure of. Never a `summary`: that is the reviewer's.
+ */
+export interface ItemReport {
+	by: "builder";
+	sessionId: string;
+	run: number;
+	/** The step attempt's key it was filed in: <item>:<run>:<step>:<attempt>. */
+	key: string;
+	/** The commit the item's work was pushed at when the turn ended; null when it was not pushed yet. */
+	head: string | null;
+	at: number;
+	title: string;
+	blocks: ReviewBlock[];
+	/** Referenced platform records at filing time. Builder blocks have no references in R1. */
+	records: ReviewRecord[];
+}
+
+export const REVIEW_LIMITS = {
+	inputBytes: 96 * 1024,
+	totalChars: 40_000,
+	blocks: 60,
+	summaryChars: 1_500,
+	textChars: 4_000,
+	headingChars: 80,
+	findings: 30,
+	findingTitleChars: 160,
+	findingChars: 2_000,
+	locationsPerBlock: 5,
+	refsPerBlock: 8,
+	earlierChars: 600,
+	risks: 10,
+	riskChars: 1_000,
+	questions: 5,
+	questionChars: 600,
+	excerpts: 10,
+	excerptLines: 40,
+	excerptLineChars: 300,
+	screenshots: 8,
+	captionChars: 200,
+	pageChars: 300,
+	paths: 20,
+	refs: 40,
+	fenceLines: 60,
+	pathChars: 300,
+	locationLines: 200,
+	lookAtChars: 1_000,
+} as const;
+
 /** The rounds of each kind a run allows (`ItemRun.rounds` counts them): after a stop on one, a person can let it go on. */
 export interface RoundCaps {
 	plan: number;
@@ -1267,6 +1390,8 @@ export interface ItemSummary {
 
 /** An item's page. */
 export interface ItemView extends ItemSummary {
+	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
+	report: ItemReport | null;
 	task: ItemTask;
 	/** The run it is in, or ended last, with the rounds a run allows; null before it was started. */
 	run: (ItemRun & { caps: RoundCaps }) | null;

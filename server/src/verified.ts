@@ -525,6 +525,11 @@ export function workFlags(diff: WorkDiff, checks: ReadonlyArray<{ name: string; 
 	}
 	flag("checks_changed", changed);
 	flag("exit_ignored", ignored);
+	// Both sides of a rename matter: instructions can move into or out of the work. The root config has its own check above.
+	const instructions = [...touched].filter((path) => path !== CONFIG && (
+		/(^|\/)(AGENTS|CLAUDE)\.md$/.test(path) || /(^|\/)\.(windlass|claude|agents|cursor\/rules)\//.test(path) || path === ".github/copilot-instructions.md"
+	));
+	flag("agent_instructions_changed", instructions);
 	return flags;
 }
 
@@ -678,6 +683,8 @@ export function flagWords(kind: VerifiedFlag["kind"]): string {
 			return "Tests were newly skipped or disabled";
 		case "checks_changed":
 			return "What the checks run was changed in this work";
+		case "agent_instructions_changed":
+			return "Instructions for agents were changed in this work";
 		case "exit_ignored":
 			return "A check's command came to ignore an exit status (`|| true` or the like)";
 	}

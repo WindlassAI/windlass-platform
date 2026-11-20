@@ -17,6 +17,7 @@
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
+import { verdictWords } from "../server/src/factory/verdict.js";
 import { checkPort } from "./ports.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -287,7 +288,7 @@ async function drained(jobs: Promise<unknown>[]): Promise<void> {
 async function memoryChecks(): Promise<void> {
 	process.env.WLP_SECRET ??= randomBytes(24).toString("hex");
 	process.env.WLP_SANDBOX = "fake";
-	const { workItem } = await import("../server/src/actors/work-item.js");
+	const { workItem, REPORTS_TABLE } = await import("../server/src/actors/work-item.js");
 	const { advance, createItem, currentKey } = await import("../server/src/factory/blueprint.js");
 	const { FACTORY_DEFAULTS } = await import("../server/src/factory/budget.js");
 	const { serviceParams } = await import("../server/src/auth.js");
@@ -342,6 +343,7 @@ async function memoryChecks(): Promise<void> {
 		await db.execute("CREATE TABLE events (seq INTEGER PRIMARY KEY, at INTEGER, data TEXT)");
 		await db.execute("CREATE TABLE effects (id TEXT PRIMARY KEY, effect TEXT, due_at INTEGER, attempts INTEGER)");
 		await db.execute("CREATE TABLE verdicts (id TEXT PRIMARY KEY, run INTEGER, head TEXT, at INTEGER, data TEXT)");
+		await db.execute(REPORTS_TABLE);
 		const meta = { uid: "u", sessionId: "s", repository: { id: 1 }, source: "web", createdAt: T, updatedAt: T, verdict: null, ledger: { seconds: 0, holds: [] } };
 		await db.execute("INSERT INTO item VALUES (1, ?, ?, NULL)", item.revision, JSON.stringify({ item, meta }));
 		const jobs: Promise<unknown>[] = [];
@@ -374,6 +376,26 @@ async function memoryChecks(): Promise<void> {
 		c.vars = await createVars(c, undefined);
 		return { c, db, raw: memory.raw, holdWrites: memory.holdWrites, failOnce: memory.failOnce, jobs, schedules, publishes, drain: () => drained(jobs) };
 	};
+
+	await check("memory: storing a builder report and the turn together survives rollback, redelivery and reload", async () => {
+		const m = machine();
+		m.send({ kind: "start" });
+		const actor = await itemActor(m.item);
+		const fact = { kind: "turn_ended", at: T + 10, key: currentKey(m.item), outcome: "succeeded", verified: null, flags: [], changes: true, spend: { tokens: 1, hostedSeconds: 0 }, pushedHead: HEAD,
+			report: { title: "Fix", description: "Made it work", lookAt: "src/a", concerns: "Boundary" } };
+		actor.failOnce((sql) => sql.startsWith("INSERT OR REPLACE INTO reports"));
+		const rolledBack = await actions.internalFact(actor.c, fact).then(() => false, () => true);
+		const before = await actions.internalView(actor.c);
+		assert(rolledBack && before.revision === m.item.revision && before.report === null, "the turn or report survived the failed transaction");
+		await actions.internalFact(actor.c, fact);
+		await actions.internalFact(actor.c, { ...fact, report: { ...fact.report, title: "Duplicate" } });
+		await actor.drain();
+		actor.c.vars = await createVars(actor.c, undefined);
+		const after = await actions.internalView(actor.c);
+		const rows = actor.raw.prepare("SELECT key FROM reports").all();
+		assert(rows.length === 1 && rows[0].key === fact.key && actor.publishes.length === 1 && after.report?.title === "Fix" && after.report.head === HEAD && after.report.blocks.length === 3, "expected one unchanged report for the pushed head and step");
+		return "one report row and one publish after redelivery";
+	});
 
 	await check("memory: two actions at once store the item's revision with its own data, and the item can still be acted on", async () => {
 		const m = machine();
@@ -975,7 +997,7 @@ function checkHandoff(pull: StandinPull, view: ItemView) {
 	const own = pull.comments.filter((one) => one.user.login === `${standin.slug}[bot]`);
 	assert(own.length === 1, `expected one platform comment, got ${own.length}`);
 	const comment = own[0]!;
-	assert(comment.body.startsWith(`<!-- windlass-item:${view.id} -->\n\n**Windlass verdict at ${verdict.head.slice(0, 7)}: ${verdict.result}**`), "the comment is missing the marker or the current verdict");
+	assert(comment.body.startsWith(`<!-- windlass-item:${view.id} -->\n\n**Windlass at ${verdict.head.slice(0, 7)}: ${verdictWords(verdict, null).split(".", 1)[0]}**`), "the comment is missing the marker or the current verdict");
 	return comment;
 }
 
@@ -1229,10 +1251,12 @@ try {
 	});
 
 	await check("sleep: an item waiting on its CI schedule while the server is stopped and started again proceeds when the time comes", async () => {
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Across a restart", body: "Add a small program to the repository.", start: true });
+		const item = await user.createItem({ repository: { id: harbor.id }, title: "Across a restart", body: "Add a small program to the repository. (report)", start: true });
 		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null && view.wait?.reason === "ci", 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === pushed.pullRequest?.number);
 		assert(pull, "no pull request");
+		assert(pushed.report?.title === "Report of turn 1", "the item did not store the report filed through the host tool");
+		assert(pull.body.startsWith("What the fake agent did.") && !pull.body.includes("notes/turn-1.md"), "the first publish must use the description and omit look_at");
 		await main.stop();
 		setCi(harbor, pull.head, "success");
 		standin.commentFault = "lose_reply";
@@ -1245,6 +1269,9 @@ try {
 			standin.commentFault = null;
 		}
 		const original = checkHandoff(pull, handed);
+		const blocks = handed.report?.blocks;
+		assert(blocks?.length === 2 && blocks[0].kind === "text" && blocks[0].heading === "What it did" && blocks[0].text === "What the fake agent did." && blocks[1].kind === "text" && blocks[1].heading === "Where to look" && blocks[1].text === "notes/turn-1.md", "the reviewed page lost the filed blocks after restart");
+		assert(original.body.includes("What the fake agent did\\.") && original.body.includes("notes/turn-1\\.md"), "the marked comment is missing the builder’s report");
 		const edits = () => standin.requests.filter((call) => call.method === "PATCH" && call.path.endsWith(`/issues/comments/${original.id}`) && call.status === 200).length;
 		await main.start({ ...standin.env(), WLP_FACTORY_HOSTED_RUNNING: "20", WLP_FAKE_DELAY_MS: "25" });
 		await waitFor("the replay to write its comment", () => edits() > 0 || pull.comments.length > 1, 60_000);
@@ -1257,6 +1284,8 @@ try {
 		const second = await untilItem(user, item.id, "the second handoff", (view) => view.state === "review" && view.verdicts.length === 2, CI_WAIT_MS);
 		await waitFor("the second handoff to edit the same comment", () => edits() === 2, 10_000);
 		const updated = checkHandoff(pull, second);
+		assert(second.report === null && !updated.body.includes("What the fake agent did"), "the second run shows the first report");
+		assert(pull.title === item.title && pull.body.startsWith("Add a small program to the repository. (report)") && !pull.body.includes("What the fake agent did"), "the second publish kept the previous report’s PR title or description");
 		assert(updated.id === original.id && updated.body.includes("CI passed \\(2 checks\\)"), "the second verdict did not replace the first on the same comment");
 		const fired = main.text.match(/\[wlp\] schedule\.fired action=internalDue item=[^\n]*/g) ?? [];
 		assert(fired.length > 0, "no firing of the item's schedule was logged");

@@ -273,6 +273,83 @@
 	list-style: disc;
 }
 
+/* The agent's report: its blocks as rows of the verdict's facts, its words as plain text. */
+.item-report-title {
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+.review-text {
+	max-width: 74ch;
+	overflow-wrap: anywhere;
+}
+.review-text > * + *,
+.review-at + .review-text,
+.review-title + .review-text,
+.review-excerpt + .review-text {
+	margin-top: 0.55em;
+}
+.review-text p {
+	white-space: pre-wrap;
+}
+.review-text ul {
+	display: grid;
+	gap: 2px;
+	padding-left: 18px;
+	list-style: disc;
+}
+.review-text pre,
+.review-excerpt,
+.review-tail pre {
+	max-width: 100%;
+	padding: 8px 12px;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-m);
+	background: var(--bg-sunk);
+	font-size: var(--size-mono-small);
+	line-height: 1.55;
+	white-space: pre;
+	overflow-x: auto;
+}
+.review-text pre code,
+.review-excerpt code,
+.review-tail pre code {
+	font-size: inherit;
+	color: var(--ink);
+	overflow-wrap: normal;
+}
+.review-ln {
+	margin-right: 1.4em;
+	color: var(--ink-faint);
+	user-select: none;
+}
+.review-title {
+	font-weight: 600;
+	color: var(--ink);
+	overflow-wrap: anywhere;
+}
+.review-at {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px 14px;
+	margin-bottom: 4px;
+}
+.review-severity {
+	font-weight: 600;
+}
+.review-title .review-severity {
+	font-weight: 400;
+	color: var(--ink-dim);
+}
+.review-refs {
+	margin-top: 8px;
+}
+.review-tail summary {
+	cursor: pointer;
+}
+.review-tail pre {
+	margin-top: 4px;
+}
+
 /* Cost: each figure against its budget, with a thin bar. */
 .item-cost > div {
 	grid-template-columns: 132px 220px minmax(0, 1fr);

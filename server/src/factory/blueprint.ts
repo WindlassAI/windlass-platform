@@ -357,7 +357,9 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	}
 	if (kind === "refine") {
 		const more = run.rounds.plan < RULES.planRounds;
-		const text = fact.report ? `The planner proposes this plan:\n\n${fact.report}` : "The planner ended its turn without filing a plan.";
+		const report = fact.report;
+		const plan = report && typeof report !== "string" ? [report.title, report.description, report.concerns ? `Unsure of: ${report.concerns}` : ""].filter(Boolean).join("\n\n") : report;
+		const text = plan ? `The planner proposes this plan:\n\n${plan}` : "The planner ended its turn without filing a plan.";
 		return ask(c, "plan_approval", text, [choice("approve"), ...(more ? [choice("revise")] : []), choice("give_up")], null, null, "Waiting for you to approve the plan.");
 	}
 	if (!fact.changes) {

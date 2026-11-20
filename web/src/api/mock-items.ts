@@ -734,6 +734,8 @@ function flagWords(kind: Verdict["flags"][number]["kind"]): string {
 			return "Tests were newly skipped or disabled";
 		case "checks_changed":
 			return "What the checks run was changed in this work";
+		case "agent_instructions_changed":
+			return "Instructions for agents were changed in this work";
 		case "exit_ignored":
 			return "A check's command came to ignore an exit status (`|| true` or the like)";
 	}
@@ -863,10 +865,19 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		head,
 		events,
 		verdicts,
+		report: seed.n === 24 ? {
+			by: "builder", sessionId: "", run: 1, key: `${id}:1:1:1`, head: null, at: ago(50),
+			title: "Log the SHA-256 after each upload", records: [],
+			blocks: [
+				{ kind: "text", heading: "What it did", text: "Added the uploaded file’s checksum to its log entry.", refs: [] },
+				{ kind: "text", heading: "Where to look", text: "Read the log call after the upload completes.", refs: [] },
+				{ kind: "risk", text: "I only exercised single-file uploads.", at: [] },
+			],
+		} : null,
 	};
 }
 
-const summaryOf = ({ task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, ...summary }: ItemView): ItemSummary => summary;
+const summaryOf = ({ task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, report: _report, ...summary }: ItemView): ItemSummary => summary;
 
 function seedTokens(state: MockItemsState, at: number): ApiToken[] {
 	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
@@ -895,11 +906,14 @@ export function createMockItems(deps: MockItemsDeps) {
 		if (!found) {
 			const at = deps.now();
 			const items = seeds(state, at, deps.machines(auth)?.list ?? null)
-				.map((seed) => viewOf(seed, at, auth.profile.uid))
+				.map((seed) => withSeededReport(viewOf(seed, at, auth.profile.uid), seed.n))
 				.sort((a, b) => b.createdAt - a.createdAt);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };
 			kept.set(auth.profile.uid, found);
-			for (const item of items) item.sessionId = deps.seededSession(auth, item);
+			for (const item of items) {
+				item.sessionId = deps.seededSession(auth, item);
+				if (item.report) item.report.sessionId = item.sessionId;
+			}
 		}
 		return found;
 	}
@@ -982,7 +996,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 }, caps: ROUND_CAPS };
 		if (before && before.endedAt === null) Object.assign(before, { endedAt: at, stopReason: "retried" });
 		item.events.push({ at, by: `person:${auth.profile.uid}`, step: null, said });
-		change(auth, item, { state: "queued", wait: null, question: null, run }, [], "person");
+		change(auth, item, { state: "queued", wait: null, question: null, run, report: null }, [], "person");
 		deps.later(2500, () => {
 			if (item.run !== run || item.state !== "queued") return;
 			startTurn(auth, item);
@@ -1108,6 +1122,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					head: null,
 					events: [],
 					verdicts: [],
+					report: null,
 				};
 				mine.items.unshift(item);
 				if (typeof idempotencyKey === "string") mine.made.set(idempotencyKey, { content, id });
@@ -1173,3 +1188,128 @@ export function createMockItems(deps: MockItemsDeps) {
 	return { calls, machinesChanged, prepare };
 }
 
+// ---- the agent's reports on the item's page (Reviewer slice R1-C) -----------------------------------
+// Kept apart from the rest of the seeds: an item listed here gets this report on its page, whatever
+// `viewOf` gave it; every other item keeps what `viewOf` gave.
+
+type MockReport = NonNullable<ItemView["report"]>;
+type MockBlock = MockReport["blocks"][number];
+
+/** A fence of `count` numbered lines of code, for the 60-line cut. */
+const fence = (count: number) => ["```ts", ...Array.from({ length: count }, (_, index) => `const station${index + 1} = load("station-${index + 1}"); // line ${index + 1}`), "```"].join("\n");
+
+/** Text an agent might file, with everything the page must show as typed and never act on. */
+const HOSTILE = [
+	"Kept the station list in memory for the run. Hi @octocat, see [link](https://e.example) and ![](https://e.example/a.png).",
+	'<img src="https://e.example/b.png" onerror="alert(1)">',
+	"<script>alert(1)</script>",
+	"# Heading",
+	"**bold**, _emphasis_ and a bare https://e.example/c stay as typed.",
+	"",
+	"- `stations.ts` keeps the list",
+	"- [another](javascript:alert(1)) link",
+	"",
+	fence(40),
+].join("\n");
+
+const SEEDED_REPORTS: Record<number, { run?: number; title: string; blocks: MockBlock[] }> = {
+	// Every kind of block the page renders in R1 (screenshots come with R2), with references the record bears out.
+	41: {
+		title: "Remove the CSV export and its tests",
+		blocks: [
+			{ kind: "summary", text: "Removed the CSV export from the menu and the API, with its tests. Nothing else in the repository reads the exporter." },
+			{
+				kind: "text",
+				heading: "What it did",
+				text: "Deleted `src/export/csv.ts` and the menu entry that opened it.\n\nThe route `/export.csv` stays, and answers 410 Gone so that a script still calling it learns why.\n\n- removed `test/export-csv.test.ts`, which only tested the exporter\n- left `test/menu.test.ts`, which now checks the entry is gone",
+				refs: [{ ref: "flag/tests_removed" }, { ref: "ci/1", says: "passed" }],
+			},
+			{ kind: "text", heading: "Where to look", text: "- `src/menu.ts`: the entry is gone\n- `src/api/routes.ts` around line 88: the route that answers 410", refs: [] },
+			{ kind: "finding", id: "r1.f1", root: "r1.f1", severity: "should_fix", title: "The changelog does not mention the removal", text: "A user upgrading would find the menu entry gone with no note. One line under 3.0 would do.", at: [{ path: "CHANGELOG.md", lines: { start: 1, end: 12 } }], refs: [] },
+			{ kind: "finding", id: "r1.f2", root: "r1.f2", severity: "note", title: "The 410 answer has no body", text: "It could say which version removed the export.", at: [{ path: "src/api/routes.ts", lines: { start: 88, end: 88 } }], refs: [] },
+			{ kind: "earlier", finding: "r1.f3", status: "fixed", text: "The menu test now checks that the entry is gone." },
+			{ kind: "risk", text: "A script may still call `/export.csv`. It gets 410, not 404; I did not find any such script in the repository.", at: [{ path: "src/api/routes.ts", lines: { start: 80, end: 95 } }] },
+			{ kind: "question", text: "Should the 410 answer name the version that removed the export?" },
+			{
+				kind: "excerpt",
+				at: { path: "src/api/routes.ts", lines: { start: 86, end: 91 } },
+				code: ['router.get("/export.csv", (_request, response) => {', "\t// Removed in 3.0: the export had no users.", "\tresponse.status(410).end();", "});", "", 'router.get("/export.json", exportJson);'].join("\n"),
+				note: "The route that stays, answering 410.",
+			},
+		],
+	},
+	// A claim the platform's record does not bear out, beside one it does.
+	26: {
+		title: "Use glob's promise API in the release script",
+		blocks: [
+			{
+				kind: "text",
+				heading: "What it did",
+				text: "Replaced `glob.sync` with `await glob(…)` in the release script, and made its caller async.\n\nLint passes and the unit tests pass.",
+				refs: [
+					{ ref: "ci/2", says: "passed" },
+					{ ref: "check/1", says: "passed" },
+					{ ref: "ci/7", says: "passed" },
+				],
+			},
+			{ kind: "text", heading: "Where to look", text: "`scripts/release.ts`, the `collect` function.", refs: [] },
+		],
+	},
+	// A description only.
+	37: {
+		title: "Put the request id in every error line",
+		blocks: [{ kind: "text", heading: "What it did", text: "The error logger now takes the request from the handler's context and writes its id first on every line.", refs: [] }],
+	},
+	// Hostile text: links, images, HTML, a heading, and fences of 40 and 70 lines, all kept as typed.
+	38: {
+		title: "Cache the station list <b>once</b> [per run](https://e.example)",
+		blocks: [
+			{ kind: "text", heading: "What it did", text: HOSTILE, refs: [] },
+			{ kind: "text", heading: "Where to look", text: `The whole loader, all of it:\n\n${fence(70)}`, refs: [] },
+			{ kind: "risk", text: "<a href=\"https://e.example\">click</a> and `<script>` in a code span.", at: [{ path: "src/<b>stations</b>.ts", lines: { start: 3, end: 3 } }] },
+		],
+	},
+	// Sent back, and the second run filed no report: the page shows the first run's.
+	31: {
+		run: 1,
+		title: "Add GET /healthz",
+		blocks: [
+			{ kind: "text", heading: "What it did", text: "Added `GET /healthz`: 503 until the database answers a ping, then 200 with `{ version }`.", refs: [] },
+			{ kind: "risk", text: "It does not know about migrations: during one it answers 200.", at: [] },
+		],
+	},
+};
+
+/** The platform's record a reference names, from the item's verdict, as the server keeps it beside the report (`ItemReport.records`). */
+function seededRecord(ref: string, verdict: Verdict | undefined): MockReport["records"][number][] {
+	if (!verdict) return [];
+	const [kind, name = ""] = ref.split("/");
+	const check = kind === "check" ? verdict.gate.required[Number(name)] : undefined;
+	if (check) return [{ ref, kind: "check", name: check.name, status: check.status }];
+	const run = kind === "ci" ? verdict.ci.runs[Number(name)] : undefined;
+	if (run) return [{ ref, kind: "ci", ...run }];
+	const flag = kind === "flag" ? verdict.flags.find((one) => one.kind === name) : undefined;
+	return flag ? [{ ref, kind: "flag", flag }] : [];
+}
+
+function withSeededReport(view: ItemView, n: number): ItemView {
+	const seeded = SEEDED_REPORTS[n];
+	if (!seeded) return view;
+	const run = seeded.run ?? view.run?.n ?? 1;
+	const verdict = view.verdicts.findLast((one) => one.run === run);
+	const refs = [...new Set(seeded.blocks.flatMap((block) => ("refs" in block ? block.refs.map((ref) => ref.ref) : [])))];
+	// Filed as the turn ended, a little before the verdict.
+	const at = (verdict?.at ?? view.updatedAt) - 2 * MINUTE;
+	const report: MockReport = {
+		by: "builder",
+		sessionId: view.sessionId,
+		run,
+		key: `${view.id}:${run}:1:1`,
+		head: verdict?.head ?? view.head,
+		at,
+		title: seeded.title,
+		blocks: seeded.blocks,
+		records: refs.flatMap((ref) => seededRecord(ref, verdict)),
+	};
+	return { ...view, report };
+}

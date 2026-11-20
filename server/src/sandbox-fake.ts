@@ -1037,7 +1037,7 @@ class FakeWindlass implements Windlass {
 						["(report)", "report", input.onReport],
 					] as const) {
 						if (!text.includes(word) || run === undefined || signal?.aborted) continue;
-						const call = { messageId: currentStep ?? "msg_fake", callId: `call_${name}`, arguments: name === "report" ? { title: `Report of turn ${turn}`, description: "What the fake agent did." } : name === "push" ? { message: `Push of turn ${turn}` } : {} };
+						const call = { messageId: currentStep ?? "msg_fake", callId: `call_${name}`, arguments: name === "report" ? { title: `Report of turn ${turn}`, description: "What the fake agent did.", look_at: `notes/turn-${turn}.md` } : name === "push" ? { message: `Push of turn ${turn}` } : {} };
 						// `input` as Windlass writes it for every call, a host tool's too: the model's arguments as JSON text (its event/durable.ts, `tool.called`).
 						emit({ type: "tool.called", v: 1, data: { messageId: call.messageId, callId: call.callId, name, input: JSON.stringify(call.arguments) }, seq: 0, time: 0 });
 						const output = await Promise.resolve(run(call, signal ?? new AbortController().signal)).catch(() => "The platform could not handle this call.");

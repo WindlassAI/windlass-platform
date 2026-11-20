@@ -190,7 +190,8 @@ import { VerificationLog, outputTail, withOutputs } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { grantIsValid, type ReserveAnswer, secretsActor, type SessionCreateInput, userActor } from "./internal.js";
-import { type AgentReport, REPORT_REFUSED, REPORT_TAKEN, reportOf } from "../agent-publish.js";
+import type { AgentReport } from "../agent-publish.js";
+import { fileReport } from "../factory/review.js";
 import type { Fact } from "../factory/types.js";
 import { DeploymentFull, WindlassUnaskedError } from "../sandbox/api.js";
 import type { ItemPublishAnswer } from "./work-item.js";
@@ -404,7 +405,7 @@ interface SessionMeta {
 	/** For a session on one of the user's machines: the machine's name at launch. Absent in a session from before it was kept. */
 	machineName?: string | null;
 	/** What the item's agent last filed with `report`: the pull request's title and description. */
-	report?: AgentReport | null;
+	report?: (AgentReport & { run: number }) | null;
 }
 
 /** What `prompt()` answers: the turn the message is in, and whether it was steered into one that ran. */
@@ -1758,7 +1759,7 @@ async function readCheckOutputs(c: Ctx, sandbox: SandboxHandle, outputs: Array<{
  * checked that nothing is in the way. `shownIsEnough` for the item's step: its agent may have pushed
  * everything itself (`agentPush`), and then an open pull request is only described again.
  */
-async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, shownIsEnough = false): Promise<PublishResult> {
+async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false): Promise<PublishResult> {
 	const app = githubApp();
 	if (!app || !meta.sandboxId) throw new UserError(publishBlocked(c, meta) ?? "There is nothing to push yet.", { code: "publish_blocked" });
 	// A suspend or removal of the idle sandbox finishes first, as before a prompt.
@@ -1779,7 +1780,7 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 	meta.publishBranch = branch;
 	try {
 		// An item's step pushes over the platform's own last push where its agent rebased and did not push; the panel's never forces.
-		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: shownIsEnough ? (meta.platformPushed ?? null) : null, message, shownIsEnough, evidence: await evidenceOf(c, meta, null) });
+		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: itemPublish ? (meta.platformPushed ?? null) : null, message, shownIsEnough: itemPublish, retitle: itemPublish, evidence: await evidenceOf(c, meta, null) });
 		if (published.head) published.pushed = recordPushHead(meta, sandbox, published.head);
 		meta.pull = published.pull;
 		meta.updatedAt = Date.now();
@@ -3091,6 +3092,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				throw new TurnProblem(said);
 			}
 			const tools = meta.repo !== null && githubApp() !== null;
+			const item = active.item;
 			const servers: ServerQuestionContext = {
 				profile,
 				demo: meta.demo,
@@ -3118,15 +3120,12 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				prompt: `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${onBase ? setupOnBaseNote(onBase) : ""}${text}`,
 				maxSteps: active.item?.row.maxSteps,
 				// A work item's agent files its report, which the platform puts on the pull request it pushes itself.
-				onReport: active.item
-					? (request) => {
-							const filed = reportOf(request.arguments, held.redactor);
-							if (filed === null) return REPORT_REFUSED;
-							if (active.item) active.item.report = filed;
-							meta.report = filed;
+				onReport: item
+					? (request) => fileReport(request.arguments, held.redactor, (filed) => {
+							item.report = filed;
+							meta.report = { ...filed, run: Number(item.row.key.split(":")[1]) };
 							note(c, turn, "info", `The agent filed its report: “${filed.title}”.`);
-							return REPORT_TAKEN;
-						}
+						})
 					: undefined,
 				windlassSessionId: resumed ?? undefined,
 				model: meta.model,
@@ -3590,8 +3589,6 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
 		const first = append(c, { turn, kind: "user", text: row.text, model: meta.model, effort: null });
-		// A run's first turn: the report an earlier run's agent filed is not this run's, and the item's publish must not take it.
-		if (row.startsRun) meta.report = null;
 		publish(c);
 		const active: ActiveTurn = { number: turn, effort: null, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishes: new Set(), item: { row: { ...row, state: "started", turn, slot }, report: null, full: null, started: false, pushedAtStart: meta.pushedHead ?? null } };
 		c.vars.turn = active;
@@ -3665,10 +3662,9 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		return;
 	}
 	const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.branch, ended.checks, ended.verified).catch(() => []) : [];
-	const report = item.report === null ? null : [item.report.title, item.report.description, item.report.concerns ? `Unsure of: ${item.report.concerns}` : ""].filter((part) => part !== "").join("\n\n");
 	// Not known (git said nothing): taken as changed, and the push says whether there was anything. What the agent pushed itself in the turn is a change too.
 	const changed = ended.unpushed !== false || (meta.pushedHead ?? null) !== item.pushedAtStart;
-	const fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, report, ended.usage), ...(item.refused ? { refused: item.refused } : {}) };
+	const fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage), pushedHead: meta.pushedHead ?? null, ...(item.refused ? { refused: item.refused } : {}) };
 	await serial(c, () =>
 		c.db.transaction(async (tx) => {
 			await markEnded(tx, row, fact);
@@ -4371,7 +4367,7 @@ export const agentSession = actor({
 			c.vars.publishing = true;
 			const release = takeSandbox(c);
 			try {
-				const report = meta.report;
+				const report = meta.report?.run === Number(input.key.split(":")[1]) ? meta.report : null;
 				const body = report ? [report.description, report.concerns ? `**What the agent is unsure of:** ${report.concerns}` : ""].filter((part) => part !== "").join("\n\n") : String(input?.body ?? "");
 				const result = await c.keepAwake(publishSession(c, meta, repo, { title: report?.title || String(input?.title ?? meta.title), body }, true));
 				const pull = result.state.pullRequest;

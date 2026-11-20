@@ -296,6 +296,6 @@ export async function turnFlags(sandbox: SandboxHandle, base: string, checks: Re
 }
 
 /** The fact of a turn's end, for the item. `hostedSeconds` is the ledger's, which the item reads from the user's actor. */
-export function endedFactOf(key: string, at: number, outcome: TurnOutcome, verified: Verified | null, flags: Extract<Fact, { kind: "turn_ended" }>["flags"], changes: boolean, report: string | null, usage: TurnUsage | null): Extract<Fact, { kind: "turn_ended" }> {
+export function endedFactOf(key: string, at: number, outcome: TurnOutcome, verified: Verified | null, flags: Extract<Fact, { kind: "turn_ended" }>["flags"], changes: boolean, report: Extract<Fact, { kind: "turn_ended" }>["report"], usage: TurnUsage | null): Extract<Fact, { kind: "turn_ended" }> {
 	return { kind: "turn_ended", at, key, outcome, verified, flags, changes, report, spend: { tokens: turnTokens(usage), hostedSeconds: 0 } };
 }

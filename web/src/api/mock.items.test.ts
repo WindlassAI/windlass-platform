@@ -2,12 +2,15 @@
  * The mock's work items and API tokens: what the item screens are looked at with, by hand and here. It
  * answers as the server's user actor says it does (contract.ts, `UserActions.listItems` to `revokeApiToken`).
  */
-import { MAX_API_TOKENS, type ItemSummary, type Verdict, type Verified, type VerifiedCheck } from "@contract";
+import { MAX_API_TOKENS, type CheckStatus, type ItemSummary, type ReviewBlock, type ReviewRecord, type Verdict, type Verified, type VerifiedCheck } from "@contract";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { GateEvidence } from "../../../server/src/factory/types";
 import { ciSentence as serverCiSentence, verdictOf, verdictWords } from "../../../server/src/factory/verdict";
 import { createMockClient, type MockMachineState } from "./mock";
 import { REMOVED_MACHINE_ID, ciSentence, seededVerdicts, verdictSaid, type MockItemsState, type SeedVerdict } from "./mock-items";
+import { disagrees, partsOf, ReviewBlocks, ReviewText } from "../components/ReviewBlocks";
 
 const auth = { token: "mock:chatgpt:u_items:ada@example.com", profile: { uid: "u_items", email: "ada@example.com", demo: false } };
 const make = (items?: MockItemsState, machine?: MockMachineState) => createMockClient({ pace: 0, items, machine });
@@ -304,5 +307,107 @@ describe("the mock's work items", () => {
 		await expect(mock.user(auth).listItems()).rejects.toMatchObject({ code: "network" });
 		await expect(mock.user(auth).factoryLimits()).rejects.toMatchObject({ code: "network" });
 		mock.dispose();
+	});
+});
+
+describe("the agent's report on an item's page", () => {
+	/** The seeded item by its title, with the report's blocks rendered as the page renders them. */
+	async function rendered(title: string) {
+		const mock = make();
+		const user = mock.user(auth);
+		const summary = (await user.listItems()).find((item) => item.title === title) as ItemSummary;
+		const view = await user.item(summary.id);
+		mock.dispose();
+		const report = view.report;
+		if (!report) return { view, html: "" };
+		const verdict = view.verdicts.findLast((one) => one.head === report.head) ?? null;
+		return { view, html: renderToStaticMarkup(createElement(ReviewBlocks, { blocks: report.blocks, records: report.records, verdict, author: "The agent" })) };
+	}
+
+	it("renders every kind of block as plain text, labelled with its kind, and never as the reviewer's", async () => {
+		const { view, html } = await rendered("Drop the legacy export");
+		expect(view.report?.by).toBe("builder");
+		const kinds: ReviewBlock["kind"][] = ["summary", "text", "finding", "earlier", "risk", "question", "excerpt"];
+		for (const kind of kinds) expect(html).toContain(`review-block-${kind}`);
+		// A screenshot (R2) says it is not shown, and shows nothing it could fetch.
+		const shot = renderToStaticMarkup(createElement(ReviewBlocks, { blocks: [{ kind: "screenshot", attachment: "a_1" }], records: [], verdict: null, author: "The agent" }));
+		expect(shot).toContain("screenshots are not shown on this platform yet");
+		for (const out of [html, shot]) {
+			expect(out).not.toMatch(/<a[\s>]|<img|<script|<h[1-6]|<strong|<em/);
+			expect(out.toLowerCase()).not.toContain("reviewer");
+		}
+		// A finding's place is `path:line` in the code style; its severity a word.
+		expect(html).toContain('<code class="item-paths">src/api/routes.ts:88</code>');
+		expect(html).toContain("Should fix");
+		// The excerpt numbers its lines from where it starts.
+		expect(html).toMatch(/<span class="review-ln"[^>]*>86<\/span>router\.get/);
+	});
+
+	it("keeps hostile agent text as typed: no link, image, markup or heading, and a long fence cut at 60 lines", async () => {
+		const { html } = await rendered("Cache the station list");
+		expect(html).toContain("[link](https://e.example)");
+		expect(html).toContain("![](https://e.example/a.png)");
+		expect(html).toContain("@octocat");
+		expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+		expect(html).toContain("&lt;img src=&quot;https://e.example/b.png&quot; onerror=&quot;alert(1)&quot;&gt;");
+		expect(html).toContain("# Heading");
+		expect(html).toContain("**bold**, _emphasis_");
+		expect(html).toContain("[another](javascript:alert(1))");
+		expect(html).toContain("src/&lt;b&gt;stations&lt;/b&gt;.ts:3");
+		expect(html).not.toMatch(/<a[\s>]|<img|<script|<h[1-6]|<strong|<em|<b>/);
+		expect(html).not.toMatch(/<[^>]*\shref=/);
+		// The 40-line fence whole; the 70-line one shows 60 lines, then "…".
+		const fences = [...html.matchAll(/<pre[^>]*><code>([\s\S]*?)<\/code><\/pre>/g)].map((match) => (match[1] ?? "").split("\n"));
+		expect(fences.map((lines) => lines.length)).toEqual([40, 61]);
+		expect(fences[1]?.at(-2)).toContain("line 60");
+		expect(fences[1]?.at(-1)).toBe("…");
+		expect(html).not.toContain("line 61");
+	});
+
+	it("shows the platform's record beside the agent's claim, and marks the claims it does not bear out", async () => {
+		const { html } = await rendered("Replace the deprecated glob call");
+		const disagreeing = [...html.matchAll(/<li[^>]*data-disagrees[^>]*>([\s\S]*?)<\/li>/g)].map((match) => (match[1] ?? "").replace(/<[^>]+>/g, ""));
+		expect(disagreeing).toEqual(["The agent says it passed; the platform&#x27;s record: CI lint failure.", "The agent names ci/7 and says it passed; the platform has no such record."]);
+		// The claim the record bears out is shown with it, unmarked.
+		expect(html.replace(/<[^>]+>/g, "")).toContain("The platform&#x27;s record: your check lint passed, as the agent says");
+	});
+
+	it("reads a claim against a record as the record has it", () => {
+		const ci = (conclusion: string): ReviewRecord => ({ ref: "ci/0", kind: "ci", name: "test", app: "github-actions", conclusion, url: "https://github.com/a/b/actions/runs/1" });
+		const check = (status: CheckStatus): ReviewRecord => ({ ref: "check/0", kind: "check", name: "unit", status });
+		expect(disagrees("passed", ci("success"))).toBe(false);
+		expect(disagrees("passed", ci("failure"))).toBe(true);
+		expect(disagrees("passed", ci(""))).toBe(true);
+		expect(disagrees("failed", ci("success"))).toBe(true);
+		expect(disagrees("ran", ci("not_run"))).toBe(true);
+		expect(disagrees("ran", ci("skipped"))).toBe(true);
+		expect(disagrees("not_run", ci("failure"))).toBe(true);
+		expect(disagrees("ran", check("failed"))).toBe(false);
+		expect(disagrees("passed", check("timed_out"))).toBe(true);
+		expect(disagrees("not_run", check("could_not_start"))).toBe(false);
+		expect(disagrees(undefined, ci("failure"))).toBe(false);
+		expect(disagrees("passed", { ref: "flag/tests_removed", kind: "flag", flag: { kind: "tests_removed", where: ["a.test.ts"] } })).toBe(false);
+	});
+
+	it("renders paragraphs, bullets, code spans and fences, and nothing else", () => {
+		expect(partsOf("One\nline two\n\n- a `b`\n- c\nAfter\n\n```js\nx()\n```\n# not a heading")).toEqual([
+			{ kind: "p", text: "One\nline two" },
+			{ kind: "ul", items: ["a `b`", "c"] },
+			{ kind: "p", text: "After" },
+			{ kind: "pre", lines: ["x()"], cut: 0 },
+			{ kind: "p", text: "# not a heading" },
+		]);
+		const html = renderToStaticMarkup(createElement(ReviewText, { text: "Use `a<b>` here; *not* [this](https://e.example)." }));
+		expect(html).toBe('<div class="review-text"><p>Use <code>a&lt;b&gt;</code> here; *not* [this](https://e.example).</p></div>');
+	});
+
+	it("seeds a report of an earlier run, and items in review without one", async () => {
+		const { view } = await rendered("Add a health check endpoint");
+		expect(view.report?.run).toBe(1);
+		expect(view.run?.n).toBe(2);
+		const none = await rendered("Make the station parser accept tabs");
+		expect(none.view).toMatchObject({ state: "review", report: null });
+		const only = await rendered("Log the request id with each error");
+		expect(only.view.report?.blocks.map((block) => block.kind)).toEqual(["text"]);
 	});
 });

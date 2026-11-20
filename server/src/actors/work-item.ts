@@ -31,8 +31,9 @@
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { clientError, describeError, requireService } from "../auth.js";
-import { type ItemAction, type ItemEvent, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
+import { type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
 import { RULES, advance, currentKey } from "../factory/blueprint.js";
+import { itemComment, reportBlocks } from "../factory/review.js";
 import type { Effect, Fact, FactoryItem } from "../factory/types.js";
 import { githubApp, GithubError } from "../github/app.js";
 import { readCi } from "../github/ci.js";
@@ -162,6 +163,23 @@ function viewOf(c: Ctx): Promise<ItemView> {
 	});
 }
 
+/** The report and its reference snapshots share one JSON value and one transaction with the turn. */
+export const REPORTS_TABLE = "CREATE TABLE IF NOT EXISTS reports (key TEXT PRIMARY KEY, run INTEGER NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)";
+
+export async function storeReport(db: Pick<RawAccess, "execute">, item: FactoryItem, sessionId: string, fact: Extract<Fact, { kind: "turn_ended" }>): Promise<void> {
+	if (!item.run || !fact.report || typeof fact.report === "string") return;
+	const report: ItemReport = {
+		by: "builder", sessionId, run: item.run.n, key: fact.key, head: fact.pushedHead === undefined ? item.head : fact.pushedHead,
+		at: fact.at, title: fact.report.title, blocks: reportBlocks(fact.report), records: [],
+	};
+	await db.execute("INSERT OR REPLACE INTO reports (key, run, at, data) VALUES (?, ?, ?, ?)", report.key, report.run, report.at, JSON.stringify(report));
+}
+
+export async function latestReport(db: Pick<RawAccess, "execute">, run: number): Promise<ItemReport | null> {
+	const [row] = await db.execute<{ data: string }>("SELECT data FROM reports WHERE run = ? ORDER BY at DESC, rowid DESC LIMIT 1", run);
+	return row ? JSON.parse(row.data) as ItemReport : null;
+}
+
 async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 	const run = stored.item.run;
 	const events = await c.db.execute<{ data: string }>("SELECT data FROM (SELECT seq, data FROM events ORDER BY seq DESC LIMIT ?) ORDER BY seq", VIEW_EVENTS);
@@ -172,6 +190,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		// What the gate and CI read stays here: the page shows the run as the contract has it.
 		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, step: run.step, rounds: run.rounds, caps: ROUND_CAPS },
 		head: stored.item.head,
+		report: run ? await latestReport(c.db, run.n) : null,
 		events: events.map((row) => JSON.parse(row.data) as ItemEvent),
 		verdicts: verdicts.map((row) => JSON.parse(row.data) as Verdict),
 	};
@@ -246,6 +265,7 @@ async function take(c: Ctx, fact: Fact): Promise<boolean> {
 				for (const effect of effects) {
 					await tx.execute("INSERT OR REPLACE INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)", rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 				}
+				if (fact.kind === "turn_ended") await storeReport(tx, before, stored.meta.sessionId, fact);
 				if (handoff) await tx.execute("INSERT OR REPLACE INTO verdicts (id, run, head, at, data) VALUES (?, ?, ?, ?, ?)", handoff.verdict.id, handoff.verdict.run, handoff.verdict.head, handoff.verdict.at, JSON.stringify(handoff.verdict));
 			}, { name: "item.take" }),
 		);
@@ -347,13 +367,6 @@ async function github(c: Ctx, meta: ItemMeta) {
 
 type Handoff = Extract<Effect, { kind: "handoff" }>;
 
-/** Put outside text in one paragraph. Bound it before escaping, so even twenty criteria fit in a GitHub comment. */
-function commentText(value: string, limit: number): string {
-	const line = value.replace(/\s+/g, " ").trim();
-	const bounded = line.length > limit ? `${line.slice(0, limit)}…` : line;
-	return bounded.replace(/([\\`*_{}\[\]()<>!&~|@#:$.])/g, "\\$1");
-}
-
 async function handoffProblem(c: Ctx, effect: Handoff, said: string): Promise<void> {
 	const [, , n, attempt] = effect.key.split(":");
 	const event: ItemEvent = { at: Date.now(), by: "platform", step: { run: effect.verdict.run, kind: "handoff", n: Number(n), attempt: Number(attempt) }, said };
@@ -390,9 +403,7 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 
 			action = "post the verdict comment";
 			const marker = `<!-- windlass-item:${verdict.item} -->`;
-			const words = effect.words;
-			const acceptance = verdict.acceptance.map((criterion) => `- ${commentText(criterion, 1000)}`);
-			const body = [marker, `**Windlass verdict at ${commentText(verdict.head.slice(0, 7), 7)}: ${verdict.result}**`, commentText(words, MAX_NOTE_CHARS), ...(acceptance.length ? [`Acceptance criteria left to you:\n\n${acceptance.join("\n")}`] : [])].join("\n\n");
+			const body = itemComment(verdict, effect.words, await latestReport(c.db, verdict.run));
 			// Every page, so that on a busy pull request a comment past the first hundred is edited, not posted a second time.
 			const comments = await app.issueComments(token, owner, name, number);
 			const own = comments.find((one) => one.author.toLowerCase() === `${app.settings.slug.toLowerCase()}[bot]` && one.body.split("\n", 1)[0] === marker);
@@ -598,6 +609,7 @@ export const workItem = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS item (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, data TEXT NOT NULL, due TEXT)");
 			await db.execute("CREATE TABLE IF NOT EXISTS effects (id TEXT PRIMARY KEY, effect TEXT NOT NULL, due_at INTEGER NOT NULL, attempts INTEGER NOT NULL)");
 			await db.execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, data TEXT NOT NULL)");
+			await db.execute(REPORTS_TABLE);
 			await db.execute("CREATE TABLE IF NOT EXISTS verdicts (id TEXT PRIMARY KEY, run INTEGER NOT NULL, head TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)");
 		},
 	}),

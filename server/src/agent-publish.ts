@@ -30,7 +30,7 @@
  * the words of the question, of the timeline's lines and of what the agent is told.
  */
 
-import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
+import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
 import type { CommandSandbox, Redactor } from "./repo-secrets.js";
 
 /**
@@ -78,7 +78,7 @@ const DESCRIPTION = [
 ].join(" ");
 
 const REPORT_DESCRIPTION = [
-	"File your report on this turn's work, for the person who reviews it: a title and a description for the pull request, and what you are unsure of.",
+	"File your report on this turn's work, for the person who reviews it: a title and a description for the pull request, where the reader should look, and what you are unsure of.",
 	"Call it once, at the end of your turn, after the work is done; a later call replaces the report. The platform opens the pull request itself once your turn has ended, and pushes whatever you did not push with `push`.",
 	"Whether the work is ready is decided from the checks and CI, not from the report: say plainly what you did not finish or could not verify.",
 ].join(" ");
@@ -100,9 +100,11 @@ const REPORT_SCHEMA = {
 	properties: {
 		title: { type: "string", description: `The pull request's title, at most ${MAX_PUBLISH_TITLE_CHARS} characters.` },
 		description: { type: "string", description: `The pull request's description, in Markdown, at most ${MAX_PUBLISH_BODY_CHARS} characters: what changed and why, and how it was checked.` },
+		look_at: { type: "string", description: `Where the reader should look in the change, at most ${REVIEW_LIMITS.lookAtChars} characters.` },
 		concerns: { type: "string", description: "What you are unsure of, did not finish, or did differently from what was asked; left out when there is nothing." },
 	},
-	required: ["title", "description"],
+	required: ["title"],
+	additionalProperties: false,
 };
 
 const INPUT_SCHEMA = {
@@ -190,34 +192,23 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 /** A call's input as the platform reads it: an object, or none. Windlass checked it against the schema, which is the declaration's and asks for little. */
 export const callArguments = (input: unknown): Record<string, unknown> => (isObject(input) ? input : {});
 
-/** A report the agent filed, as its words are kept: cleaned as a request's are, cut to the limits. */
+/** A builder report after the host tool has checked and cleaned every field. */
 export interface AgentReport {
 	title: string;
 	description: string;
+	lookAt: string;
 	concerns: string;
-}
-
-/** A call's arguments as a report; the saved secrets and control characters are taken out, and what is too long is cut. Null without a title. */
-export function reportOf(given: Record<string, unknown>, redactor: Redactor): AgentReport | null {
-	const clean = (value: unknown, limit: number, oneLine: boolean) => {
-		const text = redactor.text(typeof value === "string" ? value : "").replace(/\r\n?/g, "\n").replace(CONTROL, "");
-		return (oneLine ? text.replace(/\s+/g, " ") : text).trim().slice(0, limit);
-	};
-	const title = clean(given.title, MAX_PUBLISH_TITLE_CHARS, true);
-	if (title === "") return null;
-	return { title, description: clean(given.description, MAX_PUBLISH_BODY_CHARS, false), concerns: clean(given.concerns, MAX_PUBLISH_BODY_CHARS, false) };
 }
 
 /** What the agent is told when its report was taken. */
 export const REPORT_TAKEN = "Your report was filed. The platform publishes your work when your turn ends; end your turn now.";
-export const REPORT_REFUSED = "Not filed: the report needs a title. Call the tool again with a title and a description.";
 
 // ---------------------------------------------------------------------------------------------
 // What a request may hold
 // ---------------------------------------------------------------------------------------------
 
 /** What is taken out of the agent's text besides line breaks and tabs: a terminal, or a page, should not act on it. */
-const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029]/g;
+export const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029]/g;
 
 export type PublishRequest =
 	/** What the platform would publish with. */

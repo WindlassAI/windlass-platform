@@ -10,6 +10,7 @@
  * None of them reads a clock, stores anything or talks to anything: every time comes in on a fact.
  */
 
+import type { AgentReport } from "../agent-publish.js";
 import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { CiReading, CiState } from "../github/ci.js";
 
@@ -152,8 +153,10 @@ export type Fact =
 			flags: VerifiedFlag[];
 			/** Whether there is something to push: the workspace or local commits differ from what GitHub has of the branch (from the base, before the first push). */
 			changes: boolean;
-			/** What the agent filed with `report`, in words; for a refine step, the plan. */
-			report: string | null;
+			/** What the agent filed. A string can arrive from a session outbox written before structured reports. */
+			report: AgentReport | string | null;
+			/** A push made by the host tool can precede the item's publish step. */
+			pushedHead?: string | null;
 			/**
 			 * Set when the session refused the turn before the agent ran, for a reason trying again will not
 			 * cure (today: its sandbox's Windlass is too old for the platform): the session's sentence for a
