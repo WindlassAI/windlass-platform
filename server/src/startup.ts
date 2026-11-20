@@ -5,6 +5,10 @@ import type { ConnectionTokens } from "./connection-tokens.js";
 import type { SandboxLayer } from "./sandbox/api.js";
 import type { SignIns } from "./signin/index.js";
 
+export function reportWebhook(enabled: boolean): void {
+	if (enabled) console.log("[wlp] github: webhook on /github/webhook");
+}
+
 /**
  * The one sentence the server stops with when it must not start, or null. With a remote engine the
  * server is one of several, and a token one of them signs must be accepted by all the others: a

@@ -23,7 +23,7 @@
  */
 
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { createHash, createPublicKey, createVerify, generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomUUID, createPublicKey, createVerify, generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -161,6 +161,8 @@ export class GithubStandin {
 	readonly pulls: StandinPull[] = [];
 	readonly tokens = new Map<string, Token>();
 	readonly requests: StandinRequest[] = [];
+	readonly deliveries: { id: number; guid: string; installation_id: number | null; delivered_at: string; status_code: number; redelivery: boolean }[] = [];
+	private readonly resend = new Map<number, () => Promise<Response>>();
 	/** What each installation token asked for, in order: the body of the request that made it. */
 	readonly minted: Array<{ installation: number; repositoryIds: number[] | null; permissions: Permissions | null; token: string }> = [];
 	/** The permissions the app was given when it was registered. */
@@ -202,7 +204,7 @@ export class GithubStandin {
 		};
 	}
 
-	async start(): Promise<void> {
+	async start(port = 0): Promise<void> {
 		const server = createServer((request, response) => {
 			this.handle(request, response).catch((error: unknown) => {
 				if (!response.headersSent) json(response, 500, { message: `stand-in failure: ${error instanceof Error ? error.message : String(error)}` });
@@ -211,7 +213,7 @@ export class GithubStandin {
 		});
 		this.server = server;
 		const host = this.options.host ?? "127.0.0.1";
-		await new Promise<void>((resolve) => server.listen(0, host, resolve));
+		await new Promise<void>((resolve) => server.listen(port, host, resolve));
 		const address = server.address();
 		if (typeof address !== "object" || address === null) throw new Error("the stand-in has no address");
 		this.url = `http://127.0.0.1:${address.port}`;
@@ -226,6 +228,26 @@ export class GithubStandin {
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 		}
 		rmSync(this.root, { recursive: true, force: true });
+	}
+
+	/** Sign exactly the bytes sent. A redelivery uses the original GUID and records its own answer. */
+	deliver(url: string, event: string, payload: unknown, options: { secret: string; guid?: string; targetId?: string }): Promise<Response> {
+		const body = JSON.stringify(payload);
+		const guid = options.guid ?? randomUUID();
+		const installationId = (payload as { installation?: { id?: number } } | null)?.installation?.id ?? null;
+		const send = async (redelivery: boolean) => {
+			const response = await fetch(url, { method: "POST", body, headers: {
+				"content-type": "application/json", "user-agent": "GitHub-Hookshot/standin",
+				"x-github-event": event, "x-github-delivery": guid,
+				"x-github-hook-installation-target-id": options.targetId ?? this.appId,
+				"x-hub-signature-256": "sha256=" + createHmac("sha256", options.secret).update(body).digest("hex"),
+			} });
+			const id = ++this.nextId;
+			this.deliveries.unshift({ id, guid, installation_id: installationId, delivered_at: new Date().toISOString(), status_code: response.status, redelivery });
+			this.resend.set(id, () => send(true));
+			return response;
+		};
+		return send(false);
 	}
 
 	// ---- the world --------------------------------------------------------------------------------
@@ -556,6 +578,28 @@ export class GithubStandin {
 		const method = request.method ?? "GET";
 
 		// --- as the app ---
+		const attempt = /^\/app\/hook\/deliveries\/(\d+)\/attempts$/.exec(api);
+		if (api === "/app/hook/deliveries" || attempt) {
+			if (auth.kind !== "jwt" || !auth.raw || !this.verifyJwt(auth.raw)) return answer(401, { message: "Bad credentials" });
+			if (method === "GET" && !attempt) {
+				const status = url.searchParams.get("status");
+				const rows = this.deliveries.filter(d => !status || (d.status_code >= 400) === (status === "failure"));
+				const cursor = url.searchParams.get("cursor");
+				const first = cursor ? rows.findIndex(d => String(d.id) === cursor) : 0;
+				if (first < 0) return answer(400, { message: "Unknown cursor" });
+				const size = Math.min(100, Number(url.searchParams.get("per_page") ?? 30));
+				const next = rows[first + size];
+				url.searchParams.set("cursor", String(next?.id));
+				return answer(200, rows.slice(first, first + size), next ? { link: `<${url}>; rel="next"` } : {});
+			}
+			if (method === "POST" && attempt) {
+				const send = this.resend.get(Number(attempt[1]));
+				if (!send) return answer(404, { message: "Not Found" });
+				await (await send()).arrayBuffer();
+				return answer(202, {});
+			}
+			return answer(405, { message: "Method not allowed" });
+		}
 		const mint = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(api);
 		if (mint && method === "POST") {
 			if (auth.kind !== "jwt" || auth.raw === null || !this.verifyJwt(auth.raw)) return answer(401, { message: "A JSON web token could not be decoded" });

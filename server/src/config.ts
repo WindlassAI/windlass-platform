@@ -384,6 +384,7 @@ export function backupConfig(env: NodeJS.ProcessEnv = process.env): BackupConfig
 
 /** What `githubConfig` found: the GitHub App's public settings when all of it is configured. */
 export interface GithubConfig {
+	webhook: { secrets: string[] } | null;
 	/** Null when the feature is off. Holds no secret: the client secret and the private key are read where they are used. */
 	app: { appId: string; slug: string; clientId: string; apiUrl: string; webUrl: string } | null;
 	/** The required variables that are not set while others are: the names, never a value. Empty when all or none are set. */
@@ -400,7 +401,14 @@ const GITHUB_REQUIRED = ["WLP_GITHUB_APP_ID", "WLP_GITHUB_APP_SLUG", "WLP_GITHUB
 export function githubConfig(env: NodeJS.ProcessEnv = process.env): GithubConfig {
 	const read = (name: string) => (name === "WLP_GITHUB_PRIVATE_KEY" ? rawGithubPrivateKey(env) : (env[name] ?? "").trim());
 	const missing = GITHUB_REQUIRED.filter((name) => read(name) === "");
-	if (missing.length > 0) return { app: null, missing: missing.length === GITHUB_REQUIRED.length ? [] : missing };
+	const webhookSecret = (name: string) => {
+		const secret = env[name] ?? "";
+		if (env[name] !== undefined && [...secret].length < 32) throw new Error(`${name} must be at least 32 characters long`);
+		return secret;
+	};
+	const current = webhookSecret("WLP_GITHUB_WEBHOOK_SECRET");
+	const previous = webhookSecret("WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS");
+	if (missing.length > 0) return { app: null, webhook: null, missing: missing.length === GITHUB_REQUIRED.length ? [] : missing };
 	const appId = read("WLP_GITHUB_APP_ID");
 	if (!/^[0-9]{1,20}$/.test(appId)) throw new Error("WLP_GITHUB_APP_ID must be the app's numeric id");
 	const slug = read("WLP_GITHUB_APP_SLUG");
@@ -420,7 +428,10 @@ export function githubConfig(env: NodeJS.ProcessEnv = process.env): GithubConfig
 		}
 		return url.toString().replace(/\/+$/, "");
 	};
-	return { app: { appId, slug, clientId, apiUrl: address("WLP_GITHUB_API_URL", "https://api.github.com"), webUrl: address("WLP_GITHUB_URL", "https://github.com") }, missing: [] };
+	const webhook = current ? { secrets: previous ? [current, previous] : [current] } : null;
+	// Keep configuration dumps and JSON responses free of credentials.
+	if (webhook) Object.defineProperty(webhook, "secrets", { enumerable: false });
+	return { app: { appId, slug, clientId, apiUrl: address("WLP_GITHUB_API_URL", "https://api.github.com"), webUrl: address("WLP_GITHUB_URL", "https://github.com") }, webhook, missing: [] };
 }
 
 /** The GitHub App's client secret, or null. Like the admin token it is not part of any configuration object. */

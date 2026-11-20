@@ -16,6 +16,7 @@ import { apiRoute } from "./api-routes.js";
 import { RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH } from "./runner/control.js";
 import { config, githubConfig } from "./config.js";
 import { PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH } from "./contract.js";
+import { webhookRoute } from "./github/webhook.js";
 import { githubApp } from "./github/app.js";
 import { GITHUB_CALLBACK_PATH, githubCallbackResponse } from "./github/connect.js";
 import { getLayer } from "./layer.js";
@@ -24,7 +25,7 @@ import { webFiles } from "./web.js";
 import { registry } from "./registry.js";
 import type { SandboxLayer } from "./sandbox/api.js";
 import { getSignIns } from "./signin/index.js";
-import { reportSignIns, startupProblem, warnAboutConnectionTokens, warnAboutWindlass } from "./startup.js";
+import { reportWebhook, reportSignIns, startupProblem, warnAboutConnectionTokens, warnAboutWindlass } from "./startup.js";
 
 process.on("unhandledRejection", (reason) => {
 	console.error("[wlp] unhandled promise rejection:", reason);
@@ -65,7 +66,8 @@ void warnAboutConnectionTokens(connectionTokens());
 
 // The GitHub App, when the deployment has one: said now, with a key that does not sign or a half-set configuration.
 try {
-	const { app, missing } = githubConfig();
+	const { app, missing, webhook } = githubConfig();
+	reportWebhook(webhook !== null);
 	if (missing.length > 0) console.error(`[wlp] WARNING: GitHub is off: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set while the other GitHub App settings are.`);
 	else if (app) {
 		const problem = githubApp()?.keyProblem() ?? null;
@@ -91,6 +93,7 @@ async function route(request: Request): Promise<Response> {
 	if (pathname === PLATFORM_CONNECTION_PATH) return platformConnectionResponse(request);
 	// Where GitHub sends a user's browser back to when they connect: the GitHub App's callback URL.
 	if (pathname === GITHUB_CALLBACK_PATH) return githubCallbackResponse(request);
+	if (pathname === "/github/webhook") return (await webhookRoute(request))!;
 	// For a load balancer or the host's health check: the node's own view of its connection to the engine.
 	if (pathname === "/health") return registry.routes.health();
 	const page = web ? await web(request) : null;

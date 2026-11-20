@@ -249,7 +249,7 @@ export class GithubApp {
 		}
 	}
 
-	private async call(call: Call): Promise<{ status: number; body: unknown; next: boolean }> {
+	private async call(call: Call): Promise<{ status: number; body: unknown; next: boolean; link: string }> {
 		const response = await this.request(call, "follow");
 		const raw = await response.text().catch(() => "");
 		let body: unknown = null;
@@ -270,7 +270,7 @@ export class GithubApp {
 			if (call.auth) known.push("bearer" in call.auth ? call.auth.bearer : call.auth.basic);
 			throw new GithubError(refused && response.ok ? 400 : response.status, redact(said.replace(/\s+/g, " ").slice(0, 300), known), `could not ${call.what}`, response.headers);
 		}
-		return { status: response.status, body, next: /rel="next"/.test(response.headers.get("link") ?? "") };
+		return { status: response.status, body, link: response.headers.get("link") ?? "", next: /rel="next"/.test(response.headers.get("link") ?? "") };
 	}
 
 	/** Every page of a listing, a hundred a page; `truncated` when there were more pages than are read. */
@@ -282,6 +282,26 @@ export class GithubApp {
 			if (!answer.next) return { items, truncated: false };
 		}
 		return { items, truncated: true };
+	}
+
+	// https://docs.github.com/en/rest/apps/webhooks#list-deliveries-for-an-app-webhook
+	// "You must use a JWT"; status=failure selects 400–599; the Link header supplies the next cursor.
+	async hookDeliveries(input: { cursor?: string; status: "failure" }) {
+		const answer = await this.call({ path: "/app/hook/deliveries", query: { status: input.status, ...(input.cursor ? { cursor: input.cursor } : {}), per_page: 100 }, auth: { bearer: this.jwt() }, what: "list failed webhook deliveries" });
+		if (!Array.isArray(answer.body)) throw new Error("GitHub returned no delivery list");
+		const deliveries = answer.body.map(value => {
+			const row = record(value);
+			return { id: whole(row.id), guid: text(row.guid), at: Date.parse(text(row.delivered_at)), installationId: whole(row.installation_id) || null };
+		});
+		const next = /<([^>]+)>;\s*rel="next"/.exec(answer.link)?.[1];
+		// Use only the cursor, never a link's host or credentials.
+		return { deliveries, cursor: next ? new URL(next, this.settings.apiUrl).searchParams.get("cursor") : null };
+	}
+
+	// https://docs.github.com/en/rest/apps/webhooks#redeliver-a-delivery-for-an-app-webhook
+	// "You must use a JWT"; GitHub answers "202 - Accepted".
+	async redeliver(id: number): Promise<void> {
+		await this.call({ method: "POST", path: `/app/hook/deliveries/${id}/attempts`, auth: { bearer: this.jwt() }, what: "redeliver a failed webhook" });
 	}
 
 	// ---- installation tokens ------------------------------------------------------------------

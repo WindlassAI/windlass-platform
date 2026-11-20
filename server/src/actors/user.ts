@@ -121,6 +121,7 @@ import {
 	type UsageView,
 	type UserProfile,
 } from "../contract.js";
+import { updateGithubAccount } from "./github-account.js";
 import { githubApp, type GithubApp } from "../github/app.js";
 import { isBranchName } from "../github/git.js";
 import type { StoredRepository } from "../github/publish.js";
@@ -1499,13 +1500,16 @@ export const user = actor({
 				throw new UserError("This link to connect GitHub was already used. Connect GitHub again if it is not connected.", { code: "github_ticket" });
 			}
 			const connection: StoredConnection = {
+				...(githubConfig().webhook ? { webhookLinked: true } : {}),
 				user: { id: confirmed.user.id, login: confirmed.user.login },
 				installations: confirmed.installations.slice(0, MAX_GITHUB_ACCOUNTS).map(({ id, account, htmlUrl }) => ({ id, account: { id: account.id, login: account.login, type: account.type }, htmlUrl })),
 				connectedAt: Date.now(),
 			};
 			await c.db.execute("INSERT INTO github (id, connection, updated_at) VALUES (1, ?, ?) ON CONFLICT (id) DO UPDATE SET connection = excluded.connection, updated_at = excluded.updated_at", JSON.stringify(connection), connection.connectedAt);
+			const linked = updateGithubAccount(c, profile.uid, c.vars.github, connection);
 			c.vars.github = connection;
 			c.vars.reached = true;
+			await linked;
 			console.log(`[wlp] github.connected uid=${profile.uid} github=${connection.user.login} installations=${connection.installations.map((installation) => installation.id).join(",")}`);
 			return githubStatus(c.vars);
 		},
@@ -1519,7 +1523,9 @@ export const user = actor({
 			// on the list until they would have expired: one of them must not bring the connection back.
 			await c.db.execute("DELETE FROM github_nonce WHERE kind = 'state'");
 			if (c.vars.github) console.log(`[wlp] github.disconnected uid=${profile.uid}`);
+			const unlinked = updateGithubAccount(c, profile.uid, c.vars.github, null);
 			c.vars.github = null;
+			await unlinked;
 			return githubStatus(c.vars);
 		},
 

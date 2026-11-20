@@ -1,0 +1,441 @@
+/** From server/: ../scripts/locked.sh webhook-check.ts. The engine node is the normal server
+ * with test-only fixture actions attached before registry setup. No production action exposes SQL,
+ * sets a test clock or installs a handler. All HTTP listeners use this check's port group.
+ */
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
+import { GithubStandin } from "./github-standin.js";
+import { checkPort } from "./ports.js";
+import { edge, isAddressed } from "../server/src/github/events.js";
+
+const DAY = 86_400_000;
+const RETRY_INSTALLATION = 91919;
+const HEAD = "a".repeat(40);
+const origin = "http://127.0.0.1:5173";
+const engine = checkPort(3410);
+const base = (port: number) => "http://127.0.0.1:" + port;
+const api = base(checkPort(3431));
+const second = base(checkPort(3432)) + "/github/webhook";
+
+async function testNode() {
+	const { githubInbox, HANDLERS, githubHooks } = await import("../server/src/actors/github-inbox.js");
+	const { requireServiceFor } = await import("../server/src/auth.js");
+	const actions = githubInbox.config.actions!;
+	type Ctx = Parameters<typeof actions.internalReceive>[0];
+	const original = HANDLERS.installation!;
+	const failures = new Map<string, number>();
+	HANDLERS.installation = d => {
+		if (d.installationId !== RETRY_INSTALLATION) return original(d);
+		const tried = failures.get(d.guid) ?? 0;
+		failures.set(d.guid, tried + 1);
+		if (d.action === "suspended" || tried < 3) throw new Error("injected failure");
+	};
+	Object.assign(actions, {
+		checkRow: async (c: Ctx, guid: string) => {
+			requireServiceFor(c, "call");
+			const [r] = await c.db.execute("SELECT state, said, attempts, next_at, received_at FROM deliveries WHERE guid = ?", guid);
+			return r ?? null;
+		},
+		checkFixture: async (c: Ctx, kind: string, guid: string) => {
+			requireServiceFor(c, "call");
+			if (kind === "retry") await c.db.execute("UPDATE deliveries SET next_at = 0 WHERE guid = ?", guid);
+			if (kind === "expire") await c.db.execute("UPDATE deliveries SET received_at = ? WHERE guid = ?", Date.now() - 8 * DAY, guid);
+			if (kind === "capacity") {
+				const now = Date.now();
+				await c.db.execute(`WITH RECURSIVE ns(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM ns WHERE i < 20000)
+					INSERT INTO deliveries SELECT 'fixture-' || i, 'status', '', 1, '{}', ? + i,
+					CASE WHEN i = 1 THEN 'failed' WHEN i = 2 THEN 'ignored' ELSE 'done' END, 1, 0, '' FROM ns`, now - DAY);
+			}
+			if (kind === "full") await c.db.execute(`WITH RECURSIVE ns(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM ns WHERE i < 2000)
+				INSERT INTO deliveries SELECT 'fixture-' || i, 'status', '', 1, '{}', ?, 'received', 0, ?, '' FROM ns`, Date.now(), Date.now() + DAY);
+		},
+	});
+	Object.assign(githubHooks.config.actions!, {
+		checkStarted: async (c: Ctx) => {
+			requireServiceFor(c, "call");
+			const [r] = await c.db.execute<{ at: number }>("SELECT at FROM timer");
+			return r?.at ?? null;
+		},
+	});
+	await import("../server/src/index.js");
+}
+
+async function until<T>(label: string, probe: () => Promise<T>, timeout = 12_000) {
+	const end = Date.now() + timeout;
+	do {
+		const answer = await probe();
+		if (answer) return answer;
+		await sleep(60);
+	} while (Date.now() < end);
+	throw new Error("timed out waiting for " + label);
+}
+
+async function run() {
+	const storage = mkdtempSync(join(tmpdir(), "wlp-webhook-check-"));
+	const standin = new GithubStandin({ callbackUrl: api + "/github/callback", slug: "windlass-fk4w" });
+	await standin.start(checkPort(3433));
+	const secret = randomBytes(32).toString("hex"), previous = randomBytes(32).toString("hex");
+	const bodyMarker = "private-issue-" + randomUUID();
+	Object.assign(process.env, standin.env(), {
+		WLP_SECRET: randomBytes(32).toString("hex"), WLP_GITHUB_WEBHOOK_SECRET: secret,
+		WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS: previous, WLP_SANDBOX: "fake", WLP_DEMO: "1", WLP_HTTP_PORT: String(checkPort(3431)),
+		RIVETKIT_STORAGE_PATH: storage, RIVET_RUN_ENGINE_PORT: String(engine), WLP_WEB_ORIGINS: origin, RIVET_LOG_LEVEL: "silent",
+	});
+	for (const key of ["RIVET_ADMIN_TOKEN", "RIVET_ENDPOINT", "RIVET_ENGINE", "PORT"]) delete process.env[key];
+	const { webhookRoute } = await import("../server/src/github/webhook.js");
+	const { createClient } = await import("../server/src/client.js");
+	const { serviceParams } = await import("../server/src/auth.js");
+	const { githubConfig } = await import("../server/src/config.js");
+	const client = createClient<import("../server/src/registry.js").Registry>({ endpoint: base(engine) });
+	const service = () => ({ params: serviceParams() });
+	const inbox = (id: number) => client.githubInbox.getOrCreate([String(id)], service());
+	type Row = { state: string; said: string; attempts: number; next_at: number };
+	const fixture = (id: number) => inbox(id) as unknown as { checkRow(guid: string): Promise<Row | null>; checkFixture(op: string, guid: string): Promise<void> };
+	const shaPayload = { installation: { id: 91234 }, repository: { id: 123 }, sha: HEAD, state: "success", description: bodyMarker };
+	const web = api + "/github/webhook";
+	const send = (payload = shaPayload, guid = randomUUID(), url = web) => standin.deliver(url, "status", payload, { secret, guid });
+	const local = async (options: { event?: string; body?: string; signBytes?: string; secret?: string; guid?: string; omit?: string; target?: string; method?: string; url?: string } = {}) => {
+		const body = options.body ?? JSON.stringify(shaPayload);
+		const headers = new Headers({ "x-github-event": options.event ?? "status", "x-github-delivery": options.guid ?? randomUUID(),
+			"x-github-hook-installation-target-id": options.target ?? standin.appId,
+			"x-hub-signature-256": "sha256=" + createHmac("sha256", options.secret ?? secret).update(options.signBytes ?? body).digest("hex") });
+		if (options.omit) headers.delete(options.omit);
+		const method = options.method ?? "POST";
+		return (await webhookRoute(new Request(options.url ?? web, { method, headers, body: method === "POST" ? body : undefined })))!;
+	};
+	const failed: string[] = [];
+	const check = async (name: string, fn: () => Promise<void> | void) => {
+		try { await fn(); console.log("PASS " + name); }
+		catch (error) {
+			failed.push(name);
+			// Assertion messages can include the actual body or headers. Print only the check location.
+			const location = error instanceof Error ? /webhook-check\.ts:(\d+:\d+)/.exec(error.stack ?? "")?.[1] : undefined;
+			console.error("FAIL " + name + (location ? " at webhook-check.ts:" + location : ""));
+		}
+	};
+	const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "--node"], {
+		cwd: fileURLToPath(new URL("../server", import.meta.url)), env: process.env, stdio: ["ignore", "pipe", "pipe"],
+	});
+	let logs = "";
+	child.stdout.on("data", b => { logs += b.toString(); });
+	child.stderr.on("data", b => { logs += b.toString(); });
+	const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+	let offline = false;
+	// A second route process on another port shares only the engine with the platform node.
+	const other = createServer(async (req, res) => {
+		const chunks: Buffer[] = [];
+		for await (const b of req) chunks.push(b);
+		const response = offline ? new Response(null, { status: 503 }) : await webhookRoute(new Request(second, {
+			method: "POST", headers: req.headers as Record<string, string>, body: Buffer.concat(chunks),
+		}));
+		res.writeHead(response?.status ?? 404);
+		res.end(await response?.text());
+	});
+	try {
+		await new Promise<void>(resolve => other.listen(checkPort(3432), "127.0.0.1", resolve));
+		await until("the platform HTTP port", async () => {
+			if (child.exitCode !== null) throw new Error("test node exited " + child.exitCode);
+			return (await fetch(api + "/platform/info").catch(() => null))?.ok;
+		}, 90_000);
+		const known = (guid: string, id = shaPayload.installation.id) => inbox(id).internalKnows(guid);
+		await check("edge table and its excluded neighbours", () => {
+			const user = { id: 5, login: "ada", type: "User" };
+			const subject = { id: 7, user, author_association: "OWNER", body: "@windlass-fk4w fix", commit_id: HEAD, path: "src/a", line: 9 };
+			const p = { ...shaPayload, action: "created", sender: user, issue: { number: 3, user, author_association: "OWNER" },
+				pull_request: { number: 4, head: { sha: HEAD }, merged: false }, review: { ...subject, state: "changes_requested" }, comment: subject };
+			const meta = { guid: randomUUID(), at: 42, slug: standin.slug };
+			const take = (event: string, changes: object) => edge(event, { ...p, ...changes }, meta);
+			for (const action of ["labeled", "unlabeled", "closed", "reopened", "edited", "deleted", "transferred"]) {
+				assert.equal(take("issues", { action, label: { name: "windlass" } })?.event, "issues", action);
+			}
+			assert.equal(take("issues", { action: "labeled", label: { name: "else" } }), null);
+			assert.equal(take("issues", { action: "opened" }), null);
+			const comment = take("issue_comment", { comment: { ...subject, body: "/windlass " + "x".repeat(20_000) }, issue: { ...p.issue, pull_request: {} } });
+			assert.ok(comment?.event === "issue_comment" && comment.data.isPullRequest && comment.data.body.length === 16_000 && comment.data.body.endsWith("…"));
+			for (const changes of [{ comment: { ...subject, body: "hello @windlass-fk4w" } }, { sender: { ...user, type: "Bot" } }, { action: "edited" }])
+				assert.equal(take("issue_comment", changes), null);
+			for (const action of ["closed", "reopened", "synchronize"]) assert.deepEqual(take("pull_request", { action })?.data, { pr: 4, head: HEAD, merged: false });
+			assert.equal(take("pull_request", { action: "opened" }), null);
+			assert.ok(take("pull_request_review", { action: "submitted", review: { ...p.review, body: "" } }));
+			assert.ok(take("pull_request_review", { action: "submitted", review: { ...p.review, state: "commented" } }));
+			assert.equal(take("pull_request_review", { action: "submitted", review: { ...subject, state: "approved", body: "ok" } }), null);
+			assert.ok(take("pull_request_review_comment", {}));
+			assert.equal(take("pull_request_review_comment", { comment: { ...subject, body: "fix" } }), null);
+			for (const event of ["check_suite", "check_run"]) {
+				assert.deepEqual(take(event, { action: "completed", [event]: { head_sha: HEAD } })?.data, { head: HEAD });
+				assert.equal(take(event, { action: "created", [event]: { head_sha: HEAD } }), null);
+			}
+			for (const state of ["success", "failure", "error"]) assert.deepEqual(take("status", { state })?.data, { head: HEAD });
+			assert.equal(take("status", { state: "pending" }), null);
+			for (const event of ["installation", "installation_repositories"])
+				assert.deepEqual(take(event, { repositories_added: [{ id: 9 }], repositories_removed: [{ id: 8 }] })?.data, { repositoryIds: [9, 8] });
+			assert.equal(take("push", {}), null);
+			assert.equal(take("status", { installation: {} }), null);
+			assert.equal(isAddressed(" \n@WINDLASS-FK4W fix it", standin.slug), "fix it");
+			assert.equal(isAddressed("/WINDLASS", standin.slug), "");
+			assert.equal(isAddressed("@windlass-fk4w-more hi", standin.slug), null);
+		});
+		await check("good signature and ignored G1 state", async () => {
+			const guid = randomUUID(), r = await send(shaPayload, guid);
+			assert.equal(r.status, 202); assert.deepEqual(await r.json(), { taken: true }); assert.equal(await known(guid), true);
+			const row = await until("ignored", async () => { const r = await fixture(91234).checkRow(guid); return r?.state === "ignored" ? r : null; });
+			assert.equal(row.said, "no handler yet"); assert.equal(row.attempts, 1);
+		});
+		await check("installation events finish with one metadata log", async () => {
+			for (const event of ["installation", "installation_repositories"]) {
+				const guid = randomUUID(), id = 91234;
+				const payload = { installation: { id }, action: "created", repositories: [{ id: 13 }], description: bodyMarker };
+				assert.equal((await standin.deliver(web, event, payload, { secret, guid })).status, 202);
+				await until("installation handled", async () => (await fixture(id).checkRow(guid))?.state === "done");
+				assert.equal(logs.split(`github.installation event=${event}.created installation=${id} delivery=${guid}`).length - 1, 1);
+			}
+		});
+		await check("bad signature stores nothing", async () => {
+			const guid = randomUUID();
+			const r = await standin.deliver(web, "status", shaPayload, { secret: randomBytes(32).toString("hex"), guid });
+			assert.equal(r.status, 401); assert.equal(await known(guid), false);
+		});
+		await check("missing headers store nothing", async () => {
+			for (const omit of ["x-hub-signature-256", "x-github-event", "x-github-delivery"]) {
+				const guid = randomUUID(); assert.equal((await local({ omit, guid })).status, 400); assert.equal(await known(guid), false);
+			}
+		});
+		await check("raw bytes before JSON", async () => {
+			const body = JSON.stringify(shaPayload, null, 2);
+			assert.equal((await local({ body, signBytes: JSON.stringify(shaPayload) })).status, 401);
+			assert.equal((await local({ body })).status, 202);
+			assert.equal((await local({ body: "{", signBytes: "different" })).status, 401);
+		});
+		await check("previous secret rotation", async () => {
+			try {
+				assert.equal((await local({ secret: previous })).status, 202);
+				delete process.env.WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS;
+				assert.equal((await local({ secret: previous })).status, 401);
+			} finally { process.env.WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS = previous; }
+		});
+		await check("target App before JSON", async () => {
+			assert.equal((await local({ target: "7777", body: "{" })).status, 403);
+		});
+		await check("off without current secret or App", async () => {
+			try {
+				delete process.env.WLP_GITHUB_WEBHOOK_SECRET;
+				const r = await local({ method: "GET" }); assert.equal(r.status, 404); assert.equal(r.headers.get("cache-control"), "no-store");
+				assert.equal((await send(shaPayload, randomUUID(), second)).status, 404);
+				process.env.WLP_GITHUB_WEBHOOK_SECRET = secret;
+				delete process.env.WLP_GITHUB_APP_ID;
+				assert.equal((await local()).status, 404);
+			} finally { process.env.WLP_GITHUB_WEBHOOK_SECRET = secret; process.env.WLP_GITHUB_APP_ID = standin.appId; }
+		});
+		await check("invalid short secrets name only the setting", () => {
+			for (const name of ["WLP_GITHUB_WEBHOOK_SECRET", "WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS"]) {
+				for (const value of ["", "short"]) assert.throws(() => githubConfig({ [name]: value }), (e: Error) => e.message === name + " must be at least 32 characters long");
+			}
+		});
+		await check("POST method required", async () => {
+			assert.equal((await local({ method: "GET" })).status, 405);
+		});
+		await check("two MiB body limit", async () => {
+			const guid = randomUUID(), large = JSON.stringify(shaPayload).padEnd(2 * 1024 * 1024 + 1);
+			assert.equal((await local({ body: large, guid })).status, 413); assert.equal(await known(guid), false);
+		});
+		await check("invalid JSON", async () => {
+			assert.equal((await local({ body: "{" })).status, 400);
+		});
+		await check("ping acknowledged without storage", async () => {
+			const guid = randomUUID();
+			const r = await local({ event: "ping", guid }); assert.equal(r.status, 202); assert.deepEqual(await r.json(), { taken: false });
+			assert.equal(await known(guid), false);
+		});
+		await check("duplicate and two installations", async () => {
+			const guid = randomUUID();
+			const one = await send(shaPayload, guid); assert.deepEqual(await one.json(), { taken: true });
+			const two = await send(shaPayload, guid); assert.deepEqual(await two.json(), { taken: "duplicate" });
+			assert.equal(await known(guid, 92222), false);
+			assert.deepEqual(await (await send({ ...shaPayload, installation: { id: 92222 } }, guid)).json(), { taken: true });
+			assert.equal(await known(guid, 92222), true);
+			assert.equal(logs.split("github.delivery.stored event=status installation=91234 delivery=" + guid).length - 1, 1);
+		});
+		await check("two HTTP servers one concurrent GUID", async () => {
+			const guid = randomUUID();
+			const replies = await Promise.all([web, second].map(async url => (await (await send(shaPayload, guid, url)).json()).taken));
+			assert.deepEqual(replies.map(String).sort(), ["duplicate", "true"]);
+			assert.equal(await known(guid), true);
+		});
+		for (const [action, total, terminal] of [["created", 4, "done"], ["suspended", 8, "failed"]] as const) {
+			await check("retry to " + terminal + " in " + total + " attempts", async () => {
+				const guid = randomUUID(), id = RETRY_INSTALLATION;
+				const res = await standin.deliver(web, "installation", { action, installation: { id } }, { secret, guid });
+				assert.equal(res.status, 202);
+				for (let attempt = 1; attempt <= total; attempt++) {
+					const row = await until("handler attempt " + attempt, async () => {
+						const r = await fixture(id).checkRow(guid); return r && r.attempts >= attempt ? r : null;
+					}, 20_000);
+					assert.equal(row.attempts, attempt);
+					if (attempt === total) { assert.equal(row.state, terminal); break; }
+					assert.equal(row.state, "received");
+					const delay = row.next_at - Date.now(), expected = Math.min(1_800_000, 15_000 * 2 ** (attempt - 1));
+					assert.ok(delay <= expected && delay >= expected - 5_000, "retry delay");
+					if (attempt === 1 && terminal === "done") continue; // Let the real 15 s schedule fire once.
+					await fixture(id).checkFixture("retry", guid);
+					await inbox(id).internalDue();
+				}
+			});
+		}
+		await check("waiting limit maps to HTTP 503", async () => {
+			const id = 92123, guid = randomUUID();
+			await fixture(id).checkFixture("full", "");
+			const res = await send({ ...shaPayload, installation: { id } }, guid);
+			assert.equal(res.status, 503); assert.equal(await known(guid, id), false);
+		});
+		await check("twenty thousand rows evict oldest finished first", async () => {
+			const id = 92678;
+			await fixture(id).checkFixture("capacity", "");
+			assert.equal((await send({ ...shaPayload, installation: { id } })).status, 202);
+			assert.equal(await known("fixture-1", id), true); // failed
+			assert.equal(await known("fixture-2", id), false); // oldest ignored
+			assert.equal(await known("fixture-3", id), true);
+		});
+		await check("seven day retention", async () => {
+			const guid = randomUUID();
+			await send(shaPayload, guid);
+			await fixture(91234).checkFixture("expire", guid);
+			await until("expired row removed", async () => {
+				await inbox(91234).internalDue();
+				return (await fixture(91234).checkRow(guid)) === null;
+			});
+		});
+		const ada = standin.addUser("ada");
+		const install = standin.addInstallation("ada", "User");
+		const project = standin.addRepository({ owner: "ada", name: "project", installation: install });
+		const repo = client.githubRepository.getOrCreate([String(project.id)], service());
+		await check("permission gate, scoped token, cache and 404", async () => {
+			const args = { installationId: install.id, owner: "ada", name: "project", userId: ada.id, login: "ada", associations: "NONE" };
+			const before = standin.requests.length;
+			assert.equal(await repo.internalPermission(args), "none"); assert.equal(standin.requests.length, before);
+			const writer = { ...args, associations: "COLLABORATOR" };
+			assert.equal(await repo.internalPermission(writer), "admin");
+			assert.deepEqual(standin.minted.at(-1)?.repositoryIds, [project.id]); assert.deepEqual(standin.minted.at(-1)?.permissions, { metadata: "read" });
+			const after = standin.requests.length; assert.ok(after > before);
+			assert.equal(await repo.internalPermission(writer), "admin"); assert.equal(standin.requests.length, after);
+			assert.equal(await repo.internalPermission(args), "none"); assert.equal(standin.requests.length, after);
+			assert.equal(await repo.internalPermission({ ...writer, login: "gone", userId: 999999 }), "none");
+			assert.ok(standin.requests.some(r => r.status === 404 && r.path.endsWith("/gone/permission")));
+		});
+		await check("repository registration, lookup and removal", async () => {
+			const row = { uid: "one", itemId: "item", issue: 12, generation: 1 };
+			await repo.internalRegister(row);
+			await repo.internalRegister({ uid: "one", itemId: "item", pr: 13, head: HEAD });
+			for (const key of [{ issue: 12 }, { pr: 13 }, { head: HEAD }]) assert.equal((await repo.internalFind(key))[0]?.itemId, "item");
+			await assert.rejects(repo.internalRegister({ ...row, uid: "two", itemId: "another" }));
+			await repo.internalForget("item"); assert.equal((await repo.internalFind({ issue: 12 })).length, 0);
+		});
+		await check("connect, replace, old disconnect, current disconnect", async () => {
+			const connect = async () => {
+				const auth = await client.login.getOrCreate([randomUUID()]).demo();
+				const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
+				const { url } = await user.githubConnect({ origin });
+				const back = await fetch(standin.authorize("ada", url), { redirect: "manual" });
+				const ticket = back.headers.get("location")?.split("#github=")[1]; assert.ok(ticket, "ticket issued");
+				await user.githubComplete(ticket);
+				return { user, uid: auth.profile.uid };
+			};
+			const account = client.githubAccount.getOrCreate([String(ada.id)], service());
+			const a = await connect(); assert.deepEqual(await account.internalWho(), { uid: a.uid, installations: [install.id] });
+			const b = await connect(); assert.deepEqual(await account.internalWho(), { uid: b.uid, installations: [install.id] });
+			await a.user.githubDisconnect(); assert.equal((await account.internalWho())?.uid, b.uid);
+			await b.user.githubDisconnect(); assert.equal(await account.internalWho(), null);
+		});
+		await check("service-only actors", async () => {
+			await assert.rejects(client.githubAccount.getOrCreate(["1"]).internalWho());
+			await assert.rejects(client.githubInbox.getOrCreate(["1"]).internalKnows(randomUUID()));
+			await assert.rejects(client.githubRepository.getOrCreate(["1"]).internalFind({ pr: 1 }));
+			await assert.rejects(client.githubHooks.getOrCreate(["app"]).internalSweep());
+		});
+		await check("sweep skips known, redelivers failed GUID once", async () => {
+			// Only these two failures belong to this scenario. Both are real signed HTTP attempts.
+			standin.deliveries.length = 0;
+			const existing = randomUUID(), missing = randomUUID();
+			assert.equal((await send(shaPayload, existing)).status, 202);
+			try {
+				offline = true;
+				for (const id of [existing, missing]) assert.equal((await send(shaPayload, id, second)).status, 503);
+			} finally { offline = false; }
+			const hooks = client.githubHooks.getOrCreate(["app"], service());
+			const started = await until("the first delivery to arm the sweep", () => (hooks as unknown as { checkStarted(): Promise<number | null> }).checkStarted(), 35_000);
+			assert.ok(started > Date.now() && started <= Date.now() + 600_000, "first delivery armed ten-minute sweep");
+			await hooks.internalSweep();
+			assert.deepEqual(standin.deliveries.filter(d => d.redelivery).map(d => [d.guid, d.status_code]), [[missing, 202]]);
+			assert.equal(await known(missing), true);
+			// The four-day receipt itself must suppress a repeat, even after a missing inbox row.
+			await fixture(91234).checkFixture("expire", missing);
+			await inbox(91234).internalDue();
+			await hooks.internalSweep();
+			assert.equal(standin.requests.filter(r => r.path.endsWith("/attempts")).length, 1);
+			assert.ok(standin.requests.some(r => r.auth === "jwt" && r.path.includes("status=failure") && r.path.includes("per_page=100")));
+		});
+		await check("sweep page and redelivery budgets resume on the next sweep", async () => {
+			const hooks = client.githubHooks.getOrCreate(["app"], service());
+			await hooks.internalStart();
+			standin.deliveries.length = 0;
+			try {
+				offline = true;
+				for (let i = 0; i < 51; i++) await standin.deliver(second, "push", {}, { secret });
+			} finally { offline = false; }
+			const attempts = () => standin.deliveries.filter(d => d.redelivery).length;
+			await hooks.internalSweep(); assert.equal(attempts(), 50);
+			await hooks.internalSweep(); assert.equal(attempts(), 51);
+			const remembered = standin.deliveries.find(d => d.redelivery)!;
+			standin.deliveries.length = 0;
+			for (let i = 0; i < 301; i++)
+				standin.deliveries.push({ ...remembered, id: 100000 + i, delivered_at: new Date().toISOString(), status_code: 503 });
+			const pages = () => standin.requests.filter(r => r.path.startsWith("/api/v3/app/hook/deliveries?")).length;
+			const start = pages();
+			await hooks.internalSweep(); assert.equal(pages() - start, 3);
+			await hooks.internalSweep(); assert.equal(pages() - start, 4);
+			assert.ok(standin.requests.at(-1)?.path.includes("cursor=100300"), "resumed at the fourth page");
+		});
+		await check("inbox unreachable or timed out", async () => {
+			const transport = globalThis.fetch;
+			for (const fail of ["unreachable", "silent"]) {
+				try {
+					globalThis.fetch = async (_url, init) => {
+						if (fail === "unreachable") throw new Error("engine unreachable");
+						return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("timeout")), { once: true }));
+					};
+					const now = Date.now(); assert.equal((await local()).status, 503);
+					assert.ok(Date.now() - now < 9500, "hard inbox deadline");
+				} finally { globalThis.fetch = transport; }
+			}
+		});
+		await check("logs contain metadata only", () => {
+			const dumped = JSON.stringify(githubConfig());
+			assert.ok(![secret, previous].some(value => dumped.includes(value)), "configuration serialized webhook credentials");
+			assert.ok(logs.includes("[wlp] github: webhook on /github/webhook"));
+			assert.ok(logs.includes("github.delivery.stored event=status"));
+			assert.ok(![secret, previous, bodyMarker, "sha256="].some(value => logs.includes(value)), "private delivery material appeared in node output");
+		});
+	} finally {
+		other.closeAllConnections();
+		await new Promise<void>(resolve => other.close(() => resolve()));
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+		const guard = setTimeout(() => child.kill("SIGKILL"), 15_000);
+		await exited; clearTimeout(guard);
+		try {
+			const { pid } = JSON.parse(readFileSync(join(storage, ".rivetkit/var/engine/runtime.json"), "utf8"));
+			if (Number.isSafeInteger(pid) && pid > 1) process.kill(pid, "SIGTERM");
+		} catch { /* Engine exited with its node. */ }
+		await standin.stop();
+		rmSync(storage, { recursive: true, force: true });
+	}
+	if (failed.length) throw new Error(failed.length + " webhook check(s) failed");
+}
+
+if (process.argv.includes("--node")) await testNode();
+else await run();
