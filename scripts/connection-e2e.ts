@@ -31,6 +31,7 @@
  * Prints one PASS/FAIL line per check and exits 1 if any failed. No token is printed.
  */
 
+import { checkPort } from "./ports.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -42,8 +43,9 @@ import { fileURLToPath } from "node:url";
 import type { AuthResult, PlatformConnection, PlatformInfo, SessionSnapshot, SessionSummary, TimelineItem } from "../server/src/contract.js";
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
-const ENGINE = { host: "127.0.0.1", port: 6420 };
-const API = "http://127.0.0.1:6440";
+const ENGINE = { host: "127.0.0.1", port: checkPort(6420) };
+const HTTP_PORT = checkPort(6440);
+const API = `http://127.0.0.1:${HTTP_PORT}`;
 const ADMIN = "FAKE-ADMIN-TOKEN-for-connection-e2e";
 /** How long the front's tokens last. The server hands one out until half of that is gone. */
 const TOKEN_MS = 12_000;
@@ -260,6 +262,8 @@ class Server {
 				WLP_SANDBOX: "fake",
 				WLP_SECRET: randomBytes(24).toString("hex"),
 				RIVETKIT_STORAGE_PATH: this.storage,
+				RIVET_RUN_ENGINE_PORT: String(ENGINE.port),
+				WLP_HTTP_PORT: String(HTTP_PORT),
 				WLP_FAKE_DELAY_MS: "15",
 				RIVET_ADMIN_TOKEN: ADMIN,
 				WLP_PUBLIC_ENDPOINT: publicEndpoint,
@@ -334,7 +338,7 @@ interface WebClient {
 }
 
 async function main(): Promise<void> {
-	if (!(await portFree(6420)) || !(await portFree(6440))) throw new Error("port 6420 or 6440 is in use: stop the running server first");
+	if (!(await portFree(ENGINE.port)) || !(await portFree(HTTP_PORT))) throw new Error(`port ${ENGINE.port} or ${HTTP_PORT} is in use: stop the running server first`);
 	const front = new Front();
 	await front.start();
 	const server = new Server();

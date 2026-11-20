@@ -3,7 +3,7 @@
  * runs, and nothing here calls GitHub. Run with:
  *
  *   cd server && npx tsx ../scripts/github-check.ts
- *   cd server && npx tsx ../scripts/github-check.ts --docker     and the git commands again, in a
+ *   cd server && ../scripts/locked.sh github-check.ts --docker   and the git commands again, in a
  *                                                                container of the sandbox image
  *
  * GitHub is played by scripts/github-standin.ts: its API, its authorization and installation pages, and

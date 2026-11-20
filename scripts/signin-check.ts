@@ -32,6 +32,7 @@
  *   WLP_CHECK_SECTIONS=seal,holder   run only the sections whose names start with one of these
  */
 
+import { checkPort } from "./ports.js";
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createSign, generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -118,7 +119,7 @@ async function until(test: () => boolean, ms: number): Promise<boolean> {
 }
 
 /** Where this check keeps its own files; removed at the end. */
-const scratch = mkdtempSync(join(tmpdir(), `wlp-signin-check-${run}-`));
+const scratch = mkdtempSync(join(tmpdir(), `wlp-check-signin-${run}-`));
 /** The private directories of a runner that are still there. */
 const leftIn = (root: string) => (existsSync(root) ? readdirSync(root).filter((name) => name.startsWith(TMP_PREFIX)) : []);
 
@@ -1031,13 +1032,15 @@ async function main(): Promise<void> {
 			info(`SKIP  no Windlass executable ${binary === null ? "from sandbox/fetch-windlass.sh" : `at ${binary}`}: set WLP_WINDLASS_BIN to one with \`login token --valid-for\``);
 			return;
 		}
+		const enginePort = checkPort(6420);
+		const httpPort = checkPort(6440);
 		const free = await new Promise<boolean>((done) => {
 			const probe = createNetServer();
 			probe.once("error", () => done(false));
-			probe.listen(6420, "127.0.0.1", () => probe.close(() => done(true)));
+			probe.listen(enginePort, "127.0.0.1", () => probe.close(() => done(true)));
 		});
 		if (!free) {
-			info("SKIP  port 6420 is taken: a server or another check is running; this section starts a server of its own");
+			info(`SKIP  port ${enginePort} is taken: a server or another check is running; this section starts a server of its own`);
 			return;
 		}
 		const standin = new StandIn();
@@ -1046,7 +1049,8 @@ async function main(): Promise<void> {
 		mkdirSync(storage);
 		const privateRoot = join(scratch, "server-private");
 		mkdirSync(privateRoot);
-		const endpoint = "http://127.0.0.1:6420";
+		const endpoint = `http://127.0.0.1:${enginePort}`;
+		process.env.RIVET_RUN_ENGINE_PORT = String(enginePort); // Also used by this process's ActorSignInDirectory.
 		let output = "";
 		let child: ChildProcess | null = null;
 		const reapEngine = () => {
@@ -1078,6 +1082,7 @@ async function main(): Promise<void> {
 					WLP_DEMO: "0",
 					WLP_FAKE_DELAY_MS: "2",
 					RIVETKIT_STORAGE_PATH: storage,
+					WLP_HTTP_PORT: String(httpPort),
 				},
 				stdio: ["ignore", "pipe", "pipe"],
 			});
@@ -1093,7 +1098,7 @@ async function main(): Promise<void> {
 				const deadline = Date.now() + 120_000;
 				for (;;) {
 					if (child === null) throw new Error(`the server exited while starting: ${output.slice(-600)}`);
-					const up = await fetch("http://127.0.0.1:6440/health").then(
+					const up = await fetch(`http://127.0.0.1:${httpPort}/health`).then(
 						(response) => response.ok,
 						() => false,
 					);
@@ -1116,7 +1121,7 @@ async function main(): Promise<void> {
 			reapEngine();
 			await until(() => {
 				try {
-					execFileSync("sh", ["-c", "! ss -ltn | grep -q ':6420 '"], { stdio: "pipe" });
+					execFileSync("sh", ["-c", `! ss -ltn | grep -q ':${enginePort} '`], { stdio: "pipe" });
 					return true;
 				} catch {
 					return false;
@@ -1188,7 +1193,7 @@ async function main(): Promise<void> {
 			expect("a model the account does not offer is refused, though the platform's stand-in list has it", (unknownModel as { code?: string } | null)?.code === "bad_model" && standin.count("models") === 1, String((unknownModel as Error | null)?.message));
 
 			// ---- a turn on the server is handed the same token, by way of the same actor
-			const profiles = (await (await fetch("http://127.0.0.1:6440/platform/info")).json()) as { profiles?: Array<{ id: string; available: boolean }> };
+			const profiles = (await (await fetch(`http://127.0.0.1:${httpPort}/platform/info`)).json()) as { profiles?: Array<{ id: string; available: boolean }> };
 			const profile = profiles.profiles?.find((entry) => entry.available)?.id ?? "docker-windlass-sandbox";
 			const session = await user.createSession({ profile: profile as never });
 			const sessionHandle = client.agentSession.get([uid, session.id], { params: { token: auth.token } });

@@ -27,6 +27,7 @@
  * the second delivery is RivetKit's own, 25 ms later.
  */
 
+import { checkPort } from "./ports.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -42,8 +43,8 @@ process.env.RIVET_LOG_LEVEL ??= "silent";
 const { createClient } = await import("../server/src/client.js");
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
-const ENGINE_PORT = Number(process.env.WLP_CHECK_ENGINE_PORT ?? 6460);
-const HTTP_PORT = Number(process.env.WLP_CHECK_HTTP_PORT ?? 6480);
+const ENGINE_PORT = checkPort(Number(process.env.WLP_CHECK_ENGINE_PORT ?? 6460));
+const HTTP_PORT = checkPort(Number(process.env.WLP_CHECK_HTTP_PORT ?? 6480));
 const ENDPOINT = `http://127.0.0.1:${ENGINE_PORT}`;
 const API = `http://127.0.0.1:${HTTP_PORT}`;
 const PROFILE = "docker-windlass-sandbox" as const;

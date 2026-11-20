@@ -2444,16 +2444,22 @@ The local engine asks for no token, so `connection-e2e.ts` puts a front before i
 cluster's engine does, with tokens that last twelve seconds, and runs real turns through it with the web
 app's own client: past a token's expiry, across a dropped connection, and with a clock that runs behind.
 
-**Which checks can run together.** The helper lets checks that share nothing run at the same time, at
-most three at once, and makes the others wait for each other:
+**Which checks can run together.** The helper runs up to four checks at once across checkouts
+(`WLP_CHECK_MAX`). Use the same limits in every checkout on a host.
 
-- *Ports.* Each group of fixed ports has a lock of its own. The `pnpm e2e` that starts its own server
-  (ports 6420, 6421, 6430, 6440 and 6449), `connection-e2e.ts` and the last section of `signin-check.ts`
-  share group 6420, so stop a development server on those ports first; an `e2e.ts --endpoint URL` run
-  uses the server it was given and takes no group. The other groups are 6460 (`idempotency-check.ts`),
-  6620 (`factory-e2e.ts`), 6740 (`runner-socket-probe.ts`), 6850 (`machine-check.ts`), 6900
-  (`runner-check.ts`, its stand-in on 7020 included) and 6950 (`runner-e2e.ts`). A check whose ports are
-  set to others by hand still takes its group's lock, so choose free ports outside the other groups.
+- *Ports.* Each group has three slots by default (`WLP_CHECK_SLOTS`, 1–59). The helper takes the first
+  free slot, starting at zero, and waits if all are busy. It sets `WLP_CHECK_PORT_OFFSET` to the slot
+  number times 1000 for the whole run. For example, three copies of `pnpm e2e` can start engines on
+  6420, 7420 and 8420. The engine's companion ports and the platform's HTTP port move with it.
+  `connection-e2e.ts` and `signin-check.ts` share that group. An `e2e.ts --endpoint URL` uses the
+  supplied server and takes no port slot. Slot zero uses the original group lock, so a checkout with
+  the old helper still reserves the base ports. Keep development servers off the port sets in use.
+  The other base groups are 6460 (`idempotency-check.ts`), 6620 (`factory-e2e.ts`), 6740
+  (`runner-socket-probe.ts`), 6850 (`machine-check.ts`), 6900 (`runner-check.ts`, including its
+  stand-in on 7020) and 6950 (`runner-e2e.ts`). For a direct run the offset defaults to zero.
+  Custom engine and HTTP base ports also receive the offset and must leave room for other groups.
+- *Machine check.* `machine-check.ts` takes slot zero and every slot under the overall cap. Other
+  helper-managed checks wait for its timing-sensitive steps to finish.
 - *Docker.* `mcp-check.ts`, `runner-check.ts`, `e2e.ts` with `WLP_SANDBOX=docker`, and `verified-check.ts`,
   `github-check.ts`, `backup-check.ts` and `e2b-provider-test.ts` with `--docker` share one Docker lock.
   `sandbox-check.ts`, which builds the image and cleans up, takes it alone, and so do an image build or a

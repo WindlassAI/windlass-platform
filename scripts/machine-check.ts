@@ -1,4 +1,5 @@
 /** cd server && ../scripts/locked.sh machine-check.ts */
+import { checkPort } from "./ports.js";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
@@ -14,7 +15,7 @@ import type { Registry } from "../server/src/client.js";
 import { CONTROL_DEAD_MS, REFUSED_RETRY_MS, parseConnection, RUNNER_PAIR_PATH } from "../server/src/runner/control.js";
 import { FakeRunner, controlProxy, post } from "./runner-fake.js";
 
-const port = 6850;
+const port = checkPort(6850);
 const endpoint = `http://127.0.0.1:${port}`;
 const origin = `http://127.0.0.1:${port + 20}`;
 const peer = `http://127.0.0.1:${port + 21}`;
@@ -101,7 +102,7 @@ async function check() {
 	const secret = randomBytes(32).toString("hex");
 	process.env.WLP_SECRET = secret;
 	const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(WLP_|RIVET|E2B_|PORT$)/.test(k)));
-	const env = { ...cleanEnv, WLP_SECRET: secret, WLP_DEMO: "1", WLP_SANDBOX: "fake", RIVET_LOG_LEVEL: "silent",
+	const env = { ...cleanEnv, WLP_CHECK_PORT_OFFSET: process.env.WLP_CHECK_PORT_OFFSET, WLP_SECRET: secret, WLP_DEMO: "1", WLP_SANDBOX: "fake", RIVET_LOG_LEVEL: "silent",
 		WLP_GITHUB_APP_ID: "1", WLP_GITHUB_APP_SLUG: "local", WLP_GITHUB_CLIENT_ID: "local", WLP_GITHUB_CLIENT_SECRET: secret,
 		WLP_GITHUB_PRIVATE_KEY: generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
 		WLP_GITHUB_API_URL: origin, WLP_GITHUB_URL: origin };

@@ -2,6 +2,7 @@
  * Then run: cd server && ../scripts/locked.sh runner-check.ts
  * The five-minute Wi-Fi outage and two-minute laptop sleep are wall time.
  */
+import { checkPort } from "./ports.js";
 import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash, createPublicKey, randomBytes, randomUUID } from "node:crypto";
@@ -72,7 +73,7 @@ async function scripted(ch: ServerChannel, id: string, interrupt: () => Promise<
 // One integration against the actual platform routes, user and machine actors. The demo
 // account has no GitHub link, so this also exercises the nullable login in PairStatus.
 async function realMachine() {
-	const port = 6900;
+	const port = checkPort(6900);
 	const endpoint = "http://127.0.0.1:" + port;
 	const platform = "http://127.0.0.1:" + (port + 20);
 	for (const n of [port, port + 1, port + 10, port + 20]) await new Promise<void>((resolve, reject) => {

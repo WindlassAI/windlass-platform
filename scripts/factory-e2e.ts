@@ -16,6 +16,7 @@
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
+import { checkPort } from "./ports.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createWriteStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -28,8 +29,8 @@ import { createClient, type Registry } from "../server/src/client.js";
 import { GithubStandin, type StandinRepository, type StandinPull } from "./github-standin.js";
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
-const ENGINE_PORT = 6620;
-const HTTP_PORT = 6645;
+const ENGINE_PORT = checkPort(6620);
+const HTTP_PORT = checkPort(6645);
 const ENDPOINT = `http://127.0.0.1:${ENGINE_PORT}`;
 const API = `http://127.0.0.1:${HTTP_PORT}`;
 const ORIGIN = "http://localhost:5173";

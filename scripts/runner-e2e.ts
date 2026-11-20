@@ -13,6 +13,7 @@
  * The helper takes group 6950 (engine 6950, +1 and +10; HTTP 6970). Nothing runs in
  * Docker. Prints one PASS/FAIL line per check and exits 1 if any failed.
  */
+import { checkPort } from "./ports.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { createWriteStream, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -28,8 +29,8 @@ import { MIN_RUNNER_VERSION, parseConnection, parseServerFrame, sessionProof } f
 import { DEAD_MS, PROTOCOL_VERSION, type Operation } from "../server/src/runner/protocol.js";
 import { FakeRunner } from "./runner-fake.js";
 
-const PORT = 6950;
-const HTTP = 6970;
+const PORT = checkPort(6950);
+const HTTP = checkPort(6970);
 const ENDPOINT = `http://127.0.0.1:${PORT}`;
 const ORIGIN = `http://127.0.0.1:${HTTP}`;
 const SERVER_DIR = fileURLToPath(new URL("../server/", import.meta.url));

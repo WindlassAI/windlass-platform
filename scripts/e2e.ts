@@ -18,6 +18,7 @@
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
+import { checkPort } from "./ports.js";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createWriteStream, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -44,9 +45,12 @@ import {
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
 const args = process.argv.slice(2);
 const endpointArg = args.includes("--endpoint") ? args[args.indexOf("--endpoint") + 1] : undefined;
-const ENDPOINT = endpointArg ?? "http://127.0.0.1:6420";
+const ENGINE_PORT = checkPort(6420);
+const httpBase = endpointArg === undefined ? process.env.WLP_HTTP_PORT?.trim() || process.env.PORT?.trim() : undefined;
+const HTTP_PORT = checkPort(Number(httpBase || 6440));
+const ENDPOINT = endpointArg ?? `http://127.0.0.1:${ENGINE_PORT}`;
 /** The server's own HTTP routes. */
-const API = process.env.WLP_E2E_API ?? `${new URL(ENDPOINT).protocol}//${new URL(ENDPOINT).hostname}:6440`;
+const API = process.env.WLP_E2E_API ?? `${new URL(ENDPOINT).protocol}//${new URL(ENDPOINT).hostname}:${HTTP_PORT}`;
 const MODE = (process.env.WLP_SANDBOX ?? "fake") as "fake" | "docker";
 const OWN_SERVER = endpointArg === undefined;
 const FAKE = MODE === "fake";
@@ -179,6 +183,8 @@ class Server {
 			WLP_SANDBOX: MODE,
 			WLP_SECRET: this.secret,
 			RIVETKIT_STORAGE_PATH: this.storage,
+			RIVET_RUN_ENGINE_PORT: String(ENGINE_PORT),
+			WLP_HTTP_PORT: String(HTTP_PORT),
 			WLP_FAKE_DELAY_MS: process.env.WLP_FAKE_DELAY_MS ?? "15",
 			WLP_QUESTION_TIMEOUT_MS: String(QUESTION_MS),
 			// One demo user keeps more sandboxes here, and runs them for longer, than an account may: the
@@ -241,7 +247,7 @@ class Server {
 		// The engine is a child of the server; make sure it does not outlive it and keep the port.
 		await sleep(500);
 		this.reapEngine();
-		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+		await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 	}
 
 	private reapEngine(): void {
@@ -259,7 +265,7 @@ class Server {
 	}
 }
 
-function portFree(port = 6420): Promise<boolean> {
+function portFree(port: number): Promise<boolean> {
 	return new Promise((done) => {
 		const probe = createServer();
 		probe.once("error", () => done(false));
@@ -269,7 +275,7 @@ function portFree(port = 6420): Promise<boolean> {
 
 /** Both of the server's ports: the engine's and the platform's HTTP routes. */
 async function portsFree(): Promise<boolean> {
-	return (await portFree(6420)) && (await portFree(6440));
+	return (await portFree(ENGINE_PORT)) && (await portFree(HTTP_PORT));
 }
 
 /** `GET /platform/info`, from a page at `origin` when one is given. */
@@ -291,7 +297,7 @@ function platformConnection(origin?: string): Promise<Response> {
  * `change` is given the environment it would otherwise start with.
  */
 async function startRefused(change: (env: Record<string, string | undefined>) => void): Promise<{ code: number | null; output: string }> {
-	const env: Record<string, string | undefined> = { ...process.env, WLP_SANDBOX: "fake", WLP_SECRET: randomBytes(24).toString("hex"), WLP_HTTP_PORT: "6449" };
+	const env: Record<string, string | undefined> = { ...process.env, WLP_SANDBOX: "fake", WLP_SECRET: randomBytes(24).toString("hex"), WLP_HTTP_PORT: String(checkPort(6449)), RIVET_RUN_ENGINE_PORT: String(ENGINE_PORT) };
 	delete env.RIVET_ADMIN_TOKEN;
 	delete env.WLP_PUBLIC_ENDPOINT;
 	change(env);
@@ -328,10 +334,10 @@ function sandboxContainers(): string[] {
 let loginTtlMs = 10 * 60 * 1000;
 const SHORT_LOGIN_TTL_MS = 15_000;
 
-function loginVolumes(): string[] {
+function loginVolumes(attempt: string): string[] {
 	return execFileSync("docker", ["volume", "ls", "-q", "--filter", "label=dev.windlass-platform=1"], { encoding: "utf8" })
 		.split("\n")
-		.filter((name) => name.startsWith("wlp-login-"));
+		.filter((name) => name === `wlp-login-${attempt}`);
 }
 
 async function controlPlane(path: string, method = "GET"): Promise<Response> {
@@ -593,7 +599,7 @@ async function main(server: Server | null): Promise<void> {
 			const lines = output.trim().split("\n");
 			assert(lines.length === 1 && lines[0].startsWith("[wlp] WLP_SECRET is not set:") && lines[0].endsWith("on all of them."), `it said: ${output.slice(0, 600)}`);
 			assert(!output.includes("sk_e2e_made_up"), "the output shows the engine's token");
-			assert(await portFree(6449), "it bound its HTTP port before refusing");
+			assert(await portFree(checkPort(6449)), "it bound its HTTP port before refusing");
 			return lines[0];
 		});
 	} else {
@@ -2216,7 +2222,7 @@ async function main(server: Server | null): Promise<void> {
 			// Neither layer contacts OpenAI for an address that is not the loopback one.
 			const wrong = await refused(() => handle.finish("https://example.com/not-the-callback"), "sandbox_error");
 			// An attempt is kept, sealed, in its actor: no layer makes a volume for it.
-			if (!FAKE) assert(loginVolumes().length === 0, `an attempt left a volume: ${loginVolumes().join(", ")}`);
+			if (!FAKE) assert(loginVolumes(id).length === 0, `an attempt left a volume: wlp-login-${id}`);
 			await waitFor("the attempt to be discarded", () => server.output.includes(`[wlp] login.discarded attempt=${id}`), loginTtlMs + 20_000, 250);
 			await refused(() => client.login.get([id]).finish(`${started.redirectPrefix}?code=late&state=x`), "not_found");
 			return `after ${Math.round(loginTtlMs / 1000)} s the actor and the attempt in it were gone; a wrong address was answered with "${wrong}"`;
@@ -2256,7 +2262,7 @@ async function main(server: Server | null): Promise<void> {
 		await check("the turn's time limit applies while a question waits", async () => {
 			const limitMs = 3_000;
 			await server.stop();
-			await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+			await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 			await server.start({ WLP_TURN_TIMEOUT_MS: String(limitMs), WLP_LOGIN_TTL_MS: String(loginTtlMs) });
 			const limited = await userHandle.createSession({ profile: availableProfile as never, title: "Limited" });
 			const limitedWatch = new Watch(client, uid, limited.id, token);
@@ -2296,7 +2302,7 @@ async function main(server: Server | null): Promise<void> {
 		// Removing a sandbox takes PROVIDER_MS here, so that a prompt sent during a free arrives while the session removes it.
 		const PROVIDER_MS = 1_500;
 		await server.stop();
-		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+		await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 		await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_MAX_KEPT_SANDBOXES: "1", WLP_FAKE_CREATE_FAILS: "1", WLP_FAKE_PROVIDER_DELAY_MS: String(PROVIDER_MS) });
 		const someone = await demoSignIn();
 		const theirs = client.user.getOrCreate([someone.profile.uid], { params: { token: someone.token } });
@@ -2401,7 +2407,7 @@ async function main(server: Server | null): Promise<void> {
 		const counted = (session: string) => [...server.output.matchAll(new RegExp(`\\[wlp\\] usage\\.counted uid=\\S+ session=${session} hold=(\\S+) kind=(\\S+) seconds=(-?\\d+)`, "g"))].map((m) => ({ hold: m[1]!, kind: m[2]!, seconds: Number(m[3]) }));
 		const lost = (session: string, kind: string) => [...server.output.matchAll(new RegExp(`\\[wlp\\] usage\\.fault_lost uid=\\S+ session=${session} hold=(\\S+) ${kind}:`, "g"))].map((m) => m[1]!);
 		await server.stop();
-		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+		await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 		await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_USAGE_HOLD_SECONDS: String(HOLD_S), WLP_FAKE_RESERVE_FAULT: "lose:1,lose-renewal:1,delay:1500" });
 		const someone = await demoSignIn();
 		const theirs = client.user.getOrCreate([someone.profile.uid], { params: { token: someone.token } });
@@ -2449,7 +2455,7 @@ async function main(server: Server | null): Promise<void> {
 		await check(FAULT_CHECKS[2], async () => {
 			const { UNCHECKED_TURN_NOTE, holdDeadline } = await import("../server/src/usage.js");
 			await server.stop();
-			await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+			await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 			// The question waits as long as the hold's grace and more: the turn runs on, its sandbox with it, until the meter stops it.
 			await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_USAGE_HOLD_SECONDS: String(HOLD_S), WLP_FAKE_RESERVE_FAULT: "down:300000", WLP_QUESTION_TIMEOUT_MS: "600000" });
 			const away = await theirs.createSession({ profile: availableProfile as never, title: "Its user's actor is away" });
@@ -2473,7 +2479,7 @@ async function main(server: Server | null): Promise<void> {
 
 		await check(FAULT_CHECKS[3], async () => {
 			await server.stop();
-			await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+			await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 			// A first hold is answered after 5 s: the server dies while the session waits, once it has stored what it asked for.
 			await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_FAKE_RESERVE_FAULT: "delay:5000" });
 			const cut = await theirs.createSession({ profile: availableProfile as never, title: "Its first hold was cut off" });
@@ -2596,7 +2602,7 @@ async function main(server: Server | null): Promise<void> {
 			const lines = output.trim().split("\n");
 			assert(lines.length === 1 && lines[0].startsWith("[wlp] WLP_PUBLIC_ENDPOINT is not set:"), `it said: ${output.slice(0, 600)}`);
 			assert(!output.includes("e2e_made_up_admin_token"), "the output shows the admin token");
-			assert(await portFree(6449), "it bound its HTTP port before refusing");
+			assert(await portFree(checkPort(6449)), "it bound its HTTP port before refusing");
 			return lines[0];
 		});
 	} else {
@@ -2675,7 +2681,7 @@ async function submissionChecks(server: Server | null, client: Client, uid: stri
 		if (server) {
 			await check("the keys outlive a server restart", async () => {
 				await server.stop();
-				await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+				await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 				await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs) });
 				const answer = await handle.prompt({ text: LONG, idempotencyKey: once });
 				const steered = await handle.prompt({ text: "Also, keep the report short.", idempotencyKey: steer });
@@ -2737,7 +2743,7 @@ async function idleChecks(server: Server, client: Client, uid: string, token: st
 	const SUSPENDED = `Suspended the sandbox after ${seconds(SUSPEND_MS)} without use; the next prompt resumes it.`;
 	const REMOVED = `Removed the sandbox and its files after ${seconds(DESTROY_MS)} without use; the next prompt starts a new one.`;
 	await server.stop();
-	await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+	await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 	await server.start({ WLP_IDLE_SUSPEND_MS: String(SUSPEND_MS), WLP_IDLE_DESTROY_MS: String(DESTROY_MS), WLP_LOGIN_TTL_MS: String(loginTtlMs) });
 
 	const userHandle = client.user.getOrCreate([uid], { params: { token } });
@@ -2865,7 +2871,7 @@ async function idleChecks(server: Server, client: Client, uid: string, token: st
 			// Nobody is connected to the session from here on: only its schedule can wake it.
 			await watch.conn.dispose().catch(() => undefined);
 			await server.stop();
-			await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+			await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 			const restarted = Date.now();
 			await server.start({ WLP_IDLE_SUSPEND_MS: String(SUSPEND_MS), WLP_IDLE_DESTROY_MS: String(DESTROY_MS), WLP_LOGIN_TTL_MS: String(loginTtlMs) });
 			await waitFor("the removal after the restart", () => logged("idle_removed").length > removals, DESTROY_MS + 40_000, 200);
@@ -2886,7 +2892,7 @@ async function idleChecks(server: Server, client: Client, uid: string, token: st
 			const firings = () => count(`schedule.fired session=${idle.id} action=internalIdle`);
 			await step(IDLE_CHECKS[6], async () => {
 				await server.stop();
-				await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+				await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 				await server.start({ ...idleEnv, WLP_FAKE_PROVIDER_DELAY_MS: String(PROVIDER_MS) });
 				const first = new Watch(client, uid, idle.id, token);
 				const made = await first.conn.prompt({ text: "Write a short program" });
@@ -2997,7 +3003,7 @@ async function backupChecks(server: Server, client: Client, uid: string, token: 
 	const env = { WLP_FAKE_BACKUP_DIR: bucket, WLP_BACKUP_MAX_BYTES: String(LIMIT), WLP_LOGIN_TTL_MS: String(loginTtlMs) };
 	const restart = async () => {
 		await server.stop();
-		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+		await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 		await server.start(env);
 	};
 	await restart();
@@ -3212,7 +3218,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 	await standin.start();
 	try {
 		await server.stop();
-		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+		await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 		await server.start({ ...standin.env(), WLP_LOGIN_TTL_MS: String(loginTtlMs) });
 
 		// Who is at "GitHub": ada with two private repositories, an organization she can write to and bo can read, and mallory.
@@ -3672,7 +3678,7 @@ async function serverApprovalChecks(server: Server, client: Client, demoSignIn: 
 	const env = { ...standin.env(), WLP_FAKE_BACKUP_DIR: join(server.storage, "bucket-approvals"), WLP_LOGIN_TTL_MS: String(loginTtlMs) };
 	const restartWith = async (extra: Record<string, string> = {}) => {
 		await server.stop();
-		await waitFor("ports 6420 and 6440 to be free", portsFree, 20_000, 200);
+		await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
 		await server.start({ ...env, ...extra });
 	};
 
@@ -4088,7 +4094,7 @@ let crashed = false;
 try {
 	console.log(`e2e: sandbox layer ${MODE}; ${OWN_SERVER ? "starting a server on fresh state" : `using ${ENDPOINT}`}`);
 	if (OWN_SERVER) {
-		if (!(await portsFree())) throw new Error("port 6420 or 6440 is in use: stop the running server, or pass --endpoint to test it");
+		if (!(await portsFree())) throw new Error(`port ${ENGINE_PORT} or ${HTTP_PORT} is in use: stop the running server, or pass --endpoint to test it`);
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
 		await server.start();

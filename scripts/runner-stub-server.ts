@@ -1,5 +1,6 @@
 // Only the pairing routes and two socket endpoints. The real session channel owns replay,
 // receipts, operation ids, timers, and result validation on this side of the TCP proxy.
+import { checkPort } from "./ports.js";
 import { randomBytes, verify } from "node:crypto";
 import { createServer as http } from "node:http";
 import { createRequire } from "node:module";
@@ -24,7 +25,7 @@ const send = (ws: WS, f: ServerFrame) => ws.send(JSON.stringify(f));
 
 export async function stub(storage: string) {
 	for (const k of Object.keys(process.env)) if (k.startsWith("RIVET")) delete process.env[k];
-	const port = 7020;
+	const port = checkPort(7020);
 	// Rivet starts two companion listeners. Never attach to an engine that was already there.
 	for (const p of [port, port + 1, port + 10]) await new Promise<void>((resolve, reject) => {
 		const test = createServer(); test.once("error", reject); test.listen(p, "127.0.0.1", () => test.close(() => resolve()));
