@@ -78,8 +78,10 @@ export interface PlatformInfo {
 	/**
 	 * Set when users of this deployment may file work items (WLP_ITEMS=1). Absent when not: the web app
 	 * then shows nothing of them, and the item and API token actions are refused with `items_off`.
+	 * `reviewer` says whether a second agent reviews each handed-over change (WLP_FACTORY_REVIEWER=on),
+	 * so that the Factory page can say there is none before any item exists.
 	 */
-	items?: true;
+	items?: { reviewer: boolean };
 }
 
 /**

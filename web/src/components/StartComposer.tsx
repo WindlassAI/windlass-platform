@@ -14,8 +14,8 @@
  * machine that cannot be used now, an open mode and an open sandbox fact are a warning dot on their
  * chip, said in its picker.
  *
- * The title is the task's first line (`titleOf`). The model goes with the agent, the effort with its
- * first prompt. An agent of another harness (Claude Code) is on its own default model unless its
+ * No title is sent: the server names the agent from its first prompt, with saved secret values taken
+ * out of it. The model goes with the agent, the effort with its first prompt. An agent of another harness (Claude Code) is on its own default model unless its
  * machine's runner reported its models (`harnessOptions`).
  *
  * Connecting GitHub is offered only in the repository's picker. It leaves the page, so the task and
@@ -31,7 +31,7 @@ import { HARNESS_NAMES } from "../lib/acp";
 import { count, localTime, sandboxTime } from "../lib/format";
 import { effortsOf, harnessOptions, modelsNote } from "../lib/models";
 import { CLAUDE_DEFAULT_MODE, OPEN_MODES, launchModes } from "../lib/modes";
-import { lastUsed, layerChoices, repositoryName, startingChoices, startingModel, startingProfile, titleOf } from "../lib/repositories";
+import { lastUsed, layerChoices, repositoryName, startingChoices, startingModel, startingProfile } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { clockTime, useMachines } from "../screens/Machines";
@@ -398,7 +398,6 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 				repoUrl: repo.kind === "address" && repo.url !== "" ? repo.url : undefined,
 				repository,
 				setupCommand: repository ? setup.toSave : undefined,
-				title: titleOf(task),
 			};
 			// One key for the agent: launching again after an answer that never came, with nothing changed, makes no second one.
 			asked.current = submissionOf(JSON.stringify(input), asked.current);

@@ -219,6 +219,11 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 		const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=";
 		const { config } = await import("../server/src/config.js");
 		const { client, user, auth } = await world(server, standin, { WLP_SECRET: config.secret.toString(), WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_BACKUP_DIR: join(server.storage, "shots"), WLP_FAKE_BUCKET_SIGNING_SECRET: randomBytes(32).toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_IDLE_SUSPEND_MS: "1000" });
+		await check("reviewer: platform info says the second review is on", async () => {
+			const info = (await (await fetch(`${API}/platform/info`)).json()) as { items?: { reviewer?: unknown } };
+			assert(info.items?.reviewer === true, `platform info has items: ${JSON.stringify(info.items)}`);
+			return "items: { reviewer: true }";
+		});
 		await check("reviewer: builder and reviewer keep their profile mode", async () => {
 			const item = await user.createItem({ repository: { id: harbor.id }, title: "Fixed modes", body: "Read the repository.", start: false });
 			const view = await user.item(item.id);
@@ -1330,9 +1335,9 @@ try {
 	});
 
 	await check("on: with WLP_ITEMS=1 platform info says items are offered", async () => {
-		const info = (await (await fetch(`${API}/platform/info`)).json()) as { items?: unknown };
-		assert(info.items === true, `platform info has items: ${JSON.stringify(info.items)}`);
-		return "items: true";
+		const info = (await (await fetch(`${API}/platform/info`)).json()) as { items?: { reviewer?: unknown } };
+		assert(info.items?.reviewer === false && Object.keys(info.items).length === 1, `platform info has items: ${JSON.stringify(info.items)}`);
+		return "items: { reviewer: false }";
 	});
 
 	await check("ci: implement, gate, publish, CI with the stand-in's check runs, handoff with a verdict", async () => {

@@ -128,7 +128,7 @@ describe("the start composer", () => {
 		write("Run the tests and fix what fails");
 		await enter();
 		expect(created).toHaveLength(1);
-		expect(created[0]).toMatchObject({ repository: { id: 7101, branch: "main" }, profile: "docker-hardened", model: "gpt-6-luna", mode: "full", title: "Run the tests and fix what fails" });
+		expect(created[0]).toMatchObject({ repository: { id: 7101, branch: "main" }, profile: "docker-hardened", model: "gpt-6-luna", mode: "full" });
 		expect(created[0]?.place).toBeUndefined();
 		expect(created[0]?.harness).toBeUndefined();
 		expect(prompted).toEqual([expect.objectContaining({ text: "Run the tests and fix what fails" })]);
@@ -147,11 +147,12 @@ describe("the start composer", () => {
 		expect(prompted).toHaveLength(0);
 	});
 
-	it("names the agent after the task's first line", async () => {
+	it("sends no title: the server names the agent from its first prompt, without the secrets saved", async () => {
 		await show();
 		write("\n  Add the tests command to the README  \nThen run them, and say what passed.");
 		await enter();
-		expect(created[0]?.title).toBe("Add the tests command to the README");
+		expect(created).toHaveLength(1);
+		expect(created[0]).not.toHaveProperty("title");
 		expect(prompted[0]?.text).toBe("Add the tests command to the README  \nThen run them, and say what passed.");
 	});
 });
@@ -340,6 +341,6 @@ describe("the start composer and the visit to GitHub", () => {
 		expect(value("on")).toContain("nas");
 		expect(value("mode")).toBe("Ask");
 		await enter();
-		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, mode: "ask", title: "Add a health check" });
+		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, mode: "ask" });
 	});
 });

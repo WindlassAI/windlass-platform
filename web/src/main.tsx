@@ -51,7 +51,8 @@ async function createPlatformClient(): Promise<PlatformClient> {
 		// `?models=unavailable` one whose ChatGPT plan's models could not be read, so that the stand-in list is offered,
 		// `?machine=none|offline|pairing|outdated|docker|clock|key|full|unpublished|stale|failed|loading|off` the user's machines in that state (`MockMachineState`),
 		// `?machineSession=answering|not_answering|offline|removed` how the agent on the machine "nas" finds it (`MockMachineSession`),
-		// and `?items=few|none|full|loading|failed|off` the user's work items and API tokens in that state (`MockItemsState`), `off` a deployment without them.
+		// `?items=few|none|full|loading|failed|off` the user's work items and API tokens in that state (`MockItemsState`), `off` a deployment without them,
+		// and `?reviewer=off` a deployment without the second review.
 		const params = new URLSearchParams(location.search);
 		const usage = params.get("usage");
 		const machine = params.get("machine");
@@ -68,6 +69,7 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			machine: MOCK_MACHINE_STATES.find((state) => state === machine),
 			machineSession: MOCK_MACHINE_SESSIONS.find((state) => state === machineSession),
 			items: MOCK_ITEMS_STATES.find((state) => state === items),
+			reviewer: params.get("reviewer") !== "off",
 		});
 		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),
 		// `__wlpMock.mockNextAnswer("elsewhere" | "error")` (an answer that does not go through),

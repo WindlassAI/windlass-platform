@@ -171,6 +171,8 @@ export interface MockOptions {
 	machineSession?: MockMachineSession;
 	/** How the user's work items and API tokens stand when the page loads (mock-items.ts, `MockItemsState`). Default "all". */
 	items?: MockItemsState;
+	/** False plays a deployment without the second review (WLP_FACTORY_REVIEWER unset): platform info says so. Default true. */
+	reviewer?: boolean;
 }
 
 /**
@@ -1201,6 +1203,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	// On one of the user's machines, it takes the machines as they are listed now, and is told of every change of them.
 	const items = createMockItems({
 		state: options.items,
+		reviewer: options.reviewer,
 		now: () => realNow(),
 		latency,
 		later,
@@ -3847,7 +3850,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
 			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, platformUrl: origin } };
-			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(options.items === "off" ? {} : { items: true as const }) };
+			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false } }) };
 		},
 		login: {
 			async start(): Promise<LoginStart> {

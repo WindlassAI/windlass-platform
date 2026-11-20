@@ -69,6 +69,8 @@ export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 
 export interface MockItemsDeps {
 	state?: MockItemsState;
+	/** False plays a deployment without the second review: no item gets one, as WLP_FACTORY_REVIEWER unset leaves them. Default true. */
+	reviewer?: boolean;
 	now(): number;
 	/** Waits as long as the mock's answers take. */
 	latency(ms?: number): Promise<void>;
@@ -939,6 +941,14 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 	};
 }
 
+/** The server's reason for no second review on a deployment without the reviewer (factory/blueprint.ts). */
+const DEPLOYMENT_OFF = "turned off for this deployment";
+
+/** A seeded item as a deployment without the second review keeps it: none, and that reason. */
+function withoutReviewer(view: ItemView): ItemView {
+	return { ...view, review: view.review ? { state: "off", recommendation: null } : null, reviews: [], reviewerSessionId: null, reviewNone: DEPLOYMENT_OFF };
+}
+
 const summaryOf = ({ task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => summary;
 
 function seedTokens(state: MockItemsState, at: number): ApiToken[] {
@@ -971,6 +981,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			const at = deps.now();
 			const items = seeds(state, at, deps.machines(auth)?.list ?? null)
 				.map((seed) => withSeededReview(withSeededReport(viewOf(seed, at, auth.profile.uid), seed.n), seed.n))
+				.map((view) => (deps.reviewer === false ? withoutReviewer(view) : view))
 				.sort((a, b) => b.createdAt - a.createdAt);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };
 			kept.set(auth.profile.uid, found);
@@ -1207,10 +1218,10 @@ export function createMockItems(deps: MockItemsDeps) {
 					events: [],
 					verdicts: [],
 					report: null,
-					review: place.kind === "machine" ? { state: "off", recommendation: null } : null,
+					review: place.kind === "machine" || deps.reviewer === false ? { state: "off", recommendation: null } : null,
 					reviews: [],
 					reviewerSessionId: null,
-					reviewNone: place.kind === "machine" ? "in this sandbox the reviewer's commands would run with the network" : null,
+					reviewNone: deps.reviewer === false ? DEPLOYMENT_OFF : place.kind === "machine" ? "in this sandbox the reviewer's commands would run with the network" : null,
 				};
 				mine.items.unshift(item);
 				if (typeof idempotencyKey === "string") mine.made.set(idempotencyKey, { content, id });
