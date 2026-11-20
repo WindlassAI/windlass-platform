@@ -199,9 +199,22 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 		if (claudePin) {
 			const token = "sk-ant-oat01-" + randomBytes(30).toString("base64url");
 			const volume = "wlp-harness-claude-" + machineId;
+			const code = "fixture-approval#fixture-state";
+			const pageToken = "sk-ant-oat01-" + createHash("sha256").update(code).digest("hex");
+			const pageUrl = "https://claude.com/cai/oauth/authorize?state=fixture&code_challenge=fixture";
+			const fastExpiry = join(tmp, "expire-page-login");
+			const login = async (op: "start" | "finish" | "cancel", approval = code) => {
+				const requestId = randomBytes(16).toString("hex");
+				srv.send(op === "finish" ? { kind: "harnessLogin.finish", requestId, code: approval } : { kind: `harnessLogin.${op}`, requestId });
+				await until(() => srv.loginReplies.has(requestId), "Missing login " + op + " reply.", 12_000);
+				return srv.loginReplies.get(requestId)!;
+			};
 			const path = "/run/wlp-harness/claude/token";
 			const create = { profile: "docker-hardened", harness: "claude" } as const;
-			const clean = (text: string) => assert.ok(!text.includes(token.slice(0, 16)) && !text.includes(token.slice(-16)), "Claude login data escaped.");
+			const clean = (text: string) => {
+				for (const secret of [pageToken, token]) assert.ok(!text.includes(secret.slice(0, 16)) && !text.includes(secret.slice(-16)), "Claude login data escaped.");
+			};
+			srv.observeControl(clean);
 			const probeLog = join(tmp, "probe-calls");
 			const failureFlag = join(tmp, "probe-failure");
 			await writeFile(probeLog, "");
@@ -210,6 +223,8 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 			// Observe every docker spawn in an owner command. Record only its verb and whether
 			// it violated the policy, so a regression cannot put the fixture token in the log.
 			await writeFile(guard, `const cp = require("node:child_process"), fs = require("node:fs");
+const originalTimeout = global.setTimeout;
+global.setTimeout = (fn, ms, ...rest) => originalTimeout(fn, ms === 600000 && fs.existsSync(${JSON.stringify(fastExpiry)}) ? 2500 : ms, ...rest);
 for (const method of ["spawn", "spawnSync"]) {
  const original = cp[method];
  cp[method] = function(file, args, opts) {
@@ -235,6 +250,17 @@ for (const method of ["spawn", "spawnSync"]) {
      return write(line, ...rest);
     };
     return child;
+   }
+   if (args[0] === "create" && args.some(arg => arg.includes("--cli setup-token"))) {
+    // The same Docker shim as the terminal check. Keep the hardening, inner PTY and lifetime.
+    const command = args.findIndex(arg => arg.includes("--cli setup-token"));
+    const fake = ${JSON.stringify(`stty -echo; printf '%s' 'https://claude.com/cai/oauth/'; sleep .1; printf 'authorize?state=fixture&code_challenge=fixture\\nPaste code here\\n';
+IFS= read -r input || exit 2
+printf 'sk-ant-'; sleep .1; printf 'oat01-'; sleep .1
+printf '%s' '${code}' | sha256sum | cut -d' ' -f1
+case "$input" in *'${code}'*) exit 0;; *) exit 1;; esac`)};
+    args = [...args]; args[command] = fake;
+    return original.call(this, file, args, opts);
    }
    if (args.includes("setup-token")) {
     const approved = ["run", "--rm", "-it", "--log-driver", "none", "--pull", "never",
@@ -279,11 +305,16 @@ require("node:module").syncBuiltinESMExports();`);
 			const ch = srv.channel(sessionId);
 			await assert.rejects(ch.request("create", create), /--harness claude/);
 			assert.equal(srv.state.lastErrorKind, "refused");
+			for (const op of ["start", "finish", "cancel"] as const) {
+				const off = await login(op);
+				assert.ok("error" in off && off.error.includes("--harness claude"), "Login needs the opt-in sentence");
+			}
 			ok("Claude create needs the machine owner's opt-in.");
 			srv.detach(); await stop(service.child);
 			await until(() => !srv.online(), "Runner did not stop.");
 			const enabled = ["--harness", "claude", "--harness", "claude", "--screenshots"];
 			const report = () => srv.state.report?.harnesses?.[0];
+			const supportsPageLogin = () => srv.state.report?.claudeLogin === true;
 			const absentPin = join(tmp, "absent-claude.cjs");
 			await exec(process.execPath, ["runner/bundle.mjs", image, absentPin, image, "claude=sha256:" + randomBytes(32).toString("hex")], { cwd: root });
 			service = run(state, undefined, absentPin, {}, { flags: enabled });
@@ -291,11 +322,58 @@ require("node:module").syncBuiltinESMExports();`);
 			await srv.attach();
 			await assert.rejects(ch.request("create", create), /pinned Claude Code image is missing/);
 			srv.detach(); await stop(service.child); await until(() => !srv.online(), "Runner did not disconnect.");
+			// A crash between create and start leaves no in-container timer to reap the setup.
+			const orphanSetup = (await docker(["create", "--label", LABEL_ARG, "--label", MACHINE_LABEL + "=" + machineId,
+				"--label", "dev.windlass-platform.uid=" + uid, "--label", "dev.windlass-platform.claude-login=1", image, "true"], { check: true })).stdout.trim();
 			srv.state.report = null;
 			service = run(state, guard, bundle, {}, { flags: enabled });
 			await until(() => report()?.signIn === "none", "Enabled runner did not report the unsigned Claude harness.");
+			assert.ok((await docker(["container", "inspect", orphanSetup])).code !== 0, "Reconnect left the abandoned setup");
 			await srv.attach();
 			await assert.rejects(ch.request("create", { ...create, profile: "docker-windlass-sandbox" }), /docker-hardened/);
+
+			const setupContainers = async () => (await docker(["ps", "-aq", ...ownedFilters, "--filter", "label=dev.windlass-platform.claude-login=1"], { check: true })).stdout.trim();
+			const startPage = async () => {
+				const before = Date.now();
+				const start = await login("start");
+				assert.ok("url" in start && start.url === pageUrl && start.expiresAt >= before + 599_000 && start.expiresAt <= Date.now() + 600_000);
+				assert.deepEqual(Object.keys(start).sort(), ["expiresAt", "url"]);
+				const id = await setupContainers();
+				assert.ok(/^[0-9a-f]{12}$/.test(id));
+				const box = JSON.parse((await docker(["inspect", id], { check: true })).stdout)[0];
+				assert.ok(box.State.Running && box.HostConfig.AutoRemove && box.HostConfig.LogConfig.Type === "none");
+				assert.deepEqual(box.Mounts, []); assert.deepEqual(box.HostConfig.CapDrop, ["ALL"]);
+				assert.ok(box.HostConfig.SecurityOpt.includes("no-new-privileges"));
+				return id;
+			};
+			const setupId = await startPage();
+			const duplicate = await login("start");
+			assert.ok("error" in duplicate && duplicate.error.includes("pending") && await setupContainers() === setupId);
+			assert.deepEqual(await login("finish"), { signedIn: true });
+			assert.equal(await setupContainers(), "");
+			const hash = await docker(["run", "--rm", "--pull", "never", "--network", "none", "--mount",
+				"type=volume,src=" + volume + ",dst=/login,readonly,volume-nocopy", image, "sha256sum", "/login/token"], { check: true });
+			assert.ok(hash.stdout.split(" ")[0] === createHash("sha256").update(pageToken).digest("hex"), "Stored login differs from setup output");
+			assert.match((await owner(["status"])).output, /Claude Code.*: signed in/);
+			await until(() => report()?.signIn === "token", "Page login did not update the report");
+			await until(() => report()?.options !== undefined, "Page login did not report model options.");
+			assert.equal((await owner(["logout", "claude"])).code, 0);
+			await startPage();
+			assert.ok("error" in await login("finish", "wrong-code"));
+			assert.equal(await setupContainers(), "");
+			assert.ok((await docker(["volume", "inspect", volume])).code !== 0);
+			await startPage();
+			assert.deepEqual(await login("cancel"), { cancelled: true });
+			assert.equal(await setupContainers(), "");
+			await writeFile(fastExpiry, "");
+			await startPage();
+			await until(async () => !await setupContainers(), "Expired setup container was kept", 8000);
+			assert.ok("error" in await login("finish"));
+			await rm(fastExpiry);
+			assert.deepEqual(await probes(), [claudePin], "only successful sign-ins probe");
+			await writeFile(probeLog, "");
+			clean(service.output()); clean((await owner(["log"])).output);
+			ok("Page sign-in stores the exact split token, reports signed in, refuses a second start, and removes setup on finish, error, cancel and expiry.");
 
 			// An unlabelled namesake is never mounted or overwritten.
 			await docker(["volume", "create", volume], { check: true });
@@ -308,6 +386,8 @@ require("node:module").syncBuiltinESMExports();`);
 				assert.equal((await owner(["login", "claude"], invalid + "\n")).code, 1);
 			}
 			assert.equal((await docker(["volume", "inspect", volume])).code === 0, false);
+			// Keep page setup waiting for approval while a terminal login triggers the options probe.
+			const pendingSetup = await startPage();
 			assert.equal((await owner(["login", "claude"], token + "\n", { CLAUDE_CODE_OAUTH_TOKEN: token, CHECK_PASTED_TOKEN: token })).code, 0);
 			await until(() => report()?.signIn === "token", "Login did not publish a signed-in report.", 15_000);
 			assert.deepEqual(await probes(), [claudePin], "one probe after login");
@@ -315,6 +395,14 @@ require("node:module").syncBuiltinESMExports();`);
 			assert.ok(options && options.defaultModel === "default" && options.models.find(m => m.id === "default")?.efforts.includes("high"));
 			assert.deepEqual(options.models.find(m => m.id === "sonnet")?.efforts, []);
 			assert.deepEqual(report(), { options, id: "claude", adapter: "claude-agent-acp 0.109.0", image: claudePin, signIn: "token" });
+			assert.ok(supportsPageLogin());
+			assert.equal(await setupContainers(), pendingSetup);
+			const stillPending = await login("start");
+			assert.ok("error" in stillPending && stillPending.error.includes("pending"));
+			assert.deepEqual(await login("cancel"), { cancelled: true });
+			assert.equal(await setupContainers(), "");
+			assert.deepEqual(report()?.options, options);
+			ok("The options probe completed while page setup was pending, and cancelling setup preserved the reported options.");
 			clean(JSON.stringify(srv.state.report));
 			const labels = JSON.parse((await docker(["volume", "inspect", "-f", "{{json .Labels}}", volume], { check: true })).stdout);
 			assert.equal(labels[MACHINE_LABEL], machineId); assert.equal(labels["dev.windlass-platform.uid"], uid);

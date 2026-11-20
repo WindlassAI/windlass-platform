@@ -19,6 +19,8 @@
  *   attach     actor → runner   a session wants its sandbox: open that session's socket with the ticket
  *   remove     actor → runner   remove one sandbox (its session was deleted); answered with `removed`
  *   removed    runner → actor   that sandbox is gone, or was never this machine's
+ *   harnessLogin.start/finish/cancel  actor → runner   owner actions correlated by requestId on this socket
+ *   harnessLogin.result              runner → actor   public result or a scrubbed refusal
  *   logout     actor → runner   the user's ChatGPT sign-in was forgotten: remove the access token files
  *                               of running turns
  *
@@ -32,6 +34,7 @@
  * ("bad-frame"), the runner drops the socket and connects again.
  */
 import type { HarnessOptions, MachineProbe, PlatformConnection } from "../contract.js";
+import { loginCommand, loginResultFrame } from "./protocol.js";
 import { type Assert, type Of, type Same, boolean, count, either, integer, is, json, list, nullable, object, oneOf, optional, plain, text } from "./check.js";
 
 /** The oldest runner release this server serves: raise it when the server stops reading what older runners send. */
@@ -114,7 +117,7 @@ const refusal = either(
 	 */
 	object({ kind: oneOf("refused"), reason: oneOf("key-in-use", "unknown", "bad-frame", "other"), message: line(500) }),
 );
-const serverFrame = either(
+const serverFrame = either(loginCommand, either(
 	either(
 		either(object({ kind: oneOf("challenge"), nonce }), object({ kind: oneOf("welcome"), idleSuspendMs: count })),
 		either(refusal, object({ kind: oneOf("heartbeat", "logout") })),
@@ -124,7 +127,7 @@ const serverFrame = either(
 		object({ kind: oneOf("attach"), sessionId: name, ticket: text(1024) }),
 		object({ kind: oneOf("remove"), sandbox: sandboxId }),
 	),
-);
+));
 export type Refusal = Of<typeof refusal>;
 export type ServerFrame = Of<typeof serverFrame>;
 
@@ -152,6 +155,8 @@ export const validHarnessOptions = is<HarnessOptions>(v => optionsShape(v)
 	&& Buffer.byteLength(JSON.stringify(v)) <= 16 * 1024);
 const harnesses = list(object({ id: oneOf("claude"), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) }), 4);
 const report = object({
+	/** The connected runner supports the pairing-wide login commands. Older ones omit this. */
+	claudeLogin: optional(oneOf(true)),
 	harnesses: optional(harnesses),
 	kind: oneOf("report"),
 	docker: probe,
@@ -166,7 +171,8 @@ const report = object({
 	maxRunning: optional(cap),
 	maxSandboxes: optional(cap),
 });
-const runnerFrame = either(either(hello, report), either(object({ kind: oneOf("heartbeat") }), object({ kind: oneOf("removed"), sandbox: sandboxId })));
+export type LoginResultFrame = Of<typeof loginResultFrame>;
+const runnerFrame = either(either(hello, either(report, loginResultFrame)), either(object({ kind: oneOf("heartbeat") }), object({ kind: oneOf("removed"), sandbox: sandboxId })));
 export type Hello = Of<typeof hello>;
 export type Report = Of<typeof report>;
 export type RunnerFrame = Of<typeof runnerFrame>;

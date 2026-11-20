@@ -19,6 +19,27 @@ const make = (machine?: (typeof MOCK_MACHINE_STATES)[number]) => createMockClien
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 describe("the mock's machines", () => {
+	it("completes, cancels and refuses overlapping Claude logins", async () => {
+		const mock = make("claude-signed-out");
+		const user = mock.user(auth);
+		const input = { machineId: "m_nas" };
+		try {
+			expect((await user.machines())[0]?.harnesses?.[0]?.signIn).toBe("none");
+			const start = await user.startClaudeLogin(input);
+			expect(start.url).toMatch(/^https:\/\//);
+			expect(start.expiresAt).toBeGreaterThan(Date.now());
+			await expect(user.startClaudeLogin(input)).rejects.toThrow(/pending/);
+			await user.cancelClaudeLogin(input);
+			await expect(user.finishClaudeLogin({ ...input, code: "mock-approval" })).rejects.toThrow(/pending/);
+			await user.startClaudeLogin(input);
+			await expect(user.finishClaudeLogin({ ...input, code: "wrong" })).rejects.toThrow();
+			await user.startClaudeLogin(input);
+			expect(await user.finishClaudeLogin({ ...input, code: "mock-approval" })).toEqual({ signedIn: true });
+			expect((await user.machines()).find(m => m.machineId === input.machineId)?.harnesses?.[0]?.signIn).toBe("token");
+			await expect(user.startClaudeLogin({ machineId: "m_build" })).rejects.toMatchObject({ reason: "machine_not_found" });
+		} finally { mock.dispose(); }
+	});
+
 	it("offers machines unless told not to, with an install command only once a runner is published", async () => {
 		const on = make();
 		const info = await on.info();

@@ -11,7 +11,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { MachineSummary } from "../server/src/contract.js";
 import type { Registry } from "../server/src/client.js";
-import { CONTROL_DEAD_MS, REFUSED_RETRY_MS, parseConnection, RUNNER_PAIR_PATH } from "../server/src/runner/control.js";
+import { CONTROL_DEAD_MS, REFUSED_RETRY_MS, parseConnection, parseServerFrame, RUNNER_PAIR_PATH } from "../server/src/runner/control.js";
 import { FakeRunner, controlProxy, post } from "./runner-fake.js";
 
 const refused = (p: Promise<unknown>, code: string) => assert.rejects(p, e => (e as { code?: string }).code === code);
@@ -217,8 +217,42 @@ async function check() {
 		await eventually(() => foreign.readyState === 3); assert(!challenged);
 		step("same-process reconnect, a refused second runner, reports, logout and opaque attach");
 		proxy = await controlProxy(port);
-		await runner.connect({ ...conn, endpoint: proxy.endpoint }, id);
+		const loginSocket = await runner.connect({ ...conn, endpoint: proxy.endpoint }, id);
 		await eventually(() => events.some(rows => rows.some(r => r.status === "online" && r.freeDiskBytes === runner.report.freeDiskBytes)));
+		for (const account of [other, user]) {
+			const reason = account === other ? "machine_not_found" : "claude_unavailable";
+			const attempts = await Promise.allSettled([account.startClaudeLogin({ machineId }), account.finishClaudeLogin({ machineId, code: "fixture" }), account.cancelClaudeLogin({ machineId })]);
+			for (const attempt of attempts) assert.ok(attempt.status === "rejected" && attempt.reason.code === reason, "Expected " + reason + " from each login action");
+		}
+		const harness = { id: "claude", adapter: "fixture", image: "fixture", signIn: "none" } as const;
+		loginSocket.send({ ...runner.report, harnesses: [harness] });
+		await eventually(async () => (await row()).harnesses?.[0]?.signIn === "none");
+		await refused(user.startClaudeLogin({ machineId }), "runner_outdated");
+		loginSocket.send({ ...runner.report, claudeLogin: true, harnesses: [harness] });
+		const url = "https://claude.com/cai/oauth/authorize?state=fixture&code_challenge=fixture";
+		const expiresAt = Date.now() + 600_000;
+		loginSocket.ws.addEventListener("message", ({ data }) => {
+			const frame = parseServerFrame(data);
+			if (frame?.kind === "harnessLogin.start") loginSocket.send({ kind: "harnessLogin.result", requestId: frame.requestId, result: { url, expiresAt } });
+			if (frame?.kind === "harnessLogin.finish") {
+				assert.ok(frame.code === "fixture#state", "The owner code did not reach the runner");
+				loginSocket.send({ ...runner.report, claudeLogin: true, harnesses: [{ ...harness, signIn: "token" }] });
+				loginSocket.send({ kind: "harnessLogin.result", requestId: frame.requestId, result: { signedIn: true } });
+			}
+			if (frame?.kind === "harnessLogin.cancel") loginSocket.send({ kind: "harnessLogin.result", requestId: frame.requestId, result: { cancelled: true } });
+		});
+		await eventually(async () => (await service().internalFacts()).report?.claudeLogin === true);
+		const startedLogin = await user.startClaudeLogin({ machineId });
+		assert.equal(startedLogin.url, url);
+		assert.ok(Math.abs(startedLogin.expiresAt - expiresAt) < 5000);
+		assert.deepEqual(await user.finishClaudeLogin({ machineId, code: "fixture#state" }), { signedIn: true });
+		assert.equal((await row()).harnesses?.[0]?.signIn, "token");
+		// Three unsupported calls, one old runner and two successful calls have used six slots.
+		for (let i = 0; i < 6; i++) assert.deepEqual(await user.cancelClaudeLogin({ machineId }), { cancelled: true });
+		await refused(user.startClaudeLogin({ machineId }), "rate_limited");
+		await refused(user.finishClaudeLogin({ machineId, code: "fixture" }), "rate_limited");
+		await refused(user.cancelClaudeLogin({ machineId }), "rate_limited");
+		console.log("ok   owner-only Claude sign-in, capability and release checks, reported sign-in and rate limits for all three actions");
 		const listed = await row();
 		assert.deepEqual(listed.profiles.map(p => p.id), ["docker-windlass-sandbox", "docker-hardened"]);
 		assert(listed.profiles.every(p => p.available && p.name.includes(runner.details.name)));

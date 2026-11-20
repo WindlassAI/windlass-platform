@@ -1697,6 +1697,10 @@ export interface UserActions {
 	 * UserError with code `machine_not_found` for one that is not the user's. Answers with the list as it is then.
 	 */
 	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
+	/** Owner-only control of this pairing's ten-minute Claude Code setup. expiresAt is Unix time in milliseconds. */
+	startClaudeLogin(input: { machineId: string }): Promise<{ url: string; expiresAt: number }>;
+	finishClaudeLogin(input: { machineId: string; code: string }): Promise<{ signedIn: true }>;
+	cancelClaudeLogin(input: { machineId: string }): Promise<{ cancelled: true }>;
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
 	/** The user's work items, the newest first. */

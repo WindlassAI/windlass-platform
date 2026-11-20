@@ -140,7 +140,7 @@ export interface SessionFeed {
 	onConnection(state: ConnectionState, error?: PlatformError): void;
 }
 
-export interface UserApi {
+export interface UserApi extends Pick<UserActions, "startClaudeLogin" | "finishClaudeLogin" | "cancelClaudeLogin"> {
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
 	/** The models the user may choose and the efforts of each: their ChatGPT plan's, or the stand-in, and which it is. */

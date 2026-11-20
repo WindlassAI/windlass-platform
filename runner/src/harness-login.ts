@@ -76,6 +76,12 @@ async function pastedToken(signal: AbortSignal) {
 	return value;
 }
 
+export const setupCli = "/opt/wlp-claude/node_modules/.bin/claude-agent-acp";
+
+export function setupFlags(machine: MachineDocker) {
+	return ["--log-driver", "none", "--pull", "never", "--label", LABEL_ARG, ...machine.pairingLabelFlags, ...COMMON_RUN_FLAGS];
+}
+
 export async function changeClaudeLogin(machine: MachineDocker, login: boolean, signal: AbortSignal) {
 	let token: string | undefined;
 	if (login) {
@@ -88,12 +94,17 @@ export async function changeClaudeLogin(machine: MachineDocker, login: boolean, 
 			if (!process.stdout.isTTY || !process.stderr.isTTY) throw new RunnerError("Attach a terminal to sign in interactively.");
 			await machine.ensureImage(pin);
 			// The CLI prints its token in the owner's attached terminal. Disable Docker log capture.
-			const setup = spawnSync("docker", ["run", "--rm", "-it", "--log-driver", "none", "--pull", "never", "--label", LABEL_ARG, ...machine.pairingLabelFlags, ...COMMON_RUN_FLAGS,
-				pin, "/opt/wlp-claude/node_modules/.bin/claude-agent-acp", "--cli", "setup-token"], { stdio: "inherit" });
+			const setup = spawnSync("docker", ["run", "--rm", "-it", ...setupFlags(machine),
+				pin, setupCli, "--cli", "setup-token"], { stdio: "inherit" });
 			if (setup.status !== 0) console.log("Setup did not finish. You can paste a token made on another computer.");
 		}
 		token = await pastedToken(signal);
 	}
+	await storeClaudeLogin(machine, token);
+}
+
+export async function storeClaudeLogin(machine: MachineDocker, token: string | undefined, signal?: AbortSignal) {
+	const login = token !== undefined;
 	await machine.ensureImage();
 	await withLoginVolume(machine, async () => {
 		if (login) {
@@ -104,6 +115,7 @@ export async function changeClaudeLogin(machine: MachineDocker, login: boolean, 
 				throw new RunnerError("The machine pairing changed during login. Run windlass-runner login claude again.");
 		}
 		if (!await machine.ownedVolume(login, machine.claudeVolume)) return;
+		signal?.throwIfAborted();
 		const name = tmpName();
 		// Use the base image, no network and a private temporary file. No login data in Docker's
 		// argv, environment, container logs, or diagnostics returned to the operator.

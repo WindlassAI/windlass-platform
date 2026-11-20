@@ -9,6 +9,8 @@ import {
 } from "../../server/src/runner/control.js";
 import { audit, safeSentence } from "./audit.js";
 import { Executor } from "./docker-executor.js";
+import { PageLogin } from "./page-login.js";
+import { cleanClaudeOutput } from "./claude-output.js";
 import { Session } from "./session.js";
 import { RunnerError, VERSION, origin, storePair } from "./state.js";
 
@@ -157,6 +159,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 			let discarding: Promise<void> | undefined;
 			let slow = false;
 			let reason = "Disconnected";
+			const login = new PageLogin(owner);
 			const attempt = new AbortController();
 			const active = AbortSignal.any([signal, attempt.signal]);
 			try {
@@ -198,6 +201,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				const send = (f: RunnerFrame) => ws.send(JSON.stringify(f));
 				let phase: "challenge" | "welcome" | "online" = "challenge";
 				let heard = Date.now();
+				let loginReady = false;
 				lastSent = Date.now();
 				let lastReport = "";
 				owner.publishReport = () => {
@@ -235,9 +239,22 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						status("Online");
 						lastRefresh = Date.now();
 						await owner.welcome(active);
+						loginReady = !active.aborted;
 						if (!active.aborted) owner.publishReport?.();
 					} else if (phase !== "online") { reason = "Unexpected control handshake"; disconnect(); }
-					else if (f.kind === "attach") {
+					else if (f.kind === "harnessLogin.start" || f.kind === "harnessLogin.finish" || f.kind === "harnessLogin.cancel") {
+						const result = loginReady
+							? await login.request(f).catch(error => ({ error: safeSentence(category(error)) }))
+							: { error: "The runner is still connecting. Try again in a moment." };
+						audit(null, null, f.kind, "error" in result ? "refused" : "done");
+						if (!active.aborted && ws.readyState === 1)
+							ws.send(cleanClaudeOutput(JSON.stringify({ kind: "harnessLogin.result", requestId: f.requestId, result } satisfies RunnerFrame)));
+						if ("signedIn" in result) {
+							// A slow options probe must not delay the completed sign-in reply.
+							await owner.serial(() => owner.loginChanged(true));
+							owner.publishReport?.();
+						}
+					} else if (f.kind === "attach") {
 						if (sessions.get(f.sessionId)?.refused) return;
 						attaching.set(f.sessionId, f.ticket);
 						try {
@@ -271,7 +288,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				try { if (active.aborted) disconnect(); await closed; }
 				finally { clearInterval(heartbeat); active.removeEventListener("abort", disconnect); }
 			} catch (error) { reason = category(error); }
-			finally { attempt.abort(); owner.publishReport = undefined; }
+			finally { attempt.abort(); owner.publishReport = undefined; await login.close(); }
 			if (signal.aborted) break;
 			if (refusal || slow) {
 				mayMaintain = false; idle = undefined;

@@ -194,7 +194,7 @@ export type MockUsageState = "plenty" | "low" | "used" | "full";
  * "loading" (it is never answered), and "off" (the deployment offers no machines). In the add dialog any
  * well-formed code is found, except ZZZZ-ZZZZ.
  */
-export const MOCK_MACHINE_STATES = ["none", "online", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off"] as const;
+export const MOCK_MACHINE_STATES = ["none", "online", "claude-signed-out", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off"] as const;
 export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
 
 /**
@@ -2932,6 +2932,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		claims: Map<string, string | null>;
 		/** When this user looked a code up, for the limit of five in ten minutes. */
 		lookups: number[];
+		loginAttempts: number[];
+		logins: Map<string, number>;
 		/** For `stale`: whether the user's connection dropped yet, after which the list can no longer be read. */
 		dropped: "no" | "soon" | "yes";
 	}
@@ -2946,7 +2948,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const world = worldOf(auth);
 		let set = machineSets.get(world.profile.uid);
 		if (!set) {
-			set = { list: seedMachines(machineState), claims: new Map(), lookups: [], dropped: "no" };
+			set = { list: seedMachines(machineState), claims: new Map(), lookups: [], loginAttempts: [], logins: new Map(), dropped: "no" };
 			machineSets.set(world.profile.uid, set);
 		}
 		return set;
@@ -3076,6 +3078,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				return [nas({
 					...(machineSession === "offline" && { status: "offline", since: at - 12 * MINUTE }),
 				})];
+			case "claude-signed-out":
+				return [nas({ harnesses: [{ ...MOCK_CLAUDE, signIn: "none" }] })];
 			case "pairing":
 				return [nas({ status: "waiting", since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [], harnesses: undefined })];
 			case "outdated":
@@ -3132,7 +3136,20 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** The calls of the Machines page. A machine paired here waits for its runner, which connects a few seconds later. */
-	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineSecrets"> {
+	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineSecrets" | "startClaudeLogin" | "finishClaudeLogin" | "cancelClaudeLogin"> {
+		function loginMachine(id: string) {
+			machinesOn();
+			const set = machinesOf(auth);
+			const at = realNow();
+			set.loginAttempts = set.loginAttempts.filter(t => t > at - 10 * MINUTE);
+			if (set.loginAttempts.length >= 12) throw new PlatformError("user", "Too many Claude sign-in requests.", { reason: "rate_limited" });
+			set.loginAttempts.push(at);
+			const machine = machineOf(auth, id);
+			if (machine.status !== "online") throw new PlatformError("user", "The machine is offline.", { reason: "machine_not_connected" });
+			if (!machine.harnesses?.some(h => h.id === "claude")) throw new PlatformError("user", "This machine does not offer Claude Code.", { reason: "claude_unavailable" });
+			if ((set.logins.get(id) ?? 0) <= at) set.logins.delete(id);
+			return { machine, logins: set.logins };
+		}
 		return {
 			async machines() {
 				machinesOn();
@@ -3174,6 +3191,25 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					machinesChanged(auth);
 				});
 				return machinesView(auth).find((one) => one.machineId === machineId) as MachineSummary;
+			},
+			async startClaudeLogin({ machineId }) {
+				const { logins } = loginMachine(machineId);
+				if (logins.has(machineId)) throw new PlatformError("user", "A Claude Code sign-in is already pending.", { reason: "claude_login_failed" });
+				const expiresAt = realNow() + 10 * MINUTE;
+				logins.set(machineId, expiresAt);
+				return { url: "https://claude.example.invalid/authorize", expiresAt };
+			},
+			async finishClaudeLogin({ machineId, code }) {
+				const { machine, logins } = loginMachine(machineId);
+				if (!logins.delete(machineId)) throw new PlatformError("user", "No Claude Code sign-in is pending.", { reason: "claude_login_failed" });
+				if (code !== "mock-approval") throw new PlatformError("user", "The mock approval code is mock-approval.", { reason: "claude_login_failed" });
+				machine.harnesses = machine.harnesses!.map(h => ({ ...h, signIn: "token" }));
+				machinesChanged(auth);
+				return { signedIn: true };
+			},
+			async cancelClaudeLogin({ machineId }) {
+				loginMachine(machineId).logins.delete(machineId);
+				return { cancelled: true };
 			},
 			async removeMachine({ machineId }) {
 				machinesOn();

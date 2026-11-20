@@ -54,6 +54,21 @@ expect("the server accepts each Claude sign-in state and refuses extra login fie
 	["token", "none", "unknown"].every(signIn => parseRunnerFrame(JSON.stringify({ ...plainReport, harnesses: [{ ...harness, signIn }] }))?.kind === "report")
 	&& [ { ...harness, signIn: "other" }, { ...harness, secret: "fixture" }, { ...harness, id: "other" } ].every(invalid =>
 		parseRunnerFrame(JSON.stringify({ ...plainReport, harnesses: [invalid] })) === null));
+const requestId = "f".repeat(32);
+const url = "https://claude.com/cai/oauth/authorize?state=fixture&code_challenge=fixture";
+const started = { kind: "harnessLogin.result", requestId, result: { url, expiresAt: Date.now() + 600_000 } };
+for (const [operation, args] of [["start", {}], ["finish", { code: "fixture#state" }], ["cancel", {}]] as const) {
+	const frame = { kind: "harnessLogin." + operation, requestId, ...args };
+	expect("control delivers the pairing's login " + operation, parseServerFrame(JSON.stringify(frame))?.kind === frame.kind);
+}
+expect("control accepts only the public results of login", [started.result, { signedIn: true }, { cancelled: true }, { error: "Login failed." }]
+	.every(result => parseRunnerFrame(JSON.stringify({ ...started, result }))?.kind === started.kind));
+expect("control rejects an unsafe URL, extra login data, unbounded or multiline code and invalid request ids",
+	[{ url: url.replace("claude.com", "claude.com.invalid"), expiresAt: 1 }, { url: url.replace("//", "//user@"), expiresAt: 1 },
+	 { url: url + "&code_verifier=private", expiresAt: 1 }, { url: url + "a".repeat(8192), expiresAt: 1 }, { ...started.result, token: "fixture" }, { signedIn: false }].every(result =>
+		parseRunnerFrame(JSON.stringify({ ...started, result })) === null)
+	&& ["a".repeat(2049), "one\ntwo", "bad\r", "bad\u001b", ""].every(code => !parseServerFrame(JSON.stringify({ kind: "harnessLogin.finish", requestId, code })))
+	&& !parseServerFrame(JSON.stringify({ kind: "harnessLogin.start", requestId: "a".repeat(128) })));
 const capped = parseRunnerFrame(JSON.stringify({ ...plainReport, maxRunning: 2, maxSandboxes: 5 }));
 expect("a report carries the caps its owner set, and a report with no caps also passes",
 	capped?.kind === "report" && capped.maxRunning === 2 && capped.maxSandboxes === 5 && parseRunnerFrame(JSON.stringify(plainReport))?.kind === "report");

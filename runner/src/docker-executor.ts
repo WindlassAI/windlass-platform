@@ -10,6 +10,7 @@ import { containerName, DockerSandboxes, DockerSandboxHandle } from "../../serve
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { audit, safeSentence } from "./audit.js";
 import { bubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker, rawId, type Limits, type Profile } from "./policy.js";
+import { pageLoginLabel } from "./page-login.js";
 import { cleanClaudeOutput } from "./claude-output.js";
 import { claudeSignIn, loginFileState, dropDetachedLoginVolume, withLoginVolume } from "./harness-login.js";
 import { Refusal, RunnerError, type Identity } from "./state.js";
@@ -167,6 +168,13 @@ export class Executor extends MachineDocker {
 		await this.serial(() => this.refresh());
 		if (!this.dockerHealth.ok || signal.aborted) return;
 		try {
+			// A killed runner can leave setup between Docker create and start, before its
+			// in-container deadline exists. Only the authenticated pairing reaps its leftovers.
+			const stale = await dockerOutput(["ps", "-aq", ...this.filters(), "--filter", "label=" + pageLoginLabel]);
+			for (const id of stale.trim().split(/\s+/).filter(Boolean)) {
+				if (signal.aborted) return;
+				await docker(["rm", "-f", id]);
+			}
 			await this.ensureImage();
 			if (this.claudePin) await this.ensureImage(this.claudePin).catch(() => {}); // create explains a missing harness pin.
 			await this.serial(async () => {
@@ -189,7 +197,7 @@ export class Executor extends MachineDocker {
 	}
 	report(): Report {
 		return { kind: "report", docker: this.dockerHealth,
-			...(this.claudePin ? { harnesses: [{ id: "claude" as const,
+			...(this.claudePin ? { claudeLogin: true as const, harnesses: [{ id: "claude" as const,
 				adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
 				image: this.claudePin.slice(this.claudePin.lastIndexOf("@") + 1), signIn: this.signIn,
 				...(this.signIn === "token" && this.claudeOptions && { options: this.claudeOptions }) }] } : {}),

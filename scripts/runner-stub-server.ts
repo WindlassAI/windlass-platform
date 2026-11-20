@@ -12,7 +12,7 @@ import { parseFrame } from "../server/src/runner/protocol.js";
 import {
 	CLOCK_TOLERANCE_MS, CONTROL_HEARTBEAT_MS, RUNNER_CONNECTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH,
 	connectionProof, controlProof, sessionProof, parseRunnerFrame, parseConnectionRequest, parsePairPoll, parsePairRequest,
-	refuse, secondHello, type PairStatus, type PairStarted, type Refusal, type Report, type ServerFrame,
+	refuse, secondHello, type LoginResultFrame, type PairStatus, type PairStarted, type Refusal, type Report, type ServerFrame,
 } from "../server/src/runner/control.js";
 
 export async function until(test: () => boolean | Promise<boolean>, message: string, ms = 45_000) {
@@ -41,6 +41,8 @@ export async function stub(storage: string) {
 		report: null as Report | null, reports: 0, gatewayLifetime: 0, epoch: "", connections: 0, connectionRequests: 0, pairStarts: 0, pairingMode: "approve" as "approve" | "gone" | "refused" | "waiting", startFailures: 0, pollFailures: 0, clockRefusals: 0,
 		refusal: null as Refusal | null, httpRefusal: null as "removed" | "unknown" | null, idleMs: 600_000, removed: "", lastErrorKind: "",
 	};
+	const loginReplies = new Map<string, LoginResultFrame["result"]>();
+	let observeControl: ((text: string) => void) | undefined;
 	const tickets = new Map<string, string>();
 	const joined = new Map<string, number>();
 	const opened = new Map<string, number>();
@@ -68,6 +70,7 @@ export async function stub(storage: string) {
 	const machine = actor({ onWebSocket(_c, ws) {
 		const nonce = random();
 		ws.addEventListener("message", e => {
+			if (typeof e.data === "string") observeControl?.(e.data);
 			const f = parseRunnerFrame(e.data);
 			if (!f) { ws.close(); return; }
 			if (f.kind === "hello") {
@@ -80,6 +83,7 @@ export async function stub(storage: string) {
 				for (const s of wanted) ticket(s);
 			} else if (live?.ws === ws) {
 				live.heardAt = Date.now();
+				if (f.kind === "harnessLogin.result") loginReplies.set(f.requestId, f.result);
 				if (f.kind === "report") { state.report = f; state.reports++; }
 				if (f.kind === "removed") state.removed = f.sandbox;
 			}
@@ -188,6 +192,7 @@ export async function stub(storage: string) {
 	await new Promise<void>(resolve => api.listen(0, "127.0.0.1", resolve));
 	const heartbeat = setInterval(() => { if (live) send(live.ws, { kind: "heartbeat" }); }, CONTROL_HEARTBEAT_MS);
 	return { state, uid, machineId, sessionId, other, platform: "http://127.0.0.1:" + (api.address() as AddressInfo).port,
+		loginReplies, observeControl(fn: (text: string) => void) { observeControl = fn; },
 		channel, ticket, opened, incompatible(s: string) { incompatible = s; }, online: () => !!live, send: (f: ServerFrame) => { if (!live) throw new Error("Control is offline"); send(live.ws, f); },
 		async attach(s = sessionId) {
 			await client.agentSession.getOrCreate([uid, s]).resolve();
