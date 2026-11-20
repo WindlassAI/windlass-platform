@@ -15,6 +15,13 @@ const permissionOptions = [
 	{ optionId: "reject-always", name: "Always reject", kind: "reject_always" },
 ];
 
+// Selects returned by session/options and by the fixture session on each model.
+export const modelEfforts = {
+	default: ["default", "low", "medium", "high", "max"],
+	sonnet: ["default", "low"],
+	opus: ["default", "low", "medium", "high", "max"],
+};
+
 export const scenarios = {
 	*plain() {
 		for (const part of ["I'll ", "inspect ", "the files."]) yield thought(part);

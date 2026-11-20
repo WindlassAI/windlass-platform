@@ -110,7 +110,7 @@ async function initialize(client: Client) {
 		agentCapabilities: {
 			loadSession: true, promptCapabilities: { image: true, embeddedContext: true },
 			mcpCapabilities: { http: true, sse: true, acp: true },
-			sessionCapabilities: { resume: {}, close: {}, list: {}, fork: {}, additionalDirectories: {} },
+			sessionCapabilities: { options: {}, resume: {}, close: {}, list: {}, fork: {}, additionalDirectories: {} },
 		},
 		_meta: { steering: { supported: true } },
 		authMethods: [{ id: "claude-login", name: "Log in with Claude", description: "Run `claude /login` in the terminal", type: "terminal", args: ["--cli"] }],
@@ -421,6 +421,20 @@ async function clientCheck(state: string) {
 	] });
 	assert(updates.some(u => u.sessionUpdate === "current_mode_update" && u.currentModeId === "plan"));
 	ok("session/load uses the chosen mode and preserves the adapter’s current order, labels and optional descriptions");
+
+	for (const effort of ["high", undefined]) {
+		const prior = await harness.runTurn(handle, { prompt: "plain", model: "opus", effort: "high" });
+		assert.equal(prior.failure, null);
+		const defaults: (string | null)[] = [];
+		const switched = await harness.runTurn(handle, {
+			prompt: "plain", windlassSessionId: prior.windlassSessionId!, model: "sonnet", effort,
+			onEffortFallback: fallback => defaults.push(fallback),
+		});
+		assert.equal(switched.failure, null, "a stale effort must not fail the new model's turn");
+		assert.deepEqual(defaults, ["default"]);
+		assert.deepEqual(switched.acp?.models?.models.find(m => m.id === "sonnet")?.efforts, ["default", "low"]);
+	}
+	ok("changing models drops an unsupported requested or inherited effort and the prompt succeeds");
 
 	variant = "adapter-default";
 	methods.length = 0;

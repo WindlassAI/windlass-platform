@@ -260,6 +260,14 @@ export interface SessionMode {
 	description: string | null;
 }
 
+/** A machine's prompt-free ACP options. An unselected model has no advertised efforts until observed. */
+export interface HarnessOptions {
+	models: ModelChoice[];
+	defaultModel: string;
+	modes: SessionMode[];
+	checkedAt: number;
+}
+
 /** Launch choices for the pinned Claude adapter. Once opened, the session reports its actual list. */
 export const CLAUDE_LAUNCH_MODES: readonly SessionMode[] = [
 	{ id: "default", name: "Manual", description: "Ask before using tools." },
@@ -272,7 +280,7 @@ export const CLAUDE_LAUNCH_MODES: readonly SessionMode[] = [
 export interface SessionSummary {
 	/** The mode selected for the next prompt. */
 	mode: string;
-	/** For Claude, the most recent open's choices (empty before first open). Empty for item sessions. */
+	/** For Claude, the machine's reported choices until the session reports its own. Empty for item sessions. */
 	availableModes: SessionMode[];
 	harness?: HarnessId;
 	harnessModels?: ModelList | null;
@@ -339,7 +347,7 @@ export interface CreateSessionInput {
 	/** Left out: run on the hosted layer. */
 	place?: SandboxPlace;
 	profile: SandboxProfileId;
-	/** One of the user's models (`UserActions.models`). Defaults to their default. */
+	/** An account model or a model offered by the machine's harness. Omit to use its default. */
 	model?: string;
 	/** An https git address to clone into the workspace. */
 	repoUrl?: string;
@@ -1017,7 +1025,7 @@ export interface MachineSandbox {
 
 /** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary {
-	harnesses?: Array<{ id: "claude"; adapter: string; image: string; signIn: "token" | "none" | "unknown" }>;
+	harnesses?: Array<{ id: "claude"; adapter: string; image: string; signIn: "token" | "none" | "unknown"; options?: HarnessOptions }>;
 	machineId: string;
 	/** What the machine said of itself when it was paired: its host name, OS and architecture. Nobody checked them. */
 	name: string;
@@ -2081,7 +2089,7 @@ export interface SessionSnapshot {
 
 export interface PromptInput {
 	text: string;
-	/** Switches the session's model from this turn on: one of the user's (`UserActions.models`). */
+	/** Switches to an offered account or harness model from this turn on. */
 	model?: string;
 	/** One of the efforts the turn's model accepts. */
 	effort?: string;

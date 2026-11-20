@@ -1,3 +1,5 @@
+import type { HarnessOptions } from "../../server/src/contract.js";
+import { probeClaudeOptions } from "./claude-options.js";
 import claudePackage from "../../sandbox/harness/claude/package.json";
 import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/control.js";
 import { type Operation } from "../../server/src/runner/protocol.js";
@@ -52,6 +54,8 @@ export class Executor extends MachineDocker {
 	readonly boxes = new Map<string, Box>();
 	private readonly claudePin?: string;
 	private readonly claudeProvider?: DockerSandboxes;
+	private optionsPin?: string;
+	private claudeOptions?: HarnessOptions;
 	private signIn: "none" | "token" | "unknown" = "unknown";
 	private pending: Promise<unknown> = Promise.resolve();
 	private dockerHealth: Report["docker"] = { ok: false, reason: "Docker has not been checked." };
@@ -80,8 +84,33 @@ export class Executor extends MachineDocker {
 		try { await this.ensureImage(this.claudePin); }
 		catch { throw new Refusal("The pinned Claude Code image is missing on this machine. Update the runner and start it with --harness claude."); }
 	}
-	async refreshLogin() {
-		if (this.claude) this.signIn = await claudeSignIn(this);
+	private async refreshLogin() {
+		if (!this.claudePin) return;
+		this.signIn = await claudeSignIn(this);
+		if (this.signIn === "none") this.claudeOptions = undefined;
+	}
+	async loginChanged(signedIn: boolean) {
+		await this.refreshLogin();
+		if (signedIn) await this.refreshClaudeOptions(true);
+	}
+	private async refreshClaudeOptions(loginChanged = false) {
+		const pin = this.claudePin;
+		if (!pin || this.signIn !== "token") return;
+		// The pin is immutable for this runner build. Reconnects and inventory refreshes reuse the result.
+		if (this.optionsPin === pin && !loginChanged) return;
+		this.optionsPin = pin;
+		this.claudeOptions = undefined;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			try {
+				await this.ensureImage(pin);
+				this.claudeOptions = await withLoginVolume(this, async () => {
+					if (await loginFileState(this) !== "token") return undefined;
+					return probeClaudeOptions(this, pin);
+				});
+				return;
+			} catch { /* A transient adapter startup failure gets one retry. */ }
+		}
+		console.log("Could not read Claude Code model options.");
 	}
 	// Count, reserve and change a container under one ordering, including idle stops and prune.
 	serial<T>(work: () => Promise<T>): Promise<T> {
@@ -142,8 +171,9 @@ export class Executor extends MachineDocker {
 			if (this.claudePin) await this.ensureImage(this.claudePin).catch(() => {}); // create explains a missing harness pin.
 			await this.serial(async () => {
 				if (signal.aborted) return;
-				// Once a real create has failed its probe, keep that result. A lightweight
-				// startup probe cannot overrule what happened inside the actual sandbox.
+				if (this.signIn === "unknown") await this.refreshLogin();
+				await this.refreshClaudeOptions();
+				// Keep the result of a real sandbox create after this initial bubblewrap check.
 				const first = this.freeDiskBytes === null;
 				this.freeDiskBytes = await this.disk();
 				if (first) this.commandSandbox = await this.probeAvailable();
@@ -161,7 +191,8 @@ export class Executor extends MachineDocker {
 		return { kind: "report", docker: this.dockerHealth,
 			...(this.claudePin ? { harnesses: [{ id: "claude" as const,
 				adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
-				image: this.claudePin.slice(this.claudePin.lastIndexOf("@") + 1), signIn: this.signIn }] } : {}),
+				image: this.claudePin.slice(this.claudePin.lastIndexOf("@") + 1), signIn: this.signIn,
+				...(this.signIn === "token" && this.claudeOptions && { options: this.claudeOptions }) }] } : {}),
 			...(this.screenshots ? { screenshots: true } : {}),
 			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes,
 			sandboxes: [...this.boxes.entries()].slice(0, MAX_REPORTED_SANDBOXES).map(([id, { sessionId, state, usedAt }]) => ({ id, sessionId, state, usedAt })),

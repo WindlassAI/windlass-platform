@@ -31,7 +31,7 @@
  * field of that protocol is used here. A frame that does not pass is null: the actor refuses the socket
  * ("bad-frame"), the runner drops the socket and connects again.
  */
-import type { MachineProbe, PlatformConnection } from "../contract.js";
+import type { HarnessOptions, MachineProbe, PlatformConnection } from "../contract.js";
 import { type Assert, type Of, type Same, boolean, count, either, integer, is, json, list, nullable, object, oneOf, optional, plain, text } from "./check.js";
 
 /** The oldest runner release this server serves: raise it when the server stops reading what older runners send. */
@@ -140,7 +140,17 @@ export type ServerFrame = Of<typeof serverFrame>;
  */
 const hello = object({ kind: oneOf("hello"), runnerVersion: version, epoch, time, signature });
 const cap = is<number>((v) => Number.isSafeInteger(v) && (v as number) >= 1);
-const harnesses = list(object({ id: oneOf("claude"), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown") }), 4);
+const modelChoice = object({ id: line(128), name: nullable(line(256)), efforts: list(line(64), 16) });
+const optionsShape = object({
+	models: list(modelChoice, 32), defaultModel: line(128), checkedAt: time,
+	modes: list(object({ id: line(64), name: line(128), description: nullable(line(512)) }), 16),
+});
+/** Leave room for the sandbox inventory in the same control frame. */
+export const validHarnessOptions = is<HarnessOptions>(v => optionsShape(v)
+	&& v.models.some(model => model.id === v.defaultModel)
+	&& new Set(v.models.map(m => m.id)).size === v.models.length
+	&& Buffer.byteLength(JSON.stringify(v)) <= 16 * 1024);
+const harnesses = list(object({ id: oneOf("claude"), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) }), 4);
 const report = object({
 	harnesses: optional(harnesses),
 	kind: oneOf("report"),
@@ -266,4 +276,4 @@ const connection = object({
 /** For the runner: the 200 answer of RUNNER_CONNECTION_PATH. */
 export const parseConnection = (body: unknown): PlatformConnection | null => (connection(body) ? body : null);
 
-type Drift = [Assert<Same<Of<typeof probe>, MachineProbe>>, Assert<Same<Of<typeof connection>, PlatformConnection>>];
+type Drift = [Assert<Same<Of<typeof optionsShape>, HarnessOptions>>, Assert<Same<Of<typeof probe>, MachineProbe>>, Assert<Same<Of<typeof connection>, PlatformConnection>>];

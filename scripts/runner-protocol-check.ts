@@ -8,6 +8,7 @@
  *   cd server && npx tsx ../scripts/runner-protocol-check.ts
  */
 import { createHash } from "node:crypto";
+import { parseRunnerFrame } from "../server/src/runner/control.js";
 import { mock } from "node:test";
 import { ConversationLost, RunnerChannel, ServerChannel, type ChannelSocket } from "../server/src/runner/channel.js";
 import { ACK_MS, DEAD_MS, MAX_FRAME_BYTES, MAX_MESSAGE_BYTES, MAX_OPS_IN_FLIGHT, OP_MS, PING_MS, RUNNER_GRACE_MS, WINDOW_BYTES, parseFrame, validArgs, type Operation } from "../server/src/runner/protocol.js";
@@ -306,6 +307,15 @@ async function untrusted(): Promise<void> {
 }
 
 async function harnessCreate() {
+	const model = { id: "opus", name: "Opus", efforts: ["low", "high"] };
+	const options = { models: [model], defaultModel: "opus", modes: [], checkedAt: 1000 };
+	const accepted = (options: unknown) => parseRunnerFrame(JSON.stringify({ kind: "report", docker: { ok: true }, commandSandbox: { ok: true },
+		freeDiskBytes: null, sandboxes: [], harnesses: [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token", options }] })) !== null;
+	expect("a bounded model report passes, oversized or inconsistent options are refused", accepted(options) &&
+		[{ models: Array(33).fill(model) }, { models: [{ ...model, efforts: Array(17).fill("x") }] },
+			{ defaultModel: "absent" }, { checkedAt: -1 }, { modes: [null] }, { models: [model, model] },
+			{ models: Array.from({ length: 28 }, (_, i) => ({ ...model, id: i ? String(i) : model.id, name: "界".repeat(210) })) },
+			{ models: [{ ...model, name: "x".repeat(257) }] }].every(change => !accepted({ ...options, ...change })));
 	const args = { profile: "docker-hardened", harness: "claude" } as const;
 	const { ch: s } = server();
 	const { ch: r } = runner((ch, op) => {

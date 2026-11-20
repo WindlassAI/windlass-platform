@@ -340,6 +340,9 @@ export interface TurnControl {
 export interface RunTurnInput {
 	/** Selection captured when the prompt was accepted. Absent uses the harness or profile default. */
 	mode?: string;
+	/** Efforts already observed on other models in this session. */
+	harnessModels?: ModelList | null;
+	onEffortFallback?: (fallback: string | null) => void;
 	/** The effective ACP mode and choices on open. fallbackFrom names a requested mode the agent no longer offers. */
 	onAcpModes?: (mode: string, offered: SessionMode[], fallbackFrom?: string) => void;
 	prompt: string;

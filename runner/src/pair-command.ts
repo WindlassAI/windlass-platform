@@ -18,9 +18,9 @@ export async function requestPair(platform?: string) {
 }
 // The owner changed the volume. Only a fixed notification crosses this local socket;
 // the service rechecks Docker before reporting. While stopped it checks on next welcome.
-export async function requestLoginReport() {
+export async function requestLoginReport(signedIn: boolean) {
 	await new Promise<void>(resolve => {
-		const client = connect(path, () => client.end("report-login"));
+		const client = connect(path, () => client.end(signedIn ? "report-login" : "report-logout"));
 		client.setTimeout(15_000, () => client.destroy());
 		client.resume();
 		client.on("error", () => {});
@@ -28,7 +28,7 @@ export async function requestLoginReport() {
 	});
 }
 
-export function waitForPair(signal: AbortSignal, ready: () => void, reportLogin?: () => Promise<void>): Promise<{ client: Socket; platform?: string } | undefined> {
+export function waitForPair(signal: AbortSignal, ready: () => void, reportLogin?: (signedIn: boolean) => Promise<void>): Promise<{ client: Socket; platform?: string } | undefined> {
 	if (signal.aborted) return Promise.resolve(undefined);
 	rmSync(path, { force: true }); // Only the state lock holder may replace a stale socket.
 	return new Promise((resolve, reject) => {
@@ -39,8 +39,8 @@ export function waitForPair(signal: AbortSignal, ready: () => void, reportLogin?
 			client.on("data", chunk => { address += chunk; if (address.length > 2048) client.destroy(); });
 			client.on("error", () => client.destroy());
 			client.on("end", () => {
-				if (address === "report-login") {
-					if (reportLogin) void reportLogin().catch(() => {}).finally(() => client.end());
+				if (address === "report-login" || address === "report-logout") {
+					if (reportLogin) void reportLogin(address === "report-login").catch(() => {}).finally(() => client.end());
 					else client.end();
 					return;
 				}

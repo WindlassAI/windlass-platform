@@ -301,11 +301,11 @@ function modelsOf(c: ModelsCtx, demo: boolean): Promise<ModelList> {
 }
 
 /** A model a client named, held against the user's list, or the UserError that says what is wrong with it. */
-function modelInput<T>(pick: () => T): T {
+function modelInput<T>(pick: () => T, refusalCode?: "bad_input"): T {
 	try {
 		return pick();
 	} catch (error) {
-		if (error instanceof ModelProblem) throw new UserError(error.message, { code: error.code });
+		if (error instanceof ModelProblem) throw new UserError(error.message, { code: refusalCode ?? error.code });
 		throw error;
 	}
 }
@@ -973,7 +973,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	let summary: SessionSummary;
 	try {
 		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : null;
-		if (harness === "claude" && !machine?.harnesses?.some(entry => entry.id === harness)) throw new UserError("This machine does not offer Claude Code.", { code: "bad_input" });
+		const offered = machine?.harnesses?.find(entry => entry.id === harness);
+		if (harness === "claude" && !offered) throw new UserError("This machine does not offer Claude Code.", { code: "bad_input" });
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
 		const chosen = profiles.find((candidate) => candidate.id === input.profile);
 		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
@@ -988,8 +989,10 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			if (typeof input.mode !== "string" || !input.mode.trim() || (harness === "windlass" && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
 			modes.mode = input.mode;
 		}
-		const models = harness === "claude" ? initialHarnessModels() : await modelsOf(c, profile.demo);
-		const model = modelInput(() => chosenModel(models, input.model));
+		const options = offered?.options;
+		const models = harness === "claude" ? initialHarnessModels(options) : await modelsOf(c, profile.demo);
+		const model = modelInput(() => chosenModel(models, input.model), options ? "bad_input" : undefined);
+		if (options) modes.availableModes = options.modes;
 
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
 		if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
@@ -1002,6 +1005,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			harness,
 			profile: chosen.id,
 			...modes,
+			...(options && { harnessModels: models }),
 			model,
 			repoUrl,
 			...(repo ? { repository: { provider: repo.provider, id: repo.id, owner: repo.owner, name: repo.name, branch: repo.branch, private: repo.private, url: repo.url }, pullRequest: null, publishUnasked: input.publishUnasked === true } : {}),
@@ -1022,6 +1026,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(machine ? { machineName: machine.name } : {}),
 			profile: summary.profile,
 			mode: input.mode,
+			...(options && { harnessOptions: options }),
 			model,
 			repoUrl,
 			repo,

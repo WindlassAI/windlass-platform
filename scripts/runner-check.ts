@@ -202,6 +202,10 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 			const path = "/run/wlp-harness/claude/token";
 			const create = { profile: "docker-hardened", harness: "claude" } as const;
 			const clean = (text: string) => assert.ok(!text.includes(token.slice(0, 16)) && !text.includes(token.slice(-16)), "Claude login data escaped.");
+			const probeLog = join(tmp, "probe-calls");
+			const failureFlag = join(tmp, "probe-failure");
+			await writeFile(probeLog, "");
+			const probes = async () => (await readFile(probeLog, "utf8")).trim().split("\n").filter(Boolean);
 			const guard = join(tmp, "check-docker.cjs"), calls = join(tmp, "docker-calls");
 			// Observe every docker spawn in an owner command. Record only its verb and whether
 			// it violated the policy, so a regression cannot put the fixture token in the log.
@@ -211,6 +215,27 @@ for (const method of ["spawn", "spawnSync"]) {
  cp[method] = function(file, args, opts) {
   if (file === "docker") {
    if (/sk-ant-oat01-[A-Za-z0-9_-]+/.test(JSON.stringify([args, opts?.env ?? process.env]))) throw Error("credential passed to docker");
+   if (args[0] === "run" && args.at(-1) === "wlp-claude-acp") {
+    const flags = ${JSON.stringify(COMMON_RUN_FLAGS)};
+    if (!JSON.stringify(args).includes(JSON.stringify(flags).slice(1,-1))
+      || !args.some(v => v.includes("src=${volume},") && v.includes("dst=/run/wlp-harness/claude") && v.includes("readonly") && v.includes("volume-nocopy"))) throw Error("unsafe options probe");
+    fs.appendFileSync(${JSON.stringify(probeLog)}, args.at(-2) + "\\n");
+    // Run the fixture in the actual probe container with its flags and login mount.
+    const fixture = ${JSON.stringify(join(root, "fixtures/acp-agent"))};
+    args = [...args.slice(0,-2), "--mount", "type=bind,src=" + fixture + ",dst=/fixture,readonly", args.at(-2),
+     ...(fs.existsSync(${JSON.stringify(failureFlag)}) ? ["false"] : ["node", "/fixture/agent.mjs"])];
+    const child = original.call(this, file, args, opts);
+    const write = child.stdin.write.bind(child.stdin);
+    let initialized = false;
+    child.stdin.write = (line, ...rest) => {
+     const {method, params} = JSON.parse(line);
+     if (!initialized ? method !== "initialize" : method !== "session/options" || params.cwd !== "/workspace")
+      throw Error("unexpected probe request");
+     initialized = true;
+     return write(line, ...rest);
+    };
+    return child;
+   }
    if (args.includes("setup-token")) {
     const approved = ["run", "--rm", "-it", "--log-driver", "none", "--pull", "never",
      ...${JSON.stringify(["--label", LABEL_ARG, "--label", MACHINE_LABEL + "=" + machineId, "--label", "dev.windlass-platform.uid=" + uid, ...COMMON_RUN_FLAGS])},
@@ -267,7 +292,7 @@ require("node:module").syncBuiltinESMExports();`);
 			await assert.rejects(ch.request("create", create), /pinned Claude Code image is missing/);
 			srv.detach(); await stop(service.child); await until(() => !srv.online(), "Runner did not disconnect.");
 			srv.state.report = null;
-			service = run(state, undefined, bundle, {}, { flags: enabled });
+			service = run(state, guard, bundle, {}, { flags: enabled });
 			await until(() => report()?.signIn === "none", "Enabled runner did not report the unsigned Claude harness.");
 			await srv.attach();
 			await assert.rejects(ch.request("create", { ...create, profile: "docker-windlass-sandbox" }), /docker-hardened/);
@@ -285,7 +310,11 @@ require("node:module").syncBuiltinESMExports();`);
 			assert.equal((await docker(["volume", "inspect", volume])).code === 0, false);
 			assert.equal((await owner(["login", "claude"], token + "\n", { CLAUDE_CODE_OAUTH_TOKEN: token, CHECK_PASTED_TOKEN: token })).code, 0);
 			await until(() => report()?.signIn === "token", "Login did not publish a signed-in report.", 15_000);
-			assert.deepEqual(report(), { id: "claude", adapter: "claude-agent-acp 0.109.0", image: claudePin, signIn: "token" });
+			assert.deepEqual(await probes(), [claudePin], "one probe after login");
+			const options = report()?.options;
+			assert.ok(options && options.defaultModel === "default" && options.models.find(m => m.id === "default")?.efforts.includes("high"));
+			assert.deepEqual(options.models.find(m => m.id === "sonnet")?.efforts, []);
+			assert.deepEqual(report(), { options, id: "claude", adapter: "claude-agent-acp 0.109.0", image: claudePin, signIn: "token" });
 			clean(JSON.stringify(srv.state.report));
 			const labels = JSON.parse((await docker(["volume", "inspect", "-f", "{{json .Labels}}", volume], { check: true })).stdout);
 			assert.equal(labels[MACHINE_LABEL], machineId); assert.equal(labels["dev.windlass-platform.uid"], uid);
@@ -368,7 +397,10 @@ require("node:module").syncBuiltinESMExports();`);
 			assert.deepEqual(setup.Mounts, []);
 			ok("The setup CLI has session hardening, pairing labels and no login mount. The paste has echo off.");
 
+			const beforeLaunch = await probes();
+			assert.deepEqual(beforeLaunch, [claudePin, claudePin], "login rotation probes again");
 			const id = await ch.request("create", { ...create, screenshots: true });
+			assert.deepEqual(await probes(), beforeLaunch, "launch used the reported options");
 			const name = containerName("claude-" + id.slice(-12));
 			const inspect = async (name: string) => JSON.parse((await docker(["inspect", name], { check: true })).stdout)[0];
 			const box = await inspect(name);
@@ -448,10 +480,30 @@ require("node:module").syncBuiltinESMExports();`);
 			assert.ok(migrated.stdout.includes(ordinary) && !migrated.stdout.includes(id));
 			ok("Upgrade preserves the existing Claude container and hides it from b12b61e discovery.");
 			srv.detach(); await stop(service.child); await until(() => !srv.online(), "Runner did not disconnect.");
-			service = run(state, undefined, bundle, {}, { flags: enabled });
+			// A new runner build is how the machine receives a different immutable Claude image.
+			const changed = join(tmp, "changed-pin.cjs");
+			await exec(process.execPath, ["runner/bundle.mjs", image, changed, image, "claude=" + image], { cwd: root });
+			service = run(state, guard, changed, {}, { flags: enabled });
+			await until(() => report()?.image === image && report()?.options !== undefined, "Updated pin missed the signed-in probe.");
+			assert.deepEqual(await probes(), [claudePin, claudePin, image]);
+			await stop(service.child);
+			await until(() => !srv.online(), "Updated runner did not stop.");
+			srv.state.report = null;
+			service = run(state, guard, changed, {}, { flags: enabled });
 			await until(() => srv.online(), "Runner did not restart with Claude.");
 			await srv.attach();
 			assert.equal((await ch.request("connect", { id }))?.harness, "claude");
+			await until(() => report()?.options !== undefined, "Startup missed the signed-in probe");
+			assert.deepEqual(await probes(), [claudePin, claudePin, image, image]);
+			await writeFile(failureFlag, "");
+			assert.equal((await owner(["login", "claude"], token)).code, 0);
+			await until(() => report()?.signIn === "token" && report()?.options === undefined, "Failed probe did not clear the report");
+			clean(service.output());
+			assert.equal(service.output().split("Could not read Claude Code model options.").length - 1, 1);
+			assert.equal((await probes()).length, 6, "a failed probe retries only once");
+			assert.equal((await ch.request("connect", { id }))?.harness, "claude");
+			await rm(failureFlag);
+			ok("A failed options probe reports once and the signed-in runner continues serving sessions.");
 			// A killed login helper could leave its private staging file. Logout clears both.
 			await docker(["run", "--rm", "--pull", "never", "--network", "none", "--user", "0", "--mount",
 				"type=volume,src=" + volume + ",dst=/login,volume-nocopy", image, "touch", "/login/.token.abandoned"], { check: true });

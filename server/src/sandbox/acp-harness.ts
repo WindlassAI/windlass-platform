@@ -1,5 +1,6 @@
-import type { AcpContent, AcpUpdate, ModelList, SessionMode } from "../contract.js";
+import type { AcpContent, AcpUpdate, SessionMode } from "../contract.js";
 import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
+import { configChoices, modesOf, object, objects, optionsOf, text, type Fields } from "./acp-options.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { SandboxUserError, type RunTurnInput, type RunTurnResult, type SandboxHandle } from "./api.js";
 import type { Harness, HarnessCapabilities } from "./harness.js";
@@ -20,28 +21,6 @@ function unsupported(input: RunTurnInput): string | undefined {
 	if (input.reportScreenshots) return "report screenshots";
 	return (["script", "maxSteps", "onEvent", "onUnasked", "onServerQuestion", "onServerApproved", "onServers", "onPublish", "onReport", "onReview", "onPush", "onFetchBase"] as const)
 		.find(key => input[key] !== undefined);
-}
-
-type Fields = Record<string, unknown>;
-const object = (value: unknown): Fields => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Fields : {};
-const objects = (value: unknown): Fields[] => Array.isArray(value) ? value.map(object) : [];
-const text = (value: unknown): string => typeof value === "string" ? value : "";
-
-function configChoices(option: Fields | undefined) {
-	return objects(option?.options).flatMap(group => Array.isArray(group.options) ? objects(group.options) : [group])
-		.filter(value => typeof value.value === "string").map(value => ({ id: text(value.value), name: text(value.name) || null }));
-}
-
-function optionsOf(raw: unknown) {
-	const options = objects(raw);
-	const model = options.find(o => o.category === "model" && o.type === "select");
-	const effort = options.find(o => o.category === "thought_level" && o.type === "select");
-	const efforts = configChoices(effort).map(value => value.id);
-	const models = configChoices(model).map(choice => ({ ...choice, efforts }));
-	const list: ModelList | null = models.length ? {
-		source: "harness", models, defaultModel: text(model?.currentValue) || models[0]!.id, fetchedAt: Date.now(),
-	} : null;
-	return { model, effort, list };
 }
 
 async function permission(params: Fields, input: RunTurnInput, signal: AbortSignal, name: string) {
@@ -188,6 +167,10 @@ export class AcpHarness implements Harness {
 		let cancelDeadline: ReturnType<typeof setTimeout> | undefined;
 		let phase: "setup" | "running" | "ended" = "setup";
 		let configs = optionsOf([]);
+		const readConfigs = (raw: unknown) => {
+			configs = optionsOf(raw, acp.models ?? input.harnessModels);
+			acp.models = configs.list;
+		};
 		const rpc = new AcpConnection(line => run?.write(line + "\n") ?? false, {
 			notification: (method, params) => {
 				if (phase === "ended" || method !== "session/update" || !result.windlassSessionId || params.sessionId !== result.windlassSessionId) return;
@@ -198,8 +181,7 @@ export class AcpHarness implements Harness {
 					acp.usage = { used: update.used, size: update.size, cost: typeof cost.amount === "number" && typeof cost.currency === "string" ? { amount: cost.amount, currency: cost.currency } : null };
 				}
 				if (update.sessionUpdate === "config_option_update") {
-					configs = optionsOf(update.configOptions);
-					acp.models = configs.list;
+					readConfigs(update.configOptions);
 				}
 				stream.push(isKnownUpdate(update) ? update : { ...update, sessionUpdate: "unknown", originalSessionUpdate: update.sessionUpdate });
 			},
@@ -243,9 +225,8 @@ export class AcpHarness implements Harness {
 				result.windlassSessionId = previous ?? text(opened.sessionId);
 				const modes = object(opened.modes);
 				currentMode = text(modes.currentModeId);
-				offered = objects(modes.availableModes).map(m => ({ id: text(m.id), name: text(m.name), description: typeof m.description === "string" ? m.description : null }));
-				configs = optionsOf(opened.configOptions);
-				acp.models = configs.list;
+				offered = modesOf(modes);
+				readConfigs(opened.configOptions);
 			};
 			if (prior) {
 				const method = object(caps.sessionCapabilities).resume != null ? "session/resume" : caps.loadSession === true ? "session/load" : null;
@@ -267,20 +248,32 @@ export class AcpHarness implements Harness {
 			if (!modeId) throw new Error(`${profile.name} did not report its current permission mode.`);
 			input.onAcpModes?.(modeId, offered, modeId === requested ? undefined : requested);
 			await request("session/set_mode", { sessionId, modeId });
-			for (const key of ["model", "effort"] as const) {
-				const value = input[key];
-				if (!value) continue;
-				const option = configs[key];
-				if (!option || !configChoices(option).some(choice => choice.id === value)) {
-					// Before its first turn the platform knows only the adapter's default.
-					if (key === "model" && value === "default") continue;
-					throw new Error(`${profile.name} does not offer ${key} “${value}” here.`);
-				}
-				await request("session/set_config_option", { sessionId, configId: option.id, value }, set => {
-					if (set.configOptions) configs = optionsOf(set.configOptions);
-				});
+			const priorModel = text(configs.model?.currentValue);
+			const priorEffort = text(configs.effort?.currentValue);
+			const select = (option: Fields, value: string) => request("session/set_config_option", { sessionId, configId: option.id, value }, set => {
+				readConfigs(set.configOptions);
+			});
+			if (input.model) {
+				if (configs.model && configChoices(configs.model).some(choice => choice.id === input.model))
+					await select(configs.model, input.model);
+				else if (input.model !== "default")
+					throw new Error(`${profile.name} does not offer model “${input.model}” here.`);
 			}
-			acp.models = configs.list;
+			// Model selection can change or remove the effort select altogether.
+			const changed = priorModel !== text(configs.model?.currentValue);
+			const effort = input.effort ?? (changed ? priorEffort : undefined);
+			if (effort) {
+				if (configs.effort && configChoices(configs.effort).some(choice => choice.id === effort)) {
+					if (input.effort) await select(configs.effort, effort);
+				} else if (changed || input.model) {
+					const option = configs.effort;
+					if (option && option.currentValue !== "default" && configChoices(option).some(choice => choice.id === "default"))
+						await select(option, "default");
+					input.onEffortFallback?.(text(configs.effort?.currentValue) || null);
+				} else {
+					throw new Error(`${profile.name} does not offer effort “${effort}” here.`);
+				}
+			}
 			const prompt = (value: string) => ({ sessionId, prompt: [{ type: "text", text: value }] });
 			phase = "running";
 			const answer = rpc.request<Fields>("session/prompt", prompt(input.prompt), { onResult: () => { phase = "ended"; } });

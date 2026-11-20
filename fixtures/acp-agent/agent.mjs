@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { scenarios, scriptFor } from "./scenarios.mjs";
+import { modelEfforts, scenarios, scriptFor } from "./scenarios.mjs";
 
 const initialize = {
 	protocolVersion: 1,
@@ -11,7 +11,7 @@ const initialize = {
 		loadSession: true,
 		promptCapabilities: { image: true, embeddedContext: true },
 		mcpCapabilities: { http: true, sse: true, acp: true },
-		sessionCapabilities: { resume: {}, close: {}, list: {}, fork: {}, additionalDirectories: {} },
+		sessionCapabilities: { options: {}, resume: {}, close: {}, list: {}, fork: {}, additionalDirectories: {} },
 	},
 	_meta: { steering: { supported: true } },
 	authMethods: [{
@@ -39,8 +39,8 @@ function choices(session) {
 	return {
 		modes: { currentModeId: session.mode, availableModes },
 		configOptions: [
-			config("model", "Model", "model", ["default", "sonnet", "opus"], session.model),
-			config("effort", "Effort", "thought_level", ["default", "low", "medium", "high", "max"], session.effort),
+			config("model", "Model", "model", Object.keys(modelEfforts), session.model),
+			config("effort", "Effort", "thought_level", modelEfforts[session.model], session.effort),
 		],
 	};
 }
@@ -118,6 +118,7 @@ export class FixturePeer {
 		const { sessionId } = params;
 		const unknown = () => fail(-32002, "Resource not found");
 		if (method === "initialize") return reply(initialize);
+		if (method === "session/options") return reply(choices({ mode: "default", model: "default", effort: "default" }));
 		if (method === "session/new") {
 			const key = randomUUID();
 			const session = { mode: "default", model: "default", effort: "default", resumes: 0 };
@@ -145,6 +146,7 @@ export class FixturePeer {
 				const option = choices(session).configOptions.find((item) => item.id === params.configId);
 				if (!option?.options.some((item) => item.value === params.value)) return fail(-32602, "Unknown option or value");
 				const next = { ...session, [option.id]: params.value };
+				if (option.id === "model" && session.model !== params.value) next.effort = "default";
 				this.save(sessionId, next);
 				return reply({ configOptions: choices(next).configOptions });
 			}

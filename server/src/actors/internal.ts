@@ -10,7 +10,7 @@
 
 import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
-import type { HarnessId, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { HarnessOptions, HarnessId, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import type { ItemCreateInput, ItemPublishAnswer } from "./work-item.js";
@@ -25,6 +25,7 @@ import { issueServiceToken, verifyToken } from "../tokens.js";
 export interface SessionCreateInput {
 	mode?: string;
 	harness?: HarnessId;
+	harnessOptions?: HarnessOptions;
 	/** A service token bound to this actor's key: proof that `user` created it. */
 	grant: string;
 	title: string;

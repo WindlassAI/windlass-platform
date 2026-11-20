@@ -59,6 +59,7 @@
  * The world is rebuilt from the token on every page load, so the seeded sessions keep their IDs
  * across a reload and sessions created by hand do not survive one.
  */
+import { initialHarnessModels } from "../../../server/src/sandbox/harnesses.js";
 import { initialSessionModes } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
 import {
@@ -210,14 +211,14 @@ export type MockMachineSession = (typeof MOCK_MACHINE_SESSIONS)[number];
 /** Claude Code as a runner started with `--harness claude` reports it (server/src/runner/control.ts, `report.harnesses`). */
 const MOCK_CLAUDE = { id: "claude" as const, adapter: "claude-agent-acp 0.109.0", image: "sha256:3f9a1c0e7b5d2a8c6e4f1b9d7a5c3e1f0b8d6a4c2e0f9b7d5a3c1e8f6b4d2a0c", signIn: "token" as const };
 
-/** The models Claude Code lists once it has run (`configOptions`), as the server keeps them: none with an effort. */
+/** Model and effort choices reported by the fixture machine. */
 const MOCK_CLAUDE_MODELS: ModelList = {
 	source: "harness",
 	defaultModel: "default",
 	fetchedAt: null,
 	models: [
 		{ id: "default", name: "Default (recommended)", efforts: [] },
-		{ id: "opus", name: "Opus", efforts: [] },
+		{ id: "opus", name: "Opus", efforts: ["low", "high", "max"] },
 		{ id: "haiku", name: "Haiku", efforts: [] },
 	],
 };
@@ -2243,6 +2244,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	 */
 	function acpTurn(world: World, session: MockSession, input: PromptInput, script: AcpScript, answered?: string): Step[] {
 		const turn = session.summary.turns + 1;
+		const model = input.model ?? session.summary.model;
+		const fallback = input.effort !== undefined && model !== session.summary.model && !MOCK_CLAUDE_MODELS.models.find(m => m.id === model)?.efforts.includes(input.effort);
 		const steps: Step[] = [
 			{
 				wait: 0,
@@ -2267,9 +2270,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					};
 					cancel(session.pauseTimer);
 					session.pauseTimer = null;
-					store(session, { turn, kind: "user", text: input.text, model: input.model ?? session.summary.model, effort: input.effort ?? null });
+					store(session, { turn, kind: "user", text: input.text, model, effort: fallback ? null : input.effort ?? null });
+					if (fallback) store(session, { turn, kind: "platform", level: "info", text: "The selected model uses its default effort." });
 					const title = !session.titled && session.summary.turns === 0 ? openingWords(input.text) : session.summary.title;
-					setSummary(world, session, { status: "starting", model: input.model ?? session.summary.model, title, updatedAt: now() });
+					setSummary(world, session, { status: "starting", model, title, updatedAt: now() });
 				},
 			},
 		];
@@ -3053,7 +3057,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			profiles: mockMachineProfiles(patch.name ?? "nas"),
 			sendSecrets: true,
 			warnings: [],
-			harnesses: [MOCK_CLAUDE],
+			harnesses: [{ ...MOCK_CLAUDE, options: { models: MOCK_CLAUDE_MODELS.models, defaultModel: MOCK_CLAUDE_MODELS.defaultModel, modes: [...CLAUDE_LAUNCH_MODES], checkedAt: at } }],
 			...patch,
 		});
 		switch (state) {
@@ -3066,7 +3070,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			// The agent on "nas" finds it offline: the machine went offline after the agent last used it.
 			case "online":
 				return [nas({
-					harnesses: [{ id: "claude", adapter: "0.109.0", image: "windlass-runner-claude", signIn: "token" }],
 					...(machineSession === "offline" && { status: "offline", since: at - 12 * MINUTE }),
 				})];
 			case "pairing":
@@ -3222,19 +3225,21 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const profile = (machine ? machine.profiles : profiles).find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
 				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());
-				// Claude Code, as the server holds it (server/src/actors/user.ts, `makeSession`): on a machine that offers it, in the hardened container, on its default model.
+				const options = machine?.harnesses?.find(entry => entry.id === "claude")?.options;
 				const harness: HarnessId = input.harness ?? "windlass";
 				if (harness !== "windlass") {
 					if (!machine) throw new PlatformError("user", "Claude Code runs only on a machine of yours.", { reason: "bad_input" });
 					if (input.profile !== "docker-hardened") throw new PlatformError("user", "Claude Code requires the docker-hardened profile.", { reason: "bad_input" });
 					if (input.publishUnasked) throw new PlatformError("user", "Claude Code has no publish tool. Publish from the session panel.", { reason: "bad_input" });
 					if (!machine.harnesses?.some((offered) => offered.id === harness)) throw new PlatformError("user", "This machine does not offer Claude Code.", { reason: "bad_input" });
-					if (input.model !== undefined && input.model !== "default") throw new PlatformError("user", "Claude Code starts on its default model.", { reason: "bad_model" });
 				}
-				const models = modelsFor(world().profile);
-				if (input.model !== undefined && harness === "windlass") checkModel(models, input.model);
+				const models = harness === "claude" ? initialHarnessModels(options) : modelsFor(world().profile);
+				if (input.model) {
+					if (harness === "claude" && options && !models.models.some(m => m.id === input.model)) throw new PlatformError("user", "Choose a model offered by this machine.", { reason: "bad_input" });
+					checkModel(models, input.model);
+				}
 				const modes = initialSessionModes(profile.id, harness);
-				if (harness === "claude") modes.availableModes = [...CLAUDE_LAUNCH_MODES];
+				if (harness === "claude") modes.availableModes = options?.modes ?? [...CLAUDE_LAUNCH_MODES];
 				if (input.mode !== undefined) {
 					if (!modes.availableModes.some(m => m.id === input.mode)) throw new PlatformError("user", "Choose a mode offered by this agent.", { reason: "bad_input" });
 					modes.mode = input.mode;
@@ -3251,8 +3256,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const title = input.title?.trim() ?? "";
 				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
 				if (repository && input.setupCommand !== undefined) saveSetup(world(), repository.id, input.setupCommand);
-				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, harness, modes, model: harness === "windlass" ? (input.model ?? models.defaultModel) : "default", repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
-				if (harness !== "windlass") session.summary = { ...session.summary, harnessModels: null };
+				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, harness, modes, model: input.model || models.defaultModel, repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
+				if (harness === "claude" && options) session.summary = { ...session.summary, harnessModels: models };
 				if (machine) {
 					session.summary = { ...session.summary, place: { kind: "machine", machineId: machine.machineId } };
 					session.machine = { profile, reach: null };
@@ -3632,7 +3637,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					if (unreachable === null && offered?.signIn === "none") throw new PlatformError("user", `Claude Code on “${machine?.name ?? "your machine"}” is not signed in. Run windlass-runner login claude there.`, { reason: "harness_signed_out" });
 					const listed = session.summary.harnessModels ?? null;
 					if (input.model !== undefined && !(listed?.models ?? [{ id: "default" }]).some((one) => one.id === input.model)) throw new PlatformError("user", `Claude Code offers no model "${input.model}".`, { reason: "bad_model" });
-					if (input.effort !== undefined && !(listed?.models.find((one) => one.id === (input.model ?? session.summary.model))?.efforts ?? []).includes(input.effort)) throw new PlatformError("user", "Claude Code offered no such effort.", { reason: "bad_effort" });
+					if ((!input.model || input.model === session.summary.model) && input.effort !== undefined && !(listed?.models.find((one) => one.id === (input.model ?? session.summary.model))?.efforts ?? []).includes(input.effort)) throw new PlatformError("user", "Claude Code offered no such effort.", { reason: "bad_effort" });
 					const turn = session.summary.turns + 1;
 					if (unreachable !== null) {
 						play(session, plan(world, session, { ...input, text }, { events: [], platformFailure: unreachable, unreachable: true }));

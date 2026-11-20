@@ -605,6 +605,44 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				assert(session.harness === "claude" && session.model === "default" && (await snapshot()).summary.harness === "claude", "wrong harness or initial model");
 				return refused.join(", ");
 			});
+			await check("Claude creation refuses an unknown reported model with bad_input", async () => {
+				const options = { defaultModel: "opus", models: [
+					{ id: "opus", name: "Opus", efforts: ["default", "high"] },
+					{ id: "sonnet", name: "Sonnet", efforts: [] },
+				], checkedAt: Date.now(), modes: [] };
+				runner.fake.report.harnesses![0]!.options = options;
+				runner.report();
+				await until("reported model options", async () => (await user.machines()).find(m => m.machineId === place.machineId)?.harnesses?.[0]?.options);
+				const code = await refusal(user.createSession({ ...launch, model: "unknown" }));
+				assert(code === "bad_input", "unknown-model refusal was " + code);
+				const implicit = await user.createSession(launch);
+				try { assert(implicit.model === options.defaultModel, "did not use reported default model"); }
+				finally { await user.deleteSession(implicit.id); }
+				return code;
+			});
+			await check("Claude sends the launch model and effort on the first turn and falls back on a model switch", async () => {
+				const other = await user.createSession({ ...launch, model: "opus" });
+				const seen = new Watch(client, uid, other.id, token);
+				try {
+					assert(other.harnessModels?.defaultModel === "opus", "launch did not seed the model list");
+					const before = runner.acpInput.length;
+					const { turn } = await seen.conn.prompt({ text: "plain", effort: "high" });
+					assert((await seen.untilEnded(turn)).outcome === "succeeded", "first turn failed");
+					const sent = runner.acpInput.slice(before).map(line => JSON.parse(line));
+					const prompted = sent.findIndex(f => f.method === "session/prompt");
+					assert(prompted >= 0 && sent.slice(0, prompted).filter(f => f.method === "session/set_config_option").map(f => f.params.value).join() === "opus,high", "first prompt missed its choices");
+					const since = runner.acpInput.length;
+					const switched = await seen.conn.prompt({ text: "plain", model: "sonnet", effort: "high" });
+					assert((await seen.untilEnded(switched.turn)).outcome === "succeeded", "model switch failed");
+					const file = join(stateDir, "wlp-fake-acp-" + (await seen.conn.snapshot()).windlassSessionId + ".json");
+					assert(JSON.parse(readFileSync(file, "utf8")).effort === "default", "new model missed its default effort");
+					assert(!runner.acpInput.slice(since).map(line => JSON.parse(line)).some(f => f.method === "session/set_config_option" && f.params.value === "high"), "sent the stale effort");
+					assert(seen.items.filter(i => i.turn === switched.turn && i.kind === "platform" && i.text.includes("effort")).length === 1, "missing or repeated effort fallback");
+					const models = (await seen.conn.snapshot()).summary.harnessModels?.models;
+					assert(models?.some(m => m.id === "opus" && m.efforts.includes("high")) && models.some(m => m.id === "sonnet" && !m.efforts.includes("high")), "lost model-specific efforts");
+				} finally { await seen.conn.dispose(); await user.deleteSession(other.id); }
+				return "selected first turn, one fallback line and no stale effort on the wire";
+			});
 			await check("Claude plain coalesces thought and text and clears pending deltas", async () => {
 				const { end, updates, turn } = await play("plain");
 				const chunks = updates.filter(u => u.sessionUpdate.endsWith("_chunk"));
@@ -772,7 +810,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 			});
 			await check("Claude uses its own model and effort options and reports context", async () => {
 				const { summary } = await snapshot();
-				assert(summary.harnessModels?.models.some(m => m.id === "opus" && m.efforts.includes("high")), "missing model or efforts");
+				assert(summary.harnessModels?.models.some(m => m.id === "opus" && !m.efforts.length), "another model inherited the current efforts");
 				const { end } = await play("usage", "opus", "high");
 				const state = JSON.parse(readFileSync((await acpSession()).file, "utf8"));
 				assert(state.model === "opus" && state.effort === "high" && state.mode === "auto", "fixture configuration differs");

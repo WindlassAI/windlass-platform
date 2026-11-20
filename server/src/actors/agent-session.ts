@@ -3174,6 +3174,10 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			result = await harness.runTurn(sandbox, {
 				...common,
 				secrets: { env: {}, withholdEnv: [], passEnv: [], redactor: active.secrets.redactor },
+				harnessModels: meta.harnessModels,
+				onEffortFallback: fallback => {
+					if (open) note(c, turn, "info", `The selected model uses its default effort${fallback && fallback !== "default" ? ` (“${fallback}”)` : ""}.`);
+				},
 				onAcpModes: (chosen, offered, fallbackFrom) => {
 					if (!open) return;
 					meta.availableModes = offered;
@@ -3706,7 +3710,12 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 			const models = caps.models === "harness" ? meta.harnessModels ?? initialHarnessModels() : meta.demo ? standInModels("demo") : await userActor(c, meta.uid).internalModels();
 			try {
 				if (switches) model = chosenModel(models, input.model);
-				if (effort !== null) checkEffort(models, model, effort);
+				if (effort !== null) {
+					// The adapter reports a new model's efforts only after selection.
+					const checkOnSelection = caps.models === "harness" && (model !== meta.model ||
+						(meta.turns === 0 && model !== models.defaultModel && !models.models.find(m => m.id === model)?.efforts.length));
+					if (!checkOnSelection || typeof effort !== "string" || effort.length > 64) checkEffort(models, model, effort);
+				}
 			} catch (error) {
 				if (error instanceof ModelProblem) throw new UserError(error.message, { code: error.code });
 				throw error;
@@ -4035,6 +4044,7 @@ export const agentSession = actor({
 				harness: input.harness,
 				profile: input.profile,
 				...initialSessionModes(input.profile, input.harness, !!input.origin),
+				...(input.harnessOptions && { harnessModels: initialHarnessModels(input.harnessOptions), availableModes: input.harnessOptions.modes }),
 				...(input.mode !== undefined && { mode: input.mode }),
 				model: String(input.model),
 				repoUrl: typeof input.repoUrl === "string" ? input.repoUrl : null,

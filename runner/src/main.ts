@@ -66,7 +66,7 @@ async function main() {
 					}
 				}
 			}
-			await requestLoginReport();
+			await requestLoginReport(command === "login");
 			return;
 		}
 		if (command !== "status" && !tryLock()) {
@@ -161,8 +161,8 @@ async function main() {
 				const connection = new AbortController();
 				const active = AbortSignal.any([abort.signal, connection.signal]);
 				const owner = new Executor(paired.current, limits, values.screenshots, claude);
-				const local = waitForPair(active, () => {}, async () => {
-					await owner.serial(() => owner.refreshLogin());
+				const local = waitForPair(active, () => {}, async signedIn => {
+					await owner.serial(() => owner.loginChanged(signedIn));
 					owner.publishReport?.();
 				}).then(request => {
 					if (request) connection.abort();

@@ -23,7 +23,7 @@ export async function withLoginVolume<T>(machine: MachineDocker, work: () => Pro
 	} finally { await fd.close(); }
 }
 
-function volumeFlags(machine: MachineDocker, readonly: boolean) {
+export function volumeFlags(machine: MachineDocker, readonly: boolean) {
 	return [...machine.pairingLabelFlags,
 		"--pull", "never", "--log-driver", "none", "--mount",
 		`type=volume,src=${machine.claudeVolume},dst=${loginDir},volume-nocopy${readonly ? ",readonly" : ""}`];
