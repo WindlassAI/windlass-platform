@@ -149,7 +149,7 @@ import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } fr
 import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
 import { getSignIns } from "../signin/index.js";
 import { serverSealer } from "../signin/seal.js";
-import { uidOfAccount } from "../signin/material.js";
+import { ownerOfAccount } from "./account-email.js";
 import { USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
@@ -216,6 +216,7 @@ interface UserVars {
 }
 
 interface SignInCtx {
+	client(): unknown;
 	vars: UserVars;
 	db: RawAccess;
 	key: string[];
@@ -240,8 +241,7 @@ function signIn(c: SignInCtx): Promise<SignInHolder> {
 					commands,
 					sealer,
 					revoke: hooks.revoke,
-					// The sign-in of one OpenAI account is one user's: no other user's actor takes it.
-					ownerOf: (account) => uidOfAccount(account.sub),
+					ownerOf: (account) => ownerOfAccount(c, account),
 					store: {
 						load: async (): Promise<StoredSignIn | null> => {
 							const [row] = await db().execute<SignInRow>("SELECT sealed, generation, short_noted FROM signin WHERE id = 1");

@@ -1191,7 +1191,7 @@ function fakeCheck(check: RepositoryCheck): Record<string, unknown> {
 
 /** What the stand-in keeps in a sign-in's `auth.json`: the fields the platform reads, and tokens that are obviously not real. */
 interface FakeCredentials {
-	account: { sub: string; email: string };
+	account: { sub: string; email: string | null };
 	accessToken: string;
 	refreshToken: string;
 	expiresAt: number;
@@ -1209,6 +1209,10 @@ class FakeSignInCommands implements SignInCommands {
 	/** How many times the (imaginary) `windlass login token --json --valid-for 20m` ran. */
 	asked = 0;
 	private issued = 0;
+	/** Test issuer's grants by code, supplied by the server running the check. */
+	private readonly grants = new Map<string, { sub?: string; email: string | null }>(
+		Object.entries(JSON.parse(process.env.WLP_FAKE_SIGNIN_GRANTS ?? "{}")),
+	);
 
 	async start(): Promise<{ url: string; redirectPrefix: string; material: SignInMaterial }> {
 		const state = randomBytes(8).toString("hex");
@@ -1229,7 +1233,8 @@ class FakeSignInCommands implements SignInCommands {
 		if (!code) throw new SandboxUserError("The address has no sign-in code in it. Copy the whole address.");
 		if (code === "refused") throw new SandboxUserError("OpenAI refused the sign-in. Start again.");
 		if (code === "explode") throw new Error("fake layer: docker run failed with /var/run/docker.sock: permission denied");
-		const saved = this.issue({ sub: `fake|${code}`, email: `${code}@example.com` }, code === "brief" ? 60_000 : 60 * 60 * 1000);
+		const grant = this.grants.get(code) ?? { email: `${code}@example.com` };
+		const saved = this.issue({ sub: grant.sub ?? `fake|${code}`, email: grant.email }, code === "brief" ? 60_000 : 60 * 60 * 1000);
 		return { account: { ...saved.account, accessExpiresAt: saved.expiresAt }, material: { files: { "auth.json": JSON.stringify(saved) } } };
 	}
 

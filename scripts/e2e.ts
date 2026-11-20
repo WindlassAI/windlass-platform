@@ -530,6 +530,117 @@ async function runningSlotRace(server: Server, client: Client, auth: AuthResult,
 	});
 }
 
+/** Grants from the fake issuer. Only the code comes back from the browser. */
+const identityGrants = {
+	"first-app": { email: "  Ada@example.invalid " }, brief: { email: "ada@EXAMPLE.invalid" },
+	"first-0": { email: "one@example.invalid" }, "second-0": { email: "one@example.invalid" },
+	"first-1": { email: "two@example.invalid" }, "second-1": { email: "two@example.invalid" },
+	"seed-app": { email: "seed@example.com" }, "bare-seeded": { sub: "fake|bare", email: "seed@example.com" },
+	bare: { email: null }, "other-bare": { email: null },
+	"race-a": { email: "race@example.invalid" }, "race-b": { email: "race@example.invalid" },
+	"my-sub": { email: "mine@example.invalid" }, "their-sub": { email: "theirs@example.invalid" },
+};
+
+/** Separate ChatGPT apps issue different subjects for one verified email. */
+async function identityChecks(client: Client, server: Server) {
+	const { uidOfAccount } = await import("../server/src/signin/material.js");
+	const { serverSealer } = await import("../server/src/signin/seal.js");
+	const { serviceParams } = await import("../server/src/auth.js");
+	const prepare = async (code: string) => {
+		const login = client.login.getOrCreate([`identity-${randomBytes(8).toString("hex")}`]);
+		const { redirectPrefix } = await login.start();
+		return () => login.finish(`${redirectPrefix}?${new URLSearchParams({ code })}`);
+	};
+	const signIn = async (code: string) => (await prepare(code))();
+	const userOf = (auth: AuthResult) => client.user.get([auth.profile.uid], { params: { token: auth.token } });
+	const derived = (code: string) => uidOfAccount(`fake|${code}`);
+
+	await check("returning email keeps its sessions and refreshes the second app's sign-in", async () => {
+		const first = await signIn("first-app");
+		const session = await userOf(first).createSession({ profile: "docker-windlass-sandbox" });
+		try {
+			const next = await signIn("brief");
+			const uid = next.profile.uid;
+			assert(uid === first.profile.uid && uid === derived("first-app"), `first ${first.profile.uid}, second ${uid}`);
+			assert((await userOf(next).listSessions()).some(row => row.id === session.id), "the second login lost the session");
+			const inner = client.user.get([uid], { params: serviceParams() });
+			const before = await inner.internalSignInStatus();
+			assert(before.ok && before.value?.sub === "fake|brief" && (before.value.accessExpiresAt ?? 0) < Date.now() + 120_000, "the second app's short-lived material was not adopted");
+			assert((await inner.internalAccessToken(randomBytes(16).toString("base64url"))).ok, "the second app's refresh failed");
+			const after = await inner.internalSignInStatus();
+			assert(after.ok && after.value?.sub === "fake|brief" && (after.value.accessExpiresAt ?? 0) > Date.now() + 55 * 60_000, "the refreshed second sign-in was not saved");
+			return `uid ${uid}, session ${session.id}, refreshed second app`;
+		} finally {
+			await userOf(first).deleteSession(session.id);
+		}
+	});
+
+	await check("two verified emails keep distinct uids across apps", async () => {
+		const loginPair = (app: string) => Promise.all([0, 1].map(i => signIn(`${app}-${i}`)));
+		const [one, two] = await loginPair("first");
+		const [oneAgain, twoAgain] = await loginPair("second");
+		assert(one.profile.uid !== two.profile.uid, "two people share a uid");
+		assert(oneAgain.profile.uid === one.profile.uid && twoAgain.profile.uid === two.profile.uid, "the second app changed their uids");
+		return `${one.profile.uid} and ${two.profile.uid}`;
+	});
+
+	await check("first sign-in of a seeded email uses the operator's uid", async () => {
+		const result = await signIn("seed-app");
+		assert(result.profile.uid === "u_existing", `got ${result.profile.uid}`);
+		return result.profile.uid;
+	});
+
+	await check("email-less sign-ins use only their own subject, even beside a seeded email", async () => {
+		const first = await signIn("bare");
+		const seeded = await signIn("bare-seeded");
+		const again = await signIn("bare");
+		const other = await signIn("other-bare");
+		assert([first, again, other].every(auth => auth.profile.email === null), "an email appeared");
+		assert(first.profile.uid === derived("bare") && again.profile.uid === first.profile.uid && other.profile.uid === derived("other-bare"), "an email-less uid changed");
+		assert(seeded.profile.uid !== first.profile.uid, "the seeded email and the email-less subject resolved to the same user");
+		return `${first.profile.uid} and ${other.profile.uid}`;
+	});
+
+	await check("two concurrent first sign-ins claim one uid", async () => {
+		const finishes = await Promise.all(["race-a", "race-b"].map(code => prepare(code)));
+		const [a, b] = await Promise.all(finishes.map(finish => finish()));
+		assert(a.profile.uid === b.profile.uid && [derived("race-a"), derived("race-b")].includes(a.profile.uid), `got ${a.profile.uid} and ${b.profile.uid}`);
+		return a.profile.uid;
+	});
+
+	await check("ownerOf refuses material whose email belongs elsewhere even when the subject matches", async () => {
+		const mine = await signIn("my-sub");
+		await signIn("their-sub");
+		const uid = mine.profile.uid;
+		const inner = client.user.get([uid], { params: serviceParams() });
+		const material = { files: { "auth.json": JSON.stringify({ account: { sub: "fake|my-sub", email: "theirs@example.invalid" } }) } };
+		const answer = await inner.internalAdoptSignIn(serverSealer().seal("user", uid, JSON.stringify(material)));
+		assert(!answer.ok && answer.problem.message.includes("another account's"), "accepted or misclassified theirs@example.invalid");
+		assert((await userOf(mine).chatgpt()).email === mine.profile.email, "refused material replaced the saved sign-in");
+		return "an email linked to another user was refused";
+	});
+
+	await check("a sign-in saved before the directory (no link yet) stays with the user its own subject names, and no other", async () => {
+		const mine = await signIn("my-sub");
+		const uid = mine.profile.uid;
+		const material = (sub: string) => ({ files: { "auth.json": JSON.stringify({ account: { sub, email: "unlinked@example.invalid" } }) } });
+		const own = await client.user.get([uid], { params: serviceParams() }).internalAdoptSignIn(serverSealer().seal("user", uid, JSON.stringify(material("fake|my-sub"))));
+		assert(own.ok, "the user's own unlinked material was refused");
+		const other = await client.user.get([uid], { params: serviceParams() }).internalAdoptSignIn(serverSealer().seal("user", uid, JSON.stringify(material("fake|someone-else"))));
+		assert(!other.ok && other.problem.message.includes("another account's"), "unlinked material of another subject was accepted");
+		return "own subject kept, another subject refused";
+	});
+	// The first seed is gone. A different seed for the same email must not override the durable entry.
+	await server.stop();
+	await server.start({ WLP_ACCOUNT_EMAILS: "seed@example.com=u_replacement", WLP_ALLOWED_USERS: "u_existing" });
+	await check("after restart an existing email link wins over a changed seed and is invited by uid alone", async () => {
+		const auth = await signIn("seed");
+		assert(auth.profile.uid === "u_existing" && (await userOf(auth).me()).uid === auth.profile.uid, `got ${auth.profile.uid}`);
+		await refused(() => signIn("uninvited"), "not_invited");
+		return auth.profile.uid;
+	});
+}
+
 async function main(server: Server | null): Promise<void> {
 	const client = newClient();
 	const attempt = () => `e2e-${randomBytes(8).toString("hex")}`;
@@ -4200,6 +4311,16 @@ try {
 	if (OWN_SERVER) {
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
+		if (FAKE) {
+			await server.start({ WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
+			const identityClient = newClient();
+			try {
+				await identityChecks(identityClient, server);
+			} finally {
+				await identityClient.dispose();
+			}
+			await server.stop();
+		}
 		await server.start();
 	}
 	await main(server);

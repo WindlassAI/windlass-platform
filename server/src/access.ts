@@ -15,6 +15,10 @@ export interface AccessRules {
 	allowed: { emails: ReadonlySet<string>; uids: ReadonlySet<string> } | null;
 }
 
+export function normalizeEmail(email: unknown): string | null {
+	return typeof email === "string" ? email.trim().toLowerCase() || null : null;
+}
+
 function items(raw: string | undefined, fold: boolean): Set<string> {
 	return new Set(
 		(raw ?? "")
@@ -36,7 +40,8 @@ export function mayUse(profile: Pick<UserProfile, "uid" | "email" | "demo">, rul
 	if (profile.demo) return rules.demo;
 	if (rules.allowed === null) return true;
 	if (rules.allowed.uids.has(profile.uid)) return true;
-	return profile.email !== null && rules.allowed.emails.has(profile.email.trim().toLowerCase());
+	const email = normalizeEmail(profile.email);
+	return email !== null && rules.allowed.emails.has(email);
 }
 
 /** What a ChatGPT account that is not on the list is told when it signs in. */

@@ -10,12 +10,13 @@ import { machinePairing, pairingDirectory } from "./actors/machine-pairing.js";
 import { githubAccount } from "./actors/github-account.js";
 import { githubInbox, githubHooks } from "./actors/github-inbox.js";
 import { githubRepository } from "./actors/github-repository.js";
+import { accountEmail } from "./actors/account-email.js";
 import { login } from "./actors/login.js";
 import { user } from "./actors/user.js";
 import { workItem } from "./actors/work-item.js";
 
 export const registry = setup({
-	use: { login, user, agentSession, machine, machinePairing, pairingDirectory, workItem, githubInbox, githubAccount, githubRepository, githubHooks },
+	use: { login, accountEmail, user, agentSession, machine, machinePairing, pairingDirectory, workItem, githubInbox, githubAccount, githubRepository, githubHooks },
 	// The native HTTP listener bounds the body before copying it into a JavaScript Request.
 	serverless: { maxStartPayloadBytes: 3 * 1024 * 1024 },
 	// A prompt may be 20,000 characters, and a snapshot carries a session's whole timeline.

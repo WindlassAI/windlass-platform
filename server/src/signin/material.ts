@@ -80,7 +80,7 @@ export function accountOf(material: SignInMaterial): ChatgptAccount | null {
 	return { sub, email: typeof email === "string" ? email : null, accessExpiresAt: typeof expiresAt === "number" && Number.isFinite(expiresAt) ? expiresAt : null };
 }
 
-/** The platform's user id of an OpenAI account: the same account is the same user on every server. */
+/** The default uid for a new email, or the uid of an email-less sign-in, from this OAuth app’s subject. */
 export function uidOfAccount(sub: string): string {
 	return `u_${createHash("sha256").update(sub).digest("hex").slice(0, 20)}`;
 }

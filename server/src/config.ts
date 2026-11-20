@@ -6,6 +6,7 @@
  *                              who may sign in with ChatGPT: account emails and user ids (`u_...`),
  *                              comma-separated. Unset, both: anyone with a ChatGPT account. Asked at
  *                              the sign-in and at every call, so a removal holds at once (access.ts)
+ *   WLP_ACCOUNT_EMAILS           comma-separated email=u_... seeds for first sign-in
  *   WLP_SANDBOX=docker|e2b|fake
  *                              the sandbox layer (default docker). docker: containers on this machine, for
  *                              one server. e2b: E2B microVMs, which every server of a deployment reaches
@@ -215,7 +216,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type AccessRules, readAccessRules } from "./access.js";
+import { type AccessRules, normalizeEmail, readAccessRules } from "./access.js";
 import { QUESTION_TIMEOUT_MS } from "./contract.js";
 import { APPROVAL_TTL_MS } from "./server-approvals.js";
 import { DEFAULT_DAILY_SECONDS, DEFAULT_HOLD_SECONDS, DEFAULT_MAX_KEPT, type UsageLimits } from "./usage.js";
@@ -262,6 +263,7 @@ export interface Config {
 	machines: MachinesConfig | null;
 	/** Who may use the platform (access.ts). */
 	access: AccessRules;
+	accountEmails: ReadonlyMap<string, string>;
 	sandbox: SandboxMode;
 	secret: Buffer;
 	/** False when a remote engine is configured and WLP_SECRET is not: the server refuses to start (startup.ts). */
@@ -664,12 +666,29 @@ function readMachines(httpPort: number): MachinesConfig | null {
 	return { runnerImage: pinned ? image : null, publicUrl };
 }
 
+function readAccountEmails(): ReadonlyMap<string, string> {
+	const seeds = new Map<string, string>();
+	for (const entry of (process.env.WLP_ACCOUNT_EMAILS ?? "").split(",")) {
+		if (!entry.trim()) continue;
+		const split = entry.lastIndexOf("=");
+		const email = normalizeEmail(entry.slice(0, split));
+		const uid = entry.slice(split + 1).trim();
+		if (split < 1 || !email || !/^u_[A-Za-z0-9_-]{1,62}$/.test(uid) || (seeds.has(email) && seeds.get(email) !== uid)) {
+			unusable.push("WLP_ACCOUNT_EMAILS must contain comma-separated email=u_... entries with one user id per email");
+			break;
+		}
+		seeds.set(email, uid);
+	}
+	return seeds;
+}
+
 const httpPort = readHttpPort();
 
 export const config: Config = {
 	demo: process.env.WLP_DEMO === "1",
 	machines: readMachines(httpPort),
 	access: readAccessRules(),
+	accountEmails: readAccountEmails(),
 	sandbox: readSandboxMode(),
 	secret: readSecret(),
 	secretConfigured: !engine.remote || Boolean(process.env.WLP_SECRET),

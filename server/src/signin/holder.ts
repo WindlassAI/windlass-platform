@@ -65,7 +65,7 @@ export interface SignInHolderOptions {
 	 */
 	revoke?: (uid: string) => Promise<void>;
 	/** The user an account belongs to. When given, a sign-in of an account that is not this user's is refused. */
-	ownerOf?: (account: ChatgptAccount) => string;
+	ownerOf?: (account: ChatgptAccount) => string | Promise<string | null>;
 	/** Where the holder's `[wlp]` lines go. Default the console. None ever contains a token. */
 	log?: (line: string) => void;
 }
@@ -147,7 +147,7 @@ export class SignInHolder {
 		}
 		const account = accountOf(material);
 		if (account === null) throw new SandboxUserError("This sign-in is not finished yet.");
-		if (this.options.ownerOf !== undefined && this.options.ownerOf(account) !== this.uid) throw new Error(`the sign-in handed over for user ${this.uid} is another account's`);
+		if (this.options.ownerOf !== undefined && (await this.options.ownerOf(account)) !== this.uid) throw new Error(`the sign-in handed over for user ${this.uid} is another account's`);
 		this.running?.abort();
 		await this.exclusive(async () => {
 			this.unsaved = null;

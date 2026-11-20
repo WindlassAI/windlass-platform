@@ -574,7 +574,7 @@ export interface Windlass {
 // ---------------------------------------------------------------------------------------------
 
 export interface ChatgptAccount {
-	/** OpenAI's stable account identifier. */
+	/** OpenAI's subject for the account within this OAuth app. */
 	sub: string;
 	email: string | null;
 	/** When the saved access token expires, ms since the epoch. */

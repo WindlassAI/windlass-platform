@@ -48,6 +48,7 @@ browser ── HTTP ───────▶ any server (:6440)  GET /platform/i
 browser ── WebSocket ──▶ Rivet endpoint (:6420)
                            │
                            ├─ login             [attemptId]          one sign-in attempt
+                           ├─ accountEmail      [email hash]         the platform uid for one verified email
                            ├─ user              [uid]                profile, the index of sessions, the ChatGPT
                            │                                         sign-in (encrypted) and its access tokens,
                            │                                         the models of the ChatGPT plan,
@@ -246,6 +247,12 @@ token and its expiry, the refresh token, the ID token) and `host-id`. The platfo
 tokens itself. It stores the files and lends them to Windlass for one command at a time
 (`server/src/signin/`).
 
+Windlass returns the verified email from OpenAI’s ID token. Each OAuth app can receive a different
+`sub` for the same person. The first sign-in for an email records its platform uid in an `accountEmail`
+actor keyed by SHA-256 of the trimmed, lowercased email. Its uid comes from `WLP_ACCOUNT_EMAILS` if
+seeded, otherwise from the first app’s `sub`. Later sign-ins reuse that uid, including after the user
+forgets their ChatGPT sign-in. A sign-in without an email uses the uid derived from its own `sub`.
+
 **Where it is.** In the user's `user` actor, one row, encrypted. A sign-in attempt between `start` and
 `finish` (Windlass's `auth-pending.json`: the PKCE verifier, state and nonce) is in its `login` actor the same
 way, so the two steps can be served by different servers. Actor storage is the Rivet engine's, which with
@@ -268,9 +275,8 @@ the sign-in changed, whether a line about short tokens was already logged, and w
 Someone with a copy of the actor storage and without the key learns which users have a sign-in, how long each
 blob is, and when it last changed (so, roughly, when its user was active). They learn no token, no refresh
 token and no PKCE secret, and, from these rows, no account. (The email is in the same actor's `profile` table,
-which is not encrypted, and the uid the actor is named by is a hash of the OpenAI account id: whoever knows an
-account id can tell whether it has a user here.) Someone who can also write to the storage can put back an
-older blob of the same user (a sign-in that was forgotten, or one from before a refresh, which the sign-in
+which is not encrypted. Someone who knows an email can also hash it to find its directory entry.) Someone
+who can also write to the storage can put back an older blob of the same user (a sign-in that was forgotten, or one from before a refresh, which the sign-in
 service then refuses); they cannot make one user's blob work for another. Forgetting a sign-in empties the
 row; what the engine keeps of earlier versions of a row is the engine's, and is ciphertext.
 
@@ -2376,7 +2382,7 @@ cd server && npx tsx ../scripts/factory-e2e.ts                          # items 
 | Path | What it holds |
 |---|---|
 | `server/src/contract.ts` | The contract between the actors and the web app: types only |
-| `server/src/actors/` | The actors: `login`, `user`, `agentSession`, `machine`, `machinePairing` with `pairingDirectory`, and `workItem`. `user-machines.ts` and `user-items.ts` hold what the `user` actor does for machines and for work items (the index, the turn queue, the API tokens), `session-inbox.ts` what a session does for its item |
+| `server/src/actors/` | The actors: `login`, `accountEmail`, `user`, `agentSession`, `machine`, `machinePairing` with `pairingDirectory`, and `workItem`. `user-machines.ts` and `user-items.ts` hold what the `user` actor does for machines and for work items (the index, the turn queue, the API tokens), `session-inbox.ts` what a session does for its item |
 | `server/src/index.ts`, `platform-info.ts`, `runner-routes.ts`, `api-routes.ts` | The server: one Rivet node, and its HTTP routes (`/platform/info`, `/platform/connection`, `/health`, GitHub's callback, the runner's three, the API's two) |
 | `server/src/web.ts` | The web app's built files, served on the same port where `WLP_WEB_DIR` names them |
 | `server/src/connection-tokens.ts` | The tokens browsers connect with: issued by the engine for the admin token, kept and handed out by each server |
@@ -2502,6 +2508,7 @@ tag and remove that tag after use. Run the host-wide `sandbox/cleanup.sh` manual
 |---|---|
 | `WLP_DEMO` | `1`: offer the demo sign-in (scripted model). `scripts/dev.sh` sets it |
 | `WLP_ALLOWED_EMAILS`, `WLP_ALLOWED_USERS` | who may sign in with ChatGPT: account emails and user ids (`u_...`), comma-separated. Unset, both: anyone with a ChatGPT account. Asked at the sign-in and at every call, so a removal holds at once |
+| `WLP_ACCOUNT_EMAILS` | comma-separated seeds such as `owner@example.com=u_existing`. At the first sign-in for each verified email, the platform records the configured uid. Existing entries keep their uid when seeds change or are removed. Invitation rules still apply to the resolved uid and email. |
 | `WLP_SANDBOX` | `docker` (default), `e2b` ("E2B") or `fake` |
 | `WLP_SECRET` | signs tokens; when unset one is generated in `.data/secret`. Required with a remote engine (`RIVET_ENDPOINT`): the server refuses to start without it |
 | `WLP_WEB_ORIGINS` | origins the web app may connect from, comma-separated (default `localhost:5173`, `127.0.0.1:5173`) |

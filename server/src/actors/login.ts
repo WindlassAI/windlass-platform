@@ -17,9 +17,9 @@ import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, clientError } from "../auth.js";
 import { config } from "../config.js";
 import type { AuthResult, LoginStart, UserProfile } from "../contract.js";
-import { NOT_INVITED, mayUse } from "../access.js";
+import { NOT_INVITED, mayUse, normalizeEmail } from "../access.js";
 import { getLayer } from "../layer.js";
-import { uidOfAccount } from "../signin/material.js";
+import { claimAccountUid } from "./account-email.js";
 import { issueUserToken } from "../tokens.js";
 
 /** How long a started attempt is accepted: ten minutes. */
@@ -161,21 +161,20 @@ export const login = actor({
 					const finished = await logins.finish(attemptId, attempt.sealed, pastedUrl.trim());
 					const account = finished.account;
 					if (typeof account?.sub !== "string" || account.sub === "") throw new Error("the sign-in returned no account identifier");
-					// By invitation: an account that is not on the list gets no user, and nothing of its sign-in is kept.
-					if (!mayUse({ uid: uidOfAccount(account.sub), email: typeof account.email === "string" ? account.email : null, demo: false }, config.access)) {
+					// OpenAI takes the code only once. Save the result before calling either directory or user,
+					// so a retry after an interrupted handover uses the same verified material.
+					attempt.sealed = finished.attempt;
+					await save(c);
+					const uid = await claimAccountUid(c, account);
+					const profile: UserProfile = { uid, email: normalizeEmail(account.email), demo: false };
+					if (!mayUse(profile, config.access)) {
 						attempt.sealed = null;
 						throw new UserError(NOT_INVITED, { code: "not_invited" });
 					}
-					// Kept before it is handed on: OpenAI takes the code in the address once, so when the user's
-					// actor cannot be reached now, the same address finishes the attempt when it is sent again.
-					attempt.sealed = finished.attempt;
-					await save(c);
-					const uid = uidOfAccount(account.sub);
 					await logins.adopt(attemptId, finished.attempt, uid);
 					// The user's actor has it: nothing of the sign-in stays here.
 					attempt.sealed = null;
 
-					const profile: UserProfile = { uid, email: typeof account.email === "string" ? account.email : null, demo: false };
 					const token = issueUserToken(profile);
 					const replaced = attempt.scheduleId;
 					attempt.scheduleId = await c.schedule.after(CLEANUP_DELAY_MS, "expire");
