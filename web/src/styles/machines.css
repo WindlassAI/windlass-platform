@@ -268,3 +268,129 @@
 		justify-items: stretch;
 	}
 }
+
+/* ---- Claude Code's sign-in from the page (components/ClaudeSignIn.tsx) ------------------------- */
+
+/* Nothing to say about the machine: no gap where the notes would be. */
+.machine-notes:empty {
+	display: none;
+}
+.claude-signin {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	justify-items: start;
+	gap: 8px;
+	min-width: 0;
+	font-size: var(--size-small);
+}
+.claude-signin-line {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 12px;
+}
+.claude-signin-panel {
+	justify-self: stretch;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 12px;
+	max-width: 64ch;
+	padding: 12px 14px;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-m);
+	background: var(--bg-raised);
+	color: var(--ink);
+}
+.claude-signin-panel .field-note {
+	margin-top: 0;
+}
+/* The two steps of the sign-in page (signin.css), smaller. */
+.claude-signin-steps .step {
+	grid-template-columns: 22px minmax(0, 1fr);
+	gap: 10px;
+	padding-bottom: 14px;
+}
+.claude-signin-steps .step:last-child {
+	padding-bottom: 0;
+}
+.claude-signin-steps .step:not(:last-child)::before {
+	left: 10.500px;
+	top: 26px;
+}
+.claude-signin-steps .step-number {
+	width: 22px;
+	height: 22px;
+	margin-top: 4px;
+	font-size: 0.6875rem;
+}
+.claude-signin-steps .step-body {
+	gap: 6px;
+}
+.claude-signin-steps .step-body .label {
+	margin: 6px 0 0;
+}
+.claude-signin-steps .step-body .field-note {
+	margin-top: 0;
+}
+.claude-signin-code {
+	display: flex;
+	gap: 8px;
+	justify-self: stretch;
+}
+.claude-signin-code .input {
+	flex: 1;
+	min-width: 0;
+	min-height: 30px;
+	padding: 4px 9px;
+}
+.claude-signin-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+.claude-signin-failure {
+	color: var(--bad);
+	overflow-wrap: anywhere;
+}
+.claude-signin-or {
+	font-size: var(--size-small);
+	font-weight: 500;
+	color: var(--ink-dim);
+}
+.claude-signin-command {
+	justify-self: stretch;
+	max-width: 64ch;
+}
+.claude-signin-command[hidden] {
+	display: none;
+}
+.claude-signin .machine-command {
+	margin-top: 0;
+}
+.claude-signin-done {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: var(--size-small);
+}
+/* Above a Claude Code agent's composer, the width of the column, as the other banners are. */
+.session-signin.claude-signin {
+	display: grid;
+	align-items: start;
+}
+.session-signin .machine-command,
+.session-signin .claude-signin-command {
+	max-width: 64ch;
+}
+.session-signin .claude-signin-or {
+	margin-left: 0;
+}
+/* A quiet button's text lines up with the notes above it. */
+.claude-signin-actions > .button-quiet:first-child {
+	margin-left: -10px;
+}
+/* The row's own buttons take a place in its grid on a narrow screen (usage.css); these stay where they are. */
+.claude-signin .button {
+	grid-area: auto;
+	align-self: auto;
+}

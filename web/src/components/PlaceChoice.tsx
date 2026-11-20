@@ -11,9 +11,10 @@
  */
 import type { HarnessId, MachineSummary } from "@contract";
 import { useId, useState, type ReactNode } from "react";
-import { HARNESS_NAMES, loginCommand, type ReportedHarness } from "../lib/acp";
+import { HARNESS_NAMES, type ReportedHarness } from "../lib/acp";
 import { linkProps } from "../lib/router";
-import { Command, MachineState } from "../screens/Machines";
+import { MachineState } from "../screens/Machines";
+import { ClaudeSignIn } from "./ClaudeSignIn";
 
 export type PlacePurpose = "agent" | "item";
 
@@ -168,14 +169,17 @@ export function HarnessChoice({ machine, chosen, hardened, disabled = false, onC
 function HarnessState({ harness, machine, hardened }: { harness: ReportedHarness; machine: MachineSummary; hardened: boolean }) {
 	const name = HARNESS_NAMES[harness.id];
 	if (!hardened) return <p className="field-note tone-warn">{name} runs only in the hardened container, which “{machine.name}” cannot make now.</p>;
-	if (harness.signIn === "token") return null;
 	if (harness.signIn === "unknown") return <p className="field-note">{name}: the runner on “{machine.name}” has not said whether it is signed in.</p>;
+	// Signed in, this is the line that says it just was, or nothing.
 	return (
-		<div className="harness-login">
-			<p className="field-note tone-warn">
-				{name}: not signed in on “{machine.name}”. Run <code>windlass-runner login {harness.id}</code> there.
-			</p>
-			<Command text={loginCommand(harness)} label={`The command that signs ${name} in`} />
-		</div>
+		<ClaudeSignIn machine={machine} className="harness-login field-note">
+			{name}: not signed in on “{machine.name}”.
+			{machine.status === "online" ? null : (
+				<>
+					{" "}
+					Run <code>windlass-runner login {harness.id}</code> there.
+				</>
+			)}
+		</ClaudeSignIn>
 	);
 }

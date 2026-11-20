@@ -14,10 +14,12 @@
  *
  * An agent of another harness than Windlass (Claude Code, on one of the user's machines) says which
  * beside its title, and the page draws only what that harness does: its tool calls cannot be stopped
- * one by one, and the composer offers the models it offered.
+ * one by one, and the composer offers the models it offered. Where its machine says Claude Code is not
+ * signed in, the line above the composer says so and signs it in from the page (components/ClaudeSignIn.tsx).
  */
 import { USAGE_LOW_SHARE, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
 import { useCallback, useMemo, useState } from "react";
+import { ClaudeSignIn } from "../components/ClaudeSignIn";
 import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
 import { ArrowLeftIcon, Mark, WarnIcon } from "../components/Icons";
@@ -228,6 +230,11 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 						<WarnIcon size={14} />
 						{reach.text}
 					</p>
+				) : null}
+				{summary.harness === "claude" && machine ? (
+					<ClaudeSignIn machine={machine} className="banner session-signin">
+						Claude Code: not signed in on “{machine.name}”, so this agent cannot run a turn.
+					</ClaudeSignIn>
 				) : null}
 				<QuestionDock flow={flow} />
 				{summary.item ? (
