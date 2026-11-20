@@ -1328,17 +1328,12 @@ export type ReviewBlock =
 	| { kind: "excerpt"; at: ReviewLocation; code: string; note: string | null }
 	| { kind: "screenshot"; attachment: string };
 
-/**
- * What the agent that made the change filed with `report`, as the item's page shows it: its own words,
- * labelled as the author's. Turned into blocks by the platform (review.ts `reportBlocks`): a `text`
- * block "What it did" (the description), a `text` block "Where to look" (`look_at`), and a `risk` for
- * what it is unsure of, followed by a `screenshot` block for each verified image.
- */
 export interface ItemAttachment {
 	id: string;
 	by: "builder" | "reviewer";
 	sessionId: string;
-	head: string;
+	/** The published commit for the builder's filing, or the reviewer's checkout. Null until known. */
+	head: string | null;
 	width: number;
 	height: number;
 	bytes: number;
@@ -1349,6 +1344,12 @@ export interface ItemAttachment {
 	state: "kept" | "removed";
 }
 
+/**
+ * What the agent that made the change filed with `report`, as the item's page shows it: its own words,
+ * labelled as the author's. Turned into blocks by the platform (review.ts `reportBlocks`): a `text`
+ * block "What it did" (the description), a `text` block "Where to look" (`look_at`), and a `risk` for
+ * what it is unsure of, followed by a `screenshot` block for each verified image.
+ */
 export interface ItemReport {
 	screenshots: ItemAttachment[];
 	by: "builder";
@@ -1356,7 +1357,7 @@ export interface ItemReport {
 	run: number;
 	/** The step attempt's key it was filed in: <item>:<run>:<step>:<attempt>. */
 	key: string;
-	/** The commit the item's work was pushed at when the turn ended; null when it was not pushed yet. */
+	/** The commit published for this report's turn, or null until known. */
 	head: string | null;
 	at: number;
 	title: string;

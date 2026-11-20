@@ -414,6 +414,29 @@ function commentText(value: string, max: number): string {
 	return bounded.replace(/([\\`*_{}\[\]()<>!&~|@#:$.])/g, "\\$1").replace(/^([-+=])/, "\\$1");
 }
 
+/** Allow only heading/list prefixes and complete, single-line code spans from agent prose. */
+function agentMarkdown(value: string, max: number): string {
+	const clean = value.replace(/\r\n?/g, "\n").replace(CONTROL, "");
+	const bounded = clean.length > max ? clean.slice(0, max) + "…" : clean;
+	const literal = (text: string) => text
+		// GitHub also linkifies plain text after Markdown parsing. Break its triggers in the text itself.
+		.replace(/@|#(?=\d)|(?:https?|ftp)(?=:)|www(?=\.)|\bgh(?=-\d)/gi, "$&\u200B")
+		.replace(/\b[a-f\d]{7,64}\b/gi, sha => sha.replace(/.{6}(?=.)/g, "$&\u200B"))
+		.replace(/([\\`*_{}\[\]()<>!&~|#$])/g, "\\$1");
+	return bounded.split("\n").map(line => {
+		const prefix = /^(\s*(?:#{1,6}|[-+*]|\d{1,9}[.)])[ \t]+)/.exec(line)?.[0] ?? "";
+		const content = line.slice(prefix.length);
+		const parts: string[] = [prefix];
+		let end = 0;
+		for (const span of content.matchAll(/(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)/g)) {
+			parts.push(literal(content.slice(end, span.index)), span[0]);
+			end = span.index + span[0].length;
+		}
+		parts.push(literal(content.slice(end)));
+		return parts.join("");
+	}).join("\n");
+}
+
 type CommentReview = { filed: ItemReview | null; reason: string | null; owner: string; name: string };
 
 function reviewParagraphs(item: string, review: CommentReview): string[] {
@@ -421,7 +444,8 @@ function reviewParagraphs(item: string, review: CommentReview): string[] {
 	if (!r?.recommendation) return review.reason ? [`No second review: ${commentText(review.reason.replace(/\.$/, ""), 500)}.`] : [];
 	const words = { approve: "approves", changes_requested: "asks for changes", needs_person: "needs you" };
 	const summary = r.blocks.find(block => block.kind === "summary");
-	const paragraphs = [`Second review at ${r.head.slice(0, 7)}: ${words[r.recommendation]}. ${commentText(summary?.text ?? "", 1500)}`.trimEnd()];
+	const paragraphs = [`Second review at ${r.head.slice(0, 7)}: ${words[r.recommendation]}.`];
+	if (summary?.text) paragraphs.push(agentMarkdown(summary.text, limit.summaryChars));
 	const rank = { blocking: 0, should_fix: 1, note: 2 };
 	const labels = { blocking: "Blocking", should_fix: "Should fix", note: "Note" };
 	const findings = r.blocks.filter(block => block.kind === "finding").sort((a,b) => rank[a.severity] - rank[b.severity]);
@@ -435,7 +459,7 @@ function reviewParagraphs(item: string, review: CommentReview): string[] {
 			const anchor = at.lines ? `#L${at.lines.start}-L${at.lines.end}` : "";
 			location = `[${commentText(at.path, 300)}${at.lines ? ":" + at.lines.start : ""}](https://github.com/${component(review.owner)}/${component(review.name)}/blob/${sha}/${path}${anchor}) · `;
 		}
-		return `- ${labels[f.severity]} · ${location}${commentText(f.title, limit.findingTitleChars)}`;
+		return `- ${labels[f.severity]} · ${location}${agentMarkdown(f.title, limit.findingTitleChars).replaceAll("\n", "\n  ")}`;
 	});
 	if (findings.length > lines.length) lines.push(`and ${findings.length - lines.length} more on the item's page`);
 	if (lines.length) paragraphs.push(lines.join("\n"));
@@ -453,15 +477,24 @@ export function itemComment(verdict: Verdict, words: string, report: ItemReport 
 	if (criteria.length) paragraphs.push(`Acceptance criteria left to you:\n\n${criteria.join("\n")}`);
 	if (review) paragraphs.push(...reviewParagraphs(verdict.item, review));
 	if (report) {
-		// Every agent field occupies one escaped line with a platform label, after the complete verdict.
-		paragraphs.push(`Builder's report: ${commentText(report.title, MAX_PUBLISH_TITLE_CHARS)}`);
+		paragraphs.push("## Builder's report", agentMarkdown(report.title, MAX_PUBLISH_TITLE_CHARS));
 		for (const block of report.blocks) {
-			if (block.kind === "text") paragraphs.push(`${block.heading === "Where to look" ? "Where to look" : "What it did"}: ${commentText(block.text, MAX_PUBLISH_BODY_CHARS)}`);
-			if (block.kind === "risk") paragraphs.push(`What the builder is unsure of: ${commentText(block.text, MAX_PUBLISH_BODY_CHARS)}`);
+			if (block.kind === "text") {
+				const where = block.heading === "Where to look";
+				paragraphs.push(where ? "### Where to look" : "### What it did", agentMarkdown(block.text, where ? limit.lookAtChars : MAX_PUBLISH_BODY_CHARS));
+			}
+			if (block.kind === "risk") paragraphs.push("### What the builder is unsure of", agentMarkdown(block.text, MAX_PUBLISH_BODY_CHARS));
 		}
 	}
 	const count = report?.blocks.filter(block => block.kind === "screenshot").length ?? 0;
-	const link = count ? `\n\n${count} screenshot${count === 1 ? "" : "s"} on the item's page: ${config.origins[0]}/items/${verdict.item} (opens for the item's owner only)` : "";
+	const maxBytes = 60_000;
+	let link = count ? `\n\n${count} screenshot${count === 1 ? "" : "s"} on the item's page: ${config.origins[0]}/items/${verdict.item} (opens for the item's owner only)` : "";
 	const body = paragraphs.join("\n\n");
-	return (body.length + link.length > 60_000 ? `${body.slice(0, 59_999 - link.length)}…` : body) + link;
+	// Even an oversized configured origin must leave room for the item marker.
+	if (Buffer.byteLength(paragraphs[0] + "\n…" + link) > maxBytes) link = "";
+	const budget = maxBytes - Buffer.byteLength(link);
+	if (Buffer.byteLength(body) <= budget) return body + link;
+	// Truncate between lines so no code span, generated link or UTF-8 character is cut in half.
+	const prefix = Buffer.from(body).subarray(0, budget - Buffer.byteLength("…"));
+	return prefix.subarray(0, prefix.lastIndexOf(10) + 1).toString() + "…" + link;
 }

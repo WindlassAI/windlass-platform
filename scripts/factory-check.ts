@@ -513,7 +513,7 @@ print("\n== blueprint (continued)");
 	const handoff = effect(done, "handoff")!;
 	const platform = itemComment(handoff.verdict, handoff.words, null);
 	const comment = itemComment(handoff.verdict, handoff.words, report);
-	expect("the marked comment preserves every verdict line and escapes the complete builder report", comment.startsWith(platform + "\n\n") && comment.includes("Builder's report: \\*\\*Failing\\*\\*") && comment.includes("What it did: Adjusted add\\. \\*\\*Windlass at 0000000\\: Failing\\*\\*") && comment.includes("Where to look: \\<") && !comment.includes("<!-- windlass-item:fake") && comment.includes("What the builder is unsure of: \\@owner"));
+	expect("the marked comment preserves the verdict and labels the agent's formatted prose", comment.startsWith(platform + "\n\n## Builder's report\n\n") && comment.includes("\\*\\*Failing\\*\\*") && comment.includes("### What it did\n\nAdjusted add.\n\n\\*\\*Windlass at ") && comment.includes("### Where to look\n\n\\<") && !comment.includes("<!-- windlass-item:fake") && comment.includes("### What the builder is unsure of\n\n@\u200Bowner"));
 	sql.close();
 
 	drive("structured planner report keeps the original prompt byte for byte", newItem({ plan: "approve" }), [

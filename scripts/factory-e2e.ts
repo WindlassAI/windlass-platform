@@ -592,6 +592,41 @@ async function memoryChecks(): Promise<void> {
 		return "one report row and one publish after redelivery";
 	});
 
+	for (const earlier of [false, true]) {
+		await check(earlier ? "memory: an earlier round's screenshot keeps its own published head" : "memory: a screenshot filed before commit takes the published head", async () => {
+			const m = machine();
+			m.send({ kind: "start" });
+			const second = "b".repeat(40);
+			let pushed = HEAD;
+			const actor = await itemActor(m.item, { publish: async () => ({ kind: "published", head: pushed, pr: { number: 1, url: "local" } }) });
+			const shot = { id: "a_first", by: "builder", sessionId: "s", head: "c".repeat(40), width: 1, height: 1, bytes: 68, sha256: "c".repeat(64), caption: "First round", shows: null, page: null, state: "kept" };
+			const first = { kind: "turn_ended", key: currentKey(m.item), at: T + 1, outcome: "succeeded", verified: null, flags: [], changes: true, spend: { tokens: 1, hostedSeconds: 0 }, pushedHead: null,
+				report: { title: "First round", description: "", lookAt: "", concerns: "", screenshots: [shot] } };
+			await actions.internalFact(actor.c, first);
+			await actor.drain();
+			if (earlier) {
+				const key = () => currentKey((actor.c.vars as { stored: { item: Item } }).stored.item);
+				const { pull, pages } = app;
+				try {
+					Object.assign(app, { pull: async () => ({ headSha: HEAD, mergeable: false, state: "open" }), pages: async () => ({ items: [], truncated: false }) });
+					await actor.db.execute("UPDATE effects SET due_at = 0 WHERE id LIKE 'poll_ci:%'");
+					actor.c.scheduledFire = { id: "conflict", scheduledAt: Date.now(), firedAt: Date.now() };
+					await actions.internalDue(actor.c);
+					await actor.drain();
+				} finally {
+					Object.assign(app, { pull, pages });
+				}
+				pushed = second;
+				await actions.internalFact(actor.c, { ...first, key: key(), at: T + 60_002, report: null });
+				await actor.drain();
+			}
+			const view = await actions.internalView(actor.c);
+			assert(view.head === pushed, "the expected publication did not finish");
+			assert(view.report?.head === HEAD && view.report.screenshots[0]?.head === HEAD, `report head ${view.report?.head}, screenshot head ${view.report?.screenshots[0]?.head}, expected ${HEAD}`);
+			return earlier ? "second push without a new report preserved the first filing" : "the item report and screenshot name the confirmed push";
+		});
+	}
+
 	await check("memory: two actions at once store the item's revision with its own data, and the item can still be acted on", async () => {
 		const m = machine();
 		m.send({ kind: "start" });
@@ -1494,7 +1529,7 @@ try {
 		assert(handed.review?.state === "off" && !handed.reviews.length && handed.reviewerSessionId === null && handed.spent.turns === 1, "reviewer-off item must hand over after its builder alone");
 		const blocks = handed.report?.blocks;
 		assert(blocks?.length === 2 && blocks[0].kind === "text" && blocks[0].heading === "What it did" && blocks[0].text === "What the fake agent did." && blocks[1].kind === "text" && blocks[1].heading === "Where to look" && blocks[1].text === "notes/turn-1.md", "the reviewed page lost the filed blocks after restart");
-		assert(original.body.includes("What the fake agent did\\.") && original.body.includes("notes/turn-1\\.md"), "the marked comment is missing the builder’s report");
+		assert(original.body.includes("### What it did\n\nWhat the fake agent did.") && original.body.includes("### Where to look\n\nnotes/turn-1.md"), "the marked comment is missing the builder’s report");
 		const edits = () => standin.requests.filter((call) => call.method === "PATCH" && call.path.endsWith(`/issues/comments/${original.id}`) && call.status === 200).length;
 		await main.start({ ...standin.env(), WLP_FACTORY_HOSTED_RUNNING: "20", WLP_FAKE_DELAY_MS: "25" });
 		await waitFor("the replay to write its comment", () => edits() > 0 || pull.comments.length > 1, 60_000);
@@ -1570,7 +1605,9 @@ try {
 	const dir = join(narrow.storage, "fake-bucket");
 	const signing = randomBytes(32);
 	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=";
-	const { user, client, auth } = await world(narrow, standin, { WLP_FAKE_BACKUP_DIR: dir, WLP_FAKE_BUCKET_SIGNING_SECRET: signing.toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_FACTORY_TURNS: "1", WLP_FACTORY_RUNNING_TURNS: "2", WLP_FAKE_DELAY_MS: "50" });
+	// The fake checkout starts at aaaaaaa; the later publish receipt names this commit.
+	const publishedHead = "b".repeat(40);
+	const { user, client, auth } = await world(narrow, standin, { WLP_FAKE_REVIEW_HEAD: publishedHead, WLP_FAKE_BACKUP_DIR: dir, WLP_FAKE_BUCKET_SIGNING_SECRET: signing.toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_FACTORY_TURNS: "1", WLP_FACTORY_RUNNING_TURNS: "2", WLP_FAKE_DELAY_MS: "50" });
 	await check("capacity: with one factory turn a second item waits with the sentence, and starts when the first turn ends", async () => {
 		const a = await user.createItem({ repository: { id: harbor.id }, title: "First (slow)", body: "A long build (slow).", start: true });
 		await untilItem(user, a.id, "the first turn", (view) => view.run?.step.turn === "started", 60_000);
@@ -1586,6 +1623,7 @@ try {
 		const view = await untilItem(user, item.id, "the report and push", v => !!v.report && !!v.pullRequest);
 		const shot = view.report!.screenshots[0];
 		assert(shot?.width === 1 && shot.height === 1 && shot.state === "kept" && view.report!.blocks.some(b => b.kind === "screenshot" && b.attachment === shot.id), "the item did not retain the verified PNG");
+		assert(view.head === publishedHead && view.report!.head === publishedHead && shot.head === publishedHead, "the builder screenshot did not receive the pushed commit");
 		const [link] = await user.itemAttachmentLinks(item.id);
 		assert(link?.id === shot.id && Math.abs(link.expiresAt - Date.now() - 600_000) < 10_000, "the owner did not receive a ten-minute link");
 		const store = new StandInObjectStore({ dir, secret: signing });
@@ -1601,7 +1639,7 @@ try {
 		assert(store.use(redirect.headers.get("location") ?? "", "GET").status === 200, "the API redirect is unusable");
 		assert((await get(url.replace(shot.id, "a_0000000000000000"), allowed.secret)).status === 404, "an unknown attachment was visible");
 		const pull = standin.pulls.find(one => one.repository === harbor.id && one.number === view.pullRequest!.number)!;
-		setCi(harbor, pull.head, "success");
+		setCi(harbor, publishedHead, "success");
 		await waitFor("the screenshot comment", () => pull.comments.length > 0, CI_WAIT_MS);
 		const body = pull.comments[0].body;
 		assert(body.includes(`1 screenshot on the item's page: ${ORIGIN}/items/${item.id} (opens for the item's owner only)`) && !/!\[|X-Amz-|wlp-stand-in/.test(body), "GitHub did not receive just the item page link");

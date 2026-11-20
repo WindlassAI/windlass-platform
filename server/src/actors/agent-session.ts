@@ -3952,7 +3952,9 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.branch, ended.checks, ended.verified).catch(() => []) : [];
 		// Not known (git said nothing): taken as changed, and the push says whether there was anything. What the agent pushed itself in the turn is a change too.
 		const changed = ended.unpushed !== false || (meta.pushedHead ?? null) !== item.pushedAtStart;
-		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage), pushedHead: meta.pushedHead ?? null, ...(item.refused ? { refused: item.refused } : {}) };
+		// Until publication, only a confirmed push of this turn's complete work identifies its report.
+		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
+		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage), pushedHead, ...(item.refused ? { refused: item.refused } : {}) };
 	}
 	if (attachmentStore()) {
 		// If the server stops after the ledger commits but before the outbox commits, retry the same keep list.

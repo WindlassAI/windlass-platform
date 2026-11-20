@@ -197,11 +197,23 @@ export const REPORTS_TABLE = "CREATE TABLE IF NOT EXISTS reports (key TEXT PRIMA
 
 export async function storeReport(db: Pick<RawAccess, "execute">, item: FactoryItem, sessionId: string, fact: Extract<Fact, { kind: "turn_ended" }>): Promise<void> {
 	if (!item.run || !fact.report || typeof fact.report === "string") return;
+	const head = fact.pushedHead ?? null;
 	const report: ItemReport = {
-		by: "builder", sessionId, run: item.run.n, key: fact.key, head: fact.pushedHead === undefined ? item.head : fact.pushedHead,
-		at: fact.at, title: fact.report.title, blocks: reportBlocks(fact.report), records: [], screenshots: fact.report.screenshots,
+		by: "builder", sessionId, run: item.run.n, key: fact.key, head,
+		at: fact.at, title: fact.report.title, blocks: reportBlocks(fact.report), records: [], screenshots: fact.report.screenshots.map(shot => ({ ...shot, head })),
 	};
 	await db.execute("INSERT OR REPLACE INTO reports (key, run, at, data) VALUES (?, ?, ?, ?)", report.key, report.run, report.at, JSON.stringify(report));
+}
+
+async function publishReport(db: Pick<RawAccess, "execute">, turn: string, head: string): Promise<void> {
+	// A sandbox without a commit can return a branch name in its publish receipt.
+	if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) return;
+	const [row] = await db.execute<{ data: string }>("SELECT data FROM reports WHERE key = ?", turn);
+	if (!row) return;
+	const report: ItemReport = JSON.parse(row.data);
+	report.head = head;
+	for (const shot of report.screenshots) shot.head = head;
+	await db.execute("UPDATE reports SET data = ? WHERE key = ?", JSON.stringify(report), turn);
 }
 
 export async function latestReport(db: Pick<RawAccess, "execute">, run: number): Promise<ItemReport | null> {
@@ -333,6 +345,7 @@ async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { b
 					await tx.execute("INSERT OR REPLACE INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)", rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 				}
 				if (fact.kind === "turn_ended") await storeReport(tx, before, stored.meta.sessionId, fact);
+				if (fact.kind === "published" && before.run?.gate) await publishReport(tx, before.run.gate.turn, fact.head);
 				if (filing) {
 					const r = filing;
 					await tx.execute("INSERT OR REPLACE INTO reviews (id, run, head, at, data) VALUES (?, ?, ?, ?, ?)", r.id, r.run, r.head, r.at, JSON.stringify(r));

@@ -126,9 +126,9 @@ export function removedLine(days?: number): string {
 	return days === undefined ? "The screenshots of this item were removed after it ended." : `The screenshots of this item were removed ${days} days after it ended.`;
 }
 
-function whoLine(by: ItemAttachment["by"], head: string): string {
-	const at = head.slice(0, 7);
-	return by === "builder" ? `Taken by the agent that made the change, in its own sandbox, at ${at}.` : `Taken by the second reviewer in its own checkout of ${at}.`;
+function whoLine(by: ItemAttachment["by"], head: string | null): string {
+	if (by === "builder") return head ? `Filed by the builder for commit ${head.slice(0, 7)}.` : "Filed by the builder. No published commit recorded yet.";
+	return head ? `Taken by the second reviewer in its own checkout of ${head.slice(0, 7)}.` : "Taken by the second reviewer in its own checkout.";
 }
 
 /** The quiet words under a caption: "after · 1280 × 800", then the page it shows on a line of its own. */
@@ -211,10 +211,10 @@ function FullSize({ shot, links, onClose }: { shot: ItemAttachment; links: Scree
 }
 
 /**
- * One author's screenshots, in the order filed, under its report. `by` and `head` say who took them and
- * at which commit. Nothing is shown when none were filed; one line when retention removed them all.
+ * Screenshots in filing order. Builder screenshots name the commit published for the report.
+ * Reviewer screenshots name the checkout the reviewer inspected.
  */
-export function Screenshots({ by, head, shots, links, days }: { by: ItemAttachment["by"]; head: string; shots: ItemAttachment[]; links: ScreenshotLinks; days?: number }) {
+export function Screenshots({ by, head, shots, links, days }: { by: ItemAttachment["by"]; head: string | null; shots: ItemAttachment[]; links: ScreenshotLinks; days?: number }) {
 	const [open, setOpen] = useState<ItemAttachment | null>(null);
 	if (shots.length === 0) return null;
 	const kept = shots.some((shot) => shot.state === "kept");

@@ -1,6 +1,7 @@
 /** The report tool before a session calls it. No actor, network, or sandbox. cd server && npx tsx ../scripts/review-check.ts */
 import assert from "node:assert/strict";
-import type { ItemReport, ReviewRecord, Verdict } from "../server/src/contract.js";
+import { createRequire } from "node:module";
+import type { ItemReport, ItemReview, ReviewRecord, Verdict } from "../server/src/contract.js";
 import { fileReview, ReviewCommands, checkReview, itemComment, reportBlocks, reportOf, type ReviewContext } from "../server/src/factory/review.js";
 import { verdictWords } from "../server/src/factory/verdict.js";
 import { SecretRedactor } from "../server/src/repo-secrets.js";
@@ -297,7 +298,43 @@ test("a maximum-size report shares the comment budget without changing one verdi
 	const words = "@".repeat(2000);
 	const body = itemComment(withCriteria, words, { ...itemReport, title: large.report.title, blocks: reportBlocks(large.report) });
 	assert.ok(body.startsWith(itemComment(withCriteria, words, null) + "\n\n"));
-	assert.ok(body.includes("What the builder is unsure of: ") && body.length <= 60_000 && body.endsWith("…"));
+	assert.ok(body.includes("### What the builder is unsure of") && body.length <= 60_000 && body.endsWith("…"));
+});
+
+// Inspect the rendered GFM with the same parser used by the web workspace.
+const { parse: renderGfm } = createRequire(new URL("../web/package.json", import.meta.url))("marked") as { parse: (source: string) => string };
+const formatted = "## Changes\n- Pick the next tide\n- Run `npm test`\n\n### Verification\n1. Read the output";
+const reviewer: ItemReview = { id: "r1", run: 1, round: 1, head: verdict.head, base: "123", verdictId: verdict.id, by: { sessionId: "s2", model: "reviewer" }, at: 0,
+	state: "filed", said: null, recommendation: "approve", blocks: [{ kind: "summary", text: formatted }], records: [], screenshots: [], notes: [] };
+test("both builder sections keep headings, list items, blank lines and inline code", () => {
+	const report = { ...itemReport, blocks: reportBlocks({ ...builder.report, description: formatted, lookAt: formatted }) };
+	const body = itemComment(verdict, "Ready", report);
+	assert.equal(body.split(formatted).length - 1, 2);
+	const html = renderGfm(body);
+	assert.match(html, /<h2>Changes<\/h2>/);
+	assert.match(html, /<li>Run <code>npm test<\/code><\/li>/);
+});
+test("code spans keep literal brackets, angle brackets and backticks", () => {
+	const report = { ...itemReport, blocks: reportBlocks({ ...builder.report, description: "Inspect `a[0]` and ``<b> ` x``." }) };
+	const html = renderGfm(itemComment(verdict, "", report));
+	assert.ok(html.includes("<code>a[0]</code>") && html.includes("<code>&lt;b&gt; ` x</code>"));
+});
+test("the reviewer summary keeps its Markdown on its own lines", () => {
+	const body = itemComment(verdict, "Ready", null, { filed: reviewer, reason: null, owner: "u", name: "r" });
+	assert.ok(body.includes("\n\n" + formatted + "\n\n"));
+});
+test("agent prose neutralises mentions, HTML, images, links and autolinks", () => {
+	const hostile = "@someone <img src=x onerror=alert(1)> ![x](https://images.test/x) [x](https://evil) <https://evil> www.evil.test a@evil.test\n\n[see][ref]\n\n[ref]: https://evil";
+	const body = itemComment(verdict, "", { ...itemReport, blocks: reportBlocks({ ...builder.report, description: hostile }) });
+	assert.doesNotMatch(renderGfm(body), /<(?:img|a)\b/i);
+	assert.doesNotMatch(body, /@someone|(?<!\\)<img|(?<!\\)!\[|(?<!\\)\[x\]\(|<https:|https:\/\/evil|www\.evil|a@evil/);
+});
+test("multibyte report and criteria share the 60,000-byte cap with the screenshot footer", () => {
+	const text = "界".repeat(4000);
+	const report = { ...itemReport, blocks: [...reportBlocks({ ...builder.report, description: text, concerns: text }), { kind: "screenshot" as const, attachment: "a_1" }] };
+	const body = itemComment({ ...verdict, acceptance: repeat(20, () => text.slice(0, 1000)) }, "", report);
+	assert.ok(Buffer.byteLength(body) <= 60_000, `${Buffer.byteLength(body)} UTF-8 bytes`);
+	assert.ok(body.endsWith("(opens for the item's owner only)") && !body.includes("�"));
 });
 
 const diff: WorkDiff = { files: [], patch: "", config: { before: null, after: null }, packageJson: { before: null, after: null } };

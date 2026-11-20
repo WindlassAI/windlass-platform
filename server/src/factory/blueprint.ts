@@ -396,7 +396,7 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	}
 
 	c.enter("gate");
-	run.gate = { outcome: fact.outcome, verified: fact.verified, flags: fact.flags };
+	run.gate = { turn: fact.key, outcome: fact.outcome, verified: fact.verified, flags: fact.flags };
 	if (result === "fail" && fact.verified !== null) {
 		const failing = failingNames(fact.verified);
 		c.say(`The checks failed: ${failing}.`);

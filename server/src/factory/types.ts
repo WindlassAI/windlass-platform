@@ -65,7 +65,8 @@ export interface CiProgress {
 export interface Run extends ItemRun {
 	/** The fingerprint of the last failure a fix turn was started for. */
 	lastFailure: string | null;
-	gate: GateEvidence | null;
+	/** The turn that produced the work about to be published, including across publish retries. */
+	gate: (GateEvidence & { turn: string }) | null;
 	ci: CiProgress | null;
 	review: { verdictId: string; head: string; refiles: number; prReads?: number } | null;
 }

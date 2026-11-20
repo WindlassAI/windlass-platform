@@ -61,7 +61,7 @@ function Page({ ask, shots, days }: { ask: () => Promise<AttachmentLink[]>; shot
 			.map((one) => one.id)
 			.join(","),
 	);
-	return createElement(Screenshots, { by: "builder", head: HEAD, shots, links, days });
+	return createElement(Screenshots, { by: "builder", head: shots[0]?.head ?? null, shots, links, days });
 }
 
 async function show(shots: ItemAttachment[], ask = vi.fn(async () => linksOf(shots)), days?: number) {
@@ -81,9 +81,14 @@ describe("an item's screenshots", () => {
 		]);
 		const text = host.textContent ?? "";
 		expect(text).toContain("Screenshots");
-		expect(text).toContain("Taken by the agent that made the change, in its own sandbox, at 8c76c00.");
+		expect(text).toContain("Filed by the builder for commit 8c76c00.");
 		const captions = [...host.querySelectorAll("figcaption")].map((one) => one.textContent);
 		expect(captions).toEqual(["The page a_1after1280 × 800/settings", "The page a_2before390 × 844"]);
+	});
+
+	it("identifies a builder filing waiting for its published commit", async () => {
+		await show([shot("a_1", { head: null })]);
+		expect(host.textContent).toContain("Filed by the builder. No published commit recorded yet.");
 	});
 
 	it("keeps an agent's caption and page as typed: no link, no image, no markup", async () => {

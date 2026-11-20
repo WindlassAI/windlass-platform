@@ -121,9 +121,13 @@ export async function uploadShots(
 	const clean = () => step(sandbox, "clean", ATTACH_CLEAN, {});
 	try {
 		await clean();
-		const headResult = await sandbox.run(WORKSPACE_HEAD_COMMAND, { cwd: top, timeoutMs: STEP_TIMEOUT_MS, signal });
-		const head = headResult.stdout.trim();
-		if (headResult.exitCode !== 0 || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) throw new Error("Cannot read the checkout.");
+		// The builder may still have uncommitted changes. Its report gets the publish receipt's head.
+		let head: string | null = null;
+		if (owner.by === "reviewer") {
+			const result = await sandbox.run(WORKSPACE_HEAD_COMMAND, { cwd: top, timeoutMs: STEP_TIMEOUT_MS, signal });
+			head = result.stdout.trim();
+			if (result.exitCode !== 0 || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) throw new Error("Cannot read the checkout.");
+		}
 		const lines = await step(
 			sandbox,
 			"pack",
