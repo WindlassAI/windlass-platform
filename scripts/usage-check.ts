@@ -207,7 +207,7 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 
 // Until when a sandbox that is found stopped can have run, and how lengths of time are said.
 {
-	const stretch = { hold: "h", since: at(0), seconds: 300 };
+	const stretch = { hold: "h", use: "h", since: at(0), seconds: 300 };
 	expect("where the provider stops an unused sandbox, it ran until that long after its last use", stoppedBy(stretch, at(100), 120_000, at(600)) === at(220));
 	expect("never later than now", stoppedBy(stretch, at(100), 120_000, at(150)) === at(150));
 	expect("and not before it was last seen running", stoppedBy({ ...stretch, seen: at(400) }, at(100), 120_000, at(600)) === at(400));
@@ -220,10 +220,10 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 	// A renewal reaches the book and its answer is lost; the session asks again 25 s later, under the same id and from the first moment.
 	const book = new UsageBook(LIMITS);
 	book.reserve(at(0), { id: "a1", session: "a", fresh: true });
-	const first = { hold: "a1", since: at(0), seconds: 600 };
+	const first = { hold: "a1", use: "a1", since: at(0), seconds: 600 };
 	book.reserve(at(600), { id: "a2", session: "a", settle: { hold: "a1", seconds: stretchSeconds(first, at(600)) } });
 	const retry = book.reserve(at(625), { id: "a2", session: "a", settle: { hold: "a1", seconds: stretchSeconds(first, at(600)) } });
-	const second = { hold: "a2", since: at(600), seconds: 600 };
+	const second = { hold: "a2", use: "a1", since: at(600), seconds: 600 };
 	book.reserve(at(1200), { id: "a3", session: "a", settle: { hold: "a2", seconds: stretchSeconds(second, at(1200)) } });
 	book.settle(at(1300), { session: "a", hold: "a3", seconds: 100 });
 	expect("a renewal asked again under its id, from when it was first asked, counts every second once", retry.ok && retry.hold.id === "a2" && book.usedOn(TODAY) === 1300, `${book.usedOn(TODAY)} s counted for 1300 s`);
@@ -231,7 +231,7 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 
 	// The stretch ends with that renewal unanswered: both halves are reported, whichever of them the book has.
 	const asked = { id: "b2", at: at(600) };
-	const reports = closingReports({ hold: "b1", since: at(0), seconds: 600 }, asked, at(700));
+	const reports = closingReports({ hold: "b1", use: "b1", since: at(0), seconds: 600 }, asked, at(700));
 	for (const reached of [false, true]) {
 		const other = new UsageBook(LIMITS);
 		other.reserve(at(0), { id: "b1", session: "b", fresh: true });

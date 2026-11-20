@@ -16,31 +16,7 @@ You need Node 22 or later, pnpm and Docker. The Windlass the platform runs is th
 build scripts fetch by themselves (`sandbox/fetch-windlass.sh`: the release is pinned there by tag and by the
 SHA-256 of each executable, and a file that does not match is not installed).
 
-What the platform needs of a Windlass, should you try another one: it can hand its sign-in's access token to
-another Windlass and be asked for one that is good for a while yet (`windlass login token --valid-for <duration>`
-and `WINDLASS_ACCESS_TOKEN_FILE`), it names every failure of a sign-in by a stable code, and it lists an
-account's models on such a token, one JSON object on a line (`windlass --models --json`; "Models"). 0.3.0 also has three
-things the platform uses where a sandbox's Windlass has them, and does without where it has not: a home of the
-session's own for sandboxed commands ("Sandboxes" below), two lists that say by name which variables a
-command gets ("A repository's secrets"), and required checks, which a repository's own file cannot replace
-("A repository's checks"). 0.4.0 also takes tools its client runs itself, *host tools*, which is how the agent
-asks the platform to publish, push and fetch ("The agent's own tools"); the platform needs them, and a turn in a
-sandbox whose Windlass does not take them does not run. The released 0.2.0 has the first two and not the third. The local builds before
-0.2.0 all call themselves 0.1.1: `0.1.1+a9c3601d40` is the same code as 0.2.0, `0.1.1+739e1cbc09` has the
-token option and none of the three later things, and `0.1.1+dca57b2627` has `login token` without
-`--valid-for` and is too old.
-
-A sandbox keeps the Windlass it was made with, so a session whose sandbox was made before the image had
-0.3.0 goes on with 0.2.0 until its sandbox is replaced. It works as it did: its user's checks reach Windlass
-the older way, where a repository's own list can stand in for them, and its pull requests and the
-repository's page say so. A sandbox made in its place has 0.3.0, which opens every session 0.2.0 wrote, and
-the user's checks are required from that turn on. The other way about does not work: 0.2.0 does not open a
-session in which 0.3.0 recorded check results. So a sandbox image is not to be rolled back to 0.2.0 while
-such sessions are in use ("A repository's checks", "Two kinds of Windlass", has what a turn then says and
-what its user can do). The same holds one release on: 0.3.0 does not open a session in which a host tool ran
-under Windlass's approval layer, which every session does once its agent has pushed or filed a report. So the
-image and the E2B template are not to be rolled back to 0.3.0 once such sessions exist; going back means a newer
-Windlass, never an older one.
+The server and Docker image build require Windlass 0.4.0 or later. Each turn checks for host tools in its engine’s `initialize` response before opening the session. Keep the Docker image and E2B template at or above 0.4.0 when rolling back.
 
 ```sh
 pnpm install
@@ -55,13 +31,6 @@ pnpm --filter @windlass-platform/web dev    # the web app on http://localhost:51
 
 Open http://localhost:5173. "Try the demo" needs no account: it runs Windlass's real engine and real tool calls in
 a real container, with a scripted model in place of ChatGPT. "Continue with ChatGPT" runs on your own plan.
-
-With a Windlass from before 0.2.0 in the image the demo still works and nothing else does. There are two kinds: one without
-`windlass login token`, and one that has the command but not its `--valid-for` option. `sandbox/build.sh` warns
-about either, the server says so when it starts (`[wlp] WARNING: The Windlass in the sandbox image ... has no
-windlass login token ...`, or `... has windlass login token but not its --valid-for option ...`), and a turn on a
-ChatGPT sign-in ends with the same sentence. The remedy is always to rebuild the image from a newer Windlass and
-start the server again.
 
 When the browser is on another machine, forward ports 5173, 6420 and 6440, or set `VITE_WLP_ENDPOINT` (web) and
 `WLP_WEB_ORIGINS` (server) to the addresses you use (the web app looks for the server's routes on the endpoint's
@@ -126,7 +95,7 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
 
   | What comes | What the session does |
   |---|---|
-  | no key (left out, or null) | what it always did: every call is a message of its own. Older clients send none |
+  | no key (left out, or null) | what it always did: every call is a message of its own. |
   | a key that is empty, longer than 255 characters or no string | refuses it, `bad_idempotency_key`: it is never read as no key |
   | a key it has not taken | takes the prompt as usual, and keeps the key in the same step that puts the message into the timeline |
   | a key it has taken, with the same text | answers what the first attempt was answered, `{ turn, steered }`, whatever the session does by now: no second message in the running turn, no second turn, nothing in the timeline. `model` and `effort` are the first attempt's |
@@ -229,11 +198,7 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
   | a `handed_in_...` code the platform does not know | the turn | `token_unavailable` | Windlass could not use the token: send the prompt again, and sign in again if it ends the same way |
   | any other code | the turn | what Windlass reported | Windlass's own sentence |
 
-  Words are read in three places only, where there is no code. `windlass login token` reports that nobody is
-  signed in on a line of its own, without one. A sandbox keeps the Windlass of the image it was made from, so an
-  agent made before the image was rebuilt may run one that reads a handed-in token and gives no codes yet: its
-  sentences, which no longer change, are read as before. And a Windlass that does not know the platform's command
-  line at all says which part it does not know.
+  `windlass login token` reports an empty sign-in on its own line without a code.
 - **Sandboxes.** Two profiles work, both on local Docker. The picker lists four more and says what each needs.
 
 | Profile | Outer layer | Inner layer | Windlass runs with | Commands |
@@ -272,20 +237,6 @@ is not in the copy of the agent's memory. A sandbox's files outside the workspac
 "Changes" or of a push, and these are not either. The image still keeps the package managers' caches under
 `/tmp/.cache` (`sandbox/Dockerfile`): a repository's setup command runs outside Windlass's sandbox, and a
 cache it made in the real home would be a directory that is read-only as a whole for the commands after it.
-
-**Sandboxes that keep an older Windlass.** A sandbox keeps the Windlass of the image it was made from: a
-container from before the image was rebuilt, a paused E2B sandbox from before the template was. An older
-Windlass does not refuse a key of a session's metadata it does not know; it leaves it unread, which for a
-list of variables to withhold would mean that the agent's commands get them. So nothing is assumed. Every
-Windlass lists the keys it takes in its answer to `initialize` (`agentCapabilities._meta.windlass.openMeta`),
-and the platform goes by that list: a key is sent only to an engine that names it, and a turn that was
-handed a variable to withhold fails before a session is opened should its engine not name `withholdEnv`.
-What a turn's Windlass is handed has to be decided before it starts, so the first turn in a sandbox on a
-server starts an engine there for that question alone (`Windlass.features`), and the answer is kept for that
-sandbox (for the 500 sandboxes the server used last; one it forgot is asked again). With an older Windlass a session works as it did: its commands find the home
-read-only, and its repository's secrets reach what Windlass's rule alone allows ("A repository's secrets").
-The same list says whether a Windlass takes its user's checks as required checks (`requiredChecks`), and
-one that does not is handed them as before ("A repository's checks").
 
 ## Sign-ins
 
@@ -345,9 +296,7 @@ access token's file in the directory in place of the sign-in's. There are two ru
 
 The server uses the local runner when `WLP_WINDLASS_BIN` is set. Without it, a server whose sandboxes are
 Docker's uses the Docker runner, and any other server the local one with `windlass` from its `PATH`;
-`WLP_SIGNIN_RUNNER=local|docker` says it outright. The Windlass must have `login token --valid-for` ("Run
-it"): `signInProblem()` (`server/src/signin/index.ts`) says when the server's own cannot be run or is too old,
-and a turn that needs a token fails with the same sentence.
+`WLP_SIGNIN_RUNNER=local|docker` says it outright. At startup the server checks the selected executable and requires Windlass 0.4.0 or later.
 
 **One refresh at a time.** A refresh replaces the refresh token, so two servers refreshing one sign-in at once
 would break it. Whichever server runs a turn, `AccessTokens.current(uid)` is a call to that user's actor, and
@@ -537,10 +486,7 @@ address the node itself is given in `RIVET_ENDPOINT` is an internal one. The ser
 first token when it starts, and says so if it is refused (`[wlp] WARNING: Browsers cannot connect: ...`). There
 is no Docker on a cluster's node, so `WLP_SANDBOX=e2b` is required there. The cluster rolls its pool from
 one build to the next itself; if the server says `node version defaulted` when it starts there, add
-`--env RIVET_NODE_VERSION=<n>`, a number that goes up with every deploy. While a pool rolls, servers of
-the old build and of the new one run side by side, and the server that asks for a session's actor need
-not be the one that creates it: a server accepts a session's creation grant in its earlier form as well as
-its own, and logs one it refuses (`[wlp] actor.create_refused`).
+`--env RIVET_NODE_VERSION=<n>`, a number that goes up with every deploy. Each actor creation grant binds its actor kind and key. The server logs refused grants as `[wlp] actor.create_refused`.
 
 **On servers of your own.** Each runs the same image, or `cd server && npx tsx src/index.ts`, with the
 variables above, behind a load balancer for port 6440. The Rivet docs describe such nodes joining an engine by
@@ -1255,9 +1201,6 @@ engine's connection works: a forged host call has not been tried.
 fails with "This agent's sandbox is from an older version of the platform, whose Windlass cannot give the
 agent the platform's tools, so nothing was run. Start a new agent." (on a person's machine: install the
 current runner there, then start a new agent), a work item's too (its person is asked, with that sentence).
-A sandbox that does not answer what its Windlass takes is not taken for an older one: the turn fails with
-"The sandbox did not answer when the platform asked what its Windlass can do, so the agent's turn did not
-start. Send the prompt again."
 
 ### When a sandbox is replaced
 
@@ -1414,31 +1357,7 @@ session on it.
   (`/repositories/<id>/settings#checks`). The list is saved
   whole, by one statement that reads nothing first, so of two saves that run together one stays as it was
   sent, and neither undoes a setup command or a secret saved meanwhile.
-- **Two kinds of Windlass.** What a repository's own `.windlass/config.json` can do to the user's checks
-  depends on the Windlass in the session's sandbox. One with *required checks* (its docs/safety.md,
-  "Required checks"; 0.3.0, which the image has) runs them whatever that file says. The released 0.2.0
-  has none: there a repository's list stands in for the user's. A sandbox keeps the Windlass it was made with, so
-  the platform asks each sandbox's Windlass, with the question it asks already ("Sandboxes that keep an
-  older Windlass": `requiredChecks` among the keys it lists), and each turn goes by the Windlass it runs
-  on. The session's summary carries the answer (`SessionSummary.requiredChecks`), and the repository's
-  Settings say under the checks which of the two holds in the sandboxes of the user's agents on it, as far
-  as they have said. A session made under 0.2.0 carries on in a sandbox with 0.3.0. The
-  other way about it does not: once 0.3.0 has recorded anything about checks in a session
-  (a run of them, or the ending of a turn with checks in force), 0.2.0 refuses to open it, whole: the
-  record has fields 0.2.0 does not know (Windlass's changelog, 0.3.0, says the same). So an image is
-  not to be rolled back to 0.2.0 while such sessions are in use. A turn that meets this ends with what the user can do about it instead of
-  Windlass's "Internal error": the session is unchanged and opens again in a sandbox with the Windlass
-  that last worked in it, so the image is to be built from that one, the agent's sandbox freed (what
-  was not pushed goes with it) and the prompt sent again; or a new agent started. The platform says so
-  on a structured fact and never on a message's words. A Windlass that refuses a session with a
-  reason (0.3.0, of one a later Windlass wrote to: `unreadable_session`, with a sentence that names
-  the record) is taken at its word. 0.2.0
-  gives none, only JSON-RPC's internal error, which the sandbox layer hands on as that
-  (`open_refused`); the session's actor then goes by what it knows: this sandbox's Windlass takes no
-  required checks, and one that does ended a turn of this very Windlass session with checks in
-  force (`checksRecorded`), which is exactly what 0.2.0 does not read. Any other internal error at
-  the open stays "Internal error".
-- **With required checks: named when the session is opened.** A session reads the checks from the user's
+- **Required checks are named when the session opens.** A session reads the checks from the user's
   actor when a turn starts, with its repository's secrets, and the sandbox layer names them to Windlass in
   the metadata it opens the session with (`_meta.windlass.requiredChecks` on `session/new` and
   `session/resume`, `server/src/sandbox/turn.ts`), with `outputTail: "always"` on a check whose output
@@ -1449,9 +1368,7 @@ session on it.
   is in the sandbox: where commands are not sandboxed (`docker-hardened`, `e2b-open`) a command of the
   agent's can write it, and a check that a turn can remove before the next verifies nothing. What is
   named at the open is held by Windlass's process and comes from the platform's process each time; no
-  file in the sandbox has it. It also needs no file a Windlass without the key would refuse to read,
-  and its record tells the two apart: a check the platform named has the origin `session`, one from
-  that file `user`.
+  file in the sandbox has it. Windlass records `session` as the origin of a check the platform named.
   - They run before the repository's own checks, which run too, and gate the turn: a failing one sends
     the agent back, three times at most, whatever the repository's file says about `checks` (an empty
     list too) or `verify` (`mode` `off` or `report`, `maxRounds`). A check of the repository's with the
@@ -1478,46 +1395,18 @@ session on it.
   - `checks`, `requiredChecks` and `verify` in Windlass's own configuration file in the sandbox are
     still the platform's alone, and it still takes out what a command left under them before every
     open: the number of times the agent is sent back is that file's to say.
-- **Without them: written into Windlass's own file.** The sandbox layer writes the checks into Windlass's
-  own configuration file in the sandbox (`~/.config/windlass/config.json`) as its `checks`, in the step
-  that writes the user's MCP servers there and by the same code (`server/src/windlass-config.ts`); they
-  are taken out again when the turn has ended. Windlass reads the repository's `.windlass/config.json`
-  too, and follows it before its user's file, key by key: a `checks` list there stands in for the user's
-  whole, an empty one too, and `verify.mode` there can turn the gate off or make it report without sending
-  the agent back. Windlass reads both files when a turn starts and not again in it.
-
-  | The repository's `.windlass/config.json` | Windlass 0.2.0 | A Windlass with required checks (0.3.0) |
-  |---|---|---|
-  | is not there, or says nothing of checks | runs the user's checks | runs the user's checks |
-  | names `checks` | runs those, and none of the user's: a turn can end as done without one of the user's checks having run | runs the user's, then those |
-  | names `checks: []` | runs nothing, and reports that no checks are configured | runs the user's |
-  | sets `verify.mode` to `off` | runs nothing, and reports that no checks are configured | runs the user's, and none of the repository's own |
-  | is written or changed by the agent during a turn | changes nothing in that turn; from the next turn on it is followed as above | changes nothing for the user's checks, in that turn or later |
-  | cannot run checks: commands are sandboxed and there is no sandbox | runs nothing, says so, and calls the turn done | records the user's checks as not started, and ends the turn as unresolved, at once |
-
-  Both columns were tried against the real thing, the released 0.2.0 and the released 0.3.0
-  (`scripts/verified-check.ts --docker`). 0.2.0's record of a run does not say which file
-  a check came from. The platform does not rewrite a repository's file. It says whose checks ran, and for
-  that the sandbox layer reads the repository's file when it writes its own, in the same step, and hands
-  on what it holds about checks (`projectChecks`). On 0.2.0 a check is presented as the user's only when
-  both hold: the repository's file named no list when the turn started, and the check's name and command
-  are those of a check the platform handed over. Anything else is presented as the repository's.
 - **Where commands are not sandboxed.** In `docker-hardened` Windlass runs checks as it runs the agent's
   commands there, without its sandbox. A command of the agent's can write Windlass's own configuration
-  file there; the next turn takes out what it left about checks before Windlass reads it, and with
-  required checks the user's are not in that file at all. A command there can still reach Windlass's
+  file there. The next turn removes those settings before Windlass reads the file. A command there can still reach Windlass's
   process itself, as it can the engine's connection to the platform ("What it cannot say" below).
 
 ```sh
 cd server && npx tsx ../scripts/verified-check.ts                                   # the rules on their own: what may be saved, the configuration file, a turn's events, the section
-cd server && npx tsx ../scripts/verified-check.ts --docker                       # and what a real Windlass does with a user's checks and a repository's own: the image's, and the last release without required checks (`sandbox/fetch-windlass.sh older`)
+cd server && npx tsx ../scripts/verified-check.ts --docker                       # run the same rules against the image’s Windlass
 ```
 
 The web app's mock has two checks saved for acme/harbor (`?mock=1`, `/repositories/7101/settings`), one of them with
-file patterns that the mock's turns never match. Its sandboxes have a Windlass with required checks, except
-the one of "Make add() pass its checks", which keeps an older one; the fake sandbox layer's Windlass has them
-too, and its evidence of a run names what the run's changes are measured from and the session's required
-checks, as the real one's does. A mock turn on a repository whose checks all have patterns ends with no
+file patterns that the mock's turns never match. A mock turn on a repository whose checks all have patterns ends with no
 check needed because none covers what changed, said as that.
 
 ## What a pull request shows was verified
@@ -1553,22 +1442,12 @@ To look at:
 - **What it says.** How the gate ended in the session's last turn, in one sentence. Each check of the
   session's last run of checks: its name, its command, whose it is (the user's, by their GitHub login, or
   "from the repository's `.windlass/config.json`"), how it ended, how long it took, and how many times in
-  that turn the agent was sent back with it failing. A check of the user's that Windlass ran as a
-  required check is "ada's required check"; on a Windlass without required checks it is "ada's check",
-  as the example above would then have it, without the repository's own beside it. The user's checks
-  that did not run, with the reason: no changed file matched their patterns, or, on a Windlass without
-  required checks, the repository's file named a list of its own ("The repository's
-  `.windlass/config.json` names checks of its own, and Windlass follows a repository's list in place of
-  ada's checks."). Where the user's checks were required ones and the repository's file said something
-  about checks or verification, one sentence says whom that held for. The end of a check's output,
+  that turn the agent was sent back with it failing. The section identifies the user's required checks, names saved checks whose patterns did not match, and describes how the repository configured its own checks. The end of a check's output is
   folded, for one that did not pass and for one whose user asked (1,500 characters, of six checks at
   most). And when nothing was verified, one plain sentence: "Nothing was verified: no checks are
   set for this repository.", or which file turned verification off, or that the turn was stopped before
   its checks had run. There is no badge and no tick in it, and it ends by saying that it is not a review.
-- **What a turn that needed no check rests on, and a check that was not started.** Windlass 0.3.0
-  says more than 0.2.0 in two places, and the platform says it after it
-  (`Verified.unneeded`, `putBack`, `VerifiedCheck.startError`). A Windlass that does not say it is
-  told as before, word for word: nothing is worked out in its place.
+- **What a turn that needed no check rests on, and a check that was not started.** Windlass records the reason, the workspace state, and any start error.
   - *Why no check was needed* (`reason` of the ending). "The turn changed no file." is told apart
     from "no check covers the files that differ from the state the checks last passed on, at the end
     of turn 1", and from a turn that changed files and put them back.
@@ -1597,26 +1476,16 @@ To look at:
     not find (exit code 126 or 127) ran, and is told as before.
 - **Where the facts come from.** Windlass's own events of the turn, each decision on a field of them and
   none on a sentence: `checks.finished` has the evidence of a run (each check's name, command, status,
-  exit code, duration and the file its output is kept in); a message the harness appends with the origin
+  exit code, duration and retained output); a message the harness appends with the origin
   `check_report`, followed by a model call (`step.started`), is the agent being sent back (Windlass
   writes the same message with an ending that leaves checks unresolved, for whoever continues the
   session, and that one sends nobody back); `execution.succeeded` has how the gate ended, why a turn
-  was let end with a check failing, and from 0.3.0 on why no check was needed and on what;
+  was let end with a check failing, and why no check was needed and on what;
   `snapshot.taken` names each state of the workspace. A key of the evidence or of an ending that the
   platform does not know is passed over, and an ending is never compared whole. The session's
   actor keeps what they come to (`Verified`) on the item that ends the turn, and in its own state for the
   next push. A turn in which no check ran keeps what the last run found, with the turn it was in.
-- **One record, two sources.** Three of those facts have another source on a Windlass with required
-  checks, and which source a turn's record is made from is decided in one place, on one field
-  (`VerificationLog.verified`, on `TurnChecks.required`: what the turn's own Windlass said it takes).
-
-  | The fact | With required checks | Without |
-  |---|---|---|
-  | Whose a check is | the evidence's `origin`: `session` is a check the platform named for the user, anything else is not the user's | worked out from the two files, as Windlass merges them ("A repository's checks") |
-  | Whether it is required | the evidence's `required` | never |
-  | The end of its output | the evidence's `outputTail`, which Windlass keeps for a check that did not pass and for one whose entry asks, redacted | read from the file in the sandbox that the evidence names, when the turn has ended |
-
-  Everything after that is the same code: the record, the section, the session's screen.
+  The evidence names the check's `origin` and `required` status and carries its redacted `outputTail`.
 - **What is looked for in the changes.** Once the work is committed, the platform reads it against the
   branch it started from, in the sandbox (`git diff` from the merge base, with no program of the
   repository's choosing), and lists what a reviewer would want to look at, as observations
@@ -1639,10 +1508,8 @@ To look at:
   output, and output is fenced by more backticks than it holds.
 - **Nothing a redactor would hide.** The section leaves through both existing redactions: the saved
   secrets of the session's repository and account are taken out by value, and whatever is shaped like a
-  credential by the GitHub layer's own (`server/src/github/redact.ts`). A check's output was redacted by
-  Windlass before it was kept, in its record as in its file (`[REDACTED:openai-key]` and the like stand
-  where a credential was), and the saved secrets are taken out of either on the way: out of every event
-  of the engine's as it arrives, and out of a file when the platform reads it.
+  credential by the GitHub layer's own (`server/src/github/redact.ts`). Windlass redacts credentials before recording a check’s output. The platform also removes saved
+  secret values from each incoming event.
 - **A push the agent asked for is made before its turn's checks run.** The gate runs when a turn ends,
   and the agent asks the platform to publish during it. The section then says so first ("This was pushed
   while the agent's turn 3 was still running: what that turn changed had not been checked yet."), with
@@ -1662,8 +1529,7 @@ To look at:
   rests on, and gives the reason a check was not started with it. Windlass's own run of checks in
   the timeline says "not started" of such a check, not "failed".
 - **What it cannot say.** That the checks are good ones. That a check which passed tested what changed.
-  On a Windlass without required checks, what the repository's file did in a turn the platform could
-  not read it in. And where commands are not
+  Where commands are not
   sandboxed, a command can write on the engine's connection to the platform ("The agent's own
   tools"), so an agent that set out to could forge the events themselves; in the profiles where
   Windlass sandboxes every command it cannot.
@@ -1735,32 +1601,7 @@ never shown again once it is saved.
   session (or the one chosen in the launch form), with the reason (`secretReach`). One promise is not made:
   where commands are not held in Windlass's sandbox, an MCP server is given nothing they are not meant to
   have.
-- **A sandbox that keeps an older Windlass** ("Sandboxes that keep an older Windlass") has the rule and no
-  lists, so there a variable in Windlass's environment is kept from a command by its name alone, and the
-  platform hands Windlass only what keeps the scope true by that:
-
-  | The secret | Commands sandboxed by Windlass | Commands not sandboxed, or nothing promised |
-  |---|---|---|
-  | setup and MCP servers, a name Windlass withholds (`NPM_TOKEN`, `DATABASE_URL`) | setup command, MCP servers | setup command only |
-  | setup and MCP servers, any other name (`SENTRY_DSN`) | setup command only | setup command only |
-  | also the agent's commands, a name Windlass passes on (`PREVIEW_HOST`) | setup command, MCP servers, commands | setup command, MCP servers, commands |
-  | also the agent's commands, a name Windlass withholds (`DEPLOY_KEY`) | setup command, MCP servers; **not** commands | setup command, MCP servers, and the commands Windlass runs without its sandbox |
-
-  The list is said for the sandbox it is asked about. A session records what its sandbox's Windlass
-  answered when a turn last asked it (`SessionSummary.envLists`), and its panel's list goes by that: a
-  session whose sandbox has the older Windlass reads the sentences of this second table, and a sandbox
-  that replaces it gets the first. A sandbox no turn has asked was made before the platform asked, and is
-  taken to have the older one until its next turn. The launch form's list, and that of a session with no
-  sandbox yet, is said for a sandbox made now, from an image with a Windlass that has the lists ("Run it");
-  where the image's own is older, a session's list says so from its first turn.
-- **The copy of Windlass's credential names.** Which names Windlass keeps from sandboxed commands has to be
-  known before Windlass is started: it decides what goes into `passEnv`, and with an older Windlass what
-  a secret reaches at all. Windlass cannot be asked, so its lists are repeated in `looksLikeCredential`.
-  They must change when Windlass's do: with a name the platform takes to be passed on and Windlass
-  withholds, a secret for the agent's commands would not reach them; and in a sandbox with an older
-  Windlass, with a name the platform takes to be withheld and that Windlass passes on, a secret for setup
-  and MCP servers would reach the agent's commands. `scripts/secrets-check.ts` holds the copy against
-  Windlass's source when that is beside this repository.
+- **Credential names.** `looksLikeCredential` mirrors Windlass's filter so `passEnv` includes credential-like names that the agent’s commands may use. `scripts/secrets-check.ts` compares the filter against Windlass's source when available.
 - **When a change takes effect.** A session reads its repository's secrets from the user's actor when a turn
   starts. Windlass is started for each turn, so MCP servers and the agent's commands have a new, replaced or
   deleted secret from the session's next turn; a turn that is running keeps what it started with. The setup
@@ -1805,9 +1646,7 @@ cd server && npx tsx ../scripts/secrets-check.ts    # the rules on their own: na
 ```
 
 The web app's mock has four secrets saved for acme/harbor (`?mock=1`), each scope under a name that looks
-like a credential and under one that does not; it keeps no value at all. One of its seeded sessions on that
-repository (`/agents/checks`) has a sandbox with the older Windlass, and its panel shows the sentences of the
-second table.
+like a credential and under one that does not. The mock stores only their names and scopes.
 
 ## A project's MCP servers
 
@@ -1851,7 +1690,7 @@ the same place as a tool call's question, with the same control.
   will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs.
   Save a secret named HARBOR_TOKEN for acme/harbor, under Secrets in this session's panel: it is handed over
   from the next turn."), or, where a secret of that name is saved and the session's sandbox keeps it from MCP
-  servers (commands are not held in Windlass's sandbox there, or its Windlass is an older one), why. An
+  servers (commands are not held in Windlass's sandbox there), why. An
   approval of such a server ends in Windlass's own reason and the same sentence. A session on no
   repository has none to save a secret for: there the sentence adds that a secret of the user's account
   under that name sets the variable, where the session's sandbox gives those to MCP servers ("Account
@@ -2160,9 +1999,7 @@ with another owner and no setup command to go to (`server/src/account-secrets.ts
   `docker-hardened`, `e2b-open` and E2B before its check a secret for MCP servers only stays out
   of Windlass's environment, and a server that reads it does not start. One that is also for the
   agent's commands is handed over there too, since its user chose that those commands may read it,
-  and a server that reads it starts. In a sandbox with an older Windlass a secret for MCP servers
-  only is handed over only under a name Windlass keeps from commands by itself. The list on the
-  settings page says what each secret reaches in the sandbox a new session starts in, and a
+  and a server that reads it starts. Account settings show each secret’s reach for the chosen profile, and a
   session's panel says which of them its sandbox hands to servers, under a server that could not start.
 - **One name, two secrets.** A session on a repository that has a secret of the same name is handed
   the repository's, with its value and its scope, and not the account's: what is saved for the one
@@ -2203,7 +2040,7 @@ anything starts (`too_many_running`: "You already have 6 agents working, which i
 to finish, or stop one."); a work item's turn waits instead.
 
 Only hosted sandboxes, the layer `WLP_SANDBOX` chooses, are counted. A session says where it runs
-(`place` in `createSession`): hosted when left out, as is every session stored before places existed,
+(`place` in `createSession`): hosted when left out,
 or one of its user's machines ("Machines of your own"). The platform's limits do not hold a machine's
 sessions (`hostedLimitsApply`): their sandboxes take no sandbox time and no kept place and have no price,
 and their turns do not count towards the limit on agents working at once. What bounds a machine is its
@@ -2494,7 +2331,7 @@ cd server && npx tsx ../scripts/factory-e2e.ts                          # items 
 | `server/src/usage.ts` | A user's sandbox time and kept sandboxes: what is counted, the two limits, the book the `user` actor decides with, and the words of a refusal ("Usage and limits") |
 | `server/src/setup-command.ts`, `server/src/sandbox/setup.ts` | A repository's setup command: what it is saved for, its limits, what is kept of a run's output and what the agent is told; and the run itself in a sandbox |
 | `server/src/repository-defaults.ts` | A repository's defaults for new sessions: what may be saved, and how a save writes only the fields it names ("A repository's page") |
-| `server/src/repository-checks.ts` | A repository's checks: what may be saved, the list as Windlass takes it (as required checks, or as its own file's), and how it is stored whole ("A repository's checks") |
+| `server/src/repository-checks.ts` | A repository's checks: what may be saved, the list as Windlass takes it (as required checks), and how it is stored whole ("A repository's checks") |
 | `server/src/verified.ts` | What a session's work was verified with: what a turn's events come to, what is looked for in the work's changes, and the section of a pull request's description ("What a pull request shows was verified") |
 | `server/src/account-models.ts` | The models a user may choose ("Models"): the list of their ChatGPT plan as the `user` actor keeps it, when Windlass is asked again, the stand-in, and how a model and an effort are held against the list |
 | `server/src/account-defaults.ts`, `server/src/personal-servers.ts`, `server/src/account-secrets.ts` | What a user keeps for their account ("Account settings"): the defaults for new sessions; their own MCP servers, what a name and a definition may be and how many are kept; and the secrets those read, whom they reach and how they give way to a repository's |
@@ -2658,13 +2495,6 @@ Actor data is in `.data/.rivetkit`; stop the server and remove that directory to
 `sandbox/cleanup.sh --keep-image` removes every container and volume this project made; the sign-ins in the
 users' actors go with the actor data.
 
-An agent made before sign-ins left the sandboxes keeps its sandbox, which was made from the older
-image: its files and its timeline are there, and demo agents go on working, but its Windlass cannot run on a
-handed-in token, so a prompt on a ChatGPT sign-in ends by saying so and asking for a new agent. An agent whose
-sandbox was made from an image whose Windlass does read a handed-in token goes on working after the image is
-rebuilt, also when that Windlass is older than the codes ("What went wrong with a token" above), and when it
-is older than the session's home and the lists of variable names ("Sandboxes that keep an older Windlass").
-
 ## Limits
 
 - **It is a development deployment.** The local Rivet engine accepts anyone who can reach port 6420, and its
@@ -2750,16 +2580,6 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   agent may do itself), so a task that is to publish while its user is away needs a profile whose commands Windlass
   sandboxes. What would close it: an engine that runs as another user than its commands, or one whose
   connection a command cannot write to.
-- **In a sandbox that still has Windlass 0.2.0, a repository's own file can replace a user's checks,
-  and the platform can only say so.** Windlass 0.2.0 follows `checks` and `verify` in a repository's
-  `.windlass/config.json` before its user's, and an agent can write that file: from the turn after, its
-  list runs in place of the user's, or nothing does. The pull request then says that the checks that
-  ran were the repository's, that the user's did not run, and that the check configuration changed in
-  this work; nothing stops the turn from being called done. In a sandbox whose Windlass has required
-  checks the user's run whatever that file says ("A repository's checks"): that is 0.3.0, which every
-  sandbox made from the image as it is now has. And the observations about a work's changes are a short list of
-  patterns: they miss a test deleted from inside its file and a check weakened in a way the list does
-  not name, and they have not been run on a large repository.
 - **Work items take only their person's words.** Items come from the web app and the API, from their own
   user, and the agent is given the text as its prompt. There is no intake from GitHub's issues and no
   planning step.
@@ -2770,12 +2590,12 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   once more after a turn in which the agent published. A turn that changes files and is not pushed
   leaves the description saying what was true of what is at GitHub.
 - **What a turn wrote into Windlass's configuration can outlast it until the next turn.** The
-  repository's checks and the user's own MCP servers are written into Windlass's configuration file in the sandbox
+  user's own MCP servers are written into Windlass's configuration file in the sandbox
   for a turn and removed when the turn ends; a server that dies in between leaves them there. The
   session's next turn takes them out before it writes its own, by the platform's list of what it wrote.
   Nothing reads the file in between: no Windlass runs between turns. The agent's own tools are not written
   anywhere: they are declared with each session's opening; a server called `windlass_platform` left there by
-  an earlier version is taken out (`server/src/windlass-config.ts`).
+  a command is taken out (`server/src/windlass-config.ts`).
 - **A user's own MCP server runs unasked, with the network and the session's access token.** Windlass
   asks before it starts a project's server and not before one of its user's own configuration, and
   such a server is a process outside Windlass's sandbox around commands in every profile. The settings
@@ -2788,8 +2608,7 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
 - **A server's definition is checked against a copy of Windlass's rules.** The keys Windlass takes
   for one server are repeated in `server/src/personal-servers.ts`. With a Windlass that takes a key
   the copy lacks, that key cannot be saved; with one that refuses a key the copy has, a saved
-  definition would fail its user's turns until it is changed. A sandbox keeps the Windlass of the
-  image it was made from, so the second can happen for a sandbox older than the key.
+  definition would fail its user's turns until it is changed.
 - **Personal servers have not run on E2B.** They were run with a real Windlass in local Docker
   containers, in both profiles; the E2B layer writes the same file through the same seam.
 - **A subagent cannot ask to publish.** The platform acts on the calls of the session's own agent, as the
@@ -2802,16 +2621,6 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   the repository's MCP servers go without it ("A repository's secrets"). Windlass would not give a command
   the variable there, but a command of the same user reads it from Windlass's process. What would close
   it: MCP servers started with an environment that is not Windlass's own, or as another user.
-- **A sandbox keeps the Windlass it was made with.** A session whose sandbox was made from an older image
-  has what that Windlass has: with 0.2.0, checks of its user's that a repository's own file can replace;
-  with one before it, also a read-only home for its sandboxed commands and the narrower secret scopes,
-  until its sandbox is replaced: removed for not being used, or lost. Nothing in the platform replaces a
-  sandbox for its Windlass. And no sandbox can go back: an image rolled back to 0.2.0 does not open the
-  sessions 0.3.0 recorded check results in ("A repository's checks").
-- **The launch form's list of secrets is said for the image the platform is built for.** A server does not
-  look at the Windlass of its image or template for it (on E2B that would mean starting a sandbox), so
-  with an older Windlass there the launch form's sentences are the newer one's, and a session's own list
-  corrects them from its first turn.
 - **A server that Windlass starts from its own record says nothing of secrets.** When a variable such a
   server reads is not set, no question is put, so the sentence about what would set it is not said: the
   panel lists the server as one that could not start, with Windlass's reason, which names the variable.

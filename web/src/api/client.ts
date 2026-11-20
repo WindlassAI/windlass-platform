@@ -172,10 +172,10 @@ export interface UserApi {
 	 * `profile`: the sandbox of the session `sessionId` names, whose Windlass may be an older one, or
 	 * without it a sandbox made now. A value is sent to the server when it is saved and never comes back.
 	 */
-	repositorySecrets(repositoryId: GithubId, profile: SandboxProfileId, sessionId?: string): Promise<RepositorySecrets>;
+	repositorySecrets(repositoryId: GithubId, profile: SandboxProfileId): Promise<RepositorySecrets>;
 	/** Saves a secret: with `value` a new one or a new value, without it only the scope. Throws with reason `bad_secret`, `too_many_secrets` or `secret_not_found`. */
-	saveRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }, sessionId?: string): Promise<RepositorySecrets>;
-	deleteRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, name: string, sessionId?: string): Promise<RepositorySecrets>;
+	saveRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
+	deleteRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, name: string): Promise<RepositorySecrets>;
 	/** What is kept for a repository beside its setup command and its secrets: the defaults for new agents and the remembered approvals of its MCP servers. Asks GitHub nothing. */
 	repository(repositoryId: GithubId): Promise<RepositoryView>;
 	/**

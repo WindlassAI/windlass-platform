@@ -42,8 +42,7 @@
  * question says which of them approving hands to the server, or sends to its address; and for a
  * variable that is not set it says what would set it: saving a secret of that name, or, where one is
  * saved and this sandbox keeps it from MCP servers, why. That is so where the agent's commands are
- * not held in Windlass's sandbox, for a secret that is not for them, and in a sandbox whose Windlass
- * is an older one, by the secret's name as well.
+ * not held in Windlass's sandbox, for a secret that is not for them.
  *
  * web/src/api/mock.ts repeats these texts for the web app's mock.
  */
@@ -71,12 +70,6 @@ export interface ServerQuestionContext {
 	 * connection, which can have none. Absent where it is not known (the panel's words need none).
 	 */
 	secrets?: Array<{ name: string; scope: SecretScope }> | null;
-	/**
-	 * `WindlassFeatures.envLists` of the session's sandbox: whether its Windlass can be told by name
-	 * which variables its commands get, on which what a saved secret reaches depends. Absent where
-	 * `secrets` is, and read as an older Windlass then.
-	 */
-	envLists?: boolean;
 	/**
 	 * The names of the account's secrets this session's turn is handed (account-secrets.ts): those no
 	 * secret of the repository has the name of. Absent where there are none, or it is not known.
@@ -188,16 +181,16 @@ function remembered(context: ServerQuestionContext): string {
 const ACCOUNT_SECRET_SETS_IT = "A secret of your account under that name, saved in your settings, sets it for MCP servers too.";
 const WIDE_ACCOUNT_SECRET_SETS_IT = "A secret of your account under that name, saved in your settings, sets it for MCP servers in this sandbox if it is also for the agent's commands.";
 
-export function unsetRemedy(unset: readonly string[], context: Pick<ServerQuestionContext, "profile" | "project" | "secrets" | "envLists">): string {
+export function unsetRemedy(unset: readonly string[], context: Pick<ServerQuestionContext, "profile" | "project" | "secrets">): string {
 	if (unset.length === 0) return "";
 	if (context.secrets === null) {
 		// One of the account's secrets sets the variable too: any, where this sandbox gives them all to MCP servers.
-		const account = accountSecretsNote(context.profile, context.envLists === true) === null ? ACCOUNT_SECRET_SETS_IT : WIDE_ACCOUNT_SECRET_SETS_IT;
+		const account = accountSecretsNote(context.profile) === null ? ACCOUNT_SECRET_SETS_IT : WIDE_ACCOUNT_SECRET_SETS_IT;
 		return `A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one. ${account}`;
 	}
 	if (context.secrets === undefined) return "A variable is set by saving a secret of that name for the repository, under Secrets in the session's panel.";
 	const kept = unset.flatMap((name) => {
-		const why = withheldFromServers(name, context.secrets ?? [], context.profile, context.envLists === true);
+		const why = withheldFromServers(name, context.secrets ?? [], context.profile);
 		return why === null ? [] : [{ name, why }];
 	});
 	const absent = unset.filter((name) => !kept.some((item) => item.name === name));

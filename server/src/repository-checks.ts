@@ -8,9 +8,7 @@
  * `setupProjectKey`). They are never read from the repository: a file in a repository is something
  * an agent can edit during a turn, and a check a turn can rewrite verifies nothing. A session is
  * handed the list when a turn starts, with its repository's secrets, and the sandbox layer names it
- * to Windlass when it opens the session, as required checks (`requiredChecks` in the session's
- * metadata, Windlass's docs/acp.md); for a Windlass that takes none it writes the list into
- * Windlass's own configuration file there (windlass-config.ts).
+ * to Windlass as required checks when the session opens.
  *
  * What may be saved is what Windlass takes (`checks[]` in its configuration, its docs/user-guide.md),
  * so a list that is saved is one Windlass reads: a list it cannot read fails the turn. `showOutput` is
@@ -80,16 +78,15 @@ export function cleanChecks(raw: unknown): RepositoryCheck[] {
 
 /**
  * The list as Windlass takes it: its own fields and no other, since it refuses a key it does not
- * know. `required`: for a Windlass that takes required checks, whose checks have one field more:
- * `outputTail: "always"` has it keep the end of a check's output also when the check passed.
+ * know. `outputTail: "always"` has it keep the end of a check's output also when the check passed.
  */
-export function windlassChecks(checks: readonly RepositoryCheck[], required = false): Array<Record<string, unknown>> {
+export function windlassChecks(checks: readonly RepositoryCheck[]): Array<Record<string, unknown>> {
 	return checks.map((check) => ({
 		name: check.name,
 		command: check.command,
 		...(check.timeoutSeconds === undefined ? {} : { timeoutSeconds: check.timeoutSeconds }),
 		...(check.when === undefined ? {} : { when: [...check.when] }),
-		...(required && check.showOutput === true ? { outputTail: "always" } : {}),
+		...(check.showOutput === true ? { outputTail: "always" } : {}),
 	}));
 }
 

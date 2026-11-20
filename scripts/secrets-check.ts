@@ -6,9 +6,7 @@
  *
  * What it holds to: a name is an environment variable's and none the sandbox relies on; a value has a
  * least and a greatest length and is kept exactly; a scope comes to what it says where Windlass
- * sandboxes commands and can be told names, and to what Windlass's rule alone allows in a sandbox
- * whose Windlass is an older one, word for word as before; Windlass is handed nothing that would
- * break a scope, in any kind of sandbox and with either Windlass; a sealed value opens for its user,
+ * sandboxes commands. Windlass is handed only what the scope permits. A sealed value opens for its user,
  * repository and name and as nothing else; the list a client gets has no value; and a saved value is
  * taken out of text, whole, escaped, line by line, and split over two pieces.
  *
@@ -103,75 +101,29 @@ expect(
 expect("the names Windlass keeps from sandboxed commands are told from the others", ["NPM_TOKEN", "DATABASE_URL", "aws_region", "GH_PAT", "API_KEY", "PGPASSWORD", "BASIC_AUTH"].every(looksLikeCredential) && ["SENTRY_DSN", "PGHOST", "AUTHOR", "PATTERN", "REGION", "API_URL"].every((name) => !looksLikeCredential(name)));
 const e2bOpen = PROFILES.find((profile) => profile.id === "e2b-open")!;
 const everyProfile = [sandboxed, e2bSandboxed, hardened, e2bOpen, e2bUnknown];
-const names = ["NPM_TOKEN", "DATABASE_URL", "SENTRY_DSN", "PREVIEW_HOST", "DEPLOY_KEY"];
 
-// With a Windlass that takes the two lists of names: a scope is what it says, wherever commands are sandboxed.
 {
 	expect(
 		"setup and MCP servers, commands sandboxed, whatever the name: MCP servers get it, commands do not, and nothing has to be said",
-		[sandboxed, e2bSandboxed].every((profile) => names.every((name) => JSON.stringify(secretReach(name, "setup", profile, true)) === JSON.stringify({ servers: true, commands: "no", note: null }))),
+		[sandboxed, e2bSandboxed].every((profile) => JSON.stringify(secretReach("setup", profile)) === JSON.stringify({ servers: true, commands: "no", note: null })),
 	);
 	expect(
 		"also the agent's commands, in every profile and whatever the name: MCP servers and commands get it, and nothing has to be said",
-		everyProfile.every((profile) => names.every((name) => JSON.stringify(secretReach(name, "agent", profile, true)) === JSON.stringify({ servers: true, commands: "yes", note: null }))),
+		everyProfile.every((profile) => JSON.stringify(secretReach("agent", profile)) === JSON.stringify({ servers: true, commands: "yes", note: null })),
 	);
 	for (const [label, profile, words] of [
 		["commands not sandboxed", hardened, "run there without Windlass's sandbox"],
 		["commands not sandboxed until untrusted content arrives", e2bOpen, "run there without Windlass's sandbox"],
 		["a sandbox of which nothing is promised", e2bUnknown, "has not been established"],
 	] as const) {
-		const reaches = names.map((name) => secretReach(name, "setup", profile, true));
+		const reach = secretReach("setup", profile);
 		expect(
 			`setup and MCP servers, ${label}: only the setup command gets it, whatever the name, and the sentence says that a command could read it from Windlass's process`,
-			reaches.every((reach) => !reach.servers && reach.commands === "no" && (reach.note ?? "").includes(words) && (reach.note ?? "").includes("from Windlass's own process") && (reach.note ?? "").endsWith("Only the setup command gets it.")),
+			!reach.servers && reach.commands === "no" && (reach.note ?? "").includes(words) && (reach.note ?? "").includes("from Windlass's own process") && (reach.note ?? "").endsWith("Only the setup command gets it."),
 		);
 	}
 }
 
-// With an older Windlass, which has one rule and no lists: what it was before there were lists, word for word.
-{
-	const looks = "a name that looks like a credential (it contains TOKEN, KEY, SECRET or PASSWORD, for example)";
-	const reach = secretReach("NPM_TOKEN", "setup", sandboxed, false);
-	expect("older Windlass: setup and MCP servers, a name it withholds, commands sandboxed: MCP servers get it and commands do not", reach.servers && reach.commands === "no" && reach.note === null);
-	const plain = secretReach("SENTRY_DSN", "setup", sandboxed, false);
-	expect(
-		"older Windlass: the same with a name it would pass on: it stays out of Windlass's environment, and the sentence says why",
-		!plain.servers && plain.commands === "no" && plain.note === `MCP servers are not given it in this sandbox. Windlass passes every variable it has on to the agent's commands unless it has ${looks}, so with this name an MCP server could only have it if the commands had it too. Only the setup command gets it.`,
-	);
-	expect(
-		"older Windlass: setup and MCP servers, commands not sandboxed: only the setup command gets it, whatever the name",
-		["NPM_TOKEN", "SENTRY_DSN"].every((name) => {
-			const open = secretReach(name, "setup", hardened, false);
-			return !open.servers && open.commands === "no" && open.note === "MCP servers are not given it in this sandbox: the agent's commands run there without Windlass's sandbox, and would get every variable an MCP server can be given. Only the setup command gets it.";
-		}),
-	);
-	expect(
-		"older Windlass: the same in a sandbox of which nothing is promised",
-		["NPM_TOKEN", "SENTRY_DSN"].every((name) => {
-			const open = secretReach(name, "setup", e2bUnknown, false);
-			return !open.servers && open.commands === "no" && open.note === "MCP servers are not given it in this sandbox: it has not been established that Windlass can sandbox the agent's commands there, and a command it cannot sandbox gets every variable an MCP server can be given. Only the setup command gets it.";
-		}),
-	);
-	const opted = secretReach("SENTRY_DSN", "agent", sandboxed, false);
-	expect("older Windlass: also the agent's commands, a name it passes on: commands get it everywhere", opted.servers && opted.commands === "yes" && opted.note === null && secretReach("SENTRY_DSN", "agent", hardened, false).commands === "yes" && secretReach("SENTRY_DSN", "agent", e2bUnknown, false).commands === "yes");
-	const kept = secretReach("DEPLOY_KEY", "agent", sandboxed, false);
-	expect(
-		"older Windlass: also the agent's commands, a name it withholds, commands sandboxed: commands do not get it, and the sentence says so",
-		kept.servers && kept.commands === "no" && kept.note === `The agent's commands do not get it in this sandbox: Windlass keeps a variable with ${looks} from the commands it sandboxes, and has no setting that lets one through. The setup command and MCP servers get it.`,
-	);
-	const full = secretReach("DEPLOY_KEY", "agent", hardened, false);
-	expect(
-		"older Windlass: the same where commands are not sandboxed: they get it, until Windlass sandboxes them again",
-		full.servers &&
-			full.commands === "unsandboxed" &&
-			full.note === "The agent's commands get it while Windlass runs them without its sandbox. Once content from the web or an MCP server is in the conversation, Windlass sandboxes commands again where it can, and it keeps a variable whose name looks like a credential from the commands it sandboxes.",
-	);
-	const perhaps = secretReach("DEPLOY_KEY", "agent", e2bUnknown, false);
-	expect(
-		"older Windlass: and where nothing is promised: only the commands it cannot sandbox get it",
-		perhaps.servers && perhaps.commands === "unsandboxed" && perhaps.note === "The agent's commands get it only where Windlass cannot sandbox them: it keeps a variable whose name looks like a credential from the commands it sandboxes.",
-	);
-}
 const held = [
 	{ name: "NPM_TOKEN", scope: "setup" as const, value: made() },
 	{ name: "SENTRY_DSN", scope: "setup" as const, value: made() },
@@ -185,7 +137,7 @@ expect("the setup command is handed every secret", sorted(Object.keys(setupEnvir
 	const commandGets = (handed: { env: Record<string, string>; withholdEnv: string[]; passEnv: string[] }, inSandbox: boolean) =>
 		sorted(Object.keys(handed.env).filter((name) => !handed.withholdEnv.includes(name) && (!inSandbox || handed.passEnv.includes(name) || !looksLikeCredential(name))));
 	for (const profile of [sandboxed, e2bSandboxed]) {
-		const handed = windlassEnvironment(held, profile, true);
+		const handed = windlassEnvironment(held, profile);
 		expect(
 			`in ${profile.name}, Windlass is handed every secret, with the names of the first scope to withhold and the credential-looking names of the second to pass`,
 			sorted(Object.keys(handed.env)) === "DEPLOY_KEY,NPM_TOKEN,PREVIEW_HOST,SENTRY_DSN" && sorted(handed.withholdEnv) === "NPM_TOKEN,SENTRY_DSN" && sorted(handed.passEnv) === "DEPLOY_KEY",
@@ -194,40 +146,26 @@ expect("the setup command is handed every secret", sorted(Object.keys(setupEnvir
 		expect("and the values are the saved ones", held.every((secret) => handed.env[secret.name] === secret.value));
 	}
 	for (const profile of [hardened, e2bOpen, e2bUnknown]) {
-		const handed = windlassEnvironment(held, profile, true);
+		const handed = windlassEnvironment(held, profile);
 		expect(
 			`in ${profile.name}, where a withheld variable could be read all the same, Windlass is handed only what is also for commands, and nothing to withhold`,
 			sorted(Object.keys(handed.env)) === "DEPLOY_KEY,PREVIEW_HOST" && handed.withholdEnv.length === 0 && sorted(handed.passEnv) === "DEPLOY_KEY",
 		);
 		expect("so a command gets the second scope there with the sandbox and without", commandGets(handed, true) === "DEPLOY_KEY,PREVIEW_HOST" && commandGets(handed, false) === "DEPLOY_KEY,PREVIEW_HOST");
 	}
-	const older = windlassEnvironment(held, sandboxed, false);
-	expect(
-		"an older Windlass, commands sandboxed: it is handed what MCP servers may have and nothing of the first scope that a command would be passed, and is told no names",
-		sorted(Object.keys(older.env)) === "DEPLOY_KEY,NPM_TOKEN,PREVIEW_HOST" && commandGets(older, true) === "PREVIEW_HOST" && older.withholdEnv.length === 0 && older.passEnv.length === 0,
-	);
-	for (const profile of [hardened, e2bOpen, e2bUnknown]) {
-		const handed = windlassEnvironment(held, profile, false);
-		expect(`an older Windlass in ${profile.name}: it is handed only what is also for commands, and is told no names`, sorted(Object.keys(handed.env)) === "DEPLOY_KEY,PREVIEW_HOST" && handed.withholdEnv.length === 0 && handed.passEnv.length === 0);
-	}
 	expect(
 		"whatever is named to withhold or to pass is in the environment, and no name is in both lists",
-		everyProfile.every((profile) =>
-			[true, false].every((lists) => {
-				const handed = windlassEnvironment(held, profile, lists);
-				return [...handed.withholdEnv, ...handed.passEnv].every((name) => name in handed.env) && !handed.withholdEnv.some((name) => handed.passEnv.includes(name));
-			}),
-		),
+		everyProfile.every((profile) => {
+			const handed = windlassEnvironment(held, profile);
+			return [...handed.withholdEnv, ...handed.passEnv].every((name) => name in handed.env) && !handed.withholdEnv.some((name) => handed.passEnv.includes(name));
+		}),
 	);
 	expect(
 		"a saved secret that is kept from MCP servers is said with its reason, one that is handed over or not saved is not",
-		withheldFromServers("SENTRY_DSN", held, sandboxed, true) === null &&
-			withheldFromServers("OTHER", held, sandboxed, true) === null &&
-			(withheldFromServers("SENTRY_DSN", held, hardened, true) ?? "").includes("from Windlass's own process") &&
-			withheldFromServers("DEPLOY_KEY", held, hardened, true) === null &&
-			(withheldFromServers("SENTRY_DSN", held, sandboxed, false) ?? "").includes("MCP servers are not given it") &&
-			withheldFromServers("NPM_TOKEN", held, sandboxed, false) === null &&
-			withheldFromServers("NPM_TOKEN", held, hardened, false) !== null,
+		withheldFromServers("SENTRY_DSN", held, sandboxed) === null &&
+			withheldFromServers("OTHER", held, sandboxed) === null &&
+			(withheldFromServers("SENTRY_DSN", held, hardened) ?? "").includes("from Windlass's own process") &&
+			withheldFromServers("DEPLOY_KEY", held, hardened) === null,
 	);
 }
 
@@ -313,18 +251,10 @@ expect("the setup command is handed every secret", sorted(Object.keys(setupEnvir
 {
 	const secret = made();
 	const rows = [{ name: "NPM_TOKEN", scope: "setup", updated_at: 1_700_000_000_000, sealed: `wlps1.x.y.${secret}.z`, value: secret, label: "acme/harbor", project: "github:7101" }];
-	const listed = listedSecrets(rows, sandboxed, true);
+	const listed = listedSecrets(rows, sandboxed);
 	expect("the list has the name, the scope, the time and what it reaches", listed.profile === sandboxed.id && listed.secrets.length === 1 && listed.secrets[0]!.name === "NPM_TOKEN" && listed.secrets[0]!.scope === "setup" && listed.secrets[0]!.updatedAt === 1_700_000_000_000 && listed.secrets[0]!.reach.servers);
 	expect("and nothing else of a row: no value, sealed or not", !JSON.stringify(listed).includes(secret) && Object.keys(listed.secrets[0]!).sort().join() === "name,reach,scope,updatedAt");
-	expect("a scope it does not know is listed as the narrower one", listedSecrets([{ name: "X_TOKEN", scope: "everything", updated_at: 1 }], sandboxed, true).secrets[0]!.scope === "setup");
-	const two = [
-		{ name: "DEPLOY_KEY", scope: "agent", updated_at: 1 },
-		{ name: "SENTRY_DSN", scope: "setup", updated_at: 1 },
-	];
-	expect(
-		"the list is said for the Windlass of the sandbox it is asked for: nothing to say with the lists, a sentence under each without",
-		listedSecrets(two, sandboxed, true).secrets.every((item) => item.reach.note === null) && listedSecrets(two, sandboxed, false).secrets.every((item) => item.reach.note !== null),
-	);
+	expect("a scope it does not know is listed as the narrower one", listedSecrets([{ name: "X_TOKEN", scope: "everything", updated_at: 1 }], sandboxed).secrets[0]!.scope === "setup");
 }
 
 // Taking values out of text.

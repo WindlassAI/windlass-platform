@@ -56,7 +56,7 @@ export function gateResult(outcome: TurnOutcome, verified: Verified | null): Ver
 		case "unresolved":
 			return failingChecks(verified).length > 0 ? "fail" : "unverified";
 		case "not_needed":
-			return verified.unneeded?.on === "run" && !verified.changedAfter ? "pass" : "unverified";
+			return verified.unneeded.on === "run" && !verified.changedAfter ? "pass" : "unverified";
 		case "stopped":
 		case "failed":
 			return "incomplete";
@@ -175,7 +175,7 @@ export function verdictWords(verdict: Verdict, gate: GateEvidence | null): strin
 						: "Not verified.";
 	// No checks set is no shortcoming: checks are the person's choice, and CI decides without them.
 	const gateSaid =
-		!gate?.verified ? "The turn left no record of its checks; CI decides." : gate.verified.state === "none_set" ? "No checks are set for this repository; CI decides." : verifiedHeadline(gate.verified, "your");
+		!gate?.verified ? "The turn left no record of its checks; CI decides." : gate.verified.state === "none_set" ? "No checks are set for this repository; CI decides." : verifiedHeadline(gate.verified);
 	const ci = verdict.said.ci;
 	const flags = verdict.flags.map((flag, index) => `${verdict.said.flags[index] ?? flagWords(flag.kind)}: ${flag.where.join(", ")}.`);
 	const merge = verdict.mergeable === false ? ["GitHub says the pull request conflicts with its base."] : [];

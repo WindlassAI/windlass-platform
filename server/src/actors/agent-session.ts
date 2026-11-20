@@ -127,7 +127,6 @@ import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, maySubscribe, requireService, requireUser } from "../auth.js";
 import { config } from "../config.js";
 import {
-	CHECK_OUTPUT_CHARS,
 	type LiveDelta,
 	type ItemReview,
 	type ReviewRecord,
@@ -188,7 +187,7 @@ import {
 } from "../server-question.js";
 import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf } from "../setup-command.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
-import { VerificationLog, groupReviewPaths, outputTail, withOutputs } from "../verified.js";
+import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { grantIsValid, type ReserveAnswer, secretsActor, type SessionCreateInput, userActor } from "./internal.js";
@@ -200,7 +199,7 @@ import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
 import { fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact } from "../factory/types.js";
-import { DeploymentFull, WindlassUnaskedError } from "../sandbox/api.js";
+import { DeploymentFull } from "../sandbox/api.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase } from "../github/publish.js";
 import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
@@ -294,14 +293,6 @@ interface SessionMeta {
 	sandboxId: string | null;
 	sandbox: "none" | "running" | "paused";
 	/**
-	 * `WindlassFeatures.envLists` of the current sandbox, as its Windlass said when a turn last asked
-	 * it: what the list of the repository's secrets is said for (`SessionSummary.envLists`). Null or
-	 * absent: no turn has asked this sandbox.
-	 */
-	envLists?: boolean | null;
-	/** `WindlassFeatures.requiredChecks` of the current sandbox, asked and kept as `envLists` is (`SessionSummary.requiredChecks`). */
-	requiredChecks?: boolean | null;
-	/**
 	 * Why the session's sandbox hands the account's secrets to no MCP server, or to some only, as its
 	 * last turn found it (account-secrets.ts, `accountSecretsNote`); null where it hands them all over.
 	 * Said in the panel beside the user's own servers.
@@ -311,11 +302,8 @@ interface SessionMeta {
 	cloned: boolean;
 	windlassSessionId: string | null;
 	turnStartedAt: number | null;
-	/**
-	 * When the last turn ended, or the workspace was last read through the sandbox: what the idle times
-	 * count from. Absent in sessions made before it; `updatedAt` stands in.
-	 */
-	lastUsedAt?: number;
+	/** When this session was created, last ran a turn, or last used its workspace. */
+	lastUsedAt: number;
 	/** The idle check the durable schedule holds: its id, and when it fires. */
 	idleCheck?: { id: string; at: number } | null;
 	/** Set when the session was launched on a repository of the user's GitHub connection (`repoUrl` is its address). */
@@ -340,13 +328,6 @@ interface SessionMeta {
 	/** What the session's work rests on since its last turn ended (verified.ts): what a pull request's description is given. */
 	verified?: Verified | null;
 	/**
-	 * True once a Windlass that takes required checks ended a turn of the current Windlass session with
-	 * checks in force. What it records of that, a Windlass without them (0.2.0 and earlier) does not
-	 * read: it refuses the whole session, with an internal error and no reason. This is what tells that
-	 * refusal from any other (`UNREADABLE_SESSION`).
-	 */
-	checksRecorded?: boolean;
-	/**
 	 * Whether the agent may have the platform publish without the user being asked each time
 	 * (`SessionSummary.publishUnasked`). Absent or false: each request is put to the user.
 	 */
@@ -369,7 +350,7 @@ interface SessionMeta {
 	 */
 	servers?: KnownServer[];
 	/** When `servers`, or what is remembered of their approvals through this session, last changed. */
-	serversChangedAt?: number;
+	serversChangedAt: number;
 	/**
 	 * Set when the repository was cloned into the current sandbox and its setup command has not been run
 	 * there: the clone's directory, relative to the workspace. Sessions cloned before there were setup
@@ -416,8 +397,8 @@ interface SessionMeta {
 	reviewBase?: string;
 	/** The run that owns this checkout. Late cleanup for an earlier run cannot free it. */
 	reviewRun?: number;
-	/** For a session on one of the user's machines: the machine's name at launch. Absent in a session from before it was kept. */
-	machineName?: string | null;
+	/** For a session on one of the user's machines: the machine's name at launch. */
+	machineName: string | null;
 	/** What the item's agent last filed with `report`: the pull request's title and description. */
 	report?: (AgentReport & { run: number }) | null;
 }
@@ -610,10 +591,6 @@ type NewItem =
 	| Omit<Extract<TimelineItem, { kind: "setup" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "turn.ended" }>, "seq" | "at">;
 
-/** What a user can do when the Windlass in a session's sandbox does not read the session, after the sentence that says so. */
-const UNREADABLE_SESSION =
-	"Nothing in the session was changed, and it opens again in a sandbox whose Windlass is the one that last worked in it, or a later one. Once the server's sandbox image is built from that Windlass, free this agent's sandbox under Usage and send the prompt again; what was not pushed goes with the sandbox, so publish it first. Or start a new agent: this one's files stay in its workspace.";
-
 /** A failure of a turn whose message is fit to show as it is. */
 class TurnProblem extends Error {}
 
@@ -689,9 +666,7 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		turns: meta.turns,
 		lastOutcome: meta.lastOutcome,
 		sandbox: meta.sandbox,
-		...(meta.sandbox !== "none" && typeof meta.envLists === "boolean" ? { envLists: meta.envLists } : {}),
-		...(meta.sandbox !== "none" && typeof meta.requiredChecks === "boolean" ? { requiredChecks: meta.requiredChecks } : {}),
-		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt ?? meta.updatedAt } } : {}),
+		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt } } : {}),
 		...(meta.origin ? { item: { id: meta.origin.itemId, role: meta.origin.role ?? "builder" } } : {}),
 	};
 }
@@ -899,7 +874,6 @@ function onWindlassEvent(c: Ctx, meta: SessionMeta, turn: number, event: Windlas
 		// Remembered at once: if this turn is lost, the next one can still continue Windlass's session.
 		meta.windlassSessionId = event.sessionId;
 		// Another session of Windlass's: nothing is recorded in it yet.
-		meta.checksRecorded = false;
 	}
 	if (DELTA_TYPES.has(event.type)) {
 		const delta: LiveDelta = { turn, event };
@@ -1000,8 +974,6 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 			meta.cloned = false;
 		}
 		// What is known of a setup run, and of the Windlass that was asked, was the old sandbox's.
-		meta.envLists = null;
-		meta.requiredChecks = null;
 		meta.accountSecrets = null;
 		meta.setupDue = null;
 		meta.setupRunning = null;
@@ -1768,41 +1740,13 @@ async function evidenceOf(c: Ctx, meta: SessionMeta, during: number | null): Pro
 	return { verified: meta.verified ?? null, during, checks: held.checks, redact: (text) => held.redactor.text(text), machine: machineOf(meta) };
 }
 
-/** For a session on one of the user's machines, that machine as a question or a pull request names it: by the name kept at launch, null in an older session. */
+/** For a session on one of the user's machines, that machine as a question or a pull request names it: by the name kept at launch. */
 function machineOf(meta: SessionMeta): { name: string | null } | null {
-	return meta.place.kind === "machine" ? { name: meta.machineName ?? null } : null;
+	return meta.place.kind === "machine" ? { name: meta.machineName } : null;
 }
 
 /** After a push's line in the timeline: what the pull request's description now says was verified, in its few words. */
-const verifiedLine = (pull: PullRequestInfo) => (pull.verified ? ` Its description reports: ${pull.verified}.` : "");
-
-/** How much of a check's output is read from its file: more than is kept, so that the end can be cut at a line. */
-const CHECK_OUTPUT_READ_BYTES = 4 * CHECK_OUTPUT_CHARS;
-
-/**
- * The end of what the checks of a turn's last run printed, for a Windlass whose record of a run has
- * no more of it than a path: read from the files Windlass keeps their
- * output in, each by the path its evidence names (`VerificationLog.outputs` hands on only a path
- * that is Windlass's own name for such a file). The saved secrets are taken out before anything is
- * kept. Never throws: a file that cannot be read leaves its check without output.
- */
-async function readCheckOutputs(c: Ctx, sandbox: SandboxHandle, outputs: Array<{ name: string; path: string }>, redactor: Redactor): Promise<Map<string, string>> {
-	const read = new Map<string, string>();
-	if (outputs.length === 0) return read;
-	const mark = `wlp-${randomBytes(9).toString("hex")}`;
-	try {
-		const said = await sandbox.run(`for file in ${outputs.map((output) => shellQuote(output.path)).join(" ")}; do tail -c ${CHECK_OUTPUT_READ_BYTES} -- "$file" 2>/dev/null || true; printf '\\n%s\\n' ${shellQuote(mark)}; done`, { timeoutMs: GIT_TIMEOUT_MS });
-		const parts = said.stdout.split(`\n${mark}\n`);
-		if (said.exitCode !== 0 || parts.length !== outputs.length + 1) return read;
-		for (const [index, output] of outputs.entries()) {
-			const kept = outputTail(redactor.text(parts[index] as string));
-			if (kept !== "") read.set(output.name, kept);
-		}
-	} catch (error) {
-		c.log.warn({ msg: "could not read the output of the turn's checks", error: describeError(error) });
-	}
-	return read;
-}
+const verifiedLine = (pull: PullRequestInfo) => ` Its description reports: ${pull.verified}.`;
 
 /**
  * Commits, pushes and opens the pull request, for `publish()` and a work item's step. The caller has
@@ -2054,7 +1998,8 @@ function orNull<T>(promise: Promise<T>, ms: number): Promise<T | null> {
 
 /** Says that what the session knows of its project's servers, or of their approvals, changed: clients ask `servers()` again. */
 function serversChanged(c: Ctx, meta: SessionMeta): void {
-	meta.serversChangedAt = Math.max(Date.now(), (meta.serversChangedAt ?? 0) + 1);
+	const now = Date.now();
+	meta.serversChangedAt = meta.serversChangedAt >= now ? meta.serversChangedAt + 1 : now;
 	publish(c);
 	void persist(c);
 }
@@ -2526,7 +2471,7 @@ const MAX_UNSETTLED = 20;
  * decision is theirs, whatever the decision found. Null when nothing is being counted.
  */
 function useOf(meta: SessionMeta): string | null {
-	return meta.meter ? (meta.meter.use ?? meta.meter.hold) : null;
+	return meta.meter?.use ?? null;
 }
 
 /** Runs `job` after every call to the user's meter queued before it. */
@@ -2574,7 +2519,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
 	// since may have ended long before, when the provider stopped the unused sandbox by itself: it is
 	// traded at the latest moment the sandbox can have run, as a "found" close would count it, and not
 	// up to the wake. Decided in the step that sends it.
-	const until = open && fresh && carriedOver(c, meta) ? stoppedBy(open, lastUsed(meta), c.vars.idleStopMs, now) : now;
+	const until = open && fresh && carriedOver(c, meta) ? stoppedBy(open, meta.lastUsedAt, c.vars.idleStopMs, now) : now;
 	let answer: ReserveAnswer;
 	try {
 		answer = await inTime(
@@ -2595,7 +2540,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
 	void persist(c);
 	if (answer.ok) {
 		// A renewal goes on with the use the hold was for; anything that starts takes a use of its own.
-		const use = !fresh && open ? (open.use ?? open.hold) : answer.hold.id;
+		const use = !fresh && open ? open.use : answer.hold.id;
 		meta.meter = { hold: answer.hold.id, since: now, seconds: answer.hold.seconds, use, ...(open?.seen ? { seen: open.seen } : {}) };
 		void persist(c);
 	}
@@ -2636,7 +2581,7 @@ function armMeter(c: Ctx, meta: SessionMeta, notBefore = 0): void {
 	let at = open.since + open.seconds * 1000;
 	const idleStopMs = c.vars.idleStopMs;
 	if (idleStopMs !== null && !c.vars.turn) {
-		at = Math.min(at, Math.max(Math.max(open.since, lastUsed(meta)) + idleStopMs + IDLE_STOP_MARGIN_MS, (open.seen ?? 0) + METER_RETRY_MS));
+		at = Math.min(at, Math.max(Math.max(open.since, meta.lastUsedAt) + idleStopMs + IDLE_STOP_MARGIN_MS, (open.seen ?? 0) + METER_RETRY_MS));
 	}
 	c.vars.meterTimer = setTimeout(
 		() => {
@@ -2667,7 +2612,7 @@ function meterTick(c: Ctx, meta: SessionMeta): Promise<void> {
 		const id = meta.sandboxId;
 		const unused = !busy(c);
 		const idleStopMs = c.vars.idleStopMs;
-		if (id && unused && idleStopMs !== null && Date.now() >= Math.max(open.since, lastUsed(meta)) + idleStopMs) {
+		if (id && unused && idleStopMs !== null && Date.now() >= Math.max(open.since, meta.lastUsedAt) + idleStopMs) {
 			const gen = c.vars.sandboxGen;
 			const read = await layerOf(c, meta)
 				.then(({ sandboxes }) => sandboxes.state(id))
@@ -2676,7 +2621,7 @@ function meterTick(c: Ctx, meta: SessionMeta): Promise<void> {
 			const state = c.vars.sandboxGen === gen ? read : null;
 			if (state === "running") open.seen = Date.now();
 			else if (state !== null && !busy(c)) {
-				await settleStretch(c, meta, stoppedBy(open, lastUsed(meta), idleStopMs, Date.now()), useOf(meta));
+				await settleStretch(c, meta, stoppedBy(open, meta.lastUsedAt, idleStopMs, Date.now()), useOf(meta));
 				noteSandbox(c, meta, state);
 				void armIdle(c, meta);
 				return;
@@ -2801,7 +2746,7 @@ function closeMeter(c: Ctx, meta: SessionMeta, how: "now" | "found", use: string
 		const open = meta.meter;
 		if (!open || useOf(meta) !== use) return;
 		// The provider's timeout is asked of this session's layer every time: a server that has not asked yet must not count to now.
-		const until = how === "now" ? at : Math.min(stoppedBy(open, lastUsed(meta), (await layerOf(c, meta)).sandboxes.idleStopMs, at), open.since + open.seconds * 1000);
+		const until = how === "now" ? at : Math.min(stoppedBy(open, meta.lastUsedAt, (await layerOf(c, meta)).sandboxes.idleStopMs, at), open.since + open.seconds * 1000);
 		await settleStretch(c, meta, until, use);
 	}).catch((error) => {
 		c.log.warn({ msg: "could not settle the sandbox's time", session: meta.sessionId, error: describeError(error) });
@@ -2929,10 +2874,6 @@ async function removeSandbox(c: Ctx, meta: SessionMeta, id: string, text: string
 /** How long a check that failed, or found a prompt being accepted, waits before it looks again. */
 const IDLE_RETRY_MS = 60_000;
 
-function lastUsed(meta: SessionMeta): number {
-	return meta.lastUsedAt ?? meta.updatedAt;
-}
-
 /**
  * Whether a sandbox nobody used for long is removed. Not on one of the user's machines (design
  * decision 4): it costs the platform nothing there, and it is the user's to remove.
@@ -2944,8 +2885,8 @@ function removedWhenIdle(meta: SessionMeta): boolean {
 /** When the sandbox is next due: to be suspended while it runs, to be removed while it exists. Null when there is none. */
 function idleDue(meta: SessionMeta): number | null {
 	if (!meta.sandboxId) return null;
-	if (meta.sandbox === "running") return lastUsed(meta) + config.idleSuspendMs;
-	return removedWhenIdle(meta) ? lastUsed(meta) + config.idleDestroyMs : null;
+	if (meta.sandbox === "running") return meta.lastUsedAt + config.idleSuspendMs;
+	return removedWhenIdle(meta) ? meta.lastUsedAt + config.idleDestroyMs : null;
 }
 
 /**
@@ -2989,7 +2930,7 @@ async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 		return;
 	}
 	const id = meta.sandboxId;
-	const since = lastUsed(meta);
+	const since = meta.lastUsedAt;
 	const now = Date.now();
 	const remove = id !== null && removedWhenIdle(meta) && now >= since + config.idleDestroyMs;
 	const suspend = id !== null && !remove && meta.sandbox === "running" && now >= since + config.idleSuspendMs;
@@ -3139,25 +3080,6 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			// What the question about a project's server has to say depends on where this session runs.
 			const profile = layer.sandboxes.profile(meta.profile);
 			const held = active.secrets;
-			// A sandbox keeps the Windlass it was made with: what a secret's scope comes to here, and what a repository's own file can do to the user's checks, depend on which one that is.
-			// A sandbox that did not say what its Windlass takes is not taken for an older one: the turn fails with that sentence, and what was known stays.
-			const { envLists, requiredChecks, hostTools } = await layer.windlass.features(sandbox).catch((error: unknown) => {
-				throw error instanceof WindlassUnaskedError ? new TurnProblem(error.message) : error;
-			});
-			if (meta.envLists !== envLists || meta.requiredChecks !== requiredChecks) {
-				meta.envLists = envLists;
-				meta.requiredChecks = requiredChecks;
-				publish(c);
-				void persist(c);
-			}
-			// The platform's tools are Windlass's host tools, which every sandbox the platform makes takes. One that does not is from
-			// before them, a state that should not exist: the turn fails loudly, and is not worked around.
-			if (!hostTools) {
-				// An item is told why, so that it asks its person instead of trying the turn again (`turn_ended.refused`).
-				const said = oldSandbox(meta.place.kind === "machine" ? "machine" : "hosted");
-				if (active.item) active.item.refused = said;
-				throw new TurnProblem(said);
-			}
 			const tools = !reviewer && !!meta.repo && githubApp() !== null;
 			const item = active.item;
 			const servers: ServerQuestionContext = {
@@ -3168,11 +3090,10 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				machine: machineOf(meta),
 				// Null for a session that is not on a repository of the GitHub connection: it can have none.
 				secrets: setupProjectOf(meta) ? held.opened.map(({ name, scope }) => ({ name, scope })) : null,
-				envLists,
 				accountSecrets: accountSecretsFor(held.account, held.opened).map((secret) => secret.name),
 			};
 			// What the panel says of the account's secrets goes by this sandbox, as the list of the repository's does.
-			meta.accountSecrets = accountSecretsNote(profile, envLists);
+			meta.accountSecrets = accountSecretsNote(profile);
 			const store = item ? attachmentStore() : null;
 			const screenshots = held.screenshots && !!store;
 			const listed: ReviewRecord[] = [];
@@ -3224,10 +3145,10 @@ fi`, { signal, timeoutMs: 5000 });
 			let calls = 0;
 			result = await layer.windlass.runTurn(sandbox, {
 				// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.
-				secrets: { ...turnEnvironment(reviewer ? [] : held.opened, reviewer ? [] : held.account, profile, envLists), redactor: held.redactor },
+				secrets: { ...turnEnvironment(reviewer ? [] : held.opened, reviewer ? [] : held.account, profile), redactor: held.redactor },
 				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
 				servers: reviewer ? [] : held.servers,
-				// The checks the user saved for the repository: Windlass runs them before it calls the turn done, as required checks where it takes them.
+				// The checks the user saved for the repository: Windlass runs them before it calls the turn done, as required checks.
 				checks: reviewer ? [] : held.checks,
 				// Windlass's question about a tool of one whose tools run without asking: the layer answers it, and the timeline says for whom and why.
 				onUnasked: (call) => {
@@ -3384,11 +3305,10 @@ fi`, { signal, timeoutMs: 5000 });
 				outcome = "error";
 				meta.windlassSessionId = null;
 				message = `${said || "Windlass no longer has the session this agent was working in."}\nThe next prompt starts a new Windlass session; the files in the workspace are still there.`;
-			} else if (failure?.reason === "unreadable_session" || (failure?.reason === "open_refused" && meta.requiredChecks === false && meta.checksRecorded === true)) {
-				// The sandbox's Windlass does not read the session: it says so itself, or it is one without required checks, asked to open a session
-				// in which one with them recorded checks, which such a Windlass refuses with an internal error and nothing else. The session is kept.
+			} else if (failure?.reason === "host_tools_required") {
 				outcome = "error";
-				message = `${failure.reason === "unreadable_session" && said ? said : "The Windlass in this agent's sandbox is older than the one that last worked in this session, and does not read what that one recorded about checks."}\n${UNREADABLE_SESSION}`;
+				message = oldSandbox(meta.place.kind);
+				if (active.item) active.item.refused = message;
 			} else if (reported !== undefined && WINDLASS_OUTCOMES.includes(reported)) {
 				// Windlass's own outcome stands. If the turn failed, its events in the timeline say how.
 				outcome = reported;
@@ -3430,11 +3350,7 @@ fi`, { signal, timeoutMs: 5000 });
 		const saved = reviewer ? [] : active.secrets?.checks ?? [];
 		let verified = active.checks.verified(turn, saved, result?.checks, meta.verified ?? null);
 		if (outcome === "error" && verified.state === "stopped") verified = { ...verified, state: "failed" };
-		// The end of what the checks printed is in Windlass's record where it keeps it there, and `verified` has it; where it keeps only files in the sandbox, they are read.
-		if (!reviewer && used && active.secrets && !c.vars.stopping && !c.vars.destroying) verified = withOutputs(verified, await readCheckOutputs(c, used, active.checks.outputs(saved, result?.checks), active.secrets.redactor));
 		meta.verified = verified;
-		// A run of checks, or an ending with checks in force, on a Windlass that takes required checks: an older one no longer opens this session.
-		if (result?.checks?.required === true && (verified.run?.turn === turn || verified.state === "passed" || verified.state === "unresolved" || verified.state === "not_needed")) meta.checksRecorded = true;
 
 		c.vars.pending = [];
 		append(c, {
@@ -3652,7 +3568,7 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 			throw new UserError(`You already have ${claim.running === 1 ? "1 agent" : `${claim.running} agents`} working, which is your limit. Wait for one to finish, or stop one.`, { code: "too_many_running" });
 		}
 		claimed = true;
-		claimName = claim.claim ?? null;
+		claimName = claim.claim;
 		// Time for the sandbox to run on, and a place for one the session does not have: refused here, before anything is started.
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
@@ -3687,7 +3603,7 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 		if (claimed) {
 			publish(c);
 			// The place among the user's running sessions is handed back now (`internalReleaseRun`), by the claim's name, so that
-			// a late one cannot free a newer claim. One that does not arrive (an older server, the user's actor away) leaves it
+			// a late one cannot free a newer claim. One that does not arrive while the user's actor is away leaves it
 			// to the launch check, a minute after the claim.
 			if (claimName !== null) {
 				const released = userActor(c, meta.uid)
@@ -3953,6 +3869,8 @@ export const agentSession = actor({
 				publishUnasked: typeof input.repo === "object" && input.repo !== null && input.publishUnasked === true,
 				createdAt: input.createdAt,
 				updatedAt: input.createdAt,
+				lastUsedAt: input.createdAt,
+				serversChangedAt: input.createdAt,
 				status: "idle",
 				turns: 0,
 				lastOutcome: null,
@@ -3973,7 +3891,6 @@ export const agentSession = actor({
 		const [row] = await c.db.execute<{ data: string }>("SELECT data FROM meta WHERE id = 1");
 		const [last] = await c.db.execute<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM timeline");
 		const meta = row ? (JSON.parse(row.data) as SessionMeta) : null;
-		if (meta && meta.place === undefined) meta.place = { kind: "hosted" };
 		return {
 			meta,
 			nextSeq: (last?.seq ?? 0) + 1,
@@ -4079,8 +3996,7 @@ export const agentSession = actor({
 				(error: unknown) => c.log.warn({ msg: "could not read the deliveries that wait for a slot", error: describeError(error) }),
 			),
 		);
-		// The sandbox may have been paused, removed or left running while the actor was away. A session
-		// from before the idle checks, or one whose check was lost, gets one here.
+		// Repair a lost idle check when the actor wakes.
 		const use = useOf(meta);
 		c.vars.carried = use === null ? null : { use, gen: c.vars.sandboxGen };
 		void c.keepAwake(

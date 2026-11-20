@@ -1,7 +1,7 @@
 /** How the list of agents is grouped and folded, which pull requests a repository's page lists, and what a new agent on a repository starts with. */
 import { describe, expect, it } from "vitest";
 import type { ModelList, PlatformInfo, SandboxProfile, SessionRepository, SessionSummary } from "@contract";
-import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, checksStanding, foldGroup, groupSessions, layerChoices, openPulls, ownAgents, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile, workingCounts, workingWords } from "./repositories";
+import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, foldGroup, groupSessions, layerChoices, openPulls, ownAgents, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile, workingCounts, workingWords } from "./repositories";
 
 const repository = (id: number, owner: string, name: string, branch = "main"): SessionRepository => ({ provider: "github", id, owner, name, branch, private: true, url: `https://github.com/${owner}/${name}` });
 const harbor = repository(7101, "acme", "harbor");
@@ -98,7 +98,7 @@ describe("a long group, folded", () => {
 });
 
 describe("a repository's page", () => {
-	const pull = (number: number, state: "open" | "draft" | "merged" | "closed", pushedAt: number) => ({ number, url: `https://github.com/acme/harbor/pull/${number}`, state, title: `Pull ${number}`, branch: `windlass/${number}`, base: "main", pushedAt });
+	const pull = (number: number, state: "open" | "draft" | "merged" | "closed", pushedAt: number) => ({ number, url: `https://github.com/acme/harbor/pull/${number}`, state, title: `Pull ${number}`, branch: `windlass/${number}`, base: "main", pushedAt, verified: "1 check passed" });
 	const sessions = [
 		session({ id: "a", repository: harbor, pullRequest: pull(38, "open", 100), updatedAt: 5 }),
 		session({ id: "b", repository: harbor, pullRequest: pull(39, "merged", 300), updatedAt: 9 }),
@@ -118,14 +118,6 @@ describe("a repository's page", () => {
 		expect(openPulls(sessions, 7102).map(({ pull: one }) => one.number)).toEqual([3]);
 	});
 
-	it("says what a repository's own file can do to the checks from what each agent's sandbox said, and nothing where none has", () => {
-		const asked = (requiredChecks: boolean | undefined, sandbox: "none" | "running" | "paused" = "paused") => session({ repository: harbor, sandbox, ...(requiredChecks === undefined ? {} : { requiredChecks }) });
-		expect(checksStanding([])).toBeNull();
-		expect(checksStanding([asked(undefined), asked(true, "none")])).toBeNull();
-		expect(checksStanding([asked(true), asked(undefined), asked(true, "running")])).toBe("required");
-		expect(checksStanding([asked(false)])).toBe("replaceable");
-		expect(checksStanding([asked(false), asked(true)])).toBe("mixed");
-	});
 });
 
 describe("what a new agent on a repository starts with", () => {

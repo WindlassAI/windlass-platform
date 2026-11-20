@@ -54,18 +54,11 @@ export interface SignInStore {
 	save(row: StoredSignIn): Promise<void>;
 }
 
-export interface LegacySignIns {
-	take(uid: string): Promise<SignInMaterial | null>;
-	remove(uid: string): Promise<void>;
-	where(uid: string): string;
-}
-
 export interface SignInHolderOptions {
 	uid: string;
 	store: SignInStore;
 	commands: SignInCommands;
 	sealer: Sealer;
-	legacy?: LegacySignIns;
 	/**
 	 * The sandbox provider's part of forgetting a sign-in: it removes the token files of the user's turns
 	 * that are still running. Called after the sign-in is gone from the store.

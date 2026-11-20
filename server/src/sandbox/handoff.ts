@@ -91,38 +91,6 @@ export const NOT_SIGNED_IN = "You are not signed in with ChatGPT. Sign in with C
 export const SIGN_IN_EXPIRED = "Your ChatGPT sign-in is no longer accepted: it expired or was withdrawn. Sign in with ChatGPT again, then send the prompt once more.";
 export const TOKEN_REJECTED = "ChatGPT rejected the access token of your sign-in. Sign in with ChatGPT again, then send the prompt once more.";
 
-/**
- * What the platform needs of the image's Windlass and it may lack: the command that prints a token
- * (`windlass login token`), or that command's `--valid-for` option, which every token is asked with.
- */
-export type WindlassLack = "login token" | "--valid-for";
-
-/** What a Windlass needs for the hand-off, for messages: it can be told by `windlass login --help`. */
-export const WINDLASS_NEEDED = "`windlass login token --valid-for` (`windlass login --help` lists it)";
-
-/** The image's Windlass cannot hand a session an access token. `version` is what `windlass --version` says, when known. */
-export function outdatedWindlass(version: string | null, image: string, lack: WindlassLack = "login token"): string {
-	const lacks = lack === "login token" ? "has no `windlass login token`" : "has `windlass login token` but not its `--valid-for` option, which the platform asks for every access token with";
-	return `The Windlass in the sandbox image ${image}${version === null ? "" : ` (${version})`} ${lacks}, so the platform cannot hand a session an access token of a ChatGPT sign-in: every turn that is not a demo turn fails. Rebuild the image from a newer Windlass, one with ${WINDLASS_NEEDED}, then start the server again: WINDLASS_BINARY=/path/to/windlass-linux-<arch> sandbox/build.sh`;
-}
-
-/**
- * A sandbox made from an older image, when the image itself is new enough: its Windlass looks for a saved
- * sign-in in its data directory, which is no longer there, and does not read a handed-in token. (A
- * sandbox's own Windlass only has to read the token file: `--valid-for` is needed where tokens are
- * fetched, which is the image.)
- */
-export const OUTDATED_SANDBOX =
-	"This agent's sandbox was made from an older sandbox image: its Windlass cannot run on an access token handed to it, and a sandbox no longer holds your ChatGPT sign-in. Start a new agent to go on; this one's files stay in its workspace.";
-
-/** Thrown when a Windlass is too old for the hand-off: the image's, which the token source runs (no `login token`, or no `--valid-for`; `message` is `outdatedWindlass()`), or a sandbox's. */
-export class WindlassOutdatedError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "WindlassOutdatedError";
-	}
-}
-
 // ---------------------------------------------------------------------------------------------
 // Windlass's codes
 // ---------------------------------------------------------------------------------------------
@@ -194,27 +162,6 @@ export function handedInProblem(code: string): HandedInProblem | null {
 	return HANDED_IN.get(code) ?? (code.startsWith("handed_in_") ? "unknown" : null);
 }
 
-/**
- * The same from Windlass's words, for a failure that carries NO code at all. That is the one place where
- * words still decide, and it is only reached then: a sandbox keeps the Windlass of the image it was made
- * from, so after the image is rebuilt an older agent's sandbox can run a Windlass that reads a handed-in
- * token and does not report codes yet (the builds before 0.1.1+739e1cbc09). Its sentences are frozen with
- * that build, so reading them cannot go stale. A Windlass that gives a code is never read this way.
- *
- * `failure` is the sentence the turn failed with and `stepAuth` the message of its last model call when
- * that failed for the sign-in. Such a Windlass names the variable in everything it says about a
- * handed-in token (null when neither does: the failure is about something else), and what it found in
- * the file is in the model call's message; the provider's own message about a token it rejected is not
- * about the file. Words this does not know give `unknown`, which is told carefully instead of wrongly.
- */
-export function handedInProblemInWords(failure: string, stepAuth: string | null): HandedInProblem | null {
-	if (!failure.includes(ACCESS_TOKEN_FILE_ENV) && !(stepAuth ?? "").includes(ACCESS_TOKEN_FILE_ENV)) return null;
-	const said = stepAuth ?? failure;
-	if (/does not exist|cannot be read|is empty|holds neither/.test(said)) return "undelivered";
-	if (/expired at /.test(said)) return "expired";
-	return stepAuth !== null && !stepAuth.includes(ACCESS_TOKEN_FILE_ENV) ? "rejected" : "unknown";
-}
-
 // ---------------------------------------------------------------------------------------------
 // Failures
 // ---------------------------------------------------------------------------------------------
@@ -242,7 +189,6 @@ const sentence = (error: unknown) => (error instanceof Error ? error.message : S
 /** Why no token could be had from the token source, as `RunTurnResult.failure`. The kind of error decides, which the token source made from Windlass's code. */
 export function tokenSourceFailure(error: unknown): Failure {
 	if (error instanceof SandboxUserError) return { reason: "auth_required", message: error.message };
-	if (error instanceof WindlassOutdatedError) return { reason: "windlass_outdated", message: error.message };
 	return { reason: "token_unavailable", message: `The platform could not get an access token of your ChatGPT sign-in for this turn: ${sentence(error)}. Your sign-in is untouched; send the prompt again.` };
 }
 
@@ -293,7 +239,6 @@ export function handedInFailure(problem: HandedInProblem, state: TokenFileState,
 	if (problem === "rejected" && !ranOut) return { reason: "auth_required", message: TOKEN_REJECTED };
 	const why = state.problem ?? null;
 	if (why instanceof SandboxUserError) return { reason: "auth_required", message: why.message };
-	if (why instanceof WindlassOutdatedError) return { reason: "windlass_outdated", message: why.message };
 	if (problem === "undelivered") return { reason: "token_unavailable", message: UNDELIVERED };
 	if (!ranOut) return { reason: "token_unavailable", message: UNUSABLE };
 	if (why !== null) {

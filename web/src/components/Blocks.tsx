@@ -459,7 +459,7 @@ function subagentSaid(block: ToolBlock, run: SubagentRun): string | null {
 	return run.detail;
 }
 
-const EMPTY_TURN: TurnView = { turn: 1, blocks: [], steps: 0, interruptRequested: false, verification: null, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null };
+const EMPTY_TURN: TurnView = { turn: 1, blocks: [], steps: 0, interruptRequested: false, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null };
 
 /**
  * A call of the `subagent` tool once its subagent started: a row like any call's, whose state is the
@@ -798,13 +798,6 @@ function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
 // A turn
 // ---------------------------------------------------------------------------------------------
 
-const VERIFICATION_WORD: Record<string, string> = {
-	not_configured: "no checks configured",
-	not_needed: "checks not needed",
-	passed: "checks passed",
-	unresolved: "checks unresolved",
-};
-
 /**
  * Under a turn's closing line: what its work rests on, as the platform recorded it from Windlass's
  * checks. Which state the files are back on where no check was needed for that, a run that did not
@@ -876,8 +869,7 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 	const end = turn.end;
 	if (!end) return null;
 	const tone = OUTCOME_TONE[end.outcome];
-	// The platform's own word for how the gate ended, where the turn's item has it; Windlass's status otherwise.
-	const gate = end.verified ? gateWord(end.verified) : end.outcome !== "unresolved" && turn.verification ? (VERIFICATION_WORD[turn.verification] ?? null) : null;
+	const gate = gateWord(end.verified);
 	const steps = end.steps ?? (turn.steps > 0 ? turn.steps : null);
 	const usage = end.usage;
 	const share = end.cachedShare ?? (usage && usage.inputTokens > 0 ? usage.cachedInputTokens / usage.inputTokens : null);
@@ -896,7 +888,7 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 				{end.exitCode !== null && end.exitCode !== 0 ? <span>exit {end.exitCode}</span> : null}
 			</p>
 			{end.message ? <p className="turn-end-message">{end.message}</p> : null}
-			{end.verified ? <VerifiedLines verified={end.verified} /> : null}
+			<VerifiedLines verified={end.verified} />
 			{files && files.length > 0 ? (
 				<p className="turn-end-line turn-end-sub">
 					<span>

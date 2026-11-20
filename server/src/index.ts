@@ -25,7 +25,7 @@ import { webFiles } from "./web.js";
 import { registry } from "./registry.js";
 import type { SandboxLayer } from "./sandbox/api.js";
 import { getSignIns } from "./signin/index.js";
-import { reportWebhook, reportSignIns, startupProblem, warnAboutConnectionTokens, warnAboutWindlass } from "./startup.js";
+import { reportWebhook, startupProblem, warnAboutConnectionTokens } from "./startup.js";
 
 process.on("unhandledRejection", (reason) => {
 	console.error("[wlp] unhandled promise rejection:", reason);
@@ -58,9 +58,13 @@ if (config.browsers.tokens) {
 } else {
 	console.log(`[wlp] browsers: ${config.browsers.endpoint ?? "the endpoint the web app was built with"}, with no token (RIVET_ADMIN_TOKEN is not set)`);
 }
-// A sandbox image without Windlass, or with one too old to hand a session an access token: said now, not at the first turn.
-void warnAboutWindlass(layer);
-void reportSignIns(getSignIns, config.sandbox !== "e2b");
+const signIns = await getSignIns();
+console.log(`[wlp] sign-in commands run in ${signIns.describe}`);
+const windlassProblem = (await layer.windlass.problem()) ?? (await signIns.check());
+if (windlassProblem) {
+	console.error(`[wlp] ${windlassProblem}`);
+	process.exit(1);
+}
 // An admin token the engine refuses: said now, not to the first visitor.
 void warnAboutConnectionTokens(connectionTokens());
 

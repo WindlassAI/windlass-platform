@@ -12,17 +12,13 @@ export function gateWord(verified: Verified): string | null {
 		case "passed":
 			return "checks passed";
 		case "not_needed":
-			return verified.unneeded?.reason === "not_covered" ? "no check covers the changes" : "checks not needed";
+			return verified.unneeded.reason === "not_covered" ? "no check covers the changes" : "checks not needed";
 		case "none_set":
 			return "no checks set";
 		case "off":
 			return "verification turned off by the repository's file";
-		case "emptied":
-			return "the repository's file names an empty list of checks";
 		case "no_sandbox":
 			return "checks could not run in this sandbox";
-		case "not_handed":
-			return "your checks could not be handed over";
 		case "not_in_force":
 			return "no checks in force";
 		case "unresolved":
@@ -71,8 +67,8 @@ export function unresolvedLine(verified: Verified): string | null {
 
 /** Where no check was needed because of the state the files are in: which state, and what verified it; null for a turn that changed no file, and where Windlass does not say. */
 export function unneededLine(verified: Verified): string | null {
+	if (verified.state !== "not_needed" || verified.unneeded.reason === "turn_unchanged") return null;
 	const { unneeded, run } = verified;
-	if (verified.state !== "not_needed" || !unneeded || unneeded.reason === "turn_unchanged") return null;
 	const passed = unneeded.on === "run" && run !== null ? `, in turn ${run.turn}` : null;
 	if (unneeded.reason === "state_unchanged")
 		return passed !== null ? `the files the checks cover are again as they were when the checks last passed${passed}` : unneeded.on === "start" ? "the files the checks cover are again as they were when the session started, a state no check has verified" : "the turn changed files and left them as they were before";
@@ -84,7 +80,6 @@ export function unrunLine(verified: Verified): string | null {
 	if (verified.unrun.length === 0) return null;
 	const names = verified.unrun.map((check) => check.name).join(", ");
 	const many = verified.unrun.length > 1;
-	if (verified.replaced) return `${names}: the repository's .windlass/config.json names checks of its own, which Windlass follows in place of yours`;
 	if (verified.state === "passed" || verified.state === "unresolved") return `${names}: no changed file matches ${many ? "their" : "its"} patterns`;
 	if (verified.state === "not_needed") return `${names}: the turn changed nothing ${many ? "they cover" : "it covers"}`;
 	if (verified.state === "stopped" || verified.state === "failed") return `${names}: the turn ended before ${many ? "they" : "it"} ran`;

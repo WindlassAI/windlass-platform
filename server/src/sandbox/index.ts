@@ -87,8 +87,6 @@ export async function createE2bLayer(): Promise<SandboxLayer> {
 		logins: signIns.logins,
 		tokens: signIns.tokens,
 		backups: await backupsFromConfig(),
-		// Where Windlass's sign-in commands run is the server's to configure (WLP_WINDLASS_BIN, signin/index.ts): no image of the sandboxes is on this machine.
-		problem: async () => (await import("../signin/index.js")).signInProblem(),
 	});
 }
 

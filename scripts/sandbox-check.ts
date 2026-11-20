@@ -18,7 +18,7 @@
  *     Windlass, inside the same container, and answers the refresh with tokens that are as fake, or with
  *     a refusal;
  *   - every turn is scripted with WINDLASS_ACP_SCRIPT, except those of the sections `failures`,
- *     `hand-off`, `valid-for` and `old image` that are handed a (fake) access token or must fail for want of one.
+ *     `hand-off` and `valid-for` that are handed a (fake) access token or must fail for want of one.
  *     Each of those runs in a sandbox that was first cut off from every network and shown to be, so
  *     Windlass could reach no model whatever it tried;
  *   - `finish` is tried only with addresses Windlass rejects before any network request.
@@ -37,7 +37,7 @@
 
 import { imageId } from "./check-image.js";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,14 +46,13 @@ import { type AccessToken, type AccessTokens, type RunTurnResult, type ScriptedM
 import { AcpConnection, AcpError, LineSplitter } from "../server/src/sandbox/acp.js";
 import { DEMO_SCENARIOS, DEMO_SPARE_ANSWERS } from "../server/src/sandbox/demo.js";
 import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, PROCESS_MARK, docker, helperFlags, randomId, runHelper, tmpName } from "../server/src/sandbox/docker.js";
-import { ACCESS_TOKEN_FILE_ENV, NOT_SIGNED_IN, OUTDATED_SANDBOX, SIGN_IN_EXPIRED, SignInRefreshError, TOKEN_REJECTED, TOKEN_REPLACE_LEAD_MS, TOKEN_VALID_FOR_MS, loginTokenCommand } from "../server/src/sandbox/handoff.js";
+import { ACCESS_TOKEN_FILE_ENV, NOT_SIGNED_IN, SIGN_IN_EXPIRED, SignInRefreshError, TOKEN_REJECTED, TOKEN_REPLACE_LEAD_MS, TOKEN_VALID_FOR_MS, loginTokenCommand } from "../server/src/sandbox/handoff.js";
 import { createSandboxLayer } from "../server/src/sandbox/index.js";
 import { type DockerSandboxHandle, DockerSandboxes, containerName } from "../server/src/sandbox/sandboxes.js";
 import { TOKEN_REMOVED, tokenFilePath } from "../server/src/sandbox/token-file.js";
 import { ensureDataVolume } from "../server/src/sandbox/volumes.js";
 import type { SignInMaterial } from "../server/src/signin/material.js";
 import { DockerWindlass } from "../server/src/sandbox/windlass.js";
-import { warnAboutWindlass } from "../server/src/startup.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 /** This machine's architecture as Windlass's builds name it. */
@@ -71,14 +70,12 @@ const uid = `chk-${run}`;
 const uid2 = `chk-${run}-b`;
 /** A user with no sign-in at all, for the turn that must fail for want of one. */
 const uid3 = `chk-${run}-n`;
-/** The users of the token source, of the hand-off (two), of the old images (two) and of `--valid-for`. */
+/** The users of the token source, of the hand-off (two) and of `--valid-for`. */
 const uidT = `chk-${run}-t`;
 const uidH = `chk-${run}-h`;
 const uidD = `chk-${run}-d`;
-const uidO = `chk-${run}-o`;
-const uidO2 = `chk-${run}-o2`;
 const uidV = `chk-${run}-v`;
-const allUids = [uid, uid2, uid3, uidT, uidH, uidD, uidO, uidO2, uidV];
+const allUids = [uid, uid2, uid3, uidT, uidH, uidD, uidV];
 /** The volume the stand-in for OpenAI's token endpoint reads its plan from and notes its requests in (see STANDIN). */
 const STANDIN_VOLUME = `wlp-standin-chk-${run}`;
 /** Throwaway images this run built. */
@@ -341,7 +338,7 @@ def send(message):
 for line in sys.stdin:
     message = json.loads(line)
     if message.get("method") == "initialize":
-        send({"jsonrpc": "2.0", "id": message["id"], "result": {"protocolVersion": 1, "agentCapabilities": {"_meta": {"windlass": {"notifications": ["_windlass/event"]}}}}})
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"protocolVersion": 1, "agentCapabilities": {"_meta": {"windlass": {"openMeta": ["hostTools"], "notifications": ["_windlass/event"]}}}}})
     elif message.get("method") == "session/new":
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"sessionId": "ses_deaf"}})
     elif message.get("method") == "session/prompt":
@@ -370,7 +367,7 @@ for line in sys.stdin:
     message = json.loads(line)
     method = message.get("method")
     if method == "initialize":
-        send({"jsonrpc": "2.0", "id": message["id"], "result": {"protocolVersion": 1, "agentCapabilities": {"_meta": {"windlass": {"notifications": ["_windlass/event"]}}}}})
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"protocolVersion": 1, "agentCapabilities": {"_meta": {"windlass": {"openMeta": ["hostTools"], "notifications": ["_windlass/event"]}}}}})
     elif method == "session/new":
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"sessionId": "ses_coded"}})
     elif method == "session/prompt":
@@ -707,16 +704,15 @@ async function main(): Promise<void> {
 			if ((process.env.WINDLASS_BINARY ?? "") !== "") info("SKIP  which binary build.sh takes by default: WINDLASS_BINARY is set");
 			else {
 				expect(
-					"without WINDLASS_BINARY build.sh takes the released Windlass that fetch-windlass.sh pins, and has nothing to warn about",
-					new RegExp(`building ${baseTag} with \\S+/windlass-v\\d+\\.\\d+\\.\\d+/windlass-linux-${ARCH}`).test(stderr) && !/WARNING/.test(stderr),
+					"without WINDLASS_BINARY build.sh takes the released Windlass that fetch-windlass.sh pins",
+					new RegExp(`building ${baseTag} with \\S+/windlass-v\\d+\\.\\d+\\.\\d+/windlass-linux-${ARCH}`).test(stderr),
 					stderr.trim().split("\n")[0] ?? "",
 				);
 			}
 			const version = await layer.windlass.version();
 			expect("windlass.version() reports the same version", version === printed, String(version));
 			const problem = await layer.windlass.problem();
-			expect("windlass.problem() finds nothing wrong: this Windlass can hand a session an access token that is good for a while yet (`login token --valid-for`)", problem === null, problem ?? "");
-			expect("the server would start without a warning about it", (await warnAboutWindlass(layer, () => undefined)) === null);
+			expect("the sandbox image meets the Windlass version requirement", problem === null, problem ?? "");
 			const size = await docker(["image", "inspect", "--format", "{{.Size}}", image]);
 			info(`image size ${(Number(size.stdout.trim()) / 1e6).toFixed(0)} MB`);
 		});
@@ -1536,7 +1532,7 @@ async function main(): Promise<void> {
 		expect("status() is null for a user who never signed in", (await layer.logins.status(`chk-${run}-nobody`)) === null && storedSignIn(`chk-${run}-nobody`) === null);
 		await layer.logins.ensureUserVolume(uid2);
 		await layer.logins.ensureUserVolume(uid2);
-		expect("ensureUserVolume() creates an empty data volume (idempotent) and nothing for a sign-in, as for a demo user; status() is null", (await layer.logins.status(uid2)) === null && (await lsVolume(`wlp-user-${uid2}`)) === "" && (await volumeGone(`wlp-auth-${uid2}`)));
+		expect("ensureUserVolume() creates an empty data volume (idempotent) and nothing for a sign-in, as for a demo user; status() is null", (await layer.logins.status(uid2)) === null && (await lsVolume(`wlp-user-${uid2}`)) === "");
 
 		// A finished attempt, simulated: the synthetic auth.json Windlass would have saved, sealed as `finish` hands it back.
 		const expiresAt = Date.now() + 3_600_000;
@@ -1544,8 +1540,8 @@ async function main(): Promise<void> {
 		const account = await layer.logins.status(uid2);
 		const row = storedSignIn(uid2);
 		expect(
-			"adopt() puts the sign-in in the user's store, sealed for that user: no volume holds it, the data volume gets nothing, and what is stored shows no token and no account",
-			row?.sealed != null && !SECRET.test(row.sealed) && !row.sealed.includes("fake-sub-123") && !row.sealed.includes("fake.user") && (await volumeGone(`wlp-auth-${uid2}`)) && (await volumeGone(`wlp-login-${attempt}`)) && (await lsVolume(`wlp-user-${uid2}`)) === "",
+			"adopt() puts the sign-in in the user's store, sealed for that user: the data volume gets nothing, and what is stored shows no token and no account",
+			row?.sealed != null && !SECRET.test(row.sealed) && !row.sealed.includes("fake-sub-123") && !row.sealed.includes("fake.user") && (await lsVolume(`wlp-user-${uid2}`)) === "",
 			`${row?.sealed?.length ?? 0} characters stored`,
 		);
 		expect("status() reports sub, email and expiry only", JSON.stringify(account) === JSON.stringify({ sub: "fake-sub-123", email: "fake.user@example.invalid", accessExpiresAt: expiresAt }) && !JSON.stringify(account).includes("FAKE-"), JSON.stringify(account));
@@ -1578,16 +1574,14 @@ async function main(): Promise<void> {
 			`wlp-user-${uid2}: ${await lsVolume(`wlp-user-${uid2}`)}`,
 		);
 		await layer.logins.logout(`chk-${run}-nobody`);
-		expect("logout() of a user without a sign-in is a no-op and makes no volume", (await volumeGone(`wlp-auth-chk-${run}-nobody`)) && (await volumeGone(`wlp-user-chk-${run}-nobody`)));
+		expect("logout() of a user without a sign-in is a no-op and makes no volume", (await volumeGone(`wlp-user-chk-${run}-nobody`)));
 
 		const attempt3 = `chk${run}c`;
 		const once = await layer.logins.start(attempt3);
 		const twice = await layer.logins.start(attempt3);
-		const leftovers = (await listOurs()).volumes.filter((name) => name.startsWith("wlp-login-"));
 		expect(
-			"start() again restarts an attempt with a new pending sign-in; an attempt is nothing but its blob, so there is nothing to discard",
-			new URL(once.url).searchParams.get("state") !== new URL(twice.url).searchParams.get("state") && once.attempt !== twice.attempt && leftovers.length === 0,
-			leftovers.join(", ") || "no attempt volumes",
+			"start() again issues a new pending sign-in",
+			new URL(once.url).searchParams.get("state") !== new URL(twice.url).searchParams.get("state") && once.attempt !== twice.attempt,
 		);
 	});
 
@@ -1969,14 +1963,14 @@ async function main(): Promise<void> {
 				`${turnedDown.result.failure?.reason}: ${turnedDown.result.failure?.message} (Windlass's code: ${lastStepCode(turnedDown)}; Windlass itself said: ${said})`,
 			);
 		}
-		// The same from a scripted model, which stands in for the provider as a whole. Windlass ends that turn with
-		// its sentence about the handed-in token too, but gives the failure no code (only its own provider's
-		// rejections get one), so this is told by the fallback for a failure without a code; the result is the same.
+		// Windlass reports an auth failure for a scripted provider without a token-specific error code.
 		const rejected = await scriptedOnToken(direct, "Fail.", { responses: [[{ type: "fail", kind: "auth", message: "the scripted provider rejected the token" }]] });
 		const rejectedSaid = String(dataOf(ofType(rejected.events, "execution.failed")[0]).message ?? "");
 		expect(
-			"a scripted model's rejection on a handed-in token ends the turn the same way: `auth_required`, sign in with ChatGPT again",
-			rejected.result.failure?.reason === "auth_required" && rejected.result.failure.message === TOKEN_REJECTED && lastStepError(rejected) === "auth" && rejectedSaid.includes(ACCESS_TOKEN_FILE_ENV) && outcomeOf(rejected) === "failed",
+			"an auth failure without a token-specific code keeps Windlass's message",
+			rejected.result.failure?.reason === "auth_required" && rejected.result.failure.message === rejectedSaid &&
+				lastStepCode(rejected) === "none" && lastStepError(rejected) === "auth" && rejectedSaid.includes(ACCESS_TOKEN_FILE_ENV) &&
+				outcomeOf(rejected) === "failed" && !leaks(rejected),
 			`${rejected.result.failure?.message} (Windlass's code: ${lastStepCode(rejected)}; Windlass itself said: ${rejectedSaid})`,
 		);
 
@@ -2090,20 +2084,6 @@ async function main(): Promise<void> {
 					plan: { ...auth, code: "handed_in_by_a_newer_windlass", stepCode: "handed_in_by_a_newer_windlass", stepSays: expiredWords },
 					reason: "token_unavailable",
 					message: /^Windlass could not use the access token the platform handed it for this turn\. Send the prompt again; if it ends the same way, sign in with ChatGPT again\.$/,
-					asksAgain: false,
-				},
-				{
-					name: "no code at all (an older Windlass), and its words for a file that does not exist: there, and only there, the words are read, `token_unavailable`",
-					plan: { ...auth, stepSays: missingWords },
-					reason: "token_unavailable",
-					message: /^Windlass could not read the access token the platform handed it/,
-					asksAgain: true,
-				},
-				{
-					name: "no code at all, and words about the variable that no Windlass says: the same careful sentence as for an unknown code",
-					plan: { ...auth, stepSays: `no usable access token: ${ACCESS_TOKEN_FILE_ENV} is not as this check's stand-in likes it` },
-					reason: "token_unavailable",
-					message: /^Windlass could not use the access token the platform handed it for this turn\./,
 					asksAgain: false,
 				},
 			];
@@ -2452,118 +2432,9 @@ async function main(): Promise<void> {
 		expect("the throwaway image is removed again", removed && (await idOf(tag)) === "");
 	});
 
-	await section("old image", async () => {
-		// Two kinds of Windlass that are too old for the hand-off, each built into a throwaway image of its own.
-		const kinds = [
-			{ what: "no `login token`", binary: `/home/ubuntu/projects/light-harness/dist/windlass-linux-${ARCH}`, tag: `windlass-platform-sandbox-old:chk-${run}`, user: uidO, sessionId: "check-old-image", lack: "has no `windlass login token`", refusal: /unknown login command|unknown option --json/, reads: false },
-			{ what: "`login token` but not `--valid-for`", binary: `/home/ubuntu/projects/wt-windlass-token-handoff/dist/windlass-linux-${ARCH}`, tag: `windlass-platform-sandbox-mid:chk-${run}`, user: uidO2, sessionId: "check-mid-image", lack: "has `windlass login token` but not its `--valid-for` option", refusal: /unknown option --valid-for/, reads: true },
-		];
-		const idOf = async (image: string) => (await docker(["image", "inspect", "--format", "{{.Id}}", image])).stdout.trim();
-		for (const kind of kinds) {
-			const { tag } = kind;
-			if (!existsSync(kind.binary)) {
-				info(`SKIP  an image whose Windlass has ${kind.what}: there is no such build at ${kind.binary}`);
-				continue;
-			}
-
-			createdImages.add(tag);
-			const built = spawnSync(join(root, "sandbox/build.sh"), { env: { ...process.env, WLP_SANDBOX_IMAGE: tag, WINDLASS_BINARY: kind.binary }, encoding: "utf8" });
-			const version = built.stdout.trim().split("\n").pop() ?? "";
-			expect(
-				`build.sh builds a Windlass with ${kind.what} into a throwaway image of its own, and warns that it cannot hand a session a token, with what it lacks and what is needed`,
-				built.status === 0 && built.stderr.includes(`WARNING: this Windlass ${kind.lack}`) && /Rebuild from a newer Windlass, one with\s+build\.sh:\s+`windlass login token --valid-for`/.test(built.stderr) && (await idOf(tag)) !== "",
-				`${tag}, Windlass ${version}`,
-			);
-			// What that Windlass says to the command with and without the option, where nobody is signed in.
-			const [plainName, optionName] = [tmpName(), tmpName()];
-			const plain = await runHelper(helperFlags(plainName, "none"), plainName, ["windlass", "login", "token", "--json"], { image: tag });
-			const option = await runHelper(helperFlags(optionName, "none"), optionName, loginTokenCommand(), { image: tag });
-			expect(
-				kind.reads ? "that Windlass does have `login token` (exit code 1: nobody is signed in) and refuses its `--valid-for` (exit code 2)" : "that Windlass refuses `login token` itself, with or without the option (exit code 2)",
-				plain.code === (kind.reads ? 1 : 2) && option.code === 2 && kind.refusal.test(option.stderr),
-				`without the option: exit ${plain.code}; with it: exit ${option.code}, ${option.stderr.trim().split("\n")[0]}`,
-			);
-			const old = createSandboxLayer({ image: tag, signIns: "memory", tokenNetwork: "none" });
-			const problem = await old.windlass.problem();
-			expect(
-				"windlass.problem() says what that image lacks and what to do: rebuild it from a Windlass with `login token --valid-for`",
-				problem !== null && problem.includes(tag) && problem.includes(version) && problem.includes(kind.lack) && /Rebuild the image from a newer Windlass, one with `windlass login token --valid-for` \(`windlass login --help` lists it\).*WINDLASS_BINARY=.* sandbox\/build\.sh/.test(problem),
-				problem ?? "null",
-			);
-			const lines: string[] = [];
-			const warned = await warnAboutWindlass(old, (line) => lines.push(line));
-			expect("at start-up the server prints that sentence as a warning", warned === `[wlp] WARNING: ${problem}` && lines.length === 1 && lines[0] === warned, warned?.slice(0, 110) ?? "nothing");
-
-			await signInFake(kind.user, TOKEN_A, Date.now() + 3_600_000);
-			const refused = await old.tokens.current(kind.user).then(
-				() => null,
-				(error: unknown) => error,
-			);
-			expect("its token source fails with the same sentence, and not as the user's doing", refused instanceof Error && !(refused instanceof SandboxUserError) && refused.message === problem && old.tokens.asked === 1);
-			const handle = await offlineSandbox(kind.user, "docker-hardened", kind.sessionId, old);
-			if (handle !== null) {
-				const image = await docker(["container", "inspect", "--format", "{{.Config.Image}}", handle.container]);
-				const failed = await turn(handle, "Hello?", null, { windlass: old.windlass });
-				expect(
-					"a turn on a ChatGPT sign-in fails in that image as `windlass_outdated`, with the same sentence, before Windlass starts and without a token being asked for",
-					image.stdout.trim() === tag && failed.result.failure?.reason === "windlass_outdated" && failed.result.failure.message === problem && failed.events.length === 0 && failed.result.exitCode === null && !failed.result.aborted && old.tokens.asked === 1,
-					`${failed.result.failure?.reason}: ${failed.result.failure?.message.slice(0, 130)}…`,
-				);
-				const demo = await turn(handle, "A demo turn.", plainScript, { windlass: old.windlass });
-				expect("a scripted (demo) turn still works in it", outcomeOf(demo) === "succeeded" && demo.result.failure === null, `${demo.durationMs} ms`);
-				// The image was rebuilt since, but this sandbox was made before: the server's layer, the old container.
-				layer.tokens.forget(kind.user);
-				const askedBefore = layer.tokens.asked;
-				if (!kind.reads) {
-					const behind = await turn(handle, "Hello?", null);
-					const behindAgain = await turn(handle, "Hello?", null);
-					expect(
-						"a sandbox left over from that image, once the image is new: a turn on a ChatGPT sign-in fails as `windlass_outdated` and asks for a new agent, and no token is fetched for it or written into it",
-						behind.result.failure?.reason === "windlass_outdated" && behind.result.failure.message === OUTDATED_SANDBOX && /Start a new agent/.test(OUTDATED_SANDBOX) && behindAgain.result.failure?.message === OUTDATED_SANDBOX && behind.events.length === 0 && layer.tokens.asked === askedBefore && !(await handle.run(DATA_LS)).stdout.includes("access-token"),
-						`${behind.result.failure?.reason}: ${behind.result.failure?.message}`,
-					);
-				} else {
-					// Its own Windlass only has to read the token, which this one does: the option is needed where tokens are fetched.
-					const handedFrom = wlpLines.length;
-					const controller = new AbortController();
-					const fine = await turn(handle, "Hello?", null, {
-						signal: controller.signal,
-						onEvent: (event) => {
-							if (event.type === "step.started") controller.abort();
-						},
-					});
-					const handed = wlpLines.slice(handedFrom).filter((line) => line.includes("token.handed") && line.includes(`sandbox=${handle.id}`));
-					expect(
-						"a sandbox left over from that image, once the image is new, is not behind: its Windlass reads a handed-in token, so the turn is handed one and its engine starts (the turn is stopped at its first model call)",
-						handed.length === 1 && fine.result.failure === null && fine.result.aborted && ofType(fine.events, "execution.started").length === 1 && layer.tokens.asked === askedBefore + 1 && !leaks(fine) && !(await handle.run(DATA_LS)).stdout.includes("access-token"),
-						`${fine.events.length} events, ${fine.result.aborted ? "stopped" : `ended: ${fine.result.failure?.reason}`}`,
-					);
-					// That Windlass gives its failures no code. For it alone the platform still reads the words, and tells the
-					// user the same as with a Windlass that has codes.
-					let removing: Promise<unknown> | null = null;
-					const wordy = await turn(handle, "Hello, with a file that goes missing?", null, {
-						onEvent: (event) => {
-							if (event.type === "retry.scheduled") removing ??= handle.removeFiles([tokenFilePath(handle.id)]);
-						},
-					});
-					expect(
-						"that older Windlass reports a token file that went missing without any code, and there the platform falls back on its words: the turn ends as `token_unavailable`, as it does with a Windlass that gives the code",
-						removing !== null && lastStepCode(wordy) === "none" && lastStepError(wordy) === "auth" && wordy.result.failure?.reason === "token_unavailable" && /^Windlass could not read the access token the platform handed it/.test(wordy.result.failure.message) && !/sign in/i.test(wordy.result.failure.message) && !leaks(wordy) && !(await handle.run(DATA_LS)).stdout.includes("access-token"),
-						`${wordy.result.failure?.reason}: ${wordy.result.failure?.message} (the code of its failed model call: ${lastStepCode(wordy)})`,
-					);
-				}
-				await old.sandboxes.destroy(handle.id);
-				createdSandboxes.delete(handle.id);
-			}
-			const removed = await removeImage(tag);
-			if (removed) createdImages.delete(tag);
-			expect("the throwaway image is removed again", removed && (await idOf(tag)) === "");
-		}
-	});
-
 	await section("cleanup", async () => {
 		for (const id of createdSandboxes) await layer.sandboxes.destroy(id);
-		for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}`, `wlp-auth-${user}`]);
+		for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}`]);
 		await docker(["volume", "rm", "-f", STANDIN_VOLUME]);
 		for (const image of createdImages) await removeImage(image);
 		const now = await listOurs();
@@ -2593,7 +2464,7 @@ async function emergencyCleanup(): Promise<void> {
 	for (const id of createdSandboxes) await docker(["rm", "-f", `wlp-session-${id}`]).catch(() => undefined);
 	const tmp = await docker(["ps", "-aq", "--filter", `label=${LABEL_ARG}`, "--filter", `name=^wlp-tmp-${PROCESS_MARK}-`]);
 	if (tmp.stdout.trim() !== "") await docker(["rm", "-f", ...tmp.stdout.trim().split("\n")]);
-	for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}`, `wlp-auth-${user}`]).catch(() => undefined);
+	for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}`]).catch(() => undefined);
 	await docker(["volume", "rm", "-f", STANDIN_VOLUME]).catch(() => undefined);
 	for (const image of createdImages) await removeImage(image).catch(() => undefined);
 }

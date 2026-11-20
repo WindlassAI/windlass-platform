@@ -32,7 +32,7 @@ import { MATERIAL_FILES, MAX_MATERIAL_FILE_BYTES, NO_MATERIAL, type SignInMateri
 import type { LoginCommand, LoginRun, LoginRunner, TokenCommand, TokenRun } from "../signin/runner.js";
 import type { AccessToken } from "./api.js";
 import { IMAGE, docker, helperFlags, tmpName } from "./docker.js";
-import { ACCESS_TOKEN_FILE_ENV, type WindlassLack, outdatedWindlass, tokenFileContent } from "./handoff.js";
+import { ACCESS_TOKEN_FILE_ENV, tokenFileContent } from "./handoff.js";
 import { probeImage } from "./tokens.js";
 
 /**
@@ -161,11 +161,7 @@ export class DockerLoginRunner implements LoginRunner {
 	}
 
 	async version(): Promise<string | null> {
-		return (await probeImage(this.image).catch(() => null))?.version ?? null;
-	}
-
-	async outdated(lack: WindlassLack): Promise<string> {
-		return outdatedWindlass(await this.version(), this.image, lack);
+		return probeImage(this.image);
 	}
 }
 

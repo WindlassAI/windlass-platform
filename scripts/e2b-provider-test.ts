@@ -93,7 +93,7 @@ const SETTINGS: E2bSettings = {
 
 /** A machine that answers as the sandbox image would to what the provider itself runs. */
 function imageLike(extra: (command: string, stdin: () => string) => { exitCode?: number; stdout?: string; stderr?: string } | undefined = () => undefined): ScriptedMachine {
-	return new ScriptedMachine((command, stdin) => extra(command, stdin) ?? (command.includes("windlass --version") ? { stdout: "Windlass 0.1.1+test (linux-x64)\n" } : command.includes("wlp-run list") && command.includes("wc -l") ? { stdout: "0\n" } : undefined));
+	return new ScriptedMachine((command, stdin) => extra(command, stdin) ?? (command.includes("windlass --version") ? { stdout: "Windlass 0.4.0+test (linux-x64)\n" } : command.includes("wlp-run list") && command.includes("wc -l") ? { stdout: "0\n" } : undefined));
 }
 
 /** A provider on a fake E2B, with a clock of its own and its log lines kept. */
@@ -175,7 +175,7 @@ await section("create", async () => {
 		init !== undefined && /^wlp-run exec r[a-f0-9]{12} sh -c 'git init -q && git commit -q --allow-empty -m "Empty workspace" && windlass --version'$/.test(init.command) && init.options.cwd === "/workspace",
 		init?.command,
 	);
-	expect("the Windlass in the template is noted from the first sandbox", versions.join() === "0.1.1+test");
+	expect("the Windlass in the template is noted from the first sandbox", versions.join() === "0.4.0+test");
 	expect("a line says it was created, and how many run", lines.some((line) => line.startsWith(`[wlp] e2b.sandbox.created id=${id} uid=user-1 session=session-1`) && line.includes("1 of at most 2 running")), lines.join(" | "));
 	expect("the handle is one the turn code takes", isTurnSandbox((await sandboxes.connect(id))!));
 	const refused = await userError(() => sandboxes.create({ uid: "user-1", sessionId: "s", profile: "docker-hardened" }));
@@ -564,8 +564,8 @@ await section("settings and prices", async () => {
 		defaults.maxRunning === 3 && defaults.idleTimeoutMs === 2 * MINUTE && defaults.turnLeaseMs === 3 * MINUTE && defaults.maxRuntimeMs === 60 * MINUTE && defaults.pause && !defaults.windlassSandbox && defaults.deployment === "default" && defaults.template === "windlass-platform-sandbox",
 		JSON.stringify(defaults),
 	);
-	const set = readE2bSettings({ WLP_E2B_MAX_RUNNING: "1", WLP_E2B_DEPLOYMENT: "prod-1", WLP_E2B_IDLE_TIMEOUT_MS: "60000", WLP_E2B_PAUSE: "0", WLP_E2B_WINDLASS_SANDBOX: "1", WLP_TURN_TIMEOUT_MS: "600000", WLP_E2B_WINDLASS_VERSION: "0.1.1+abc" });
-	expect("every one of them is read from the environment", set.maxRunning === 1 && set.deployment === "prod-1" && set.idleTimeoutMs === 60_000 && !set.pause && set.windlassSandbox && set.turnLimitMs === 600_000 && set.windlassVersion === "0.1.1+abc");
+	const set = readE2bSettings({ WLP_E2B_MAX_RUNNING: "1", WLP_E2B_DEPLOYMENT: "prod-1", WLP_E2B_IDLE_TIMEOUT_MS: "60000", WLP_E2B_PAUSE: "0", WLP_E2B_WINDLASS_SANDBOX: "1", WLP_TURN_TIMEOUT_MS: "600000", WLP_E2B_WINDLASS_VERSION: "0.4.0+abc" });
+	expect("every one of them is read from the environment", set.maxRunning === 1 && set.deployment === "prod-1" && set.idleTimeoutMs === 60_000 && !set.pause && set.windlassSandbox && set.turnLimitMs === 600_000 && set.windlassVersion === "0.4.0+abc");
 	expect("the turn limit is read as the server's own settings read it: the whole text as a number", readE2bSettings({ WLP_TURN_TIMEOUT_MS: "1e6" }).turnLimitMs === 1_000_000 && readE2bSettings({ WLP_TURN_TIMEOUT_MS: " 90000 " }).turnLimitMs === 90_000);
 	const rejects = (env: NodeJS.ProcessEnv) => {
 		try {
@@ -733,13 +733,6 @@ if (withDocker) {
 			const log = await handle.run("git log --oneline | wc -l; git status --short | wc -l; whoami; pwd; echo $LANG $NO_COLOR");
 			expect("a new sandbox has an empty git repository in /workspace, and commands run as agent with the image's environment", log.exitCode === 0 && log.stdout.trim().split(/\s+/).join(" ") === "1 0 agent /workspace C.UTF-8 1", log.stdout.trim());
 			expect("the Windlass version is known once a sandbox was made", version !== null && /^\d+\.\d+\.\d+/.test(version), String(version));
-			const features = await layer.windlass.features(handle);
-			expect(
-				"the sandbox's Windlass says what a session can be opened with (the image's has the session's home and the lists of variable names), and the engine started to ask it is gone",
-				features.sessionHome && features.envLists && (await stray(container)).length === 0,
-				`${JSON.stringify(features)}; ${(await stray(container)).join(" ; ")}`,
-			);
-
 			const odd = ["a b", "it's", "$HOME", 'x"y', "`uname`", "", "é✓", "a\nb", "*", "~", "; echo no"];
 			const echoed = await handle.exec(["printf", "[%s]", ...odd]);
 			expect("every argument arrives as it was given, whatever is in it", echoed.exitCode === 0 && echoed.stdout === odd.map((item) => `[${item}]`).join(""), echoed.stdout);

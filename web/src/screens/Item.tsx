@@ -510,12 +510,8 @@ function gateWords(gate: Verdict["gate"]): string {
 			return "None saved for this repository. CI decides.";
 		case "off":
 			return "The repository's own file turned verification off.";
-		case "emptied":
-			return "The repository's own file names an empty list of checks.";
 		case "no_sandbox":
 			return "Checks could not run in this sandbox.";
-		case "not_handed":
-			return "Your checks could not be handed to the agent's sandbox.";
 		case "not_in_force":
 			return "No checks were in force.";
 		case "stopped":

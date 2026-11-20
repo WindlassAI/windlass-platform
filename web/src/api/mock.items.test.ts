@@ -21,7 +21,8 @@ function gateOf(seed: SeedVerdict): GateEvidence | null {
 	if (seed.gate.state === null) return null;
 	const check = (name: string, whose: VerifiedCheck["whose"], status: VerifiedCheck["status"], sentBack: number): VerifiedCheck => ({ name, command: `run ${name}`, whose, status, exitCode: status === "passed" ? 0 : 1, durationMs: 1000, sentBack });
 	const checks = [...seed.gate.required.map((one) => check(one.name, "user", one.status, one.sentBack)), ...Array.from({ length: seed.repositoryChecks ?? 0 }, (_, index) => check(`own ${index + 1}`, "repository", "passed", 0))];
-	const verified: Verified = { turn: 1, state: seed.gate.state, run: checks.length > 0 ? { turn: 1, at: 0, checks } : null, unrun: [], replaced: false, changedAfter: false, ...(seed.gate.unneeded ? { unneeded: seed.gate.unneeded } : {}) };
+	const ending = seed.gate.state === "not_needed" ? { state: seed.gate.state, unneeded: seed.gate.unneeded! } : { state: seed.gate.state };
+	const verified: Verified = { ...ending, turn: 1, run: checks.length > 0 ? { turn: 1, at: 0, seq: 1, checks } : null, unrun: [], changedAfter: false };
 	return { outcome: seed.gate.state === "stopped" ? "stopped" : "succeeded", verified, flags: seed.flags };
 }
 

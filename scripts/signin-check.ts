@@ -45,7 +45,7 @@ import { fileURLToPath } from "node:url";
 import { createClient, type Registry } from "../server/src/client.js";
 import { config } from "../server/src/config.js";
 import { type AccessToken, SandboxUserError } from "../server/src/sandbox/api.js";
-import { NOT_SIGNED_IN, SIGN_IN_EXPIRED, SignInRefreshError, TOKEN_VALID_FOR_MS, WindlassOutdatedError } from "../server/src/sandbox/handoff.js";
+import { NOT_SIGNED_IN, SIGN_IN_EXPIRED, SignInRefreshError, TOKEN_VALID_FOR_MS } from "../server/src/sandbox/handoff.js";
 import { type SignInCommands, type TokenAnswer, WindlassSignIns } from "../server/src/signin/commands.js";
 import { ActorSignInDirectory, errorOf, problemOf, tokenSubject } from "../server/src/signin/directory.js";
 import { memorySignIns } from "../server/src/signin/facade.js";
@@ -419,10 +419,10 @@ async function main(): Promise<void> {
 		}
 		expect("a secret that is too short to derive a key from is refused", /at least 16 bytes/.test(short));
 		// How a failure crosses from an actor to the server that asked: by its kind.
-		const crossed = [new SandboxUserError(NOT_SIGNED_IN), new WindlassOutdatedError("too old"), new SignInRefreshError("no network", "network_error"), new Error("something else")].map((error) => errorOf(JSON.parse(JSON.stringify(problemOf(error)))));
+		const crossed = [new SandboxUserError(NOT_SIGNED_IN), new SignInRefreshError("no network", "network_error"), new Error("something else")].map((error) => errorOf(JSON.parse(JSON.stringify(problemOf(error)))));
 		expect(
 			"a failure of the sign-in keeps its kind, its sentence and Windlass's code on the way from the user's actor to the server that asked",
-			crossed[0] instanceof SandboxUserError && crossed[0].message === NOT_SIGNED_IN && crossed[1] instanceof WindlassOutdatedError && crossed[2] instanceof SignInRefreshError && crossed[2].code === "network_error" && !(crossed[3] instanceof SandboxUserError) && crossed[3]!.message === "something else",
+			crossed[0] instanceof SandboxUserError && crossed[0].message === NOT_SIGNED_IN && crossed[1] instanceof SignInRefreshError && crossed[1].code === "network_error" && !(crossed[2] instanceof SandboxUserError) && crossed[2]!.message === "something else",
 		);
 	});
 
@@ -959,17 +959,6 @@ async function main(): Promise<void> {
 				rows.get(uid)!.sealed === null && (await serverA.logins.status(uid)) === null && (await serverB.logins.status(uid)) === null && revoked.includes(uid) && gone instanceof SandboxUserError && gone.message === NOT_SIGNED_IN && commandsB.asked === asked,
 			);
 			expect("the other user's sign-in is untouched", (await serverB.tokens.current(ben.uid)).accessToken === bensToken.accessToken);
-
-			// ---- a Windlass too old for the platform
-			const old = join(scratch, "old-windlass");
-			writeFileSync(old, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "Windlass 0.0.9+old (linux)"; exit 0; fi\necho "windlass: unknown option --valid-for" >&2\nexit 2\n');
-			chmodSync(old, 0o755);
-			const outdated = await new WindlassSignIns(new LocalLoginRunner({ binary: old, tmpRoot: rootA })).token(fakeMaterial("fake-sub-old", Date.now() + 3_600_000));
-			expect(
-				"a Windlass on the server that does not know `--valid-for` is reported as too old, with where it is, its version and what to set",
-				!outdated.ok && outdated.error instanceof WindlassOutdatedError && outdated.error.message.includes(old) && outdated.error.message.includes("0.0.9+old") && /WLP_WINDLASS_BIN/.test(outdated.error.message) && /--valid-for/.test(outdated.error.message),
-				outdated.ok ? "it gave a token" : outdated.error.message.replace(scratch, "<scratch>").slice(0, 160),
-			);
 
 			expect("no private directory of either server is left", leftIn(rootA).length === 0 && leftIn(rootB).length === 0);
 			expect("every request went to the stand-in, as a tunnel to auth.openai.com", standin.tunnels.length > 0 && standin.tunnels.every((tunnel) => tunnel === "CONNECT auth.openai.com:443 HTTP/1.1"), `${standin.tunnels.length} tunnels, ${standin.requests.length} requests`);

@@ -71,11 +71,22 @@ export class AcpConnection {
 	}
 
 	/** Sends a request and resolves with its result. Rejects with an AcpError: the agent's refusal, a time limit, or the connection's end. */
-	request<T>(method: string, params: Record<string, unknown>, options: { timeoutMs?: number } = {}): Promise<T> {
+	request<T>(method: string, params: Record<string, unknown>, options: { timeoutMs?: number; onResult?: (value: T) => void } = {}): Promise<T> {
 		return new Promise<T>((resolve, reject) => {
 			if (this.ended !== null) return reject(new AcpError(this.ended, 0, "closed"));
 			const id = this.nextId++;
-			const entry: Waiting = { method, resolve: resolve as (value: unknown) => void, reject, timer: undefined };
+			const entry: Waiting = {
+				method, reject, timer: undefined,
+				resolve(value) {
+					try {
+						// Observe the reply before receive() dispatches the next line from the same chunk.
+						options.onResult?.(value as T);
+						resolve(value as T);
+					} catch (error) {
+						reject(error);
+					}
+				},
+			};
 			if (options.timeoutMs !== undefined) {
 				entry.timer = setTimeout(() => {
 					if (this.waiting.delete(id)) reject(new AcpError(`${method} was not answered within ${formatSeconds(options.timeoutMs!)}`, 0, "timeout"));

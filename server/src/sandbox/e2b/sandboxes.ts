@@ -140,7 +140,7 @@ export interface E2bSandboxesOptions {
 /** The profiles a sandbox on E2B can be made with. */
 const E2B_PROFILES: readonly SandboxProfileId[] = ["e2b", "e2b-open"];
 
-/** The profile a sandbox was made with, from its metadata. Sandboxes made before there was a second profile are all `e2b`. */
+/** The profile a sandbox was made with, from its metadata. */
 export function sandboxProfile(metadata: Record<string, string>): SandboxProfileId {
 	const named = metadata[META.profile];
 	return E2B_PROFILES.find((id) => id === named) ?? "e2b";
@@ -536,7 +536,7 @@ export class E2bSandboxes implements Sandboxes {
 		try {
 			const init = await handle.exec(["sh", "-c", 'git init -q && git commit -q --allow-empty -m "Empty workspace" && windlass --version'], { timeoutMs: 60_000 });
 			if (init.exitCode !== 0) throw new Error(`could not set up the workspace: ${(init.stderr.trim() || init.stdout.trim() || `exit ${init.exitCode}`).slice(-500)}`);
-			// "Windlass 0.1.1+0f5192c3ea (linux-x64)"
+			// "Windlass 0.4.0 (linux-x64)"
 			const version = /^\S+\s+(\S+)/.exec(init.stdout.trim().split("\n").pop() ?? "")?.[1];
 			if (version !== undefined) this.options.onVersion?.(version);
 			if (profile.id === "e2b" && this.settings.windlassSandbox) {

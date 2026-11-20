@@ -232,8 +232,8 @@ export interface TurnEnd {
 	usage: TurnUsage | null;
 	cachedShare: number | null;
 	message: string | null;
-	/** What the session's work rests on after the turn, as the platform recorded it; null on a turn from before it did. */
-	verified: Verified | null;
+	/** What the session's work rests on after the turn, as the platform recorded it. */
+	verified: Verified;
 }
 
 export interface TurnView {
@@ -242,8 +242,6 @@ export interface TurnView {
 	/** Model calls started in this turn. */
 	steps: number;
 	interruptRequested: boolean;
-	/** `verification.status` of the execution's ending: what "done" rests on. */
-	verification: string | null;
 	/** Files the turn changed, from `workspace.changes`. */
 	changedFiles: string[] | null;
 	/** Tokens of the turn's finished model calls, added up as they end. */
@@ -406,7 +404,7 @@ class Draft {
 	turn(number: number): TurnView {
 		const found = this.view.turns.find((turn) => turn.turn === number);
 		if (found) return found;
-		const created: TurnView = { turn: number, blocks: [], steps: 0, interruptRequested: false, verification: null, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null };
+		const created: TurnView = { turn: number, blocks: [], steps: 0, interruptRequested: false, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null };
 		const turns = [...this.view.turns, created].sort((a, b) => a.turn - b.turn);
 		this.view = { ...this.view, turns };
 		return created;
@@ -708,8 +706,7 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			return;
 		case "execution.succeeded":
 		case "turn.ended": {
-			const verification = isRecord(data.verification) ? data.verification : null;
-			if (verification !== null) draft.patchTurn(turn, { verification: str(verification.status) || null });
+
 			return;
 		}
 		case "execution.failed": {
@@ -844,7 +841,7 @@ function endTurn(draft: Draft, item: Extract<TimelineItem, { kind: "turn.ended" 
 			usage: item.usage,
 			cachedShare: item.cachedShare,
 			message: item.message,
-			verified: item.verified ?? null,
+			verified: item.verified,
 		},
 	});
 }

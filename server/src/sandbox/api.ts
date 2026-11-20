@@ -300,46 +300,10 @@ export interface TurnUnaskedCall {
 export interface TurnSecrets {
 	env: Record<string, string>;
 	/** Names in `env` that no command the agent runs is to be given (Windlass's `withholdEnv`). */
-	withholdEnv?: string[];
+	withholdEnv: string[];
 	/** Names in `env` that look like credentials and that sandboxed commands are to be given all the same (Windlass's `passEnv`). */
-	passEnv?: string[];
+	passEnv: string[];
 	redactor: Redactor;
-}
-
-/** `features` had no answer: the sandbox's Windlass did not say what it takes, which is not the same as taking nothing. */
-export class WindlassUnaskedError extends Error {
-	constructor() {
-		super("The sandbox did not answer when the platform asked what its Windlass can do, so the agent's turn did not start. Send the prompt again.");
-		this.name = "WindlassUnaskedError";
-	}
-}
-
-/**
- * What the Windlass in a sandbox can be told when a session is opened, beyond what every Windlass the
- * platform runs takes. A sandbox keeps the Windlass of the image it was made from, so one made before
- * the image was rebuilt may lack either.
- */
-export interface WindlassFeatures {
-	/** It takes `sandboxHome`: sandboxed commands can be given a home of the session's own. */
-	sessionHome: boolean;
-	/**
-	 * It takes `withholdEnv` and `passEnv`: which of its environment's variables the commands it runs
-	 * get can be said by name. Without them a command gets what Windlass's rule gives it, by the
-	 * variable's name alone (repo-secrets.ts).
-	 */
-	envLists: boolean;
-	/**
-	 * It takes `requiredChecks`: the user's checks can be named when a session is opened, as checks
-	 * the repository's own file can neither replace nor switch off, and its record of a run says
-	 * whose each check is and carries the end of its output. Without it the user's checks go into
-	 * its own configuration file, where a repository's list stands in for them (windlass-config.ts).
-	 */
-	requiredChecks: boolean;
-	/**
-	 * It takes `hostTools`: the platform's own tools (agent-publish.ts) can be declared when a session
-	 * is opened, and their calls reach the platform. Without it the agent is offered none of them.
-	 */
-	hostTools: boolean;
 }
 
 /**
@@ -383,11 +347,7 @@ export interface RunTurnInput {
 	 * The secrets of the session's repository for this turn (repo-secrets.ts). `env` is put into
 	 * Windlass's own environment, by `ExecOptions.secretEnv`'s way: Windlass fills `${NAME}` in the
 	 * definitions of the project's MCP servers from it, and passes it on to the commands it runs by
-	 * its own rule, so the caller hands over only what may go there. `withholdEnv` and `passEnv`
-	 * correct that rule by name, for a Windlass that takes them (`Windlass.features` says whether
-	 * this sandbox's does, and the caller asks before it decides what to hand over): they are said
-	 * when the session is opened. A turn that names a variable to withhold and finds a Windlass
-	 * that would not withhold it opens no session and fails. `redactor` knows every saved
+	 * scope. `withholdEnv` and `passEnv` name the exceptions for commands. `redactor` knows every saved
 	 * value of the repository, also those Windlass is not handed (the setup command had them, and may
 	 * have left them in a file): each is taken out of everything the turn hands back, which is every
 	 * event, question, description of a server, `stderrTail` and `failure`. A value that streaming
@@ -409,12 +369,7 @@ export interface RunTurnInput {
 	servers?: TurnPersonalServer[];
 	/**
 	 * The checks the session's user saved for its repository (repository-checks.ts), for this turn.
-	 * An engine that takes required checks is told them when the session is opened, each time it is
-	 * opened: it runs them before it lets the turn end, whatever the repository's own
-	 * `.windlass/config.json` says. For any other the layer writes them into Windlass's own
-	 * configuration file in the sandbox, with the servers and by the same step, as its `checks`,
-	 * and Windlass follows the repository's file first. That file is never touched, and
-	 * `RunTurnResult.checks` says which of the two it was and what the file held.
+	 * Windlass takes these as required checks each time the session opens.
 	 */
 	checks?: RepositoryCheck[];
 	/**
@@ -476,9 +431,7 @@ export interface RunTurnInput {
 	onControl?: (control: TurnControl) => void;
 	/**
 	 * The platform's own tools (agent-publish.ts), each given for a turn whose agent is to have it. The
-	 * layer declares the tool when it opens the session, to a Windlass that takes them
-	 * (`WindlassFeatures.hostTools`), and to no other: without the callback, or with such a Windlass, the
-	 * agent is told of no such tool. A callback is called for each call of its tool that the turn's
+	 * layer declares each tool with a callback at session open. Each callback handles calls its turn's
 	 * engine sends while the turn runs, and resolves with what the agent is to be told, in full: the
 	 * layer makes it the call's result. The call waits for it, and with it the turn. `signal` aborts
 	 * when the call ended before the answer (Windlass stopped it, or its time ran out) or the turn did:
@@ -503,15 +456,6 @@ export interface RunTurnInput {
 
 /** What a turn's Windlass had for checks when its session was opened, as far as the layer saw. */
 export interface TurnChecks {
-	/**
-	 * True when the turn's engine took the user's checks as required checks, named when its session
-	 * was opened: its record of a run then says whose each check is, whether it is required, and
-	 * carries the end of its output. False for an engine that takes none: the checks went into its
-	 * own configuration file, and its record says none of that.
-	 */
-	required: boolean;
-	/** True when the user's checks (`RunTurnInput.checks`, an empty list too) are what Windlass was given: always where `required`, and otherwise when its own configuration file held them then. False when that file could not be read or written. */
-	handed: boolean;
 	/** What the repository's own configuration file said about checks then (windlass-config.ts, `projectChecks`); null when it is not there or says nothing. */
 	project: ProjectChecks | null;
 }
@@ -550,17 +494,7 @@ export interface RunTurnResult {
 	 * keeps Windlass's reason and sentence: a `network_error` stays the connection problem it is.
 	 * Further reasons of this layer:
 	 *
-	 *   `windlass_outdated`  the image's Windlass cannot fetch a token as the platform asks for it: it has
-	 *                        no `windlass login token`, or that command has no `--valid-for`. The sentence
-	 *                        says which, and to rebuild the image from a newer one (`Windlass.problem()`
-	 *                        says the same). Or only this sandbox is behind, made from an older image than
-	 *                        the one in use: its Windlass reads no handed-in token, and the sentence says
-	 *                        to start a new agent
-	 *   `open_refused`       the engine answered the opening of the session to continue with an
-	 *                        internal error (JSON-RPC -32603) and no reason of its own. A Windlass from
-	 *                        before `unreadable_session` (0.2.0 and earlier) answers so for a session
-	 *                        it cannot read, and for anything else that goes wrong there; the sentence
-	 *                        is Windlass's ("Internal error")
+	 *   `host_tools_required` the sandbox's Windlass cannot provide the platform's tools
 	 *   `engine`             the process could not be started or died
 	 *
 	 * Null otherwise, and null when `aborted` is true.
@@ -577,18 +511,13 @@ export interface ScriptedModel {
 
 export interface Windlass {
 	/**
-	 * The binary's version in the image, e.g. "0.1.1+0f5192c3ea"; null when the image is missing. On E2B
+	 * The binary's version in the image, e.g. "0.4.0"; null when the image is missing. On E2B
 	 * it is the version in the template, which is known once a sandbox was made from it (or from
 	 * WLP_E2B_WINDLASS_VERSION): null until then, since asking would mean starting a sandbox.
 	 */
 	version(): Promise<string | null>;
 	/**
-	 * What keeps this layer from running turns on a ChatGPT sign-in, in a sentence that says what to do
-	 * about it: the image is missing, or its Windlass is too old to hand a session an access token. The
-	 * platform needs `windlass login token --valid-for`: a Windlass without `login token` is too old,
-	 * and so is one that has the command but not its `--valid-for` option; the sentence says which.
-	 * Null when nothing does. Demo turns need neither a sign-in nor that command. The server prints it
-	 * when it starts; a turn that fails for it has `windlass_outdated`.
+	 * Why the configured Windlass cannot run, or null when it is ready.
 	 */
 	problem(): Promise<string | null>;
 	/**
@@ -616,14 +545,6 @@ export interface Windlass {
 	 * Windlass ends the turn, and `failure` says what that means for the user: see `RunTurnResult.failure`.
 	 */
 	runTurn(sandbox: SandboxHandle, input: RunTurnInput): Promise<RunTurnResult>;
-	/**
-	 * What the Windlass in this sandbox can be told when a session is opened. It is asked of the
-	 * sandbox's own Windlass, once per sandbox, by starting it for a moment and reading what it says of
-	 * itself (the keys of a session's metadata it lists in its answer to `initialize`): its version
-	 * does not tell. A sandbox that did not answer is not taken for an older Windlass: this rejects,
-	 * with a sentence for the user, and nothing is remembered.
-	 */
-	features(sandbox: SandboxHandle): Promise<WindlassFeatures>;
 	/**
 	 * A scripted model for a demo turn: a short, varied scenario of real tool calls (write a file, run
 	 * it, read it back, fix something) that suits the prompt's words where it can. `turn` starts at 1.

@@ -195,7 +195,6 @@ describe("find and fix a failing test", () => {
 
 	it("ends with the summary of the turn", () => {
 		expect(turn(view).end).toMatchObject({ outcome: "succeeded", steps: 5, durationMs: 10648, cachedShare: 0.784 });
-		expect(turn(view).verification).toBe("not_configured");
 		expect(turn(view).steps).toBe(5);
 	});
 });
@@ -412,7 +411,6 @@ describe("the project's checks", () => {
 
 	it("puts each run where it happened, between the model's steps", () => {
 		expect(kinds(turn(view).blocks)).toEqual(["user", "tool", "text", "checks", "tool", "text", "checks"]);
-		expect(turn(view).verification).toBe("passed");
 	});
 });
 
@@ -469,7 +467,7 @@ describe("a turn the platform ended", () => {
 		const open = reduce(feed.slice(0, cut));
 		expect(toolBlocks(turn(open))[0]?.state).toBe("running");
 
-		const ended = applyItem(open, { seq: open.lastSeq + 1, at: 5, turn: 1, kind: "turn.ended", outcome: "error", exitCode: null, steps: null, durationMs: 4000, usage: null, cachedShare: null, message: "The sandbox stopped responding." });
+		const ended = applyItem(open, { seq: open.lastSeq + 1, at: 5, turn: 1, kind: "turn.ended", outcome: "error", verified: { turn: 1, state: "failed", run: null, unrun: [], changedAfter: false }, exitCode: null, steps: null, durationMs: 4000, usage: null, cachedShare: null, message: "The sandbox stopped responding." });
 		const [call] = toolBlocks(turn(ended));
 		expect(call).toMatchObject({ state: "failed", interrupted: true, progress: null });
 		// What it had printed is kept as its output.
@@ -727,7 +725,7 @@ describe("a run of the repository's setup command", () => {
 	});
 
 	it("that has no ending item when its turn ends was cut off", () => {
-		const ended = applyItem(running, { seq: 2, at: 3_000, turn: 1, kind: "turn.ended", outcome: "interrupted", exitCode: null, steps: null, durationMs: 2_000, usage: null, cachedShare: null, message: null });
+		const ended = applyItem(running, { seq: 2, at: 3_000, turn: 1, kind: "turn.ended", outcome: "interrupted", verified: { turn: 1, state: "stopped", run: null, unrun: [], changedAfter: false }, exitCode: null, steps: null, durationMs: 2_000, usage: null, cachedShare: null, message: null });
 		expect(block(ended)[0]).toMatchObject({ state: "cut_off" });
 	});
 });
@@ -769,7 +767,7 @@ describe("subagents (a real turn of Windlass 0.3.0 over ACP: acp-subagents)", ()
 	it("that are still running when their turn ends were cut off, and so is what they had open", () => {
 		const opened = feed.findIndex((entry) => "item" in entry && entry.item.kind === "windlass" && entry.item.event.type === "child.event" && (entry.item.event.event as { type?: string }).type === "tool.started");
 		const running = reduce(feed.slice(0, opened + 1));
-		const cut = applyItem(running, { seq: running.lastSeq + 1, at: 2_000_000, turn: 1, kind: "turn.ended", outcome: "interrupted", exitCode: null, steps: null, durationMs: 1_000, usage: null, cachedShare: null, message: null });
+		const cut = applyItem(running, { seq: running.lastSeq + 1, at: 2_000_000, turn: 1, kind: "turn.ended", outcome: "interrupted", verified: { turn: 1, state: "stopped", run: null, unrun: [], changedAfter: false }, exitCode: null, steps: null, durationMs: 1_000, usage: null, cachedShare: null, message: null });
 		const [call] = subagents(cut);
 		expect(call?.subagent?.state).toBe("cut_off");
 		expect(turn(call!.subagent!.work).blocks[0]).toMatchObject({ kind: "tool", state: "failed", interrupted: true });

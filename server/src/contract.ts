@@ -61,7 +61,7 @@ export interface SandboxProfile {
 export interface PlatformInfo {
 	/** True when the server runs with WLP_DEMO=1: the demo sign-in is offered and its model is scripted. */
 	demoEnabled: boolean;
-	/** The Windlass version inside the sandbox image, e.g. "0.1.1+0f5192c3ea". */
+	/** The Windlass version inside the sandbox image, e.g. "0.4.0". */
 	windlassVersion: string | null;
 	profiles: SandboxProfile[];
 	/**
@@ -285,19 +285,6 @@ export interface SessionSummary {
 	/** Whether the sandbox exists and whether it is running or paused. */
 	sandbox: "none" | "running" | "paused";
 	/**
-	 * Whether the Windlass in the session's sandbox can be told by name which variables its commands
-	 * get, which is what makes a secret's scope exact (`SecretReach`), as it said when a turn last
-	 * asked it. A sandbox keeps the Windlass of the image it was made from. Absent while the session
-	 * has no sandbox, and for a sandbox that no turn has asked.
-	 */
-	envLists?: boolean;
-	/**
-	 * Whether the Windlass in the session's sandbox takes its user's checks as required checks, which
-	 * a repository's own file can neither replace nor switch off (README, "A repository's checks"),
-	 * as it said when a turn last asked it. Absent as `envLists` is.
-	 */
-	requiredChecks?: boolean;
-	/**
 	 * Set once Windlass has told the session of MCP servers: those its project's configuration names,
 	 * and its user's own (`PersonalServer`). How many, and when what the session knows of them last
 	 * changed (a server started, failed, came to wait, an approval was remembered or forgotten here). A
@@ -455,9 +442,9 @@ export interface PullRequestInfo {
 	 * What the section the platform keeps in its description said when it was last written, in a few
 	 * words (`Verified`; README, "What a pull request shows was verified"): "2 checks passed",
 	 * "1 of 2 checks failing", "nothing verified", with "1 thing to look at" where the section lists
-	 * observations. Absent for a pull request from before the section.
+	 * observations.
 	 */
-	verified?: string;
+	verified: string;
 }
 
 /** The message of the commit the platform makes, and of the pull request when it opens one. */
@@ -530,8 +517,7 @@ export interface RepositoryCheck {
 	when?: string[];
 	/**
 	 * True: the end of what it printed goes into a pull request's description also when it passed. The
-	 * platform's own field. A Windlass that takes required checks is told as `outputTail: "always"`
-	 * and keeps that end itself; for any other the platform reads it from the sandbox.
+	 * platform's own field, handed to Windlass as `outputTail: "always"`.
 	 */
 	showOutput?: boolean;
 }
@@ -554,8 +540,7 @@ export interface VerifiedCheck {
 	/**
 	 * "user": one of the checks the session's user saved for the repository, handed to Windlass for
 	 * that turn. "repository": from the repository's own `.windlass/config.json`, which Windlass
-	 * runs besides the user's where those are required checks, and in place of them where they are
-	 * not, whenever it names a list.
+	 * runs alongside the user's required checks.
 	 */
 	whose: "user" | "repository";
 	/** True when Windlass ran it as a required check: the repository's file could neither replace it nor switch it off. Only a check of the user's is one. */
@@ -570,8 +555,7 @@ export interface VerifiedCheck {
 	/** The end of what it printed, at most CHECK_OUTPUT_CHARS: kept for one that did not pass, and for one whose user asked (`RepositoryCheck.showOutput`; of the repository's own, its file's `outputTail`). */
 	output?: string;
 	/**
-	 * Set for a check that was not started (`could_not_start` with no exit code), where the turn's
-	 * Windlass keeps such a check apart from the ones that failed: why its command could not be
+	 * Set for a check that was not started (`could_not_start` with no exit code), with the reason why its command could not be
 	 * started, in Windlass's words (the evidence's `startError`), "" where it gave none. Such a check
 	 * says nothing about the code, and the agent was not sent back for it.
 	 */
@@ -587,28 +571,19 @@ export interface VerifiedCheck {
  *   passed          every check that applied passed
  *   unresolved      checks did not pass and the turn ended anyway (`unresolved` says why)
  *   not_needed      checks are set and none was needed: the turn changed nothing they cover
- *                   (`unneeded` says more, where the turn's Windlass does)
+ *                   (`unneeded` records why)
  *   none_set        no check is set, neither by the user nor by the repository's file
  *   off             the repository's file turns verification off
- *   emptied         the repository's file names an empty list, which stands in for the user's
  *   no_sandbox      Windlass could not run checks in this sandbox, and said so; required checks
  *                   are then in `run`, each as one that could not be started
- *   not_handed      the platform could not write the user's checks where Windlass reads them
  *   not_in_force    the user has checks, Windlass reported none in force, and nothing says why
  *   stopped         the turn was stopped, or cut off, before the gate decided
  *   failed          the turn failed before the gate decided
  */
-export interface Verified {
-	turn: number;
-	state: "passed" | "unresolved" | "not_needed" | "none_set" | "off" | "emptied" | "no_sandbox" | "not_handed" | "not_in_force" | "stopped" | "failed";
+export type Verified = ({
+	state: "not_needed";
 	/**
-	 * For "unresolved": why the turn was let end, and for "acknowledged" what the agent gave as its
-	 * reason. "not_started": no check that did not pass was started (`VerifiedCheck.startError`), so
-	 * the turn ended at once and the agent was not sent back.
-	 */
-	unresolved?: { reason: "acknowledged" | "max_rounds" | "report_mode" | "not_started"; said: string | null };
-	/**
-	 * For "not_needed", where the turn's Windlass says why no check was needed (the ending's `reason`):
+	 * For "not_needed", why no check was needed (the ending's `reason`):
 	 *
 	 *   turn_unchanged    the turn changed no file
 	 *   state_unchanged   the turn changed files, and they are again as they were in the state Windlass
@@ -619,7 +594,19 @@ export interface Verified {
 	 * on, give or take files no check covers; "start", what the session started from, which no check
 	 * has verified; null where Windlass does not say, or names a run the platform no longer holds.
 	 */
-	unneeded?: { reason: "turn_unchanged" | "state_unchanged" | "not_covered"; on: "run" | "start" | null };
+	unneeded: { reason: "turn_unchanged" | "state_unchanged" | "not_covered"; on: "run" | "start" | null };
+} | {
+	state: "passed" | "unresolved" | "none_set" | "off" | "no_sandbox" | "not_in_force" | "stopped" | "failed";
+	unneeded?: never;
+}) & {
+	turn: number;
+	/**
+	 * For "unresolved": why the turn was let end, and for "acknowledged" what the agent gave as its
+	 * reason. "not_started": no check that did not pass was started (`VerifiedCheck.startError`), so
+	 * the turn ended at once and the agent was not sent back.
+	 */
+	unresolved?: { reason: "acknowledged" | "max_rounds" | "report_mode" | "not_started"; said: string | null };
+
 	/**
 	 * The checks that did not pass in a run of `turn` whose result does not stand: the agent then put
 	 * the files back, and the turn ended with no check needed (`unneeded`). They are not `run`'s.
@@ -627,15 +614,13 @@ export interface Verified {
 	putBack?: VerifiedCheck[];
 	/**
 	 * The session's last run of checks that finished, with the turn it was in, when, and where in
-	 * Windlass's log (`seq`, of its `checks.finished`; absent in a record from before it was kept);
+	 * Windlass's log (`seq`, of its `checks.finished`);
 	 * null when none has. After a turn that ended on a state verified earlier (`unneeded`) it is the
 	 * run that state rests on, or null.
 	 */
-	run: { turn: number; at: number; seq?: number; checks: VerifiedCheck[] } | null;
+	run: { turn: number; at: number; seq: number; checks: VerifiedCheck[] } | null;
 	/** The user's checks, as saved when `turn` started, that are neither among `run`'s nor among `putBack`. */
 	unrun: Array<{ name: string; command: string }>;
-	/** True when the repository's file named a list of its own in `turn`, so the user's did not apply. Never where the user's were required checks. */
-	replaced: boolean;
 	/** True when the user's checks were required ones in `turn` and the repository's file said something about checks or verification: that held for the repository's own checks, and not for the user's. */
 	overruled?: boolean;
 	/** True when Windlass recorded another state of the workspace after `run` finished than the one the checks ran on. */
@@ -668,7 +653,7 @@ export interface VerifiedFlag {
  *   "agent"   the MCP servers, and the commands the agent runs as well
  *
  * Where Windlass sandboxes the agent's commands, that is what each of them gets. Where it does not,
- * and in a sandbox whose Windlass is an older one, a scope can come to less; `SecretReach` says what.
+ * a scope can come to less; `SecretReach` says what.
  * A secret of the account (`AccountSecret`) has the same two, without the setup command.
  */
 export type SecretScope = "setup" | "agent";
@@ -681,18 +666,12 @@ export type SecretScope = "setup" | "agent";
  * all of them), which whoever opens the session corrects by name. Where commands are sandboxed that
  * makes a scope exact. Where they are not, a variable withheld from a command can still be read by
  * it, so a secret that is not for the commands stays out of Windlass's environment and MCP servers
- * go without it. A sandbox made from an older image has a Windlass that takes no names: there a
- * secret is kept from commands only by its name or by staying out of Windlass's environment.
+ * go without it.
  */
 export interface SecretReach {
 	/** Whether the MCP servers the repository names can be given it (`${NAME}` in their definitions). */
 	servers: boolean;
-	/**
-	 * Whether the commands the agent runs get it: "yes", "no", or "unsandboxed": only the commands
-	 * Windlass runs without its own sandbox, which in that profile is not all of them at all times
-	 * (an older Windlass, and a name that looks like a credential).
-	 */
-	commands: "yes" | "no" | "unsandboxed";
+	commands: "yes" | "no";
 	/** Set when that is less than the scope says, or needs a word: a sentence fit to show under the secret. */
 	note: string | null;
 }
@@ -1554,12 +1533,9 @@ export interface UserActions {
 	saveRepositoryChecks(input: { repositoryId: GithubId; checks: RepositoryCheck[] }): Promise<RepositoryChecks>;
 	/**
 	 * The names, scopes and times of the secrets the user saved for a repository, and what each reaches
-	 * in a sandbox of `profile`. With `sessionId`, one of the user's sessions on that repository, it is
-	 * said for that session's sandbox, whose Windlass may be an older one (`SessionSummary.envLists`);
-	 * without, for a sandbox made now. No value: a saved value is never sent to a client. Asks GitHub
-	 * nothing. `sessionId` means the same in the two actions below, which answer with the list.
+	 * in a sandbox of `profile`. Saved values stay on the server.
 	 */
-	repositorySecrets(input: { repositoryId: GithubId; profile: SandboxProfileId; sessionId?: string }): Promise<RepositorySecrets>;
+	repositorySecrets(input: { repositoryId: GithubId; profile: SandboxProfileId }): Promise<RepositorySecrets>;
 	/**
 	 * Saves a secret of a repository. With `value`: a new secret, or a new value for the one of that
 	 * name. Without: only the scope of the one of that name is changed. It reaches a setup command in
@@ -1567,9 +1543,9 @@ export interface UserActions {
 	 * code `bad_secret` for a name or value that cannot be saved, `too_many_secrets` at
 	 * MAX_SECRETS_PER_REPOSITORY, and `secret_not_found` for a scope change of a name that is not saved.
 	 */
-	saveRepositorySecret(input: { repositoryId: GithubId; profile: SandboxProfileId; sessionId?: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
+	saveRepositorySecret(input: { repositoryId: GithubId; profile: SandboxProfileId; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
 	/** Deletes a secret of a repository. A sandbox whose setup command already had it keeps what that command made of it. */
-	deleteRepositorySecret(input: { repositoryId: GithubId; profile: SandboxProfileId; sessionId?: string; name: string }): Promise<RepositorySecrets>;
+	deleteRepositorySecret(input: { repositoryId: GithubId; profile: SandboxProfileId; name: string }): Promise<RepositorySecrets>;
 	/**
 	 * What is kept for a repository, by GitHub's id for it: the defaults for new sessions and the
 	 * remembered approvals of its MCP servers. Asks GitHub nothing, and answers for a repository the
@@ -1831,8 +1807,8 @@ export type TimelineItem =
 			cachedShare: number | null;
 			/** Set for "error": what went wrong, fit to show. */
 			message: string | null;
-			/** What the session's work rests on after this turn. Absent on turns from before the platform kept it. */
-			verified?: Verified;
+			/** What the session's work rests on after this turn. */
+			verified: Verified;
 	  };
 
 /**

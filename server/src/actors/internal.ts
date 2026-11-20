@@ -66,7 +66,7 @@ export interface UserInternal {
 	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
 	internalRemoveBackupLater(sessionId: string): Promise<void>;
 	/** Counts the session as running if the user's hosted sessions at work are below their ceiling (`FactoryLimits.runningTurns`); one on a machine of theirs always is. */
-	internalAcquireRun(sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until?: number | null; claim?: number | null }>;
+	internalAcquireRun(sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }>;
 	/** Gives back the running slot of the claim named `claim`, for a prompt the session refused after it was claimed; a newer claim, or one already settled, is left as it is. */
 	internalReleaseRun(input: { sessionId: string; claim: number; summary: SessionSummary }): Promise<{ released: boolean }>;
 	/** The user's GitHub connection as it is now; null when there is none. */
@@ -161,22 +161,13 @@ function creationSubject(kind: string, key: readonly string[]): string {
 	return `create:${encodeURIComponent(kind)}:${key.map(encodeURIComponent).join("/")}`;
 }
 
-// 26d2365 introduced kind-bound grants. For the rollout from 148e17c, issue session grants
-// that old nodes can read and accept both forms. Resume scoped issuance once all pre-26d2365
-// nodes are gone; remove this reader after the last old-form grants have expired (one minute).
-function legacySessionSubject(kind: string, key: readonly string[]): string | null {
-	// Old session keys had two plain IDs. A separator in either could alias another signed subject.
-	if (kind !== "agentSession" || key.length !== 2 || !key.every((part) => /^[A-Za-z0-9_-]+$/.test(part))) return null;
-	return `create:${key[0]}/${key[1]}`;
-}
-
 export function createGrant(kind: string, key: readonly string[]): string {
-	return issueServiceToken(legacySessionSubject(kind, key) ?? creationSubject(kind, key));
+	return issueServiceToken(creationSubject(kind, key));
 }
 
 export function grantIsValid(grant: unknown, key: readonly string[], kind: string): boolean {
 	const caller = verifyToken(grant);
-	if (caller?.kind === "service" && (caller.subject === creationSubject(kind, key) || caller.subject === legacySessionSubject(kind, key))) return true;
+	if (caller?.kind === "service" && caller.subject === creationSubject(kind, key)) return true;
 	console.warn(`[wlp] actor.create_refused kind=${kind} keyParts=${key.length}`);
 	return false;
 }

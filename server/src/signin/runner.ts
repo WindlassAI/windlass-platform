@@ -39,7 +39,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { AccessToken } from "../sandbox/api.js";
-import { ACCESS_TOKEN_FILE_ENV, WINDLASS_NEEDED, type WindlassLack, tokenFileContent } from "../sandbox/handoff.js";
+import { ACCESS_TOKEN_FILE_ENV, tokenFileContent } from "../sandbox/handoff.js";
 import { MATERIAL_FILES, MAX_MATERIAL_FILE_BYTES, type SignInMaterial, cleanMaterial } from "./material.js";
 
 export interface LoginCommand {
@@ -83,8 +83,6 @@ export interface LoginRunner {
 	runWithToken(token: AccessToken, command: TokenCommand): Promise<TokenRun>;
 	/** What `windlass --version` says where this runner runs it; null when it could not be asked. */
 	version(): Promise<string | null>;
-	/** The sentence for a Windlass that is too old for the platform (`lack` is what it does not have), saying where that Windlass is and what to do. */
-	outdated(lack: WindlassLack): Promise<string>;
 }
 
 /** What is kept of a command's standard output and standard error. */
@@ -191,18 +189,12 @@ export class LocalLoginRunner implements LoginRunner {
 	async version(): Promise<string | null> {
 		try {
 			const said = await execute(this.binary, ["--version"], { cwd: this.tmpRoot, env: { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin" }, timeoutMs: 20_000 });
-			// "Windlass 0.1.1+0f5192c3ea (linux-arm64)"
+			// "Windlass 0.4.0 (linux-arm64)"
 			const match = /^\S+\s+(\S+)/.exec(said.stdout.trim());
 			return said.code === 0 && match !== null ? match[1]! : null;
 		} catch {
 			return null;
 		}
-	}
-
-	async outdated(lack: WindlassLack): Promise<string> {
-		const version = await this.version();
-		const lacks = lack === "login token" ? "has no `windlass login token`" : "has `windlass login token` but not its `--valid-for` option, which the platform asks for every access token with";
-		return `The Windlass the server runs sign-in commands with, ${this.binary}${version === null ? "" : ` (${version})`}, ${lacks}, so the platform cannot hand a session an access token of a ChatGPT sign-in: every turn that is not a demo turn fails. Point WLP_WINDLASS_BIN at a newer Windlass, one with ${WINDLASS_NEEDED}, then start the server again.`;
 	}
 
 	/**

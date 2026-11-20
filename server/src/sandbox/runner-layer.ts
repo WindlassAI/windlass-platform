@@ -34,7 +34,7 @@ import { type ChannelSocket, ConversationLost, ServerChannel } from "../runner/c
 import { machineProfiles } from "../machines/profiles.js";
 import type { Args, Name, Value } from "../runner/protocol.js";
 import { AttachTickets } from "../machines/ticket.js";
-import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxLayer, type Sandboxes, SandboxUserError, type Windlass } from "./api.js";
+import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxLayer, type Sandboxes, SandboxUserError } from "./api.js";
 import { findProfile } from "./profiles.js";
 import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
 import { SandboxWindlass } from "./turn.js";
@@ -574,17 +574,13 @@ class RunnerSandboxes implements Sandboxes {
 	}
 }
 
-let windlass: SandboxWindlass | null = null;
-
 /**
  * The layer of a machine. Its sign-ins and access tokens are the deployment's (`hosted`): the platform
- * keeps the one sign-in, and a turn on a machine is handed a token as any turn is. Windlass's version
- * is asked of each sandbox by the turn itself; what keeps a token from being had at all is the hosted
- * layer's to say.
+ * keeps the one sign-in, and a turn on a machine is handed a token as any turn is.
+ * The turn checks the machine sandbox's own engine for host tools.
  */
 export function machineLayer(link: RunnerLink, hosted: SandboxLayer): SandboxLayer {
-	const host = { version: async () => null, problem: () => hosted.windlass.problem(), tokenSourceProblem: () => hosted.windlass.problem() };
-	// One for the server: what it learns of a sandbox (its Windlass's features) is kept by the sandbox's id, which carries its machine's.
-	windlass ??= new SandboxWindlass(hosted.tokens, host);
-	return { sandboxes: new RunnerSandboxes(link), windlass: windlass as Windlass, logins: hosted.logins, tokens: hosted.tokens, backups: null };
+	const host = { version: async () => null, problem: () => hosted.windlass.problem() };
+	const windlass = new SandboxWindlass(hosted.tokens, host);
+	return { sandboxes: new RunnerSandboxes(link), windlass, logins: hosted.logins, tokens: hosted.tokens, backups: null };
 }

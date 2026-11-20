@@ -26,7 +26,6 @@ const turnOf = (text: string, streaming: boolean): TurnView => ({
 	blocks: [{ kind: "text", id: "a", at: 0, messageId: "m", text, streaming } satisfies TextBlock],
 	steps: 1,
 	interruptRequested: false,
-	verification: null,
 	changedFiles: null,
 	usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
 	end: null,

@@ -358,7 +358,7 @@ async function serviceUser(server: Server, uid: string) {
 	return newClient().user.get([uid], { params: serviceParams() }) as unknown as {
 		internalRelease(sessionId: string): Promise<void>;
 		internalSessionChanged(summary: SessionSummary): Promise<void>;
-		internalAcquireRun(sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until?: number | null; claim?: number | null }>;
+		internalAcquireRun(sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }>;
 		internalReleaseRun(input: { sessionId: string; claim: number; summary: SessionSummary }): Promise<{ released: boolean }>;
 	};
 }
@@ -374,12 +374,6 @@ async function forceSleep(sid: string): Promise<void> {
 
 /** The demo users this run signed in. With the Docker layer each has a data volume, removed at the end. */
 const demoUids: string[] = [];
-
-/** The auth volumes of this run's demo users. There should be none: a demo user has no sign-in to keep. */
-function demoAuthVolumes(): string[] {
-	const existing = execFileSync("docker", ["volume", "ls", "-q", "--filter", "label=dev.windlass-platform=1"], { encoding: "utf8" }).split("\n");
-	return demoUids.map((uid) => `wlp-auth-${uid}`).filter((name) => existing.includes(name));
-}
 
 /** Removes this run's volumes, and only those: other work may be using the same Docker. */
 function removeDemoVolumes(): string[] {
@@ -1880,8 +1874,8 @@ async function main(server: Server | null): Promise<void> {
 			assert(thrown.outcome === "error" && thrown.exitCode === null && thrown.message?.startsWith("The sandbox failed"), `throw: ${plain(thrown)}`);
 			const signedOut = await run("please (auth-fail)");
 			assert(signedOut.outcome === "error" && /sign in with chatgpt again/i.test(signedOut.message ?? ""), `auth-fail: ${plain(signedOut)}`);
-			const outdated = await run("please (old-windlass)");
-			assert(outdated.outcome === "error" && /has no `windlass login token`/.test(outdated.message ?? "") && /Rebuild the image from a newer Windlass.*sandbox\/build\.sh/.test(outdated.message ?? ""), `old-windlass: ${plain(outdated)}`);
+			const outdated = await run("please (missing-host-tools)");
+			assert(outdated.outcome === "error" && /platform's tools/.test(outdated.message ?? ""), "a sandbox without host tools must refuse the turn");
 			const failed = await run("please (exec-fail)");
 			assert(failed.outcome === "failed" && failed.message === null && failed.steps === 1, `exec-fail: ${plain(failed)}`);
 			assert(scratchWatch.windlass(failed.turn, "execution.failed").some((item) => String(item.event.data?.message).includes("failed 4 times")), "the failed turn's events do not say how it failed");
@@ -1891,7 +1885,7 @@ async function main(server: Server | null): Promise<void> {
 			assert(typeof kept === "string" && kept.startsWith("ses_"), `the Windlass session after the failures so far is ${kept}`);
 			// A session the sandbox's Windlass does not read: its own sentence, what the user can do about it, and the session is kept for a Windlass that reads it.
 			const unread = await run("please (session-unread)");
-			assert(unread.outcome === "error" && unread.message?.includes(`session ${kept}`) && unread.message.includes("does not read") && unread.message.includes("free this agent's sandbox under Usage") && unread.message.includes("Or start a new agent"), `session-unread: ${plain(unread)}`);
+			assert(unread.outcome === "error" && unread.message?.includes(`session ${kept}`) && unread.message.includes("does not read") && unread.message.includes("open the session with the version that wrote it"), `session-unread: ${plain(unread)}`);
 			assert((await scratchWatch.conn.snapshot()).windlassSessionId === kept, "a session Windlass could not read was given up");
 			const gone = await run("please (session-gone)");
 			assert(gone.outcome === "error" && gone.message?.includes(kept) && gone.message.includes("starts a new Windlass session"), `session-gone: ${plain(gone)}`);
@@ -1904,7 +1898,7 @@ async function main(server: Server | null): Promise<void> {
 			assert(scratchWatch.items.filter((item) => item.kind === "platform" && item.text.startsWith("Cloning")).length === 1, "the repository was cloned more than once");
 			dense(scratchWatch.items);
 			assert(scratch.model === models.at(-1) && scratch.repoUrl === "https://example.com/org/project.git", "the session's model or repository is off");
-			return `crash: "${crashed.message?.split("\n")[0]}"; throw: "${thrown.message}"; auth-fail: "${signedOut.message}"; old-windlass: "${outdated.message?.slice(0, 96)}…"; exec-fail: failed, the events say how; session-busy: "${busy.message}"; session-unread: "${unread.message?.split("\n")[1]?.slice(0, 80)}…"; session-gone: "${gone.message?.split("\n").join(" / ")}"; then succeeded in a new Windlass session`;
+			return `crash: "${crashed.message?.split("\n")[0]}"; throw: "${thrown.message}"; auth-fail: "${signedOut.message}"; missing-host-tools: "${outdated.message?.slice(0, 96)}…"; exec-fail: failed, the events say how; session-busy: "${busy.message}"; session-unread: "${unread.message?.slice(0, 80)}…"; session-gone: "${gone.message?.split("\n").join(" / ")}"; then succeeded in a new Windlass session`;
 		});
 		await scratchWatch.conn.dispose();
 		await userConnTwo.deleteSession(scratch.id);
@@ -3562,12 +3556,10 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			assert(saved.checks.length === 2 && (await user.repository(harbor.id)).saved.checks === 2 && (await userOf(carol).repositoryChecks(harbor.id)).checks.length === 0, `saved: ${plain(saved)}`);
 
 			// The session is handed them with its next turn, and the turn's closing item says what they came to and whose they are.
-			// The fake layer's Windlass takes them as required checks, and the session's summary says so once a turn has asked it.
 			const first = await watch.conn.prompt({ text: "Write a short program" });
 			const ended = await watch.untilEnded(first.turn);
-			const ran = ended.verified?.run?.checks.map((one) => `${one.name}:${one.whose}:${one.required === true ? "required" : "replaceable"}:${one.status}:${one.sentBack}`).join(",");
-			assert(ended.outcome === "succeeded" && ended.verified?.state === "passed" && ended.verified.run?.turn === first.turn && ran === "test:user:required:passed:0,lint:user:required:passed:0" && ended.verified.unrun.length === 0 && !ended.verified.replaced, `the turn ended ${ended.outcome} with ${plain(ended.verified)}`);
-			assert((await user.listSessions()).find((one) => one.id === sessionId)?.requiredChecks === true, "the session's summary does not say that its sandbox's Windlass takes required checks");
+			const ran = ended.verified.run?.checks.map((one) => `${one.name}:${one.whose}:${one.required === true}:${one.status}:${one.sentBack}`).join(",");
+			assert(ended.outcome === "succeeded" && ended.verified.state === "passed" && ended.verified.run?.turn === first.turn && ran === "test:user:true:passed:0,lint:user:true:passed:0" && ended.verified.unrun.length === 0, `the turn ended ${ended.outcome} with ${plain(ended.verified)}`);
 			assert(watch.windlass(first.turn, "checks.finished").length === 1, "the timeline has no run of checks");
 			// The record keeps where that run is in Windlass's log: a later ending that needs no check names the run it rests on by it.
 			assert(typeof ended.verified.run?.seq === "number" && ended.verified.run.seq > 0, `the record of the run is ${plain(ended.verified.run)}`);
@@ -3581,7 +3573,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "test", command: "npm run fail" }] });
 			const second = await watch.conn.prompt({ text: "Write a short program" });
 			const failing = await watch.untilEnded(second.turn);
-			assert(failing.outcome === "unresolved" && failing.verified?.state === "unresolved" && failing.verified.unresolved?.reason === "max_rounds" && failing.verified.run?.checks[0]?.status === "failed", `the turn ended ${failing.outcome} with ${plain(failing.verified)}`);
+			assert(failing.outcome === "unresolved" && failing.verified.state === "unresolved" && failing.verified.unresolved?.reason === "max_rounds" && failing.verified.run?.checks[0]?.status === "failed", `the turn ended ${failing.outcome} with ${plain(failing.verified)}`);
 			const again = await handle.publish({ message: { title: "With a check failing", body: "" } });
 			const now = standin.pulls.at(-1)?.body ?? "";
 			assert(again.state.pullRequest?.verified === "1 of 1 check failing" && now.includes(`The agent's turn ${second.turn} ended with a check still failing: the agent had been sent back as often as a turn allows.`) && now.includes("- **test** (`npm run fail`), ada's required check: failed with exit code 1 after 40 ms."), `the description is ${plain(now)}`);
@@ -4208,20 +4200,13 @@ try {
 			const left = sandboxContainers().filter((name) => made.includes(name));
 			if (left.length > 0) fail("no sandbox containers left behind", left.join(", "));
 			else pass("no sandbox containers left behind", `${made.length} created and removed`);
-			const withAuth = demoAuthVolumes();
-			if (withAuth.length > 0) fail("no demo user was given an auth volume", withAuth.join(", "));
-			else pass("no demo user was given an auth volume", `${demoUids.length} demo users, each with a data volume only`);
-			for (const name of withAuth) execFileSync("docker", ["volume", "rm", name], { stdio: "pipe" });
 			const stuck = removeDemoVolumes();
 			if (stuck.length > 0) fail("the demo users' data volumes are removed", stuck.join("; "));
 			else pass("the demo users' data volumes are removed", `${demoUids.length} demo users`);
-			// Demo turns are scripted: none is handed an access token, and the image's Windlass is one that could hand one on.
+			// Demo turns are scripted and get no access token.
 			const handed = server.output.split("\n").filter((line) => line.includes("[wlp] token.handed")).length;
-			const warned = server.output.split("\n").find((line) => line.includes("[wlp] WARNING"));
 			if (handed > 0) fail("no scripted turn was handed an access token", `${handed} were`);
 			else pass("no scripted turn was handed an access token");
-			if (warned) fail("the server started without a warning about the image's Windlass", warned);
-			else pass("the server started without a warning about the image's Windlass");
 		}
 	}
 }

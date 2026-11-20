@@ -7,9 +7,7 @@
  * A secret is a named value the platform hands to the repository's agents as an environment
  * variable. Its value goes to the server when it is saved and is never sent back: the list has
  * names, scopes and dates, and the value's field is empty whenever it is shown. What a secret reaches
- * depends on the sandbox as well as on its scope, so the list is asked for one sandbox (a profile,
- * and in a session's panel that session's own sandbox, whose Windlass may be an older one) and
- * carries, for each secret, the server's sentence about what is less than the scope says there.
+ * depends on the sandbox profile and the secret's scope. Each list carries the server's explanation.
  *
  * The account's secrets are managed with the same list and the same dialog, on the account's settings
  * page (`AccountSecretsBlock`). They are for MCP servers, the user's own and a project's that reads
@@ -29,7 +27,7 @@ import {
 	type SecretScope,
 	type SessionSummary,
 } from "@contract";
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { UserApi } from "../api/client";
 import { absoluteTime, count, day } from "../lib/format";
@@ -57,12 +55,10 @@ interface SecretList {
 
 /**
  * Whose secrets a list is, and how they are read and changed: a repository's, as a sandbox of the
- * profile gets them (with `sessionId`, that session's own sandbox), or the account's.
+ * profile gets them, or the account's.
  */
 interface SecretsOwner {
 	kind: "repository" | "account";
-	/** What separates one owner's list from another's. */
-	key: string;
 	/** In words: "acme/harbor", or "your account". */
 	name: string;
 	/** How many it may keep. */
@@ -72,21 +68,19 @@ interface SecretsOwner {
 	remove(api: UserApi, profile: SandboxProfileId, name: string): Promise<SecretList>;
 }
 
-function repositoryOwner(repositoryId: GithubId, name: string, sessionId?: string): SecretsOwner {
+function repositoryOwner(repositoryId: GithubId, name: string): SecretsOwner {
 	return {
 		kind: "repository",
-		key: `repository:${repositoryId}:${sessionId ?? ""}`,
 		name,
 		limit: MAX_SECRETS_PER_REPOSITORY,
-		read: (api, profile) => api.repositorySecrets(repositoryId, profile, sessionId),
-		save: (api, profile, secret) => api.saveRepositorySecret(repositoryId, profile, secret, sessionId),
-		remove: (api, profile, secretName) => api.deleteRepositorySecret(repositoryId, profile, secretName, sessionId),
+		read: (api, profile) => api.repositorySecrets(repositoryId, profile),
+		save: (api, profile, secret) => api.saveRepositorySecret(repositoryId, profile, secret),
+		remove: (api, profile, secretName) => api.deleteRepositorySecret(repositoryId, profile, secretName),
 	};
 }
 
 const ACCOUNT_OWNER: SecretsOwner = {
 	kind: "account",
-	key: "account",
 	name: "your account",
 	limit: MAX_ACCOUNT_SECRETS,
 	read: (api, profile) => api.accountSecrets(profile),
@@ -143,27 +137,14 @@ interface SecretsState {
 	set(list: SecretList): void;
 }
 
-/**
- * An owner's secrets as a sandbox of `profile` gets them: read when either changes. With `session` it
- * is that session's sandbox, and the list is read again when what is known of it changes: a sandbox
- * is made or removed, or a turn has asked its Windlass what it can be told. A null owner reads nothing.
- */
-function useSecrets(owner: SecretsOwner | null, profile: SandboxProfileId | null, session?: Pick<SessionSummary, "id" | "sandbox" | "envLists">): SecretsState {
+function useSecrets(owner: SecretsOwner | null, profile: SandboxProfileId | null): SecretsState {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [list, setList] = useState<SecretList | null>(null);
 	const [error, setError] = useState<string | null>(null);
-	const sandbox = session === undefined ? "" : `${session.sandbox === "none" ? "none" : "made"}:${session.envLists ?? ""}`;
-	/** What the list on show was asked for, the session's sandbox aside. */
-	const shown = useRef("");
-	const key = owner?.key ?? null;
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: `sandbox` is not read here, it is what the server's answer depends on; the owner is the same while its key is
 	useEffect(() => {
-		// The same list said for a sandbox that changed stays on show until its new sentences are there: a dialog open over it is not closed.
-		const asked = `${key}:${profile}`;
-		if (shown.current !== asked) setList(null);
-		shown.current = asked;
+		setList(null);
 		setError(null);
 		if (owner === null || profile === null) return;
 		let current = true;
@@ -178,7 +159,7 @@ function useSecrets(owner: SecretsOwner | null, profile: SandboxProfileId | null
 		return () => {
 			current = false;
 		};
-	}, [client, auth, explain, key, profile, sandbox]);
+	}, [client, auth, explain, owner, profile]);
 
 	const set = useCallback((next: SecretList) => {
 		setList(next);
@@ -524,8 +505,7 @@ export function SecretsBlock({
 	title(add: ReactNode): ReactNode;
 	onChanged?(): void;
 }) {
-	const sessionId = session?.id;
-	const owner = useMemo(() => repositoryOwner(repositoryId, name, sessionId), [repositoryId, name, sessionId]);
+	const owner = useMemo(() => repositoryOwner(repositoryId, name), [repositoryId, name]);
 	return <OwnedSecrets owner={owner} profile={profile} session={session} title={title} onChanged={onChanged} />;
 }
 
@@ -538,7 +518,7 @@ export function AccountSecretsBlock({ profile, title, onChanged }: { profile: Sa
 }
 
 function OwnedSecrets({ owner, profile, session, title, onChanged }: { owner: SecretsOwner; profile: SandboxProfileId | null; session?: SessionSummary; title(add: ReactNode): ReactNode; onChanged?(): void }) {
-	const secrets = useSecrets(owner, profile, session);
+	const secrets = useSecrets(owner, profile);
 	const { list, error } = secrets;
 	const [open, setOpen] = useState<DialogView | null>(null);
 	const workspace = session === undefined ? null : session.sandbox === "none" ? "none" : "made";

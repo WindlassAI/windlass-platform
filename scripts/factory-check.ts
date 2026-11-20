@@ -55,7 +55,7 @@ function expect(name: string, ok: boolean, detail = ""): void {
 // ---------------------------------------------------------------------------------------------
 
 const check = (name: string, status: VerifiedCheck["status"], output?: string, whose: VerifiedCheck["whose"] = "user"): VerifiedCheck => ({ name, command: `npm run ${name}`, whose, required: whose === "user", status, exitCode: status === "passed" ? 0 : 1, durationMs: 1000, sentBack: status === "passed" ? 0 : 3, ...(output ? { output } : {}) });
-const verified = (state: Verified["state"], checks: VerifiedCheck[], extra: Partial<Verified> = {}): Verified => ({ turn: 1, state, run: checks.length === 0 ? null : { turn: 1, at: 0, checks }, unrun: [], replaced: false, changedAfter: false, ...extra });
+const verified = (state: Exclude<Verified["state"], "not_needed"> | NonNullable<Verified["unneeded"]>, checks: VerifiedCheck[], extra: Partial<Pick<Verified, "unresolved" | "changedAfter">> = {}): Verified => ({ turn: 1, ...(typeof state === "string" ? { state } : { state: "not_needed" as const, unneeded: state }), run: checks.length === 0 ? null : { turn: 1, at: 0, seq: 1, checks }, unrun: [], changedAfter: false, ...extra });
 const PASSED = verified("passed", [check("test", "passed"), check("lint", "passed")]);
 const FAILING = verified("unresolved", [check("test", "failed", "FAIL src/add.test.ts\nError: expected 3, got -1"), check("lint", "passed")], { unresolved: { reason: "max_rounds", said: null } });
 
@@ -759,8 +759,8 @@ const gates: Array<[string, Verified, string]> = [
 	["the checks passed", PASSED, "pass"],
 	["a check failed", FAILING, "fail"],
 	["a check could not start, none failed", verified("unresolved", [{ ...check("test", "could_not_start"), startError: "npm: not found" }], { unresolved: { reason: "not_started", said: null } }), "unverified"],
-	["not needed, resting on a run that passed", verified("not_needed", [check("test", "passed")], { unneeded: { reason: "not_covered", on: "run" } }), "pass"],
-	["not needed, resting on the start", verified("not_needed", [], { unneeded: { reason: "not_covered", on: "start" } }), "unverified"],
+	["not needed, resting on a run that passed", verified({ reason: "not_covered", on: "run" }, [check("test", "passed")]), "pass"],
+	["not needed, resting on the start", verified({ reason: "not_covered", on: "start" }, []), "unverified"],
 	["no checks set", verified("none_set", []), "unverified"],
 	["files changed after the checks ran", { ...PASSED, changedAfter: true }, "unverified"],
 	["the turn was stopped before the gate", verified("stopped", []), "incomplete"],

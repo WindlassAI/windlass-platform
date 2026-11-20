@@ -79,7 +79,7 @@ RUN set -eu; cd /tmp; \
 # mounted there takes that ownership.
 #
 # Windlass's command sandbox lets a command write in the workspace and in /tmp, and under the home
-# directory only what is not there yet (a home of the session's own; with an older Windlass, nothing).
+# directory only what is not there yet (a home of the session's own).
 # The package managers keep their caches in the home directory: in a read-only one npm and uv fail, pip
 # goes without a cache and pnpm puts its store into the project, and a cache that a command outside the
 # sandbox made there (the repository's setup command) is read-only for the sandboxed ones. So each is
@@ -96,6 +96,10 @@ RUN useradd --create-home --uid 1000 --shell /bin/bash agent \
  && chown -R agent:agent /workspace /home/agent
 
 COPY --chmod=0755 windlass /usr/local/bin/windlass
+# Check the executable on the target architecture, before the image can be tagged.
+RUN version="$(windlass --version)" && \
+    release="$(echo "$version" | awk '$1 == "Windlass" { sub(/\+.*/, "", $2); if ($2 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) print $2 }')" && \
+    { dpkg --compare-versions "$release" ge 0.4.0 || { echo "Windlass 0.4.0 or later is required; found $version" >&2; exit 1; }; }
 COPY --chmod=0755 wlp-run /usr/local/bin/wlp-run
 COPY --chmod=0755 wlp-shot /usr/local/bin/wlp-shot
 

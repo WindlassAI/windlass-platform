@@ -11,16 +11,12 @@
  *
  *   docker exec -i wlp-session-<id> sh -c 'set -eu; umask 077; tmp="$1.tmp"; trap ... EXIT; cat > "$tmp"; mv -f -- "$tmp" "$1"' sh <file>
  *
- * (the token on standard input). Before the first unscripted turn in a sandbox,
- * `docker exec -e WINDLASS_ACCESS_TOKEN_FILE=/nonexistent/wlp-probe wlp-session-<id> windlass login status`
- * asks its Windlass whether it reads a handed-in token at all, and before every one the image's
- * Windlass is looked at: tokens are fetched with it (tokens.ts), so it must have
- * `windlass login token --valid-for`.
+ * (the token on standard input). The server checks the image version at startup.
  */
 
 import type { AccessTokens } from "./api.js";
 import { IMAGE } from "./docker.js";
-import { outdatedWindlass } from "./handoff.js";
+import { windlassVersionProblem } from "../startup.js";
 import { probeImage } from "./tokens.js";
 import { SandboxWindlass, type TurnOptions, type WindlassHost } from "./turn.js";
 
@@ -34,16 +30,8 @@ export interface DockerWindlassOptions extends TurnOptions {
 /** The Windlass of a Docker image: sandboxes are made from it, and the helper that fetches access tokens runs it. */
 export function dockerWindlassHost(image: string = IMAGE): WindlassHost {
 	return {
-		version: async () => (await probeImage(image))?.version ?? null,
-		problem: async () => {
-			const found = await probeImage(image);
-			if (found === null) return `The sandbox image ${image} is missing, so no agent can run. Build it: sandbox/build.sh`;
-			return found.lacks === null ? null : outdatedWindlass(found.version, image, found.lacks);
-		},
-		tokenSourceProblem: async () => {
-			const found = await probeImage(image).catch(() => null);
-			return found !== null && found.lacks !== null ? outdatedWindlass(found.version, image, found.lacks) : null;
-		},
+		version: () => probeImage(image),
+		problem: async () => windlassVersionProblem(await probeImage(image), "sandbox image " + image),
 	};
 }
 

@@ -3,6 +3,7 @@
  * it: durable events and three of the ephemeral ones are stored (timeline items); the four streaming
  * ones are broadcast and never stored (live deltas). Pure functions, shared by the mock and the tests.
  */
+import { VerificationLog } from "../../../server/src/verified";
 import type { LiveDelta, TimelineItem, TurnUsage, WindlassEvent } from "@contract";
 
 /** Streaming output: broadcast, never stored. */
@@ -117,7 +118,11 @@ export function runToFeed(events: WindlassEvent[], options: { turn: number; afte
 		else feed.push({ item: { seq: ++seq, at: at + (offsets[index] ?? 0), turn: options.turn, kind: "windlass", event } });
 	});
 	const summary = events.find((event) => event.type === "cli.summary");
-	if (summary) feed.push({ item: turnEnded(summary, { seq: ++seq, at: at + (offsets.at(-1) ?? 0), turn: options.turn }) });
+	if (summary) {
+		const log = new VerificationLog();
+		for (const event of events) log.note(event);
+		feed.push({ item: { ...turnEnded(summary, { seq: ++seq, at: at + (offsets.at(-1) ?? 0), turn: options.turn }), verified: log.verified(options.turn, [], { project: null }, null) } });
+	}
 	return feed;
 }
 
@@ -130,7 +135,7 @@ export function promptText(enqueued: WindlassEvent | undefined): string {
 const OUTCOMES = ["succeeded", "unresolved", "failed", "stopped", "interrupted"] as const;
 
 /** The platform's `turn.ended` for a run that printed `cli.summary`. */
-export function turnEnded(summary: WindlassEvent, position: { seq: number; at: number; turn: number }): Extract<TimelineItem, { kind: "turn.ended" }> {
+export function turnEnded(summary: WindlassEvent, position: { seq: number; at: number; turn: number }): Omit<Extract<TimelineItem, { kind: "turn.ended" }>, "verified"> {
 	const outcome = OUTCOMES.find((candidate) => candidate === summary.outcome) ?? "failed";
 	const usage = typeof summary.usage === "object" && summary.usage !== null ? (summary.usage as TurnUsage) : null;
 	return {

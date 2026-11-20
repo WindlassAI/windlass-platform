@@ -127,7 +127,7 @@ describe("the mock's repository page", () => {
 			state: "passed",
 			run: { turn: 1, checks: [{ name: "test", command: "npm test", whose: "user", status: "passed", sentBack: 1 }] },
 			unrun: [{ name: "types", command: "npm run typecheck" }],
-			replaced: false,
+
 			changedAfter: false,
 		});
 		// A session on a repository nothing is saved for says that nothing was set.

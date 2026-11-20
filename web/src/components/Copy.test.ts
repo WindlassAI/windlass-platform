@@ -93,7 +93,7 @@ describe("the copy control", () => {
 
 const user = (text: string): UserBlock => ({ kind: "user", id: "u", at: 0, text, model: "gpt", effort: null, steer: false });
 const answer = (text: string, streaming = false): TextBlock => ({ kind: "text", id: "a", at: 0, messageId: "m", text, streaming });
-const turnOf = (...blocks: TurnView["blocks"]): TurnView => ({ turn: 1, blocks, steps: 1, interruptRequested: false, verification: null, changedFiles: null, usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, end: null, platformAnswer: null });
+const turnOf = (...blocks: TurnView["blocks"]): TurnView => ({ turn: 1, blocks, steps: 1, interruptRequested: false, changedFiles: null, usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, end: null, platformAnswer: null });
 
 describe("copying in the conversation", () => {
 	const MARKDOWN = "Changed **`add`**:\n\n```ts\nreturn a + b\n```\n\nThen:\n\n```sh\nbun test\n```\n";

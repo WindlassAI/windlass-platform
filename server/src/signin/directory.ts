@@ -22,7 +22,7 @@ import { isActorGone } from "../actors/internal.js";
 import { serviceParams } from "../auth.js";
 import { ownEngineEndpoint } from "../config.js";
 import { type AccessToken, type ChatgptAccount, SandboxUserError } from "../sandbox/api.js";
-import { NOT_SIGNED_IN, SignInRefreshError, WindlassOutdatedError } from "../sandbox/handoff.js";
+import { NOT_SIGNED_IN, SignInRefreshError } from "../sandbox/handoff.js";
 import type { SignInCommands } from "./commands.js";
 import { SignInHolder, type StoredSignIn } from "./holder.js";
 import { type SignInMaterial, signInOnly } from "./material.js";
@@ -47,21 +47,18 @@ export interface SignInDirectory {
  */
 export type SignInProblem =
 	| { kind: "user"; message: string }
-	| { kind: "outdated"; message: string }
 	| { kind: "refresh"; message: string; code: string }
 	| { kind: "other"; message: string };
 
 export function problemOf(error: unknown): SignInProblem {
 	const message = error instanceof Error ? error.message : String(error);
 	if (error instanceof SandboxUserError) return { kind: "user", message };
-	if (error instanceof WindlassOutdatedError) return { kind: "outdated", message };
 	if (error instanceof SignInRefreshError) return { kind: "refresh", message, code: error.code };
 	return { kind: "other", message };
 }
 
 export function errorOf(problem: SignInProblem): Error {
 	if (problem.kind === "user") return new SandboxUserError(problem.message);
-	if (problem.kind === "outdated") return new WindlassOutdatedError(problem.message);
 	if (problem.kind === "refresh") return new SignInRefreshError(problem.message, problem.code);
 	return new Error(problem.message);
 }

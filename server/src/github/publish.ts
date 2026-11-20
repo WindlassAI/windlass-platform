@@ -256,8 +256,8 @@ export class PullProblem extends GithubProblem {
 	}
 }
 
-function infoOf(pull: Pull, pushedAt: number, verified?: string): PullRequestInfo {
-	return { number: pull.number, url: pull.url, state: pull.state, title: pull.title, branch: pull.head, base: pull.base, pushedAt, ...(verified === undefined ? {} : { verified }) };
+function infoOf(pull: Pull, pushedAt: number, verified: string): PullRequestInfo {
+	return { number: pull.number, url: pull.url, state: pull.state, title: pull.title, branch: pull.head, base: pull.base, pushedAt, verified };
 }
 
 const isOpen = (pull: PullRequestInfo | null): pull is PullRequestInfo => pull !== null && (pull.state === "open" || pull.state === "draft");

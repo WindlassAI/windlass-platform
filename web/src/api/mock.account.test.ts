@@ -158,10 +158,10 @@ describe("the mock's account settings", () => {
 		for (const profile of [...MOCK_PROFILES, ...MOCK_E2B_PROFILES].filter((candidate) => candidate.available)) {
 			const there = createMockClient({ pace: 0, sandbox: profile.id.startsWith("e2b") ? "e2b" : "docker" });
 			const listed = await there.user(ada).saveAccountSecret(profile.id, { name: "TRACKER_TOKEN", value, scope: "setup" });
-			expect(listed.secrets[0]?.reach, profile.id).toEqual(accountSecretReach("TRACKER_TOKEN", "setup", profile, true));
+			expect(listed.secrets[0]?.reach, profile.id).toEqual(accountSecretReach("setup", profile));
 			// Its scope alone is changed, as a repository's secret's is: it then reaches what the server says such a secret reaches there.
 			const wide = await there.user(ada).saveAccountSecret(profile.id, { name: "TRACKER_TOKEN", scope: "agent" });
-			expect(wide.secrets[0], profile.id).toMatchObject({ scope: "agent", reach: accountSecretReach("TRACKER_TOKEN", "agent", profile, true) });
+			expect(wide.secrets[0], profile.id).toMatchObject({ scope: "agent", reach: accountSecretReach("agent", profile) });
 			expect(wide.secrets[0]?.reach, profile.id).toEqual({ servers: true, commands: "yes", note: null });
 			there.dispose();
 		}
@@ -217,7 +217,7 @@ describe("the mock's account settings", () => {
 		const open = await turn("docker-hardened");
 		const there = await open.api.servers();
 		expect(there.servers.find((server) => server.name === "issues")).toMatchObject({ state: "failed" });
-		expect(there.accountSecrets).toBe(accountSecretsNote(MOCK_PROFILES.find((profile) => profile.id === "docker-hardened") as SandboxProfile, true));
+		expect(there.accountSecrets).toBe(accountSecretsNote(MOCK_PROFILES.find((profile) => profile.id === "docker-hardened") as SandboxProfile));
 		expect(there.accountSecrets).toContain("only those that are also for the agent's commands");
 
 		// Once its user says it may also go where the agent's commands could read it, the server that reads it starts there with the next turn.

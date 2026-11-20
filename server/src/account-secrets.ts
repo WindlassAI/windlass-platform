@@ -64,26 +64,20 @@ export const ACCOUNT_SECRETS_TABLE = `
 
 type Promises = Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">;
 
-/**
- * What an account's secret of this name and scope reaches in a sandbox of `profile`, whose Windlass
- * takes the lists of variable names or not (`lists`): what a repository's secret of that scope
- * reaches there, without the setup command.
- */
-export function accountSecretReach(name: string, scope: SecretScope, profile: Promises, lists: boolean): SecretReach {
-	return secretReach(name, scope, profile, lists, "account");
+export function accountSecretReach(scope: SecretScope, profile: Promises): SecretReach {
+	return secretReach(scope, profile, "account");
 }
 
 /**
  * Why a sandbox of `profile` hands MCP servers only some of the account's secrets, in a sentence
  * for a session's panel; null where every one of them is handed over.
  */
-export function accountSecretsNote(profile: Promises, lists: boolean): string | null {
+export function accountSecretsNote(profile: Promises): string | null {
 	const sandbox: CommandSandbox = commandSandbox(profile);
 	const only = "Of your account's secrets, MCP servers are given only those that are also for the agent's commands in this sandbox";
 	if (sandbox === "none") return `${only}: the agent's commands run here without Windlass's sandbox, where a command can read whatever Windlass was handed for an MCP server from Windlass's own process. A server that reads another one does not start.`;
 	if (sandbox === "unknown") return `${only}: it has not been established that Windlass can sandbox the agent's commands here, and a command it cannot sandbox can read whatever Windlass was handed for an MCP server from Windlass's own process. A server that reads another one does not start.`;
-	if (lists) return null;
-	return "This sandbox has an older Windlass, which passes every variable it has on to the agent's commands unless its name looks like a credential (it contains TOKEN, KEY, SECRET or PASSWORD, for example). So an account's secret that is for MCP servers only is given to them here only under such a name, and a server that reads another one does not start.";
+	return null;
 }
 
 /** A secret of the account with its value, as a session holds it in memory for one turn. */
@@ -106,8 +100,8 @@ export function accountSecretsFor(account: readonly OpenedAccountSecret[], repos
  * everywhere. One whose name a secret of the repository has is left out, whatever becomes of the
  * repository's.
  */
-export function turnEnvironment(repository: readonly OpenedSecret[], account: readonly OpenedAccountSecret[], profile: Promises, lists: boolean): WindlassSecrets {
-	return windlassEnvironment([...repository, ...accountSecretsFor(account, repository)], profile, lists);
+export function turnEnvironment(repository: readonly OpenedSecret[], account: readonly OpenedAccountSecret[], profile: Promises): WindlassSecrets {
+	return windlassEnvironment([...repository, ...accountSecretsFor(account, repository)], profile);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -178,7 +172,7 @@ export function listedAccountSecrets(rows: ReadonlyArray<{ name: string; scope: 
 			const name = String(row.name);
 			const scope: SecretScope = row.scope === "agent" ? "agent" : "setup";
 			const shared = repositories.filter((other) => other.name === name).map((other) => (other.label !== "" ? other.label : `repository ${other.project.replace(/^github:/, "")}`));
-			return { name, scope, updatedAt: Number(row.updated_at), reach: accountSecretReach(name, scope, profile, true), repositories: [...new Set(shared)].sort((a, b) => a.localeCompare(b)) };
+			return { name, scope, updatedAt: Number(row.updated_at), reach: accountSecretReach(scope, profile), repositories: [...new Set(shared)].sort((a, b) => a.localeCompare(b)) };
 		}),
 	};
 }

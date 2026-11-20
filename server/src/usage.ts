@@ -479,9 +479,9 @@ export interface OpenStretch {
 	/**
 	 * The id of the hold the current use of the sandbox began with: a turn, a read of the workspace, a
 	 * push or a wake takes a new one, and a renewal keeps it. A decision to stop counting names it, so a
-	 * use that began after the decision is not stopped by it. Absent in stretches stored before: `hold`.
+	 * use that began after the decision is not stopped by it.
 	 */
-	use?: string;
+	use: string;
 	/** When the session last saw the sandbox running after the time it would have stopped by itself. */
 	seen?: number;
 }

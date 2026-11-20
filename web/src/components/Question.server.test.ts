@@ -124,7 +124,7 @@ describe("the question's words", () => {
 		expect(one.subject).toBe("bash -c 'tracker serve --port 80'");
 		expect(one.details[3]).toBe(`It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs. ${SAVE_HARBOR_TOKEN}`);
 		// A session with no repository: where its sandbox gives the account's secrets to MCP servers, one of those sets the variable.
-		const alone = serverQuestionWords(harbor({ unset: ["HARBOR_TOKEN"] }), { profile: profile("docker-windlass-sandbox"), demo: false, dataInSandbox: false, project: own, secrets: null, envLists: true });
+		const alone = serverQuestionWords(harbor({ unset: ["HARBOR_TOKEN"] }), { profile: profile("docker-windlass-sandbox"), demo: false, dataInSandbox: false, project: own, secrets: null });
 		expect(alone.details[3]).toBe("It will not start yet: its definition reads the variable HARBOR_TOKEN, which is not set where Windlass runs. A variable is set by saving a secret for a repository of your GitHub connection, and this session is not on one. A secret of your account under that name, saved in your settings, sets it for MCP servers too.");
 		const three = serverQuestionWords(harbor({ unset: ["A", "B", "C"] }), { profile: profile("docker-hardened"), demo: false, dataInSandbox: false, project: own, secrets: null });
 		expect(three.details[3]).toBe(
@@ -139,11 +139,6 @@ describe("the question's words", () => {
 		expect(given.details[3]).toBe("Its definition reads the secret HARBOR_TOKEN saved for this repository: approving gives its value to the server.");
 		const sent = serverQuestionWords(harbor({ name: "docs", argv: null, url: "https://docs.example.com/mcp", secrets: ["DOCS_TOKEN", "DOCS_KEY"] }), { ...context, secrets: [] });
 		expect(sent.details[3]).toBe("Its definition reads the secrets DOCS_TOKEN and DOCS_KEY saved for this repository: approving sends their values to that address.");
-		// Saved, and kept from Windlass: its name is not one Windlass withholds from the commands it sandboxes.
-		const kept = serverQuestionWords(harbor({ unset: ["HARBOR_HOST"] }), { ...context, secrets: [{ name: "HARBOR_HOST", scope: "setup" }] });
-		expect(kept.details[3]).toBe(
-			"It will not start yet: its definition reads the variable HARBOR_HOST, which is not set where Windlass runs. A secret named HARBOR_HOST is saved for acme/harbor. MCP servers are not given it in this sandbox. Windlass passes every variable it has on to the agent's commands unless it has a name that looks like a credential (it contains TOKEN, KEY, SECRET or PASSWORD, for example), so with this name an MCP server could only have it if the commands had it too. Only the setup command gets it.",
-		);
 		// Where commands are not sandboxed, a secret for the setup command and MCP servers stays out of Windlass's environment whatever its name.
 		const open = serverQuestionWords(harbor({ unset: ["HARBOR_TOKEN"] }), { ...context, profile: profile("docker-hardened"), secrets: [{ name: "HARBOR_TOKEN", scope: "setup" }] });
 		expect(open.details[3]).toContain("A secret named HARBOR_TOKEN is saved for acme/harbor. MCP servers are not given it in this sandbox: the agent's commands run there without Windlass's sandbox");
@@ -208,30 +203,21 @@ describe("the question's words", () => {
 		expect(forgettingWords({ dataInSandbox: false })).toBe("Forgetting holds once Windlass's own record has run out, 30 days after the server was last approved: all your sessions share that record here. A running server is not stopped.");
 	});
 
-	it("has the mock say what a secret reaches word for word as the server does, for every kind of sandbox and either Windlass in it", () => {
+	it("has the mock say what a secret reaches word for word as the server does, for every kind of sandbox", () => {
 		const kinds = [profile("docker-windlass-sandbox"), profile("docker-hardened"), e2bProfile({ windlassSandbox: false }), e2bProfile({ windlassSandbox: true })];
 		for (const kind of kinds) {
-			for (const name of ["NPM_TOKEN", "DATABASE_URL", "SENTRY_DSN", "PREVIEW_HOST", "DEPLOY_KEY", "AWS_REGION", "GH_PAT", "AUTHOR", "netrc"]) {
-				for (const scope of ["setup", "agent"] as const) {
-					for (const lists of [true, false]) expect(mockSecretReach(name, scope, kind, lists)).toEqual(secretReach(name, scope, kind, lists));
-				}
+			for (const scope of ["setup", "agent"] as const) {
+				expect(mockSecretReach(scope, kind)).toEqual(secretReach(scope, kind));
 			}
 		}
 	});
 
-	it("has the mock list a repository's secrets for the sandbox it is asked about: a session's own, with the Windlass it has, or one made now", async () => {
+	it("has the mock list a repository's secrets for the sandbox it is asked about: the selected sandbox profile", async () => {
 		const client = createMockClient({ pace: 0, origin: "http://localhost:5173" });
 		const user = client.user({ token: "mock:chatgpt:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } });
 		const sentences = (list: { secrets: Array<{ name: string; reach: { note: string | null } }> }) => Object.fromEntries(list.secrets.map((secret) => [secret.name, secret.reach.note !== null]));
-		// The launch form, and a session whose sandbox has the Windlass that takes the lists: nothing to say where commands are sandboxed.
 		expect(sentences(await user.repositorySecrets(7101, "docker-windlass-sandbox"))).toEqual({ DEPLOY_KEY: false, NPM_TOKEN: false, PREVIEW_HOST: false, SENTRY_DSN: false });
-		expect(sentences(await user.repositorySecrets(7101, "docker-windlass-sandbox", "harbor-build"))).toEqual({ DEPLOY_KEY: false, NPM_TOKEN: false, PREVIEW_HOST: false, SENTRY_DSN: false });
-		// A session whose sandbox keeps the older Windlass: the two that its one rule cannot keep to their scope.
-		expect(sentences(await user.repositorySecrets(7101, "docker-windlass-sandbox", "checks"))).toEqual({ DEPLOY_KEY: true, NPM_TOKEN: false, PREVIEW_HOST: false, SENTRY_DSN: true });
-		// Where commands are not sandboxed, a secret that is not for them stays out of Windlass with either.
 		expect(sentences(await user.repositorySecrets(7101, "docker-hardened"))).toEqual({ DEPLOY_KEY: false, NPM_TOKEN: true, PREVIEW_HOST: false, SENTRY_DSN: true });
-		// A session on another repository says nothing about this one's sandbox.
-		expect(sentences(await user.repositorySecrets(7101, "docker-windlass-sandbox", "add-test"))).toEqual({ DEPLOY_KEY: false, NPM_TOKEN: false, PREVIEW_HOST: false, SENTRY_DSN: false });
 		client.dispose();
 	});
 
@@ -248,8 +234,7 @@ describe("the question's words", () => {
 				const mine = MOCK_PROFILES.find((candidate) => candidate.id === id) as SandboxProfile;
 				for (const demo of [true, false]) {
 					// The mock plays a repository no secret of that name is saved for; a session without one can have none.
-					// And a sandbox whose Windlass can be told which variables its commands get, on which what an account's secret reaches depends.
-					const context = { profile: profile(id), demo, dataInSandbox: true, project: theirs, secrets: theirs.kind === "github" ? [] : null, envLists: true };
+					const context = { profile: profile(id), demo, dataInSandbox: true, project: theirs, secrets: theirs.kind === "github" ? [] : null };
 					for (const unset of [[], ["HARBOR_TOKEN"], ["A", "B"]]) {
 						const server = harbor({ unset, argv: ["python3", "tools/harbor_mcp.py", "it's here"] });
 						expect(mockServerQuestion({ name: server.name, argv: server.argv as string[], unset }, mine, demo, project)).toEqual(serverQuestionWords(server, context));

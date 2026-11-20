@@ -13,12 +13,11 @@
  *   long, slow, build, progress, wait
  *                   one command that prints for a while: the turn to steer, or to stop one call of
  *
- * A turn that is handed checks (`RunTurnInput.checks`) ends with one run of them, as the gate of a
- * Windlass that takes them as required checks would report it: each is the session's and required,
+ * A turn that is handed checks (`RunTurnInput.checks`) ends with one run of them, as Windlass reports it: each is the session's and required,
  * a check whose command has the word "fail" in it fails, with the end of its output in the evidence,
  * and the turn ends `unresolved`; any other passes. The evidence names what the run's changes are
  * measured from (`since`: the session's start until a run has passed, then that run) and the
- * session's required checks, as such a Windlass does.
+ * session's required checks, as Windlass records them.
  *
  * Switches in the prompt reach every other ending:
  *
@@ -28,8 +27,6 @@
  *                     `failure.reason` "engine"
  *   "(throw)"         the layer itself fails: `runTurn` rejects
  *   "(auth-fail)"     the recorded run of a refused sign-in: `failure.reason` "auth_required"
- *   "(old-windlass)"  the image's Windlass cannot hand a token on (it has no `login token`, or not that
- *                     command's `--valid-for`): "windlass_outdated", no events
  *   "(session-gone)"  Windlass no longer has the session to continue: "session_not_found", no events
  *   "(session-busy)"  another process holds the session: "session_in_use", no events
  *   "(session-unread)" the session holds a record this Windlass does not read, as when a later one
@@ -140,10 +137,9 @@ import {
 	type TurnServer,
 	type TurnServerQuestion,
 	type Windlass,
-	type WindlassFeatures,
 } from "./sandbox/api.js";
 import { BACKUP_ENV, SandboxSessionBackups } from "./sandbox/backup.js";
-import { NOT_SIGNED_IN, SIGN_IN_EXPIRED, SIGN_IN_UNREACHABLE, SignInRefreshError, TOKEN_VALID_FOR_MS, outdatedWindlass, tokenSourceFailure } from "./sandbox/handoff.js";
+import { NOT_SIGNED_IN, SIGN_IN_EXPIRED, SIGN_IN_UNREACHABLE, SignInRefreshError, TOKEN_VALID_FOR_MS, tokenSourceFailure } from "./sandbox/handoff.js";
 import type { SignInCommands, TokenAnswer } from "./signin/commands.js";
 import { actorSignIns, memorySignIns } from "./signin/facade.js";
 import type { SignInMaterial } from "./signin/material.js";
@@ -660,15 +656,11 @@ class FakeWindlass implements Windlass {
 	) {}
 
 	async version(): Promise<string | null> {
-		return "0.3.0-fake";
+		return "0.4.0-fake";
 	}
 
 	async problem(): Promise<string | null> {
 		return null;
-	}
-
-	async features(): Promise<WindlassFeatures> {
-		return { sessionHome: true, envLists: true, requiredChecks: true, hostTools: true };
 	}
 
 	demoScript(prompt: string, turn: number): ScriptedModel {
@@ -705,7 +697,7 @@ class FakeWindlass implements Windlass {
 		}
 
 		const none = { exitCode: null, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "" };
-		if (text.includes("(old-windlass)")) return { ...none, failure: { reason: "windlass_outdated", message: outdatedWindlass("0.0.0-fake", "windlass-platform-sandbox:latest") } };
+		if (text.includes("(missing-host-tools)")) return { ...none, failure: { reason: "host_tools_required", message: "Windlass needs host tools." } };
 		// A turn that is not scripted runs on its user's sign-in: it is handed that user's access token before anything starts.
 		if (input.script === undefined) {
 			const uid = this.sandboxes.all.get(sandbox.id)?.uid ?? "";
@@ -1172,7 +1164,7 @@ class FakeWindlass implements Windlass {
 			let failure: RunTurnResult["failure"] = null;
 			if (text.includes("(auth-fail)")) failure = { reason: "auth_required", message: "Signed out: sign in again to continue." };
 			else if (finished() === "failed") failure = { reason: "execution_failed", message: EXEC_FAIL_MESSAGE };
-			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure, checks: { required: true, handed: true, project: null } };
+			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure, checks: { project: null } };
 		} finally {
 			ended = true;
 			session.seq = seq;

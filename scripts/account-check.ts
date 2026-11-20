@@ -350,26 +350,19 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 // ---- whom an account's secret reaches --------------------------------------------------------------
 
 {
-	const strict = accountSecretReach("TRACKER_TOKEN", "setup", STRICT, true);
-	const open = accountSecretReach("TRACKER_TOKEN", "setup", OPEN, true);
-	const unknown = accountSecretReach("TRACKER_TOKEN", "setup", UNKNOWN, true);
+	const strict = accountSecretReach("setup", STRICT);
+	const open = accountSecretReach("setup", OPEN);
+	const unknown = accountSecretReach("setup", UNKNOWN);
 	expect("a secret for MCP servers only: where Windlass sandboxes every command, MCP servers get it and no command does", strict.servers && strict.commands === "no" && strict.note === null);
 	expect("where commands are not held in Windlass's sandbox, or not known to be, nothing gets it, and the sentence says so", !open.servers && open.commands === "no" && !unknown.servers && unknown.commands === "no" && [open.note, unknown.note].every((note) => note !== null && note.endsWith("So nothing is given it there.") && !note.includes("setup command")), `${open.note}\n      ${unknown.note}`);
-	const old = [accountSecretReach("TRACKER_TOKEN", "setup", STRICT, false), accountSecretReach("SENTRY_DSN", "setup", STRICT, false), accountSecretReach("TRACKER_TOKEN", "setup", OPEN, false)];
-	expect("with an older Windlass, only a name that looks like a credential reaches MCP servers, and only where commands are sandboxed", old[0]?.servers === true && old[1]?.servers === false && old[2]?.servers === false && old.every((reach) => reach.commands === "no") && !plain(old).includes("setup command"));
-	expect("in every kind of sandbox and with either Windlass, the commands never get it", [STRICT, OPEN, UNKNOWN].every((one) => [true, false].every((lists) => ["TRACKER_TOKEN", "SENTRY_DSN"].every((name) => accountSecretReach(name, "setup", one, lists).commands === "no"))));
 	expect(
 		"a secret that is also for the agent's commands reaches MCP servers and commands in every kind of sandbox, and nothing is said under it",
-		[STRICT, OPEN, UNKNOWN].every((one) => ["TRACKER_TOKEN", "SENTRY_DSN"].every((name) => plain(accountSecretReach(name, "agent", one, true)) === plain({ servers: true, commands: "yes", note: null }))),
+		[STRICT, OPEN, UNKNOWN].every((one) => plain(accountSecretReach("agent", one)) === plain({ servers: true, commands: "yes", note: null })),
 	);
-	expect("what either scope reaches is what a repository's secret of that scope reaches", [STRICT, OPEN, UNKNOWN].every((one) => (["setup", "agent"] as const).every((scope) => [true, false].every((lists) => plain({ ...accountSecretReach("DEPLOY_KEY", scope, one, lists), note: null }) === plain({ ...secretReach("DEPLOY_KEY", scope, one, lists), note: null })))));
-	const olderAgent = [STRICT, OPEN, UNKNOWN].flatMap((one) => ["TRACKER_TOKEN", "SENTRY_DSN"].map((name) => accountSecretReach(name, "agent", one, false)));
-	expect("with an older Windlass it reaches MCP servers too, and no sentence about it speaks of a setup command", olderAgent.every((reach) => reach.servers) && !plain(olderAgent).includes("setup command") && olderAgent.some((reach) => reach.note?.endsWith("MCP servers get it.") === true));
 	expect(
 		"a session's panel is told which of them its sandbox hands to servers, and nothing where it hands them all over",
-		accountSecretsNote(STRICT, true) === null &&
-			[accountSecretsNote(OPEN, true), accountSecretsNote(UNKNOWN, true)].every((note) => note !== null && note.includes("only those that are also for the agent's commands") && note.includes("does not start")) &&
-			accountSecretsNote(STRICT, false)?.includes("for MCP servers only") === true,
+		accountSecretsNote(STRICT) === null &&
+			[accountSecretsNote(OPEN), accountSecretsNote(UNKNOWN)].every((note) => note !== null && note.includes("only those that are also for the agent\u0027s commands") && note.includes("does not start")),
 	);
 }
 
@@ -386,10 +379,10 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 		{ name: "NPM_TOKEN", scope: "setup", value: value() },
 	];
 
-	const alone = turnEnvironment([], account, STRICT, true);
+	const alone = turnEnvironment([], account, STRICT);
 	expect("with no repository, Windlass is handed every one of the account's secrets, each named as withheld from the agent's commands", plain(Object.keys(alone.env).sort()) === plain(["SENTRY_DSN", "SHARED_KEY", "TRACKER_TOKEN"]) && plain([...alone.withholdEnv].sort()) === plain(["SENTRY_DSN", "SHARED_KEY", "TRACKER_TOKEN"]) && alone.passEnv.length === 0);
 
-	const both = turnEnvironment(repository, account, STRICT, true);
+	const both = turnEnvironment(repository, account, STRICT);
 	expect("a repository's secret of the same name wins: its value is the one handed over", both.env.SHARED_KEY === repositorys && both.env.TRACKER_TOKEN === tracker);
 	expect("and its scope is the one that holds: the repository's is for the agent's commands, so it is not withheld, and passed on by name", !both.withholdEnv.includes("SHARED_KEY") && both.passEnv.includes("SHARED_KEY") && both.withholdEnv.includes("TRACKER_TOKEN") && both.withholdEnv.includes("NPM_TOKEN"));
 	expect("the account's secrets a session is handed are those no secret of its repository has the name of", plain(accountSecretsFor(account, repository).map((secret) => secret.name)) === plain(["TRACKER_TOKEN", "SENTRY_DSN"]));
@@ -401,7 +394,7 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 		["commands run without Windlass's sandbox", OPEN],
 		["nothing is promised of commands", UNKNOWN],
 	] as const) {
-		const there = turnEnvironment(repository, account, kind, true);
+		const there = turnEnvironment(repository, account, kind);
 		expect(`where ${name}, Windlass is handed none of the account's secrets: only the repository's secret for the agent's commands`, plain(Object.keys(there.env)) === plain(["SHARED_KEY"]) && there.env.SHARED_KEY === repositorys && there.withholdEnv.length === 0);
 	}
 	// One that is also for the agent's commands is handed over where commands are not sandboxed too, and a server that reads it starts there.
@@ -410,13 +403,11 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 		["commands run without Windlass's sandbox", OPEN],
 		["nothing is promised of commands", UNKNOWN],
 	] as const) {
-		const there = turnEnvironment([], wide, kind, true);
+		const there = turnEnvironment([], wide, kind);
 		expect(`where ${name}, an account's secret that is also for the agent's commands is handed over, and no other`, plain(Object.keys(there.env).sort()) === plain(["PREVIEW_HOST", "WIKI_TOKEN"]) && there.withholdEnv.length === 0 && plain(there.passEnv) === plain(["WIKI_TOKEN"]));
 	}
-	const sandboxed = turnEnvironment([], wide, STRICT, true);
+	const sandboxed = turnEnvironment([], wide, STRICT);
 	expect("where commands are sandboxed it is not withheld, and passed on by name where its name would keep it from them", !sandboxed.withholdEnv.includes("WIKI_TOKEN") && !sandboxed.withholdEnv.includes("PREVIEW_HOST") && plain(sandboxed.passEnv) === plain(["WIKI_TOKEN"]) && sandboxed.withholdEnv.includes("TRACKER_TOKEN"));
-	const older = turnEnvironment([], account, STRICT, false);
-	expect("an older Windlass is handed only the ones its own rule keeps from commands, and no lists", plain(Object.keys(older.env).sort()) === plain(["SHARED_KEY", "TRACKER_TOKEN"]) && older.withholdEnv.length === 0 && older.passEnv.length === 0);
 
 	// Whatever a session shows has every saved value taken out, also the account's that the repository's stands in for.
 	const redactor = new SecretRedactor([...repository, ...account]);
@@ -426,7 +417,7 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 
 {
 	// The question about a project's server that reads a secret of the account says whose it is.
-	const context = { profile: STRICT, demo: false, dataInSandbox: true, project: { kind: "github" as const, label: "acme/harbor" }, secrets: [], envLists: true, accountSecrets: ["TRACKER_TOKEN"] };
+	const context = { profile: STRICT, demo: false, dataInSandbox: true, project: { kind: "github" as const, label: "acme/harbor" }, secrets: [], accountSecrets: ["TRACKER_TOKEN"] };
 	const question = { name: "harbor", fingerprint: "f", argv: ["python3", "harbor.py"], url: null, file: "/workspace/.windlass/config.json", unset: [], holdsTurn: true };
 	const mine = serverQuestionWords({ ...question, secrets: ["TRACKER_TOKEN"] }, context).details.join(" ");
 	const mixed = serverQuestionWords({ ...question, secrets: ["NPM_TOKEN", "TRACKER_TOKEN"] }, context).details.join(" ");

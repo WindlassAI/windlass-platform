@@ -274,7 +274,7 @@ function Pulls({ page, now }: { page: RepositoryPage; now: number }) {
 											)}
 										</span>
 										<span title={absoluteTime(pull.pushedAt)}>pushed {relativeTime(pull.pushedAt, now)}</span>
-										{pull.verified ? <span title="What its description said was verified when the platform last wrote it">{pull.verified}</span> : null}
+										<span title="What its description said was verified when the platform last wrote it">{pull.verified}</span>
 									</p>
 								</div>
 							</li>

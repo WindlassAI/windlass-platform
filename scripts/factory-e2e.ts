@@ -1035,7 +1035,7 @@ async function memoryChecks(): Promise<void> {
 		// The first turn's 80 s leave the ledger's window before the second's 30 s are counted: the ledger alone would say 30.
 		const reads = [[{ hold: "h_first", session: "s", seconds: 80 }], [{ hold: "h_second", session: "s", seconds: 30 }]];
 		const actor = await itemActor(m.item, { facts: async () => ({ entries: reads.shift() ?? [], openItems: 1 }) });
-		const failing = { turn: 1, state: "unresolved", run: { turn: 1, at: T, checks: [{ name: "test", command: "npm test", whose: "user", required: true, status: "failed", exitCode: 1, durationMs: 1, sentBack: 3, output: "expected 3" }] }, unrun: [], replaced: false, changedAfter: false };
+		const failing = { turn: 1, state: "unresolved", run: { turn: 1, at: T, seq: 1, checks: [{ name: "test", command: "npm test", whose: "user", required: true, status: "failed", exitCode: 1, durationMs: 1, sentBack: 3, output: "expected 3" }] }, unrun: [], changedAfter: false };
 		// Two different checks fail, so the second failure is no repeat of the first and the budget is what decides.
 		const ended = (turn: string, name: string) => ({ kind: "turn_ended", at: Date.now(), key: turn, outcome: "unresolved", verified: { ...failing, run: { ...failing.run, checks: [{ ...failing.run.checks[0], name }] } }, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
 		const item = () => (actor.c.vars as { stored: { item: Item } }).stored.item;
@@ -1058,7 +1058,7 @@ async function memoryChecks(): Promise<void> {
 			[{ hold: "h_one", session: "s", seconds: 50 }, { hold: "h_two", session: "s", seconds: 20 }],
 		];
 		const actor = await itemActor(m.item, { facts: async () => ({ entries: reads.shift() ?? [], openItems: 1 }) });
-		const failing = { turn: 1, state: "unresolved", run: { turn: 1, at: T, checks: [{ name: "test", command: "npm test", whose: "user", required: true, status: "failed", exitCode: 1, durationMs: 1, sentBack: 3, output: "expected 3" }] }, unrun: [], replaced: false, changedAfter: false };
+		const failing = { turn: 1, state: "unresolved", run: { turn: 1, at: T, seq: 1, checks: [{ name: "test", command: "npm test", whose: "user", required: true, status: "failed", exitCode: 1, durationMs: 1, sentBack: 3, output: "expected 3" }] }, unrun: [], changedAfter: false };
 		const ended = (turn: string, name: string) => ({ kind: "turn_ended", at: Date.now(), key: turn, outcome: "unresolved", verified: { ...failing, run: { ...failing.run, checks: [{ ...failing.run.checks[0], name }] } }, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
 		const item = () => (actor.c.vars as { stored: { item: Item } }).stored.item;
 		for (const name of ["test", "lint", "build"]) {

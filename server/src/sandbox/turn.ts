@@ -14,10 +14,7 @@
  * turn is handed the user's current access token in that file (token-file.ts says where, how and for
  * how long), written before the process starts (`TurnSandbox.writeSecretFile`: the token on standard
  * input, the file renamed into place), replaced the same way when the token in it has ten minutes left,
- * and removed when the turn ends. A scripted turn gets no token and no such variable. Before the first
- * unscripted turn in a sandbox, `windlass login status` with WINDLASS_ACCESS_TOKEN_FILE=/nonexistent/wlp-probe
- * asks its Windlass whether it reads a handed-in token at all, and before every one the Windlass that
- * fetches tokens is looked at: it must have `windlass login token --valid-for` (`sandboxProblem`).
+ * and removed when the turn ends. A scripted turn gets no token.
  *
  * While a turn runs, the sandbox is held (`TurnSandbox.holdForTurn`): a provider whose sandboxes stop by
  * themselves when nobody vouches for them keeps this one running until the turn has ended.
@@ -30,14 +27,7 @@
  * them no command may get, and which credential-looking ones sandboxed commands get all the same, is
  * said by name when the session is opened (`withholdEnv`, `passEnv`).
  *
- * A sandbox keeps the Windlass of the image it was made from, so what a session can be opened with is
- * asked of the engine and never assumed. Every Windlass lists the keys of a session's metadata it
- * takes in its answer to `initialize` (`agentCapabilities._meta.windlass.openMeta`), and one that
- * does not know a key does not refuse it: it leaves it unread. A key is therefore sent only to an
- * engine that lists it, and a turn that was handed a variable to withhold fails, before a session is
- * opened, on an engine that does not list `withholdEnv`: left unread, the variable would reach the
- * agent's commands. What a turn is handed is decided before its engine starts, so a caller asks first
- * (`SandboxWindlass.features`: an engine started for that question alone, once per sandbox).
+ * Each turn checks its engine's initialize response for host tools before opening a session.
  *
  * The process is driven over its stdin and stdout as the `windlass` command line drives its own engine (Windlass's
  * docs/acp.md, "The command line is an ACP client"):
@@ -45,7 +35,7 @@
  *   initialize                         every engine event is asked for as `_windlass/event`, no standard updates
  *   session/new | _windlass/resolve + session/resume
  *                                      model, effort, the profile's approval mode, whether anyone can answer,
- *                                      and where the engine takes them: a home of the session's own for
+ *                                      a home of the session's own for
  *                                      sandboxed commands, the two lists of variable names, and the
  *                                      user's checks as required checks
  *   _windlass/mcp                      the servers the project's configuration names that wait for approval,
@@ -82,21 +72,11 @@
  * is taken out first, by the layer's own list of what it wrote: a sandbox that exists has the user's
  * servers as they are now from its next turn, and a deleted one does not go on starting.
  *
- * The checks the session's user saved for its repository (`RunTurnInput.checks`) are named to an
- * engine that takes them when its session is opened, as its required checks (`requiredChecks`, among
- * the keys it lists): they are then held by the engine's process, which no file in the sandbox
- * reaches, they run whatever the repository's own `.windlass/config.json` says, and the engine's
- * record says whose each check is. They are not stored with a session, so they are said at every
- * open. To an engine that does not list the key they go as before: into that file in the same step
- * as the servers, as Windlass's own `checks`, and out again with them. The repository's own file is
- * read then too, and never written: such an engine follows it before its user's file and does not
- * say so. `RunTurnResult.checks` says which way the checks went and what the repository's file held
- * on the matter, so that whoever reports a turn's checks knows where each fact about them is from.
+ * The opener supplies the user's required checks on every turn. The engine's evidence identifies their origin.
  *
  * The platform's own tools (agent-publish.ts: `publish`, `report`, `push`, `fetch_base`) are
  * declared to the engine when the session is opened (`hostTools`), those the turn has a callback for
- * (`RunTurnInput.onPublish`, ...), to an engine that lists the key, and to no other: an older one would
- * leave the key unread, and the agent is then offered none of them. A call arrives as the engine's
+ * (`RunTurnInput.onPublish`, ...). A call arrives as the engine's
  * request `_windlass/host_call` on this turn's connection, which lives with the turn's engine process:
  * it is answered for this turn's session, while the turn runs, for a tool the turn declared, and with
  * what the tool's callback resolves with. One that arrives once the turn is over, or names another
@@ -131,11 +111,10 @@ import { isReservedServerName } from "../personal-servers.js";
 import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
 import { windlassChecks } from "../repository-checks.js";
 import { type ConfigServer, type PlatformConfig, PLATFORM_SERVERS_FILE, WINDLASS_CONFIG_FILE, platformConfig, projectChecks } from "../windlass-config.js";
-import { WindlassUnaskedError } from "./api.js";
-import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnChecks, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass, WindlassFeatures } from "./api.js";
+import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnChecks, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
-import { ACCESS_TOKEN_FILE_ENV, type Failure, OUTDATED_SANDBOX, WindlassOutdatedError, handedInFailure, handedInProblem, handedInProblemInWords, tokenRanOut, tokenSourceFailure } from "./handoff.js";
+import { ACCESS_TOKEN_FILE_ENV, type Failure, handedInFailure, handedInProblem, tokenRanOut, tokenSourceFailure } from "./handoff.js";
 import { type ProcessEnd, type SandboxProcess, type TurnSandbox, isTurnSandbox, randomId } from "./provider.js";
 import { TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
 
@@ -262,58 +241,16 @@ export interface WindlassHost {
 	version(): Promise<string | null>;
 	/** `Windlass.problem()`. */
 	problem(): Promise<string | null>;
-	/**
-	 * Why no access token can be fetched for any sandbox: the Windlass that fetches them has no
-	 * `windlass login token --valid-for`. The sentence says to rebuild the image. Null when it can.
-	 */
-	tokenSourceProblem(): Promise<string | null>;
-}
-
-/**
- * How many sandboxes' answers a server keeps; the one used longest ago goes first. A sandbox may be
- * removed by any server, so nothing here hears of it: what is forgotten costs one question asked again.
- */
-const KNOWN_SANDBOXES = 500;
-
-/** Keeps `value` for `id` as the most recently used, and lets the least recently used go beyond KNOWN_SANDBOXES. */
-function keep<V>(known: Map<string, V>, id: string, value: V): void {
-	known.delete(id);
-	known.set(id, value);
-	for (const oldest of known.keys()) {
-		if (known.size <= KNOWN_SANDBOXES) break;
-		known.delete(oldest);
-	}
 }
 
 /** `Windlass` on any provider's sandboxes. A provider passes its `WindlassHost` (windlass.ts for Docker, e2b/windlass.ts for E2B). */
 export class SandboxWindlass implements Windlass {
-	/** Whether the Windlass in a sandbox reads a handed-in token, asked once per sandbox: a sandbox's binary does not change. */
-	private readonly takesToken = new Map<string, boolean>();
-
-	/** What the Windlass in a sandbox said it can be told when a session is opened, asked once per sandbox for the same reason. */
-	private readonly told = new Map<string, WindlassFeatures>();
-
 	/** `tokens`: where a turn that is not scripted gets its user's access token. */
 	constructor(
 		private readonly tokens: AccessTokens,
 		private readonly host: WindlassHost,
 		private readonly options: TurnOptions = {},
 	) {}
-
-	async features(sandbox: SandboxHandle): Promise<WindlassFeatures> {
-		if (!isTurnSandbox(sandbox)) throw new Error("features needs a sandbox from this layer's connect()");
-		const known = this.told.get(sandbox.id);
-		if (known !== undefined) {
-			keep(this.told, sandbox.id, known);
-			return known;
-		}
-		// No answer (the sandbox was slow, the engine did not start) is no answer about what it takes: refused, and not taken for a Windlass that takes nothing.
-		const keys = await openKeysOf(sandbox, this.options);
-		if (keys === null) throw new WindlassUnaskedError();
-		const found = { sessionHome: keys.includes("sandboxHome"), envLists: keys.includes("withholdEnv") && keys.includes("passEnv"), requiredChecks: keys.includes("requiredChecks"), hostTools: keys.includes("hostTools") };
-		keep(this.told, sandbox.id, found);
-		return found;
-	}
 
 	version(): Promise<string | null> {
 		return this.host.version();
@@ -331,39 +268,7 @@ export class SandboxWindlass implements Windlass {
 		if (!isTurnSandbox(sandbox)) throw new Error("runTurn needs a sandbox from this layer's connect()");
 		if (input.windlassSessionId !== undefined && !SESSION_ID.test(input.windlassSessionId)) throw new Error(`invalid Windlass session id: ${input.windlassSessionId}`);
 		if (input.signal?.aborted) return { exitCode: null, aborted: true, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: null };
-		return new Turn(sandbox, input, this.options, this.tokens, () => this.sandboxProblem(sandbox)).run();
-	}
-
-	/**
-	 * Why a turn in this sandbox cannot run on a handed-in token, or null. Two Windlasses have to be new
-	 * enough, and they need different things:
-	 *
-	 *   the sandbox's own  reads the token: it must know WINDLASS_ACCESS_TOKEN_FILE. A sandbox made before
-	 *                      the image was rebuilt keeps its older Windlass, which may ignore the variable and
-	 *                      look for a sign-in that sandboxes no longer hold. It is asked about a file that
-	 *                      does not exist: a Windlass that knows the variable names it in its answer, and
-	 *                      none reads or writes anything for it. Asked once per sandbox. (This reads
-	 *                      what a Windlass can do, not what a failure means, and from its words because
-	 *                      the Windlasses to be told apart are older than the codes: one that reads a
-	 *                      handed-in token and reports no code is not behind.)
-	 *   the token source's fetches the token: it must have `windlass login token` and its `--valid-for`
-	 *                      (`WindlassHost.tokenSourceProblem`; on Docker it is the image's Windlass,
-	 *                      `probeImage`, once per image id). Without them no token can be had for any
-	 *                      sandbox, so that is said first, and no token is asked for.
-	 */
-	private async sandboxProblem(sandbox: TurnSandbox): Promise<string | null> {
-		let takes = this.takesToken.get(sandbox.id);
-		if (takes === undefined) {
-			const asked = await sandbox.ask(["windlass", "login", "status"], { env: { [ACCESS_TOKEN_FILE_ENV]: "/nonexistent/wlp-probe" }, timeoutMs: 20_000 });
-			// An answer of Windlass's (exit 0 or 1, with text). Anything else is the sandbox not running: the turn finds that out itself.
-			if (asked === null || (asked.code !== 0 && asked.code !== 1) || asked.stdout.trim() === "") return null;
-			takes = asked.stdout.includes(ACCESS_TOKEN_FILE_ENV);
-		}
-		keep(this.takesToken, sandbox.id, takes);
-		// With an image that is too old, the remedy is to rebuild it, whatever this sandbox's own Windlass can do; otherwise only this sandbox can be behind.
-		const source = await this.host.tokenSourceProblem().catch(() => null);
-		if (source !== null) return source;
-		return takes ? null : OUTDATED_SANDBOX;
+		return new Turn(sandbox, input, this.options, this.tokens).run();
 	}
 }
 
@@ -557,13 +462,9 @@ class Turn {
 	private engineSecrets = new Set<string>();
 	/** Takes the repository's saved secrets out of what the engine sends (`RunTurnInput.secrets`). */
 	private readonly redactor: Redactor;
-	/** The keys of a session's metadata this engine takes, as its answer to `initialize` lists them. */
-	private openKeys: string[] = [];
-	/** The extension methods this engine serves, as the same answer lists them. */
-	private methods: string[] = [];
-	/** The platform's tools this turn declares, by name, each with its callback; empty for an engine that takes none. */
+	/** The platform's tools this turn declares, by name, each with its callback. */
 	private hostTools = new Map<string, (call: TurnPublishRequest, signal: AbortSignal) => Promise<string> | string>();
-	/** True while this turn has servers or checks of its own in that file: they are taken out when it ends. */
+	/** True while this turn has servers of its own in that file: they are taken out when it ends. */
 	private configWritten = false;
 	/** What Windlass had for checks when its session was opened; null until the file was dealt with. */
 	private checks: TurnChecks | null = null;
@@ -582,20 +483,13 @@ class Turn {
 	private readonly tokenFile: TokenFile | null;
 	/** Windlass's code for `failure`, when the error it came from carried one (`data.windlass.code`). */
 	private failureCode: string | null = null;
-	/**
-	 * The provider error of the model call the turn is at, when that call failed: Windlass's code for it
-	 * (`error.error.code`), and its message when the call failed for the sign-in, which is only read
-	 * should Windlass give no code anywhere. Null once the next call starts.
-	 */
-	private stepFailure: { code: string | null; authMessage: string | null } | null = null;
+	private stepFailureCode: string | null = null;
 
 	constructor(
 		private readonly sandbox: TurnSandbox,
 		private readonly input: RunTurnInput,
 		private readonly options: TurnOptions,
 		private readonly tokens: AccessTokens,
-		/** Why a turn in this sandbox cannot run on a handed-in token (its own Windlass reads none, or the image's cannot fetch one), or null. */
-		private readonly sandboxProblem: () => Promise<string | null>,
 	) {
 		// A scripted turn calls no model: it is handed no token.
 		this.tokenFile = input.script === undefined ? new TokenFile(sandbox, tokens, options.tokenFile) : null;
@@ -720,15 +614,13 @@ class Turn {
 	 * The code is the one on the error the engine answered with and, where there is no such error (the
 	 * execution a late message started), the one on the provider error of the model call that failed;
 	 * Windlass gives both the same. A code that is not about a handed-in token (`network_error`, a
-	 * provider's own) leaves the failure as Windlass reported it: a connection problem stays one. Only a
-	 * failure without any code is read by its words (`handedInProblemInWords` says which Windlass gives none).
+	 * provider's own) leaves the failure as Windlass reported it.
 	 */
 	private async told(failure: Failure | null): Promise<Failure | null> {
 		const tokenFile = this.tokenFile;
 		if (failure === null || tokenFile === null) return failure;
-		const code = this.failureCode ?? this.stepFailure?.code ?? null;
-		const wordy = failure.reason === "auth_required" || failure.reason === "execution_failed";
-		const problem = code !== null ? handedInProblem(code) : wordy ? handedInProblemInWords(failure.message, this.stepFailure?.authMessage ?? null) : null;
+		const code = this.failureCode ?? this.stepFailureCode;
+		const problem = code === null ? null : handedInProblem(code);
 		if (problem === null) return failure;
 		let state = tokenFile.state;
 		if (state.problem === null && (problem === "undelivered" || tokenRanOut(problem, state))) {
@@ -757,7 +649,7 @@ class Turn {
 				"disallowed-tools: subagent", "---", "Review the change yourself.", "",
 			].join("\n")),
 			// The user's access token, in its file before the engine looks for it. An abort does not wait for it.
-			this.tokenFile === null ? undefined : this.unlessAborted(this.handIn(this.tokenFile)),
+			this.tokenFile === null ? undefined : this.unlessAborted(this.tokenFile.start()),
 		]);
 		// The sandbox itself does not work (it is not running, a file cannot be written): that is not about anyone's sign-in.
 		const setupError = [leftovers, script, agent].find(result => result.status === "rejected");
@@ -768,19 +660,13 @@ class Turn {
 		}
 		if (leftovers.status === "fulfilled" && leftovers.value > 0) this.notes.push(`[platform] stopped ${leftovers.value} Windlass run(s) left over in this sandbox before starting the turn`);
 		if (token.status === "rejected") {
-			// No sign-in, one that is no longer accepted, a Windlass too old for the hand-off, or a token that could not be had this time.
+			// No sign-in, one that is no longer accepted, or a token that could not be had this time.
 			this.failure = tokenSourceFailure(token.reason);
 			return false;
 		}
 		return true;
 	}
 
-	/** Hands the turn its user's access token, unless this sandbox's Windlass would not read it or the image's cannot fetch it: then no token is asked for at all. */
-	private async handIn(tokenFile: TokenFile): Promise<void> {
-		const problem = await this.sandboxProblem();
-		if (problem !== null) throw new WindlassOutdatedError(problem);
-		await tokenFile.start();
-	}
 
 	private get startTimeoutMs(): number {
 		return this.options.startTimeoutMs ?? START_TIMEOUT_MS;
@@ -804,25 +690,16 @@ class Turn {
 				this.failure = { reason: "engine", message: `the engine process does not send Windlass's events (${EXT.event}); it may be another version` };
 				return;
 			}
-			this.openKeys = openKeysIn(init);
-			this.methods = methodsIn(init);
-			if (input.onReview && ["agent", "children", "withholdEnv", "passEnv", "requiredChecks", "hostTools"].some(key => !this.openKeys.includes(key))) {
+			const openKeys = openKeysIn(init);
+			if (!openKeys.includes("hostTools")) {
+				this.failure = { reason: "host_tools_required", message: "The sandbox needs Windlass 0.4.0 or later for host tools." };
+				return;
+			}
+			if (input.onReview && ["agent", "children", "requiredChecks"].some(key => !openKeys.includes(key))) {
 				this.failure = { reason: "engine", message: "This Windlass cannot open a restricted reviewer session with file_review." };
 				return;
 			}
-			// Declared only to an engine that takes them: one that does not would leave the key unread, and a call could never come.
-			if (this.openKeys.includes("hostTools")) {
-				this.hostTools = turnHostTools(input);
-			}
-			// An engine that does not take the list leaves it unread, and its commands would get what its environment holds.
-			const withheld = input.secrets?.withholdEnv ?? [];
-			if (withheld.length > 0 && !this.openKeys.includes("withholdEnv")) {
-				this.failure = {
-					reason: "engine",
-					message: `the Windlass in this sandbox was handed ${withheld.length === 1 ? "a variable" : `${withheld.length} variables`} that no command of the agent may get, and it cannot be told which (it takes no withholdEnv); no session was opened`,
-				};
-				return;
-			}
+			this.hostTools = turnHostTools(input);
 		} catch (error) {
 			this.failure = { reason: "engine", message: await this.startFailure(error) };
 			return;
@@ -835,9 +712,7 @@ class Turn {
 			const opened = await this.unlessAborted(this.open());
 			if (opened === "aborted" || this.abortRequested) return;
 		} catch (error) {
-			// An internal error with no reason of Windlass's, for a session that exists: among other things, what a Windlass from before
-			// `unreadable_session` answers for a session it cannot read. Said as that, so that whoever knows more of the session can tell.
-			this.refused(error, input.windlassSessionId !== undefined && error instanceof AcpError && error.code === -32603 ? "open_refused" : "engine");
+			this.refused(error, "engine");
 			return;
 		}
 
@@ -884,18 +759,12 @@ class Turn {
 			// Whether anyone can answer a question. Without someone, a call that would ask is refused at once and the model is told.
 			attended: input.onQuestion !== undefined,
 			unattended: "deny",
-			// None of these is stored with the session: they are said each time it is opened, to an engine that takes them.
-			...(this.openKeys.includes("sandboxHome") ? { sandboxHome: SANDBOX_HOME } : {}),
+			sandboxHome: SANDBOX_HOME,
 			// Reviewer commands use the image's read-only ~/.config/pnpm, while the engine uses its private config.
-			...((input.secrets || this.reviewerAgent) && this.openKeys.includes("withholdEnv") && this.openKeys.includes("passEnv")
-				? { withholdEnv: [...(input.secrets?.withholdEnv ?? []), ...(this.reviewerAgent ? ["XDG_CONFIG_HOME"] : [])], passEnv: [...(input.secrets?.passEnv ?? [])] }
-				: {}),
-			// The user's checks, an empty list too: what the engine holds for the session is then what the user has saved now.
-			...(this.openKeys.includes("requiredChecks") ? { requiredChecks: windlassChecks(input.checks ?? [], true) } : {}),
-			// The platform's own tools: not stored with the session either, so declared at every open, an empty list too.
-			...(this.openKeys.includes("hostTools")
-				? hostToolsMeta(this.hostTools, input.reportScreenshots)
-				: {}),
+			withholdEnv: [...(input.secrets?.withholdEnv ?? []), ...(this.reviewerAgent ? ["XDG_CONFIG_HOME"] : [])],
+			passEnv: input.secrets?.passEnv ?? [],
+			requiredChecks: windlassChecks(input.checks ?? []),
+			...hostToolsMeta(this.hostTools, input.reportScreenshots),
 		};
 		if (input.windlassSessionId === undefined) {
 			const made = await peer.request<{ sessionId?: unknown }>("session/new", sessionOpenParams(this.sandbox.cwd, meta), { timeoutMs: OPEN_TIMEOUT_MS });
@@ -995,13 +864,10 @@ class Turn {
 			this.undelivered.delete(data.messageId);
 		}
 		// Why the model call the turn is at failed, as Windlass names it: a code, when it has one.
-		if (event.type === "step.started") this.stepFailure = null;
+		if (event.type === "step.started") this.stepFailureCode = null;
 		if (event.type === "step.failed") {
-			const provider = (data.error as { error?: { kind?: unknown; code?: unknown; message?: unknown } } | undefined)?.error;
-			this.stepFailure =
-				typeof provider !== "object" || provider === null
-					? null
-					: { code: typeof provider.code === "string" && provider.code !== "" ? provider.code : null, authMessage: provider.kind === "auth" && typeof provider.message === "string" ? provider.message : null };
+			const provider = (data.error as { error?: { code?: unknown } } | undefined)?.error;
+			this.stepFailureCode = typeof provider?.code === "string" && provider.code !== "" ? provider.code : null;
 		}
 		// The engine has withdrawn what was pending: a question may be answered `cancelled` now.
 		if (event.type === "execution.interrupt_requested") this.resolveInterrupted();
@@ -1051,37 +917,26 @@ class Turn {
 		if (next.written === null && had.written !== null) await this.sandbox.removeFiles([PLATFORM_SERVERS_FILE]);
 	}
 
-	/**
-	 * Puts what this turn hands Windlass into its configuration file in the sandbox: the user's own
-	 * servers and the checks of the session's repository. What an earlier turn left there is taken
-	 * out in the same step, so the file is read on every turn, also one that has nothing to write. A
-	 * file that is there and is not one Windlass reads is left as it is. An engine that takes required checks is told the user's when its session is opened
-	 * (`open`), and the file gets none. `checks` says afterwards which way they went, whether the
-	 * engine has them, and what the project's own file held. Never throws.
-	 */
+	/** Writes the user's MCP servers and reads the project's check settings before opening the session. */
 	private async writeServers(): Promise<void> {
 		// The platform's own name is not a user's to have, whatever was saved.
 		const personal: ConfigServer[] = (this.input.servers ?? []).filter((server) => !isReservedServerName(server.name)).map(({ name, definition }) => ({ name, definition }));
-		const required = this.openKeys.includes("requiredChecks");
-		const checks = required ? [] : windlassChecks(this.input.checks ?? []);
-		const missed = [...(personal.length > 0 ? ["your own MCP servers were not started"] : []), ...(checks.length > 0 ? ["your checks were not handed to Windlass"] : [])].join(" and ");
-		// Until the file holds them, a turn with checks to write there has not handed them over.
-		this.checks = { required, handed: checks.length === 0, project: null };
+		const missed = personal.length > 0 ? "your own MCP servers were not started" : "";
+		this.checks = { project: null };
 		try {
 			const had = await this.readConfiguration();
 			if (had === null) {
 				if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be read, so ${missed}`);
 				return;
 			}
-			this.checks = { ...this.checks, project: projectChecks(had.project) };
-			const next = platformConfig(had.config, had.written, personal, checks);
+			this.checks = { project: projectChecks(had.project) };
+			const next = platformConfig(had.config, had.written, personal);
 			if (next === null) {
 				if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be read as one, so ${missed}`);
 				return;
 			}
 			await this.storeConfiguration(next, had);
-			this.configWritten = next.written !== null || checks.length > 0;
-			this.checks = { ...this.checks, handed: true };
+			this.configWritten = next.written !== null;
 			this.personal = new Set(personal.map((server) => server.name));
 			this.unasked = new Set((this.input.servers ?? []).filter((server) => server.unasked === true && this.personal.has(server.name)).map((server) => server.name));
 		} catch (error) {
@@ -1089,7 +944,7 @@ class Turn {
 		}
 	}
 
-	/** Takes this turn's servers and checks out of Windlass's configuration file again. Never throws. */
+	/** Removes this turn's personal servers from Windlass's configuration. Never throws. */
 	private async withdrawServers(): Promise<void> {
 		if (!this.configWritten) return;
 		this.configWritten = false;
@@ -1261,7 +1116,7 @@ class Turn {
 		// Also asked for the servers whose tools run without asking: whose a server is, by the engine's word, decides whether a call is acted on.
 		if (this.input.onServerQuestion === undefined && this.input.onServers === undefined && this.unasked.size === 0) return;
 		try {
-			this.serversSaid(await this.peer.request(EXT.mcp, { sessionId: this.session }, { timeoutMs: SERVERS_TIMEOUT_MS }));
+			await this.peer.request(EXT.mcp, { sessionId: this.session }, { timeoutMs: SERVERS_TIMEOUT_MS, onResult: (list) => this.serversSaid(list) });
 		} catch (error) {
 			if (!(error instanceof AcpError && error.reason === "closed")) {
 				this.notes.push(`[platform] Windlass did not say which MCP servers of the project wait for approval (${error instanceof Error ? error.message : String(error)}); none was asked about`);
@@ -1349,12 +1204,10 @@ class Turn {
 	private async approveServer(question: TurnServerQuestion): Promise<TurnServerOutcome> {
 		let answer: { approved?: unknown } | null;
 		try {
-			answer = await this.peer.request<{ approved?: unknown } | null>(EXT.mcpApprove, { sessionId: this.session, name: question.name, fingerprint: question.fingerprint }, { timeoutMs: SERVERS_TIMEOUT_MS });
+			answer = await this.peer.request<{ approved?: unknown } | null>(EXT.mcpApprove, { sessionId: this.session, name: question.name, fingerprint: question.fingerprint }, { timeoutMs: SERVERS_TIMEOUT_MS, onResult: (list) => this.serversSaid(list) });
 		} catch (error) {
 			return { state: "refused", reason: error instanceof Error ? error.message : String(error) };
 		}
-		// Its answer has the servers as they are now; a definition that waits in place of this one is asked about in its turn.
-		this.serversSaid(answer);
 		// No such server waited: the definition changed after the question was put.
 		if (answer?.approved !== true) return { state: "changed" };
 		const deadline = Date.now() + SERVER_START_WAIT_MS;
@@ -1597,40 +1450,6 @@ type Initialized = { agentCapabilities?: { _meta?: Record<string, unknown> } };
 function openKeysIn(init: Initialized): string[] {
 	const listed = (init.agentCapabilities?._meta?.[NS] as { openMeta?: unknown } | undefined)?.openMeta;
 	return Array.isArray(listed) ? listed.filter((key): key is string => typeof key === "string") : [];
-}
-
-/** The extension methods an engine serves (`_windlass/...`), from its answer to `initialize`; none when it lists none. */
-function methodsIn(init: Initialized): string[] {
-	const listed = (init.agentCapabilities?._meta?.[NS] as { methods?: unknown } | undefined)?.methods;
-	return Array.isArray(listed) ? listed.filter((method): method is string => typeof method === "string") : [];
-}
-
-/**
- * The same keys for the Windlass of a sandbox, before any turn: an engine is started there, asked
- * `initialize` and nothing else, and let go again. It is handed nothing (no token, no script, no
- * secret) and opens no session. Its standard input stays open until it has answered: an engine whose
- * client is gone shuts down without answering. Null when it gave no answer.
- */
-async function openKeysOf(sandbox: TurnSandbox, options: TurnOptions): Promise<string[] | null> {
-	const lines = new LineSplitter((line) => peer.receive(line));
-	const run = sandbox.start(options.engineCommand ?? ["windlass", "acp"], { env: { WINDLASS_WAKE: "off", WINDLASS_ACP_LOG: "warn" }, onStdout: (chunk) => lines.push(chunk) });
-	const peer: AcpConnection = new AcpConnection((line) => run.write(`${line}\n`), { notification: () => undefined, request: (method) => Promise.reject(new MethodNotFound(method)) }, NS);
-	void run.ended.then((end) => {
-		lines.flush();
-		peer.end(end.error !== null ? end.error.message : `the engine process ${describeEnd(end)}`);
-	});
-	try {
-		return openKeysIn(await peer.request<Initialized>("initialize", INITIALIZE, { timeoutMs: options.startTimeoutMs ?? START_TIMEOUT_MS }));
-	} catch {
-		return null;
-	} finally {
-		run.closeStdin();
-		if (!(await within(run.ended, EXIT_WAIT_MS))) {
-			await run.signal("KILL", "all");
-			if (!(await within(run.ended, 3000))) run.killClient();
-		}
-		await sandbox.sweep(run.tag, { waitMs: 0 }).catch(() => 0);
-	}
 }
 
 /** The approval question of a permission request (`_meta.windlass.approval`), or null when it is not one. */

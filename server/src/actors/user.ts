@@ -237,7 +237,6 @@ function signIn(c: SignInCtx): Promise<SignInHolder> {
 					uid,
 					commands,
 					sealer,
-					legacy: hooks.legacy,
 					revoke: hooks.revoke,
 					// The sign-in of one OpenAI account is one user's: no other user's actor takes it.
 					ownerOf: (account) => uidOfAccount(account.sub),
@@ -551,26 +550,12 @@ async function secretProfile(id: unknown): Promise<SandboxProfile> {
  * A repository's secrets as a client may see them: name, scope, when each was last changed, and what
  * it reaches in a sandbox of `profile`. The value's column is not read, so no value can be in the answer.
  */
-async function listSecrets(db: RawAccess, project: string, profile: SandboxProfile, lists: boolean): Promise<RepositorySecrets> {
+async function listSecrets(db: RawAccess, project: string, profile: SandboxProfile): Promise<RepositorySecrets> {
 	const rows = await db.execute<{ name: string; scope: string; updated_at: number }>("SELECT name, scope, updated_at FROM repo_secret WHERE project = ? ORDER BY name", project);
-	const listed = listedSecrets(rows, profile, lists);
+	const listed = listedSecrets(rows, profile);
 	// A secret of the account under the same name is not used in this repository's sessions: the list says where that is so.
 	const account = rows.length === 0 ? new Set<string>() : await accountSecretNames(db);
 	return account.size === 0 ? listed : { ...listed, secrets: listed.secrets.map((secret) => (account.has(secret.name) ? { ...secret, account: true } : secret)) };
-}
-
-/**
- * Whether the list is said for a Windlass that can be told by name which variables its commands get
- * (repo-secrets.ts). For a session of the user's on that repository it is what the session's sandbox
- * said when a turn last asked (`SessionSummary.envLists`). A sandbox nobody has asked was made before
- * the platform asked, so it is taken to have the older Windlass until its next turn asks. Without a
- * session, and for one that has no sandbox yet, it is said for a sandbox made now, from an image
- * with the Windlass this platform is built for (README, "Run it").
- */
-function secretLists(vars: UserVars, repositoryId: GithubId, sessionId: unknown): boolean {
-	const session = typeof sessionId === "string" ? vars.sessions.get(sessionId) : undefined;
-	if (session === undefined || session.repository?.id !== repositoryId || session.sandbox === "none") return true;
-	return session.envLists === true;
 }
 
 /**
@@ -1058,7 +1043,11 @@ export const user = actor({
 				CREATE TABLE IF NOT EXISTS sessions (
 					id TEXT PRIMARY KEY,
 					created_at INTEGER NOT NULL,
-					summary TEXT NOT NULL
+					summary TEXT NOT NULL,
+					key TEXT,
+					sent TEXT,
+					launch_until INTEGER,
+					launch_claim INTEGER
 				)
 			`);
 			// `sealed` is the sign-in, encrypted (signin/seal.ts); NULL once it was forgotten.
@@ -1136,17 +1125,11 @@ export const user = actor({
 			await db.execute(MODELS_TABLE);
 			await db.execute(PERSONAL_SERVERS_TABLE);
 			await db.execute(ACCOUNT_SECRETS_TABLE);
+			// Before the column checks below: the API token table is one of them.
 			for (const table of ITEM_TABLES) await db.execute(table);
-			// Tables made before a server had its setting and a secret its scope lack the column: those servers' tools ask, and those secrets are for MCP servers only, as they were.
-			// And the sessions made before a session could be created with a key have none (submissions.ts): `key`, and `sent`, the digest of what was asked for under it.
 			for (const [table, column, definition] of [
 				["repository_defaults", "screenshots", "INTEGER NOT NULL DEFAULT 1"],
 				["api_token", "window_count", "INTEGER NOT NULL DEFAULT 0"],
-				["personal_server", "unasked", "INTEGER NOT NULL DEFAULT 0"],
-				["account_secret", "scope", "TEXT NOT NULL DEFAULT 'setup'"],
-				["sessions", "key", "TEXT"],
-				["sessions", "sent", "TEXT"],
-				["sessions", "launch_until", "INTEGER"],
 				["sessions", "launch_claim", "INTEGER"],
 			] as const) {
 				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
@@ -1207,7 +1190,6 @@ export const user = actor({
 		const created = new Map<string, Submission & { id: string }>();
 		for (const { summary, key, sent, launch_until, launch_claim } of rows) {
 			const parsed = JSON.parse(summary) as SessionSummary;
-			if (parsed.place === undefined) parsed.place = { kind: "hosted" };
 			sessions.set(parsed.id, parsed);
 			if (launch_until !== null) launchUntil.set(parsed.id, launch_until);
 			if (launch_until !== null && launch_claim !== null) launchClaim.set(parsed.id, launch_claim);
@@ -1648,18 +1630,18 @@ export const user = actor({
 
 		// --- secrets of repositories (repo-secrets.ts) ----------------------------------------------
 
-		repositorySecrets: async (c, input: { repositoryId: GithubId; profile: string; sessionId?: string }): Promise<RepositorySecrets> => {
+		repositorySecrets: async (c, input: { repositoryId: GithubId; profile: string }): Promise<RepositorySecrets> => {
 			requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const profile = await secretProfile(input?.profile);
 			try {
-				return await listSecrets(c.db, project, profile, secretLists(c.vars, input.repositoryId, input.sessionId));
+				return await listSecrets(c.db, project, profile);
 			} catch (error) {
 				throw clientError(c.log, error, "The repository's secrets could not be read. Try again.");
 			}
 		},
 
-		saveRepositorySecret: async (c, input: { repositoryId: GithubId; profile: string; sessionId?: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets> => {
+		saveRepositorySecret: async (c, input: { repositoryId: GithubId; profile: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets> => {
 			const user = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const profile = await secretProfile(input?.profile);
@@ -1668,13 +1650,13 @@ export const user = actor({
 			const value = input?.value === undefined || input?.value === null ? undefined : secretInput(() => cleanSecretValue(input.value));
 			try {
 				await saveSecret(c, user.uid, project, await labelFor(c, input.repositoryId, project), name, value, scope);
-				return await listSecrets(c.db, project, profile, secretLists(c.vars, input.repositoryId, input.sessionId));
+				return await listSecrets(c.db, project, profile);
 			} catch (error) {
 				throw clientError(c.log, error, "The secret could not be saved. Try again.");
 			}
 		},
 
-		deleteRepositorySecret: async (c, input: { repositoryId: GithubId; profile: string; sessionId?: string; name: string }): Promise<RepositorySecrets> => {
+		deleteRepositorySecret: async (c, input: { repositoryId: GithubId; profile: string; name: string }): Promise<RepositorySecrets> => {
 			const user = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const profile = await secretProfile(input?.profile);
@@ -1682,7 +1664,7 @@ export const user = actor({
 			try {
 				await c.db.execute("DELETE FROM repo_secret WHERE project = ? AND name = ?", project, name);
 				console.log(`[wlp] secret.deleted uid=${user.uid} project=${project} name=${name.replace(/[^A-Za-z0-9_]/g, "?")}`);
-				return await listSecrets(c.db, project, profile, secretLists(c.vars, input.repositoryId, input.sessionId));
+				return await listSecrets(c.db, project, profile);
 			} catch (error) {
 				throw clientError(c.log, error, "The secret could not be deleted. Try again.");
 			}
@@ -2116,7 +2098,7 @@ export const user = actor({
 			queueChanged(c);
 		},
 
-		internalAcquireRun: async (c, sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until?: number | null; claim?: number | null }> => {
+		internalAcquireRun: async (c, sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }> => {
 			requireService(c);
 			const uid = c.key[0];
 			// An item session's turn holds a slot of the turn queue (user-items.ts), counted here instead of by its summary.
@@ -2148,9 +2130,9 @@ export const user = actor({
 			const own = asking && hostedLimitsApply(asking.place) ? await sessionActor(c, uid, sessionId).internalSummary() : null;
 			// From here to the `set` nothing is awaited: the count and the claim are one step.
 			const entry = c.vars.sessions.get(sessionId);
-			if (!entry) return { ok: false, running: others().length, known: false };
+			if (!entry) return { ok: false, running: others().length, known: false, until: null, claim: null };
 			const running = others().length;
-			if (hostedLimitsApply(entry.place) && atLimit()) return { ok: false, running: running + factorySlots(c), known: true };
+			if (hostedLimitsApply(entry.place) && atLimit()) return { ok: false, running: running + factorySlots(c), known: true, until: null, claim: null };
 			const claimed: SessionSummary = { ...entry, turns: own?.turns ?? entry.turns, status: entry.status === "idle" ? "starting" : entry.status };
 			// The lease lapses at `until` (`internalCheckLaunch`); the claim is named by its generation (`internalReleaseRun`), one more
 			// than any claim before it, taken in this same step: the time names nothing, since two claims can share a millisecond.

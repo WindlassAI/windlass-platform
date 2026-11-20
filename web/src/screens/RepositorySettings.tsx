@@ -14,7 +14,7 @@ import { WarnIcon } from "../components/Icons";
 import { SecretsBlock } from "../components/Secrets";
 import { RepositoryApprovals } from "../components/Servers";
 import { SetupEditor } from "../components/SetupCommand";
-import { checksStanding, layerChoices, ownAgents, startingChoices } from "../lib/repositories";
+import { layerChoices, ownAgents, startingChoices } from "../lib/repositories";
 import { sectionOf, useHash, type RepositorySection } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useAccount, useModels, useNow } from "../state/hooks";
@@ -244,7 +244,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 							Checks
 							{view.saved.checks > 0 ? <span className="usage-count">{view.saved.checks}</span> : null}
 						</h2>
-						<ChecksEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.checks} standing={checksStanding(sessions ?? [])} onSaved={page.reload} />
+						<ChecksEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.checks} onSaved={page.reload} />
 					</section>
 
 					<section className="usage-section repo-saved" aria-labelledby="repo-secrets">

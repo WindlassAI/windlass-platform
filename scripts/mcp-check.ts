@@ -49,7 +49,6 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { FETCH_BASE_TOOL, PUBLISH_SERVER, PUBLISH_TOOL, PUSH_TOOL, REPORT_TAKEN, REPORT_TOOL, pushRequest } from "../server/src/agent-publish.js";
-import { WindlassUnaskedError } from "../server/src/sandbox/api.js";
 import { NO_REDACTION } from "../server/src/repo-secrets.js";
 import type { SandboxProfileId, WindlassEvent } from "../server/src/contract.js";
 import { unaskedNote } from "../server/src/personal-servers.js";
@@ -260,7 +259,7 @@ const finish = () => {
 };
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
-  if (message.method === "initialize") send({ id: message.id, result: { protocolVersion: 1, agentCapabilities: { _meta: { windlass: { notifications: ["_windlass/event", "_windlass/mcp_changed"] } } } } });
+  if (message.method === "initialize") send({ id: message.id, result: { protocolVersion: 1, agentCapabilities: { _meta: { windlass: { openMeta: ["hostTools"], notifications: ["_windlass/event", "_windlass/mcp_changed"] } } } } });
   else if (message.method === "session/new") send({ id: message.id, result: { sessionId: session } });
   else if (message.method === "_windlass/mcp") send({ id: message.id, result: { sessionId: session, available: true, servers: [] } });
   else if (message.method === "session/prompt") {
@@ -275,12 +274,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     if (approvals === 1) send({ id: message.id, result: { approved: false, servers: [waiting("bbbbbbbbbbbbbbbb", "--new")] } });
     else {
       changed([server("starting", "--new")]);
-      send({ id: message.id, result: { approved: true, servers: [server("starting", "--new")] } });
-      setTimeout(() => {
-        changed([server("running", "--new", { tools: 3 })]);
-        running = true;
-        finish();
-      }, 400);
+      // A reply and a newer notification can arrive in the same chunk.
+      process.stdout.write([
+        { jsonrpc: "2.0", id: message.id, result: { approved: true, servers: [server("starting", "--new")] } },
+        { jsonrpc: "2.0", method: "_windlass/mcp_changed", params: { sessionId: session, available: true, servers: [server("running", "--new", { tools: 3 })] } },
+      ].map(x => JSON.stringify(x)).join("\n") + "\n");
+      running = true;
+      finish();
     }
   } else if (message.id === "ask-1" && message.method === undefined) {
     answered = true;
@@ -388,21 +388,25 @@ async function checkUnanswered(): Promise<void> {
 	const found = await turn(handle, "File the report.", scripted(call(REPORT_TOOL, REPORT_TOOL, { title: "Late", description: "Never answered." }), say("Done.")), {
 		unattended: true,
 		server: () => false,
-		// The report's declaration takes Windlass's 60 s; this one never answers. (The session's own is answered at once.)
+		// The report allows three minutes for attachments. This callback deliberately never answers.
 		onReport: ((_: unknown, signal: AbortSignal) => new Promise<string>((resolve) => signal.addEventListener("abort", () => ((aborted = true), resolve("too late")), { once: true }))) as unknown as RunTurnInput["onReport"],
-		signal: AbortSignal.timeout(120_000),
+		signal: AbortSignal.timeout(240_000),
 	});
 	info(`late report: ${traceOf(found, REPORT_TOOL)}; ${outputOf(found, REPORT_TOOL)}`);
-	expect("a call not answered within its time is cancelled with Windlass's sentence, and the platform's callback is aborted", dataOf(settled(found, REPORT_TOOL)).outcome === "error" && outputOf(found, REPORT_TOOL).startsWith("The client did not answer the call to report within 60 s, and it was cancelled.") && aborted, outputOf(found, REPORT_TOOL));
+	expect("a call not answered within its time is cancelled with Windlass's sentence, and the platform's callback is aborted", dataOf(settled(found, REPORT_TOOL)).outcome === "error" && outputOf(found, REPORT_TOOL).startsWith("The client did not answer the call to report within 180 s, and it was cancelled.") && aborted, outputOf(found, REPORT_TOOL));
 	expect("the turn goes on and ends normally", outcomeOf(found) === "succeeded", outcomeOf(found) ?? found.result.stderrTail);
 }
 
-/** Asking a sandbox what its Windlass takes: a probe that never answers is no answer, not a Windlass without host tools. */
-async function checkFailedProbe(): Promise<void> {
-	const handle = await sandbox(uid, "docker-windlass-sandbox", "mcp-probe-fails", []);
-	const never = new DockerWindlass(layer.tokens, { image: IMAGE_USED, engineCommand: ["sh", "-c", "exit 1"] });
-	const refused = await never.features(handle).catch((error: unknown) => error);
-	expect("a probe that never answers is refused with the sentence that the sandbox could not be asked, not taken for a Windlass without host tools", refused instanceof WindlassUnaskedError && refused.message.startsWith("The sandbox did not answer when the platform asked what its Windlass can do"), refused instanceof Error ? refused.message : JSON.stringify(refused));
+/** A turn must refuse before opening a session if initialize omits host tools. */
+async function checkMissingHostTools(): Promise<void> {
+	const handle = await sandbox(uid, "docker-windlass-sandbox", "mcp-no-host-tools", []);
+	const command = ["node", "-e", `process.stdin.once("data", chunk => {
+		const { id } = JSON.parse(chunk);
+		console.log(JSON.stringify({ jsonrpc: "2.0", id, result: { agentCapabilities: { _meta: { windlass: { notifications: ["_windlass/event"], openMeta: ["requiredChecks"] } } } } }));
+	})`];
+	const windlass = new DockerWindlass(layer.tokens, { engineCommand: command });
+	const result = await windlass.runTurn(handle, { prompt: "hello", script: scripted(say("Done.")), onEvent: () => {} });
+	expect("initialize without host tools refuses the turn before it opens a session", result.failure?.reason === "host_tools_required" && result.windlassSessionId === null);
 }
 
 async function checkOtherServers(): Promise<void> {
@@ -478,7 +482,7 @@ async function checkOtherServers(): Promise<void> {
 			{ windlassSessionId: sessionId, server: () => true },
 		);
 		expect("a later message does not ask again: Windlass remembers the approval", later.asked.length === 0 && later.outcomes.length === 0);
-		expect("and the layer says the server runs, though nobody was asked", later.servers.length >= 1 && later.servers.at(-1)?.[0]?.state === "running" && later.servers.every((list) => list.every((server) => server.fingerprint === null)), later.servers.map((list) => list.map((server) => server.state).join(",")).join(" > "));
+		expect("and the layer says the server runs, though nobody was asked", later.servers.at(-1)?.[0]?.state === "running" && later.servers.every((list) => list.every((server) => server.fingerprint === null)), later.servers.map((list) => list.map((server) => server.state).join(",")).join(" > "));
 		expect("and the model calls the server's tool in it", outcomeOf(later) === "succeeded" && mcpOutcome(later, "l1") === "result", outputOf(later, "l1").split("\n").slice(1).join(" | "));
 		const reach = outputOf(later, "l1");
 		const command = outputOf(later, "l2");
@@ -502,7 +506,7 @@ async function checkOtherServers(): Promise<void> {
 			changed.asked.length === 1 && asked !== undefined && asked.fingerprint !== approvedPrint && JSON.stringify(asked.argv) === JSON.stringify(["python3", "tools/harbor_mcp.py", "--berths", "12 or more"]),
 			asked ? `${serverQuestionWords(asked, context).subject} (fingerprint ${asked.fingerprint}, before ${approvedPrint})` : "no question",
 		);
-		expect("and starts once approved", changed.outcomes[0]?.outcome.state === "running" && mcpOutcome(changed, "c1") === "result", JSON.stringify(changed.outcomes[0]?.outcome));
+		expect("and starts once approved", startedOrRunning(changed.outcomes[0]?.outcome.state) && mcpOutcome(changed, "c1") === "result", JSON.stringify(changed.outcomes[0]?.outcome));
 
 		await define(handle, { command: "python3", args: ["tools/harbor_mcp.py"], env: { HARBOR_NOTE: "${HARBOR_TOKEN}" } });
 		const unset = await turn(handle, "Which berth is free for Cy?", scripted(mcp("e1", "berth", { ship: "Cy" }), say("The server did not start.")), { windlassSessionId: sessionId, server: () => true });
@@ -648,7 +652,7 @@ async function checkOtherServers(): Promise<void> {
 		created.delete(first.id);
 		const replaced = await disk("s-1");
 		const after = await remembering("ada", harborRepo, replaced, "Which berth is free for Cy?", berth("p3", "Cy"), false);
-		expect("a sandbox that replaces a lost one is not asked, in the middle of the conversation the server was approved in", after.reported.length === 1 && after.put.length === 0 && after.outcomes[0]?.outcome.state === "running" && mcpOutcome(after, "p3") === "result", after.lines.join(" | "));
+		expect("a sandbox that replaces a lost one is not asked, in the middle of the conversation the server was approved in", after.reported.length === 1 && after.put.length === 0 && startedOrRunning(after.outcomes[0]?.outcome.state) && mcpOutcome(after, "p3") === "result", after.lines.join(" | "));
 
 		// A changed definition in the second session.
 		await define(second, { command: "python3", args: ["tools/harbor_mcp.py", "--berths", "12"] });
@@ -840,13 +844,9 @@ async function checkOtherServers(): Promise<void> {
 async function main(): Promise<void> {
 	info(`Windlass in ${IMAGE_USED}: ${(await layer.windlass.version()) ?? "unknown"}; run ${run}`);
 	if (!process.argv.includes("--report")) await checkOtherServers();
-	// The platform's tools need a Windlass that takes host tools: an image without one is not a case to check, but a broken image.
-	const probe = await sandbox(uid, "docker-windlass-sandbox", "mcp-probe", []);
-	if (expect(`the Windlass in ${IMAGE_USED} takes host tools`, (await layer.windlass.features(probe)).hostTools)) {
-		for (const profile of ["docker-windlass-sandbox", "docker-hardened"] as const) await section(`${profile}: the platform's own tools`, () => checkPlatformTools(profile));
-		await section("a call the platform does not answer in time", () => checkUnanswered());
-	}
-	await section("a sandbox that does not answer what its Windlass takes", () => checkFailedProbe());
+	for (const profile of ["docker-windlass-sandbox", "docker-hardened"] as const) await section(`${profile}: the platform's own tools`, () => checkPlatformTools(profile));
+	await section("a call the platform does not answer in time", () => checkUnanswered());
+	await section("a sandbox without host tools", checkMissingHostTools);
 	await section("cleanup", async () => {
 		for (const id of created) await layer.sandboxes.destroy(id);
 		for (const user of users) await docker(["volume", "rm", `wlp-user-${user}`], { check: true });

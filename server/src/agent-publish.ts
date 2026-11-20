@@ -103,7 +103,7 @@ const REPORT_SCHEMA = {
 		title: { type: "string", description: `The pull request's title, at most ${MAX_PUBLISH_TITLE_CHARS} characters.` },
 		description: { type: "string", description: `The pull request's description, in Markdown, at most ${MAX_PUBLISH_BODY_CHARS} characters: what changed and why, and how it was checked.` },
 		screenshots: { type: "array", maxItems: 4, items: { type: "object", additionalProperties: false, required: ["file", "caption"], properties: {
-			file: { type: "string", pattern: "^\\.wlp-shots/[a-z0-9][a-z0-9._-]{0,63}\\.png$" },
+			file: { type: "string", description: "The .wlp-shots/<name>.png file saved with wlp-shot." },
 			caption: { type: "string", minLength: 1, maxLength: 200 }, shows: { enum: ["after", "before"] }, page: { type: "string", maxLength: 300 },
 		} } },
 		look_at: { type: "string", description: `Where the reader should look in the change, at most ${REVIEW_LIMITS.lookAtChars} characters.` },

@@ -138,18 +138,6 @@ export function sessionsOn(sessions: readonly SessionSummary[], repositoryId: Gi
 	return sessions.filter((session) => session.repository?.id === repositoryId).sort(byUse);
 }
 
-/**
- * What a repository's own file can do to the user's checks in the sandboxes of these agents, as the
- * Windlass of each said when a turn last asked it (`SessionSummary.requiredChecks`): "required"
- * where each one that has said takes them as required checks, "replaceable" where none does, "mixed"
- * where the sandboxes differ, and null where none has said.
- */
-export function checksStanding(sessions: readonly SessionSummary[]): "required" | "replaceable" | "mixed" | null {
-	const said = sessions.flatMap((session) => (session.sandbox !== "none" && session.requiredChecks !== undefined ? [session.requiredChecks] : []));
-	if (said.length === 0) return null;
-	return said.every((takes) => takes) ? "required" : said.some((takes) => takes) ? "mixed" : "replaceable";
-}
-
 export interface OpenPull {
 	pull: PullRequestInfo;
 	/** The agent whose work it is. */

@@ -36,9 +36,7 @@
  *                                        `bad_token_response`, a code of the service's that is no
  *                                        refusal): `SignInRefreshError` as well
  *
- * Two answers have no code, and for those alone the words are read (`token` says why): the line for
- * nobody being signed in, and the stack trace an older Windlass died with when it could not reach the
- * sign-in service.
+ * Windlass reports an empty sign-in with its own line on stderr.
  *
  * The token is a secret. It is read from the command's standard output and from nowhere else, and that
  * output is never logged or put into an error: messages are made from the exit code and from standard
@@ -55,8 +53,6 @@ import {
 	SIGN_IN_REFUSED,
 	SIGN_IN_UNREACHABLE,
 	SignInRefreshError,
-	type WindlassLack,
-	WindlassOutdatedError,
 	loginTokenCommand,
 	saysShorterThanAsked,
 } from "../sandbox/handoff.js";
@@ -200,8 +196,6 @@ export class WindlassSignIns implements SignInCommands {
 			return { token, shorter: saysShorterThanAsked(result.stderr) };
 		}
 		const stderr = result.stderr.trim();
-		// This Windlass does not know the command or its option: it says which, and the runner knows where it is.
-		if (isUsage(result)) throw new WindlassOutdatedError(await this.runner.outdated(lackOf(result)));
 		// What Windlass says about the sign-in, by its code.
 		const failed = signInFailure(stderr);
 		if (failed !== null) {
@@ -215,26 +209,8 @@ export class WindlassSignIns implements SignInCommands {
 		// ("windlass: not signed in, so there is no token to hand on; run `windlass login`", exit code 1), so that
 		// one answer is still told by its words.
 		if (result.code === 1 && stderr.split("\n").some((line) => /^\S+: not signed in\b/.test(line.trim()))) throw new SandboxUserError(NOT_SIGNED_IN);
-		// Anything else is not known to be about the sign-in, and is not said to be: an older Windlass (before
-		// 0.1.1+739e1cbc09) died here with a stack trace when the sign-in service could not be reached, and the
-		// line of the error it threw is its reason.
 		throw new Error(`\`windlass login token\` failed (exit code ${result.code}): ${thrownLine(stderr) ?? "it gave no reason"}`);
 	}
-}
-
-/** Windlass's answer to a command line it does not know: exit code 2, with its usage. The exit code says it. */
-function isUsage(result: { code: number | null }): boolean {
-	return result.code === 2;
-}
-
-/**
- * Which part of the token command a Windlass that refused it does not know. Read from its words, and it
- * has to be: a usage error has no code, and the only Windlasses that give this one are the older builds,
- * whose sentence ("unknown option --valid-for") is as it was when they were built. It chooses between
- * two sentences that both say to get a newer Windlass.
- */
-export function lackOf(result: { stderr: string }): WindlassLack {
-	return /unknown option --valid-for/.test(result.stderr) ? "--valid-for" : "login token";
 }
 
 /**
@@ -294,9 +270,7 @@ export function parseModels(stdout: string): ListedModels | null {
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 300);
 
 /**
- * Why Windlass died, from what it wrote to standard error: the line of the error it threw (how an older
- * Windlass ended when a request could not be sent), never a stack frame or the source excerpt Bun
- * prints with it. It words a reason and decides nothing: such a failure is never taken for the sign-in's.
+ * Extracts the command's error line from stderr, skipping stack frames and source excerpts.
  */
 function thrownLine(stderr: string): string | null {
 	const lines = stderr
