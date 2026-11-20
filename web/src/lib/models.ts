@@ -69,3 +69,15 @@ export function harnessOptions(machine: MachineSummary | null, harness: HarnessI
 	const defaultModel = reported.models.some((model) => model.id === reported.defaultModel) ? (reported.defaultModel as string) : first.id;
 	return { models: { source: "harness", models: reported.models, defaultModel, fetchedAt: reported.checkedAt ?? null }, modes };
 }
+
+/** What a model is called on screen: the harness's name for it where it gave one, its id otherwise. */
+export const modelName = (list: ModelList | null, id: string): string => list?.models.find((model) => model.id === id)?.name || id;
+
+/** Whether a model's name says it is the default already, as Claude Code's "Default (recommended)" does: no second "default" is put beside it. */
+export const saysDefault = (name: string): boolean => /\bdefault\b/i.test(name);
+
+/** A model in a few words, its list's default marked: "Opus (default)", "Haiku". What a harness starts on when no model is sent is its default. */
+export function modelLabel(list: ModelList, id: string): string {
+	const name = modelName(list, id);
+	return id === list.defaultModel && !saysDefault(name) ? `${name} (default)` : name;
+}

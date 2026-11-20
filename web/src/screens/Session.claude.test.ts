@@ -102,7 +102,12 @@ describe("a Claude Code agent's page", () => {
 	it("has no effort picker, since Claude Code offered no thought_level, and the model picker its models", async () => {
 		await open("nas-claude");
 		expect(pickers()).toEqual(["mode", "model"]);
-		expect([...host.querySelectorAll(".composer-selects option")].map((option) => option.textContent)).toEqual(["default", "opus", "haiku"]);
+		// By the names Claude Code gave them; its default says so in its own name, so nothing is added to it.
+		expect([...host.querySelectorAll(".composer-selects option")].map((option) => [(option as HTMLOptionElement).value, option.textContent])).toEqual([
+			["default", "Default (recommended)"],
+			["opus", "Opus"],
+			["haiku", "Haiku"],
+		]);
 	});
 
 	it("draws no stop button on a running call, and puts Claude Code's question under the call it is about, without a note", async () => {

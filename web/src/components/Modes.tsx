@@ -10,7 +10,7 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
  * "mode Auto", in the composer's quiet picker style; pressed, the modes open above it as a list, each
  * with its description. `current` is the mode shown as chosen; `title` says what a choice applies to.
  */
-export function ModePicker({ modes, current, disabled = false, title, onChoose }: { modes: SessionMode[]; current: string; disabled?: boolean; title?: string; onChoose(mode: string): void }) {
+export function ModePicker({ modes, current, disabled = false, title, onChoose, onOpen }: { modes: SessionMode[]; current: string; disabled?: boolean; title?: string; onChoose(mode: string): void; /** Told when the list opens, by pointer or keyboard, so that another open list can close. */ onOpen?(): void }) {
 	const [open, setOpen] = useState(false);
 	const [active, setActive] = useState(0);
 	const box = useRef<HTMLDivElement>(null);
@@ -37,6 +37,7 @@ export function ModePicker({ modes, current, disabled = false, title, onChoose }
 	const show = (at: number) => {
 		setActive(at);
 		setOpen(true);
+		onOpen?.();
 	};
 	const close = () => {
 		setOpen(false);

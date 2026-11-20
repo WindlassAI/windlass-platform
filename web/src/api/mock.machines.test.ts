@@ -284,16 +284,19 @@ describe("the start composer's agent picker", () => {
 		return [...(pop()?.querySelectorAll(".harness-pick .segment") ?? [])].map((segment) => segment.textContent);
 	};
 	const agent = (id: string) => act(() => (pop()?.querySelector(`.harness-pick input[type="radio"][value="${id}"]`) as HTMLInputElement).click());
-	/** The modes offered, by name, each with what it does, and the one chosen. */
+	/** The mode's own list, while it is open: not the rows of a chip's picker, which share its look. */
+	const modeRows = () => [...host.querySelectorAll(".start-chip-mode .mode-menu .mode-option")] as HTMLElement[];
+	/** The modes offered, by name, each with what it does, and the one chosen. Opening the list closes a chip's picker. */
 	const modes = () => {
 		chip("mode");
-		const list = [...host.querySelectorAll(".mode-option")].map((option) => ({ name: option.querySelector(".mode-option-name")?.textContent, text: option.querySelector(".mode-option-text")?.textContent, chosen: option.getAttribute("aria-selected") === "true" }));
+		expect(pop()).toBeNull();
+		const list = modeRows().map((option) => ({ name: option.querySelector(".mode-option-name")?.textContent, text: option.querySelector(".mode-option-text")?.textContent, chosen: option.getAttribute("aria-selected") === "true" }));
 		chip("mode", true);
 		return list;
 	};
 	const mode = (name: string) => {
 		chip("mode");
-		act(() => ([...host.querySelectorAll(".mode-option")].find((option) => option.querySelector(".mode-option-name")?.textContent === name) as HTMLElement).click());
+		act(() => (modeRows().find((option) => option.querySelector(".mode-option-name")?.textContent === name) as HTMLElement).click());
 	};
 	const sandboxLine = () => {
 		chip("sandbox");
@@ -341,9 +344,14 @@ describe("the start composer's agent picker", () => {
 		expect(text()).toContain("Claude Code runs in this container with your Claude subscription, in the mode chosen for it. It does not run this repository's checks; CI's result is on the pull request.");
 		expect(value("on")).toContain("nas");
 		expect(value("sandbox")).toContain('Hardened Docker on your machine "nas"');
-		// No list of models before its runner reports one: Claude Code's default.
-		expect(value("agent")).toBe("Claude Code · default model");
-		expect(pop()?.querySelector(".field-fixed")?.textContent).toBe("Claude Code's default");
+		// nas's runner reported Claude Code's models: its default is named as the adapter names it, and chosen.
+		expect(value("agent")).toBe("Claude Code · Default (recommended)");
+		const rows = [...(pop()?.querySelectorAll(".start-option") ?? [])].map((row) => [row.querySelector(".mode-option-name")?.textContent, row.querySelector("input")?.checked]);
+		expect(rows).toEqual([
+			["Default (recommended)", true],
+			["Opus", false],
+			["Haiku", false],
+		]);
 		await act(async () => ([...host.querySelectorAll(".start-foot button")].find((button) => button.textContent === "Create without a prompt") as HTMLButtonElement).click());
 		await settle();
 		expect(created).toHaveLength(1);

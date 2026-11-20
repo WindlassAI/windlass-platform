@@ -15,8 +15,8 @@
  * chip, said in its picker.
  *
  * No title is sent: the server names the agent from its first prompt, with saved secret values taken
- * out of it. The model goes with the agent, the effort with its first prompt. An agent of another harness (Claude Code) is on its own default model unless its
- * machine's runner reported its models (`harnessOptions`).
+ * out of it. The model goes with the agent, the effort with its first prompt. An agent of another harness (Claude Code) starts on its own default model,
+ * for which no model is sent; where its machine's runner reported its models (`harnessOptions`), that default is named, "Opus (default)", and another may be chosen.
  *
  * Connecting GitHub is offered only in the repository's picker. It leaves the page, so the task and
  * every choice made here are kept (`LaunchDraft`) and put back on the way in, with the picker open.
@@ -38,7 +38,7 @@ import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { HARNESS_NAMES } from "../lib/acp";
 import { count, localTime, sandboxTime } from "../lib/format";
-import { effortsOf, harnessOptions, modelsNote } from "../lib/models";
+import { effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault } from "../lib/models";
 import { CLAUDE_DEFAULT_MODE, OPEN_MODES, launchModes } from "../lib/modes";
 import { itemOf, lastUsed, layerChoices, repositoryName, startingChoices, startingModel, startingProfile } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
@@ -382,9 +382,11 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const profile = other ? HARNESS_PROFILE : startingProfile(profileChoice, defaults, info ? { profiles: placeProfiles } : null, last.of.windlass?.profile ?? null);
 	const modelList = other ? options.models : models.list;
 	const offers = (id: string) => modelList?.models.some((candidate) => candidate.id === id) === true;
-	// Another harness's "" is its own default model: nothing is sent for it.
-	const model = other ? (modelChoice !== "" && offers(modelChoice) ? modelChoice : lastOf && offers(lastOf.model) ? lastOf.model : "") : startingModel(modelChoice, defaults, models.list, last.of.windlass?.model ?? null);
-	const efforts = effortsOf(modelList, model);
+	// Another harness's "" is its own default model, the one its runner reported as that: nothing is sent for it, so the adapter starts on its own.
+	const reportedDefault = other && modelList !== null && modelList.models.length > 0 ? modelList.defaultModel : null;
+	const harnessModel = (id: string) => (offers(id) ? (id === reportedDefault ? "" : id) : null);
+	const model = other ? (harnessModel(modelChoice) ?? (lastOf ? harnessModel(lastOf.model) : null) ?? "") : startingModel(modelChoice, defaults, models.list, last.of.windlass?.model ?? null);
+	const efforts = effortsOf(modelList, model === "" && reportedDefault !== null ? reportedDefault : model);
 	const effort = efforts.includes(effortChoice) ? effortChoice : "";
 	const chosenProfile = placeProfiles.find((candidate) => candidate.id === profile) ?? null;
 	const launch = launchModes(harness, chosenProfile);
@@ -741,7 +743,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			</div>
 		) : null;
 
-	const agentValue = `${HARNESS_NAMES[harness]} · ${model === "" ? "default model" : model}${effort ? ` · ${effort}` : ""}`;
+	const agentModel = !other ? model || "default model" : model !== "" ? modelName(modelList, model) : reportedDefault !== null && modelList ? modelLabel(modelList, reportedDefault) : "default model";
+	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}${effort ? ` · ${effort}` : ""}`;
 	const agentChip = (
 		<Chip key="agent" label="agent" value={agentValue} open={open === "agent"} changed={modelChanged} warn={!other && ignored.model !== null} onToggle={() => toggle("agent")} onClose={close}>
 			{chosenMachine && offeredHarnesses(chosenMachine).length > 0 ? (
@@ -759,7 +762,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				</span>
 				{modelList === null || (other && modelList.models.length === 0) ? (
 					<>
-						<p className="field-fixed">{other ? `${other}'s default` : model || "Your default model"}</p>
+						<p className="field-fixed">{other ? `${other}'s default model` : model || "Your default model"}</p>
 						<p className="field-note" aria-busy={models.reading}>
 							{other ? `“${chosenMachine?.name ?? "The machine"}”'s runner reports ${other}'s models once it has checked.` : models.reading ? "Reading your models…" : `${models.error ?? "Your models could not be read."} The agent starts on your default model.`}
 						</p>
@@ -767,21 +770,21 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				) : (
 					<>
 						<div className="start-options" role="radiogroup" aria-labelledby={ids.models}>
-							{other && !offers("default") ? (
-								<label className={`mode-option start-option${model === "" ? " start-option-chosen" : ""}`}>
-									<input className="segment-radio" type="radio" name={ids.models} checked={model === ""} onChange={() => setModel("")} disabled={busy !== null} />
-									<span className="mode-option-name">{other}'s default</span>
-								</label>
-							) : null}
-							{modelList.models.map(({ id }) => (
-								<label key={id} className={`mode-option start-option${model === id ? " start-option-chosen" : ""}`}>
-									<input className="segment-radio" type="radio" name={ids.models} value={id} checked={model === id} onChange={() => setModel(id)} disabled={busy !== null} />
-									<span className="mode-option-name">
-										{id}
-										{!other && id === modelList.defaultModel ? <span className="mode-option-text"> default</span> : null}
-									</span>
-								</label>
-							))}
+							{modelList.models.map(({ id }) => {
+								const isDefault = id === modelList.defaultModel;
+								// Another harness's reported default is its "": chosen, nothing is sent.
+								const checked = other && model === "" ? isDefault : model === id;
+								const name = other ? modelName(modelList, id) : id;
+								return (
+									<label key={id} className={`mode-option start-option${checked ? " start-option-chosen" : ""}`}>
+										<input className="segment-radio" type="radio" name={ids.models} value={id} checked={checked} onChange={() => setModel(id)} disabled={busy !== null} />
+										<span className="mode-option-name">
+											{name}
+											{isDefault && !saysDefault(name) ? <span className="mode-option-text"> default</span> : null}
+										</span>
+									</label>
+								);
+							})}
 						</div>
 						<p className="field-note">{other ? `The models “${chosenMachine?.name}”'s runner reported for ${other}.` : modelsNote(modelList)}</p>
 					</>
@@ -822,7 +825,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					close();
 				}}
 			>
-				<ModePicker modes={modes.modes} current={mode.id} disabled={busy !== null} onChoose={setMode} />
+				{/* Opened from the keyboard too, it closes the chip's picker: one list is open at a time. */}
+				<ModePicker modes={modes.modes} current={mode.id} disabled={busy !== null} onChoose={setMode} onOpen={close} />
 			</div>
 		) : null;
 

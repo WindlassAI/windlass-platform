@@ -111,10 +111,10 @@ const open = (label: string) => act(() => (chip(label)?.querySelector("button") 
 const pop = () => host.querySelector(".start-pop") as HTMLElement;
 /** Chooses the radio of this value in the open picker. */
 const pick = (value: string) => act(() => (pop().querySelector(`input[type="radio"][value="${value}"]`) as HTMLInputElement).click());
-/** Chooses a mode in the mode's own list. */
+/** Chooses a mode in the mode's own list, not among the rows of a chip's picker, which share its look. */
 function mode(name: string): void {
 	open("mode");
-	const option = [...host.querySelectorAll(".mode-option")].find((candidate) => candidate.querySelector(".mode-option-name")?.textContent === name) as HTMLElement;
+	const option = [...host.querySelectorAll(".start-chip-mode .mode-menu .mode-option")].find((candidate) => candidate.querySelector(".mode-option-name")?.textContent === name) as HTMLElement;
 	act(() => option.click());
 }
 /** A link-styled button in the open picker, by its words. */
@@ -223,8 +223,9 @@ describe("each picker of the start composer", () => {
 		pick("m_nas");
 		open("agent");
 		pick("claude");
-		expect(value("agent")).toBe("Claude Code · default model");
-		expect(pop().textContent).toContain("“nas”'s runner reports Claude Code's models once it has checked.");
+		// nas's runner reported Claude Code's models: the adapter's default, by the name it gives it.
+		expect(value("agent")).toBe("Claude Code · Default (recommended)");
+		expect(pop().textContent).toContain("The models “nas”'s runner reported for Claude Code.");
 		expect(value("mode")).toBe("Auto");
 		write("Add the test command to the README");
 		await enter();
@@ -244,19 +245,63 @@ describe("each picker of the start composer", () => {
 		expect(prompted[0]?.effort).toBe("low");
 	});
 
+	/** The machines, each of whose Claude Code reports these options. */
+	const reporting = (options: { models: Array<{ id: string; name: string | null; efforts: string[] }>; defaultModel: string }) => (list: MachineSummary[]) =>
+		list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map((harness) => ({ ...harness, options: { ...options, modes: [], checkedAt: 1 } })) }));
+	/** The agent picker's model rows: each as shown, and whether it is chosen. */
+	const modelRows = () => [...pop().querySelectorAll(".start-options .start-option")].map((row) => [row.querySelector(".mode-option-name")?.textContent, (row.querySelector("input") as HTMLInputElement).checked]);
+
 	it("offers Claude Code's models and efforts as its machine's runner reported them, and sends the ones chosen", async () => {
-		const reported = { models: [{ id: "opus", name: "Opus", efforts: ["low", "high"] }, { id: "haiku", name: null, efforts: [] }], defaultModel: "opus", modes: [], checkedAt: 1 };
-		await show({ machines: (list) => list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map((harness) => ({ ...harness, options: reported })) })) });
+		const models = [
+			{ id: "opus", name: "Opus", efforts: ["low", "high"] },
+			{ id: "sonnet", name: "Sonnet", efforts: ["low", "high"] },
+			{ id: "haiku", name: null, efforts: [] },
+		];
+		await show({ machines: reporting({ models, defaultModel: "opus" }) });
 		open("on");
 		pick("m_nas");
 		open("agent");
 		pick("claude");
-		pick("opus");
+		// By the names the adapter gave them, its id where it gave none.
+		expect(modelRows()).toEqual([
+			["Opus default", true],
+			["Sonnet", false],
+			["haiku", false],
+		]);
+		pick("sonnet");
 		pick("high");
-		expect(value("agent")).toBe("Claude Code · opus · high");
+		expect(value("agent")).toBe("Claude Code · Sonnet · high");
 		write("Add the test command to the README");
 		await enter();
-		expect(created[0]).toMatchObject({ harness: "claude", model: "opus" });
+		expect(created[0]).toMatchObject({ harness: "claude", model: "sonnet" });
+		expect(prompted[0]?.effort).toBe("high");
+	});
+
+	it("starts Claude Code on the default its runner reported, not the first model listed, and sends no model for it", async () => {
+		const models = [
+			{ id: "haiku", name: "Haiku", efforts: [] },
+			{ id: "opus", name: "Opus", efforts: ["low", "high"] },
+		];
+		await show({ machines: reporting({ models, defaultModel: "opus" }) });
+		open("on");
+		pick("m_nas");
+		open("agent");
+		pick("claude");
+		expect(value("agent")).toBe("Claude Code · Opus (default)");
+		expect(modelRows()).toEqual([
+			["Haiku", false],
+			["Opus default", true],
+		]);
+		// Away and back: the default chosen again is still the adapter's own, and its efforts are offered.
+		pick("haiku");
+		expect(value("agent")).toBe("Claude Code · Haiku");
+		pick("opus");
+		pick("high");
+		expect(value("agent")).toBe("Claude Code · Opus (default) · high");
+		write("Add the test command to the README");
+		await enter();
+		expect(created[0]).toMatchObject({ harness: "claude" });
+		expect(created[0]?.model).toBeUndefined();
 		expect(prompted[0]?.effort).toBe("high");
 	});
 

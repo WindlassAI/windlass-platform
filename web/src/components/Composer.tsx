@@ -31,7 +31,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent
 import { errorMessage, hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { count } from "../lib/format";
-import { effortsOf, modelIds, modelsNote, modelsNoteShort } from "../lib/models";
+import { effortsOf, modelIds, modelLabel, modelsNote, modelsNoteShort } from "../lib/models";
 import { linkProps } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { ChevronIcon, SendIcon, SteerIcon, StopIcon, WarnIcon } from "./Icons";
@@ -179,6 +179,8 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 	const currentEffort = efforts.includes(effort) ? effort : "";
 	// Another harness's pickers are drawn only where it offers a choice.
 	const modelPicker = harness === null || offered.length > 1;
+	// Another harness's models by the names it gave them, its default marked as the start composer marks it; Windlass's by their ids, as before.
+	const harnessModelLabel = (id: string) => (harness === null || !models ? id : modelLabel(models, id));
 	const effortPicker = harness === null || efforts.length > 0;
 	const tooLong = text.length > MAX_PROMPT_CHARS;
 	const canSend = writable && online && !sending && text.trim() !== "" && !tooLong;
@@ -393,9 +395,9 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 						<label className="mini-select" htmlFor={ids.model}>
 							<span>model</span>
 							<select id={ids.model} value={currentModel} onChange={(event) => setChosenModel(event.target.value)} disabled={!idle} title={idle ? undefined : "For the next turn; a message to the running turn uses its model"}>
-								{(offered.includes(currentModel) ? offered : [currentModel, ...offered]).map((name) => (
-									<option key={name} value={name}>
-										{name}
+								{(offered.includes(currentModel) ? offered : [currentModel, ...offered]).map((id) => (
+									<option key={id} value={id}>
+										{harnessModelLabel(id)}
 									</option>
 								))}
 							</select>

@@ -156,6 +156,20 @@ describe("the composer's submissions", () => {
 	});
 });
 
+describe("another harness's model picker", () => {
+	it("names its models as the harness does, and marks its default as the start composer does, wherever it is listed", () => {
+		const models = { source: "harness" as const, fetchedAt: null, defaultModel: "opus", models: [{ id: "haiku", name: "Haiku", efforts: [] }, { id: "opus", name: "Opus", efforts: [] }, { id: "sonnet", name: null, efforts: [] }] };
+		show({ harness: "Claude Code", model: "opus", models });
+		const select = host.querySelector(".composer-selects select") as HTMLSelectElement;
+		expect([...select.options].map((option) => [option.value, option.textContent])).toEqual([
+			["haiku", "Haiku"],
+			["opus", "Opus (default)"],
+			["sonnet", "sonnet"],
+		]);
+		expect(select.value).toBe("opus");
+	});
+});
+
 describe("a message to a running turn whose harness takes none then", () => {
 	// The server's refusal of a steer (server/src/actors/agent-session.ts, `steerTurn`): known by its code, whatever its words.
 	const notNow = () => new PlatformError("user", "The running turn could not take the message. Try again in a moment.", { reason: "steer_unavailable" });
