@@ -37,10 +37,10 @@ if [ -z "$binary" ] || [ ! -f "$binary" ]; then
   exit 1
 fi
 
-# A small build context of its own: the Dockerfile, the helper and the binary (hard-linked when possible).
+# A small build context of its own: the Dockerfile, the helpers and the binary (hard-linked when possible).
 context=$(mktemp -d "${TMPDIR:-/tmp}/wlp-build.XXXXXX")
 trap 'rm -rf "$context"' EXIT INT TERM
-cp "$here/Dockerfile" "$here/wlp-run" "$context/"
+cp "$here/Dockerfile" "$here/wlp-run" "$here/wlp-shot" "$context/"
 ln "$binary" "$context/windlass" 2>/dev/null || cp "$binary" "$context/windlass"
 
 echo "build.sh: building $IMAGE with $binary" >&2

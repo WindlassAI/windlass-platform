@@ -1,9 +1,9 @@
 /**
  * The E2B template sessions' sandboxes are made from: the Docker image's own Dockerfile
  * (sandbox/Dockerfile), handed to E2B's template builder, so a microVM has what a container has: the
- * user `agent`, /workspace, Windlass's data directory, `wlp-run`, git, bubblewrap and the Windlass
- * binary. E2B's builder reads FROM, RUN, COPY (with --chmod), WORKDIR, USER, ENV, ARG and CMD and
- * passes over LABEL (https://docs.e2b.dev/template/base-image.md, "Parsing existing Dockerfiles"; the
+ * user `agent`, /workspace, Windlass's data directory, `wlp-run`, git, bubblewrap, the Windlass binary,
+ * and `wlp-shot` with Playwright and Chrome headless shell. E2B's builder reads FROM, RUN, COPY
+ * (with --chmod), WORKDIR, USER, ENV, ARG and CMD, and passes over LABEL (https://docs.e2b.dev/template/base-image.md, "Parsing existing Dockerfiles"; the
  * SDK's `fromDockerfile`). The last USER and WORKDIR become the sandbox's defaults: `agent`, /workspace.
  *
  * Three things differ from the container, and the provider makes up for each:

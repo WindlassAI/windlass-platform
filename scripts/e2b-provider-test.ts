@@ -604,12 +604,13 @@ await section("the template", async () => {
 	try {
 		writeFileSync(join(context, "Dockerfile"), readFileSync(join(root, "sandbox/Dockerfile"), "utf8"));
 		writeFileSync(join(context, "wlp-run"), readFileSync(join(root, "sandbox/wlp-run"), "utf8"));
+		writeFileSync(join(context, "wlp-shot"), readFileSync(join(root, "sandbox/wlp-shot"), "utf8"));
 		writeFileSync(join(context, "windlass"), "not a real binary\n");
 		const text = describeTemplate(context);
 		const lines = text.split("\n");
 		expect("the template is the Docker image's Dockerfile: Ubuntu 24.04, the same packages", /^FROM ubuntu:24\.04/m.test(text) && /bubblewrap git ripgrep/.test(text), lines[0]);
 		expect("it has the user agent, the workspace and Windlass's data directory", /useradd --create-home --uid 1000 --shell \/bin\/bash agent/.test(text) && /mkdir -p \/workspace \/home\/agent\/\.local\/share\/windlass/.test(text));
-		expect("it copies the Windlass binary and wlp-run into place", /COPY .*windlass \/usr\/local\/bin\/windlass/.test(text) && /COPY .*wlp-run \/usr\/local\/bin\/wlp-run/.test(text), lines.filter((line) => line.startsWith("COPY")).join(" | "));
+		expect("it copies the Windlass binary, wlp-run and wlp-shot into place", /COPY .*windlass \/usr\/local\/bin\/windlass/.test(text) && /COPY .*wlp-run \/usr\/local\/bin\/wlp-run/.test(text) && /COPY .*wlp-shot \/usr\/local\/bin\/wlp-shot/.test(text), lines.filter((line) => line.startsWith("COPY")).join(" | "));
 		const users = lines.filter((line) => /^USER /.test(line));
 		const workdirs = lines.filter((line) => /^WORKDIR /.test(line));
 		expect("commands run as agent in /workspace by default", users.at(-1) === "USER agent" && workdirs.at(-1) === "WORKDIR /workspace", `${users.at(-1)} | ${workdirs.at(-1)}`);

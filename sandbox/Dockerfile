@@ -45,6 +45,36 @@ RUN set -eu; cd /tmp; \
     rm -rf /tmp/* /root/.npm; \
     node --version; npm --version; pnpm --version; bun --version; uv --version
 
+# Chrome's headless shell as paired by playwright-core. Playwright supplies the Linux arm64 build,
+# Chrome for Testing the amd64 build. The digests pin the two release archives byte for byte.
+ARG HEADLESS_SHELL_VERSION=149.0.7827.55
+ARG HEADLESS_SHELL_ARM64_BUILD=1228
+ARG PLAYWRIGHT_CORE_VERSION=1.61.1
+ARG HEADLESS_SHELL_AMD64_SHA256=410c9407d5de3fea80d9398666be06f2aa09154a3fa7b327dc254e336bb4c4b7
+ARG HEADLESS_SHELL_ARM64_SHA256=1652929a70f4afb17aca36fce073fb7ed22262d16825be761b0801972f43ac4f
+ENV WLP_BROWSER=/opt/wlp-browser/chrome/headless_shell
+RUN set -eu; cd /tmp; \
+    apt-get update; apt-get install -y --no-install-recommends \
+      libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 libcups2t64 \
+      libdbus-1-3 libdrm2 libgbm1 libxkbcommon0 libx11-6 libxcb1 libxcomposite1 libxdamage1 \
+      libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libasound2t64 libpango-1.0-0 libcairo2 \
+      fontconfig fonts-liberation fonts-dejavu-core; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) dir=chrome-headless-shell-linux64; zip="$dir.zip"; sha="$HEADLESS_SHELL_AMD64_SHA256"; \
+             url="https://cdn.playwright.dev/builds/cft/$HEADLESS_SHELL_VERSION/linux64/$zip" ;; \
+      arm64) dir=chrome-linux; zip=chromium-headless-shell-linux-arm64.zip; sha="$HEADLESS_SHELL_ARM64_SHA256"; \
+             url="https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/$HEADLESS_SHELL_ARM64_BUILD/$zip" ;; \
+      *) echo "unsupported browser architecture" >&2; exit 1 ;; \
+    esac; \
+    curl --retry 3 -fsSLO "$url"; printf '%s  %s\n' "$sha" "$zip" | sha256sum -c -; \
+    unzip -q "$zip" -d /opt/wlp-browser; mv "/opt/wlp-browser/$dir" /opt/wlp-browser/chrome; \
+    if [ "$dir" = chrome-headless-shell-linux64 ]; then ln -s chrome-headless-shell "$WLP_BROWSER"; fi; \
+    ln -s "$WLP_BROWSER" /usr/local/bin/wlp-headless-shell; \
+    printf 'export WLP_BROWSER=%s\n' "$WLP_BROWSER" > /etc/profile.d/wlp-browser.sh; \
+    npm install -g --no-fund --no-audit "playwright-core@${PLAYWRIGHT_CORE_VERSION}"; \
+    wlp-headless-shell --version; \
+    npm cache clean --force; find /var/lib/apt/lists /tmp /root/.npm -mindepth 1 -delete
+
 # A non-root user. The data directory exists in the image owned by `agent`, so an empty named volume
 # mounted there takes that ownership.
 #
@@ -67,6 +97,7 @@ RUN useradd --create-home --uid 1000 --shell /bin/bash agent \
 
 COPY --chmod=0755 windlass /usr/local/bin/windlass
 COPY --chmod=0755 wlp-run /usr/local/bin/wlp-run
+COPY --chmod=0755 wlp-shot /usr/local/bin/wlp-shot
 
 USER agent
 ENV HOME=/home/agent \

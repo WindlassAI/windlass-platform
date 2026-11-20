@@ -1,0 +1,187 @@
+#!/usr/bin/env node
+import { execFileSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { constants, readFileSync, writeFileSync } from 'node:fs';
+import { mkdir, open, rename, unlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { parseArgs, stripVTControlCharacters } from 'node:util';
+
+const help = `wlp-shot [--serve "<command>"] --url http://127.0.0.1:<port>[/path]
+         [--shot <path>=<name>.png ...] [--out <name>.png] [--viewport 1280x800]
+         [--full-page] [--click <css selector> ...] [--wait-for <css selector>]
+         [--color-scheme light|dark] [--timeout 90]
+
+The server and the browser have to be started by the same command; a server started
+in another command cannot be reached from here. Use --serve to start and stop it.
+--out captures --url (default home.png when no --shot is given). Each --shot
+captures another path on the same server. Clicks run in order before --wait-for.
+Files are written to .wlp-shots/ at the repository top, or in the current directory.`;
+
+function options() {
+  const string = { type: 'string' };
+  const repeated = { ...string, multiple: true, default: [] };
+  const { values: v } = parseArgs({ options: {
+    help: { type: 'boolean' }, serve: string, url: string, out: string, shot: repeated,
+    viewport: { ...string, default: '1280x800' }, 'full-page': { type: 'boolean' },
+    click: repeated, 'wait-for': string, 'color-scheme': { ...string, default: 'light' },
+    timeout: { ...string, default: '90' },
+  } });
+  if (v.help) return;
+  const url = new URL(v.url);
+  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username || url.password)
+    throw new Error('--url must be an HTTP URL on 127.0.0.1');
+  const shots = v.shot.map(spec => {
+    const end = spec.lastIndexOf('=');
+    if (end < 1) throw new Error('--shot needs <path>=<name>.png');
+    const target = new URL(spec.slice(0, end), url);
+    if (target.origin !== url.origin || target.username || target.password)
+      throw new Error('--shot must use the same loopback origin as --url');
+    return { url: target.href, name: spec.slice(end + 1) };
+  });
+  if (v.out !== undefined || !shots.length) shots.unshift({ url: url.href, name: v.out ?? 'home.png' });
+  const names = new Set();
+  for (const { name } of shots) {
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}\.png$/.test(name)) throw new Error('invalid PNG name: ' + name);
+    if (names.has(name)) throw new Error('duplicate PNG name: ' + name);
+    names.add(name);
+  }
+  const match = /^(\d+)x(\d+)$/.exec(v.viewport);
+  const viewport = { width: Number(match?.[1]), height: Number(match?.[2]) };
+  if (!match || Object.values(viewport).some(n => !Number.isSafeInteger(n) || n < 1))
+    throw new Error('--viewport needs positive integer dimensions, e.g. 1280x800');
+  if (!['light', 'dark'].includes(v['color-scheme'])) throw new Error('--color-scheme needs light or dark');
+  const timeout = Number(v.timeout) * 1000;
+  if (!Number.isInteger(timeout) || timeout < 1 || timeout > 2147483647)
+    throw new Error('--timeout needs a positive number of seconds');
+  return { ...v, url: url.href, shots, viewport, timeout };
+}
+
+async function outputDirectory() {
+  let root;
+  try {
+    root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+    }).replace(/\n$/, '');
+  } catch { root = process.cwd(); }
+  const dir = join(root, '.wlp-shots');
+  await mkdir(dir, { recursive: true });
+  // Pin the real directory, and replace each destination by rename so links in the repo
+  // cannot redirect a write (including .gitignore) to some other file.
+  return open(dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+}
+
+async function put(directory, name, bytes) {
+  const dir = '/proc/self/fd/' + directory.fd;
+  const tmp = join(dir, '.' + randomUUID());
+  await writeFile(tmp, bytes, { flag: 'wx' });
+  try { await rename(tmp, join(dir, name)); }
+  finally { await unlink(tmp).catch(e => { if (e.code !== 'ENOENT') throw e; }); }
+}
+
+function startServer(command, serverScore) {
+  // Chrome sets renderer processes to 300 itself. Keep the app expendable ahead of
+  // Windlass, but below Chrome, so a renderer OOM can still be reported by the driver.
+  const launch = 'echo "$1" > /proc/self/oom_score_adj && exec sh -c "$2"';
+  const child = spawn('sh', ['-c', launch, 'wlp-shot-serve', String(serverScore), command], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let tail = '';
+  const append = chunk => { tail = (tail + chunk).slice(-8192).split('\n').slice(-21).join('\n'); };
+  for (const stream of [child.stdout, child.stderr]) stream.setEncoding('utf8').on('data', append);
+  child.on('error', error => append(error.message));
+  return { pid: child.pid, output: () => tail.trimEnd().split('\n').slice(-20).join(' | ') };
+}
+
+async function stopServer(pid) {
+  if (!pid) return;
+  const signal = name => {
+    try { process.kill(-pid, name); return true; }
+    catch (e) { if (e.code === 'ESRCH') return false; throw e; }
+  };
+  if (!signal('SIGTERM')) return;
+  const until = Date.now() + 5000;
+  while (Date.now() < until && signal(0)) await delay(50);
+  signal('SIGKILL');
+}
+
+async function ready(opts, server, signal) {
+  const until = Date.now() + opts.timeout;
+  do {
+    signal.throwIfAborted();
+    const remaining = Math.max(1, until - Date.now());
+    try {
+      const response = await fetch(opts.url, {
+        redirect: 'manual', signal: AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
+      });
+      await response.body?.cancel();
+      return;
+    } catch { signal.throwIfAborted(); }
+    await delay(Math.min(100, Math.max(0, until - Date.now())), undefined, { signal });
+  } while (Date.now() < until);
+  const output = server?.output();
+  throw new Error(`the app did not answer at ${opts.url} within ${opts.timeout / 1000} s` +
+    (output ? '; its last output: ' + output : ''));
+}
+
+async function run(opts) {
+  const oomScore = '/proc/self/oom_score_adj';
+  const inheritedScore = readFileSync(oomScore, 'utf8').trim();
+  writeFileSync(oomScore, '1000');
+  // The pinned driver lives with the image even when the project has its own Playwright.
+  const { chromium, errors } = await import('/usr/local/lib/node_modules/playwright-core/index.mjs');
+  const stop = new AbortController();
+  let directory, server, browser, crashed = false;
+  const interrupt = () => {
+    stop.abort(new Error('interrupted'));
+    void browser?.close().catch(() => {});
+  };
+  process.on('SIGTERM', interrupt);
+  process.on('SIGINT', interrupt);
+  try {
+    directory = await outputDirectory();
+    await put(directory, '.gitignore', '*\n');
+    if (opts.serve) server = startServer(opts.serve, Math.max(200, Number(inheritedScore)));
+    writeFileSync(oomScore, inheritedScore);
+    await ready(opts, server, stop.signal);
+    writeFileSync(oomScore, '1000');
+    browser = await chromium.launch({
+      executablePath: process.env.WLP_BROWSER || '/usr/local/bin/wlp-headless-shell',
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+      handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
+    });
+    // The shell inherited 1000. Keep the driver alive to report a disconnect or page crash.
+    writeFileSync(oomScore, inheritedScore);
+    stop.signal.throwIfAborted();
+    const page = await browser.newPage({ viewport: opts.viewport, colorScheme: opts['color-scheme'] });
+    page.on('crash', () => { crashed = true; });
+    page.setDefaultTimeout(opts.timeout);
+    for (const shot of opts.shots) {
+      try { await page.goto(shot.url, { waitUntil: 'networkidle', timeout: Math.min(30000, opts.timeout) }); }
+      catch (e) { if (!(e instanceof errors.TimeoutError)) throw e; }
+      for (const selector of opts.click) await page.locator(selector).click();
+      if (opts['wait-for']) await page.locator(opts['wait-for']).waitFor();
+      const png = await page.screenshot({ type: 'png', fullPage: opts['full-page'] });
+      stop.signal.throwIfAborted();
+      await put(directory, shot.name, png);
+      console.log(`wlp-shot: .wlp-shots/${shot.name} ${png.readUInt32BE(16)}x${png.readUInt32BE(20)} ${png.length} bytes`);
+    }
+  } catch (e) {
+    stop.signal.throwIfAborted();
+    if (crashed || (browser && !browser.isConnected()) || /signal=SIGKILL|page crashed/i.test(e.message))
+      throw new Error('the browser was killed (out of memory?)');
+    throw e;
+  } finally {
+    try { await Promise.all([stopServer(server?.pid), browser?.close(), directory?.close()]); }
+    finally { process.off('SIGTERM', interrupt); process.off('SIGINT', interrupt); }
+  }
+  stop.signal.throwIfAborted();
+}
+
+try {
+  const opts = options();
+  if (opts) await run(opts);
+  else console.log(help);
+} catch (error) {
+  console.error('wlp-shot: ' + stripVTControlCharacters(error.message).replace(/\s+/g, ' ').trim());
+  process.exitCode = 1;
+}

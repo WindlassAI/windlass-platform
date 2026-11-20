@@ -27,8 +27,8 @@ function number(name: string, fallback: number, least: number, most: number): nu
 }
 
 async function main(): Promise<number> {
-	if (context === undefined || !["Dockerfile", "wlp-run", "windlass"].every((file) => existsSync(join(context, file)))) {
-		console.error("e2b-template: give the build context: a directory with Dockerfile, wlp-run and windlass (sandbox/e2b/build.sh makes one)");
+	if (context === undefined || !["Dockerfile", "wlp-run", "wlp-shot", "windlass"].every((file) => existsSync(join(context, file)))) {
+		console.error("e2b-template: give the build context: a directory with Dockerfile, wlp-run, wlp-shot and windlass (sandbox/e2b/build.sh makes one)");
 		return 2;
 	}
 	const name = (process.env.WLP_E2B_TEMPLATE ?? DEFAULT_TEMPLATE).trim();

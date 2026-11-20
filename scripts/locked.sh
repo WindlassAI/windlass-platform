@@ -41,12 +41,13 @@ case "$name" in
         fi ;;
     idempotency-check) ports=6460 ;;
     factory-e2e) ports=6620 ;;
+    webhook-check) ports=3410 ;;
     runner-socket-probe) ports=6740 ;;
     machine-check) ports=6850; slots=1 ;;
     runner-check) ports=6900; docker=-s ;; # Its 7020 stub belongs to this check too.
     runner-e2e) ports=6950 ;;
     mcp-check) docker=-s ;;
-    verified-check|github-check|backup-check|e2b-provider-test) docker=$with_docker ;;
+    verified-check|github-check|backup-check|e2b-provider-test|shot-check) docker=$with_docker ;;
     # Lock hand-run builds and cleanup here. As children of a check they already run under its lock.
     sandbox-check|build.sh|runner-build.sh|cleanup.sh) docker=-x ;;
 esac
