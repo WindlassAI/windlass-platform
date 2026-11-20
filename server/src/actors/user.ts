@@ -78,7 +78,7 @@
 import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
 import { launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
-import { ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
+import { ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
@@ -1278,6 +1278,14 @@ export const user = actor({
 			queueChanged(c);
 		},
 		// --- work items, the turn queue and API tokens (user-items.ts) ---
+		internalReserveAttachment: (c, input: import("../sandbox/attach.js").Reservation) => itemActions.internalReserveAttachment(c, input),
+		internalRecordAttachment: (c, input: { id: string; width: number; height: number }) => itemActions.internalRecordAttachment(c, input),
+		internalReleaseAttachment: (c, input: string) => itemActions.internalReleaseAttachment(c, input),
+		internalSettleAttachments: (c, input: { sessionId: string; key: string; keep: string[] }) => itemActions.internalSettleAttachments(c, input),
+		internalDeleteItemAttachments: (c, input: string) => itemActions.internalDeleteItemAttachments(c, input),
+		[ATTACHMENT_SWEEP_ACTION]: (c) => itemActions.internalAttachmentSweep(c),
+		itemAttachmentLinks: (c, input: string) => itemActions.itemAttachmentLinks(c, input),
+		internalApiItemAttachment: (c, input: { token: string; id: string; attachment: string }) => itemActions.internalApiItemAttachment(c, input),
 		listItems: (c): ItemSummary[] => itemActions.listItems(c),
 		item: (c, id: string): Promise<ItemView> => itemActions.item(c, id),
 		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),

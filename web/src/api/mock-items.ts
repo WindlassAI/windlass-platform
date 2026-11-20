@@ -867,7 +867,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		verdicts,
 		report: seed.n === 24 ? {
 			by: "builder", sessionId: "", run: 1, key: `${id}:1:1:1`, head: null, at: ago(50),
-			title: "Log the SHA-256 after each upload", records: [],
+			title: "Log the SHA-256 after each upload", records: [], screenshots: [],
 			blocks: [
 				{ kind: "text", heading: "What it did", text: "Added the uploaded file’s checksum to its log entry.", refs: [] },
 				{ kind: "text", heading: "Where to look", text: "Read the log call after the upload completes.", refs: [] },
@@ -1310,6 +1310,7 @@ function withSeededReport(view: ItemView, n: number): ItemView {
 		title: seeded.title,
 		blocks: seeded.blocks,
 		records: refs.flatMap((ref) => seededRecord(ref, verdict)),
+		screenshots: [],
 	};
 	return { ...view, report };
 }

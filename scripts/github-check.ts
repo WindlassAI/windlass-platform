@@ -619,8 +619,8 @@ await section("the agent asks: what a request may hold, and what becomes of an o
 	expect("a person's session is offered publish, push and fetch_base; an item's report, push and fetch_base, and never publish", person.map((tool) => tool.name).join() === "publish,push,fetch_base" && item.map((tool) => tool.name).join() === "report,push,fetch_base", `${person.map((tool) => tool.name)} / ${item.map((tool) => tool.name)}`);
 	expect("each is declared read, which Windlass never asks about, and each answer is the platform's own", [...person, ...item].every((tool) => tool.effect === "read" && tool.untrustedResult === false && tool.inputSchema.type === "object"));
 	expect(
-		"a publish may wait for the person's answer and the push (10 + 5 minutes), a push or a fetch 5 minutes, and a report Windlass's 60 s",
-		byName(person).get("publish")?.timeoutSeconds === 900 && byName(person).get("push")?.timeoutSeconds === 300 && byName(person).get("fetch_base")?.timeoutSeconds === 300 && byName(item).get("report")?.timeoutSeconds === undefined && asks.platformTools({ publish: true, report: false, push: false }, 24 * 3_600_000)[0]?.timeoutSeconds === 3600,
+		"a publish may wait for the person's answer and the push (10 + 5 minutes), a push or a fetch 5 minutes, and a report 3 minutes, to upload its screenshots",
+		byName(person).get("publish")?.timeoutSeconds === 900 && byName(person).get("push")?.timeoutSeconds === 300 && byName(person).get("fetch_base")?.timeoutSeconds === 300 && byName(item).get("report")?.timeoutSeconds === 180 && asks.platformTools({ publish: true, report: false, push: false }, 24 * 3_600_000)[0]?.timeoutSeconds === 3600,
 	);
 
 	// Windlass's configuration file in the sandbox: a server an older platform left there under its name goes, whether or not the platform's list names it (server/src/windlass-config.ts).

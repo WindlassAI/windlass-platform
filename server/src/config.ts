@@ -219,6 +219,7 @@ import { QUESTION_TIMEOUT_MS } from "./contract.js";
 import { APPROVAL_TTL_MS } from "./server-approvals.js";
 import { DEFAULT_DAILY_SECONDS, DEFAULT_HOLD_SECONDS, DEFAULT_MAX_KEPT, type UsageLimits } from "./usage.js";
 import type { FactoryLimits } from "./contract.js";
+import { ATTACHMENT_LIMITS } from "./factory/attachments.js";
 import { FACTORY_DEFAULTS } from "./factory/budget.js";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -287,7 +288,7 @@ export interface Config {
 	/** A user's daily allowance of sandbox time, the cap on the sandboxes they keep, and the size of a hold (usage.ts). */
 	usage: UsageLimits;
 	/** The software factory's limits, the same for every user (WLP_FACTORY_*). */
-	factory: FactoryLimits;
+	factory: ReturnType<typeof readFactory>;
 	/** Whether users may file work items (WLP_ITEMS=1). */
 	items: boolean;
 }
@@ -587,13 +588,19 @@ function readCount(name: string, fallback: number, min: number, max: number, unl
 	return fallback;
 }
 
-function readFactory(): FactoryLimits {
+function readFactory(): FactoryLimits & { attachments: { bytes: number; perItem: number; accountBytes: number; days: number } } {
 	const d = FACTORY_DEFAULTS;
 	const count = (name: string, fallback: number, max: number) => readCount(name, fallback, 1, max, false) ?? fallback;
 	const runningTurns = count("WLP_FACTORY_RUNNING_TURNS", d.runningTurns, 100);
 	// The factory's share leaves the person at least one turn of their own.
 	const factoryTurns = Math.min(count("WLP_FACTORY_TURNS", d.factoryTurns, 100), Math.max(1, runningTurns - 1));
 	return {
+		attachments: {
+			bytes: count("WLP_FACTORY_ATTACHMENT_BYTES", ATTACHMENT_LIMITS.bytes, ATTACHMENT_LIMITS.bytes),
+			perItem: count("WLP_FACTORY_ATTACHMENTS_PER_ITEM", ATTACHMENT_LIMITS.perItem, 1_000_000),
+			accountBytes: count("WLP_FACTORY_ATTACHMENT_ACCOUNT_BYTES", 1_073_741_824, Number.MAX_SAFE_INTEGER),
+			days: count("WLP_FACTORY_ATTACHMENT_DAYS", 180, 36500),
+		},
 		runningTurns,
 		factoryTurns,
 		hostedRunning: count("WLP_FACTORY_HOSTED_RUNNING", d.hostedRunning, 100),

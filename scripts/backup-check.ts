@@ -100,6 +100,7 @@ async function standIn(name: string, make: (now: () => number) => StandInObjectS
 	const fetched = store.use(get.url, "GET");
 	expect(`${name}: a link to download gives the object back, and uploads nothing`, fetched.status === 200 && fetched.body?.equals(body) === true && store.use(get.url, "PUT", body).status === 403);
 	expect(`${name}: a link reaches one key`, store.use(get.url.replace("s_1.tgz", "s_2.tgz"), "GET").status === 403 && store.use(get.url.replace(/signature=[0-9a-f]{8}/, "signature=00000000"), "GET").status === 403);
+	expect(`${name}: a ranged read returns just the requested prefix`, Buffer.from((await store.readStart(key, 3))!).equals(body.subarray(0, 3)) && (await store.readStart("missing", 33)) === null);
 	const other = make(() => clock);
 	expect(`${name}: a link of another store opens nothing`, other.use(get.url, "GET").status === 403);
 	clock += 60_001;

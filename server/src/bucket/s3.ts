@@ -1,6 +1,6 @@
 /**
- * `ObjectStore` on the S3 protocol. Four things are used, and every store that calls itself
- * S3-compatible has them: a presigned PUT, a presigned GET, HEAD and DELETE of one object, all signed
+ * `ObjectStore` on the S3 protocol. It uses presigned PUT and GET, and server-side HEAD, ranged GET
+ * and DELETE of one object, all signed
  * with AWS Signature Version 4. No SDK: the signature is a few HMACs (node:crypto), and a server must
  * not grow a dependency for it. Changing the provider is changing the settings (config.ts,
  * "The bucket").
@@ -15,7 +15,7 @@
  */
 
 import { createHash, createHmac } from "node:crypto";
-import { type ObjectStore, ObjectStoreError, type SignedLink, checkKey } from "./store.js";
+import { type GetOptions, type PutOptions, type ObjectStore, ObjectStoreError, type SignedLink, checkKey } from "./store.js";
 
 export interface S3Settings {
 	/** The store's S3 endpoint, without the bucket: `https://<account>.r2.cloudflarestorage.com`, `https://s3.eu-central-1.amazonaws.com`. */
@@ -75,20 +75,48 @@ export class S3ObjectStore implements ObjectStore {
 		this.#fetch = options.fetch ?? fetch;
 	}
 
-	async linkToPut(key: string, options: { size: number; ttlMs: number }): Promise<SignedLink> {
+	async linkToPut(key: string, options: PutOptions): Promise<SignedLink> {
 		if (!Number.isSafeInteger(options.size) || options.size < 0) throw new ObjectStoreError("invalid upload size");
-		return this.presign("PUT", key, options.ttlMs, { "content-length": String(options.size) });
+		return this.presign("PUT", key, options.ttlMs, { "content-length": String(options.size), ...(options.contentType ? { "content-type": options.contentType } : {}) });
 	}
 
-	async linkToGet(key: string, options: { ttlMs: number }): Promise<SignedLink> {
-		return this.presign("GET", key, options.ttlMs, {});
+	async linkToGet(key: string, options: GetOptions): Promise<SignedLink> {
+		const query: Record<string, string> = {};
+		if (options.contentType) query["response-content-type"] = options.contentType;
+		if (options.disposition) query["response-content-disposition"] = options.disposition;
+		return this.presign("GET", key, options.ttlMs, {}, query);
+	}
+
+	async readStart(key: string, bytes: number): Promise<Uint8Array | null> {
+		if (!Number.isSafeInteger(bytes) || bytes < 1) throw new ObjectStoreError("invalid range size");
+		const response = await this.request("GET", key, { range: `bytes=0-${bytes - 1}` });
+		if (response.status !== 206 || !response.body) {
+			await response.body?.cancel();
+			if (response.status === 404) return null;
+			throw new ObjectStoreError("the bucket did not return the requested range", response.status);
+		}
+		const reader = response.body.getReader();
+		const prefix = new Uint8Array(bytes);
+		let length = 0;
+		try {
+			while (length < bytes) {
+				const chunk = await reader.read();
+				if (chunk.done) break;
+				const part = chunk.value.subarray(0, bytes - length);
+				prefix.set(part, length);
+				length += part.length;
+			}
+		} finally {
+			await reader.cancel();
+		}
+		return prefix.subarray(0, length);
 	}
 
 	async size(key: string): Promise<number | null> {
 		const response = await this.request("HEAD", key);
 		if (response.status === 404) return null;
 		if (!response.ok) throw await this.refused("HEAD", response);
-		const length = Number(response.headers.get("content-length"));
+		const length = Number(response.headers.get("content-length") ?? NaN);
 		if (!Number.isSafeInteger(length) || length < 0) throw new ObjectStoreError("the bucket answered HEAD without the object's size", response.status);
 		return length;
 	}
@@ -116,13 +144,14 @@ export class S3ObjectStore implements ObjectStore {
 	}
 
 	/** A URL with the signature in its query. `headers` are signed beside the host: whoever uses the link has to send them as they are. */
-	private presign(method: "GET" | "PUT", key: string, ttlMs: number, headers: Record<string, string>): SignedLink {
+	private presign(method: "GET" | "PUT", key: string, ttlMs: number, headers: Record<string, string>, overrides: Record<string, string> = {}): SignedLink {
 		const seconds = Math.min(MAX_LINK_SECONDS, Math.max(1, Math.round(ttlMs / 1000)));
 		const { amzDate, date } = this.stamp();
 		const scope = `${date}/${this.#settings.region}/s3/aws4_request`;
 		const signed: Record<string, string> = { host: this.#host, ...headers };
 		const names = Object.keys(signed).sort();
 		const query = [
+			...Object.entries(overrides),
 			["X-Amz-Algorithm", ALGORITHM],
 			["X-Amz-Credential", `${this.#settings.accessKeyId}/${scope}`],
 			["X-Amz-Date", amzDate],
@@ -139,18 +168,18 @@ export class S3ObjectStore implements ObjectStore {
 	}
 
 	/** A request of the server's own, with the signature in its `Authorization` header and no body. */
-	private async request(method: "HEAD" | "DELETE", key: string): Promise<Response> {
+	private async request(method: "HEAD" | "DELETE" | "GET", key: string, extra: Record<string, string> = {}): Promise<Response> {
 		const { amzDate, date } = this.stamp();
 		const scope = `${date}/${this.#settings.region}/s3/aws4_request`;
 		const path = this.path(key);
-		const headers: Record<string, string> = { host: this.#host, "x-amz-content-sha256": EMPTY_SHA256, "x-amz-date": amzDate };
+		const headers: Record<string, string> = { ...extra, host: this.#host, "x-amz-content-sha256": EMPTY_SHA256, "x-amz-date": amzDate };
 		const names = Object.keys(headers).sort();
 		const canonical = [method, path, "", names.map((name) => `${name}:${headers[name]}\n`).join(""), names.join(";"), EMPTY_SHA256].join("\n");
 		const signature = hmac(this.signingKey(date), [ALGORITHM, amzDate, scope, sha256(canonical)].join("\n")).toString("hex");
 		try {
 			return await this.#fetch(`${this.#origin}${path}`, {
 				method,
-				headers: { "x-amz-content-sha256": EMPTY_SHA256, "x-amz-date": amzDate, authorization: `${ALGORITHM} Credential=${this.#settings.accessKeyId}/${scope}, SignedHeaders=${names.join(";")}, Signature=${signature}` },
+				headers: { ...extra, "x-amz-content-sha256": EMPTY_SHA256, "x-amz-date": amzDate, authorization: `${ALGORITHM} Credential=${this.#settings.accessKeyId}/${scope}, SignedHeaders=${names.join(";")}, Signature=${signature}` },
 				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 				redirect: "error",
 			});

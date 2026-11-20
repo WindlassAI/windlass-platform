@@ -17,6 +17,7 @@
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
+import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
 import { verdictWords } from "../server/src/factory/verdict.js";
 import { checkPort } from "./ports.js";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -218,12 +219,13 @@ await check("schedules: every action the factory schedules is registered under t
 	process.env.WLP_SANDBOX = "fake";
 	const { workItem, DUE_ACTION } = await import("../server/src/actors/work-item.js");
 	const { user } = await import("../server/src/actors/user.js");
-	const { QUEUE_ACTION } = await import("../server/src/actors/user-items.js");
+	const { ATTACHMENT_SWEEP_ACTION, QUEUE_ACTION } = await import("../server/src/actors/user-items.js");
 	const { agentSession } = await import("../server/src/actors/agent-session.js");
 	const { OUTBOX_ACTION } = await import("../server/src/actors/session-inbox.js");
 	const missing = [
 		[workItem, DUE_ACTION, "workItem"],
 		[user, QUEUE_ACTION, "user"],
+		[user, ATTACHMENT_SWEEP_ACTION, "user"],
 		[agentSession, OUTBOX_ACTION, "agentSession"],
 	].filter(([definition, name]) => typeof ((definition as { config: { actions: Record<string, unknown> } }).config.actions[name as string]) !== "function");
 	assert(missing.length === 0, `not registered: ${missing.map(([, name, actor]) => `${actor}.${name}`).join(", ")}`);
@@ -382,7 +384,7 @@ async function memoryChecks(): Promise<void> {
 		m.send({ kind: "start" });
 		const actor = await itemActor(m.item);
 		const fact = { kind: "turn_ended", at: T + 10, key: currentKey(m.item), outcome: "succeeded", verified: null, flags: [], changes: true, spend: { tokens: 1, hostedSeconds: 0 }, pushedHead: HEAD,
-			report: { title: "Fix", description: "Made it work", lookAt: "src/a", concerns: "Boundary" } };
+			report: { screenshots: [], title: "Fix", description: "Made it work", lookAt: "src/a", concerns: "Boundary" } };
 		actor.failOnce((sql) => sql.startsWith("INSERT OR REPLACE INTO reports"));
 		const rolledBack = await actions.internalFact(actor.c, fact).then(() => false, () => true);
 		const before = await actions.internalView(actor.c);
@@ -1251,11 +1253,14 @@ try {
 	});
 
 	await check("sleep: an item waiting on its CI schedule while the server is stopped and started again proceeds when the time comes", async () => {
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Across a restart", body: "Add a small program to the repository. (report)", start: true });
+		const item = await user.createItem({ repository: { id: harbor.id }, title: "Across a restart", body: "Add a small program to the repository. (report) (screenshot)", start: true });
 		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null && view.wait?.reason === "ci", 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === pushed.pullRequest?.number);
 		assert(pull, "no pull request");
 		assert(pushed.report?.title === "Report of turn 1", "the item did not store the report filed through the host tool");
+		assert(pushed.report.screenshots.length === 0, "a deployment without a bucket kept an image");
+		const timeline = (await client.agentSession.get([auth.profile.uid, pushed.sessionId], { params: { token: auth.token } }).snapshot()).timeline;
+		assert(JSON.stringify(timeline).includes("your report was filed without them"), "the agent was not told the report was filed without screenshots");
 		assert(pull.body.startsWith("What the fake agent did.") && !pull.body.includes("notes/turn-1.md"), "the first publish must use the description and omit look_at");
 		await main.stop();
 		setCi(harbor, pull.head, "success");
@@ -1344,7 +1349,10 @@ try {
 // With one factory turn: the second item waits with the sentence, and starts when the first's turn ends.
 const narrow = new Server();
 try {
-	const { user } = await world(narrow, standin, { WLP_FACTORY_TURNS: "1", WLP_FACTORY_RUNNING_TURNS: "2", WLP_FAKE_DELAY_MS: "50" });
+	const dir = join(narrow.storage, "fake-bucket");
+	const signing = randomBytes(32);
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=";
+	const { user, client, auth } = await world(narrow, standin, { WLP_FAKE_BACKUP_DIR: dir, WLP_FAKE_BUCKET_SIGNING_SECRET: signing.toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_FACTORY_TURNS: "1", WLP_FACTORY_RUNNING_TURNS: "2", WLP_FAKE_DELAY_MS: "50" });
 	await check("capacity: with one factory turn a second item waits with the sentence, and starts when the first turn ends", async () => {
 		const a = await user.createItem({ repository: { id: harbor.id }, title: "First (slow)", body: "A long build (slow).", start: true });
 		await untilItem(user, a.id, "the first turn", (view) => view.run?.step.turn === "started", 60_000);
@@ -1353,6 +1361,34 @@ try {
 		assert(waiting.wait && /Waiting for one of your 1 factory turns; 1 are running \(“First \(slow\)”\)\./.test(waiting.wait.sentence), `it says ${waiting.wait?.sentence}`);
 		const started = await untilItem(user, b.id, "the second turn", (view) => view.run?.step.turn === "started" || view.run?.step.kind !== "implement", 120_000);
 		return `${waiting.wait.sentence} → ${started.state}`;
+	});
+	await check("screenshots: the item serves the builder’s PNG to its owner and links GitHub to the page", async () => {
+		const item = await user.createItem({ repository: { id: harbor.id }, title: "Screenshot", body: "Change the home page. (report) (screenshot)", start: true });
+		const view = await untilItem(user, item.id, "the report and push", v => !!v.report && !!v.pullRequest);
+		const shot = view.report!.screenshots[0];
+		assert(shot?.width === 1 && shot.height === 1 && shot.state === "kept" && view.report!.blocks.some(b => b.kind === "screenshot" && b.attachment === shot.id), "the item did not retain the verified PNG");
+		const [link] = await user.itemAttachmentLinks(item.id);
+		assert(link?.id === shot.id && Math.abs(link.expiresAt - Date.now() - 600_000) < 10_000, "the owner did not receive a ten-minute link");
+		const store = new StandInObjectStore({ dir, secret: signing });
+		const got = store.use(link.url, "GET");
+		assert(got.status === 200 && got.headers?.get("content-type") === "image/png" && got.body?.equals(Buffer.from(png, "base64")), "the link did not serve the original PNG");
+		const url = `${API}/api/items/${item.id}/attachments/${shot.id}`;
+		const get = (url: string, token: string) => fetch(url, { headers: { authorization: "Bearer " + token }, redirect: "manual" });
+		const limited = await user.createApiToken({ name: "create only", scopes: ["items:create"] });
+		assert((await get(url, limited.secret)).status === 403, "a token without items:read was not refused with 403");
+		const allowed = await user.createApiToken({ name: "read only", scopes: ["items:read"] });
+		const redirect = await get(url, allowed.secret);
+		assert(redirect.status === 302 && redirect.headers.get("cache-control") === "no-store" && redirect.headers.get("referrer-policy") === "no-referrer", "the private redirect was not returned");
+		assert(store.use(redirect.headers.get("location") ?? "", "GET").status === 200, "the API redirect is unusable");
+		assert((await get(url.replace(shot.id, "a_0000000000000000"), allowed.secret)).status === 404, "an unknown attachment was visible");
+		const pull = standin.pulls.find(one => one.repository === harbor.id && one.number === view.pullRequest!.number)!;
+		setCi(harbor, pull.head, "success");
+		await waitFor("the screenshot comment", () => pull.comments.length > 0, CI_WAIT_MS);
+		const body = pull.comments[0].body;
+		assert(body.includes(`1 screenshot on the item's page: ${ORIGIN}/items/${item.id} (opens for the item's owner only)`) && !/!\[|X-Amz-|wlp-stand-in/.test(body), "GitHub did not receive just the item page link");
+		const snapshot = await client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } }).snapshot();
+		assert(!/wlp-stand-in:\/\/|X-Amz-/i.test(JSON.stringify([view, snapshot.timeline]) + narrow.text), "a signed link appeared in stored output or the server log");
+		return "PNG, signed-in action, scoped redirect, and page-only GitHub comment";
 	});
 } finally {
 	await narrow.stop();

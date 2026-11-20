@@ -1,10 +1,11 @@
 /** The report tool's trust boundary. The page reads these strings as text. Only platform records supply facts and links. */
 import { MAX_ACCEPTANCE_CRITERIA, MAX_NOTE_CHARS, MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS as limit, type ItemReport, type ReviewBlock, type ReviewLocation, type ReviewRecommendation, type ReviewRecord, type ReviewRef, type Verdict } from "../contract.js";
 import { type AgentReport, CONTROL, REPORT_TAKEN } from "../agent-publish.js";
-import type { Redactor } from "../repo-secrets.js";
+import { shotRequest, textOf, type TextRedactor, type ShotRequest } from "./attachments.js";
+import { config } from "../config.js";
 import { verdictWords } from "./verdict.js";
 
-type TextRedactor = Pick<Redactor, "text">;
+
 export interface ReviewContext {
 	records: ReviewRecord[];
 	earlier: Array<{ id: string; severity: string; root?: string }>;
@@ -14,13 +15,6 @@ export interface ReviewContext {
 
 type Refusal = { ok: false; problems: string[] };
 type CheckedReview = Refusal | { ok: true; recommendation: ReviewRecommendation; blocks: ReviewBlock[]; records: ReviewRecord[] };
-
-function textOf(value: string, redactor: TextRedactor): string {
-	const masked = redactor.text(value);
-	const cleaned = masked.replace(/\r\n?/g, "\n").replace(CONTROL, "").replace(/(?<![ \t])[ \t]+$/gm, "");
-	// Removing a control or trailing spaces can bring two pieces of a saved value back together.
-	return cleaned === masked ? masked : redactor.text(cleaned);
-}
 
 const number = (n: number) => n.toLocaleString("en-US");
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -271,34 +265,51 @@ export function checkReview(input: unknown, context: ReviewContext): CheckedRevi
 	return { ok: true, recommendation, blocks, records: Array.from(referenced, (ref) => structuredClone(records.get(ref)!)) };
 }
 
-export function reportOf(input: unknown, redactor: TextRedactor): Refusal | { ok: true; report: AgentReport } {
+export function reportOf(input: unknown, redactor: TextRedactor): Refusal | { ok: true; report: AgentReport; shots: ShotRequest[] } {
 	const raw = rawProblem(input, "report");
 	if (raw) return { ok: false, problems: [raw] };
 	if (!isObject(input)) return { ok: false, problems: ["the report must be an object"] };
 	const read = new Fields(redactor);
-	read.keys(input, "report", ["title", "description", "concerns", "look_at"]);
+	read.keys(input, "report", ["title", "description", "concerns", "look_at", "screenshots"]);
 	const title = read.text(input.title, "title", MAX_PUBLISH_TITLE_CHARS);
 	if (typeof input.title === "string" && !title.trim()) read.problem("title", "the report needs a title");
 	if (title.includes("\n")) read.problem("title", "must be one line");
 	const optional = (key: string, max: number) => input[key] === undefined ? "" : read.text(input[key], key, max);
-	const report = { title, description: optional("description", MAX_PUBLISH_BODY_CHARS), concerns: optional("concerns", MAX_PUBLISH_BODY_CHARS), lookAt: optional("look_at", limit.lookAtChars) };
-	return read.problems.length ? { ok: false, problems: read.problems } : { ok: true, report };
+	const shots = shotRequest(input.screenshots, redactor);
+	if ("problems" in shots) read.problems.push(...shots.problems);
+	const report: AgentReport = { screenshots: [], title, description: optional("description", MAX_PUBLISH_BODY_CHARS), concerns: optional("concerns", MAX_PUBLISH_BODY_CHARS), lookAt: optional("look_at", limit.lookAtChars) };
+	return read.problems.length || "problems" in shots ? { ok: false, problems: read.problems } : { ok: true, report, shots };
 }
 
 /** The host tool's reply. A refusal leaves the previously filed report alone. */
-export function fileReport(given: unknown, redactor: TextRedactor, take: (report: AgentReport) => void): string {
+type UploadShots = (shots: ShotRequest[]) => Promise<{ screenshots: AgentReport["screenshots"]; files: string[]; problems: string[] }>;
+type TakeReport = (report: AgentReport, answer: string) => void;
+export function fileReport(given: unknown, redactor: TextRedactor, take: TakeReport): string;
+export function fileReport(given: unknown, redactor: TextRedactor, take: TakeReport, upload: UploadShots | null): string | Promise<string>;
+export function fileReport(given: unknown, redactor: TextRedactor, take: TakeReport, upload?: UploadShots | null): string | Promise<string> {
 	const checked = reportOf(given, redactor);
 	if (!checked.ok) return checked.problems.join("\n");
-	take(checked.report);
-	return REPORT_TAKEN;
+	const finish = (answer: string) => {
+		take(checked.report, answer);
+		return answer;
+	};
+	if (!checked.shots.length) return finish(REPORT_TAKEN);
+	if (!upload) return finish("Screenshots are not kept on this deployment (no storage is configured); your report was filed without them.");
+	return upload(checked.shots).then(({ screenshots, files, problems }) => {
+		checked.report.screenshots = screenshots;
+		const n = files.length;
+		const what = n ? ` with ${n} screenshot${n === 1 ? "" : "s"} (${files.map(f => "`" + f + "`").join(", ")})` : " without screenshots";
+		return finish([`Your report was filed${what}.`, ...problems, "End your turn now."].join(" "));
+	});
 }
 
 /** Only the parts the builder filed become blocks. Its concerns have the builder's 4,000-character allowance. */
-export function reportBlocks(report: AgentReport): ReviewBlock[] {
+export function reportBlocks(report: Omit<AgentReport, "screenshots"> & Partial<Pick<AgentReport, "screenshots">>): ReviewBlock[] {
 	const blocks: ReviewBlock[] = [];
 	if (report.description) blocks.push({ kind: "text", heading: "What it did", text: report.description, refs: [] });
 	if (report.lookAt) blocks.push({ kind: "text", heading: "Where to look", text: report.lookAt, refs: [] });
 	if (report.concerns) blocks.push({ kind: "risk", text: report.concerns, at: [] });
+	for (const shot of report.screenshots ?? []) blocks.push({ kind: "screenshot", attachment: shot.id });
 	return blocks;
 }
 
@@ -324,6 +335,8 @@ export function itemComment(verdict: Verdict, words: string, report: ItemReport 
 			if (block.kind === "risk") paragraphs.push(`What the builder is unsure of: ${commentText(block.text, MAX_PUBLISH_BODY_CHARS)}`);
 		}
 	}
+	const count = report?.blocks.filter(block => block.kind === "screenshot").length ?? 0;
+	const link = count ? `\n\n${count} screenshot${count === 1 ? "" : "s"} on the item's page: ${config.origins[0]}/items/${verdict.item} (opens for the item's owner only)` : "";
 	const body = paragraphs.join("\n\n");
-	return body.length > 60_000 ? `${body.slice(0, 59_999)}…` : body;
+	return (body.length + link.length > 60_000 ? `${body.slice(0, 59_999 - link.length)}…` : body) + link;
 }

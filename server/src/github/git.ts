@@ -334,7 +334,8 @@ export function commitScript(input: CommitInput): string {
 		`if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "wlp:norepo"; exit 0; fi`,
 		`cd "$(git rev-parse --show-toplevel)"`,
 		`if [ "$(git symbolic-ref --quiet --short HEAD || true)" != ${branch} ]; then git checkout --quiet -B ${branch}; fi`,
-		"git -c core.fsmonitor=false add -A",
+		"git -c core.fsmonitor=false add -A -- . ':(exclude,top).wlp-shots'",
+		"git -c core.fsmonitor=false rm -r -q -f --cached --ignore-unmatch -- .wlp-shots",
 		"if git diff --cached --quiet; then",
 		"	committed=0",
 		"else",
@@ -345,7 +346,7 @@ export function commitScript(input: CommitInput): string {
 		`echo "wlp:committed $committed"`,
 		`echo "wlp:head $head"`,
 		...nothingNew(input.base, input.pushed),
-		`rm -rf ${file}`,
+		`rm -f -- ${file}`,
 		// Left for the push only when there is something to push.
 		`if [ "$nothing" = 0 ]; then ( umask 077; { echo "$head"; cd "$(git rev-parse --git-path objects)" && pwd -P; } > ${file} ); fi`,
 	].join("\n");

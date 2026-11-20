@@ -162,7 +162,7 @@ import { type PublishEvidence, PullProblem, type Published, type StoredRepositor
 import { GithubProblem, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, standInModels } from "../account-models.js";
-import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
+import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { RUNNER_SOCKET, MachineUnreachable, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
 import { runSetupCommand, stopLeftoverSetup } from "../sandbox/setup.js";
 import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
@@ -191,6 +191,8 @@ import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { grantIsValid, type ReserveAnswer, secretsActor, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentReport } from "../agent-publish.js";
+import { attachmentStore, discardAttachment, uploadShots } from "../sandbox/attach.js";
+import { REPORT_TAKEN } from "../agent-publish.js";
 import { fileReport } from "../factory/review.js";
 import type { Fact } from "../factory/types.js";
 import { DeploymentFull, WindlassUnaskedError } from "../sandbox/api.js";
@@ -367,6 +369,7 @@ interface SessionMeta {
 	 * commands have none: a sandbox the agent has worked in is not set up after the fact.
 	 */
 	setupDue?: string | null;
+	cloneDirectory?: string;
 	/** The setup run in progress, as its starting item has it. Still set when the actor wakes: the run was cut off with its server. */
 	setupRunning?: { id: string; command: string; limitMs: number } | null;
 	/** A setup run in the current sandbox that did not succeed, of which the agent has not been told yet. */
@@ -523,6 +526,8 @@ interface SessionVars {
 	stopping: boolean;
 	reporting: Promise<void> | null;
 	reportAgain: boolean;
+	/** Still closing this inbox row after the agent itself went idle. */
+	closingItem?: string;
 	signedInUntil: number;
 	/** A suspend or removal of the idle sandbox under way; a prompt or a read of the workspace waits for it. */
 	idling: Promise<void> | null;
@@ -1468,6 +1473,7 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 		c.vars.unpushed = null;
 		// The new clone has not been set up: the repository's setup command is due, where the clone is.
 		meta.setupDue = directory;
+		meta.cloneDirectory = directory;
 	} catch (error) {
 		if (error instanceof GithubProblem) throw new TurnProblem(error.message);
 		throw error;
@@ -3106,7 +3112,11 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			};
 			// What the panel says of the account's secrets goes by this sandbox, as the list of the repository's does.
 			meta.accountSecrets = accountSecretsNote(profile, envLists);
-			result = await layer.windlass.runTurn(sandbox, {
+			// Host calls in TurnConnection await their callback and supply the call's abort signal.
+			type HostInput = Omit<RunTurnInput, "onReport"> & { onReport?: (call: TurnPublishRequest, signal: AbortSignal) => string | Promise<string> };
+			const host: { runTurn(sandbox: SandboxHandle, input: HostInput): Promise<RunTurnResult> } = layer.windlass;
+			let filings = Promise.resolve("");
+			result = await host.runTurn(sandbox, {
 				// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.
 				secrets: { ...turnEnvironment(held.opened, held.account, profile, envLists), redactor: held.redactor },
 				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
@@ -3120,13 +3130,22 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 				prompt: `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${onBase ? setupOnBaseNote(onBase) : ""}${text}`,
 				maxSteps: active.item?.row.maxSteps,
 				// A work item's agent files its report, which the platform puts on the pull request it pushes itself.
-				onReport: item
-					? (request) => fileReport(request.arguments, held.redactor, (filed) => {
+				onReport: item ? (request, withdrawn) => {
+					const file = async () => {
+						if (!open || withdrawn.aborted) return "The report call ended. File it again.";
+						const store = attachmentStore();
+						const top = meta.cloneDirectory === "." ? sandbox.cwd : `${sandbox.cwd}/${meta.cloneDirectory}`;
+						const owner = { by: "builder" as const, uid: meta.uid, sessionId: meta.sessionId, itemId: item.row.itemId, key: item.row.key };
+						return fileReport(request.arguments, held.redactor, (filed, answer) => {
+							if (!open || withdrawn.aborted) throw new Error("The report call ended.");
 							item.report = filed;
 							meta.report = { ...filed, run: Number(item.row.key.split(":")[1]) };
-							note(c, turn, "info", `The agent filed its report: “${filed.title}”.`);
-						})
-					: undefined,
+							note(c, turn, "info", `The agent filed its report: “${filed.title}”.${answer === REPORT_TAKEN ? "" : " " + answer}`);
+						}, store ? shots => uploadShots(sandbox, top, shots, owner, userActor(c, meta.uid), store, withdrawn) : null);
+					};
+					filings = filings.then(file, file).catch(() => "The platform could not finish filing this report. File it again.");
+					return tracked(filings);
+				} : undefined,
 				windlassSessionId: resumed ?? undefined,
 				model: meta.model,
 				effort: effort ?? undefined,
@@ -3290,6 +3309,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		meta.turnStartedAt = null;
 		// In the step that lets the next prompt in: what this turn leaves to settle is the hold it has now.
 		meterUse = useOf(meta);
+		c.vars.closingItem = active.item?.row.key;
 		c.vars.turn = null;
 		publish(c);
 		if (outcome === "error") await refreshSandbox(c, meta);
@@ -3313,6 +3333,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		publish(c);
 		await persist(c);
 	}
+	delete c.vars.closingItem;
 	// Given back before what follows the turn for its time: a sandbox out of time is suspended there.
 	release();
 	await meterAfterTurn(c, meta, active, meterUse);
@@ -3665,21 +3686,40 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 	// Not known (git said nothing): taken as changed, and the push says whether there was anything. What the agent pushed itself in the turn is a change too.
 	const changed = ended.unpushed !== false || (meta.pushedHead ?? null) !== item.pushedAtStart;
 	const fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage), pushedHead: meta.pushedHead ?? null, ...(item.refused ? { refused: item.refused } : {}) };
-	await serial(c, () =>
-		c.db.transaction(async (tx) => {
-			await markEnded(tx, row, fact);
-			await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
-		}, { name: "inbox.end" }),
-	);
-	await flushOutbox(c, meta.uid);
+	if (attachmentStore()) {
+		// If the server stops after the ledger commits but before the outbox commits, retry the same keep list.
+		await serial(c, () => c.db.execute("INSERT OR REPLACE INTO attachment_filing VALUES (?,?)", row.key, JSON.stringify(fact)));
+	}
+	await finishItemTurn(c, meta, row, fact);
 }
 
-/** A turn taken from the inbox that was cut off with its server: the item is told it was interrupted, and its slot is given back. */
-async function closeCutTurn(c: Ctx, meta: SessionMeta, row: InboxRow): Promise<Fact> {
-	const fact = endedFactOf(row.key, Date.now(), "interrupted", meta.verified ?? null, [], true, null, null);
-	await serial(c, () => c.db.transaction((tx) => markEnded(tx, row, fact), { name: "inbox.cut" }));
+async function finishItemTurn(c: Ctx, meta: SessionMeta, row: InboxRow, fallback: Extract<Fact, { kind: "turn_ended" }>): Promise<Fact> {
+	const result = await serial(c, async () => {
+		const previous = await endedFact(c.db, row.key);
+		if (previous) return previous;
+		const [pending] = await c.db.execute<{ data: string }>("SELECT data FROM attachment_filing WHERE key=?", row.key);
+		const fact = pending ? JSON.parse(pending.data) as Extract<Fact,{kind:"turn_ended"}> : fallback;
+		if (pending) {
+			const ledger = userActor(c, meta.uid);
+			const keep = typeof fact.report === "object" && fact.report ? fact.report.screenshots.map(shot=>shot.id) : [];
+			const abandoned = await ledger.internalSettleAttachments({ sessionId: meta.sessionId, key: row.key, keep });
+			const store = attachmentStore();
+			if (store) for (const entry of abandoned) await discardAttachment(ledger, store, entry).catch(() => {});
+		}
+		await c.db.transaction(async tx => {
+			await markEnded(tx, row, fact);
+			await tx.execute("DELETE FROM attachment_filing WHERE key=?", row.key);
+			await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
+		}, { name: "inbox.end" });
+		return fact;
+	});
 	await flushOutbox(c, meta.uid);
-	return fact;
+	return result;
+}
+
+/** Recover a completed filing across the ledger/outbox boundary, or report a cut-off turn. */
+async function closeCutTurn(c: Ctx, meta: SessionMeta, row: InboxRow): Promise<Fact> {
+	return finishItemTurn(c, meta, row, endedFactOf(row.key, Date.now(), "interrupted", meta.verified ?? null, [], true, null, null));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -3711,6 +3751,7 @@ export const agentSession = actor({
 			`);
 			await db.execute("CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK (id = 1), files TEXT NOT NULL, diff TEXT NOT NULL)");
 			for (const table of INBOX_TABLES) await db.execute(table);
+			await db.execute("CREATE TABLE IF NOT EXISTS attachment_filing (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
 		},
 	}),
 
@@ -4349,7 +4390,7 @@ export const agentSession = actor({
 			const row = await inboxRow(c.db, String(input?.turn));
 			if (row?.state === "ended") return await endedFact(c.db, row.key);
 			if (row?.state !== "started") return null;
-			if (c.vars.turn?.item?.row.key === row.key) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
+			if (c.vars.turn?.item?.row.key === row.key || c.vars.closingItem === row.key) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
 			// Taken, and no turn of it runs here: the server stopped under it before its end was written.
 			return await closeCutTurn(c, meta, row);
 		},

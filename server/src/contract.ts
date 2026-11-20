@@ -1304,9 +1304,25 @@ export type ReviewBlock =
  * What the agent that made the change filed with `report`, as the item's page shows it: its own words,
  * labelled as the author's. Turned into blocks by the platform (review.ts `reportBlocks`): a `text`
  * block "What it did" (the description), a `text` block "Where to look" (`look_at`), and a `risk` for
- * what it is unsure of. Never a `summary`: that is the reviewer's.
+ * what it is unsure of, followed by a `screenshot` block for each verified image.
  */
+export interface ItemAttachment {
+	id: string;
+	by: "builder" | "reviewer";
+	sessionId: string;
+	head: string;
+	width: number;
+	height: number;
+	bytes: number;
+	sha256: string;
+	caption: string;
+	shows: "after" | "before" | null;
+	page: string | null;
+	state: "kept" | "removed";
+}
+
 export interface ItemReport {
+	screenshots: ItemAttachment[];
 	by: "builder";
 	sessionId: string;
 	run: number;
@@ -1635,6 +1651,7 @@ export interface UserActions {
 	listItems(): Promise<ItemSummary[]>;
 	/** One item's page. Throws a UserError with code `item_not_found` for one that is not the user's. */
 	item(id: string): Promise<ItemView>;
+	itemAttachmentLinks(itemId: string): Promise<Array<{ id: string; url: string; expiresAt: number }>>;
 	/**
 	 * Files a work item, with its own agent session on the repository. Checks the repository at GitHub
 	 * as `createSession` does, and throws as it does; also `bad_input` for a title, body or criteria that

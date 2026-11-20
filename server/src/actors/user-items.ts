@@ -29,7 +29,9 @@ import { mayUse } from "../access.js";
 import { readAccountDefaults } from "../account-defaults.js";
 import { API_TOKENS_TABLE, ApiTokenProblem, createApiToken, listApiTokens, revokeApiToken, tokenOwner, useApiToken } from "../api-tokens.js";
 import { clientError, requireService, requireServiceFor, requireUser } from "../auth.js";
-import { config } from "../config.js";
+import { attachmentKey } from "../factory/attachments.js";
+import { attachmentStore, type AttachmentLedger, type Reservation, type ReserveResult } from "../sandbox/attach.js";
+import { backupConfig, config } from "../config.js";
 import {
 	type GithubId,
 	type ApiToken,
@@ -63,7 +65,14 @@ import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { launchPlace, launchMachineProfiles } from "./user-machines.js";
 import type { ItemMeta } from "./work-item.js";
 
+declare module "./internal.js" { interface UserInternal extends AttachmentLedger {} }
+
+export const ATTACHMENT_SWEEP_ACTION = "internalAttachmentSweep";
+const DAY = 86_400_000;
 export const ITEM_TABLES = [
+	"CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, item TEXT NOT NULL, session TEXT NOT NULL, step_key TEXT NOT NULL, sha256 TEXT NOT NULL, key TEXT NOT NULL, bytes INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL, ended_at INTEGER)",
+	"CREATE INDEX IF NOT EXISTS attachments_item ON attachments(item, state)",
+	"CREATE TABLE IF NOT EXISTS attachment_sweep (id INTEGER PRIMARY KEY CHECK(id=1), schedule TEXT NOT NULL, at INTEGER NOT NULL)",
 	"CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, summary TEXT NOT NULL, key TEXT, sent TEXT)",
 	// A creation's key and the digest of what it asked for, written before either of its actors is made: a creation tried
 	// again under that key with another body is refused even when the first never reached the index.
@@ -195,6 +204,8 @@ async function noteItem(c: ItemsCtx, given: ItemSummary): Promise<void> {
 	if (!held || held.revision > summary.revision) return;
 	c.vars.items.items.set(summary.id, summary);
 	await c.db.execute("UPDATE items SET summary = ? WHERE id = ?", JSON.stringify(summary), summary.id);
+	if (ended(summary)) await c.db.execute("UPDATE attachments SET ended_at=COALESCE(ended_at, ?) WHERE item=?", summary.updatedAt, summary.id);
+	else if (ended(held)) await c.db.execute("UPDATE attachments SET ended_at=NULL WHERE item=? AND ended_at>0", summary.id);
 	c.broadcast("items", itemList(c.vars.items));
 }
 
@@ -324,10 +335,18 @@ async function fileItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	return await attempt;
 }
 
+async function attachmentStates(c: ItemsCtx, view: ItemView): Promise<ItemView> {
+	if (!view.report?.screenshots.length) return view;
+	const rows = await c.db.execute<{ id: string }>("SELECT id FROM attachments WHERE item=? AND state='kept' AND ended_at IS NOT 0", view.id);
+	const live = new Set(rows.map(row => row.id));
+	for (const shot of view.report.screenshots) shot.state = live.has(shot.id) ? "kept" : "removed";
+	return view;
+}
+
 async function itemView(c: ItemsCtx, id: string): Promise<ItemView> {
 	const view = await itemActor(c, c.key[0] as string, id).internalView();
 	await noteItem(c, view);
-	return view;
+	return await attachmentStates(c, view);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -541,13 +560,16 @@ function tokenInput<T>(step: () => Promise<T>): Promise<T> {
 }
 
 /** The profile of the user an API token names, when the token is good for `scope` here. */
-async function apiCaller(c: ItemsCtx, token: unknown, scope: ApiTokenScope): Promise<UserProfile> {
+async function apiCaller(c: ItemsCtx, token: unknown, scope: ApiTokenScope, distinguishScope = false): Promise<UserProfile> {
 	const owner = tokenOwner(token);
 	const profile = c.vars.profile;
 	const refused = new UserError("That API token is not valid, or may not do this.", { code: "invalid_token" });
 	// The access rules hold for a token as for a sign-in: someone taken off the list, or a demo user once the demo is off, is locked out at once.
 	if (!owner || owner.uid !== c.key[0] || !profile || !mayUse(profile, config.access)) throw refused;
-	if (!(await useApiToken(c.db, owner.digest, scope, Date.now()))) throw refused;
+	if (!(await useApiToken(c.db, owner.digest, scope, Date.now()))) {
+		if (distinguishScope && (await c.db.execute("SELECT 1 FROM api_token WHERE digest=?", owner.digest)).length) throw new UserError("Use a token with items:read to read a screenshot.", { code: "missing_scope" });
+		throw refused;
+	}
 	return profile;
 }
 
@@ -560,7 +582,125 @@ function enabled(): void {
 	if (!config.items) throw new UserError("Work items are not available on this platform.", { code: "items_off" });
 }
 
+const ended = (item: ItemSummary) => ["done", "cancelled", "failed"].includes(item.state);
+
+// Calls can interleave at any await. Keep quota decisions, the single alarm and object deletion ordered per user.
+const writes = new WeakMap<ItemsState, Promise<unknown>>();
+function attachmentWrite<T>(c: ItemsCtx, work: () => Promise<T>): Promise<T> {
+	const next = (writes.get(c.vars.items) ?? Promise.resolve()).then(work);
+	writes.set(c.vars.items, next.catch(() => {}));
+	return next;
+}
+
+async function armSweep(c: ItemsCtx, now: number) {
+	const [old] = await c.db.execute<{ schedule: string; at: number }>("SELECT schedule, at FROM attachment_sweep WHERE id=1");
+	if (old && old.at > now && old.schedule !== c.scheduledFire?.id) return;
+	const at = now + DAY;
+	const id = await c.schedule.at(at, ATTACHMENT_SWEEP_ACTION);
+	await c.db.execute("INSERT OR REPLACE INTO attachment_sweep VALUES(1,?,?)", id, at);
+	if (old && old.schedule !== c.scheduledFire?.id) await c.schedule.cancel(old.schedule).catch(() => false);
+}
+
+async function reserveAttachment(c: ItemsCtx, input: Reservation): Promise<ReserveResult> {
+	const { sessionId, itemId, key, sha256, bytes } = input;
+	const item = c.vars.items.items.get(itemId);
+	if (!item || ended(item) || c.vars.sessions.get(sessionId)?.item?.id !== itemId || !key.startsWith(itemId + ":")) return { refused: "item_ended" };
+	const limits = config.factory.attachments;
+	if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > limits.bytes || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid screenshot size or digest.");
+	await armSweep(c, Date.now());
+	const id = "a_" + hex16(itemId + key + sha256);
+	return c.db.transaction(async tx => {
+		const [same] = await tx.execute<{ bytes: number; width: number; height: number }>("SELECT bytes,width,height FROM attachments WHERE id=? AND state!='removed'", id);
+		if (!c.vars.items.items.has(itemId) || ended(c.vars.items.items.get(itemId)!)) return { refused: "item_ended" } as const;
+		if (same) {
+			if (same.bytes !== bytes) throw new Error("The file size differs from its recorded digest.");
+			return { id, width: same.width, height: same.height };
+		}
+		const [usage] = await tx.execute<{ count: number; total: number }>("SELECT COUNT(CASE WHEN item=? THEN 1 END) AS count, COALESCE(SUM(bytes),0) AS total FROM attachments WHERE state!='removed'", itemId);
+		if (usage.count >= limits.perItem) return { refused: "item" } as const;
+		if (usage.total + bytes > limits.accountBytes) return { refused: "account" } as const;
+		await tx.execute("INSERT OR REPLACE INTO attachments VALUES(?,?,?,?,?,?,?,0,0,'reserved',?,NULL)", id, itemId, sessionId, key, sha256, attachmentKey(backupConfig().prefix, c.key[0], itemId, id), bytes, Date.now());
+		return { id, width: 0, height: 0 };
+	}, { name: "attachments.reserve" });
+}
+
+async function removeRows(c: ItemsCtx, rows: Array<{ id: string; key: string }>) {
+	const store = attachmentStore();
+	if (!store) return;
+	for (const row of rows) {
+		try {
+			await store.remove(row.key);
+			await c.db.execute("UPDATE attachments SET state='removed' WHERE id=?", row.id);
+		} catch {
+			c.log.warn({ msg: "A screenshot could not be removed. The daily sweep will retry." });
+		}
+	}
+}
+
+async function links(c: ItemsCtx, item: string, ttlMs: number, only?: string) {
+	knownItem(c, item);
+	const store = attachmentStore();
+	if (!store) return [];
+	const rows = await c.db.execute<{ id: string; key: string }>("SELECT id,key FROM attachments WHERE item=? AND state='kept' AND ended_at IS NOT 0 AND (? IS NULL OR id=?)", item, only ?? null, only ?? null);
+	return Promise.all(rows.map(async row => ({ id: row.id, ...await store.linkToGet(row.key, { ttlMs, contentType: "image/png", disposition: "inline" }) })));
+}
+
 export const itemActions = {
+	internalReserveAttachment(c: ItemsCtx, input: Reservation) {
+		requireService(c);
+		return attachmentWrite(c, () => reserveAttachment(c, input));
+	},
+	async internalRecordAttachment(c: ItemsCtx, input: { id: string; width: number; height: number }) {
+		requireService(c);
+		await attachmentWrite(c, async () => {
+			const rows = await c.db.execute("UPDATE attachments SET width=?,height=? WHERE id=? AND state='reserved' AND ended_at IS NOT 0 RETURNING id", input.width, input.height, input.id);
+			if (!rows.length) throw new Error("The screenshot reservation ended.");
+		});
+	},
+	async internalReleaseAttachment(c: ItemsCtx, id: string) {
+		requireService(c);
+		await attachmentWrite(c, async () => { await c.db.execute("UPDATE attachments SET state='removed' WHERE id=? AND state='reserved'", id); });
+	},
+	internalSettleAttachments(c: ItemsCtx, input: { sessionId: string; key: string; keep: string[] }) {
+		requireService(c);
+		return attachmentWrite(c, () => c.db.transaction(async tx => {
+			for (const id of new Set(input.keep)) await tx.execute("UPDATE attachments SET state='kept' WHERE session=? AND step_key=? AND id=? AND width>0 AND state='reserved' AND ended_at IS NOT 0", input.sessionId, input.key, id);
+			return tx.execute<{ id: string; key: string }>("SELECT id,key FROM attachments WHERE session=? AND step_key=? AND state='reserved'", input.sessionId, input.key);
+		}, { name: "attachments.settle" }));
+	},
+	internalDeleteItemAttachments(c: ItemsCtx, itemId: string) {
+		requireService(c);
+		return attachmentWrite(c, async () => {
+			await c.db.transaction(async tx => {
+				await tx.execute("UPDATE attachments SET ended_at=0 WHERE item=? AND state!='removed'", itemId);
+				await tx.execute("DELETE FROM items WHERE id=?", itemId);
+			}, { name: "attachments.deleteItem" });
+			c.vars.items.items.delete(itemId);
+			await removeRows(c, await c.db.execute("SELECT id,key FROM attachments WHERE item=? AND state!='removed'", itemId));
+		});
+	},
+	internalAttachmentSweep(c: ItemsCtx) {
+		const fire = c.scheduledFire;
+		if (!fire) throw new UserError("This action is internal.", { code: "forbidden" });
+		return attachmentWrite(c, async () => {
+			const [alarm] = await c.db.execute<{ schedule: string }>("SELECT schedule FROM attachment_sweep WHERE id=1");
+			if (alarm?.schedule !== fire.id) return;
+			await armSweep(c, fire.firedAt);
+			await removeRows(c, await c.db.execute("SELECT id,key FROM attachments WHERE state!='removed' AND (ended_at=0 OR (state='reserved' AND at<?) OR (state='kept' AND ended_at<?))", fire.firedAt - 2 * 3600_000, fire.firedAt - config.factory.attachments.days * DAY));
+		});
+	},
+	itemAttachmentLinks(c: ItemsCtx, id: string) {
+		requireUser(c);
+		enabled();
+		return links(c, id, 600_000);
+	},
+	async internalApiItemAttachment(c: ItemsCtx, input: { token: string; id: string; attachment: string }) {
+		requireServiceFor(c, "api");
+		await apiCaller(c, input.token, "items:read", true);
+		const [link] = c.vars.items.items.has(input.id) ? await links(c, input.id, 60_000, input.attachment) : [];
+		if (!link) throw new UserError("That item or attachment does not exist.", { code: "item_not_found" });
+		return link.url;
+	},
 	listItems: (c: ItemsCtx): ItemSummary[] => {
 		requireUser(c);
 		enabled();
@@ -590,7 +730,7 @@ export const itemActions = {
 		knownItem(c, input?.id);
 		const view = await itemActor(c, profile.uid, input.id).internalAct({ action: input.action, by: `person:${profile.uid}` });
 		await noteItem(c, view);
-		return view;
+		return await attachmentStates(c, view);
 	},
 
 	// Answered with work items off too: the ceiling on running agents among these holds for a person's own agents as well.

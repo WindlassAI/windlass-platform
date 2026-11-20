@@ -170,7 +170,7 @@ export async function storeReport(db: Pick<RawAccess, "execute">, item: FactoryI
 	if (!item.run || !fact.report || typeof fact.report === "string") return;
 	const report: ItemReport = {
 		by: "builder", sessionId, run: item.run.n, key: fact.key, head: fact.pushedHead === undefined ? item.head : fact.pushedHead,
-		at: fact.at, title: fact.report.title, blocks: reportBlocks(fact.report), records: [],
+		at: fact.at, title: fact.report.title, blocks: reportBlocks(fact.report), records: [], screenshots: fact.report.screenshots,
 	};
 	await db.execute("INSERT OR REPLACE INTO reports (key, run, at, data) VALUES (?, ?, ?, ?)", report.key, report.run, report.at, JSON.stringify(report));
 }
@@ -641,6 +641,11 @@ export const workItem = actor({
 	createVars: async (c): Promise<ItemVars> => {
 		const [row] = await c.db.execute<{ due: string | null }>("SELECT due FROM item WHERE id = 1");
 		return { stored: await load(c.db), writing: Promise.resolve(), performing: new Set(), handoff: Promise.resolve(), due: row?.due ? (JSON.parse(row.due) as ItemVars["due"]) : null, reporting: null, reportAgain: false };
+	},
+
+	onDestroy: async (c) => {
+		const stored = c.vars.stored;
+		if (stored) await userActor(c, stored.meta.uid).internalDeleteItemAttachments(stored.item.id);
 	},
 
 	onWake: (c) => {

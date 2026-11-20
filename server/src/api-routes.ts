@@ -30,6 +30,7 @@ const json = (status: number, body: unknown) => Response.json(body, { status, he
 
 const STATUS: Record<string, number> = {
 	invalid_token: 401,
+	missing_scope: 403,
 	item_not_found: 404,
 	idempotency_key_reused: 409,
 	item_conflict: 409,
@@ -51,8 +52,9 @@ async function readJson(request: Request): Promise<{ value: unknown } | Response
 export async function apiRoute(request: Request): Promise<Response | null> {
 	const { pathname } = new URL(request.url);
 	const one = /^\/api\/items\/([A-Za-z0-9_]{1,64})$/.exec(pathname);
+	const attachment = /^\/api\/items\/([A-Za-z0-9_]{1,64})\/attachments\/(a_[a-f0-9]{16})$/.exec(pathname);
 	// Without work items on this deployment (WLP_ITEMS) these are unknown routes too, decided before any token is read.
-	if (!config.items || (pathname !== API_ITEMS_PATH && !one)) return pathname.startsWith("/api/") ? json(404, { code: "not_found", message: "There is no such route." }) : null;
+	if (!config.items || (pathname !== API_ITEMS_PATH && !one && !attachment)) return pathname.startsWith("/api/") ? json(404, { code: "not_found", message: "There is no such route." }) : null;
 	const token = bearerOf(request) ?? "";
 	const owner = tokenOwner(token);
 	if (!owner) return json(401, { code: "invalid_token", message: "Send an API token: Authorization: Bearer wlp_…" });
@@ -68,6 +70,10 @@ export async function apiRoute(request: Request): Promise<Response | null> {
 			const item = { ...given, idempotencyKey: key === null ? undefined : key } as CreateItemInput;
 			return json(201, await user.internalApiCreateItem({ token, item }));
 		}
+		if (attachment && request.method === "GET") {
+			const location = await user.internalApiItemAttachment({ token, id: attachment[1], attachment: attachment[2] });
+			return new Response(null, { status: 302, headers: { location, "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+		}
 		if (one && request.method === "GET") return json(200, await user.internalApiItem({ token, id: one[1] }));
 		return json(405, { code: "method_not_allowed", message: "Use POST on /api/items and GET on /api/items/<id>." });
 	} catch (error) {
@@ -77,7 +83,7 @@ export async function apiRoute(request: Request): Promise<Response | null> {
 		// A UserError of the user's actor says what is wrong in its words; an error of the engine's own (group "actor") does not.
 		if (typeof code === "string" && code !== "internal_error" && typeof message === "string" && (error as { group?: unknown }).group !== "actor") return json(STATUS[code] ?? 400, { code, message });
 		// The user's actor was never reached, or failed: nothing of the token or the body is said.
-		console.error(`[wlp] api.failed path=${pathname}: ${describeError(error)}`);
+		console.error(`[wlp] api.failed path=${pathname}: ${attachment ? "attachment request failed" : describeError(error)}`);
 		return json(500, { code: "internal_error", message: "The request could not be handled. Try again." });
 	}
 }

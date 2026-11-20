@@ -923,6 +923,14 @@ The last two read the bucket's settings from the variables above, or from `R2_EN
 `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`; they write under a prefix of their own and remove it. Measured
 from an E2B sandbox to R2, for a session of one turn (24 kB): a save takes 1.3 seconds, a restore one.
 
+## Screenshots on work items
+
+A builder can file up to four PNGs saved by `wlp-shot` in its clone’s `.wlp-shots/` directory. The platform uploads a private copy directly from the sandbox to the configured backup bucket. Each upload link covers one object, its exact length and its PNG content type. The platform checks the stored length and the first 33 bytes. The sandbox receives the link on standard input. Storage credentials stay on the server.
+
+The default limits are 2 MiB per screenshot (`WLP_FACTORY_ATTACHMENT_BYTES`), 40 screenshots per item (`WLP_FACTORY_ATTACHMENTS_PER_ITEM`) and 1 GiB per account (`WLP_FACTORY_ATTACHMENT_ACCOUNT_BYTES`). Images must fit within 3840 × 8640 and 16,600,000 pixels. Captions take one line of up to 200 characters, and the optional page label takes up to 300. Reservations count against both quotas. A daily sweep removes abandoned reservations older than two hours and screenshots of items that ended more than 180 days ago (`WLP_FACTORY_ATTACHMENT_DAYS`). Deleting an item removes its screenshots. Storage failures are retried.
+
+On the item’s page the owner’s signed-in connection calls `itemAttachmentLinks(itemId)`. The returned inline PNG links expire after ten minutes. API clients with `items:read` can GET `/api/items/<id>/attachments/<aid>` for a one-minute redirect. GitHub gets a link to the item page. If a Content-Security-Policy is added, its `img-src` must allow the private bucket’s origin.
+
 ## GitHub
 
 With a GitHub App of its own, a deployment lets a user connect GitHub, launch an agent on one of their own

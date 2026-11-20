@@ -1,18 +1,17 @@
 /**
  * An object store, as much of one as the platform needs: a place outside the sandboxes and outside the
- * actors for one file per agent session (sandbox/backup.ts keeps Windlass's own session data there).
+ * actors for session backups and work-item screenshots.
  *
- * The bytes of an object never pass through a server. A server signs a link, hands it to the sandbox
- * that has the file, and the sandbox uploads or downloads by itself: a server runs on a small node
- * with a traffic allowance, and an object may be tens of megabytes after every turn. So the interface
- * is links, and two small questions a server asks for itself (is it there and how large, remove it).
+ * Object transfers run directly between storage and the sandbox or viewer. A server signs a link for the sandbox
+ * that has the file, and the sandbox uploads or downloads by itself. A server runs on a small node
+ * with a traffic allowance. Its own reads are the object size and, for a screenshot, the 33-byte PNG header.
  *
  * A link is good for one object, one method and a few minutes, and one to upload is good for exactly
  * the number of bytes it was made for: whoever holds it can do that one thing and nothing else. It is
  * a secret for as long as it lasts: never logged, never part of an error, an event or an answer.
  *
  *   s3.ts        any store that speaks the S3 protocol (Cloudflare R2, AWS S3, MinIO, ...): only
- *                signed links and plain HEAD and DELETE, nothing of one provider's own
+ *                signed links, HEAD, ranged GET and DELETE
  *   stand-in.ts  the same in memory or in a directory, for the tests and the fake sandbox layer
  */
 
@@ -23,16 +22,21 @@ export interface SignedLink {
 	expiresAt: number;
 }
 
+export interface PutOptions { size: number; ttlMs: number; contentType?: string }
+export interface GetOptions { ttlMs: number; contentType?: string; disposition?: "inline" }
+
 export interface ObjectStore {
 	/**
 	 * A link to upload `key` with: an HTTP PUT of exactly `size` bytes (the `Content-Length` is part of
 	 * what is signed), which replaces the object whole. It reads nothing and reaches no other key.
 	 */
-	linkToPut(key: string, options: { size: number; ttlMs: number }): Promise<SignedLink>;
+	linkToPut(key: string, options: PutOptions): Promise<SignedLink>;
 	/** A link to download `key` with: an HTTP GET. It answers 404 when there is no such object. */
-	linkToGet(key: string, options: { ttlMs: number }): Promise<SignedLink>;
+	linkToGet(key: string, options: GetOptions): Promise<SignedLink>;
 	/** How large the object is, in bytes; null when there is none. Throws `ObjectStoreError` when the store could not say. */
 	size(key: string): Promise<number | null>;
+	/** Read only the first bytes for a file signature. */
+	readStart(key: string, bytes: number): Promise<Uint8Array | null>;
 	/** Removes the object. A no-op when there is none. Throws `ObjectStoreError` when the store could not be told. */
 	remove(key: string): Promise<void>;
 }

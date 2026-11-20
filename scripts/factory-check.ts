@@ -271,7 +271,7 @@ const begun: Row[] = [
 	await storeReport(db, run, "s_builder", fact);
 	const report = await latestReport(db, 1);
 	expect("the current run shows the accepted report as three stored blocks and requests the same publish", outcome.effects.map((one) => one.kind).join() === "publish" && isDeepStrictEqual(report, {
-		by: "builder", sessionId: "s_builder", run: 1, key, at: fact.at, head: null, title, records: [],
+		by: "builder", sessionId: "s_builder", run: 1, key, at: fact.at, head: null, title, records: [], screenshots: [],
 		blocks: [{ kind: "text", heading: "What it did", text: description, refs: [] }, { kind: "text", heading: "Where to look", text: lookAt, refs: [] }, { kind: "risk", text: concerns, at: [] }],
 	}));
 	expect("a new run has no report until filed", (await latestReport(db, 2)) === null);

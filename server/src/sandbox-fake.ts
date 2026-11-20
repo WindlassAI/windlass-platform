@@ -110,7 +110,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { StandInObjectStore } from "./bucket/stand-in.js";
+import { fakeBucket, type StandInObjectStore } from "./bucket/stand-in.js";
 import type { ListedModels } from "./account-models.js";
 import { FIXTURES_DIR, backupConfig } from "./config.js";
 import type { RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "./contract.js";
@@ -208,6 +208,8 @@ interface FakeSandbox {
 	windlass: Map<string, FakeSession>;
 	/** The archive `backupStep` packed and has not uploaded yet. */
 	packed: Buffer | null;
+	shots: Map<string, Buffer | "outside" | "not_regular">;
+	copies: Map<string, Buffer>;
 }
 
 /** What the fake Windlass keeps of a session: enough to continue it, and to notice when it is gone. */
@@ -263,11 +265,41 @@ class FakeHandle implements SandboxHandle {
 		await delay(/\bgit clone\b/.test(command) && command.includes("slow-clone") ? SLOW_CLONE_MS : 5, options.signal);
 		if (options.signal?.aborted) return { exitCode: null, timedOut: false, aborted: true, stdout: "", stderr: "" };
 		if (!this.exists()) throw new Error(`fake sandbox ${this.sandbox.id} does not exist`);
+		const env = options.env ?? {};
+		if (env.WLP_ATTACH_STEP) return this.attachStep(env, options.stdin ?? "");
+		if (command.includes("git rev-parse --verify 'HEAD^{commit}'") && !command.includes("\n")) return ok("a".repeat(40));
 		const step = options.env?.[BACKUP_ENV.step];
 		const result = step === undefined ? this.interpret(command) : this.backupStep(step, options.env ?? {}, options.stdin ?? "");
 		if (result.stdout) options.onStdout?.(result.stdout);
 		if (result.stderr) options.onStderr?.(result.stderr);
 		return result;
+	}
+
+	private attachStep(env: Record<string, string>, stdin: string): ExecResult {
+		const { shots, copies } = this.sandbox;
+		const digest = (body: Buffer) => createHash("sha256").update(body).digest("hex");
+		switch (env.WLP_ATTACH_STEP) {
+			case "clean":
+				copies.clear();
+				return ok("clean");
+			case "pack":
+				return ok(env.WLP_ATTACH_FILES.split("\n").map((file, index) => {
+					const body = shots.get(file);
+					if (!Buffer.isBuffer(body)) return `refused ${index} ${body ?? "missing"}`;
+					if (body.length > Number(env.WLP_ATTACH_MAX)) return `refused ${index} too_large`;
+					const path = `${env.WLP_ATTACH_COPY}-${index}.png`;
+					copies.set(path, Buffer.from(body));
+					return `file ${index} ${body.length} ${digest(body)} ${path}`;
+				}).join("\n"));
+			case "upload": {
+				const body = copies.get(env.WLP_ATTACH_PATH);
+				copies.delete(env.WLP_ATTACH_PATH);
+				if (!body || digest(body) !== env.WLP_ATTACH_SHA) return ok("changed");
+				const url = /^url = "(.*)"$/m.exec(stdin)?.[1] ?? "";
+				return ok(`http ${this.bucket?.use(url, "PUT", body, { "content-type": "image/png" }).status ?? 403}`);
+			}
+			default: return ok("");
+		}
 	}
 
 	/** Understands the few commands the platform runs; anything else succeeds with no output. */
@@ -402,7 +434,7 @@ class FakeSandboxes implements Sandboxes {
 		if (!this.profile(input.profile).available) throw new Error(`sandbox profile ${input.profile} is not available`);
 		await delay(20);
 		const id = `fake-${randomBytes(6).toString("hex")}`;
-		this.all.set(id, { id, uid: input.uid, sessionId: input.sessionId, profile: input.profile, state: "running", files: new Map(), windlass: new Map(), packed: null });
+		this.all.set(id, { id, uid: input.uid, sessionId: input.sessionId, profile: input.profile, state: "running", files: new Map(), windlass: new Map(), packed: null, shots: new Map(), copies: new Map() });
 		if (this.settings.createFails > 0) {
 			this.settings.createFails -= 1;
 			throw new Error("fake layer: the sandbox was made and the answer was lost (WLP_FAKE_CREATE_FAILS)");
@@ -1037,7 +1069,10 @@ class FakeWindlass implements Windlass {
 						["(report)", "report", input.onReport],
 					] as const) {
 						if (!text.includes(word) || run === undefined || signal?.aborted) continue;
-						const call = { messageId: currentStep ?? "msg_fake", callId: `call_${name}`, arguments: name === "report" ? { title: `Report of turn ${turn}`, description: "What the fake agent did.", look_at: `notes/turn-${turn}.md` } : name === "push" ? { message: `Push of turn ${turn}` } : {} };
+						const fixture = process.env.WLP_FAKE_ATTACHMENT_PNG;
+						const pictured = name === "report" && text.includes("(screenshot)");
+						if (pictured && fixture) this.sandboxes.all.get(sandbox.id)!.shots.set(".wlp-shots/home.png", Buffer.from(fixture, "base64"));
+						const call = { messageId: currentStep ?? "msg_fake", callId: `call_${name}`, arguments: name === "report" ? { ...(pictured ? { screenshots: [{ file: ".wlp-shots/home.png", caption: "Home page", shows: "after" }] } : {}), title: `Report of turn ${turn}`, description: "What the fake agent did.", look_at: `notes/turn-${turn}.md` } : name === "push" ? { message: `Push of turn ${turn}` } : {} };
 						// `input` as Windlass writes it for every call, a host tool's too: the model's arguments as JSON text (its event/durable.ts, `tool.called`).
 						emit({ type: "tool.called", v: 1, data: { messageId: call.messageId, callId: call.callId, name, input: JSON.stringify(call.arguments) }, seq: 0, time: 0 });
 						const output = await Promise.resolve(run(call, signal ?? new AbortController().signal)).catch(() => "The platform could not handle this call.");
@@ -1195,8 +1230,7 @@ export function createFakeSignInCommands(): SignInCommands {
  */
 export function createFakeSandboxLayer(options: { signIns?: "actors" | "memory" } = {}): SandboxLayer {
 	// A directory that stands in for the bucket: Windlass's sessions then live in the sandboxes, and are copied there.
-	const backupDir = (process.env.WLP_FAKE_BACKUP_DIR ?? "").trim();
-	const bucket = backupDir === "" ? null : new StandInObjectStore({ dir: backupDir });
+	const bucket = fakeBucket();
 	// The sign-in steps and the token source are the real ones, over the stand-in for Windlass above.
 	const { logins, tokens } = options.signIns === "memory" ? memorySignIns({ commands: createFakeSignInCommands(), rows: new Map() }) : actorSignIns();
 	const raw = Number.parseInt(process.env.WLP_FAKE_DELAY_MS ?? "", 10);

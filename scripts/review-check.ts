@@ -256,7 +256,7 @@ test("builder title required on one line", () => {
 });
 const builder = reportOf(filedBuilder, redactor);
 assert.ok(builder.ok);
-const itemReport: ItemReport = { by: "builder", run: 1, head: null, key: "i_test:1:2:0", sessionId: "s_test", at: 1, title: builder.report.title, blocks: reportBlocks(builder.report), records: [] };
+const itemReport: ItemReport = { by: "builder", run: 1, head: null, key: "i_test:1:2:0", sessionId: "s_test", at: 1, title: builder.report.title, blocks: reportBlocks(builder.report), records: [], screenshots: [] };
 test("builder blocks, in order, omit absent parts and never add a summary", () => {
 	assert.deepEqual(itemReport.blocks, [{ kind: "text", heading: "What it did", text: filedBuilder.description, refs: [] }, { kind: "text", heading: "Where to look", text: filedBuilder.look_at, refs: [] }, { kind: "risk", text: filedBuilder.concerns, at: [] }]);
 	assert.deepEqual(reportBlocks({ title: "Title alone", concerns: "", description: "", lookAt: "" }), []);
