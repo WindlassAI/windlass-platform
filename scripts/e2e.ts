@@ -2489,9 +2489,21 @@ async function main(server: Server | null): Promise<void> {
 			// Long enough that a stretch counted from the request before the crash stands out from the turn's own by more than the book's slack.
 			await sleep(10_000);
 			const from = server.output.length;
-			const watch = new Watch(client, someone.profile.uid, cut.id, someone.token);
+			// The prompt is what wakes the session. Until the engine has given the dead server's actor to the new one it
+			// refuses the connection (service_unavailable), which never reaches the actor: such a prompt is sent again.
+			let watch = new Watch(client, someone.profile.uid, cut.id, someone.token);
 			try {
-				const { turn } = await watch.conn.prompt({ text: "Write a short program" });
+				let turn: number | undefined;
+				for (const tryUntil = Date.now() + 30_000; turn === undefined; ) {
+					try {
+						turn = (await watch.conn.prompt({ text: "Write a short program" })).turn;
+					} catch (error) {
+						if (!describe(error).includes("service_unavailable") || Date.now() >= tryUntil) throw error;
+						await watch.conn.dispose().catch(() => undefined);
+						await sleep(1_000);
+						watch = new Watch(client, someone.profile.uid, cut.id, someone.token);
+					}
+				}
 				const ended = await watch.untilEnded(turn);
 				assert(ended.outcome === "succeeded", `the turn after the crash ended ${ended.outcome}: ${ended.message ?? ""}`);
 				await watch.conn.dispose().catch(() => undefined);
