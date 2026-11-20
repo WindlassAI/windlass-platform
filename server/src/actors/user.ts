@@ -78,7 +78,7 @@
 import { MACHINE_ID } from "../runner/control.js";
 import type { MachineUpdate } from "./machine.js";
 import { launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
-import { ITEM_TABLES, type ItemsState, type MakeSession, QUEUE_ACTION, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
+import { ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
@@ -1266,7 +1266,7 @@ export const user = actor({
 		internalApiCreateItem: (c, input: { token: string; item: CreateItemInput }): Promise<ItemSummary> => itemActions.internalApiCreateItem(c, input, itemSession(c)),
 		internalApiItem: (c, input: { token: string; id: string }): Promise<ItemView> => itemActions.internalApiItem(c, input),
 		internalItemChanged: (c, summary: ItemSummary): Promise<void> => itemActions.internalItemChanged(c, summary),
-		internalItemFacts: (c, sessionId: string): { hostedSeconds: number; openItems: number } => itemActions.internalItemFacts(c, sessionId),
+		internalItemFacts: (c, sessionId: string): ItemFacts => itemActions.internalItemFacts(c, sessionId),
 		internalRequestTurn: (c, request: TurnRequest): Promise<TurnAnswer> => itemActions.internalRequestTurn(c, request),
 		internalTurnDone: (c, input: { sessionId: string; slot: string; key: string }): Promise<void> => itemActions.internalTurnDone(c, input),
 		internalWithdrawTurn: (c, input: { sessionId: string; key: string }): Promise<void> => itemActions.internalWithdrawTurn(c, input),

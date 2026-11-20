@@ -12,6 +12,7 @@ import type { ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, Rep
 import type { Fact } from "../factory/types.js";
 import type { Delivery, TurnAnswer, TurnRequest } from "./session-inbox.js";
 import type { ItemCreateInput, ItemPublishAnswer } from "./work-item.js";
+import type { ItemFacts } from "./user-items.js";
 import { serviceParams } from "../auth.js";
 import type { StoredRepository } from "../github/publish.js";
 import type { StoredConnection } from "../github/repos.js";
@@ -91,7 +92,7 @@ export interface UserInternal {
 	/** A work item's summary changed (user-items.ts). */
 	internalItemChanged(summary: ItemSummary): Promise<void>;
 	/** What an item reads of its user: its session's hosted seconds in the ledger, and the user's open items. */
-	internalItemFacts(sessionId: string): Promise<{ hostedSeconds: number; openItems: number }>;
+	internalItemFacts(sessionId: string): Promise<ItemFacts>;
 	/** An item session asks for a running slot for the turn of a delivery: granted now, or queued (`SessionInternal.internalGrant` later). */
 	internalRequestTurn(request: TurnRequest): Promise<TurnAnswer>;
 	/** The turn a slot was given to ended, or could not start: the slot, by its id, is free. */

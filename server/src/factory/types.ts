@@ -40,6 +40,18 @@ export interface CiProgress {
 	/** The last reading that said something, as the verdict needs it; null before the first. */
 	last: { state: Exclude<CiState, "retry">; runs: VerdictRun[]; said: string | null } | null;
 	mergeable: boolean | null;
+	/**
+	 * What the gate recorded of the work at `head`, kept from when it was pushed: a later turn that
+	 * pushed nothing (a fix whose checks failed again) is not evidence for this commit.
+	 */
+	gate: GateEvidence | null;
+	/**
+	 * The commit the pull request's branch was at when GitHub was last asked, when that is not `head`: pushed there by someone
+	 * other than the agent, and verified by nothing. Null while the pull request holds `head`, or GitHub did not say.
+	 */
+	moved: string | null;
+	/** The id of the verdict handed over for `head`, made again when the pull request moves after it. */
+	handed: string | null;
 }
 
 /** One attempt of the blueprint (§1.2 `runs`): what the contract shows (`ItemRun`), and what the gate and CI read. */
@@ -152,8 +164,11 @@ export type Fact =
 	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string }; openItems: number }
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */
 	| { kind: "publish_failed"; at: number; key: string; said: string; transient: boolean }
-	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; mergeable: boolean | null; openItems: number }
-	| { kind: "pr_read"; at: number; key: string; state: "open" | "draft" | "merged" | "closed" };
+	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
+	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; mergeable: boolean | null; prHead: string | null; openItems: number }
+	| { kind: "pr_read"; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null }
+	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
+	| { kind: "spent"; at: number; hostedSeconds: number };
 
 /**
  * What the item actor does after storing the item. Every effect has a key that names it exactly once:

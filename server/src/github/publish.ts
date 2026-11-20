@@ -84,7 +84,8 @@ function gitProblem(outcome: GitOutcome, what: "clone" | "push", repository: str
 		case "unreachable":
 			return new GithubProblem("github_unreachable", `GitHub could not be reached from the sandbox.${said} Try again in a moment.`);
 		case "timeout":
-			return new GithubProblem("github_failed", what === "clone" ? `Cloning ${repository} took longer than ${CLONE_MINUTES} minutes and was stopped.` : `Pushing to ${repository} took too long and was stopped. Try again.`);
+			// Said as GitHub out of reach: trying again later is what cures it (an item's publish step does, by itself).
+			return new GithubProblem("github_unreachable", what === "clone" ? `Cloning ${repository} took longer than ${CLONE_MINUTES} minutes and was stopped.` : `Pushing to ${repository} took too long and was stopped, so whether GitHub got it is not known. Push again: a push of what GitHub already has pushes nothing.`);
 		default:
 			return new GithubProblem("github_failed", `${what === "clone" ? `Cloning ${repository}` : `Pushing to ${repository}`} failed.${said}`);
 	}

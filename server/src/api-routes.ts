@@ -14,6 +14,7 @@
  */
 
 import { createClient } from "rivetkit/client";
+import { isActorGone } from "./actors/internal.js";
 import { bearerOf, tokenOwner } from "./api-tokens.js";
 import { describeError } from "./auth.js";
 import { config, ownEngineEndpoint } from "./config.js";
@@ -70,6 +71,8 @@ export async function apiRoute(request: Request): Promise<Response | null> {
 		if (one && request.method === "GET") return json(200, await user.internalApiItem({ token, id: one[1] }));
 		return json(405, { code: "method_not_allowed", message: "Use POST on /api/items and GET on /api/items/<id>." });
 	} catch (error) {
+		// A token that names a user with no actor is a token that is not valid: the same answer as any other, and nothing logged.
+		if (isActorGone(error)) return json(401, { code: "invalid_token", message: "That API token is not valid, or may not do this." });
 		const { code, message } = (typeof error === "object" && error !== null ? error : {}) as { code?: unknown; message?: unknown };
 		// A UserError of the user's actor says what is wrong in its words; an error of the engine's own (group "actor") does not.
 		if (typeof code === "string" && code !== "internal_error" && typeof message === "string" && (error as { group?: unknown }).group !== "actor") return json(STATUS[code] ?? 400, { code, message });

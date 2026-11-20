@@ -236,15 +236,18 @@ export async function readCi(app: GithubApp, target: CiTarget): Promise<CiReadin
 					const list = record(body).check_runs;
 					return Array.isArray(list) ? list : [];
 				});
+				// The combined status names the commit GitHub answered for: the reading is of that commit, which is checked against the one asked of it.
+				let answeredFor = "";
 				const statuses = await app.pages({ path: `${base}/status`, auth, what: "read commit statuses" }, (body) => {
-					const list = record(body).statuses;
+					const { sha, statuses: list } = record(body);
+					if (answeredFor === "" && typeof sha === "string") answeredFor = sha;
 					return Array.isArray(list) ? list : [];
 				});
 				const runs = [...checks.items.map(checkRunOf), ...statuses.items.map(statusOf)].filter((run): run is CiRun => run !== null);
 				const failing = runs.filter((run): run is CiRun & { jobId: number } => run.state === "failed" && run.jobId !== null).slice(0, LOGS_PER_READING);
 				const logs: CiLog[] = [];
 				for (const run of failing) logs.push(await readLog(app, token, target.owner, target.name, run));
-				return { kind: "read", head: target.head, runs, truncated: checks.truncated || statuses.truncated, logs } satisfies CiReading;
+				return { kind: "read", head: answeredFor || target.head, runs, truncated: checks.truncated || statuses.truncated, logs } satisfies CiReading;
 			} catch (error) {
 				if (error instanceof GithubError) return refusal(error);
 				throw error;
@@ -253,8 +256,8 @@ export async function readCi(app: GithubApp, target: CiTarget): Promise<CiReadin
 	} catch (error) {
 		if (!(error instanceof GithubError)) throw error;
 		// The token itself was refused: 422 when the installation does not have, or has not accepted, a permission asked for.
-		if (error.status === 422 || error.status === 403) return { kind: "not_permitted", said: error.said };
-		if (error.status === 429) return { kind: "rate_limited", retryAt: Date.now() + CI_POLLING.everyMs, said: error.said };
-		return { kind: "failed", said: error.unreachable ? "GitHub could not be reached" : error.said };
+		if (error.status === 422) return { kind: "not_permitted", said: error.said };
+		// Otherwise as any answer of GitHub's: a limit by its headers, before a 403 is taken for a refusal.
+		return refusal(error);
 	}
 }

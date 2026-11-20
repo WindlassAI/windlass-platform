@@ -26,6 +26,7 @@ import { readWork } from "../github/git.js";
 import type { SandboxHandle } from "../sandbox/api.js";
 import { workFlags } from "../verified.js";
 import { itemActor, userActor } from "./internal.js";
+import type { ItemPublishAnswer } from "./work-item.js";
 
 export const INBOX_TABLES = [
 	// `state`: waiting (for a slot), started (its turn was taken), ended, withdrawn. `ended`: the fact the item was sent.
@@ -45,6 +46,8 @@ export const INBOX_TABLES = [
 		at INTEGER NOT NULL
 	)`,
 	"CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT NOT NULL, attempts INTEGER NOT NULL, next_at INTEGER NOT NULL)",
+	// What a push for the item answered, by the item's effect key: the same push asked again (its answer was lost) is answered from here.
+	"CREATE TABLE IF NOT EXISTS publish_receipt (key TEXT PRIMARY KEY, answer TEXT NOT NULL)",
 	// The one schedule that sends the outbox again: replaced, never added to.
 	"CREATE TABLE IF NOT EXISTS outbox_schedule (id INTEGER PRIMARY KEY CHECK (id = 1), schedule TEXT NOT NULL, at INTEGER NOT NULL)",
 ];
@@ -182,6 +185,26 @@ export async function withdrawWaiting(db: RawAccess, key: string): Promise<boole
 	return rows.length > 0;
 }
 
+/**
+ * The answer a push for the item's effect `key` already had. A push that went through and whose answer
+ * did not reach the item is asked for again under the same key: it is answered as it was then, and not
+ * pushed again (which would find nothing new and be taken for a refusal).
+ */
+export async function publishReceipt(db: RawAccess, key: string): Promise<ItemPublishAnswer | null> {
+	const [row] = await db.execute<{ answer: string }>("SELECT answer FROM publish_receipt WHERE key = ?", key);
+	return row ? (JSON.parse(row.answer) as ItemPublishAnswer) : null;
+}
+
+/** Keeps the answer of a push that went through, under its effect's key. */
+export async function rememberPublish(db: RawAccess, key: string, answer: Extract<ItemPublishAnswer, { kind: "published" }>): Promise<void> {
+	await db.execute("INSERT OR REPLACE INTO publish_receipt (key, answer) VALUES (?, ?)", key, JSON.stringify(answer));
+}
+
+/** The deliveries that wait for a slot: asked for again when the session wakes, since a grant may have been lost with a server. */
+export async function waitingRows(db: RawAccess): Promise<InboxRow[]> {
+	return (await db.execute<Row>(`${SELECT} WHERE state = 'waiting' ORDER BY at`)).map(rowOf);
+}
+
 /** The row whose turn has this number, if one was taken from the inbox. */
 export async function rowOfTurn(db: RawAccess, turn: number): Promise<InboxRow | null> {
 	const [row] = await db.execute<Row>(`${SELECT} WHERE turn = ? AND state = 'started'`, turn);
@@ -226,7 +249,6 @@ export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 	try {
 		const now = Date.now();
 		const rows = await c.db.execute<{ id: number; message: string; attempts: number }>("SELECT id, message, attempts FROM outbox WHERE next_at <= ? ORDER BY id", now);
-		let later: number | null = null;
 		for (const row of rows) {
 			const message = JSON.parse(row.message) as OutboxMessage;
 			try {
@@ -236,11 +258,13 @@ export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 			} catch (error) {
 				const at = Date.now() + Math.min(OUTBOX_RETRY_MOST_MS, OUTBOX_RETRY_FIRST_MS * 2 ** Math.min(row.attempts, 10));
 				await c.db.execute("UPDATE outbox SET attempts = attempts + 1, next_at = ? WHERE id = ?", at, row.id);
-				later = later === null ? at : Math.min(later, at);
 				c.log.warn({ msg: "could not send a message of the outbox; it is sent again", to: message.to, error: String(error) });
 			}
 		}
-		if (later !== null) await armOutbox(c, later);
+		// After every drain, an empty one too: the schedule that fired, or the safety one, may be earlier than
+		// any row still to send, and nothing else would set one for them.
+		const [next] = await c.db.execute<{ at: number | null }>("SELECT MIN(next_at) AS at FROM outbox");
+		if (next?.at !== null && next?.at !== undefined) await armOutbox(c, next.at);
 	} catch (error) {
 		c.log.warn({ msg: "could not send the outbox", error: String(error) });
 	}

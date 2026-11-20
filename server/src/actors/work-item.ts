@@ -38,6 +38,7 @@ import { githubApp, GithubError } from "../github/app.js";
 import { readCi } from "../github/ci.js";
 import { resolveRepository, type StoredConnection } from "../github/repos.js";
 import { grantIsValid, sessionActor, userActor } from "./internal.js";
+import type { ItemFacts } from "./user-items.js";
 
 /** The rounds a run allows, as the blueprint stops on them (`RULES`), for the item's page. */
 const ROUND_CAPS: RoundCaps = { plan: RULES.planRounds, gate: RULES.gateRounds, ci: RULES.ciRounds, conflict: RULES.conflictRounds };
@@ -53,6 +54,11 @@ export interface ItemMeta {
 	updatedAt: number;
 	/** The latest verdict's result and flags, for the index. */
 	verdict: ItemSummary["verdict"];
+	/**
+	 * The hosted sandbox seconds of the item's session over its whole life, and the ledger's holds already
+	 * in it: the ledger keeps only its last days, so the item adds each hold once as it sees it.
+	 */
+	ledger: { seconds: number; holds: string[] };
 }
 
 /** What `user` passes when it creates a `workItem`. */
@@ -100,12 +106,10 @@ interface Ctx {
 }
 
 /** How long an effect that could not be performed waits before it is tried again: 15 s, doubling, at most 5 min. */
-const RETRY_FIRST_MS = 15_000;
-const RETRY_MOST_MS = 5 * 60_000;
+const EFFECT_RETRY_FIRST_MS = 15_000;
+const EFFECT_RETRY_MOST_MS = 5 * 60_000;
 /** The action the item's schedule fires: its name is looked up when it fires, so it is one constant (factory-e2e.ts checks it is registered). */
 export const DUE_ACTION = "internalDue";
-/** How soon an item wakes to perform what it stored, should it be stopped before it could: the performing itself starts at once. */
-const SAFETY_MS = 5_000;
 /** The item's page shows at most this many entries of its log, the newest. */
 const VIEW_EVENTS = 500;
 
@@ -145,7 +149,20 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 	};
 }
 
-async function viewOf(c: Ctx, stored: Stored): Promise<ItemView> {
+/**
+ * The item's page, read from what is stored, in the write queue: the item and its log are then one
+ * state. Read from memory, a question decided a moment ago could be shown before the log line that led
+ * to it was written.
+ */
+function viewOf(c: Ctx): Promise<ItemView> {
+	return queued(c, async () => {
+		const stored = await load(c.db);
+		if (!stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
+		return await pageOf(c, stored);
+	});
+}
+
+async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 	const run = stored.item.run;
 	const events = await c.db.execute<{ data: string }>("SELECT data FROM (SELECT seq, data FROM events ORDER BY seq DESC LIMIT ?) ORDER BY seq", VIEW_EVENTS);
 	const verdicts = await c.db.execute<{ data: string }>("SELECT data FROM verdicts ORDER BY at, id");
@@ -220,7 +237,11 @@ async function take(c: Ctx, fact: Fact): Promise<boolean> {
 			c.db.transaction(async (tx) => {
 				const [row] = await tx.execute<{ revision: number }>("SELECT revision FROM item WHERE id = 1");
 				if (row?.revision !== before.revision) throw new Error(`the item is at revision ${row?.revision ?? "none"}, not ${before.revision}`);
-				await tx.execute("UPDATE item SET revision = ?, data = ? WHERE id = 1", stored.item.revision, data);
+				await tx.execute("UPDATE item SET revision = ?, data = ? WHERE id = 1", next.revision, data);
+				// What this decision left behind goes with it: a publish waiting for its retry is not done for a cancelled item.
+				for (const old of await tx.execute<{ id: string; effect: string }>("SELECT id, effect FROM effects")) {
+					if (!live(next, JSON.parse(old.effect) as Effect)) await tx.execute("DELETE FROM effects WHERE id = ? AND effect = ?", old.id, old.effect);
+				}
 				for (const event of outcome.events) await tx.execute("INSERT INTO events (at, data) VALUES (?, ?)", event.at, JSON.stringify(event));
 				for (const effect of effects) {
 					await tx.execute("INSERT OR REPLACE INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)", rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
@@ -233,10 +254,10 @@ async function take(c: Ctx, fact: Fact): Promise<boolean> {
 		c.vars.stored = await load(c.db).catch(() => c.vars.stored);
 		throw error;
 	}
-	for (const event of outcome.events) console.log(`[wlp] item.event uid=${stored.meta.uid} item=${before.id} revision=${stored.item.revision}: ${event.said.replace(/\s+/g, " ").slice(0, 200)}`);
+	for (const event of outcome.events) console.log(`[wlp] item.event uid=${stored.meta.uid} item=${before.id} revision=${next.revision}: ${event.said.replace(/\s+/g, " ").slice(0, 200)}`);
 	report(c);
-	// Durable before anything is performed: an item stopped by a deploy before its effects ran wakes for them.
-	if (effects.length > 0) await c.schedule.at(Date.now() + SAFETY_MS, DUE_ACTION);
+	// The item's one schedule, set before anything is performed: an item stopped by a deploy before its effects ran wakes for them.
+	await armDue(c);
 	void c.keepAwake(performDue(c));
 	return true;
 }
@@ -258,8 +279,11 @@ async function load(db: RawAccess): Promise<Stored | null> {
 async function performDue(c: Ctx): Promise<void> {
 	try {
 		const now = Date.now();
-		const rows = await c.db.execute<EffectRow>("SELECT id, effect, due_at, attempts FROM effects WHERE due_at <= ? ORDER BY rowid", now);
-		await Promise.all(rows.filter((row) => !c.vars.performing.has(row.id)).map((row) => performRow(c, row)));
+		const rows = (await c.db.execute<EffectRow>("SELECT id, effect, due_at, attempts FROM effects WHERE due_at <= ? ORDER BY rowid", now)).filter((row) => !c.vars.performing.has(row.id));
+		for (const row of rows) c.vars.performing.add(row.id);
+		// Armed before they are performed: a server that stops under a slow push leaves a schedule that wakes the item for it.
+		if (rows.length > 0) await armDue(c);
+		await Promise.all(rows.map((row) => performRow(c, row)));
 		await armDue(c);
 	} catch (error) {
 		c.log.error({ msg: "could not perform the item's effects", error: describeError(error) });
@@ -269,10 +293,19 @@ async function performDue(c: Ctx): Promise<void> {
 async function performRow(c: Ctx, row: EffectRow): Promise<void> {
 	c.vars.performing.add(row.id);
 	try {
-		await perform(c, row);
-		await queued(c, () => c.db.execute("DELETE FROM effects WHERE id = ? AND effect = ?", row.id, row.effect));
+		const done = await perform(c, row);
+		await queued(c, async () => {
+			// Found not wanted, it is let go only if the stored item does not want it either: the decision that retired it may
+			// still be waiting for its write, which can fail, and the item read again then waits for this effect. That write
+			// is queued before this one, so it has gone through or failed by now.
+			if (!done) {
+				const durable = await load(c.db);
+				if (durable && live(durable.item, JSON.parse(row.effect) as Effect)) return;
+			}
+			await c.db.execute("DELETE FROM effects WHERE id = ? AND effect = ?", row.id, row.effect);
+		});
 	} catch (error) {
-		const wait = Math.min(RETRY_MOST_MS, RETRY_FIRST_MS * 2 ** Math.min(row.attempts, 10));
+		const wait = Math.min(EFFECT_RETRY_MOST_MS, EFFECT_RETRY_FIRST_MS * 2 ** Math.min(row.attempts, 10));
 		c.log.warn({ msg: "an effect of the item could not be performed; it is tried again", effect: row.id, inSeconds: wait / 1000, error: describeError(error) });
 		await queued(c, () => c.db.execute("UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE id = ? AND effect = ?", Date.now() + wait, row.id, row.effect)).catch(() => undefined);
 	} finally {
@@ -285,8 +318,13 @@ async function performRow(c: Ctx, row: EffectRow): Promise<void> {
  * schedule whose time has passed is not armed: its firing may have been cut off after RivetKit took it.
  */
 async function armDue(c: Ctx): Promise<void> {
-	const [next] = await c.db.execute<{ at: number | null }>("SELECT MIN(due_at) AS at FROM effects");
-	const at = next?.at ?? null;
+	// An effect being performed now counts as due EFFECT_RETRY_FIRST_MS from now, not at its own time: armed "now" for it, the
+	// schedule would fire again and again while a slow push goes on; left out, a server that stops under the push would
+	// leave nothing to wake the item.
+	const rows = await c.db.execute<{ id: string; due_at: number }>("SELECT id, due_at FROM effects");
+	const now = Date.now();
+	const times = rows.map((row) => (c.vars.performing.has(row.id) ? now + EFFECT_RETRY_FIRST_MS : row.due_at));
+	const at = times.length === 0 ? null : Math.min(...times);
 	const due = c.vars.due;
 	if (at === null || (due !== null && due.at === at && due.at > Date.now())) return;
 	const id = await c.schedule.at(Math.max(at, Date.now()), DUE_ACTION);
@@ -352,14 +390,13 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 
 			action = "post the verdict comment";
 			const marker = `<!-- windlass-item:${verdict.item} -->`;
-			// Older queued handoffs kept the sentence in the same transaction, only in the item's log.
-			const words = effect.words ?? (await c.db.execute<{ said: string }>(
-				"SELECT json_extract(data, '$.said') AS said FROM events WHERE at = ? AND json_extract(data, '$.step.kind') = 'handoff' ORDER BY seq LIMIT 1", verdict.at,
-			))[0]?.said;
-			if (!words) throw new Error("the handoff has no recorded verdict sentence");
+			const words = effect.words;
 			const acceptance = verdict.acceptance.map((criterion) => `- ${commentText(criterion, 1000)}`);
 			const body = [marker, `**Windlass verdict at ${commentText(verdict.head.slice(0, 7), 7)}: ${verdict.result}**`, commentText(words, MAX_NOTE_CHARS), ...(acceptance.length ? [`Acceptance criteria left to you:\n\n${acceptance.join("\n")}`] : [])].join("\n\n");
-			const comments = await app.issueComments(token, owner, name, number);
+			// Every page, so that on a busy pull request a comment past the first hundred is edited, not posted a second time.
+			const { items: comments } = await app.pages({ path: `/repos/${owner}/${name}/issues/${number}/comments`, auth: { bearer: token }, what: "list the pull request's comments" }, (body) =>
+				(Array.isArray(body) ? body : []).map((entry: { id?: unknown; body?: unknown; user?: { login?: unknown } }) => ({ id: Number(entry.id), body: String(entry.body ?? ""), author: String(entry.user?.login ?? "") })),
+			);
 			const own = comments.find((one) => one.author.toLowerCase() === `${app.settings.slug.toLowerCase()}[bot]` && one.body.split("\n", 1)[0] === marker);
 			if (own) await app.updateIssueComment(token, owner, name, own.id, body);
 			else await app.createIssueComment(token, owner, name, number, body);
@@ -371,61 +408,133 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 	}
 }
 
-/** Performs one effect: what comes of it is taken as a fact. Throws when it could not be done, to be tried again. */
-async function perform(c: Ctx, row: EffectRow): Promise<void> {
+/**
+ * The item's lifetime hosted seconds after the ledger's latest entries for its session: each hold
+ * counted once, whenever it is seen, and kept after the ledger has let it go. Decided synchronously on
+ * the stored meta, which the next write of the item stores.
+ */
+function lifetimeSeconds(meta: ItemMeta, facts: ItemFacts): number {
+	const seen = new Set(meta.ledger.holds);
+	const fresh = facts.entries.filter((entry) => !seen.has(entry.hold));
+	// Every hold ever counted is kept: an older answer that comes back after a newer one would otherwise drop a hold, which the
+	// next answer would count again. An item's life holds few of them (its hosted budget, in holds of minutes).
+	meta.ledger = { seconds: meta.ledger.seconds + fresh.reduce((sum, entry) => sum + entry.seconds, 0), holds: [...meta.ledger.holds, ...fresh.map((entry) => entry.hold)] };
+	return meta.ledger.seconds;
+}
+
+/** The user's facts for the item, and the item's hosted time taken in when it has grown: settled after a turn, it would otherwise be missed. */
+async function factsOf(c: Ctx, meta: ItemMeta): Promise<ItemFacts> {
+	const facts = await userActor(c, meta.uid).internalItemFacts(meta.sessionId);
+	const stored = c.vars.stored;
+	if (stored) {
+		const seconds = lifetimeSeconds(stored.meta, facts);
+		if (seconds > stored.item.spent.hostedSeconds) await take(c, { kind: "spent", at: Date.now(), hostedSeconds: seconds });
+	}
+	return facts;
+}
+
+/** States in which an item asks nothing more of anyone: what was stored for its steps is not done. */
+const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "failed"]);
+
+/**
+ * Whether an effect is still wanted by the item as it is: of its current step's current attempt, with
+ * the item not ended. Decided in the transaction that moves the item on (the rows it leaves behind go)
+ * and again in the step that sends an effect, since a row read before a cancel may be performed after
+ * it. A withdrawal is always wanted: it is what a cancel leaves.
+ */
+function live(item: FactoryItem, effect: Effect): boolean {
+	if (effect.kind === "withdraw" || effect.kind === "ask") return true;
+	const run = item.run;
+	if (ENDED.has(item.state) || run === null) return false;
+	const key = currentKey(item);
+	switch (effect.kind) {
+		case "deliver":
+			return effect.key === key && run.step.turn === "delivered";
+		case "check_turn":
+			return effect.turn === key && run.step.turn !== null;
+		case "publish":
+			return effect.key === key && run.step.kind === "publish";
+		case "poll_ci":
+			return effect.key === key && run.step.kind === "ci" && item.pr !== null;
+		case "poll_pr":
+			return effect.key === key && run.step.kind === "merged";
+		case "handoff":
+			return run.n === effect.verdict.run && item.pr !== null;
+	}
+}
+
+/**
+ * Performs one effect: what comes of it is taken as a fact. Throws when it could not be done, to be
+ * tried again; answers false when the item as it is now does not want it, and nothing was done.
+ */
+async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 	const effect: Effect = JSON.parse(row.effect);
 	const stored = c.vars.stored;
-	if (!stored) return;
+	// Checked in the step that sends it: a cancel stored since the row was read leaves it undone.
+	if (!stored || !live(stored.item, effect)) return false;
 	const { item, meta } = stored;
 	const session = sessionActor(c, meta.uid, meta.sessionId);
-	const current = currentKey(item);
 	switch (effect.kind) {
 		case "deliver":
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text: effect.text, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key) });
-			return;
+			return true;
 		case "withdraw":
 			await session.internalWithdraw(effect.key);
-			return;
+			return true;
 		case "check_turn": {
-			if (effect.turn !== current) return;
 			const fact = await session.internalCheckTurn({ turn: effect.turn, check: effect.key });
-			if (fact !== null) await take(c, fact);
-			return;
+			// A turn still waiting for its slot is not running at the session: it is still in the session's hands, and looked at again.
+			if (fact === null && item.run?.step.turn === "delivered") await take(c, { kind: "turn_running", at: Date.now(), key: effect.key });
+			else if (fact !== null) await take(c, fact);
+			return true;
 		}
 		case "publish": {
-			if (effect.key !== current) return;
+			// Read before the push: a lookup that fails tries the effect again before anything was pushed, not after a push that went through.
+			const { openItems } = await factsOf(c, meta);
+			// Asked again after the lookup: a cancel stored while it was answered pushes nothing.
+			const now = c.vars.stored;
+			if (!now || !live(now.item, effect)) return false;
 			const answer = await session.internalPublish({ key: effect.key, title: item.task.title, body: item.task.body });
-			const { openItems } = await userActor(c, meta.uid).internalItemFacts(meta.sessionId);
 			await take(c, { ...answer, at: Date.now(), key: effect.key, ...(answer.kind === "published" ? { openItems } : {}) } as Fact);
-			return;
+			return true;
 		}
 		case "poll_ci": {
-			if (effect.key !== current || item.pr === null) return;
-			const hub = await github(c, meta);
-			// A commit's SHA, or the branch where git did not say which commit it pushed: as part of the address, in one piece.
-			const reading = await readCi(hub.app, { installationId: hub.installationId, repositoryId: meta.repository.id, owner: hub.owner, name: hub.name, head: encodeURIComponent(effect.head) });
-			// GitHub works out whether a pull request can merge after a push, and says null until it has.
-			const mergeable = (await hub.pull(item.pr.number).catch(() => null))?.mergeable ?? null;
-			const { openItems } = await userActor(c, meta.uid).internalItemFacts(meta.sessionId);
-			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, mergeable, openItems });
-			return;
+			const number = item.pr?.number ?? 0;
+			// Not reaching GitHub at all (the connection gone, the repository out of reach) is a reading that failed:
+			// it waits as any other, and CI's time limit still ends in the person's question.
+			const read = async () => {
+				const hub = await github(c, meta);
+				// A commit's SHA, or the branch where git did not say which commit it pushed: as part of the address, in one piece.
+				const reading = await readCi(hub.app, { installationId: hub.installationId, repositoryId: meta.repository.id, owner: hub.owner, name: hub.name, head: encodeURIComponent(effect.head) });
+				// GitHub works out whether a pull request can merge after a push, and says null until it has. Its head is the
+				// commit it holds now, which may be one pushed after the agent's.
+				const pull = await hub.pull(number).catch(() => null);
+				return { reading, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
+			};
+			const { reading, mergeable, prHead } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, mergeable: null, prHead: null }));
+			const { openItems } = await factsOf(c, meta);
+			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, mergeable, prHead, openItems });
+			return true;
 		}
 		case "poll_pr": {
-			if (effect.key !== current) return;
+			// In review, too: the last turn's sandbox time is settled while the person reviews.
+			await factsOf(c, meta);
 			const pull = await (await github(c, meta)).pull(effect.pr);
-			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, state: pull.state });
-			return;
+			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, state: pull.state, prHead: pull.headSha || null });
+			return true;
 		}
 		case "handoff": {
 			const next = c.vars.handoff.then(async () => {
 				const latest = c.vars.stored?.item;
-				if (latest?.pr && latest.run?.n === effect.verdict.run) await handoffOnGithub(c, meta, latest.pr.number, effect, row);
+				if (!latest?.pr || !live(latest, effect)) return false;
+				await handoffOnGithub(c, meta, latest.pr.number, effect, row);
+				return true;
 			});
-			c.vars.handoff = next.catch(() => undefined);
+			c.vars.handoff = next.then(() => undefined, () => undefined);
 			return next;
 		}
 		case "ask":
-			return;
+			return true;
 	}
 }
 
@@ -544,7 +653,7 @@ export const workItem = actor({
 		internalView: async (c): Promise<ItemView> => {
 			requireService(c);
 			if (!c.vars.stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
-			return await viewOf(c, c.vars.stored);
+			return await viewOf(c);
 		},
 
 		/** A person's action (`UserActions.actOnItem`), by `by` ("person:<uid>"). Refused with `item_conflict` when it changes nothing. */
@@ -560,7 +669,7 @@ export const workItem = actor({
 				throw clientError(c.log, error, "The item could not be changed. Try again.");
 			}
 			if (!changed) throw new UserError(CONFLICT[input.action.kind], { code: "item_conflict" });
-			return await viewOf(c, stored);
+			return await viewOf(c);
 		},
 
 		// --- called by the item's session and by `user` -----------------------------------------
@@ -573,7 +682,7 @@ export const workItem = actor({
 			if (fact.kind !== "turn_ended" && fact.kind !== "turn_started" && fact.kind !== "turn_running" && fact.kind !== "turn_waiting") return;
 			if (fact.kind === "turn_ended") {
 				// The sandbox time the item's session has used so far is the ledger's, which the user's actor keeps.
-				const { hostedSeconds } = await userActor(c, stored.meta.uid).internalItemFacts(stored.meta.sessionId);
+				const hostedSeconds = lifetimeSeconds(stored.meta, await userActor(c, stored.meta.uid).internalItemFacts(stored.meta.sessionId));
 				await take(c, { ...fact, spend: { tokens: fact.spend?.tokens ?? 0, hostedSeconds } });
 				return;
 			}

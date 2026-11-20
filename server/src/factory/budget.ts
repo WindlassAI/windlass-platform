@@ -32,7 +32,7 @@ export const FACTORY_DEFAULTS: FactoryLimits = {
 	item: { tokens: 4_000_000, turns: 10, activeSeconds: 4 * 3600, hostedSeconds: 1.5 * 3600 },
 };
 
-/** A turn that waits at a place is tried again after 30 s, then twice as long each time, up to 5 min (slice 1's brief). */
+/** A turn that waits at a place is tried again after 30 s, then twice as long each time, up to 5 min. */
 export const RETRY_FIRST_MS = 30_000;
 export const RETRY_MOST_MS = 5 * 60_000;
 
@@ -135,8 +135,13 @@ export function admit(input: AdmissionInput): Admission {
 	if (input.startsRun && input.inReview >= limits.reviewCap) {
 		return wait("review_cap", `Waiting until fewer than ${limits.reviewCap} of your items are in review (${input.inReview} now).`);
 	}
-	if (turns.factory.length >= limits.factoryTurns) {
-		return wait("capacity", `Waiting for one of your ${limits.factoryTurns} factory turns; ${turns.factory.length} are running${listed(turns.factory)}.`);
+	// The factory never has the person's last turn: with one running turn allowed in all, it has none.
+	const factoryTurns = Math.min(limits.factoryTurns, Math.max(0, limits.runningTurns - 1));
+	if (factoryTurns === 0) {
+		return wait("capacity", `This deployment allows you ${plural(limits.runningTurns, "running turn", "running turns")}, which is kept for your own prompts: work items need at least two.`);
+	}
+	if (turns.factory.length >= factoryTurns) {
+		return wait("capacity", `Waiting for one of your ${factoryTurns} factory turns; ${turns.factory.length} are running${listed(turns.factory)}.`);
 	}
 	if (turns.running >= limits.runningTurns) {
 		return wait("capacity", `Waiting for one of your ${limits.runningTurns} running turns; ${turns.running} are running, ${turns.running - turns.factory.length} of them your own.`);

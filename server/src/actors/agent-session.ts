@@ -195,7 +195,7 @@ import type { Fact } from "../factory/types.js";
 import { DeploymentFull, WindlassUnaskedError } from "../sandbox/api.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase } from "../github/publish.js";
-import { type InboxRow, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, markEnded, markTaken, queueMessage, receive, requestTurn, requeue, rowOfTurn, sendOutbox, turnFlags, withdrawWaiting } from "./session-inbox.js";
+import { type InboxRow, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
 
 // ---------------------------------------------------------------------------------------------
 // Limits
@@ -610,6 +610,17 @@ async function publishingSettled(c: Ctx, ms: number): Promise<boolean> {
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 	return true;
+}
+
+/** `publishSession`'s refusal for a GitHub problem, with whether trying again later can cure it: GitHub was out of reach, or the push took too long. */
+class PublishRefused extends UserError {
+	constructor(
+		message: string,
+		code: string,
+		readonly transient: boolean,
+	) {
+		super(message, { code });
+	}
 }
 
 function layerOf(c: Ctx, meta: SessionMeta): Promise<SandboxLayer> {
@@ -1784,7 +1795,7 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 		await afterPublish(c, meta, sandbox).catch(() => undefined);
 		if (error instanceof GithubProblem) {
 			console.warn(`[wlp] github.publish_failed session=${meta.sessionId} repository=${repo.id}: ${error.code}`);
-			throw new UserError(error.message, { code: error.code === "github_gone" || error.code === "github_denied" ? error.code : "publish_failed" });
+			throw new PublishRefused(error.message, error.code === "github_gone" || error.code === "github_denied" ? error.code : "publish_failed", error.code === "github_unreachable");
 		}
 		throw error;
 	}
@@ -3576,6 +3587,8 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
 		const first = append(c, { turn, kind: "user", text: row.text, model: meta.model, effort: null });
+		// A run's first turn: the report an earlier run's agent filed is not this run's, and the item's publish must not take it.
+		if (row.startsRun) meta.report = null;
 		publish(c);
 		const active: ActiveTurn = { number: turn, effort: null, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishes: new Set(), item: { row: { ...row, state: "started", turn, slot }, report: null, full: null, started: false, pushedAtStart: meta.pushedHead ?? null } };
 		c.vars.turn = active;
@@ -3836,6 +3849,13 @@ export const agentSession = actor({
 		meta.setupRunning = null;
 		// What the item or the turn queue was not told yet before the server stopped is sent now.
 		void c.keepAwake(sendOutbox(c, meta.uid));
+		// A grant lost with a server leaves a delivery waiting with nothing to move it: each waiting one is asked for again (the queue answers a key it granted with the same slot).
+		void c.keepAwake(
+			waitingRows(c.db).then(
+				(rows) => Promise.all(rows.map((row) => askForSlot(c, meta, row))).then(() => undefined),
+				(error: unknown) => c.log.warn({ msg: "could not read the deliveries that wait for a slot", error: describeError(error) }),
+			),
+		);
 		// The sandbox may have been paused, removed or left running while the actor was away. A session
 		// from before the idle checks, or one whose check was lost, gets one here.
 		const use = useOf(meta);
@@ -4148,7 +4168,7 @@ export const agentSession = actor({
 					await persist(c);
 					return { state: await publishStateOf(c, meta), opened: true };
 				} catch (error) {
-					if (error instanceof GithubProblem) throw new UserError(error.message, { code: error.code === "github_gone" || error.code === "github_denied" ? error.code : "publish_failed" });
+					if (error instanceof GithubProblem) throw new PublishRefused(error.message, error.code === "github_gone" || error.code === "github_denied" ? error.code : "publish_failed", error.code === "github_unreachable");
 					throw clientError(c.log, error, "The pull request could not be opened. Try again.");
 				} finally {
 					c.vars.publishing = false;
@@ -4332,6 +4352,9 @@ export const agentSession = actor({
 		internalPublish: async (c, input: { key: string; title: string; body: string }): Promise<ItemPublishAnswer> => {
 			requireService(c);
 			const meta = liveMeta(c);
+			// A push for this effect that went through and whose answer did not reach the item is answered as it was, and not pushed again.
+			const known = await publishReceipt(c.db, String(input?.key ?? ""));
+			if (known) return known;
 			const repo = meta.repo;
 			if (!repo) return { kind: "publish_failed", said: "the item's agent has no repository to push to", transient: false };
 			const blocked = publishBlocked(c, meta);
@@ -4345,9 +4368,12 @@ export const agentSession = actor({
 				const pull = result.state.pullRequest;
 				if (!pull) return { kind: "publish_failed", said: "GitHub opened no pull request", transient: true };
 				// The commit git said it pushed; where git says nothing (a sandbox layer without git), the branch names it.
-				return { kind: "published", head: meta.pushedHead ?? pull.branch, pr: { number: pull.number, url: pull.url } };
+				const answer = { kind: "published" as const, head: meta.pushedHead ?? pull.branch, pr: { number: pull.number, url: pull.url } };
+				await rememberPublish(c.db, String(input?.key ?? ""), answer);
+				return answer;
 			} catch (error) {
-				if (error instanceof UserError) return { kind: "publish_failed", said: error.message, transient: false };
+				// GitHub out of reach, or a push that took too long, is tried again by the item; any other refusal is its person's to decide.
+				if (error instanceof UserError) return { kind: "publish_failed", said: error.message, transient: error instanceof PublishRefused && error.transient };
 				return { kind: "publish_failed", said: describeError(error), transient: true };
 			} finally {
 				c.vars.publishing = false;

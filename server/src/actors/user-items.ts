@@ -26,6 +26,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
+import { mayUse } from "../access.js";
 import { readAccountDefaults } from "../account-defaults.js";
 import { API_TOKENS_TABLE, ApiTokenProblem, createApiToken, listApiTokens, revokeApiToken, tokenOwner, useApiToken } from "../api-tokens.js";
 import { clientError, requireService, requireServiceFor, requireUser } from "../auth.js";
@@ -50,7 +51,7 @@ import {
 	type Wait,
 } from "../contract.js";
 import { createItem } from "../factory/blueprint.js";
-import { admit, ledgerSeconds } from "../factory/budget.js";
+import { admit } from "../factory/budget.js";
 import { getLayer } from "../layer.js";
 import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
@@ -61,10 +62,15 @@ import type { ItemMeta } from "./work-item.js";
 
 export const ITEM_TABLES = [
 	"CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, summary TEXT NOT NULL, key TEXT, sent TEXT)",
+	// A creation's key and the digest of what it asked for, written before either of its actors is made: a creation tried
+	// again under that key with another body is refused even when the first never reached the index.
+	"CREATE TABLE IF NOT EXISTS item_keys (key TEXT PRIMARY KEY, sent TEXT NOT NULL, id TEXT NOT NULL)",
 	// A turn of an item's session waiting for a slot: `wait` is what it was last told, `attempt` how often it waited.
 	"CREATE TABLE IF NOT EXISTS turn_request (key TEXT PRIMARY KEY, session TEXT NOT NULL, item TEXT NOT NULL, title TEXT NOT NULL, starts_run INTEGER NOT NULL, at INTEGER NOT NULL, attempt INTEGER NOT NULL, full INTEGER, full_until INTEGER, wait TEXT)",
 	// A slot given to the turn of `key`: released by its id, or when `expires_at` has passed.
 	"CREATE TABLE IF NOT EXISTS turn_slot (id TEXT PRIMARY KEY, key TEXT NOT NULL UNIQUE, session TEXT NOT NULL, item TEXT NOT NULL, title TEXT NOT NULL, at INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
+	// A slot whose session has not been told of it yet: told on the queue's next run and on wake, until the session answers.
+	"CREATE TABLE IF NOT EXISTS turn_grant (slot TEXT PRIMARY KEY)",
 	// The schedule that tries the waiting requests again: one, at the earliest wait's time.
 	"CREATE TABLE IF NOT EXISTS turn_queue (id INTEGER PRIMARY KEY CHECK (id = 1), schedule TEXT NOT NULL, at INTEGER NOT NULL)",
 	API_TOKENS_TABLE,
@@ -91,6 +97,8 @@ interface Slot {
 	title: string;
 	at: number;
 	expiresAt: number;
+	/** False until the session has answered for its grant: a grant lost with a server or a reply is sent again. */
+	told: boolean;
 }
 
 export interface ItemsState {
@@ -119,6 +127,7 @@ export async function loadItems(db: RawAccess): Promise<ItemsState> {
 		items.set(summary.id, summary);
 		if (row.key !== null && row.sent !== null) created.set(row.key, { key: row.key, sent: row.sent, id: summary.id });
 	}
+	for (const row of await db.execute<{ key: string; sent: string; id: string }>("SELECT key, sent, id FROM item_keys")) created.set(row.key, row);
 	const requests = new Map<string, Request>();
 	type RequestRow = { key: string; session: string; item: string; title: string; starts_run: number; at: number; attempt: number; full: number | null; full_until: number | null; wait: string | null };
 	for (const row of await db.execute<RequestRow>("SELECT key, session, item, title, starts_run, at, attempt, full, full_until, wait FROM turn_request")) {
@@ -126,9 +135,20 @@ export async function loadItems(db: RawAccess): Promise<ItemsState> {
 	}
 	const slots = new Map<string, Slot>();
 	type SlotRow = { id: string; key: string; session: string; item: string; title: string; at: number; expires_at: number };
-	for (const row of await db.execute<SlotRow>("SELECT id, key, session, item, title, at, expires_at FROM turn_slot")) slots.set(row.id, { ...row, expiresAt: row.expires_at });
+	const untold = new Set((await db.execute<{ slot: string }>("SELECT slot FROM turn_grant")).map((row) => row.slot));
+	for (const row of await db.execute<SlotRow>("SELECT id, key, session, item, title, at, expires_at FROM turn_slot")) slots.set(row.id, { ...row, expiresAt: row.expires_at, told: !untold.has(row.id) });
 	const [queue] = await db.execute<{ schedule: string; at: number }>("SELECT schedule, at FROM turn_queue WHERE id = 1");
 	return { items, created, creating: new Attempts(), requests, slots, queueAt: queue ? { id: queue.schedule, at: queue.at } : null };
+}
+
+/**
+ * What an item reads of its user: its session's entries in the ledger, each once by its hold (the item
+ * adds up its own lifetime total from them, since the ledger keeps only the last days), and the user's
+ * items not done, failed or cancelled.
+ */
+export interface ItemFacts {
+	entries: Array<{ hold: string; seconds: number }>;
+	openItems: number;
 }
 
 /** What the factory's functions need of the user actor's context. */
@@ -158,14 +178,14 @@ function itemList(state: ItemsState): ItemSummary[] {
 }
 
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
-function summaryOf(item: ItemSummary): ItemSummary {
+function summaryFields(item: ItemSummary): ItemSummary {
 	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
 	return { id, title, repository, place, source, state, wait, question, pullRequest, verdict, budget, spent, sessionId, createdAt, updatedAt, revision };
 }
 
 /** Takes a summary the item reported when it is newer than the one held: reports can arrive out of order. */
 async function noteItem(c: ItemsCtx, given: ItemSummary): Promise<void> {
-	const summary = summaryOf(given);
+	const summary = summaryFields(given);
 	const held = c.vars.items.items.get(summary.id);
 	if (!held || held.revision > summary.revision) return;
 	c.vars.items.items.set(summary.id, summary);
@@ -232,16 +252,32 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	const itemId = `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`;
 	const sessionId = `s_${hex16(`item\n${itemId}`)}`;
 	let summary: ItemSummary;
+	// Set just before the session is made: a refusal before that made nothing, and leaves the key unused.
+	let begun = false;
+	if (submission) {
+		// The key is this body's from here, before anything is made: in memory now, so that a second attempt is judged by it at
+		// once, and stored before the first actor, so that it holds across a restart too.
+		c.vars.items.created.set(submission.key, { ...submission, id: itemId });
+		await c.db.execute("INSERT OR IGNORE INTO item_keys (key, sent, id) VALUES (?, ?, ?)", submission.key, submission.sent, itemId);
+	}
 	try {
-		const session = c.vars.sessions.get(sessionId) ?? (await makeSession(c, profile, { title: input.title, profile: await itemProfile(c, input.repository.id, input.profile), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId }));
+		const existing = c.vars.sessions.get(sessionId);
+		const sandbox = existing ? null : await itemProfile(c, input.repository.id, input.profile);
+		begun = true;
+		const session = existing ?? (await makeSession(c, profile, { title: input.title, profile: sandbox as SandboxProfileId, ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId }));
 		const repository = session.repository;
 		if (!repository) throw new Error("the item's session has no repository");
 		const now = Date.now();
-		const meta: ItemMeta = { uid, sessionId, repository, source, createdAt: now, updatedAt: now, verdict: null };
+		const meta: ItemMeta = { uid, sessionId, repository, source, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
 		const item = createItem({ id: itemId, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: { kind: "hosted" }, budget: config.factory.item });
 		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
 	} catch (error) {
+		// Nothing was made: the key is unused again, as a refused attempt leaves it. Once anything may exist, it stays this body's.
+		if (submission && !begun) {
+			c.vars.items.created.delete(submission.key);
+			await c.db.execute("DELETE FROM item_keys WHERE key = ?", submission.key).catch(() => undefined);
+		}
 		throw clientError(c.log, error, "The item could not be filed. Try again.");
 	}
 	// In one step with the item: from here a creation with this key answers with it.
@@ -318,7 +354,10 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		if (slot.expiresAt > now) continue;
 		state.slots.delete(slot.id);
 		released.push(slot.id);
-		console.warn(`[wlp] factory.slot_expired uid=${c.key[0]} slot=${slot.id} key=${slot.key}: held past ${Math.round(SLOT_LEASE_MS / 60_000)} min without its turn's end being reported; given back`);
+		// Asked for again: a turn whose slot outlived every turn's limit never started (its grant was lost with a server), and a
+		// session that ended it answers a second grant by giving it back.
+		if (!state.requests.has(slot.key)) state.requests.set(slot.key, { key: slot.key, session: slot.session, item: slot.item, title: slot.title, startsRun: false, at: slot.at, attempt: 0, full: null, wait: null });
+		console.warn(`[wlp] factory.slot_expired uid=${c.key[0]} slot=${slot.id} key=${slot.key}: held past ${Math.round(SLOT_LEASE_MS / 60_000)} min without its turn's end being reported; given back and asked for again`);
 	}
 	const limits = config.factory;
 	const sessions = [...c.vars.sessions.values()];
@@ -327,6 +366,8 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 	const inReview = [...state.items.values()].filter((item) => item.state === "review").length;
 	const usage = c.vars.usage.numbers(now);
 	const hostedRunning = new Set(sessions.filter((session) => session.place.kind === "hosted" && session.sandbox === "running").map((session) => session.id));
+	// A session given a slot runs a sandbox from then on, whether or not its summary has said so yet: counted across admissions, not only within one.
+	for (const slot of state.slots.values()) hostedRunning.add(slot.session);
 	const granted: Slot[] = [];
 	const waits: Request[] = [];
 	const dropped: string[] = [];
@@ -350,7 +391,8 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			attempt: request.attempt,
 		});
 		if (answer.ok) {
-			const slot: Slot = { id: `t_${randomBytes(8).toString("hex")}`, key: request.key, session: request.session, item: request.item, title: request.title, at: now, expiresAt: now + SLOT_LEASE_MS };
+			// The one asking now is told in its answer; any other is told below, and until it answers the grant stays recorded.
+			const slot: Slot = { id: `t_${randomBytes(8).toString("hex")}`, key: request.key, session: request.session, item: request.item, title: request.title, at: now, expiresAt: now + SLOT_LEASE_MS, told: request.key === answering };
 			state.requests.delete(request.key);
 			state.slots.set(slot.id, slot);
 			granted.push(slot);
@@ -364,27 +406,39 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		if (before?.sentence !== answer.wait.sentence || before?.retryAt !== answer.wait.retryAt) waits.push(request);
 	}
 
-	for (const id of released) await c.db.execute("DELETE FROM turn_slot WHERE id = ?", id);
+	for (const id of released) {
+		await c.db.execute("DELETE FROM turn_slot WHERE id = ?", id);
+		await c.db.execute("DELETE FROM turn_grant WHERE slot = ?", id);
+	}
 	for (const key of dropped) await c.db.execute("DELETE FROM turn_request WHERE key = ?", key);
 	for (const slot of granted) {
-		await c.db.execute("DELETE FROM turn_request WHERE key = ?", slot.key);
-		await c.db.execute("INSERT OR REPLACE INTO turn_slot (id, key, session, item, title, at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)", slot.id, slot.key, slot.session, slot.item, slot.title, slot.at, slot.expiresAt);
+		// The request becomes its slot in one transaction: a server stopped in between leaves one or the other, never neither.
+		await c.db.transaction(async (tx) => {
+			await tx.execute("DELETE FROM turn_request WHERE key = ?", slot.key);
+			await tx.execute("INSERT OR REPLACE INTO turn_slot (id, key, session, item, title, at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)", slot.id, slot.key, slot.session, slot.item, slot.title, slot.at, slot.expiresAt);
+			if (!slot.told) await tx.execute("INSERT OR IGNORE INTO turn_grant (slot) VALUES (?)", slot.id);
+		}, { name: "queue.grant" });
 		console.log(`[wlp] factory.slot_granted uid=${c.key[0]} slot=${slot.id} key=${slot.key} factory=${state.slots.size}`);
 	}
 	for (const request of waits) await storeRequest(c, request);
 
 	const uid = c.key[0] as string;
-	let mine: Slot | null = null;
-	for (const slot of granted) {
-		if (slot.key === answering) {
-			mine = slot;
-			continue;
-		}
+	const mine = granted.find((slot) => slot.key === answering) ?? null;
+	// Every slot its session has not answered for: the ones granted now, and any whose grant was lost before.
+	for (const slot of [...state.slots.values()].filter((one) => !one.told)) {
 		try {
 			await sessionActor(c, uid, slot.session).internalGrant({ key: slot.key, slot: slot.id });
+			slot.told = true;
+			await c.db.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
 		} catch (error) {
-			c.log.warn({ msg: "could not give a session its slot; it is asked again later", session: slot.session, error: String(error) });
-			await takeBack(c, slot, isActorGone(error));
+			if (!isActorGone(error)) {
+				// Kept, slot and all: the session may have taken it and only its answer was lost. Told again on the next run, or freed by its lease.
+				c.log.warn({ msg: "could not give a session its slot; it is told again later", session: slot.session, error: String(error) });
+				continue;
+			}
+			state.slots.delete(slot.id);
+			await c.db.execute("DELETE FROM turn_slot WHERE id = ?", slot.id);
+			await c.db.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
 		}
 	}
 	for (const request of waits) {
@@ -396,17 +450,6 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 	}
 	await armQueue(c);
 	return mine;
-}
-
-/** A granted slot whose session was not told: released, and its request put back (unless the session is gone). */
-async function takeBack(c: ItemsCtx, slot: Slot, gone: boolean): Promise<void> {
-	const state = c.vars.items;
-	state.slots.delete(slot.id);
-	await c.db.execute("DELETE FROM turn_slot WHERE id = ?", slot.id);
-	if (gone) return;
-	const request: Request = { key: slot.key, session: slot.session, item: slot.item, title: slot.title, startsRun: false, at: slot.at, attempt: 1, full: null, wait: { reason: "capacity", sentence: "Waiting for the item's agent to answer.", retryAt: Date.now() + 30_000 } };
-	state.requests.set(request.key, request);
-	await storeRequest(c, request);
 }
 
 /** One schedule, at the earliest time a waiting request is to be tried again. */
@@ -425,7 +468,8 @@ async function armQueue(c: ItemsCtx): Promise<void> {
 
 /** Something that frees capacity happened (a person's session went idle), or the actor woke: the waiting requests are tried, and the schedule armed again. Never throws. */
 export function queueChanged(c: ItemsCtx): void {
-	if (c.vars.items.requests.size === 0) return;
+	const { requests, slots } = c.vars.items;
+	if (requests.size === 0 && [...slots.values()].every((slot) => slot.told)) return;
 	void c.keepAwake(runQueue(c).catch((error) => c.log.error({ msg: "the turn queue could not be run", error: String(error) })));
 }
 
@@ -456,7 +500,8 @@ async function apiCaller(c: ItemsCtx, token: unknown, scope: ApiTokenScope): Pro
 	const owner = tokenOwner(token);
 	const profile = c.vars.profile;
 	const refused = new UserError("That API token is not valid, or may not do this.", { code: "invalid_token" });
-	if (!owner || owner.uid !== c.key[0] || !profile) throw refused;
+	// The access rules hold for a token as for a sign-in: someone taken off the list, or a demo user once the demo is off, is locked out at once.
+	if (!owner || owner.uid !== c.key[0] || !profile || !mayUse(profile, config.access)) throw refused;
 	if (!(await useApiToken(c.db, owner.digest, scope, Date.now()))) throw refused;
 	return profile;
 }
@@ -557,12 +602,15 @@ export const itemActions = {
 	},
 
 	/** What an item reads of its user: the hosted sandbox seconds the ledger has for its session, and the user's open items. */
-	internalItemFacts: (c: ItemsCtx, sessionId: string): { hostedSeconds: number; openItems: number } => {
+	internalItemFacts: (c: ItemsCtx, sessionId: string): ItemFacts => {
 		requireService(c);
 		const today = dayOf(Date.now());
-		const entries = Array.from({ length: USAGE_HISTORY_DAYS }, (_, back) => c.vars.usage.entriesOn(today - back)).flat();
+		const entries = Array.from({ length: USAGE_HISTORY_DAYS }, (_, back) => c.vars.usage.entriesOn(today - back))
+			.flat()
+			.filter((entry) => entry.session === String(sessionId))
+			.map((entry) => ({ hold: entry.hold, seconds: entry.seconds }));
 		const openItems = [...c.vars.items.items.values()].filter((item) => item.state !== "done" && item.state !== "failed" && item.state !== "cancelled").length;
-		return { hostedSeconds: ledgerSeconds(entries, String(sessionId)), openItems };
+		return { entries, openItems };
 	},
 
 	/** An item session asks for a slot for the turn of `key`: granted now, or queued with a wait the item is told. Asked again, it answers the same. */
@@ -571,7 +619,14 @@ export const itemActions = {
 		const state = c.vars.items;
 		const key = String(input?.key);
 		const held = [...state.slots.values()].find((slot) => slot.key === key);
-		if (held) return { granted: true, slot: held.id };
+		if (held) {
+			// Asked by its session: this answer tells it, so the grant need not be sent again.
+			if (!held.told) {
+				held.told = true;
+				await c.db.execute("DELETE FROM turn_grant WHERE slot = ?", held.id);
+			}
+			return { granted: true, slot: held.id };
+		}
 		const session = c.vars.sessions.get(String(input?.sessionId));
 		if (!session?.item || session.item.id !== input.itemId) return { granted: false };
 		const now = Date.now();
@@ -591,6 +646,7 @@ export const itemActions = {
 		if (!slot || slot.session !== input.sessionId) return;
 		c.vars.items.slots.delete(slot.id);
 		await c.db.execute("DELETE FROM turn_slot WHERE id = ?", slot.id);
+		await c.db.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
 		await runQueue(c);
 	},
 

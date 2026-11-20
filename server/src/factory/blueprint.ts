@@ -35,7 +35,7 @@ import type { TurnOutcome, Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
 import { budgetStop } from "./budget.js";
-import type { ChoiceId, Fact, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
+import type { ChoiceId, CiProgress, Fact, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { ciFingerprint, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
 
 /** §2.1 and §2.4. Design constants, not settings. */
@@ -139,7 +139,8 @@ class Change {
 	state(next: ItemState, wait: Wait | null = null): void {
 		const { item } = this;
 		if (item.state === "working" && next !== "working" && item.workingSince !== null) {
-			item.spent.activeSeconds += (this.at - item.workingSince) / 1000;
+			// A clock that stepped back gives no time: it never takes any away either.
+			item.spent.activeSeconds += Math.max(0, this.at - item.workingSince) / 1000;
 			item.workingSince = null;
 		}
 		if (next === "working" && item.workingSince === null) item.workingSince = this.at;
@@ -175,13 +176,18 @@ function apply(c: Change, fact: Fact): boolean {
 			return true;
 		case "answer":
 			return answer(c, fact);
+		case "spent":
+			// The ledger only grows: an older figure that arrives late says nothing new.
+			if (!(fact.hostedSeconds > item.spent.hostedSeconds)) return false;
+			item.spent.hostedSeconds = fact.hostedSeconds;
+			return true;
 		default:
 			return stepFact(c, fact);
 	}
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "start" | "retry" | "send_back" | "cancel" | "answer" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" }>): boolean {
 	const run = c.item.run;
 	if (run === null) return false;
 	const step = run.step;
@@ -203,7 +209,8 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "start" | "retry" | "se
 			checkTurn(c);
 			return true;
 		case "turn_running":
-			if (step.turn !== "started" || fact.key !== `${key}/check${step.checks}`) return false;
+			// Asked while delivered too: a turn whose slot was granted and never taken (a server stopped in between) is noticed.
+			if (step.turn === null || fact.key !== `${key}/check${step.checks}`) return false;
 			checkTurn(c);
 			return true;
 		case "turn_ended":
@@ -279,7 +286,7 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	else if (plan.charge !== null && plan.charge !== "interruptions" && run.rounds[plan.charge] >= ROUND_CAPS[plan.charge]) cause = plan.charge;
 	if (cause !== null) return stop(c, cause, STOP_WORDS[cause as keyof typeof STOP_WORDS](item.task), plan);
 
-	const working = item.workingSince === null ? 0 : (c.at - item.workingSince) / 1000;
+	const working = item.workingSince === null ? 0 : Math.max(0, c.at - item.workingSince) / 1000;
 	const over = budgetStop(item.budget, { ...item.spent, activeSeconds: item.spent.activeSeconds + working }, item.place);
 	if (over !== null) return stop(c, over.cause, over.sentence, plan);
 
@@ -291,6 +298,8 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	run.step.checks = 0;
 	c.state(item.state === "queued" ? "queued" : "working");
 	c.effects.push({ kind: "deliver", key: c.key, text: plan.text, agent: plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, fetchBase: plan.fetchBase });
+	// From delivery on, not only once started: nothing else would notice a delivery that waits for a slot nobody will give.
+	checkTurn(c);
 }
 
 function checkTurn(c: Change): void {
@@ -378,7 +387,8 @@ function published(c: Change, fact: Extract<Fact, { kind: "published" }>): void 
 	item.pr = fact.pr;
 	c.say(`Pushed ${shortSha(fact.head)} to pull request #${fact.pr.number}.`);
 	c.enter("ci");
-	run.ci = { head: fact.head, since: c.at, last: null, mergeable: null };
+	// The gate this commit rests on is kept with it: a later turn's gate is not about it until it is pushed.
+	run.ci = { head: fact.head, since: c.at, last: null, mergeable: null, gate: run.gate, moved: null, handed: null };
 	pollCi(c, fact.openItems, null, `Waiting for CI to start on ${shortSha(fact.head)}.`);
 }
 
@@ -430,11 +440,19 @@ function ciFixText(head: string, reading: Extract<CiReading, { kind: "read" }>):
 	].join("\n\n");
 }
 
+/** A full commit SHA: what git said it pushed. A branch's name stands in where it said nothing, and is not compared. */
+const isSha = (head: string) => /^[0-9a-f]{40}$/.test(head);
+
+/** The commit the pull request holds, when GitHub named one other than `head`. */
+const movedFrom = (head: string, prHead: string | null) => (prHead && isSha(head) && prHead !== head ? prHead : null);
+
 function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	const { run } = c;
 	const ci = run.ci;
 	if (ci === null) return;
-	const { reading } = fact;
+	// A reading GitHub gave for another commit than the one asked of it is not a reading of this one: it waits as a reading that failed.
+	const reading: CiReading =
+		fact.reading.kind === "read" && isSha(ci.head) && fact.reading.head !== ci.head ? { kind: "failed", said: `GitHub answered for commit ${shortSha(fact.reading.head)}, not ${shortSha(ci.head)}` } : fact.reading;
 	const state = ciState(reading);
 	// The poll is used up, whatever follows: the same reading again names an earlier one.
 	run.step.attempt += 1;
@@ -445,6 +463,14 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	const settled = (state !== "none" && state !== "skipped") || since >= CI_POLLING.noneAfterMs;
 	if (reading.kind === "read" && state !== "retry" && state !== "not_permitted" && settled) ci.last = { state, runs: reading.runs.map(({ name, app, conclusion, url }) => ({ name, app, conclusion, url })), said: null };
 	if (reading.kind === "not_permitted") ci.last = { state: "not_permitted", runs: [], said: reading.said };
+
+	// Someone pushed to the pull request's branch after the agent: what was verified is not what it holds. Handed over as it is,
+	// never as passed; a fix turn now would push over their commit.
+	if (fact.prHead !== null) ci.moved = movedFrom(ci.head, fact.prHead);
+	if (ci.moved !== null) {
+		c.say(`The pull request is now at ${shortSha(ci.moved)}, pushed after the agent's ${shortSha(ci.head)}: it is handed over as it is.`);
+		return handoff(c);
+	}
 
 	if (fact.mergeable === false) {
 		c.say(`GitHub says the pull request conflicts with ${c.item.task.base}.`);
@@ -493,18 +519,32 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	pollCi(c, fact.openItems, reading.kind === "rate_limited" ? reading.retryAt : null, ciWaitSentence(ci.head, reading));
 }
 
+/** Hands over the commit this run pushed, with the evidence kept for that commit: never a later, unpushed turn's. */
 function handoff(c: Change): void {
 	const { item, run } = c;
-	if (item.head === null || item.pr === null) throw new Error("an item is handed over only after its work was pushed");
+	const ci = run.ci;
+	if (item.head === null || item.pr === null || ci === null || ci.head !== item.head) throw new Error("an item is handed over only after this run pushed its work");
 	c.enter("handoff");
-	const verdict = verdictOf({ id: c.key, item: item.id, run: run.n, head: item.head, at: c.at, place: item.place, gate: run.gate, ci: verdictCi(run.ci), acceptance: item.task.acceptance, mergeable: run.ci?.mergeable ?? null });
-	const words = verdictWords(verdict, run.gate);
-	c.effects.push({ kind: "handoff", key: c.key, verdict, words });
-	c.say(words);
+	ci.handed = c.key;
+	handVerdict(c, ci);
 	run.endedAt = c.at;
 	c.state("review");
 	c.enter("merged");
 	c.effects.push({ kind: "poll_pr", key: c.key, pr: item.pr.number, at: c.at + CI_POLLING.prEveryMs });
+}
+
+/**
+ * The verdict for the commit this run pushed, as CI and the pull request now stand, handed over. Made again after a move, it
+ * keeps the first one's id and key: it replaces that verdict and its effect, so a first comment still to be posted cannot
+ * come after it and put the older verdict back on the pull request.
+ */
+function handVerdict(c: Change, ci: CiProgress, reviewDone?: true): void {
+	const { item, run } = c;
+	const key = ci.handed ?? c.key;
+	const verdict = verdictOf({ id: key, item: item.id, run: run.n, head: ci.head, at: c.at, place: item.place, gate: ci.gate, ci: verdictCi(ci), acceptance: item.task.acceptance, mergeable: ci.mergeable, moved: ci.moved });
+	const words = verdictWords(verdict, ci.gate);
+	c.effects.push({ kind: "handoff", key, verdict, words, ...(reviewDone ? { reviewDone } : {}) });
+	c.say(words);
 }
 
 function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
@@ -517,6 +557,13 @@ function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
 		return c.state("cancelled");
 	}
 	c.run.step.attempt += 1;
+	// Pushed to after it was handed over: the verdict is made again for what the pull request holds, and is never a pass of it.
+	const ci = c.run.ci;
+	if (ci !== null && fact.prHead !== null && movedFrom(ci.head, fact.prHead) !== ci.moved) {
+		ci.moved = movedFrom(ci.head, fact.prHead);
+		c.say(ci.moved === null ? `The pull request is back at ${shortSha(ci.head)}, the commit verified.` : `The pull request moved to ${shortSha(ci.moved)} after it was handed over.`);
+		handVerdict(c, ci, true);
+	}
 	c.effects.push({ kind: "poll_pr", key: c.key, pr: c.item.pr?.number ?? 0, at: c.at + CI_POLLING.prEveryMs });
 }
 
@@ -548,7 +595,11 @@ const CHOICES: Record<ChoiceId, string> = {
 	give_up: "Give up",
 };
 const choice = (id: ChoiceId) => ({ id, label: CHOICES[id] });
-const handOver = (item: FactoryItem) => (item.pr !== null && item.head !== null ? [choice("hand_over")] : []);
+/**
+ * "Hand it over as it is" is offered only for a commit this run pushed, whose evidence it holds. A run
+ * that pushed nothing yet (sent back, and stopped before a push) has nothing of its own to hand over.
+ */
+const handOver = (item: FactoryItem) => (item.run?.ci !== null && item.run?.ci !== undefined && item.run.ci.head === item.head ? [choice("hand_over")] : []);
 
 const STOP_WORDS: Record<Exclude<StopCause, keyof ItemBudget>, (task: Task) => string> = {
 	repeated: () => "The same failure came back after a fix, so the factory stopped instead of trying it again.",

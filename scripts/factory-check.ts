@@ -32,7 +32,7 @@ const { advance, createItem, currentKey } = await import("../server/src/factory/
 const { admit, budgetStop, FACTORY_DEFAULTS, retryAt } = await import("../server/src/factory/budget.js");
 const { gateResult, verdictOf, verdictWords } = await import("../server/src/factory/verdict.js");
 const { readCi, ciState, LOG_TAIL_CHARS, LOG_TAIL_LINES } = await import("../server/src/github/ci.js");
-const { GithubApp } = await import("../server/src/github/app.js");
+const { GithubApp, GithubError } = await import("../server/src/github/app.js");
 
 const output: string[] = [];
 const print = (line: string) => {
@@ -56,11 +56,11 @@ const verified = (state: Verified["state"], checks: VerifiedCheck[], extra: Part
 const PASSED = verified("passed", [check("test", "passed"), check("lint", "passed")]);
 const FAILING = verified("unresolved", [check("test", "failed", "FAIL src/add.test.ts\nError: expected 3, got -1"), check("lint", "passed")], { unresolved: { reason: "max_rounds", said: null } });
 
-type Run = { name: string; state: "pending" | "passed" | "failed"; log?: string };
+type Run = { name: string; state: "pending" | "passed" | "failed" | "neutral"; log?: string };
 const ciRead = (runs: Run[]): CiReading => ({
 	kind: "read",
 	head: "",
-	runs: runs.map((run, index) => ({ name: run.name, app: "github-actions", state: run.state, conclusion: run.state === "passed" ? "success" : run.state === "failed" ? "failure" : "in_progress", url: `https://github.invalid/run/${index}`, summary: "", jobId: index + 1 })),
+	runs: runs.map((run, index) => ({ name: run.name, app: "github-actions", state: run.state, conclusion: run.state === "passed" ? "success" : run.state === "failed" ? "failure" : run.state === "neutral" ? "skipped" : "in_progress", url: `https://github.invalid/run/${index}`, summary: "", jobId: index + 1 })),
 	truncated: false,
 	logs: runs.filter((run) => run.log !== undefined).map((run) => ({ name: run.name, untrusted: true as const, text: run.log ?? "", truncated: false })),
 });
@@ -106,7 +106,7 @@ const ended = (outcome: "succeeded" | "unresolved" | "interrupted" | "stopped", 
 	spend: { tokens: more.tokens ?? 100_000, hostedSeconds: 0 },
 });
 const published = (head: string): Row["fact"] => (k) => ({ kind: "published", key: k.key, head, pr: { number: 7, url: "https://github.invalid/pull/7" }, openItems: 1 });
-const ci = (head: string, reading: CiReading, mergeable: boolean | null = true): Row["fact"] => (k) => ({ kind: "ci_read", key: k.key, head, reading: reading.kind === "read" ? { ...reading, head } : reading, mergeable, openItems: 1 });
+const ci = (head: string, reading: CiReading, mergeable: boolean | null = true): Row["fact"] => (k) => ({ kind: "ci_read", prHead: null, key: k.key, head, reading: reading.kind === "read" ? { ...reading, head } : reading, mergeable, openItems: 1 });
 const answer = (choice: Extract<Fact, { kind: "answer" }>["choice"], more: { note?: string; budget?: Partial<FactoryItem["budget"]> } = {}): Row["fact"] => (k) => ({ kind: "answer", by: "person:u1", question: k.question, choice, ...more });
 
 function newItem(more: { plan?: "approve"; budget?: Partial<FactoryItem["budget"]> } = {}): FactoryItem {
@@ -186,29 +186,29 @@ const toReview: Row[] = [
 ];
 
 drive("the plain run: implement, checks pass, publish, CI passes, review, merged", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver"], also: (o) => holds(effect(o, "deliver")?.text.includes("add(1, 2) is 3") === true && effect(o, "deliver")?.maxSteps === 60, "the task and its criteria go to the agent, with 60 steps") },
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.text.includes("add(1, 2) is 3") === true && effect(o, "deliver")?.maxSteps === 60, "the task and its criteria go to the agent, with 60 steps") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: (k) => ({ kind: "turn_running", key: k.check }), after: 5 * MINUTE, state: "working", effects: ["check_turn"] },
 	...toReview,
-	{ fact: (k) => ({ kind: "pr_read", key: k.key, state: "open" }), after: 10 * MINUTE, state: "review", effects: ["poll_pr"] },
-	{ fact: (k) => ({ kind: "pr_read", key: k.key, state: "merged" }), after: 10 * MINUTE, state: "done", effects: [] },
+	{ fact: (k) => ({ kind: "pr_read", prHead: null, key: k.key, state: "open" }), after: 10 * MINUTE, state: "review", effects: ["poll_pr"] },
+	{ fact: (k) => ({ kind: "pr_read", prHead: null, key: k.key, state: "merged" }), after: 10 * MINUTE, state: "done", effects: [] },
 ]);
 
 drive("a required check fails at first and passes after a fix turn", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver"] },
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: ended("unresolved", FAILING), state: "working", effects: ["deliver"], also: (o) => holds(/still failing: test\b/.test(effect(o, "deliver")?.text ?? "") && o.item.run?.rounds.gate === 1, "a continue-fixing turn names the failing check") },
+	{ fact: ended("unresolved", FAILING), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(/still failing: test\b/.test(effect(o, "deliver")?.text ?? "") && o.item.run?.rounds.gate === 1, "a continue-fixing turn names the failing check") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	...toReview,
 ]);
 
 const failedGate = (name: string, output: string) => ended("unresolved", verified("unresolved", [check(name, "failed", output)]));
 drive("a third distinct required-check failure asks the person after two fix turns", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver"] },
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: ended("unresolved", FAILING), state: "working", effects: ["deliver"] },
+	{ fact: ended("unresolved", FAILING), state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: failedGate("lint", "Unused import"), state: "working", effects: ["deliver"] },
+	{ fact: failedGate("lint", "Unused import"), state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: failedGate("typecheck", "Missing return value"), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "rounds" && o.item.question.cause === "gate", "the gate ran out of fix turns") },
 ]);
@@ -224,7 +224,7 @@ const pushedAndFailed = (head: string, log: string): Row[] => [
 		fact: ci(head, failingCi(log)),
 		after: 60_000,
 		state: "working",
-		effects: ["deliver"],
+		effects: ["deliver", "check_turn"],
 		also: (o) => {
 			const text = effect(o, "deliver")?.text ?? "";
 			return holds(text.includes("untrusted") && text.includes(log) && text.includes("e2e"), "a CI fix turn has the failing check and its log, marked untrusted");
@@ -233,7 +233,7 @@ const pushedAndFailed = (head: string, log: string): Row[] => [
 	...ciFix,
 ];
 const begun: Row[] = [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver"] },
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
 ];
@@ -242,7 +242,7 @@ const pendingBuild = ciRead([{ name: "build", state: "pending" }]);
 drive("a second base conflict asks the person after one resolving turn", newItem(), [
 	...begun,
 	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
-	{ fact: ci(H(1), pendingBuild, false), state: "working", effects: ["deliver"], also: (o) => holds(effect(o, "deliver")?.fetchBase === "main", "the resolving turn fetches the base") },
+	{ fact: ci(H(1), pendingBuild, false), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.fetchBase === "main", "the resolving turn fetches the base") },
 	...ciFix,
 	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
 	{ fact: ci(H(2), pendingBuild, true), state: "waiting", wait: "ci", effects: ["poll_ci"] },
@@ -278,20 +278,20 @@ drive("the same CI failure after a fix stops the run at once", newItem(), [
 	...pushedAndFailed(H(1), "Error: timeout waiting for #login after 5012 ms"),
 	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
 	{ fact: ci(H(2), failingCi("Error: timeout waiting for #login after 4980 ms")), after: 60_000, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.cause === "repeated" && o.item.run?.rounds.ci === 1, "stopped with a round left, on the fingerprint") },
-	{ fact: answer("raise"), state: "working", effects: ["deliver"] },
+	{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"] },
 ]);
 
 const interrupted = ended("interrupted", null);
 drive("a deploy in the middle of the implement step", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver"] },
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: interrupted, state: "working", effects: ["deliver"], also: (o) => holds(/interrupted/.test(effect(o, "deliver")?.text ?? "") && effect(o, "deliver")?.key.endsWith(":1:2") === true, "the same step, its next attempt, told to continue") },
+	{ fact: interrupted, state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(/interrupted/.test(effect(o, "deliver")?.text ?? "") && effect(o, "deliver")?.key.endsWith(":1:2") === true, "the same step, its next attempt, told to continue") },
 	{ fact: (k) => ({ kind: "turn_started", key: k.key.replace(/:2$/, ":1") }), state: "working", effects: [], also: (o) => holds(o.events.length === 0, "a fact about the cut attempt is ignored") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: interrupted, state: "working", effects: ["deliver"] },
+	{ fact: interrupted, state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: interrupted, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.cause === "interruptions", "cut off three times: a person is asked") },
-	{ fact: answer("raise"), state: "working", effects: ["deliver"] },
+	{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
 ]);
@@ -299,10 +299,13 @@ drive("a deploy in the middle of the implement step", newItem(), [
 const usage = (left: number): UsageNumbers => ({ at: T0, day: "2026-11-19", resetsAt: MIDNIGHT, allowanceSeconds: 8 * 3600, usedSeconds: 8 * 3600 - left, heldSeconds: 0, leftSeconds: left, startSeconds: 30, sandboxes: { kept: 4, limit: 20 } });
 const hosted = (left: number) => ({ kind: "hosted" as const, usage: usage(left), running: 0, needsSandbox: false, deploymentFull: null });
 const allowance = admit({ at: T0 + 3 * MINUTE, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: hosted(0), attempt: 0 });
+// One running turn in all: it is the person's, and factory work has none, whatever its own share says.
+const onlyOne = admit({ at: T0, limits: { ...FACTORY_DEFAULTS, runningTurns: 1, factoryTurns: 1 }, turns: { running: 0, factory: [] }, startsRun: true, inReview: 0, place: hosted(8 * 3600), attempt: 0 });
+expect("with one running turn allowed, factory work waits and the turn stays the person's", !onlyOne.ok && /kept for your own prompts/.test(onlyOne.wait.sentence), onlyOne.ok ? "admitted" : onlyOne.wait.sentence);
 drive("the daily allowance runs out mid-turn: the item waits for 00:00 UTC and resumes", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver"] },
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: ended("stopped", null), state: "working", effects: ["deliver"] },
+	{ fact: ended("stopped", null), state: "working", effects: ["deliver", "check_turn"] },
 	{
 		fact: (k) => ({ kind: "turn_waiting", key: k.key, wait: allowance.ok ? { reason: "person", sentence: "", retryAt: null } : allowance.wait }),
 		state: "waiting",
@@ -315,9 +318,9 @@ drive("the daily allowance runs out mid-turn: the item waits for 00:00 UTC and r
 ]);
 
 drive("the item's budget runs out, and the person raises it", newItem({ budget: { turns: 2 } }), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver"] },
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: ended("unresolved", FAILING), state: "working", effects: ["deliver"] },
+	{ fact: ended("unresolved", FAILING), state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{
 		fact: ended("unresolved", verified("unresolved", [check("test", "failed", "Error: expected 3, got 4")])),
@@ -326,7 +329,7 @@ drive("the item's budget runs out, and the person raises it", newItem({ budget: 
 		effects: ["ask"],
 		also: (o) => holds(o.item.question?.kind === "budget" && o.item.wait?.sentence === "This item has used 2 of its 2 turns.", `asked, with the numbers: ${o.item.wait?.sentence}`),
 	},
-	{ fact: answer("raise", { budget: { turns: 4 } }), state: "working", effects: ["deliver"], also: (o) => holds(o.item.budget.turns === 4, "the raised budget is kept") },
+	{ fact: answer("raise", { budget: { turns: 4 } }), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.budget.turns === 4, "the raised budget is kept") },
 ]);
 
 const fourHours = 4 * 60 * MINUTE;
@@ -335,7 +338,7 @@ drive("four hours working uses the active-time budget, four hours waiting does n
 	{ fact: published(H(1)), after: 0, state: "waiting", wait: "ci", effects: ["poll_ci"] },
 	{ fact: ci(H(1), pendingBuild), after: fourHours, state: "waiting", wait: "person", effects: ["ask"] },
 	{ fact: answer("wait"), after: fourHours, state: "waiting", wait: "ci", effects: ["poll_ci"] },
-	{ fact: ci(H(1), failingCi("Error: login timed out")), state: "working", effects: ["deliver"], also: (o) => holds(o.item.spent.activeSeconds === 60, "only the first minute of work counts") },
+	{ fact: ci(H(1), failingCi("Error: login timed out")), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.spent.activeSeconds === 60, "only the first minute of work counts") },
 	{ fact: started(), after: 0, state: "working", effects: ["check_turn"] },
 	{ fact: ended("unresolved", FAILING), after: fourHours - MINUTE, state: "waiting", wait: "budget", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "budget" && o.item.question.cause === "activeSeconds" && o.item.spent.activeSeconds === fourHours / 1000, "exactly four hours of work stops the next turn") },
 ]);
@@ -344,23 +347,23 @@ const planRound = (canRevise: boolean): Row[] => [
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", null, { changes: false, report: "Fix the sign in add()." }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "plan_approval" && o.item.question.choices.some((choice) => choice.id === "revise") === canRevise, canRevise ? "the person can request another plan" : "the third plan must not offer a fourth round") },
 ];
-const revise: Row = { fact: answer("revise"), state: "working", effects: ["deliver"], also: (o) => holds(effect(o, "deliver")?.agent === "planner", "the revision goes to the planner") };
+const revise: Row = { fact: answer("revise"), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.agent === "planner", "the revision goes to the planner") };
 drive("the person can request a second and third plan, then planning stops for a decision", newItem({ plan: "approve" }), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver"] },
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	...planRound(true), revise,
 	...planRound(true), revise,
 	...planRound(false),
 ]);
 
 drive("a plan for approval, a question to the person and its answer", newItem({ plan: "approve" }), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver"], also: (o) => holds(effect(o, "deliver")?.agent === "planner", "step 0 runs as the planner") },
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.agent === "planner", "step 0 runs as the planner") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", null, { changes: false, report: "1. Fix the sign in add()." }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "plan_approval" && o.item.question.text.includes("Fix the sign"), "the plan is put to the person") },
 	{ fact: (k) => ({ kind: "answer", by: "person:u1", question: `${k.question}x`, choice: "approve" }), state: "waiting", wait: "person", effects: [], also: (o) => holds(o.events.length === 0, "an answer to another question is ignored") },
-	{ fact: answer("approve", { note: "Keep the signature." }), state: "working", effects: ["deliver"], also: (o) => holds(effect(o, "deliver")?.agent === null && /Keep the signature/.test(effect(o, "deliver")?.text ?? ""), "the approval and the note go to the implementing agent") },
+	{ fact: answer("approve", { note: "Keep the signature." }), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.agent === null && /Keep the signature/.test(effect(o, "deliver")?.text ?? ""), "the approval and the note go to the implementing agent") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED, { changes: false }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "no_change", "a turn that changed nothing is a question") },
-	{ fact: answer("again", { note: "The bug is in src/add.ts." }), state: "working", effects: ["deliver"], also: (o) => holds(/src\/add\.ts/.test(effect(o, "deliver")?.text ?? ""), "the person's note goes with it") },
+	{ fact: answer("again", { note: "The bug is in src/add.ts." }), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(/src\/add\.ts/.test(effect(o, "deliver")?.text ?? ""), "the person's note goes with it") },
 ]);
 
 drive("CI cannot be read for lack of permission", newItem(), [
@@ -384,12 +387,12 @@ drive("no CI on the repository, CI that does not finish, a conflict, send back a
 	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
 	{ fact: ci(H(1), ciRead([]), null), after: 9 * MINUTE, state: "waiting", wait: "ci", effects: ["poll_ci"] },
 	{ fact: ci(H(1), ciRead([]), null), after: 2 * MINUTE, state: "review", effects: ["handoff", "poll_pr"], also: (o) => holds(effect(o, "handoff")?.verdict.ci.state === "none" && effect(o, "handoff")?.verdict.result === "pass", "no CI after 10 minutes: handed over on the user's checks") },
-	{ fact: () => ({ kind: "send_back", by: "person:u1", note: "Also handle negatives." }), state: "queued", effects: ["deliver"], also: (o) => holds(o.item.run?.n === 2 && /negatives/.test(effect(o, "deliver")?.text ?? ""), "a new run with the note") },
+	{ fact: () => ({ kind: "send_back", by: "person:u1", note: "Also handle negatives." }), state: "queued", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.run?.n === 2 && /negatives/.test(effect(o, "deliver")?.text ?? ""), "a new run with the note") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
 	{ fact: (k) => ({ kind: "publish_failed", key: k.key, said: "connection reset", transient: true }), state: "working", effects: ["publish"], also: (o) => holds(effect(o, "publish")?.at === T0 + 19 * MINUTE + 30_000, "a push that did not get through is tried again after 30 s") },
 	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
-	{ fact: ci(H(2), ciRead([{ name: "build", state: "pending" }]), false), after: 60_000, state: "working", effects: ["deliver"], also: (o) => holds(effect(o, "deliver")?.fetchBase === "main", "a conflict: the base is fetched and merged") },
+	{ fact: ci(H(2), ciRead([{ name: "build", state: "pending" }]), false), after: 60_000, state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.fetchBase === "main", "a conflict: the base is fetched and merged") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
 	{ fact: published(H(3)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
@@ -407,7 +410,7 @@ drive("GitHub refuses the push: a question with GitHub's reason, then a push aga
 ]);
 
 drive("cancelling a running turn withdraws it", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver"] },
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: () => ({ kind: "cancel", by: "person:u1" }), state: "cancelled", effects: ["withdraw"] },
 ]);
 
@@ -513,6 +516,157 @@ expect("verdict: CI not readable is said in plain words, apart from no CI", /CI 
 // The CI reader, against the stand-in
 // ---------------------------------------------------------------------------------------------
 
+print("\n== The evidence a handoff gives, and CI not read");
+
+/** The item after each fact, given as the actor gives it: at its next minute, about the item's current attempt. */
+function walk(item: FactoryItem, facts: Array<Record<string, unknown>>, from = T0): { item: FactoryItem; last: Outcome } {
+	let at = from;
+	let last: Outcome = { item, effects: [], events: [] };
+	for (let fact of facts) {
+		at += MINUTE;
+		const key = fact.key ?? (fact.kind === "turn_running" ? `${currentKey(item)}/check${item.run?.step.checks ?? 0}` : currentKey(item));
+		// A reading is of the commit it was asked for, as `readCi` gives it, unless the case says otherwise.
+		const reading = fact.reading as CiReading | undefined;
+		if (fact.kind === "ci_read" && reading?.kind === "read" && reading.head === "") fact = { ...fact, reading: { ...reading, head: fact.head } };
+		last = advance(item, { at, by: "person:u1", ...fact, key, ...(fact.kind === "answer" ? { question: item.question?.id } : {}) } as unknown as Fact);
+		item = last.item;
+	}
+	return { item, last };
+}
+const turnEnded = (outcome: "succeeded" | "unresolved", evidence: Verified | null) => ({ kind: "turn_ended", outcome, verified: evidence, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
+const passedCi = ciRead([{ name: "build", state: "passed" }]);
+const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", PASSED), { kind: "published", head, pr: { number: 7, url: "" }, openItems: 1 }];
+
+{
+	// Run 1 passed its gate and CI at H(1); run 2 was sent back, its checks failed twice, and it pushed nothing.
+	const reviewed = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", prHead: null, head: H(1), reading: passedCi, mergeable: true, openItems: 1 }]);
+	const first = effect(reviewed.last, "handoff");
+	const resent = walk(reviewed.item, [{ kind: "send_back", note: "Try another change" }, { kind: "turn_started" }, turnEnded("unresolved", FAILING), { kind: "turn_started" }, turnEnded("unresolved", FAILING)]);
+	const offered = resent.item.question?.choices.map((one) => one.id) ?? [];
+	expect(
+		"a sent-back run that pushed nothing offers no handover of the earlier commit, whose verdict stays as it was",
+		first?.verdict.result === "pass" && resent.item.question !== null && !offered.includes("hand_over"),
+		`first ${first?.verdict.result}; then asked “${resent.item.question?.text}” offering ${offered.join(", ")}`,
+	);
+	// Within one run: H(1) pushed with its checks passing, CI failed, the fix turn's checks then failed twice. Handed over, the
+	// verdict is H(1)'s: its own gate and CI, not the unpushed turn's.
+	const fixing = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", prHead: null, head: H(1), reading: failingCi("expected 3"), mergeable: true, openItems: 1 }, { kind: "turn_started" }, turnEnded("unresolved", FAILING), { kind: "turn_started" }, turnEnded("unresolved", FAILING)]);
+	const handed = walk(fixing.item, [{ kind: "answer", choice: "hand_over" }]);
+	const verdict = effect(handed.last, "handoff")?.verdict;
+	expect(
+		"handed over after an unpushed fix failed its checks, the verdict is the pushed commit's own: its gate passed, its CI failed",
+		verdict?.head === H(1) && verdict.gate.state === "passed" && verdict.ci.state === "failed" && verdict.result === "fail",
+		`${verdict?.head.slice(0, 7)}: gate ${verdict?.gate.state}, CI ${verdict?.ci.state}, ${verdict?.result}`,
+	);
+}
+
+{
+	// GitHub never answered a reading: 91 minutes on, the person has it handed over. That is not "no CI".
+	const waited = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", prHead: null, head: H(1), reading: { kind: "failed", said: "GitHub answered 503" }, mergeable: null, openItems: 1, at: T0 + 95 * MINUTE }]);
+	const handed = walk(waited.item, [{ kind: "answer", choice: "hand_over" }], T0 + 96 * MINUTE);
+	const ci = effect(handed.last, "handoff")?.verdict;
+	expect("CI that was never read, handed over, is said to be unread, not absent", waited.item.question?.kind === "ci_timeout" && ci?.ci.state === "unread" && /could not be read/.test(ci.said.ci), `${ci?.ci.state}: ${ci?.said.ci}`);
+}
+
+{
+	// One empty reading a minute after the push, then GitHub not answering until the wait ran out. CI may well
+	// have run since: handed over, that is "could not be read", never "no CI ran".
+	const empty: CiReading = { kind: "read", head: "", runs: [], truncated: false, logs: [] };
+	const early = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", prHead: null, head: H(1), reading: empty, mergeable: null, openItems: 1 }]);
+	const waited = walk(early.item, [{ kind: "ci_read", prHead: null, head: H(1), reading: { kind: "failed", said: "GitHub answered 503" }, mergeable: null, openItems: 1, at: T0 + 95 * MINUTE }], T0 + 94 * MINUTE);
+	const handed = walk(waited.item, [{ kind: "answer", choice: "hand_over" }], T0 + 96 * MINUTE);
+	const verdict = effect(handed.last, "handoff")?.verdict;
+	expect("an early empty reading followed by readings that failed is handed over as unread, not as no CI", early.item.run?.ci?.last === null && verdict?.ci.state === "unread", `kept ${JSON.stringify(early.item.run?.ci?.last)}; handed over as ${verdict?.ci.state}`);
+
+	// CI ran, and every check was skipped. Not a pass; waited for as "no CI" is, then said as itself.
+	const skipped = ciRead([{ name: "deploy", state: "neutral" }, { name: "release", state: "neutral" }]);
+	expect("CI whose every check was skipped, cancelled or neutral is skipped, not passed", ciState(skipped) === "skipped" && ciState(ciRead([{ name: "build", state: "passed" }, { name: "deploy", state: "neutral" }])) === "passed", ciState(skipped));
+	const soon = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", prHead: null, head: H(1), reading: skipped, mergeable: true, openItems: 1 }]);
+	const later = walk(soon.item, [{ kind: "ci_read", prHead: null, head: H(1), reading: skipped, mergeable: true, openItems: 1, at: T0 + 95 * MINUTE }], T0 + 94 * MINUTE);
+	const said = effect(later.last, "handoff")?.verdict;
+	expect(
+		"a skipped CI is waited for, then handed over as skipped: the person's checks passing decide the result, and the words say CI ran",
+		soon.item.state === "waiting" && effect(soon.last, "handoff") === undefined && said?.ci.state === "skipped" && said.result === "pass" && said.said.ci === "CI ran, and nothing in it passed: its 2 checks were skipped, cancelled or neutral.",
+		`${soon.item.state}; then ${said?.ci.state}, ${said?.result}: ${said?.said.ci}`,
+	);
+	// The pull request's branch moved to another commit after the agent pushed: CI passing on the agent's commit is not a pass
+	// of what the pull request holds. Handed over as it is, saying so, never as ready; with the branch where the agent left it, a pass.
+	const movedTo = H(2);
+	const moved = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", head: H(1), reading: passedCi, mergeable: true, prHead: movedTo, openItems: 1 }]);
+	const movedVerdict = effect(moved.last, "handoff")?.verdict;
+	const stayed = effect(walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", head: H(1), reading: passedCi, mergeable: true, prHead: H(1), openItems: 1 }]).last, "handoff")?.verdict;
+	expect(
+		"a pull request moved past the verified commit is handed over not verified, saying so; one still at it passes",
+		moved.item.state === "review" && movedVerdict?.result === "unverified" && movedVerdict.moved === movedTo && movedVerdict.said.ci.includes(`now at ${movedTo.slice(0, 7)}`) && effect(moved.last, "handoff")?.words.startsWith("Not verified: the pull request has a newer commit.") === true && stayed?.result === "pass" && stayed.moved === null,
+		`${moved.item.state}, ${movedVerdict?.result}: ${effect(moved.last, "handoff")?.words}; unmoved ${stayed?.result}`,
+	);
+	// A reading GitHub gave for another commit than the one asked of it is no reading of the agent's commit.
+	const other = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", head: H(1), reading: { ...passedCi, head: H(2) }, mergeable: true, prHead: null, openItems: 1 }]);
+	expect("a reading answered for another commit is waited past, not taken for CI of the commit asked", other.item.state === "waiting" && effect(other.last, "handoff") === undefined && other.item.run?.ci?.last === null, `${other.item.state}; last ${JSON.stringify(other.item.run?.ci?.last)}`);
+	// After the handover, a push to the branch makes the verdict again, in place of the first: not verified while it holds the other
+	// commit, a pass again if it comes back; the same head read twice changes nothing.
+	const reviewing = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", head: H(1), reading: passedCi, mergeable: true, prHead: H(1), openItems: 1 }]);
+	const first = effect(reviewing.last, "handoff");
+	const pushedOver = walk(reviewing.item, [{ kind: "pr_read", state: "open", prHead: movedTo }]);
+	const again = effect(pushedOver.last, "handoff");
+	const readTwice = walk(pushedOver.item, [{ kind: "pr_read", state: "open", prHead: movedTo }]);
+	const back = effect(walk(readTwice.item, [{ kind: "pr_read", state: "open", prHead: H(1) }]).last, "handoff");
+	expect(
+		"a push to the pull request after its handover replaces the verdict with one not verified, once, and a return to the commit passes again",
+		first?.verdict.result === "pass" && again?.verdict.result === "unverified" && again.verdict.id === first.verdict.id && again.key === first.key && again.reviewDone === true && pushedOver.item.state === "review" && effect(readTwice.last, "handoff") === undefined && back?.verdict.result === "pass",
+		`first ${first?.verdict.result}; moved ${again?.verdict.result} (${again?.verdict.id === first?.verdict.id ? "same id" : "new id"}); twice ${effect(readTwice.last, "handoff") ? "made again" : "nothing"}; back ${back?.verdict.result}`,
+	);
+	// A listing cut short of which nothing usable was read is not "no CI".
+	const cutEmpty: CiReading = { kind: "read", head: H(1), runs: [], truncated: true, logs: [] };
+	const cutVerdict = effect(walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", head: H(1), reading: cutEmpty, mergeable: true, prHead: null, openItems: 1 }]).last, "handoff")?.verdict;
+	expect("a listing cut short with nothing usable read is unread, not no CI", ciState(cutEmpty) === "incomplete" && cutVerdict?.ci.state === "unread" && !/No CI/.test(cutVerdict.said.ci), `${ciState(cutEmpty)}; ${cutVerdict?.ci.state}: ${cutVerdict?.said.ci}`);
+	const unchecked = verdictOf({ id: "v", item: "i", run: 1, head: H(1), at: T0, place: { kind: "hosted" }, gate: { outcome: "succeeded", verified: verified("none_set", []), flags: [] }, ci: { state: "skipped", runs: [{ name: "deploy", app: "ci", conclusion: "skipped", url: "" }], said: null }, acceptance: [], mergeable: true });
+	expect("with no checks set, a CI where nothing passed is not verified", unchecked.result === "unverified", unchecked.result);
+
+	// The person's checks passed while CI could not be read, or had not finished. The result is a
+	// pass; its first words say both halves.
+	const unreadPass = verdictOf({ id: "v", item: "i", run: 1, head: H(1), at: T0, place: { kind: "hosted" }, gate: { outcome: "succeeded", verified: PASSED, flags: [] }, ci: { state: "unread", runs: [], said: null }, acceptance: [], mergeable: true });
+	const slowPass = verdictOf({ id: "v", item: "i", run: 1, head: H(1), at: T0, place: { kind: "hosted" }, gate: { outcome: "succeeded", verified: PASSED, flags: [] }, ci: { state: "timed_out", runs: [], said: null }, acceptance: [], mergeable: true });
+	const gate = { outcome: "succeeded" as const, verified: PASSED, flags: [] };
+	expect(
+		"a pass on the person's checks with CI unread or unfinished does not begin \"Ready for review.\"",
+		unreadPass.result === "pass" && verdictWords(unreadPass, gate).startsWith("Your checks passed; CI has not been read.") && slowPass.result === "pass" && verdictWords(slowPass, gate).startsWith("Your checks passed; CI had not finished."),
+		`${verdictWords(unreadPass, gate)} | ${verdictWords(slowPass, gate)}`,
+	);
+}
+
+{
+	// What is said of the checks is what is true: none set, or no record of them, or what they came to.
+	const recordless = walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", null)]);
+	const unset = walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", verified("none_set", []))]);
+	const lines = (o: { item: FactoryItem; last: Outcome }) => o.last.events.map((event) => event.said);
+	expect(
+		"a turn with no record of its checks says so, and only a repository with none set says none are set",
+		lines(recordless).includes("The turn left no record of its checks: the work is pushed for CI to verify.") && lines(unset).includes("No checks are set for this repository: the work is pushed for CI to verify."),
+		`${lines(recordless).join(" / ")} | ${lines(unset).join(" / ")}`,
+	);
+	const ran = { name: "build", app: "ci", conclusion: "success", url: "" };
+	const noRecord = verdictOf({ id: "v", item: "i", run: 1, head: H(1), at: T0, place: { kind: "hosted" }, gate: { outcome: "succeeded", verified: null, flags: [] }, ci: { state: "passed", runs: [ran], said: null }, acceptance: [], mergeable: true });
+	expect("the verdict too: no record of the checks is not 'none set'", verdictWords(noRecord, { outcome: "succeeded", verified: null, flags: [] }) === "Ready for review. The turn left no record of its checks; CI decides. CI passed (1 check).", verdictWords(noRecord, { outcome: "succeeded", verified: null, flags: [] }));
+
+	// A turn the session refused before the agent ran: the person is asked with the session's sentence, and no cut-off is counted.
+	const refused = walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }, { ...turnEnded("succeeded", null), outcome: "error", refused: "This agent's sandbox has a Windlass too old for its conversation." }]);
+	const question = refused.item.question;
+	const again = question ? walk(refused.item, [{ kind: "answer", choice: "again" }]) : null;
+	expect(
+		"a refused turn asks the person with the session's reason, counts no cut-off, and trying again delivers the step anew",
+		question?.kind === "turn_refused" && question.text === "The agent's turn could not start. This agent's sandbox has a Windlass too old for its conversation." && refused.item.run?.step.interruptions === 0 && again !== null && effect(again.last, "deliver")?.key.endsWith(":1:1:2") === true,
+		`${question?.kind}: ${question?.text}; interruptions ${refused.item.run?.step.interruptions}`,
+	);
+}
+
+{
+	// The clock steps back sixty seconds between a turn's start and its end.
+	const running = walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }]);
+	const back = advance(running.item, { kind: "turn_ended", at: (running.item.workingSince ?? T0) - 60_000, key: currentKey(running.item), outcome: "succeeded", verified: null, flags: [], changes: false, report: null, spend: { tokens: 0, hostedSeconds: 0 } } as Fact);
+	expect("a clock that steps back credits no working time", back.item.spent.activeSeconds === 0, `${back.item.spent.activeSeconds} s`);
+}
+
 print("\n== CI reader");
 
 const standin = new GithubStandin({ callbackUrl: "http://localhost:5193/github/callback" });
@@ -568,6 +722,32 @@ try {
 	expect("a job still running: pending", ciState(await readCi(app, target)) === "pending");
 	ciData.runs = [];
 	expect("nothing reported yet: none", ciState(await readCi(app, target)) === "none");
+	const named = await readCi({ withToken: async (_i: number, _s: unknown, step: (token: string) => Promise<unknown>) => step(""), pages: async ({ path }: { path: string }, pick: (body: unknown) => unknown[]) => ({ items: pick(path.endsWith("/status") ? { sha: H(7), statuses: [] } : { check_runs: [] }), truncated: false }) } as unknown as InstanceType<typeof GithubApp>, target);
+	expect("a reading is of the commit GitHub's combined status names, not only the one asked", named.kind === "read" && named.head === H(7), named.kind === "read" ? named.head : named.kind);
+	ciData.runs = [checkRun(5301, "deploy", "skipped"), checkRun(5302, "release", "cancelled")];
+	expect("every job skipped or cancelled: skipped, not passed", ciState(await readCi(app, target)) === "skipped");
+
+	// More check runs than are read (ten pages): the ones read passed, the one that failed is past them. Not a pass.
+	ciData.runs = Array.from({ length: 1001 }, (_, index) => checkRun(7000 + index, `job-${index}`, index === 1000 ? "failure" : "success"));
+	const partial = await readCi(app, target);
+	expect("a listing cut short with no failure among what was read is incomplete, not passed", partial.kind === "read" && partial.truncated && ciState(partial) === "incomplete", partial.kind === "read" ? `${partial.runs.length} read, truncated ${partial.truncated}` : partial.kind);
+	const cut = advance(
+		advance(advance(advance(advance(newItem(), { kind: "start", at: T0, by: "person:u1" }).item, { kind: "turn_started", at: T0, key: "i_00000000000000aa:1:1:1" }).item, { ...(ended("succeeded", PASSED)({ key: "i_00000000000000aa:1:1:1", check: "", question: "" }) as Extract<Fact, { kind: "turn_ended" }>), at: T0 }).item, { kind: "published", at: T0, key: "i_00000000000000aa:1:3:1", head: HEAD, pr: { number: 1, url: "" }, openItems: 1 }).item,
+		{ kind: "ci_read", prHead: null, at: T0 + MINUTE, key: "i_00000000000000aa:1:4:1", head: HEAD, reading: partial, mergeable: null, openItems: 1 },
+	);
+	const said = effect(cut, "handoff")?.verdict;
+	expect("handed over, it says CI was not read in full, and claims no pass of it", said?.ci.state === "unread" && /not read in full|could not be read in full/.test(said.said.ci) && !/CI passed/.test(said.said.ci), `${said?.ci.state}: ${said?.said.ci}`);
+	ciData.runs = [];
+
+	// GitHub limits the request for the reading's token itself, with a Retry-After: a wait, not a missing permission.
+	const minting = new (class extends GithubApp {
+		override async installationToken(): Promise<never> {
+			throw new GithubError(403, "You have exceeded a secondary rate limit.", "could not get a token for the installation", new Headers({ "retry-after": "60" }));
+		}
+	})(app.settings, secrets);
+	const mintLimited = await readCi(minting, target);
+	expect("a rate limit on the reading's token is a wait, not a refusal of permission", mintLimited.kind === "rate_limited" && ciState(mintLimited) === "retry", JSON.stringify(mintLimited));
+
 
 	const withoutChecks = new (class extends GithubApp {
 		override installationToken() {
@@ -598,7 +778,7 @@ try {
 			pr: { number: 1, url: "" },
 			openItems: 1,
 		}).item,
-		{ kind: "ci_read", at: T0 + MINUTE, key: "i_00000000000000aa:1:4:1", head: HEAD, reading: ungranted, mergeable: null, openItems: 1 },
+		{ kind: "ci_read", prHead: null, at: T0 + MINUTE, key: "i_00000000000000aa:1:4:1", head: HEAD, reading: ungranted, mergeable: null, openItems: 1 },
 	);
 	expect("that reading, given to the blueprint, hands the item over saying CI was not read", handed.item.state === "review" && effect(handed, "handoff")?.verdict.ci.state === "not_permitted");
 	standin.appPermissions = granted;
