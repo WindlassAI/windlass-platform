@@ -14,7 +14,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../server"
 export WLP_DEMO="${WLP_DEMO:-1}"
 export WLP_SANDBOX="${WLP_SANDBOX:-docker}"
 
-if [ "$WLP_SANDBOX" = "docker" ] && ! docker image inspect windlass-platform-sandbox:latest >/dev/null 2>&1; then
+if [ "$WLP_SANDBOX" = "docker" ] && ! docker image inspect "${WLP_SANDBOX_IMAGE:-windlass-platform-sandbox:latest}" >/dev/null 2>&1; then
 	echo "The sandbox image is missing. Build it with sandbox/build.sh, or run with WLP_SANDBOX=fake." >&2
 	exit 1
 fi

@@ -8,12 +8,12 @@
  * (runner-layer.ts) is checked in this process, against a stand-in machine actor, on a clock it moves by
  * hand: the interleavings of hellos, answers, deadlines and closes that a real run meets only by chance.
  *
- *   cd server && ../scripts/locked.sh runner-e2e.ts
+ *   cd server && npx tsx ../scripts/runner-e2e.ts
  *
- * The helper takes group 6950 (engine 6950, +1 and +10; HTTP 6970). Nothing runs in
+ * The engine and HTTP server use OS-assigned ports. Nothing runs in
  * Docker. Prints one PASS/FAIL line per check and exits 1 if any failed.
  */
-import { checkPort } from "./ports.js";
+import { localListeners } from "./check-listeners.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { createWriteStream, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -30,8 +30,9 @@ import { DEAD_MS, PROTOCOL_VERSION, type Operation } from "../server/src/runner/
 import { StandInRunner, assert, until, opened } from "./runner-standin.js";
 import { FakeRunner } from "./runner-fake.js";
 
-const PORT = checkPort(6950);
-const HTTP = checkPort(6970);
+const { engine: PORT, http: [HTTP] } = process.argv[2] === "node"
+	? { engine: Number(process.env.RIVET_RUN_ENGINE_PORT), http: [Number(process.env.WLP_HTTP_PORT)] }
+	: await localListeners();
 const ENDPOINT = `http://127.0.0.1:${PORT}`;
 const ORIGIN = `http://127.0.0.1:${HTTP}`;
 const SERVER_DIR = fileURLToPath(new URL("../server/", import.meta.url));
@@ -537,7 +538,6 @@ async function main(): Promise<void> {
 	process.env.WLP_SECRET = server.secret;
 	// First, and on a clock of their own: nothing of the server is needed for them.
 	await linkChecks();
-	for (const port of [PORT, PORT + 1, PORT + 10, HTTP]) assert(await free(port), `port ${port} is in use`);
 	const runner = new StandInRunner(ORIGIN, ENDPOINT);
 	try {
 		await server.start();

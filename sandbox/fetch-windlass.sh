@@ -39,19 +39,23 @@ mkdir -p "$dir"
 
 sum_of() { sha256sum "$1" | cut -d' ' -f1; }
 
+part=
+trap '[ -z "$part" ] || rm -f "$part"' EXIT
 for arch in x64 arm64; do
   file="$dir/windlass-linux-$arch"
   eval "want=\$SUM_$arch"
   if [ -f "$file" ] && [ "$(sum_of "$file")" = "$want" ]; then continue; fi
   echo "fetch-windlass.sh: fetching Windlass $RELEASE for linux-$arch" >&2
-  curl --fail --silent --show-error --location --output "$file.part" "$BASE/windlass-linux-$arch"
-  got=$(sum_of "$file.part")
+  part=$(mktemp "$dir/.windlass-$arch.XXXXXX")
+  curl --fail --silent --show-error --location --output "$part" "$BASE/windlass-linux-$arch"
+  got=$(sum_of "$part")
   if [ "$got" != "$want" ]; then
-    rm -f "$file.part"
+    rm -f "$part"
     echo "fetch-windlass.sh: windlass-linux-$arch of $RELEASE has SHA-256 $got, not the pinned $want; nothing was installed" >&2
     exit 1
   fi
-  chmod 0755 "$file.part"
-  mv "$file.part" "$file"
+  chmod 0755 "$part"
+  mv "$part" "$file"
+  part=
 done
 echo "$dir"

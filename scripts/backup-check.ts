@@ -6,7 +6,7 @@
  *                                                                 signer against AWS's published example,
  *                                                                 and the backups on a scripted sandbox
  *   cd server && npx tsx ../scripts/backup-check.ts --bucket      and the S3 store against a real bucket
- *   cd server && ../scripts/locked.sh backup-check.ts --bucket --docker
+ *   cd server && npx tsx ../scripts/backup-check.ts --bucket --docker
  *                                                                 and the real scripts in real containers
  *                                                                 of the sandbox image, with a real
  *                                                                 Windlass, through that bucket
@@ -21,13 +21,13 @@
  * model, so no model is called, no sign-in is needed and no token exists. Each sandbox is a container
  * with a data volume of its own, so a second one is what a sandbox that replaces a lost one is on E2B:
  * a disk that has never seen the session. The containers and volumes carry the label
- * dev.windlass-platform=1 and are removed at the end; the lock is there because sandbox/cleanup.sh,
- * which other checks run, removes every such container on the machine.
+ * dev.windlass-platform=1 and are removed at the end.
  *
  * Nothing this prints holds a setting of the bucket, a link or a signature: its last check reads its
  * own output for them.
  */
 
+import { imageId } from "./check-image.js";
 import { spawnSync } from "node:child_process";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -393,7 +393,7 @@ async function realSandboxes(settings: S3Settings, store: ObjectStore, prefix: s
 	const { createSandboxLayer } = await import("../server/src/sandbox/index.js");
 	const { docker } = await import("../server/src/sandbox/docker.js");
 	// No sign-in exists here and no turn asks for a token: every turn is scripted.
-	const layer = createSandboxLayer({ signIns: "memory", tokenNetwork: "none" });
+	const layer = createSandboxLayer({ image: await imageId(), signIns: "memory", tokenNetwork: "none" });
 	const backups = new SandboxSessionBackups(store, { maxBytes: 8 * 1024 * 1024, prefix });
 	const uids: string[] = [];
 	const ids: string[] = [];
@@ -545,7 +545,7 @@ async function main(): Promise<number> {
 		try {
 			await section("a real bucket", () => realBucket(settings, store, prefix, dir));
 			if (withDocker) await section("real containers, a real Windlass, the real bucket", () => realSandboxes(settings, store, prefix));
-			else say("\n== real containers, a real Windlass, the real bucket\n      skipped: run with --docker (and under flock /tmp/wlp-test.lock)");
+			else say("\n== real containers, a real Windlass, the real bucket\n      skipped: run with --docker");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 			say("\n== cleanup");

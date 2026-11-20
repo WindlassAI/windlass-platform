@@ -3,10 +3,9 @@
  * through the real actors (`user`, `workItem`, `agentSession`) on the fake sandbox layer, with GitHub
  * played by scripts/github-standin.ts. Run with:
  *
- *   cd server && ../scripts/locked.sh factory-e2e.ts
+ *   cd server && npx tsx ../scripts/factory-e2e.ts
  *
- * It starts its own servers on fresh state, on ports of its own (engine 6620, which also takes 6621
- * and 6630; HTTP 6645), and stops each by its PID. The fake layer replays recorded turns (its words
+ * It starts its own servers on fresh state, on OS-assigned ports, and stops each by its PID. The fake layer replays recorded turns (its words
  * choose them, sandbox-fake.ts): a user's check whose command says "fail" fails, every other passes,
  * and a turn always leaves files to push. CI is set on the stand-in per branch; the factory polls it
  * every minute (github/ci.ts `CI_POLLING`), so a check that waits for CI takes a minute or more.
@@ -19,7 +18,7 @@
 
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
 import { verdictWords } from "../server/src/factory/verdict.js";
-import { checkPort } from "./ports.js";
+import { localListeners } from "./check-listeners.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createWriteStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -34,8 +33,7 @@ import { StandInRunner } from "./runner-standin.js";
 import { GithubStandin, type StandinRepository, type StandinPull } from "./github-standin.js";
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
-const ENGINE_PORT = checkPort(6620);
-const HTTP_PORT = checkPort(6645);
+const { engine: ENGINE_PORT, http: [HTTP_PORT] } = await localListeners();
 const ENDPOINT = `http://127.0.0.1:${ENGINE_PORT}`;
 const API = `http://127.0.0.1:${HTTP_PORT}`;
 const ORIGIN = "http://localhost:5173";

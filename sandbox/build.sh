@@ -1,8 +1,8 @@
 #!/bin/sh
 # Builds the sandbox image, windlass-platform-sandbox:latest. Idempotent: an unchanged Dockerfile and binary reuse the cache.
 #
-# From server/, take the exclusive Docker lock when running by hand:
-#   WINDLASS_BINARY=/path/to/windlass-linux-<arch> ../scripts/locked.sh ../sandbox/build.sh
+# From server/, publish the local image or supply a run-private tag:
+#   WINDLASS_BINARY=/path/to/windlass-linux-<arch> ../sandbox/build.sh
 #   WLP_SANDBOX_IMAGE=<name:tag> ...   another tag than the one the server uses (scripts/sandbox-check.ts
 #                                      builds throwaway images from older Windlasses this way)
 #
@@ -14,11 +14,22 @@
 #
 # Without WINDLASS_BINARY it takes the released Windlass that sandbox/fetch-windlass.sh pins and fetches.
 # A build of your own is for trying a Windlass that is not released yet:
-#   WINDLASS_BINARY=~/projects/windlass-local-builds/windlass-linux-<arch> ../scripts/locked.sh ../sandbox/build.sh
+#   WINDLASS_BINARY=~/projects/windlass-local-builds/windlass-linux-<arch> ../sandbox/build.sh
 # Prints the installed Windlass version on its last line.
 set -eu
 
 IMAGE="${WLP_SANDBOX_IMAGE:-windlass-platform-sandbox:latest}"
+if [ -n "${WLP_SANDBOX_IMAGE:-}" ]; then
+  case "${IMAGE##*/}" in
+    *:latest) echo "build.sh: omit WLP_SANDBOX_IMAGE to publish :latest" >&2; exit 2 ;;
+    *:*) ;;
+    *) echo "build.sh: give the private image an explicit tag" >&2; exit 2 ;;
+  esac
+else
+  # Only publishers compete for this tag. An interrupted publisher releases the descriptor.
+  exec 9>>/tmp/wlp-sandbox-publish.lock
+  flock -n 9 || { echo "build.sh: another local image publication is in progress" >&2; exit 1; }
+fi
 LABEL=dev.windlass-platform=1
 here=$(cd "$(dirname "$0")" && pwd)
 

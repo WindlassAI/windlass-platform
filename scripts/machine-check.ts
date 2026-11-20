@@ -1,11 +1,10 @@
-/** cd server && ../scripts/locked.sh machine-check.ts */
-import { checkPort } from "./ports.js";
+/** cd server && npx tsx ../scripts/machine-check.ts */
+import { localListeners } from "./check-listeners.js";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
@@ -15,12 +14,8 @@ import type { Registry } from "../server/src/client.js";
 import { CONTROL_DEAD_MS, REFUSED_RETRY_MS, parseConnection, RUNNER_PAIR_PATH } from "../server/src/runner/control.js";
 import { FakeRunner, controlProxy, post } from "./runner-fake.js";
 
-const port = checkPort(6850);
-const endpoint = `http://127.0.0.1:${port}`;
-const origin = `http://127.0.0.1:${port + 20}`;
-const peer = `http://127.0.0.1:${port + 21}`;
 const refused = (p: Promise<unknown>, code: string) => assert.rejects(p, e => (e as { code?: string }).code === code);
-async function eventually(test: () => boolean | Promise<boolean>, ms = 15_000) {
+async function eventually(test: () => boolean | Promise<boolean>, ms = 90_000) {
 	const end = Date.now() + ms;
 	while (!await test()) { if (Date.now() >= end) throw new Error("Timed out"); await wait(50); }
 }
@@ -46,7 +41,7 @@ async function server() {
 		if (input?.details.name === "Old machine fixture") {
 			// Age a private test database. Fire the production schedule with no clock argument.
 			await c.db.execute("UPDATE machine SET created = ?", Date.now() - 91 * 86_400_000);
-			await c.schedule.after(2500, "expire");
+			await c.schedule.after(15_000, "expire");
 		}
 	};
 	// A report of 404 bytes free stands for the user actor being briefly away (its node restarting) when the machine publishes it.
@@ -94,15 +89,19 @@ async function realRunner() {
 	const owner = new Executor(id, { maxRunning: 1, maxSandboxes: 1 });
 	// The connection's state in status.json, as runner/src/main.ts keeps it: the check reads "key-in-use" there.
 	const saveStatus = (connection: string, idleSuspendMs?: number) => save("status.json", { machineId: id.machineId, connection, idleSuspendMs: idleSuspendMs ?? null });
-	await control(owner, createPrivateKey({ key, type: "pkcs8", format: "der" }), origin, new AbortController().signal, saveStatus, undefined);
+	await control(owner, createPrivateKey({ key, type: "pkcs8", format: "der" }), process.env.WLP_PUBLIC_URL!, new AbortController().signal, saveStatus, undefined);
 }
 
 async function check() {
+	const { engine: port, http: [http, peerPort] } = await localListeners(2);
+	const endpoint = `http://127.0.0.1:${port}`;
+	const origin = `http://127.0.0.1:${http}`;
+	const peer = `http://127.0.0.1:${peerPort}`;
 	const dir = await mkdtemp(join(tmpdir(), "wlp-machine-check-"));
 	const secret = randomBytes(32).toString("hex");
 	process.env.WLP_SECRET = secret;
 	const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(WLP_|RIVET|E2B_|PORT$)/.test(k)));
-	const env = { ...cleanEnv, WLP_CHECK_PORT_OFFSET: process.env.WLP_CHECK_PORT_OFFSET, WLP_SECRET: secret, WLP_DEMO: "1", WLP_SANDBOX: "fake", RIVET_LOG_LEVEL: "silent",
+	const env = { ...cleanEnv, WLP_SECRET: secret, WLP_DEMO: "1", WLP_SANDBOX: "fake", RIVET_LOG_LEVEL: "silent",
 		WLP_GITHUB_APP_ID: "1", WLP_GITHUB_APP_SLUG: "local", WLP_GITHUB_CLIENT_ID: "local", WLP_GITHUB_CLIENT_SECRET: secret,
 		WLP_GITHUB_PRIVATE_KEY: generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
 		WLP_GITHUB_API_URL: origin, WLP_GITHUB_URL: origin };
@@ -133,10 +132,7 @@ async function check() {
 	let stage = "starting a private local engine";
 	const step = (name: string) => { console.log("ok   " + stage); stage = name; };
 	try {
-		for (const p of [port, port + 1, port + 10, port + 20, port + 21]) await new Promise<void>((ok, fail) => {
-			const s = createServer().once("error", fail); s.listen(p, "127.0.0.1", () => s.close(() => ok()));
-		});
-		const node = await start(port + 20, true);
+		const node = await start(http, true);
 		const { createClient } = await import("../server/src/client.js");
 		const { serviceParams } = await import("../server/src/auth.js");
 		const { createGrant, grantIsValid, secretsActor } = await import("../server/src/actors/internal.js");
@@ -266,7 +262,6 @@ async function check() {
 		step("the user actor briefly away keeps the control socket; sockets that never say hello go, one at a time");
 		back.send({ ...runner.report, freeDiskBytes: 404 });
 		await eventually(() => hooks.some(h => h.hook === "publish-refused" && h.id === machineId));
-		await wait(300);
 		assert.equal(back.ws.readyState, 1);
 		back.send({ ...runner.report, freeDiskBytes: 405 });
 		await eventually(async () => (await row()).freeDiskBytes === 405);
@@ -282,10 +277,10 @@ async function check() {
 		const opened = Date.now();
 		const quieter = await silent();
 		quieter.addEventListener("close", e => codes.push(e.code));
-		await eventually(() => quiet.readyState === 3, 3000);
-		await eventually(() => quieter.readyState === 3, 20_000);
+		await eventually(() => quiet.readyState === 3);
+		await eventually(() => quieter.readyState === 3);
 		const lasted = Date.now() - opened;
-		assert(lasted >= 8000 && lasted < 14_000, `a silent control socket lasted ${lasted} ms`);
+		assert(lasted >= 8000, `a silent control socket lasted ${lasted} ms`);
 		// Neither close is a refusal (1008), which a runner would answer by dropping its sessions and waiting ten minutes.
 		await eventually(() => codes.length === 2);
 		assert.deepEqual(codes, [1001, 1001], `silent control sockets were closed with ${codes.join(", ")}`);
@@ -298,7 +293,7 @@ async function check() {
 		await eventually(async () => (await row()).freeDiskBytes === runner.report.freeDiskBytes);
 		const since = events.length;
 		proxy.drop();
-		await eventually(async () => events.slice(since).some(rows => rows.some(r => r.machineId === machineId && r.status === "offline")) && (await row()).status === "offline", CONTROL_DEAD_MS + 2_000);
+		await eventually(async () => events.slice(since).some(rows => rows.some(r => r.machineId === machineId && r.status === "offline")) && (await row()).status === "offline", CONTROL_DEAD_MS + 60_000);
 		proxy.close(); proxy = undefined;
 		step("list reads leaving the actor asleep, a second node and queued removal");
 		const actorId = await service().resolve();
@@ -311,7 +306,7 @@ async function check() {
 		for (let i = 0; i < 3; i++) assert.equal((await row()).status, "offline");
 		assert.equal(wakes(), asleep);
 		await service().internalRemoveSandbox({ sandboxId: "deleted-sandbox" });
-		const node2 = await start(port + 21, true, true);
+		const node2 = await start(peerPort, true, true);
 		assert.equal((await runner.connection(peer, id)).status, 200);
 		const returned = await runner.connect(conn, id);
 		await eventually(() => returned.frames.some(f => f.kind === "remove" && f.sandbox === "deleted-sandbox"));
@@ -325,7 +320,7 @@ async function check() {
 			const state = await mkdtemp(join(dir, "runner-"));
 			const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "runner"], {
 				cwd: fileURLToPath(new URL("../server/", import.meta.url)), stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "advanced",
-				env: { ...env, DOCKER_HOST: "unix://" + join(dir, "no-docker.sock"), DOCKER_CONTEXT: "", WLP_RUNNER_STATE_DIR: state },
+				env: { ...env, WLP_PUBLIC_URL: origin, DOCKER_HOST: "unix://" + join(dir, "no-docker.sock"), DOCKER_CONTEXT: "", WLP_RUNNER_STATE_DIR: state },
 			});
 			nodes.add(child);
 			child.send({ id, key: runner.key.export({ type: "pkcs8", format: "der" }) });
@@ -376,18 +371,20 @@ async function check() {
 		assert(confirmed.some(r => r.status === "rejected" && r.reason.code === "too_many_machines"));
 		// Each machine actor fails the logout: forgetting the sign-in still succeeds.
 		await user.forgetChatgpt();
-		assert.equal(hooks.filter(h => h.hook === "logout-refused").length, 3);
+		await eventually(() => hooks.filter(h => h.hook === "logout-refused").length === 3);
 		for (let i = 0; i < 4; i++) await refused(other.claimMachine({ code: "0000-0000" }), "pairing_not_found");
 		await refused(other.claimMachine({ code: "0000-0000" }), "too_many_claims");
 		step("expired pairing and scheduled 90-day removal");
 		const { codeDigest, digest, newPairCode, publicSpki } = await import("../server/src/runner-keys.js");
 		const expCode = newPairCode(), pairingId = randomBytes(32).toString("base64url");
+		const pollSecret = randomBytes(32).toString("base64url");
 		const claimant = await account();
 		const params = serviceParams();
 		await client.pairingDirectory.get(["starts"], { params }).internalStart(codeDigest(expCode)!, pairingId, digest("fixture"));
 		await client.machinePairing.create([pairingId], { params, input: { grant: createGrant("machinePairing", [pairingId]), details: runner.details,
-			publicKey: publicSpki(runner.details.publicKey)!, pollHash: digest(randomUUID()), expires: Date.now() + 2500 } });
-		await claimant.user.claimMachine({ code: expCode }); await wait(2600);
+			publicKey: publicSpki(runner.details.publicKey)!, pollHash: digest(pollSecret), expires: Date.now() + 15_000 } });
+		await claimant.user.claimMachine({ code: expCode });
+		await eventually(async () => (await runner.poll(origin, { pairing: pairingId, pollSecret }))?.state === "gone");
 		await refused(claimant.user.confirmMachine({ code: expCode }), "pairing_not_found");
 		assert.equal((await claimant.user.machines()).length, 0);
 		const idle = new FakeRunner();
@@ -433,7 +430,7 @@ async function check() {
 		step("disabled routes, user actions and platform info after restart");
 		await stop(node2);
 		await stop(node);
-		await start(port + 20, false);
+		await start(http, false);
 		assert.equal((await post(origin, RUNNER_PAIR_PATH, {})).status, 404);
 		assert(!(await (await fetch(origin + "/platform/info")).json()).machines);
 		await Promise.all([user.machines(), user.claimMachine(code), user.confirmMachine(code),

@@ -4,11 +4,9 @@
  * of its submission (`PromptInput.idempotencyKey`, `CreateSessionInput.idempotencyKey`) it is taken
  * once and answered as the first attempt was (README, "A message sent twice").
  *
- *   cd server && ../scripts/locked.sh idempotency-check.ts
+ *   cd server && npx tsx ../scripts/idempotency-check.ts
  *
- * It starts a server of its own on fresh state, on ports of its own (the engine on 6460, which also
- * takes 6461 and 6470, the platform's routes on 6480; WLP_CHECK_ENGINE_PORT and WLP_CHECK_HTTP_PORT
- * move them), so it runs beside a development server and beside the end-to-end suite. No model is
+ * It starts a server of its own on fresh state, on OS-assigned ports, so it runs beside a development server and beside the end-to-end suite. No model is
  * called and nothing leaves the machine.
  *
  * What it holds to: a key is a string of 1 to 255 characters, and anything else is refused, not read
@@ -27,7 +25,7 @@
  * the second delivery is RivetKit's own, 25 ms later.
  */
 
-import { checkPort } from "./ports.js";
+import { localListeners } from "./check-listeners.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -43,8 +41,7 @@ process.env.RIVET_LOG_LEVEL ??= "silent";
 const { createClient } = await import("../server/src/client.js");
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
-const ENGINE_PORT = checkPort(Number(process.env.WLP_CHECK_ENGINE_PORT ?? 6460));
-const HTTP_PORT = checkPort(Number(process.env.WLP_CHECK_HTTP_PORT ?? 6480));
+const { engine: ENGINE_PORT, http: [HTTP_PORT] } = await localListeners();
 const ENDPOINT = `http://127.0.0.1:${ENGINE_PORT}`;
 const API = `http://127.0.0.1:${HTTP_PORT}`;
 const PROFILE = "docker-windlass-sandbox" as const;
@@ -199,7 +196,10 @@ const lossy: typeof fetch = async (input, init) => {
 async function main(): Promise<void> {
 	const client = createClient<Registry>({ endpoint: ENDPOINT, fetch: lossy });
 	const signIn = async (): Promise<AuthResult> => client.login.getOrCreate([`check-${randomBytes(8).toString("hex")}`]).demo();
-	const auth = await signIn();
+	// The HTTP routes can answer before the local engine has opened actor storage under load.
+	const login = client.login.getOrCreate([`check-${randomBytes(8).toString("hex")}`]);
+	await waitFor("the first login actor to become reachable", () => login.resolve().catch(() => false), 90_000, 500);
+	const auth = await login.demo();
 	const { uid } = auth.profile;
 	const params = { token: auth.token };
 	const user = client.user.getOrCreate([uid], { params });

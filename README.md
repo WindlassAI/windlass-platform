@@ -661,7 +661,7 @@ the server's own measurement, and E2B's usage page has what was billed.
 cd server && E2B_API_KEY=e2b_... npx tsx ../scripts/e2b-cleanup.ts            # lists the deployment's sandboxes; changes nothing
 cd server && E2B_API_KEY=e2b_... npx tsx ../scripts/e2b-cleanup.ts --kill     # removes them, paused ones too
 cd server && npx tsx ../scripts/e2b-provider-test.ts                         # the provider on an in-memory E2B: no account, nothing sent
-cd server && ../scripts/locked.sh e2b-provider-test.ts --docker
+cd server && npx tsx ../scripts/e2b-provider-test.ts --docker
                                                                              # and real scripted turns through it, in local containers
 ```
 
@@ -854,10 +854,11 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
 | `WLP_RUNNER_IMAGE` | the runner image the Machines page tells users to start, pinned by digest (`<name>@sha256:<64 hex>`). Unset: the page says that it cannot be installed yet. Set to anything else, the server does not start |
 
 What is not there yet. No runner image is published, so the page has no command to copy until one is:
-`scripts/runner-build.sh [<sandbox image pin>]` builds `windlass-runner:dev` for the machine it runs on,
-from a local sandbox image (`windlass-platform-sandbox:latest` by default) whose id it pins, and with
-`WLP_RUNNER_PLATFORMS=linux/amd64,linux/arm64` it writes a two-architecture OCI archive instead. A new
-sandbox image means a new runner build. Until `WLP_RUNNER_IMAGE` is set, the Machines page says that the
+`scripts/runner-build.sh [<sandbox image pin>]` builds a local runner and prints its image ID.
+It pins the sandbox image by ID, using `windlass-platform-sandbox:latest` by default.
+With `WLP_RUNNER_PLATFORMS=linux/amd64,linux/arm64` it writes a two-architecture OCI archive
+and prints its path. Set `WLP_RUNNER_ARCHIVE` to choose the archive path.
+A new sandbox image means a new runner build. Until `WLP_RUNNER_IMAGE` is set, the Machines page says that the
 runner is not published and shows no command; a runner built on the machine itself is started with the same
 command, naming the local image:
 
@@ -865,7 +866,7 @@ command, naming the local image:
 docker run -d --name windlass-runner --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v windlass-runner:/var/lib/windlass-runner \
-  windlass-runner:dev --platform <WLP_PUBLIC_URL>
+  <runner-image-id> --platform <WLP_PUBLIC_URL>
 ```
 
 and paired by the code it prints, as above. Give it a sandbox image pinned by id, so that a rebuild of
@@ -946,7 +947,7 @@ and the server says which are missing when it starts.
 
 ```sh
 cd server && npx tsx ../scripts/backup-check.ts                     # the seam and the backups: no network, no Docker
-cd server && ../scripts/locked.sh backup-check.ts --bucket --docker
+cd server && npx tsx ../scripts/backup-check.ts --bucket --docker
                                                                     # a real bucket, and a real Windlass in local containers
 cd server && E2B_API_KEY=e2b_... npx tsx ../scripts/e2b-backup-check.ts
                                                                     # two E2B sandboxes, one after the other, for under half a minute
@@ -1305,7 +1306,7 @@ GitHub's refusals written from what is known of them and not copied from a run a
 
 ```sh
 cd server && npx tsx ../scripts/github-check.ts             # the server's GitHub code and real git against the stand-in
-cd server && ../scripts/locked.sh github-check.ts --docker  # and the git commands again in a container of the sandbox image
+cd server && npx tsx ../scripts/github-check.ts --docker  # and the git commands again in a container of the sandbox image
 cd server && pnpm e2e                                       # its last section: the route and the actors, on the fake layer
 ```
 
@@ -1509,7 +1510,7 @@ session on it.
 
 ```sh
 cd server && npx tsx ../scripts/verified-check.ts                                   # the rules on their own: what may be saved, the configuration file, a turn's events, the section
-cd server && ../scripts/locked.sh verified-check.ts --docker                       # and what a real Windlass does with a user's checks and a repository's own: the image's, and the last release without required checks (`sandbox/fetch-windlass.sh older`)
+cd server && npx tsx ../scripts/verified-check.ts --docker                       # and what a real Windlass does with a user's checks and a repository's own: the image's, and the last release without required checks (`sandbox/fetch-windlass.sh older`)
 ```
 
 The web app's mock has two checks saved for acme/harbor (`?mock=1`, `/repositories/7101/settings`), one of them with
@@ -1912,7 +1913,7 @@ the same place as a tool call's question, with the same control.
   answered by the platform, where its user said so ("Account settings").
 
 ```sh
-cd server && ../scripts/locked.sh mcp-check.ts                         # a real Windlass in local containers, and fixtures/mcp-repo
+cd server && npx tsx ../scripts/mcp-check.ts                         # a real Windlass in local containers, and fixtures/mcp-repo
 cd server && pnpm e2e                                                   # the session's part, on the fake layer's "(mcp...)" switches
 ```
 
@@ -2174,7 +2175,7 @@ with another owner and no setup command to go to (`server/src/account-secrets.ts
 ```sh
 cd server && npx tsx ../scripts/account-check.ts                        # the rules on their own: defaults, names, definitions, the setting, limits under saves that interleave, sealing, scopes and reach, the configuration file
 cd server && pnpm e2e                                                   # one step of its last section: through the actors, on the fake layer
-cd server && ../scripts/locked.sh mcp-check.ts                          # its section on a user's own server: a real Windlass asks about a tool, and is answered where the setting is on
+cd server && npx tsx ../scripts/mcp-check.ts                          # its section on a user's own server: a real Windlass asks about a tool, and is answered where the setting is on
 ```
 
 The web app's mock has two servers and two secrets saved for the account (`?mock=1`; `&account=empty`
@@ -2470,7 +2471,7 @@ and the API, from their own user, and nothing is taken in from GitHub's issues.
 
 ```sh
 cd server && npx tsx ../scripts/factory-check.ts                          # the sequence, verdicts and budgets as tables of facts, and the reader of CI against the GitHub stand-in
-cd server && ../scripts/locked.sh factory-e2e.ts                          # items through the real actors, on fake sandboxes and the GitHub stand-in; ports 6620, 6621, 6630 and 6645
+cd server && npx tsx ../scripts/factory-e2e.ts                          # items through the real actors, on fake sandboxes and the GitHub stand-in
 ```
 
 ## Layout
@@ -2511,51 +2512,61 @@ cd server && ../scripts/locked.sh factory-e2e.ts                          # item
 | `web/` | The web app (Vite, React); `src/api/rivet.ts` is the real client, `src/api/connection.ts` where it gets its connection and renews its token, `src/api/mock.ts` the mock |
 | `fixtures/windlass-events/` | Recorded Windlass events, used by the fake layer, the mock and the reducer's tests |
 | `fixtures/mcp-repo/` | A small repository whose `.windlass/config.json` names an MCP server, and the server (Python, nothing else), for `scripts/mcp-check.ts` |
-| `scripts/` | `dev.sh`, `e2e.ts` (the actors), `sandbox-check.ts` (the sandbox layer), `signin-check.ts` (the sign-ins), `connection-check.ts` and `connection-e2e.ts` (what browsers connect with, and its renewal), the stand-ins the checks use (`github-standin.ts`; `runner-fake.ts` and `runner-stub-server.ts` for a runner and for the platform), `locked.sh` (the locks a check takes), and the checks listed under "Checks" |
+| `scripts/` | `dev.sh`, `e2e.ts` (the actors), `sandbox-check.ts` (the sandbox layer), `signin-check.ts` (the sign-ins), `connection-check.ts` and `connection-e2e.ts` (what browsers connect with, and its renewal), the stand-ins the checks use (`github-standin.ts`; `runner-fake.ts` and `runner-stub-server.ts` for a runner and for the platform), and the checks listed under "Checks" |
 
 ## Checks
 
-A check that binds fixed ports or uses Docker is run through `scripts/locked.sh`, from `server/`, as
-`../scripts/locked.sh <name>.ts [flags]`; `pnpm e2e` and `pnpm e2e:docker` go through it already. The
-commands below are the ones each script's header gives.
+Run each TypeScript check from the project root with `cd server && npx tsx ../scripts/<name>.ts [flags]`.
+Existing commands using `../scripts/locked.sh <check>.ts` from `server/` still run the same check directly.
+The `pnpm e2e` and `pnpm e2e:docker` commands in `server/` are shortcuts for the actor checks.
 
 ```sh
 pnpm -r typecheck
 pnpm --filter @windlass-platform/web test                         # the timeline reducer against every fixture; the connection and its renewal
-cd server && pnpm e2e                                             # the actors, fake sandboxes
-cd server && WLP_DEMO=1 pnpm e2e:docker                           # the actors, real containers
-cd server && ../scripts/locked.sh sandbox-check.ts                # the sandbox layer on its own
-cd server && ../scripts/locked.sh mcp-check.ts                    # the question about a project's MCP server, against a real Windlass
+cd server && npx tsx ../scripts/e2e.ts                            # the actors, fake sandboxes
+cd server && WLP_SANDBOX=docker npx tsx ../scripts/e2e.ts         # the actors, real containers
+cd server && npx tsx ../scripts/sandbox-check.ts                  # the sandbox layer on its own
+cd server && npx tsx ../scripts/mcp-check.ts                      # the question about a project's MCP server, against a real Windlass
 cd server && npx tsx ../scripts/setup-check.ts                    # a repository's setup command: its rules, no server and no Docker
 cd server && npx tsx ../scripts/usage-check.ts                    # sandbox time and kept sandboxes: their rules, no server and no Docker
 cd server && npx tsx ../scripts/secrets-check.ts                  # a repository's secrets: its rules, no server and no Docker
 cd server && npx tsx ../scripts/repository-check.ts               # a repository's defaults: its rules and saves that interleave, no server and no Docker
 cd server && npx tsx ../scripts/verified-check.ts                 # a repository's checks and what a pull request says was verified: the rules, no server and no Docker
-cd server && ../scripts/locked.sh verified-check.ts --docker      # and the same against a real Windlass
+cd server && npx tsx ../scripts/verified-check.ts --docker        # and the same against a real Windlass
 cd server && npx tsx ../scripts/account-check.ts                  # the account's settings: defaults, own MCP servers and their secrets, no server and no Docker
-cd server && ../scripts/locked.sh idempotency-check.ts            # a message sent twice: with and without a key, through the actors on fake sandboxes, on ports of its own
+cd server && npx tsx ../scripts/idempotency-check.ts              # a message sent twice: with and without a key, through the actors on fake sandboxes, on ports of its own
 cd server && npx tsx ../scripts/models-check.ts                   # a user's models: the list's rules, and the real `windlass --models` against a stand-in for the provider
-cd server && ../scripts/locked.sh signin-check.ts                 # the sign-in machinery without Docker, against a stand-in for OpenAI; its last section starts a server of its own on ports 6420 and 6440
+cd server && npx tsx ../scripts/signin-check.ts                   # the sign-in machinery without Docker, against a stand-in for OpenAI; its last section starts a server of its own on OS-assigned ports
 cd server && npx tsx ../scripts/connection-check.ts               # the tokens browsers connect with: a stand-in for the engine
 cd server && npx tsx ../scripts/access-check.ts                   # who may sign in: the invitation list and the demo
 cd server && npx tsx ../scripts/web-files-check.ts                # the web app's files as the server serves them
-cd server && ../scripts/locked.sh connection-e2e.ts               # the web app's client through an engine whose tokens run out
+cd server && npx tsx ../scripts/connection-e2e.ts                 # the web app's client through an engine whose tokens run out
+cd server && npx tsx ../scripts/harness-check.ts                  # recorded ACP agent interactions
+cd server && npx tsx ../scripts/attachments-check.ts              # work item attachments
+cd server && npx tsx ../scripts/review-check.ts                   # the report tool
+cd server && npx tsx ../scripts/reviewer-task-check.ts            # reviewer task text
+cd server && npx tsx ../scripts/shot-check.ts                     # screenshot helper; --docker exercises the browser
+cd server && npx tsx ../scripts/github-check.ts                   # GitHub stand-in and git operations
+cd server && npx tsx ../scripts/webhook-check.ts                  # GitHub webhook delivery and retries
+cd server && npx tsx ../scripts/backup-check.ts                   # backup and restore with a stand-in bucket
+cd server && npx tsx ../scripts/e2b-provider-test.ts              # E2B provider with its in-memory client
+cd server && npx tsx ../scripts/e2b-check.ts                      # live E2B; requires E2B_API_KEY
+cd server && npx tsx ../scripts/e2b-backup-check.ts               # live E2B and bucket; requires both configurations
 ```
 
-The checks of machines and of work items run from `server/` too. `runner-check.ts` needs the runner's
-image, which `runner-build.sh` builds first.
+The machine and work item checks use the same command. `runner-check.ts` builds its own runner from
+the pinned sandbox, or uses the image named by `WLP_RUNNER_CHECK_IMAGE`.
 
 ```sh
-npx tsx ../scripts/runner-protocol-check.ts                    # the runner channel under the failures it will meet, on loopback sockets and a clock moved by hand
-npx tsx ../scripts/runner-control-check.ts                     # the control socket's frames: input that is not a frame, every refusal readable by a runner, a second runner with one key
-../scripts/locked.sh http-limits-check.ts                      # public HTTP limits, two nodes, real tokens and signed deliveries; port group 3710
-../scripts/locked.sh machine-check.ts                          # pairing, keys, removal and the 90-day expiry, through the real routes and actors, a second node and the runner's own control loop. Ports 6850, 6851, 6860, 6870 and 6871
-../scripts/locked.sh runner-e2e.ts                             # sessions on a machine through the real server and actors, with a runner stood in for in the process; no Docker. Ports 6950, 6951, 6960 and 6970
-../scripts/locked.sh runner-socket-probe.ts                    # one throwaway actor on a local engine, ports 6740, 6741 and 6750
-npx tsx ../scripts/factory-check.ts                            # work items' sequence, verdicts and budgets as tables of facts, and the reader of CI against the GitHub stand-in
-../scripts/locked.sh factory-e2e.ts                            # work items through the real actors on fake sandboxes and the GitHub stand-in; ports 6620, 6621, 6630 and 6645
-../scripts/locked.sh ../scripts/runner-build.sh                # the runner's image, windlass-runner:dev, from the local sandbox image
-../scripts/locked.sh runner-check.ts                           # the real runner in real containers, against a stand-in of the platform and the real routes: pairing, outages, refusals, prune. Ports 6900, 6901, 6910, 6920, 7020, 7021 and 7030
+cd server && npx tsx ../scripts/runner-protocol-check.ts          # the runner channel under the failures it will meet, on loopback sockets and a clock moved by hand
+cd server && npx tsx ../scripts/runner-control-check.ts           # the control socket's frames: input that is not a frame, every refusal readable by a runner, a second runner with one key
+cd server && npx tsx ../scripts/http-limits-check.ts               # public HTTP limits, two nodes, real tokens and signed deliveries
+cd server && npx tsx ../scripts/machine-check.ts                  # pairing, keys, removal and the 90-day expiry, through the real routes and actors, a second node and the runner's own control loop
+cd server && npx tsx ../scripts/runner-e2e.ts                     # sessions on a machine through the real server and actors, with a runner stood in for in the process; no Docker
+cd server && npx tsx ../scripts/runner-socket-probe.ts            # one throwaway actor on a local engine
+cd server && npx tsx ../scripts/factory-check.ts                  # work items' sequence, verdicts and budgets as tables of facts, and the reader of CI against the GitHub stand-in
+cd server && npx tsx ../scripts/factory-e2e.ts                    # work items through the real actors on fake sandboxes and the GitHub stand-in
+cd server && npx tsx ../scripts/runner-check.ts                   # the real runner in real containers, against a stand-in of the platform and the real routes: pairing, outages, refusals, prune
 ```
 
 `runner-check.ts` plays a five-minute outage of the machine's network and a two-minute sleep of the machine
@@ -2573,34 +2584,19 @@ The local engine asks for no token, so `connection-e2e.ts` puts a front before i
 cluster's engine does, with tokens that last twelve seconds, and runs real turns through it with the web
 app's own client: past a token's expiry, across a dropped connection, and with a clock that runs behind.
 
-**Which checks can run together.** The helper runs up to four checks at once across checkouts
-(`WLP_CHECK_MAX`). Use the same limits in every checkout on a host.
+Local checks can run together, including multiple copies of the same check. Each starts its own
+listeners on OS-assigned ports. RivetKit requires an engine port before startup and opens two more
+at base + 1 and base + 10. Each check reserves the engine and HTTP port numbers on loopback UDP and
+probes them on TCP before starting the server. The UDP sockets stay bound until the check exits,
+so other checks skip those ports even during a server restart. `machine-check.ts` waits for its
+machines' state changes. There is no host-wide cap.
 
-- *Ports.* Each group has three slots by default (`WLP_CHECK_SLOTS`, 1–59). The helper takes the first
-  free slot, starting at zero, and waits if all are busy. It sets `WLP_CHECK_PORT_OFFSET` to the slot
-  number times 1000 for the whole run. For example, three copies of `pnpm e2e` can start engines on
-  6420, 7420 and 8420. The engine's companion ports and the platform's HTTP port move with it.
-  `connection-e2e.ts` and `signin-check.ts` share that group. An `e2e.ts --endpoint URL` uses the
-  supplied server and takes no port slot. Slot zero uses the original group lock, so a checkout with
-  the old helper still reserves the base ports. Keep development servers off the port sets in use.
-  The other base groups are 3410 (`webhook-check.ts`), 3710 (`http-limits-check.ts`),
-  6460 (`idempotency-check.ts`), 6620 (`factory-e2e.ts`), 6740
-  (`runner-socket-probe.ts`), 6850 (`machine-check.ts`), 6900 (`runner-check.ts`, including its
-  stand-in on 7020) and 6950 (`runner-e2e.ts`). For a direct run the offset defaults to zero.
-  Custom engine and HTTP base ports also receive the offset and must leave room for other groups.
-- *Machine check.* `machine-check.ts` takes slot zero and every slot under the overall cap. Other
-  helper-managed checks wait for its timing-sensitive steps to finish.
-- *Docker.* `mcp-check.ts`, `runner-check.ts`, `e2e.ts` with `WLP_SANDBOX=docker`, and `verified-check.ts`,
-  `github-check.ts`, `backup-check.ts` and `e2b-provider-test.ts` with `--docker` share one Docker lock.
-  `sandbox-check.ts`, which builds the image and cleans up, takes it alone, and so do an image build or a
-  cleanup by hand when it goes through the helper: `../scripts/locked.sh ../sandbox/build.sh`,
-  `../scripts/locked.sh ../sandbox/cleanup.sh`, `../scripts/locked.sh ../scripts/runner-build.sh`.
-- *Everything else.* A check with no fixed ports and no Docker runs directly, with `npx tsx`.
-
-Every run through the helper also holds the lock of before, `/tmp/wlp-test.lock`, shared, so an older
-`flock /tmp/wlp-test.lock ...` run still waits for all of them and keeps them all out while it runs. The
-helper and the two `pnpm e2e` commands are not to be wrapped in that lock: they would wait for their own
-caller.
+Docker checks resolve input images to an image ID at startup or build a labelled, private tag
+and remove it when finished. Docker shares the build cache. To publish the local sandbox image,
+run `sandbox/build.sh` with no image override. This command takes a nonblocking lock on
+`/tmp/wlp-sandbox-publish.lock` because two publishers would both write
+`windlass-platform-sandbox:latest`. For a private build, set `WLP_SANDBOX_IMAGE` to a distinct
+tag and remove that tag after use. Run the host-wide `sandbox/cleanup.sh` manually on an idle host.
 
 ## Configuration
 
@@ -2647,7 +2643,7 @@ caller.
 | `WLP_PUBLIC_URL` | the platform's address for runners: an `https://` origin, or `http://` on a loopback address. Required with `WLP_MACHINES=1` and a remote engine; with the local one, default `http://localhost:<WLP_HTTP_PORT>` |
 | `WLP_RUNNER_IMAGE` | the runner image the Machines page names, `<name>@sha256:<64 hex>`; unset: none is published yet |
 | `WINDLASS_BINARY` | the executable `sandbox/build.sh` puts in the image (default: the local build with `login token --valid-for`, see "Run it") |
-| `WLP_SANDBOX_IMAGE` | `sandbox/build.sh` only: another tag for the image it builds, for a throwaway image; the server always uses `windlass-platform-sandbox:latest` |
+| `WLP_SANDBOX_IMAGE` | Sandbox image for the Docker layer, or the private output tag for `sandbox/build.sh`; defaults to `windlass-platform-sandbox:latest` |
 | `VITE_WLP_ENDPOINT` | the Rivet endpoint the web app connects to when the server names none, as a development server does (default `http://localhost:6420`). A server with `WLP_PUBLIC_ENDPOINT` names its own, and this is not needed |
 | `VITE_WLP_API` | where the web app asks for `/platform/info` and `/platform/connection` (default: the endpoint's host on port 6440 when the endpoint is on 6420, else `http://localhost:6440`) |
 | `VITE_WLP_MOCK` | `1`: the web app runs on its mock, with no server |

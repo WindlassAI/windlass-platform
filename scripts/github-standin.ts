@@ -210,7 +210,7 @@ export class GithubStandin {
 		};
 	}
 
-	async start(port = 0): Promise<void> {
+	async start(): Promise<void> {
 		const server = createServer((request, response) => {
 			this.handle(request, response).catch((error: unknown) => {
 				if (!response.headersSent) json(response, 500, { message: `stand-in failure: ${error instanceof Error ? error.message : String(error)}` });
@@ -219,10 +219,11 @@ export class GithubStandin {
 		});
 		this.server = server;
 		const host = this.options.host ?? "127.0.0.1";
-		await new Promise<void>((resolve) => server.listen(port, host, resolve));
+		await new Promise<void>((resolve) => server.listen(0, host, resolve));
 		const address = server.address();
 		if (typeof address !== "object" || address === null) throw new Error("the stand-in has no address");
 		this.url = `http://127.0.0.1:${address.port}`;
+		console.log(`GitHub stand-in port: ${address.port}`);
 	}
 
 	async stop(): Promise<void> {

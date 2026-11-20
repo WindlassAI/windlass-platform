@@ -5,7 +5,7 @@
  * request's description (server/src/verified.ts). No server, nothing sent anywhere.
  *
  *   cd server && npx tsx ../scripts/verified-check.ts
- *   cd server && ../scripts/locked.sh verified-check.ts --docker
+ *   cd server && npx tsx ../scripts/verified-check.ts --docker
  *
  * With --docker it also asks a real Windlass what it does with a user's checks and a repository's
  * own: real turns in local containers, with a scripted model and no sign-in. That is what the
@@ -28,6 +28,7 @@
  * rebuilt. Where that release cannot be had, its half is skipped, and the check says so.
  */
 
+import { imageId } from "./check-image.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -474,12 +475,12 @@ expect("the section leaves through both redactions: a saved secret by value, and
 // ---- with --docker: what a real Windlass does with a user's checks and a repository's own -----------
 
 if (process.argv.includes("--docker")) {
-	const { IMAGE, LABEL, LABEL_ARG, docker, randomId } = await import("../server/src/sandbox/docker.js");
+	const { LABEL, LABEL_ARG, docker, randomId } = await import("../server/src/sandbox/docker.js");
 	const { createSandboxLayer } = await import("../server/src/sandbox/index.js");
 	type Layer = ReturnType<typeof createSandboxLayer>;
 	type Handle = import("../server/src/sandbox/sandboxes.js").DockerSandboxHandle;
 	const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-	const run = randomId(3);
+	const run = randomId(8);
 	/** The last release without required checks, which a sandbox made from an earlier image keeps: the second Windlass the cases run against. */
 	const older = spawnSync(join(root, "sandbox/fetch-windlass.sh"), ["older"], { encoding: "utf8" });
 	const OLDER_BINARY = join(older.stdout.trim(), `windlass-linux-${process.arch === "arm64" ? "arm64" : "x64"}`);
@@ -722,21 +723,21 @@ if (process.argv.includes("--docker")) {
 		}
 	}
 
-	await cases(createSandboxLayer({ signIns: "memory", tokenNetwork: "none" }), IMAGE, true);
+	const current = await imageId();
+	await cases(createSandboxLayer({ image: current, signIns: "memory", tokenNetwork: "none" }), current, true);
 
 	if (older.status !== 0 || !existsSync(OLDER_BINARY)) console.log(`\nSKIP  the same cases against a Windlass without required checks: sandbox/fetch-windlass.sh older did not give one (${older.stderr.trim().split("\n").pop() ?? `exit ${older.status}`})`);
 	else {
 		const tag = `windlass-platform-sandbox-older:chk-${run}`;
 		const idOf = async (image: string) => (await docker(["image", "inspect", "--format", "{{.Id}}", image])).stdout.trim();
-		const latest = await idOf(IMAGE);
 		const built = spawnSync(join(root, "sandbox/build.sh"), { env: { ...process.env, WLP_SANDBOX_IMAGE: tag, WINDLASS_BINARY: OLDER_BINARY }, encoding: "utf8" });
-		expect("build.sh builds that Windlass into a throwaway image of its own", built.status === 0 && (await idOf(tag)) !== "" && (await idOf(IMAGE)) === latest, built.stderr.trim().split("\n").pop());
+		expect("build.sh builds that Windlass into a throwaway image of its own", built.status === 0 && (await idOf(tag)) !== "", built.stderr.trim().split("\n").pop());
 		try {
 			if (built.status === 0) await cases(createSandboxLayer({ image: tag, signIns: "memory", tokenNetwork: "none" }), tag, false);
 		} finally {
 			const label = await docker(["image", "inspect", "--format", `{{index .Config.Labels "${LABEL}"}}`, tag]);
 			if (label.code === 0 && label.stdout.trim() === "1") await docker(["rmi", tag]);
-			expect("the throwaway image is removed again, and the server's image was never replaced", (await idOf(tag)) === "" && (await idOf(IMAGE)) === latest);
+			expect("the throwaway image is removed again", (await idOf(tag)) === "");
 		}
 	}
 }

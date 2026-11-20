@@ -1,6 +1,8 @@
-/** Offline by default. --docker runs the shell protocol in the sandbox image with networking disabled.
+/** cd server && npx tsx ../scripts/attachments-check.ts
+ * Offline by default. --docker runs the shell protocol in the sandbox image with networking disabled.
  * --bucket exercises an explicitly configured loopback S3 test service, never a deployment bucket.
  */
+import { imageId } from "./check-image.js";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -197,7 +199,7 @@ async function cases() {
 				"-d",
 				"-v",
 				root + ":" + root,
-				process.env.WLP_SHOT_CHECK_IMAGE ?? "windlass-platform-sandbox:shots",
+				await imageId(process.env.WLP_SHOT_CHECK_IMAGE ?? "windlass-platform-sandbox:shots"),
 				"sleep",
 				"600",
 			])

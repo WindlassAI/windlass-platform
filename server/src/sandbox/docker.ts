@@ -9,8 +9,8 @@ import { DATA_DIR, WORKSPACE, randomId } from "./provider.js";
 // The layout inside a sandbox is every provider's, so provider.ts names it; it is passed on here for the Docker code.
 export { DATA_DIR, WORKSPACE, randomId };
 
-/** The sandbox image the server uses. A layer made for another one (`createSandboxLayer({ image })`) is for the layer's own checks. */
-export const IMAGE = "windlass-platform-sandbox:latest";
+/** Use the local published image by default. Checks pass their pinned image ID to child servers. */
+export const IMAGE = process.env.WLP_SANDBOX_IMAGE || "windlass-platform-sandbox:latest";
 /** Every resource the platform creates carries `dev.windlass-platform=1`. */
 export const LABEL = "dev.windlass-platform";
 export const LABEL_ARG = `${LABEL}=1`;

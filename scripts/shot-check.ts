@@ -1,33 +1,31 @@
 /**
  * cd server && npx tsx ../scripts/shot-check.ts
- * cd server && WLP_SANDBOX_IMAGE=windlass-platform-sandbox:shots ../scripts/locked.sh shot-check.ts --docker
+ * cd server && WLP_SANDBOX_IMAGE=windlass-platform-sandbox:shots npx tsx ../scripts/shot-check.ts --docker
  *
  * The fixture is embedded here. Install Vite in a separate setup container, then use the same
  * workspace on a fresh, offline 1 GiB container. All shell tool calls are real Windlass sandboxes.
  * Read memory.peak before the deliberately oversized renderer runs.
  */
+import { imageId } from "./check-image.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { docker, IMAGE, LABEL_ARG, randomId } from "../server/src/sandbox/docker.js";
+import { docker, LABEL_ARG, randomId } from "../server/src/sandbox/docker.js";
 import { PROFILE_RUN_FLAGS } from "../server/src/sandbox/profiles.js";
 import { shellQuote } from "../server/src/sandbox/provider.js";
 
-const url = "http://127.0.0.1:4173/";
 const cli = fileURLToPath(new URL("../sandbox/wlp-shot", import.meta.url));
 const help = /server and the browser have to be started by the same command; a server started\s+in another command cannot be reached/;
 const badNames = ["../x.png", "a b.png", ".hidden.png", "A.png", "a".repeat(65) + ".png"];
 assert.match(spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" }).stdout, help);
 for (const name of badNames) {
-	const r = spawnSync(process.execPath, [cli, "--url", url, "--shot", "/=ok.png", "--out", name], { encoding: "utf8" });
+	const r = spawnSync(process.execPath, [cli, "--url", "http://127.0.0.1/", "--shot", "/=ok.png", "--out", name], { encoding: "utf8" });
 	assert.equal(r.status, 1);
 	assert.match(r.stderr, /^wlp-shot: invalid PNG name:/);
 }
 console.log("PASS  help and filename validation (without Docker)");
 
 const fixture = "/workspace/fixtures/vite";
-const vite = "npx vite --port 4173 --strictPort --host 127.0.0.1";
-const serve = `wlp-shot --serve ${shellQuote(vite)} --url ${url}`;
 const page = `<!doctype html><meta charset="utf-8"><title>Windlass fixture</title>
 <h1>Screenshot fixture</h1><button id="show">Show details</button><p hidden>Ready</p>
 <script type="module">
@@ -66,7 +64,7 @@ type Call = { id: string; command: string; background?: boolean };
 type Event = { type: string; outcome?: string; data?: { callId?: string; outcome?: string; output?: string } };
 
 async function dockerProof() {
-	const image = process.env.WLP_SANDBOX_IMAGE || "windlass-platform-sandbox:shots";
+	const image = await imageId(process.env.WLP_SANDBOX_IMAGE || "windlass-platform-sandbox:shots");
 	const name = "wlp-shot-check-" + randomId(6);
 	const volume = name + "-work";
 	const run = async (args: string[], stdin?: string) =>
@@ -74,8 +72,8 @@ async function dockerProof() {
 	const exec = (args: string[], stdin?: string) => run(["exec", "-i", "-w", fixture, name, ...args], stdin);
 	const mount = ["-v", volume + ":/workspace"];
 	const memory = ["--memory", "1g", "--memory-swap", "1g"];
-	const sizes = (tag: string) => run(["image", "ls", "--format", "{{.Repository}}:{{.Tag}} {{.Size}}", tag]);
-	console.log("Before: " + (await sizes(IMAGE)).trim() + "\nAfter:  " + (await sizes(image)).trim());
+	const size = async (ref: string) => (await docker(["image", "inspect", "--format", "{{.Id}} {{.Size}} bytes", ref])).stdout.trim() || "image unavailable";
+	console.log("Before: " + (await size("windlass-platform-sandbox:latest")) + "\nAfter:  " + (await size(image)));
 
 	async function turn(calls: Call[]): Promise<string[]> {
 		const responses: Record<string, unknown>[][] = calls.map(({ id, command, background }) => [
@@ -116,6 +114,11 @@ async function dockerProof() {
 			assert.ok(arch === "arm64" || arch === "amd64");
 			assert.equal(version.split(" ").at(-1), arch === "arm64" ? "149.0.7827.0" : "149.0.7827.55");
 			console.log("PASS  image help and " + version);
+			const port = Number((await exec(["python3", "-c", "import socket; s = socket.socket(); s.bind(('127.0.0.1', 0)); print(s.getsockname()[1])"])).trim());
+			assert.ok(Number.isInteger(port) && port > 0);
+			const url = `http://127.0.0.1:${port}/`;
+			const vite = `npx vite --port ${port} --strictPort --host 127.0.0.1`;
+			const serve = `wlp-shot --serve ${shellQuote(vite)} --url ${url}`;
 			const [result] = await turn([{ id: "shots", command: shot +
 				`${serve} --out home.png --shot '/?page=two=details.png' --click '#show' --wait-for '#desktop' && ` +
 				`${serve} --out mobile.png --viewport 390x844 --color-scheme dark --full-page --click '#show' --wait-for '#mobile' && ` +
@@ -143,7 +146,7 @@ async function dockerProof() {
 			const otherServer = `from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 import os
-s = HTTPServer(('127.0.0.1', 4173), SimpleHTTPRequestHandler)
+s = HTTPServer(('127.0.0.1', ${port}), SimpleHTTPRequestHandler)
 Path('/tmp/server.net').write_text(os.readlink('/proc/self/ns/net'))
 s.timeout = .1
 while not Path('/tmp/server.stop').exists(): s.handle_request()

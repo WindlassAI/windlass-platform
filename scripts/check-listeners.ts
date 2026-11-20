@@ -1,0 +1,40 @@
+import { createSocket, type Socket } from "node:dgram";
+import { createServer } from "node:net";
+
+/**
+ * RivetKit needs its engine URL before startup. Its native engine also binds base+1 and base+10.
+ * Reserve each number on UDP before probing TCP so parallel checks skip it until this process exits.
+ */
+export async function localListeners(httpCount = 1) {
+	for (;;) {
+		const reservations: Socket[] = [];
+		let allocated = false;
+		async function reserve(port = 0) {
+			const reservation = createSocket("udp4");
+			reservations.push(reservation);
+			await new Promise<void>((ready, reject) => reservation.once("error", reject).bind(port, "127.0.0.1", ready));
+			reservation.unref();
+
+			const chosen = reservation.address().port;
+			const probe = createServer();
+			await new Promise<void>((ready, reject) => probe.once("error", reject).listen(chosen, "127.0.0.1", ready));
+			await new Promise<void>(done => probe.close(() => done()));
+			return chosen;
+		}
+		try {
+			const engine = await reserve();
+			if (engine + 10 > 65535) continue;
+			await reserve(engine + 1);
+			await reserve(engine + 10);
+			const http: number[] = [];
+			for (let i = 0; i < httpCount; i++) http.push(await reserve());
+			console.log(`Local ports: engine ${engine}, ${engine + 1}, ${engine + 10}${http.length ? "; HTTP " + http.join(", ") : ""}`);
+			allocated = true;
+			return { engine, http };
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+		} finally {
+			if (!allocated) for (const reservation of reservations) reservation.close();
+		}
+	}
+}

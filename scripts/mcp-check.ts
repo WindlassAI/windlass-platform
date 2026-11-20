@@ -1,7 +1,7 @@
 /**
  * The question about a project's MCP server, against a real Windlass. Run with:
  *
- *   cd server && ../scripts/locked.sh mcp-check.ts
+ *   cd server && npx tsx ../scripts/mcp-check.ts
  *   Add --report to check only the platform's own tools (its host tools) in both Docker profiles, and
  *   --image <tag> to run against another sandbox image (one with an unreleased Windlass, say).
  *
@@ -43,6 +43,7 @@
  * holds the word "placeholder" and no token.
  */
 
+import { imageId } from "./check-image.js";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,7 +65,8 @@ import { forgettingWords, serverApprovedNote, serverForgottenNote, serverNotNowN
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = join(root, "fixtures/mcp-repo");
 /** `--image <tag>`: the sandbox image to run against; the server's own by default. */
-const IMAGE_USED = process.argv.includes("--image") ? (process.argv[process.argv.indexOf("--image") + 1] ?? IMAGE) : IMAGE;
+const reference = process.argv.includes("--image") ? (process.argv[process.argv.indexOf("--image") + 1] ?? IMAGE) : IMAGE;
+const IMAGE_USED = await imageId(reference);
 const layer = createSandboxLayer({ signIns: "memory", tokenNetwork: "none", image: IMAGE_USED });
 const run = randomId(3);
 const uid = `mcp-${run}`;
@@ -738,7 +740,7 @@ async function checkOtherServers(): Promise<void> {
 	await section("a server reported while the turn runs (a stand-in for the engine)", async () => {
 		const handle = await sandbox(uidOther, "docker-windlass-sandbox", "mcp-stand-in");
 		await handle.writeTextFile("/tmp/mcp-stand-in.mjs", STAND_IN);
-		const windlass = new DockerWindlass(layer.tokens, { engineCommand: ["node", "/tmp/mcp-stand-in.mjs"] });
+		const windlass = new DockerWindlass(layer.tokens, { image: IMAGE_USED, engineCommand: ["node", "/tmp/mcp-stand-in.mjs"] });
 		let toolAsked: () => void = () => {};
 		const whenToolAsked = new Promise<void>((resolve) => (toolAsked = resolve));
 		/** What was open when: "server:<fingerprint>" and "call". */
@@ -836,12 +838,6 @@ async function checkOtherServers(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	const image = await docker(["image", "inspect", "--format", "{{.Id}}", IMAGE_USED]);
-	if (image.code !== 0) {
-		console.log(`The sandbox image ${IMAGE_USED} is missing. Build it: sandbox/build.sh`);
-		process.exitCode = 1;
-		return;
-	}
 	info(`Windlass in ${IMAGE_USED}: ${(await layer.windlass.version()) ?? "unknown"}; run ${run}`);
 	if (!process.argv.includes("--report")) await checkOtherServers();
 	// The platform's tools need a Windlass that takes host tools: an image without one is not a case to check, but a broken image.

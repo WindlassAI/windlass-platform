@@ -3,7 +3,7 @@
  * (web/src/api/rivet.ts, with RivetKit's real client under it) against a real server, through an
  * engine that asks for tokens and lets them run out. Run with:
  *
- *   cd server && ../scripts/locked.sh connection-e2e.ts
+ *   cd server && npx tsx ../scripts/connection-e2e.ts
  *
  * The local engine asks for no token and issues none, so this check stands a front before it, on a
  * port of its own, that does what a cluster's engine does at its edge (guard-core `auth.rs` and
@@ -20,7 +20,7 @@
  *
  * The server is started as a deployment's: with the (made-up) admin token and the front as
  * WLP_PUBLIC_ENDPOINT. The client is given the platform's address and nothing else. Sandboxes are the
- * fake layer's. Its server shares ports 6420 and 6440 with the other checks in group 6420.
+ * fake layer's. The front and the server use OS-assigned ports.
  *
  * What it shows, with turns that really run: the web app signs in, creates an agent and runs a turn
  * with a token it was handed; a feed stays open and delivers after its token ran out; the next prompt
@@ -31,20 +31,20 @@
  * Prints one PASS/FAIL line per check and exits 1 if any failed. No token is printed.
  */
 
-import { checkPort } from "./ports.js";
+import { localListeners } from "./check-listeners.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { type IncomingMessage, type ServerResponse, createServer, request as httpRequest } from "node:http";
-import { type AddressInfo, type Socket, connect, createServer as createNetServer } from "node:net";
+import { type AddressInfo, type Socket, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AuthResult, PlatformConnection, PlatformInfo, SessionSnapshot, SessionSummary, TimelineItem } from "../server/src/contract.js";
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
-const ENGINE = { host: "127.0.0.1", port: checkPort(6420) };
-const HTTP_PORT = checkPort(6440);
+const { engine, http: [HTTP_PORT] } = await localListeners();
+const ENGINE = { host: "127.0.0.1", port: engine };
 const API = `http://127.0.0.1:${HTTP_PORT}`;
 const ADMIN = "FAKE-ADMIN-TOKEN-for-connection-e2e";
 /** How long the front's tokens last. The server hands one out until half of that is gone. */
@@ -99,7 +99,9 @@ class Front {
 	async start(): Promise<void> {
 		this.server.on("upgrade", (request, socket, head) => this.upgrade(request, socket as Socket, head));
 		await new Promise<void>((done) => this.server.listen(0, "127.0.0.1", done));
-		this.url = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
+		const { port } = this.server.address() as AddressInfo;
+		this.url = `http://127.0.0.1:${port}`;
+		console.log(`Connection proxy port: ${port}`);
 	}
 
 	async stop(): Promise<void> {
@@ -240,14 +242,6 @@ class Front {
 // The server, and the web app's client
 // ---------------------------------------------------------------------------------------------
 
-function portFree(port: number): Promise<boolean> {
-	return new Promise((done) => {
-		const probe = createNetServer();
-		probe.once("error", () => done(false));
-		probe.listen(port, "127.0.0.1", () => probe.close(() => done(true)));
-	});
-}
-
 class Server {
 	private child: ChildProcess | null = null;
 	output = "";
@@ -338,7 +332,6 @@ interface WebClient {
 }
 
 async function main(): Promise<void> {
-	if (!(await portFree(ENGINE.port)) || !(await portFree(HTTP_PORT))) throw new Error(`port ${ENGINE.port} or ${HTTP_PORT} is in use: stop the running server first`);
 	const front = new Front();
 	await front.start();
 	const server = new Server();

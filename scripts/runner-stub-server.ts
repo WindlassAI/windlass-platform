@@ -1,10 +1,10 @@
 // Only the pairing routes and two socket endpoints. The real session channel owns replay,
 // receipts, operation ids, timers, and result validation on this side of the TCP proxy.
-import { checkPort } from "./ports.js";
+import { localListeners } from "./check-listeners.js";
 import { randomBytes, verify } from "node:crypto";
 import { createServer as http } from "node:http";
 import { createRequire } from "node:module";
-import { createServer, connect, type AddressInfo } from "node:net";
+import { connect, type AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 import { setTimeout as wait } from "node:timers/promises";
 import { ServerChannel } from "../server/src/runner/channel.js";
@@ -25,11 +25,7 @@ const send = (ws: WS, f: ServerFrame) => ws.send(JSON.stringify(f));
 
 export async function stub(storage: string) {
 	for (const k of Object.keys(process.env)) if (k.startsWith("RIVET")) delete process.env[k];
-	const port = checkPort(7020);
-	// Rivet starts two companion listeners. Never attach to an engine that was already there.
-	for (const p of [port, port + 1, port + 10]) await new Promise<void>((resolve, reject) => {
-		const test = createServer(); test.once("error", reject); test.listen(p, "127.0.0.1", () => test.close(() => resolve()));
-	});
+	const { engine: port } = await localListeners(0);
 	Object.assign(process.env, { RIVETKIT_STORAGE_PATH: storage, RIVET_RUN_ENGINE_PORT: String(port), RIVET_LOG_LEVEL: "silent", NODE_ENV: "development" });
 	const require = createRequire(new URL("../server/package.json", import.meta.url));
 	const { actor, setup } = require("rivetkit") as typeof import("../server/node_modules/rivetkit/dist/tsup/mod.js");

@@ -3,7 +3,7 @@
  * runs, and nothing here calls GitHub. Run with:
  *
  *   cd server && npx tsx ../scripts/github-check.ts
- *   cd server && ../scripts/locked.sh github-check.ts --docker   and the git commands again, in a
+ *   cd server && npx tsx ../scripts/github-check.ts --docker   and the git commands again, in a
  *                                                                container of the sandbox image
  *
  * GitHub is played by scripts/github-standin.ts: its API, its authorization and installation pages, and
@@ -23,6 +23,7 @@
  *   WLP_CHECK_SECTIONS=connect,publish   run only the sections whose names start with one of these
  */
 
+import { imageId } from "./check-image.js";
 import { changedReviewPaths, checkoutReview, reviewCheckoutScript } from "../server/src/github/git.js";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
@@ -1302,7 +1303,7 @@ await section("docker: the same git commands in a container of the sandbox image
 	const docker = (args: string[], input?: string) => execFileSync("docker", args, { encoding: "utf8", input, stdio: ["pipe", "pipe", "pipe"] });
 	// On the host's network, so that git inside reaches the stand-in on this machine's loopback address: a
 	// host's firewall often stands between a container's own network and a port of the host's.
-	docker(["run", "-d", "--rm", "--name", name, "--label", "dev.windlass-platform=1", "--network", "host", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "windlass-platform-sandbox:latest", "sleep", "600"]);
+	docker(["run", "-d", "--rm", "--name", name, "--label", "dev.windlass-platform=1", "--network", "host", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", await imageId(), "sleep", "600"]);
 	try {
 		const inside = app;
 		const stdins: string[] = [];

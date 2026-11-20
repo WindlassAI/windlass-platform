@@ -417,7 +417,7 @@ async function main(): Promise<void> {
 
 	await section("startup", async () => {
 		reset();
-		const engineConfig = { remote: true, endpoint: "http://internal.example:6420", namespace: "default", pool: "default" };
+		const engineConfig = { remote: true, endpoint: "http://internal.example", namespace: "default", pool: "default" };
 		const browsers = (endpoint: string | null, withTokens: boolean) => ({ endpoint, tokens: withTokens, tokenTtlMs: HOUR });
 		const missing = startupProblem({ engine: engineConfig, secretConfigured: true, unusable: [], browsers: browsers(null, true) });
 		expect("an admin token without the engine's address for browsers: the server refuses to start, in one sentence", missing !== null && missing.startsWith("[wlp] WLP_PUBLIC_ENDPOINT is not set:") && !missing.includes("\n"), missing ?? "");

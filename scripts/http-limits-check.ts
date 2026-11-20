@@ -1,4 +1,4 @@
-/** cd server && ../scripts/locked.sh http-limits-check.ts */
+/** cd server && npx tsx ../scripts/http-limits-check.ts */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -9,14 +9,14 @@ import { test } from "node:test";
 import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { createClient, type Registry } from "../server/src/client.js";
+import { localListeners } from "./check-listeners.js";
 import { GithubStandin } from "./github-standin.js";
-import { checkPort } from "./ports.js";
 import { FakeRunner, post } from "./runner-fake.js";
 
-const port = checkPort(3710);
-const endpoint = `http://127.0.0.1:${port}`;
-const primary = `http://127.0.0.1:${port + 20}`;
-const peer = `http://127.0.0.1:${port + 21}`;
+const { engine, http: [primaryPort, peerPort] } = await localListeners(2);
+const endpoint = `http://127.0.0.1:${engine}`;
+const primary = `http://127.0.0.1:${primaryPort}`;
+const peer = `http://127.0.0.1:${peerPort}`;
 const origin = "http://localhost:5173";
 
 async function limited(response: Response, code = "rate_limited") {
@@ -31,7 +31,7 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 	const dir = await mkdtemp(join(tmpdir(), "wlp-http-limits-"));
 	const secret = randomBytes(32).toString("hex");
 	const github = new GithubStandin({ callbackUrl: primary + "/github/callback" });
-	await github.start(port + 22);
+	await github.start();
 	t.after(async () => { await github.stop(); await rm(dir, { recursive: true, force: true }); });
 	const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(WLP_|RIVET|PORT$)/.test(key)));
 	const logs: string[] = [];
@@ -41,7 +41,7 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 			cwd: fileURLToPath(new URL("../server/", import.meta.url)), stdio: ["ignore", "pipe", "pipe"],
 			env: { ...clean, ...github.env(), WLP_GITHUB_WEBHOOK_SECRET: secret, WLP_DEMO: "1", WLP_SANDBOX: "fake",
 				WLP_SECRET: secret, WLP_ITEMS: "1", WLP_MACHINES: "1", WLP_PUBLIC_URL: primary,
-				WLP_HTTP_PORT: String(port + (second ? 21 : 20)), RIVET_RUN_ENGINE_PORT: String(port),
+				WLP_HTTP_PORT: String(second ? peerPort : primaryPort), RIVET_RUN_ENGINE_PORT: String(engine),
 				RIVETKIT_STORAGE_PATH: second ? join(dir, "peer") : dir, RIVET_LOG_LEVEL: "silent",
 				WLP_API_ADDRESS_PER_MINUTE: "5", WLP_API_FAILURES_PER_MINUTE: "2", WLP_API_TOKEN_PER_MINUTE: "3",
 				WLP_WEBHOOK_REFUSALS_PER_MINUTE: "2", WLP_RUNNER_POLLS_PER_MINUTE: "2", WLP_RUNNER_CONNECTIONS_PER_MINUTE: "2",

@@ -2,11 +2,9 @@
  * End-to-end check of the server's three actors, through RivetKit's client, as the web app uses them,
  * and of its HTTP routes (`/platform/info`, `/platform/connection`, `/health`).
  *
- *   cd server && pnpm e2e                 starts its own server on fresh state (ports 6420, 6421,
- *                                          6430, 6440 and 6449, group 6420)
- *   cd server && pnpm e2e --endpoint URL  uses a running server (HTTP on the same host, port 6440,
- *                                          or at WLP_E2E_API). With WLP_SANDBOX=docker both runs
- *                                          take the shared Docker lock.
+ *   cd server && npx tsx ../scripts/e2e.ts                 starts a server on fresh state
+ *   cd server && npx tsx ../scripts/e2e.ts --endpoint URL  uses a running server (HTTP on the
+ *                                                         same host, port 6440, or at WLP_E2E_API)
  *
  * WLP_SANDBOX chooses the sandbox layer of the server it starts (default here: fake). The server is
  * always started with WLP_DEMO=1; with --endpoint the server must have it too. Some checks need the
@@ -18,7 +16,8 @@
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
-import { checkPort } from "./ports.js";
+import { imageId } from "./check-image.js";
+import { localListeners } from "./check-listeners.js";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createWriteStream, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -46,15 +45,16 @@ import {
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
 const args = process.argv.slice(2);
 const endpointArg = args.includes("--endpoint") ? args[args.indexOf("--endpoint") + 1] : undefined;
-const ENGINE_PORT = checkPort(6420);
-const httpBase = endpointArg === undefined ? process.env.WLP_HTTP_PORT?.trim() || process.env.PORT?.trim() : undefined;
-const HTTP_PORT = checkPort(Number(httpBase || 6440));
+const { engine: ENGINE_PORT, http: [HTTP_PORT, refusalPort] } = endpointArg === undefined
+	? await localListeners(2)
+	: { engine: Number(new URL(endpointArg).port), http: [6440] };
 const ENDPOINT = endpointArg ?? `http://127.0.0.1:${ENGINE_PORT}`;
 /** The server's own HTTP routes. */
 const API = process.env.WLP_E2E_API ?? `${new URL(ENDPOINT).protocol}//${new URL(ENDPOINT).hostname}:${HTTP_PORT}`;
 const MODE = (process.env.WLP_SANDBOX ?? "fake") as "fake" | "docker";
 const OWN_SERVER = endpointArg === undefined;
 const FAKE = MODE === "fake";
+const sandboxImage = OWN_SERVER && MODE === "docker" ? await imageId() : undefined;
 /** How long one turn may take. A Docker turn creates a container and runs real commands. */
 const TURN_MS = FAKE ? 30_000 : 240_000;
 /** How long the server this script starts lets a question wait before it declines it: short, so the wait can be watched. */
@@ -182,6 +182,7 @@ class Server {
 			...process.env,
 			WLP_DEMO: "1",
 			WLP_SANDBOX: MODE,
+			...(sandboxImage && { WLP_SANDBOX_IMAGE: sandboxImage }),
 			WLP_SECRET: this.secret,
 			RIVETKIT_STORAGE_PATH: this.storage,
 			RIVET_RUN_ENGINE_PORT: String(ENGINE_PORT),
@@ -298,7 +299,7 @@ function platformConnection(origin?: string): Promise<Response> {
  * `change` is given the environment it would otherwise start with.
  */
 async function startRefused(change: (env: Record<string, string | undefined>) => void): Promise<{ code: number | null; output: string }> {
-	const env: Record<string, string | undefined> = { ...process.env, WLP_SANDBOX: "fake", WLP_SECRET: randomBytes(24).toString("hex"), WLP_HTTP_PORT: String(checkPort(6449)), RIVET_RUN_ENGINE_PORT: String(ENGINE_PORT) };
+	const env: Record<string, string | undefined> = { ...process.env, WLP_SANDBOX: "fake", WLP_SECRET: randomBytes(24).toString("hex"), WLP_HTTP_PORT: String(refusalPort), RIVET_RUN_ENGINE_PORT: String(ENGINE_PORT) };
 	delete env.RIVET_ADMIN_TOKEN;
 	delete env.WLP_PUBLIC_ENDPOINT;
 	change(env);
@@ -605,7 +606,7 @@ async function main(server: Server | null): Promise<void> {
 			const lines = output.trim().split("\n");
 			assert(lines.length === 1 && lines[0].startsWith("[wlp] WLP_SECRET is not set:") && lines[0].endsWith("on all of them."), `it said: ${output.slice(0, 600)}`);
 			assert(!output.includes("sk_e2e_made_up"), "the output shows the engine's token");
-			assert(await portFree(checkPort(6449)), "it bound its HTTP port before refusing");
+			assert(await portFree(refusalPort), "it bound its HTTP port before refusing");
 			return lines[0];
 		});
 	} else {
@@ -1525,15 +1526,20 @@ async function main(server: Server | null): Promise<void> {
 
 	if (FAKE) {
 		const harbor = await userConnTwo.createSession({ profile: availableProfile as never, title: "Servers" });
-		const harborWatch = new Watch(client, uid, harbor.id, token);
+		let harborWatch!: Watch;
 		const harborHandle = client.agentSession.get([uid, harbor.id], { params: { token } });
-		await harborWatch.conn.snapshot();
-		const idle = () => waitFor("the session to be idle", () => harborWatch.summaries.length === 0 || harborWatch.summaries.at(-1)?.status === "idle", TURN_MS);
+		// Subscribe for the next turn on a fresh socket. A gateway reconnect between cases can
+		// miss the previous idle event, so establish the starting state from this socket's snapshot.
+		const watchNextTurn = async () => {
+			await harborWatch?.conn.dispose();
+			harborWatch = new Watch(client, uid, harbor.id, token);
+			await waitFor("the session to be idle", async () => (await harborWatch.conn.snapshot()).summary.status === "idle", TURN_MS, 200);
+		};
 		/** The platform's lines of a turn that name the server. */
 		const linesOf = (turn: number) => harborWatch.items.flatMap((item) => (item.kind === "platform" && item.turn === turn && item.text.includes("MCP server") ? [item] : []));
 		/** Starts a turn whose project names a server, and returns the question about it once it is announced. */
 		const askAbout = async (text: string): Promise<PendingQuestion> => {
-			await idle();
+			await watchNextTurn();
 			const { turn } = await harborWatch.conn.prompt({ text });
 			const asked = await harborWatch.untilQuestion(turn);
 			assert(asked.server !== undefined, `the question is not about a server: ${plain(asked).slice(0, 200)}`);
@@ -1592,7 +1598,7 @@ async function main(server: Server | null): Promise<void> {
 		});
 
 		await check("an approved definition is not asked about again, and a changed one is", async () => {
-			await idle();
+			await watchNextTurn();
 			const before = harborWatch.questions.length;
 			const { turn } = await harborWatch.conn.prompt({ text: "once more (mcp)" });
 			await harborWatch.untilEnded(turn);
@@ -1678,7 +1684,7 @@ async function main(server: Server | null): Promise<void> {
 
 		/** A turn in which Windlass reports the server while it runs and a tool call asks as well: returns both questions once the call's is shown. */
 		const askBoth = async (): Promise<{ server: PendingQuestion; call: PendingQuestion; from: number }> => {
-			await idle();
+			await watchNextTurn();
 			const from = harborWatch.questions.length;
 			const { turn } = await harborWatch.conn.prompt({ text: `${ASK} (mcp-late)` });
 			const call = await waitFor(
@@ -1735,7 +1741,7 @@ async function main(server: Server | null): Promise<void> {
 			return lines[0];
 		});
 
-		await harborWatch.conn.dispose().catch(() => undefined);
+		await harborWatch?.conn.dispose().catch(() => undefined);
 		await userConnTwo.deleteSession(harbor.id).catch(() => undefined);
 	} else {
 		skip("the project's MCP servers", "the fake layer's switches; scripts/mcp-check.ts runs them against a real Windlass");
@@ -2366,21 +2372,26 @@ async function main(server: Server | null): Promise<void> {
 				assert((await turnOf(freed.id, "Write a short program")).outcome === "succeeded", "the first turn failed");
 				const watch = new Watch(client, someone.profile.uid, freed.id, someone.token);
 				try {
-					// The first turn's last steps may still have the sandbox: the session says so (`sandbox_busy`), and the free is asked again.
-					let freeing: Promise<unknown> | null = null;
-					for (let tries = 0; freeing === null; tries += 1) {
-						const attempt = theirs.freeSandbox(freed.id).then(() => null, (error: unknown) => error);
-						// Still going after 300 ms: the session is removing its sandbox (PROVIDER_MS).
-						const early = await Promise.race([attempt, sleep(300).then(() => "removing" as const)]);
-						if (early === "removing") freeing = attempt;
-						else if (early === null) throw new Error("the free was over before the prompt could be sent");
-						else if ((early as { code?: unknown }).code !== "sandbox_busy" || tries >= 20) throw early;
-						else await sleep(300);
-					}
-					// The prompt waits for the removal, then makes a new sandbox.
+					// Wait for the fake provider to begin destroying this sandbox before sending the prompt.
+					const original = madeFor(freed.id).at(-1)?.match(/id=(\S+)/)?.[1];
+					assert(original, "the first turn did not create a sandbox");
+					const removing = `[wlp] fake sandbox removal started id=${original}`;
+					const freeing = (async () => {
+						const deadline = Date.now() + 60_000;
+						for (;;) {
+							try { return await theirs.freeSandbox(freed.id); }
+							catch (error) {
+								if ((error as { code?: string }).code !== "sandbox_busy" || Date.now() >= deadline) throw error;
+								await sleep(100);
+							}
+						}
+					})();
+					await Promise.race([
+						waitFor("sandbox removal to start", () => server.output.includes(removing), 60_000),
+						freeing.then(() => { throw new Error("the free finished before the concurrent prompt"); }),
+					]);
 					const { turn } = await watch.conn.prompt({ text: "Write a short program" });
-					const refused = await freeing;
-					assert(refused === null, `the free failed: ${describe(refused)}`);
+					await freeing;
 					const ended = await watch.untilEnded(turn);
 					assert(ended.outcome === "succeeded", `the prompt's turn ended ${ended.outcome}: ${ended.message}`);
 				} finally {
@@ -2655,7 +2666,7 @@ async function main(server: Server | null): Promise<void> {
 			const lines = output.trim().split("\n");
 			assert(lines.length === 1 && lines[0].startsWith("[wlp] WLP_PUBLIC_ENDPOINT is not set:"), `it said: ${output.slice(0, 600)}`);
 			assert(!output.includes("e2e_made_up_admin_token"), "the output shows the admin token");
-			assert(await portFree(checkPort(6449)), "it bound its HTTP port before refusing");
+			assert(await portFree(refusalPort), "it bound its HTTP port before refusing");
 			return lines[0];
 		});
 	} else {
@@ -4176,7 +4187,6 @@ let crashed = false;
 try {
 	console.log(`e2e: sandbox layer ${MODE}; ${OWN_SERVER ? "starting a server on fresh state" : `using ${ENDPOINT}`}`);
 	if (OWN_SERVER) {
-		if (!(await portsFree())) throw new Error(`port ${ENGINE_PORT} or ${HTTP_PORT} is in use: stop the running server, or pass --endpoint to test it`);
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
 		await server.start();

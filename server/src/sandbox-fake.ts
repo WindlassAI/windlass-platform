@@ -485,7 +485,10 @@ class FakeSandboxes implements Sandboxes {
 	}
 
 	async destroy(id: string): Promise<void> {
-		if (this.settings.delayMs > 0) await delay(this.settings.delayMs);
+		if (this.settings.delayMs > 0) {
+			console.log(`[wlp] fake sandbox removal started id=${id}`);
+			await delay(this.settings.delayMs);
+		}
 		this.all.delete(id);
 	}
 }

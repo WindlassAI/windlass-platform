@@ -71,6 +71,7 @@ export async function controlProxy(port: number) {
 	await new Promise<void>((done, fail) => server.once("error", fail).listen(0, "127.0.0.1", done));
 	const address = server.address();
 	if (!address || typeof address === "string") throw new Error("The control proxy needs a TCP port.");
+	console.log(`Control proxy port: ${address.port}`);
 	return {
 		endpoint: `http://127.0.0.1:${address.port}`,
 		drop() {

@@ -7,8 +7,8 @@
     "dev": "WLP_DEMO=${WLP_DEMO:-1} tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "e2e": "../scripts/locked.sh e2e.ts",
-    "e2e:docker": "WLP_SANDBOX=docker ../scripts/locked.sh e2e.ts"
+    "e2e": "tsx ../scripts/e2e.ts",
+    "e2e:docker": "WLP_SANDBOX=docker tsx ../scripts/e2e.ts"
   },
   "dependencies": {
     "e2b": "2.63.0",

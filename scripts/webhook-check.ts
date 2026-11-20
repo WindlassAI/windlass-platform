@@ -1,28 +1,26 @@
-/** From server/: ../scripts/locked.sh webhook-check.ts. The engine node is the normal server
+/** cd server && npx tsx ../scripts/webhook-check.ts. The engine node is the normal server
  * with test-only fixture actions attached before registry setup. No production action exposes SQL,
- * sets a test clock or installs a handler. All HTTP listeners use this check's port group.
+ * sets a test clock or installs a handler. All HTTP listeners use OS-assigned ports.
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { GithubStandin } from "./github-standin.js";
-import { checkPort } from "./ports.js";
+import { localListeners } from "./check-listeners.js";
 import { edge, isAddressed } from "../server/src/github/events.js";
 
 const DAY = 86_400_000;
 const RETRY_INSTALLATION = 91919;
 const HEAD = "a".repeat(40);
 const origin = "http://127.0.0.1:5173";
-const engine = checkPort(3410);
 const base = (port: number) => "http://127.0.0.1:" + port;
-const api = base(checkPort(3431));
-const second = base(checkPort(3432)) + "/github/webhook";
 
 async function testNode() {
 	const { githubInbox, HANDLERS, githubHooks } = await import("../server/src/actors/github-inbox.js");
@@ -106,14 +104,17 @@ async function until<T>(label: string, probe: () => Promise<T>, timeout = 12_000
 }
 
 async function run() {
+	const { engine, http: [http] } = await localListeners();
+	const api = base(http);
+	let second: string;
 	const storage = mkdtempSync(join(tmpdir(), "wlp-webhook-check-"));
 	const standin = new GithubStandin({ callbackUrl: api + "/github/callback", slug: "windlass-fk4w", strictBranches: false });
-	await standin.start(checkPort(3433));
+	await standin.start();
 	const secret = randomBytes(32).toString("hex"), previous = randomBytes(32).toString("hex");
 	const bodyMarker = "private-issue-" + randomUUID();
 	Object.assign(process.env, standin.env(), {
 		WLP_SECRET: randomBytes(32).toString("hex"), WLP_GITHUB_WEBHOOK_SECRET: secret,
-		WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS: previous, WLP_SANDBOX: "fake", WLP_DEMO: "1", WLP_HTTP_PORT: String(checkPort(3431)),
+		WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS: previous, WLP_SANDBOX: "fake", WLP_DEMO: "1", WLP_HTTP_PORT: String(http),
 		RIVETKIT_STORAGE_PATH: storage, RIVET_RUN_ENGINE_PORT: String(engine), WLP_WEB_ORIGINS: origin, RIVET_LOG_LEVEL: "silent",
 	});
 	for (const key of ["RIVET_ADMIN_TOKEN", "RIVET_ENDPOINT", "RIVET_ENGINE", "PORT", "WLP_GITHUB_POLL_FALLBACK"]) delete process.env[key];
@@ -168,7 +169,8 @@ async function run() {
 		res.end(await response?.text());
 	});
 	try {
-		await new Promise<void>(resolve => other.listen(checkPort(3432), "127.0.0.1", resolve));
+		await new Promise<void>(resolve => other.listen(0, "127.0.0.1", resolve));
+		second = base((other.address() as AddressInfo).port) + "/github/webhook";
 		await until("the platform HTTP port", async () => {
 			if (child.exitCode !== null) throw new Error("test node exited " + child.exitCode);
 			return (await fetch(api + "/platform/info").catch(() => null))?.ok;

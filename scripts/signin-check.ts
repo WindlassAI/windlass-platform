@@ -1,10 +1,9 @@
 /**
  * Check of the sign-in machinery (server/src/signin/) on this machine, without Docker. Run with:
  *
- *   cd server && ../scripts/locked.sh signin-check.ts
+ *   cd server && npx tsx ../scripts/signin-check.ts
  *
- * Its last section, `actors`, starts a server of its own on ports 6420 and 6440 (fake sandboxes, the
- * real sign-in), so the helper takes group 6420. The section skips itself when port 6420 is taken.
+ * Its last section, `actors`, starts a server of its own on OS-assigned ports (fake sandboxes, real sign-in).
  * The sections before it need no server.
  *
  * No real sign-in is used and nothing is sent to OpenAI:
@@ -32,7 +31,8 @@
  *   WLP_CHECK_SECTIONS=seal,holder   run only the sections whose names start with one of these
  */
 
-import { checkPort } from "./ports.js";
+import "./check-secret.js";
+import { localListeners } from "./check-listeners.js";
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createSign, generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -984,17 +984,7 @@ async function main(): Promise<void> {
 			info(`SKIP  no Windlass executable ${binary === null ? "from sandbox/fetch-windlass.sh" : `at ${binary}`}: set WLP_WINDLASS_BIN to one with \`login token --valid-for\``);
 			return;
 		}
-		const enginePort = checkPort(6420);
-		const httpPort = checkPort(6440);
-		const free = await new Promise<boolean>((done) => {
-			const probe = createNetServer();
-			probe.once("error", () => done(false));
-			probe.listen(enginePort, "127.0.0.1", () => probe.close(() => done(true)));
-		});
-		if (!free) {
-			info(`SKIP  port ${enginePort} is taken: a server or another check is running; this section starts a server of its own`);
-			return;
-		}
+		const { engine: enginePort, http: [httpPort] } = await localListeners();
 		const standin = new StandIn();
 		await standin.start();
 		const storage = join(scratch, "server-state");

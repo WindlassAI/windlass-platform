@@ -1,13 +1,12 @@
-/** Build locally: cd server && ../scripts/locked.sh ../scripts/runner-build.sh
- * Then run: cd server && ../scripts/locked.sh runner-check.ts
+/** Run: cd server && npx tsx ../scripts/runner-check.ts
  * The five-minute Wi-Fi outage and two-minute laptop sleep are wall time.
  */
-import { checkPort } from "./ports.js";
+import { imageId } from "./check-image.js";
+import { localListeners } from "./check-listeners.js";
 import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash, createPublicKey, randomBytes, randomUUID } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,18 +71,15 @@ async function scripted(ch: ServerChannel, id: string, interrupt: () => Promise<
 }
 // One integration against the actual platform routes, user and machine actors. The demo
 // account has no GitHub link, so this also exercises the nullable login in PairStatus.
-async function realMachine() {
-	const port = checkPort(6900);
+async function realMachine(runnerImage: string) {
+	const { engine: port, http: [http] } = await localListeners();
 	const endpoint = "http://127.0.0.1:" + port;
-	const platform = "http://127.0.0.1:" + (port + 20);
-	for (const n of [port, port + 1, port + 10, port + 20]) await new Promise<void>((resolve, reject) => {
-		const s = createServer(); s.once("error", reject); s.listen(n, "127.0.0.1", () => s.close(() => resolve()));
-	});
+	const platform = "http://127.0.0.1:" + http;
 	const node = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
 		cwd: join(root, "server"), stdio: "ignore",
 		env: { PATH: process.env.PATH, HOME: process.env.HOME, WLP_SECRET: randomBytes(32).toString("hex"),
 			WLP_MACHINES: "1", WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_PUBLIC_URL: platform,
-			WLP_HTTP_PORT: String(port + 20), RIVET_RUN_ENGINE_PORT: String(port),
+			WLP_HTTP_PORT: String(http), RIVET_RUN_ENGINE_PORT: String(port),
 			RIVET_LOG_LEVEL: "silent", RIVETKIT_STORAGE_PATH: join(tmp, "real-engine") },
 	});
 	const directory = join(tmp, "real-runner");
@@ -104,7 +100,7 @@ async function realMachine() {
 		service = spawn("docker", ["run", "--rm", "--pull", "never", "--name", name, "--label", LABEL_ARG,
 			"--log-driver", "none", "--network", "host", "--user", `${process.getuid!()}:${process.getgid!()}`,
 			"--group-add", String((await stat(socket)).gid), "-e", "HOME=/tmp",
-			"-v", socket + ":" + socket, "-v", directory + ":/var/lib/windlass-runner", process.env.WLP_RUNNER_CHECK_IMAGE ?? "windlass-runner:dev", "--platform", platform],
+			"-v", socket + ":" + socket, "-v", directory + ":/var/lib/windlass-runner", runnerImage, "--platform", platform],
 			{ stdio: ["ignore", "pipe", "pipe"] });
 		service.stderr!.on("data", chunk => { stderr = (stderr + chunk).slice(-8192); });
 		service.stdout!.on("data", chunk => { output = (output + chunk).slice(-8192); });
@@ -481,7 +477,7 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		const foreign = "m" + machineId + "-" + hostedRaw;
 		await assert.rejects(ch.request("destroy", { id: foreign }), /does not belong/);
 		await assert.rejects(ch.request("run", { id: foreign, command: "touch /tmp/touched" }), /owned/);
-		const hostedProvider = new DockerSandboxes({ machine: null, dataVolume: async () => { throw Error("unexpected create"); } });
+		const hostedProvider = new DockerSandboxes({ image, machine: null, dataVolume: async () => { throw Error("unexpected create"); } });
 		assert.deepEqual((await hostedProvider.list(uid)).map(x => x.id), [hostedRaw]);
 		assert.ok(!(await cli("status")).includes(hostedRaw)); assert.equal((await docker(["exec", hostedName, "test", "!", "-e", "/tmp/touched"])).code, 0);
 		srv.detach(srv.other); srv.incompatible(srv.other);
@@ -665,16 +661,28 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		for (const v of (await docker(["volume", "ls", "-q", ...ownedFilters])).stdout.trim().split(/\s+/).filter(Boolean)) await docker(["volume", "rm", v], { check: true });
 	}
 }
+const privateTag = process.env.WLP_RUNNER_CHECK_IMAGE ? undefined : `windlass-runner:chk-${randomUUID()}`;
 try {
-	const image = (await docker(["image", "inspect", "--format", "{{.Id}}", "windlass-platform-sandbox:latest"], { check: true })).stdout.trim();
-	await exec(process.execPath, ["runner/bundle.mjs", image, bundle], { cwd: root });
-	if (!process.argv.includes("--real-machine")) await check(image);
-	await realMachine();
+	const image = await imageId();
+	if (privateTag) {
+		await exec(join(root, "scripts/runner-build.sh"), [image], { env: { ...process.env, WLP_RUNNER_BUILD_TAG: privateTag, WLP_RUNNER_PLATFORMS: "" } });
+	}
+	const runnerImage = await imageId(privateTag ?? process.env.WLP_RUNNER_CHECK_IMAGE);
+	if (!process.argv.includes("--real-machine")) {
+		await exec(process.execPath, ["runner/bundle.mjs", image, bundle], { cwd: root });
+		await check(image);
+	}
+	await realMachine(runnerImage);
 } catch (error) {
 	// Client exceptions can contain signed URLs. Identify the failing assertion without replaying its arguments.
 	const where = error instanceof Error ? /runner-check\.ts:(\d+)/.exec(error.stack ?? "")?.[1] : undefined;
 	console.error(`FAIL  runner-check.ts line ${where ?? "unknown"}`);
 	process.exitCode = 1;
-} finally { await rm(tmp, { recursive: true, force: true }); }
+} finally {
+	if (privateTag && (await docker(["image", "inspect", privateTag])).code === 0) {
+		await docker(["image", "rm", privateTag], { check: true });
+	}
+	await rm(tmp, { recursive: true, force: true });
+}
 // The in-process Rivet native runtime retains worker handles after registry.shutdown().
 process.exit(process.exitCode ?? 0);

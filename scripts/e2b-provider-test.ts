@@ -2,7 +2,7 @@
  * Tests of the E2B provider that need no E2B account and send nothing to E2B. Run with:
  *
  *   cd server && npx tsx ../scripts/e2b-provider-test.ts                  the provider on the in-memory client
- *   cd server && ../scripts/locked.sh e2b-provider-test.ts --docker
+ *   cd server && npx tsx ../scripts/e2b-provider-test.ts --docker
  *                                                                        the same, and "a real turn" besides
  *
  * The first part runs the provider's logic (server/src/sandbox/e2b/sandboxes.ts) on `FakeE2b`, which
@@ -15,8 +15,7 @@
  * everything between `E2bClient` and Windlass is real: the provider's quoting of commands, standard
  * input and its order, signals, the access token file, and a whole scripted turn through turn.ts. What
  * stays untried is only the adapter to E2B's SDK (e2b/sdk.ts) and E2B itself: scripts/e2b-check.ts.
- * The containers carry the label dev.windlass-platform=1 and are removed at the end; the lock is there
- * because sandbox/cleanup.sh, which other checks run, removes every such container on the machine.
+ * The containers carry the label dev.windlass-platform=1 and are removed at the end.
  *
  * Exit code 0 when every check passed.
  */
@@ -628,12 +627,12 @@ await section("the template", async () => {
 class ContainerMachine implements FakeMachine {
 	private constructor(readonly container: string) {}
 
-	static async make(id: string): Promise<ContainerMachine> {
+	static async make(id: string, image: string): Promise<ContainerMachine> {
 		const name = `wlp-e2bfake-${run}-${id.slice(0, 12)}`;
 		// As a session container of the first Docker profile, where bubblewrap works, but on a disk of its own (no
 		// volume) and with no network at all: nothing these turns do needs one.
 		const flags = ["--init", "--user", "agent", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--network", "none", "--memory", "1024m", "--memory-swap", "1024m", "--cpus", "1", "--pids-limit", "512", "--hostname", "sandbox", ...(PROFILE_RUN_FLAGS["docker-windlass-sandbox"] ?? [])];
-		await docker(["run", "-d", "--pull", "never", "--name", name, "--label", LABEL_ARG, ...flags, IMAGE], { timeoutMs: 120_000, check: true });
+		await docker(["run", "-d", "--pull", "never", "--name", name, "--label", LABEL_ARG, ...flags, image], { timeoutMs: 120_000, check: true });
 		return new ContainerMachine(name);
 	}
 
@@ -703,7 +702,7 @@ if (withDocker) {
 		const machines = new Map<string, ContainerMachine>();
 		const fake = new FakeE2b({
 			machine: async (id) => {
-				const machine = await ContainerMachine.make(id);
+				const machine = await ContainerMachine.make(id, image.stdout.trim());
 				machines.set(id, machine);
 				return machine;
 			},
@@ -834,7 +833,7 @@ if (withDocker) {
 		}
 	});
 } else {
-	console.log('\n== a real turn\n      skipped: run with --docker (and under flock /tmp/wlp-test.lock) to drive real containers of the sandbox image through the provider');
+	console.log('\n== a real turn\n      skipped: run with --docker to drive real containers of the sandbox image through the provider');
 }
 
 console.log(`\n${passes} passed, ${failures} failed`);

@@ -2,16 +2,15 @@
  * A raw socket to one actor, through the engine's gateway. The node doing the answering is a
  * child of this check, so a drain reaches just that node. The actor answers with a byte count.
  *
- *   cd server && ../scripts/locked.sh runner-socket-probe.ts
+ *   cd server && npx tsx ../scripts/runner-socket-probe.ts
  *
  * WLP_CHECK_ENGINE selects an existing engine. On a cluster give RIVET_ADMIN_TOKEN and a
  * RIVET_POOL reserved for this node. WLP_PROBE_IDLE_MS sets the wait without any messages.
  */
-import { checkPort } from "./ports.js";
+import { localListeners } from "./check-listeners.js";
 import { fork } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,14 +48,6 @@ function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
 	});
 }
 
-function portFree(port: number): Promise<boolean> {
-	return new Promise((resolve) => {
-		const socket = createServer();
-		socket.once("error", () => resolve(false));
-		socket.listen(port, "127.0.0.1", () => socket.close(() => resolve(true)));
-	});
-}
-
 function startNode(env: NodeJS.ProcessEnv) {
 	const child = fork(fileURLToPath(import.meta.url), ["--node"], { cwd: server, execArgv: ["--import", "tsx"], env, stdio: ["ignore", "ignore", "ignore", "ipc"] });
 	const exited = new Promise<void>((done) => child.once("exit", () => done()));
@@ -78,7 +69,7 @@ function startNode(env: NodeJS.ProcessEnv) {
 
 async function main(): Promise<void> {
 	const given = process.env.WLP_CHECK_ENGINE;
-	const port = checkPort(Number(process.env.RIVET_RUN_ENGINE_PORT ?? 6740));
+	const port = given ? undefined : (await localListeners(0)).engine;
 	const endpoint = given ?? `http://127.0.0.1:${port}`;
 	const url = new URL(endpoint);
 	const local = !given || ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
@@ -92,15 +83,10 @@ async function main(): Promise<void> {
 	const pool = given ? process.env.RIVET_POOL : "runner-socket-probe";
 	const namespace = given ? process.env.RIVET_NAMESPACE ?? "default" : "default";
 	if (!pool || pool === "default" || (!local && !admin)) throw new ProbeError("An existing engine needs a dedicated RIVET_POOL and a cluster needs RIVET_ADMIN_TOKEN.");
-	if (!given) {
-		for (const bind of [port, port + 1, port + 10]) {
-			if ([6420, 6421, 6430, 6440].map(checkPort).includes(bind) || !(await portFree(bind))) throw new ProbeError("The local probe ports must be free and outside the end-to-end suite.");
-		}
-	}
 	const storage = await mkdtemp(join(tmpdir(), "wlp-runner-probe-"));
 	const env = { ...process.env };
 	for (const key of Object.keys(env)) if (key.startsWith("RIVET") || key.startsWith("WLP_")) delete env[key];
-	Object.assign(env, { RIVETKIT_STORAGE_PATH: storage, RIVET_RUN_ENGINE_PORT: String(port), RIVET_NAMESPACE: namespace });
+	Object.assign(env, { RIVETKIT_STORAGE_PATH: storage, ...(port && { RIVET_RUN_ENGINE_PORT: String(port) }), RIVET_NAMESPACE: namespace });
 	let keeper: ReturnType<typeof startNode> | undefined;
 	let node: ReturnType<typeof startNode> | undefined;
 	let id: string | undefined;
