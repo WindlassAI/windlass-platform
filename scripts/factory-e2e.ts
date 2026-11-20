@@ -208,7 +208,7 @@ const standin = new GithubStandin({ callbackUrl: `${API}/github/callback`, stric
 await standin.start();
 standin.addUser("ada");
 const installation = standin.addInstallation("ada", "User");
-const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation });
+const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
 standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "read", statuses: "read", actions: "read" };
 
 if (!only.length || only.some(name => name.startsWith("reviewer"))) {
@@ -227,12 +227,21 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			await user.savePersonalServer({ name: "builder-notes", definition: { command: "cat" } });
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "build", command: "true" }] });
 			await user.saveRepositorySetup({ repositoryId: harbor.id, command: "true" });
-			const item = await user.createItem({ repository: { id: harbor.id }, title: "Review the homepage", body: "Change the homepage. (report)", start: true });
+			const item = await user.createItem({ repository: { id: harbor.id }, title: "Review the homepage", body: "Change the homepage. (report) (review-files) (lookup-limit)", start: true });
 			const view = await untilItem(user, item.id, "the second review handoff", v => v.state === "review", CI_WAIT_MS);
 			assert(view.reviewerSessionId, "missing reviewer session");
 			const keys = [auth.profile.uid, view.reviewerSessionId];
 			const session = client.agentSession.get(keys, { params: { token: auth.token } });
 			const snapshot = await session.snapshot();
+			const first = snapshot.timeline.find(e => e.kind === "user");
+			const inbox = snapshot.timeline.find(e => e.kind === "windlass" && e.event.type === "inbox.enqueued");
+			assert(first?.kind === "user" && first.text === `Review pull request #${view.pullRequest?.number} at aaaaaaa against the task and its acceptance criteria.`, "missing short stored review prompt");
+			assert(inbox?.kind === "windlass" && JSON.stringify(inbox.event.data?.content) === JSON.stringify([{ type: "text", text: first.text }]), "Windlass prompt echo differs from the stored prompt");
+			const lookup = snapshot.timeline.find(e => e.kind === "windlass" && e.event.type === "fake.review_reply" && e.event.data?.lookup);
+			assert(lookup?.kind === "windlass" && String(lookup.event.data?.lookup).includes("only the commands field") && snapshot.summary.turns === 1, "lookup must refuse extra fields and leave the fourth filing available");
+			const fileCalls = standin.requests.map(r => r.path.split("?")[0]!.split("/").pop() ?? "").filter(p => ["access_tokens", "token", "README.md", "notes.txt"].includes(p));
+			const firstRead = fileCalls.indexOf("README.md");
+			assert(firstRead > 0 && fileCalls.slice(firstRead - 1, firstRead + 3).join() === "access_tokens,README.md,notes.txt,token", `expected one mint and revoke around both reads, got ${fileCalls.slice(firstRead - 1, firstRead + 4)}`);
 			const event = snapshot.timeline.find(e => e.kind === "windlass" && e.event.type === "fake.session_open");
 			const open = event?.kind === "windlass" ? event.event.data as { method: string; params: { _meta: { windlass: { hostTools: Array<{ name: string; timeoutSeconds?: number; effect: string; untrustedResult: boolean }> } } } } : null;
 			const tools = open?.params._meta.windlass.hostTools;

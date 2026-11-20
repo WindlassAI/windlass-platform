@@ -1089,6 +1089,11 @@ class FakeWindlass implements Windlass {
 						emit({ type: "tool.called", data: { ...ids, name: "shell", input: JSON.stringify({ command: "pwd" }) }, seq: 0 });
 						emit({ type: "tool.settled", data: { ...ids, outcome: "success", output: "/workspace", display: { exitCode: 0 } }, seq: 0 });
 						const ask = (args: Record<string, unknown>) => offered.get(REVIEW_TOOL)!({ ...ids, callId: "filing", arguments: args }, signal ?? new AbortController().signal);
+						if (text.includes("(lookup-limit)")) {
+							for (let i = 0; i < 3; i++) await ask({});
+							const lookup = await ask({ commands: true, blocks: [] });
+							emit({ type: "fake.review_reply", data: { lookup }, seq: 0 });
+						}
 						const available = await ask({ commands: true });
 						const ref = available.split(", ").at(-1)?.split(" ").at(-1);
 						const picture = text.includes("## screenshots");
@@ -1099,7 +1104,8 @@ class FakeWindlass implements Windlass {
 							const refusal = await ask({ recommendation: "approve", blocks: [...blocks, { kind: "screenshot", file, caption: "Home" }] });
 							emit({ type: "fake.review_reply", data: { refusal }, seq: 0 });
 						}
-						const answer = await ask({ recommendation: "approve", blocks: [...blocks, ...(picture ? [{ kind: "screenshot", file, caption: "Reviewed home page" }] : [])] });
+						const excerpts = text.includes("(review-files)") ? ["README.md", "notes.txt"].map(path => ({ kind: "excerpt", at: { path, side: "base", lines: { start: 1, end: 1 } } })) : [];
+						const answer = await ask({ recommendation: "approve", blocks: [...blocks, ...excerpts, ...(picture ? [{ kind: "screenshot", file, caption: "Reviewed home page" }] : [])] });
 						emit({ type: "fake.review_reply", data: { answer }, seq: 0 });
 					}
 					for (const [word, name, run] of [

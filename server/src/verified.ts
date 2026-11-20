@@ -526,11 +526,25 @@ export function workFlags(diff: WorkDiff, checks: ReadonlyArray<{ name: string; 
 	flag("checks_changed", changed);
 	flag("exit_ignored", ignored);
 	// Both sides of a rename matter: instructions can move into or out of the work. The root config has its own check above.
-	const instructions = [...touched].filter((path) => path !== CONFIG && (
-		/(^|\/)(AGENTS|CLAUDE)\.md$/.test(path) || /(^|\/)\.(windlass|claude|agents|cursor\/rules)\//.test(path) || path === ".github/copilot-instructions.md"
-	));
-	flag("agent_instructions_changed", instructions);
+	flag("agent_instructions_changed", [...touched].filter(isAgentInstructionPath));
 	return flags;
+}
+
+function isAgentInstructionPath(path: string): boolean {
+	return path !== ".windlass/config.json" && (
+		/(^|\/)(AGENTS|CLAUDE)\.md$/.test(path) || /(^|\/)\.(windlass|claude|agents|cursor\/rules)\//.test(path) || path === ".github/copilot-instructions.md"
+	);
+}
+
+/** Group the pinned diff before redaction, so an instruction path still gets a warning if its name is redacted. */
+export function groupReviewPaths(paths: string[]) {
+	const instructionPaths: string[] = [];
+	const otherPaths: string[] = [];
+	for (const path of paths) {
+		if (isAgentInstructionPath(path)) instructionPaths.push(path);
+		else otherPaths.push(path);
+	}
+	return { paths: otherPaths, instructionPaths, total: paths.length };
 }
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "source", "."]);

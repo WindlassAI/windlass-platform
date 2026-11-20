@@ -189,6 +189,7 @@ interface TurnRun {
 }
 
 interface TurnExtra {
+	onReview?: () => Promise<string>;
 	windlassSessionId?: string;
 	signal?: AbortSignal;
 	onEvent?: (event: WindlassEvent, control: TurnControl | null) => void;
@@ -207,6 +208,7 @@ async function turn(handle: DockerSandboxHandle, prompt: string, script: Scripte
 	const ask = extra.onQuestion;
 	const result = await (extra.windlass ?? layer.windlass).runTurn(handle, {
 		prompt,
+		onReview: extra.onReview,
 		script: script ?? undefined,
 		windlassSessionId: extra.windlassSessionId,
 		signal: extra.signal,
@@ -843,6 +845,25 @@ async function main(): Promise<void> {
 			slow instanceof AcpError && slow.reason === "timeout" && /0\.1 s|0\.2 s/.test(slow.message) && lost instanceof AcpError && lost.reason === "closed" && /exited with code 9/.test(lost.message) && after instanceof AcpError && after.reason === "closed",
 			`${(slow as Error | null)?.message} / ${(lost as Error | null)?.message}`,
 		);
+	});
+
+	await section("reviewer commands", async () => {
+		const box = await offlineSandbox(uid, "docker-windlass-sandbox", "check-reviewer");
+		if (!box) throw new Error("reviewer sandbox unavailable");
+		const script: ScriptedModel = { responses: [
+			shell("pnpm", 'pnpm config get store-dir && test ! -w "$HOME/.config/pnpm/config.yaml" && echo read-only'),
+			[{ type: "tool_call", callId: "delegate", name: "subagent", input: { task: "Say hello." } }, { type: "finish", reason: "tool_calls" }],
+			say("Done."), say("Done."),
+		] };
+		let session: string | undefined;
+		for (const open of ["new", "resume"]) {
+			const attempt = await turn(box, "Review this commit.", script, { windlassSessionId: session, onReview: async () => "Filed." });
+			expect(`reviewer ${open}: pnpm reads the image's read-only configuration`, outputOf(settled(attempt.events, "pnpm")).includes("/tmp/.cache/pnpm-store\nread-only"), outputOf(settled(attempt.events, "pnpm")));
+			const denied = outputOf(settled(attempt.events, "delegate"));
+			expect(`reviewer ${open}: the subagent tool is refused before it starts`, /may not use the tool "subagent"/.test(denied) && !started(attempt.events, "delegate"), denied);
+			session = attempt.result.windlassSessionId ?? undefined;
+			if (!session) throw new Error("missing reviewer session");
+		}
 	});
 
 	for (const profileId of ["docker-windlass-sandbox", "docker-hardened"] as SandboxProfileId[]) {

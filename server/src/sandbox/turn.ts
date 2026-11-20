@@ -491,6 +491,7 @@ class Tally {
 /** One turn: the process, the connection, and everything that has to be told apart while it runs. */
 class Turn {
 	private readonly approval: "auto" | "full";
+	private readonly reviewerAgent: string | null;
 	private process: SandboxProcess | null = null;
 	private readonly peer: AcpConnection;
 	private processEnd: ProcessEnd | null = null;
@@ -599,6 +600,8 @@ class Turn {
 		// A scripted turn calls no model: it is handed no token.
 		this.tokenFile = input.script === undefined ? new TokenFile(sandbox, tokens, options.tokenFile) : null;
 		this.approval = sandbox.approval;
+		// A project definition takes precedence over a named user agent. Choose the name after checkout, on every open.
+		this.reviewerAgent = input.onReview ? `wlp-review-${randomId(16)}` : null;
 		this.redactor = input.secrets?.redactor ?? NO_REDACTION;
 		this.peer = new AcpConnection(
 			(line) => this.process?.write(`${line}\n`) ?? false,
@@ -612,8 +615,10 @@ class Turn {
 		const { sandbox, input } = this;
 		const scriptPath = input.script === undefined ? null : `/tmp/.wlp-script-${randomId(6)}.json`;
 		const tokenFile = this.tokenFile;
+		const configHome = this.reviewerAgent && `/tmp/${this.reviewerAgent}`;
+		const agentFile = configHome && `${configHome}/windlass/agents/${this.reviewerAgent}.md`;
 		// What the turn leaves in the sandbox besides its processes.
-		const files = [...(scriptPath === null ? [] : [scriptPath]), ...(tokenFile === null ? [] : tokenFile.files)];
+		const files = [...(scriptPath === null ? [] : [scriptPath]), ...(tokenFile === null ? [] : tokenFile.files), ...(agentFile ? [agentFile] : [])];
 		const onAbort = () => this.abort();
 		/** Ends the hold on the sandbox; null while there is none. */
 		let release: (() => Promise<void>) | null = null;
@@ -626,14 +631,14 @@ class Turn {
 				this.failure = { reason: "engine", message: `the sandbox could not be kept running for the turn: ${error instanceof Error ? error.message : String(error)}` };
 				return null;
 			});
-			if (release !== null && (await this.prepare(scriptPath)) && !this.abortRequested) {
+			if (release !== null && (await this.prepare(scriptPath, agentFile)) && !this.abortRequested) {
 				// A token a command printed is taken out before the message is read: it reaches no event.
 				const lines = new LineSplitter((line) => this.peer.receive(tokenFile === null ? line : tokenFile.scrub(line)));
 				const env = {
 					// A server that lives for one turn must not start other sessions' wake-up turns, as the command line's one-prompt runs do not.
 					WINDLASS_WAKE: "off",
 					// A base setup may have written a user config with auto-start MCP servers.
-					...(input.onReview ? { XDG_CONFIG_HOME: `/tmp/wlp-review-config-${randomId(16)}` } : {}),
+					...(configHome ? { XDG_CONFIG_HOME: configHome } : {}),
 					// Only warnings and errors on stderr: that is what `stderrTail` is for.
 					WINDLASS_ACP_LOG: "warn",
 					...(scriptPath === null ? {} : { WINDLASS_ACP_SCRIPT: scriptPath }),
@@ -741,17 +746,22 @@ class Turn {
 	}
 
 	/** What has to be so before the engine starts. False, with `failure` set, when the sandbox cannot be used. */
-	private async prepare(scriptPath: string | null): Promise<boolean> {
+	private async prepare(scriptPath: string | null, agentFile: string | null): Promise<boolean> {
 		// One turn at a time per sandbox: a Windlass still running here is left over from a turn whose server or
 		// client went away, and it would hold the session ("in use by another windlass process").
-		const [leftovers, script, token] = await Promise.allSettled([
+		const [leftovers, script, agent, token] = await Promise.allSettled([
 			this.sandbox.stopLeftovers("windlass"),
 			scriptPath === null ? undefined : this.sandbox.writeTextFile(scriptPath, JSON.stringify(this.input.script)),
+			agentFile === null ? undefined : this.sandbox.writeTextFile(agentFile, [
+				"---", `name: ${this.reviewerAgent}`, "description: Reviews this pull request independently.",
+				"disallowed-tools: subagent", "---", "Review the change yourself.", "",
+			].join("\n")),
 			// The user's access token, in its file before the engine looks for it. An abort does not wait for it.
 			this.tokenFile === null ? undefined : this.unlessAborted(this.handIn(this.tokenFile)),
 		]);
 		// The sandbox itself does not work (it is not running, a file cannot be written): that is not about anyone's sign-in.
-		const broken = leftovers.status === "rejected" ? leftovers.reason : script.status === "rejected" ? script.reason : token.status === "rejected" && token.reason instanceof TokenFileError ? token.reason : null;
+		const setupError = [leftovers, script, agent].find(result => result.status === "rejected");
+		const broken = setupError?.status === "rejected" ? setupError.reason : token.status === "rejected" && token.reason instanceof TokenFileError ? token.reason : null;
 		if (broken !== null) {
 			this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${broken instanceof Error ? broken.message : String(broken)}` };
 			return false;
@@ -796,7 +806,7 @@ class Turn {
 			}
 			this.openKeys = openKeysIn(init);
 			this.methods = methodsIn(init);
-			if (input.onReview && ["agent", "children", "requiredChecks", "hostTools"].some(key => !this.openKeys.includes(key))) {
+			if (input.onReview && ["agent", "children", "withholdEnv", "passEnv", "requiredChecks", "hostTools"].some(key => !this.openKeys.includes(key))) {
 				this.failure = { reason: "engine", message: "This Windlass cannot open a restricted reviewer session with file_review." };
 				return;
 			}
@@ -869,14 +879,16 @@ class Turn {
 			...(input.model === undefined ? {} : { model: input.model }),
 			...(input.effort === undefined ? {} : { effort: input.effort }),
 			approval: this.approval,
-			...(input.onReview ? { agent: "none", children: false } : {}),
+			// The agent definition refuses delegation. children controls only questions from a child.
+			...(this.reviewerAgent ? { agent: this.reviewerAgent, children: false } : {}),
 			// Whether anyone can answer a question. Without someone, a call that would ask is refused at once and the model is told.
 			attended: input.onQuestion !== undefined,
 			unattended: "deny",
 			// None of these is stored with the session: they are said each time it is opened, to an engine that takes them.
 			...(this.openKeys.includes("sandboxHome") ? { sandboxHome: SANDBOX_HOME } : {}),
-			...(input.secrets !== undefined && this.openKeys.includes("withholdEnv") && this.openKeys.includes("passEnv")
-				? { withholdEnv: [...(input.secrets.withholdEnv ?? [])], passEnv: [...(input.secrets.passEnv ?? [])] }
+			// Reviewer commands use the image's read-only ~/.config/pnpm, while the engine uses its private config.
+			...((input.secrets || this.reviewerAgent) && this.openKeys.includes("withholdEnv") && this.openKeys.includes("passEnv")
+				? { withholdEnv: [...(input.secrets?.withholdEnv ?? []), ...(this.reviewerAgent ? ["XDG_CONFIG_HOME"] : [])], passEnv: [...(input.secrets?.passEnv ?? [])] }
 				: {}),
 			// The user's checks, an empty list too: what the engine holds for the session is then what the user has saved now.
 			...(this.openKeys.includes("requiredChecks") ? { requiredChecks: windlassChecks(input.checks ?? [], true) } : {}),

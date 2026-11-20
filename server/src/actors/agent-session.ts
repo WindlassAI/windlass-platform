@@ -158,7 +158,7 @@ import {
 	type WindlassEvent,
 	type WorkspaceFile,
 } from "../contract.js";
-import { GithubError, githubApp } from "../github/app.js";
+import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
 import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutReview } from "../github/git.js";
 import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, problemOf, resolveRepository, type StoredConnection } from "../github/repos.js";
@@ -188,7 +188,7 @@ import {
 } from "../server-question.js";
 import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf } from "../setup-command.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
-import { VerificationLog, outputTail, withOutputs } from "../verified.js";
+import { VerificationLog, groupReviewPaths, outputTail, withOutputs } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { grantIsValid, type ReserveAnswer, secretsActor, type SessionCreateInput, userActor } from "./internal.js";
@@ -3075,6 +3075,10 @@ function titleFrom(prompt: string): string {
 	return title.length < text.length ? `${title}…` : title;
 }
 
+function itemPrompt(row: InboxRow): string {
+	return row.checkout && !row.text ? `Review pull request #${row.checkout.pr} at ${row.checkout.head.slice(0, 7)} against the task and its acceptance criteria.` : row.text;
+}
+
 /** Runs one accepted turn to its `turn.ended`. `release` gives back the sandbox its acceptance took (`takeSandbox`). Never rejects. */
 async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: string, release: () => void): Promise<void> {
 	const startedAt = Date.now();
@@ -3174,7 +3178,8 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			const listed: ReviewRecord[] = [];
 			const commands = new ReviewCommands(held.redactor);
 			let uiChanged = false;
-			let files: ((path: string, sha: string) => Promise<string>) | null = null;
+			let filingFiles: (() => { read(path: string, sha: string): Promise<string>; close(): Promise<void> }) | null = null;
+			let storedBrief: string | null = null;
 			if (reviewer && checkout && item) {
 				const repo = meta.repo;
 				const app = githubApp();
@@ -3199,10 +3204,20 @@ fi`, { signal, timeoutMs: 5000 });
 				if (grantCheck.aborted || grantCheck.timedOut) throw new TurnProblem("checking the saved project approvals was interrupted");
 				if (grantCheck.exitCode !== 0) throw new ReviewRefused("could not establish that Windlass has no saved project approvals");
 				const paths = await changedReviewPaths(sandbox, directory, checkout.baseSha, checkout.head);
-				files = (path, sha) => app.withToken(resolved.installation.id, scope, token => app.fileAt(token, owner, name, path, sha), { revokeAfter: true });
+				filingFiles = () => {
+					let issued: InstallationToken | undefined;
+					return {
+						async read(path, sha) {
+							issued ??= await app.installationToken(resolved.installation.id, scope);
+							return app.fileAt(issued.token, owner, name, path, sha);
+						},
+						async close() { if (issued) await app.revoke(issued); },
+					};
+				};
 				uiChanged = paths.some(path => /\.(tsx|jsx|vue|svelte|css|scss|html)$|^(web|app|pages|components|src\/ui)\//i.test(path));
 				const manifestsChanged = paths.some(path => /(?:^|\/)(?:package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lock[^/]*|requirements[^/]*\.txt|pyproject\.toml|uv\.lock|poetry\.lock|Cargo\.(?:toml|lock)|go\.(?:mod|sum)|Gemfile[^/]*)$/.test(path));
-				const brief = reviewerTask(held.redactor.deep({ ...checkout, changed: { paths, total: paths.length }, uiChanged, manifestsChanged, screenshots }), listed, held.redactor.text(text));
+				const brief = reviewerTask(held.redactor.deep({ ...checkout, changed: groupReviewPaths(paths), uiChanged, manifestsChanged, screenshots }), listed, held.redactor.text(text));
+				storedBrief = held.redactor.text(itemPrompt(item.row));
 				text = brief;
 			}
 			let filings = Promise.resolve("");
@@ -3221,18 +3236,22 @@ fi`, { signal, timeoutMs: 5000 });
 				prompt: reviewer ? text : `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${onBase ? setupOnBaseNote(onBase) : ""}${text}`,
 				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
 				reportScreenshots: !store || held.screenshots,
-				onReview: reviewer && item && checkout && files ? (request, withdrawn) => {
-					const readFile = files!;
+				onReview: reviewer && item && checkout && filingFiles ? (request, withdrawn) => {
+					const openFiles = filingFiles;
 					const file = async () => {
 						if (!open || withdrawn.aborted) return "The review call ended.";
 						const args = request.arguments;
-						if (args?.commands === true && Object.keys(args).length === 1) return "Completed shell commands in call order: " + (commands.records().map(r => r.ref).join(", ") || "none");
+						if (args?.commands === true) {
+							if (Object.keys(args).length !== 1) return "A command lookup takes only the commands field. No filing was used.";
+							return "Completed shell commands in call order: " + (commands.records().map(r => r.ref).join(", ") || "none");
+						}
 						if (calls >= RULES.reviewFilings) return "No more filings in this turn. The platform keeps the last review it accepted. End your turn.";
 						calls++;
 						const owner = { by: "reviewer" as const, uid: meta.uid, sessionId: meta.sessionId, itemId: item.row.itemId, key: item.row.key };
 						const top = meta.cloneDirectory === "." ? sandbox.cwd : `${sandbox.cwd}/${meta.cloneDirectory}`;
-						const result = await fileReview(args, { records: listed, commands: commands.records(), earlier: [], round: checkout.round, redactor: held.redactor }, checkout.baseSha, checkout.head, screenshots, readFile,
-							store ? shots => uploadShots(sandbox, top, shots, owner, userActor(c, meta.uid), store, withdrawn) : null);
+						const files = openFiles();
+						const result = await fileReview(args, { records: listed, commands: commands.records(), earlier: [], round: checkout.round, redactor: held.redactor }, checkout.baseSha, checkout.head, screenshots, files.read,
+							store ? shots => uploadShots(sandbox, top, shots, owner, userActor(c, meta.uid), store, withdrawn) : null).finally(files.close);
 						if (result.retryFree) calls--;
 						if (!open || withdrawn.aborted) return "The review call ended.";
 						if (result.filing) {
@@ -3272,6 +3291,11 @@ fi`, { signal, timeoutMs: 5000 });
 					if (!open) return;
 					events += 1;
 					try {
+						// Windlass echoes the submitted brief in this event. Keep its receipt, with the same short text as the user row.
+						if (storedBrief !== null && event.type === "inbox.enqueued" && event.data?.origin === null) {
+							event = { ...event, data: { ...event.data, content: [{ type: "text", text: storedBrief }] } };
+							storedBrief = null;
+						}
 						if (reviewer) commands.note(event);
 						active.checks.note(event);
 						onWindlassEvent(c, meta, turn, event);
@@ -3753,7 +3777,7 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		meta.status = "starting";
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
-		const first = append(c, { turn, kind: "user", text: row.text, model: meta.model, effort: null });
+		const first = append(c, { turn, kind: "user", text: itemPrompt(row), model: meta.model, effort: null });
 		publish(c);
 		const active: ActiveTurn = { number: turn, effort: null, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishes: new Set(), item: { row: { ...row, state: "started", turn, slot }, report: null, full: null, started: false, pushedAtStart: meta.pushedHead ?? null } };
 		c.vars.turn = active;

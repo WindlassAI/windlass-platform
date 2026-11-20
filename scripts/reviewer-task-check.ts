@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS, type ReviewRecord } from "../server/src/contract.js";
 import { REVIEW_TOOL, REVIEWER_TASK_LIMITS, reviewerTask, type ReviewerTaskInput } from "../server/src/factory/reviewer-task.js";
+import { groupReviewPaths } from "../server/src/verified.js";
 import { SecretRedactor } from "../server/src/repo-secrets.js";
 
 let passed = 0;
@@ -200,6 +201,17 @@ test("every record id appears once, with its state; the names are quoted; comman
 	assert.ok(section(none, "The platform's records of this commit").includes("The platform has no records of checks, CI or flags for this commit."));
 });
 
+test("the pinned diff identifies changed instruction files even without a verdict flag", () => {
+	const names = ["nested/AGENTS.md", ".windlass/skills/a-----b/SKILL.md"];
+	const paths = [...repeat(350, i => `src/${i}.ts`), ...names];
+	const text = reviewerTask({ ...first, records: [], changed: groupReviewPaths(paths) });
+	const changed = section(text, "The changed files");
+	assert.match(changed, /2 agent instruction files changed/);
+	assert.ok(changed.includes(names[0]) && changed.includes(".windlass/skills/a- - - - -b/SKILL.md"));
+	assert.ok(!outside(text).includes(names[0]));
+	assert.ok(!section(reviewerTask(first), "The changed files").includes("agent instruction file"));
+});
+
 test("each note appears only when its flag is set", () => {
 	const manifests = "Dependency manifests or lockfiles changed in this commit";
 	const ui = "UI files changed in this commit";
@@ -283,7 +295,7 @@ test("everything at its largest still fits: every check and flag, failing CI bef
 			task: { title: "t".repeat(80), body: "b".repeat(MAX_ITEM_BODY_CHARS), acceptance: repeat(MAX_ACCEPTANCE_CRITERIA, () => "c".repeat(1_000)), base: "main" },
 			verdictWords: "v".repeat(10_000),
 			records: many,
-			changed: { paths: repeat(5_000, (i) => `${i}/${"p".repeat(400)}`), total: 5_000 },
+			changed: groupReviewPaths(repeat(5_000, (i) => `${i}/${"p".repeat(400)}${i % 2 ? "/AGENTS.md" : ""}`)),
 			manifestsChanged: true,
 			report: { title: "r".repeat(MAX_PUBLISH_TITLE_CHARS), description: "d".repeat(MAX_PUBLISH_BODY_CHARS), lookAt: "l".repeat(REVIEW_LIMITS.lookAtChars), concerns: "c".repeat(MAX_PUBLISH_BODY_CHARS), screenshots: repeat(4, (i) => ({ file: `.wlp-shots/${i}.png`, caption: "k".repeat(200) })) },
 			earlier: round === 1 ? [] : repeat(REVIEW_LIMITS.findings, (i) => ({ id: `r1.f${i + 1}`, title: "t".repeat(REVIEW_LIMITS.findingTitleChars), text: "e".repeat(REVIEW_LIMITS.findingChars) })),
@@ -313,6 +325,8 @@ test("everything at its largest still fits: every check and flag, failing CI bef
 		assert.ok(task.length >= REVIEWER_TASK_LIMITS.taskRoom, `the task keeps ${task.length}`);
 		assert.ok(report.length >= REVIEWER_TASK_LIMITS.taskRoom, `the report keeps ${report.length}`);
 		console.log(`      round ${round} at its largest: ${text.length} characters; task ${task.length}, report ${report.length}, records ${listed.length}`);
+		assert.match(text, /2,500 agent instruction files changed/);
+		assert.match(text, /instruction paths are omitted for length/);
 		assert.match(text, /5,000 files changed between the base and this commit\. (\d[\d,]*) are named below and [\d,]+ more are not/);
 		if (round === 2) assert.ok(section(text, "Round 2").includes(`are ${repeat(REVIEW_LIMITS.findings, (i) => `r1.f${i + 1}`).join(", ")}.`), "every earlier id is named even when the findings are cut");
 		for (const heading of REQUIRED) assert.ok(text.includes(`\n## ${heading}\n`), heading);
