@@ -193,6 +193,13 @@ export class Executor extends MachineDocker {
 		box.usedAt = Date.now();
 		return box;
 	}
+	/** Keep the control report in step with an observed container transition, including an idle stop. */
+	private noteState(id: string, box: Box, state: "none" | "running" | "paused") {
+		if (box.state === state) return;
+		if (state === "none") this.boxes.delete(id);
+		else box.state = state;
+		this.publishReport?.();
+	}
 	async lifecycle(op: Lifecycle["name"], id: string, session?: string) {
 		if (!this.dockerHealth.ok) await this.discover();
 		const box = this.owned(id, session);
@@ -207,15 +214,14 @@ export class Executor extends MachineDocker {
 		box.usedAt = Date.now();
 		if (op === "state") {
 			const state = await this.provider.state(box.raw);
-			if (state === "none") this.boxes.delete(id);
-			else box.state = state;
+			this.noteState(id, box, state);
 			return state;
 		}
 		if (op === "connect") {
 			if (box.state === "paused") this.room();
 			const handle = await this.provider.connect(box.raw);
-			if (!handle) { this.boxes.delete(id); return null; }
-			box.state = "running";
+			this.noteState(id, box, handle ? "running" : "none");
+			if (!handle) return null;
 			return { cwd: handle.cwd, profile: box.profile };
 		}
 		// The server names the token by the external sandbox id; the provider knows the raw id.
@@ -227,8 +233,7 @@ export class Executor extends MachineDocker {
 		else {
 			await this.provider.suspend(box.raw);
 			const state = await this.provider.state(box.raw);
-			if (state === "none") this.boxes.delete(id);
-			else box.state = state;
+			this.noteState(id, box, state);
 			if (state === "running") throw new RunnerError("Docker could not stop the sandbox.");
 		}
 		return null;

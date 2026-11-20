@@ -11,6 +11,8 @@ import { mkdtempSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
+import { mock } from "node:test";
+import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import type { Executor } from "../runner/src/docker-executor.js";
 import {
 	REFUSED_RETRY_MS, type ServerFrame, LIVE_MS, MAX_CONTROL_FRAME_BYTES, MIN_RUNNER_VERSION, parseConnectionRefusal, parsePairStatus, parseRunnerFrame, parseServerFrame, refuse, secondHello, versionAtLeast,
@@ -145,6 +147,26 @@ async function checkControl(name: string, run: () => Promise<void>) {
 	catch (error) { expect(name, false); console.error(error instanceof Error ? error.message : "Runner check failed."); }
 }
 try {
+	await checkControl("an idle stop reports the paused sandbox immediately", async () => {
+		const machineId = "m_0123456789abcdef";
+		Object.assign(globalThis, { SANDBOX_IMAGE: "sha256:" + "0".repeat(64) });
+		const { Executor } = await import("../runner/src/docker-executor.js");
+		const owner = new Executor({ uid: "u_owner", machineId }, {});
+		const raw = "0123456789ab", id = `m${machineId}-${raw}`;
+		owner.boxes.set(id, { raw, sessionId: "s_idle", state: "running", profile: "docker-hardened", usedAt: 0, busy: 0, workspaceChecked: true });
+		owner.discover = async () => {};
+		let stopped = false;
+		owner.provider.suspend = async () => { stopped = true; };
+		owner.provider.state = async () => stopped ? "paused" : "running";
+		const reports: string[] = [];
+		owner.publishReport = () => reports.push(owner.report().sandboxes[0]!.state);
+		const cleanup = mock.method(DockerSandboxHandle.prototype, "removeFiles", async () => {});
+		try {
+			await owner.idle(1, () => false);
+			assert.ok(stopped);
+			assert.deepEqual(reports, ["paused"]);
+		} finally { cleanup.mock.restore(); }
+	});
 	await checkControl("a failed renewal preserves the control and session sockets and retries on the next attach", async () => {
 		const errors = [answer(429), answer(403, { reason: "removed", removeSandboxes: true }), answer(410, { reason: "unknown" }),
 			answer(403, { reason: "clock", serverTime: Date.now() + 60_000 })];

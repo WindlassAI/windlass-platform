@@ -138,8 +138,8 @@ export class StandInRunner {
 	leftovers = 0;
 	/** The machine is at its owner's cap (`--max-sandboxes`): a `create` is refused as the real runner refuses it. */
 	full = false;
-	/** The next `create` makes its container and then the runner dies before it answers or reports it. */
-	loseNextCreate = false;
+	/** How many create replies to lose by restarting before answering or reporting the container. */
+	loseCreates = 0;
 	creates = 0;
 	offline = false;
 	removed = false;
@@ -173,14 +173,6 @@ export class StandInRunner {
 			return;
 		}
 		this.control = control as never;
-		await opened(control.ws);
-		await until("the machine's welcome", () => {
-			if (control.ws.readyState > 1) {
-				if (this.control?.ws === control.ws) this.control = null;
-				throw new Error("the control socket was refused");
-			}
-			return control.frames.some((frame) => frame.kind === "welcome");
-		}, 15_000);
 		control.ws.addEventListener("message", ({ data }) => {
 			const frame = parseServerFrame(data);
 			if (frame?.kind === "attach") this.attach(frame.sessionId, frame.ticket);
@@ -196,6 +188,14 @@ export class StandInRunner {
 			this.control = null;
 			if (!this.offline && !this.removed) void this.reconnect();
 		});
+		await opened(control.ws);
+		await until("the machine's welcome", () => {
+			if (control.ws.readyState > 1) {
+				if (this.control?.ws === control.ws) this.control = null;
+				throw new Error("the control socket was refused");
+			}
+			return control.frames.some((frame) => frame.kind === "welcome");
+		}, 15_000);
 	}
 
 	private async reconnect(): Promise<void> {
@@ -310,18 +310,17 @@ export class StandInRunner {
 				this.creates += 1;
 				// As the runner does: a session's sandbox, once made, is the answer to its every `create`, also after a restart.
 				const had = [...this.boxes.values()].find((existing) => existing.sessionId === sessionId);
-				if (had) return channel.respond(op, had.id);
 				// The real runner's sentence (runner/src/docker-executor.ts), sent as a SandboxUserError is (runner/src/session.ts).
-				if (this.full) return channel.refuse(op, { kind: "user", message: "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." });
-				const made: Box = { id: `${this.id.machineId}-${randomBytes(6).toString("hex")}`, sessionId, profile: op.args.profile, state: "running", files: new Map(), engines: new Set() };
+				if (!had && this.full) return channel.refuse(op, { kind: "user", message: "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." });
+				const made: Box = had ?? { id: `${this.id.machineId}-${randomBytes(6).toString("hex")}`, sessionId, profile: op.args.profile, state: "running", files: new Map(), engines: new Set() };
 				this.boxes.set(made.id, made);
-				if (this.loseNextCreate) {
+				if (this.loseCreates > 0) {
 					// Before any report: the real runner reports at most once a minute, so the server cannot count on one.
-					this.loseNextCreate = false;
+					this.loseCreates--;
 					void sleep(300).then(() => this.restartProcess());
 					return;
 				}
-				this.report();
+				if (!had) this.report();
 				return channel.respond(op, made.id);
 			}
 			case "connect":

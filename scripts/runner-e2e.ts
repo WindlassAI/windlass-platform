@@ -109,6 +109,7 @@ async function serverNode(): Promise<void> {
 	Object.assign(agentSession.config.actions!, { e2eMeta: (c: { vars: { meta: unknown } }) => c.vars.meta });
 	const { machine } = await import("../server/src/actors/machine.js");
 	const actions = machine.config.actions!;
+	Object.assign(actions, { e2eDestroy: (c: { destroy(): void }) => c.destroy() });
 	const remove = actions.internalRemoveSandbox;
 	const refusal = join(process.env.RIVETKIT_STORAGE_PATH!, "refuse-removal");
 	actions.internalRemoveSandbox = async (c, input) => {
@@ -244,15 +245,14 @@ function socketPair() {
  * runner answers an `attach`: "now" (before the actor's reply reaches the session), after a number of
  * ms, or "never"; `reply` is what the actor's answer waits for first.
  */
-function bench(layer: LinkModule, options: { report?: Facts["report"]; serve?: (op: Operation, channel: RunnerChannel) => void } = {}) {
+function bench(layer: LinkModule, options: { report?: Facts["report"]; facts?: () => Promise<void>; serve?: (op: Operation, channel: RunnerChannel) => void } = {}) {
 	const key = generateKeyPairSync("ed25519");
 	const report: Facts["report"] = options.report ?? { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 10e9, sandboxes: [] };
 	const facts: Facts = { status: "online", name: "Bench", publicKey: key.publicKey.export({ type: "spki", format: "der" }).toString("base64"), report };
 	const log = { calls: [] as string[], attaches: [] as number[], tickets: [] as string[], ops: [] as string[], reaches: [] as string[], inFlight: 0, mostInFlight: 0 };
-	const mode: { hello: "now" | "never" | number; reply: () => Promise<void>; facts: () => Promise<void>; answer: Attachment } = {
+	const mode: { hello: "now" | "never" | number; reply: () => Promise<void>; answer: Attachment } = {
 		hello: "now",
 		reply: async () => undefined,
-		facts: async () => undefined,
 		answer: { ok: true },
 	};
 	const serve = options.serve ?? ((op: Operation, channel: RunnerChannel) => {
@@ -284,7 +284,7 @@ function bench(layer: LinkModule, options: { report?: Facts["report"]; serve?: (
 		{
 			facts: async () => {
 				log.calls.push("facts");
-				await mode.facts();
+				await options.facts?.();
 				return facts;
 			},
 			attach: async (_sessionId, ticket) => {
@@ -401,8 +401,7 @@ async function linkChecks(): Promise<void> {
 			const late = [first.at, second.at];
 			assert(early.every((at) => at === "pending"), `gave up early: ${early.map((at) => (at instanceof Error ? at.message : String(at))).join(" | ")}`);
 			assert(late.every((at) => at instanceof MachineUnreachable && at.message.startsWith('Your machine "Bench" is offline')), `at ${ATTACH_WAIT_MS / 1000} s: ${late.map((at) => (at instanceof Error ? at.message : String(at))).join(" | ")}`);
-			const c = fresh();
-			c.mode.facts = never;
+			const c = fresh({ facts: never });
 			const stalled = track(c.sandboxes.connect(LINK_SANDBOX));
 			await advance(ATTACH_WAIT_MS + 100);
 			const unnamed = stalled.at;
@@ -487,12 +486,23 @@ async function linkChecks(): Promise<void> {
 
 		await check("link: a machine session's profile is the machine's own, with its real availability", async () => {
 			const b = fresh({ report: { kind: "report", docker: { ok: true }, commandSandbox: { ok: false, reason: "Bubblewrap could not start" }, freeDiskBytes: 10e9, sandboxes: [] } });
-			const connecting = b.sandboxes.connect(LINK_SANDBOX);
 			await advance(50);
-			await connecting;
+			assert(b.log.calls.join() === "facts", `calls: ${b.log.calls.join()}`);
 			const profile = b.sandboxes.profile("docker-windlass-sandbox");
 			assert(profile.name.includes('"Bench"') && !profile.available, `profile: ${profile.name}, available ${profile.available}`);
 			return `${profile.name}: ${profile.unavailableReason}`;
+		});
+
+		await check("link: losing an idle socket pushes the offline banner without inviting the runner back", async () => {
+			const b = fresh();
+			await b.link.ready();
+			b.drop();
+			await advance(IDLE_DETACH_MS + 100);
+			assert(b.log.reaches.join() === "answering,offline", `pushed: ${b.log.reaches.join()}`);
+			assert(b.link.reach()?.state === "offline" && b.log.attaches.length === 1, "idle socket loss must wait for new work");
+			await b.link.ready();
+			assert(b.link.reach()?.state === "answering", "the next operation did not restore the banner");
+			return b.log.reaches.join(", ");
 		});
 
 		await check("link: what the banner reads is pushed each time it changes", async () => {
@@ -580,6 +590,17 @@ async function main(): Promise<void> {
 		};
 
 		const main = await newSession();
+		await check("the first snapshot after a sandbox-less machine session wakes shows its machine profile", async () => {
+			// Instantiate the link before sleep too, so the wake must build a fresh one.
+			await snapshotOf(client, uid, main.id, token);
+			await forceSleep(main.id);
+			const before = runner.attaches;
+			const snapshot = await snapshotOf(client, uid, main.id, token);
+			assert(snapshot.summary.sandbox === "none" && snapshot.profile.available && snapshot.profile.name.includes(runner.fake.details.name), `profile: ${snapshot.profile.name} (available: ${snapshot.profile.available})`);
+			assert(runner.attaches === before, "reading the profile opened a runner socket");
+			return snapshot.profile.name;
+		});
+
 		let plainEvents = 0;
 		await check("a turn on the machine completes, with its sandbox on the machine, and is not metered", async () => {
 			const { watch, ended } = await turn(main.id, "Write the primes");
@@ -772,12 +793,36 @@ async function main(): Promise<void> {
 		await check("create in a conversation that is lost, before any report, is asked again and makes no second sandbox", async () => {
 			const fresh = await newSession();
 			const creates = runner.creates;
-			runner.loseNextCreate = true;
+			runner.loseCreates = 1;
 			const { ended } = await turn(fresh.id, "Write the primes");
 			assert(ended.outcome === "succeeded", `ended ${ended.outcome}: ${ended.message}`);
 			assert(boxesOf(fresh.id).length === 1, `${boxesOf(fresh.id).length} sandboxes for the session`);
 			assert(runner.creates === creates + 2, `${runner.creates - creates} creates reached the runner`);
 			return "two creates, one sandbox: the runner answered the repeat with the one it had made";
+		});
+
+		await check("delete removes all reported sandboxes of a session that lost both create replies", async () => {
+			const doomed = await newSession();
+			runner.loseCreates = 2;
+			const { ended } = await turn(doomed.id, "Write the primes");
+			const [orphan] = boxesOf(doomed.id);
+			assert(ended.outcome === "error" && orphan && runner.loseCreates === 0, "both creates should lose their replies");
+			assert((await snapshotOf(client, uid, doomed.id, token)).summary.sandbox === "none", "the session saved its sandbox");
+			const otherId = `${place.machineId}-${randomBytes(6).toString("hex")}`;
+			runner.boxes.set(otherId, { ...orphan, id: otherId });
+			runner.report();
+			await until("both unrecorded sandboxes in the machine's report", async () => (await user.machines()).some(m => m.sandboxes.filter(s => s.sessionId === doomed.id).length === 2));
+			await runner.setOffline(true);
+			try {
+				await machineIs("offline");
+				await user.deleteSession(doomed.id);
+				assert(boxesOf(doomed.id).length === 2, "the offline runner acted on a removal");
+			} finally {
+				await runner.setOffline(false);
+			}
+			await until("both reported sandboxes to be removed", () => boxesOf(doomed.id).length === 0, 5_000);
+			assert(boxesOf(main.id).length === 1, "the main session lost its sandbox");
+			return "both removed on reconnect, the other session's sandbox kept";
 		});
 
 		await check("a delete whose machine cannot record the sandbox's removal is refused and keeps the session; once the machine answers it goes through", async () => {
@@ -911,6 +956,16 @@ async function main(): Promise<void> {
 			const snapshot = await snapshotOf(client, uid, main.id, token);
 			assert(snapshot.machine?.state === "removed" && snapshot.timeline.length > 0, `snapshot: ${JSON.stringify(snapshot.machine)}`);
 			return `the running turn ended ${ms} ms after the removal (${reason}), the open page told in ${pushedMs} ms; the next refused in ${next.ms} ms`;
+		});
+
+		await check("deleting a session whose machine actor is gone succeeds", async () => {
+			const machine = client.machine.get([uid, place.machineId], { params: serviceParams() });
+			const { isActorGone } = await import("../server/src/actors/internal.js");
+			await (machine as unknown as { e2eDestroy(): Promise<void> }).e2eDestroy();
+			await until("the machine actor to disappear", () => machine.internalFacts().then(() => false, isActorGone));
+			await user.deleteSession(main.id);
+			assert(!(await user.listSessions()).some(s => s.id === main.id), "the session is still listed");
+			return "the session with a saved sandbox id left the list";
 		});
 	} catch (error) {
 		failed += 1;

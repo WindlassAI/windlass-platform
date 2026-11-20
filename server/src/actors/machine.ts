@@ -274,11 +274,21 @@ export const machine = actor({
 				return { ok: true };
 			});
 		},
-		internalRemoveSandbox: async (c, { sandboxId }: { sandboxId: string }): Promise<void> => {
+		internalRemoveSandbox: async (c, { sandboxId, sessionId }: { sandboxId: string | null; sessionId?: string }): Promise<void> => {
 			requireServiceFor(c, "call");
 			await ordered(c, async () => {
-				await c.db.execute("INSERT OR IGNORE INTO pending SELECT ? WHERE EXISTS (SELECT 1 FROM machine WHERE removed_at IS NULL)", sandboxId);
-				if (c.vars.live) c.vars.live.ws.send({ kind: "remove", sandbox: sandboxId });
+				const r = await record(c);
+				if (!r || r.removed_at !== null) return;
+				const ids = new Set<string>();
+				if (sandboxId) ids.add(sandboxId);
+				// Only a session deletion includes sessionId. Read its last inventory in order with incoming reports.
+				if (sessionId && r.report) {
+					const report: Report = JSON.parse(r.report);
+					for (const box of report.sandboxes) if (box.sessionId === sessionId) ids.add(box.id);
+				}
+				if (!ids.size) return;
+				await c.db.execute("INSERT OR IGNORE INTO pending SELECT value FROM json_each(?)", JSON.stringify([...ids]));
+				for (const sandbox of ids) c.vars.live?.ws.send({ kind: "remove", sandbox });
 			});
 		},
 		internalLogout: async c => {

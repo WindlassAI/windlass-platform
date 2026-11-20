@@ -54,7 +54,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 		const titles = new Map(sessions.map(s => [s.id, s.title]));
 		return {
 			name: row.name, os: row.os, arch: row.arch, ...facts, machineId: row.id,
-			profiles: machineProfiles(row.name, report), sendSecrets: !!row.send, agents: sessions.length,
+			profiles: report ? machineProfiles(row.name, report) : [], sendSecrets: !!row.send, agents: sessions.length,
 			sandboxes: (report?.sandboxes ?? []).map(({ sessionId, state, usedAt }) => ({ sessionId, state, usedAt, title: titles.get(sessionId) ?? null })).sort((a, b) => b.usedAt - a.usedAt),
 			freeDiskBytes: report?.freeDiskBytes ?? null, commandSandbox: report?.commandSandbox ?? null,
 			...(report?.maxRunning !== undefined ? { maxRunning: report.maxRunning } : {}),

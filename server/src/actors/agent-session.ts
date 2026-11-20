@@ -227,6 +227,8 @@ const SIGNED_IN_FRESH_MS = 5 * 60 * 1000;
 const STOP_WAIT_MS = 10_000;
 /** How long the end of a turn waits for the `user` actor to take the new summary. */
 const REPORT_WAIT_MS = 5_000;
+/** A slow machine actor may delay profile availability, but the session timeline must still open. */
+const PROFILE_WAIT_MS = 2_000;
 
 /**
  * Going to sleep has to be over before the server exits. On SIGTERM RivetKit drains every actor at
@@ -652,7 +654,7 @@ function runnerLink(c: Ctx, machineId: string): RunnerLink {
 		const [uid, sessionId] = c.key as [string, string];
 		const client = c.client();
 		c.vars.runner = new RunnerLink(
-			{ uid, sessionId, machineId },
+			{ uid, sessionId, machineId, machineName: c.vars.meta?.machineName },
 			machineActor(() => client, uid, machineId),
 			(reason) => {
 				console.log(`[wlp] runner.conversation_ended session=${sessionId} machine=${machineId}: ${reason}`);
@@ -1361,6 +1363,30 @@ async function sweepSandboxes(c: Ctx, meta: SessionMeta, layer: SandboxLayer): P
 	} catch (error) {
 		c.log.warn({ msg: "could not remove the sandboxes the session did not know of", session: meta.sessionId, error: describeError(error) });
 	}
+}
+
+/** Machine removals must be durable before a delete succeeds, even if the runner is offline. */
+async function destroySessionSandboxes(c: Ctx, meta: SessionMeta): Promise<void> {
+	if (meta.place.kind === "machine") {
+		await runnerLink(c, meta.place.machineId).removeSessionSandboxes(meta.sandboxId);
+		sandboxChanged(c);
+		meta.sandboxId = null;
+		meta.sandbox = "none";
+		return;
+	}
+	if (meta.sandboxId) {
+		try {
+			const { sandboxes } = await layerOf(c, meta);
+			await sandboxes.destroy(meta.sandboxId);
+			sandboxChanged(c);
+			console.log(`[wlp] sandbox.destroyed id=${meta.sandboxId} session=${meta.sessionId}`);
+			meta.sandboxId = null;
+			meta.sandbox = "none";
+		} catch (error) {
+			c.log.error({ msg: "could not destroy the sandbox", sandbox: meta.sandboxId, error: describeError(error) });
+		}
+	}
+	await layerOf(c, meta).then((layer) => sweepSandboxes(c, meta, layer), () => undefined);
 }
 
 /** The session's sandbox was created, connected to, suspended or destroyed: a state read asked before then is out of date. */
@@ -4086,6 +4112,7 @@ export const agentSession = actor({
 	},
 
 	onDestroy: async (c) => {
+		const alreadyDeleting = c.vars.destroying;
 		c.vars.stopping = true;
 		c.vars.destroying = true;
 		try {
@@ -4093,17 +4120,9 @@ export const agentSession = actor({
 			if (!meta) return;
 			await stopTurn(c);
 			if (c.vars.flushTimer) clearTimeout(c.vars.flushTimer);
-			if (meta.sandboxId) {
-				try {
-					const { sandboxes } = await layerOf(c, meta);
-					await sandboxes.destroy(meta.sandboxId);
-					sandboxChanged(c);
-					console.log(`[wlp] sandbox.destroyed id=${meta.sandboxId} session=${meta.sessionId}`);
-				} catch (error) {
-					c.log.error({ msg: "could not destroy the sandbox", sandbox: meta.sandboxId, error: describeError(error) });
-				}
+			if (meta.place.kind === "hosted" || !alreadyDeleting) {
+				await destroySessionSandboxes(c, meta).catch(error => c.log.error({ msg: "could not remove the session's sandboxes", error: describeError(error) }));
 			}
-			await layerOf(c, meta).then((layer) => sweepSandboxes(c, meta, layer), () => undefined);
 			await leaveUsage(c, meta);
 			// After the sandbox, which is what uploads: nothing can put the copy back once it is removed.
 			await removeBackup(c, meta);
@@ -4147,6 +4166,7 @@ export const agentSession = actor({
 			const meta = liveMeta(c);
 			try {
 				const { sandboxes } = await layerOf(c, meta);
+				if (c.vars.runner && !c.vars.runner.known) await within(c.vars.runner.initialFacts, PROFILE_WAIT_MS);
 				const profile = sandboxes.profile(meta.profile);
 				return await serial(c, async () => {
 					await writeItems(c).catch((error) => c.log.error({ msg: "could not write the timeline", error: describeError(error) }));
@@ -4636,33 +4656,18 @@ export const agentSession = actor({
 			c.vars.destroying = true;
 			const meta = c.vars.meta;
 			if (meta) {
-				// Done here as well as in `onDestroy`, so that the caller's delete resolves only once the
-				// sandbox is gone; `onDestroy` finds nothing left to do.
+				// Done here as well as in `onDestroy`, so that the caller can retry if the machine could not record the removals.
 				await stopTurn(c);
-				if (meta.sandboxId) {
-					try {
-						const { sandboxes } = await layerOf(c, meta);
-						await sandboxes.destroy(meta.sandboxId);
-						sandboxChanged(c);
-						console.log(`[wlp] sandbox.destroyed id=${meta.sandboxId} session=${meta.sessionId}`);
-						meta.sandboxId = null;
-						meta.sandbox = "none";
-					} catch (error) {
-						c.log.error({ msg: "could not destroy the sandbox", sandbox: meta.sandboxId, error: describeError(error) });
-						// On a machine the removal is done by the machine's actor, which records it before it tells the
-						// runner: a failure here is that record not written, and nothing else would ever remove the
-						// sandbox. The delete is refused and the user's list keeps the session, so a second one retries.
-						// A hosted sandbox left behind is still found by its provider's list (`sweepSandboxes`, the user's `freeSandbox`).
-						if (meta.place.kind === "machine") {
-							c.vars.destroying = false;
-							await persist(c);
-							// What a turn stopped above could not set while the session was being destroyed.
-							void armIdle(c, meta);
-							throw new UserError("The agent could not be deleted: its machine's record of the sandbox to remove could not be written. Try again in a moment.", { code: "machine_unreachable" });
-						}
-					}
+				try {
+					await destroySessionSandboxes(c, meta);
+				} catch (error) {
+					c.log.error({ msg: "could not record the session's sandbox removals", session: meta.sessionId, error: describeError(error) });
+					c.vars.destroying = false;
+					await persist(c);
+					// What a turn stopped above could not set while the session was being destroyed.
+					void armIdle(c, meta);
+					throw new UserError("The agent could not be deleted: its machine's record of the sandbox to remove could not be written. Try again in a moment.", { code: "machine_unreachable" });
 				}
-				await layerOf(c, meta).then((layer) => sweepSandboxes(c, meta, layer), () => undefined);
 				// What its sandbox ran is reported, and its place among the user's sandboxes given back.
 				await leaveUsage(c, meta);
 				// The copy of Windlass's session goes with the session, once the sandbox that uploads it is gone.

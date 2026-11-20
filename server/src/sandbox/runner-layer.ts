@@ -6,8 +6,8 @@
  * unchanged: `SandboxWindlass` over the handle this file makes.
  *
  * A machine's layer is made from the session's link alone (the session's owner, the machine's id),
- * on whichever server asks, and making it calls nothing: a session on a machine that is offline or
- * removed stays readable. Its operations fail instead, with a sentence a person can act on.
+ * on whichever server asks. The link reads the machine actor's last report without attaching: an offline or
+ * removed machine's session stays readable. Its operations fail with a sentence a person can act on.
  *
  * The link (`RunnerLink`) is the session actor's, one per instance, kept in its vars and never stored:
  *
@@ -26,6 +26,7 @@
  * a session's second `create` with the sandbox it already made for it; `run` and `start` never (the
  * caller decides, and the turn's own `stopLeftovers` ends what a lost `start` left).
  */
+import { isActorGone } from "../actors/internal.js";
 import type { Attachment, MachineFacts } from "../actors/machine.js";
 import type { SandboxProfile, SandboxProfileId, SessionSnapshot } from "../contract.js";
 import { describeError, serviceParams } from "../auth.js";
@@ -58,7 +59,7 @@ export interface MachineSeam {
 	/** With the machine's key, which checks the runner's hello. */
 	facts(): Promise<MachineFacts>;
 	/** Records that the sandbox must go, and tells the runner when it is next connected. */
-	removeSandbox(sandboxId: string): Promise<void>;
+	removeSandbox(sandboxId: string | null, sessionId?: string): Promise<void>;
 }
 
 /** The real `machine` actor, through the actor's client. A check passes a stand-in instead. */
@@ -68,7 +69,13 @@ export function machineActor(client: () => any, uid: string, machineId: string):
 	return {
 		attach: (sessionId, ticket) => machine().internalAttach({ sessionId, ticket }),
 		facts: () => machine().internalFacts(),
-		removeSandbox: (sandboxId) => machine().internalRemoveSandbox({ sandboxId }),
+		removeSandbox: async (sandboxId, sessionId) => {
+			try {
+				await machine().internalRemoveSandbox({ sandboxId, sessionId });
+			} catch (error) {
+				if (!isActorGone(error)) throw error;
+			}
+		},
 	};
 }
 
@@ -96,6 +103,7 @@ class Stopped extends Error {}
 export type MachineReach = NonNullable<SessionSnapshot["machine"]>;
 
 interface Who {
+	machineName?: string | null;
 	uid: string;
 	sessionId: string;
 	machineId: string;
@@ -111,6 +119,8 @@ interface RawSocket {
 
 export class RunnerLink {
 	readonly channel: ServerChannel;
+	/** The first profile read is shared by snapshots and operations waiting to attach. */
+	readonly initialFacts: Promise<MachineFacts | null>;
 	private readonly tickets = new AttachTickets();
 	/** What the machine's actor last said of it. Had before the first ticket goes out: its key checks the hello. */
 	private heard: MachineFacts | null = null;
@@ -138,6 +148,7 @@ export class RunnerLink {
 			onConnect: () => this.connected(),
 			onDisconnect: () => this.lost(),
 		});
+		this.initialFacts = this.facts().catch(() => null);
 	}
 
 	/** A socket from `onWebSocket`. The channel decides by its hello whether it counts. */
@@ -179,6 +190,11 @@ export class RunnerLink {
 
 	removeSandbox(id: string): Promise<void> {
 		return this.machine.removeSandbox(id);
+	}
+
+	/** On deletion the machine also queues any sandbox it reported before the session learnt its id. */
+	removeSessionSandboxes(savedId: string | null): Promise<void> {
+		return this.machine.removeSandbox(savedId, this.who.sessionId);
 	}
 
 	/** One operation: waits for a socket first, so that one the machine cannot give fails now and not after the grace. */
@@ -279,6 +295,8 @@ export class RunnerLink {
 		this.inviting = true;
 		try {
 			// The runner's hello can come before the actor's answer to `attach`: the key must be had first.
+			await this.initialFacts;
+			if (this.closed) return;
 			if (!this.heard) await this.facts();
 			if (this.closed || this.channel.connected) return;
 			const answer = await this.machine.attach(this.who.sessionId, this.tickets.issue());
@@ -316,9 +334,9 @@ export class RunnerLink {
 
 	/** The socket closed. With work outstanding the runner is asked back; the channel keeps the work for its grace. */
 	private lost(): void {
-		if (this.closed || this.channel.connected || this.outstanding === 0) return;
-		this.note("not_answering");
-		this.ask();
+		if (this.closed || this.channel.connected) return;
+		this.note(this.outstanding ? "not_answering" : "offline");
+		if (this.outstanding) this.ask();
 	}
 
 	private note(state: MachineReach["state"]): void {
@@ -489,10 +507,10 @@ class RunnerSandboxes implements Sandboxes {
 		return null;
 	}
 
-	/** From the machine's last report, as the link last heard it: none before it first asked (the launch checks the user's own list, which has it). */
+	/** From the machine's last report, with availability unknown while the actor cannot answer. */
 	profiles(): SandboxProfile[] {
 		const facts = this.link.known;
-		return facts ? machineProfiles(facts.name, facts.report) : [];
+		return machineProfiles(facts?.name || this.link.who.machineName, facts?.report ?? null);
 	}
 
 	/** Never throws for a profile the platform knows: a session must stay readable whatever its machine reports. */
