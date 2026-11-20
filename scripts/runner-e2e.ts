@@ -23,11 +23,12 @@ import { join } from "node:path";
 import { mock } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createClient, type Registry } from "../server/src/client.js";
-import type { SessionSnapshot, SessionSummary, TimelineItem } from "../server/src/contract.js";
+import type { AcpUpdate, LiveDelta, SessionSnapshot, SessionSummary, TimelineItem } from "../server/src/contract.js";
 import { type ChannelSocket, RunnerChannel } from "../server/src/runner/channel.js";
 import { MIN_RUNNER_VERSION, sessionProof } from "../server/src/runner/control.js";
 import { DEAD_MS, PROTOCOL_VERSION, type Operation } from "../server/src/runner/protocol.js";
 import { StandInRunner, assert, until, opened } from "./runner-standin.js";
+import { GithubStandin } from "./github-standin.js";
 import { FakeRunner } from "./runner-fake.js";
 
 const { engine: PORT, http: [HTTP] } = process.argv[2] === "node"
@@ -60,14 +61,14 @@ class Server {
 	private child: ChildProcess | null = null;
 	readonly secret = randomBytes(24).toString("hex");
 
-	async start(): Promise<void> {
+	async start(extra: Record<string, string> = {}): Promise<void> {
 		const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(WLP_|RIVET|E2B_)/.test(key)));
 		const log = createWriteStream(join(this.storage, "server.log"), { flags: "a" });
 		// The server is this file in its "node" role (`serverNode` below): the real server, with one hook.
 		const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "node"], {
 			cwd: SERVER_DIR,
 			stdio: ["ignore", "pipe", "pipe"],
-			env: { ...env, WLP_SECRET: this.secret, WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_MACHINES: "1", WLP_FACTORY_RUNNING_TURNS: String(CEILING), WLP_PUBLIC_URL: ORIGIN, WLP_HTTP_PORT: String(HTTP), RIVET_RUN_ENGINE_PORT: String(PORT), RIVETKIT_STORAGE_PATH: this.storage, RIVET_LOG_LEVEL: "warn" },
+			env: { ...env, ...extra, WLP_SECRET: this.secret, WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_MACHINES: "1", WLP_FACTORY_RUNNING_TURNS: String(CEILING), WLP_PUBLIC_URL: ORIGIN, WLP_HTTP_PORT: String(HTTP), RIVET_RUN_ENGINE_PORT: String(PORT), RIVETKIT_STORAGE_PATH: this.storage, RIVET_LOG_LEVEL: "warn" },
 		});
 		child.stdout?.pipe(log);
 		child.stderr?.pipe(log);
@@ -117,6 +118,16 @@ async function serverNode(): Promise<void> {
 		if (existsSync(refusal)) throw new Error("the machine's storage is away (runner-e2e)");
 		return remove(c, input);
 	};
+	const { user } = await import("../server/src/actors/user.js");
+	const userActions = user.config.actions!;
+	const readSecrets = userActions.internalSessionSecrets;
+	userActions.internalSessionSecrets = async (c, id) => {
+		const sealed = await readSecrets(c, id);
+		if (existsSync(join(process.env.RIVETKIT_STORAGE_PATH!, "unreadable-secret"))) {
+			sealed.account!.secrets.push({ name: "TEST", scope: "setup", sealed: "unreadable" });
+		}
+		return sealed;
+	};
 	await import("../server/src/index.js");
 }
 
@@ -136,12 +147,14 @@ type Client = ReturnType<typeof createClient<Registry>>;
 
 class Watch {
 	readonly items: TimelineItem[] = [];
+	readonly deltas: LiveDelta[] = [];
 	/** Each `machine` event: what the banner says of the machine, when it changes. */
 	readonly machines: Array<{ state: string; since: number; at: number }> = [];
 	readonly conn;
 	constructor(client: Client, uid: string, id: string, token: string) {
 		this.conn = client.agentSession.get([uid, id], { params: { token } }).connect();
 		this.conn.on("item", (item: unknown) => this.items.push(item as TimelineItem));
+		this.conn.on("delta", (delta: unknown) => this.deltas.push(delta as LiveDelta));
 		this.conn.on("machine", (reach: unknown) => this.machines.push({ ...(reach as { state: string; since: number }), at: Date.now() }));
 	}
 	ended(turn: number) {
@@ -553,6 +566,272 @@ async function linkChecks(): Promise<void> {
 	}
 }
 
+/** A Claude Code session on a machine, through the same sockets and actors as the Windlass cases. */
+async function claudeChecks(client: Client, uid: string, token: string, windlassPlace: { kind: "machine"; machineId: string }, stateDir: string, github: GithubStandin) {
+	const runner = new StandInRunner(ORIGIN, ENDPOINT, { claude: true, stateDir });
+	const user = client.user.get([uid], { params: { token } });
+	const profile = "docker-hardened" as const;
+	await runner.pair(user);
+	try {
+		await runner.connectControl();
+		const place = { kind: "machine" as const, machineId: runner.id.machineId };
+		const launch = { place, profile, harness: "claude" } as const;
+		await until("the second machine's report", async () => (await user.machines()).find(m => m.machineId === place.machineId && m.commandSandbox));
+		const session = await user.createSession(launch);
+		const watch = new Watch(client, uid, session.id, token);
+		const snapshot = () => watch.conn.snapshot();
+		const play = async (text: string, model?: string, effort?: string) => {
+			const { turn } = await watch.conn.prompt({ text, model, effort });
+			const end = await watch.untilEnded(turn);
+			const updates = watch.items.flatMap(i => i.turn === turn && i.kind === "acp" ? [i.update] : []);
+			return { end, updates, turn };
+		};
+		const refusal = (call: Promise<unknown>) => call.then(() => "accepted", e => e.code);
+		const acpSession = async () => {
+			const id = (await snapshot()).windlassSessionId;
+			assert(id && /^[a-f0-9-]{36}$/.test(id), "the session has no ACP id");
+			return { id, file: join(stateDir, `wlp-fake-acp-${id}.json`) };
+		};
+		const waitDuring = async <T>(turn: number, what: string, ready: () => T | undefined | null | false | Promise<T | undefined | null | false>) =>
+			until(what, async () => { assert(!watch.ended(turn), `turn ended before ${what}`); return await ready(); });
+		try {
+			await check("Claude launch accepts only an offering machine and the hardened profile", async () => {
+				const refused = await Promise.all([
+					refusal(user.createSession({ ...launch, place: { kind: "hosted" } })),
+					refusal(user.createSession({ ...launch, profile: "docker-windlass-sandbox" })),
+					refusal(user.createSession({ ...launch, place: windlassPlace })),
+				]);
+				assert(refused.every(code => code === "bad_input"), refused.join(", "));
+				assert(session.harness === "claude" && session.model === "default" && (await snapshot()).summary.harness === "claude", "wrong harness or initial model");
+				return refused.join(", ");
+			});
+			await check("Claude plain coalesces thought and text and clears pending deltas", async () => {
+				const { end, updates, turn } = await play("plain");
+				const chunks = updates.filter(u => u.sessionUpdate.endsWith("_chunk"));
+				assert(JSON.stringify(chunks.map(u => u.content)) === JSON.stringify([{ type: "text", text: "I'll inspect the files." }, { type: "text", text: "The files are ready." }]), JSON.stringify(chunks));
+				const deltas = watch.deltas.filter(d => d.turn === turn && "acp" in d);
+				assert(deltas.length === 8 && new Set(deltas.map(d => "messageKey" in d && d.messageKey)).size === 2, "expected eight deltas across two keys");
+				assert(!(await snapshot()).pending.length && end.outcome === "succeeded" && end.verified === null && end.usage === null && end.cachedShare === null, JSON.stringify(end));
+				return "eight live chunks, two stored items, no pending chunks or verification";
+			});
+			await check("Claude tools preserve call order, output, diff and failed edit", async () => {
+				const { updates } = await play("tools");
+				const calls = updates.filter(u => u.sessionUpdate.startsWith("tool_call"));
+				assert(calls.map(c => c.status).join() === "pending,in_progress,completed,pending,failed", JSON.stringify(calls));
+				assert(calls[0]!.toolCallId === calls[2]!.toolCallId && calls[3]!.toolCallId === calls[4]!.toolCallId && JSON.stringify(calls[3]!.content).includes('"diff"'), "lost tool id or diff");
+				return "execute completed, edit failed";
+			});
+			for (const stop of [false, true]) await check(`Claude permission is ${stop ? "withdrawn by Stop" : "answered with the offered option id"}`, async () => {
+				const { turn } = await watch.conn.prompt({ text: "ask" });
+				const question = await waitDuring(turn, "permission", async () => (await snapshot()).question);
+				assert(question.messageId === "acp" && question.callId && question.choices.some(c => c.id === "allow-with-updates" && c.remembers), "missing ACP question choices");
+				if (stop) await watch.conn.stop();
+				else await watch.conn.answer({ questionId: question.id, choice: "allow-once" });
+				const end = await watch.untilEnded(turn);
+				assert(end.outcome === (stop ? "stopped" : "succeeded") && !(await snapshot()).question, JSON.stringify(end));
+				assert(stop ? runner.acpInput.some(line => line.includes('"outcome":"cancelled"')) : JSON.stringify(watch.items).includes("Permission answered: allow-once."), "fixture did not receive the permission answer");
+				return end.outcome;
+			});
+			await check("Claude withdraws only the named permission and shows the next question", async () => {
+				const { turn } = await watch.conn.prompt({ text: "askagain" });
+				try {
+					const first = await waitDuring(turn, "first question", async () => (await snapshot()).question);
+					const served = runner.served.get(session.id)!;
+					const process = [...served.processes.entries()].find(([, p]) => p.engine)![0];
+					const cancel = (requestId: number | string) => served.channel.output(process, 1, JSON.stringify({
+						jsonrpc: "2.0", method: "$/cancel_request", params: { requestId },
+					}) + "\n");
+					cancel("123");
+					assert((await snapshot()).question?.id === first.id, "cancelled the wrong RPC id");
+					cancel(123);
+					const next = await until("replacement permission", async () => {
+						const q = (await snapshot()).question;
+						return q && q.id !== first.id && q;
+					}, 5000);
+					await watch.conn.answer({ questionId: next.id, choice: "allow-once" });
+					assert((await watch.untilEnded(turn)).outcome === "succeeded" && watch.items.some(i => i.turn === turn && i.kind === "acp" && JSON.stringify(i.update).includes("Permission answered: allow-once.")), "replacement question was not answered");
+					return "cancelled first RPC, allowed second in the same turn";
+				} finally { if (!watch.ended(turn)) { await watch.conn.stop(); await watch.untilEnded(turn); } }
+			});
+			await check("Claude Stop sends session/cancel during a slow prompt", async () => {
+				const before = runner.acpInput.length;
+				const { turn } = await watch.conn.prompt({ text: "slow" });
+				await waitDuring(turn, "slow output", () => watch.deltas.find(d => d.turn === turn && "acp" in d));
+				const now = Date.now();
+				await watch.conn.stop();
+				const end = await watch.untilEnded(turn, 10_000);
+				assert(end.outcome === "stopped" && Date.now() - now < 10_000 && runner.acpInput.slice(before).some(line => line.includes('"session/cancel"')), JSON.stringify(end));
+				return `stopped in ${Date.now() - now} ms`;
+			});
+			await check("Claude steering reaches the fixture and the session keeps its user row", async () => {
+				const { turn } = await watch.conn.prompt({ text: "steer" });
+				await waitDuring(turn, "fixture waiting for a steer", () => watch.deltas.find(d => d.turn === turn && "acp" in d));
+				const follow = "Read the second file";
+				const answer = await watch.conn.prompt({ text: follow });
+				await watch.untilEnded(turn);
+				assert(answer.steered && watch.items.some(i => i.turn === turn && i.kind === "user" && i.steer && i.text === follow), "no steered user row");
+				assert(watch.items.some(i => i.turn === turn && i.kind === "acp" && i.update.sessionUpdate === "agent_message_chunk" && JSON.stringify(i.update.content).includes(follow)), "fixture did not echo the steer");
+				return follow;
+			});
+			await check("Claude explains an unreadable secret before starting a prompt", async () => {
+				const marker = join(stateDir, "unreadable-secret");
+				const before = runner.acpInput.length;
+				writeFileSync(marker, "");
+				try {
+					const error = await watch.conn.prompt({ text: "plain" }).then(() => null, e => e);
+					assert(error?.code === "secrets_unavailable" && error.message.includes("could not read all saved values to redact the Claude Code session"), String(error));
+					assert(runner.acpInput.length === before, "started an ACP process");
+					return error.code;
+				} finally { rmSync(marker); }
+			});
+			await check("Claude sends a refused steer once as a normal next prompt", async () => {
+				const { turn } = await watch.conn.prompt({ text: "turnend" });
+				await waitDuring(turn, "turn-end race", () => watch.deltas.find(d => d.turn === turn && "acp" in d));
+				const follow = { text: "plain follow-up", idempotencyKey: randomUUID() };
+				const answer = await watch.conn.prompt(follow);
+				await watch.untilEnded(answer.turn);
+				const retried = await watch.conn.prompt(follow);
+				assert(!answer.steered && answer.turn === turn + 1 && retried.turn === answer.turn, JSON.stringify(answer));
+				const rows = watch.items.filter(i => i.kind === "user" && i.text === follow.text);
+				assert(rows.length === 1 && rows[0]!.turn === answer.turn, "lost or duplicated follow-up");
+				assert(watch.items.some(i => i.turn === turn && i.kind === "platform" && i.text === "Sent when this turn ends."), "missing queue note");
+				const sent = runner.acpInput.map(line => JSON.parse(line)).find(f => f.method === "_session/steering" && f.params.prompt[0].text === follow.text);
+				assert(sent?.params._meta?.steering?.idleBehavior === "promptRequired", "missing idle behavior");
+				return "one user row and a new session/prompt";
+			});
+			await check("Claude resumes its id and starts fresh with a note if the saved id is lost", async () => {
+				const first = await acpSession();
+				const count = () => JSON.parse(readFileSync(first.file, "utf8")).resumes as number;
+				const before = count();
+				await play("plain");
+				assert((await acpSession()).id === first.id && count() === before + 1, "no recorded resume");
+				rmSync(first.file);
+				const { end } = await play("plain");
+				assert(end.outcome === "succeeded" && (await acpSession()).id !== first.id && watch.warnings(end.turn).includes("Claude Code could not continue the conversation; the files are as they were."), "no new conversation or explanation");
+				return "one recorded resume, then a new id";
+			});
+			await check("Claude uses its own model and effort options and reports context", async () => {
+				const { summary } = await snapshot();
+				assert(summary.harnessModels?.models.some(m => m.id === "opus" && m.efforts.includes("high")), "missing model or efforts");
+				const { end } = await play("usage", "opus", "high");
+				const state = JSON.parse(readFileSync((await acpSession()).file, "utf8"));
+				assert(state.model === "opus" && state.effort === "high" && state.mode === "bypassPermissions", "fixture configuration differs");
+				assert(JSON.stringify(end.context) === JSON.stringify({ used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } }), JSON.stringify(end));
+				return JSON.stringify(end.context);
+			});
+			await check("Claude's error and last reported sign-out give the machine login command", async () => {
+				const { end } = await play("signedout");
+				const name = (await user.machines()).find(m => m.machineId === place.machineId)!.name;
+				const sentence = `Claude Code on “${name}” is not signed in. Run windlass-runner login claude there.`;
+				assert(end.outcome === "error" && end.message === sentence, JSON.stringify(end));
+				const entry = runner.fake.report.harnesses![0]!;
+				entry.signIn = "none"; runner.report();
+				try {
+					await until("signed-out report", async () => (await user.machines()).find(m => m.machineId === place.machineId)?.harnesses?.[0]?.signIn === "none");
+					const created = await user.createSession(launch);
+					const refused = await client.agentSession.get([uid, created.id], { params: { token } }).prompt({ text: "plain" }).then(() => "", e => e.message);
+					assert(refused.includes(sentence), "signed-out prompt was not refused with the login command");
+				} finally { entry.signIn = "token"; runner.report(); }
+				return sentence;
+			});
+			github.addUser("ada");
+			const installation = github.addInstallation("ada", "User");
+			const repo = github.addRepository({ owner: "ada", name: "harbor", private: true, installation });
+			const { url } = await user.githubConnect({ origin: "http://localhost:5173" });
+			const back = await fetch(github.authorize("ada", url), { redirect: "manual" });
+			await user.githubComplete(back.headers.get("location")!.split("#github=")[1]!);
+			await check("Claude redacts a saved repository secret in the prompt, streamed chunks and tool output", async () => {
+				const value = randomBytes(16).toString("hex");
+				await user.saveRepositorySecret({ repositoryId: repo.id, profile, name: "HARBOR_KEY", value, scope: "setup" });
+				await user.setMachineSecrets({ machineId: place.machineId, send: false });
+				const created = await user.createSession({ ...launch, repository: { id: repo.id } });
+				const seen = new Watch(client, uid, created.id, token);
+				try {
+					const { turn } = await seen.conn.prompt({ text: `secret:${value}` });
+					const end = await seen.untilEnded(turn);
+					assert(end.outcome === "succeeded" && seen.items.some(i => i.kind === "acp" && i.update.status === "completed"), "the fixture did not echo the secret");
+					const steering = await seen.conn.prompt({ text: "steer" });
+					await until("a steerable turn", () => seen.deltas.find(d => d.turn === steering.turn && "acp" in d));
+					assert((await seen.conn.prompt({ text: value })).steered, "the fixture did not accept the steer");
+					await seen.untilEnded(steering.turn);
+					const saved = await seen.conn.snapshot();
+					const content = JSON.stringify([saved, seen.items, seen.deltas]);
+					assert(!content.includes(value) && content.includes("HARBOR_KEY"), "saved secret exposed or redaction missing");
+				} finally { await seen.conn.dispose(); }
+				return "prompt, steer, title, chunk and tool result scrubbed";
+			});
+			await check("Windlass and Claude on the same stand-in retain their respective event kinds", async () => {
+				const other = await user.createSession({ place, profile });
+				const seen = new Watch(client, uid, other.id, token);
+				try {
+					const { turn } = await seen.conn.prompt({ text: "Write the primes" });
+					assert((await seen.untilEnded(turn)).outcome === "succeeded" && seen.windlass(turn) > 0 && !seen.items.some(i => i.kind === "acp") && watch.items.some(i => i.kind === "acp") && !watch.items.some(i => i.kind === "windlass"), "mixed or missing engine events");
+				} finally { await seen.conn.dispose(); }
+				return "both engines isolated";
+			});
+			await check("work items and their builder and reviewer sessions refuse Claude", async () => {
+				const raw = { title: "Inspect", body: "Read the repo", repository: { id: repo.id }, harness: "claude" };
+				const item = await refusal(user.createItem(raw));
+				const { createSessionActor } = await import("../server/src/actors/internal.js");
+				const roles = await Promise.all((["builder", "reviewer"] as const).map(role =>
+					refusal(createSessionActor({ client: () => client }, uid, randomUUID(), { ...launch, model: "default", demo: false, title: "Inspect", titleIsDefault: false, repoUrl: null, createdAt: Date.now(), origin: { kind: "item", role, itemId: "i_fixture" } }))
+				));
+				assert([item, ...roles].every(code => code === "bad_input"), `item, builder, reviewer: ${[item, ...roles].join(", ")}`);
+				return "item, builder, reviewer refused";
+			});
+			await check("Claude bounds the serialized item, live deltas and reconnect text", async () => {
+				const { id } = await acpSession();
+				const { turn } = await watch.conn.prompt({ text: "steer" });
+				await waitDuring(turn, "fixture waiting for a steer", () => watch.deltas.find(d => d.turn === turn && "acp" in d));
+				const served = runner.served.get(session.id)!;
+				const process = [...served.processes.entries()].find(([, p]) => p.engine)![0];
+				const send = (update: AcpUpdate) => served.channel.output(process, 1, JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: id, update } }) + "\n");
+				const big = "x".repeat(65_000);
+				send({ sessionUpdate: "tool_call", toolCallId: big, kind: big, status: big, rawInput: { [big]: 1 }, content: [{ type: big }] });
+				const piece = 'a"\n'.repeat(3000);
+				for (let i = 0; i < 20; i++) send({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: piece, extra: big } });
+				// A permission frame is an ordered barrier that does not flush the pending text run.
+				served.channel.output(process, 1, JSON.stringify({ jsonrpc: "2.0", id: 77, method: "session/request_permission", params: { sessionId: id, toolCall: { title: "barrier" }, options: [] } }) + "\n");
+				try {
+					await waitDuring(turn, "all chunks processed", async () => (await snapshot()).question);
+					const pending = (await snapshot()).pending.find(d => "acp" in d && d.acp.sessionUpdate === "agent_thought_chunk");
+					assert(pending && "acp" in pending, "missing pending run");
+					send({ sessionUpdate: "tool_call_update", content: [{ type: "content", content: { type: "text", text: big } }], toolCallId: "large", status: "completed" });
+					await watch.conn.prompt({ text: "finish" });
+					await watch.untilEnded(turn);
+					const items = watch.items.filter(i => i.turn === turn && i.kind === "acp");
+					const clipped = items.filter(i => i.kind === "acp" && i.truncated);
+					assert(clipped.length === 3 && items.every(i => JSON.stringify(i).length <= 64_000), "whole serialized item exceeded cap or missing truncation marker");
+					const deltas = watch.deltas.flatMap(d => d.turn === turn && "acp" in d && d.messageKey === pending.messageKey ? [d] : []);
+					const text = (u: AcpUpdate) => (u.content as { text: string }).text;
+					const stored = clipped.find(i => i.kind === "acp" && i.messageKey === pending.messageKey);
+					const kept = text(pending.acp);
+					assert(stored?.kind === "acp" && text(stored.update) === kept && kept.length > 100 && piece.repeat(20).startsWith(kept), "reconnect differs from stored prefix");
+					assert(deltas.every(d => "acp" in d && text(d.acp).length > 0 && JSON.stringify(d).length <= 64000) && deltas.map(d => "acp" in d && text(d.acp)).join("") === kept, "broadcast exceeds retained text");
+					assert(clipped.some(i => i.kind === "acp" && i.update.toolCallId === "large" && i.update.status === "completed"), "truncation discarded tool state");
+					return `retained ${kept.length} escaped text characters identically in all three views`;
+				} finally { if (!watch.ended(turn)) { await watch.conn.stop(); await watch.untilEnded(turn); } }
+			});
+			await check("Claude caps mixed text and tool updates at 5000 items and one note", async () => {
+				const { turn, updates } = await play("many");
+				const notes = watch.items.filter(i => i.turn === turn && i.kind === "platform" && i.level === "warn" && i.text.includes("5,000"));
+				assert(updates.length === 5000 && notes.length === 1, `${updates.length} items and ${notes.length} notes`);
+				return "5,000 items, one omission note";
+			});
+			await check("Claude refusal and token limit preserve distinct turn outcomes", async () => {
+				const refusal = (await play("refuse")).end;
+				const limit = (await play("maxtokens")).end;
+				assert(refusal.outcome === "failed" && limit.outcome === "unresolved", `${refusal.outcome}, ${limit.outcome}`);
+				return "failed, unresolved";
+			});
+		} finally { await watch.conn.dispose(); }
+	} finally {
+		runner.offline = true;
+		runner.control?.ws.close();
+		for (const served of runner.served.values()) served.ws?.close();
+	}
+}
+
 async function main(): Promise<void> {
 	const server = new Server();
 	// Before anything imports auth.js, which reads it once: the service tokens this process makes are the server's.
@@ -560,8 +839,10 @@ async function main(): Promise<void> {
 	// First, and on a clock of their own: nothing of the server is needed for them.
 	await linkChecks();
 	const runner = new StandInRunner(ORIGIN, ENDPOINT);
+	const github = new GithubStandin({ callbackUrl: `${ORIGIN}/github/callback` });
+	await github.start();
 	try {
-		await server.start();
+		await server.start({ ...github.env(), WLP_ITEMS: "1" });
 		const client = createClient<Registry>({ endpoint: ENDPOINT, token: "default", namespace: "default" });
 		const auth = await client.login.getOrCreate([randomUUID()]).demo();
 		const { uid } = auth.profile;
@@ -610,6 +891,8 @@ async function main(): Promise<void> {
 			}
 		};
 
+		await claudeChecks(client, uid, token, place, server.storage, github);
+		if (process.argv[2] === "claude") return;
 		const main = await newSession();
 		await check("the first snapshot after a sandbox-less machine session wakes shows its machine profile", async () => {
 			// Instantiate the link before sleep too, so the wake must build a fresh one.
@@ -996,10 +1279,10 @@ async function main(): Promise<void> {
 		runner.control?.ws.close();
 		for (const served of runner.served.values()) served.ws?.close();
 		await server.stop();
+		await github.stop();
 		if (failed === 0) rmSync(server.storage, { recursive: true, force: true });
 		else console.log(`\nserver log and state kept in ${server.storage}`);
 	}
-	process.exit(failed === 0 ? 0 : 1);
 }
 
 /** Puts a session's actor to sleep through the engine's control plane, as e2e.ts does. */
@@ -1017,4 +1300,7 @@ function snapshotOf(client: Client, uid: string, id: string, token: string): Pro
 }
 
 if (process.argv[2] === "node") await serverNode();
-else await main();
+else {
+	await main();
+	process.exit(failed === 0 ? 0 : 1);
+}

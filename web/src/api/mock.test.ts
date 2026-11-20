@@ -1,4 +1,4 @@
-import type { AuthResult, LiveDelta, PendingQuestion, SessionSnapshot, SessionSummary, TimelineItem } from "@contract";
+import type { AuthResult, WindlassDelta, PendingQuestion, SessionSnapshot, SessionSummary, TimelineItem } from "@contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyDelta, applyItem, fromSnapshot, toolBlocks, type PlatformBlock, type SessionView } from "../lib/timeline";
 import { PlatformError, type ConnectionState, type SessionFeed } from "./client";
@@ -13,7 +13,7 @@ function recorder() {
 	const record = {
 		snapshots: [] as SessionSnapshot[],
 		items: [] as TimelineItem[],
-		deltas: [] as LiveDelta[],
+		deltas: [] as WindlassDelta[],
 		summaries: [] as SessionSummary[],
 		questions: [] as Array<PendingQuestion | null>,
 		/** The question as the screen would hold it: from the snapshot, then from the events. */
@@ -33,6 +33,7 @@ function recorder() {
 			if (record.view) record.view = applyItem(record.view, item);
 		},
 		onDelta(delta) {
+			if (!("event" in delta)) throw new Error("The Windlass mock emitted an ACP delta.");
 			record.deltas.push(delta);
 			if (record.view) record.view = applyDelta(record.view, delta);
 		},
@@ -230,7 +231,7 @@ describe("a turn played from a recording", () => {
 		const snapshot = late.record.snapshots[0];
 		expect(snapshot?.summary.status).toBe("running");
 		expect(snapshot?.pending.length).toBeGreaterThan(0);
-		expect(snapshot?.pending.every((delta) => LIVE_TYPES.has(delta.event.type))).toBe(true);
+		expect(snapshot?.pending.every((delta) => "event" in delta && LIVE_TYPES.has(delta.event.type))).toBe(true);
 		const joined = late.record.view?.turns[0]?.blocks.find((block) => block.kind === "text");
 		expect(joined).toMatchObject({ streaming: true });
 		expect("Running the build and the test suite.".startsWith(joined?.kind === "text" ? joined.text : "?")).toBe(true);

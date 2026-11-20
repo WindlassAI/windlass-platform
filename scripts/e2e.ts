@@ -29,7 +29,7 @@ import { createClient, type Registry } from "../server/src/client.js";
 import { GithubStandin } from "./github-standin.js";
 import {
 	type AuthResult,
-	type LiveDelta,
+	type WindlassDelta,
 	MAX_PROMPT_CHARS,
 	type GithubId,
 	type PendingQuestion,
@@ -405,7 +405,7 @@ function newClient(options: { origin?: string } = {}): Client {
 /** A connection to one session that records every event in the order it arrived. */
 class Watch {
 	readonly items: TimelineItem[] = [];
-	readonly deltas: LiveDelta[] = [];
+	readonly deltas: WindlassDelta[] = [];
 	readonly summaries: SessionSummary[] = [];
 	/** Every `question` event: the question when one is asked, null when it is settled. */
 	readonly questions: Array<PendingQuestion | null> = [];
@@ -422,7 +422,7 @@ class Watch {
 			this.order.push(`i${item.seq}`);
 		});
 		this.conn.on("delta", (payload: unknown) => {
-			this.deltas.push(payload as LiveDelta);
+			this.deltas.push(payload as WindlassDelta);
 			this.order.push("d");
 		});
 		this.conn.on("summary", (payload: unknown) => {
@@ -3558,6 +3558,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			// The session is handed them with its next turn, and the turn's closing item says what they came to and whose they are.
 			const first = await watch.conn.prompt({ text: "Write a short program" });
 			const ended = await watch.untilEnded(first.turn);
+			assert(ended.verified !== null, "a Windlass turn has no verification record");
 			const ran = ended.verified.run?.checks.map((one) => `${one.name}:${one.whose}:${one.required === true}:${one.status}:${one.sentBack}`).join(",");
 			assert(ended.outcome === "succeeded" && ended.verified.state === "passed" && ended.verified.run?.turn === first.turn && ran === "test:user:true:passed:0,lint:user:true:passed:0" && ended.verified.unrun.length === 0, `the turn ended ${ended.outcome} with ${plain(ended.verified)}`);
 			assert(watch.windlass(first.turn, "checks.finished").length === 1, "the timeline has no run of checks");
@@ -3573,6 +3574,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "test", command: "npm run fail" }] });
 			const second = await watch.conn.prompt({ text: "Write a short program" });
 			const failing = await watch.untilEnded(second.turn);
+			assert(failing.verified !== null, "a Windlass turn has no verification record");
 			assert(failing.outcome === "unresolved" && failing.verified.state === "unresolved" && failing.verified.unresolved?.reason === "max_rounds" && failing.verified.run?.checks[0]?.status === "failed", `the turn ended ${failing.outcome} with ${plain(failing.verified)}`);
 			const again = await handle.publish({ message: { title: "With a check failing", body: "" } });
 			const now = standin.pulls.at(-1)?.body ?? "";

@@ -810,7 +810,7 @@ class FakeWindlass implements Windlass {
 					if (event.type === "execution.succeeded" && (data.verification as { status?: unknown } | undefined)?.status === "unresolved") outcome = "unresolved";
 			}
 			emitted += 1;
-			input.onEvent(event);
+			input.onEvent?.(event);
 		};
 
 		/** How the turn ended, once an event has said so. */
@@ -830,7 +830,7 @@ class FakeWindlass implements Windlass {
 				usage: total,
 				cachedShare: total && total.inputTokens > 0 ? Math.round((total.cachedInputTokens / total.inputTokens) * 1000) / 1000 : null,
 			};
-			input.onEvent(summary);
+			input.onEvent?.(summary);
 		};
 
 		/** Waits between two events; a stop of the turn or of a call ends the wait early. */

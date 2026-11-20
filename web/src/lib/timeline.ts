@@ -233,7 +233,7 @@ export interface TurnEnd {
 	cachedShare: number | null;
 	message: string | null;
 	/** What the session's work rests on after the turn, as the platform recorded it. */
-	verified: Verified;
+	verified: Verified | null;
 }
 
 export interface TurnView {
@@ -341,6 +341,7 @@ export function applyItem(view: SessionView, item: TimelineItem): SessionView {
 
 /** Applies one piece of streaming output. */
 export function applyDelta(view: SessionView, delta: LiveDelta): SessionView {
+	if ("acp" in delta) return view;
 	const draft = new Draft(view);
 	applyEvent(draft, delta.turn, delta.event, null);
 	return draft.view;

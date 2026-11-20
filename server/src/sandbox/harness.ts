@@ -1,19 +1,12 @@
-/**
- * The agent a session's turns run: a `Harness`, chosen by the session (`SessionMeta.harness`, absent
- * for Windlass). The session actor asks it what it can do (`capabilities`) and decides from that what
- * to hand a turn, then runs the turn through it (`runTurn`). Nothing outside this file asks which
- * harness it is to decide what to hand over.
- *
- * Windlass is the only harness so far: `WindlassHarness` is the layer's `Windlass` as it is, and its
- * capabilities are constants, since every sandbox the platform makes has a Windlass with all of them
- * (one without host tools is refused by the turn itself: `host_tools_required`, turn.ts).
- */
-
+/** A session chooses its harness once. Its capabilities govern turn inputs, sign-in and storage. */
 import { FETCH_BASE_TOOL, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL } from "../agent-publish.js";
 import { REVIEW_TOOL } from "../factory/reviewer-task.js";
 import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, Windlass } from "./api.js";
+import type { HarnessId } from "../contract.js";
+import { ACP_CAPABILITIES, AcpHarness } from "./acp-harness.js";
+import { CLAUDE } from "./harnesses.js";
 
-export type HarnessId = "windlass" | "claude";
+export type { HarnessId } from "../contract.js";
 
 /** One of the platform's tools (agent-publish.ts, and the reviewer's `file_review`). */
 export type PlatformTool = typeof PUBLISH_TOOL | typeof REPORT_TOOL | typeof PUSH_TOOL | typeof FETCH_BASE_TOOL | typeof REVIEW_TOOL;
@@ -85,6 +78,11 @@ const WINDLASS_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	demo: true,
 });
 
+/** Launch and admission decisions precede the sandbox. Neither harness runs a capability probe. */
+export function capabilitiesOf(id: HarnessId = "windlass"): HarnessCapabilities {
+	return id === "windlass" ? WINDLASS_CAPABILITIES : ACP_CAPABILITIES;
+}
+
 /** The layer's Windlass, unchanged. */
 export class WindlassHarness implements Harness {
 	readonly id = "windlass" as const;
@@ -100,8 +98,10 @@ export class WindlassHarness implements Harness {
 	}
 }
 
-/** The harness of `id` in this layer. Only Windlass exists so far. */
+/** Select a harness only where the platform can start its sandbox. */
 export function harnessOf(layer: SandboxLayer, id: HarnessId): Harness {
 	if (id === "windlass") return new WindlassHarness(layer.windlass);
-	throw new Error(`There is no ${id} harness on this server.`);
+	if (id !== "claude") throw new Error(`Unknown harness: ${id}`);
+	if (!layer.machine) throw new Error("Claude Code runs only on a machine of yours.");
+	return new AcpHarness(CLAUDE, layer.machine.name);
 }

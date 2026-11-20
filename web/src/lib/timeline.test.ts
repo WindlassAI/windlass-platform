@@ -24,6 +24,12 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------------------------
 
+it("leaves the view unchanged when it receives an ACP delta", () => {
+	const view = emptyView();
+	const delta: LiveDelta = { turn: 1, messageKey: "chunk-1", acp: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hello" } } };
+	expect(applyDelta(view, delta)).toBe(view);
+});
+
 /** A fixture as a session's clients would receive it: one turn per recorded run (an ACP run gets its ending). */
 function feedOf(name: string): FeedEntry[] {
 	const feed: FeedEntry[] = [];

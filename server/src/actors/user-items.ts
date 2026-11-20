@@ -233,7 +233,8 @@ const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").
 /** The input of a new item, checked. */
 function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; profile: SandboxProfileId | null; model: string | null; start: boolean } {
 	const bad = (message: string) => new UserError(message, { code: "bad_input" });
-	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput, unknown>>;
+	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput | "harness", unknown>>;
+	if (input.harness !== undefined && input.harness !== "windlass") throw bad("Work items and their reviewers run only with Windlass.");
 	const title = typeof input.title === "string" ? input.title.replace(/\s+/g, " ").trim() : "";
 	if (title === "" || title.length > MAX_TITLE_CHARS) throw bad(`Give the item a title of at most ${MAX_TITLE_CHARS} characters.`);
 	const body = typeof input.body === "string" ? input.body.trim() : "";

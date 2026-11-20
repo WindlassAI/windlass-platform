@@ -57,6 +57,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 			profiles: report ? machineProfiles(row.name, report) : [], sendSecrets: !!row.send, agents: sessions.length,
 			sandboxes: (report?.sandboxes ?? []).map(({ sessionId, state, usedAt }) => ({ sessionId, state, usedAt, title: titles.get(sessionId) ?? null })).sort((a, b) => b.usedAt - a.usedAt),
 			freeDiskBytes: report?.freeDiskBytes ?? null, commandSandbox: report?.commandSandbox ?? null,
+			...(report?.harnesses ? { harnesses: report.harnesses } : {}),
 			...(report?.maxRunning !== undefined ? { maxRunning: report.maxRunning } : {}),
 			...(report?.maxSandboxes !== undefined ? { maxSandboxes: report.maxSandboxes } : {}) };
 	});
@@ -87,7 +88,7 @@ export async function launchMachineProfiles(db: RawAccess, id: string) {
 		throw new UserError(`The runner on "${row.name}" is older than this platform takes: update it to ${MIN_RUNNER_VERSION} or later, then start the agent again.`, { code: "runner_outdated" });
 	}
 	if (!report) throw new UserError(`"${row.name}" has not connected yet. Start its runner, and once the Machines page shows it online, start the agent again.`, { code: "machine_not_connected" });
-	return { name: row.name, profiles: machineProfiles(row.name, report) };
+	return { name: row.name, harnesses: report.harnesses, profiles: machineProfiles(row.name, report) };
 }
 
 /**

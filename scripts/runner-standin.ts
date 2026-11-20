@@ -7,6 +7,7 @@ import type { WindlassEvent } from "../server/src/contract.js";
 import { type ChannelSocket, RunnerChannel } from "../server/src/runner/channel.js";
 import { MIN_RUNNER_VERSION, parseConnection, parseServerFrame, sessionProof } from "../server/src/runner/control.js";
 import type { Operation } from "../server/src/runner/protocol.js";
+import { FakeAcpAgent } from "./acp-agent-fake.js";
 import { FakeRunner } from "./runner-fake.js";
 
 const FIXTURE = fileURLToPath(new URL("../fixtures/windlass-events/demo-several-steps-in-one-turn.jsonl", import.meta.url));
@@ -100,14 +101,17 @@ class Engine {
 	}
 }
 
+type AgentProcess = Pick<Engine, "input" | "stop">;
+
 interface Box {
+	harness?: "claude";
 	id: string;
 	sessionId: string;
 	profile: "docker-windlass-sandbox" | "docker-hardened";
 	state: "running" | "paused";
 	files: Map<string, string>;
 	/** The engines running in it, which outlive the runner process that started them, as in a container. */
-	engines: Set<Engine>;
+	engines: Set<AgentProcess>;
 }
 
 /** What the runner holds for one session: its channel, in memory only. */
@@ -115,12 +119,17 @@ interface Served {
 	channel: RunnerChannel;
 	ws: WebSocket | null;
 	resets: string[];
-	processes: Map<string, { engine: Engine | null; box: Box }>;
+	processes: Map<string, { engine: AgentProcess | null; box: Box }>;
 	runs: Map<string, Operation>;
 }
 
 export class StandInRunner {
-	constructor(private readonly origin: string, private readonly endpoint: string) {}
+	constructor(private readonly origin: string, private readonly endpoint: string, private readonly options: { claude?: boolean; stateDir?: string } = {}) {
+		if (options.claude) this.fake.report.harnesses = [{ id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fake", signIn: "token" }];
+	}
+
+	/** Messages received by the in-process fixture, for assertions about cancellation and steering. */
+	readonly acpInput: string[] = [];
 
 	readonly fake = new FakeRunner();
 	id!: { uid: string; machineId: string };
@@ -312,7 +321,7 @@ export class StandInRunner {
 				const had = [...this.boxes.values()].find((existing) => existing.sessionId === sessionId);
 				// The real runner's sentence (runner/src/docker-executor.ts), sent as a SandboxUserError is (runner/src/session.ts).
 				if (!had && this.full) return channel.refuse(op, { kind: "user", message: "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." });
-				const made: Box = had ?? { id: `${this.id.machineId}-${randomBytes(6).toString("hex")}`, sessionId, profile: op.args.profile, state: "running", files: new Map(), engines: new Set() };
+				const made: Box = had ?? { id: `${this.id.machineId}-${randomBytes(6).toString("hex")}`, sessionId, profile: op.args.profile, harness: op.args.harness, state: "running", files: new Map(), engines: new Set() };
 				this.boxes.set(made.id, made);
 				if (this.loseCreates > 0) {
 					// Before any report: the real runner reports at most once a minute, so the server cannot count on one.
@@ -359,7 +368,11 @@ export class StandInRunner {
 			case "start": {
 				if (!mine) return channel.refuse(op, { kind: "refused", message: "No such sandbox." });
 				const isEngine = op.args.argv[0] === "windlass" && op.args.argv[1] === "acp";
-				const engine = isEngine ? new Engine((line) => channel.output(op.id, 1, line), meta => this.opens.set(sessionId, meta)) : null;
+				let engine: AgentProcess | null;
+				if (op.args.argv[0] === "wlp-claude-acp" && box.harness === "claude" && this.options.claude) {
+					const agent = new FakeAcpAgent(line => channel.output(op.id, 1, line), this.options.stateDir);
+					engine = { input: chunk => { this.acpInput.push(chunk); agent.input(chunk); }, stop: () => agent.stop() };
+				} else engine = isEngine ? new Engine((line) => channel.output(op.id, 1, line), meta => this.opens.set(sessionId, meta)) : null;
 				if (engine) box.engines.add(engine);
 				served.processes.set(op.id, { engine, box });
 				return channel.respond(op, null);

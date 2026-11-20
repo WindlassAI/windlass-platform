@@ -93,7 +93,7 @@ import {
 	type GithubRepository,
 	type GithubRepositoryList,
 	type GithubStatus,
-	type LiveDelta,
+	type WindlassDelta,
 	type LoginStart,
 	type ItemView,
 	type MachineSummary,
@@ -1026,7 +1026,7 @@ interface MockSession {
 	windlassSessionId: string | null;
 	windlassSeq: number;
 	timeline: TimelineItem[];
-	pending: LiveDelta[];
+	pending: WindlassDelta[];
 	seq: number;
 	feeds: Set<SessionFeed>;
 	run: Run | null;
@@ -1463,7 +1463,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	function emit(session: MockSession, turn: number, event: WindlassEvent): void {
 		track(session, event);
 		if (isLive(event)) {
-			const delta: LiveDelta = { turn, event };
+			const delta: WindlassDelta = { turn, event };
 			session.pending.push(delta);
 			for (const feed of session.feeds) feed.onDelta(delta);
 			return;
@@ -1559,7 +1559,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			steps.push({
 				wait: 700,
 				run: () => {
-					const delta: LiveDelta = { turn, event: { type: "setup.output", id, text: `${line}\n` } };
+					const delta: WindlassDelta = { turn, event: { type: "setup.output", id, text: `${line}\n` } };
 					session.pending.push(delta);
 					for (const feed of session.feeds) feed.onDelta(delta);
 				},

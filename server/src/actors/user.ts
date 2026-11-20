@@ -131,6 +131,7 @@ import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches,
 import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../account-defaults.js";
+import { initialHarnessModels } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
@@ -920,6 +921,14 @@ const KEYED = "agent";
  */
 async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4]): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
+	const harness = input.harness === undefined ? "windlass" : input.harness;
+	if (harness !== "windlass" && harness !== "claude") throw new UserError("Choose an available harness.", { code: "bad_input" });
+	if (harness !== "windlass") {
+		if (item) throw new UserError("Work items and their reviewers run only with Windlass.", { code: "bad_input" });
+		if (place.kind !== "machine") throw new UserError("Claude Code runs only on a machine of yours.", { code: "bad_input" });
+		if (input.profile !== "docker-hardened") throw new UserError("Claude Code requires the docker-hardened profile.", { code: "bad_input" });
+		if (input.publishUnasked) throw new UserError("Claude Code has no publish tool. Publish from the session panel.", { code: "bad_input" });
+	}
 	let repoUrl = cleanRepoUrl(input.repoUrl);
 	const givenTitle = input.title === undefined || input.title === null ? null : cleanTitle(input.title);
 	// A setup command is saved for a repository of the GitHub connection, and is checked before GitHub is asked anything.
@@ -963,6 +972,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	let summary: SessionSummary;
 	try {
 		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : null;
+		if (harness === "claude" && !machine?.harnesses?.some(entry => entry.id === harness)) throw new UserError("This machine does not offer Claude Code.", { code: "bad_input" });
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
 		const chosen = profiles.find((candidate) => candidate.id === input.profile);
 		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
@@ -972,7 +982,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
 		const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
-		const models = await modelsOf(c, profile.demo);
+		const models = harness === "claude" ? initialHarnessModels() : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model));
 
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
@@ -983,6 +993,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			id: item?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
 			title: givenTitle ?? DEFAULT_TITLE,
 			place,
+			harness,
 			profile: chosen.id,
 			model,
 			repoUrl,
@@ -1000,13 +1011,14 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			title: summary.title,
 			titleIsDefault: givenTitle === null,
 			place: summary.place,
+			harness,
 			...(machine ? { machineName: machine.name } : {}),
 			profile: summary.profile,
 			model,
 			repoUrl,
 			repo,
 			publishUnasked: repo !== null && input.publishUnasked === true,
-			demo: profile.demo,
+			demo: harness === "windlass" && profile.demo,
 			createdAt: now,
 		}).catch((error: unknown) => {
 			// An item's session has an id derived from its item's: one that exists is the one an earlier try made.
@@ -1690,16 +1702,17 @@ export const user = actor({
 			const session = c.vars.sessions.get(id);
 			if (!session) return { project: null, secrets: [], checks: [], account: { secrets: [], servers: [] } };
 			const send = session.place.kind === "hosted" || await machineSecrets(c.db, session.place.machineId) === true;
-			const kept = send ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name") : [];
+			const redactOnly = !send && session.harness === "claude";
+			const kept = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name") : [];
 			const account = {
 				secrets: kept.map((row) => ({ name: row.name, scope: row.scope === "agent" ? ("agent" as const) : ("setup" as const), sealed: row.sealed })),
 				servers: (await readServers(c.db)).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
 			};
 			const project = setupProjectKey(session.repository?.id);
-			if (project === null) return { project: null, secrets: [], checks: [], account };
-			const rows = send ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
+			if (project === null) return { project: null, secrets: [], checks: [], account, ...(redactOnly && { redactOnly }) };
+			const rows = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
 			const { checks } = await readChecks(c.db, project);
-			return { project, screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
+			return { project, ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
 		// --- a repository's page ----------------------------------------------------------------------

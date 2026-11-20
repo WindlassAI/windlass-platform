@@ -30,7 +30,7 @@
  * are three durations that belong together: handoff.ts has them and says why.
  */
 
-import type { RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
+import type { AcpContext, AcpUpdate, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
 import type { Redactor } from "../repo-secrets.js";
 import type { HarnessId } from "./harness.js";
 import type { ProjectChecks } from "../windlass-config.js";
@@ -402,7 +402,9 @@ export interface RunTurnInput {
 	 * `cachedShare`), adding up every execution of the turn (a message steered in at the very end
 	 * starts a second one).
 	 */
-	onEvent: (event: WindlassEvent) => void;
+	onEvent?: (event: WindlassEvent) => void;
+	/** A base ACP update with saved values redacted. */
+	onAcpUpdate?: (update: AcpUpdate) => void;
 	/**
 	 * Called when a tool call needs the user's approval; the turn waits for the promise. Resolve with
 	 * the chosen option. `signal` aborts when Windlass withdraws the question (the turn was stopped):
@@ -468,11 +470,14 @@ export interface TurnChecks {
 }
 
 export interface RunTurnResult {
+	acp?: { stopReason: string | null; usage: AcpContext | null; modes: string[]; models: ModelList | null };
+	/** Whether the ACP session could be continued when a previous id was supplied. */
+	resumed?: boolean;
 	/** The exit code of the Windlass process that served the turn: 0 after any orderly end, whatever the turn's outcome; null when it was killed. */
 	exitCode: number | null;
 	aborted: boolean;
 	timedOut: boolean;
-	/** The `ses_...` id seen on the events, if any arrived. */
+	/** The harness’s conversation id when one has been opened. */
 	windlassSessionId: string | null;
 	/** The summary event the layer made (see `onEvent`); null when the turn ended before Windlass reported how. */
 	summary: WindlassEvent | null;
@@ -502,6 +507,7 @@ export interface RunTurnResult {
 	 * Further reasons of this layer:
 	 *
 	 *   `host_tools_required` the sandbox's Windlass cannot provide the platform's tools
+	 *   `harness_signed_out` the harness needs its machine login
 	 *   `engine`             the process could not be started or died
 	 *
 	 * Null otherwise, and null when `aborted` is true.
@@ -741,6 +747,8 @@ export interface SessionBackups {
 
 /** What `server/src/sandbox/index.ts` exports as `createSandboxLayer()`. */
 export interface SandboxLayer {
+	/** Present only on the layer backed by this machine's runner. */
+	machine?: { name: string };
 	sandboxes: Sandboxes;
 	windlass: Windlass;
 	logins: ChatgptLogins;

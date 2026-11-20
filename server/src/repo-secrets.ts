@@ -476,6 +476,8 @@ export class RedactingStream {
 		return held === 0 ? whole : whole.slice(0, whole.length - held);
 	}
 
+	get hasTail(): boolean { return this.waiting !== ""; }
+
 	/** The stream ended: what was held back was not a value. */
 	flush(): string {
 		const rest = this.waiting;

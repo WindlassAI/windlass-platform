@@ -8,7 +8,21 @@ import { createInterface } from "node:readline";
 import { PassThrough, type Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import type { AcpUpdate, CreateItemInput } from "../server/src/contract.js";
+import type { RunTurnInput, SandboxHandle, SandboxLayer } from "../server/src/sandbox/api.js";
+import { markTurnSandbox, type ProcessEnd, type StartOptions } from "../server/src/sandbox/provider.js";
+import { SecretRedactor } from "../server/src/repo-secrets.js";
 import { FakeAcpAgent } from "./acp-agent-fake.js";
+
+// Compile this consumer along with the server so changes to the wire contract cannot undo narrowing.
+function typedField(update: AcpUpdate): string | undefined {
+	if (update.sessionUpdate === "plan") return update.entries[0]?.content;
+	if (update.sessionUpdate === "tool_call") return update.toolCallId;
+	if (update.sessionUpdate === "current_mode_update") return update.currentModeId;
+}
+const itemHasHarness: "harness" extends keyof CreateItemInput ? true : false = false;
+assert.equal(itemHasHarness, false);
+assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", priority: "low", status: "pending" }] }), "Read");
 
 const fixture = fileURLToPath(new URL("../fixtures/acp-agent/agent.mjs", import.meta.url));
 const openParams = { cwd: "/workspace", mcpServers: [] };
@@ -259,6 +273,157 @@ async function checkScenarios(client: Client, sessionId: string) {
 	ok("secret echoes the exact value in a message chunk and in tool output");
 }
 
+/** The real client with a fixture process. Adjust individual wire replies to exercise negotiation. */
+async function clientCheck(state: string) {
+	const { harnessOf } = await import("../server/src/sandbox/harness.js");
+	const machine = { machine: { name: "Bench" } } as SandboxLayer;
+	const harness = harnessOf(machine, "claude");
+	assert.throws(() => harnessOf({} as SandboxLayer, "claude"), /only on a machine/);
+	const secret = "value-held-only-for-redaction";
+	const redactor = new SecretRedactor([{ name: "FIXTURE", value: secret }]);
+	const secrets = { env: {}, withholdEnv: [], passEnv: [], redactor };
+	const input = { prompt: "secret:" + secret, secrets };
+	const guards: Partial<RunTurnInput>[] = [
+		{ checks: [{ name: "check", command: "true" }] }, { servers: [{ name: "user", definition: {} }] },
+		{ secrets: { ...secrets, env: { FIXTURE: secret } } }, { secrets: { ...secrets, withholdEnv: ["FIXTURE"] } }, { secrets: { ...secrets, passEnv: ["FIXTURE"] } },
+		{ script: { responses: [] } }, { maxSteps: 0 }, { reportScreenshots: true },
+		{ onEvent() {} }, { onUnasked() {} }, { onServerApproved() {} }, { onServers() {} },
+		{ onServerQuestion: async () => false }, { onPublish: async () => "" }, { onReport: () => "" },
+		{ onReview: async () => "" }, { onPush: async () => "" }, { onFetchBase: async () => "" },
+	];
+	for (const guard of guards) {
+		const result = await harness.runTurn({} as SandboxHandle, { ...input, ...guard });
+		assert.equal(result.failure?.reason, "engine");
+		assert.match(result.failure.message, /^This turn asked Claude Code for .+, which it does not take here\.$/);
+	}
+	ok(`all ${guards.length} unsupported inputs are refused before the sandbox is touched`);
+
+	let variant: "normal" | "load" | "wrong-version" | "no-mode" | "adapter-default" = "normal";
+	let duringShutdown: (() => void) | undefined;
+	const methods: string[] = [];
+	const updates: AcpUpdate[] = [];
+	const sandbox = {
+		profile: "docker-hardened", cwd: "/workspace",
+		async stopLeftovers(name: string) { assert.equal(name, "claude-agent-acp"); return 0; },
+		async sweep(tag: string) { assert.equal(tag, "fixture"); return 0; },
+		start(argv: string[], opts: StartOptions) {
+			assert.deepEqual(argv, ["wlp-claude-acp"]);
+			assert.deepEqual(opts.env, {});
+			assert.equal(opts.secretEnv, undefined);
+			assert.equal(opts.cwd, "/workspace");
+			let finish!: (end: ProcessEnd) => void;
+			const ended = new Promise<ProcessEnd>(resolve => { finish = resolve; });
+			const emit = (frame: unknown) => opts.onStdout!(JSON.stringify(frame) + "\n");
+			let lastSessionId: string | undefined;
+			const agent = new FakeAcpAgent(line => {
+				const frame = JSON.parse(line);
+				lastSessionId = frame.result?.sessionId ?? lastSessionId;
+				if (frame.result?.agentCapabilities) {
+					if (variant === "load") delete frame.result.agentCapabilities.sessionCapabilities.resume;
+					if (variant === "wrong-version") frame.result.protocolVersion = 2;
+				}
+				if (frame.result?.modes && variant === "no-mode") frame.result.modes.availableModes = [];
+				if (variant === "adapter-default" && frame.result?.modes) frame.result.configOptions = [
+					{ id: "model", category: "model", type: "select", currentValue: "opus", options: [{ value: "opus", name: "Opus" }] },
+				];
+				const update = frame.params?.update;
+				if (update?.sessionUpdate === "agent_message_chunk" && update.content.text === secret) {
+					for (const part of [secret.slice(0, 8), secret.slice(8)]) {
+						update.content.text = part;
+						emit(frame);
+					}
+				} else if (update?.sessionUpdate === "tool_call_update" && update.content?.[0]?.content.text === secret) {
+					const part = (id: string, text: string, status: string) => emit({ ...frame, params: { ...frame.params, update: {
+						...update, toolCallId: id, status, rawOutput: [{ type: "text", text }], content: [{ type: "content", content: { type: "text", text } }],
+					} } });
+					part("first", "before " + secret.slice(0, 8), "in_progress");
+					part("other", "other output", "completed");
+					part("first", secret.slice(8) + " after", "completed");
+					part("unfinished", "ordinary " + secret.slice(0, 3), "in_progress");
+				} else emit(frame);
+				if (frame.result?.stopReason) emit({ method: "session/update", params: {
+					sessionId: lastSessionId, update: { sessionUpdate: "notice", text: "after prompt reply" },
+				} });
+				if (variant === "load" && frame.result?.sessionId) emit({ method: "session/update", params: {
+					sessionId: frame.result.sessionId, update: { sessionUpdate: "notice", text: "after load" },
+				} });
+			}, state);
+			return {
+				tag: "fixture", ended, hasEnded: false,
+				write(line: string) {
+					const frame = JSON.parse(line);
+					methods.push(frame.method);
+					if (frame.method === "session/load") {
+						emit({ method: "session/update", params: { sessionId: frame.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "old transcript" } } } });
+						frame.method = "session/resume";
+					}
+					if (frame.method === "session/prompt") {
+						opts.onStderr!(secret.slice(0, 8));
+						opts.onStderr!(secret.slice(8));
+					}
+					agent.input(JSON.stringify(frame) + "\n");
+					return true;
+				},
+				closeStdin() { duringShutdown?.(); agent.stop(); finish({ code: 0, signal: null, error: null }); },
+			};
+		},
+	};
+	markTurnSandbox(sandbox);
+	const handle = sandbox as unknown as SandboxHandle;
+	let lateSteer: Promise<void> | undefined;
+	const first = await harness.runTurn(handle, { ...input, onControl: c => { duringShutdown = () => { lateSteer = assert.rejects(c.steer("late"), /turn ended/i); }; }, onAcpUpdate: u => updates.push(u) });
+	assert.equal(first.failure, null);
+	assert.equal(first.acp?.stopReason, "end_turn");
+	assert.equal(first.stderrTail, redactor.text(secret));
+	assert(!JSON.stringify(updates).includes(secret));
+	assert(updates.some(u => u.sessionUpdate === "agent_message_chunk" && JSON.stringify(u.content).includes(redactor.text(secret))));
+	ok("redaction spans ACP chunks and stderr writes without passing secret environment to the agent");
+
+	assert(lateSteer);
+	await lateSteer;
+	duringShutdown = undefined;
+	assert(!methods.includes("_session/steering"));
+	assert(!updates.some(u => u.text === "after prompt reply"));
+	const outputOf = (id: string) => updates.flatMap(u => u.sessionUpdate === "tool_call_update" && u.toolCallId === id
+		? (u.content ?? []).map(block => "content" in block ? (block.content as { text: string }).text : block.text) : []).join("");
+	assert.equal(outputOf("first"), "before " + redactor.text(secret) + " after");
+	const rawText = updates.flatMap(u => u.toolCallId === "first" && Array.isArray(u.rawOutput)
+		? u.rawOutput.map(block => block.text) : []).join("");
+	assert.equal(rawText, "before " + redactor.text(secret) + " after");
+	assert.equal(outputOf("other"), "other output");
+	assert.equal(outputOf("unfinished"), "ordinary " + secret.slice(0, 3));
+	ok("late steering sends no request and interleaved tool output redacts and flushes per call");
+
+	variant = "load";
+	updates.length = 0;
+	const loaded = await harness.runTurn(handle, { prompt: "ask", windlassSessionId: first.windlassSessionId!, onAcpUpdate: u => updates.push(u) });
+	assert.equal(loaded.resumed, true);
+	assert(methods.includes("session/load"));
+	assert(!JSON.stringify(updates).includes("old transcript"));
+	assert(updates.some(update => update.text === "after load"));
+	assert(JSON.stringify(updates).includes("Permission answered: reject."));
+	ok("load suppresses replay and unattended permission uses reject_once");
+
+	variant = "adapter-default";
+	methods.length = 0;
+	const implicit = await harness.runTurn(handle, { prompt: "plain", model: "default" });
+	assert.equal(implicit.failure, null);
+	assert.equal(implicit.acp?.models?.defaultModel, "opus");
+	assert(!methods.includes("session/set_config_option"));
+	const unavailable = await harness.runTurn(handle, { prompt: "plain", effort: "high" });
+	assert.match(unavailable.failure?.message ?? "", /does not offer effort/);
+	ok("the first prompt uses the adapter's default and an unsupported effort is refused");
+
+	for (const [setting, sentence] of [["wrong-version", /ACP v1/], ["no-mode", /permission mode is not offered/]] as const) {
+		variant = setting;
+		methods.length = 0;
+		const result = await harness.runTurn(handle, { prompt: "plain" });
+		assert.match(result.failure?.message ?? "", sentence);
+		assert(!methods.includes("session/prompt"));
+	}
+	ok("wrong protocol version and missing permission mode both prevent prompting");
+}
+
 const state = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".fake-acp-check-"));
 try {
 	const id = await withProcess(state, async (client) => {
@@ -292,6 +457,7 @@ try {
 		agent.stop();
 		output.end();
 	}
+	await clientCheck(state);
 } finally {
 	rmSync(state, { recursive: true, force: true });
 }

@@ -16,6 +16,8 @@ export const effortsOf = (list: ModelList | null, model: string): string[] => li
 /** Whose list it is, in a sentence, for under a field. */
 export function modelsNote(list: ModelList): string {
 	switch (list.source) {
+		case "harness":
+			return "The models offered by the session’s harness.";
 		case "account":
 			return `The models of your ChatGPT plan${list.fetchedAt === null ? "" : `, as read at ${localTime(list.fetchedAt)}`}.`;
 		case "demo":
@@ -30,6 +32,8 @@ export function modelsNote(list: ModelList): string {
 /** The same in a few words, for beside the composer's pickers. */
 export function modelsNoteShort(list: ModelList): string {
 	switch (list.source) {
+		case "harness":
+			return "harness models";
 		case "account":
 			return "your plan's models";
 		case "demo":

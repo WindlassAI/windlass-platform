@@ -664,6 +664,20 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   update it to 0.1.0 or later, then start the agent again."). A machine offers the two Docker profiles,
   `docker-windlass-sandbox` and `docker-hardened`, as its runner last reported them: the first only where
   bubblewrap starts in a container there.
+- **Claude Code sessions.** When the machine reports Claude Code, `createSession` accepts
+  `harness: "claude"` with `docker-hardened`. Its runner owns the sign-in. Run
+  `windlass-runner login claude` on that machine when it needs a login. The platform clones the
+  repository and runs its setup command before starting the adapter. The first prompt uses the
+  adapter's default model. Later prompts can select a model and reasoning effort it offered.
+
+  The session streams messages, reasoning, tool calls and permission questions over ACP v1. You
+  can stop a turn and send a follow-up during a turn when the adapter offers steering. The turn
+  reports context use and cost when available. Its conversation stays in the machine’s sandbox
+  across turns and sleeps. Removing the sandbox removes that conversation.
+
+  Publish from the session panel. The adapter receives no platform tools, saved secrets or user MCP
+  servers. Individual tool-call cancellation, required checks, token accounting and conversation
+  backups are unavailable for Claude Code. Work items, reviewers and hosted sessions use Windlass.
 - **What the platform keeps.** The machine's public key, what it said of itself when it was paired, when
   its runner was last heard from, and the runner's last report: whether Docker answers, whether bubblewrap
   starts in a sandbox there, the free disk space, its sandboxes, and the caps its owner set, where any is

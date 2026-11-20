@@ -127,6 +127,8 @@ import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, maySubscribe, requireService, requireUser } from "../auth.js";
 import { config } from "../config.js";
 import {
+	type AcpUpdate,
+	type ModelList,
 	type LiveDelta,
 	type ItemReview,
 	type ReviewRecord,
@@ -200,7 +202,10 @@ import { reviewerTask } from "../factory/reviewer-task.js";
 import { fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
-import { type HarnessId, harnessOf } from "../sandbox/harness.js";
+import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
+import { AcpPromptRequired } from "../sandbox/acp-harness.js";
+import { CLAUDE, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase } from "../github/publish.js";
 import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
@@ -301,9 +306,10 @@ interface SessionMeta {
 	accountSecrets?: string | null;
 	/** Whether `repoUrl` has been cloned into the current sandbox. */
 	cloned: boolean;
-	/** The agent this session's turns run (sandbox/harness.ts). Absent: Windlass, which every session so far is. */
+	/** The agent this session runs. Absent means Windlass. */
 	harness?: HarnessId;
-	/** The harness's own id of its session (Windlass's, so far), kept by this name. */
+	harnessModels?: ModelList | null;
+	/** The harness's own conversation id, kept across turns. */
 	windlassSessionId: string | null;
 	turnStartedAt: number | null;
 	/** When this session was created, last ran a turn, or last used its workspace. */
@@ -518,6 +524,8 @@ interface SessionVars {
 	accepting: boolean;
 	/** The prompts with a key that are being decided: another attempt of one of them ends as it does (submissions.ts). */
 	attempts: Attempts<PromptAnswer>;
+	/** Admission of the last ordinary ACP prompt, including follow-ups waiting for their own turns. */
+	nextPrompt?: Promise<PromptAnswer>;
 	destroying: boolean;
 	/** True once the actor is going to sleep or being destroyed. */
 	stopping: boolean;
@@ -591,6 +599,7 @@ interface Ctx {
 type NewItem =
 	| Omit<Extract<TimelineItem, { kind: "user" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "platform" }>, "seq" | "at">
+	| Omit<Extract<TimelineItem, { kind: "acp" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "windlass" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "setup" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "turn.ended" }>, "seq" | "at">;
@@ -658,6 +667,8 @@ function isRunnerSocket(request: Request | undefined): boolean {
 function summaryOf(meta: SessionMeta): SessionSummary {
 	return {
 		id: meta.sessionId,
+		...(meta.harness ? { harness: meta.harness } : {}),
+		...(meta.harnessModels !== undefined ? { harnessModels: meta.harnessModels } : {}),
 		title: meta.title,
 		place: meta.place,
 		profile: meta.profile,
@@ -753,7 +764,8 @@ function scheduleWrite(c: Ctx): void {
  */
 function append(c: Ctx, item: NewItem): TimelineItem {
 	const redactor = c.vars.turn?.secrets?.redactor;
-	const full = { ...(redactor ? redactor.deep(item) : item), seq: c.vars.nextSeq, at: Date.now() } as TimelineItem;
+	const numbered = { ...(redactor ? redactor.deep(item) : item), seq: c.vars.nextSeq, at: Date.now() } as TimelineItem;
+	const full = numbered.kind === "acp" ? boundedAcpItem(numbered) : numbered;
 	c.vars.nextSeq += 1;
 	c.vars.unwritten.push(full);
 	c.broadcast("item", full);
@@ -869,7 +881,64 @@ function settleDeltas(vars: SessionVars, durable: WindlassEvent): void {
 		default:
 			return;
 	}
-	vars.pending = vars.pending.filter((delta) => !redundant(delta.event));
+	vars.pending = vars.pending.filter((delta) => !("event" in delta && redundant(delta.event)));
+}
+
+/** One durable item per contiguous run of text; a reconnect sees the same prefix as live clients. */
+function acpRecorder(c: Ctx, turn: number) {
+	type TextKind = "agent_message_chunk" | "agent_thought_chunk";
+	let run: { kind: TextKind; key: string; text: string; remaining: number; truncated: boolean } | null = null;
+	let items = 0;
+	let warned = false;
+	function admit(): boolean {
+		if (items < MAX_PENDING) {
+			items++;
+			return true;
+		}
+		if (!warned) note(c, turn, "warn", `Further ACP updates were omitted after ${MAX_PENDING.toLocaleString("en-US")} timeline items in this turn.`);
+		warned = true;
+		return false;
+	}
+	function textUpdate(kind: TextKind, text: string): AcpUpdate {
+		return { sessionUpdate: kind, content: { type: "text", text } };
+	}
+	function flush() {
+		if (!run) return;
+		const { kind, key, text, truncated } = run;
+		run = null;
+		c.vars.pending = c.vars.pending.filter(delta => !("acp" in delta && delta.messageKey === key));
+		append(c, { turn, kind: "acp", messageKey: key, update: textUpdate(kind, text), ...(truncated && { truncated }) });
+	}
+	return {
+		flush,
+		update(update: AcpUpdate) {
+			const kind = update.sessionUpdate;
+			if ((kind === "agent_message_chunk" || kind === "agent_thought_chunk") && update.content?.type === "text" && typeof update.content.text === "string") {
+				if (run?.kind !== kind) {
+					flush();
+					if (!admit()) return;
+					const key = `acp-${turn}-${c.vars.nextSeq}`;
+					// Other timeline events can advance seq before flush. Reserve both numbers and the marker now.
+					const envelope = { turn, kind: "acp", messageKey: key, update: textUpdate(kind, ""), seq: Number.MAX_SAFE_INTEGER, at: Number.MAX_SAFE_INTEGER, truncated: true };
+					run = { kind, key, text: "", remaining: ACP_ITEM_LIMIT - JSON.stringify(envelope).length, truncated: false };
+				}
+				if (run.truncated) return;
+				const piece = jsonPrefix(update.content.text, run.remaining);
+				run.truncated = piece.text.length < update.content.text.length;
+				if (!piece.text) return;
+				run.remaining -= piece.size;
+				run.text += piece.text;
+				c.broadcast("delta", { turn, acp: textUpdate(kind, piece.text), messageKey: run.key });
+				const pending = { turn, messageKey: run.key, acp: textUpdate(kind, run.text) };
+				const last = c.vars.pending.at(-1);
+				if (last && "acp" in last && last.messageKey === run.key) c.vars.pending[c.vars.pending.length - 1] = pending;
+				else keepDelta(c.vars, pending);
+				return;
+			}
+			flush();
+			if (admit()) append(c, { turn, kind: "acp", update });
+		},
+	};
 }
 
 function onWindlassEvent(c: Ctx, meta: SessionMeta, turn: number, event: WindlassEvent): void {
@@ -961,7 +1030,7 @@ function tail(text: string, lines = 6, chars = 800): string {
 
 /** Docker normally keeps sessions on a shared volume. A reviewer always owns its data. */
 function privateSessionData(meta: SessionMeta, sandboxes: SandboxLayer["sandboxes"]): boolean {
-	return meta.origin?.role === "reviewer" || sandboxes.sessionsLiveInSandbox;
+	return !capabilitiesOf(meta.harness).backups || meta.origin?.role === "reviewer" || sandboxes.sessionsLiveInSandbox;
 }
 
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
@@ -1018,7 +1087,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		if (meta.windlassSessionId && privateSessionData(meta, layer.sandboxes)) {
 			// Windlass's own session went with the old sandbox. Its copy is put into the new one before anything
 			// else happens there; without one, asking for the session would only fail the turn.
-			if (!(await restoreBackup(c, meta, turn, handle, layer))) {
+			if (!capabilitiesOf(meta.harness).backups || !(await restoreBackup(c, meta, turn, handle, layer))) {
 				meta.windlassSessionId = null;
 				meta.backup = null;
 				note(c, turn, "info", "The agent's memory of the conversation went with the old sandbox, so it starts this turn without it.");
@@ -1434,11 +1503,12 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 		if (turn !== null) note(c, turn, "warn", `${shut.length === 1 ? `Your account's secret ${shut[0]}` : `Your account's secrets ${shut.join(", ")}`} could not be opened by this server, so ${shut.length === 1 ? "it is" : "they are"} not handed over. Save ${shut.length === 1 ? "it" : "them"} again in your settings.`);
 	}
 	if (meta.origin?.role === "reviewer" && (closed.length || shut.length || sealed.project !== project?.key)) throw new TurnProblem("The platform could not read all saved secrets to redact this review.");
+	if (meta.harness === "claude" && (closed.length || shut.length)) throw new TurnProblem("The platform could not read all saved values to redact the Claude Code session.");
 	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
 	return {
 		screenshots: sealed.screenshots === true,
-		opened,
-		account,
+		opened: sealed.redactOnly ? [] : opened,
+		account: sealed.redactOnly ? [] : account,
 		servers: (sealed.account?.servers ?? []).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
 		checks: project && sealed.project === project.key ? (sealed.checks ?? []) : [],
 		redactor: new SecretRedactor([...opened, ...account]),
@@ -1523,7 +1593,7 @@ async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandb
 	meta.workDue = null;
 	meta.pushedHead = head;
 	c.vars.unpushed = null;
-	if (setUp) meta.setupOnBase = { branch: due.branch, base: repo.branch };
+	if (setUp && capabilitiesOf(meta.harness).events === "windlass") meta.setupOnBase = { branch: due.branch, base: repo.branch };
 	note(c, turn, "info", `Put the workspace on ${due.branch} at ${head.slice(0, 7)}.${setUp ? ` The setup command ran on ${repo.branch} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
 	await persist(c);
 }
@@ -1538,7 +1608,7 @@ function setupOutput(c: Ctx, turn: number, id: string, text: string): void {
 	c.broadcast("delta", delta);
 	// Kept as one delta per run, the end of the output so far: a client that connects late shows what the others do.
 	const last = c.vars.pending.at(-1);
-	if (last && last.event.type === "setup.output" && last.event.id === id) {
+	if (last && "event" in last && last.event.type === "setup.output" && last.event.id === id) {
 		const joined = `${str(last.event.text)}${text}`;
 		c.vars.pending[c.vars.pending.length - 1] = { turn, event: { type: "setup.output", id, text: joined.length > SETUP_OUTPUT_CHARS ? joined.slice(-SETUP_OUTPUT_CHARS) : joined } };
 	} else {
@@ -1608,7 +1678,7 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	clearTimeout(timer);
 	const output = tail.text;
 	// The ending item carries the output: the deltas that built it up are not needed any more.
-	c.vars.pending = c.vars.pending.filter((delta) => !(delta.event.type === "setup.output" && delta.event.id === id));
+	c.vars.pending = c.vars.pending.filter((delta) => !("event" in delta && delta.event.type === "setup.output" && delta.event.id === id));
 	meta.setupRunning = null;
 	append(c, { turn, kind: "setup", id, command, state: result.state, exitCode: result.exitCode, durationMs: result.durationMs, limitMs, output, truncated: tail.truncated });
 	if (result.problem !== null) note(c, turn, "warn", `The setup command for ${project.label} could not be run. ${result.problem}`);
@@ -1899,7 +1969,7 @@ function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, question: Tu
 		if (meta.status === "waiting") meta.status = "running";
 	} else if (active.question) {
 		// Windlass asks one question at a time, and the contract shows one. A second one is not left to hang.
-		note(c, active.number, "warn", `Windlass asked "${title}" while another question was waiting for an answer, so it was declined.`);
+		note(c, active.number, "warn", `${meta.harness === "claude" ? CLAUDE.name : "Windlass"} asked "${title}" while another question was waiting for an answer, so it was declined.`);
 		return declined("Another question was waiting for the user's answer, so the platform declined this call. Ask again if it is still needed.");
 	}
 
@@ -1946,7 +2016,7 @@ function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, question: Tu
 				else reject(new Error(why ?? "the question was withdrawn"));
 			},
 		};
-		// Windlass withdrew the question: the turn was stopped. What the promise does now is ignored.
+		// The harness withdrew this question or stopped the turn.
 		function onWithdrawn(): void {
 			if (active.question === asked) {
 				takeQuestion(c, meta, active);
@@ -3036,6 +3106,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 	let layer: SandboxLayer | null = null;
 	let result: RunTurnResult | null = null;
 	let problem: string | null = null;
+	const acpTimeline = acpRecorder(c, turn);
 	let events = 0;
 	let open = true;
 	let used: SandboxHandle | null = null;
@@ -3057,13 +3128,14 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 	try {
 		await persist(c);
 		layer = await layerOf(c, meta);
+		if (meta.origin && meta.harness && meta.harness !== "windlass") throw new TurnProblem("Work items and their reviewers run only with Windlass.");
 		if (reviewer && (!checkout || !reviewerAllowed(meta.place, layer.sandboxes.profile(meta.profile)))) {
 			const reason = REVIEW_PROFILE_REASON;
 			if (active.item) active.item.refused = reason;
 			throw new TurnProblem(reason);
 		}
 		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
-		active.secrets = await readSecrets(c, meta, turn);
+		active.secrets ??= await readSecrets(c, meta, turn);
 		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
 		used = sandbox;
 		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
@@ -3080,12 +3152,23 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn);
 		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
 		resumed = meta.windlassSessionId;
-		if (!signal.aborted) {
-			if (meta.status === "starting") {
-				meta.status = "running";
-				publish(c);
-				void persist(c);
-			}
+		if (!signal.aborted && meta.status === "starting") {
+			meta.status = "running";
+			publish(c);
+			void persist(c);
+		}
+		const common: RunTurnInput = {
+			prompt: text, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
+			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
+			onControl: control => { if (open) active.control = control; },
+		};
+		if (!signal.aborted && caps.events === "acp") {
+			result = await harness.runTurn(sandbox, {
+				...common,
+				secrets: { env: {}, withholdEnv: [], passEnv: [], redactor: active.secrets.redactor },
+				onAcpUpdate: update => { if (open) acpTimeline.update(update); },
+			});
+		} else if (!signal.aborted) {
 			// Told once: with the first prompt Windlass takes in the new sandbox.
 			const fresh = meta.freshWorkspace === true;
 			// And once: that the repository's setup command did not succeed in this sandbox.
@@ -3164,6 +3247,7 @@ fi`, { signal, timeoutMs: 5000 });
 			let filings = Promise.resolve("");
 			let calls = 0;
 			result = await harness.runTurn(sandbox, {
+				...common,
 				// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.
 				secrets: { ...turnEnvironment(reviewer ? [] : held.opened, reviewer ? [] : held.account, profile), redactor: held.redactor },
 				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
@@ -3223,11 +3307,7 @@ fi`, { signal, timeoutMs: 5000 });
 					filings = filings.then(file, file).catch(() => "The platform could not finish filing this report. File it again.");
 					return tracked(filings);
 				} : undefined,
-				windlassSessionId: resumed ?? undefined,
-				model: meta.model,
-				effort: effort ?? undefined,
 				script: meta.demo ? layer.windlass.demoScript(text, turn) : undefined,
-				signal,
 				onEvent: (event) => {
 					if (!open) return;
 					events += 1;
@@ -3249,9 +3329,6 @@ fi`, { signal, timeoutMs: 5000 });
 				// And push its branch, and have the base fetched to rebase onto, in a person's session and an item's alike.
 				onPush: tools && platformTool("push") ? (request) => tracked(agentPush(c, meta, active, sandbox, request)) : undefined,
 				onFetchBase: tools && platformTool("fetch_base") ? () => agentFetchBase(c, meta, active, sandbox) : undefined,
-				// A person's session is attended, by whoever has it open now or opens it in time. A work item's turn is not:
-				// without the callback Windlass refuses a call that would ask, and tells the model.
-				onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 				// The project's own MCP servers, which Windlass leaves stopped until the user says otherwise; nobody can say so in an item's turn.
 				onServerQuestion: active.item
 					? async (question) => {
@@ -3271,9 +3348,6 @@ fi`, { signal, timeoutMs: 5000 });
 				},
 				onServers: (said) => {
 					if (open) knowServers(c, meta, said);
-				},
-				onControl: (control) => {
-					if (open) active.control = control;
 				},
 			});
 			// Windlass took the prompt if it said anything at all; a turn that never reached it is told again.
@@ -3297,6 +3371,7 @@ fi`, { signal, timeoutMs: 5000 });
 			else c.log.error({ msg: "turn failed", session: meta.sessionId, turn, error: clean(error instanceof Error ? (error.stack ?? error.message) : String(error)) });
 		}
 	}
+	acpTimeline.flush();
 	open = false;
 	clearTimeout(limit);
 	// From here on the turn takes no message, no answer and no stop of a call, and has no question.
@@ -3305,10 +3380,23 @@ fi`, { signal, timeoutMs: 5000 });
 	if (active.publishes.size > 0) await Promise.allSettled([...active.publishes]);
 
 	try {
+		const caps = capabilitiesOf(meta.harness);
 		const summary = result?.summary ?? null;
 		let outcome: TurnOutcome;
 		let message: string | null = null;
-		if (result?.aborted || (!result && signal.aborted)) {
+		if (caps.events === "acp") {
+			const reason = result?.acp?.stopReason;
+			if (result?.acp && result.windlassSessionId) meta.harnessModels = result.acp.models;
+			if (resumed && result?.resumed === false && result.windlassSessionId) note(c, turn, "warn", "Claude Code could not continue the conversation; the files are as they were.");
+			if (result?.failure || problem) {
+				outcome = "error";
+				message = result?.failure?.message ?? problem;
+			} else if (reason === "cancelled" || result?.aborted || signal.aborted) outcome = "stopped";
+			else if (reason === "end_turn") outcome = "succeeded";
+			else if (reason === "max_tokens" || reason === "max_turn_requests") outcome = "unresolved";
+			else if (reason === "refusal") outcome = "failed";
+			else { outcome = "error"; message = "Claude Code ended without a recognized stop reason."; }
+		} else if (result?.aborted || (!result && signal.aborted)) {
 			outcome = "interrupted";
 		} else if (result) {
 			const failure = result.failure ?? null;
@@ -3353,14 +3441,14 @@ fi`, { signal, timeoutMs: 5000 });
 			outcome = reviewer && !active.item?.refused ? "interrupted" : "error";
 			message = problem ?? "The turn could not be run.";
 		}
-		if (result?.windlassSessionId && outcome !== "error") meta.windlassSessionId = result.windlassSessionId;
+		if (result?.windlassSessionId && (result.acp || outcome !== "error")) meta.windlassSessionId = result.windlassSessionId;
 
 		// The turn may have changed the workspace: a new copy, taken before the turn is reported as ended so
 		// that whoever asks then gets it. Without one (the actor is stopping, or git failed) the old copy is
 		// wrong, and the next read goes to the sandbox.
 		if (used) {
 			// Windlass's session is copied out of the sandbox meanwhile, when Windlass ran: both only read.
-			const saving = result && layer ? saveBackup(c, meta, turn, used, layer) : undefined;
+			const saving = caps.backups && result && layer ? saveBackup(c, meta, turn, used, layer) : undefined;
 			const copied = reviewer || c.vars.stopping || c.vars.destroying ? null : await copyWorkspace(c, meta, used);
 			if (!copied) await dropWorkspace(c);
 			await saving;
@@ -3368,8 +3456,8 @@ fi`, { signal, timeoutMs: 5000 });
 
 		// What the session's work rests on now, from what Windlass recorded of this turn's checks; a turn the platform could not run failed before any.
 		const saved = reviewer ? [] : active.secrets?.checks ?? [];
-		let verified = active.checks.verified(turn, saved, result?.checks, meta.verified ?? null);
-		if (outcome === "error" && verified.state === "stopped") verified = { ...verified, state: "failed" };
+		let verified = caps.checks === "none" ? null : active.checks.verified(turn, saved, result?.checks, meta.verified ?? null);
+		if (outcome === "error" && verified?.state === "stopped") verified = { ...verified, state: "failed" };
 		meta.verified = verified;
 
 		c.vars.pending = [];
@@ -3381,6 +3469,7 @@ fi`, { signal, timeoutMs: 5000 });
 			steps: typeof summary?.steps === "number" ? summary.steps : null,
 			durationMs: typeof summary?.durationMs === "number" ? summary.durationMs : Date.now() - startedAt,
 			usage: usageOf(summary?.usage),
+			...(caps.usage === "context" ? { context: result?.acp?.usage ?? null } : {}),
 			cachedShare: typeof summary?.cachedShare === "number" ? summary.cachedShare : null,
 			message,
 			verified,
@@ -3493,6 +3582,18 @@ function remember(meta: SessionMeta, submission: Submission | null, answer: Prom
 	return answer;
 }
 
+/** Serialize ACP prompt admissions so two refused steers cannot both start the same next turn. */
+function queuePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, message: string, submission: Submission | null): Promise<PromptAnswer> {
+	const previous = c.vars.nextPrompt;
+	const start = async () => {
+		while (c.vars.turn) await c.vars.turn.done;
+		return startPrompt(c, meta, input, message, submission);
+	};
+	const queued = previous ? previous.then(start, start) : start();
+	c.vars.nextPrompt = queued;
+	return queued.finally(() => { if (c.vars.nextPrompt === queued) delete c.vars.nextPrompt; });
+}
+
 /**
  * Whether the session's machine is out of reach now: a session on a machine whose runner has no socket
  * to it. What the turn's layer sends then waits in the link's queue until the runner is back, so an
@@ -3509,6 +3610,11 @@ function machineAway(c: Ctx, meta: SessionMeta): boolean {
  */
 async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, message: string, submission: Submission | null): Promise<PromptAnswer> {
 	const control = active?.control;
+	const next = (turn: number) => {
+		note(c, turn, "info", "Sent when this turn ends.");
+		return queuePrompt(c, meta, { text: message }, message, submission);
+	};
+	if (active?.closed && meta.harness === "claude") return next(active.number);
 	const stopping = meta.status === "stopping" || active?.controller.signal.aborted === true || active?.closed === true;
 	if (!active || !control || stopping || (meta.status !== "running" && meta.status !== "waiting")) {
 		const state = stopping ? "is being stopped" : "is still starting";
@@ -3519,15 +3625,17 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
 	try {
 		await control.steer(message);
 	} catch (error) {
+		if (error instanceof AcpPromptRequired) return next(active.number);
 		c.log.warn({ msg: "a running turn did not take a steered message", session: meta.sessionId, turn: active.number, error: describeError(error) });
 		const why = isSandboxUserError(error) ? ` ${error.message}` : "";
 		throw new UserError(`The running turn could not take the message.${why} Try again in a moment.`, { code: "turn_running" });
 	}
-	if (active.closed) {
+	if (active.closed && meta.harness !== "claude") {
 		// The turn ended while Windlass was taking the message; nothing can be added to a closed turn.
 		throw new UserError("The turn ended just as the message arrived. Try again in a moment.", { code: "turn_running" });
 	}
-	append(c, { turn: active.number, kind: "user", text: message, model: meta.model, effort: active.effort, steer: true });
+	const shown = capabilitiesOf(meta.harness).events === "acp" ? active.secrets?.redactor.text(message) ?? message : message;
+	append(c, { turn: active.number, kind: "user", text: shown, model: meta.model, effort: active.effort, steer: true });
 	meta.updatedAt = Date.now();
 	publish(c);
 	const answer = remember(meta, submission, { turn: active.number, steered: true });
@@ -3544,7 +3652,13 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
  */
 async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: string, submission: Submission | null): Promise<PromptAnswer> {
 	// A turn in progress takes the message itself; `model` and `effort` are for a turn that starts.
+	if ((c.vars.turn || c.vars.accepting) && capabilitiesOf(meta.harness).events === "acp" && (input.model || input.effort)) throw new UserError("Choose the model and effort when starting a turn.", { code: "bad_input" });
 	if (c.vars.turn || c.vars.accepting) return await steerTurn(c, meta, c.vars.turn, text, submission);
+	if (meta.harness === "claude") return queuePrompt(c, meta, input, text, submission);
+	return startPrompt(c, meta, input, text, submission);
+}
+
+async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: string, submission: Submission | null): Promise<PromptAnswer> {
 	// The platform is committing and pushing the workspace: the agent does not start under it.
 	if (c.vars.publishing) throw new UserError("The platform is pushing this agent's work to GitHub. Send the prompt again in a moment.", { code: "turn_running" });
 
@@ -3560,11 +3674,12 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 	try {
 		// A suspend or removal of the idle sandbox finishes first; the turn then resumes or recreates it.
 		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
+		const caps = capabilitiesOf(meta.harness);
 		let model = meta.model;
 		const switches = input.model !== undefined && input.model !== null && input.model !== "";
 		if (switches || effort !== null) {
 			// Held against the user's own models, and the effort against the ones the turn's model accepts. The demo's scripted model has the stand-in.
-			const models = meta.demo ? standInModels("demo") : await userActor(c, meta.uid).internalModels();
+			const models = caps.models === "harness" ? meta.harnessModels ?? initialHarnessModels() : meta.demo ? standInModels("demo") : await userActor(c, meta.uid).internalModels();
 			try {
 				if (switches) model = chosenModel(models, input.model);
 				if (effort !== null) checkEffort(models, model, effort);
@@ -3574,7 +3689,12 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 			}
 		}
 
-		if (!meta.demo && Date.now() >= c.vars.signedInUntil) {
+		if (caps.signIn === "machine" && meta.place.kind === "machine") {
+			const facts = await runnerLink(c, meta.place.machineId).facts();
+			const offered = facts.report?.harnesses?.find(entry => entry.id === meta.harness);
+			if (!offered) throw new UserError("This machine does not offer Claude Code.", { code: "bad_input" });
+			if (offered.signIn === "none") throw new UserError(machineLoginMessage(CLAUDE, facts.name), { code: "harness_signed_out" });
+		} else if (!meta.demo && Date.now() >= c.vars.signedInUntil) {
 			const { logins } = await layerOf(c, meta);
 			if (!(await logins.status(meta.uid))) {
 				throw new UserError("Sign in with ChatGPT first: this agent needs your account to run.", { code: "chatgpt_required" });
@@ -3582,6 +3702,11 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 			c.vars.signedInUntil = Date.now() + SIGNED_IN_FRESH_MS;
 		}
 
+		// The user row and default title are published before the ACP process starts. Scrub them with the same secrets as its output.
+		const held = caps.events === "acp" ? await readSecrets(c, meta, null).catch(error => {
+			if (error instanceof TurnProblem) throw new UserError(error.message, { code: "secrets_unavailable" });
+			throw error;
+		}) : null;
 		const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId);
 		if (!claim.known || c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		if (!claim.ok) {
@@ -3593,6 +3718,7 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 
+		const shown = held?.redactor.text(text) ?? text;
 		// Accepted. From here to the return nothing is awaited.
 		const turn = meta.turns + 1;
 		const now = Date.now();
@@ -3602,13 +3728,13 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
 		if (meta.titleIsDefault) {
-			meta.title = titleFrom(text);
+			meta.title = titleFrom(shown);
 			meta.titleIsDefault = false;
 		}
-		append(c, { turn, kind: "user", text, model, effort });
+		append(c, { turn, kind: "user", text: shown, model, effort });
 		publish(c);
 
-		const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishes: new Set() };
+		const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: held, checks: new VerificationLog(), publishes: new Set() };
 		c.vars.turn = active;
 		// The turn's first step writes the session, and the key with it.
 		const answer = remember(meta, submission, { turn, steered: false });
@@ -3882,6 +4008,7 @@ export const agentSession = actor({
 				titleIsDefault: input.titleIsDefault === true,
 				place: input.place,
 				machineName: typeof input.machineName === "string" ? input.machineName : null,
+				harness: input.harness,
 				profile: input.profile,
 				model: String(input.model),
 				repoUrl: typeof input.repoUrl === "string" ? input.repoUrl : null,
@@ -3974,12 +4101,15 @@ export const agentSession = actor({
 			const turn = meta.turns;
 			note(c, turn, "warn", "The server stopped while this turn was running, so the turn was cut short.");
 			// What the turn recorded before it was cut off says whether it changed the workspace after the checks last ran.
-			const cut = new VerificationLog();
-			for (const row of await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE turn = ? AND kind = 'windlass' ORDER BY seq", turn)) {
-				const item = JSON.parse(row.item) as TimelineItem;
-				if (item.kind === "windlass") cut.note(item.event);
+			if (capabilitiesOf(meta.harness).checks === "none") meta.verified = null;
+			else {
+				const cut = new VerificationLog();
+				for (const row of await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE turn = ? AND kind = 'windlass' ORDER BY seq", turn)) {
+					const item = JSON.parse(row.item) as TimelineItem;
+					if (item.kind === "windlass") cut.note(item.event);
+				}
+				meta.verified = cut.cutOff(turn, meta.verified ?? null);
 			}
-			meta.verified = cut.cutOff(turn, meta.verified ?? null);
 			append(c, {
 				turn,
 				kind: "turn.ended",
@@ -4218,6 +4348,7 @@ export const agentSession = actor({
 			if (!active || !asked || active.stopping || active.closed) {
 				throw new UserError("That question is not waiting for an answer any more.", { code: "no_question" });
 			}
+			if (asked.pending.messageId === "acp" && note) throw new UserError("Claude Code takes a choice without a note.", { code: "bad_input" });
 			const choice = asked.pending.choices.find((candidate) => candidate.id === input.choice);
 			if (!choice) {
 				throw new UserError(`That is not one of the question's answers. Choose one of: ${asked.pending.choices.map((candidate) => candidate.label).join(", ")}`, { code: "bad_choice" });
@@ -4349,6 +4480,7 @@ export const agentSession = actor({
 			if (typeof input !== "object" || input === null || typeof input.unasked !== "boolean") throw new UserError("Say whether the agent may publish without asking.", { code: "bad_input" });
 			if (!meta.repo) throw new UserError("This agent does not work on a repository of your GitHub connection, so it has nowhere to publish to.", { code: "publish_blocked" });
 			if (input.unasked) {
+				if (!capabilitiesOf(meta.harness).platformTools.includes("publish")) throw new UserError("This agent has no publish tool. Publish from the panel.", { code: "publish_blocked" });
 				const { sandboxes } = await layerOf(c, meta);
 				const problem = publishUnaskedProblem(commandSandbox(sandboxes.profile(meta.profile)));
 				if (problem !== null) throw new UserError(problem, { code: "publish_blocked" });
@@ -4382,6 +4514,7 @@ export const agentSession = actor({
 		approveServer: async (c, input: { name: string; fingerprint: string }): Promise<SessionServers> => {
 			requireUser(c);
 			const meta = liveMeta(c);
+			if (!capabilitiesOf(meta.harness).projectServerApproval) throw new UserError("Claude Code does not take project MCP servers here.", { code: "bad_server" });
 			if (meta.origin?.role === "reviewer") throw new UserError("The reviewer cannot start MCP servers.", { code: "reviewer" });
 			if (typeof input !== "object" || input === null || typeof input.name !== "string" || input.name === "" || typeof input.fingerprint !== "string" || input.fingerprint === "") {
 				throw new UserError("Say which server to approve, and which definition of it.", { code: "bad_server" });
@@ -4419,6 +4552,7 @@ export const agentSession = actor({
 		forgetServer: async (c, input: { name: string }): Promise<SessionServers> => {
 			requireUser(c);
 			const meta = liveMeta(c);
+			if (!capabilitiesOf(meta.harness).projectServerApproval) throw new UserError("Claude Code does not take project MCP servers here.", { code: "bad_server" });
 			if (typeof input !== "object" || input === null || typeof input.name !== "string" || input.name === "" || input.name.length > 200) {
 				throw new UserError("Say which server's approval to forget.", { code: "bad_server" });
 			}

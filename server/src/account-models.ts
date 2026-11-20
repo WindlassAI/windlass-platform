@@ -45,7 +45,7 @@ const STAND_IN_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
  */
 export const STAND_IN_MODELS: readonly ModelChoice[] = ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"].map((id) => ({ id, name: null, efforts: STAND_IN_EFFORTS }));
 
-export function standInModels(source: Exclude<ModelList["source"], "account">): ModelList {
+export function standInModels(source: Exclude<ModelList["source"], "account" | "harness">): ModelList {
 	return { source, models: STAND_IN_MODELS.map((model) => ({ ...model, efforts: [...model.efforts] })), defaultModel: STAND_IN_MODELS[0]!.id, fetchedAt: null };
 }
 

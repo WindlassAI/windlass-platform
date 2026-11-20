@@ -37,6 +37,21 @@ export const scenarios = {
 		if (option.outcome === "cancelled") return "cancelled";
 		yield message(`Permission answered: ${option.optionId}.`);
 	},
+	*askagain() {
+		const first = yield { requestId: 123, permission: { toolCall: call("execute", "First question"), options: permissionOptions } };
+		if (first.outcome !== "cancelled") return "refusal";
+		yield* scenarios.ask();
+	},
+	*many() {
+		for (let i = 0; i < 5100; i++) {
+			if (i % 20 === 0) yield { delay: 30 };
+			yield i % 3 === 0 ? thought("a") : i % 3 === 1 ? message("b") : progress("call", "in_progress");
+		}
+	},
+	*turnend() {
+		yield thought("Waiting for the turn-end race.");
+		yield { steer: "promptRequired" };
+	},
 	*plan() {
 		const tasks = ["Read the file", "Make the edit", "Check the result"];
 		for (let current = 0; current <= tasks.length; current++) {

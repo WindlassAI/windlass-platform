@@ -4,7 +4,7 @@
  * ones are broadcast and never stored (live deltas). Pure functions, shared by the mock and the tests.
  */
 import { VerificationLog } from "../../../server/src/verified";
-import type { LiveDelta, TimelineItem, TurnUsage, WindlassEvent } from "@contract";
+import type { WindlassDelta, TimelineItem, TurnUsage, WindlassEvent } from "@contract";
 
 /** Streaming output: broadcast, never stored. */
 export const LIVE_TYPES: ReadonlySet<string> = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]);
@@ -99,7 +99,7 @@ export function withSummary(events: WindlassEvent[]): WindlassEvent[] {
 	return [...events, { type: "cli.summary", sessionId, executionId, outcome, steps, summaryCalls: 0, requests: steps, durationMs, usage, cachedShare }];
 }
 
-export type FeedEntry = { item: TimelineItem } | { delta: LiveDelta };
+export type FeedEntry = { item: TimelineItem } | { delta: WindlassDelta };
 
 /**
  * One run as a session's clients would receive it: the user's prompt, every stored event as a

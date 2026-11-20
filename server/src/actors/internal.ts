@@ -8,8 +8,9 @@
  * signin/directory.ts makes them with a client of its own.
  */
 
+import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
-import type { ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { HarnessId, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import type { ItemCreateInput, ItemPublishAnswer } from "./work-item.js";
@@ -22,6 +23,7 @@ import { issueServiceToken, verifyToken } from "../tokens.js";
 
 /** What `user` passes when it creates an `agentSession`. */
 export interface SessionCreateInput {
+	harness?: HarnessId;
 	/** A service token bound to this actor's key: proof that `user` created it. */
 	grant: string;
 	title: string;
@@ -43,9 +45,9 @@ export interface SessionCreateInput {
 }
 
 /** The repository setting selects an image only for work item sessions, at sandbox creation. */
-export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "origin">, screenshots = false): CreateSandboxInput {
+export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "origin" | "harness">, screenshots = false): CreateSandboxInput {
 	const { uid, sessionId, profile, origin } = session;
-	return { uid, sessionId, profile, privateData: origin?.role === "reviewer", screenshots: origin?.kind === "item" && screenshots };
+	return { uid, sessionId, profile, ...(session.harness === "claude" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: origin?.kind === "item" && screenshots };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
@@ -110,6 +112,8 @@ export interface UserInternal {
 
 /** A repository's secrets, and what the user keeps for their account, on their way to a session: each value as the `user` actor stores it, sealed (repo-secrets.ts). */
 export interface SealedSecrets {
+	/** Only the server-side redactor may use these values. The machine owner disabled sending them. */
+	redactOnly?: boolean;
 	screenshots?: boolean;
 	/** What the secrets are saved for; null when the session has no repository of the GitHub connection. */
 	project: string | null;
@@ -180,6 +184,7 @@ export function grantIsValid(grant: unknown, key: readonly string[], kind: strin
 }
 
 export async function createSessionActor(c: HasClient, uid: string, sessionId: string, input: Omit<SessionCreateInput, "grant">): Promise<void> {
+	if (input.origin && input.harness !== undefined && input.harness !== "windlass") throw new UserError("Work items and their reviewers run only with Windlass.", { code: "bad_input" });
 	const full: SessionCreateInput = { ...input, grant: createGrant("agentSession", [uid, sessionId]) };
 	await c.client().agentSession.create([uid, sessionId], { input: full, params: serviceParams() });
 }

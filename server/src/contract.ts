@@ -127,11 +127,11 @@ export interface ModelChoice {
 export interface ModelList {
 	/**
 	 * Whose list this is. "account": the user's plan's, as it was read at `fetchedAt`. Anything else is
-	 * the platform's fixed stand-in, and says why it stands in: "demo", the demo's scripted model
+	 * either the harness's own config options ("harness") or a fixed stand-in: "demo", the demo's scripted model
 	 * answers under any of its names; "signed-out", there is no ChatGPT sign-in to list with;
 	 * "unavailable", the plan's list could not be read and none is kept from before.
 	 */
-	source: "account" | "demo" | "signed-out" | "unavailable";
+	source: "account" | "harness" | "demo" | "signed-out" | "unavailable";
 	models: ModelChoice[];
 	/** The model a session starts on where nothing else says: one of `models`. */
 	defaultModel: string;
@@ -249,7 +249,11 @@ export type TurnOutcome =
 	/** The platform could not run the turn at all (sandbox failure, Windlass crashed). */
 	| "error";
 
+export type HarnessId = "windlass" | "claude";
+
 export interface SessionSummary {
+	harness?: HarnessId;
+	harnessModels?: ModelList | null;
 	id: string;
 	title: string;
 	place: SandboxPlace;
@@ -305,6 +309,7 @@ export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
 }
 
 export interface CreateSessionInput {
+	harness?: HarnessId;
 	/** Defaults to "New agent"; replaced by the first prompt's opening words when left unset. */
 	title?: string;
 	/** Left out: run on the hosted layer. */
@@ -988,6 +993,7 @@ export interface MachineSandbox {
 
 /** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary {
+	harnesses?: Array<{ id: "claude"; adapter: string; image: string; signIn: "token" | "none" | "unknown" }>;
 	machineId: string;
 	/** What the machine said of itself when it was paired: its host name, OS and architecture. Nobody checked them. */
 	name: string;
@@ -1722,6 +1728,33 @@ export interface TurnUsage {
 	reasoningTokens: number;
 }
 
+export interface AcpContext {
+	used: number;
+	size: number;
+	cost: { amount: number; currency: string } | null;
+}
+
+export type AcpContent = { type: "text"; text: string } | { type: string; [key: string]: unknown };
+type AcpChunk = { content: AcpContent };
+type AcpTool = { toolCallId: string; title?: string; kind?: string; status?: string; content?: AcpContent[] };
+
+export type AcpUpdate = (
+	| ({ sessionUpdate: "agent_message_chunk" } & AcpChunk)
+	| ({ sessionUpdate: "agent_thought_chunk" } & AcpChunk)
+	| ({ sessionUpdate: "user_message_chunk" } & AcpChunk)
+	| ({ sessionUpdate: "tool_call" } & AcpTool)
+	| ({ sessionUpdate: "tool_call_update" } & AcpTool)
+	| { sessionUpdate: "plan"; entries: Array<{ content: string; priority: string; status: string }> }
+	| { sessionUpdate: "available_commands_update"; availableCommands: Array<{ name: string; description: string }> }
+	| { sessionUpdate: "current_mode_update"; currentModeId: string }
+	| { sessionUpdate: "config_option_update"; configOptions: unknown[] }
+	| { sessionUpdate: "session_info_update"; title?: string; updatedAt?: string }
+	| { sessionUpdate: "usage_update"; used: number; size: number; cost?: AcpContext["cost"] }
+	| { sessionUpdate: "notice" }
+	| { sessionUpdate: "compaction_update" }
+	| { sessionUpdate: "unknown"; originalSessionUpdate: string }
+) & Record<string, unknown>;
+
 /**
  * An entry of a session's timeline. `seq` is the platform's own numbering, dense and increasing
  * within a session, and has nothing to do with a Windlass event's `seq`.
@@ -1763,6 +1796,7 @@ export type TimelineItem =
 	  }
 	/** A durable Windlass event, or one of the stored ephemeral ones (`notice`, `workspace.changes`, `cli.summary`). */
 	| { seq: number; at: number; turn: number; kind: "windlass"; event: WindlassEvent }
+	| { seq: number; at: number; turn: number; kind: "acp"; update: AcpUpdate; messageKey?: string; truncated?: boolean }
 	/**
 	 * A run of the repository's setup command (`RepositorySetup`) in the session's new sandbox. Two items
 	 * with one `id`: the first when it starts (`state: "started"`), the second when it has ended. What it
@@ -1809,7 +1843,8 @@ export type TimelineItem =
 			/** Set for "error": what went wrong, fit to show. */
 			message: string | null;
 			/** What the session's work rests on after this turn. */
-			verified: Verified;
+			verified: Verified | null;
+			context?: AcpContext | null;
 	  };
 
 /**
@@ -1818,10 +1853,11 @@ export type TimelineItem =
  * what a run of the repository's setup command printed since the delta before it (`id` is the run's,
  * as on its `setup` items; `text` is to be appended, and a reader keeps the end of it).
  */
-export interface LiveDelta {
-	turn: number;
-	event: WindlassEvent;
-}
+export interface WindlassDelta { turn: number; event: WindlassEvent }
+
+export type LiveDelta =
+	| WindlassDelta
+	| { turn: number; acp: AcpUpdate; messageKey: string };
 
 /** One answer a question offers. */
 export interface QuestionChoice {
@@ -1996,7 +2032,7 @@ export interface SessionServers {
 export interface SessionSnapshot {
 	summary: SessionSummary;
 	profile: SandboxProfile;
-	/** Windlass's own session ID (`ses_...`), once the first turn created it. */
+	/** The harness's conversation id, once the first turn created it. */
 	windlassSessionId: string | null;
 	/** The whole stored timeline, oldest first. */
 	timeline: TimelineItem[];

@@ -157,8 +157,8 @@ export class FixturePeer {
 			case "_session/steering":
 				if (!session) return unknown();
 				if (!running?.steer) return fail(-32600, "No prompt waiting for steering");
+				reply({ outcome: running.steer === true ? "injected" : running.steer });
 				running.steer = false;
-				reply({ outcome: "injected" });
 				return this.advance(running, promptText(params.prompt));
 			case "session/cancel":
 			case "session/close":
@@ -188,12 +188,12 @@ export class FixturePeer {
 				turn.timer = setTimeout(() => this.advance(turn), value.delay);
 				return;
 			} else if (value.permission) {
-				turn.permissionId = randomUUID();
+				turn.permissionId = value.requestId ?? randomUUID();
 				this.permissions.set(turn.permissionId, turn);
 				this.send({ id: turn.permissionId, method: "session/request_permission", params: { sessionId: turn.sessionId, ...value.permission } });
 				return;
 			} else if (value.steer) {
-				turn.steer = true;
+				turn.steer = value.steer;
 				return;
 			}
 		}

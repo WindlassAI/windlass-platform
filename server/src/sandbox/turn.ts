@@ -873,7 +873,7 @@ class Turn {
 		if (event.type === "execution.interrupt_requested") this.resolveInterrupted();
 		const out = this.streamed(event);
 		try {
-			if (out !== null) this.input.onEvent(out);
+			if (out !== null) this.input.onEvent?.(out);
 		} catch {
 			// A listener's failure must not stop the turn.
 		}
@@ -1356,7 +1356,7 @@ class Turn {
 			if (summary !== null) {
 				this.summary = summary;
 				try {
-					this.input.onEvent(summary);
+					this.input.onEvent?.(summary);
 				} catch {
 					// A listener's failure must not stop the turn.
 				}

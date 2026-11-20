@@ -33,7 +33,7 @@ export class AcpError extends Error {
 export interface AcpHandlers {
 	notification(method: string, params: Record<string, unknown>): void;
 	/** A request from the agent. The value it resolves with is the result; a rejection is answered as an internal error. */
-	request(method: string, params: Record<string, unknown>): Promise<unknown>;
+	request(method: string, params: Record<string, unknown>, withdrawn: AbortSignal): Promise<unknown>;
 }
 
 interface Waiting {
@@ -47,6 +47,7 @@ const NOT_JSON_KEPT = 20;
 
 export class AcpConnection {
 	private nextId = 1;
+	private readonly incoming = new Map<number | string, AbortController>();
 	private readonly waiting = new Map<number, Waiting>();
 	private ended: string | null = null;
 	/** Lines that were not protocol messages, the latest ones. */
@@ -117,6 +118,12 @@ export class AcpConnection {
 		}
 		if (typeof message !== "object" || message === null || Array.isArray(message)) return this.keep(line);
 		const { id, method } = message as { id?: unknown; method?: unknown };
+		if (method === "$/cancel_request" && id == null) {
+			// Correlate using the wire id, including its type, before redacting payload strings.
+			const requestId = (message as { params?: { requestId?: unknown } }).params?.requestId;
+			if (typeof requestId === "number" || typeof requestId === "string") this.incoming.get(requestId)?.abort();
+			return;
+		}
 		const { params, result, error } = this.clean(message as { params?: unknown; result?: unknown; error?: unknown });
 		if (typeof method === "string") {
 			const given = (typeof params === "object" && params !== null ? params : {}) as Record<string, unknown>;
@@ -144,6 +151,8 @@ export class AcpConnection {
 	end(why: string): void {
 		if (this.ended !== null) return;
 		this.ended = why;
+		for (const controller of this.incoming.values()) controller.abort();
+		this.incoming.clear();
 		for (const [id, entry] of this.waiting) {
 			this.waiting.delete(id);
 			if (entry.timer) clearTimeout(entry.timer);
@@ -152,12 +161,16 @@ export class AcpConnection {
 	}
 
 	private async answer(id: number | string, method: string, params: Record<string, unknown>): Promise<void> {
+		const controller = new AbortController();
+		this.incoming.set(id, controller);
 		try {
-			const result = await this.handlers.request(method, params);
+			const result = await this.handlers.request(method, params, controller.signal);
 			this.send({ jsonrpc: "2.0", id, result: result ?? null });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			this.send({ jsonrpc: "2.0", id, error: { code: error instanceof MethodNotFound ? -32601 : -32603, message } });
+		} finally {
+			if (this.incoming.get(id) === controller) this.incoming.delete(id);
 		}
 	}
 

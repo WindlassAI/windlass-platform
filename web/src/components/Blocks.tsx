@@ -869,7 +869,7 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 	const end = turn.end;
 	if (!end) return null;
 	const tone = OUTCOME_TONE[end.outcome];
-	const gate = gateWord(end.verified);
+	const gate = end.verified && gateWord(end.verified);
 	const steps = end.steps ?? (turn.steps > 0 ? turn.steps : null);
 	const usage = end.usage;
 	const share = end.cachedShare ?? (usage && usage.inputTokens > 0 ? usage.cachedInputTokens / usage.inputTokens : null);
@@ -888,7 +888,7 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 				{end.exitCode !== null && end.exitCode !== 0 ? <span>exit {end.exitCode}</span> : null}
 			</p>
 			{end.message ? <p className="turn-end-message">{end.message}</p> : null}
-			<VerifiedLines verified={end.verified} />
+			{end.verified && <VerifiedLines verified={end.verified} />}
 			{files && files.length > 0 ? (
 				<p className="turn-end-line turn-end-sub">
 					<span>

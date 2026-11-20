@@ -531,6 +531,7 @@ class RunnerSandboxes implements Sandboxes {
 		if (input.profile !== "docker-windlass-sandbox" && input.profile !== "docker-hardened") throw new SandboxUserError(`${findProfile(input.profile).name} does not run on a machine of yours.`);
 		// A `create` lost with its conversation may have made the sandbox: the runner answers the repeat with that one.
 		// Request the screenshots image only when this runner offers it.
+		if (input.harness === "claude" && input.profile !== "docker-hardened") throw new SandboxUserError("Claude Code requires the docker-hardened profile.");
 		const report = input.harness || input.screenshots ? (await link.facts()).report : null;
 		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
 			throw new SandboxUserError("This machine's runner does not offer Claude Code. Update it and start it with --harness claude.");
@@ -588,5 +589,5 @@ class RunnerSandboxes implements Sandboxes {
 export function machineLayer(link: RunnerLink, hosted: SandboxLayer): SandboxLayer {
 	const host = { version: async () => null, problem: () => hosted.windlass.problem() };
 	const windlass = new SandboxWindlass(hosted.tokens, host);
-	return { sandboxes: new RunnerSandboxes(link), windlass, logins: hosted.logins, tokens: hosted.tokens, backups: null };
+	return { machine: { name: link.known?.name || link.who.machineName || link.who.machineId }, sandboxes: new RunnerSandboxes(link), windlass, logins: hosted.logins, tokens: hosted.tokens, backups: null };
 }
