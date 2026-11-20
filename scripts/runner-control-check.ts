@@ -95,6 +95,8 @@ async function until(test: () => boolean) {
 
 const dir = mkdtempSync(join(tmpdir(), "runner-control-check-"));
 process.env.WLP_RUNNER_STATE_DIR = dir;
+// The runner's bundle defines these; loading its source directly needs them first.
+Object.assign(globalThis, { SANDBOX_IMAGE: "sha256:" + "0".repeat(64), SHOTS_IMAGE_PIN: "" });
 const { control } = await import("../runner/src/control.js");
 const { RunnerError } = await import("../runner/src/state.js");
 const failedSandbox = "mm_0123456789abcdef-0123456789ab";

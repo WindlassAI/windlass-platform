@@ -82,7 +82,7 @@ async function server() {
 async function realRunner() {
 	const [{ id, key }] = await once(process, "message") as [{ id: { uid: string; machineId: string }; key: Buffer }];
 	process.disconnect();
-	Object.assign(globalThis, { SANDBOX_IMAGE: "sha256:" + "0".repeat(64) });
+	Object.assign(globalThis, { SANDBOX_IMAGE: "sha256:" + "0".repeat(64), SHOTS_IMAGE_PIN: "" });
 	const { control } = await import(new URL("../runner/src/control.ts", import.meta.url).href);
 	const { Executor } = await import(new URL("../runner/src/docker-executor.ts", import.meta.url).href);
 	const { save } = await import(new URL("../runner/src/state.ts", import.meta.url).href);
