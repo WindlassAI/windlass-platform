@@ -80,6 +80,9 @@ export function forgetGithubCaches(): void {
 export function problemOf(error: unknown, account: string, repository?: string): GithubProblem {
 	if (error instanceof GithubProblem) return error;
 	if (error instanceof GithubError) {
+		if (error.status === 429 || (error.status === 403 && (error.headers.has("retry-after") || error.headers.get("x-ratelimit-remaining") === "0" || /rate limit/i.test(error.said)))) {
+			return new GithubProblem("github_unreachable", "GitHub asked the platform to wait before trying again.");
+		}
 		if (error.unreachable) return new GithubProblem("github_unreachable", "GitHub could not be reached. Try again in a moment.");
 		if (error.status === 404 && repository === undefined) {
 			return new GithubProblem("github_gone", `The GitHub App is no longer installed on ${account}. Connect GitHub again and install it there, then try once more.`);

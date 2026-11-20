@@ -302,9 +302,18 @@ export function reviewCheckoutScript(directory: string, head: string): string {
 
 export async function checkoutReview(sandbox: SandboxHandle, url: string, token: string, directory: string, pr: number, head: string, signal?: AbortSignal) {
 	const fetch = await run(sandbox, fetchHeadScript(url, pr, directory), { stdin: token + "\n", timeoutMs: PUSH_TIMEOUT_MS, secrets: [token], signal });
-	if (!fetch.ok) throw new Error("the pull request head could not be fetched");
+	if (!fetch.ok) {
+		if (fetch.marks.has("unsafe")) throw new GithubProblem("github_denied", unsafeWorkspace(fetch.marks.get("unsafe")!));
+		if (fetch.failure === "denied" || fetch.failure === "gone" || (fetch.failure === "other" && /couldn't find remote ref/i.test(fetch.said))) {
+			throw new GithubProblem(fetch.failure === "denied" ? "github_denied" : "github_gone", "the pull request head is unavailable");
+		}
+		throw new Error("the pull request head could not be fetched");
+	}
 	const checkout = await run(sandbox, reviewCheckoutScript(directory, head), { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS, signal });
-	if (!checkout.ok || checkout.marks.get("review") !== head) throw new Error("the pull ref does not identify the expected commit or its checkout failed");
+	if (checkout.marks.has("missing") && !checkout.ok && checkout.failure !== "aborted" && checkout.failure !== "timeout") {
+		throw new GithubProblem("github_gone", "the pull ref does not identify the expected commit");
+	}
+	if (!checkout.ok || checkout.marks.get("review") !== head) throw new Error("the checkout of the pull request failed");
 }
 
 export async function changedReviewPaths(sandbox: SandboxHandle, directory: string, base: string, head: string): Promise<string[]> {

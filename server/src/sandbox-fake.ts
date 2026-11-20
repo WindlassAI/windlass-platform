@@ -199,6 +199,7 @@ const PROFILES: SandboxProfile[] = [
 ];
 
 interface FakeSandbox {
+	reviewCloneFailed?: boolean;
 	privateData: boolean;
 	id: string;
 	uid: string;
@@ -309,6 +310,10 @@ class FakeHandle implements SandboxHandle {
 	private interpret(command: string): ExecResult {
 		const files = this.sandbox.files;
 		const head = process.env.WLP_FAKE_REVIEW_HEAD;
+		if (this.sandbox.privateData && command.includes("wlp_git clone --quiet --single-branch") && process.env.WLP_FAKE_REVIEW_CLONE_503_ONCE && !this.sandbox.reviewCloneFailed) {
+			this.sandbox.reviewCloneFailed = true;
+			return { ...ok(), exitCode: 128, stderr: "fatal: unable to access repository: The requested URL returned error: 503" };
+		}
 		if (head && command.includes('base64 -w0 "$patch"')) return ok("0\n");
 		if (head && command.includes('echo "wlp:committed $committed"')) return ok(`wlp:committed 1\nwlp:head ${head}\n`);
 		if (head && command.includes('echo "wlp:pushed $sha"')) return ok(`wlp:pushed ${head}\n`);

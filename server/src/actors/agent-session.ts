@@ -158,10 +158,10 @@ import {
 	type WindlassEvent,
 	type WorkspaceFile,
 } from "../contract.js";
-import { githubApp } from "../github/app.js";
+import { GithubError, githubApp } from "../github/app.js";
 import { WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutReview } from "../github/git.js";
 import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
-import { GithubProblem, resolveRepository, type StoredConnection } from "../github/repos.js";
+import { GithubProblem, problemOf, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, standInModels } from "../account-models.js";
 import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
@@ -412,6 +412,8 @@ interface SessionMeta {
 	origin?: SessionCreateInput["origin"];
 	review?: ItemReview;
 	reviewBase?: string;
+	/** The run that owns this checkout. Late cleanup for an earlier run cannot free it. */
+	reviewRun?: number;
 	/** For a session on one of the user's machines: the machine's name at launch. Absent in a session from before it was kept. */
 	machineName?: string | null;
 	/** What the item's agent last filed with `report`: the pull request's title and description. */
@@ -491,7 +493,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; full: number | null; machineAway?: MachineUnreachable["reason"]; started: boolean; said?: string; pushedAtStart: string | null; refused?: string | null };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; said?: string; pushedAtStart: string | null; refused?: string | null };
 }
 
 /**
@@ -612,6 +614,9 @@ const UNREADABLE_SESSION =
 
 /** A failure of a turn whose message is fit to show as it is. */
 class TurnProblem extends Error {}
+
+/** A confirmed checkout or policy failure. Transport and provider failures use the interruption budget. */
+class ReviewRefused extends TurnProblem {}
 
 /** How long the panel's publish waits for a push under way before it says so: well inside the action's own limit. */
 const PUBLISH_WAIT_MS = 60_000;
@@ -1468,7 +1473,7 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 	const repo = meta.repo;
 	if (!repo) return true;
 	const app = githubApp();
-	if (!app) throw new TurnProblem(`This agent was launched on ${repo.owner}/${repo.name} through your GitHub connection, and this deployment has no GitHub App any more to clone it with.`);
+	if (!app) throw new ReviewRefused(`This agent was launched on ${repo.owner}/${repo.name} through your GitHub connection, and this deployment has no GitHub App any more to clone it with.`);
 	// A sandbox made in place of a lost one: what the platform pushed is all that is left of the work, so
 	// the workspace goes back on the session's branch as GitHub has it, but only once the setup command
 	// has run on the branch it started from (`putWorkspaceOnWork`): the setup command never runs on what
@@ -1490,7 +1495,10 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 		meta.setupDue = directory;
 		meta.cloneDirectory = directory;
 	} catch (error) {
-		if (error instanceof GithubProblem) throw new TurnProblem(error.message);
+		if (error instanceof GithubProblem) {
+			if (meta.origin?.role === "reviewer") throw error;
+			throw new TurnProblem(error.message);
+		}
 		throw error;
 	}
 	meta.cloned = true;
@@ -3081,13 +3089,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		}
 		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
 		active.secrets = await readSecrets(c, meta, turn);
-		let sandbox: SandboxHandle;
-		try {
-			sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
-		} catch (error) {
-			if (checkout && active.item && error instanceof TurnProblem && !signal.aborted) active.item.refused = `The reviewer's checkout of ${checkout.head.slice(0, 7)} failed: ${active.secrets.redactor.text(error.message)}`;
-			throw error;
-		}
+		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
 		used = sandbox;
 		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn);
 		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
@@ -3150,36 +3152,32 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			if (reviewer && checkout && item) {
 				const repo = meta.repo;
 				const app = githubApp();
-				try {
-					if (!repo || !app || !meta.cloned) throw new Error("the base clone is unavailable");
-					const connection = await githubConnection(c, meta);
-					if (!connection) throw new Error("the repository connection is unavailable");
-					const resolved = await resolveRepository(app, connection, repo.id, "read");
-					const scope = { repositoryId: repo.id, permissions: { contents: "read", metadata: "read" } } as const;
-					const { owner, name } = resolved.repository;
-					const directory = meta.cloneDirectory ?? ".";
-					await app.withToken(resolved.installation.id, scope, token => checkoutReview(sandbox, app.cloneUrl(owner, name), token, directory, checkout.pr, checkout.head, signal), { revokeAfter: true });
-					// Windlass starts a project server with a remembered grant before it asks the platform.
-					// The private data directory starts empty; fail closed if setup populated its grants.
-					const grants = `${DATA_DIR}/approvals`;
-					const grantCheck = await sandbox.run(`set -eu
+				if (!repo || !app || !meta.cloned) throw new ReviewRefused("the base clone is unavailable");
+				const connection = await githubConnection(c, meta);
+				if (!connection) throw new ReviewRefused("the repository connection is unavailable");
+				const resolved = await resolveRepository(app, connection, repo.id, "read");
+				const scope = { repositoryId: repo.id, permissions: { contents: "read", metadata: "read" } } as const;
+				const { owner, name } = resolved.repository;
+				const directory = meta.cloneDirectory ?? ".";
+				await app.withToken(resolved.installation.id, scope, token => checkoutReview(sandbox, app.cloneUrl(owner, name), token, directory, checkout.pr, checkout.head, signal), { revokeAfter: true });
+				// Windlass starts a project server with a remembered grant before it asks the platform.
+				// The private data directory starts empty; fail closed if setup populated its grants.
+				const grants = `${DATA_DIR}/approvals`;
+				const grantCheck = await sandbox.run(`set -eu
 test ! -L '${grants}'
 if test -e '${grants}'; then
   test -d '${grants}'
   found=$(find '${grants}' -mindepth 1 -print -quit)
   test -z "$found"
 fi`, { signal, timeoutMs: 5000 });
-					if (grantCheck.exitCode !== 0 || grantCheck.aborted || grantCheck.timedOut) throw new Error("could not establish that Windlass has no saved project approvals");
-					const paths = await changedReviewPaths(sandbox, directory, checkout.baseSha, checkout.head);
-					files = (path, sha) => app.withToken(resolved.installation.id, scope, token => app.fileAt(token, owner, name, path, sha), { revokeAfter: true });
-					uiChanged = paths.some(path => /\.(tsx|jsx|vue|svelte|css|scss|html)$|^(web|app|pages|components|src\/ui)\//i.test(path));
-					const manifestsChanged = paths.some(path => /(?:^|\/)(?:package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lock[^/]*|requirements[^/]*\.txt|pyproject\.toml|uv\.lock|poetry\.lock|Cargo\.(?:toml|lock)|go\.(?:mod|sum)|Gemfile[^/]*)$/.test(path));
-					const brief = reviewerTask(held.redactor.deep({ ...checkout, changed: { paths, total: paths.length }, uiChanged, manifestsChanged, screenshots }), listed, held.redactor.text(text));
-					text = brief;
-				} catch (error) {
-					if (!signal.aborted) item.refused = `The reviewer's checkout of ${checkout.head.slice(0, 7)} failed: ${held.redactor.text(describeError(error))}`;
-					throw error;
-				}
+				if (grantCheck.aborted || grantCheck.timedOut) throw new TurnProblem("checking the saved project approvals was interrupted");
+				if (grantCheck.exitCode !== 0) throw new ReviewRefused("could not establish that Windlass has no saved project approvals");
+				const paths = await changedReviewPaths(sandbox, directory, checkout.baseSha, checkout.head);
+				files = (path, sha) => app.withToken(resolved.installation.id, scope, token => app.fileAt(token, owner, name, path, sha), { revokeAfter: true });
+				uiChanged = paths.some(path => /\.(tsx|jsx|vue|svelte|css|scss|html)$|^(web|app|pages|components|src\/ui)\//i.test(path));
+				const manifestsChanged = paths.some(path => /(?:^|\/)(?:package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lock[^/]*|requirements[^/]*\.txt|pyproject\.toml|uv\.lock|poetry\.lock|Cargo\.(?:toml|lock)|go\.(?:mod|sum)|Gemfile[^/]*)$/.test(path));
+				const brief = reviewerTask(held.redactor.deep({ ...checkout, changed: { paths, total: paths.length }, uiChanged, manifestsChanged, screenshots }), listed, held.redactor.text(text));
+				text = brief;
 			}
 			let filings = Promise.resolve("");
 			let calls = 0;
@@ -3293,6 +3291,11 @@ fi`, { signal, timeoutMs: 5000 });
 			if (onBase && events > 0 && meta.setupOnBase === onBase) meta.setupOnBase = null;
 		}
 	} catch (error) {
+		const failure = checkout && meta.repo && error instanceof GithubError ? problemOf(error, meta.repo.owner, meta.repo.name) : error;
+		if (checkout && active.item && !signal.aborted && (failure instanceof ReviewRefused || (failure instanceof GithubProblem && (failure.code === "github_denied" || failure.code === "github_gone")))) {
+			const reason = active.secrets?.redactor.text(failure.message) ?? failure.message;
+			active.item.refused = `The reviewer's checkout of ${checkout.head.slice(0, 7)} failed: ${reason}`;
+		}
 		if (active.item && !active.item.started && error instanceof MachineUnreachable) active.item.machineAway = error.reason;
 		if (active.item && error instanceof DeploymentFull) active.item.full = error.limit;
 		if (!signal.aborted) {
@@ -3357,7 +3360,7 @@ fi`, { signal, timeoutMs: 5000 });
 				}
 			}
 		} else {
-			outcome = "error";
+			outcome = reviewer && !active.item?.refused ? "interrupted" : "error";
 			message = problem ?? "The turn could not be run.";
 		}
 		if (result?.windlassSessionId && outcome !== "error") meta.windlassSessionId = result.windlassSessionId;
@@ -3396,13 +3399,17 @@ fi`, { signal, timeoutMs: 5000 });
 			message,
 			verified,
 		});
-		if (reviewer && layer && meta.sandboxId && meta.sandbox === "running") {
+		if (reviewer && layer && meta.sandboxId) {
 			try {
-				await layer.sandboxes.suspend(meta.sandboxId);
-				noteSandbox(c, meta, "paused");
-				await closeMeter(c, meta, "now", useOf(meta));
+				if (active.item && (active.item.withdrawn || active.item.refused || meta.review?.id === active.item.row.key)) {
+					await removeSandbox(c, meta, meta.sandboxId, "Removed the reviewer’s checkout at the end of its turn.");
+				} else if (meta.sandbox === "running") {
+					await layer.sandboxes.suspend(meta.sandboxId);
+					noteSandbox(c, meta, "paused");
+					await closeMeter(c, meta, "now", useOf(meta));
+				}
 			} catch (error) {
-				c.log.warn({ msg: "could not pause the reviewer; idle accounting will retry", error: describeError(error) });
+				c.log.warn({ msg: "could not close the reviewer sandbox; item cleanup or idle accounting will retry", error: describeError(error) });
 			}
 		}
 		meta.status = "idle";
@@ -3696,7 +3703,11 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		// Confirm the session socket before recording a turn. An online control socket alone cannot run it.
 		if (meta.place.kind === "machine") await runnerLink(c, meta.place.machineId).ready();
 		if (row.checkout) {
-			if (meta.sandboxId && meta.reviewBase !== row.checkout.baseSha) await removeSandbox(c, meta, meta.sandboxId, "The new review has a different base. Setting up a fresh checkout.");
+			const run = Number(row.key.split(":")[1]);
+			if (meta.sandboxId && (meta.reviewRun !== run || meta.reviewBase !== row.checkout.baseSha)) {
+				await removeSandbox(c, meta, meta.sandboxId, "Setting up a fresh checkout for the new review.");
+			}
+			meta.reviewRun = run;
 			meta.reviewBase = row.checkout.baseSha;
 		}
 		await holdSandbox(c, meta, true);
@@ -4499,7 +4510,11 @@ export const agentSession = actor({
 				await userActor(c, meta.uid).internalWithdrawTurn({ sessionId: meta.sessionId, key: String(key) });
 				return;
 			}
-			if (c.vars.turn?.item?.row.key === key) abortTurn(c, meta, c.vars.turn);
+			const active = c.vars.turn;
+			if (active?.item?.row.key === key) {
+				active.item.withdrawn = true;
+				abortTurn(c, meta, active);
+			}
 		},
 
 		internalCheckTurn: async (c, input: { turn: string; check: string }): Promise<Fact | null> => {
@@ -4578,10 +4593,11 @@ export const agentSession = actor({
 		 * that was not used for long is, the timeline says who did it and what became of the agent's
 		 * memory, and the next prompt starts a new sandbox. Refused while the session works.
 		 */
-		internalFreeSandbox: async (c): Promise<{ freed: boolean }> => {
+		internalFreeSandbox: async (c, throughReviewRun?: number): Promise<{ freed: boolean }> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			if (c.vars.idling) await c.vars.idling.catch(() => undefined);
+			if (throughReviewRun !== undefined && (meta.origin?.role !== "reviewer" || (meta.reviewRun ?? 0) > throughReviewRun)) return { freed: false };
 			if (c.vars.turn || c.vars.accepting || meta.status !== "idle") throw new UserError(`${meta.title} is working. Stop its turn first, then free its sandbox.`, { code: "sandbox_busy" });
 			if (busy(c)) throw new UserError(`The platform is busy with the sandbox of ${meta.title}. Try again in a moment.`, { code: "sandbox_busy" });
 			const id = meta.sandboxId;
@@ -4591,7 +4607,7 @@ export const agentSession = actor({
 				const layer = await layerOf(c, meta);
 				if (id) {
 					const memory = !meta.windlassSessionId ? null : !privateSessionData(meta, layer.sandboxes) ? "kept" : layer.backups && meta.backup?.windlassSessionId === meta.windlassSessionId ? "copied" : "lost";
-					await removeSandbox(c, meta, id, freedNote(memory));
+					await removeSandbox(c, meta, id, throughReviewRun === undefined ? freedNote(memory) : "Released the reviewer’s sandbox for the finished run.");
 					console.log(`[wlp] sandbox.freed id=${id} session=${meta.sessionId}`);
 				}
 				// Under the same exclusion: what the provider still has for the session goes with it, by the session's

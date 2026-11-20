@@ -261,7 +261,9 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			await client.workItem.get([auth.profile.uid, view.id], { params: serviceParams() }).internalFact(receipt);
 			const replay = await user.item(view.id);
 			assert(replay.reviews.length === 1 && replay.verdicts.length === 1 && replay.spent.turns === 2 && replay.revision === view.revision, "duplicate review receipt changed the item");
-			const ledger = (await user.usage()).today.filter(r => r.sessionId === view.sessionId || r.sessionId === view.reviewerSessionId);
+			const usage = await user.usage();
+			assert(snapshot.summary.sandbox === "none" && !usage.kept.some(row => row.sessionId === view.reviewerSessionId) && usage.kept.some(row => row.sessionId === view.sessionId), "a filed review must release its sandbox and kept place while keeping the builder's");
+			const ledger = usage.today.filter(r => r.sessionId === view.sessionId || r.sessionId === view.reviewerSessionId);
 			assert(ledger.length === 2 && ledger.every(row => row.seconds > 0) && view.spent.hostedSeconds === ledger.reduce((n, row) => n + row.seconds, 0), `item ${view.spent.hostedSeconds}s; ledger ${JSON.stringify(ledger)}`);
 			return `file_review alone; one verdict, one review, a verified PNG and ${view.spent.hostedSeconds}s across two sessions`;
 		});
@@ -288,11 +290,13 @@ await check("reviewer: a pull ref missing the expected commit hands over before 
 	try {
 		const head = "a".repeat(40);
 		setCi(harbor, head, "success");
-		const { user, client, auth } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_REVIEW_MISSING: "1" });
+		const { user, client, auth } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_REVIEW_CLONE_503_ONCE: "1", WLP_FAKE_REVIEW_MISSING: "1" });
 		const item = await user.createItem({ repository: { id: harbor.id }, title: "Review the pushed commit", body: "Change the homepage.", start: true });
 		const view = await untilItem(user, item.id, "the refused checkout", v => v.state === "review", CI_WAIT_MS);
 		assert(view.reviewerSessionId && view.review?.state === "none" && !view.reviews.length && view.reviewNone?.includes("checkout of aaaaaaa failed"), "missing a reason for the unavailable head");
 		const snapshot = await client.agentSession.get([auth.profile.uid, view.reviewerSessionId], { params: { token: auth.token } }).snapshot();
+		assert(snapshot.summary.turns === 2 && view.spent.turns === 3 && snapshot.timeline.some(e => e.kind === "turn.ended" && e.outcome === "interrupted" && e.message?.includes("503")), "the temporary 503 during the base clone must interrupt the first review and retry once");
+		assert(snapshot.summary.sandbox === "none" && !(await user.usage()).kept.some(row => row.sessionId === view.reviewerSessionId), "a refused review kept its sandbox or place");
 		assert(!snapshot.timeline.some(e => e.kind === "windlass" && e.event.type === "fake.session_open"), "Windlass started on the wrong head");
 		return view.reviewNone ?? undefined;
 	} finally { await server.stop(); server.remove(); }
@@ -427,7 +431,7 @@ async function memoryChecks(): Promise<void> {
 	};
 
 	/** A work item's actor over a database in memory: the session and the user answer as `answers` says. */
-	const itemActor = async (item: Item, answers: { publish?: () => Promise<unknown>; checkTurn?: () => Promise<unknown>; facts?: () => Promise<unknown> } = {}) => {
+	const itemActor = async (item: Item, answers: { publish?: () => Promise<unknown>; checkTurn?: () => Promise<unknown>; facts?: () => Promise<unknown>; freeReviewer?: (sessionId: string, run: number) => Promise<void> } = {}) => {
 		const memory = memoryDb();
 		const { db } = memory;
 		await db.execute("CREATE TABLE item (id INTEGER PRIMARY KEY, revision INTEGER, data TEXT, due TEXT)");
@@ -436,7 +440,7 @@ async function memoryChecks(): Promise<void> {
 		await db.execute("CREATE TABLE verdicts (id TEXT PRIMARY KEY, run INTEGER, head TEXT, at INTEGER, data TEXT)");
 		await db.execute(REPORTS_TABLE);
 		await db.execute(REVIEWS_TABLE);
-		const meta = { uid: "u", sessionId: "s", reviewerSessionId: null, reviewBase: null, handoffReview: null, repository: { id: 1 }, source: "web", createdAt: T, updatedAt: T, verdict: null, ledger: { seconds: 0, holds: [] } };
+		const meta = { uid: "u", sessionId: "s", reviewerSessionId: answers.freeReviewer ? "review-session" : null, reviewBase: null, handoffReview: null, repository: { id: 1 }, source: "web", createdAt: T, updatedAt: T, verdict: null, ledger: { seconds: 0, holds: [] } };
 		await db.execute("INSERT INTO item VALUES (1, ?, ?, NULL)", item.revision, JSON.stringify({ item, meta }));
 		const jobs: Promise<unknown>[] = [];
 		const schedules: number[] = [];
@@ -456,7 +460,7 @@ async function memoryChecks(): Promise<void> {
 			conn: { params: serviceParams() },
 			db,
 			log: { error: () => undefined, warn: () => undefined },
-			client: () => ({ agentSession: { get: () => session }, user: { get: () => user } }),
+			client: () => ({ agentSession: { get: (keys: string[]) => ({ ...session, internalFreeSandbox: (run: number) => answers.freeReviewer?.(keys[1], run) }) }, user: { get: () => user } }),
 			keepAwake<P>(promise: Promise<P>) {
 				jobs.push(promise);
 				return promise;
@@ -468,6 +472,52 @@ async function memoryChecks(): Promise<void> {
 		c.vars = await createVars(c, undefined);
 		return { c, db, raw: memory.raw, holdWrites: memory.holdWrites, failOnce: memory.failOnce, jobs, schedules, publishes, drain: () => drained(jobs) };
 	};
+
+	const publishedItem = () => {
+		const m = machine();
+		m.send({ kind: "start" });
+		m.send({ kind: "turn_ended", outcome: "succeeded", verified: null, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
+		m.send({ kind: "published", head: HEAD, pr: { number: 1, url: "local" }, openItems: 1 });
+		return m;
+	};
+	const cleanCi = { kind: "ci_read", head: HEAD, reading: { kind: "read", head: HEAD, runs: [{ name: "build", app: "ci", state: "passed", conclusion: "success", url: "", summary: "", jobId: null }], truncated: false, logs: [] }, mergeable: true, prHead: HEAD, openItems: 1 };
+
+	await check("memory: loading a pre-reviewer item in review preserves its run and defaults its reviewer", async () => {
+		const m = publishedItem();
+		m.send(cleanCi);
+		assert(m.item.state === "review", "fixture did not reach review");
+		delete m.item.reviewer;
+		const actor = await itemActor(m.item);
+		const view = await actions.internalView(actor.c);
+		assert(view.state === "review" && view.revision === m.item.revision && view.reviewNone === "turned off for this deployment", "missing deployment default on the stored review");
+		const loaded = (actor.c.vars as { stored: { item: Item } }).stored.item;
+		assert(JSON.stringify(loaded) === JSON.stringify({ ...m.item, reviewer: { off: "deployment" } }), "loading changed the pre-reviewer item");
+		await actions.internalAct(actor.c, { action: { kind: "cancel" }, by: "person:u" });
+		await actor.drain();
+		const row = actor.raw.prepare("SELECT json_extract(data, '$.item.reviewer.off') AS reason FROM item").get();
+		assert(row?.reason === "deployment", "the next store lost the default");
+		return "original run, revision and deployment default survived reload";
+	});
+
+	for (const end of ["handoff", "cancel"] as const) {
+		await check(`memory: ${end} releases a reviewer's leftover sandbox even without an active turn`, async () => {
+			const m = publishedItem();
+			m.item.reviewer = { on: true };
+			m.send(cleanCi);
+			for (let attempt = 0; attempt < 3; attempt++) {
+				m.send({ kind: "review_ended", outcome: "interrupted", review: null, said: null, spend: { tokens: 0, hostedSeconds: 0 } });
+			}
+			const question = m.item.question;
+			assert(question?.cause === "interruptions", "the interrupted reviewer is not waiting for its owner");
+			const freed: string[] = [];
+			const actor = await itemActor(m.item, { freeReviewer: async (session, run) => { freed.push(`${session}:${run}`); } });
+			if (end === "cancel") await actions.internalAct(actor.c, { action: { kind: "cancel" }, by: "person:u" });
+			else await actions.internalAct(actor.c, { action: { kind: "answer", question: question.id, choice: "hand_over" }, by: "person:u" });
+			await actor.drain();
+			assert(freed.join() === `review-session:${m.item.run!.n}`, `released ${JSON.stringify(freed)} on ${end}`);
+			return "targeted only the reviewer's sandbox for this run";
+		});
+	}
 
 	await check("memory: storing a builder report and the turn together survives rollback, redelivery and reload", async () => {
 		const m = machine();

@@ -291,6 +291,11 @@ async function take(c: Ctx, fact: Fact, baseSha?: string | null): Promise<boolea
 	const data = JSON.stringify({ item: next, meta: stored.meta });
 	// An `ask` is the question on the item itself, which reaches the index with the summary: nothing is left to perform.
 	const effects = outcome.effects.filter((effect) => effect.kind !== "ask");
+	// A cut-off review may have left its checkout paused while the item waited for its owner.
+	// Keep cleanup in the outbox, independently of GitHub and of a withdrawal still stopping a turn.
+	if (stored.meta.reviewerSessionId && next.run && before.state !== next.state && (next.state === "review" || ENDED.has(next.state))) {
+		effects.push({ kind: "release_review", key: String(next.run.n), run: next.run.n, to: "review" });
+	}
 	try {
 		await queued(c, () =>
 			c.db.transaction(async (tx) => {
@@ -328,7 +333,10 @@ async function take(c: Ctx, fact: Fact, baseSha?: string | null): Promise<boolea
 
 async function load(db: RawAccess): Promise<Stored | null> {
 	const [row] = await db.execute<{ data: string }>("SELECT data FROM item WHERE id = 1");
-	return row ? (JSON.parse(row.data) as Stored) : null;
+	if (!row) return null;
+	const stored = JSON.parse(row.data) as Stored;
+	stored.item.reviewer ??= { off: "deployment" };
+	return stored;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -502,7 +510,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
  * it. A withdrawal is always wanted: it is what a cancel leaves.
  */
 function live(item: FactoryItem, effect: Effect): boolean {
-	if (effect.kind === "withdraw" || effect.kind === "ask") return true;
+	if (effect.kind === "release_review" || effect.kind === "withdraw" || effect.kind === "ask") return true;
 	const run = item.run;
 	if (item.question?.kind === "machine_removed" || ENDED.has(item.state) || run === null) return false;
 	const key = currentKey(item);
@@ -551,6 +559,9 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text: effect.text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key) });
 			return true;
 		}
+		case "release_review":
+			await session.internalFreeSandbox(effect.run);
+			return true;
 		case "withdraw":
 			await session.internalWithdraw(effect.key);
 			return true;
