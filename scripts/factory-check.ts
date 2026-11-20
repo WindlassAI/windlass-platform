@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentReport } from "../server/src/agent-publish.js";
-import type { UsageNumbers, Verified, VerifiedCheck } from "../server/src/contract.js";
+import type { ItemReview, ReviewRecommendation, UsageNumbers, Verified, VerifiedCheck } from "../server/src/contract.js";
 import type { CiReading } from "../server/src/github/ci.js";
 import type { Effect, Fact, FactoryItem, ItemState, Outcome, Verdict, WaitReason } from "../server/src/factory/types.js";
 import { GithubStandin } from "./github-standin.js";
@@ -34,7 +34,7 @@ mkdirSync(process.env.RIVETKIT_STORAGE_PATH, { recursive: true });
 const { advance, createItem, currentKey } = await import("../server/src/factory/blueprint.js");
 const { admit, budgetStop, FACTORY_DEFAULTS, retryAt } = await import("../server/src/factory/budget.js");
 const { gateResult, verdictOf, verdictWords, verdictCi } = await import("../server/src/factory/verdict.js");
-const { readCi, ciState, LOG_TAIL_CHARS, LOG_TAIL_LINES } = await import("../server/src/github/ci.js");
+const { CI_POLLING, readCi, ciState, LOG_TAIL_CHARS, LOG_TAIL_LINES } = await import("../server/src/github/ci.js");
 const { GithubApp, GithubError } = await import("../server/src/github/app.js");
 
 const output: string[] = [];
@@ -91,7 +91,8 @@ interface Row {
 	at?: number;
 	state: ItemState;
 	wait?: WaitReason;
-	effects: Effect["kind"][];
+	effects: Array<Effect["kind"] | "verdict">;
+	unchanged?: true;
 	/** Anything more the design says of this row: null when it holds, otherwise what is wrong. */
 	also?: (outcome: Outcome) => string | null;
 }
@@ -112,11 +113,12 @@ const published = (head: string): Row["fact"] => (k) => ({ kind: "published", ke
 const ci = (head: string, reading: CiReading, mergeable: boolean | null = true): Row["fact"] => (k) => ({ kind: "ci_read", prHead: null, key: k.key, head, reading: reading.kind === "read" ? { ...reading, head } : reading, mergeable, openItems: 1 });
 const answer = (choice: Extract<Fact, { kind: "answer" }>["choice"], more: { note?: string; budget?: Partial<FactoryItem["budget"]> } = {}): Row["fact"] => (k) => ({ kind: "answer", by: "person:u1", question: k.question, choice, ...more });
 
-function newItem(more: { plan?: "approve"; budget?: Partial<FactoryItem["budget"]> } = {}): FactoryItem {
+function newItem(more: { reviewer?: FactoryItem["reviewer"]; plan?: "approve"; budget?: Partial<FactoryItem["budget"]> } = {}): FactoryItem {
 	return createItem({
 		id: "i_00000000000000aa",
 		task: { title: "Fix add()", body: "add(1, 2) returns -1.", acceptance: ["add(1, 2) is 3"], base: "main" },
 		plan: more.plan,
+		reviewer: "reviewer" in more ? more.reviewer : { off: "deployment" },
 		place: { kind: "hosted" },
 		budget: { ...FACTORY_DEFAULTS.item, ...more.budget },
 	});
@@ -133,8 +135,9 @@ function drive(name: string, start: FactoryItem, rows: Row[]): void {
 			const keys: Keys = { key: currentKey(item) ?? "", check: lastCheck, question: item.question?.id ?? "" };
 			const fact = { at, ...row.fact(keys) } as Fact;
 			const outcome = advance(item, fact);
-			const kinds = outcome.effects.map((effect) => effect.kind);
+			const kinds = [...(outcome.storeVerdict ? [outcome.storeVerdict.kind] : []), ...outcome.effects.map((effect) => effect.kind)];
 			const wrong = [
+				row.unchanged && (outcome.item !== item || outcome.events.length > 0) ? "the ignored fact changed the item or its log" : null,
 				outcome.item.state !== row.state ? `state ${outcome.item.state}, not ${row.state}` : null,
 				(outcome.item.wait?.reason ?? undefined) !== row.wait ? `waits for ${outcome.item.wait?.reason ?? "nothing"}, not ${row.wait ?? "nothing"}` : null,
 				kinds.join(",") !== row.effects.join(",") ? `effects [${kinds.join(", ")}], not [${row.effects.join(", ")}]` : null,
@@ -147,7 +150,7 @@ function drive(name: string, start: FactoryItem, rows: Row[]): void {
 			}
 			if (doubled) {
 				const again = advance(outcome.item, fact);
-				if (again.item !== outcome.item || again.effects.length > 0) {
+				if (again.item !== outcome.item || again.effects.length > 0 || again.events.length > 0 || again.storeVerdict) {
 					ok = false;
 					expect(`${name}: row ${index + 1}, ${fact.kind} delivered twice changes nothing`, false, `effects [${again.effects.map((effect) => effect.kind).join(", ")}]`);
 					break;
@@ -240,6 +243,177 @@ const begun: Row[] = [
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
 ];
+
+print("\n== the advisory second review");
+
+const reviewHead = H(1);
+const toCi: Row[] = [...begun, { fact: published(reviewHead), state: "waiting", wait: "ci", effects: ["poll_ci"] }];
+const reviewerOn = () => newItem({ reviewer: { on: true } });
+const ciPassed = ciRead([{ name: "build", state: "passed" }]);
+const publishedVerdict = `${newItem().id}:1:5:1`;
+
+function reviewStarts(reading: CiReading, after = MINUTE): Row {
+	return {
+		fact: ci(reviewHead, reading), after, state: "working", effects: ["verdict", "deliver", "check_turn"],
+		also: (o) => {
+			const saved = o.storeVerdict;
+			const delivery = effect(o, "deliver");
+			const input = delivery?.reviewerInput;
+			const pending = o.item.run?.review;
+			if (saved?.verdict.id !== publishedVerdict || saved.verdict.head !== reviewHead || saved.verdict.id !== delivery?.key) return "the stored verdict is not the first attempt at this head";
+			if (pending?.verdictId !== saved.verdict.id || pending.head !== reviewHead || o.item.run?.ci?.handed !== saved.verdict.id) return "the run lost the verdict given to the reviewer";
+			if (o.item.run?.step.kind !== "review" || delivery?.to !== "review" || effect(o, "check_turn")?.to !== "review") return "delivery and watchdog must reach the reviewer's session";
+			if (!isDeepStrictEqual(delivery.checkout, { head: reviewHead, base: "main", pr: 7 }) || delivery.maxSteps !== 40 || delivery.agent !== null) return "wrong reviewer checkout, agent or turn limit";
+			if (input?.verdictId !== saved.verdict.id || input.verdictWords !== saved.words || input.filings !== 4) return "the review lacks its verdict or filing limit";
+			if (!isDeepStrictEqual(input.task, o.item.task) || input.pr !== 7 || input.head !== reviewHead || input.round !== 1 || input.previousHead !== null || input.earlier.length) return "the input is not for the first review of this task and PR";
+			if (input.records[0]?.ref !== "check/0" || (saved.verdict.ci.runs.length && !input.records.some(r => r.ref === "ci/0"))) return "the review lacks its platform records";
+			return holds(o.events.some(e => e.said === "A second agent reviews 1111111."), "the review start was not logged");
+		},
+	};
+}
+
+const reviewing = [...toCi, reviewStarts(ciPassed)];
+const emptyCi: CiReading = { kind: "read", head: reviewHead, runs: [], truncated: false, logs: [] };
+const earlyCi = (reading: CiReading): Row => ({ fact: ci(reviewHead, reading), after: CI_POLLING.noneAfterMs - 1, state: "waiting", wait: "ci", effects: ["poll_ci"] });
+const skipped = ciRead([{ name: "build", state: "neutral" }]);
+drive("review: passed CI starts the second agent", reviewerOn(), reviewing);
+drive("review: no CI waits until the deadline", reviewerOn(), [...toCi, earlyCi(emptyCi), reviewStarts(emptyCi, 1)]);
+drive("review: skipped CI waits until the deadline", reviewerOn(), [...toCi, earlyCi(skipped), reviewStarts(skipped, 1)]);
+drive("review: unreadable CI permission", reviewerOn(), [...toCi, reviewStarts({ kind: "not_permitted", said: "access denied" })]);
+drive("review: incomplete CI listing", reviewerOn(), [...toCi, reviewStarts({ ...emptyCi, truncated: true })]);
+
+type ReviewEnd = Extract<FactBody, { kind: "review_ended" }>;
+function endReview(overrides: Partial<Omit<ReviewEnd, "kind">> = {}): Row["fact"] {
+	return ({ key }) => ({ kind: "review_ended", key, outcome: "succeeded", review: null, said: null, spend: { tokens: 19, hostedSeconds: 7 }, ...overrides });
+}
+function filing(recommendation: ReviewRecommendation, id = publishedVerdict): ItemReview {
+	const blocks: ItemReview["blocks"] = [{ kind: "summary", text: "Reviewed." }];
+	if (recommendation === "changes_requested") blocks.push({ kind: "finding", id: "r1.f1", root: "r1.f1", severity: "blocking", title: "Off by one", text: "Wrong line.", at: [], refs: [] });
+	if (recommendation === "needs_person") blocks.push({ kind: "question", text: "Should the range include its end?" });
+	return {
+		id, run: 1, round: 1, head: reviewHead, base: H(2), verdictId: publishedVerdict, by: { sessionId: "second", model: "test" }, at: T0 + 7 * MINUTE,
+		state: "filed", said: null, recommendation, records: [], notes: [],
+		blocks,
+	};
+}
+const refresh = (fact: Row["fact"]): Row => ({ fact, state: "waiting", wait: "ci", effects: ["poll_ci"] });
+const freshCi = ci(reviewHead, ciPassed);
+for (const [recommendation, words] of [["approve", "approves"], ["changes_requested", "asks for changes (1 blocking)"], ["needs_person", "needs you"]] as const) {
+	drive(`review: filed ${recommendation} hands over`, reviewerOn(), [...reviewing, {
+		...refresh(endReview({ review: filing(recommendation) })),
+		also: o => holds(o.events.some(e => e.said === `The second review of 1111111: ${words}.`), "expected the recommendation in the log"),
+	}, {
+		fact: freshCi, state: "review", effects: ["handoff", "poll_pr"],
+		also: (o) => {
+			const handed = effect(o, "handoff");
+			return holds(handed?.review === publishedVerdict && handed.reviewNone === null && handed.verdict.id === publishedVerdict && handed.verdict.result === "pass" &&
+				o.item.spent.tokens === 100_019 && o.item.spent.turns === 2 && o.item.spent.hostedSeconds === 7, "expected the filed review on the original verdict, its recommendation and exactly one turn's spend");
+		},
+	}]);
+}
+
+function handoverWithout(fact: Row["fact"], reason: string): Row {
+	return { fact, state: "review", effects: ["handoff", "poll_pr"], also: (o) => {
+		const handoff = effect(o, "handoff");
+		return holds(handoff?.review === null && handoff.reviewNone === reason && o.events.some(e => e.said.startsWith("No second review:")), `expected handover because ${reason}`);
+	} };
+}
+for (const [name, reviewer, reason] of [
+	["deployment off", { off: "deployment" }, "turned off for this deployment"],
+	["profile off", { off: "profile" }, "in this sandbox the reviewer's commands would run with the network"],
+	["item made before R3", undefined, "this item was created before second reviews were available"],
+] as const) {
+	drive(`review: ${name}`, newItem({ reviewer }), [...toCi, handoverWithout(ci(reviewHead, ciPassed), reason)]);
+}
+const movedReading: Row["fact"] = ({ key }) => ({ kind: "ci_read", key, head: reviewHead, reading: { ...emptyCi, head: reviewHead }, mergeable: true, openItems: 1, prHead: H(2) });
+drive("review: a machine item hands over after CI without a reviewer turn", { ...reviewerOn(), place: { kind: "machine", machineId: "local" } }, [
+	...toCi, handoverWithout(freshCi, "in this sandbox the reviewer's commands would run with the network"),
+]);
+drive("review: a rerun that fails during review changes the platform verdict", reviewerOn(), [...reviewing,
+	refresh(endReview({ review: filing("approve") })),
+	{ fact: ci(reviewHead, failingCi("rerun failed")), state: "review", effects: ["handoff", "poll_pr"],
+		also: o => holds(effect(o, "handoff")?.verdict.result === "fail" && effect(o, "handoff")?.review === publishedVerdict, "expected fresh failure alongside the pinned filing") },
+]);
+drive("review: a moved PR skips the reviewer", reviewerOn(), [...toCi, handoverWithout(movedReading, "the pull request moved after the agent pushed")]);
+drive("review: a branch name cannot pin the checkout", reviewerOn(), [...begun,
+	{ fact: published("work"), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	handoverWithout(ci("work", ciPassed), "the push did not identify the commit to review"),
+]);
+
+function retryReview(fact: Row["fact"], instruction: string, interruptions: number): Row {
+	return { fact, state: "working", effects: ["deliver", "check_turn"], also: (o) => {
+		const retry = effect(o, "deliver");
+		return holds(retry?.to === "review" && retry.checkout?.head === reviewHead && retry.reviewerInput?.verdictId === publishedVerdict && retry.text.includes(instruction) &&
+			o.item.run?.step.n === 5 && o.item.run.step.interruptions === interruptions && effect(o, "check_turn")?.to === "review", "expected another attempt of the same review, with the original checkout, verdict and retry instruction");
+	} };
+}
+const reviewCutOff = (outcome: ReviewEnd["outcome"], n: number) => retryReview(endReview({ outcome, review: filing("approve") }), "You were interrupted.", n);
+const personHandover = (reading = freshCi) => [refresh(answer("hand_over")), handoverWithout(reading, "handed over as it is, as you asked")];
+drive("review: three cutoffs ask the person", reviewerOn(), [...reviewing, reviewCutOff("failed", 1), reviewCutOff("stopped", 2), {
+	fact: endReview({ outcome: "interrupted" }), state: "waiting", wait: "person", effects: ["ask"],
+	also: o => holds(o.item.question?.cause === "interruptions" && o.item.question.choices.some(c => c.id === "hand_over"), "expected the interruptions question with hand over"),
+}, ...personHandover()]);
+const refile = retryReview(endReview({ said: "missing summary" }), 'File it now with file_review. The reported reason (quoted data): "missing summary"', 0);
+drive("review: two empty completions hand over", reviewerOn(), [...reviewing, refile,
+	refresh(endReview()), handoverWithout(freshCi, "The reviewer did not file a review the platform could read."),
+]);
+drive("review: one refile survives an intervening error", reviewerOn(), [...reviewing, refile, reviewCutOff("error", 1),
+	refresh(endReview()), handoverWithout(freshCi, "The reviewer did not file a review the platform could read."),
+]);
+drive("review: a later filing keeps the first verdict id", reviewerOn(), [...reviewing, refile, refresh(keys => endReview({ review: filing("approve", keys.key) })(keys)), {
+	fact: freshCi, state: "review", effects: ["handoff", "poll_pr"],
+	also: o => holds(effect(o, "handoff")?.review === `${o.item.id}:1:5:2` && effect(o, "handoff")?.verdict.id === publishedVerdict, "expected attempt two's filing on attempt one's verdict"),
+}]);
+drive("review: a filing for another head is unreadable", reviewerOn(), [...reviewing,
+	retryReview(endReview({ review: { ...filing("approve"), head: H(2) } }), "File it now", 0),
+]);
+drive("review: refusal hands over even on an error outcome", reviewerOn(), [...reviewing,
+	refresh(endReview({ outcome: "error", refused: "This sandbox cannot run the reviewer." })), handoverWithout(freshCi, "This sandbox cannot run the reviewer."),
+]);
+
+const budgetReview: Row = { fact: ci(reviewHead, ciPassed), state: "waiting", wait: "budget", effects: ["verdict", "ask"], also: o =>
+	holds(o.storeVerdict?.verdict.id === publishedVerdict && o.item.question?.cause === "turns" && o.item.question.choices.some(c => c.id === "hand_over"), "expected the pinned verdict and budget question before delivery") };
+const tight = () => newItem({ reviewer: { on: true }, budget: { turns: 1 } });
+drive("review: out of budget can hand over", tight(), [...toCi, budgetReview, ...personHandover()]);
+drive("review: raising the budget admits the pinned review", tight(), [...toCi, budgetReview,
+	retryReview(answer("raise", { budget: { turns: 3 } }), "", 0),
+]);
+drive("review: stale attempts and wrong completion facts are inert", reviewerOn(), [...toCi,
+	{ fact: endReview(), state: "waiting", wait: "ci", effects: [], unchanged: true },
+	reviewStarts(ciPassed),
+	{ fact: ended("succeeded", PASSED), state: "working", effects: [], unchanged: true },
+	reviewCutOff("interrupted", 1),
+	{ fact: endReview({ key: publishedVerdict }), state: "working", effects: [], unchanged: true },
+]);
+drive("review: watchdog and cancellation reach the reviewer", reviewerOn(), [...reviewing,
+	{ fact: k => ({ kind: "turn_waiting", key: k.key, wait: { reason: "capacity", sentence: "Waiting for a slot for the reviewer.", retryAt: null } }), state: "waiting", wait: "capacity", effects: [] },
+	{ fact: started(), state: "working", effects: ["check_turn"], also: o => holds(effect(o, "check_turn")?.to === "review", "started reviewer turn checked on builder") },
+	{ fact: k => ({ kind: "turn_running", key: k.check }), state: "working", effects: ["check_turn"], also: o => holds(effect(o, "check_turn")?.to === "review", "running reviewer turn checked on builder") },
+	{ fact: () => ({ kind: "cancel", by: "person:u1" }), state: "cancelled", effects: ["withdraw"], also: o => holds(effect(o, "withdraw")?.to === "review", "cancel withdrew the builder") },
+]);
+drive("review: CI timeout can hand over directly", reviewerOn(), [...toCi,
+	{ fact: ci(reviewHead, ciRead([{ name: "build", state: "pending" }])), after: CI_POLLING.timeoutMs, state: "waiting", wait: "person", effects: ["ask"] },
+	...personHandover(),
+]);
+drive("review: a rounds question can hand over failing CI", reviewerOn(), [...begun,
+	...pushedAndFailed(reviewHead, "build failed"),
+	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: ci(H(2), failingCi("build failed")), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.cause === "repeated", "expected a rounds question") },
+	...personHandover(ci(H(2), failingCi("build failed"))),
+]);
+const prAt = (sha: string): Row["fact"] => ({ key }) => ({ kind: "pr_read", key, state: "open", prHead: sha });
+drive("review: moving away and back updates the same verdict", reviewerOn(), [...reviewing,
+	refresh(endReview({ review: filing("approve") })),
+	{ fact: freshCi, state: "review", effects: ["handoff", "poll_pr"] },
+	...[H(2), reviewHead].flatMap((head): Row[] => [{ fact: prAt(head), state: "review", effects: ["poll_ci"] }, { fact: keys => ({ ...freshCi(keys), prHead: head }), state: "review", effects: ["handoff", "poll_pr"], also: o => {
+		const update = effect(o, "handoff");
+		return holds(update?.reviewDone === true && update.verdict.id === publishedVerdict && (head === reviewHead
+			? update.review === publishedVerdict && update.reviewNone === null
+			: update.review === null && update.reviewNone?.includes("moved") === true), "expected the original filing only on the head reviewed");
+	} }]),
+]);
+
+print("\n== blueprint (continued)");
 
 // The actual host reply and the same SQLite writer and reader the item uses.
 {

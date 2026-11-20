@@ -114,7 +114,6 @@ function fence(label: string, about: string, body: string): string {
 const REPORT_LABEL = "REPORT BY THE AGENT THAT MADE THE CHANGE";
 
 const number = (n: number) => n.toLocaleString("en-US");
-const short = (sha: string) => sha.slice(0, 7);
 const plural = (n: number, one: string, many = `${one}s`) => `${number(n)} ${n === 1 ? one : many}`;
 
 // ---------------------------------------------------------------------------------------------

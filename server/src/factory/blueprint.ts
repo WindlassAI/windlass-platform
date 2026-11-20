@@ -15,6 +15,7 @@
  *                after 90 min → ask; not readable → hand over saying so
  *   5 ci_fix     a turn with the failing checks and their logs; back to 2; at most 2 per run
  *   6 conflict   when GitHub says the pull request conflicts: a turn that merges the base; back to 2; 1 round
+ *     review     when enabled, a second session reviews the pushed head; every recommendation hands over
  *   7 handoff    code: the verdict at the pushed head; the item goes to review
  *   8 merged     wait, polling the pull request: merged → done, closed → cancelled
  *
@@ -31,17 +32,21 @@
  * that fires after the item moved on. No clock is read: every time is a fact's `at`.
  */
 
-import type { TurnOutcome, Verified } from "../contract.js";
+import type { ReviewRecord, TurnOutcome, Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
 import { budgetStop } from "./budget.js";
-import type { ChoiceId, CiProgress, Fact, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
+import type { ChoiceId, CiProgress, Fact, HandoffReview, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
+import { REVIEW_TOOL } from "./reviewer-task.js";
 import { ciFingerprint, ciSentence, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
 
 /** §2.1 and §2.4. Design constants, not settings. */
 export const RULES = {
 	/** A factory turn's `_meta["windlass/maxSteps"]`. */
 	maxSteps: 60,
+	reviewMaxSteps: 40,
+	reviewFilings: 4,
+	reviewRefiles: 1,
 	planRounds: 3,
 	gateRounds: 2,
 	ciRounds: 2,
@@ -68,6 +73,7 @@ export interface NewItem {
 	task: Task;
 	/** §3.2: "none" unless asked for. */
 	plan?: "none" | "approve";
+	reviewer?: FactoryItem["reviewer"];
 	place: FactoryItem["place"];
 	budget: ItemBudget;
 }
@@ -81,6 +87,7 @@ export function createItem(input: NewItem): FactoryItem {
 		wait: null,
 		task: input.task,
 		plan: input.plan ?? "none",
+		...(input.reviewer && { reviewer: input.reviewer }),
 		place: input.place,
 		machineRemoved: false,
 		budget: input.budget,
@@ -105,7 +112,7 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 	const change = new Change(structuredClone(item), fact.at, "by" in fact ? fact.by : "platform");
 	if (!apply(change, fact)) return unchanged;
 	change.item.revision += 1;
-	return { item: change.item, effects: change.effects, events: change.events };
+	return { item: change.item, effects: change.effects, events: change.events, ...(change.storeVerdict && { storeVerdict: change.storeVerdict }) };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -113,6 +120,7 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 // ---------------------------------------------------------------------------------------------
 
 class Change {
+	storeVerdict?: Outcome["storeVerdict"];
 	readonly effects: Effect[] = [];
 	readonly events: ItemEvent[] = [];
 
@@ -237,8 +245,12 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "start" | "retry" | "se
 			checkTurn(c);
 			return true;
 		case "turn_ended":
-			if (fact.key !== key || step.turn === null) return false;
+			if (fact.key !== key || step.turn === null || step.kind === "review") return false;
 			turnEnded(c, fact);
+			return true;
+		case "review_ended":
+			if (fact.key !== key || step.turn === null || step.kind !== "review") return false;
+			reviewEnded(c, fact);
 			return true;
 		case "published":
 		case "publish_failed":
@@ -294,6 +306,7 @@ function beginRun(c: Change, plan: TurnPlan): void {
 		lastFailure: null,
 		gate: null,
 		ci: null,
+		review: null,
 	};
 	item.question = null;
 	c.state("queued");
@@ -315,12 +328,20 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 
 	if (plan.fingerprint !== null) run.lastFailure = plan.fingerprint;
 	if (plan.charge !== null && plan.charge !== "interruptions") run.rounds[plan.charge] += 1;
-	if (plan.newStep) c.enter(plan.kind);
-	else run.step.attempt += 1;
+	// afterCi already entered review to pin its verdict even when admission stops on budget.
+	if (!plan.newStep) run.step.attempt += 1;
+	else if (plan.kind !== "review") c.enter(plan.kind);
 	run.step.turn = "delivered";
 	run.step.checks = 0;
 	c.state(item.state === "queued" || item.place.kind === "machine" ? "queued" : "working");
-	c.effects.push({ kind: "deliver", key: c.key, text: plan.text, agent: plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, fetchBase: plan.fetchBase });
+	const delivery = { kind: "deliver" as const, key: c.key, text: plan.text, fetchBase: plan.fetchBase };
+	if (plan.to === "review") {
+		if (!plan.checkout || !run.ci || !run.review) throw new Error("a reviewer turn needs its checkout and verdict");
+		if (plan.newStep) c.say(`A second agent reviews ${shortSha(run.review.head)}.`);
+		c.effects.push({ ...delivery, to: "review", checkout: plan.checkout, reviewerInput: reviewerInput(c, run.ci, plan.checkout.pr), agent: null, maxSteps: RULES.reviewMaxSteps });
+	} else {
+		c.effects.push({ ...delivery, agent: plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps });
+	}
 	// From delivery on, not only once started: nothing else would notice a delivery that waits for a slot nobody will give.
 	checkTurn(c);
 }
@@ -328,32 +349,36 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 function checkTurn(c: Change): void {
 	const step = c.run.step;
 	step.checks += 1;
-	c.effects.push({ kind: "check_turn", key: `${c.key}/check${step.checks}`, turn: c.key, at: c.at + RULES.turnCheckMs });
+	c.effects.push({ kind: "check_turn", key: `${c.key}/check${step.checks}`, turn: c.key, at: c.at + RULES.turnCheckMs, ...(step.kind === "review" && { to: "review" }) });
 }
 
 const OUTCOME_WORDS: Partial<Record<TurnOutcome, string>> = { stopped: "was stopped", failed: "failed", interrupted: "was cut off", error: "could not run" };
+
+function spendTurn(c: Change, spend: TurnSpend): void {
+	c.run.step.turn = null;
+	c.item.spent.tokens += spend.tokens;
+	c.item.spent.turns += 1;
+	if (c.item.place.kind === "hosted") c.item.spent.hostedSeconds = Math.max(c.item.spent.hostedSeconds, spend.hostedSeconds);
+}
 
 function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void {
 	const { item, run } = c;
 	const step = run.step;
 	const kind = step.kind as TurnStepKind;
-	step.turn = null;
-	item.spent.tokens += fact.spend.tokens;
-	item.spent.turns += 1;
-	if (item.place.kind === "hosted") item.spent.hostedSeconds = Math.max(item.spent.hostedSeconds, fact.spend.hostedSeconds);
+	spendTurn(c, fact.spend);
 
 	const result = gateResult(fact.outcome, fact.verified);
 	// Refused by the session before the agent ran (an old Windlass, a conversation it cannot open): no cut-off, and no use trying
 	// again on its own. The person is asked, with the session's own sentence.
 	if (fact.refused) {
-		const resume: TurnPlan = { kind, text: `Your last turn could not start, so nothing of it reached you. Carry on with the task:\n\n${taskText(item.task)}`, newStep: false, charge: null, fingerprint: null, fetchBase: null };
+		const resume: TurnPlan = { ...IMPLEMENT, kind, text: `Your last turn could not start, so nothing of it reached you. Carry on with the task:\n\n${taskText(item.task)}`, newStep: false };
 		// Two sentences: the session's own may be several, and starts with a capital.
 		return ask(c, "turn_refused", `The agent's turn could not start. ${fact.refused}`, [choice("again"), ...handOver(item), choice("give_up")], null, resume);
 	}
 	if (CUT_SHORT.has(fact.outcome) || result === "incomplete") {
 		step.interruptions += 1;
 		c.say(`The turn ${OUTCOME_WORDS[fact.outcome] ?? "did not finish"}; the step is tried again.`);
-		return nextTurn(c, { kind, text: "You were interrupted. Continue from where you were.", newStep: false, charge: "interruptions", fingerprint: null, fetchBase: null });
+		return nextTurn(c, { ...IMPLEMENT, kind, text: "You were interrupted. Continue from where you were.", newStep: false, charge: "interruptions" });
 	}
 	if (kind === "refine") {
 		const more = run.rounds.plan < RULES.planRounds;
@@ -363,7 +388,7 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		return ask(c, "plan_approval", text, [choice("approve"), ...(more ? [choice("revise")] : []), choice("give_up")], null, null, "Waiting for you to approve the plan.");
 	}
 	if (!fact.changes) {
-		const resume: TurnPlan = { kind, text: "Your last turn changed nothing. Look again at what was asked, and make the change.", newStep: true, charge: null, fingerprint: null, fetchBase: null };
+		const resume: TurnPlan = { ...IMPLEMENT, kind, text: "Your last turn changed nothing. Look again at what was asked, and make the change." };
 		return ask(c, "no_change", "The agent ended its turn without changing anything.", [choice("again"), ...handOver(item), choice("give_up")], null, resume);
 	}
 
@@ -372,7 +397,7 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	if (result === "fail" && fact.verified !== null) {
 		const failing = failingNames(fact.verified);
 		c.say(`The checks failed: ${failing}.`);
-		return nextTurn(c, { kind, text: `Your turn ended with checks still failing: ${failing}. Continue fixing until they pass.`, newStep: true, charge: "gate", fingerprint: gateFingerprint(fact.verified), fetchBase: null });
+		return nextTurn(c, { ...IMPLEMENT, kind, text: `Your turn ended with checks still failing: ${failing}. Continue fixing until they pass.`, charge: "gate", fingerprint: gateFingerprint(fact.verified) });
 	}
 	// What is true of the checks: none set is no shortcoming (CI decides); a turn with no record of them says so, whatever is set.
 	const said =
@@ -500,50 +525,52 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	if (fact.prHead !== null) ci.moved = movedFrom(ci.head, fact.prHead);
 	// A person requested this handover, or a moved PR needs a replacement verdict. One reading
 	// settles it, even if still pending or unavailable, without starting another fix or asking again.
-	if (run.step.kind === "handoff") return handoff(c);
+	if (run.step.kind === "handoff") {
+		const review = ci.moved ? skippedReview(MOVED) : ci.secondReview ?? skippedReview("this item was handed over before second reviews were available");
+		return handoff(c, review);
+	}
 
 	if (ci.moved !== null) {
 		c.say(`The pull request is now at ${shortSha(ci.moved)}, pushed after the agent's ${shortSha(ci.head)}: it is handed over as it is.`);
-		return handoff(c);
+		return afterCi(c, ci);
 	}
 
 	if (fact.mergeable === false) {
 		c.say(`GitHub says the pull request conflicts with ${c.item.task.base}.`);
 		const base = c.item.task.base;
 		return nextTurn(c, {
+			...IMPLEMENT,
 			kind: "conflict",
 			text: `The pull request conflicts with ${base}. The platform fetched ${base} into the workspace as origin/${base}: merge it into your branch (git merge origin/${base}; do not rebase) and resolve the conflicts.`,
-			newStep: true,
 			charge: "conflict",
-			fingerprint: null,
 			fetchBase: base,
 		});
 	}
 	switch (state) {
 		case "passed":
 			c.say("CI passed.");
-			return handoff(c);
+			return afterCi(c, ci);
 		case "not_permitted":
 			c.say("CI could not be read: GitHub does not let the platform see it.");
-			return handoff(c);
+			return afterCi(c, ci);
 		case "incomplete":
 			c.say(reading.kind === "read" && reading.runs.length === 0 ? "GitHub cut its list of CI's checks short before any could be read." : "CI has more checks than the platform reads; none of those it read failed.");
-			return handoff(c);
+			return afterCi(c, ci);
 		case "failed":
 			if (reading.kind !== "read") return;
 			c.say(ciSentence(verdictCi(ci)));
-			return nextTurn(c, { kind: "ci_fix", text: ciFixText(ci.head, reading), newStep: true, charge: "ci", fingerprint: ciFingerprint(reading), fetchBase: null });
+			return nextTurn(c, { ...IMPLEMENT, kind: "ci_fix", text: ciFixText(ci.head, reading), charge: "ci", fingerprint: ciFingerprint(reading) });
 		case "none":
 			if (since >= CI_POLLING.noneAfterMs) {
 				c.say(`No CI ran within ${spellSeconds(CI_POLLING.noneAfterMs / 1000)} of the push.`);
-				return handoff(c);
+				return afterCi(c, ci);
 			}
 			break;
 		case "skipped":
 			// Waited for as "no CI" is: a job that needs another may not be listed yet.
 			if (since >= CI_POLLING.noneAfterMs) {
 				c.say(`CI ran, and nothing in it passed within ${spellSeconds(CI_POLLING.noneAfterMs / 1000)} of the push: every check was skipped, cancelled or neutral.`);
-				return handoff(c);
+				return afterCi(c, ci);
 			}
 			break;
 		case "not_run": {
@@ -560,22 +587,90 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 }
 
 /** Request a durable, immediate read of the commit before publishing a verdict outside a CI poll. */
-function readForHandoff(c: Change, ci: CiProgress): void {
+function readForHandoff(c: Change, ci: CiProgress, review?: HandoffReview): void {
+	if (review) ci.secondReview = review;
 	c.enter("handoff");
 	ci.last = null;
 	if (c.item.state !== "review") c.state("waiting", { reason: "ci", sentence: `Reading CI on ${shortSha(ci.head)} for handover.`, retryAt: c.at });
 	c.effects.push({ kind: "poll_ci", key: c.key, head: ci.head, at: c.at });
 }
 
+const skippedReview = (why: string): HandoffReview => ({ review: null, reviewNone: why });
+const MOVED = "the pull request moved after the agent pushed";
+const PERSON_HANDOVER = "handed over as it is, as you asked";
+
+function afterCi(c: Change, ci: CiProgress): void {
+	const { item, run } = c;
+	if (ci.moved !== null) return handoff(c, skippedReview(MOVED));
+	if (!item.reviewer) return handoff(c, skippedReview("this item was created before second reviews were available"));
+	if (item.place.kind === "machine" || "off" in item.reviewer) {
+		const why = "off" in item.reviewer && item.reviewer.off === "deployment" ? "turned off for this deployment" : "in this sandbox the reviewer's commands would run with the network";
+		return handoff(c, skippedReview(why));
+	}
+	// Older publishers could report a branch instead of a SHA. It cannot pin an independent review.
+	if (!isSha(ci.head)) return handoff(c, skippedReview("the push did not identify the commit to review"));
+	c.enter("review");
+	ci.handed = c.key;
+	run.review = { verdictId: c.key, head: ci.head, refiles: 0 };
+	const { verdict, words } = verdictAt(c, ci);
+	c.storeVerdict = { kind: "verdict", verdict, words };
+	nextTurn(c, reviewPlan(c));
+}
+
+function reviewPlan(c: Change): TurnPlan {
+	const { item, run } = c;
+	if (!item.pr || !run.review) throw new Error("a review needs a published commit");
+	return { ...IMPLEMENT, kind: "review", to: "review", checkout: { head: run.review.head, base: item.task.base, pr: item.pr.number } };
+}
+
+function reviewerInput(c: Change, ci: CiProgress, pr: number): ReviewerInput {
+	const { verdict, words } = c.storeVerdict ?? verdictAt(c, ci);
+	const records: ReviewRecord[] = [
+		...verdict.gate.required.map(({ name, status }, i) => ({ kind: "check" as const, ref: `check/${i}`, name, status })),
+		...verdict.ci.runs.map((run, i) => ({ kind: "ci" as const, ref: `ci/${i}`, ...run })),
+		...verdict.flags.map((flag) => ({ kind: "flag" as const, ref: `flag/${flag.kind}`, flag })),
+	];
+	return { round: 1, task: c.item.task, pr, head: ci.head, previousHead: null, verdictId: verdict.id, verdictWords: words, records, filings: RULES.reviewFilings, earlier: [] };
+}
+
+function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): void {
+	const { review: pending, ci } = c.run;
+	if (!pending || !ci) throw new Error("the review turn has no verdict");
+	spendTurn(c, fact.spend);
+	if (fact.refused) return readForHandoff(c, ci, skippedReview(fact.refused));
+	if (CUT_SHORT.has(fact.outcome)) {
+		c.run.step.interruptions += 1;
+		c.say(`The review ${OUTCOME_WORDS[fact.outcome]}.`);
+		return nextTurn(c, { ...reviewPlan(c), newStep: false, charge: "interruptions", text: "You were interrupted. Continue from where you were." });
+	}
+
+	const filed = fact.review;
+	if (filed?.state !== "filed" || !filed.recommendation || filed.id !== c.key || filed.head !== pending.head || filed.verdictId !== pending.verdictId || filed.run !== c.run.n || filed.round !== 1) {
+		if (pending.refiles >= RULES.reviewRefiles) return readForHandoff(c, ci, skippedReview("The reviewer did not file a review the platform could read."));
+		pending.refiles += 1;
+		const reason = JSON.stringify((fact.said || "no readable review was filed").slice(0, 500));
+		const text = `You ended your turn without a review the platform could take. File it now with ${REVIEW_TOOL}. The reported reason (quoted data): ${reason}`;
+		c.say("The reviewer is asked to file again.");
+		return nextTurn(c, { ...reviewPlan(c), newStep: false, text });
+	}
+
+	const blocking = filed.blocks.filter((block) => block.kind === "finding" && block.severity === "blocking").length;
+	const words = { approve: "approves", changes_requested: `asks for changes (${blocking} blocking)`, needs_person: "needs you" };
+	c.say(`The second review of ${shortSha(pending.head)}: ${words[filed.recommendation]}.`);
+	readForHandoff(c, ci, { review: filed.id, reviewNone: null });
+}
+
 /** Hands over the commit this run pushed, with the evidence kept for that commit: never a later, unpushed turn's. */
-function handoff(c: Change): void {
+function handoff(c: Change, review: HandoffReview): void {
 	const { item, run } = c;
 	const ci = run.ci;
 	if (item.head === null || item.pr === null || ci === null || ci.head !== item.head) throw new Error("an item is handed over only after this run pushed its work");
 	if (run.step.kind !== "handoff") c.enter("handoff");
 	const reviewDone = c.item.state === "review";
 	ci.handed ??= c.key;
-	handVerdict(c, ci, reviewDone || undefined);
+	ci.secondReview ??= review;
+	if (review.reviewNone) c.say(`No second review: ${review.reviewNone.replace(/\.$/, "")}.`);
+	handVerdict(c, ci, review, reviewDone || undefined);
 	run.endedAt ??= c.at;
 	c.state("review");
 	c.enter("merged");
@@ -587,13 +682,18 @@ function handoff(c: Change): void {
  * keeps the first one's id and key: it replaces that verdict and its effect, so a first comment still to be posted cannot
  * come after it and put the older verdict back on the pull request.
  */
-function handVerdict(c: Change, ci: CiProgress, reviewDone?: true): void {
+function verdictAt(c: Change, ci: CiProgress) {
 	const { item, run } = c;
 	const key = ci.handed ?? c.key;
 	const verdict = verdictOf({ id: key, item: item.id, run: run.n, head: ci.head, at: c.at, place: item.place, gate: ci.gate, ci: verdictCi(ci), acceptance: item.task.acceptance, mergeable: ci.mergeable, moved: ci.moved });
 	const words = verdictWords(verdict, ci.gate);
-	c.effects.push({ kind: "handoff", key, verdict, words, ...(reviewDone ? { reviewDone } : {}) });
-	c.say(words);
+	return { key, verdict, words };
+}
+
+function handVerdict(c: Change, ci: CiProgress, review: HandoffReview, reviewDone?: true): void {
+	const record = verdictAt(c, ci);
+	c.effects.push({ kind: "handoff", ...record, ...review, ...(reviewDone ? { reviewDone } : {}) });
+	c.say(record.words);
 }
 
 function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
@@ -619,7 +719,7 @@ function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
 function cancel(c: Change): void {
 	const { item } = c;
 	const run = item.run;
-	if (run !== null && run.step.turn !== null) c.effects.push({ kind: "withdraw", key: c.key });
+	if (run !== null && run.step.turn !== null) c.effects.push({ kind: "withdraw", key: c.key, ...(run.step.kind === "review" && { to: "review" }) });
 	if (run !== null && run.endedAt === null) {
 		run.endedAt = c.at;
 		run.stopReason = "cancelled";
@@ -722,7 +822,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			pollCi(c, 0, null, `Waiting for CI on ${shortSha(run.ci?.head ?? "")}, as you asked.`);
 			break;
 		case "hand_over":
-			if (run.ci !== null) readForHandoff(c, run.ci);
+			if (run.ci !== null) readForHandoff(c, run.ci, skippedReview(PERSON_HANDOVER));
 			break;
 	}
 	return true;

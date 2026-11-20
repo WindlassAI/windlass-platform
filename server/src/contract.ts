@@ -305,7 +305,7 @@ export interface SessionSummary {
 	 */
 	servers?: { count: number; changedAt: number };
 	/** Set for the session of a work item: the item it works for (`ItemSummary`). Its prompts come from the item; a person may still read it. */
-	item?: { id: string };
+	item?: { id: string; role?: "builder" | "reviewer" };
 }
 
 export interface CreateSessionInput {
@@ -1074,10 +1074,10 @@ export interface Waiting extends Wait {
 
 /**
  * A step of the blueprint. "implement", "ci_fix", "conflict" (and "refine", which is not offered yet)
- * are turns of the item's agent; "gate" and "handoff" are the platform's decisions; "publish" is the
+ * are builder turns; "review" is a turn of the second agent; "gate" and "handoff" are the platform's decisions; "publish" is the
  * platform pushing; "ci" and "merged" are waits on GitHub.
  */
-export type StepKind = "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "handoff" | "merged";
+export type StepKind = "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "review" | "handoff" | "merged";
 
 /** The step a run is at. */
 export interface ItemStep {
@@ -1337,6 +1337,24 @@ export interface ItemReport {
 	records: ReviewRecord[];
 }
 
+/** A review of one pushed head. Its id is the review step attempt's key. */
+export interface ItemReview {
+	id: string;
+	run: number;
+	round: number;
+	head: string;
+	base: string;
+	verdictId: string;
+	by: { sessionId: string; model: string };
+	at: number;
+	state: "filed" | "none";
+	said: string | null;
+	recommendation: ReviewRecommendation | null;
+	blocks: ReviewBlock[];
+	records: ReviewRecord[];
+	notes: string[];
+}
+
 export const REVIEW_LIMITS = {
 	inputBytes: 96 * 1024,
 	totalChars: 40_000,
@@ -1393,6 +1411,8 @@ export interface ItemSummary {
 	pullRequest: { number: number; url: string } | null;
 	/** The latest verdict's result and flags; null before the first. */
 	verdict: { result: Verdict["result"]; flags: VerifiedFlag[]; ci: Verdict["ci"]["state"] } | null;
+	/** Absent on items served by a platform predating reviewer sessions. */
+	review?: { state: "waiting" | "running" | "filed" | "none" | "off"; recommendation: ReviewRecommendation | null } | null;
 	budget: ItemBudget;
 	spent: ItemBudget;
 	/** The item's agent session, among the user's sessions. */
@@ -1408,6 +1428,9 @@ export interface ItemSummary {
 export interface ItemView extends ItemSummary {
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
 	report: ItemReport | null;
+	/** Last ten, oldest first. Older item views omit both reviewer fields. */
+	reviews?: ItemReview[];
+	reviewerSessionId?: string | null;
 	task: ItemTask;
 	/** The run it is in, or ended last, with the rounds a run allows; null before it was started. */
 	run: (ItemRun & { caps: RoundCaps }) | null;

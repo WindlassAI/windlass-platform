@@ -11,7 +11,8 @@
  */
 
 import type { AgentReport } from "../agent-publish.js";
-import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
+import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
+import type { ReviewerTaskInput } from "./reviewer-task.js";
 import type { CiReading, CiState } from "../github/ci.js";
 
 // What the web sees of these is in the contract; they are named here as the factory's modules use them.
@@ -21,7 +22,7 @@ export type { ChoiceId, FactoryLimits, ItemBudget, ItemEvent, ItemState, Questio
 // The item
 // ---------------------------------------------------------------------------------------------
 
-export type TurnStepKind = "refine" | "implement" | "ci_fix" | "conflict";
+export type TurnStepKind = "refine" | "implement" | "ci_fix" | "conflict" | "review";
 
 /** A step as the contract has it (`ItemStep`): a turn step's next delivery, a publish's retry and every poll of a wait step is a new attempt, so a fact about an earlier one is recognised by its key and ignored. */
 export type Step = ItemStep;
@@ -53,6 +54,8 @@ export interface CiProgress {
 	moved: string | null;
 	/** The id of the verdict handed over for `head`, made again when the pull request moves after it. */
 	handed: string | null;
+	/** Original handoff, restored if the PR returns to the reviewed head. */
+	secondReview?: HandoffReview;
 }
 
 /** One attempt of the blueprint (§1.2 `runs`): what the contract shows (`ItemRun`), and what the gate and CI read. */
@@ -61,6 +64,7 @@ export interface Run extends ItemRun {
 	lastFailure: string | null;
 	gate: GateEvidence | null;
 	ci: CiProgress | null;
+	review: { verdictId: string; head: string; refiles: number } | null;
 }
 
 /** The work as the item was given it (`ItemTask`). */
@@ -76,6 +80,7 @@ export interface FactoryItem {
 	task: Task;
 	/** §3.2: "approve" runs step 0 first. */
 	plan: "none" | "approve";
+	reviewer?: { on: true } | { off: "deployment" | "profile" };
 	place: SandboxPlace;
 	machineRemoved: boolean;
 	budget: ItemBudget;
@@ -103,9 +108,17 @@ export interface Question extends ItemQuestion {
 	resume: TurnPlan | null;
 }
 
+/** base is the target branch. The actor supplies its pinned SHA to reviewerTask. */
+export type ReviewCheckout = { head: string; base: string; pr: number };
+export type ReviewerInput = Pick<ReviewerTaskInput, "round" | "task" | "pr" | "head" | "previousHead" | "verdictWords" | "records" | "filings" | "earlier"> & { verdictId: string };
+export type HandoffReview = { review: string; reviewNone: null } | { review: null; reviewNone: string };
+
 /** A turn the blueprint is about to deliver. */
 export interface TurnPlan {
 	kind: TurnStepKind;
+	/** Absent on builder plans, including resume plans saved before reviewer sessions. */
+	to?: "work" | "review";
+	checkout?: ReviewCheckout | null;
 	text: string;
 	/** False: another attempt of the current step (after an interruption). */
 	newStep: boolean;
@@ -165,6 +178,7 @@ export type Fact =
 			refused?: string | null;
 			spend: TurnSpend;
 	  }
+	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; review: ItemReview | null; said: string | null; refused?: string | null; spend: TurnSpend }
 	/** `openItems`: the user's items not done, failed or cancelled; it sets how often CI is polled. */
 	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string }; openItems: number }
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */
@@ -182,11 +196,11 @@ export type Fact =
  */
 export type Effect =
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
-	| { kind: "deliver"; key: string; text: string; agent: "planner" | null; maxSteps: number; fetchBase: string | null }
+	| { kind: "deliver"; key: string; text: string; agent: "planner" | null; maxSteps: number; fetchBase: string | null; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
-	| { kind: "withdraw"; key: string }
+	| { kind: "withdraw"; key: string; to?: "review" }
 	/** Ask the session whether the turn of `turn` still runs; it answers `turn_running` with `key`, or `turn_ended`. */
-	| { kind: "check_turn"; key: string; turn: string; at: number }
+	| { kind: "check_turn"; key: string; turn: string; at: number; to?: "review" }
 	/** Commit and push the session's branch, then open or update its pull request with the agent's report and the verified section. */
 	| { kind: "publish"; key: string; at?: number }
 	| { kind: "poll_ci"; key: string; head: string; at: number }
@@ -194,11 +208,20 @@ export type Effect =
 	/** Record the question and show it ("Needs you"). */
 	| { kind: "ask"; question: Question }
 	/** Record the verdict, request a review from the item's person, and put the verdict line on the pull request. */
-	| { kind: "handoff"; key: string; verdict: Verdict; words: string; reviewDone?: true };
+	| ({ kind: "handoff"; key: string; verdict: Verdict; words: string; reviewDone?: true } & HandoffReview);
+
+/** A transaction-only effect, consumed before the actor performs any deliveries. */
+export interface VerdictEffect {
+	kind: "verdict";
+	verdict: Verdict;
+	words: string;
+}
 
 export interface Outcome {
 	/** The same object as given when the fact changed nothing. */
 	item: FactoryItem;
+	/** Store beside the item before performing the outbox. This effect never goes to GitHub. */
+	storeVerdict?: VerdictEffect;
 	effects: Effect[];
 	/** Entries for the item's event log (§1.2 `events`), in the order they happened. */
 	events: ItemEvent[];
