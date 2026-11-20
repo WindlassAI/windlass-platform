@@ -2,11 +2,7 @@
  * The sandbox layer, put together: `createSandboxLayer` for a server on Docker, `createE2bLayer` for
  * one on E2B (server/src/layer.ts chooses by WLP_SANDBOX).
  *
- * On Docker: containers for sessions and Windlass run inside them. The ChatGPT sign-in
- * and the access token a turn is handed are not Docker's: they are the users' actors' (server/src/signin/),
- * and this layer only passes them on, with the two things Docker adds (the user's data volume, and for
- * a machine that ran the first version, its old auth volumes). See api.ts for the interface and
- * sandbox/ for the image.
+ * Docker mounts the user's data volume in session containers. The user's actor holds the ChatGPT sign-in.
  */
 
 import type { SandboxLayer } from "./api.js";
@@ -15,7 +11,7 @@ import type { MemorySignInDirectory } from "../signin/directory.js";
 import { type SignInLogins, type SignInTokens, actorSignIns, memorySignIns } from "../signin/facade.js";
 import { DockerLoginRunner } from "./logins.js";
 import { DockerSandboxes } from "./sandboxes.js";
-import { dockerLegacySignIns, ensureUserVolume, removeTokenFiles, userVolume } from "./volumes.js";
+import { ensureUserVolume, removeTokenFiles, userVolume } from "./volumes.js";
 import { DockerWindlass } from "./windlass.js";
 
 export interface DockerSandboxLayer extends SandboxLayer {
@@ -53,7 +49,6 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 		options.signIns === "memory"
 			? memorySignIns({
 					commands: new WindlassSignIns(new DockerLoginRunner({ image, network: options.tokenNetwork, extraFlags: options.signInHelperFlags })),
-					legacy: dockerLegacySignIns(image),
 					revoke: (uid) => removeTokenFiles(uid, image),
 					ensureUserData,
 				})

@@ -48,7 +48,7 @@ expect("a hello and a report pass", parseRunnerFrame(JSON.stringify(hello))?.kin
 	&& parseRunnerFrame(JSON.stringify({ kind: "report", docker: { ok: false, reason: "permission denied" }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [{ id: "m_0123456789abcdef-0123456789ab", sessionId: "s_0123456789abcdef", state: "paused", usedAt: 5 }] }))?.kind === "report");
 const plainReport = { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [] };
 const capped = parseRunnerFrame(JSON.stringify({ ...plainReport, maxRunning: 2, maxSandboxes: 5 }));
-expect("a report carries the caps its owner set, and one without them (no cap, or an older runner) still passes",
+expect("a report carries the caps its owner set, and a report with no caps also passes",
 	capped?.kind === "report" && capped.maxRunning === 2 && capped.maxSandboxes === 5 && parseRunnerFrame(JSON.stringify(plainReport))?.kind === "report");
 expect("a cap that is no positive whole number is not one", never(parseRunnerFrame, [0, -1, 1.5, "3", null].map((cap) => JSON.stringify({ ...plainReport, maxRunning: cap }))));
 const refusals = [refuse("outdated", { runnerVersion: "0.0.9" }), refuse("removed", { removeSandboxes: true }), refuse("removed"), refuse("key-in-use"), refuse("unknown"), refuse("bad-frame")];

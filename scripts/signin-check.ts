@@ -49,7 +49,7 @@ import { NOT_SIGNED_IN, SIGN_IN_EXPIRED, SignInRefreshError, TOKEN_VALID_FOR_MS,
 import { type SignInCommands, type TokenAnswer, WindlassSignIns } from "../server/src/signin/commands.js";
 import { ActorSignInDirectory, errorOf, problemOf, tokenSubject } from "../server/src/signin/directory.js";
 import { memorySignIns } from "../server/src/signin/facade.js";
-import { type LegacySignIns, SIGN_IN_UNREADABLE, SignInHolder, type StoredSignIn } from "../server/src/signin/holder.js";
+import { SIGN_IN_UNREADABLE, SignInHolder, type StoredSignIn } from "../server/src/signin/holder.js";
 import { type SignInMaterial, accountOf, cleanMaterial, uidOfAccount } from "../server/src/signin/material.js";
 import { LocalLoginRunner, TMP_PREFIX } from "../server/src/signin/runner.js";
 import { SealError, createSealer, serverSealer } from "../server/src/signin/seal.js";
@@ -722,54 +722,6 @@ async function main(): Promise<void> {
 				short.expiresAt - Date.now() < 9 * 60_000 && reused.accessToken === short.accessToken && commands.issued === 2 && said.length === 1 && rows.row!.shortNoted,
 				`${said.length} line, ${commands.issued} refreshes for 3 requests`,
 			);
-		}
-
-		// ---- a sign-in the single-machine layout left behind
-		{
-			// What happened to the old place and to the store, in one order.
-			let steps: string[] = [];
-			const legacy = (found: SignInMaterial | null, failing = false): LegacySignIns => ({
-				where: () => "the Docker volume wlp-auth-u_holder",
-				take: async () => {
-					steps.push("looked");
-					if (failing) throw new Error("docker is away");
-					return found;
-				},
-				remove: async () => void steps.push("removed"),
-			});
-			const rows = new Rows();
-			steps = rows.events;
-			const commands = new ScriptedCommands();
-			const before = lines.length;
-			const holder = make(rows, commands, { legacy: legacy(fakeMaterial("fake-sub-h", Date.now() + 3_600_000, 3)) });
-			const account = await holder.status();
-			const token = await holder.accessToken();
-			await holder.status();
-			const said = lines.slice(before).filter((line) => line.includes("sign-in.imported"));
-			expect(
-				"the first time the user is touched the old sign-in is taken into the store, sealed, and only then removed from where it was; it works, and it is looked for once",
-				account?.sub === "fake-sub-h" && token.accessToken === "FAKE-ACCESS-TOKEN-3-not-a-real-token" && steps.join(",") === "looked,saved,removed" && rows.row!.sealed !== null && !SECRET.test(rows.row!.sealed),
-				steps.join(", "),
-			);
-			expect("a log line says that it was taken in and its old place removed, once, without a token", said.length === 1 && said[0]!.includes(`uid=${uid}`) && said[0]!.includes("wlp-auth-u_holder") && /was removed/.test(said[0]!) && !SECRET.test(said[0]!), said.join(" | "));
-
-			steps.length = 0;
-			const beforeNewer = lines.length;
-			const newer = make(rows, commands, { legacy: legacy(fakeMaterial("fake-sub-h", Date.now() + 3_600_000, 4)) });
-			const kept = await newer.accessToken();
-			expect(
-				"an old sign-in found beside one the store already holds is removed, not taken in: the store's one is the newer",
-				kept.accessToken === "FAKE-ACCESS-TOKEN-3-not-a-real-token" && steps.join(",") === "looked,removed" && lines.slice(beforeNewer).some((line) => /already holds a newer one/.test(line)),
-				steps.join(", "),
-			);
-
-			const failingRows = new Rows();
-			steps = failingRows.events;
-			const failing = make(failingRows, commands, { legacy: legacy(null, true) });
-			const blocked = await caught(failing.logout());
-			expect("when the old place cannot be looked at, forgetting the sign-in fails rather than leave one there to come back", blocked instanceof Error && /docker is away/.test(blocked.message));
-			await failing.adopt(seal(fakeMaterial("fake-sub-h", Date.now() + 3_600_000, 5)));
-			expect("adopting a new sign-in goes ahead all the same", saved(open(failingRows)).accessToken === "FAKE-ACCESS-TOKEN-5-not-a-real-token");
 		}
 
 		// ---- a command that is killed after Windlass saved the refreshed sign-in

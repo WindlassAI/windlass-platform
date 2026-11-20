@@ -52,7 +52,7 @@ import { ACCESS_TOKEN_FILE_ENV, NOT_SIGNED_IN, OUTDATED_SANDBOX, SIGN_IN_EXPIRED
 import { createSandboxLayer } from "../server/src/sandbox/index.js";
 import { type DockerSandboxHandle, DockerSandboxes, containerName } from "../server/src/sandbox/sandboxes.js";
 import { TOKEN_REMOVED, tokenFilePath } from "../server/src/sandbox/token-file.js";
-import { ensureAuthVolume, ensureDataVolume } from "../server/src/sandbox/volumes.js";
+import { ensureDataVolume } from "../server/src/sandbox/volumes.js";
 import type { SignInMaterial } from "../server/src/signin/material.js";
 import { DockerWindlass } from "../server/src/sandbox/windlass.js";
 import { warnAboutWindlass } from "../server/src/startup.js";
@@ -67,17 +67,14 @@ const uid = `chk-${run}`;
 const uid2 = `chk-${run}-b`;
 /** A user with no sign-in at all, for the turn that must fail for want of one. */
 const uid3 = `chk-${run}-n`;
-/** The users of the token source, of the older layouts (three), of the hand-off (two), of the old images (two) and of `--valid-for`. */
+/** The users of the token source, of the hand-off (two), of the old images (two) and of `--valid-for`. */
 const uidT = `chk-${run}-t`;
-const uidM = `chk-${run}-m`;
-const uidM2 = `chk-${run}-m2`;
-const uidM3 = `chk-${run}-m3`;
 const uidH = `chk-${run}-h`;
 const uidD = `chk-${run}-d`;
 const uidO = `chk-${run}-o`;
 const uidO2 = `chk-${run}-o2`;
 const uidV = `chk-${run}-v`;
-const allUids = [uid, uid2, uid3, uidT, uidM, uidM2, uidM3, uidH, uidD, uidO, uidO2, uidV];
+const allUids = [uid, uid2, uid3, uidT, uidH, uidD, uidO, uidO2, uidV];
 /** The volume the stand-in for OpenAI's token endpoint reads its plan from and notes its requests in (see STANDIN). */
 const STANDIN_VOLUME = `wlp-standin-chk-${run}`;
 /** Throwaway images this run built. */
@@ -495,19 +492,6 @@ function fakeSignIn(account: { sub: string; email: string }, expiresAt: number, 
 	return { files: { "auth.json": JSON.stringify(credentials, null, 2), "host-id": credentials.hostId } };
 }
 
-/** Writes a synthetic, obviously fake auth.json into a volume: where the layouts before this one kept a sign-in. */
-async function writeFakeAuth(volume: string, account: { sub: string; email: string }, expiresAt: number, accessToken = TOKEN_A): Promise<void> {
-	const credentials = fakeCredentials(account, expiresAt, accessToken);
-	const helper = tmpName();
-	const result = await runHelper(
-		[...helperFlags(helper, "none"), "-v", `${volume}:${DATA_DIR}`],
-		helper,
-		["sh", "-c", `cat > ${DATA_DIR}/auth.json && chmod 600 ${DATA_DIR}/auth.json && printf '%s' "$1" > ${DATA_DIR}/host-id`, "sh", credentials.hostId],
-		{ stdin: JSON.stringify(credentials, null, 2) },
-	);
-	if (result.code !== 0) throw new Error(`could not write the fake auth.json: ${result.stderr}`);
-}
-
 async function lsVolume(volume: string): Promise<string> {
 	const helper = tmpName();
 	const result = await runHelper([...helperFlags(helper, "none"), "-v", `${volume}:${DATA_DIR}:ro`], helper, ["ls", "-A", DATA_DIR]);
@@ -536,25 +520,6 @@ function finishedAttempt(attemptId: string, account: { sub: string; email: strin
 const storedSignIn = (user: string) => layer.signIns!.stored(user);
 
 const volumeGone = async (name: string) => (await docker(["volume", "inspect", name])).code !== 0;
-
-/** The sign-in in a volume of its own, as the single-machine layout kept it: `wlp-auth-<uid>`, with the lock a refresh leaves. */
-async function authVolumeLayout(user: string, account: { sub: string; email: string }, accessToken: string, expiresAt: number): Promise<void> {
-	await ensureAuthVolume(user);
-	await writeFakeAuth(`wlp-auth-${user}`, account, expiresAt, accessToken);
-	const helper = tmpName();
-	const result = await runHelper([...helperFlags(helper, "none"), "-v", `wlp-auth-${user}:${DATA_DIR}`], helper, ["sh", "-c", `: > ${DATA_DIR}/auth.lock`]);
-	if (result.code !== 0) throw new Error(`could not write the single-machine layout: ${result.stderr}`);
-}
-
-/** A user volume as the platform left it before sign-ins had a volume of their own: the sign-in, its lock, and a session log beside them. */
-async function oldLayout(user: string, accessToken: string, expiresAt: number): Promise<void> {
-	const volume = `wlp-user-${user}`;
-	await docker(["volume", "create", "--label", LABEL_ARG, "--label", `${LABEL}.uid=${user}`, volume], { check: true });
-	await writeFakeAuth(volume, fakeAccount(user), expiresAt, accessToken);
-	const helper = tmpName();
-	const result = await runHelper([...helperFlags(helper, "none"), "-v", `${volume}:${DATA_DIR}`], helper, ["sh", "-c", `: > ${DATA_DIR}/auth.lock && mkdir -p ${DATA_DIR}/sessions && echo kept > ${DATA_DIR}/sessions/ses_old.db`]);
-	if (result.code !== 0) throw new Error(`could not write the old layout: ${result.stderr}`);
-}
 
 /** The names of the volumes a container mounts, with where. */
 async function mountsOf(container: string): Promise<string> {
@@ -1590,50 +1555,6 @@ async function main(): Promise<void> {
 		await layer.logins.logout(`chk-${run}-nobody`);
 		expect("logout() of a user without a sign-in is a no-op and makes no volume", (await volumeGone(`wlp-auth-chk-${run}-nobody`)) && (await volumeGone(`wlp-user-chk-${run}-nobody`)));
 
-		// The single-machine layout: a machine that ran the first version has each user's sign-in in a volume wlp-auth-<uid>.
-		const oldExpiry = Date.now() + 3_600_000;
-		await authVolumeLayout(uidM, fakeAccount(uidM), TOKEN_B, oldExpiry);
-		expect("an auth volume of the single-machine layout holds the sign-in", (await lsVolume(`wlp-auth-${uidM}`)).split(" ").sort().join(" ") === "auth.json auth.lock host-id" && storedSignIn(uidM) === null);
-		const importedBefore = wlpLines.length;
-		// The first touch of this user: here, asking who is signed in.
-		const imported = await layer.logins.status(uidM);
-		const said = wlpLines.slice(importedBefore).filter((line) => line.includes("sign-in.imported"));
-		const importedRow = storedSignIn(uidM);
-		expect(
-			"the first time such a user is touched the sign-in is taken into the user's store, sealed, and the volume is removed: status() finds it there",
-			imported?.sub === `fake-sub-${uidM}` && imported.accessExpiresAt === oldExpiry && importedRow?.sealed != null && !SECRET.test(importedRow.sealed) && (await volumeGone(`wlp-auth-${uidM}`)),
-			`${importedRow?.sealed?.length ?? 0} characters stored; wlp-auth-${uidM} ${(await volumeGone(`wlp-auth-${uidM}`)) ? "is gone" : "is still there"}`,
-		);
-		expect("a log line says that the sign-in was taken in and the volume removed, once, without a token", said.length === 1 && said[0]!.includes(`uid=${uidM}`) && said[0]!.includes(`wlp-auth-${uidM}`) && /was removed/.test(said[0]!) && !SECRET.test(said[0]!), said.join(" | "));
-		const importedToken = await layer.tokens.current(uidM);
-		await layer.logins.status(uidM);
-		expect("the sign-in works from there: the token source returns its token; touching the user again takes nothing in", importedToken.accessToken === TOKEN_B && importedToken.expiresAt === oldExpiry && wlpLines.slice(importedBefore).filter((line) => line.includes("sign-in.imported")).length === 1);
-
-		// The layout before that: the sign-in beside Windlass's sessions in the user's data volume.
-		await oldLayout(uidM2, TOKEN_B, oldExpiry);
-		expect("a user volume of the first layout holds the sign-in beside Windlass's sessions", (await lsVolume(`wlp-user-${uidM2}`)).split(" ").sort().join(" ") === "auth.json auth.lock host-id sessions");
-		const movedBefore = wlpLines.length;
-		// The first touch of this one: asking for its access token.
-		const moved = await layer.tokens.current(uidM2);
-		const movedSaid = wlpLines.slice(movedBefore).filter((line) => /sign-in\.(moved|imported)/.test(line));
-		expect(
-			"such a sign-in is taken in the same way, by way of an auth volume that is gone again afterwards: the token source returns its token, and the data volume keeps only the sessions",
-			moved.accessToken === TOKEN_B && moved.expiresAt === oldExpiry && (await layer.logins.status(uidM2))?.sub === `fake-sub-${uidM2}` && (await lsVolume(`wlp-user-${uidM2}`)) === "sessions" && (await volumeGone(`wlp-auth-${uidM2}`)) && movedSaid.length === 2 && movedSaid[0]!.includes("sign-in.moved") && movedSaid[1]!.includes("sign-in.imported"),
-			movedSaid.map((line) => line.split(":")[0]).join(" | "),
-		);
-
-		// An old sign-in in a volume beside a newer one the user's store already holds: the newer one stays.
-		saveFakeSignIn(uidM3, TOKEN_C, oldExpiry + 5);
-		await authVolumeLayout(uidM3, { sub: "fake-sub-older", email: "older@example.invalid" }, TOKEN_B, oldExpiry);
-		const staleBefore = wlpLines.length;
-		const newer = await layer.tokens.current(uidM3);
-		const staleSaid = wlpLines.slice(staleBefore).filter((line) => line.includes("sign-in.imported"));
-		expect(
-			"an old sign-in in a volume beside a newer one in the store is removed, not taken in: the newer one's token is returned",
-			newer.accessToken === TOKEN_C && (await layer.logins.status(uidM3))?.sub === `fake-sub-${uidM3}` && (await volumeGone(`wlp-auth-${uidM3}`)) && staleSaid.length === 1 && /already holds a newer one/.test(staleSaid[0]!),
-			staleSaid.join(" | "),
-		);
-
 		const attempt3 = `chk${run}c`;
 		const once = await layer.logins.start(attempt3);
 		const twice = await layer.logins.start(attempt3);
@@ -1679,10 +1600,10 @@ async function main(): Promise<void> {
 		expect("six requests at once for one user are served one at a time: by a single run of Windlass", many.every((token) => token.accessToken === TOKEN_A && token.expiresAt === expiresAt) && tokens.asked === asked + 1, `${tokens.asked - asked} run for 6 requests, ${ms(start)}`);
 		// Two users at once are two runs: the queue is per user.
 		tokens.forget(uidT);
-		tokens.forget(uidM);
+		await signInFake(uid2, TOKEN_B, expiresAt);
 		asked = tokens.asked;
-		const [mine, theirs] = await Promise.all([tokens.current(uidT), tokens.current(uidM).then((token) => token.accessToken, (error: Error) => error.constructor.name)]);
-		expect("two users' requests do not wait for each other and never get each other's token", mine.accessToken === TOKEN_A && theirs !== TOKEN_A && tokens.asked - asked <= 2, `${tokens.asked - asked} run(s)`);
+		const [mine, theirs] = await Promise.all([tokens.current(uidT), tokens.current(uid2)]);
+		expect("two users' requests do not wait for each other and never get each other's token", mine.accessToken === TOKEN_A && theirs.accessToken === TOKEN_B && tokens.asked - asked === 2, `${tokens.asked - asked} run(s)`);
 
 		// A new sign-in: what was kept of the old one is not handed out again.
 		const attempt = `chk${run}t`;

@@ -372,12 +372,6 @@ until that token expires, within the hour, and then ends asking for a sign-in; i
 a user's own machine its runner removes them, when it is connected at that moment ("Machines of your
 own" says what holds for one that is not).
 
-**Sign-ins of the first version.** A machine that ran it has a Docker volume `wlp-auth-<uid>` per signed-in
-user (and before that, `auth.json` in `wlp-user-<uid>`). The first time such a user is touched, the Docker
-layer reads the volume, the user's actor stores the sign-in encrypted, and the volume is removed:
-`[wlp] sign-in.imported uid=<uid>: ...`. If the actor already holds a sign-in, that one is newer and the
-volume is only removed. This works on the machine that has the volumes, and only there.
-
 | Variable | Effect |
 |---|---|
 | `WLP_SIGNIN_KEY` | what the key that encrypts sign-ins is derived from; at least 32 characters, the same on every server. Unset: derived from `WLP_SECRET`. Setting it lets `WLP_SECRET` change without every user signing in again |
@@ -2528,11 +2522,10 @@ A count (`WLP_DAILY_SANDBOX_SECONDS`, `WLP_MAX_KEPT_SANDBOXES`, `WLP_USAGE_HOLD_
 settings) that is not a whole number in its range stops the server the same way.
 
 Actor data is in `.data/.rivetkit`; stop the server and remove that directory to start from nothing.
-`sandbox/cleanup.sh --keep-image` removes every container and volume this project made, sign-ins of the first
-version that were never taken in included; the sign-ins in the users' actors go with the actor data.
+`sandbox/cleanup.sh --keep-image` removes every container and volume this project made; the sign-ins in the
+users' actors go with the actor data.
 
-A platform that was used before sign-ins were kept in the users' actors still has them in Docker volumes;
-"Sign-ins" says how they are taken in. An agent made before sign-ins left the sandboxes keeps its sandbox, which was made from the older
+An agent made before sign-ins left the sandboxes keeps its sandbox, which was made from the older
 image: its files and its timeline are there, and demo agents go on working, but its Windlass cannot run on a
 handed-in token, so a prompt on a ChatGPT sign-in ends by saying so and asking for a new agent. An agent whose
 sandbox was made from an image whose Windlass does read a handed-in token goes on working after the image is

@@ -17,7 +17,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { type AccessToken, type AccessTokens, type ChatgptAccount, type ChatgptLogins, SandboxUserError } from "../sandbox/api.js";
 import { ATTEMPT_UNKNOWN, type SignInCommands } from "./commands.js";
 import { ActorSignInDirectory, MemorySignInDirectory, type SignInDirectory } from "./directory.js";
-import type { LegacySignIns, StoredSignIn } from "./holder.js";
+import type { StoredSignIn } from "./holder.js";
 import { getSignIns } from "./index.js";
 import { type SignInMaterial, accountOf, assertName, cleanMaterial, hasSignIn, signInOnly } from "./material.js";
 import { SealError, type Sealer, createSealer, serverSealer } from "./seal.js";
@@ -153,7 +153,6 @@ let memoryKey: Sealer | null = null;
 
 export interface MemorySignInsOptions {
 	commands: SignInCommands;
-	legacy?: LegacySignIns;
 	revoke?: (uid: string) => Promise<void>;
 	ensureUserData?: (uid: string) => Promise<void>;
 	log?: (line: string) => void;
@@ -168,7 +167,7 @@ export interface MemorySignInsOptions {
 export function memorySignIns(options: MemorySignInsOptions): { logins: SignInLogins; tokens: SignInTokens; directory: MemorySignInDirectory; sealer: Sealer } {
 	memoryKey ??= createSealer(randomBytes(32));
 	const sealer = memoryKey;
-	const directory = new MemorySignInDirectory({ commands: options.commands, sealer, legacy: options.legacy, revoke: options.revoke, log: options.log, rows: options.rows });
+	const directory = new MemorySignInDirectory({ commands: options.commands, sealer, revoke: options.revoke, log: options.log, rows: options.rows });
 	const facade = signInFacade({ commands: async () => options.commands, directory, sealer, ensureUserData: options.ensureUserData, asked: () => options.commands.asked });
 	return { ...facade, directory, sealer };
 }

@@ -28,9 +28,6 @@
  * `AccessTokens` below are the same for every provider: signin/facade.ts implements them. How much time
  * a token has left when it is handed over, when a turn's token is replaced and how long one is reused
  * are three durations that belong together: handoff.ts has them and says why.
- *
- * (A machine that ran the first version may still have volumes `wlp-auth-<uid>`, each a user's sign-in.
- * The Docker layer takes one into the user's actor the first time that user is touched, and removes it.)
  */
 
 import type { RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";

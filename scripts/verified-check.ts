@@ -78,13 +78,7 @@ const db: ChecksDb = {
 		return (/^\s*(SELECT|PRAGMA)/i.test(query) ? statement.all(...(args as never[])) : (statement.run(...(args as never[])), [])) as Row[];
 	},
 };
-// A record as the code before this change made it: its tables stay as they are, and the new one is added beside them.
-await db.execute("CREATE TABLE IF NOT EXISTS setup_command (project TEXT PRIMARY KEY, label TEXT NOT NULL, command TEXT NOT NULL, updated_at INTEGER NOT NULL)");
-await db.execute(DEFAULTS_TABLE);
-await db.execute("INSERT INTO setup_command (project, label, command, updated_at) VALUES ('github:7101', 'acme/harbor', 'npm ci', 1)");
 await db.execute(CHECKS_TABLE);
-await db.execute(CHECKS_TABLE);
-expect("a record from before the checks gets their table, keeps what it had, and has no checks", (await readChecks(db, "github:7101")).checks.length === 0 && (await db.execute<{ command: string }>("SELECT command FROM setup_command"))[0]?.command === "npm ci");
 const saved = await saveChecks(db, "github:7101", "acme/harbor", [TEST, TYPES], 5);
 expect("a list is saved whole and read back as it was saved", plain(saved) === plain({ checks: cleanChecks([TEST, TYPES]), updatedAt: 5 }));
 let whole = true;
@@ -543,7 +537,16 @@ if (process.argv.includes("--docker")) {
 			);
 			expectAs(`the layer says ${required ? "that the checks were named as required ones" : "that it wrote the checks into Windlass's file"}, and that the repository's file names none`, plain(fixed.result.checks) === plain({ required, handed: true, project: null }), plain(fixed.result.checks));
 			const left = await a.run("cat /home/agent/.config/windlass/config.json 2>/dev/null || echo none");
-			expectAs("Windlass's own file in the sandbox holds no check when the turn has ended", left.stdout.trim() === "none", left.stdout.trim());
+			// The file may stay with the platform's own `wake` entry in it (windlass-config.ts, `PLATFORM_WAKE`): what matters is that no check is left there.
+			const leftChecks = (() => {
+				try {
+					const file = JSON.parse(left.stdout) as Record<string, unknown>;
+					return ["checks", "requiredChecks", "verify"].filter((key) => key in file);
+				} catch {
+					return left.stdout.trim() === "none" ? [] : ["(not JSON)"];
+				}
+			})();
+			expectAs("Windlass's own file in the sandbox holds no check when the turn has ended", leftChecks.length === 0, left.stdout.trim());
 			const shown = fixed.verified.run?.checks[0]?.output;
 			const paths = fixed.log.outputs([{ ...OWN_CHECK, showOutput: true }], fixed.result.checks);
 			if (required) expectAs("the end of the passing check's output is in the evidence because its entry asks for it, and no file is to be read", shown === "app.txt is fixed" && paths.length === 0, `${plain(shown)} ${plain(paths)}`);

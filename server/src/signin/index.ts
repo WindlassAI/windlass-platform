@@ -19,11 +19,6 @@
  * With WLP_SANDBOX=fake no Windlass runs at all: the fake layer's stand-in answers (sandbox-fake.ts).
  * Unless WLP_SIGNIN_RUNNER is set: then the sign-in is the real one over fake sandboxes, which is how
  * the sign-in is tried on a machine without Docker (scripts/signin-check.ts, section `actors`).
- *
- * What a provider adds (`SignInHooks`): the Docker provider takes in sign-ins of the single-machine
- * layout and removes the token files of running turns when a sign-in is forgotten (sandbox/volumes.ts).
- * Both act on Docker volumes of the machine the server runs on. Another provider has no old layout to
- * take in, and owes the second for its own sandboxes.
  */
 
 import { config } from "../config.js";
@@ -84,8 +79,7 @@ async function make(): Promise<SignIns> {
 	}
 	const hooks: SignInHooks = {};
 	if (config.sandbox === "docker") {
-		const { dockerLegacySignIns, removeTokenFiles } = await import("../sandbox/volumes.js");
-		hooks.legacy = dockerLegacySignIns();
+		const { removeTokenFiles } = await import("../sandbox/volumes.js");
 		hooks.revoke = (uid) => removeTokenFiles(uid);
 	}
 	let runner: LoginRunner;

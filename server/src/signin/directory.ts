@@ -24,7 +24,7 @@ import { ownEngineEndpoint } from "../config.js";
 import { type AccessToken, type ChatgptAccount, SandboxUserError } from "../sandbox/api.js";
 import { NOT_SIGNED_IN, SignInRefreshError, WindlassOutdatedError } from "../sandbox/handoff.js";
 import type { SignInCommands } from "./commands.js";
-import { type LegacySignIns, SignInHolder, type StoredSignIn } from "./holder.js";
+import { SignInHolder, type StoredSignIn } from "./holder.js";
 import { type SignInMaterial, signInOnly } from "./material.js";
 import type { Sealer } from "./seal.js";
 
@@ -168,7 +168,6 @@ const sharedRows = new Map<string, StoredSignIn>();
 export interface MemorySignInDirectoryOptions {
 	commands: SignInCommands;
 	sealer: Sealer;
-	legacy?: LegacySignIns;
 	revoke?: (uid: string) => Promise<void>;
 	log?: (line: string) => void;
 	/** Rows of its own instead of the process's shared ones. */
@@ -191,7 +190,6 @@ export class MemorySignInDirectory implements SignInDirectory {
 				uid,
 				commands: this.options.commands,
 				sealer: this.options.sealer,
-				legacy: this.options.legacy,
 				revoke: this.options.revoke,
 				log: this.options.log,
 				store: {

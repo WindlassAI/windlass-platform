@@ -148,7 +148,7 @@ const report = object({
 	freeDiskBytes: nullable(count),
 	/** `usedAt` by the runner's clock: the actor corrects it by the offset from the hello. */
 	sandboxes: list(object({ id: sandboxId, sessionId: name, state: oneOf("running", "paused"), usedAt: count }), MAX_REPORTED_SANDBOXES),
-	/** The caps its owner set (`--max-running`, `--max-sandboxes`); left out where none is set, and by a runner from before them. */
+	/** The caps its owner set (`--max-running`, `--max-sandboxes`), left out where none is set. */
 	maxRunning: optional(cap),
 	maxSandboxes: optional(cap),
 });

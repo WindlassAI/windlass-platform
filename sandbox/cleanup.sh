@@ -3,7 +3,7 @@
 # dev.windlass-platform=1 and a wlp- name, then the sandbox image. Nothing without that label is touched.
 #
 # From server/, take the exclusive Docker lock when running by hand:
-#   ../scripts/locked.sh ../sandbox/cleanup.sh            containers, volumes (wlp-user-*, and any wlp-auth-* left from before sign-ins moved into the users' actors)
+#   ../scripts/locked.sh ../sandbox/cleanup.sh            containers, volumes
 #                                                         and the image
 #   ../scripts/locked.sh ../sandbox/cleanup.sh --keep-image
 set -eu

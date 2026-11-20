@@ -82,15 +82,10 @@ export const login = actor({
 					id INTEGER PRIMARY KEY CHECK (id = 1),
 					state TEXT NOT NULL,
 					expires_at INTEGER NOT NULL,
-					volume INTEGER NOT NULL DEFAULT 0,
 					schedule_id TEXT,
 					sealed TEXT
 				)
 			`);
-			// An attempt made before attempts were kept here has the table without the column. (`volume`
-			// is from that time: whether a Docker volume held the attempt. Nothing reads it any more.)
-			const columns = await db.execute<{ name: string }>("PRAGMA table_info(attempt)");
-			if (!columns.some((column) => column.name === "sealed")) await db.execute("ALTER TABLE attempt ADD COLUMN sealed TEXT");
 		},
 	}),
 
@@ -98,7 +93,7 @@ export const login = actor({
 		const expiresAt = Date.now() + ATTEMPT_TTL_MS;
 		// An attempt nobody finishes is removed, whether or not it was ever started.
 		const scheduleId = await c.schedule.after(ATTEMPT_TTL_MS + 1_000, "expire");
-		await c.db.execute("INSERT OR REPLACE INTO attempt (id, state, expires_at, volume, schedule_id) VALUES (1, 'new', ?, 0, ?)", expiresAt, scheduleId);
+		await c.db.execute("INSERT OR REPLACE INTO attempt (id, state, expires_at, schedule_id) VALUES (1, 'new', ?, ?)", expiresAt, scheduleId);
 	},
 
 	createVars: async (c): Promise<LoginVars> => {

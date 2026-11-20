@@ -41,7 +41,7 @@ import { SealError, type Sealer } from "./seal.js";
 export interface StoredSignIn {
 	/** The sign-in, sealed for this user; null when there is none (never signed in, or forgotten). */
 	sealed: string | null;
-	/** Counts the times the sign-in itself changed (adopted, forgotten, imported): not its refreshes. */
+	/** Counts the times the sign-in itself changed (adopted or forgotten): not its refreshes. */
 	generation: number;
 	/** Whether it was already said that the service issues tokens shorter than the platform asks for. */
 	shortNoted: boolean;
@@ -54,17 +54,9 @@ export interface SignInStore {
 	save(row: StoredSignIn): Promise<void>;
 }
 
-/**
- * A sign-in the first version of the platform left on the machine it ran on (a Docker volume), to be
- * taken into the user's store the first time the user is touched. Only a provider that had such a
- * layout gives one (sandbox/volumes.ts).
- */
 export interface LegacySignIns {
-	/** The sign-in found for the user, or null when there is nothing to take. */
 	take(uid: string): Promise<SignInMaterial | null>;
-	/** Removes what `take` found. */
 	remove(uid: string): Promise<void>;
-	/** What it is called, for the log line. */
 	where(uid: string): string;
 }
 
@@ -110,7 +102,6 @@ export class SignInHolder {
 	private running: AbortController | null = null;
 	/** A refreshed sign-in the store did not take: saved before anything else is done. */
 	private unsaved: StoredSignIn | null = null;
-	private looked = false;
 	private unreadableSaid = false;
 
 	constructor(private readonly options: SignInHolderOptions) {
@@ -120,7 +111,6 @@ export class SignInHolder {
 
 	/** Who is signed in and when the saved access token expires; null when nobody is. Never a token. */
 	async status(): Promise<ChatgptAccount | null> {
-		if (!this.looked && this.options.legacy !== undefined) await this.exclusive(() => this.look());
 		const row = this.unsaved ?? (await this.options.store.load());
 		if (row === null || row.sealed === null) return null;
 		try {
@@ -167,8 +157,6 @@ export class SignInHolder {
 		if (this.options.ownerOf !== undefined && this.options.ownerOf(account) !== this.uid) throw new Error(`the sign-in handed over for user ${this.uid} is another account's`);
 		this.running?.abort();
 		await this.exclusive(async () => {
-			// An old volume must not come back later as if it were newer than this.
-			await this.look().catch((error: unknown) => this.log(`[wlp] sign-in.import_failed uid=${this.uid}: ${error instanceof Error ? error.message : String(error)}`));
 			this.unsaved = null;
 			const row = (await this.options.store.load()) ?? NOTHING;
 			await this.options.store.save({ sealed: this.seal(material), generation: row.generation + 1, shortNoted: false });
@@ -183,8 +171,6 @@ export class SignInHolder {
 	async logout(): Promise<void> {
 		this.running?.abort();
 		await this.exclusive(async () => {
-			// A sign-in still lying in an old volume would be taken in at the next touch: it has to go first, so this fails when it cannot.
-			await this.look();
 			try {
 				this.unsaved = null;
 				const row = (await this.options.store.load()) ?? NOTHING;
@@ -208,7 +194,6 @@ export class SignInHolder {
 	}
 
 	private async ask(): Promise<AccessToken> {
-		await this.look();
 		// A refresh that was carried out and not saved comes first: Windlass must never be asked with the sign-in from before it.
 		if (this.unsaved !== null) await this.save(this.unsaved);
 		const row = { ...((await this.options.store.load()) ?? NOTHING) };
@@ -273,39 +258,6 @@ export class SignInHolder {
 	private keep(token: AccessToken): void {
 		const left = token.expiresAt - Date.now();
 		this.kept = { token, reuseUntil: token.expiresAt - (left > TOKEN_VALID_FOR_MS ? TOKEN_VALID_FOR_MS : left / 2) };
-	}
-
-	/**
-	 * Takes in a sign-in the single-machine layout left behind, once per holder: when the store has none
-	 * it is sealed and saved, and then (only then) what it was found in is removed; when the store has
-	 * one already, that one is newer, and the old one is only removed.
-	 */
-	private async look(): Promise<void> {
-		const legacy = this.options.legacy;
-		if (this.looked || legacy === undefined) return;
-		const found = await legacy.take(this.uid);
-		if (found !== null) {
-			const where = legacy.where(this.uid);
-			const row = (await this.options.store.load()) ?? NOTHING;
-			const material = signInOnly(found);
-			const account = accountOf(material);
-			if (account !== null && this.options.ownerOf !== undefined && this.options.ownerOf(account) !== this.uid) {
-				// Not this user's: neither taken in nor removed. Said once per holder.
-				this.log(`[wlp] sign-in.import_refused uid=${this.uid}: the ChatGPT sign-in found in ${where} is another account's; it was left where it is`);
-			} else if (row.sealed === null && account !== null) {
-				await this.options.store.save({ sealed: this.seal(material), generation: row.generation + 1, shortNoted: false });
-				await legacy.remove(this.uid);
-				this.log(`[wlp] sign-in.imported uid=${this.uid}: the ChatGPT sign-in found in ${where} (the single-machine layout) is now kept encrypted in the user's actor storage; ${where} was removed`);
-			} else {
-				await legacy.remove(this.uid);
-				this.log(
-					row.sealed === null
-						? `[wlp] sign-in.imported uid=${this.uid}: ${where} (the single-machine layout) held no finished ChatGPT sign-in and was removed`
-						: `[wlp] sign-in.imported uid=${this.uid}: an old ChatGPT sign-in found in ${where} was removed; the user's actor storage already holds a newer one`,
-				);
-			}
-		}
-		this.looked = true;
 	}
 
 	private seal(material: SignInMaterial): string {
