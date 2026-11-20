@@ -1176,7 +1176,7 @@ export interface VerdictRun {
 	name: string;
 	/** The app that reported it ("github-actions"), or "status" for a commit status. */
 	app: string;
-	/** GitHub's word for how it ended. */
+	/** GitHub's conclusion, or `not_run` for a failure GitHub attributed to a job it never started. */
 	conclusion: string;
 	url: string;
 }
@@ -1205,6 +1205,7 @@ export interface Verdict {
 		unneeded?: Verified["unneeded"];
 	};
 	/**
+	 * "not_run": GitHub did not start a job (`said` is its reason);
 	 * "not_permitted": GitHub would not show the platform this repository's CI (`said` is GitHub's words);
 	 * "timed_out": still running when the work was handed over; "unread": the platform could not read it
 	 * (GitHub did not answer while it waited), or not all of it (more checks than it reads: `said`
@@ -1212,7 +1213,7 @@ export interface Verdict {
 	 * listed no CI at all; "skipped": CI ran and finished, and none of its checks passed (all skipped,
 	 * cancelled or neutral).
 	 */
-	ci: { state: "passed" | "failed" | "none" | "skipped" | "timed_out" | "not_permitted" | "unread"; runs: VerdictRun[]; said: string | null };
+	ci: { state: "passed" | "failed" | "none" | "skipped" | "not_run" | "timed_out" | "not_permitted" | "unread"; runs: VerdictRun[]; said: string | null };
 	flags: VerifiedFlag[];
 	acceptance: string[];
 	mergeable: boolean | null;

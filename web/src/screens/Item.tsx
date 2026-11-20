@@ -479,7 +479,7 @@ const times = (count: number) => (count === 1 ? "once" : count === 2 ? "twice" :
 const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "action_required", "error"];
 
 /** CI's tone: a failure is bad; CI that was not read, or not in full, or had not finished is a quiet warning; passed and none are plain facts. */
-const CI_TONE: Partial<Record<Verdict["ci"]["state"], string>> = { failed: "tone-bad", not_permitted: "tone-warn", timed_out: "tone-warn", unread: "tone-warn" };
+const CI_TONE: Partial<Record<Verdict["ci"]["state"], string>> = { failed: "tone-bad", not_run: "tone-warn", not_permitted: "tone-warn", timed_out: "tone-warn", unread: "tone-warn" };
 
 /** What the gate said when none of the user's checks is listed. */
 function gateWords(gate: Verdict["gate"]): string {
@@ -539,7 +539,7 @@ function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView
 											{run.name}
 											<ExternalIcon size={10} />
 										</a>{" "}
-										<span className={run.conclusion === "success" ? "tone-good" : run.conclusion === "" ? "tone-dim" : FAILING_CONCLUSIONS.includes(run.conclusion) ? "tone-bad" : "tone-dim"}>{run.conclusion === "" ? "still running" : run.conclusion.replace(/_/g, " ")}</span>
+										<span className={run.conclusion === "success" ? "tone-good" : run.conclusion === "not_run" ? "tone-warn" : run.conclusion === "" ? "tone-dim" : FAILING_CONCLUSIONS.includes(run.conclusion) ? "tone-bad" : "tone-dim"}>{run.conclusion === "" ? "still running" : run.conclusion.replace(/_/g, " ")}</span>
 										{run.app === "github-actions" ? null : <span className="tone-dim"> · {run.app === "status" ? "a commit status" : run.app}</span>}
 									</li>
 								))}

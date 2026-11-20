@@ -304,7 +304,7 @@ async function memoryChecks(): Promise<void> {
 	const createVars = (workItem.config as unknown as { createVars: (c: any, input: unknown) => Promise<unknown> }).createVars;
 
 	// GitHub, played here, before any case can ask for the client (it is made once, on first use): the app of this process, with its calls answered in memory. Its settings are taken out again after.
-	const settings = { WLP_GITHUB_APP_ID: "1", WLP_GITHUB_APP_SLUG: "memory", WLP_GITHUB_CLIENT_ID: "memory", WLP_GITHUB_CLIENT_SECRET: randomBytes(16).toString("hex"), WLP_GITHUB_PRIVATE_KEY: randomBytes(16).toString("hex") };
+	const settings = { WLP_GITHUB_API_URL: standin.apiUrl, WLP_GITHUB_APP_ID: "1", WLP_GITHUB_APP_SLUG: "memory", WLP_GITHUB_CLIENT_ID: "memory", WLP_GITHUB_CLIENT_SECRET: randomBytes(16).toString("hex"), WLP_GITHUB_PRIVATE_KEY: randomBytes(16).toString("hex") };
 	Object.assign(process.env, settings);
 	const { githubApp } = await import("../server/src/github/app.js");
 	const app = githubApp();
@@ -622,18 +622,26 @@ async function memoryChecks(): Promise<void> {
 		withGithub(actor, true);
 		// Someone pushes to the pull request's branch after the handover: GitHub's pull request is at another commit.
 		const moved = "b".repeat(40);
-		const pull = (app as unknown as { pull: unknown }).pull;
-		Object.assign(app, { pull: async () => ({ number: 1, url: "local", state: "open", mergeable: true, title: "T", body: "", head: "work", headSha: moved, base: "main", requestedReviewers: ["u"] }) });
+		const { pull, pages } = app;
+		const ciPaths: string[] = [];
+		Object.assign(app, {
+			pages: async ({ path }: { path: string }) => {
+				ciPaths.push(path);
+				return { items: [], truncated: false };
+			},
+			pull: async () => ({ number: 1, url: "local", state: "open", mergeable: true, title: "T", body: "", head: "work", headSha: moved, base: "main", requestedReviewers: ["u"] }),
+		});
 		try {
 			await actor.db.execute("INSERT INTO effects VALUES (?, ?, 0, 0)", `poll_pr:${poll.key}`, JSON.stringify(poll));
 			actor.c.scheduledFire = { id: "poll", scheduledAt: poll.at, firedAt: Date.now() };
 			await actions.internalDue(actor.c);
 			await actor.drain();
 		} finally {
-			Object.assign(app, { pull });
+			Object.assign(app, { pull, pages });
 		}
 		const stored = (actor.c.vars as { stored: { item: Item; meta: { verdict: { result: string } | null } } }).stored;
 		const verdicts = actor.raw.prepare("SELECT json_extract(data, '$.result') AS result, json_extract(data, '$.moved') AS moved FROM verdicts").all() as Array<{ result: string; moved: string | null }>;
+		assert(ciPaths.filter((path) => path.endsWith(`/commits/${HEAD}/check-runs`)).length === 1, "the replacement verdict did not read CI once for the pushed commit");
 		assert(stored.item.state === "review" && stored.meta.verdict?.result === "unverified" && verdicts.length === 1 && verdicts[0]?.result === "unverified" && verdicts[0].moved === moved, `the item is ${stored.item.state}, its summary ${stored.meta.verdict?.result}; verdicts ${JSON.stringify(verdicts)}`);
 		return "the verdict became not verified when the pull request moved, in place of the pass";
 	});

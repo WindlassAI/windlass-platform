@@ -603,18 +603,20 @@ const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "action_
 
 /** CI in a sentence (server/src/factory/verdict.ts, `ciSentence`): what `Verdict.said.ci` is. */
 export function ciSentence(ci: Verdict["ci"]): string {
+	const count = new Set(ci.runs.map((run) => run.name)).size;
 	switch (ci.state) {
 		case "passed":
-			return `CI passed (${ci.runs.length} ${ci.runs.length === 1 ? "check" : "checks"}).`;
-		case "failed":
-			return `CI failed: ${ci.runs
-				.filter((run) => FAILING_CONCLUSIONS.includes(run.conclusion))
-				.map((run) => run.name)
-				.join(", ")}.`;
+			return `CI passed (${count} ${count === 1 ? "check" : "checks"}).`;
+		case "failed": {
+			const failing = ci.runs.filter((run) => FAILING_CONCLUSIONS.includes(run.conclusion));
+			return `CI failed: ${[...new Set(failing.map((run) => run.name))].join(", ")}.`;
+		}
+		case "not_run":
+			return ci.said ? `GitHub did not start the CI jobs: ${ci.said}` : "GitHub did not start the CI jobs.";
 		case "none":
 			return "No CI ran on this commit.";
 		case "skipped":
-			return `CI ran, and nothing in it passed: ${ci.runs.length === 1 ? "its one check was" : `its ${ci.runs.length} checks were`} skipped, cancelled or neutral.`;
+			return `CI ran, and nothing in it passed: ${count === 1 ? "its one check was" : `its ${count} checks were`} skipped, cancelled or neutral.`;
 		case "timed_out":
 			return "CI had not finished when this was handed over.";
 		case "unread":
@@ -675,7 +677,9 @@ export function verdictSaid(verdict: Pick<Verdict, "result" | "gate" | "ci" | "f
 					? "Your checks passed; CI has not been read."
 					: verdict.ci.state === "timed_out"
 						? "Your checks passed; CI had not finished."
-						: "Ready for review."
+						: verdict.ci.state === "not_run"
+							? "Your checks passed; CI did not start."
+							: "Ready for review."
 			: verdict.result === "fail" ? "Failing." : verdict.result === "incomplete" ? "Incomplete: the last turn did not finish." : "Not verified.";
 	const applied = verdict.gate.required.length + (verdict.repositoryChecks ?? 0);
 	const gate =

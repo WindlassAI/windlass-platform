@@ -448,6 +448,22 @@ export class GithubApp {
 		return "none";
 	}
 
+	/** The sole annotation of each candidate check run, in one request with the same Checks permission. */
+	async checkAnnotations(token: string, ids: string[]): Promise<Map<string, string>> {
+		const path = this.settings.apiUrl.endsWith("/api/v3") ? "/../graphql" : "/graphql";
+		const query = "query($ids: [ID!]!) { nodes(ids: $ids) { ... on CheckRun { id annotations(first: 1) { nodes { message } } } } }";
+		const { body } = await this.call({ method: "POST", path, auth: { bearer: token }, body: { query, variables: { ids } }, what: "read check annotations" });
+		const messages = new Map<string, string>();
+		const nodes = record(record(body).data).nodes;
+		for (const node of Array.isArray(nodes) ? nodes : []) {
+			const { id, annotations } = record(node);
+			const list = record(annotations).nodes;
+			const message = Array.isArray(list) ? text(record(list[0]).message) : "";
+			if (typeof id === "string" && message) messages.set(id, message);
+		}
+		return messages;
+	}
+
 	/** Job logs redirect to short-lived storage URLs. Start a fresh request there without the installation token. */
 	async jobLog(token: string, owner: string, name: string, jobId: number): Promise<Response> {
 		const response = await this.request({ path: `/repos/${owner}/${name}/actions/jobs/${jobId}/logs`, auth: { bearer: token }, what: "read the job log" }, "manual");

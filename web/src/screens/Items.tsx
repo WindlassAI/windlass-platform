@@ -86,6 +86,7 @@ export function verdictWord(verdict: NonNullable<ItemSummary["verdict"]>): { wor
 	switch (verdict.result) {
 		case "pass":
 			if (verdict.flags.length > 0) return { word: "Needs a look", tone: "warn" };
+			if (verdict.ci === "not_run") return { word: "Your checks passed; CI did not start", tone: "warn" };
 			if (verdict.ci === "unread") return { word: "Your checks passed; CI not read", tone: "warn" };
 			if (verdict.ci === "timed_out") return { word: "Your checks passed; CI unfinished", tone: "warn" };
 			return { word: "Ready for review", tone: "good" };

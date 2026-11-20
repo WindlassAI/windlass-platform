@@ -1,7 +1,8 @@
 /**
  * What GitHub says of a commit's CI, read for the factory (Plans "software factory" §2.1 step 4): the
  * check runs and commit statuses of the pushed head and, for a GitHub Actions job that failed, the end
- * of its log. Read with an installation token asked for with the three read permissions CI needs
+ * of its log. For a failure with no recorded runtime, a single batched annotation lookup can explain
+ * why GitHub did not start the job. Read with an installation token asked for with the three read permissions CI needs
  * (Checks, Commit statuses, Actions) and nothing else, used for one reading and dropped.
  *
  * Every reading ends as one of four outcomes, and the four are never confused, because the factory acts
@@ -63,11 +64,11 @@ export interface CiRun {
 	name: string;
 	/** The app that reported it ("github-actions"), or "status" for a commit status. */
 	app: string;
-	state: "pending" | "passed" | "failed" | "neutral";
+	state: "pending" | "passed" | "failed" | "not_run" | "neutral";
 	/** GitHub's word: a check run's `conclusion` (or its `status` while it runs), a status's `state`. */
 	conclusion: string;
 	url: string;
-	/** The run's output title and summary, or the status's description: written by CI, so untrusted, and cut short. */
+	/** The check output, job-not-started diagnostic, or status description. Untrusted and cut short. */
 	summary: string;
 	/** For a GitHub Actions check run: its job's id, whose log can be read. */
 	jobId: number | null;
@@ -87,9 +88,9 @@ export type CiReading =
  * "incomplete": every run read has finished and none failed, but GitHub listed more than are read
  * (`truncated`): a failure may be among the rest, so it is not a pass. "skipped": CI ran, every run has
  * finished, none failed and none passed (all skipped, cancelled or neutral): nothing in it verified the
- * work, which is not the same as no CI.
+ * work, which is not the same as no CI. "not_run": GitHub explicitly said a job never started.
  */
-export type CiState = "passed" | "failed" | "pending" | "none" | "skipped" | "not_permitted" | "incomplete" | "retry";
+export type CiState = "passed" | "not_run" | "failed" | "pending" | "none" | "skipped" | "not_permitted" | "incomplete" | "retry";
 
 export function ciState(reading: CiReading): CiState {
 	if (reading.kind === "not_permitted") return "not_permitted";
@@ -98,6 +99,7 @@ export function ciState(reading: CiReading): CiState {
 	if (reading.runs.length === 0) return reading.truncated ? "incomplete" : "none";
 	// A failure that was read stands, however much was not.
 	if (reading.runs.some((run) => run.state === "failed")) return "failed";
+	if (reading.runs.some((run) => run.state === "not_run")) return "not_run";
 	if (reading.runs.some((run) => run.state === "pending")) return "pending";
 	if (reading.truncated) return "incomplete";
 	// A pass needs a check that passed: a run of nothing but skipped or cancelled jobs verified nothing.
@@ -131,8 +133,16 @@ function refusal({ status, headers, said }: GithubError): CiReading {
 	return { kind: "failed", said: `GitHub answered ${status}${said ? ` (${said})` : ""}` };
 }
 
-function checkRunOf(value: unknown): CiRun | null {
-	const fields = record(value);
+// A same-second failure can also be a real test failure. Only GitHub's explicit diagnostic
+// changes its classification; titles, summaries and annotations can all contain untrusted text.
+function markNotRun(run: CiRun, message: string): boolean {
+	if (!/^The job was not started because\b/i.test(message.trim())) return false;
+	run.state = "not_run";
+	run.summary = short(redact(plain(message.trim())), 500);
+	return true;
+}
+
+function checkRunOf(fields: Record<string, unknown>, candidates: Map<CiRun, string>): CiRun | null {
 	const name = text(fields.name);
 	if (name === "") return null;
 	const app = text(record(fields.app).slug) || "unknown";
@@ -141,7 +151,13 @@ function checkRunOf(value: unknown): CiRun | null {
 	const state = status !== "completed" ? "pending" : FAILING.has(conclusion) ? "failed" : conclusion === "success" ? "passed" : "neutral";
 	const output = record(fields.output);
 	const summary = plain([text(output.title), text(output.summary)].filter((part) => part !== "").join(": "));
-	return { name, app, state, conclusion: status === "completed" ? conclusion : status, url: text(fields.html_url) || text(fields.details_url), summary: short(summary, 500), jobId: app === "github-actions" ? whole(fields.id) : null };
+	const run: CiRun = { name, app, state, conclusion: status === "completed" ? conclusion : status, url: text(fields.html_url) || text(fields.details_url), summary: short(summary, 500), jobId: app === "github-actions" ? whole(fields.id) : null };
+	const noDuration = fields.started_at === null || (typeof fields.started_at === "string" && fields.started_at === fields.completed_at);
+	if (app === "github-actions" && state === "failed" && conclusion === "failure" && noDuration) {
+		const explained = markNotRun(run, text(output.title)) || markNotRun(run, text(output.summary));
+		if (!explained && output.annotations_count === 1) candidates.set(run, text(fields.node_id));
+	}
+	return run;
 }
 
 function statusOf(value: unknown): CiRun | null {
@@ -151,6 +167,18 @@ function statusOf(value: unknown): CiRun | null {
 	const word = text(fields.state);
 	const state = word === "success" ? "passed" : word === "pending" ? "pending" : "failed";
 	return { name, app: "status", state, conclusion: word, url: text(fields.target_url), summary: short(plain(text(fields.description)), 500), jobId: null };
+}
+
+const priority: Record<CiRun["state"], number> = { neutral: 0, passed: 1, pending: 2, not_run: 3, failed: 4 };
+
+/** One entry per name in this reading of one commit; a real failure wins in either arrival order. */
+function distinctChecks(runs: CiRun[]): CiRun[] {
+	const byName = new Map<string, CiRun>();
+	for (const run of runs) {
+		const prior = byName.get(run.name);
+		if (!prior || priority[run.state] > priority[prior.state]) byName.set(run.name, run);
+	}
+	return [...byName.values()];
 }
 
 /** The end of a text as a log tail: no timestamps GitHub put before each line, no control characters, no tokens. */
@@ -225,6 +253,41 @@ export interface CiTarget {
 	head: string;
 }
 
+/** Resolve ambiguous failures before collapsing names or choosing any logs to download. */
+async function readRuns(app: GithubApp, token: string, target: CiTarget, head: string, checks: unknown[], statuses: unknown[], truncated: boolean): Promise<CiReading> {
+	const candidates = new Map<CiRun, string>();
+	const fromHead = checks.map(record).filter((fields) => !fields.head_sha || fields.head_sha === head);
+	let runs = [...fromHead.map((fields) => checkRunOf(fields, candidates)), ...statuses.map(statusOf)].filter((run): run is CiRun => run !== null);
+	if (candidates.size) {
+		let messages = new Map<string, string>();
+		let unread: CiReading = { kind: "failed", said: "GitHub did not return the check annotations" };
+		try {
+			const ids = [...new Set(candidates.values())].filter(Boolean);
+			if (ids.length) messages = await app.checkAnnotations(token, ids);
+		} catch (error) {
+			if (!(error instanceof GithubError)) throw error;
+			unread = refusal(error);
+		}
+		const missing = new Set<CiRun>();
+		for (const [run, id] of candidates) {
+			const message = messages.get(id);
+			if (message) markNotRun(run, message);
+			else missing.add(run);
+		}
+		// An unread annotation cannot establish a code failure. An independent, confirmed failure still stands.
+		if (missing.size) {
+			runs = runs.filter((run) => !missing.has(run));
+			if (!runs.some((run) => run.state === "failed")) return unread;
+			truncated = true;
+		}
+	}
+	runs = distinctChecks(runs);
+	const failing = runs.filter((run): run is CiRun & { jobId: number } => run.state === "failed" && run.jobId !== null).slice(0, LOGS_PER_READING);
+	const logs: CiLog[] = [];
+	for (const run of failing) logs.push(await readLog(app, token, target.owner, target.name, run));
+	return { kind: "read", head, runs, truncated, logs };
+}
+
 /** Reads the CI of a commit. Never throws for anything GitHub answers: every outcome is a `CiReading`. */
 export async function readCi(app: GithubApp, target: CiTarget): Promise<CiReading> {
 	try {
@@ -243,11 +306,8 @@ export async function readCi(app: GithubApp, target: CiTarget): Promise<CiReadin
 					if (answeredFor === "" && typeof sha === "string") answeredFor = sha;
 					return Array.isArray(list) ? list : [];
 				});
-				const runs = [...checks.items.map(checkRunOf), ...statuses.items.map(statusOf)].filter((run): run is CiRun => run !== null);
-				const failing = runs.filter((run): run is CiRun & { jobId: number } => run.state === "failed" && run.jobId !== null).slice(0, LOGS_PER_READING);
-				const logs: CiLog[] = [];
-				for (const run of failing) logs.push(await readLog(app, token, target.owner, target.name, run));
-				return { kind: "read", head: answeredFor || target.head, runs, truncated: checks.truncated || statuses.truncated, logs } satisfies CiReading;
+				const head = answeredFor || (/^[0-9a-f]{40}$/i.test(target.head) ? target.head : text(record(checks.items[0]).head_sha) || target.head);
+				return await readRuns(app, token, target, head, checks.items, statuses.items, checks.truncated || statuses.truncated);
 			} catch (error) {
 				if (error instanceof GithubError) return refusal(error);
 				throw error;

@@ -36,7 +36,7 @@ import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.j
 import { spellSeconds } from "../usage.js";
 import { budgetStop } from "./budget.js";
 import type { ChoiceId, CiProgress, Fact, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
-import { ciFingerprint, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
+import { ciFingerprint, ciSentence, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
 
 /** §2.1 and §2.4. Design constants, not settings. */
 export const RULES = {
@@ -224,7 +224,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "start" | "retry" | "se
 			else publishFailed(c, fact);
 			return true;
 		case "ci_read":
-			if (step.kind !== "ci" || fact.key !== key || fact.head !== run.ci?.head) return false;
+			if ((step.kind !== "ci" && step.kind !== "handoff") || fact.key !== key || fact.head !== run.ci?.head) return false;
 			ciRead(c, fact);
 			return true;
 		case "pr_read":
@@ -461,12 +461,21 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	// "No CI" and "nothing passed" are kept as what CI came to only once the wait for it is over: an early empty reading followed
 	// by readings that failed would otherwise be handed over as "no CI ran", when CI may well have run since.
 	const settled = (state !== "none" && state !== "skipped") || since >= CI_POLLING.noneAfterMs;
-	if (reading.kind === "read" && state !== "retry" && state !== "not_permitted" && settled) ci.last = { state, runs: reading.runs.map(({ name, app, conclusion, url }) => ({ name, app, conclusion, url })), said: null };
+	ci.last = null;
+	if (reading.kind === "read" && state !== "retry" && state !== "not_permitted" && (settled || run.step.kind === "handoff")) {
+		ci.last = {
+			state,
+			runs: reading.runs.map(({ name, app, state, conclusion, url }) => ({ name, app, conclusion: state === "not_run" ? "not_run" : conclusion, url })),
+			said: state === "not_run" ? reading.runs.find((run) => run.state === "not_run")?.summary ?? null : null,
+		};
+	}
 	if (reading.kind === "not_permitted") ci.last = { state: "not_permitted", runs: [], said: reading.said };
 
-	// Someone pushed to the pull request's branch after the agent: what was verified is not what it holds. Handed over as it is,
-	// never as passed; a fix turn now would push over their commit.
 	if (fact.prHead !== null) ci.moved = movedFrom(ci.head, fact.prHead);
+	// A person requested this handover, or a moved PR needs a replacement verdict. One reading
+	// settles it, even if still pending or unavailable, without starting another fix or asking again.
+	if (run.step.kind === "handoff") return handoff(c);
+
 	if (ci.moved !== null) {
 		c.say(`The pull request is now at ${shortSha(ci.moved)}, pushed after the agent's ${shortSha(ci.head)}: it is handed over as it is.`);
 		return handoff(c);
@@ -496,7 +505,7 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			return handoff(c);
 		case "failed":
 			if (reading.kind !== "read") return;
-			c.say(`CI failed: ${reading.runs.filter((run) => run.state === "failed").map((run) => run.name).join(", ")}.`);
+			c.say(ciSentence(verdictCi(ci)));
 			return nextTurn(c, { kind: "ci_fix", text: ciFixText(ci.head, reading), newStep: true, charge: "ci", fingerprint: ciFingerprint(reading), fetchBase: null });
 		case "none":
 			if (since >= CI_POLLING.noneAfterMs) {
@@ -511,6 +520,11 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 				return handoff(c);
 			}
 			break;
+		case "not_run": {
+			const sentence = ciSentence(verdictCi(ci));
+			if (since >= CI_POLLING.timeoutMs) return ask(c, "ci_timeout", sentence, [choice("wait"), choice("hand_over"), choice("give_up")], null, null);
+			return pollCi(c, fact.openItems, null, sentence);
+		}
 		case "pending":
 		case "retry":
 			if (since >= CI_POLLING.timeoutMs) return ask(c, "ci_timeout", `CI has not finished ${spellSeconds(since / 1000)} after the push.`, [choice("wait"), choice("hand_over"), choice("give_up")], null, null);
@@ -519,15 +533,24 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	pollCi(c, fact.openItems, reading.kind === "rate_limited" ? reading.retryAt : null, ciWaitSentence(ci.head, reading));
 }
 
+/** Request a durable, immediate read of the commit before publishing a verdict outside a CI poll. */
+function readForHandoff(c: Change, ci: CiProgress): void {
+	c.enter("handoff");
+	ci.last = null;
+	if (c.item.state !== "review") c.state("waiting", { reason: "ci", sentence: `Reading CI on ${shortSha(ci.head)} for handover.`, retryAt: c.at });
+	c.effects.push({ kind: "poll_ci", key: c.key, head: ci.head, at: c.at });
+}
+
 /** Hands over the commit this run pushed, with the evidence kept for that commit: never a later, unpushed turn's. */
 function handoff(c: Change): void {
 	const { item, run } = c;
 	const ci = run.ci;
 	if (item.head === null || item.pr === null || ci === null || ci.head !== item.head) throw new Error("an item is handed over only after this run pushed its work");
-	c.enter("handoff");
-	ci.handed = c.key;
-	handVerdict(c, ci);
-	run.endedAt = c.at;
+	if (run.step.kind !== "handoff") c.enter("handoff");
+	const reviewDone = c.item.state === "review";
+	ci.handed ??= c.key;
+	handVerdict(c, ci, reviewDone || undefined);
+	run.endedAt ??= c.at;
 	c.state("review");
 	c.enter("merged");
 	c.effects.push({ kind: "poll_pr", key: c.key, pr: item.pr.number, at: c.at + CI_POLLING.prEveryMs });
@@ -561,8 +584,8 @@ function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
 	const ci = c.run.ci;
 	if (ci !== null && fact.prHead !== null && movedFrom(ci.head, fact.prHead) !== ci.moved) {
 		ci.moved = movedFrom(ci.head, fact.prHead);
-		c.say(ci.moved === null ? `The pull request is back at ${shortSha(ci.head)}, the commit verified.` : `The pull request moved to ${shortSha(ci.moved)} after it was handed over.`);
-		handVerdict(c, ci, true);
+		c.say(ci.moved === null ? `The pull request is back at ${shortSha(ci.head)}, the commit this run pushed.` : `The pull request moved to ${shortSha(ci.moved)} after it was handed over.`);
+		return readForHandoff(c, ci);
 	}
 	c.effects.push({ kind: "poll_pr", key: c.key, pr: c.item.pr?.number ?? 0, at: c.at + CI_POLLING.prEveryMs });
 }
@@ -661,7 +684,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			pollCi(c, 0, null, `Waiting for CI on ${shortSha(run.ci?.head ?? "")}, as you asked.`);
 			break;
 		case "hand_over":
-			handoff(c);
+			if (run.ci !== null) readForHandoff(c, run.ci);
 			break;
 		case "give_up":
 			run.endedAt = c.at;

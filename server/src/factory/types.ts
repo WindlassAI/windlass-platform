@@ -37,7 +37,7 @@ export interface CiProgress {
 	head: string;
 	/** When it was pushed: CI's waits (CI_POLLING) count from here. */
 	since: number;
-	/** The last reading that said something, as the verdict needs it; null before the first. */
+	/** Evidence from the latest poll, cleared when a fresh reading is unavailable or still due. */
 	last: { state: Exclude<CiState, "retry">; runs: VerdictRun[]; said: string | null } | null;
 	mergeable: boolean | null;
 	/**

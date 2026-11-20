@@ -455,7 +455,7 @@ function live(item: FactoryItem, effect: Effect): boolean {
 		case "publish":
 			return effect.key === key && run.step.kind === "publish";
 		case "poll_ci":
-			return effect.key === key && run.step.kind === "ci" && item.pr !== null;
+			return effect.key === key && (run.step.kind === "ci" || run.step.kind === "handoff") && item.pr !== null;
 		case "poll_pr":
 			return effect.key === key && run.step.kind === "merged";
 		case "handoff":
@@ -512,7 +512,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 				return { reading, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
 			};
 			const { reading, mergeable, prHead } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, mergeable: null, prHead: null }));
-			const { openItems } = await factsOf(c, meta);
+			const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
 			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, mergeable, prHead, openItems });
 			return true;
 		}

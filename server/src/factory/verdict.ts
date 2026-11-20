@@ -129,15 +129,20 @@ const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "action_
 
 /** What the verdict says of CI, in a sentence: for the log, the pull request and the item's page alike. */
 export function ciSentence(ci: Verdict["ci"]): string {
+	const count = new Set(ci.runs.map((run) => run.name)).size;
 	switch (ci.state) {
 		case "passed":
-			return `CI passed (${ci.runs.length} ${ci.runs.length === 1 ? "check" : "checks"}).`;
-		case "failed":
-			return `CI failed: ${names(ci.runs.filter((run) => FAILING_CONCLUSIONS.includes(run.conclusion)))}.`;
+			return `CI passed (${count} ${count === 1 ? "check" : "checks"}).`;
+		case "failed": {
+			const failing = ci.runs.filter((run) => FAILING_CONCLUSIONS.includes(run.conclusion));
+			return `CI failed: ${[...new Set(failing.map((run) => run.name))].join(", ")}.`;
+		}
+		case "not_run":
+			return ci.said ? `GitHub did not start the CI jobs: ${ci.said}` : "GitHub did not start the CI jobs.";
 		case "none":
 			return "No CI ran on this commit.";
 		case "skipped":
-			return `CI ran, and nothing in it passed: ${ci.runs.length === 1 ? "its one check was" : `its ${ci.runs.length} checks were`} skipped, cancelled or neutral.`;
+			return `CI ran, and nothing in it passed: ${count === 1 ? "its one check was" : `its ${count} checks were`} skipped, cancelled or neutral.`;
 		case "timed_out":
 			return "CI had not finished when this was handed over.";
 		case "unread":
@@ -146,8 +151,6 @@ export function ciSentence(ci: Verdict["ci"]): string {
 			return `CI was not read: GitHub does not let the platform see this repository's checks${ci.said ? ` (“${ci.said}”)` : ""}. The GitHub App needs read access to Checks, Commit statuses and Actions, accepted on the installation. The pull request's own page shows them.`;
 	}
 }
-
-const names = (runs: Array<{ name: string }>) => runs.map((run) => run.name).join(", ");
 
 /** The verdict in plain sentences, for the item page and the line on the pull request. */
 export function verdictWords(verdict: Verdict, gate: GateEvidence | null): string {
@@ -160,7 +163,9 @@ export function verdictWords(verdict: Verdict, gate: GateEvidence | null): strin
 					? "Your checks passed; CI has not been read."
 					: verdict.ci.state === "timed_out"
 						? "Your checks passed; CI had not finished."
-						: "Ready for review."
+						: verdict.ci.state === "not_run"
+							? "Your checks passed; CI did not start."
+							: "Ready for review."
 			: verdict.result === "fail"
 				? "Failing."
 				: verdict.result === "incomplete"

@@ -82,8 +82,9 @@ describe("the mock's work items", () => {
 		];
 		const states: Verdict["ci"][] = [
 			{ state: "passed", runs: runs.slice(0, 1), said: null },
-			{ state: "passed", runs, said: null },
-			{ state: "failed", runs, said: null },
+			{ state: "passed", runs: [...runs, ...runs], said: null },
+			{ state: "failed", runs: [...runs, ...runs], said: null },
+			{ state: "not_run", runs: [], said: "The job was not started because recent account payments have failed." },
 			{ state: "none", runs: [], said: null },
 			{ state: "skipped", runs: runs.slice(0, 1), said: null },
 			{ state: "skipped", runs, said: null },
