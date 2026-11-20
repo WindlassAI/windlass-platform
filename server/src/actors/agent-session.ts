@@ -127,6 +127,7 @@ import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, maySubscribe, requireService, requireUser } from "../auth.js";
 import { config } from "../config.js";
 import {
+	generatedSessionTitle,
 	type AcpUpdate,
 	type ModelList,
 	type LiveDelta,
@@ -286,7 +287,8 @@ interface SessionMeta {
 	sessionId: string;
 	demo: boolean;
 	title: string;
-	titleIsDefault: boolean;
+	/** Set by a person at creation or rename. Absent on older sessions. */
+	titleIsTyped?: boolean;
 	place: SandboxPlace;
 	profile: SandboxProfileId;
 	model: string;
@@ -3169,6 +3171,16 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			prompt: text, mode, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
 			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 			onControl: control => { if (open) active.control = control; },
+			onAcpUpdate: update => {
+				if (!open) return;
+				if (caps.events === "acp") acpTimeline.update(update);
+				const title = generatedSessionTitle(update, { typed: meta.titleIsTyped, item: meta.origin }, active.secrets?.redactor);
+				if (title && title !== meta.title) meta.title = title;
+				else if (update.sessionUpdate === "current_mode_update" && !active.modeQueued && meta.mode !== update.currentModeId) meta.mode = update.currentModeId;
+				else return;
+				publish(c);
+				void persist(c);
+			},
 		};
 		if (!signal.aborted && caps.events === "acp") {
 			result = await harness.runTurn(sandbox, {
@@ -3185,15 +3197,6 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 					if (fallbackFrom !== undefined) note(c, turn, "info", `Claude Code does not offer “${fallbackFrom}” here. Using its current mode “${chosen}”.`);
 					publish(c);
 					void persist(c);
-				},
-				onAcpUpdate: update => {
-					if (!open) return;
-					acpTimeline.update(update);
-					if (update.sessionUpdate === "current_mode_update" && !active.modeQueued && meta.mode !== update.currentModeId) {
-						meta.mode = update.currentModeId;
-						publish(c);
-						void persist(c);
-					}
 				},
 			});
 		} else if (!signal.aborted) {
@@ -3760,10 +3763,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		meta.status = "starting";
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
-		if (meta.titleIsDefault) {
-			meta.title = titleFrom(shown);
-			meta.titleIsDefault = false;
-		}
+		if (turn === 1 && !meta.titleIsTyped && !meta.origin) meta.title = titleFrom(shown);
 		append(c, { turn, kind: "user", text: shown, model, effort });
 		publish(c);
 
@@ -4038,7 +4038,7 @@ export const agentSession = actor({
 				sessionId: c.key[1],
 				demo: input.demo === true,
 				title: String(input.title),
-				titleIsDefault: input.titleIsDefault === true,
+				titleIsTyped: input.titleIsTyped === true,
 				place: input.place,
 				machineName: typeof input.machineName === "string" ? input.machineName : null,
 				harness: input.harness,
@@ -4747,7 +4747,7 @@ export const agentSession = actor({
 			requireService(c);
 			const meta = liveMeta(c);
 			meta.title = String(title);
-			meta.titleIsDefault = false;
+			meta.titleIsTyped = true;
 			// The caller is the `user` actor, which takes the summary from the return value.
 			c.broadcast("summary", summaryOf(meta));
 			await persist(c);

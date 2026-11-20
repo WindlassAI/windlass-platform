@@ -652,6 +652,42 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				assert(!(await snapshot()).pending.length && end.outcome === "succeeded" && end.verified === null && end.usage === null && end.cachedShare === null, JSON.stringify(end));
 				return "eight live chunks, two stored items, no pending chunks or verification";
 			});
+			await check("a generated title replaces the first prompt's opening words", async () => {
+				const { summary } = await snapshot();
+				assert(summary.title === "Inspect the files", `title is "${summary.title}"`);
+				return summary.title;
+			});
+			await check("a typed title survives the same update that titles an unnamed session", async () => {
+				const other = await user.createSession({ ...launch, title: "My notes" });
+				const seen = new Watch(client, uid, other.id, token);
+				try {
+					const { turn } = await seen.conn.prompt({ text: "plain" });
+					await seen.untilEnded(turn);
+					assert(seen.items.some(i => i.kind === "acp" && i.update.title === "Inspect the files"), "missing title update");
+					const titles = [(await seen.conn.snapshot()).summary.title, (await snapshot()).summary.title];
+					assert(titles[0] === "My notes" && titles[1] === "Inspect the files", titles.join(" / "));
+				} finally { await seen.conn.dispose(); await user.deleteSession(other.id); }
+				return "My notes / Inspect the files";
+			});
+			await check("both summary feeds publish the later generated title during the turn", async () => {
+				const list = user.connect();
+				let shown = false;
+				let listed = false;
+				const off = watch.conn.on("summary", payload => { shown ||= (payload as SessionSummary).title === "Review the changes"; });
+				list.on("sessions", payload => { listed ||= (payload as SessionSummary[]).some(s => s.id === session.id && s.title === "Review the changes"); });
+				try {
+					await list.listSessions();
+					const { turn } = await watch.conn.prompt({ text: "retitle" });
+					try {
+						await until("both live feeds to show Review the changes", () => shown && listed, 5000);
+					} finally {
+						await watch.conn.prompt({ text: "Check the patch" });
+						await watch.untilEnded(turn);
+					}
+					assert((await snapshot()).summary.title === "Check the patch", "later title lost after an empty or missing title");
+				} finally { off(); await list.dispose(); }
+				return "both feeds before the turn ended, then Check the patch";
+			});
 			const sentModes = (since: number) => runner.acpInput.slice(since).map(line => JSON.parse(line)).filter(f => f.method === "session/set_mode").map(f => f.params.modeId);
 			await check("Claude defaults to auto and stores the adapter’s offered list", async () => {
 				const { summary } = await snapshot();
@@ -659,7 +695,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				assert(summary.mode === "auto" && summary.availableModes.map(m => m.id).join() === "default,acceptEdits,plan,auto,bypassPermissions" && summary.availableModes.every(m => m.name && m.description), JSON.stringify(summary));
 				return "auto on session/new, five described choices";
 			});
-			await check("Claude keeps a mid-turn choice for both subsequent prompts, including after actor sleep", async () => {
+			await check("a rename and a mid-turn mode choice both survive subsequent prompts and actor sleep", async () => {
 				const { turn } = await watch.conn.prompt({ text: "latechange" });
 				await waitDuring(turn, "fixture waiting for follow-up", () => watch.deltas.find(d => d.turn === turn));
 				const before = runner.acpInput.length;
@@ -667,13 +703,15 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				finally { await watch.conn.prompt({ text: "finish" }); await watch.untilEnded(turn); }
 				assert((await snapshot()).summary.mode === "plan", "an update from the active turn replaced the queued mode");
 				assert(!sentModes(before).length, "mode was applied to the running prompt");
+				await user.renameSession(session.id, "My review");
 				await play("plain");
 				await watch.conn.dispose();
 				await forceSleep(session.id);
 				watch = new Watch(client, uid, session.id, token);
 				await play("plain");
+				assert((await snapshot()).summary.title === "My review", "a generated title replaced the rename after sleep");
 				assert(sentModes(before).join() === "plan,plan", JSON.stringify(sentModes(before)));
-				return "plan sent on both resumed prompts";
+				return "My review kept and plan sent on both resumed prompts";
 			});
 			await check("Claude’s own mode change is visible during its turn and carried into the next open", async () => {
 				const { turn } = await watch.conn.prompt({ text: "leaveplan" });
@@ -853,6 +891,8 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 					assert((await seen.conn.prompt({ text: value })).steered, "the fixture did not accept the steer");
 					await seen.untilEnded(steering.turn);
 					const saved = await seen.conn.snapshot();
+					const expected = ("Check [secret:HARBOR_KEY] [secret:HARBOR_KEY] " + "x".repeat(220)).slice(0, 200);
+					assert(saved.summary.title === expected, "generated title was not single-line, redacted and bounded to 200 characters");
 					const content = JSON.stringify([saved, seen.items, seen.deltas]);
 					assert(!content.includes(value) && content.includes("HARBOR_KEY"), "saved secret exposed or redaction missing");
 				} finally { await seen.conn.dispose(); }
@@ -892,7 +932,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				const item = await refusal(user.createItem(raw));
 				const { createSessionActor } = await import("../server/src/actors/internal.js");
 				const roles = await Promise.all((["builder", "reviewer"] as const).map(role =>
-					refusal(createSessionActor({ client: () => client }, uid, randomUUID(), { ...launch, model: "default", demo: false, title: "Inspect", titleIsDefault: false, repoUrl: null, createdAt: Date.now(), origin: { kind: "item", role, itemId: "i_fixture" } }))
+					refusal(createSessionActor({ client: () => client }, uid, randomUUID(), { ...launch, model: "default", demo: false, title: "Inspect", titleIsTyped: true, repoUrl: null, createdAt: Date.now(), origin: { kind: "item", role, itemId: "i_fixture" } }))
 				));
 				assert([item, ...roles].every(code => code === "bad_input"), `item, builder, reviewer: ${[item, ...roles].join(", ")}`);
 				return "item, builder, reviewer refused";

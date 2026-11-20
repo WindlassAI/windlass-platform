@@ -78,6 +78,7 @@ import {
 	MAX_CHECK_TIMEOUT_SECONDS,
 	MIN_SECRET_VALUE_CHARS,
 	MAX_TITLE_CHARS,
+	generatedSessionTitle,
 	MAX_MACHINES,
 	CLAUDE_LAUNCH_MODES,
 	type RepositoryCheck,
@@ -2301,6 +2302,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					run: () => {
 						const state = session.run?.acp;
 						if (!state) return;
+						const title = generatedSessionTitle(update, { typed: session.titled, item: session.summary.item });
+						if (title && title !== session.summary.title) setSummary(world, session, { title });
 						if (update.sessionUpdate === "usage_update" && typeof update.used === "number" && typeof update.size === "number") state.context = { used: update.used, size: update.size, cost: (update.cost as AcpContext["cost"] | undefined) ?? null };
 						// Claude Code changed its own mode (leaving Plan, say): the session's follows, unless its user chose one during the turn.
 						if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string" && !state.modeQueued && session.summary.mode !== update.currentModeId) setSummary(world, session, { mode: update.currentModeId });
@@ -2407,6 +2410,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			stopReason: "end_turn",
 			entries: [
 				...plain.map((update) => ({ wait: 90, update })),
+				tool(200, { sessionUpdate: "session_info_update", title: "Document the README test command" }),
 				{ wait: 400, update: plans[0] as AcpUpdate },
 				tool(500, { sessionUpdate: "tool_call", toolCallId: ids.read, title: "Read README.md", kind: "read", status: "pending", rawInput: { file_path: "/workspace/README.md" } }),
 				tool(300, { sessionUpdate: "tool_call_update", toolCallId: ids.read, status: "in_progress" }),

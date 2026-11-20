@@ -25,6 +25,7 @@ export const modelEfforts = {
 export const scenarios = {
 	*plain() {
 		for (const part of ["I'll ", "inspect ", "the files."]) yield thought(part);
+		yield { sessionUpdate: "session_info_update", title: "Inspect the files" };
 		for (const part of ["The ", "files ", "are ", "ready", "."]) yield message(part);
 	},
 	*tools() {
@@ -86,6 +87,13 @@ export const scenarios = {
 			yield message(part);
 		}
 	},
+	*retitle() {
+		yield { sessionUpdate: "session_info_update", title: "Review the changes" };
+		const title = yield { steer: true };
+		yield { sessionUpdate: "session_info_update", title };
+		yield { sessionUpdate: "session_info_update", title: "\n\u0000" };
+		yield { sessionUpdate: "session_info_update" };
+	},
 	*steer() {
 		yield thought("Waiting for a follow-up.");
 		const followUp = yield { steer: true };
@@ -99,6 +107,8 @@ export const scenarios = {
 		yield message("Still connected.");
 	},
 	*secret(value) {
+		const split = value.slice(0, 4) + "\u0000" + value.slice(4);
+		yield { sessionUpdate: "session_info_update", title: `  Check\u0000\r\n${value}\u0080 ${split} ${"x".repeat(220)}` };
 		yield message(value);
 		const execute = call("execute", "Print the test value");
 		yield { sessionUpdate: "tool_call", ...execute };

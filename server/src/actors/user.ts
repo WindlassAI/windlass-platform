@@ -1020,7 +1020,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		await createSessionActor(c, profile.uid, summary.id, {
 			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role } } : {}),
 			title: summary.title,
-			titleIsDefault: givenTitle === null,
+			titleIsTyped: !item && givenTitle !== null,
 			place: summary.place,
 			harness,
 			...(machine ? { machineName: machine.name } : {}),

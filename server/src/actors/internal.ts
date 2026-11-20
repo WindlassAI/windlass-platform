@@ -29,7 +29,7 @@ export interface SessionCreateInput {
 	/** A service token bound to this actor's key: proof that `user` created it. */
 	grant: string;
 	title: string;
-	titleIsDefault: boolean;
+	titleIsTyped: boolean;
 	place: SandboxPlace;
 	/** For a place on one of the user's machines: its name when the session was launched. */
 	machineName?: string;

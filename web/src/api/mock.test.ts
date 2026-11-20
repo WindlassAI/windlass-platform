@@ -85,6 +85,16 @@ async function freshSession(profile: "docker-windlass-sandbox" | "docker-hardene
 }
 
 describe("what the mock serves", () => {
+	it("uses the recorded title for an unnamed session and keeps a typed title", async () => {
+		const user = client.user(auth);
+		for (const title of [undefined, "My notes"]) {
+			const session = await after(500, user.createSession({ title, harness: "claude", profile: "docker-hardened", place: { kind: "machine", machineId: "m_nas" } }));
+			await after(5000, client.session(auth, session.id).prompt({ text: "plain" }));
+			const list = await after(500, user.listSessions());
+			expect(list.find(s => s.id === session.id)?.title).toBe(title ?? "Inspect the files");
+		}
+	});
+
 	it.each([
 		["claude", "docker-hardened", "auto", ["default", "acceptEdits", "plan", "auto", "bypassPermissions"]],
 		["windlass", "docker-windlass-sandbox", "auto", ["ask", "auto"]],

@@ -1208,7 +1208,7 @@ async function machineChecks(): Promise<void> {
 	const server = new Server();
 	const runner = new StandInRunner(API, ENDPOINT);
 	try {
-		const { user } = await world(server, standin, { WLP_MACHINES: "1", WLP_FACTORY_REVIEWER: "on", WLP_PUBLIC_URL: API, WLP_FACTORY_HOSTED_RUNNING: "1", WLP_FACTORY_ITEM_HOSTED_SECONDS: "1" });
+		const { user, client, auth } = await world(server, standin, { WLP_MACHINES: "1", WLP_FACTORY_REVIEWER: "on", WLP_PUBLIC_URL: API, WLP_FACTORY_HOSTED_RUNNING: "1", WLP_FACTORY_ITEM_HOSTED_SECONDS: "1" });
 		await runner.pair(user);
 		const place = { kind: "machine" as const, machineId: runner.id.machineId };
 		const task = { repository: { id: harbor.id }, title: "On my machine", body: "Write a short program.", place };
@@ -1224,6 +1224,26 @@ async function machineChecks(): Promise<void> {
 		if (!runner.control) await runner.connectControl();
 		runner.report();
 		await waitFor("available machine profiles", async () => (await user.machines())[0]?.profiles.some(p => p.available), 15_000);
+
+		await check("machine: a generated title applies to a personal session and leaves an item's title with its builder", async () => {
+			const prompt = "Read the repo (session title)";
+			const personal = await user.createSession({ place, profile: "docker-hardened" });
+			const session = (id: string) => client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } });
+			await session(personal.id).prompt({ text: prompt });
+			const item = await user.createItem({ ...task, title: "Inspect the harbor", body: prompt, start: true });
+			try {
+				const titles = await Promise.all([personal.id, item.sessionId].map(id => waitFor("the session to finish its turn", async () => {
+					const page = await session(id).snapshot();
+					return page.timeline.some(i => i.kind === "windlass") && page.timeline.some(i => i.kind === "turn.ended") && page.summary.title;
+				}, 30_000)));
+				titles.push((await user.item(item.id)).title);
+				assert(titles[0] === "Inspect the files" && titles[1] === item.title && titles[2] === item.title, titles.join(" / "));
+				return titles.join(" / ");
+			} finally {
+				await user.actOnItem({ id: item.id, action: { kind: "cancel" } });
+				await user.deleteSession(personal.id);
+			}
+		});
 
 		await check("machine: a machine turn and a hosted turn overlap with one hosted slot, and machine review costs zero hosted seconds", async () => {
 			await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: true });

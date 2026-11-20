@@ -8,7 +8,7 @@ import { createInterface } from "node:readline";
 import { PassThrough, type Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import type { AcpUpdate, CreateItemInput } from "../server/src/contract.js";
+import { generatedSessionTitle, type AcpUpdate, type CreateItemInput } from "../server/src/contract.js";
 import type { RunTurnInput, SandboxHandle, SandboxLayer } from "../server/src/sandbox/api.js";
 import { markTurnSandbox, type ProcessEnd, type StartOptions } from "../server/src/sandbox/provider.js";
 import { SecretRedactor } from "../server/src/repo-secrets.js";
@@ -186,9 +186,19 @@ async function checkScenarios(client: Client, sessionId: string) {
 	const update = (kind: string) => client.update(sessionId, kind);
 	const plain = prompt("Please run (plain).");
 	for (let i = 0; i < 3; i++) await client.chunk(sessionId, "agent_thought_chunk");
+	const info = await update("session_info_update");
+	assert.equal(info.title, "Inspect the files");
 	for (let i = 0; i < 5; i++) await client.chunk(sessionId);
 	await client.ended(plain);
 	ok("plain delivers three thoughts and five message chunks in order");
+
+	assert.deepEqual({
+		personal: generatedSessionTitle(info, {}),
+		typed: generatedSessionTitle(info, { typed: true }),
+		builder: generatedSessionTitle(info, { item: { role: "builder" } }),
+		reviewer: generatedSessionTitle(info, { item: { role: "reviewer" } }),
+	}, { personal: "Inspect the files", typed: undefined, builder: undefined, reviewer: undefined });
+	ok("only an unnamed personal session adopts the fixture title");
 
 	const tools = prompt("tools");
 	const execute = await update("tool_call");
@@ -264,6 +274,7 @@ async function checkScenarios(client: Client, sessionId: string) {
 
 	const value = "fake.A9+/=:_value";
 	const secret = prompt("secret:" + value);
+	assert((await update("session_info_update")).title.includes(value));
 	assert.equal(await client.chunk(sessionId), value);
 	const call = await update("tool_call");
 	const output = await update("tool_call_update");

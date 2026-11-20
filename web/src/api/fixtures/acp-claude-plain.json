@@ -25,6 +25,10 @@
 			}
 		},
 		{
+			"sessionUpdate": "session_info_update",
+			"title": "Inspect the files"
+		},
+		{
 			"sessionUpdate": "agent_message_chunk",
 			"content": {
 				"type": "text",

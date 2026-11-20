@@ -816,7 +816,7 @@ async function main(server: Server | null): Promise<void> {
 	});
 	await check("auth: a session cannot be created around the user actor", async () => {
 		const forged = `s_${randomBytes(8).toString("hex")}`;
-		const input = { grant: token, title: "forged", titleIsDefault: false, profile: availableProfile, model: models[0], repoUrl: null, demo: true, createdAt: Date.now() };
+		const input = { grant: token, title: "forged", titleIsTyped: true, profile: availableProfile, model: models[0], repoUrl: null, demo: true, createdAt: Date.now() };
 		try {
 			const handle = await client.agentSession.create([uid, forged], { input: input as never, params: { token } });
 			await handle.snapshot();

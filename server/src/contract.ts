@@ -1787,6 +1787,15 @@ export type AcpUpdate = (
 	| { sessionUpdate: "unknown"; originalSessionUpdate: string }
 ) & Record<string, unknown>;
 
+/** The title an ACP update may give a personal session whose owner has not named it. */
+export function generatedSessionTitle(update: AcpUpdate, owner: { typed?: boolean; item?: { role?: "builder" | "reviewer" } }, redactor?: { text(value: string): string }): string | undefined {
+	if (update.sessionUpdate !== "session_info_update" || typeof update.title !== "string" || owner.typed || owner.item) return;
+	const line = update.title.replace(/[\s\u0085]/gu, " ").replace(/\p{Cc}/gu, "").replace(/ +/g, " ").trim();
+	// Removing controls can join fragments of a secret. Redact the whole line before cutting it.
+	const safe = redactor?.text(line) ?? line;
+	return safe.match(/^.{1,200}/u)?.[0].trimEnd();
+}
+
 /**
  * An entry of a session's timeline. `seq` is the platform's own numbering, dense and increasing
  * within a session, and has nothing to do with a Windlass event's `seq`.

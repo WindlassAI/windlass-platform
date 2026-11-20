@@ -80,6 +80,9 @@ class Engine {
 			case "session/prompt": {
 				this.prompt = m.id;
 				const text = JSON.stringify(m.params?.prompt ?? "");
+				if (text.includes("(session title)")) {
+					this.send({ method: "session/update", params: { sessionId: this.session, update: { sessionUpdate: "session_info_update", title: "Inspect the files" } } });
+				}
 				const gap = text.includes("(slow)") ? 120 : 5;
 				RECORDED.forEach((event, index) => {
 					this.timers.push(setTimeout(() => this.send({ method: "_windlass/event", params: { sessionId: this.session, event: { ...event, sessionId: this.session } } }), gap * (index + 1)));
