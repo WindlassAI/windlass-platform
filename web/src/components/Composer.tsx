@@ -68,8 +68,8 @@ function UsageLink() {
 	);
 }
 
-/** In the composer's place on a work item's agent: what sends its prompts, the way to the item, and Stop while a turn runs. */
-export function ItemNote({ item, status, online, onStop }: { item: { id: string }; status: SessionStatus; online: boolean; onStop(): Promise<void> }) {
+/** In the composer's place on a work item's agent: what sends its prompts, the way to the item, and Stop while a turn runs. On the item's second reviewer, that it is that. */
+export function ItemNote({ item, status, online, onStop }: { item: { id: string; role?: "builder" | "reviewer" }; status: SessionStatus; online: boolean; onStop(): Promise<void> }) {
 	const [error, setError] = useState<string | null>(null);
 	const [stopping, setStopping] = useState(false);
 	const idle = status === "idle";
@@ -95,13 +95,23 @@ export function ItemNote({ item, status, online, onStop }: { item: { id: string 
 				</p>
 			) : null}
 			<div className="item-note">
-				<p className="item-note-text">
-					This agent works for a{" "}
-					<a className="link" {...linkProps({ name: "item", id: item.id })}>
-						work item
-					</a>
-					, whose steps send its prompts.
-				</p>
+				{item.role === "reviewer" ? (
+					<p className="item-note-text">
+						This agent is the second reviewer of a{" "}
+						<a className="link" {...linkProps({ name: "item", id: item.id })}>
+							work item
+						</a>
+						: it reads the commit the item pushed and files one review. The item sends its prompts.
+					</p>
+				) : (
+					<p className="item-note-text">
+						This agent works for a{" "}
+						<a className="link" {...linkProps({ name: "item", id: item.id })}>
+							work item
+						</a>
+						, whose steps send its prompts.
+					</p>
+				)}
 				{!idle ? (
 					<button type="button" className="button button-stop button-small" onClick={stop} disabled={status === "stopping" || stopping || !online} title="The item tries this step again. To end its work, cancel the item.">
 						<StopIcon size={13} />

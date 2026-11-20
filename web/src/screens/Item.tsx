@@ -33,7 +33,7 @@ import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
-import { ItemGlyph, STATE_WORD, VerdictWord } from "./Items";
+import { inSecondReview, ItemGlyph, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
 import { useSessionMachine } from "./Session";
 
 /** The steps in words. Planning is not offered yet; the rest are every step a run goes through. */
@@ -525,13 +525,14 @@ function gateWords(gate: Verdict["gate"]): string {
 	}
 }
 
-function VerdictBlock({ verdict, view, now }: { verdict: Verdict; view: ItemView; now: number }) {
+/** One verdict. `reviewing`: it is the latest, and the second reviewer has it yet, so it is not handed over and its word waits. */
+function VerdictBlock({ verdict, view, now, reviewing = false }: { verdict: Verdict; view: ItemView; now: number; reviewing?: boolean }) {
 	const { gate, ci } = verdict;
 	const { said } = verdict;
 	return (
 		<article className="item-verdict-block">
 			<p className="item-verdict-head">
-				<VerdictWord verdict={{ result: verdict.result, flags: verdict.flags, ci: verdict.ci.state }} />
+				{reviewing ? <ReviewWord item={view} /> : <VerdictWord verdict={{ result: verdict.result, flags: verdict.flags, ci: verdict.ci.state }} />}
 				<span className="agent-meta">
 					<span>at {verdict.head.slice(0, 7)}</span>
 					<span>
@@ -634,8 +635,8 @@ function Verdicts({ view, now }: { view: ItemView; now: number }) {
 				<p className="usage-empty">None yet: a verdict is made when the work is handed over.</p>
 			) : (
 				<>
-					<VerdictBlock verdict={latest} view={view} now={now} />
-					<p className="usage-note">From the platform's own records.</p>
+					<VerdictBlock verdict={latest} view={view} now={now} reviewing={inSecondReview(view)} />
+					<p className="usage-note">{inSecondReview(view) ? "From the platform's own records. Its word is given when the second review is filed and the work is handed over." : "From the platform's own records."}</p>
 					{before.length > 0 ? (
 						<>
 							<p className="agents-fold items-fold">

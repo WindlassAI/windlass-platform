@@ -9,11 +9,14 @@
  * pull request from it. The agent can also ask the platform to open or update the pull request (the
  * question about that is Question.tsx's). Whether that is asked about each time is the session's own
  * setting, which stands here under the button and, for a session that is being launched, in the
- * launch form: one check box and one sentence.
+ * launch form: one check box and one sentence, with one more that says what the agent's own push does
+ * on GitHub (`AGENT_PUSH_MEANS`): it runs the repository's CI, with its secrets.
  *
  * A work item's agent files a `report` and never asks to publish: the item's own step pushes and
  * opens or updates the pull request. The setting means nothing there, so its place has one line that
- * says whose the pull request is. "Open pull request" stays, as the server takes it for any session.
+ * says whose the pull request is. "Open pull request" stays, as the server takes it for any session
+ * but an item's second reviewer, which only reads: on it the panel shows the pull request it reviews,
+ * with no action and no setting.
  */
 import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, type PublishState, type PullRequestInfo, type SandboxProfile, type SessionSummary } from "@contract";
 import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
@@ -24,7 +27,16 @@ import { Dialog } from "./Dialog";
 import { BranchIcon, CrossIcon, ExternalIcon, LockIcon, MergedIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "./Icons";
 
 /** What letting the agent publish without asking means, in one sentence: the launch form and the panel say the same. */
-const PUBLISH_UNASKED_MEANS = "The agent may have the platform open or update this session's pull request, with the agent's title and description, without you being asked each time. Pushing the session's own branch is never asked about.";
+export const PUBLISH_UNASKED_MEANS = "The agent may have the platform open or update this session's pull request, with the agent's title and description, without you being asked each time.";
+
+/** In the place of the way out, on an item's second reviewer: the server takes no push or pull request from it. */
+export const REVIEWER_PUBLISHES_NOTHING = "The second reviewer reads the commit the item pushed. It pushes nothing and opens no pull request.";
+
+/**
+ * What the agent's own push does on GitHub, which no setting holds back: said under the setting in
+ * the launch form and the panel, whichever way it is, and where the setting cannot be on.
+ */
+export const AGENT_PUSH_MEANS = "The agent pushes this session's own branch whenever it wants, and a push runs the repository's CI workflows on the agent's changes, with the CI's secrets, without you being asked.";
 
 /**
  * Why the setting cannot be on in a sandbox of `profile`, or null where it can: only where Windlass
@@ -45,6 +57,7 @@ export function PublishUnaskedCheck({ checked, disabled, onChange, profile }: { 
 			<p className="check-text">
 				<span className="check-name">You are asked each time the agent wants to publish</span>
 				<span className="check-means">{asked}</span>
+				<span className="check-means">{AGENT_PUSH_MEANS}</span>
 			</p>
 		);
 	}
@@ -55,6 +68,7 @@ export function PublishUnaskedCheck({ checked, disabled, onChange, profile }: { 
 			<span className="check-text">
 				<span className="check-name">Let the agent publish without asking</span>
 				<span className="check-means">{PUBLISH_UNASKED_MEANS}</span>
+				<span className="check-means">{AGENT_PUSH_MEANS}</span>
 			</span>
 		</label>
 	);
@@ -228,6 +242,8 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 	const [dialog, setDialog] = useState(false);
 	const repository = summary.repository ?? null;
 	const idle = summary.status === "idle";
+	// The second reviewer of an item only reads: the server refuses it a push and a pull request.
+	const reviewer = summary.item?.role === "reviewer";
 
 	const load = useCallback(() => {
 		let current = true;
@@ -317,7 +333,7 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 				<p className="panel-empty" aria-busy="true">
 					Reading the pull request…
 				</p>
-			) : (
+			) : reviewer ? null : (
 				<>
 					<p className="panel-empty gh-pull-note">{blocked ?? situation({ pull, branch: state.branch, pushed: state.pushed, nothing, unknown })}</p>
 					<button type="button" className="button button-outline button-small" onClick={() => setDialog(true)} disabled={blocked !== null || (nothing && !fromPushed)}>
@@ -325,8 +341,14 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 					</button>
 				</>
 			)}
-			{summary.item ? <p className="panel-empty gh-item-note">The work item's steps push the work and open or update the pull request.</p> : <AgentPublishing sessionId={sessionId} summary={summary} profile={profile} />}
-			{dialog && state ? (
+			{reviewer ? (
+				<p className="panel-empty gh-item-note">{REVIEWER_PUBLISHES_NOTHING}</p>
+			) : summary.item ? (
+				<p className="panel-empty gh-item-note">The work item's steps push the work and open or update the pull request.</p>
+			) : (
+				<AgentPublishing sessionId={sessionId} summary={summary} profile={profile} />
+			)}
+			{dialog && state && !reviewer ? (
 				<PublishDialog
 					sessionId={sessionId}
 					state={state}

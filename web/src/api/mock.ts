@@ -1424,7 +1424,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			const last = item.reviews.at(-1);
 			if (last) {
 				reviewer.seededTurn = () => {
-					playInstantly(plan(world, reviewer, { text: "Review the pushed commit against the task, and file one review." }, SCRIPTS.parallel), last.at);
+					// As the server's: the item sends its reviewer no text, and the brief is built in the sandbox, so the first prompt has none.
+					playInstantly(plan(world, reviewer, { text: "" }, SCRIPTS.parallel), last.at);
 					if (reviewer.pauseTimer !== null) cancel(reviewer.pauseTimer);
 					reviewer.pauseTimer = null;
 					reviewer.summary = { ...reviewer.summary, sandbox: "none" };

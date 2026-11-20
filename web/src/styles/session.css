@@ -2136,3 +2136,36 @@ button.output-more:hover {
 		max-width: 88%;
 	}
 }
+
+/* A prompt of the platform's to an item's second reviewer: one quiet line on the right, its text folded under it. */
+.user-platform {
+	gap: 4px;
+}
+.user-platform-line {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+	text-align: right;
+}
+button.user-platform-line {
+	color: var(--ink-dim);
+	text-decoration: none;
+}
+button.user-platform-line:hover {
+	color: var(--ink);
+}
+.user-platform-chevron {
+	transition: transform 160ms var(--ease);
+}
+.user-platform-line[aria-expanded="true"] .user-platform-chevron {
+	transform: rotate(90deg);
+}
+.user-platform-text {
+	font-size: var(--size-small);
+	font-weight: 450;
+	color: var(--ink-dim);
+	background: none;
+	border-style: dashed;
+}

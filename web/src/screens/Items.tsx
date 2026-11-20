@@ -113,10 +113,34 @@ export function VerdictWord({ verdict }: { verdict: NonNullable<ItemSummary["ver
 	return <span className={`outcome item-verdict tone-${tone}`}>{word}</span>;
 }
 
-/** The second reviewer's recommendation, in a quiet word beside the verdict: the agent's, never the verdict's. */
+/**
+ * Whether the item is in its review step: the second reviewer runs, or waits to. The platform makes the
+ * verdict before the reviewer runs, so one is there already; it is not handed over until the review is
+ * filed, and its word is not shown until then.
+ */
+export function inSecondReview(item: Pick<ItemSummary, "review">): boolean {
+	return item.review?.state === "running" || item.review?.state === "waiting";
+}
+
+/**
+ * Where an item stands beside its row: the verdict's word once it is handed over, with the second
+ * reviewer's recommendation; while the reviewer runs or waits to, a quiet working word in its place.
+ */
+export function ItemStanding({ item }: { item: Pick<ItemSummary, "review" | "verdict"> }) {
+	if (inSecondReview(item)) return <ReviewWord item={item} />;
+	return (
+		<>
+			{item.verdict ? <VerdictWord verdict={item.verdict} /> : null}
+			<ReviewWord item={item} />
+		</>
+	);
+}
+
+/** The second reviewer's recommendation, in a quiet word beside the verdict: the agent's, never the verdict's. While it runs, or waits to, a quiet working word. */
 export function ReviewWord({ item }: { item: Pick<ItemSummary, "review"> }) {
 	const review = item.review;
 	if (review?.state === "running") return <span className="item-row-review">being reviewed</span>;
+	if (review?.state === "waiting") return <span className="item-row-review">waiting for its reviewer</span>;
 	if (review?.state !== "filed" || !review.recommendation) return null;
 	return <span className="item-row-review">reviewed: {RECOMMENDATION_WORD[review.recommendation]}</span>;
 }
@@ -197,8 +221,7 @@ export function ItemRow({ item, now, repository = false, why }: { item: ItemSumm
 				</p>
 			</div>
 			<div className="agent-state">
-				{item.verdict ? <VerdictWord verdict={item.verdict} /> : null}
-				<ReviewWord item={item} />
+				<ItemStanding item={item} />
 			</div>
 			<time className="agent-time" dateTime={new Date(item.updatedAt).toISOString()} title={absoluteTime(item.updatedAt)}>
 				{relativeTime(item.updatedAt, now)}

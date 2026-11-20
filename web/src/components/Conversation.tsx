@@ -8,7 +8,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { duration } from "../lib/format";
 import type { SessionView, TurnView } from "../lib/timeline";
 import { useNow } from "../state/hooks";
-import { Turn } from "./Blocks";
+import { PlatformPrompts, Turn } from "./Blocks";
 import { ArrowDownIcon, AskIcon, Mark } from "./Icons";
 
 /** How close to the end counts as "at the bottom", in pixels. */
@@ -110,9 +110,12 @@ export function Conversation({ view, summary, profile, onSuggest }: { view: Sess
 			<div className="conversation" ref={scroller} onScroll={onScroll} tabIndex={0} role="log" aria-label="Conversation" aria-live="off">
 				<div className="conversation-inner" ref={content}>
 					{view.turns.length === 0 && !active ? <Empty summary={summary} profile={profile} onSuggest={onSuggest} /> : null}
-					{view.turns.map((turn) => (
-						<Turn key={turn.turn} turn={turn} />
-					))}
+					{/* An item's second reviewer takes only the platform's prompts: they stand as the platform's, never as a person's. */}
+					<PlatformPrompts.Provider value={summary.item?.role === "reviewer"}>
+						{view.turns.map((turn) => (
+							<Turn key={turn.turn} turn={turn} />
+						))}
+					</PlatformPrompts.Provider>
 					{active ? <Working summary={summary} turn={last && last.end === null ? last : null} /> : null}
 				</div>
 			</div>

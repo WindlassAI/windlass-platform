@@ -1,6 +1,6 @@
 /** The pieces of a conversation: one component per kind of block the timeline reducer produces. */
 import type { Verified } from "@contract";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { parseDiff } from "../lib/diff";
 import { absoluteTime, count, duration, percent, plural, spelledDuration } from "../lib/format";
@@ -91,7 +91,52 @@ function CodeCopies({ root, html }: { root: RefObject<HTMLDivElement | null>; ht
  * the prompt that started the turn: smaller, in the dim ink, and dashed, as the composer is while a
  * turn runs.
  */
-function UserPrompt({ block }: { block: UserBlock }) {
+/**
+ * Set by the conversation of an item's second reviewer: every prompt there is the platform's own (the
+ * brief it builds for the review, or its word after an interruption), never a person's, and the first
+ * arrives with no text of its own. Each stands as one quiet line, its text folded under it when it has one.
+ */
+export const PlatformPrompts = createContext(false);
+
+/** The line a prompt of the platform's to the second reviewer stands as. `first`: the one that starts its timeline. */
+export const platformPromptLabel = (first: boolean) => (first ? "The platform's brief for this review" : "The platform's word to the reviewer");
+
+function PlatformPrompt({ block, first }: { block: UserBlock; first: boolean }) {
+	const [open, setOpen] = useState(false);
+	const shown = useId();
+	const text = block.text.trim();
+	const label = platformPromptLabel(first);
+	return (
+		<div className="user user-platform">
+			{text ? (
+				<button type="button" className="link user-platform-line" aria-expanded={open} aria-controls={shown} onClick={() => setOpen((value) => !value)}>
+					<ChevronIcon size={11} className="user-platform-chevron" />
+					{label}
+				</button>
+			) : (
+				<p className="user-platform-line">{label}</p>
+			)}
+			{text ? (
+				<p className="user-text user-platform-text" id={shown} hidden={!open}>
+					{block.text}
+				</p>
+			) : null}
+			{block.at !== null ? (
+				<p className="user-meta">
+					<time dateTime={new Date(block.at).toISOString()}>{absoluteTime(block.at)}</time>
+				</p>
+			) : null}
+		</div>
+	);
+}
+
+function UserPrompt({ block, first = false }: { block: UserBlock; first?: boolean }) {
+	const platform = useContext(PlatformPrompts);
+	if (platform) return <PlatformPrompt block={block} first={first} />;
+	return <PersonPrompt block={block} />;
+}
+
+function PersonPrompt({ block }: { block: UserBlock }) {
 	const steer = block.steer;
 	return (
 		<div className={`user${steer ? " user-steer" : ""}`}>
@@ -889,11 +934,11 @@ function blockClass(block: Block): string {
 	return `block block-${block.kind}${block.kind === "user" && block.steer ? " block-steer" : ""}${block.kind === "notice" && block.noticeKind === "taint" ? " block-taint" : ""}`;
 }
 
-/** `nested`: a block of a subagent's, inside the row of the call that started it. */
-function renderBlock(block: Block, nested = false): ReactNode {
+/** `nested`: a block of a subagent's, inside the row of the call that started it. `first`: the timeline's first block. */
+function renderBlock(block: Block, nested = false, first = false): ReactNode {
 	switch (block.kind) {
 		case "user":
-			return <UserPrompt block={block} />;
+			return <UserPrompt block={block} first={first} />;
 		case "text":
 			return <AssistantText block={block} />;
 		case "reasoning":
@@ -922,9 +967,9 @@ export const Turn = memo(function Turn({ turn }: { turn: TurnView }) {
 	const loose = question !== null && question.turn === turn.turn && !turn.blocks.some((block) => block.kind === "tool" && block.state === "asking" && callKey(block) === callKey(question)) ? question : null;
 	return (
 		<section className="turn" aria-label={`Turn ${turn.turn}`}>
-			{turn.blocks.map((block) => (
+			{turn.blocks.map((block, index) => (
 				<div key={block.id} className={blockClass(block)}>
-					{renderBlock(block)}
+					{renderBlock(block, false, turn.turn === 1 && index === 0)}
 				</div>
 			))}
 			{loose && interactive ? (
