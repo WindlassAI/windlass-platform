@@ -271,6 +271,7 @@ export interface Config {
 	browsers: BrowserConnectionConfig;
 	httpPort: number;
 	httpHost: string;
+	httpLimits: ReturnType<typeof readHttpLimits>;
 	/** The web app's built files, when the server serves them itself. */
 	webDir: string | null;
 	idleSuspendMs: number;
@@ -588,6 +589,21 @@ function readCount(name: string, fallback: number, min: number, max: number, unl
 	return fallback;
 }
 
+function readHttpLimits() {
+	const perMinute = (name: string, fallback: number) => readCount(name, fallback, 1, 1_000_000, false) ?? fallback;
+	const ipHeader = (process.env.WLP_CLIENT_IP_HEADER ?? "").trim().toLowerCase();
+	if (ipHeader && !/^[a-z0-9-]+$/.test(ipHeader)) unusable.push("WLP_CLIENT_IP_HEADER must name a single HTTP header");
+	return {
+		ipHeader,
+		apiAddress: perMinute("WLP_API_ADDRESS_PER_MINUTE", 240),
+		apiToken: perMinute("WLP_API_TOKEN_PER_MINUTE", 60),
+		apiFailures: perMinute("WLP_API_FAILURES_PER_MINUTE", 12),
+		webhookRefusals: perMinute("WLP_WEBHOOK_REFUSALS_PER_MINUTE", 30),
+		runnerPoll: perMinute("WLP_RUNNER_POLLS_PER_MINUTE", 240),
+		runnerConnection: perMinute("WLP_RUNNER_CONNECTIONS_PER_MINUTE", 120),
+	};
+}
+
 function readFactory(): FactoryLimits & { reviewer: boolean; attachments: { bytes: number; perItem: number; accountBytes: number; days: number } } {
 	const d = FACTORY_DEFAULTS;
 	const count = (name: string, fallback: number, max: number) => readCount(name, fallback, 1, max, false) ?? fallback;
@@ -654,6 +670,7 @@ export const config: Config = {
 	engine,
 	browsers: readBrowsers(),
 	httpPort,
+	httpLimits: readHttpLimits(),
 	httpHost: process.env.WLP_HTTP_HOST || (engine.remote ? "0.0.0.0" : "127.0.0.1"),
 	webDir: (process.env.WLP_WEB_DIR ?? "").trim() || null,
 	idleSuspendMs,

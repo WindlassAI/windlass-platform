@@ -6,7 +6,11 @@ import { config, ownEngineEndpoint } from "./config.js";
 import { platformConnection } from "./platform-info.js";
 import type { Registry } from "./registry.js";
 import { codeDigest, digest, machineError, newPairCode, publicSpki } from "./runner-keys.js";
-import { CLOCK_TOLERANCE_MS, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, connectionProof, parseConnectionRequest, parsePairPoll, parsePairRequest } from "./runner/control.js";
+import { AddressBudget, clientAddress, rateLimited } from "./http-limits.js";
+import { CLOCK_TOLERANCE_MS, PAIRING_TTL_MS, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, connectionProof, parseConnectionRequest, parsePairPoll, parsePairRequest } from "./runner/control.js";
+
+const polls = new AddressBudget(config.httpLimits.runnerPoll);
+const connections = new AddressBudget(config.httpLimits.runnerConnection);
 
 const json = (status: number, body: unknown) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 
@@ -35,6 +39,11 @@ export async function runnerResponse(request: Request): Promise<Response> {
 	try { assertOrigin({ request }); } catch { return json(403, { code: "origin_not_allowed" }); }
 	if (request.method !== "POST") return json(405, { code: "method_not_allowed" });
 	const { pathname } = new URL(request.url);
+	if (pathname !== RUNNER_PAIR_PATH) {
+		const budget = pathname === RUNNER_PAIR_POLL_PATH ? polls : connections;
+		const admission = budget.take(clientAddress(request));
+		if (admission) return rateLimited(admission, "This address has reached its runner request limit. Try again later.");
+	}
 	try {
 		const body = await readBody(request);
 		if (body instanceof Response) return body;
@@ -48,7 +57,7 @@ export async function runnerResponse(request: Request): Promise<Response> {
 			const pairing = randomBytes(32).toString("base64url");
 			const pollSecret = randomBytes(32).toString("base64url");
 			const expires = await client.pairingDirectory.getOrCreate(["starts"], { params }).internalStart(codeDigest(code)!, pairing, publicKey);
-			if (!expires) return json(429, { code: "too_many_pairings" });
+			if (!expires) return rateLimited(PAIRING_TTL_MS / 1000, "Too many pairings have started. Try again after the pairing codes expire.", "too_many_pairings");
 			const { name, os, arch, runnerVersion } = input;
 			await client.machinePairing.create([pairing], { params, input: { grant: createGrant("machinePairing", [pairing]), publicKey, details: { name, os, arch, runnerVersion }, pollHash: digest(pollSecret), expires } });
 			return json(201, { code, pairing, pollSecret });

@@ -1136,10 +1136,12 @@ export const user = actor({
 			await db.execute(MODELS_TABLE);
 			await db.execute(PERSONAL_SERVERS_TABLE);
 			await db.execute(ACCOUNT_SECRETS_TABLE);
+			for (const table of ITEM_TABLES) await db.execute(table);
 			// Tables made before a server had its setting and a secret its scope lack the column: those servers' tools ask, and those secrets are for MCP servers only, as they were.
 			// And the sessions made before a session could be created with a key have none (submissions.ts): `key`, and `sent`, the digest of what was asked for under it.
 			for (const [table, column, definition] of [
 				["repository_defaults", "screenshots", "INTEGER NOT NULL DEFAULT 1"],
+				["api_token", "window_count", "INTEGER NOT NULL DEFAULT 0"],
 				["personal_server", "unasked", "INTEGER NOT NULL DEFAULT 0"],
 				["account_secret", "scope", "TEXT NOT NULL DEFAULT 'setup'"],
 				["sessions", "key", "TEXT"],
@@ -1192,7 +1194,6 @@ export const user = actor({
 			// The sessions that have a place among the sandboxes the user keeps.
 			await db.execute("CREATE TABLE IF NOT EXISTS kept_sandbox (session TEXT PRIMARY KEY, since INTEGER NOT NULL)");
 			await machineTables(db);
-			for (const table of ITEM_TABLES) await db.execute(table);
 		},
 	}),
 

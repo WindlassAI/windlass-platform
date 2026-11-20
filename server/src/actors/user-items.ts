@@ -27,7 +27,7 @@ import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { mayUse } from "../access.js";
 import { readAccountDefaults } from "../account-defaults.js";
-import { API_TOKENS_TABLE, ApiTokenProblem, createApiToken, listApiTokens, revokeApiToken, tokenOwner, useApiToken } from "../api-tokens.js";
+import { API_TOKEN_WINDOW_MS, API_TOKENS_TABLE, ApiTokenProblem, createApiToken, listApiTokens, revokeApiToken, tokenOwner, useApiToken } from "../api-tokens.js";
 import { clientError, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { attachmentKey } from "../factory/attachments.js";
 import { ATTACHMENT_PUT_TTL_MS, attachmentStore, type AttachmentLedger, type Reservation, type ReserveResult } from "../sandbox/attach.js";
@@ -577,9 +577,15 @@ async function apiCaller(c: ItemsCtx, token: unknown, scope: ApiTokenScope, dist
 	const refused = new UserError("That API token is not valid, or may not do this.", { code: "invalid_token" });
 	// The access rules hold for a token as for a sign-in: someone taken off the list, or a demo user once the demo is off, is locked out at once.
 	if (!owner || owner.uid !== c.key[0] || !profile || !mayUse(profile, config.access)) throw refused;
-	if (!(await useApiToken(c.db, owner.digest, scope, Date.now()))) {
+	const now = Date.now();
+	const admission = await useApiToken(c.db, owner.digest, scope, now, config.httpLimits.apiToken);
+	if (admission === "invalid") {
 		if (distinguishScope && (await c.db.execute("SELECT 1 FROM api_token WHERE digest=?", owner.digest)).length) throw new UserError("Use a token with items:read to read a screenshot.", { code: "missing_scope" });
 		throw refused;
+	}
+	if (admission === "limited") {
+		const retryAfter = Math.ceil((API_TOKEN_WINDOW_MS - now % API_TOKEN_WINDOW_MS) / 1000);
+		throw new UserError("This API token has reached its request limit. Try again next minute.", { code: "token_rate_limited", metadata: { retryAfter } });
 	}
 	return profile;
 }

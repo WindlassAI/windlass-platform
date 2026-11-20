@@ -23,7 +23,8 @@ export const API_TOKENS_TABLE = `
 		scopes TEXT NOT NULL,
 		digest TEXT NOT NULL UNIQUE,
 		created_at INTEGER NOT NULL,
-		used_at INTEGER
+		used_at INTEGER,
+		window_count INTEGER NOT NULL DEFAULT 0
 	)
 `;
 
@@ -32,8 +33,8 @@ const SCOPES: readonly ApiTokenScope[] = ["items:create", "items:read"];
 /** A user id as the platform makes them (signin/material.ts): letters, digits, `_` and `-`. */
 const UID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
-/** `used_at` is kept to the minute: a script that calls every second writes the row once a minute. */
-const USED_GRAIN_MS = 60_000;
+/** The token use displayed on Settings and the admission counter share a UTC minute. */
+export const API_TOKEN_WINDOW_MS = 60_000;
 
 export class ApiTokenProblem extends Error {
 	constructor(
@@ -110,13 +111,15 @@ export async function revokeApiToken(db: RawAccess, id: unknown): Promise<void> 
 	if (typeof id === "string") await db.execute("DELETE FROM api_token WHERE id = ?", id);
 }
 
-/** The token whose digest this is, when it may do `scope`; null otherwise. Notes when it was used. */
-export async function useApiToken(db: RawAccess, digest: string, scope: ApiTokenScope, now: number): Promise<ApiToken | null> {
-	const [row] = await db.execute<Row>("SELECT id, name, scopes, created_at, used_at FROM api_token WHERE digest = ?", digest);
-	if (!row) return null;
-	const token = tokenOf(row);
-	if (!token.scopes.includes(scope)) return null;
-	const minute = Math.floor(now / USED_GRAIN_MS) * USED_GRAIN_MS;
-	if (token.usedAt !== minute) await db.execute("UPDATE api_token SET used_at = ? WHERE id = ?", minute, token.id);
-	return { ...token, usedAt: minute };
+/** Authorize and charge in one write on the owning actor, even for simultaneous GET and POST. */
+export async function useApiToken(db: RawAccess, digest: string, scope: ApiTokenScope, now: number, limit: number): Promise<"accepted" | "limited" | "invalid"> {
+	const minute = Math.floor(now / API_TOKEN_WINDOW_MS) * API_TOKEN_WINDOW_MS;
+	const authorized = "digest = ? AND EXISTS (SELECT 1 FROM json_each(scopes) WHERE value = ?)";
+	const rows = await db.execute(`UPDATE api_token SET used_at = ?,
+		window_count = CASE WHEN used_at = ? THEN window_count + 1 ELSE 1 END
+		WHERE ${authorized} AND (used_at IS NOT ? OR window_count < ?) RETURNING id`,
+		minute, minute, digest, scope, minute, limit);
+	if (rows.length) return "accepted";
+	const valid = await db.execute(`SELECT id FROM api_token WHERE ${authorized}`, digest, scope);
+	return valid.length ? "limited" : "invalid";
 }

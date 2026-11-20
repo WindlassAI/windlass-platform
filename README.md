@@ -451,7 +451,7 @@ user or a session is kept on a server. Browsers reach the actors through the eng
 server, and so do the machines' runners once they are paired. A server's own port serves `GET /platform/info`,
 `GET /platform/connection`, `/health`, GitHub's callback (`GET /github/callback`), the three routes a
 machine's runner calls (`POST /runner/pair`, `POST /runner/pair/poll`, `POST /runner/connection`) where
-machines are on, and the API (`POST /api/items`, `GET /api/items/<id>`) where work items are, and any
+machines are on, the GitHub webhook (`POST /github/webhook`) where configured, and the API (`POST /api/items`, `GET /api/items/<id>`) where work items are, and any
 server answers each.
 
 What every server needs, the same on all of them:
@@ -548,6 +548,39 @@ variables above, behind a load balancer for port 6440. The Rivet docs describe s
 one, they do not say. An engine of your own that has an admin token (`auth.admin_token`) is told to the servers
 as a cluster's is, with `RIVET_ADMIN_TOKEN` and `WLP_PUBLIC_ENDPOINT`; one that lets everybody in needs neither,
 and the web app is then built with its address in `VITE_WLP_ENDPOINT`.
+
+### Public HTTP rate limits
+
+RivetKit gives these HTTP routes a web `Request` with ordinary headers and no socket peer address.
+By default, all callers share each node's address budgets, including on Rivet Cloud. Client-supplied
+`Forwarded`, `X-Forwarded-For` and `X-Real-IP` have no authority. For separate client budgets,
+set `WLP_CLIENT_IP_HEADER` only on nodes reachable exclusively through an ingress that strips
+the caller's value and writes one verified IP on **every** request. For example, such an ingress
+can write `X-Ingress-IP` and set `WLP_CLIENT_IP_HEADER=x-ingress-ip` on the server. Missing values,
+lists and malformed addresses share the unknown-address bucket. Equivalent IPv6 spellings and
+IPv4-mapped IPv6 addresses identify the same client as their canonical addresses.
+
+| Route | Key | Default and setting | Where the limit is kept and why |
+|---|---|---|---|
+| `POST /api/items`, `GET /api/items/<id>` | Address, both routes together | 240 requests/min, `WLP_API_ADDRESS_PER_MINUTE` | Each HTTP node, before body parsing or actor lookup, to cap the work reaching that node |
+| Same items routes | Authorized token, both scopes together | 60 calls/UTC minute, `WLP_API_TOKEN_PER_MINUTE` | The token row in the owning user actor's SQLite database, so concurrent calls, another node and actor sleep all share one counter |
+| Same items routes | Address, failed token lookups | 12 failures/min, `WLP_API_FAILURES_PER_MINUTE` | Each HTTP node, before lookup. Malformed, missing, unknown, revoked and out-of-scope tokens spend the allowance. In-flight lookups reserve slots. Other calls wait for pending results and successful authorization releases its slot |
+| `POST /github/webhook` | Address, refused deliveries and wrong methods | 30 refusals/min, `WLP_WEBHOOK_REFUSALS_PER_MINUTE` | Each HTTP node, where the refusal and its log originate. A signed, accepted delivery continues to pass even after refusals from the same address |
+| `POST /runner/pair` | Canonical public key and its secret-derived bucket | 3 starts/key and 16/bucket in 10 minutes, 64 buckets | Existing shared pairing directory in SQLite. Starts allocate actors and codes, so moving to another node must preserve the quota |
+| `POST /runner/pair/poll` | Address | 240 polls/min, `WLP_RUNNER_POLLS_PER_MINUTE` | Each HTTP node, before the pairing lookup. A runner normally polls 30 times/min |
+| `POST /runner/connection` | Address | 120 attempts/min, `WLP_RUNNER_CONNECTIONS_PER_MINUTE` | Each HTTP node, before looking up a machine or checking its signature. Polls have a separate allowance so they cannot exhaust reconnects |
+
+Use the same settings on every node. Each per-minute setting accepts a whole number from 1 to
+1,000,000. Address windows last 60 seconds and reset on node restart. With *N* nodes, an address
+can spend up to *N* node allowances in the same period. Clients behind one NAT or in the
+unknown-address bucket share that node's allowance. Each address table keeps up to 4,096 keys
+plus one shared overflow bucket per window. Once an address exhausts its token lookup allowance, its
+API calls wait until the next window to retry.
+
+An exhausted limit returns HTTP 429 with a JSON `message` and an integer `Retry-After` in
+seconds. Each node logs one `github.webhook.refused` summary one minute after the first refusal,
+including total refusals, bad signatures and how many received 429. Quiet minutes produce no
+line. The summary contains only counts. RivetKit enforces its 3 MiB body cap before routing.
 
 ## E2B
 
@@ -2419,8 +2452,9 @@ out), and `start: true` starts the item at once; without it the item is a draft 
 answers 201 with the item's summary. `GET /api/items/<id>` answers 200 with the item's page (`ItemView`).
 The `Idempotency-Key` header is the creation's key, by the rules of "A message sent twice": the same key
 with the same body answers with the item the first attempt made, and with another body it is refused (409,
-`idempotency_key_reused`). A token that is not valid, or lacks the scope, is answered 401, `invalid_token`;
-every error is `{ code, message }`, with the codes of the web app's actions. Without `WLP_ITEMS=1` both
+`idempotency_key_reused`). Invalid or out-of-scope tokens receive 401, `invalid_token`, within the address allowance.
+Rate limits return 429 with `Retry-After`. Every error carries `{ code, message }`.
+See [Public HTTP rate limits](#public-http-rate-limits). Without `WLP_ITEMS=1` both
 routes answer 404, `not_found` ("There is no such route."), whatever the token.
 
 **CI needs the GitHub App's three read permissions** ("The GitHub App"). Without them, or before an
@@ -2510,6 +2544,7 @@ image, which `runner-build.sh` builds first.
 ```sh
 npx tsx ../scripts/runner-protocol-check.ts                    # the runner channel under the failures it will meet, on loopback sockets and a clock moved by hand
 npx tsx ../scripts/runner-control-check.ts                     # the control socket's frames: input that is not a frame, every refusal readable by a runner, a second runner with one key
+../scripts/locked.sh http-limits-check.ts                      # public HTTP limits, two nodes, real tokens and signed deliveries; port group 3710
 ../scripts/locked.sh machine-check.ts                          # pairing, keys, removal and the 90-day expiry, through the real routes and actors, a second node and the runner's own control loop. Ports 6850, 6851, 6860, 6870 and 6871
 ../scripts/locked.sh runner-e2e.ts                             # sessions on a machine through the real server and actors, with a runner stood in for in the process; no Docker. Ports 6950, 6951, 6960 and 6970
 ../scripts/locked.sh runner-socket-probe.ts                    # one throwaway actor on a local engine, ports 6740, 6741 and 6750
@@ -2544,7 +2579,8 @@ app's own client: past a token's expiry, across a dropped connection, and with a
   `connection-e2e.ts` and `signin-check.ts` share that group. An `e2e.ts --endpoint URL` uses the
   supplied server and takes no port slot. Slot zero uses the original group lock, so a checkout with
   the old helper still reserves the base ports. Keep development servers off the port sets in use.
-  The other base groups are 6460 (`idempotency-check.ts`), 6620 (`factory-e2e.ts`), 6740
+  The other base groups are 3410 (`webhook-check.ts`), 3710 (`http-limits-check.ts`),
+  6460 (`idempotency-check.ts`), 6620 (`factory-e2e.ts`), 6740
   (`runner-socket-probe.ts`), 6850 (`machine-check.ts`), 6900 (`runner-check.ts`, including its
   stand-in on 7020) and 6950 (`runner-e2e.ts`). For a direct run the offset defaults to zero.
   Custom engine and HTTP base ports also receive the offset and must leave room for other groups.
@@ -2591,6 +2627,7 @@ caller.
 | `WLP_BACKUP_MAX_BYTES` | the largest copy that is kept (default 64 MiB) |
 | `WLP_FAKE_BACKUP_DIR` | fake layer only: a directory that stands in for the bucket; the fake sandboxes then hold Windlass's sessions as E2B's do |
 | `WLP_FAKE_RESERVE_FAULT` | fake layer only, for `scripts/e2e.ts`: makes the answers between a session and its user's actor about sandbox time go wrong (`lose:<n>`, `lose-renewal:<n>`, `down:<ms>`, comma-separated) |
+| `WLP_CLIENT_IP_HEADER`, `WLP_API_ADDRESS_PER_MINUTE`, `WLP_API_TOKEN_PER_MINUTE`, `WLP_API_FAILURES_PER_MINUTE`, `WLP_WEBHOOK_REFUSALS_PER_MINUTE`, `WLP_RUNNER_POLLS_PER_MINUTE`, `WLP_RUNNER_CONNECTIONS_PER_MINUTE` | [Public HTTP rate limits](#public-http-rate-limits) gives the defaults, address trust requirements and scope across nodes |
 | `WLP_HTTP_PORT` | the port of the server's own routes ("Running on several servers" lists them; default `PORT` when that is set, else 6440) |
 | `WLP_WEB_DIR` | the web app's built files (`web/dist`), for the server to serve on that port; unset, it serves none. `server/Dockerfile` sets it |
 | `WLP_HTTP_HOST` | the address they bind (default `127.0.0.1` with the local engine, `0.0.0.0` with a remote one) |

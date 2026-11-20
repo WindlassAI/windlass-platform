@@ -41,6 +41,7 @@ case "$name" in
         fi ;;
     idempotency-check) ports=6460 ;;
     factory-e2e) ports=6620 ;;
+    http-limits-check) ports=3710 ;;
     webhook-check)
         ports=3410
         # Slot three's engine companion would use 6420, the e2e group's engine port.
