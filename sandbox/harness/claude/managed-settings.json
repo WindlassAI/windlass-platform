@@ -1,0 +1,5 @@
+{
+  "disableAllHooks": true,
+  "allowManagedMcpServersOnly": true,
+  "allowedMcpServers": []
+}
