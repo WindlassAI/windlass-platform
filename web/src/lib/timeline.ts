@@ -14,10 +14,13 @@
  *   platform's `setup.output` deltas, each appended; the ending item's output replaces what they built.
  * - A subagent belongs to the `subagent` call that started it (`spawn.started`, by its `spawnId`), and
  *   what it does (`child.event`) is folded by this same reducer into a view of its own on that call.
+ * - What a harness spoken to through ACP sent (`acp` items and deltas) is folded into the same blocks
+ *   by lib/acp.ts, with a plan of its own (`PlanBlock`) and the context's fill (`SessionView.context`).
  *
  * Nothing here touches the DOM, the clock or the network.
  */
-import { SETUP_OUTPUT_CHARS, type LiveDelta, type SessionSnapshot, type TimelineItem, type TurnOutcome, type TurnUsage, type Verified, type WindlassEvent } from "@contract";
+import { ACP_MESSAGE, contextOf, foldAcp } from "./acp";
+import { SETUP_OUTPUT_CHARS, type AcpContext, type LiveDelta, type SessionSnapshot, type TimelineItem, type TurnOutcome, type TurnUsage, type Verified, type WindlassEvent } from "@contract";
 
 // ---------------------------------------------------------------------------------------------
 // The view
@@ -113,6 +116,8 @@ export interface ToolBlock extends BlockBase {
 	messageId: string;
 	callId: string;
 	name: string;
+	/** What the call acts on, as the harness titled it: an ACP call's. Absent: it is read from the arguments. */
+	target?: string;
 	/** The argument text as the model wrote it: JSON, partial while `state` is "input". */
 	inputText: string;
 	state: ToolState;
@@ -221,7 +226,19 @@ export interface SetupBlock extends BlockBase {
 	truncated: boolean;
 }
 
-export type Block = UserBlock | PlatformBlock | ReasoningBlock | TextBlock | ToolBlock | ChecksBlock | NoticeBlock | ErrorBlock | NoteBlock | SetupBlock;
+/** One step of a harness's plan. */
+export interface PlanEntry {
+	content: string;
+	status: "pending" | "in_progress" | "completed";
+}
+
+/** The plan a harness keeps for its turn (ACP's `plan`): one per turn, each update replacing the last. */
+export interface PlanBlock extends BlockBase {
+	kind: "plan";
+	entries: PlanEntry[];
+}
+
+export type Block = UserBlock | PlatformBlock | ReasoningBlock | TextBlock | ToolBlock | ChecksBlock | NoticeBlock | ErrorBlock | NoteBlock | SetupBlock | PlanBlock;
 
 export interface TurnEnd {
 	at: number;
@@ -234,6 +251,8 @@ export interface TurnEnd {
 	message: string | null;
 	/** What the session's work rests on after the turn, as the platform recorded it. */
 	verified: Verified | null;
+	/** An ACP turn's ending carries the context's fill instead of token counts (null: not reported); a Windlass turn's has none. */
+	context?: AcpContext | null;
 }
 
 export interface TurnView {
@@ -279,13 +298,15 @@ export interface SessionView {
 	cwd: string | null;
 	/** Windlass said once that untrusted content is in the conversation (`taint.noticed`). */
 	tainted: boolean;
+	/** How full an ACP harness's context is, as it last said (`usage_update`); null for Windlass and before it says. */
+	context: AcpContext | null;
 	nextId: number;
 }
 
 export const ZERO_USAGE: TurnUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
 
 export function emptyView(): SessionView {
-	return { lastSeq: 0, gap: false, turns: [], calls: [], windlassSessionId: null, cwd: null, tainted: false, nextId: 1 };
+	return { lastSeq: 0, gap: false, turns: [], calls: [], windlassSessionId: null, cwd: null, tainted: false, context: null, nextId: 1 };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -321,6 +342,9 @@ export function applyItem(view: SessionView, item: TimelineItem): SessionView {
 		case "windlass":
 			applyEvent(draft, item.turn, item.event, typeof item.event.time === "number" ? item.event.time : item.at);
 			break;
+		case "acp":
+			foldAcp(draft, item.turn, item.update, item.at, item.messageKey ?? null, false, newTool);
+			break;
 		case "setup": {
 			const running = draft.find(item.turn, isSetup(item.id));
 			if (item.state === "started") {
@@ -341,9 +365,9 @@ export function applyItem(view: SessionView, item: TimelineItem): SessionView {
 
 /** Applies one piece of streaming output. */
 export function applyDelta(view: SessionView, delta: LiveDelta): SessionView {
-	if ("acp" in delta) return view;
 	const draft = new Draft(view);
-	applyEvent(draft, delta.turn, delta.event, null);
+	if ("acp" in delta) foldAcp(draft, delta.turn, delta.acp, null, delta.messageKey, true, newTool);
+	else applyEvent(draft, delta.turn, delta.event, null);
 	return draft.view;
 }
 
@@ -380,6 +404,15 @@ export function cachedShare(usage: TurnUsage): number | null {
 
 export function toolBlocks(turn: TurnView): ToolBlock[] {
 	return turn.blocks.filter((block): block is ToolBlock => block.kind === "tool");
+}
+
+/**
+ * Whether `question` is about this call, and stands under its row. Windlass says so of the call itself
+ * (`approval.requested`); an ACP harness asks about a call it has not started, which the question names.
+ */
+export function asksAbout(block: ToolBlock, question: { messageId: string; callId: string }): boolean {
+	if (callKey(question) !== callKey(block)) return false;
+	return block.state === "asking" || (block.messageId === ACP_MESSAGE && (block.state === "input" || block.state === "queued"));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -843,8 +876,11 @@ function endTurn(draft: Draft, item: Extract<TimelineItem, { kind: "turn.ended" 
 			cachedShare: item.cachedShare,
 			message: item.message,
 			verified: item.verified,
+			...(item.context !== undefined ? { context: contextOf(item.context) } : {}),
 		},
 	});
+	const context = item.context === undefined ? null : contextOf(item.context);
+	if (context) draft.set({ context });
 }
 
 // ---------------------------------------------------------------------------------------------

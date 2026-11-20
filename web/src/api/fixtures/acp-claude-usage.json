@@ -1,0 +1,17 @@
+{
+	"scenario": "usage",
+	"source": "fixtures/acp-agent/scenarios.mjs",
+	"prompt": "usage",
+	"updates": [
+		{
+			"sessionUpdate": "usage_update",
+			"used": 41000,
+			"size": 200000,
+			"cost": {
+				"amount": 0.38,
+				"currency": "USD"
+			}
+		}
+	],
+	"stopReason": "end_turn"
+}

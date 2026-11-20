@@ -1,0 +1,61 @@
+{
+	"scenario": "tools",
+	"source": "fixtures/acp-agent/scenarios.mjs",
+	"prompt": "tools",
+	"updates": [
+		{
+			"sessionUpdate": "tool_call",
+			"toolCallId": "0b6f4f6e-6a2d-4c1e-9d3a-6f1c2b7e9a41",
+			"title": "pwd",
+			"kind": "execute",
+			"status": "pending"
+		},
+		{
+			"sessionUpdate": "tool_call_update",
+			"toolCallId": "0b6f4f6e-6a2d-4c1e-9d3a-6f1c2b7e9a41",
+			"status": "in_progress",
+			"content": [
+				{
+					"type": "content",
+					"content": {
+						"type": "text",
+						"text": "/workspace"
+					}
+				}
+			]
+		},
+		{
+			"sessionUpdate": "tool_call_update",
+			"toolCallId": "0b6f4f6e-6a2d-4c1e-9d3a-6f1c2b7e9a41",
+			"status": "completed"
+		},
+		{
+			"sessionUpdate": "tool_call",
+			"toolCallId": "5d2e8c1a-3f4b-4a7e-8c9d-1e2f3a4b5c6d",
+			"title": "Edit README.md",
+			"kind": "edit",
+			"status": "pending",
+			"content": [
+				{
+					"type": "diff",
+					"path": "/workspace/README.md",
+					"oldText": "Draft",
+					"newText": "Ready"
+				}
+			]
+		},
+		{
+			"sessionUpdate": "tool_call_update",
+			"toolCallId": "5d2e8c1a-3f4b-4a7e-8c9d-1e2f3a4b5c6d",
+			"status": "failed"
+		},
+		{
+			"sessionUpdate": "agent_message_chunk",
+			"content": {
+				"type": "text",
+				"text": "The edit failed."
+			}
+		}
+	],
+	"stopReason": "end_turn"
+}

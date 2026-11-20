@@ -59,7 +59,6 @@
  * The world is rebuilt from the token on every page load, so the seeded sessions keep their IDs
  * across a reload and sessions created by hand do not survive one.
  */
-import { initialHarnessModels } from "../../../server/src/sandbox/harnesses.js";
 import { initialSessionModes } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
 import {
@@ -97,6 +96,10 @@ import {
 	type GithubRepositoryList,
 	type GithubStatus,
 	type WindlassDelta,
+	type AcpContext,
+	type AcpUpdate,
+	type HarnessId,
+	type LiveDelta,
 	type LoginStart,
 	type ItemView,
 	type MachineSummary,
@@ -138,8 +141,10 @@ import {
 	MAX_NOTE_CHARS,
 } from "@contract";
 import { PlatformError, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
-import { isDurable, isLive, schedule, splitRuns, turnEnded, withSummary } from "./feed";
+import { acpOutcome, acpRecorder, isDurable, isLive, isPermission, schedule, splitRuns, turnEnded, withSummary, type AcpPermission } from "./feed";
+import { acpFixture } from "./acp-fixtures";
 import { fixture } from "./fixtures";
+import { unifiedDiff } from "../lib/acp";
 import { createMockItems, MOCK_FACTORY_LIMITS, type MockItemsState } from "./mock-items";
 
 export interface MockOptions {
@@ -199,6 +204,21 @@ export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
  */
 export const MOCK_MACHINE_SESSIONS = ["answering", "not_answering", "offline", "removed"] as const;
 export type MockMachineSession = (typeof MOCK_MACHINE_SESSIONS)[number];
+
+/** Claude Code as a runner started with `--harness claude` reports it (server/src/runner/control.ts, `report.harnesses`). */
+const MOCK_CLAUDE = { id: "claude" as const, adapter: "claude-agent-acp 0.109.0", image: "sha256:3f9a1c0e7b5d2a8c6e4f1b9d7a5c3e1f0b8d6a4c2e0f9b7d5a3c1e8f6b4d2a0c", signIn: "token" as const };
+
+/** The models Claude Code lists once it has run (`configOptions`), as the server keeps them: none with an effort. */
+const MOCK_CLAUDE_MODELS: ModelList = {
+	source: "harness",
+	defaultModel: "default",
+	fetchedAt: null,
+	models: [
+		{ id: "default", name: "Default (recommended)", efforts: [] },
+		{ id: "opus", name: "Opus", efforts: [] },
+		{ id: "haiku", name: "Haiku", efforts: [] },
+	],
+};
 
 /** What the mock's runners say they are, and what its platform asks of them. */
 const MOCK_RUNNER_VERSION = "0.2.1";
@@ -987,6 +1007,19 @@ const APPROVAL_MS = 30 * 24 * 60 * 60 * 1000;
 /** How long the mock says a repository's setup command may run. */
 const MOCK_SETUP_LIMIT_MS = 10 * MINUTE;
 
+/** One thing a Claude Code turn does, after `wait` ms: an ACP update (and what the mock changes with it), or a permission it asks, with what follows each kind of answer. */
+type AcpEntry =
+	| { wait: number; update: AcpUpdate; then?: () => void }
+	| { wait: number; ask: AcpPermission["permission"]; allowed: AcpEntry[]; declined: AcpEntry[] };
+
+interface AcpScript {
+	entries: AcpEntry[];
+	stopReason: string;
+}
+
+/** The fake ACP agent's scenarios that a prompt to a Claude Code agent can name, to see each played as it was recorded. */
+const ACP_SCENARIOS = ["plain", "tools", "plan", "ask", "usage"] as const;
+
 // ---------------------------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------------------------
@@ -1018,6 +1051,8 @@ interface Run {
 	cancelled: Set<string>;
 	/** Set after a call was stopped: what the model says next instead of what the recording says. */
 	replaceText: string | null;
+	/** A Claude Code turn's: the platform's record of its ACP updates, and the context's fill it last said. */
+	acp?: { recorder: ReturnType<typeof acpRecorder>; context: AcpContext | null };
 }
 
 interface MockSession {
@@ -1029,7 +1064,7 @@ interface MockSession {
 	windlassSessionId: string | null;
 	windlassSeq: number;
 	timeline: TimelineItem[];
-	pending: WindlassDelta[];
+	pending: LiveDelta[];
 	seq: number;
 	feeds: Set<SessionFeed>;
 	run: Run | null;
@@ -1573,7 +1608,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		steps.push({
 			wait: 600,
 			run: () => {
-				session.pending = session.pending.filter((delta) => !(delta.event.type === "setup.output" && delta.event.id === id));
+				session.pending = session.pending.filter((delta) => !("event" in delta && delta.event.type === "setup.output" && delta.event.id === id));
 				store(session, { ...item, state: fails ? "failed" : "succeeded", exitCode: fails ? 1 : 0, durationMs: Math.max(0, now() - startedAt), output: `${lines.join("\n")}\n`, truncated: false });
 			},
 		});
@@ -2194,6 +2229,211 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		return { stopped: true, message: null };
 	}
 
+	// ---- a Claude Code agent's turns (ACP) --------------------------------------------------------
+
+	/**
+	 * Plays a Claude Code agent's turn as the server records one (`acpRecorder`): the user's prompt, the
+	 * sandbox, then each ACP update after its wait, a question where the harness asks permission, and
+	 * the turn's ending with the context's fill. `answered`: the answer a seeded turn's question had,
+	 * which is then not asked.
+	 */
+	function acpTurn(world: World, session: MockSession, input: PromptInput, script: AcpScript, answered?: string): Step[] {
+		const turn = session.summary.turns + 1;
+		const steps: Step[] = [
+			{
+				wait: 0,
+				run: () => {
+					session.run = { turn, startedAt: now(), timer: null, stopping: false, executionId: null, openStep: null, steps: 0, usage: null, text: new Map(), calls: new Map(), plan: [], next: 0, steers: [], cancelled: new Set(), replaceText: null };
+					const run = session.run;
+					run.acp = {
+						context: null,
+						recorder: acpRecorder(turn, {
+							key: () => `acp-${turn}-${session.seq + 1}`,
+							store: (item) => store(session, item),
+							live: (delta, sofar) => {
+								const at = session.pending.findIndex((one) => "acp" in one && one.messageKey === sofar.messageKey);
+								if (at >= 0) session.pending[at] = sofar;
+								else session.pending.push(sofar);
+								for (const feed of session.feeds) feed.onDelta(delta);
+							},
+							ended: (key) => {
+								session.pending = session.pending.filter((one) => !("acp" in one && one.messageKey === key));
+							},
+						}),
+					};
+					cancel(session.pauseTimer);
+					session.pauseTimer = null;
+					store(session, { turn, kind: "user", text: input.text, model: input.model ?? session.summary.model, effort: input.effort ?? null });
+					const title = !session.titled && session.summary.turns === 0 ? openingWords(input.text) : session.summary.title;
+					setSummary(world, session, { status: "starting", model: input.model ?? session.summary.model, title, updatedAt: now() });
+				},
+			},
+		];
+		if (session.summary.sandbox === "none") steps.push({ wait: 350, run: () => store(session, { turn, kind: "platform", level: "info", text: `Creating sandbox: ${profileOf(session).name}` }) });
+		else if (session.summary.sandbox === "paused") steps.push({ wait: 350, run: () => store(session, { turn, kind: "platform", level: "info", text: "Resuming the paused sandbox" }) });
+		steps.push({
+			wait: 700,
+			run: () => {
+				session.windlassSessionId ??= `${hex(8)}-${hex(4)}-4${hex(3)}-a${hex(3)}-${hex(12)}`;
+				setSummary(world, session, { status: "running", sandbox: "running" });
+			},
+		});
+		steps.push(...acpSteps(world, session, turn, script.entries, script.stopReason, answered));
+		return steps;
+	}
+
+	/** The steps of a run of ACP entries; at a question the rest waits for its answer, unless the turn was seeded with one. */
+	function acpSteps(world: World, session: MockSession, turn: number, entries: AcpEntry[], stopReason: string, answered?: string): Step[] {
+		const steps: Step[] = [];
+		for (const [index, entry] of entries.entries()) {
+			if ("update" in entry) {
+				const update = entry.update;
+				steps.push({
+					wait: entry.wait,
+					run: () => {
+						const state = session.run?.acp;
+						if (!state) return;
+						if (update.sessionUpdate === "usage_update" && typeof update.used === "number" && typeof update.size === "number") state.context = { used: update.used, size: update.size, cost: (update.cost as AcpContext["cost"] | undefined) ?? null };
+						state.recorder.update(update);
+						entry.then?.();
+					},
+				});
+				continue;
+			}
+			const rest = entries.slice(index + 1);
+			const allowed = (choice: string | undefined) => entry.ask.options.find((option) => option.optionId === choice)?.kind.startsWith("allow") === true;
+			if (answered !== undefined) {
+				steps.push(...acpSteps(world, session, turn, [...(allowed(answered) ? entry.allowed : entry.declined), ...rest], stopReason, answered));
+				return steps;
+			}
+			steps.push({
+				wait: entry.wait,
+				run: () => {
+					session.run?.acp?.recorder.flush();
+					askAcp(world, session, turn, entry.ask, (choice) => play(session, [{ wait: 0, run: () => undefined }, ...acpSteps(world, session, turn, [...(allowed(choice) ? entry.allowed : entry.declined), ...rest], stopReason)]));
+				},
+			});
+			return steps;
+		}
+		steps.push({ wait: 400, run: () => finishAcp(world, session, stopReason) });
+		return steps;
+	}
+
+	/** Claude Code asks permission for a call (`session/request_permission`), as the server puts it to the user (server/src/sandbox/acp-harness.ts, `permission`). */
+	function askAcp(world: World, session: MockSession, turn: number, ask: AcpPermission["permission"], onAnswer: (choice: string) => void): void {
+		const askedAt = now();
+		const title = typeof ask.toolCall.title === "string" ? ask.toolCall.title : "";
+		const choices = ask.options.map((option) => ({ id: option.optionId, label: option.name, approve: option.kind.startsWith("allow"), remembers: option.kind === "allow_always" ? "for this conversation, as Claude Code keeps it" : null }));
+		session.question = { id: `q_${hex(16)}`, turn, messageId: "acp", callId: ask.toolCall.toolCallId, title, subject: title, details: [], choices, subagent: null, askedAt, expiresAt: askedAt + questionTimeout };
+		broadcastQuestion(session);
+		setSummary(world, session, { status: "waiting", updatedAt: now() });
+		session.resume = (choice) => onAnswer(choice);
+		session.questionTimer = later(Math.max(0, askedAt + questionTimeout - realNow()), () => {
+			const question = session.question;
+			if (!question) return;
+			store(session, { turn, kind: "platform", level: "warn", text: `Nobody answered within ${minutes(questionTimeout)}, so the platform declined the call.`, code: "question_expired", call: { messageId: question.messageId, callId: question.callId } });
+			settle(world, session, ask.options.find((option) => option.kind === "reject_once")?.optionId ?? "reject", null);
+		});
+	}
+
+	/** The turn's ending, as the server writes it for an ACP turn: the outcome from the stop reason, no gate, the context's fill. */
+	function finishAcp(world: World, session: MockSession, stopReason: string): void {
+		const state = session.run;
+		if (!state) return;
+		state.acp?.recorder.flush();
+		withdraw(session);
+		session.run = null;
+		session.pending = [];
+		const outcome = acpOutcome(stopReason);
+		store(session, { turn: state.turn, kind: "turn.ended", outcome, exitCode: null, steps: null, durationMs: now() - state.startedAt, usage: null, cachedShare: null, message: null, verified: null, context: state.acp?.context ?? null });
+		// Once it has run, the session has the models Claude Code listed.
+		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: outcome, updatedAt: now(), harnessModels: { ...MOCK_CLAUDE_MODELS, fetchedAt: now() } });
+		if (clock === null) {
+			session.pauseTimer = later(2 * MINUTE, () => {
+				if (session.run !== null || session.summary.sandbox !== "running") return;
+				store(session, { turn: state.turn, kind: "platform", level: "info", text: "Suspended the sandbox after 2 minutes without use; the next prompt resumes it." });
+				setSummary(world, session, { sandbox: "paused" });
+			});
+		}
+	}
+
+	/** Stop: Claude Code is cancelled (`session/cancel`), and the turn ends as stopped. */
+	function interruptAcp(world: World, session: MockSession): void {
+		const state = session.run;
+		if (!state || state.stopping) return;
+		state.stopping = true;
+		cancel(state.timer);
+		withdraw(session);
+		setSummary(world, session, { status: "stopping" });
+		state.timer = later(500, () => {
+			// The answer so far is kept, as the recorder stores it.
+			state.stopping = false;
+			finishAcp(world, session, "cancelled");
+		});
+	}
+
+	/** What a Claude Code agent does for a prompt: a recorded scenario when the prompt names one, otherwise a small piece of work on the README. */
+	function claudeScript(session: MockSession, text: string): AcpScript {
+		const named = ACP_SCENARIOS.find((name) => new RegExp(`\\b${name}\\b`, "i").test(text));
+		return named ? fixtureScript(acpFixture(`acp-claude-${named}`)) : workScript(session);
+	}
+
+	/**
+	 * The README piece of work, from the recorded scenarios' parts: the plan scenario's plan, the plain
+	 * scenario's thinking, the permission the ask scenario asks, around a read, an edit with its diff,
+	 * and the tests. The edit changes the workspace, as the side panel then lists.
+	 */
+	function workScript(session: MockSession): AcpScript {
+		const plain = acpFixture("acp-claude-plain").updates.filter((entry): entry is AcpUpdate => !isPermission(entry) && entry.sessionUpdate === "agent_thought_chunk");
+		const plans = acpFixture("acp-claude-plan").updates.filter((entry): entry is AcpUpdate => !isPermission(entry));
+		const ask = acpFixture("acp-claude-ask").updates.find(isPermission)?.permission.options ?? [];
+		const ids = { read: `toolu_${hex(12)}`, edit: `toolu_${hex(12)}`, test: `toolu_${hex(12)}` };
+		const chunks = (kind: "agent_message_chunk" | "agent_thought_chunk", text: string): AcpEntry[] => text.split(/(?<= )/).map((part) => ({ wait: 70, update: { sessionUpdate: kind, content: { type: "text", text: part } } }));
+		const tool = (wait: number, update: Record<string, unknown>): AcpEntry => ({ wait, update: update as AcpUpdate });
+		const readme = "# tide-tables\n\nTide tables for the harbour, as JSON.\n\n## Use\n\nnpm install\nnpm start\n";
+		const changed = readme.replace("npm start\n", "npm start\n\n## Tests\n\nRun them with `npm test`.\n");
+		const diff = unifiedDiff("/workspace/README.md", readme, changed);
+		return {
+			stopReason: "end_turn",
+			entries: [
+				...plain.map((update) => ({ wait: 90, update })),
+				{ wait: 400, update: plans[0] as AcpUpdate },
+				tool(500, { sessionUpdate: "tool_call", toolCallId: ids.read, title: "Read README.md", kind: "read", status: "pending", rawInput: { file_path: "/workspace/README.md" } }),
+				tool(300, { sessionUpdate: "tool_call_update", toolCallId: ids.read, status: "in_progress" }),
+				tool(700, { sessionUpdate: "tool_call_update", toolCallId: ids.read, status: "completed", content: [{ type: "content", content: { type: "text", text: readme } }] }),
+				{ wait: 300, update: plans[1] as AcpUpdate },
+				tool(600, { sessionUpdate: "tool_call", toolCallId: ids.edit, title: "Edit README.md", kind: "edit", status: "pending", rawInput: { file_path: "/workspace/README.md", old_string: "npm start\n", new_string: "npm start\n\n## Tests\n\nRun them with `npm test`.\n" }, content: [{ type: "diff", path: "/workspace/README.md", oldText: readme, newText: changed }] }),
+				tool(400, { sessionUpdate: "tool_call_update", toolCallId: ids.edit, status: "in_progress" }),
+				{ ...tool(500, { sessionUpdate: "tool_call_update", toolCallId: ids.edit, status: "completed" }), then: () => session.files.set("README.md", { status: "M", diff }) },
+				{ wait: 300, update: plans[2] as AcpUpdate },
+				tool(500, { sessionUpdate: "tool_call", toolCallId: ids.test, title: "npm test", kind: "execute", status: "pending", rawInput: { command: "npm test", description: "Run the tests" } }),
+				{
+					wait: 300,
+					ask: { toolCall: { toolCallId: ids.test, title: "npm test", kind: "execute" }, options: ask },
+					allowed: [
+						tool(300, { sessionUpdate: "tool_call_update", toolCallId: ids.test, status: "in_progress", content: [{ type: "content", content: { type: "text", text: "> tide-tables@1.4.0 test\n> node --test\n" } }] }),
+						tool(2600, { sessionUpdate: "tool_call_update", toolCallId: ids.test, status: "in_progress", content: [{ type: "content", content: { type: "text", text: "> tide-tables@1.4.0 test\n> node --test\n\n✔ reads a day of tides (4ms)\n✔ rounds heights to the centimetre (1ms)\nℹ tests 12\nℹ pass 12\nℹ fail 0\n" } }] }),
+						tool(400, { sessionUpdate: "tool_call_update", toolCallId: ids.test, status: "completed" }),
+						{ wait: 300, update: plans[3] as AcpUpdate },
+						{ wait: 200, update: { sessionUpdate: "usage_update", used: 82_000, size: 200_000, cost: { amount: 0.38, currency: "USD" } } },
+						...chunks("agent_message_chunk", "I added a Tests section to the README saying the tests run with `npm test`, and ran them: all 12 pass."),
+					],
+					declined: [
+						tool(300, { sessionUpdate: "tool_call_update", toolCallId: ids.test, status: "failed", content: [{ type: "content", content: { type: "text", text: "The user declined this command." } }] }),
+						{ wait: 200, update: { sessionUpdate: "usage_update", used: 64_000, size: 200_000, cost: { amount: 0.29, currency: "USD" } } },
+						...chunks("agent_message_chunk", "I added a Tests section to the README saying the tests run with `npm test`. I did not run them, since you declined the command."),
+					],
+				},
+			],
+		};
+	}
+
+	/** A recorded scenario as it was sent, a little slower than the fake agent sends it. */
+	function fixtureScript(recorded: ReturnType<typeof acpFixture>): AcpScript {
+		const entries: AcpEntry[] = recorded.updates.map((entry) => (isPermission(entry) ? { wait: 300, ask: entry.permission, allowed: [], declined: [] } : { wait: entry.sessionUpdate.endsWith("_chunk") ? 90 : 500, update: entry }));
+		return { entries, stopReason: recorded.stopReason };
+	}
+
 	// ---- the seeded sessions --------------------------------------------------------------------
 
 	function seed(world: World): void {
@@ -2305,6 +2545,18 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				onNas.summary = { ...onNas.summary, sandbox: "running" };
 				play(onNas, plan(world, onNas, { text: "Run the full build and the tests, and tell me if they pass.", effort: "medium" }, { ...SCRIPTS.build, stretch: 40 }));
 			}
+		}
+
+		// A Claude Code agent on "nas", which offers it: one turn that read, edited and tested, with a plan, and asked before the tests.
+		if (machineSessionSeeded && machineSession !== "removed") {
+			clock = start - 12 * MINUTE;
+			const claude = addSession(world, { id: "nas-claude", title: "Add the test command to the README", titled: true, profile: "docker-hardened", harness: "claude", modes: { mode: "auto", availableModes: [...CLAUDE_LAUNCH_MODES] }, model: "default", repoUrl: null });
+			claude.summary = { ...claude.summary, place: { kind: "machine", machineId: "m_nas" }, harnessModels: null };
+			claude.machine = { profile: mockMachineProfiles("nas")[1] as SandboxProfile, reach: { state: "answering", since: start - 12 * MINUTE } };
+			playInstantly(acpTurn(world, claude, { text: "Read the README and add a line to it saying what the tests command is; run the tests." }, workScript(claude), "allow-once"), start - 12 * MINUTE);
+			clock = null;
+			if (claude.pauseTimer !== null) cancel(claude.pauseTimer);
+			claude.summary = { ...claude.summary, sandbox: "paused" };
 		}
 
 		// The user saved a setup command for acme/harbor some days ago: the launch form and the panel show it.
@@ -2795,6 +3047,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			profiles: mockMachineProfiles(patch.name ?? "nas"),
 			sendSecrets: true,
 			warnings: [],
+			harnesses: [MOCK_CLAUDE],
 			...patch,
 		});
 		switch (state) {
@@ -2811,7 +3064,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					...(machineSession === "offline" && { status: "offline", since: at - 12 * MINUTE }),
 				})];
 			case "pairing":
-				return [nas({ status: "waiting", since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [] })];
+				return [nas({ status: "waiting", since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [], harnesses: undefined })];
 			case "outdated":
 				return [nas({ status: "offline", since: at - 12 * MINUTE, runnerVersion: "0.1.0", warnings: [{ kind: "outdated" }] })];
 			case "docker":
@@ -2835,9 +3088,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						profiles: mockMachineProfiles("workshop", { commandSandbox: WORKSHOP_NO_BUBBLEWRAP }),
 						freeDiskBytes: 3.2e9,
 						sendSecrets: false,
+						// Its runner was started with --harness claude, and nobody signed Claude Code in there.
+						harnesses: [{ ...MOCK_CLAUDE, signIn: "none" }],
 					}),
 					// Its owner started its runner with --max-running 2 --max-sandboxes 6; the others have no limit.
-					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9, maxRunning: 2, maxSandboxes: 6 }),
+					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9, maxRunning: 2, maxSandboxes: 6, harnesses: undefined }),
 				];
 			default:
 				return [nas({})];
@@ -2961,17 +3216,23 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const profile = (machine ? machine.profiles : profiles).find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
 				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());
-				if (input.harness === "claude" && (profile.id !== "docker-hardened" || !machine?.harnesses?.some(h => h.id === "claude"))) {
-					throw new PlatformError("user", "Claude Code requires a machine offering it and the docker-hardened profile.", { reason: "bad_input" });
+				// Claude Code, as the server holds it (server/src/actors/user.ts, `makeSession`): on a machine that offers it, in the hardened container, on its default model.
+				const harness: HarnessId = input.harness ?? "windlass";
+				if (harness !== "windlass") {
+					if (!machine) throw new PlatformError("user", "Claude Code runs only on a machine of yours.", { reason: "bad_input" });
+					if (input.profile !== "docker-hardened") throw new PlatformError("user", "Claude Code requires the docker-hardened profile.", { reason: "bad_input" });
+					if (input.publishUnasked) throw new PlatformError("user", "Claude Code has no publish tool. Publish from the session panel.", { reason: "bad_input" });
+					if (!machine.harnesses?.some((offered) => offered.id === harness)) throw new PlatformError("user", "This machine does not offer Claude Code.", { reason: "bad_input" });
+					if (input.model !== undefined && input.model !== "default") throw new PlatformError("user", "Claude Code starts on its default model.", { reason: "bad_model" });
 				}
-				const modes = initialSessionModes(profile.id, input.harness);
-				if (input.harness === "claude") modes.availableModes = [...CLAUDE_LAUNCH_MODES];
+				const models = modelsFor(world().profile);
+				if (input.model !== undefined && harness === "windlass") checkModel(models, input.model);
+				const modes = initialSessionModes(profile.id, harness);
+				if (harness === "claude") modes.availableModes = [...CLAUDE_LAUNCH_MODES];
 				if (input.mode !== undefined) {
 					if (!modes.availableModes.some(m => m.id === input.mode)) throw new PlatformError("user", "Choose a mode offered by this agent.", { reason: "bad_input" });
 					modes.mode = input.mode;
 				}
-				const models = input.harness === "claude" ? initialHarnessModels() : modelsFor(world().profile);
-				if (input.model !== undefined) checkModel(models, input.model);
 				const repoUrl = input.repoUrl?.trim() || null;
 				if (repoUrl !== null && !/^https:\/\/\S+$/.test(repoUrl)) throw new PlatformError("user", "The repository must be an https address.");
 				let repository: SessionRepository | null = null;
@@ -2984,7 +3245,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const title = input.title?.trim() ?? "";
 				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
 				if (repository && input.setupCommand !== undefined) saveSetup(world(), repository.id, input.setupCommand);
-				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, harness: input.harness, modes, model: input.model ?? models.defaultModel, repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
+				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, harness, modes, model: harness === "windlass" ? (input.model ?? models.defaultModel) : "default", repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
+				if (harness !== "windlass") session.summary = { ...session.summary, harnessModels: null };
 				if (machine) {
 					session.summary = { ...session.summary, place: { kind: "machine", machineId: machine.machineId } };
 					session.machine = { profile, reach: null };
@@ -3331,6 +3593,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const status = session.summary.status;
 				if (status === "starting") throw new PlatformError("user", "The agent is still starting. Send this again once it is working.", { reason: "steer_unavailable" });
 				if (status === "stopping") throw new PlatformError("user", "The turn is stopping. Send this again once it has stopped.", { reason: "steer_unavailable" });
+				if ((status === "running" || status === "waiting") && session.run && session.summary.harness === "claude") {
+					// Claude Code takes it through its steering extension: the server stores it as a steer.
+					if (input.model !== undefined || input.effort !== undefined) throw new PlatformError("user", "Choose the model and effort when starting a turn.", { reason: "bad_input" });
+					const turn = session.run.turn;
+					store(session, { turn, kind: "user", text, model: session.summary.model, effort: null, steer: true });
+					setSummary(world, session, { updatedAt: now() });
+					return take({ turn, steered: true });
+				}
 				if ((status === "running" || status === "waiting") && session.run) {
 					// A message to a running turn steers it: stored as a steer, delivered at the next step.
 					const turn = session.run.turn;
@@ -3346,7 +3616,26 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				// A work item's turn counts wherever it runs (server/src/actors/user.ts, `internalAcquireRun`).
 				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle" && (other.summary.item !== undefined || other.summary.place.kind === "hosted")).length;
 				if (hosted && running >= MOCK_FACTORY_LIMITS.runningTurns) throw new PlatformError("user", `You already have ${running} ${running === 1 ? "agent" : "agents"} working, which is your limit. Wait for one to finish, or stop one.`, { reason: "too_many_running" });
-				const models = session.summary.harness === "claude" ? initialHarnessModels() : modelsFor(world.profile);
+				// A Claude Code agent's turn: the models are the ones it listed, and the machine's report says whether it is signed in.
+				if (session.summary.harness === "claude") {
+					const unreachable = machineUnreachable(auth, session);
+					const place = session.summary.place;
+					const machine = place.kind === "machine" ? machinesOf(auth).list.find((one) => one.machineId === place.machineId) : undefined;
+					const offered = machine?.harnesses?.find((one) => one.id === "claude");
+					if (unreachable === null && !offered) throw new PlatformError("user", "This machine does not offer Claude Code.", { reason: "bad_input" });
+					if (unreachable === null && offered?.signIn === "none") throw new PlatformError("user", `Claude Code on “${machine?.name ?? "your machine"}” is not signed in. Run windlass-runner login claude there.`, { reason: "harness_signed_out" });
+					const listed = session.summary.harnessModels ?? null;
+					if (input.model !== undefined && !(listed?.models ?? [{ id: "default" }]).some((one) => one.id === input.model)) throw new PlatformError("user", `Claude Code offers no model "${input.model}".`, { reason: "bad_model" });
+					if (input.effort !== undefined && !(listed?.models.find((one) => one.id === (input.model ?? session.summary.model))?.efforts ?? []).includes(input.effort)) throw new PlatformError("user", "Claude Code offered no such effort.", { reason: "bad_effort" });
+					const turn = session.summary.turns + 1;
+					if (unreachable !== null) {
+						play(session, plan(world, session, { ...input, text }, { events: [], platformFailure: unreachable, unreachable: true }));
+						return take({ turn, steered: false });
+					}
+					play(session, acpTurn(world, session, { ...input, text }, claudeScript(session, text)));
+					return take({ turn, steered: false });
+				}
+				const models = modelsFor(world.profile);
 				if (input.model !== undefined) checkModel(models, input.model);
 				// An effort is held against the ones the turn's model accepts; of a model the list does not have nothing is said.
 				const efforts = models.models.find((candidate) => candidate.id === (input.model ?? session.summary.model))?.efforts;
@@ -3394,18 +3683,21 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				}
 				if (!session.question.choices.some((choice) => choice.id === input.choice)) throw new PlatformError("user", "That is not one of the question's answers.");
 				const note = input.note?.trim() ?? "";
+				if (session.question.messageId === "acp" && note !== "") throw new PlatformError("user", "Claude Code takes a choice without a note.", { reason: "bad_input" });
 				if (note.length > MAX_NOTE_CHARS) throw new PlatformError("user", `A note can be at most ${MAX_NOTE_CHARS} characters.`);
 				settle(world, session, input.choice, note === "" ? null : note);
 			},
 			async stopCall(input: { messageId: string; callId: string }) {
 				await latency(120);
 				const { session } = find();
+				if (session.summary.harness === "claude") return { stopped: false, message: "Claude Code cannot stop one call. Stop the turn instead." };
 				return stopOneCall(session, input.messageId, input.callId);
 			},
 			async stop() {
 				await latency(90);
 				const { world, session } = find();
-				interrupt(world, session);
+				if (session.summary.harness === "claude") interruptAcp(world, session);
+				else interrupt(world, session);
 			},
 			async changes(): Promise<WorkspaceFile[]> {
 				await latency(200);

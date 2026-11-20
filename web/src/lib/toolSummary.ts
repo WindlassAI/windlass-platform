@@ -137,7 +137,7 @@ export function summarizeTool(block: ToolBlock): ToolSummary {
 	} else if (typeof display.signal === "string") facts.push(display.signal);
 	if (display.timedOut === true) facts.push("timed out");
 	if (block.truncated) facts.push(`${block.truncated.originalLines.toLocaleString("en-US")} lines, capped`);
-	return { target: (platform?.target ?? targetOf(block)).replace(/\s*\n\s*/g, " ↵ "), facts, exitCode };
+	return { target: (platform?.target ?? block.target ?? targetOf(block)).replace(/\s*\n\s*/g, " ↵ "), facts, exitCode };
 }
 
 /** The call's arguments for the expanded body: pretty JSON, with a long string value kept readable. */

@@ -1,0 +1,88 @@
+{
+	"scenario": "plan",
+	"source": "fixtures/acp-agent/scenarios.mjs",
+	"prompt": "plan",
+	"updates": [
+		{
+			"sessionUpdate": "plan",
+			"entries": [
+				{
+					"content": "Read the file",
+					"priority": "medium",
+					"status": "in_progress"
+				},
+				{
+					"content": "Make the edit",
+					"priority": "medium",
+					"status": "pending"
+				},
+				{
+					"content": "Check the result",
+					"priority": "medium",
+					"status": "pending"
+				}
+			]
+		},
+		{
+			"sessionUpdate": "plan",
+			"entries": [
+				{
+					"content": "Read the file",
+					"priority": "medium",
+					"status": "completed"
+				},
+				{
+					"content": "Make the edit",
+					"priority": "medium",
+					"status": "in_progress"
+				},
+				{
+					"content": "Check the result",
+					"priority": "medium",
+					"status": "pending"
+				}
+			]
+		},
+		{
+			"sessionUpdate": "plan",
+			"entries": [
+				{
+					"content": "Read the file",
+					"priority": "medium",
+					"status": "completed"
+				},
+				{
+					"content": "Make the edit",
+					"priority": "medium",
+					"status": "completed"
+				},
+				{
+					"content": "Check the result",
+					"priority": "medium",
+					"status": "in_progress"
+				}
+			]
+		},
+		{
+			"sessionUpdate": "plan",
+			"entries": [
+				{
+					"content": "Read the file",
+					"priority": "medium",
+					"status": "completed"
+				},
+				{
+					"content": "Make the edit",
+					"priority": "medium",
+					"status": "completed"
+				},
+				{
+					"content": "Check the result",
+					"priority": "medium",
+					"status": "completed"
+				}
+			]
+		}
+	],
+	"stopReason": "end_turn"
+}

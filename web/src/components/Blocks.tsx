@@ -6,13 +6,14 @@ import { parseDiff } from "../lib/diff";
 import { absoluteTime, count, duration, percent, plural, spelledDuration } from "../lib/format";
 import { codeText, toolCopyLabels, toolInputText, toolOutputText } from "../lib/copy";
 import { reasoningTitle, renderInlineMarkdown, renderMarkdown } from "../lib/markdown";
-import { callKey, toolBlocks, ZERO_USAGE, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type SubagentRun, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
+import { contextWords, costWords } from "../lib/acp";
+import { asksAbout, toolBlocks, ZERO_USAGE, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlanBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type SubagentRun, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
 import { formatInput, parseInput, summarizeTool } from "../lib/toolSummary";
 import { checkLine, gateWord, overruledLine, ranEarlier, unneededLine, unresolvedLine, unrunLine } from "../lib/verified";
 import { useNow } from "../state/hooks";
 import { CopyButton, useLatest } from "./Copy";
 import { DiffHunks } from "./DiffView";
-import { AskIcon, CheckIcon, ChevronIcon, CrossIcon, InfoIcon, Mark, RefusedIcon, RingIcon, SandboxedIcon, SteerIcon, StopIcon, ThoughtIcon, WarnIcon } from "./Icons";
+import { AskIcon, CheckIcon, ChevronIcon, CrossIcon, DotIcon, InfoIcon, Mark, RefusedIcon, RingIcon, SandboxedIcon, SteerIcon, StopIcon, ThoughtIcon, WarnIcon } from "./Icons";
 import { AnswerLine, AskedLine, InlineQuestion, useInteractive } from "./Question";
 import { OUTCOME_TONE, OUTCOME_WORD, OutcomeGlyph } from "./Status";
 
@@ -357,15 +358,17 @@ function toolStateWord(block: ToolBlock, exitCode: number | null): string | null
  * Its question is answered at the end of the turn (`Turn`), and the user stops the subagent, not one
  * call of its.
  */
-const ToolRow = memo(function ToolRow({ block, nested = false }: { block: ToolBlock; nested?: boolean }) {
+const ToolRow = memo(function ToolRow({ block: given, nested = false }: { block: ToolBlock; nested?: boolean }) {
 	const [open, setOpen] = useState(false);
 	const interactive = useInteractive();
+	const question = nested ? null : (interactive?.flow.question ?? null);
+	const asked = question !== null && asksAbout(given, question) ? question : null;
+	// An ACP harness asks about a call it has not started: the call is drawn as the one it asks about.
+	const block = asked && given.state !== "asking" ? { ...given, state: "asking" as const } : given;
 	const running = block.state === "running";
 	const now = useNow(1000, running);
 	const summary = summarizeTool(block);
 	const elapsed = running && block.startedAt !== null ? Math.max(0, now - block.startedAt) : null;
-	const question = nested ? null : (interactive?.flow.question ?? null);
-	const asked = question !== null && block.state === "asking" && callKey(question) === callKey(block) ? question : null;
 	const stopCall = !nested && running && !block.stopRequested ? (interactive?.stopCall ?? null) : null;
 
 	const stateWord = toolStateWord(block, summary.exitCode);
@@ -426,6 +429,38 @@ const ToolRow = memo(function ToolRow({ block, nested = false }: { block: ToolBl
 		</div>
 	);
 });
+
+// ---------------------------------------------------------------------------------------------
+// A harness's plan
+// ---------------------------------------------------------------------------------------------
+
+const PLAN_WORD: Record<PlanBlock["entries"][number]["status"], string> = { pending: "to do", in_progress: "in progress", completed: "done" };
+
+/** The plan a harness keeps for its turn: its steps as a short checklist, which each update of the plan redraws in place. */
+function Plan({ block }: { block: PlanBlock }) {
+	const done = block.entries.filter((entry) => entry.status === "completed").length;
+	const all = block.entries.length > 0 && done === block.entries.length;
+	return (
+		<div className="plan">
+			<p className="plan-head">
+				<span className="line-glyph">{all ? <CheckIcon size={14} className="tone-accent" /> : <RingIcon size={14} className="tone-faint" />}</span>
+				<span className="plan-word">plan</span>
+				<span className="plan-count">
+					{done} of {block.entries.length} done
+				</span>
+			</p>
+			<ol className="plan-steps">
+				{block.entries.map((entry, index) => (
+					<li key={index} className={`plan-step plan-step-${entry.status}`}>
+						<span className="line-glyph">{entry.status === "completed" ? <CheckIcon size={12} className="tone-accent" /> : entry.status === "in_progress" ? <DotIcon size={12} className="tone-accent" /> : <RingIcon size={12} className="tone-faint" />}</span>
+						<span className="plan-text">{entry.content}</span>
+						<span className="visually-hidden">, {PLAN_WORD[entry.status]}</span>
+					</li>
+				))}
+			</ol>
+		</div>
+	);
+}
 
 // ---------------------------------------------------------------------------------------------
 // Subagents
@@ -912,7 +947,12 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 					</span>
 					<span>{count(usage.outputTokens)} out</span>
 				</p>
-			) : end.outcome !== "error" ? (
+			) : end.context ? (
+				<p className="turn-end-line turn-end-sub">
+					<span>context {contextWords(end.context)}</span>
+					{end.context.cost ? <span>{costWords(end.context.cost)}</span> : null}
+				</p>
+			) : end.context === null ? null : end.outcome !== "error" ? (
 				<p className="turn-end-line turn-end-sub">
 					<span>no token counts were reported</span>
 				</p>
@@ -941,6 +981,8 @@ function renderBlock(block: Block, nested = false, first = false): ReactNode {
 			return <Checks block={block} />;
 		case "setup":
 			return <SetupRow block={block} />;
+		case "plan":
+			return <Plan block={block} />;
 		case "notice":
 			return <Notice block={block} />;
 		case "error":
@@ -956,7 +998,7 @@ export const Turn = memo(function Turn({ turn }: { turn: TurnView }) {
 	const interactive = useInteractive();
 	const question = interactive?.flow.question ?? null;
 	// A question about a call this timeline does not show (a subagent's own call) goes at the end of its turn.
-	const loose = question !== null && question.turn === turn.turn && !turn.blocks.some((block) => block.kind === "tool" && block.state === "asking" && callKey(block) === callKey(question)) ? question : null;
+	const loose = question !== null && question.turn === turn.turn && !turn.blocks.some((block) => block.kind === "tool" && asksAbout(block, question)) ? question : null;
 	return (
 		<section className="turn" aria-label={`Turn ${turn.turn}`}>
 			{turn.blocks.map((block, index) => (

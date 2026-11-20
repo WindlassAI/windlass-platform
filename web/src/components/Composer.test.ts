@@ -155,3 +155,33 @@ describe("the composer's submissions", () => {
 		client.dispose();
 	});
 });
+
+describe("a message to a running turn whose harness takes none then", () => {
+	// The server's words when Claude Code's adapter offers no steering (server/src/sandbox/acp-harness.ts, through `steerTurn`).
+	const notNow = () => new PlatformError("user", "The running turn could not take the message. This Claude Code takes no message during a turn; it is sent when the turn ends. Try again in a moment.", { reason: "turn_running" });
+
+	it("is held with “Sent when this turn ends.”, and sent once the turn ends, with the key it had", async () => {
+		show({ status: "running", harness: "Claude Code", model: "default" });
+		write("Also update the changelog");
+		answers.push(notNow());
+		await send();
+		expect(field().value).toBe("");
+		expect(host.querySelector(".composer-held")?.textContent).toContain("Also update the changelog");
+		expect(host.querySelector(".composer-held")?.textContent).toContain("Sent when this turn ends.");
+		expect(sent).toHaveLength(1);
+		await act(async () => root.render(createElement(Composer, { status: "idle", online: true, models: null, model: "default", harness: "Claude Code", onSend, onStop: async () => undefined })));
+		expect(sent).toHaveLength(2);
+		expect(sent[1]).toEqual({ text: "Also update the changelog", idempotencyKey: sent[0]?.idempotencyKey });
+		expect(host.querySelector(".composer-held")).toBeNull();
+	});
+
+	it("can be taken back into the field before the turn ends", async () => {
+		show({ status: "running", harness: "Claude Code", model: "default" });
+		write("Also update the changelog");
+		answers.push(notNow());
+		await send();
+		await act(async () => (host.querySelector(".composer-held button") as HTMLButtonElement).click());
+		expect(field().value).toBe("Also update the changelog");
+		expect(host.querySelector(".composer-held")).toBeNull();
+	});
+});

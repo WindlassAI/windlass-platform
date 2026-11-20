@@ -1,0 +1,64 @@
+{
+	"scenario": "plain",
+	"source": "fixtures/acp-agent/scenarios.mjs",
+	"prompt": "plain",
+	"updates": [
+		{
+			"sessionUpdate": "agent_thought_chunk",
+			"content": {
+				"type": "text",
+				"text": "I'll "
+			}
+		},
+		{
+			"sessionUpdate": "agent_thought_chunk",
+			"content": {
+				"type": "text",
+				"text": "inspect "
+			}
+		},
+		{
+			"sessionUpdate": "agent_thought_chunk",
+			"content": {
+				"type": "text",
+				"text": "the files."
+			}
+		},
+		{
+			"sessionUpdate": "agent_message_chunk",
+			"content": {
+				"type": "text",
+				"text": "The "
+			}
+		},
+		{
+			"sessionUpdate": "agent_message_chunk",
+			"content": {
+				"type": "text",
+				"text": "files "
+			}
+		},
+		{
+			"sessionUpdate": "agent_message_chunk",
+			"content": {
+				"type": "text",
+				"text": "are "
+			}
+		},
+		{
+			"sessionUpdate": "agent_message_chunk",
+			"content": {
+				"type": "text",
+				"text": "ready"
+			}
+		},
+		{
+			"sessionUpdate": "agent_message_chunk",
+			"content": {
+				"type": "text",
+				"text": "."
+			}
+		}
+	],
+	"stopReason": "end_turn"
+}

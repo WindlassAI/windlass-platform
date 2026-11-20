@@ -1,0 +1,47 @@
+{
+	"scenario": "ask",
+	"source": "fixtures/acp-agent/scenarios.mjs",
+	"prompt": "ask",
+	"updates": [
+		{
+			"permission": {
+				"toolCall": {
+					"toolCallId": "0b6f4f6e-6a2d-4c1e-9d3a-6f1c2b7e9a41",
+					"title": "pwd",
+					"kind": "execute",
+					"status": "pending"
+				},
+				"options": [
+					{
+						"optionId": "allow-once",
+						"name": "Yes",
+						"kind": "allow_once"
+					},
+					{
+						"optionId": "allow-with-updates",
+						"name": "Always allow",
+						"kind": "allow_always"
+					},
+					{
+						"optionId": "reject",
+						"name": "No",
+						"kind": "reject_once"
+					},
+					{
+						"optionId": "reject-always",
+						"name": "Always reject",
+						"kind": "reject_always"
+					}
+				]
+			}
+		},
+		{
+			"sessionUpdate": "agent_message_chunk",
+			"content": {
+				"type": "text",
+				"text": "Permission answered: allow-once."
+			}
+		}
+	],
+	"stopReason": "end_turn"
+}

@@ -35,13 +35,19 @@
  * too old for the platform, is listed and cannot be chosen. The user's daily sandbox time, the cap on
  * kept sandboxes and the one on running agents are the platform's own sandboxes', so on a machine the
  * form says nothing of them.
+ *
+ * A machine whose runner reported Claude Code offers it as the agent, under "Where it runs"
+ * (components/PlaceChoice.tsx, `HarnessChoice`). Chosen, the agent runs in the hardened container,
+ * on Claude Code's default model, and the form leaves out what Claude Code is not given here: the
+ * model's choice, publishing without asking, and the repository's secrets.
  */
-import { type GithubId, MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type UsageNumbers } from "@contract";
+import { type GithubId, type HarnessId, MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type UsageNumbers } from "@contract";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
 import { Layers, ProfileFacts } from "../components/Layers";
-import { PlaceChoice, machineUnusable } from "../components/PlaceChoice";
+import { HARNESS_PROFILE, HarnessChoice, PlaceChoice, machineUnusable, offeredHarnesses } from "../components/PlaceChoice";
+import { HARNESS_NAMES } from "../lib/acp";
 import { RepositoryPicker, type PickedRepository } from "../components/RepositoryPicker";
 import { SecretsField } from "../components/Secrets";
 import { PublishUnaskedCheck, publishAlwaysAsked } from "../components/PullRequest";
@@ -253,6 +259,8 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 	const [profilesOpen, setProfilesOpen] = useState(false);
 	// Where it runs: this platform (null) or one of the user's machines, folded as the sandboxes are.
 	const [placeChoice, setPlace] = useState<string | null>(null);
+	// The agent on that machine: Windlass, or another harness its runner reported.
+	const [harnessChoice, setHarness] = useState<HarnessId>("windlass");
 	const [busy, setBusy] = useState<"creating" | "prompting" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
@@ -314,7 +322,11 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 	// A machine that was removed or can no longer be chosen while the form is open leaves the agent on this platform, which the line then says.
 	const chosenMachine = mine.find((machine) => machine.machineId === placeChoice && why(machine) === null) ?? null;
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
-	const profile = startingProfile(profileChoice, defaults, info ? { profiles: placeProfiles } : null);
+	// Another harness runs in the hardened container only: without one that can be used it cannot be chosen, and a machine that does not offer it leaves Windlass.
+	const hardened = placeProfiles.some((candidate) => candidate.id === HARNESS_PROFILE && candidate.available);
+	const harness: HarnessId = harnessChoice !== "windlass" && hardened && offeredHarnesses(chosenMachine).some((offered) => offered.id === harnessChoice) ? harnessChoice : "windlass";
+	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
+	const profile = other ? HARNESS_PROFILE : startingProfile(profileChoice, defaults, info ? { profiles: placeProfiles } : null);
 	const model = startingModel(modelChoice, defaults, models.list);
 	const fromDefaults = { profile: defaults.profile !== null && profile === defaults.profile, model: defaults.model !== null && model === defaults.model };
 	// The defaults and the models are read before the agent is created, so that it is not launched on other ones a moment too early.
@@ -336,12 +348,14 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 			const repository = chosen ? { id: chosen.repository.id, branch: chosen.branch } : undefined;
 			const input = {
 				place: chosenMachine ? { kind: "machine" as const, machineId: chosenMachine.machineId } : undefined,
+				...(other ? { harness } : {}),
 				profile,
-				model: model || undefined,
+				// Another harness starts on its own default model.
+				model: other ? undefined : model || undefined,
 				repoUrl: repo || undefined,
 				repository,
 				setupCommand: repository ? setup.toSave : undefined,
-				publishUnasked: repository && chosen?.repository.canPush && chosenProfile !== null && publishAlwaysAsked(chosenProfile) === null ? publishUnasked : undefined,
+				publishUnasked: !other && repository && chosen?.repository.canPush && chosenProfile !== null && publishAlwaysAsked(chosenProfile) === null ? publishUnasked : undefined,
 				title: title.trim() || undefined,
 			};
 			// One key for the agent: launching again after an answer that never came, with nothing changed, makes no second one.
@@ -373,8 +387,9 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 		void launch(true);
 	};
 
-	const available = placeProfiles.filter((candidate) => candidate.available);
-	const unavailable = placeProfiles.filter((candidate) => !candidate.available);
+	// Another harness has its one container: the cards show only that.
+	const available = placeProfiles.filter((candidate) => candidate.available && (!other || candidate.id === HARNESS_PROFILE));
+	const unavailable = other ? [] : placeProfiles.filter((candidate) => !candidate.available);
 
 	return (
 		<Dialog
@@ -534,29 +549,37 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 							}}
 						/>
 						{chosen ? <SetupField setup={setup} repository={`${chosen.repository.owner}/${chosen.repository.name}`} disabled={busy !== null} /> : null}
-						{chosen ? <SecretsField repositoryId={chosen.repository.id} repository={`${chosen.repository.owner}/${chosen.repository.name}`} profile={profile} disabled={busy !== null} /> : null}
-						{chosen?.repository.canPush ? (
+						{chosen && !other ? <SecretsField repositoryId={chosen.repository.id} repository={`${chosen.repository.owner}/${chosen.repository.name}`} profile={profile} disabled={busy !== null} /> : null}
+						{chosen?.repository.canPush && !other ? (
 							<div className="field field-wide">
 								<PublishUnaskedCheck checked={publishUnasked} disabled={busy !== null} onChange={setPublishUnasked} profile={chosenProfile} />
 							</div>
 						) : null}
-						<div className="field">
-							<label className="label" htmlFor={ids.model}>
-								Model
-							</label>
-							<select id={ids.model} className="select" value={model} onChange={(event) => setModel(event.target.value)} disabled={models.list === null} aria-describedby={ids.modelNote}>
-								{models.list === null ? <option value={model}>{model || "Your default model"}</option> : null}
-								{models.list?.models.map(({ id }) => (
-									<option key={id} value={id}>
-										{id}
-										{id === models.list?.defaultModel ? " (default)" : ""}
-									</option>
-								))}
-							</select>
-							<p className="field-note" id={ids.modelNote} aria-busy={models.reading}>
-								{models.list ? modelsNote(models.list) : models.reading ? "Reading your models…" : `${models.error ?? "Your models could not be read."} The agent starts on your default model.`}
-							</p>
-						</div>
+						{other ? (
+							<div className="field">
+								<span className="label">Model</span>
+								<p className="field-fixed">{other}'s default</p>
+								<p className="field-note">Once it has run, the composer offers the models {other} lists.</p>
+							</div>
+						) : (
+							<div className="field">
+								<label className="label" htmlFor={ids.model}>
+									Model
+								</label>
+								<select id={ids.model} className="select" value={model} onChange={(event) => setModel(event.target.value)} disabled={models.list === null} aria-describedby={ids.modelNote}>
+									{models.list === null ? <option value={model}>{model || "Your default model"}</option> : null}
+									{models.list?.models.map(({ id }) => (
+										<option key={id} value={id}>
+											{id}
+											{id === models.list?.defaultModel ? " (default)" : ""}
+										</option>
+									))}
+								</select>
+								<p className="field-note" id={ids.modelNote} aria-busy={models.reading}>
+									{models.list ? modelsNote(models.list) : models.reading ? "Reading your models…" : `${models.error ?? "Your models could not be read."} The agent starts on your default model.`}
+								</p>
+							</div>
+						)}
 						<div className="field">
 							<label className="label" htmlFor={ids.title}>
 								Title <span className="label-optional">optional</span>
@@ -585,6 +608,7 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 									</span>
 								</p>
 							) : null}
+							{chosenMachine && offeredHarnesses(chosenMachine).length > 0 ? <HarnessChoice machine={chosenMachine} chosen={harness} hardened={hardened} disabled={busy !== null} onChoose={setHarness} /> : null}
 						</PlaceChoice>
 					) : null}
 					<fieldset className="new-agent-section sandbox-pick">
@@ -602,7 +626,7 @@ export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over
 							</button>
 						</div>
 						<div id={ids.profiles} className="sandbox-cards" hidden={!profilesOpen}>
-							<p className="section-text">Where the agent's files live and its commands run. The boxes show what isolates it, outermost first.</p>
+							<p className="section-text">Where the agent's files live and its commands run. The boxes show what isolates it, outermost first.{other ? ` ${other} runs in this one only.` : ""}</p>
 							<div className="profiles">
 								{available.map((candidate) => (
 									<ProfileCard key={candidate.id} profile={candidate} name={group} checked={profile === candidate.id} onChoose={setProfile} />

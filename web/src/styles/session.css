@@ -667,6 +667,62 @@ button.output-more:hover {
 	color: var(--ink-dim);
 }
 
+/* A harness's plan for its turn: a short checklist in the rows' mono voice, redrawn in place as it moves. */
+.block-plan {
+	margin: 6px 0 8px;
+}
+.block-plan + .block-text {
+	margin-top: 14px;
+}
+.plan-head {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono);
+	line-height: 1.6;
+	color: var(--ink-dim);
+}
+.plan-word {
+	flex: none;
+	font-weight: 700;
+	color: var(--ink);
+}
+.plan-count::before {
+	content: "·";
+	margin-right: 0.55em;
+	color: var(--ink-faint);
+}
+.plan-steps {
+	display: grid;
+	gap: 1px;
+	margin: 2px 0 0 24px;
+	padding: 0 0 0 12px;
+	border-left: 1px solid var(--line-strong);
+	list-style: none;
+}
+.plan-step {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	font-size: var(--size-small);
+	line-height: 1.6;
+	color: var(--ink-dim);
+}
+.plan-step .line-glyph {
+	width: 14px;
+}
+.plan-step-in_progress {
+	color: var(--ink);
+}
+.plan-step-pending {
+	color: var(--ink-faint);
+}
+.plan-text {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
 /* Quiet lines from the platform and from Windlass. */
 .system {
 	display: flex;
@@ -1142,6 +1198,21 @@ button.output-more:hover {
 .composer-notice {
 	color: var(--warn);
 	animation: arrive 160ms var(--ease);
+}
+/* A message the running turn could not take, waiting for the turn to end: the user's own words, not a refusal. */
+.composer-held {
+	color: var(--ink-dim);
+	animation: arrive 160ms var(--ease);
+}
+.composer-held-text {
+	color: var(--ink);
+	overflow-wrap: anywhere;
+}
+.composer-held-text::before {
+	content: "“";
+}
+.composer-held-text::after {
+	content: "”";
 }
 .composer-box {
 	display: flex;

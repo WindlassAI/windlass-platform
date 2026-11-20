@@ -4,7 +4,7 @@
  * ones are broadcast and never stored (live deltas). Pure functions, shared by the mock and the tests.
  */
 import { VerificationLog } from "../../../server/src/verified";
-import type { WindlassDelta, TimelineItem, TurnUsage, WindlassEvent } from "@contract";
+import type { AcpContext, AcpUpdate, LiveDelta, TimelineItem, TurnOutcome, TurnUsage, WindlassDelta, WindlassEvent } from "@contract";
 
 /** Streaming output: broadcast, never stored. */
 export const LIVE_TYPES: ReadonlySet<string> = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]);
@@ -101,6 +101,9 @@ export function withSummary(events: WindlassEvent[]): WindlassEvent[] {
 
 export type FeedEntry = { item: TimelineItem } | { delta: WindlassDelta };
 
+/** An entry of an ACP turn's feed: its deltas are ACP's. */
+export type AcpFeedEntry = { item: TimelineItem } | { delta: LiveDelta };
+
 /**
  * One run as a session's clients would receive it: the user's prompt, every stored event as a
  * timeline item, every streaming event as a delta, and the platform's `turn.ended` built from the
@@ -150,3 +153,113 @@ export function turnEnded(summary: WindlassEvent, position: { seq: number; at: n
 		message: null,
 	};
 }
+
+// ---------------------------------------------------------------------------------------------
+// ACP turns (a harness such as Claude Code)
+// ---------------------------------------------------------------------------------------------
+
+/** A permission request in a recorded ACP turn: what the harness asked about, and the answers it offered. */
+export interface AcpPermission {
+	permission: {
+		toolCall: Record<string, unknown> & { toolCallId: string; title?: string };
+		options: Array<{ optionId: string; name: string; kind: string }>;
+	};
+}
+
+/** A recorded ACP turn: what the fake ACP agent sent for one of its scenarios, in wire order (src/api/fixtures/acp-claude-*.json). */
+export interface AcpFixture {
+	scenario: string;
+	prompt: string;
+	updates: Array<AcpUpdate | AcpPermission>;
+	stopReason: string;
+}
+
+export const isPermission = (entry: AcpUpdate | AcpPermission): entry is AcpPermission => "permission" in entry;
+
+type AcpItem = Extract<TimelineItem, { kind: "acp" }>;
+type AcpDelta = Extract<LiveDelta, { acp: unknown }>;
+
+/** What a recorder hands on: the items to store, and the deltas to broadcast with the run so far, which a snapshot's `pending` holds. */
+export interface AcpSink {
+	/** A key for a new run of text, unique within the session. */
+	key(): string;
+	store(item: Omit<AcpItem, "seq" | "at">): void;
+	live(delta: AcpDelta, sofar: AcpDelta): void;
+	/** The run under `key` is stored: its pending delta goes. */
+	ended(key: string): void;
+}
+
+/**
+ * The platform's record of an ACP turn as it goes, as the session actor keeps it (server/src/actors/
+ * agent-session.ts, `acpRecorder`): text and reasoning chunks are broadcast as deltas under the key of
+ * their run, and the run is stored as one item when another kind of update comes or the turn ends;
+ * every other update is stored as it came.
+ */
+export function acpRecorder(turn: number, sink: AcpSink) {
+	let run: { kind: string; key: string; text: string } | null = null;
+	function flush(): void {
+		if (!run) return;
+		const { kind, key, text } = run;
+		run = null;
+		sink.ended(key);
+		sink.store({ turn, kind: "acp", messageKey: key, update: { sessionUpdate: kind, content: { type: "text", text } } as AcpUpdate });
+	}
+	return {
+		flush,
+		update(update: AcpUpdate): void {
+			const kind = update.sessionUpdate;
+			const content = update.content as { type?: unknown; text?: unknown } | undefined;
+			if ((kind === "agent_message_chunk" || kind === "agent_thought_chunk") && content?.type === "text" && typeof content.text === "string") {
+				if (run?.kind !== kind) {
+					flush();
+					run = { kind, key: sink.key(), text: "" };
+				}
+				run.text += content.text;
+				sink.live({ turn, acp: update, messageKey: run.key }, { turn, messageKey: run.key, acp: { sessionUpdate: kind, content: { type: "text", text: run.text } } as AcpUpdate });
+				return;
+			}
+			flush();
+			sink.store({ turn, kind: "acp", update });
+		},
+	};
+}
+
+/** A turn's outcome from ACP's stop reason, as the session actor reads it. */
+export function acpOutcome(stopReason: string): TurnOutcome {
+	if (stopReason === "end_turn") return "succeeded";
+	if (stopReason === "cancelled") return "stopped";
+	if (stopReason === "max_tokens" || stopReason === "max_turn_requests") return "unresolved";
+	if (stopReason === "refusal") return "failed";
+	return "error";
+}
+
+/**
+ * One recorded ACP turn as a session's clients would receive it: the user's prompt, the updates as the
+ * recorder stores and broadcasts them (a permission request is answered elsewhere and adds nothing
+ * here), and the platform's `turn.ended`, with the context's fill the turn last reported.
+ */
+export function acpRunToFeed(fixture: AcpFixture, options: { turn: number; afterSeq?: number; at?: number; model?: string } = { turn: 1 }): AcpFeedEntry[] {
+	const feed: AcpFeedEntry[] = [];
+	let seq = options.afterSeq ?? 0;
+	const at = options.at ?? 0;
+	let keys = 0;
+	let context: AcpContext | null = null;
+	const push = (item: DistributiveOmit<TimelineItem, "seq" | "at">) => feed.push({ item: { ...item, seq: ++seq, at: at + seq } as TimelineItem });
+	push({ turn: options.turn, kind: "user", text: fixture.prompt, model: options.model ?? "default", effort: null });
+	const recorder = acpRecorder(options.turn, {
+		key: () => `acp-${options.turn}-${++keys}`,
+		store: (item) => push(item),
+		live: (delta) => feed.push({ delta }),
+		ended: () => undefined,
+	});
+	for (const entry of fixture.updates) {
+		if (isPermission(entry)) continue;
+		if (entry.sessionUpdate === "usage_update" && typeof entry.used === "number" && typeof entry.size === "number") context = { used: entry.used, size: entry.size, cost: (entry.cost as AcpContext["cost"] | undefined) ?? null };
+		recorder.update(entry);
+	}
+	recorder.flush();
+	push({ turn: options.turn, kind: "turn.ended", outcome: acpOutcome(fixture.stopReason), exitCode: null, steps: null, durationMs: 0, usage: null, cachedShare: null, message: null, verified: null, context });
+	return feed;
+}
+
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;

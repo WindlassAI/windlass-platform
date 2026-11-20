@@ -20,6 +20,7 @@
  */
 import { MAX_NOTE_CHARS } from "@contract";
 import type { PendingQuestion, QuestionChoice } from "@contract";
+import { ACP_MESSAGE } from "../lib/acp";
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { hasReason, type SessionApi } from "../api/client";
 import { absoluteTime, countdown } from "../lib/format";
@@ -283,7 +284,8 @@ export function QuestionCard({
 					{declining.map((choice) => (
 						<ChoiceButton key={choice.id} choice={choice} flow={flow} />
 					))}
-					{server ? null : showNote ? (
+					{/* Claude Code takes a choice without a note (the server refuses one). */}
+					{server || question.messageId === ACP_MESSAGE ? null : showNote ? (
 						<DeclineNote flow={flow} id={ids.note} compact={compact} />
 					) : (
 						<button type="button" className="link q-note-open" onClick={() => setNoteOpen(true)} disabled={flow.sending !== null}>

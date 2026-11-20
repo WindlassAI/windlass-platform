@@ -124,6 +124,9 @@
 .machine-facts dd {
 	overflow-wrap: anywhere;
 }
+.machine-harness + .machine-harness {
+	margin-top: 8px;
+}
 
 /* A command to run on the machine: the text as it is pasted, and the copy control, always shown. */
 .machine-command {

@@ -9,10 +9,11 @@
  * chosen. An offline machine can: an agent made there waits for it, and so does an item. An item also
  * needs a sandbox its runner reported as usable, since the server gives it the machine's first one.
  */
-import type { MachineSummary } from "@contract";
+import type { HarnessId, MachineSummary } from "@contract";
 import { useId, useState, type ReactNode } from "react";
+import { HARNESS_NAMES, loginCommand, type ReportedHarness } from "../lib/acp";
 import { linkProps } from "../lib/router";
-import { MachineState } from "../screens/Machines";
+import { Command, MachineState } from "../screens/Machines";
 
 export type PlacePurpose = "agent" | "item";
 
@@ -112,5 +113,59 @@ export function PlaceChoice({ machines, chosen, minRunnerVersion, now, purpose, 
 				) : null}
 			</div>
 		</fieldset>
+	);
+}
+
+/** The sandbox profile another harness runs in (server/src/actors/user.ts, `makeSession`). */
+export const HARNESS_PROFILE = "docker-hardened";
+
+/** The harnesses a machine offers besides Windlass, as its runner last reported them. */
+export const offeredHarnesses = (machine: MachineSummary | null): ReportedHarness[] => machine?.harnesses ?? [];
+
+/**
+ * "Agent: Windlass · Claude Code", for an agent on a machine that offers another harness: a segmented
+ * choice of the two, the harness's sign-in on the machine where it is not known to be signed in, and,
+ * once it is chosen, the one line that says what it does differently. `hardened`: whether the machine
+ * can make the container it runs in; without one it cannot be chosen.
+ */
+export function HarnessChoice({ machine, chosen, hardened, disabled = false, onChoose }: { machine: MachineSummary; chosen: HarnessId; hardened: boolean; disabled?: boolean; onChoose(harness: HarnessId): void }) {
+	const label = useId();
+	const group = useId();
+	const offered = offeredHarnesses(machine);
+	const options: Array<{ id: HarnessId; usable: boolean }> = [{ id: "windlass", usable: true }, ...offered.map((harness) => ({ id: harness.id, usable: hardened }))];
+	return (
+		<div className="harness-pick">
+			<span className="label" id={label}>
+				Agent
+			</span>
+			<div className="segmented" role="radiogroup" aria-labelledby={label}>
+				{options.map((option) => (
+					<label key={option.id} className={`segment${chosen === option.id ? " segment-chosen" : ""}${option.usable ? "" : " segment-unavailable"}`}>
+						<input className="segment-radio" type="radio" name={group} value={option.id} checked={chosen === option.id} disabled={disabled || !option.usable} onChange={() => onChoose(option.id)} />
+						{HARNESS_NAMES[option.id]}
+					</label>
+				))}
+			</div>
+			{offered.map((harness) => (
+				<HarnessState key={harness.id} harness={harness} machine={machine} hardened={hardened} />
+			))}
+			{chosen === "claude" ? <p className="field-note">Claude Code runs in this container without asking before commands, with your Claude subscription. It does not run this repository's checks; CI's result is on the pull request.</p> : null}
+		</div>
+	);
+}
+
+/** What stands in the way of a harness on the machine, if anything: its container, or its sign-in. */
+function HarnessState({ harness, machine, hardened }: { harness: ReportedHarness; machine: MachineSummary; hardened: boolean }) {
+	const name = HARNESS_NAMES[harness.id];
+	if (!hardened) return <p className="field-note tone-warn">{name} runs only in the hardened container, which “{machine.name}” cannot make now.</p>;
+	if (harness.signIn === "token") return null;
+	if (harness.signIn === "unknown") return <p className="field-note">{name}: the runner on “{machine.name}” has not said whether it is signed in.</p>;
+	return (
+		<div className="harness-login">
+			<p className="field-note tone-warn">
+				{name}: not signed in on “{machine.name}”. Run <code>windlass-runner login {harness.id}</code> there.
+			</p>
+			<Command text={loginCommand(harness)} label={`The command that signs ${name} in`} />
+		</div>
 	);
 }

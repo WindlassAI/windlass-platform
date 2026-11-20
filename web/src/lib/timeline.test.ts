@@ -1,7 +1,8 @@
-import type { LiveDelta, TimelineItem, WindlassEvent } from "@contract";
+import type { AcpUpdate, LiveDelta, TimelineItem, WindlassEvent } from "@contract";
 import { describe, expect, it } from "vitest";
 import { unaskedNote } from "../../../server/src/personal-servers";
-import { isLive, runToFeed, splitRuns, withSummary, type FeedEntry } from "../api/feed";
+import { acpFixture } from "../api/acp-fixtures";
+import { acpRunToFeed, isLive, runToFeed, splitRuns, withSummary, type AcpFeedEntry, type AcpFixture, type FeedEntry } from "../api/feed";
 import { FIXTURES, fixture } from "../api/fixtures";
 import {
 	applyDelta,
@@ -23,12 +24,6 @@ import {
 // ---------------------------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------------------------
-
-it("leaves the view unchanged when it receives an ACP delta", () => {
-	const view = emptyView();
-	const delta: LiveDelta = { turn: 1, messageKey: "chunk-1", acp: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hello" } } };
-	expect(applyDelta(view, delta)).toBe(view);
-});
 
 /** A fixture as a session's clients would receive it: one turn per recorded run (an ACP run gets its ending). */
 function feedOf(name: string): FeedEntry[] {
@@ -784,3 +779,85 @@ function contentText(fields: Record<string, unknown>): string {
 	const content = fields.content;
 	return Array.isArray(content) ? content.map((part: { text?: string }) => part.text ?? "").join("") : "";
 }
+
+// ---------------------------------------------------------------------------------------------
+// A harness spoken to through ACP (Claude Code)
+// ---------------------------------------------------------------------------------------------
+
+describe("an ACP turn", () => {
+	const acpReduce = (feed: AcpFeedEntry[], from: SessionView = emptyView()) => feed.reduce((view, entry) => ("item" in entry ? applyItem(view, entry.item) : applyDelta(view, entry.delta)), from);
+	const acpView = (name: string) => acpReduce(acpRunToFeed(acpFixture(name)));
+	const blocksOf = (view: SessionView) => turn(view).blocks.filter((block) => block.kind !== "user");
+
+	it("folds the plain scenario into one reasoning block and one text block", () => {
+		const view = acpView("acp-claude-plain");
+		const blocks = blocksOf(view);
+		expect(kinds(blocks)).toEqual(["reasoning", "text"]);
+		expect(blocks.map((block) => (block.kind === "reasoning" || block.kind === "text" ? [block.text, block.streaming] : null))).toEqual([
+			["I'll inspect the files.", false],
+			["The files are ready.", false],
+		]);
+		expect(turn(view).end).toMatchObject({ outcome: "succeeded", verified: null, context: null });
+	});
+
+	it("gives the tools scenario two tool blocks in their end states, with the edit's diff kept", () => {
+		const view = acpView("acp-claude-tools");
+		const tools = toolBlocks(turn(view));
+		expect(tools.map((block) => [block.messageId, block.name, block.target, block.state, block.outcome, block.output])).toEqual([
+			["acp", "shell", "pwd", "done", "success", "/workspace"],
+			["acp", "edit", "README.md", "failed", "error", ""],
+		]);
+		const diff = tools[1]?.display?.diff;
+		expect(typeof diff).toBe("string");
+		expect(String(diff).split("\n")).toEqual(expect.arrayContaining(["--- a/README.md", "+++ b/README.md", "-Draft", "+Ready"]));
+		expect(texts(blocksOf(view)).map((block) => block.text)).toEqual(["The edit failed."]);
+	});
+
+	it("shows live chunks and then their stored run once, not twice, from the feed and from a snapshot taken midway", () => {
+		const feed = acpRunToFeed(acpFixture("acp-claude-plain"));
+		expect(feed.filter((entry) => "delta" in entry)).toHaveLength(8);
+		// Midway through the answer: the thinking is stored, the answer is the snapshot's pending delta so far.
+		const cut = feed.findIndex((entry) => "delta" in entry && "acp" in entry.delta && entry.delta.acp.sessionUpdate === "agent_message_chunk") + 2;
+		const stored = feed.slice(0, cut).flatMap((entry) => ("item" in entry ? [entry.item] : []));
+		const sofar: LiveDelta = { turn: 1, messageKey: "acp-1-2", acp: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "The files " } } };
+		const midway = fromSnapshot({ timeline: stored, pending: [sofar], windlassSessionId: null });
+		expect(texts(blocksOf(midway)).map((block) => [block.text, block.streaming])).toEqual([["The files ", true]]);
+		const after = acpReduce(feed.slice(cut), midway);
+		expect(texts(blocksOf(after)).map((block) => [block.text, block.streaming])).toEqual([["The files are ready.", false]]);
+		expect(shape(after).turns).toEqual(shape(acpReduce(feed)).turns);
+	});
+
+	it("keeps one plan per turn, updated in place, and the context's fill from usage", () => {
+		const plan = blocksOf(acpView("acp-claude-plan"));
+		expect(plan).toHaveLength(1);
+		expect(plan[0]).toMatchObject({ kind: "plan", entries: [{ content: "Read the file", status: "completed" }, { content: "Make the edit", status: "completed" }, { content: "Check the result", status: "completed" }] });
+		const usage = acpView("acp-claude-usage");
+		expect(usage.context).toEqual({ used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } });
+		expect(turn(usage).end?.context).toEqual({ used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } });
+	});
+
+	it("folds updates it does not show, and kinds it has never heard of, into nothing, between the ones it does", () => {
+		const plain = acpFixture("acp-claude-plain");
+		// Wire data is not trusted to match the type: these come as they would off the socket.
+		const unknown = ([
+			{ sessionUpdate: "available_commands_update", availableCommands: [{ name: "compact", description: "Compact the conversation" }] },
+			{ sessionUpdate: "current_mode_update", currentModeId: "bypassPermissions" },
+			{ sessionUpdate: "config_option_update", configOptions: [{ id: "model", category: "model", type: "select" }] },
+			{ sessionUpdate: "session_info_update", title: "Inspect the files" },
+			{ sessionUpdate: "user_message_chunk", content: { type: "text", text: "plain" } },
+			{ sessionUpdate: "a_kind_from_next_year", whatever: { nested: [1, 2, 3] } },
+			// Malformed: a call update that names no call, a plan without its entries.
+			{ sessionUpdate: "tool_call_update" },
+			{ sessionUpdate: "plan" },
+		] as unknown[]) as AcpUpdate[];
+		const mixed: AcpFixture = { ...plain, updates: [...plain.updates.slice(0, 3), ...unknown, ...plain.updates.slice(3)] };
+		const view = acpReduce(acpRunToFeed(mixed));
+		expect(kinds(blocksOf(view))).toEqual(["reasoning", "text"]);
+		expect(shape(view).turns[0]?.blocks).toEqual(shape(acpView("acp-claude-plain")).turns[0]?.blocks);
+		for (const update of unknown) {
+			const before = acpView("acp-claude-plain");
+			expect(applyDelta(before, { turn: 1, messageKey: "acp-9", acp: update })).toBe(before);
+			expect(applyItem(before, { seq: before.lastSeq + 1, at: 0, turn: 1, kind: "acp", update }).turns).toEqual(before.turns);
+		}
+	});
+});

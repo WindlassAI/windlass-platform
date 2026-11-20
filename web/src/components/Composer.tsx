@@ -12,6 +12,11 @@
  * the first attempt did arrive and only its answer was lost. A message whose text changed is a new
  * submission, with a key of its own (lib/submission.ts).
  *
+ * An agent of another harness (Claude Code, `harness`) has the models and efforts that harness offered
+ * (`SessionSummary.harnessModels`): a picker is drawn only when there is a choice to make, and otherwise
+ * one quiet word says the harness's default is used. Where that harness takes no message while a turn
+ * runs, the server says so, and the message is held here and sent as the next prompt once the turn ends.
+ *
  * A work item's agent takes no prompt from a person: the item's steps send them, and the server
  * refuses any other (`item_session`). Its page has `ItemNote` in the composer's place: one quiet line
  * that says so and links to the item, with Stop beside it while a turn runs, which the server allows.
@@ -48,6 +53,8 @@ export interface ComposerProps {
 	suggestion?: { key: number; text: string } | null;
 	/** Set when nothing can be sent to this agent again, with why (its machine was removed). */
 	closed?: string | null;
+	/** The name of the harness the agent runs when it is not Windlass ("Claude Code"): its pickers are drawn only where it offers a choice. */
+	harness?: string | null;
 }
 
 /** Why nothing can be sent right now. */
@@ -58,6 +65,9 @@ const REASON: Partial<Record<SessionStatus, string>> = {
 
 /** How long a refusal to take a steer stays. */
 const TRANSIENT_MS = 6000;
+
+/** The server's refusal of a message to a running turn whose harness takes none then (server/src/sandbox/acp-harness.ts): it is sent when the turn ends. */
+export const heldForTurnEnd = (failure: unknown): boolean => hasReason(failure, "turn_running") && /\bit is sent when the turn ends\b/i.test(errorMessage(failure));
 
 /** The way to the usage page, after a sentence about a limit. */
 function UsageLink() {
@@ -123,7 +133,7 @@ export function ItemNote({ item, status, online, onStop }: { item: { id: string;
 	);
 }
 
-export function Composer({ status, online, models, model, onSend, onStop, initial, suggestion, limitNote, closed }: ComposerProps) {
+export function Composer({ status, online, models, model, onSend, onStop, initial, suggestion, limitNote, closed, harness = null }: ComposerProps) {
 	const [text, setText] = useState(initial?.text ?? "");
 	const [error, setError] = useState<string | null>(initial?.error ?? null);
 	/** Whether `error` is a refusal by one of the user's limits. */
@@ -136,6 +146,8 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 	const [stopping, setStopping] = useState(false);
 	/** The message that was sent and not taken, with its key: the same text again is another attempt of it. */
 	const untaken = useRef<Submission | null>(initial?.idempotencyKey ? { content: initial.text, idempotencyKey: initial.idempotencyKey } : null);
+	/** A message the running turn's harness could not take: sent, with its key, once the turn ends. */
+	const [held, setHeld] = useState<Submission | null>(null);
 	const area = useRef<HTMLTextAreaElement>(null);
 	const ids = { text: useId(), model: useId(), effort: useId(), reason: useId() };
 
@@ -149,6 +161,9 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 	const efforts = effortsOf(models, currentModel);
 	// An effort the chosen model does not take is not sent: the picker is back at the default.
 	const currentEffort = efforts.includes(effort) ? effort : "";
+	// Another harness's pickers are drawn only where it offers a choice.
+	const modelPicker = harness === null || offered.length > 1;
+	const effortPicker = harness === null || efforts.length > 0;
 	const tooLong = text.length > MAX_PROMPT_CHARS;
 	const canSend = writable && online && !sending && text.trim() !== "" && !tooLong;
 	const reason = closed || (!online ? "The connection is down. Reconnecting…" : (REASON[status] ?? (sending ? "Sending…" : null)));
@@ -181,6 +196,24 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 		if (idle) setStopping(false);
 	}, [idle]);
 
+	// The held message goes as the next prompt once the turn has ended; refused then, it is back in the field.
+	useEffect(() => {
+		if (!idle || !online || held === null || closed) return;
+		const message = held;
+		setHeld(null);
+		setSending(true);
+		onSend({ text: message.content, idempotencyKey: message.idempotencyKey }).then(
+			() => setSending(false),
+			(failure: unknown) => {
+				untaken.current = message;
+				setText((current) => (current.trim() === "" ? message.content : current));
+				setError(failure instanceof Error ? errorMessage(failure) : "The message could not be sent.");
+				setLimited(isLimitRefusal(failure));
+				setSending(false);
+			},
+		);
+	}, [idle, online, held, closed, onSend]);
+
 	const send = async () => {
 		if (!canSend) return;
 		setSending(true);
@@ -194,7 +227,11 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 			untaken.current = null;
 			setText("");
 		} catch (failure) {
-			if (hasReason(failure, "turn_running")) setNotice(errorMessage(failure));
+			if (steering && heldForTurnEnd(failure) && held === null) {
+				setHeld({ content, idempotencyKey });
+				untaken.current = null;
+				setText("");
+			} else if (hasReason(failure, "turn_running")) setNotice(errorMessage(failure));
 			else {
 				setError(failure instanceof Error ? errorMessage(failure) : "The message could not be sent.");
 				setLimited(isLimitRefusal(failure));
@@ -248,6 +285,25 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 					<WarnIcon size={14} />
 					<span>{notice} Your message is still here.</span>
 				</p>
+			) : held ? (
+				<p className="composer-error composer-held" role="status">
+					<SteerIcon size={14} />
+					<span>
+						<span className="composer-held-text">{held.content}</span> Sent when this turn ends.{" "}
+						<button
+							type="button"
+							className="link"
+							onClick={() => {
+								setText((current) => (current.trim() === "" ? held.content : `${held.content}\n${current}`));
+								untaken.current = held;
+								setHeld(null);
+								area.current?.focus();
+							}}
+						>
+							Take it back
+						</button>
+					</span>
+				</p>
 			) : limitNote ? (
 				<p className="composer-error composer-allowance" role="status">
 					<WarnIcon size={14} />
@@ -289,30 +345,38 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 			</div>
 			<div className="composer-foot">
 				<div className="composer-selects">
-					<label className="mini-select" htmlFor={ids.model}>
-						<span>model</span>
-						<select id={ids.model} value={currentModel} onChange={(event) => setChosenModel(event.target.value)} disabled={!idle} title={idle ? undefined : "For the next turn; a message to the running turn uses its model"}>
-							{(offered.includes(currentModel) ? offered : [currentModel, ...offered]).map((name) => (
-								<option key={name} value={name}>
-									{name}
-								</option>
-							))}
-						</select>
-					</label>
-					<label className="mini-select" htmlFor={ids.effort}>
-						<span>effort</span>
-						<select id={ids.effort} value={currentEffort} onChange={(event) => setEffort(event.target.value)} disabled={!idle} title={idle ? undefined : "For the next turn; a message to the running turn uses its effort"}>
-							<option value="">default</option>
-							{efforts.map((name) => (
-								<option key={name} value={name}>
-									{name}
-								</option>
-							))}
-						</select>
-					</label>
-					{models ? (
+					{modelPicker ? (
+						<label className="mini-select" htmlFor={ids.model}>
+							<span>model</span>
+							<select id={ids.model} value={currentModel} onChange={(event) => setChosenModel(event.target.value)} disabled={!idle} title={idle ? undefined : "For the next turn; a message to the running turn uses its model"}>
+								{(offered.includes(currentModel) ? offered : [currentModel, ...offered]).map((name) => (
+									<option key={name} value={name}>
+										{name}
+									</option>
+								))}
+							</select>
+						</label>
+					) : null}
+					{effortPicker ? (
+						<label className="mini-select" htmlFor={ids.effort}>
+							<span>effort</span>
+							<select id={ids.effort} value={currentEffort} onChange={(event) => setEffort(event.target.value)} disabled={!idle} title={idle ? undefined : "For the next turn; a message to the running turn uses its effort"}>
+								<option value="">default</option>
+								{efforts.map((name) => (
+									<option key={name} value={name}>
+										{name}
+									</option>
+								))}
+							</select>
+						</label>
+					) : null}
+					{!modelPicker ? (
+						<span className="mini-note" title={`The model is the one ${harness} starts on; it offered no other.`}>
+							{harness}'s default model
+						</span>
+					) : models ? (
 						<span className="mini-note" title={modelsNote(models)}>
-							{modelsNoteShort(models)}
+							{harness === null ? modelsNoteShort(models) : `${harness}'s models`}
 						</span>
 					) : null}
 				</div>

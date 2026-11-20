@@ -4,9 +4,14 @@
  * the agent changed, for a session on a repository of the user's GitHub connection its pull request
  * and that repository's setup command, and, where the project names MCP servers, those and the user's
  * approvals of them.
+ *
+ * An agent of another harness (Claude Code) reports no token counts and has no prompt cache to chart:
+ * in their place the panel says how full its context is, and what it has cost so far when the harness
+ * says. Its saved secrets are not handed to it, so they are not listed as if they were.
  */
 import type { PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
 import { useCallback, useEffect, useState } from "react";
+import { acpHarnessName, contextWords, costWords } from "../lib/acp";
 import { absoluteTime, compact, count, percent, plural, shortId } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { cachedShare, lastTurn, sessionUsage, turnUsage, type ModelCall, type SessionView } from "../lib/timeline";
@@ -23,6 +28,7 @@ import { SandboxState, StatusBadge } from "./Status";
 
 function Facts({ summary, view }: { summary: SessionSummary; view: SessionView }) {
 	const id = view.windlassSessionId;
+	const harness = acpHarnessName(summary);
 	return (
 		<section className="panel-section" aria-labelledby="panel-session">
 			<h2 className="panel-title" id="panel-session">
@@ -39,8 +45,14 @@ function Facts({ summary, view }: { summary: SessionSummary; view: SessionView }
 				<dd>
 					<StatusBadge status={summary.status} />
 				</dd>
+				{harness ? (
+					<>
+						<dt>agent</dt>
+						<dd>{harness}</dd>
+					</>
+				) : null}
 				<dt>model</dt>
-				<dd>{summary.model}</dd>
+				<dd>{harness && summary.model === "default" ? `${harness}'s default` : summary.model}</dd>
 				<dt>turns</dt>
 				<dd>{summary.turns}</dd>
 				{summary.repository ? (
@@ -142,6 +154,43 @@ function Tokens({ view }: { view: SessionView }) {
 				</tbody>
 			</table>
 			{unreported ? <p className="panel-empty panel-note">No token counts were reported.</p> : null}
+		</section>
+	);
+}
+
+/** An ACP harness's usage: how full its context is, and its cost so far when it says. */
+function Context({ view, harness }: { view: SessionView; harness: string }) {
+	const context = view.context;
+	const share = context ? Math.min(1, context.used / context.size) : 0;
+	return (
+		<section className="panel-section" aria-labelledby="panel-context">
+			<h2 className="panel-title" id="panel-context">
+				Usage
+			</h2>
+			{context ? (
+				<>
+					<dl className="kv">
+						<dt>context</dt>
+						<dd>
+							{contextWords(context)}{" "}
+							<span className="tone-faint">
+								{compact(context.used)} of {compact(context.size)} tokens
+							</span>
+						</dd>
+						{context.cost ? (
+							<>
+								<dt>cost</dt>
+								<dd>{costWords(context.cost)}</dd>
+							</>
+						) : null}
+					</dl>
+					<div className="usage-meter" role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={context.size} aria-valuenow={Math.min(context.size, context.used)} aria-valuetext={contextWords(context)}>
+						{share > 0 ? <span className="usage-meter-used" style={{ width: `${share * 100}%` }} /> : null}
+					</div>
+				</>
+			) : (
+				<p className="panel-empty">{harness} says how full its context is once a turn has run. It reports no token counts.</p>
+			)}
 		</section>
 	);
 }
@@ -335,16 +384,23 @@ export function SidePanel({ sessionId, summary, profile, view, turnsEnded, quest
 	const [files, setFiles] = useState<number | null>(null);
 	const [reloads, setReloads] = useState(0);
 	const published = useCallback(() => setReloads((value) => value + 1), []);
+	const harness = acpHarnessName(summary);
 	return (
 		<aside className="panel" id="details" aria-label="Session details">
 			<Facts summary={summary} view={view} />
 			<Sandbox summary={summary} profile={profile} />
-			<Tokens view={view} />
-			<CacheBars calls={view.calls} anyTurns={view.turns.length > 0} />
+			{harness ? (
+				<Context view={view} harness={harness} />
+			) : (
+				<>
+					<Tokens view={view} />
+					<CacheBars calls={view.calls} anyTurns={view.turns.length > 0} />
+				</>
+			)}
 			<Changes sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} reloads={reloads} onFiles={setFiles} />
 			<PullRequestSection sessionId={sessionId} summary={summary} profile={profile} turnsEnded={turnsEnded} files={files} onPublished={published} />
 			<SetupSection summary={summary} />
-			<SecretsSection summary={summary} />
+			{harness ? null : <SecretsSection summary={summary} />}
 			{/* Last: it is there only where the project names a server, and so its arrival moves no other section. */}
 			<ServersSection sessionId={sessionId} summary={summary} question={question} />
 		</aside>

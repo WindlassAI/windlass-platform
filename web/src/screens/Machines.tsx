@@ -10,6 +10,9 @@
  * runner versions the page compares.
  *
  * `/machines/add` opens the dialog that pairs a machine: it is the address a runner prints with its code.
+ *
+ * A runner started with another harness (`--harness claude`) reports it with its adapter's version and
+ * whether it is signed in there; each machine says so, with the command that signs it in where it is not.
  */
 import { MAX_MACHINES, type MachineClaim, type MachineSandbox, type MachineSummary, type MachineWarning, type MachinesInfo } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
@@ -18,6 +21,7 @@ import { CopyButton } from "../components/Copy";
 import { Dialog } from "../components/Dialog";
 import { ArrowLeftIcon, ChevronIcon, InfoIcon, Mark, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
 import { SandboxState } from "../components/Status";
+import { HARNESS_NAMES, loginCommand, signInWords } from "../lib/acp";
 import { absoluteTime, plural, relativeTime, spelledDuration } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
@@ -146,7 +150,7 @@ export function MachineState({ machine, now }: { machine: MachineSummary; now: n
 }
 
 /** A command to run on the machine, with the way to copy it. */
-function Command({ text, label }: { text: string; label: string }) {
+export function Command({ text, label }: { text: string; label: string }) {
 	return (
 		<div className="machine-command">
 			<pre tabIndex={0} aria-label={label}>
@@ -295,6 +299,11 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				<p className="agent-meta">
 					<span>runner {machine.runnerVersion}</span>
 					<span>{machine.sandboxes.length === 0 ? "no sandbox on it" : plural(machine.sandboxes.length, "agent's sandbox", "agents' sandboxes")}</span>
+					{(machine.harnesses ?? []).map((harness) => (
+						<span key={harness.id} className={harness.signIn === "none" ? "tone-warn" : undefined}>
+							{HARNESS_NAMES[harness.id]} {signInWords(harness)}
+						</span>
+					))}
 					<span>
 						<button type="button" className="link machine-toggle" aria-expanded={open} aria-controls={details} onClick={() => setOpen((value) => !value)}>
 							<ChevronIcon size={11} className="machine-chevron" />
@@ -342,6 +351,26 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						<dt>Commands sandboxed by Windlass</dt>
 						<dd>{machine.commandSandbox === null ? <span className="tone-faint">not reported yet</span> : machine.commandSandbox.ok ? "yes" : <>no: {machine.commandSandbox.reason}</>}</dd>
 					</div>
+					{machine.harnesses && machine.harnesses.length > 0 ? (
+						<div>
+							<dt>Other agents</dt>
+							<dd>
+								{machine.harnesses.map((harness) => (
+									<div key={harness.id} className="machine-harness">
+										{HARNESS_NAMES[harness.id]} ({harness.adapter}): <span className={harness.signIn === "none" ? "tone-warn" : undefined}>{signInWords(harness)}</span>
+										{harness.signIn === "token" ? null : (
+											<>
+												<p className="field-note">
+													{harness.signIn === "none" ? "To sign it in" : "Its runner did not say whether it is signed in. To sign it in again"}, run <code>windlass-runner login {harness.id}</code> on the machine and approve in the browser.
+												</p>
+												<Command text={loginCommand(harness)} label={`The command that signs ${HARNESS_NAMES[harness.id]} in`} />
+											</>
+										)}
+									</div>
+								))}
+							</dd>
+						</div>
+					) : null}
 					<div>
 						<dt>Free disk</dt>
 						<dd>{machine.freeDiskBytes === null ? <span className="tone-faint">not reported yet</span> : diskSize(machine.freeDiskBytes)}</dd>

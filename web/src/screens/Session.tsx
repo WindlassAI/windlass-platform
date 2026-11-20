@@ -11,6 +11,10 @@
  * the page has no composer, and says in its place that the item's steps send its prompts, with the
  * way to the item (`ItemNote`). What the server does allow there stays: Stop while a turn runs, a tool
  * call's stop, the answers to its questions, and the panel's pull request and servers.
+ *
+ * An agent of another harness than Windlass (Claude Code, on one of the user's machines) says which
+ * beside its title, and the page draws only what that harness does: its tool calls cannot be stopped
+ * one by one, and the composer offers the models it offered.
  */
 import { USAGE_LOW_SHARE, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
 import { useCallback, useMemo, useState } from "react";
@@ -18,6 +22,7 @@ import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
 import { ArrowLeftIcon, Mark, WarnIcon } from "../components/Icons";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
+import { acpHarnessName, harnessModelsOf } from "../lib/acp";
 import { SidePanel } from "../components/SidePanel";
 import { StatusBadge } from "../components/Status";
 import { localTime, sandboxTime } from "../lib/format";
@@ -43,7 +48,9 @@ export function useSessionMachine(place: SandboxPlace | undefined): MachineSumma
 }
 
 /** What the top bar shows for a session: the way back, its title and state. A work item's session is part of its item, and the way back is to the item. */
-export function SessionCrumb({ title, status, place, machine, item }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: { id: string } }) {
+export function SessionCrumb({ title, status, place, machine, item, harness }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: { id: string }; harness?: SessionSummary["harness"] }) {
+	const harnessName = acpHarnessName({ harness });
+	const machineName = machine ? machine.name : null;
 	return (
 		<nav className="crumb" aria-label="Where you are">
 			<a className="crumb-back" {...linkProps(item ? { name: "item", id: item.id } : { name: "home" })}>
@@ -61,7 +68,7 @@ export function SessionCrumb({ title, status, place, machine, item }: { title: s
 				</>
 			) : null}
 			{status !== null ? <StatusBadge status={status} /> : null}
-			{place?.kind === "machine" ? <span className="chip crumb-place">On {machine ? machine.name : "your machine"}</span> : null}
+			{place?.kind === "machine" ? <span className="chip crumb-place">{harnessName ? `${harnessName} on ${machineName ? `“${machineName}”` : "your machine"}` : `On ${machineName ?? "your machine"}`}</span> : null}
 		</nav>
 	);
 }
@@ -129,7 +136,9 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 			throw new Error(explain(failure));
 		}
 	}, [api, explain]);
-	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online ? stopCall : null }), [flow, stopCall, online]);
+	// A harness other than Windlass cannot stop one call of a turn: only the turn.
+	const harness = state.summary ? acpHarnessName(state.summary) : null;
+	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && harness === null ? stopCall : null }), [flow, stopCall, online, harness]);
 
 	if (state.phase === "missing") {
 		return (
@@ -215,8 +224,9 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 					<Composer
 						status={summary.status}
 						online={online}
-						models={models.list}
+						models={harness === null ? models.list : harnessModelsOf(summary)}
 						model={summary.model}
+						harness={harness}
 						initial={handover}
 						suggestion={suggestion}
 						limitNote={summary.place.kind === "machine" ? null : limitNote(allowance, summary)}

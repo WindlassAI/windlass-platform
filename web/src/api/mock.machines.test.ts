@@ -1,11 +1,18 @@
+// @vitest-environment jsdom
 /**
  * The mock's machines: what the Machines page is looked at with, by hand and here. It answers as the
  * server's user actor says it does (contract.ts, `UserActions.machines` and the four calls after it).
  */
 import { workingCounts } from "../lib/repositories";
-import { MAX_MACHINES, type MachineSummary } from "@contract";
-import { describe, expect, it, vi } from "vitest";
-import { createMockClient, MOCK_MACHINE_STATES, type MockMachineSession } from "./mock";
+import { MAX_MACHINES, type AuthResult, type CreateSessionInput, type MachineSummary } from "@contract";
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { saveAuth } from "../lib/authStore";
+import { NewAgent } from "../screens/NewAgent";
+import { AppProvider } from "../state/app";
+import type { UserApi } from "./client";
+import { createMockClient, MOCK_MACHINE_STATES, type MockClient, type MockMachineSession } from "./mock";
 
 const auth = { token: "mock:chatgpt:u_machines:ada@example.com", profile: { uid: "u_machines", email: "ada@example.com", demo: false } };
 const make = (machine?: (typeof MOCK_MACHINE_STATES)[number]) => createMockClient({ pace: 0, machine });
@@ -205,5 +212,110 @@ describe("the mock's machines", () => {
 		await expect(user.machines()).rejects.toMatchObject({ code: "network" });
 		close();
 		mock.dispose();
+	});
+});
+
+// ---------------------------------------------------------------------------------------------
+// The launch form on a machine that offers Claude Code
+// ---------------------------------------------------------------------------------------------
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+describe("the launch form's agent picker", () => {
+	let host: HTMLElement;
+	let root: Root;
+	let client: MockClient;
+	let created: CreateSessionInput[];
+
+	/** Lets the mock answer: in steps, so that what one answer renders can ask the next. */
+	async function wait(steps = 8): Promise<void> {
+		for (let step = 0; step < steps; step++) await act(async () => void (await vi.advanceTimersByTimeAsync(400)));
+	}
+
+	/** Signs in to a mock whose machines stand as "full" says (nas offers Claude Code signed in, workshop signed out, build-box not at all) and opens the form. */
+	async function open(): Promise<void> {
+		vi.useFakeTimers();
+		// jsdom has no <dialog> of its own that opens.
+		HTMLDialogElement.prototype.showModal ??= function showModal(this: HTMLDialogElement) {
+			this.setAttribute("open", "");
+		};
+		HTMLDialogElement.prototype.close ??= function close(this: HTMLDialogElement) {
+			this.removeAttribute("open");
+		};
+		created = [];
+		host = document.createElement("div");
+		document.body.append(host);
+		root = createRoot(host);
+		client = createMockClient({ origin: "http://localhost:5173", machine: "full" });
+		const begun = client.login.start();
+		await vi.advanceTimersByTimeAsync(1000);
+		const { redirectPrefix, url } = await begun;
+		const finished = client.login.finish(`${redirectPrefix}?code=abc&state=${new URL(url).searchParams.get("state")}`);
+		await vi.advanceTimersByTimeAsync(1000);
+		const signedIn: AuthResult = await finished;
+		saveAuth("mock", signedIn);
+		const user = client.user.bind(client);
+		(client as { user: (auth: AuthResult) => UserApi }).user = (who) => {
+			const api = user(who);
+			return { ...api, createSession: (input: CreateSessionInput) => (created.push(input), api.createSession(input)) };
+		};
+		act(() => root.render(createElement(AppProvider, { client, children: createElement(NewAgent) })));
+		await wait();
+	}
+
+	afterEach(() => {
+		act(() => root.unmount());
+		host.remove();
+		client.dispose();
+		saveAuth("mock", null);
+		vi.useRealTimers();
+	});
+
+	const text = () => host.textContent ?? "";
+	const place = (value: string) => act(() => (host.querySelector(`input[type="radio"][value="${value}"]`) as HTMLInputElement).click());
+	const segments = () => [...host.querySelectorAll(".segmented .segment")].map((segment) => segment.textContent);
+	const LOGIN = "Claude Code: not signed in on “workshop”. Run windlass-runner login claude there.";
+
+	it("offers Windlass or Claude Code on a machine that reports it, and its sign-in where it is not signed in", async () => {
+		await open();
+		place("m_workshop");
+		expect(segments()).toEqual(["Windlass", "Claude Code"]);
+		expect(text()).toContain(LOGIN);
+		expect(host.querySelector(".harness-login pre")?.textContent).toBe("docker exec -it windlass-runner windlass-runner login claude");
+		// Signed in on nas: the picker, and no sign-in line.
+		place("m_nas");
+		expect(segments()).toEqual(["Windlass", "Claude Code"]);
+		expect(text()).not.toContain("not signed in");
+	});
+
+	it("shows no picker on a machine that reports no other harness, nor on this platform", async () => {
+		await open();
+		expect(host.querySelector(".segmented")).toBeNull();
+		expect(text()).not.toContain("Claude Code");
+		// The picker there is on nas, and it goes with the machine.
+		place("m_nas");
+		expect(segments()).toEqual(["Windlass", "Claude Code"]);
+		place("m_build");
+		expect(host.querySelector(".sandbox-chosen-name")?.textContent).toBe("build-box");
+		expect(host.querySelector(".segmented")).toBeNull();
+		place("platform");
+		expect(host.querySelector(".segmented")).toBeNull();
+	});
+
+	it("launches Claude Code in the hardened container, on its default model, with the line that says what that means", async () => {
+		await open();
+		place("m_nas");
+		place("claude");
+		expect(text()).toContain("Claude Code runs in this container without asking before commands, with your Claude subscription. It does not run this repository's checks; CI's result is on the pull request.");
+		// The place's line, then the sandbox's.
+		expect([...host.querySelectorAll(".sandbox-chosen-name")].map((name) => name.textContent)).toEqual(["nas", 'Hardened Docker on your machine "nas"']);
+		// No model to choose at launch: Claude Code's default.
+		expect([...host.querySelectorAll("select")].some((select) => select.id && host.querySelector(`label[for="${select.id}"]`)?.textContent === "Model")).toBe(false);
+		expect(text()).toContain("Claude Code's default");
+		await act(async () => (document.querySelector('button[type="submit"]') as HTMLButtonElement).click());
+		await wait();
+		expect(created).toHaveLength(1);
+		expect(created[0]).toMatchObject({ harness: "claude", profile: "docker-hardened", place: { kind: "machine", machineId: "m_nas" } });
+		expect(created[0]?.model).toBeUndefined();
 	});
 });
