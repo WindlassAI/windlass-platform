@@ -2404,6 +2404,7 @@ cd server && npx tsx ../scripts/models-check.ts                   # a user's mod
 cd server && npx tsx ../scripts/signin-check.ts                   # the sign-in machinery without Docker, against a stand-in for OpenAI; its last section starts a server of its own on OS-assigned ports
 cd server && npx tsx ../scripts/connection-check.ts               # the tokens browsers connect with: a stand-in for the engine
 cd server && npx tsx ../scripts/access-check.ts                   # who may sign in: the invitation list and the demo
+cd server && npx tsx ../scripts/web-stage-check.ts                # the image's web stage copies every shared file Vite loads
 cd server && npx tsx ../scripts/web-files-check.ts                # the web app's files as the server serves them
 cd server && npx tsx ../scripts/connection-e2e.ts                 # the web app's client through an engine whose tokens run out
 cd server && npx tsx ../scripts/harness-check.ts                  # recorded ACP agent interactions
