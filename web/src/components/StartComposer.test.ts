@@ -157,6 +157,17 @@ describe("the start composer", () => {
 	});
 });
 
+describe("the start composer where it offers no switch", () => {
+	it("starts an agent even when a work item was being filed elsewhere before the visit to GitHub", async () => {
+		sessionStorage.setItem("wlp.new-agent.draft", JSON.stringify({ prompt: "Add a health check", kind: "item", criteria: "It answers 200." }));
+		await show();
+		expect(field().value).toBe("Add a health check");
+		expect(host.querySelector(".start-kind")).toBeNull();
+		expect(chip("agent")).toBeDefined();
+		expect(chip("criteria")).toBeUndefined();
+	});
+});
+
 describe("each picker of the start composer", () => {
 	it("sends no repository, chosen in the repository's picker", async () => {
 		await show();

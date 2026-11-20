@@ -23,15 +23,24 @@
  *
  * Narrow, the chips after the second fold behind "more" where that hides more than one, until a
  * picker is used; an open mode or sandbox fact never folds.
+ *
+ * Where the deployment offers work items and the page asks for it (`switchable`, the Factory page), a
+ * switch before the chips turns it to filing one ("Work item"): the text's first line is the item's
+ * title and the rest what to do (`itemOf`), a repository of the GitHub connection is required, and
+ * the chips are the repository, where it runs and its acceptance criteria; an item keeps its profile's mode and runs Windlass. Enter files and starts it,
+ * the line under it files a draft, and the page stays where it is: filing several in a row is the
+ * factory's normal use. The repository starts on the page's, else the newest item's, else the newest
+ * agent's.
  */
-import { MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type GithubId, type HarnessId, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type ItemSummary, type HarnessId, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { HARNESS_NAMES } from "../lib/acp";
 import { count, localTime, sandboxTime } from "../lib/format";
 import { effortsOf, harnessOptions, modelsNote } from "../lib/models";
 import { CLAUDE_DEFAULT_MODE, OPEN_MODES, launchModes } from "../lib/modes";
-import { lastUsed, layerChoices, repositoryName, startingChoices, startingModel, startingProfile } from "../lib/repositories";
+import { itemOf, lastUsed, layerChoices, repositoryName, startingChoices, startingModel, startingProfile } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { clockTime, useMachines } from "../screens/Machines";
@@ -152,13 +161,13 @@ function useNarrow(): boolean {
 }
 
 /** The pickers a chip opens. The mode's is its own (`ModePicker`). */
-type Picker = "repo" | "place" | "agent" | "sandbox";
+type Picker = "repo" | "place" | "agent" | "sandbox" | "criteria";
 
 /**
  * One chip: a quiet label, its value, and the picker it opens under the row. `warn` puts the warning
  * dot on it; `changed` draws it emphasised, for a value that differs from its saved default.
  */
-function Chip({ label, value, open, warn = false, changed = false, busy = false, disabled = false, onToggle, onClose, children }: { label: string; value: ReactNode; open: boolean; warn?: boolean; changed?: boolean; busy?: boolean; disabled?: boolean; onToggle(): void; onClose(): void; children: ReactNode }) {
+export function Chip({ label, value, open, warn = false, changed = false, busy = false, disabled = false, onToggle, onClose, children }: { label: string; value: ReactNode; open: boolean; warn?: boolean; changed?: boolean; busy?: boolean; disabled?: boolean; onToggle(): void; onClose(): void; children: ReactNode }) {
 	const ids = { label: useId(), button: useId(), pop: useId() };
 	const button = useRef<HTMLButtonElement>(null);
 	const pop = useRef<HTMLDivElement>(null);
@@ -201,20 +210,37 @@ export interface StartComposerProps {
 	repositoryId?: GithubId;
 	/** Puts the focus in the field when it is shown. */
 	autoFocus?: boolean;
+	/** What it starts on: an agent, or a work item to file. Work items need the deployment to offer them. */
+	kind?: StartKind;
+	/** Offers the switch between the two, where the deployment offers work items. */
+	switchable?: boolean;
+	/** The user's work items, live, where the page has them: a work item starts on the newest one's repository. Null until they arrive. */
+	items?: readonly ItemSummary[] | null;
 }
 
-export function StartComposer({ sessions, repositoryId, autoFocus = false }: StartComposerProps) {
+export type StartKind = "agent" | "item";
+
+/** The refusals of a machine that the list of machines may be behind on: it is read again. */
+const MACHINE_REFUSALS = ["machine_not_found", "machine_not_connected", "runner_outdated", "bad_profile"] as const;
+
+export function StartComposer({ sessions, repositoryId, autoFocus = false, kind: startKind = "agent", switchable = false, items }: StartComposerProps) {
 	const { client, platform, explain } = useApp();
 	const auth = useAuth();
 	const info = platform.info;
 	const github = useGithub();
 	const limit = launchLimit(useAllowance());
 	const narrow = useNarrow();
-	const ids = { text: useId(), hint: useId(), repo: useId(), repoLabel: useId(), repoNote: useId(), sandboxes: useId(), models: useId(), efforts: useId() };
+	const ids = { text: useId(), hint: useId(), repo: useId(), repoLabel: useId(), repoNote: useId(), sandboxes: useId(), models: useId(), efforts: useId(), kind: useId(), criteria: useId(), criteriaNote: useId() };
 	// What the composer held before its user left to connect GitHub, once.
 	const [draft] = useState(takeLaunchDraft);
 
 	const [prompt, setPrompt] = useState(draft?.prompt ?? "");
+	// Agent or work item: the page's, unless its user switched before leaving for GitHub on a page that offers the switch. Without work items on this deployment, an agent.
+	const [kindChoice, setKind] = useState<StartKind>((switchable ? draft?.kind : null) ?? startKind);
+	const item = kindChoice === "item" && Boolean(info?.items);
+	const [criteria, setCriteria] = useState(draft?.criteria ?? "");
+	// The work item filed last from here, said under the field until another is written.
+	const [filed, setFiled] = useState<{ id: string; title: string; started: boolean } | null>(null);
 	// The user's own choices here: none until they make one, so that the defaults can stand in.
 	const [repoChoice, setRepoChoice] = useState<{ kind: "github"; picked: PickedRepository } | { kind: "address" } | { kind: "none" } | null>(draft?.repoUrl ? { kind: "address" } : null);
 	const [repoUrl, setRepoUrl] = useState(draft?.repoUrl ?? "");
@@ -228,7 +254,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 	const [modeChoice, setMode] = useState<string | null>(draft?.mode ?? null);
 	const [open, setOpen] = useState<Picker | null>(null);
 	const [more, setMore] = useState(false);
-	const [busy, setBusy] = useState<"creating" | "prompting" | null>(null);
+	const [busy, setBusy] = useState<"creating" | "prompting" | "filing" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const area = useRef<HTMLTextAreaElement>(null);
 	const chips = useRef<HTMLDivElement>(null);
@@ -268,8 +294,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 	const connected = connection !== null;
 	const knowsConnection = !github.enabled || github.status !== null || github.error !== null;
 	const newest = lastUsed(sessions, null).repository;
-	// The repository it starts on: the page it was opened from, else the one the newest agent was launched on.
-	const startRepoId = repositoryId ?? (newest?.kind === "github" ? newest.repository.id : null);
+	const newestItem = items?.reduce<ItemSummary | null>((found, candidate) => (found === null || candidate.createdAt > found.createdAt ? candidate : found), null) ?? null;
+	// The repository it starts on: the page it was opened from, else, for a work item, the newest item's, else the one the newest agent was launched on.
+	const startRepoId = repositoryId ?? (item && newestItem ? newestItem.repository.id : newest?.kind === "github" ? newest.repository.id : null);
 	const [opening, setOpening] = useState<{ id: GithubId | null; picked: PickedRepository | null; reading: boolean; error: string | null }>({ id: null, picked: null, reading: false, error: null });
 	useEffect(() => {
 		if (startRepoId === null || !knowsConnection) {
@@ -294,15 +321,21 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 		};
 	}, [client, auth, explain, startRepoId, repositoryId, connected, knowsConnection, github.enabled]);
 	const startPicked = opening.id === startRepoId ? opening.picked : null;
-	const repo: { kind: "github"; picked: PickedRepository } | { kind: "address"; url: string } | { kind: "none" } =
-		repoChoice?.kind === "address"
+	const repo: { kind: "github"; picked: PickedRepository } | { kind: "address"; url: string } | { kind: "none" } = item
+		? // A work item is on a repository of the GitHub connection: a pasted address or none is not one.
+			repoChoice?.kind === "github"
+			? repoChoice
+			: startPicked
+				? { kind: "github", picked: startPicked }
+				: { kind: "none" }
+		: repoChoice?.kind === "address"
 			? { kind: "address", url: repoUrl.trim() }
 			: (repoChoice ?? (startPicked ? { kind: "github", picked: startPicked } : repositoryId === undefined && newest?.kind === "address" ? { kind: "address", url: newest.url } : { kind: "none" }));
 	// While the repository it starts on is asked of GitHub, nothing launches: it would go without it a moment too early.
-	const repoReading = repoChoice === null && startRepoId !== null && (opening.id !== startRepoId || opening.reading);
+	const repoReading = (repoChoice === null || (item && repoChoice.kind !== "github")) && startRepoId !== null && (opening.id !== startRepoId || opening.reading);
 	const repoInvalid = repo.kind === "address" && repo.url !== "" && !/^https:\/\/[^\s/]+\/\S+$/.test(repo.url);
 	const chosen = repo.kind === "github" ? repo.picked : null;
-	const source = connection ? (chosenSource ?? (repo.kind === "address" ? "address" : "github")) : "address";
+	const source = connection ? (item ? "github" : (chosenSource ?? (repo.kind === "address" ? "address" : "github"))) : "address";
 	const notice = github.notice?.where === "launch" ? github.notice : null;
 
 	// ---- the defaults, and what the user chose last ---------------------------------------------
@@ -320,8 +353,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 	const machines = useMachines(machinesInfo !== null);
 	const now = useNow(30_000);
 	const mine = machinesInfo === null ? [] : (machines.list ?? []);
-	const why = (machine: MachineSummary) => machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "agent");
-	const lastMachineId = last.place?.kind === "machine" ? last.place.machineId : null;
+	const why = (machine: MachineSummary) => machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", item ? "item" : "agent");
+	// A work item starts on this platform, as filing one always has; an agent where the last one ran.
+	const lastMachineId = !item && last.place?.kind === "machine" ? last.place.machineId : null;
 	const wantedMachine = placeChoice !== undefined ? placeChoice : lastMachineId;
 	// A machine that was removed or can no longer be chosen leaves the agent on this platform, which its chip says.
 	const chosenMachine = mine.find((machine) => machine.machineId === wantedMachine && why(machine) === null) ?? null;
@@ -331,7 +365,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 		wantedMachine === null || chosenMachine !== null || machinesReading
 			? null
 			: placeChoice !== undefined
-				? "The machine chosen can no longer be used, so this agent runs on this platform."
+				? `The machine chosen can no longer be used, so this ${item ? "work item" : "agent"} runs on this platform.`
 				: lastMachine === null
 					? "The machine your last agent ran on is not one of yours any more, so this one runs on this platform."
 					: `Your last agent ran on “${lastMachine.name}”, which cannot be used now, so this one runs on this platform. ${why(lastMachine) ?? ""}`.trim();
@@ -371,11 +405,24 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 
 	// ---- launching ------------------------------------------------------------------------------
 	const accountReading = account.reading && account.settings === null;
-	const reading = info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || (machinesReading && wantedMachine !== null);
-	const canCreate = !reading && profile !== null && !repoInvalid && busy === null;
+	// A work item waits for what its repository starts on, and where it runs; none of an agent's defaults.
+	const reading = item
+		? info === null || (items === null && repositoryId === undefined) || (sessions === null && repositoryId === undefined && newestItem === null) || repoReading || (machinesReading && wantedMachine !== null)
+		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || (machinesReading && wantedMachine !== null);
+	const canCreate = !item && !reading && profile !== null && !repoInvalid && busy === null;
 	const task = prompt.trim();
-	const tooLong = prompt.length > MAX_PROMPT_CHARS;
+	const maxChars = item ? MAX_ITEM_BODY_CHARS : MAX_PROMPT_CHARS;
+	const tooLong = prompt.length > maxChars;
 	const canLaunch = canCreate && task !== "" && !tooLong;
+
+	// ---- the work item ----------------------------------------------------------------------------
+	const filing = item ? itemOf(prompt) : null;
+	const acceptance = criteria
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line !== "");
+	const criteriaWrong = acceptance.length > MAX_ACCEPTANCE_CRITERIA ? `At most ${MAX_ACCEPTANCE_CRITERIA}; there are ${acceptance.length}.` : acceptance.some((line) => line.length > MAX_NOTE_CHARS) ? `Each is at most ${count(MAX_NOTE_CHARS)} characters.` : null;
+	const canFile = item && !reading && chosen !== null && filing !== null && !tooLong && criteriaWrong === null && busy === null;
 
 	/** The agent that was asked for and not answered with, with its key: launching the same again is another attempt of it. */
 	const asked = useRef<Submission | null>(null);
@@ -423,10 +470,41 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 		navigate({ name: "session", id: sessionId });
 	};
 
+	/** Files the work item, started at once unless `now` is false, and stays: the field is emptied for the next one. */
+	const file = async (now: boolean) => {
+		if (!canFile || !chosen || !filing) return;
+		setOpen(null);
+		setError(null);
+		const input: Omit<CreateItemInput, "idempotencyKey"> = {
+			repository: { id: chosen.repository.id, branch: chosen.branch },
+			title: filing.title,
+			body: filing.body,
+			acceptance,
+			start: now,
+			...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}),
+		};
+		// Filing the same again after an answer that never came, with nothing changed, makes no second item.
+		asked.current = submissionOf(JSON.stringify(input), asked.current);
+		setBusy("filing");
+		try {
+			const made = await client.user(auth).createItem({ ...input, idempotencyKey: asked.current.idempotencyKey });
+			asked.current = null;
+			setPrompt("");
+			setCriteria("");
+			setFiled({ id: made.id, title: made.title, started: now });
+		} catch (failure) {
+			setError(explain(failure));
+			if (MACHINE_REFUSALS.some((reason) => hasReason(failure, reason))) machines.reload();
+		}
+		setBusy(null);
+		area.current?.focus();
+	};
+
 	const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
 		event.preventDefault();
-		if (event.altKey) void start(false);
+		if (item) void file(!event.altKey);
+		else if (event.altKey) void start(false);
 		else if (canLaunch) void start(true);
 	};
 
@@ -452,20 +530,21 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 	}
 
 	// ---- the chips --------------------------------------------------------------------------------
-	const repoValue = repoReading ? "…" : repo.kind === "github" ? `${repositoryName(repo.picked.repository)} @ ${repo.picked.branch}` : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : "none";
+	const repoValue = repoReading ? "…" : repo.kind === "github" ? `${repositoryName(repo.picked.repository)} @ ${repo.picked.branch}` : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "choose one" : "none";
+	const repoMissing = item && !repoReading && chosen === null;
 	const repoChip = (
-		<Chip key="repo" label="repo" value={repoValue} open={open === "repo"} busy={repoReading} warn={repoInvalid || (opening.error !== null && repositoryId !== undefined && repoChoice === null) || notice?.tone === "bad"} onToggle={() => toggle("repo")} onClose={close}>
+		<Chip key="repo" label="repo" value={repoValue} open={open === "repo"} busy={repoReading} warn={repoMissing || repoInvalid || (opening.error !== null && repositoryId !== undefined && repoChoice === null) || notice?.tone === "bad"} onToggle={() => toggle("repo")} onClose={close}>
 			<div className="gh-field-head">
 				<label className="label" id={ids.repoLabel} htmlFor={ids.repo}>
 					{github.enabled ? "Repository" : "Git repository to clone"}
 				</label>
 				<span className="start-pop-links">
-					{connection ? (
+					{connection && !item ? (
 						<button type="button" className="link gh-switch" onClick={() => setChosenSource(source === "github" ? "address" : "github")} disabled={busy !== null}>
 							{source === "github" ? "Paste an address" : "Choose from GitHub"}
 						</button>
 					) : null}
-					{repo.kind !== "none" ? (
+					{repo.kind !== "none" && !item ? (
 						<button
 							type="button"
 							className="link"
@@ -519,7 +598,17 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 				/>
 			)}
 			<p className={`field-note${repoInvalid || (chosen && !chosen.repository.canPush) ? " tone-warn" : ""}`} id={ids.repoNote}>
-				{source === "github" && connection
+				{item
+					? !github.enabled
+						? "A work item is a pull request on a repository at GitHub, and this deployment has no GitHub App."
+						: !connection
+							? "A work item is a pull request on one of your repositories at GitHub."
+							: chosen
+								? chosen.repository.canPush
+									? `The work comes back as a pull request into ${chosen.branch}.`
+									: `You can read ${repositoryName(chosen.repository)} on GitHub but not push to it, so no pull request can be opened for the work.`
+								: "A work item is a pull request on one of your repositories, private ones included."
+					: source === "github" && connection
 					? chosen
 						? chosen.repository.canPush
 							? `Cloned at ${chosen.branch} when the sandbox is created. The work can come back as a pull request.`
@@ -533,7 +622,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 			</p>
 			{opening.error !== null && repoChoice === null ? (
 				<p className="field-note tone-warn" role="status">
-					{repositoryId !== undefined ? opening.error : `The repository your newest agent was launched on could not be read: ${opening.error}`} Choose another repository, or launch without one.
+					{repositoryId !== undefined ? opening.error : `The repository your newest ${item && newestItem ? "work item is on" : "agent was launched on"} could not be read: ${opening.error}`} {item ? "Choose another repository." : "Choose another repository, or launch without one."}
 				</p>
 			) : null}
 			{github.enabled && !connection ? (
@@ -547,7 +636,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 					) : (
 						<>
 							{notice?.tone === "bad" ? `${notice.text} ` : github.error ? `${github.error} ` : null}
-							<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice } })} disabled={busy !== null}>
+							<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, criteria } })} disabled={busy !== null}>
 								Connect GitHub
 							</button>{" "}
 							to choose one of your own repositories, private ones included, and get the work back as a pull request. What you wrote here is kept.
@@ -555,8 +644,17 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 					)}
 				</p>
 			) : null}
-			{chosen ? <SetupField setup={setup} repository={repositoryName(chosen.repository)} disabled={busy !== null} /> : null}
-			{chosen && !other ? <SecretsField repositoryId={chosen.repository.id} repository={repositoryName(chosen.repository)} profile={profile} disabled={busy !== null} /> : null}
+			{chosen && !item ? <SetupField setup={setup} repository={repositoryName(chosen.repository)} disabled={busy !== null} /> : null}
+			{chosen && !other && !item ? <SecretsField repositoryId={chosen.repository.id} repository={repositoryName(chosen.repository)} profile={profile} disabled={busy !== null} /> : null}
+			{chosen && item && saved.defaults ? (
+				<p className="field-note start-shots">
+					{saved.defaults.screenshots ? "Its agents take screenshots of the app for their reports" : "Screenshots are off for this repository"}:{" "}
+					<a className="link" {...linkProps({ name: "repository", id: chosen.repository.id, view: "settings", section: "screenshots" })}>
+						{saved.defaults.screenshots ? "change it" : "turn them on"}
+					</a>
+					.
+				</p>
+			) : null}
 		</Chip>
 	);
 
@@ -589,13 +687,58 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 					chosen={chosenMachine}
 					minRunnerVersion={machinesInfo?.minRunnerVersion ?? ""}
 					now={now}
-					purpose="agent"
+					purpose={item ? "item" : "agent"}
 					onChoose={(machineId) => {
 						setPlace(machineId);
 						close();
 					}}
 				/>
+				{item && chosenMachine ? (
+					<p className="field-note place-note">
+						It runs without asking on “{chosenMachine.name}”, inside its container, and costs no hosted time.{" "}
+						{chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${chosenMachine.name}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}
+						{chosenMachine.profiles.find((candidate) => candidate.available)?.id === HARNESS_PROFILE ? " This machine cannot sandbox each command, so the agent's commands can reach the machine's network and its access token." : ""}
+					</p>
+				) : null}
 			</Chip>
+		) : null;
+
+	const criteriaChip = (
+		<Chip key="criteria" label="criteria" value={acceptance.length === 0 ? "none" : count(acceptance.length)} open={open === "criteria"} warn={criteriaWrong !== null} onToggle={() => toggle("criteria")} onClose={close}>
+			<label className="label" htmlFor={ids.criteria}>
+				Acceptance criteria<span className="label-optional">optional</span>
+			</label>
+			<textarea id={ids.criteria} className={`input textarea item-criteria${criteriaWrong ? " input-invalid" : ""}`} value={criteria} onChange={(event) => setCriteria(event.target.value)} readOnly={busy !== null} aria-describedby={ids.criteriaNote} aria-invalid={criteriaWrong !== null || undefined} />
+			<p className={`field-note${criteriaWrong ? " tone-bad" : ""}`} id={ids.criteriaNote}>
+				{criteriaWrong ?? "One per line. The agent is given them, and the verdict lists them for you to check: no machine checks them."}
+			</p>
+		</Chip>
+	);
+
+	// Agent or work item: the first of the row, where the deployment offers work items.
+	const kindSwitch =
+		switchable && info?.items ? (
+			<div key="kind" className="segmented start-kind" role="radiogroup" aria-label="What to start">
+				{(["agent", "item"] as const).map((option) => (
+					<label key={option} className={`segment${kindChoice === option ? " segment-chosen" : ""}`}>
+						<input
+							className="segment-radio"
+							type="radio"
+							name={ids.kind}
+							value={option}
+							checked={kindChoice === option}
+							disabled={busy !== null}
+							onChange={() => {
+								setKind(option);
+								setOpen(null);
+								setError(null);
+								setFiled(null);
+							}}
+						/>
+						{option === "agent" ? "Agent" : "Work item"}
+					</label>
+				))}
+			</div>
 		) : null;
 
 	const agentValue = `${HARNESS_NAMES[harness]} · ${model === "" ? "default model" : model}${effort ? ` · ${effort}` : ""}`;
@@ -735,28 +878,51 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 		</Chip>
 	);
 
-	// Narrow, the chips after the second fold behind "more"; one that warns of something open stays.
-	const all: Array<{ chip: ReactNode; keep: boolean }> = [
-		{ chip: repoChip, keep: true },
-		...(placeChip ? [{ chip: placeChip, keep: true }] : []),
-		{ chip: agentChip, keep: !placeChip },
-		...(modeChip ? [{ chip: modeChip, keep: modeOpen }] : []),
-		{ chip: sandboxChip, keep: sandboxWarn && chosenProfile !== null && sandboxOpen(chosenProfile, claude) },
-	];
+	// Narrow, the chips after the second fold behind "more"; one that warns of something open stays. A work item has too few to fold.
+	const all: Array<{ chip: ReactNode; keep: boolean }> = item
+		? [{ chip: repoChip, keep: true }, ...(placeChip ? [{ chip: placeChip, keep: true }] : []), { chip: criteriaChip, keep: true }]
+		: [
+				{ chip: repoChip, keep: true },
+				...(placeChip ? [{ chip: placeChip, keep: true }] : []),
+				{ chip: agentChip, keep: !placeChip },
+				...(modeChip ? [{ chip: modeChip, keep: modeOpen }] : []),
+				{ chip: sandboxChip, keep: sandboxWarn && chosenProfile !== null && sandboxOpen(chosenProfile, claude) },
+			];
 	// A fold that would hide one chip is not worth its own.
 	const folds = narrow && !more && all.filter((entry) => !entry.keep).length > 1;
 	const folded = folds ? all.filter((entry) => !entry.keep) : [];
 	const shown = folds ? all.filter((entry) => entry.keep) : all;
 
-	const reason = info === null ? "Asking the server which sandboxes it has…" : sessions === null ? "Reading your agents…" : reading ? "Reading your defaults…" : busy === "creating" ? "Creating the agent…" : busy === "prompting" ? "Sending the task…" : null;
-	const secondary = task === "" ? "Create without a prompt" : "Create without sending it";
+	const reason = item
+		? info === null
+			? "Asking the server what it offers…"
+			: busy === "filing"
+				? "Filing the work item…"
+				: reading
+					? "Reading your repositories…"
+					: repoMissing
+						? "A work item needs a repository: choose one under “repo”."
+						: null
+		: info === null
+			? "Asking the server which sandboxes it has…"
+			: sessions === null
+				? "Reading your agents…"
+				: reading
+					? "Reading your defaults…"
+					: busy === "creating"
+						? "Creating the agent…"
+						: busy === "prompting"
+							? "Sending the task…"
+							: null;
+	const secondary = item ? "File as a draft" : task === "" ? "Create without a prompt" : "Create without sending it";
 
 	return (
 		<form
 			className={`composer start${busy ? " composer-busy" : ""}`}
 			onSubmit={(event) => {
 				event.preventDefault();
-				if (canLaunch) void start(true);
+				if (item) void file(true);
+				else if (canLaunch) void start(true);
 			}}
 		>
 			{error ? (
@@ -764,7 +930,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 					<WarnIcon size={14} />
 					<span>{error}</span>
 				</p>
-			) : limit && chosenMachine === null ? (
+			) : limit && chosenMachine === null && !item ? (
 				<p className={`composer-error composer-allowance${limit.warn ? "" : " start-allowance-low"}`} role="status">
 					<WarnIcon size={14} />
 					<span>
@@ -778,7 +944,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 			<div className="composer-box">
 				<label className="composer-caret" htmlFor={ids.text}>
 					<ChevronIcon size={16} />
-					<span className="visually-hidden">What the agent should do</span>
+					<span className="visually-hidden">{item ? "What the work item asks for: its first line is the title" : "What the agent should do"}</span>
 				</label>
 				<textarea
 					ref={area}
@@ -786,19 +952,20 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 					className="composer-text"
 					rows={1}
 					value={prompt}
-					placeholder="What should it do?"
+					placeholder={item ? "What should be done?" : "What should it do?"}
 					onChange={(event) => setPrompt(event.target.value)}
 					onKeyDown={onKeyDown}
 					disabled={busy !== null}
 					aria-describedby={ids.hint}
 					enterKeyHint="send"
 				/>
-				<button type="submit" className="button button-primary composer-action" disabled={!canLaunch}>
+				<button type="submit" className="button button-primary composer-action" disabled={item ? !canFile : !canLaunch}>
 					<SendIcon size={15} />
-					<span>{busy === "creating" ? "Creating" : busy === "prompting" ? "Sending" : "Launch"}</span>
+					<span>{busy === "creating" ? "Creating" : busy === "prompting" ? "Sending" : busy === "filing" ? "Filing" : item ? "File" : "Launch"}</span>
 				</button>
 			</div>
 			<div className="start-chips composer-selects" ref={chips}>
+				{kindSwitch}
 				{shown.map((entry) => entry.chip)}
 				{folded.length > 0 ? (
 					<span className="mini-select">
@@ -808,7 +975,20 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 					</span>
 				) : null}
 			</div>
-			{chosenMachine?.status === "offline" ? (
+			{filing ? (
+				<p className="composer-hint start-line start-title">
+					Title: <span className="start-title-text">{filing.title}</span>
+				</p>
+			) : null}
+			{filed && !filing ? (
+				<p className="field-note start-line start-filed" role="status">
+					Filed “{filed.title}”{filed.started ? "" : " as a draft"}.{" "}
+					<a className="link" {...linkProps({ name: "item", id: filed.id })}>
+						Open
+					</a>
+				</p>
+			) : null}
+			{chosenMachine?.status === "offline" && !item ? (
 				<p className="field-note tone-warn start-line" role="status">
 					“{chosenMachine.name}” is offline since {clockTime(chosenMachine.since, now)}. The agent is created now, and a prompt sent before the machine is back fails. {task === "" ? "Write to it once the machine is online." : "Create it without sending the task, and the task waits in its composer."}
 				</p>
@@ -816,16 +996,16 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false }: Sta
 			<div className="start-foot">
 				<p className={`composer-hint${reason ? " composer-reason" : ""}${tooLong ? " tone-bad" : ""}`} id={ids.hint} role={reason ? "status" : undefined}>
 					{tooLong ? (
-						`${count(prompt.length - MAX_PROMPT_CHARS)} characters over the limit of ${count(MAX_PROMPT_CHARS)}`
+						`${count(prompt.length - maxChars)} characters over the limit of ${count(maxChars)}`
 					) : (
 						(reason ?? (
 							<>
-								<kbd>Enter</kbd> launch <span aria-hidden="true">·</span> <kbd>Shift</kbd>+<kbd>Enter</kbd> new line
+								<kbd>Enter</kbd> {item ? "file and start" : "launch"} <span aria-hidden="true">·</span> <kbd>Shift</kbd>+<kbd>Enter</kbd> new line
 							</>
 						))
 					)}
 				</p>
-				<button type="button" className="link start-secondary" onClick={() => void start(false)} disabled={!canCreate || tooLong}>
+				<button type="button" className="link start-secondary" onClick={() => void (item ? file(false) : start(false))} disabled={item ? !canFile : !canCreate || tooLong}>
 					{secondary}
 				</button>
 			</div>

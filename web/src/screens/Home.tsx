@@ -14,7 +14,7 @@
  * page is still a click away. The count of what is at work is the server's, against the ceiling on
  * running turns, and says how much of it is work items'.
  */
-import { USAGE_LOW_SHARE, type SavedRepository, type UsageNumbers } from "@contract";
+import { USAGE_LOW_SHARE, type ItemSummary, type SavedRepository, type UsageNumbers } from "@contract";
 import { useEffect, useId, useState } from "react";
 import { AgentList } from "../components/Agents";
 import { Mark, WarnIcon } from "../components/Icons";
@@ -134,7 +134,8 @@ function UsageLine({ numbers }: { numbers: UsageNumbers | null }) {
 	);
 }
 
-export function Home() {
+/** `items`: the user's work items, read once for the page and the bar (null until they arrive; none where the deployment offers none). */
+export function Home({ items }: { items: readonly ItemSummary[] | null }) {
 	const { sessions, connection, error } = useSessions();
 	const now = useNow(15_000);
 	const agents = sessions === null ? null : ownAgents(sessions);
@@ -177,7 +178,7 @@ export function Home() {
 				</p>
 			) : null}
 
-			<NeedsYou now={now} />
+			<NeedsYou now={now} list={items} />
 
 			{connection === "failed" ? (
 				<div className="state state-error" role="alert">

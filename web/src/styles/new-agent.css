@@ -500,3 +500,27 @@
 .home-start {
 	margin-bottom: 10px;
 }
+
+/* Agent or work item: the segmented choice at the size of the chips beside it. */
+.start-kind {
+	align-self: center;
+	margin-right: 4px;
+}
+.start-kind .segment {
+	padding: 1px 10px;
+}
+/* A work item's title, as it will be filed: as quiet as the hint under it. */
+.start-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.start-title-text {
+	color: var(--ink-dim);
+}
+.start-pop .start-shots {
+	margin-top: 10px;
+}
+.start-pop .item-criteria {
+	min-height: 96px;
+}

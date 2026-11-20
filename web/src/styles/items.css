@@ -720,3 +720,31 @@
 		grid-column: 2;
 	}
 }
+
+/* ---- the Factory page --------------------------------------------------------------------------- */
+
+/* Its filters, under the composer and over the groups, as the composer's own chips. */
+.factory-filters {
+	margin-top: 22px;
+}
+.factory-filters + .agent-group,
+.factory-none + .agent-group {
+	margin-top: 14px;
+}
+.factory-options {
+	margin-top: 6px;
+}
+.factory-none {
+	margin-top: 14px;
+	padding-left: 12px;
+}
+.factory-fold {
+	margin-top: 18px;
+}
+.factory-empty {
+	margin-top: 22px;
+	padding: 40px 20px;
+}
+.factory-empty p {
+	max-width: 62ch;
+}

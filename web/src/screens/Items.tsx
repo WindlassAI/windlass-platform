@@ -1,6 +1,7 @@
 /**
  * Work items in lists: on a repository's page, its items grouped by where each is, with the way to
- * file a new one; on the home page, the items that ask their person something ("Needs you").
+ * file a new one; on the home page, the items that ask their person something ("Needs you"); on the
+ * Factory page (screens/Factory.tsx), every item, grouped by what its person must do.
  *
  * The list is the user's actor's (`listItems`): read when a screen opens, replaced whenever the actor
  * says an item changed (the user's live feed, `onItems`), and read again when that feed comes back
@@ -126,15 +127,27 @@ export function inSecondReview(item: Pick<ItemSummary, "review">): boolean {
  * Where an item stands beside its row: the verdict's word once it is handed over, with the second
  * reviewer's recommendation; while the reviewer runs or waits to, a quiet working word in its place.
  */
-export function ItemStanding({ item }: { item: Pick<ItemSummary, "review" | "verdict"> }) {
-	if (inSecondReview(item)) return <ReviewWord item={item} />;
+export function ItemStanding({ item, reviewer = true }: { item: Pick<ItemSummary, "review" | "verdict">; reviewer?: boolean }) {
+	if (reviewer && inSecondReview(item)) return <ReviewWord item={item} />;
 	return (
 		<>
 			{item.verdict ? <VerdictWord verdict={item.verdict} /> : null}
-			<ReviewWord item={item} />
+			{reviewer ? <ReviewWord item={item} /> : null}
 		</>
 	);
 }
+
+/** CI on the pushed commit, in two or three words: what a row of the Factory page says beside its verdict. */
+export const CI_WORD: Record<NonNullable<ItemSummary["verdict"]>["ci"], { word: string; tone: "good" | "warn" | "bad" | "dim" }> = {
+	passed: { word: "CI passed", tone: "dim" },
+	failed: { word: "CI failed", tone: "bad" },
+	none: { word: "no CI", tone: "dim" },
+	skipped: { word: "CI skipped", tone: "dim" },
+	not_run: { word: "CI did not start", tone: "warn" },
+	timed_out: { word: "CI unfinished", tone: "warn" },
+	not_permitted: { word: "CI not readable", tone: "warn" },
+	unread: { word: "CI not read", tone: "warn" },
+};
 
 /** The second reviewer's recommendation, in a quiet word beside the verdict: the agent's, never the verdict's. While it runs, or waits to, a quiet working word. */
 export function ReviewWord({ item }: { item: Pick<ItemSummary, "review"> }) {
@@ -177,11 +190,13 @@ function rowWhy(item: ItemSummary): string | null {
 
 /**
  * One item as a row of a list. `repository`: the row stands under no repository's name, so it says which.
- * An item filed from a GitHub issue links to it, beside its pull request.
+ * An item filed from a GitHub issue links to it, beside its pull request. `ci` says CI's state beside
+ * them, and an issue's outside author; `reviewer` false leaves out the second review's word, for a
+ * deployment without one.
  * The item's agent session is part of it and is in no list of agents: the row leads to it, once the
  * item has started, as the place to see what the agent did.
  */
-export function ItemRow({ item, now, repository = false, why }: { item: ItemSummary; now: number; repository?: boolean; why?: ReactNode }) {
+export function ItemRow({ item, now, repository = false, why, ci = false, reviewer = true }: { item: ItemSummary; now: number; repository?: boolean; why?: ReactNode; ci?: boolean; reviewer?: boolean }) {
 	const asks = item.question !== null;
 	const line = why ?? rowWhy(item);
 	return (
@@ -219,7 +234,9 @@ export function ItemRow({ item, now, repository = false, why }: { item: ItemSumm
 							</a>
 						</span>
 					) : null}
+					{ci && item.origin && !item.origin.issue.trusted ? <span>from an outside author</span> : null}
 					{item.source === "api" ? <span>from the API</span> : null}
+					{ci && item.verdict ? <span className={`tone-${CI_WORD[item.verdict.ci].tone}`}>{CI_WORD[item.verdict.ci].word}</span> : null}
 					{item.state === "draft" ? null : (
 						<span>
 							<a className="item-pull" {...linkProps({ name: "session", id: item.sessionId })} title="What its agent did, turn by turn" aria-label={`The agent of ${item.title}`}>
@@ -230,7 +247,7 @@ export function ItemRow({ item, now, repository = false, why }: { item: ItemSumm
 				</p>
 			</div>
 			<div className="agent-state">
-				<ItemStanding item={item} />
+				<ItemStanding item={item} reviewer={reviewer} />
 			</div>
 			<time className="agent-time" dateTime={new Date(item.updatedAt).toISOString()} title={absoluteTime(item.updatedAt)}>
 				{relativeTime(item.updatedAt, now)}
@@ -471,20 +488,23 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 
 // ---- the home page's "Needs you" ----------------------------------------------------------------
 
-/** The items that ask their person something, across repositories, the longest waiting first. Nothing when there is none. */
-export function NeedsYou({ now }: { now: number }) {
-	const { platform } = useApp();
-	const { list } = useItems(Boolean(platform.info?.items));
-	const asking = (list ?? []).filter((item) => item.question !== null).sort((a, b) => (a.question?.askedAt ?? 0) - (b.question?.askedAt ?? 0));
-	if (asking.length === 0) return null;
+/** The items that ask their person something, across repositories, the longest waiting first. */
+export function asking(list: readonly ItemSummary[]): ItemSummary[] {
+	return list.filter((item) => item.question !== null).sort((a, b) => (a.question?.askedAt ?? 0) - (b.question?.askedAt ?? 0));
+}
+
+/** The items that ask their person something, across repositories, the longest waiting first. Nothing when there is none. `list`: the user's items, as the page read them. */
+export function NeedsYou({ now, list }: { now: number; list: readonly ItemSummary[] | null }) {
+	const waiting = asking(list ?? []);
+	if (waiting.length === 0) return null;
 	return (
 		<section className="agent-group needs-you" aria-labelledby="needs-you">
 			<h2 className="agent-group-head" id="needs-you">
 				<span className="agent-group-name">Needs you</span>
-				<span className="agent-group-count">{plural(asking.length, "work item")} asking</span>
+				<span className="agent-group-count">{plural(waiting.length, "work item")} asking</span>
 			</h2>
 			<ul className="agents">
-				{asking.map((item) => (
+				{waiting.map((item) => (
 					<ItemRow key={item.id} item={item} now={now} repository why={item.question?.text} />
 				))}
 			</ul>

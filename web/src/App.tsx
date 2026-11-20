@@ -2,11 +2,13 @@
 import type { GithubId } from "@contract";
 import { useEffect, useState } from "react";
 import { Mark } from "./components/Icons";
-import { TopBar } from "./components/TopBar";
-import { linkProps, navigate, useRoute } from "./lib/router";
+import { ListTabs, TopBar } from "./components/TopBar";
+import { linkProps, navigate, useRoute, type Route } from "./lib/router";
 import { useTheme } from "./lib/theme";
+import { Factory } from "./screens/Factory";
 import { Home } from "./screens/Home";
 import { Item, ItemCrumb, useItem } from "./screens/Item";
+import { asking, useItems } from "./screens/Items";
 import { Machines, MachinesCrumb } from "./screens/Machines";
 import { NewAgent } from "./screens/NewAgent";
 import { Repository, RepositoryCrumb, useRepository, type RepositoryTab } from "./screens/Repository";
@@ -86,16 +88,38 @@ function RepositoryRoute({ repositoryId, view, launching, theme, onToggleTheme }
 	);
 }
 
+/**
+ * Home and the Factory page, with "Agents · Factory" in the bar where the deployment offers work items:
+ * the user's items are read once for the bar's count and the page both.
+ */
+function ListRoute({ route, theme, onToggleTheme }: { route: Extract<Route, { name: "home" | "factory" }>; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
+	const { platform } = useApp();
+	const offered = Boolean(platform.info?.items);
+	const items = useItems(offered);
+	const waiting = asking(items.list ?? []).length;
+	useEffect(() => {
+		document.title = route.name === "factory" ? `${waiting > 0 ? `(${waiting}) ` : ""}Factory · Windlass` : "Agents · Windlass";
+	}, [route.name, waiting]);
+	return (
+		<div className="app">
+			<TopBar theme={theme} onToggleTheme={onToggleTheme}>
+				{offered ? <ListTabs current={route.name} asking={waiting} /> : null}
+			</TopBar>
+			{route.name === "factory" ? <Factory filters={{ repository: route.repository, from: route.from }} items={items} /> : <Home items={offered ? items.list : []} />}
+		</div>
+	);
+}
+
 export function App() {
 	const route = useRoute();
 	const { auth, client, platform } = useApp();
 	const [theme, toggleTheme] = useTheme();
 
-	const needsAuth = route.name === "home" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "machines" || route.name === "session" || route.name === "item" || route.name === "repository";
+	const needsAuth = route.name === "home" || route.name === "factory" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "machines" || route.name === "session" || route.name === "item" || route.name === "repository";
 	/** A deployment that does not offer machines has no such page. While its information loads, the page says it is loading. */
 	const noMachines = route.name === "machines" && auth !== null && platform.info !== null && !platform.info.machines;
 	/** Nor one that does not offer work items an item's page. */
-	const noItems = route.name === "item" && auth !== null && platform.info !== null && !platform.info.items;
+	const noItems = (route.name === "item" || route.name === "factory") && auth !== null && platform.info !== null && !platform.info.items;
 	/** The repository whose page is shown: its own address, or the new agent's page for it. */
 	const repositoryId = route.name === "repository" ? route.id : route.name === "new" ? (route.repository ?? null) : null;
 	useEffect(() => {
@@ -104,7 +128,7 @@ export function App() {
 	}, [needsAuth, auth, route.name]);
 
 	useEffect(() => {
-		if ((route.name !== "session" && route.name !== "item" && repositoryId === null) || noItems) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines || noItems ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : route.name === "new" ? "New agent · Windlass" : "Agents · Windlass";
+		if ((route.name !== "session" && route.name !== "item" && route.name !== "home" && route.name !== "factory" && repositoryId === null) || noItems) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines || noItems ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : route.name === "new" ? "New agent · Windlass" : "Agents · Windlass";
 	}, [route.name, repositoryId, noMachines, noItems]);
 
 	if (route.name === "mock-authorize" && client.kind === "mock") return <MockAuthorize />;
@@ -170,10 +194,12 @@ export function App() {
 		);
 	}
 
+	if (route.name === "home" || route.name === "factory") return <ListRoute route={route} theme={theme} onToggleTheme={toggleTheme} />;
+
 	return (
 		<div className="app">
 			<TopBar theme={theme} onToggleTheme={toggleTheme} />
-			{route.name === "new" ? <NewAgent /> : <Home />}
+			<NewAgent />
 		</div>
 	);
 }

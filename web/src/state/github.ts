@@ -89,7 +89,8 @@ function take<T>(storageKey: string): T | null {
 /**
  * What the start composer held when its user left for GitHub: the task, a pasted address, and each
  * choice its user made there. Null and "" where they made none, so that the defaults stand in again on
- * the way back. `place` is "platform" for this platform, or a machine's id.
+ * the way back. `place` is "platform" for this platform, or a machine's id. `kind` is whether it was
+ * starting an agent or filing a work item, with that item's acceptance criteria.
  */
 export interface LaunchDraft {
 	prompt: string;
@@ -100,6 +101,8 @@ export interface LaunchDraft {
 	place: string | null;
 	harness: string | null;
 	mode: string | null;
+	kind: "agent" | "item" | null;
+	criteria: string;
 }
 
 export function takeLaunchDraft(): LaunchDraft | null {
@@ -107,7 +110,7 @@ export function takeLaunchDraft(): LaunchDraft | null {
 	if (typeof draft !== "object" || draft === null) return null;
 	const text = (value: unknown) => (typeof value === "string" ? value : "");
 	const chosen = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
-	return { prompt: text(draft.prompt), repoUrl: text(draft.repoUrl), profile: chosen(draft.profile), model: text(draft.model), effort: text(draft.effort), place: chosen(draft.place), harness: chosen(draft.harness), mode: chosen(draft.mode) };
+	return { prompt: text(draft.prompt), repoUrl: text(draft.repoUrl), profile: chosen(draft.profile), model: text(draft.model), effort: text(draft.effort), place: chosen(draft.place), harness: chosen(draft.harness), mode: chosen(draft.mode), kind: draft.kind === "agent" || draft.kind === "item" ? draft.kind : null, criteria: text(draft.criteria) };
 }
 
 // ---- actions ------------------------------------------------------------------------------------

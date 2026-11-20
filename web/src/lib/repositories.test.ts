@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { ModelList, PlatformInfo, SandboxProfile, SessionRepository, SessionSummary } from "@contract";
 import { MAX_TITLE_CHARS } from "@contract";
-import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, foldGroup, groupSessions, lastUsed, layerChoices, openPulls, ownAgents, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile, titleOf, workingCounts, workingWords } from "./repositories";
+import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, foldGroup, groupSessions, lastUsed, layerChoices, openPulls, ownAgents, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile, titleOf, itemOf, workingCounts, workingWords } from "./repositories";
 
 const repository = (id: number, owner: string, name: string, branch = "main"): SessionRepository => ({ provider: "github", id, owner, name, branch, private: true, url: `https://github.com/${owner}/${name}` });
 const harbor = repository(7101, "acme", "harbor");
@@ -259,6 +259,21 @@ describe("what a new agent starts with, after the saved defaults", () => {
 		expect([startingProfile("docker-hardened", layerChoices(repository, account), info, last?.profile), startingModel("gpt-6-brisk", layerChoices(repository, account), models, last?.model)]).toEqual(["docker-hardened", "gpt-6-brisk"]);
 		// A last choice that cannot be made now is passed over.
 		expect([startingProfile(null, nothing, info, "e2b"), startingModel("", nothing, models, "gpt-3")]).toEqual(["docker-windlass-sandbox", "gpt-6.1-sol"]);
+	});
+});
+
+describe("a work item, from what was written", () => {
+	it("takes the first line for its title and the rest for what to do", () => {
+		expect(itemOf("\n  Add the tests command to the README  \nSay how to run them.\n\nAnd where they live.\n")).toEqual({ title: "Add the tests command to the README", body: "Say how to run them.\n\nAnd where they live." });
+		expect(itemOf("Fix the flaky test")).toEqual({ title: "Fix the flaky test", body: "" });
+		expect(itemOf("  \n ")).toBeNull();
+	});
+
+	it("keeps a first line too long for a title whole in what to do", () => {
+		const line = `${"word ".repeat(40)}end`;
+		const made = itemOf(`${line}\nMore.`);
+		expect(made?.title.length).toBeLessThanOrEqual(MAX_TITLE_CHARS);
+		expect(made?.body).toBe(`${line}\nMore.`);
 	});
 });
 

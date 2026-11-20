@@ -174,9 +174,46 @@
 	white-space: nowrap;
 }
 
+/* "Agents · Factory": the bar's two lists, as quiet as its breadcrumb; the page you are on in ink. */
+.topbar-tabs {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	min-width: 0;
+	padding-left: 12px;
+	border-left: 1px solid var(--line);
+}
+.topbar-tab {
+	padding: 4px 6px;
+	border-radius: var(--radius-s);
+	font-size: var(--size-small);
+	font-weight: 600;
+	color: var(--ink-dim);
+	text-decoration: none;
+	white-space: nowrap;
+}
+.topbar-tab:hover {
+	color: var(--ink);
+	background: var(--bg-hover);
+}
+.topbar-tab[aria-current="page"] {
+	color: var(--ink);
+	font-weight: 650;
+}
+.topbar-tab-count {
+	color: var(--info);
+	font-variant-numeric: tabular-nums;
+}
+.topbar-tabs-sep {
+	color: var(--ink-faint);
+}
+
 @media (max-width: 640px) {
 	.topbar {
 		gap: 8px;
+	}
+	.topbar-tabs {
+		padding-left: 8px;
 	}
 	.topbar-home .wordmark-name,
 	.account-name,

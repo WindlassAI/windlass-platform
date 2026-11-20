@@ -183,6 +183,34 @@ function SignedInMenu() {
 	);
 }
 
+/**
+ * "Agents · Factory": the two lists, as quiet tabs where the bar says where you are, on their own
+ * pages and where the deployment offers work items. `asking`: how many work items ask their person
+ * something, said beside "Factory" when there are any.
+ */
+export function ListTabs({ current, asking }: { current: "home" | "factory"; asking: number }) {
+	return (
+		<nav className="topbar-tabs" aria-label="Lists">
+			<a className="topbar-tab" aria-current={current === "home" ? "page" : undefined} {...linkProps({ name: "home" })}>
+				Agents
+			</a>
+			<span className="topbar-tabs-sep" aria-hidden="true">
+				·
+			</span>
+			<a className="topbar-tab" aria-current={current === "factory" ? "page" : undefined} {...linkProps({ name: "factory" })}>
+				Factory
+				{asking > 0 ? (
+					<span className="topbar-tab-count">
+						<span aria-hidden="true"> · </span>
+						{asking}
+						<span className="visually-hidden"> {asking === 1 ? "needs" : "need"} you</span>
+					</span>
+				) : null}
+			</a>
+		</nav>
+	);
+}
+
 export function TopBar({ theme, onToggleTheme, children }: { theme: Theme; onToggleTheme(): void; children?: ReactNode }) {
 	const { auth, client } = useApp();
 	return (

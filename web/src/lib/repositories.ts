@@ -287,8 +287,8 @@ export function lastUsed(sessions: readonly SessionSummary[] | null, repositoryI
 }
 
 /**
- * The title an agent gets from its task: the first line that says something, as it is, cut to
- * MAX_TITLE_CHARS at a word where it is longer. None for an empty task: the server names it.
+ * A title from a text: its first line that says something, as it is, cut to MAX_TITLE_CHARS at a word
+ * where it is longer. None for an empty text.
  */
 export function titleOf(task: string): string | undefined {
 	const line = task.split("\n").map((part) => part.replace(/\s+/g, " ").trim()).find((part) => part !== "");
@@ -297,4 +297,18 @@ export function titleOf(task: string): string | undefined {
 	const cut = line.slice(0, MAX_TITLE_CHARS - 1);
 	const space = cut.lastIndexOf(" ");
 	return `${(space > MAX_TITLE_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+/**
+ * A work item from what was written in the start composer: the first line is its title (`titleOf`),
+ * and the rest what to do. A first line too long for a title is kept whole in what to do. Null for an
+ * empty text.
+ */
+export function itemOf(text: string): { title: string; body: string } | null {
+	const title = titleOf(text);
+	if (title === undefined) return null;
+	const lines = text.split("\n");
+	const first = lines.findIndex((line) => line.trim() !== "");
+	const rest = lines.slice(first + 1).join("\n").trim();
+	return { title, body: title.endsWith("…") ? text.trim() : rest };
 }
