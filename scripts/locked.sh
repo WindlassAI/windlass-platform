@@ -41,7 +41,10 @@ case "$name" in
         fi ;;
     idempotency-check) ports=6460 ;;
     factory-e2e) ports=6620 ;;
-    webhook-check) ports=3410 ;;
+    webhook-check)
+        ports=3410
+        # Slot three's engine companion would use 6420, the e2e group's engine port.
+        if [ "$slots" -gt 3 ]; then slots=3; fi ;;
     runner-socket-probe) ports=6740 ;;
     machine-check) ports=6850; slots=1 ;;
     runner-check) ports=6900; docker=-s ;; # Its 7020 stub belongs to this check too.
