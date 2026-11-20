@@ -208,7 +208,7 @@ describe("what the agent's own push does on GitHub", () => {
 		expect(PUBLISH_UNASKED_MEANS).not.toContain("branch");
 	});
 
-	it("stands under the setting in the launch form and the panel, whichever way the setting can be", () => {
+	it("stands under the setting in the panel, whichever way the setting can be", () => {
 		for (const profile of [sandboxed, open]) {
 			const html = renderToStaticMarkup(createElement(PublishUnaskedCheck, { checked: false, disabled: false, onChange: () => undefined, profile }));
 			const host = document.createElement("div");

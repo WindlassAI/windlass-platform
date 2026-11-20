@@ -6,12 +6,12 @@
  * purpose after they were taken, gets a key of its own.
  *
  * What makes two sends the same submission is what is sent: the composer goes by the message's text,
- * the launch form by everything it asks for.
+ * the start composer by everything it sends for the agent.
  */
 import type { IdempotencyKey } from "@contract";
 
 export interface Submission {
-	/** What is sent, as text: the message, or the launch form's input as JSON. */
+	/** What is sent, as text: the message, or the start composer's input as JSON. */
 	content: string;
 	idempotencyKey: IdempotencyKey;
 }

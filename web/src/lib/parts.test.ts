@@ -179,7 +179,7 @@ describe("routes", () => {
 		expect(parseRoute("/nowhere")).toEqual({ name: "notfound" });
 	});
 
-	it("reads a repository's two views, and the launch form over each", () => {
+	it("reads a repository's two views, and the new agent's page from each", () => {
 		expect(parseRoute("/repositories/7101")).toEqual({ name: "repository", id: 7101 });
 		expect(parseRoute("/repositories/7101/")).toEqual({ name: "repository", id: 7101 });
 		expect(parseRoute("/repositories/7101/settings")).toEqual({ name: "repository", id: 7101, view: "settings" });

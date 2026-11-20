@@ -8,8 +8,7 @@
  * platform performs and nobody is asked about); the panel then says the branch is pushed, and opens a
  * pull request from it. The agent can also ask the platform to open or update the pull request (the
  * question about that is Question.tsx's). Whether that is asked about each time is the session's own
- * setting, which stands here under the button and, for a session that is being launched, in the
- * launch form: one check box and one sentence, with one more that says what the agent's own push does
+ * setting, which stands here under the button: one check box and one sentence, with one more that says what the agent's own push does
  * on GitHub (`AGENT_PUSH_MEANS`): it runs the repository's CI, with its secrets.
  *
  * A work item's agent files a `report` and never asks to publish: the item's own step pushes and
@@ -26,7 +25,7 @@ import { useNow } from "../state/hooks";
 import { Dialog } from "./Dialog";
 import { BranchIcon, CrossIcon, ExternalIcon, LockIcon, MergedIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "./Icons";
 
-/** What letting the agent publish without asking means, in one sentence: the launch form and the panel say the same. */
+/** What letting the agent publish without asking means, in one sentence, as the panel says it. */
 export const PUBLISH_UNASKED_MEANS = "The agent may have the platform open or update this session's pull request, with the agent's title and description, without you being asked each time.";
 
 /** In the place of the way out, on an item's second reviewer: the server takes no push or pull request from it. */
@@ -34,7 +33,7 @@ export const REVIEWER_PUBLISHES_NOTHING = "The second reviewer reads the commit 
 
 /**
  * What the agent's own push does on GitHub, which no setting holds back: said under the setting in
- * the launch form and the panel, whichever way it is, and where the setting cannot be on.
+ * the panel, whichever way it is, and where the setting cannot be on.
  */
 export const AGENT_PUSH_MEANS = "The agent pushes this session's own branch whenever it wants, and a push runs the repository's CI workflows on the agent's changes, with the CI's secrets, without you being asked.";
 

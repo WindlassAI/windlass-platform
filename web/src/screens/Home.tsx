@@ -1,5 +1,7 @@
 /**
- * Agents: the user's sessions, live, with rename, delete and a way to launch one. They stand under the
+ * Agents: the user's sessions, live, with rename and delete, and the start composer at the top
+ * (components/StartComposer.tsx): a task and Enter launch one. Without agents, the composer is the
+ * empty page's one action. The agents stand under the
  * repository they were launched on, the repository that was used last first, and each repository's
  * name leads to its page; the agents on no repository of the GitHub connection come last. A list with
  * no such repository in it is shown as it always was, without a heading.
@@ -15,10 +17,11 @@
 import { USAGE_LOW_SHARE, type SavedRepository, type UsageNumbers } from "@contract";
 import { useEffect, useId, useState } from "react";
 import { AgentList } from "../components/Agents";
-import { Mark, PlusIcon, WarnIcon } from "../components/Icons";
+import { Mark, WarnIcon } from "../components/Icons";
+import { StartComposer } from "../components/StartComposer";
 import { count, localTime, plural, sandboxTime } from "../lib/format";
 import { NO_REPOSITORY, groupSessions, ownAgents, shownLimit, workingCounts, workingWords, type SessionGroup } from "../lib/repositories";
-import { linkProps, navigate } from "../lib/router";
+import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { NeedsYou } from "./Items";
 import { allowanceState, useAllowance, useChatgpt, useFactoryLimits, useNow, useSessions } from "../state/hooks";
@@ -144,7 +147,8 @@ export function Home() {
 	const groups = sessions === null ? [] : groupSessions(sessions);
 	const saved = useSavedWithoutAgents(sessions);
 	const waiting = agents?.filter((session) => session.status === "waiting").length ?? 0;
-	const launch = () => navigate({ name: "new" });
+	// Without agents the composer stands in the empty page; otherwise at the top, over the list.
+	const empty = sessions !== null && connection !== "failed" && groups.length === 0;
 
 	return (
 		<main className="home">
@@ -158,11 +162,13 @@ export function Home() {
 					<AccountLine />
 					<UsageLine numbers={usage} />
 				</div>
-				<button type="button" className="button button-primary button-large" onClick={launch}>
-					<PlusIcon />
-					Launch an agent
-				</button>
 			</header>
+
+			{empty ? null : (
+				<section className="home-start" aria-label="Launch an agent">
+					<StartComposer sessions={sessions} />
+				</section>
+			)}
 
 			{connection === "reconnecting" ? (
 				<p className="callout callout-warn" role="status">
@@ -195,14 +201,11 @@ export function Home() {
 					))}
 				</ul>
 			) : groups.length === 0 ? (
-				<div className="state state-empty">
+				<div className="state state-empty home-empty">
 					<Mark size={56} />
 					<h2>No agents yet</h2>
-					<p>Launch one: choose the sandbox it works in, point it at a repository if you have one, and tell it what to do.</p>
-					<button type="button" className="button button-primary" onClick={launch}>
-						<PlusIcon />
-						Launch an agent
-					</button>
+					<p>Say what it should do and press Enter. The repository, where it runs and its sandbox are under the field.</p>
+					<StartComposer sessions={sessions} autoFocus />
 				</div>
 			) : (
 				groups.map((group) => <Group key={group.key} group={group} limit={shownLimit(groups.length)} headed={groups.length > 1 || group.key !== NO_REPOSITORY} now={now} />)

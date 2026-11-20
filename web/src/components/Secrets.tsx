@@ -1,7 +1,7 @@
 /**
  * A repository's secrets, where their user manages them: a section of a session's side panel and of
  * the repository's own page, beside the setup command (`SecretsBlock`, the same in both), and a field
- * of the launch form once a repository of the GitHub connection is chosen. All open the same dialog, in which a secret is added, its value replaced, its scope
+ * of the start composer's repository picker once a repository of the GitHub connection is chosen. All open the same dialog, in which a secret is added, its value replaced, its scope
  * changed, or it is deleted.
  *
  * A secret is a named value the platform hands to the repository's agents as an environment
@@ -120,7 +120,7 @@ const ACCOUNT_NEVER = "A repository's setup command never gets it. Where a repos
 
 const scopeName = (scope: SecretScope, owner: SecretsOwner["kind"]) => (scope === "agent" ? "also the agent's commands" : owner === "account" ? "MCP servers only" : "setup and MCP servers");
 
-/** When a change reaches whom. `workspace` is what the agent the panel is about has: none yet, or one that was set up already; null in the launch form. */
+/** When a change reaches whom. `workspace` is what the agent the panel is about has: none yet, or one that was set up already; null in the start composer. */
 function applies(workspace: "none" | "made" | null, owner: SecretsOwner["kind"] = "repository"): string {
 	if (owner === "account") return "A change reaches MCP servers, and the agent's commands where a secret is also for them, from each agent's next turn, also in a sandbox that exists already. A turn that is running keeps what it started with.";
 	if (workspace === "none") return "A change reaches the setup command when this agent's workspace is created, with its next prompt, and MCP servers and the agent's commands from its next turn.";
@@ -579,7 +579,7 @@ export function SecretsSection({ summary }: { summary: SessionSummary }) {
 	);
 }
 
-/** The launch form's field: what is saved for the chosen repository, and the way to the dialog. `repository` is the chosen one, in words. */
+/** The start composer's field: what is saved for the chosen repository, and the way to the dialog. `repository` is the chosen one, in words. */
 export function SecretsField({ repositoryId, repository, profile, disabled }: { repositoryId: GithubId; repository: string; profile: SandboxProfileId | null; disabled: boolean }) {
 	const owner = useMemo(() => repositoryOwner(repositoryId, repository), [repositoryId, repository]);
 	const { list, error, set } = useSecrets(owner, profile);
@@ -610,7 +610,7 @@ export function SecretsField({ repositoryId, repository, profile, disabled }: { 
 				</p>
 			) : null}
 			{open && list !== null && profile !== null
-				? // Outside the launch form: Enter in one of its fields must not launch an agent.
+				? // Outside the start composer: Enter in one of its fields must not launch an agent.
 					createPortal(<SecretsDialog owner={owner} profile={profile} secrets={list.secrets} start="list" workspace={null} onSaved={set} onClose={() => setOpen(false)} />, document.body)
 				: null}
 		</div>

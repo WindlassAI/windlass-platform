@@ -4,7 +4,7 @@
  * is missing from it is no mystery. The list is the user's ChatGPT plan's where it could be read, and
  * the platform's stand-in where not; the server says which, and the words here only repeat it.
  */
-import type { ModelList } from "@contract";
+import type { HarnessId, MachineSummary, ModelChoice, ModelList, SessionMode } from "@contract";
 import { localTime } from "./format";
 
 /** The ids of the list's models, in its order; none while the list is not known. */
@@ -43,4 +43,26 @@ export function modelsNoteShort(list: ModelList): string {
 		case "unavailable":
 			return "stand-in models: your plan's could not be read";
 	}
+}
+
+/** What a machine's runner may report of a harness's options beside it: read as optional, so that a runner that reports none, and a summary without the field, read as nothing. */
+interface ReportedOptions {
+	models?: ModelChoice[];
+	modes?: SessionMode[];
+	checkedAt?: number;
+}
+
+/**
+ * The models and modes another harness offers on a machine before an agent of it runs there, as the
+ * machine's runner reported them (`MachineSummary.harnesses[].options`). The server holds a launch's
+ * model against that same report, so no other list is offered: a model an earlier agent listed may
+ * not be one the server takes yet. Null where there is none: the harness starts on its own default.
+ */
+export function harnessOptions(machine: MachineSummary | null, harness: HarnessId): { models: ModelList | null; modes: SessionMode[] | null } {
+	if (machine === null || harness === "windlass") return { models: null, modes: null };
+	const reported = (machine.harnesses?.find((entry) => entry.id === harness) as { options?: ReportedOptions } | undefined)?.options;
+	const modes = reported?.modes && reported.modes.length > 0 ? reported.modes : null;
+	const first = reported?.models?.[0];
+	if (!reported?.models || first === undefined) return { models: null, modes };
+	return { models: { source: "harness", models: reported.models, defaultModel: first.id, fetchedAt: reported.checkedAt ?? null }, modes };
 }

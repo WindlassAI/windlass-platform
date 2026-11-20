@@ -8,7 +8,7 @@
  * row shows of why an item waits is the server's (`Waiting.sentence`), shown as it was written.
  *
  * Filing one, where the deployment offers machines and the user has one, says where it runs as the
- * launch form of an agent does (components/PlaceChoice.tsx): this platform, or one of the user's
+ * start composer of an agent does, with the same cards (components/PlaceChoice.tsx): this platform, or one of the user's
  * machines. On a machine the server gives it that machine's first available sandbox.
  */
 import { type GithubId, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemState, type ItemSummary } from "@contract";

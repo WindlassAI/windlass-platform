@@ -49,7 +49,6 @@ function SessionRoute({ sessionId, theme, onToggleTheme }: { sessionId: string; 
 	);
 }
 
-/** A repository's page, and the launch form over it when the address asks for one with that repository chosen. */
 /** A work item's page, with the way back to its repository. */
 function ItemRoute({ itemId, theme, onToggleTheme }: { itemId: string; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
 	const { platform } = useApp();
@@ -71,19 +70,18 @@ function ItemRoute({ itemId, theme, onToggleTheme }: { itemId: string; theme: Re
 	);
 }
 
-/** `view`: the page's work, or its settings; the launch form opens over the one it was opened from. */
+/** A repository's page: `view`, its work or its settings. With `launching`, the new agent's page in its place, with that repository chosen. */
 function RepositoryRoute({ repositoryId, view, launching, theme, onToggleTheme }: { repositoryId: GithubId; view: RepositoryTab; launching: boolean; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
 	const page = useRepository(repositoryId);
 	useEffect(() => {
-		document.title = `${page.name ?? "Repository"}${view === "settings" ? " · Settings" : ""} · Windlass`;
-	}, [page.name, view]);
+		document.title = `${launching ? "New agent · " : ""}${page.name ?? "Repository"}${view === "settings" && !launching ? " · Settings" : ""} · Windlass`;
+	}, [page.name, view, launching]);
 	return (
 		<div className="app">
 			<TopBar theme={theme} onToggleTheme={onToggleTheme}>
 				<RepositoryCrumb name={page.name} />
 			</TopBar>
-			<Repository page={page} view={view} />
-			{launching ? <NewAgent repositoryId={repositoryId} over={view === "settings" ? "settings" : undefined} /> : null}
+			{launching ? <NewAgent repositoryId={repositoryId} over={view === "settings" ? "settings" : undefined} /> : <Repository page={page} view={view} />}
 		</div>
 	);
 }
@@ -98,7 +96,7 @@ export function App() {
 	const noMachines = route.name === "machines" && auth !== null && platform.info !== null && !platform.info.machines;
 	/** Nor one that does not offer work items an item's page. */
 	const noItems = route.name === "item" && auth !== null && platform.info !== null && !platform.info.items;
-	/** The repository whose page is shown: its own address, or the launch form's over it. */
+	/** The repository whose page is shown: its own address, or the new agent's page for it. */
 	const repositoryId = route.name === "repository" ? route.id : route.name === "new" ? (route.repository ?? null) : null;
 	useEffect(() => {
 		if (needsAuth && !auth) navigate({ name: "signin" }, { replace: true });
@@ -106,7 +104,7 @@ export function App() {
 	}, [needsAuth, auth, route.name]);
 
 	useEffect(() => {
-		if ((route.name !== "session" && route.name !== "item" && repositoryId === null) || noItems) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines || noItems ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : "Agents · Windlass";
+		if ((route.name !== "session" && route.name !== "item" && repositoryId === null) || noItems) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines || noItems ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : route.name === "new" ? "New agent · Windlass" : "Agents · Windlass";
 	}, [route.name, repositoryId, noMachines, noItems]);
 
 	if (route.name === "mock-authorize" && client.kind === "mock") return <MockAuthorize />;
@@ -175,8 +173,7 @@ export function App() {
 	return (
 		<div className="app">
 			<TopBar theme={theme} onToggleTheme={toggleTheme} />
-			<Home />
-			{route.name === "new" ? <NewAgent /> : null}
+			{route.name === "new" ? <NewAgent /> : <Home />}
 		</div>
 	);
 }

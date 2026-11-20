@@ -2,7 +2,7 @@
  * Settings: what a user keeps for their account, whatever the repository an agent works on. Three
  * things, each in the component its counterpart on a repository's page uses:
  *
- *   - the defaults a new agent starts with where neither the launch form nor its repository says
+ *   - the defaults a new agent starts with where neither its launch nor its repository says
  *     (`DefaultsSection`);
  *   - the user's own MCP servers, which Windlass starts in every agent of theirs (`PersonalServers`);
  *   - the secrets those servers read (`AccountSecretsBlock`), which reach MCP servers and, where
@@ -93,7 +93,7 @@ export function Settings() {
 
 					<DefaultsSection
 						id="settings-defaults"
-						lede="The launch form starts from these where the chosen repository has no default of its own, and for an agent on no repository. A choice made in the form comes first, then the repository's default, then these, then the deployment's."
+						lede="A new agent starts from these where its repository has no default of its own, and on no repository. A choice made when it is launched comes first, then the repository's default, then these, then what your newest agent was launched with, then the deployment's."
 						defaults={settings.defaults}
 						whose="account"
 						under={null}

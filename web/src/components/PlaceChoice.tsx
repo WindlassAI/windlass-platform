@@ -1,9 +1,9 @@
 /**
  * "Where it runs": this platform, or one of the user's machines. One line names the choice and its
- * plain facts; a card for each place opens from that line, as the sandboxes' do. The launch form of an
- * agent (screens/NewAgent.tsx) and the form that files a work item (screens/Items.tsx) both use it,
- * each with what the choice means for what it makes (`purpose`), and each puts its own note under the
- * line (`children`).
+ * plain facts; a card for each place opens from that line, as the sandboxes' do. The form that files a
+ * work item (screens/Items.tsx) uses it, with what the choice means for what it makes (`purpose`), and
+ * its own note under the line (`children`). The start composer of an agent (components/StartComposer.tsx)
+ * holds the same cards (`PlaceCards`) in its place picker.
  *
  * A machine whose runner never reported, or is too old for the platform, is listed and cannot be
  * chosen. An offline machine can: an agent made there waits for it, and so does an item. An item also
@@ -60,11 +60,7 @@ function PlaceCard({ machine, why, name, checked, now, purpose, onChoose }: { ma
  */
 export function PlaceChoice({ machines, chosen, minRunnerVersion, now, purpose, onChoose, children }: { machines: MachineSummary[]; chosen: MachineSummary | null; minRunnerVersion: string; now: number; purpose: PlacePurpose; onChoose(machineId: string | null): void; children?: ReactNode }) {
 	const [open, setOpen] = useState(false);
-	const group = useId();
 	const cards = useId();
-	const why = (machine: MachineSummary) => machineUnusable(machine, minRunnerVersion, purpose);
-	const usable = machines.filter((machine) => why(machine) === null);
-	const unusable = machines.filter((machine) => why(machine) !== null);
 	return (
 		<fieldset className="new-agent-section sandbox-pick">
 			<legend className="label">Where it runs</legend>
@@ -95,24 +91,37 @@ export function PlaceChoice({ machines, chosen, minRunnerVersion, now, purpose, 
 			{children}
 			<div id={cards} className="sandbox-cards" hidden={!open}>
 				<p className="section-text">Where the {purpose === "agent" ? "agent's" : "item's"} sandbox is made: by this platform, or by the runner on one of your machines.</p>
-				<div className="profiles places">
-					<PlaceCard machine={null} why={null} name={group} checked={chosen === null} now={now} purpose={purpose} onChoose={onChoose} />
-					{usable.map((machine) => (
-						<PlaceCard key={machine.machineId} machine={machine} why={null} name={group} checked={chosen?.machineId === machine.machineId} now={now} purpose={purpose} onChoose={onChoose} />
-					))}
-				</div>
-				{unusable.length > 0 ? (
-					<>
-						<p className="profiles-divider">Listed, but not usable now</p>
-						<div className="profiles profiles-unavailable">
-							{unusable.map((machine) => (
-								<PlaceCard key={machine.machineId} machine={machine} why={why(machine)} name={group} checked={false} now={now} purpose={purpose} onChoose={onChoose} />
-							))}
-						</div>
-					</>
-				) : null}
+				<PlaceCards machines={machines} chosen={chosen} minRunnerVersion={minRunnerVersion} now={now} purpose={purpose} onChoose={onChoose} />
 			</div>
 		</fieldset>
+	);
+}
+
+/** A card for each place: this platform and the machines that can be chosen, then those that cannot, each with why. The start composer's place picker holds them too. */
+export function PlaceCards({ machines, chosen, minRunnerVersion, now, purpose, onChoose }: { machines: MachineSummary[]; chosen: MachineSummary | null; minRunnerVersion: string; now: number; purpose: PlacePurpose; onChoose(machineId: string | null): void }) {
+	const group = useId();
+	const why = (machine: MachineSummary) => machineUnusable(machine, minRunnerVersion, purpose);
+	const usable = machines.filter((machine) => why(machine) === null);
+	const unusable = machines.filter((machine) => why(machine) !== null);
+	return (
+		<>
+			<div className="profiles places">
+				<PlaceCard machine={null} why={null} name={group} checked={chosen === null} now={now} purpose={purpose} onChoose={onChoose} />
+				{usable.map((machine) => (
+					<PlaceCard key={machine.machineId} machine={machine} why={null} name={group} checked={chosen?.machineId === machine.machineId} now={now} purpose={purpose} onChoose={onChoose} />
+				))}
+			</div>
+			{unusable.length > 0 ? (
+				<>
+					<p className="profiles-divider">Listed, but not usable now</p>
+					<div className="profiles profiles-unavailable">
+						{unusable.map((machine) => (
+							<PlaceCard key={machine.machineId} machine={machine} why={why(machine)} name={group} checked={false} now={now} purpose={purpose} onChoose={onChoose} />
+						))}
+					</div>
+				</>
+			) : null}
+		</>
 	);
 }
 
@@ -125,8 +134,8 @@ export const offeredHarnesses = (machine: MachineSummary | null): ReportedHarnes
 /**
  * "Agent: Windlass · Claude Code", for an agent on a machine that offers another harness: a segmented
  * choice of the two, the harness's sign-in on the machine where it is not known to be signed in, and,
- * once it is chosen, the one line that says what it does differently. Its mode is chosen under it
- * (components/Modes.tsx, `ModeChoice`). `hardened`: whether the machine
+ * once it is chosen, the one line that says what it does differently. Its mode is chosen beside it
+ * (components/Modes.tsx, `ModePicker`). `hardened`: whether the machine
  * can make the container it runs in; without one it cannot be chosen.
  */
 export function HarnessChoice({ machine, chosen, hardened, disabled = false, onChoose }: { machine: MachineSummary; chosen: HarnessId; hardened: boolean; disabled?: boolean; onChoose(harness: HarnessId): void }) {
@@ -150,7 +159,7 @@ export function HarnessChoice({ machine, chosen, hardened, disabled = false, onC
 			{offered.map((harness) => (
 				<HarnessState key={harness.id} harness={harness} machine={machine} hardened={hardened} />
 			))}
-			{chosen === "claude" ? <p className="field-note">Claude Code runs in this container with your Claude subscription, in the mode chosen below. It does not run this repository's checks; CI's result is on the pull request.</p> : null}
+			{chosen === "claude" ? <p className="field-note">Claude Code runs in this container with your Claude subscription, in the mode chosen for it. It does not run this repository's checks; CI's result is on the pull request.</p> : null}
 		</div>
 	);
 }

@@ -1,10 +1,11 @@
 /**
  * Defaults for new agents: a sandbox and a model, each saved as soon as it is chosen. The same section
  * on a repository's page, for the agents launched on that repository, and on the account's settings
- * page, for every agent where neither the launch form nor its repository says otherwise.
+ * page, for every agent where neither its launch nor its repository says otherwise.
  *
- * The launch form goes by the user's own choice, then the chosen repository's default, then the
- * account's, then the deployment's first, each field by itself. So what a field left without a default
+ * The start composer goes by the user's own choice, then the chosen repository's default, then the
+ * account's, then what their newest agent was launched with, then the deployment's first, each field
+ * by itself. So what a field left without a default
  * comes to depends on the level below: `under` is that level's defaults that can be used, the
  * account's for a repository and nothing for the account, and the notes name what it comes to. A
  * default that names a sandbox this deployment no longer offers, or a model that is not among the

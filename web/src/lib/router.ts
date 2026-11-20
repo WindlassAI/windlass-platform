@@ -1,7 +1,7 @@
 /**
- * Routing by URL with the History API: sign-in, home, the new-agent dialog over home, the usage page, the account's settings and machines,
- * a session by its ID, a work item by its ID, and a repository's page by GitHub's id for it, with the new-agent dialog over
- * that page too. A reload stays on the same screen; `?mock=1` is carried from one address to the next.
+ * Routing by URL with the History API: sign-in, home, the new agent's page, the usage page, the account's settings and machines,
+ * a session by its ID, a work item by its ID, and a repository's page by GitHub's id for it, with a new agent's page of its
+ * own too. A reload stays on the same screen; `?mock=1` is carried from one address to the next.
  */
 import { githubId } from "../../../server/src/github/ids.js";
 import type { GithubId } from "@contract";
@@ -9,7 +9,7 @@ import { useSyncExternalStore } from "react";
 
 export type Route =
 	| { name: "home" }
-	/** The launch form. With `repository`, GitHub's id for one, it opens over that repository's page with it chosen: over its settings with `over`. */
+	/** The new agent's page. With `repository`, GitHub's id for one, it has that repository chosen, and leads back to its page: to its settings with `over`. */
 	| { name: "new"; repository?: GithubId; over?: "settings" }
 	/**
 	 * One repository of the user's GitHub connection: its work (the agents on it, its work items, its open pull requests),

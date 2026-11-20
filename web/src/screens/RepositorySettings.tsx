@@ -220,7 +220,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 					<DefaultsSection
 						key={generation}
 						id="repo-defaults"
-						lede={`The launch form starts from these when ${name} is chosen. They can still be changed there for one agent, and an agent that exists keeps what it was launched with.`}
+						lede={`A new agent on ${name} starts from these. They can still be changed when it is launched, for that agent only, and an agent that exists keeps what it was launched with.`}
 						defaults={view.defaults}
 						whose="repository"
 						under={accountChoices}

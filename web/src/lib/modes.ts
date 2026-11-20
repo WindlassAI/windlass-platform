@@ -16,7 +16,7 @@ import { windlassModes } from "../../../server/src/sandbox/profiles.js";
 /** What Claude Code is launched in unless chosen otherwise (server/src/sandbox/acp-harness.ts). */
 export const CLAUDE_DEFAULT_MODE = "auto";
 
-/** The modes the launch form offers for an agent in a sandbox profile, and the one it starts on. */
+/** The modes a new agent is offered in a sandbox profile, and the one it starts on. */
 export function launchModes(harness: HarnessId, profile: Pick<SandboxProfile, "approval"> | null): { modes: SessionMode[]; default: string } | null {
 	if (harness === "claude") return { modes: [...CLAUDE_LAUNCH_MODES], default: CLAUDE_DEFAULT_MODE };
 	if (profile === null) return null;

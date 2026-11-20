@@ -1,14 +1,14 @@
 /**
  * The user's GitHub connection, as every part of the interface that shows it shares it: the account
- * menu, the launch form and a session's panel. One state per signed-in user, asked for once and
+ * menu, the start composer and a session's panel. One state per signed-in user, asked for once and
  * changed by connecting and disconnecting.
  *
  * Connecting leaves the page: the browser goes to GitHub and comes back to the web app's own address
  * with what happened in the address's fragment, `#github=<ticket>` or `#github-error=<code>`. So what
- * the user was doing is kept in the tab's storage before they leave (which screen, and what the launch
- * form held), and `completeGithubReturn` picks it up again when the page loads: it takes the fragment
+ * the user was doing is kept in the tab's storage before they leave (which screen, and what the start
+ * composer held), and `completeGithubReturn` picks it up again when the page loads: it takes the fragment
  * out of the address, hands the ticket to the user's actor, and goes back to that screen. Where the
- * result is said (`notice`) depends on where the user started: in the launch form, or in the account
+ * result is said (`notice`) depends on where the user started: in the start composer, or in the account
  * menu, which opens for it.
  */
 import type { AuthResult, GithubStatus } from "@contract";
@@ -20,7 +20,7 @@ import { useApp, useAuth } from "./app";
 export interface GithubNotice {
 	tone: "good" | "bad";
 	text: string;
-	/** Where it is shown: beside the repository field of the launch form, or in the account menu. */
+	/** Where it is shown: in the start composer's repository picker, or in the account menu. */
 	where: "launch" | "menu";
 }
 
@@ -86,20 +86,28 @@ function take<T>(storageKey: string): T | null {
 	}
 }
 
-/** What the launch form held when its user left for GitHub. `profile` and `model` are the user's own choices there: null and "" where they made none. */
+/**
+ * What the start composer held when its user left for GitHub: the task, a pasted address, and each
+ * choice its user made there. Null and "" where they made none, so that the defaults stand in again on
+ * the way back. `place` is "platform" for this platform, or a machine's id.
+ */
 export interface LaunchDraft {
-	profile: string | null;
-	model: string;
-	title: string;
 	prompt: string;
 	repoUrl: string;
+	profile: string | null;
+	model: string;
+	effort: string;
+	place: string | null;
+	harness: string | null;
+	mode: string | null;
 }
 
 export function takeLaunchDraft(): LaunchDraft | null {
 	const draft = take<Partial<LaunchDraft>>(DRAFT_KEY);
 	if (typeof draft !== "object" || draft === null) return null;
 	const text = (value: unknown) => (typeof value === "string" ? value : "");
-	return { profile: typeof draft.profile === "string" ? draft.profile : null, model: text(draft.model), title: text(draft.title), prompt: text(draft.prompt), repoUrl: text(draft.repoUrl) };
+	const chosen = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
+	return { prompt: text(draft.prompt), repoUrl: text(draft.repoUrl), profile: chosen(draft.profile), model: text(draft.model), effort: text(draft.effort), place: chosen(draft.place), harness: chosen(draft.harness), mode: chosen(draft.mode) };
 }
 
 // ---- actions ------------------------------------------------------------------------------------
@@ -182,7 +190,7 @@ export interface Github extends GithubState {
 	enabled: boolean;
 	/** Where GitHub is, for links: "https://github.com". */
 	url: string;
-	/** Sends the browser to GitHub. `where` says where the result is shown on the way back; `draft` is what the launch form holds. */
+	/** Sends the browser to GitHub. `where` says where the result is shown on the way back; `draft` is what the start composer holds. */
 	connect(options: { where: GithubNotice["where"]; install?: boolean; draft?: LaunchDraft }): void;
 	disconnect(): Promise<void>;
 	reload(): void;

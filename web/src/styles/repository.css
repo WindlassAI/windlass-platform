@@ -300,14 +300,6 @@ a.agent-group-name:hover .agent-group-owner {
 	color: var(--accent-strong);
 }
 
-/* The launch form's word on a repository's defaults: sentences under the repository, no field of its own. */
-.new-agent-defaults {
-	margin-top: -8px;
-}
-.new-agent-defaults .field-note:first-child {
-	margin-top: 0;
-}
-
 @media (max-width: 760px) {
 	.agent-group-head {
 		padding-left: 4px;

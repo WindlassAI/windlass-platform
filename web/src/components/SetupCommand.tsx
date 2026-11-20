@@ -1,5 +1,5 @@
 /**
- * A repository's setup command, where its user sets it: a field of the launch form, shown once a
+ * A repository's setup command, where its user sets it: a field of the start composer's repository picker, shown once a
  * repository of the GitHub connection is chosen, filled with what is saved for that repository and
  * saved with the launch; and a section of a session's side panel and of the repository's own page,
  * where it is read and changed (`SetupEditor`, the same in both).
@@ -45,7 +45,7 @@ export interface SetupDraft {
 	toSave: string | undefined;
 }
 
-/** The launch form's setup command for the repository that is chosen: read when the choice changes. */
+/** The start composer's setup command for the repository that is chosen: read when the choice changes. */
 export function useSetupDraft(repositoryId: GithubId | null): SetupDraft {
 	const { client, explain } = useApp();
 	const auth = useAuth();
@@ -78,7 +78,7 @@ export function useSetupDraft(repositoryId: GithubId | null): SetupDraft {
 	return { draft, setText, toSave };
 }
 
-/** The launch form's field. `repository` is the chosen one, in words. */
+/** The start composer's field. `repository` is the chosen one, in words. */
 export function SetupField({ setup, repository, disabled }: { setup: SetupDraft; repository: string; disabled: boolean }) {
 	const ids = { input: useId(), note: useId() };
 	const { draft } = setup;

@@ -1,5 +1,5 @@
 /**
- * Choosing a repository of the user's GitHub connection, in the launch form: a search field whose
+ * Choosing a repository of the user's GitHub connection, in the start composer: a search field whose
  * list narrows as you type, then the branch to start from, with the repository's default chosen.
  *
  * The list is a combobox in the ARIA sense: the field keeps the focus, the arrow keys move through

@@ -1,57 +1,10 @@
 /**
- * The agent's mode, in the two places it is chosen (lib/modes.ts says whose modes they are).
- *
- * - `ModeChoice`, on the launch form, under the agent: a segmented choice when there are only a few
- *   modes, as the agent's own choice is, and the form's select when there are more; the chosen mode's
- *   description under it, quietly.
- * - `ModePicker`, in the composer beside the model: one word that opens the list, each mode with its
- *   description, so the choice can be made without knowing the names.
+ * The agent's mode (lib/modes.ts says whose modes they are), where it is chosen: in a session's
+ * composer beside the model, and in the start composer's row of chips. One word opens the list, each
+ * mode with its description, so the choice can be made without knowing the names.
  */
 import type { SessionMode } from "@contract";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-
-/** Up to this many modes are a segmented choice; more are a select. */
-const SEGMENTED_MAX = 3;
-
-export function ModeChoice({ modes, chosen, disabled = false, onChoose }: { modes: SessionMode[]; chosen: string; disabled?: boolean; onChoose(mode: string): void }) {
-	const ids = { label: useId(), group: useId(), select: useId(), note: useId() };
-	const current = modes.find((mode) => mode.id === chosen) ?? null;
-	return (
-		<div className="harness-pick mode-pick">
-			{modes.length <= SEGMENTED_MAX ? (
-				<>
-					<span className="label" id={ids.label}>
-						Mode
-					</span>
-					<div className="segmented" role="radiogroup" aria-labelledby={ids.label} aria-describedby={ids.note}>
-						{modes.map((mode) => (
-							<label key={mode.id} className={`segment${chosen === mode.id ? " segment-chosen" : ""}`}>
-								<input className="segment-radio" type="radio" name={ids.group} value={mode.id} checked={chosen === mode.id} disabled={disabled} onChange={() => onChoose(mode.id)} />
-								{mode.name}
-							</label>
-						))}
-					</div>
-				</>
-			) : (
-				<>
-					<label className="label" htmlFor={ids.select}>
-						Mode
-					</label>
-					<select id={ids.select} className="select mode-select" value={chosen} disabled={disabled} onChange={(event) => onChoose(event.target.value)} aria-describedby={ids.note}>
-						{modes.map((mode) => (
-							<option key={mode.id} value={mode.id}>
-								{mode.name}
-							</option>
-						))}
-					</select>
-				</>
-			)}
-			<p className="field-note" id={ids.note}>
-				{current?.description ?? " "}
-			</p>
-		</div>
-	);
-}
 
 /**
  * "mode Auto", in the composer's quiet picker style; pressed, the modes open above it as a list, each

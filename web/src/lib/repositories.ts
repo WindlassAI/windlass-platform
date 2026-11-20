@@ -1,13 +1,14 @@
 /**
  * The repository as the place a user's agents are gathered under: how the list of agents is grouped,
  * how much of a long group is shown, which pull requests a repository's page lists, and what a new
- * agent starts with: its user's choice, then its repository's default, then the account's.
+ * agent starts with: its user's choice, then its repository's default, then the account's, then what
+ * the user chose for their newest agent.
  *
  * Everything here is worked out from what the web app already holds: the summaries of the user's
  * sessions, as their actor broadcasts them, the deployment's own information, and the user's models.
  * Nothing is asked of GitHub or of a sandbox to draw a list.
  */
-import type { AccountDefaults, GithubId, ModelList, PlatformInfo, PullRequestInfo, SandboxProfileId, SessionRepository, SessionSummary } from "@contract";
+import { MAX_TITLE_CHARS, type AccountDefaults, type GithubId, type HarnessId, type ModelList, type PlatformInfo, type PullRequestInfo, type SandboxPlace, type SandboxProfileId, type SessionRepository, type SessionSummary } from "@contract";
 
 // ---- the user's own agents, and the sessions of their work items -------------------------------------
 
@@ -195,7 +196,7 @@ export function startingChoices(defaults: AccountDefaults | null, info: Pick<Pla
 	return choices;
 }
 
-/** Whose default a field of the launch form stands on. */
+/** Whose default a choice of a new agent stands on. */
 export type DefaultSource = "repository" | "account";
 
 /** The defaults a launch starts from, each field by itself, and whose each is; null where neither the repository nor the account has one that can be used. */
@@ -218,15 +219,82 @@ export function layerChoices(repository: Pick<StartingChoices, "profile" | "mode
 	};
 }
 
-/** What a launch starts on: the user's own choice in the form when they made one, then the chosen repository's default, then the account's (`layerChoices`), then the deployment's first sandbox and the default of the user's models. */
-export function startingProfile(chosen: SandboxProfileId | null, choices: Pick<StartingChoices, "profile">, info: Pick<PlatformInfo, "profiles"> | null): SandboxProfileId | null {
+/**
+ * What a launch starts on: the user's own choice when they made one, then the chosen repository's
+ * default, then the account's (`layerChoices`), then what their newest agent was launched with
+ * (`lastUsed`), then the deployment's first sandbox and the default of the user's models. A last
+ * choice that cannot be made now is passed over, as a default is.
+ */
+export function startingProfile(chosen: SandboxProfileId | null, choices: Pick<StartingChoices, "profile">, info: Pick<PlatformInfo, "profiles"> | null, last: SandboxProfileId | null = null): SandboxProfileId | null {
 	const available = (id: SandboxProfileId | null) => id !== null && info !== null && info.profiles.some((profile) => profile.id === id && profile.available);
 	if (available(chosen)) return chosen;
 	if (available(choices.profile)) return choices.profile;
+	if (available(last)) return last;
 	return info?.profiles.find((profile) => profile.available)?.id ?? null;
 }
 
-export function startingModel(chosen: string, choices: Pick<StartingChoices, "model">, models: ModelList | null): string {
+export function startingModel(chosen: string, choices: Pick<StartingChoices, "model">, models: ModelList | null, last: string | null = null): string {
 	if (chosen !== "" && (models === null || models.models.some((model) => model.id === chosen))) return chosen;
-	return choices.model ?? models?.defaultModel ?? "";
+	if (choices.model !== null) return choices.model;
+	if (last !== null && models !== null && models.models.some((model) => model.id === last)) return last;
+	return models?.defaultModel ?? "";
+}
+
+// ---- what the user chose last ------------------------------------------------------------------------
+
+/** What one agent of the user's was launched with, as its summary has it. */
+export interface UsedChoice {
+	model: string;
+	mode: string;
+	profile: SandboxProfileId;
+}
+
+/**
+ * What the user chose for their newest agent, as the summaries of their sessions have it: no store of
+ * its own, so it follows the user to any browser. On a repository, the newest agent on it; where the
+ * repository has none, or none is chosen, the newest agent of all. A work item's session is not an
+ * agent the user launched, so it is left out.
+ */
+export interface LastUsed {
+	/** Where the newest agent ran, and which agent it was. */
+	place: SandboxPlace | null;
+	harness: HarnessId | null;
+	/** For each agent, what its newest session was launched with: a model and mode are that agent's own. */
+	of: Partial<Record<HarnessId, UsedChoice>>;
+	/** What the newest agent of all was launched on: a repository of the GitHub connection, a pasted address, or nothing. */
+	repository: { kind: "github"; repository: SessionRepository } | { kind: "address"; url: string } | null;
+}
+
+const byLaunch = (a: SessionSummary, b: SessionSummary) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1);
+
+export function lastUsed(sessions: readonly SessionSummary[] | null, repositoryId: GithubId | null): LastUsed {
+	const agents = ownAgents(sessions ?? []).sort(byLaunch);
+	const newest = agents[0] ?? null;
+	// The repository's own agents first, then everyone else's: "per repository, then per user".
+	const ordered = repositoryId === null ? agents : [...agents.filter((session) => session.repository?.id === repositoryId), ...agents.filter((session) => session.repository?.id !== repositoryId)];
+	const first = ordered[0] ?? null;
+	const of: LastUsed["of"] = {};
+	for (const session of ordered) {
+		const harness = session.harness ?? "windlass";
+		of[harness] ??= { model: session.model, mode: session.mode, profile: session.profile };
+	}
+	return {
+		place: first?.place ?? null,
+		harness: first ? (first.harness ?? "windlass") : null,
+		of,
+		repository: newest?.repository ? { kind: "github", repository: newest.repository } : newest?.repoUrl ? { kind: "address", url: newest.repoUrl } : null,
+	};
+}
+
+/**
+ * The title an agent gets from its task: the first line that says something, as it is, cut to
+ * MAX_TITLE_CHARS at a word where it is longer. None for an empty task: the server names it.
+ */
+export function titleOf(task: string): string | undefined {
+	const line = task.split("\n").map((part) => part.replace(/\s+/g, " ").trim()).find((part) => part !== "");
+	if (line === undefined) return undefined;
+	if (line.length <= MAX_TITLE_CHARS) return line;
+	const cut = line.slice(0, MAX_TITLE_CHARS - 1);
+	const space = cut.lastIndexOf(" ");
+	return `${(space > MAX_TITLE_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
