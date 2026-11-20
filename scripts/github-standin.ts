@@ -59,6 +59,7 @@ export interface StandinRepository {
 	/** Branch name patterns (`*` matches anything) a push to which is refused. */
 	protectedBranches: string[];
 	ci: Map<string, { runs: unknown[]; statuses: unknown[] }>;
+	jobs: Map<string, { steps: unknown[]; runner_id: number | null; runner_name: string }>;
 	jobLogs: Map<string, string>;
 }
 
@@ -290,7 +291,7 @@ export class GithubStandin {
 		git(["config", "http.receivepack", "true"], path);
 		writeFileSync(join(path, "hooks", "pre-receive"), PRE_RECEIVE);
 		chmodSync(join(path, "hooks", "pre-receive"), 0o755);
-		const repository: StandinRepository = { id: (this.nextId += 1), owner: input.owner, name: input.name, private: input.private ?? false, archived: false, defaultBranch, path, access: new Map(), protectedBranches: [], ci: new Map(), jobLogs: new Map() };
+		const repository: StandinRepository = { id: (this.nextId += 1), owner: input.owner, name: input.name, private: input.private ?? false, archived: false, defaultBranch, path, access: new Map(), protectedBranches: [], ci: new Map(), jobs: new Map(), jobLogs: new Map() };
 		this.repositories.set(repository.id, repository);
 		this.commit(repository, defaultBranch, input.files ?? { "README.md": `# ${input.name}\n` }, "Initial commit");
 		input.installation?.repositories.add(repository.id);
@@ -728,16 +729,20 @@ export class GithubStandin {
 			}
 
 			const commitCi = /^\/commits\/([^/]+)\/(check-runs|status)$/.exec(rest);
-			const jobLog = /^\/actions\/jobs\/(\d+)\/logs$/.exec(rest);
-			if (method === "GET" && (commitCi || jobLog)) {
-				const permission = jobLog ? "actions" : commitCi?.[2] === "check-runs" ? "checks" : "statuses";
+			const job = /^\/actions\/jobs\/(\d+)(\/logs)?$/.exec(rest);
+			if (method === "GET" && (commitCi || job)) {
+				const permission = job ? "actions" : commitCi?.[2] === "check-runs" ? "checks" : "statuses";
 				if (!this.allows(token, repository, permission, "read")) return denied();
 				if (this.ciRateLimit) return answer(this.ciRateLimit.status, { message: this.ciRateLimit.message }, this.ciRateLimit.headers);
 				if (commitCi) {
 					const ci = repository.ci.get(decodeURIComponent(commitCi[1]));
 					return permission === "checks" ? pageOf("check_runs", ci?.runs ?? []) : pageOf("statuses", ci?.statuses ?? []);
 				}
-				const id = jobLog![1];
+				const id = job![1];
+				if (!job![2]) {
+					const details = repository.jobs.get(id);
+					return details ? answer(200, { id, ...details }) : answer(404, { message: "Not Found" });
+				}
 				if (!repository.jobLogs.has(id)) return answer(404, { message: "Not Found" });
 				return answer(302, null, { location: `${this.url}/storage/${repository.id}/${id}` });
 			}

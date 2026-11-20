@@ -509,6 +509,13 @@ export class GithubApp {
 		return messages;
 	}
 
+	/** A workflow can supply check output, but GitHub records which runner and steps the job used. */
+	async jobNeverStarted(token: string, owner: string, name: string, jobId: string): Promise<boolean> {
+		const { body } = await this.call({ path: `/repos/${owner}/${name}/actions/jobs/${jobId}`, auth: { bearer: token }, what: "read the Actions job" });
+		const { steps, runner_id } = record(body);
+		return Array.isArray(steps) && steps.length === 0 && (runner_id === 0 || runner_id === null);
+	}
+
 	/** Job logs redirect to short-lived storage URLs. Start a fresh request there without the installation token. */
 	async jobLog(token: string, owner: string, name: string, jobId: string): Promise<Response> {
 		const response = await this.request({ path: `/repos/${owner}/${name}/actions/jobs/${jobId}/logs`, auth: { bearer: token }, what: "read the job log" }, "manual");

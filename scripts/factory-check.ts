@@ -1037,24 +1037,30 @@ try {
 
 	{
 		const billing = "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings";
-		const at = "2026-11-20T09:00:00Z";
+		const at = "2026-11-20T15:09:28Z";
 		const job = (id: number, name: string, started_at: string | null, message: string) => ({
 			check: { ...checkRun(id, name, "failure"), node_id: `CR_${id}`, head_sha: HEAD, started_at, completed_at: at, output: { title: null, summary: null, text: null, annotations_count: 1, annotations_url: `${standin.apiUrl}/repos/ada/harbor/check-runs/${id}/annotations` } },
-			job: { id, steps: message === billing ? [] : [{ name: "Run tests", number: 1, status: "completed", conclusion: "failure", started_at, completed_at: at }] },
 			message,
 		});
 		const blocked = [job(101, "test (22)", null, billing), job(102, "test (20)", at, billing)];
 		const fast = job(103, "lint", at, "Process completed with exit code 1.");
 		const fastAgain = job(105, "lint", at, fast.message);
-		const fixtures = [...blocked, fast, fastAgain];
+		const live = job(106, "test (20)", "2026-11-20T15:09:26Z", billing);
+		const forged = job(107, "test", at, billing);
+		const unexplained = job(108, "test", at, fast.message);
+		const unavailableJob = job(109, "test", at, billing);
+		const fixtures = [...blocked, fast, fastAgain, live, forged, unexplained, unavailableJob];
+		for (const { check } of [...blocked, live, unexplained]) {
+			repo.jobs.set(String(check.id), { steps: [], runner_id: 0, runner_name: "" });
+		}
+		for (const { check } of [fast, fastAgain, forged]) {
+			repo.jobs.set(String(check.id), { steps: [{ name: "Run tests", number: 1, status: "completed", conclusion: "failure" }], runner_id: 7, runner_name: "runner-7" });
+		}
 		const original = globalThis.fetch;
 		let lookups = 0;
 		let unavailableAnnotations = false;
 		globalThis.fetch = async (input, init) => {
-			// The Actions Jobs response carries the steps; the check-run listing does not.
 			const url = new URL(String(input));
-			const jobId = /\/actions\/jobs\/(\d+)$/.exec(url.pathname)?.[1];
-			if (jobId) return Response.json(fixtures.find((one) => one.job.id === Number(jobId))?.job ?? null);
 			if (url.href !== `${standin.url}/api/graphql`) return original(input, init);
 			lookups++;
 			if (unavailableAnnotations) return Response.json({ data: { nodes: null }, errors: [{ message: "Something went wrong" }] });
@@ -1084,6 +1090,38 @@ try {
 			const mixedCi = verdictCi(fixing.item.run?.ci ?? null);
 			const made = verdictOf({ id: "v", item: "i", run: 1, head: HEAD, at: T0, place: { kind: "hosted" }, gate: null, ci: mixedCi, acceptance: [], mergeable: true });
 			expect("mixed: only the fast job with a test error gets a fix, one name in the event and verdict", made.result === "fail" && made.said.ci === "CI failed: lint." && fixing.last.events.some((event) => event.said === made.said.ci) && !!effect(fixing.last, "deliver") && mixed.kind === "read" && mixed.logs.length === 1 && mixed.logs[0]?.name === "lint" && lookups === 2, made.said.ci);
+
+			for (const [label, fixture, expected] of [
+				["two-second billing failure with zero steps and no runner", live, "not_run"],
+				["billing annotation written by a job with steps and a runner", forged, "failed"],
+				["zero steps and no runner without the explanatory text", unexplained, "failed"],
+				["billing annotation with a missing Actions job (404)", unavailableJob, "failed"],
+			] as const) {
+				ciData.runs = [fixture.check];
+				const state = ciState(await readCi(app, target));
+				expect(label, state === expected, state);
+			}
+
+			// As live on 2026-11-20: a push run and a pull request run, each with test (20) and test (22), none started.
+			ciData.runs = [301, 302, 303, 304].map((id, i) => ({ ...live.check, id, name: `test (${i % 2 ? 22 : 20})` }));
+			for (const id of [301, 302, 303, 304]) repo.jobs.set(String(id), { steps: [], runner_id: 0, runner_name: "" });
+			const four = await readCi(app, target);
+			expect("four never-started jobs from two runs read as not run, none of them as failed", ciState(four) === "not_run" && four.kind === "read" && four.runs.every((run) => run.state === "not_run"), four.kind === "read" ? four.runs.map((run) => run.state).join() : four.kind);
+
+			// Check output has the same trust boundary as an annotation, including when there are no annotations.
+			const inline = (id: number, field: "title" | "summary") => ({
+				...live.check, id, name: `job-${id}`, output: { [field]: billing, annotations_count: 0 },
+			});
+			repo.jobs.set("201", { steps: [], runner_id: null, runner_name: "" });
+			repo.jobs.set("202", { steps: [], runner_id: 7, runner_name: "runner-7" });
+			repo.jobs.set("203", { steps: [{ name: "Run tests" }], runner_id: null, runner_name: "" });
+			ciData.runs = [inline(201, "summary"), inline(202, "title"), inline(203, "summary"), inline(204, "title")];
+			const start = standin.requests.length;
+			const annotationReads = lookups;
+			const inlineRead = await readCi(app, target);
+			const jobPaths = standin.requests.slice(start).map(({ path }) => path).filter(path => path.includes("/actions/jobs/") && !path.endsWith("/logs"));
+			expect("inline diagnostics require both zero steps and an unassigned runner", inlineRead.kind === "read" && inlineRead.runs.map(run => run.state).join() === "not_run,failed,failed,failed");
+			expect("every candidate's job record is read, and inline diagnostics need no annotation lookup", lookups === annotationReads && jobPaths.map(path => path.split("/").pop()).join() === "201,202,203,204", jobPaths.join(", "));
 
 			ciData.runs = [20, 22, 20, 22, 22].map((n, i) => ({ ...checkRun(110 + i, `test (${n})`, "success"), head_sha: HEAD }));
 			const passing = await readCi(app, target);

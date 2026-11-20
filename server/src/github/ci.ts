@@ -1,8 +1,8 @@
 /**
  * What GitHub says of a commit's CI, read for the factory (Plans "software factory" §2.1 step 4): the
  * check runs and commit statuses of the pushed head and, for a GitHub Actions job that failed, the end
- * of its log. For a failure with no recorded runtime, a single batched annotation lookup can explain
- * why GitHub did not start the job. Read with an installation token asked for with the three read permissions CI needs
+ * of its log. When check output or a single annotation says the job never started, the Actions job
+ * record must confirm it had no steps or runner. Read with an installation token asked for with the three read permissions CI needs
  * (Checks, Commit statuses, Actions) and nothing else, used for one reading and dropped.
  *
  * Every reading ends as one of four outcomes, and the four are never confused, because the factory acts
@@ -64,6 +64,8 @@ export const LOG_TAIL_CHARS = 16_000;
 export const LOG_MAX_BYTES = 16 * 1024 * 1024;
 /** Logs are read for at most this many failing jobs per reading. */
 export const LOGS_PER_READING = 3;
+/** Actions job records read per reading to confirm that a job never started (one small request each). */
+export const JOB_READS_PER_READING = 20;
 
 /** One check run or commit status of the head. */
 export interface CiRun {
@@ -138,16 +140,11 @@ function refusal({ status, headers, said }: GithubError): CiReading {
 	return { kind: "failed", said: `GitHub answered ${status}${said ? ` (${said})` : ""}` };
 }
 
-// A same-second failure can also be a real test failure. Only GitHub's explicit diagnostic
-// changes its classification; titles, summaries and annotations can all contain untrusted text.
-function markNotRun(run: CiRun, message: string): boolean {
-	if (!/^The job was not started because\b/i.test(message.trim())) return false;
-	run.state = "not_run";
-	run.summary = short(redact(plain(message.trim())), 500);
-	return true;
-}
+const notStarted = (message: string) => /^The job was not started because\b/i.test(message.trim());
 
-function checkRunOf(fields: Record<string, unknown>, candidates: Map<CiRun, string>): CiRun | null {
+type Candidate = { run: CiRun; jobId: string; diagnostic: string; annotationId: string };
+
+function checkRunOf(fields: Record<string, unknown>, candidates: Candidate[]): CiRun | null {
 	const name = text(fields.name);
 	if (name === "") return null;
 	const app = text(record(fields.app).slug) || "unknown";
@@ -157,10 +154,11 @@ function checkRunOf(fields: Record<string, unknown>, candidates: Map<CiRun, stri
 	const output = record(fields.output);
 	const summary = plain([text(output.title), text(output.summary)].filter((part) => part !== "").join(": "));
 	const run: CiRun = { name, app, state, conclusion: status === "completed" ? conclusion : status, url: text(fields.html_url) || text(fields.details_url), summary: short(summary, 500), jobId: app === "github-actions" ? decimalId(fields.id) : null };
-	const noDuration = fields.started_at === null || (typeof fields.started_at === "string" && fields.started_at === fields.completed_at);
-	if (app === "github-actions" && state === "failed" && conclusion === "failure" && noDuration) {
-		const explained = markNotRun(run, text(output.title)) || markNotRun(run, text(output.summary));
-		if (!explained && output.annotations_count === 1) candidates.set(run, text(fields.node_id));
+	if (run.jobId !== null && state === "failed" && conclusion === "failure") {
+		const diagnostic = [text(output.title), text(output.summary)].find(notStarted) ?? "";
+		if (diagnostic || output.annotations_count === 1) {
+			candidates.push({ run, jobId: run.jobId, diagnostic, annotationId: diagnostic ? "" : text(fields.node_id) });
+		}
 	}
 	return run;
 }
@@ -260,24 +258,40 @@ export interface CiTarget {
 
 /** Resolve ambiguous failures before collapsing names or choosing any logs to download. */
 async function readRuns(app: GithubApp, token: string, target: CiTarget, head: string, checks: unknown[], statuses: unknown[], truncated: boolean): Promise<CiReading> {
-	const candidates = new Map<CiRun, string>();
+	const candidates: Candidate[] = [];
+	let remainingJobReads = JOB_READS_PER_READING;
 	const fromHead = checks.map(record).filter((fields) => !fields.head_sha || fields.head_sha === head);
 	let runs = [...fromHead.map((fields) => checkRunOf(fields, candidates)), ...statuses.map(statusOf)].filter((run): run is CiRun => run !== null);
-	if (candidates.size) {
+	if (candidates.length) {
 		let messages = new Map<string, string>();
 		let unread: CiReading = { kind: "failed", said: "GitHub did not return the check annotations" };
 		try {
-			const ids = [...new Set(candidates.values())].filter(Boolean);
+			const ids = [...new Set(candidates.map(({ annotationId }) => annotationId).filter(Boolean))];
 			if (ids.length) messages = await app.checkAnnotations(token, ids);
 		} catch (error) {
 			if (!(error instanceof GithubError)) throw error;
 			unread = refusal(error);
 		}
 		const missing = new Set<CiRun>();
-		for (const [run, id] of candidates) {
-			const message = messages.get(id);
-			if (message) markNotRun(run, message);
-			else missing.add(run);
+		for (const { run, jobId, diagnostic, annotationId } of candidates) {
+			const message = diagnostic || messages.get(annotationId);
+			if (message && !notStarted(message)) continue;
+			// Past the budget a candidate is unread, not failed: it may be one more job that never started.
+			if (remainingJobReads === 0) { missing.add(run); continue; }
+			remainingJobReads--;
+			// Workflows can write all three forms of the diagnostic. Only GitHub's job record can corroborate it.
+			try {
+				if (!(await app.jobNeverStarted(token, target.owner, target.name, jobId))) continue;
+			} catch (error) {
+				if (!(error instanceof GithubError)) throw error;
+				continue;
+			}
+			if (message) {
+				run.state = "not_run";
+				run.summary = short(redact(plain(message.trim())), 500);
+			} else {
+				missing.add(run);
+			}
 		}
 		// An unread annotation cannot establish a code failure. An independent, confirmed failure still stands.
 		if (missing.size) {
