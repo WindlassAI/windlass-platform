@@ -838,7 +838,7 @@ docker run -d --name windlass-runner --restart unless-stopped \
 and paired by the code it prints, as above. Give it a sandbox image pinned by id, so that a rebuild of
 `windlass-platform-sandbox:latest` does not change what an existing runner runs. `docker-windlass-sandbox` is offered on a machine only where the
 runner's probe found that bubblewrap starts in a container there, which is the machine's kernel's to allow;
-elsewhere only `docker-hardened` is. And work items do not run on machines ("Work items").
+elsewhere only `docker-hardened` is. Work items can use either available profile ("Work items").
 
 ## The agent's memory outlives its sandbox
 
@@ -2279,6 +2279,14 @@ either way, since `WLP_FACTORY_RUNNING_TURNS` is also the ceiling on a person's 
 with its steps while the switch is off, and turning it off and on again loses nothing. While it is off,
 nobody can file, read or act on an item.
 
+An item runs on a hosted sandbox by default. With `WLP_MACHINES=1`, it can run on a machine paired
+to the same account. Send `"place": {"kind": "machine", "machineId": "…"}` with the item. Its session
+uses the requested `profile` if the machine offers it, otherwise the first available profile in its
+last report. The runner must have reported an available profile at least once. When a turn is due
+and the machine is offline or does not answer, the item waits without spending its budget and resumes
+when the runner answers. Removing the machine stops outstanding work and asks the person to give up
+or hand over the commit the run already pushed.
+
 - **The sequence is fixed** (`server/src/factory/blueprint.ts`). Which step comes next is decided from what
   the platform observed, never from what the agent says. The agent implements the task in one turn. The
   turn's own verification, the user's checks for the repository ("A repository's checks"), decides what
@@ -2306,7 +2314,9 @@ nobody can file, read or act on an item.
   app never approves, merges or dismisses a review. The person merges at GitHub, or sends the work back
   from the item's page with a note, which starts a new run.
 - **Turns are unattended.** An item's turn has nobody to ask: a tool call that would ask is refused at once,
-  and the model is told so. A turn takes at most 60 steps. The agent is not given `publish`, since the
+  and the model is told so. On a machine using `docker-hardened`, Windlass runs shell commands unasked
+  inside the runner's container. There is no per-command sandbox. Those commands can reach the machine's
+  local network and read the session's access token. A turn takes at most 60 steps. The agent is not given `publish`, since the
   platform opens an item's pull request itself; it is given `report`, to file what it did, in a title and a
   description that the platform puts on the pull request, and what it is unsure of, and `push` and
   `fetch_base` as a person's agent is ("The agent's own tools"): it may push the item's branch during its
@@ -2340,9 +2350,11 @@ nobody can file, read or act on an item.
 - **The same ceiling as the person's own agents.** `WLP_FACTORY_RUNNING_TURNS` counts the person's own
   turns and the items' together, and is the ceiling on the person's own running agents ("Usage and
   limits"). The items' share, `WLP_FACTORY_TURNS`, is held at least one below it (unless the ceiling is
-  1), so a person's own prompt never waits behind the factory.
+  1), so a person's own prompt never waits behind the factory. A machine item's turn uses this share
+  and counts toward the person's running-turn ceiling. Hosted running, kept-sandbox and time caps apply
+  only to hosted items. The machine enforces its runner's own caps.
 - **The cost of an item** is its tokens, turns, working time and hosted sandbox time, against its budget, on
-  the item's page and the usage page. Working time leaves out what it waited for. A budget used up is a
+  the item's page and the usage page. A machine item has zero hosted seconds and has only the first three limits. Working time leaves out what it waited for. A budget used up is a
   question, and "Raise the limit and go on" takes the person's new figures for that item.
 
 The limits are the deployment's, the same for every user, set by its owner; a user cannot raise them. A
@@ -2384,8 +2396,7 @@ routes answer 404, `not_found` ("There is no such route."), whatever the token.
 **CI needs the GitHub App's three read permissions** ("The GitHub App"). Without them, or before an
 installation has accepted them, an item waits for no CI: it is handed over saying that CI was not read.
 
-What is not in this slice. Items run on hosted sandboxes only: one filed for a machine is refused
-(`bad_input`). An item's turn runs only in a sandbox whose Windlass takes host tools ("The agent's own
+An item's turn runs only in a sandbox whose Windlass takes host tools ("The agent's own
 tools"). There is no planning step: an item starts by implementing. Items come from the web app
 and the API, from their own user, and nothing is taken in from GitHub's issues.
 
@@ -2684,7 +2695,7 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   not name, and they have not been run on a large repository.
 - **Work items take only their person's words.** Items come from the web app and the API, from their own
   user, and the agent is given the text as its prompt. There is no intake from GitHub's issues and no
-  planning step, and an item runs on hosted sandboxes only.
+  planning step.
 - **An item's verdict is as good as its repository's checks and CI.** The acceptance criteria are listed
   for the person and checked by nobody, and a repository with no checks of its user's and no CI is
   handed over `unverified`.

@@ -3,18 +3,18 @@ import type { createClient } from "rivetkit/client";
 import type { RawAccess } from "rivetkit/db";
 import { requireServiceFor, requireUser, serviceParams } from "../auth.js";
 import { config } from "../config.js";
-import { MAX_MACHINES, type MachineClaim, type MachineSummary, type SessionSummary } from "../contract.js";
+import { MAX_MACHINES, type MachineClaim, type MachineSummary, type SandboxPlace, type SessionSummary } from "../contract.js";
 import type { Registry } from "../registry.js";
 import { machineProfiles } from "../machines/profiles.js";
 import { codeDigest } from "../runner-keys.js";
-import { MIN_RUNNER_VERSION, PAIRING_TTL_MS, versionAtLeast } from "../runner/control.js";
+import { MACHINE_ID, MIN_RUNNER_VERSION, PAIRING_TTL_MS, versionAtLeast } from "../runner/control.js";
 import { createGrant, isActorGone } from "./internal.js";
 import type { MachineUpdate } from "./machine.js";
 import { asPairingError, pairingGone } from "./machine-pairing.js";
 
 interface Ctx {
 	db: RawAccess; key: string[]; client(): unknown; conn?: { params: unknown } | null;
-	vars: { sessions: Map<string, SessionSummary>; github: { user: { login: string } } | null };
+	vars: { machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; github: { user: { login: string } } | null };
 	broadcast(name: string, ...args: unknown[]): void;
 }
 const actors = (c: Ctx) => c.client() as ReturnType<typeof createClient<Registry>>;
@@ -23,6 +23,13 @@ const missing = () => new UserError("That machine is not in your account.", { co
 const full = () => new UserError(`An account can connect up to ${MAX_MACHINES} machines.`, { code: "too_many_machines" });
 function enabled() {
 	if (!config.machines) throw new UserError("Machines are not available on this platform.", { code: "machines_off" });
+}
+
+export function launchPlace(raw: unknown): SandboxPlace {
+	const place = raw as Partial<{ kind: string; machineId: unknown }> | null | undefined;
+	if (place === undefined || place?.kind === "hosted") return { kind: "hosted" };
+	if (place?.kind === "machine" && typeof place.machineId === "string" && MACHINE_ID.test(place.machineId)) return { kind: "machine", machineId: place.machineId };
+	throw new UserError("Choose where the sandbox runs.", { code: "bad_input" });
 }
 
 export async function machineTables(db: RawAccess) {
@@ -39,7 +46,7 @@ async function pairing(c: Ctx, input: { code: string }) {
 	return actors(c).machinePairing.get([id], { params: serviceParams() });
 }
 
-async function list(c: Ctx): Promise<MachineSummary[]> {
+export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "sessions"> }): Promise<MachineSummary[]> {
 	const rows = await c.db.execute<{ id: string; name: string; os: string; arch: string; facts: string; send: number }>("SELECT id, name, os, arch, facts, send FROM machines WHERE expires IS NULL ORDER BY rowid");
 	return rows.map(row => {
 		const { report, ...facts }: MachineUpdate = JSON.parse(row.facts);
@@ -55,7 +62,8 @@ async function list(c: Ctx): Promise<MachineSummary[]> {
 	});
 }
 async function changed(c: Ctx) {
-	const machines = await list(c);
+	const machines = await listMachines(c);
+	c.vars.machines = new Map(machines.map(m => [m.machineId, m]));
 	c.broadcast("machines", machines);
 	return machines;
 }
@@ -99,7 +107,7 @@ export async function logoutMachines(c: Ctx) {
 export const machineActions = {
 	async machines(c: Ctx): Promise<MachineSummary[]> {
 		requireUser(c); enabled();
-		return list(c);
+		return listMachines(c);
 	},
 	async claimMachine(c: Ctx, input: { code: string }): Promise<MachineClaim> {
 		const { uid } = requireUser(c); enabled();
@@ -132,7 +140,7 @@ export const machineActions = {
 				throw pairingGone();
 			}
 		}
-		const summary = (await list(c)).find(row => row.machineId === id);
+		const summary = (await listMachines(c)).find(row => row.machineId === id);
 		if (!summary) throw pairingGone();
 		return summary;
 	},
@@ -142,7 +150,7 @@ export const machineActions = {
 		if (typeof input.machineId !== "string" || await machineSecrets(c.db, input.machineId) === null) throw missing();
 		try { await machine(c, input.machineId).internalRevoke(input.removeSandboxes); }
 		catch (error) { if (isActorGone(error)) throw missing(); throw error; }
-		return list(c);
+		return listMachines(c);
 	},
 	async setMachineSecrets(c: Ctx, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> {
 		requireUser(c); enabled();

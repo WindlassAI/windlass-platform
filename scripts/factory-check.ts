@@ -421,7 +421,7 @@ drive("cancelling a running turn withdraws it", newItem(), [
 
 print("\n== limits");
 
-const machine = (online: boolean, running: number) => ({ kind: "machine" as const, name: "nas", online, since: Date.UTC(2026, 10, 19, 23, 10), running, max: 3 });
+const machine = (online: boolean, running: number) => ({ kind: "machine" as const, name: "nas", online, attachRetryAt: null, keptFull: false, running, max: 3 });
 const admissions: Array<[string, Parameters<typeof admit>[0], WaitReason | null, RegExp | null, number | null]> = [
 	["the review cap holds new work back", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: true, inReview: 6, place: hosted(3600), attempt: 0 }, "review_cap", /fewer than 6 of your items are in review \(6 now\)/, T0 + 30_000],
 	["but never work in progress", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 6, place: hosted(3600), attempt: 0 }, null, null, null],
@@ -431,7 +431,7 @@ const admissions: Array<[string, Parameters<typeof admit>[0], WaitReason | null,
 	["the kept sandboxes are all taken, for a session that needs one", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: { ...hosted(3600), usage: { ...usage(3600), sandboxes: { kept: 20, limit: 20 } }, needsSandbox: true }, attempt: 0 }, "capacity", /20 sandboxes you may keep/, T0 + 30_000],
 	["the user's hosted sandboxes are all running", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: { ...hosted(3600), running: 3 }, attempt: 0 }, "capacity", /one of your 3 hosted sandboxes: 3 running/, T0 + 30_000],
 	["the deployment is full: tried again, spaced up to 5 min", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: { ...hosted(3600), deploymentFull: 10 }, attempt: 6 }, "capacity", /this deployment runs 10 at once and all are in use/, T0 + 5 * MINUTE],
-	["the machine is offline", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: machine(false, 0), attempt: 0 }, "machine", /‘nas’ is offline since 23:10 UTC/, T0 + 30_000],
+	["the machine is offline", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: machine(false, 0), attempt: 0 }, "machine", /^Waiting for your machine "nas" to come back online\.$/, T0 + 30_000],
 	["the machine runs all it can", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: machine(true, 3), attempt: 0 }, "machine", /Waiting for ‘nas’: 3 of 3 sandboxes running there/, T0 + 30_000],
 	["a machine with room starts", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: true, inReview: 0, place: machine(true, 2), attempt: 0 }, null, null, null],
 ];
@@ -444,6 +444,25 @@ expect("retries are spaced 30 s, 60 s, … up to 5 min", [0, 1, 2, 3, 4].map((at
 const spentAll = { tokens: 4_000_000, turns: 3, activeSeconds: 600, hostedSeconds: 9000 };
 expect("a budget: tokens used up, said with the numbers", budgetStop(FACTORY_DEFAULTS.item, spentAll, { kind: "hosted" })?.sentence === "This item has used 4M of its 4M tokens.");
 expect("hosted sandbox seconds are no limit on a machine", budgetStop(FACTORY_DEFAULTS.item, { ...spentAll, tokens: 0 }, { kind: "machine", machineId: "m1" }) === null && budgetStop(FACTORY_DEFAULTS.item, { ...spentAll, tokens: 0 }, { kind: "hosted" })?.cause === "hostedSeconds");
+
+const machineItem = { ...newItem(), place: { kind: "machine" as const, machineId: "m1" } };
+const offlineAdmission = admit({ at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: true, inReview: 0, place: machine(false, 0), attempt: 0 });
+if (offlineAdmission.ok) throw new Error("an offline machine was granted");
+drive("a machine wait spends nothing, even when repeated hours later", machineItem, [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: k => ({ kind: "turn_waiting", key: k.key, wait: offlineAdmission.wait }), state: "waiting", wait: "machine", effects: [] },
+	{ fact: started(), after: fourHours, state: "working", effects: ["check_turn"], also: o => holds(Object.values(o.item.spent).every(n => n === 0), "no budget charged before start") },
+	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
+	{ fact: published(H(1)), after: 0, state: "waiting", wait: "ci", effects: ["poll_ci"], also: o => holds(o.item.spent.turns === 1 && o.item.spent.activeSeconds === 60 && o.item.spent.tokens === 100_000 && o.item.spent.hostedSeconds === 0, "only the running minute and its turn and tokens count") },
+]);
+for (const field of ["tokens", "turns", "activeSeconds"] as const) {
+	expect(`on a machine the ${field} limit still applies`, budgetStop(machineItem.budget, { ...machineItem.spent, [field]: machineItem.budget[field] }, machineItem.place)?.cause === field);
+}
+expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { kind: "spent", at: T0, hostedSeconds: 90 }).item === machineItem);
+drive("removal while a machine item is still a draft", machineItem, [
+	{ fact: () => ({ kind: "machine_removed" }), state: "waiting", wait: "person", effects: ["ask"] },
+	{ fact: answer("give_up"), state: "failed", effects: [] },
+]);
 
 // ---------------------------------------------------------------------------------------------
 // The verdict

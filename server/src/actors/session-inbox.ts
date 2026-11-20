@@ -75,8 +75,16 @@ export interface InboxRow extends Delivery {
 	slot: string | null;
 }
 
+/** An unanswered runner attach releases the slot and returns its delivery to the queue in the same transaction. */
+export interface TurnRelease {
+	sessionId: string;
+	slot: string;
+	key: string;
+	machineWait?: { at: number; startsRun: boolean };
+}
+
 /** What the outbox sends: a fact to the item, or a slot given back to the user's turn queue. */
-export type OutboxMessage = { to: "item"; itemId: string; fact: Fact } | { to: "user"; done: { slot: string; key: string } };
+export type OutboxMessage = { to: "item"; itemId: string; fact: Fact } | { to: "user"; done: Omit<TurnRelease, "sessionId"> };
 
 /** What a slot request hands the user's turn queue (user-items.ts `internalRequestTurn`). */
 export interface TurnRequest {
@@ -160,6 +168,17 @@ export function requestTurn(c: InboxCtx, uid: string, row: InboxRow, deploymentF
 export async function requeue(tx: RawAccess, key: string, slot: string): Promise<void> {
 	await tx.execute("UPDATE inbox SET state = 'waiting', turn = NULL, slot = NULL WHERE key = ? AND state = 'started'", key);
 	await queueMessage(tx, { to: "user", done: { slot, key } });
+}
+
+/** The session could not reach the runner before work began. Retrying or withdrawing the delivery and
+ * returning its slot are one durable operation, including when removal raced the runner's attach. */
+export async function machineUnavailable(tx: RawAccess, row: InboxRow, slot: string, reason: "offline" | "removed"): Promise<void> {
+	const state = reason === "removed" ? "withdrawn" : "waiting";
+	const changed = await tx.execute("UPDATE inbox SET state = ?, turn = NULL, slot = NULL WHERE key = ? AND (state = 'waiting' OR (state = 'started' AND slot = ?)) RETURNING key", state, row.key, slot);
+	const at = Date.now();
+	if (reason === "removed" && changed.length) await queueMessage(tx, { to: "item", itemId: row.itemId, fact: { kind: "machine_removed", at } });
+	const machineWait = reason === "offline" && changed.length ? { startsRun: row.startsRun, at } : undefined;
+	await queueMessage(tx, { to: "user", done: { slot, key: row.key, machineWait } });
 }
 
 /**

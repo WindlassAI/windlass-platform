@@ -19,8 +19,6 @@
  * a turn of their own. Requests are admitted oldest first: each item has at most one turn waiting,
  * so oldest first is round-robin over items. A request that waits is tried again when a slot is given
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
- *
- * Items run only on hosted sandboxes in this slice: a machine place is refused when the item is filed.
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -40,6 +38,8 @@ import {
 	type ItemAction,
 	type ItemSummary,
 	type ItemView,
+	type MachineSummary,
+	type SandboxPlace,
 	MAX_ACCEPTANCE_CRITERIA,
 	MAX_ITEM_BODY_CHARS,
 	MAX_NOTE_CHARS,
@@ -51,13 +51,14 @@ import {
 	type Wait,
 } from "../contract.js";
 import { createItem } from "../factory/blueprint.js";
-import { admit } from "../factory/budget.js";
+import { admit, retryAt } from "../factory/budget.js";
 import { getLayer } from "../layer.js";
 import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { type UsageBook, dayOf, hostedLimitsApply } from "../usage.js";
 import { createItemActor, isActorGone, itemActor, sessionActor } from "./internal.js";
-import type { TurnAnswer, TurnRequest } from "./session-inbox.js";
+import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
+import { launchPlace, launchMachineProfiles } from "./user-machines.js";
 import type { ItemMeta } from "./work-item.js";
 
 export const ITEM_TABLES = [
@@ -84,8 +85,10 @@ interface Request {
 	startsRun: boolean;
 	at: number;
 	attempt: number;
-	/** The deployment's cap the sandbox layer refused at, and until when that is believed. */
-	full: { limit: number; until: number } | null;
+	/** The hosted deployment's cap, when that was the refusal. */
+	full: number | null;
+	/** Retry time after a deployment refusal or an unanswered machine attach. */
+	deferUntil: number | null;
 	wait: Wait | null;
 }
 
@@ -131,7 +134,7 @@ export async function loadItems(db: RawAccess): Promise<ItemsState> {
 	const requests = new Map<string, Request>();
 	type RequestRow = { key: string; session: string; item: string; title: string; starts_run: number; at: number; attempt: number; full: number | null; full_until: number | null; wait: string | null };
 	for (const row of await db.execute<RequestRow>("SELECT key, session, item, title, starts_run, at, attempt, full, full_until, wait FROM turn_request")) {
-		requests.set(row.key, { key: row.key, session: row.session, item: row.item, title: row.title, startsRun: row.starts_run === 1, at: row.at, attempt: row.attempt, full: row.full === null ? null : { limit: row.full, until: row.full_until ?? 0 }, wait: row.wait ? (JSON.parse(row.wait) as Wait) : null });
+		requests.set(row.key, { key: row.key, session: row.session, item: row.item, title: row.title, startsRun: row.starts_run === 1, at: row.at, attempt: row.attempt, full: row.full, deferUntil: row.full_until, wait: row.wait ? (JSON.parse(row.wait) as Wait) : null });
 	}
 	const slots = new Map<string, Slot>();
 	type SlotRow = { id: string; key: string; session: string; item: string; title: string; at: number; expires_at: number };
@@ -153,7 +156,7 @@ export interface ItemFacts {
 
 /** What the factory's functions need of the user actor's context. */
 export interface ItemsCtx {
-	vars: { items: ItemsState; sessions: Map<string, SessionSummary>; usage: UsageBook; profile: UserProfile | null };
+	vars: { items: ItemsState; machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; usage: UsageBook; profile: UserProfile | null };
 	db: RawAccess;
 	key: string[];
 	log: { warn(entry: unknown): void; error(entry: unknown): void };
@@ -202,7 +205,7 @@ function knownItem(c: ItemsCtx, id: unknown): ItemSummary {
 const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
 /** The input of a new item, checked. */
-function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { repository: { id: number; branch?: string }; profile: SandboxProfileId | null; model: string | null; start: boolean } {
+function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: number; branch?: string }; profile: SandboxProfileId | null; model: string | null; start: boolean } {
 	const bad = (message: string) => new UserError(message, { code: "bad_input" });
 	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput, unknown>>;
 	const title = typeof input.title === "string" ? input.title.replace(/\s+/g, " ").trim() : "";
@@ -213,13 +216,13 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 	if (!Array.isArray(acceptance) || acceptance.length > MAX_ACCEPTANCE_CRITERIA || !acceptance.every((line) => typeof line === "string" && line.trim() !== "" && line.length <= MAX_NOTE_CHARS)) {
 		throw bad(`The acceptance criteria are at most ${MAX_ACCEPTANCE_CRITERIA} lines of text, each at most ${MAX_NOTE_CHARS} characters.`);
 	}
-	const place = input.place as { kind?: unknown } | undefined | null;
-	if (place !== undefined && place !== null && place.kind !== "hosted") throw bad("Work items run on this platform's sandboxes for now: an item cannot be given to one of your machines yet.");
+	const place = launchPlace(input.place ?? undefined);
 	const repository = input.repository as { id?: unknown; branch?: unknown } | undefined;
 	if (typeof repository !== "object" || repository === null || typeof repository.id !== "number") throw bad("Choose a repository of your GitHub connection for the item.");
 	if (input.start !== undefined && input.start !== null && typeof input.start !== "boolean") throw bad("Say yes or no to starting the item at once.");
 	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 	return {
+		place,
 		title,
 		body,
 		acceptance: (acceptance as string[]).map((line) => line.trim()),
@@ -231,7 +234,14 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 }
 
 /** The sandbox an item's session is made in when the input names none: the repository's default, the account's, then the deployment's first that can be chosen. */
-async function itemProfile(c: ItemsCtx, repositoryId: number, asked: SandboxProfileId | null): Promise<SandboxProfileId> {
+async function itemProfile(c: ItemsCtx, repositoryId: number, asked: SandboxProfileId | null, place: SandboxPlace): Promise<SandboxProfileId> {
+	if (place.kind === "machine") {
+		const machine = await launchMachineProfiles(c.db, place.machineId);
+		const available = machine.profiles.filter(profile => profile.available);
+		const chosen = available.find(profile => profile.id === asked) ?? available[0];
+		if (!chosen) throw new UserError(`Your machine "${machine.name}" offers no available sandbox profile for this item.`, { code: "bad_profile" });
+		return chosen.id;
+	}
 	if (asked !== null) return asked;
 	const saved = (await readDefaults(c.db, `github:${repositoryId}`)).profile ?? (await readAccountDefaults(c.db)).profile;
 	if (saved !== null) return saved;
@@ -262,14 +272,14 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	}
 	try {
 		const existing = c.vars.sessions.get(sessionId);
-		const sandbox = existing ? null : await itemProfile(c, input.repository.id, input.profile);
+		const sandbox = existing ? null : await itemProfile(c, input.repository.id, input.profile, input.place);
 		begun = true;
-		const session = existing ?? (await makeSession(c, profile, { title: input.title, profile: sandbox as SandboxProfileId, ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId }));
+		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId }));
 		const repository = session.repository;
 		if (!repository) throw new Error("the item's session has no repository");
 		const now = Date.now();
 		const meta: ItemMeta = { uid, sessionId, repository, source, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
-		const item = createItem({ id: itemId, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: { kind: "hosted" }, budget: config.factory.item });
+		const item = createItem({ id: itemId, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: config.factory.item });
 		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
 	} catch (error) {
@@ -286,6 +296,10 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	await c.db.execute("INSERT INTO items (id, created_at, summary, key, sent) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET summary = excluded.summary", summary.id, summary.createdAt, JSON.stringify(summary), submission?.key ?? null, submission?.sent ?? null);
 	c.broadcast("items", itemList(c.vars.items));
 	console.log(`[wlp] item.created uid=${uid} item=${summary.id} session=${sessionId} source=${source}`);
+	if (summary.place.kind === "machine" && !c.vars.machines.has(summary.place.machineId)) {
+		await notifyRemovedMachines(c, summary.place.machineId);
+		return itemView(c, summary.id);
+	}
 	return summary;
 }
 
@@ -318,8 +332,8 @@ async function itemView(c: ItemsCtx, id: string): Promise<ItemView> {
 // The turn queue
 // ---------------------------------------------------------------------------------------------
 
-async function storeRequest(c: ItemsCtx, request: Request): Promise<void> {
-	await c.db.execute(
+async function storeRequest(db: RawAccess, request: Request): Promise<void> {
+	await db.execute(
 		"INSERT OR REPLACE INTO turn_request (key, session, item, title, starts_run, at, attempt, full, full_until, wait) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		request.key,
 		request.session,
@@ -328,8 +342,8 @@ async function storeRequest(c: ItemsCtx, request: Request): Promise<void> {
 		request.startsRun ? 1 : 0,
 		request.at,
 		request.attempt,
-		request.full?.limit ?? null,
-		request.full?.until ?? null,
+		request.full,
+		request.deferUntil,
 		request.wait === null ? null : JSON.stringify(request.wait),
 	);
 }
@@ -356,7 +370,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		released.push(slot.id);
 		// Asked for again: a turn whose slot outlived every turn's limit never started (its grant was lost with a server), and a
 		// session that ended it answers a second grant by giving it back.
-		if (!state.requests.has(slot.key)) state.requests.set(slot.key, { key: slot.key, session: slot.session, item: slot.item, title: slot.title, startsRun: false, at: slot.at, attempt: 0, full: null, wait: null });
+		if (!state.requests.has(slot.key)) state.requests.set(slot.key, { key: slot.key, session: slot.session, item: slot.item, title: slot.title, startsRun: false, at: slot.at, attempt: 0, full: null, deferUntil: null, wait: null });
 		console.warn(`[wlp] factory.slot_expired uid=${c.key[0]} slot=${slot.id} key=${slot.key}: held past ${Math.round(SLOT_LEASE_MS / 60_000)} min without its turn's end being reported; given back and asked for again`);
 	}
 	const limits = config.factory;
@@ -367,10 +381,13 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 	const usage = c.vars.usage.numbers(now);
 	const hostedRunning = new Set(sessions.filter((session) => session.place.kind === "hosted" && session.sandbox === "running").map((session) => session.id));
 	// A session given a slot runs a sandbox from then on, whether or not its summary has said so yet: counted across admissions, not only within one.
-	for (const slot of state.slots.values()) hostedRunning.add(slot.session);
+	for (const slot of state.slots.values()) {
+		if (c.vars.sessions.get(slot.session)?.place.kind === "hosted") hostedRunning.add(slot.session);
+	}
 	const granted: Slot[] = [];
 	const waits: Request[] = [];
 	const dropped: string[] = [];
+	const removed: Request[] = [];
 	for (const request of [...state.requests.values()].sort((a, b) => a.at - b.at || (a.key < b.key ? -1 : 1))) {
 		// The item may not be in the index yet: its first delivery can come before its creation has answered here.
 		const session = c.vars.sessions.get(request.session);
@@ -380,6 +397,12 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			continue;
 		}
 		const slots = [...state.slots.values()];
+		const machine = session.place.kind === "machine" ? c.vars.machines.get(session.place.machineId) : null;
+		if (session.place.kind === "machine" && !machine) {
+			// Keep the request until the item's durable withdrawal. Its creation can precede the index entry.
+			removed.push(request);
+			continue;
+		}
 		const answer = admit({
 			at: now,
 			limits,
@@ -387,7 +410,13 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			startsRun: request.startsRun,
 			inReview,
 			// The session's own sandbox, running already, is not one more for its turn.
-			place: { kind: "hosted", usage, running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0), needsSandbox: session.sandbox === "none", deploymentFull: request.full !== null && request.full.until > now ? request.full.limit : null },
+			place: machine ? {
+				kind: "machine", name: machine.name, online: machine.status === "online",
+				attachRetryAt: machine.since <= request.at ? request.deferUntil : null,
+				running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
+				max: machine.maxRunning ?? Infinity,
+				keptFull: machine.maxSandboxes !== undefined && machine.sandboxes.length >= machine.maxSandboxes && !machine.sandboxes.some(box => box.sessionId === session.id),
+			} : { kind: "hosted", usage, running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0), needsSandbox: session.sandbox === "none", deploymentFull: (request.deferUntil ?? 0) > now ? request.full : null },
 			attempt: request.attempt,
 		});
 		if (answer.ok) {
@@ -396,7 +425,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			state.requests.delete(request.key);
 			state.slots.set(slot.id, slot);
 			granted.push(slot);
-			hostedRunning.add(session.id);
+			if (hostedLimitsApply(session.place)) hostedRunning.add(session.id);
 			continue;
 		}
 		const before = request.wait;
@@ -420,7 +449,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		}, { name: "queue.grant" });
 		console.log(`[wlp] factory.slot_granted uid=${c.key[0]} slot=${slot.id} key=${slot.key} factory=${state.slots.size}`);
 	}
-	for (const request of waits) await storeRequest(c, request);
+	for (const request of waits) await storeRequest(c.db, request);
 
 	const uid = c.key[0] as string;
 	const mine = granted.find((slot) => slot.key === answering) ?? null;
@@ -440,6 +469,11 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			await c.db.execute("DELETE FROM turn_slot WHERE id = ?", slot.id);
 			await c.db.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
 		}
+	}
+	for (const request of removed) {
+		await itemActor(c, uid, request.item).internalFact({ kind: "machine_removed", at: now });
+		state.requests.delete(request.key);
+		await c.db.execute("DELETE FROM turn_request WHERE key = ?", request.key);
 	}
 	for (const request of waits) {
 		if (request.wait === null) continue;
@@ -464,6 +498,15 @@ async function armQueue(c: ItemsCtx): Promise<void> {
 	state.queueAt = { id, at };
 	await c.db.execute("INSERT OR REPLACE INTO turn_queue (id, schedule, at) VALUES (1, ?, ?)", id, at);
 	if (before !== null) await c.schedule.cancel(before.id).catch(() => false);
+}
+
+/** Removal also reaches drafts and work waiting on GitHub. Repeat on wake in case a notification was cut off. */
+export async function notifyRemovedMachines(c: ItemsCtx, machineId?: string): Promise<void> {
+	for (const item of c.vars.items.items.values()) {
+		if (item.place.kind !== "machine" || (machineId && item.place.machineId !== machineId) || c.vars.machines.has(item.place.machineId)) continue;
+		if (["done", "failed", "cancelled"].includes(item.state) || item.question?.kind === "machine_removed") continue;
+		await itemActor(c, c.key[0]!, item.id).internalFact({ kind: "machine_removed", at: Date.now() });
+	}
 }
 
 /** Something that frees capacity happened (a person's session went idle), or the actor woke: the waiting requests are tried, and the schedule armed again. Never throws. */
@@ -631,32 +674,53 @@ export const itemActions = {
 		if (!session?.item || session.item.id !== input.itemId) return { granted: false };
 		const now = Date.now();
 		const known = state.requests.get(key);
-		const full = typeof input.deploymentFull === "number" && input.deploymentFull > 0 ? { limit: input.deploymentFull, until: now + FULL_FOR_MS } : (known?.full ?? null);
-		const request: Request = { key, session: session.id, item: input.itemId, title: String(input.title ?? ""), startsRun: input.startsRun === true, at: known?.at ?? now, attempt: known?.attempt ?? 0, full, wait: known?.wait ?? null };
+		const full = typeof input.deploymentFull === "number" && input.deploymentFull > 0 ? input.deploymentFull : (known?.full ?? null);
+		const request: Request = { key, session: session.id, item: input.itemId, title: String(input.title ?? ""), startsRun: input.startsRun === true, at: known?.at ?? now, attempt: known?.attempt ?? 0, full, deferUntil: input.deploymentFull ? now + FULL_FOR_MS : known?.deferUntil ?? null, wait: known?.wait ?? null };
 		state.requests.set(key, request);
-		await storeRequest(c, request);
+		await storeRequest(c.db, request);
 		const mine = await runQueue(c, key);
 		return mine ? { granted: true, slot: mine.id } : { granted: false };
 	},
 
 	/** The turn a slot was given to has ended, or could not start: the slot is free. Named by its id, so a release that comes twice frees nothing else. */
-	internalTurnDone: async (c: ItemsCtx, input: { sessionId: string; slot: string; key: string }): Promise<void> => {
+	internalTurnDone: async (c: ItemsCtx, input: TurnRelease): Promise<void> => {
 		requireService(c);
 		const slot = c.vars.items.slots.get(String(input?.slot));
 		if (!slot || slot.session !== input.sessionId) return;
-		c.vars.items.slots.delete(slot.id);
-		await c.db.execute("DELETE FROM turn_slot WHERE id = ?", slot.id);
-		await c.db.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
+		const retry = input.machineWait;
+		const request: Request | null = retry ? {
+			key: slot.key, session: slot.session, item: slot.item, title: slot.title, startsRun: retry.startsRun,
+			at: retry.at, attempt: 0, full: null, deferUntil: retryAt(retry.at, 0), wait: null,
+		} : null;
+		// Keep the slot until its durable release commits. An outbox retry after a failed write still finds it.
+		const released = await c.db.transaction(async tx => {
+			const rows = await tx.execute("DELETE FROM turn_slot WHERE id = ? RETURNING id", slot.id);
+			if (!rows.length) return false;
+			await tx.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
+			if (request) await storeRequest(tx, request);
+			return true;
+		}, { name: "queue.release" });
+		if (!released || !c.vars.items.slots.delete(slot.id)) return;
+		if (request) c.vars.items.requests.set(request.key, request);
 		await runQueue(c);
 	},
 
 	/** The item does not want the turn of `key` any more, before it started: its request goes. */
 	internalWithdrawTurn: async (c: ItemsCtx, input: { sessionId: string; key: string }): Promise<void> => {
 		requireService(c);
-		const request = c.vars.items.requests.get(String(input?.key));
-		if (!request || request.session !== input.sessionId) return;
-		c.vars.items.requests.delete(request.key);
-		await c.db.execute("DELETE FROM turn_request WHERE key = ?", request.key);
+		const key = String(input?.key);
+		const slot = [...c.vars.items.slots.values()].find(slot => slot.key === key && slot.session === input.sessionId);
+		// The inbox confirmed this delivery was withdrawn before it started. Its attach can still hold a
+		// slot, or its delayed release can already have put it back in the queue.
+		await c.db.transaction(async tx => {
+			await tx.execute("DELETE FROM turn_request WHERE key = ? AND session = ?", key, input.sessionId);
+			if (slot) {
+				await tx.execute("DELETE FROM turn_slot WHERE id = ?", slot.id);
+				await tx.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
+			}
+		}, { name: "queue.withdraw" });
+		if (c.vars.items.requests.get(key)?.session === input.sessionId) c.vars.items.requests.delete(key);
+		if (slot && c.vars.items.slots.delete(slot.id)) queueChanged(c);
 	},
 
 	// --- called by the actor's own schedule only ------------------------------------------------

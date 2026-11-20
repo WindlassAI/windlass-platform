@@ -75,17 +75,16 @@
  * whichever servers, and each takes its hold and its place here, so no server counts for itself.
  */
 
-import { MACHINE_ID } from "../runner/control.js";
 import type { MachineUpdate } from "./machine.js";
-import { launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
-import { ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
+import { launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
+import { ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemSummary, ItemView } from "../contract.js";
-import type { TurnAnswer, TurnRequest } from "./session-inbox.js";
+import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, authenticate, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
-import { config } from "../config.js";
+import { config, githubConfig } from "../config.js";
 import {
 	type AccountDefaults,
 	type AccountSecrets,
@@ -207,6 +206,7 @@ interface UserVars {
 	listed: { at: number; sandboxes: ListedSandbox[] } | null;
 	/** The user's work items, the turn queue and its slots (user-items.ts), as the tables have them. */
 	items: ItemsState;
+	machines: Map<string, MachineSummary>;
 }
 
 interface SignInCtx {
@@ -900,12 +900,6 @@ export function cleanRepoUrl(raw: unknown): string | null {
 	return url.toString();
 }
 
-function launchPlace(place: SandboxPlace | undefined): SandboxPlace {
-	if (place === undefined || place?.kind === "hosted") return { kind: "hosted" };
-	if (place?.kind === "machine" && typeof place.machineId === "string" && MACHINE_ID.test(place.machineId)) return { kind: "machine", machineId: place.machineId };
-	throw new UserError("Choose where the sandbox runs.", { code: "bad_input" });
-}
-
 /** What `makeSession` needs of an action's context. */
 interface CreateCtx extends UserCtx, ModelsCtx {
 	log: { error(entry: unknown): void };
@@ -1205,7 +1199,7 @@ export const user = actor({
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, items: await loadItems(c.db) };
+		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items: await loadItems(c.db) };
 	},
 
 	events: {
@@ -1236,6 +1230,7 @@ export const user = actor({
 	onWake: async (c) => {
 		// Turn requests that waited while the actor was away are tried, and their schedule set again (user-items.ts).
 		queueChanged(c);
+		await notifyRemovedMachines(c);
 		// A try whose next schedule was set and not stored, because the server stopped in between, is set again.
 		try {
 			const late = await c.db.execute<{ session: string; tries: number }>("SELECT session, tries FROM backup_removal WHERE due_at < ?", Date.now() - BACKUP_REMOVE_LATE_MS);
@@ -1253,7 +1248,11 @@ export const user = actor({
 		setMachineSecrets: (c, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> => machineActions.setMachineSecrets(c, input),
 		internalMachineCreated: (c, id: string): Promise<boolean> => machineActions.internalMachineCreated(c, id),
 		internalMachineApproval: (c, id: string): Promise<{ login: string | null } | null> => machineActions.internalMachineApproval(c, id),
-		internalMachineChanged: (c, id: string, facts: MachineUpdate | null): Promise<void> => machineActions.internalMachineChanged(c, id, facts),
+		internalMachineChanged: async (c, id: string, facts: MachineUpdate | null): Promise<void> => {
+			await machineActions.internalMachineChanged(c, id, facts);
+			if (facts === null) await notifyRemovedMachines(c, id);
+			queueChanged(c);
+		},
 		// --- work items, the turn queue and API tokens (user-items.ts) ---
 		listItems: (c): ItemSummary[] => itemActions.listItems(c),
 		item: (c, id: string): Promise<ItemView> => itemActions.item(c, id),
@@ -1268,7 +1267,7 @@ export const user = actor({
 		internalItemChanged: (c, summary: ItemSummary): Promise<void> => itemActions.internalItemChanged(c, summary),
 		internalItemFacts: (c, sessionId: string): ItemFacts => itemActions.internalItemFacts(c, sessionId),
 		internalRequestTurn: (c, request: TurnRequest): Promise<TurnAnswer> => itemActions.internalRequestTurn(c, request),
-		internalTurnDone: (c, input: { sessionId: string; slot: string; key: string }): Promise<void> => itemActions.internalTurnDone(c, input),
+		internalTurnDone: (c, input: TurnRelease): Promise<void> => itemActions.internalTurnDone(c, input),
 		internalWithdrawTurn: (c, input: { sessionId: string; key: string }): Promise<void> => itemActions.internalWithdrawTurn(c, input),
 		[QUEUE_ACTION]: (c): Promise<void> => itemActions.internalTurnQueue(c),
 		me: async (c): Promise<UserProfile> => {

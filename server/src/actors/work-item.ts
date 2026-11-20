@@ -426,7 +426,7 @@ function lifetimeSeconds(meta: ItemMeta, facts: ItemFacts): number {
 async function factsOf(c: Ctx, meta: ItemMeta): Promise<ItemFacts> {
 	const facts = await userActor(c, meta.uid).internalItemFacts(meta.sessionId);
 	const stored = c.vars.stored;
-	if (stored) {
+	if (stored?.item.place.kind === "hosted") {
 		const seconds = lifetimeSeconds(stored.meta, facts);
 		if (seconds > stored.item.spent.hostedSeconds) await take(c, { kind: "spent", at: Date.now(), hostedSeconds: seconds });
 	}
@@ -445,7 +445,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
 function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "withdraw" || effect.kind === "ask") return true;
 	const run = item.run;
-	if (ENDED.has(item.state) || run === null) return false;
+	if (item.question?.kind === "machine_removed" || ENDED.has(item.state) || run === null) return false;
 	const key = currentKey(item);
 	switch (effect.kind) {
 		case "deliver":
@@ -679,10 +679,10 @@ export const workItem = actor({
 			requireService(c);
 			const stored = c.vars.stored;
 			if (!stored || typeof fact?.kind !== "string" || typeof fact.at !== "number") return;
-			if (fact.kind !== "turn_ended" && fact.kind !== "turn_started" && fact.kind !== "turn_running" && fact.kind !== "turn_waiting") return;
+			if (fact.kind !== "machine_removed" && fact.kind !== "turn_ended" && fact.kind !== "turn_started" && fact.kind !== "turn_running" && fact.kind !== "turn_waiting") return;
 			if (fact.kind === "turn_ended") {
 				// The sandbox time the item's session has used so far is the ledger's, which the user's actor keeps.
-				const hostedSeconds = lifetimeSeconds(stored.meta, await userActor(c, stored.meta.uid).internalItemFacts(stored.meta.sessionId));
+				const hostedSeconds = stored.item.place.kind === "hosted" ? lifetimeSeconds(stored.meta, await userActor(c, stored.meta.uid).internalItemFacts(stored.meta.sessionId)) : 0;
 				await take(c, { ...fact, spend: { tokens: fact.spend?.tokens ?? 0, hostedSeconds } });
 				return;
 			}

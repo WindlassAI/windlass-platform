@@ -82,6 +82,7 @@ export function createItem(input: NewItem): FactoryItem {
 		task: input.task,
 		plan: input.plan ?? "none",
 		place: input.place,
+		machineRemoved: false,
 		budget: input.budget,
 		spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
 		workingSince: null,
@@ -156,18 +157,25 @@ class Change {
 function apply(c: Change, fact: Fact): boolean {
 	const { item } = c;
 	switch (fact.kind) {
+		case "machine_removed":
+			if (item.place.kind !== "machine" || item.machineRemoved) return false;
+			item.machineRemoved = true;
+			if (item.state === "failed") return true;
+			if (item.run?.step.turn) c.effects.push({ kind: "withdraw", key: c.key });
+			askRemoved(c);
+			return true;
 		case "start":
 			if (item.state !== "draft") return false;
 			c.say("Started.");
 			beginRun(c, firstPlan(item.task, item.plan, null));
 			return true;
 		case "retry":
-			if (item.state !== "failed") return false;
+			if (item.state !== "failed" || item.machineRemoved) return false;
 			c.say("Started again.");
 			beginRun(c, firstPlan(item.task, item.plan, null));
 			return true;
 		case "send_back":
-			if (item.state !== "review") return false;
+			if (item.state !== "review" || item.machineRemoved) return false;
 			c.say(`Sent back: ${fact.note}`);
 			beginRun(c, { ...IMPLEMENT, text: `The person sent your work back: ${fact.note}` });
 			return true;
@@ -178,7 +186,7 @@ function apply(c: Change, fact: Fact): boolean {
 			return answer(c, fact);
 		case "spent":
 			// The ledger only grows: an older figure that arrives late says nothing new.
-			if (!(fact.hostedSeconds > item.spent.hostedSeconds)) return false;
+			if (item.place.kind !== "hosted" || !(fact.hostedSeconds > item.spent.hostedSeconds)) return false;
 			item.spent.hostedSeconds = fact.hostedSeconds;
 			return true;
 		default:
@@ -187,11 +195,26 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "machine_removed" }>): boolean {
 	const run = c.item.run;
 	if (run === null) return false;
 	const step = run.step;
 	const key = c.key;
+	// A withdrawal can race a turn's receipt or a push already on its way to GitHub.
+	if (c.item.question?.kind === "machine_removed" || (c.item.machineRemoved && c.item.state === "failed")) {
+		if (fact.key !== key) return false;
+		if (fact.kind === "turn_ended" && step.turn === "started") {
+			step.turn = null;
+			c.item.spent.tokens += fact.spend.tokens;
+			c.item.spent.turns += 1;
+			return true;
+		}
+		if (fact.kind === "published" && step.kind === "publish" && c.item.question?.kind === "machine_removed") {
+			published(c, fact);
+			return true;
+		}
+		return false;
+	}
 	switch (fact.kind) {
 		case "turn_waiting": {
 			if (fact.key !== key || step.turn !== "delivered") return false;
@@ -296,7 +319,7 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	else run.step.attempt += 1;
 	run.step.turn = "delivered";
 	run.step.checks = 0;
-	c.state(item.state === "queued" ? "queued" : "working");
+	c.state(item.state === "queued" || item.place.kind === "machine" ? "queued" : "working");
 	c.effects.push({ kind: "deliver", key: c.key, text: plan.text, agent: plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, fetchBase: plan.fetchBase });
 	// From delivery on, not only once started: nothing else would notice a delivery that waits for a slot nobody will give.
 	checkTurn(c);
@@ -317,7 +340,7 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	step.turn = null;
 	item.spent.tokens += fact.spend.tokens;
 	item.spent.turns += 1;
-	item.spent.hostedSeconds = Math.max(item.spent.hostedSeconds, fact.spend.hostedSeconds);
+	if (item.place.kind === "hosted") item.spent.hostedSeconds = Math.max(item.spent.hostedSeconds, fact.spend.hostedSeconds);
 
 	const result = gateResult(fact.outcome, fact.verified);
 	// Refused by the session before the agent ran (an old Windlass, a conversation it cannot open): no cut-off, and no use trying
@@ -389,6 +412,7 @@ function published(c: Change, fact: Extract<Fact, { kind: "published" }>): void 
 	c.enter("ci");
 	// The gate this commit rests on is kept with it: a later turn's gate is not about it until it is pushed.
 	run.ci = { head: fact.head, since: c.at, last: null, mergeable: null, gate: run.gate, moved: null, handed: null };
+	if (item.machineRemoved) return askRemoved(c);
 	pollCi(c, fact.openItems, null, `Waiting for CI to start on ${shortSha(fact.head)}.`);
 }
 
@@ -638,6 +662,10 @@ function stop(c: Change, cause: StopCause, sentence: string, resume: TurnPlan): 
 	ask(c, budget ? "budget" : "rounds", sentence, [choice("raise"), choice("retry"), ...handOver(c.item), choice("give_up")], cause, resume);
 }
 
+function askRemoved(c: Change): void {
+	ask(c, "machine_removed", "Your machine was removed. This item can no longer work on it.", [...handOver(c.item), choice("give_up")], null, null);
+}
+
 function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text): void {
 	const { item } = c;
 	// The revision this change gives the item: no two questions of an item share it.
@@ -657,6 +685,14 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	const note = fact.note?.trim() || null;
 	item.question = null;
 	c.say(`Answered “${picked.label}”${note === null ? "" : `: ${note}`}.`);
+	if (fact.choice === "give_up") {
+		if (item.run) {
+			item.run.endedAt = c.at;
+			item.run.stopReason = question.cause ?? question.kind;
+		}
+		c.state("failed");
+		return true;
+	}
 	const run = c.run;
 	const resume = question.resume;
 	switch (fact.choice) {
@@ -685,11 +721,6 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			break;
 		case "hand_over":
 			if (run.ci !== null) readForHandoff(c, run.ci);
-			break;
-		case "give_up":
-			run.endedAt = c.at;
-			run.stopReason = question.cause ?? question.kind;
-			c.state("failed");
 			break;
 	}
 	return true;

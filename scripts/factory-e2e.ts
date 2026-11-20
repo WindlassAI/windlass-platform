@@ -28,6 +28,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AuthResult, ItemSummary, ItemView } from "../server/src/contract.js";
 import { createClient, type Registry } from "../server/src/client.js";
+import { StandInRunner } from "./runner-standin.js";
 import { GithubStandin, type StandinRepository, type StandinPull } from "./github-standin.js";
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
@@ -669,7 +670,7 @@ async function memoryChecks(): Promise<void> {
 				return promise;
 			},
 			schedule: { at: async () => "alarm", cancel: async () => true },
-			vars: { items: await loadItems(db as never), sessions, usage: new UsageBook({ dailySeconds: 100_000, holdSeconds: 60, maxKept: 20 }), profile: null },
+			vars: { items: await loadItems(db as never), machines: new Map<string, { name: string; since: number; status: string; sandboxes: unknown[] }>(), sessions, usage: new UsageBook({ dailySeconds: 100_000, holdSeconds: 60, maxKept: 20 }), profile: null },
 			client: () => ({
 				agentSession: { get: ([, id]: string[]) => ({ internalGrant: async () => (grantFails ? Promise.reject(new Error("the reply was lost")) : void grants.push(id as string)) }) },
 				workItem: { get: () => ({ internalFact: async () => undefined }) },
@@ -754,13 +755,13 @@ async function memoryChecks(): Promise<void> {
 							lost = false;
 							throw new Error("the reply was lost");
 						}
-						return { id: made?.id, title: made?.task.title, createdAt: T, revision: 0 };
+						return { id: made?.id, title: made?.task.title, place: made?.place, createdAt: T, revision: 0 };
 					},
 				}),
 			},
 		});
 		const makeSession = async (_c: unknown, _profile: unknown, _input: unknown, _submission: unknown, ids: { sessionId: string }) => {
-			const summary = { id: ids.sessionId, repository: { provider: "github", id: 1, owner: "u", name: "r", branch: "main", private: true, url: "" } };
+			const summary = { id: ids.sessionId, place: { kind: "hosted" }, repository: { provider: "github", id: 1, owner: "u", name: "r", branch: "main", private: true, url: "" } };
 			q.c.vars.sessions.set(ids.sessionId, summary as never);
 			return summary;
 		};
@@ -785,6 +786,43 @@ async function memoryChecks(): Promise<void> {
 			const b = await q.request("b");
 			assert(a.granted && !b.granted, `a granted ${a.granted}, b granted ${b.granted}, with one hosted sandbox allowed`);
 			return "the second waited: the first's slot counts as a running sandbox before its session says so";
+		} finally {
+			q.close();
+		}
+	});
+
+	await check("memory: machine items share the person's turn ceiling even while hosted capacity is full", async () => {
+		const q = await queue({ factoryTurns: 4, runningTurns: 3, hostedRunning: 1 });
+		try {
+			q.c.vars.machines.set("m", { name: "Test machine", since: 0, status: "online", sandboxes: [] });
+			Object.assign(q.c.vars.sessions.get("a")!, { place: { kind: "machine", machineId: "m" } });
+			Object.assign(q.c.vars.sessions.get("own")!, { status: "running", sandbox: "running" });
+			q.c.vars.sessions.set("other", { ...q.c.vars.sessions.get("own")!, id: "other" });
+			const first = await q.request("a");
+			assert(first.granted, "two hosted sandboxes held the machine back");
+			Object.assign(q.c.vars.sessions.get("b")!, { place: { kind: "machine", machineId: "m" } });
+			const second = await q.request("b");
+			const reason = [...q.c.vars.items.requests.values()][0]?.wait?.sentence;
+			assert(!second.granted && reason?.includes("3 running turns; 3 are running"), `unexpected admission: ${reason}`);
+			return reason;
+		} finally {
+			q.close();
+		}
+	});
+
+	await check("memory: cancelling while the runner attaches prevents a late release from queuing another attempt", async () => {
+		const q = await queue({});
+		try {
+			q.c.vars.machines.set("m", { name: "Test machine", since: 0, status: "online", sandboxes: [] });
+			Object.assign(q.c.vars.sessions.get("a")!, { place: { kind: "machine", machineId: "m" } });
+			const grant = await q.request("a");
+			assert(grant.granted, "expected an attaching turn");
+			const delivery = { sessionId: "a", key: "i_a:1:1:1" };
+			await itemActions.internalWithdrawTurn(q.c as never, delivery);
+			await itemActions.internalTurnDone(q.c as never, { ...delivery, slot: grant.slot, machineWait: { at: Date.now(), startsRun: true } });
+			await q.wake();
+			assert(!q.c.vars.items.slots.size && !q.c.vars.items.requests.size, "cancelled delivery survived its withdrawal");
+			return "no request or slot after wake";
 		} finally {
 			q.close();
 		}
@@ -949,6 +987,93 @@ if (only.length > 0 && only.every((name) => name.startsWith("memory"))) {
 	process.exit(failed === 0 ? 0 : 1);
 }
 
+async function machineChecks(): Promise<void> {
+	const server = new Server();
+	const runner = new StandInRunner(API, ENDPOINT);
+	try {
+		const { user } = await world(server, standin, { WLP_MACHINES: "1", WLP_PUBLIC_URL: API, WLP_FACTORY_HOSTED_RUNNING: "1", WLP_FACTORY_ITEM_HOSTED_SECONDS: "1" });
+		await runner.pair(user);
+		const place = { kind: "machine" as const, machineId: runner.id.machineId };
+		const task = { repository: { id: harbor.id }, title: "On my machine", body: "Write a short program.", place };
+		await check("machine: only a paired machine with an available profile can take an item", async () => {
+			await refused(() => user.createItem({ ...task, place: { kind: "machine", machineId: "m_0123456789abcdef" } }), "machine_not_found");
+			await refused(() => user.createItem(task), "machine_not_connected");
+			runner.fake.report.docker = { ok: false, reason: "Docker is stopped." };
+			await runner.connectControl();
+			await waitFor("the Docker report", async () => (await user.machines())[0]?.warnings.some(w => w.kind === "docker"), 10_000);
+			return await refused(() => user.createItem(task), "bad_profile");
+		});
+		runner.fake.report.docker = { ok: true };
+		if (!runner.control) await runner.connectControl();
+		runner.report();
+		await waitFor("available machine profiles", async () => (await user.machines())[0]?.profiles.some(p => p.available), 15_000);
+
+		await check("machine: a machine turn and a hosted turn overlap with one hosted slot, and machine review costs zero hosted seconds", async () => {
+			const token = (await user.createApiToken({ name: "machine", scopes: ["items:create"] })).secret;
+			const filed = await api("/api/items", { method: "POST", body: JSON.stringify({ ...task, profile: "docker-hardened", body: "Write a program (slow).", start: true }), token, key: "machine-slot" });
+			assert(filed.status === 201, JSON.stringify(filed.body));
+			const item = filed.body as unknown as ItemSummary;
+			assert(item.place.kind === "machine" && item.place.machineId === place.machineId, "item lost its machine");
+			await untilItem(user, item.id, "the running machine turn", view => view.run?.step.turn === "started");
+			const hosted = await user.createItem({ ...task, title: "Beside the machine", place: { kind: "hosted" }, start: true });
+			await untilItem(user, hosted.id, "the running hosted turn", view => view.run?.step.turn === "started");
+			assert((await user.item(item.id)).run?.step.turn === "started", "hosted turn waited for the machine's slot");
+			const pushed = await untilItem(user, item.id, "the machine's pull request", view => !!view.pullRequest);
+			setCi(harbor, standin.pulls.find(p => p.repository === harbor.id && p.number === pushed.pullRequest!.number)!.head, "success");
+			const review = await untilItem(user, item.id, "review", view => view.state === "review", CI_WAIT_MS);
+			assert([...runner.boxes.values()].some(box => box.sessionId === item.sessionId && box.profile === "docker-hardened"), "runner did not serve the requested profile");
+			const open = runner.opens.get(item.sessionId);
+			assert(open?.approval === "full" && open.attended === false && open.unattended === "deny", "the hardened container was not opened in unattended full mode");
+			assert(review.verdicts.at(-1)?.attestedBy === `machine:${place.machineId}` && review.spent.turns === 1 && review.spent.hostedSeconds === 0, JSON.stringify(review.spent));
+			return "overlapping turns, one machine-attested verdict, zero hosted seconds";
+		});
+
+		await check("machine: offline at launch waits without spend and resumes to review", async () => {
+			await runner.setOffline(true);
+			await waitFor("offline in the index", async () => (await user.machines())[0]?.status === "offline", 15_000);
+			const item = await user.createItem({ ...task, profile: "e2b", start: true });
+			const waiting = await untilItem(user, item.id, "machine wait", view => view.wait?.reason === "machine");
+			assert(waiting.wait?.sentence === 'Waiting for your machine "Test machine" to come back online.' && Object.values(waiting.spent).every(n => n === 0), JSON.stringify(waiting));
+			await runner.setOffline(false);
+			const pushed = await untilItem(user, item.id, "push after reconnection", view => !!view.pullRequest);
+			setCi(harbor, standin.pulls.find(p => p.repository === harbor.id && p.number === pushed.pullRequest!.number)!.head, "success");
+			const review = await untilItem(user, item.id, "review after reconnection", view => view.state === "review", CI_WAIT_MS);
+			assert([...runner.boxes.values()].some(box => box.sessionId === item.sessionId && box.profile === "docker-windlass-sandbox"), "missing fallback to the machine's first available profile");
+			assert(review.spent.turns === 1 && review.spent.hostedSeconds === 0, JSON.stringify(review.spent));
+			return waiting.wait.sentence;
+		});
+
+		await check("machine: an unanswered session attach waits, and removal asks what to hand over", async () => {
+			const pushed = await user.createItem({ ...task, start: true });
+			await untilItem(user, pushed.id, "a pushed commit", view => !!view.pullRequest);
+			runner.attachMode = "ignore";
+			const waiting = await user.createItem({ ...task, start: true });
+			const view = await untilItem(user, waiting.id, "the unanswered attach", v => v.wait?.reason === "machine");
+			assert(view.wait?.sentence === 'Waiting for your machine "Test machine" to come back online.' && Object.values(view.spent).every(n => n === 0), JSON.stringify(view.spent));
+			await user.removeMachine({ machineId: place.machineId, removeSandboxes: false });
+			for (const [id, expected] of [[waiting.id, ["give_up"]], [pushed.id, ["hand_over", "give_up"]]] as const) {
+				const asked = await untilItem(user, id, "a removal question", v => v.question?.kind === "machine_removed");
+				assert(asked.wait?.reason === "person" && asked.wait.retryAt === null && asked.question?.choices.map(c => c.id).join() === expected.join(), JSON.stringify(asked.question));
+				const action = expected[0];
+				const result = await user.actOnItem({ id, action: { kind: "answer", question: asked.question.id, choice: action } });
+				if (action === "give_up") assert(result.state === "failed", result.state);
+				else await untilItem(user, id, "handover of the pushed commit", v => v.state === "review");
+			}
+			return "unanswered attach spent nothing; gave up before push, handed over after push";
+		});
+	} finally {
+		await runner.setOffline(true);
+		await server.stop();
+		server.remove();
+	}
+}
+
+if (!only.length || only.some(prefix => prefix.startsWith("machine"))) await machineChecks();
+if (only.length && only.every(prefix => prefix.startsWith("machine"))) {
+	await standin.stop();
+	process.exit(failed ? 1 : 0);
+}
+
 const main = new Server();
 try {
 	// Room for every sandbox these items leave running: the cap on them has a check of its own (factory-check.ts, `admit`).
@@ -993,12 +1118,6 @@ try {
 		const info = (await (await fetch(`${API}/platform/info`)).json()) as { items?: unknown };
 		assert(info.items === true, `platform info has items: ${JSON.stringify(info.items)}`);
 		return "items: true";
-	});
-
-	await check("api: a machine place is refused with a sentence", async () => {
-		const answer = await api("/api/items", { method: "POST", body: JSON.stringify({ repository: { id: harbor.id }, title: "On my machine", body: "x", place: { kind: "machine", machineId: "m_0123456789abcdef" } }), token, key: "k-3" });
-		assert(answer.status === 400 && answer.body.code === "bad_input" && /machines?/.test(String(answer.body.message)), `answered ${answer.status} ${JSON.stringify(answer.body)}`);
-		return String(answer.body.message);
 	});
 
 	await check("ci: implement, gate, publish, CI with the stand-in's check runs, handoff with a verdict", async () => {

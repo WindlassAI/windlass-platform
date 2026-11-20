@@ -76,6 +76,7 @@ export interface FactoryItem {
 	/** §3.2: "approve" runs step 0 first. */
 	plan: "none" | "approve";
 	place: SandboxPlace;
+	machineRemoved: boolean;
 	budget: ItemBudget;
 	spent: ItemBudget;
 	/** Since when the item is "working": active time (§2.4) is the sum of such stretches. */
@@ -130,6 +131,7 @@ export interface TurnSpend {
 
 export type Fact =
 	| { kind: "start"; at: number; by: Cause }
+	| { kind: "machine_removed"; at: number }
 	| { kind: "cancel"; at: number; by: Cause }
 	/** A failed item, again (§1.3 "person retry"). */
 	| { kind: "retry"; at: number; by: Cause }

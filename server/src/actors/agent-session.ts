@@ -163,7 +163,7 @@ import { GithubProblem, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, standInModels } from "../account-models.js";
 import type { RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
-import { RUNNER_SOCKET, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
+import { RUNNER_SOCKET, MachineUnreachable, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
 import { runSetupCommand, stopLeftoverSetup } from "../sandbox/setup.js";
 import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
 import { unaskedNote } from "../personal-servers.js";
@@ -195,7 +195,7 @@ import type { Fact } from "../factory/types.js";
 import { DeploymentFull, WindlassUnaskedError } from "../sandbox/api.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase } from "../github/publish.js";
-import { type InboxRow, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
+import { type InboxRow, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
 
 // ---------------------------------------------------------------------------------------------
 // Limits
@@ -480,7 +480,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; full: number | null; started: boolean; pushedAtStart: string | null; refused?: string | null };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; full: number | null; machineAway?: MachineUnreachable["reason"]; started: boolean; pushedAtStart: string | null; refused?: string | null };
 }
 
 /**
@@ -3181,6 +3181,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			if (onBase && events > 0 && meta.setupOnBase === onBase) meta.setupOnBase = null;
 		}
 	} catch (error) {
+		if (active.item && !active.item.started && error instanceof MachineUnreachable) active.item.machineAway = error.reason;
 		if (active.item && error instanceof DeploymentFull) active.item.full = error.limit;
 		if (!signal.aborted) {
 			// An error's text is the sandbox's or the provider's: the repository's saved values are taken out of it before it is logged or shown.
@@ -3569,6 +3570,8 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 	let release: (() => void) | null = takeSandbox(c);
 	try {
 		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
+		// Confirm the session socket before recording a turn. An online control socket alone cannot run it.
+		if (meta.place.kind === "machine") await runnerLink(c, meta.place.machineId).ready();
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		// The row is claimed before anything of the turn is: a withdrawal that came while the sandbox was being had leaves no
@@ -3607,6 +3610,11 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 			meta.turnStartedAt = null;
 		}
 		c.log.warn({ msg: "the item's turn could not start; its slot is given back", key, error: describeError(error) });
+		if (error instanceof MachineUnreachable) {
+			await serial(c, () => c.db.transaction(tx => machineUnavailable(tx, row, slot, error.reason), { name: "inbox.machine" }));
+			await flushOutbox(c, meta.uid);
+			return;
+		}
 		await giveBack(c, meta, key, slot);
 		// Refused for the user's sandbox time or kept sandboxes: asked again, the queue answers with the wait.
 		if (error instanceof UserError && ["allowance_used", "too_many_sandboxes", "usage_unavailable"].includes(String(error.code))) void c.keepAwake(askForSlot(c, meta, row));
@@ -3644,15 +3652,16 @@ async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<Acti
  */
 async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, ended: { outcome: TurnOutcome; verified: Verified | null; used: SandboxHandle | null; unpushed: boolean | null; usage: TurnUsage | null; checks: RepositoryCheck[] }): Promise<void> {
 	const { row } = item;
-	if (item.full !== null && !item.started) {
+	if ((item.full !== null || item.machineAway) && !item.started) {
 		await serial(c, () =>
 			c.db.transaction(async (tx) => {
-				await requeue(tx, row.key, row.slot);
+				if (item.machineAway) await machineUnavailable(tx, row, row.slot, item.machineAway);
+				else await requeue(tx, row.key, row.slot);
 				await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
 			}, { name: "inbox.requeue" }),
 		);
 		await flushOutbox(c, meta.uid);
-		void c.keepAwake(askForSlot(c, meta, { ...row, state: "waiting", turn: null, slot: null }, item.full));
+		if (!item.machineAway) void c.keepAwake(askForSlot(c, meta, { ...row, state: "waiting", turn: null, slot: null }, item.full));
 		return;
 	}
 	const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.branch, ended.checks, ended.verified).catch(() => []) : [];

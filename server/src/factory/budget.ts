@@ -99,8 +99,9 @@ export type PlaceNow =
 			/** What the machine is called on the Machines page. */
 			name: string;
 			online: boolean;
-			/** For an offline machine: when it was last heard from. */
-			since: number;
+			/** Its control socket is online, but the runner did not open the session link. */
+			attachRetryAt: number | null;
+			keptFull: boolean;
 			/** Its sandboxes running, and how many its runner said it runs at most. */
 			running: number;
 			max: number;
@@ -132,6 +133,9 @@ export function admit(input: AdmissionInput): Admission {
 	const later = retryAt(at, input.attempt);
 	const wait = (reason: Wait["reason"], sentence: string, when = later): Admission => ({ ok: false, wait: { reason, sentence, retryAt: when } });
 
+	if (place.kind === "machine" && (!place.online || (place.attachRetryAt ?? 0) > at)) {
+		return wait("machine", `Waiting for your machine "${place.name}" to come back online.`, place.online ? place.attachRetryAt! : later);
+	}
 	if (input.startsRun && input.inReview >= limits.reviewCap) {
 		return wait("review_cap", `Waiting until fewer than ${limits.reviewCap} of your items are in review (${input.inReview} now).`);
 	}
@@ -148,7 +152,7 @@ export function admit(input: AdmissionInput): Admission {
 	}
 
 	if (place.kind === "machine") {
-		if (!place.online) return wait("machine", `‘${place.name}’ is offline since ${utcTime(place.since)} UTC.`);
+		if (place.keptFull) return wait("machine", `Waiting for room on your machine "${place.name}". Its runner has reached its limit on kept sandboxes.`);
 		if (place.running >= place.max) return wait("machine", `Waiting for ‘${place.name}’: ${place.running} of ${place.max} sandboxes running there.`);
 		return { ok: true };
 	}

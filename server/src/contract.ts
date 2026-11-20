@@ -1117,14 +1117,14 @@ export interface ItemTask {
 export interface ItemBudget {
 	tokens: number;
 	turns: number;
-	/** Time the item was working: waiting for capacity, CI or a person does not count. */
+	/** Seconds spent working. Time waiting for a machine, capacity, CI or a person is excluded. */
 	activeSeconds: number;
 	hostedSeconds: number;
 }
 
 /** The factory's limits for a user: the deployment's settings (WLP_FACTORY_*), which its owner sets; a user cannot raise them. */
 export interface FactoryLimits {
-	/** Running turns of the user at once, the factory's and the person's own; a turn on one of the user's machines is not counted. */
+	/** All factory turns and the person's own hosted turns count toward this ceiling. */
 	runningTurns: number;
 	/** Of those, the factory's: the rest are always free for the person's own prompts. */
 	factoryTurns: number;
@@ -1137,7 +1137,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session could not start the agent's turn (an old Windlass, a conversation it cannot open), in its words. */
-export type QuestionKind = "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused";
+export type QuestionKind = "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1284,10 +1284,10 @@ export interface CreateItemInput {
 	body: string;
 	/** At most MAX_ACCEPTANCE_CRITERIA, each at most MAX_NOTE_CHARS. */
 	acceptance?: string[];
-	/** The agent's sandbox and model; left out, the repository's defaults, then the account's, then the deployment's. */
+	/** The agent's sandbox profile and model. A hosted item uses the usual defaults. */
 	profile?: SandboxProfileId;
 	model?: string;
-	/** Left out: hosted. Items run only on hosted sandboxes for now: a machine is refused (`bad_input`). */
+	/** Left out: hosted. On a paired machine, use the requested profile if available, otherwise its first available profile. */
 	place?: SandboxPlace;
 	/** True: started at once, as "Start" would. Left out: the item is a draft until started. */
 	start?: boolean;
@@ -1510,7 +1510,7 @@ export interface UserActions {
 	/**
 	 * Files a work item, with its own agent session on the repository. Checks the repository at GitHub
 	 * as `createSession` does, and throws as it does; also `bad_input` for a title, body or criteria that
-	 * cannot be taken, and for a machine place.
+	 * cannot be taken. A machine must be paired to this user and have an available profile.
 	 */
 	createItem(input: CreateItemInput): Promise<ItemSummary>;
 	/** Throws a UserError with code `item_not_found`, or `item_conflict` when the item's state does not allow the action (it says why). */
