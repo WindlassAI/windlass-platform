@@ -21,6 +21,7 @@
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
+import { isGithubId } from "../github/ids.js";
 import { createHash, randomBytes } from "node:crypto";
 import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
@@ -30,6 +31,7 @@ import { API_TOKENS_TABLE, ApiTokenProblem, createApiToken, listApiTokens, revok
 import { clientError, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { config } from "../config.js";
 import {
+	type GithubId,
 	type ApiToken,
 	type ApiTokenScope,
 	type CreateItemInput,
@@ -205,7 +207,7 @@ function knownItem(c: ItemsCtx, id: unknown): ItemSummary {
 const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
 /** The input of a new item, checked. */
-function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: number; branch?: string }; profile: SandboxProfileId | null; model: string | null; start: boolean } {
+function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; profile: SandboxProfileId | null; model: string | null; start: boolean } {
 	const bad = (message: string) => new UserError(message, { code: "bad_input" });
 	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput, unknown>>;
 	const title = typeof input.title === "string" ? input.title.replace(/\s+/g, " ").trim() : "";
@@ -218,7 +220,7 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 	}
 	const place = launchPlace(input.place ?? undefined);
 	const repository = input.repository as { id?: unknown; branch?: unknown } | undefined;
-	if (typeof repository !== "object" || repository === null || typeof repository.id !== "number") throw bad("Choose a repository of your GitHub connection for the item.");
+	if (typeof repository !== "object" || repository === null || !isGithubId(repository.id)) throw bad("Choose a repository of your GitHub connection for the item.");
 	if (input.start !== undefined && input.start !== null && typeof input.start !== "boolean") throw bad("Say yes or no to starting the item at once.");
 	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 	return {
@@ -234,7 +236,7 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 }
 
 /** The sandbox an item's session is made in when the input names none: the repository's default, the account's, then the deployment's first that can be chosen. */
-async function itemProfile(c: ItemsCtx, repositoryId: number, asked: SandboxProfileId | null, place: SandboxPlace): Promise<SandboxProfileId> {
+async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxProfileId | null, place: SandboxPlace): Promise<SandboxProfileId> {
 	if (place.kind === "machine") {
 		const machine = await launchMachineProfiles(c.db, place.machineId);
 		const available = machine.profiles.filter(profile => profile.available);

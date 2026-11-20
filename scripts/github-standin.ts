@@ -59,7 +59,7 @@ export interface StandinRepository {
 	/** Branch name patterns (`*` matches anything) a push to which is refused. */
 	protectedBranches: string[];
 	ci: Map<string, { runs: unknown[]; statuses: unknown[] }>;
-	jobLogs: Map<number, string>;
+	jobLogs: Map<string, string>;
 }
 
 export interface StandinPull {
@@ -74,7 +74,7 @@ export interface StandinPull {
 	mergeable: boolean | null;
 	draft: boolean;
 	requestedReviewers: string[];
-	comments: Array<{ id: number; body: string; user: { login: string } }>;
+	comments: Array<{ id: number | bigint; body: string; user: { login: string } }>;
 }
 
 interface Token {
@@ -109,9 +109,13 @@ export interface StandinOptions {
 	host?: string;
 }
 
+// GitHub sends database IDs as JSON integers, including those outside JavaScript's safe range.
+const wireJson = (body: unknown) => JSON.stringify(body, (_key, value) =>
+	typeof value === "bigint" ? (JSON as JSON & { rawJSON(source: string): unknown }).rawJSON(String(value)) : value);
+
 const json = (response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) => {
 	response.writeHead(status, { "content-type": "application/json; charset=utf-8", ...headers });
-	response.end(body === null ? "" : JSON.stringify(body));
+	response.end(body === null ? "" : wireJson(body));
 };
 
 const readBody = (request: IncomingMessage): Promise<Buffer> =>
@@ -161,8 +165,10 @@ export class GithubStandin {
 	readonly pulls: StandinPull[] = [];
 	readonly tokens = new Map<string, Token>();
 	readonly requests: StandinRequest[] = [];
-	readonly deliveries: { id: number; guid: string; installation_id: number | null; delivered_at: string; status_code: number; redelivery: boolean }[] = [];
-	private readonly resend = new Map<number, () => Promise<Response>>();
+	readonly deliveries: { id: string; guid: string; installation_id: number | bigint | null; delivered_at: string; status_code: number; redelivery: boolean }[] = [];
+	private nextCommentId = 9007199254740992n;
+	private nextDeliveryId = 3855090938003079000n;
+	private readonly resend = new Map<string, () => Promise<Response>>();
 	/** What each installation token asked for, in order: the body of the request that made it. */
 	readonly minted: Array<{ installation: number; repositoryIds: number[] | null; permissions: Permissions | null; token: string }> = [];
 	/** The permissions the app was given when it was registered. */
@@ -232,9 +238,9 @@ export class GithubStandin {
 
 	/** Sign exactly the bytes sent. A redelivery uses the original GUID and records its own answer. */
 	deliver(url: string, event: string, payload: unknown, options: { secret: string; guid?: string; targetId?: string }): Promise<Response> {
-		const body = JSON.stringify(payload);
+		const body = wireJson(payload);
 		const guid = options.guid ?? randomUUID();
-		const installationId = (payload as { installation?: { id?: number } } | null)?.installation?.id ?? null;
+		const installationId = (payload as { installation?: { id?: number | bigint } } | null)?.installation?.id ?? null;
 		const send = async (redelivery: boolean) => {
 			const response = await fetch(url, { method: "POST", body, headers: {
 				"content-type": "application/json", "user-agent": "GitHub-Hookshot/standin",
@@ -242,7 +248,7 @@ export class GithubStandin {
 				"x-github-hook-installation-target-id": options.targetId ?? this.appId,
 				"x-hub-signature-256": "sha256=" + createHmac("sha256", options.secret).update(body).digest("hex"),
 			} });
-			const id = ++this.nextId;
+			const id = String(++this.nextDeliveryId);
 			this.deliveries.unshift({ id, guid, installation_id: installationId, delivered_at: new Date().toISOString(), status_code: response.status, redelivery });
 			this.resend.set(id, () => send(true));
 			return response;
@@ -552,7 +558,7 @@ export class GithubStandin {
 		if (storage && request.method === "GET") {
 			// Keep storage on the same origin so even an automatic redirect would reveal a forwarded credential.
 			if (request.headers.authorization !== undefined) return answer(403, { message: "Log storage received an Authorization header" });
-			const log = this.repositories.get(Number(storage[1]))?.jobLogs.get(Number(storage[2]));
+			const log = this.repositories.get(Number(storage[1]))?.jobLogs.get(storage[2]);
 			if (log === undefined) return answer(404, { message: "Not Found" });
 			entry.status = 200;
 			response.writeHead(200, { "content-type": "text/plain" });
@@ -585,15 +591,17 @@ export class GithubStandin {
 				const status = url.searchParams.get("status");
 				const rows = this.deliveries.filter(d => !status || (d.status_code >= 400) === (status === "failure"));
 				const cursor = url.searchParams.get("cursor");
-				const first = cursor ? rows.findIndex(d => String(d.id) === cursor) : 0;
+				const first = cursor ? rows.findIndex(d => d.id === cursor) : 0;
 				if (first < 0) return answer(400, { message: "Unknown cursor" });
 				const size = Math.min(100, Number(url.searchParams.get("per_page") ?? 30));
 				const next = rows[first + size];
-				url.searchParams.set("cursor", String(next?.id));
-				return answer(200, rows.slice(first, first + size), next ? { link: `<${url}>; rel="next"` } : {});
+				if (next) url.searchParams.set("cursor", next.id);
+				// GitHub writes an unquoted integer on the wire.
+				const page = rows.slice(first, first + size).map(row => ({ ...row, id: BigInt(row.id) }));
+				return answer(200, page, next ? { link: `<${url}>; rel="next"` } : {});
 			}
 			if (method === "POST" && attempt) {
-				const send = this.resend.get(Number(attempt[1]));
+				const send = this.resend.get(attempt[1]);
 				if (!send) return answer(404, { message: "Not Found" });
 				await (await send()).arrayBuffer();
 				return answer(202, {});
@@ -680,7 +688,7 @@ export class GithubStandin {
 					const ci = repository.ci.get(decodeURIComponent(commitCi[1]));
 					return permission === "checks" ? pageOf("check_runs", ci?.runs ?? []) : pageOf("statuses", ci?.statuses ?? []);
 				}
-				const id = Number(jobLog?.[1]);
+				const id = jobLog![1];
 				if (!repository.jobLogs.has(id)) return answer(404, { message: "Not Found" });
 				return answer(302, null, { location: `${this.url}/storage/${repository.id}/${id}` });
 			}
@@ -748,7 +756,7 @@ export class GithubStandin {
 				if (!pull) return answer(404, { message: "Not Found" });
 				if (method === "GET") return answer(200, pull.comments.slice(0, Number(url.searchParams.get("per_page") ?? 30)));
 				if (this.commentFault === "refuse") return denied();
-				const comment = { id: ++this.nextId, body: (body as { body: string }).body, user: { login: `${this.slug}[bot]` } };
+				const comment = { id: ++this.nextCommentId, body: (body as { body: string }).body, user: { login: `${this.slug}[bot]` } };
 				pull.comments.push(comment);
 				if (this.commentFault === "lose_reply") return void response.destroy();
 				return answer(201, comment);
@@ -756,7 +764,7 @@ export class GithubStandin {
 			const edit = /^\/issues\/comments\/(\d+)$/.exec(rest);
 			if (edit && method === "PATCH") {
 				if (!this.allows(token, repository, "pull_requests", "write")) return denied();
-				const comment = this.pulls.filter((one) => one.repository === repository.id).flatMap((one) => one.comments).find((one) => one.id === Number(edit[1]));
+				const comment = this.pulls.filter((one) => one.repository === repository.id).flatMap((one) => one.comments).find((one) => String(one.id) === edit[1]);
 				if (!comment) return answer(404, { message: "Not Found" });
 				if (this.commentFault === "refuse") return denied();
 				comment.body = (body as { body: string }).body;

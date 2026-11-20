@@ -60,7 +60,7 @@ type Run = { name: string; state: "pending" | "passed" | "failed" | "neutral"; l
 const ciRead = (runs: Run[]): CiReading => ({
 	kind: "read",
 	head: "",
-	runs: runs.map((run, index) => ({ name: run.name, app: "github-actions", state: run.state, conclusion: run.state === "passed" ? "success" : run.state === "failed" ? "failure" : run.state === "neutral" ? "skipped" : "in_progress", url: `https://github.invalid/run/${index}`, summary: "", jobId: index + 1 })),
+	runs: runs.map((run, index) => ({ name: run.name, app: "github-actions", state: run.state, conclusion: run.state === "passed" ? "success" : run.state === "failed" ? "failure" : run.state === "neutral" ? "skipped" : "in_progress", url: `https://github.invalid/run/${index}`, summary: "", jobId: String(index + 1) })),
 	truncated: false,
 	logs: runs.filter((run) => run.log !== undefined).map((run) => ({ name: run.name, untrusted: true as const, text: run.log ?? "", truncated: false })),
 });
@@ -705,15 +705,15 @@ const app = new GithubApp({ appId: standin.appId, slug: standin.slug, clientId: 
 const target = { installationId: installation.id, repositoryId: repo.id, owner: "ada", name: "harbor", head: HEAD };
 const granted = { ...standin.appPermissions, checks: "read" as const, statuses: "read" as const, actions: "read" as const };
 
-const checkRun = (id: number, name: string, conclusion: string | null) => ({ id, name, status: conclusion === null ? "in_progress" : "completed", conclusion, html_url: `https://github.invalid/ada/harbor/runs/${id}`, app: { slug: "github-actions" }, output: { title: conclusion === "failure" ? "Process completed with exit code 1." : null, summary: null } });
+const checkRun = (id: number | bigint, name: string, conclusion: string | null) => ({ id, name, status: conclusion === null ? "in_progress" : "completed", conclusion, html_url: `https://github.invalid/ada/harbor/runs/${id}`, app: { slug: "github-actions" }, output: { title: conclusion === "failure" ? "Process completed with exit code 1." : null, summary: null } });
 
 try {
 	standin.appPermissions = granted;
-	ciData.runs = Array.from({ length: 250 }, (_, index) => checkRun(5000 + index, `job-${index}`, index === 137 ? "failure" : "success"));
+	ciData.runs = Array.from({ length: 250 }, (_, index) => checkRun(index === 137 ? 9007199254740993n : 5000 + index, `job-${index}`, index === 137 ? "failure" : "success"));
 	ciData.statuses = [{ context: "ci/legacy", state: "success", description: "ok", target_url: "https://ci.invalid/1" }];
 	const lines = Array.from({ length: 5000 }, (_, index) => `2026-11-19T20:0${index % 10}:00.1234567Z \x1b[31mline ${index}\x1b[0m`);
 	lines.push("2026-11-19T20:09:59.0000000Z Error: expected 3, got -1 (token ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789)");
-	repo.jobLogs.set(5137, lines.join("\n"));
+	repo.jobLogs.set("9007199254740993", lines.join("\n"));
 
 	const read = await readCi(app, target);
 	const minted = standin.minted.at(-1);
@@ -735,7 +735,7 @@ try {
 	const downloads = standin.requests.filter(({ path }) => path.startsWith("/storage/"));
 	expect("the log's storage is fetched without the token", downloads.length === 1 && downloads[0].auth === "none" && downloads[0].status === 200);
 
-	repo.jobLogs.set(5137, "x".repeat(17 * 1024 * 1024));
+	repo.jobLogs.set("9007199254740993", "x".repeat(17 * 1024 * 1024));
 	const huge = await readCi(app, target);
 	const hugeLog = huge.kind === "read" ? huge.logs[0] : undefined;
 	expect("a log larger than the most that is read is not read to its end, and says so", hugeLog !== undefined && hugeLog.text === null && "why" in hugeLog && /larger than 16 MiB/.test(hugeLog.why), hugeLog && "why" in hugeLog ? hugeLog.why : "");

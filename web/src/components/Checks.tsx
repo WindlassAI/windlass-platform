@@ -8,7 +8,7 @@
  * sets them, and whether its own file can replace them depends on the Windlass in a sandbox. The
  * list is saved whole, by one control.
  */
-import { MAX_CHECKS_PER_REPOSITORY, MAX_CHECK_NAME_CHARS, MAX_CHECK_TIMEOUT_SECONDS, MAX_SETUP_COMMAND_CHARS, type RepositoryCheck } from "@contract";
+import { type GithubId, MAX_CHECKS_PER_REPOSITORY, MAX_CHECK_NAME_CHARS, MAX_CHECK_TIMEOUT_SECONDS, MAX_SETUP_COMMAND_CHARS, type RepositoryCheck } from "@contract";
 import { useEffect, useId, useState } from "react";
 import { useApp, useAuth } from "../state/app";
 import { PlusIcon, TrashIcon, WarnIcon } from "./Icons";
@@ -71,7 +71,7 @@ export function checksWhose(standing: "required" | "replaceable" | "mixed" | nul
  * under; `standing` is what a repository's own file can do to them in the sandboxes of the user's
  * agents on it; `onSaved` hears of a save.
  */
-export function ChecksEditor({ repositoryId, name, labelledBy, standing, onSaved }: { repositoryId: number; name: string; labelledBy: string; standing: "required" | "replaceable" | "mixed" | null; onSaved?(): void }) {
+export function ChecksEditor({ repositoryId, name, labelledBy, standing, onSaved }: { repositoryId: GithubId; name: string; labelledBy: string; standing: "required" | "replaceable" | "mixed" | null; onSaved?(): void }) {
 	const { client, explain, platform } = useApp();
 	// Said only where the deployment offers work items, as every other word of them is.
 	const items = Boolean(platform.info?.items);

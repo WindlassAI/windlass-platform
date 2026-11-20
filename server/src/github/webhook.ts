@@ -1,4 +1,5 @@
 /** The App's HTTP route. Only the trimmed, authenticated delivery crosses the actor boundary. */
+import { parseGithubJson } from "./ids.js";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createClient } from "rivetkit/client";
 import { serviceParams } from "../auth.js";
@@ -79,7 +80,7 @@ export async function webhookRoute(request: Request): Promise<Response | null> {
 		return error(403, "wrong_app", "The delivery is for a different App.");
 	let payload: unknown;
 	try {
-		payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+		payload = parseGithubJson(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 	} catch {
 		return error(400, "bad_json", "The delivery body must be JSON.");
 	}

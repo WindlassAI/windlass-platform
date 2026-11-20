@@ -45,7 +45,7 @@ async function testNode() {
 	Object.assign(actions, {
 		checkRow: async (c: Ctx, guid: string) => {
 			requireServiceFor(c, "call");
-			const [r] = await c.db.execute("SELECT state, said, attempts, next_at, received_at FROM deliveries WHERE guid = ?", guid);
+			const [r] = await c.db.execute("SELECT state, said, attempts, next_at, received_at, data, CAST(repository AS TEXT) AS repository FROM deliveries WHERE guid = ?", guid);
 			return r ?? null;
 		},
 		checkFixture: async (c: Ctx, kind: string, guid: string) => {
@@ -101,9 +101,9 @@ async function run() {
 	const { githubConfig } = await import("../server/src/config.js");
 	const client = createClient<import("../server/src/registry.js").Registry>({ endpoint: base(engine) });
 	const service = () => ({ params: serviceParams() });
-	const inbox = (id: number) => client.githubInbox.getOrCreate([String(id)], service());
-	type Row = { state: string; said: string; attempts: number; next_at: number };
-	const fixture = (id: number) => inbox(id) as unknown as { checkRow(guid: string): Promise<Row | null>; checkFixture(op: string, guid: string): Promise<void> };
+	const inbox = (id: number | string) => client.githubInbox.getOrCreate([String(id)], service());
+	type Row = { data: string; repository: string | null; state: string; said: string; attempts: number; next_at: number };
+	const fixture = (id: number | string) => inbox(id) as unknown as { checkRow(guid: string): Promise<Row | null>; checkFixture(op: string, guid: string): Promise<void> };
 	const shaPayload = { installation: { id: 91234 }, repository: { id: 123 }, sha: HEAD, state: "success", description: bodyMarker };
 	const web = api + "/github/webhook";
 	const send = (payload = shaPayload, guid = randomUUID(), url = web) => standin.deliver(url, "status", payload, { secret, guid });
@@ -150,8 +150,8 @@ async function run() {
 			if (child.exitCode !== null) throw new Error("test node exited " + child.exitCode);
 			return (await fetch(api + "/platform/info").catch(() => null))?.ok;
 		}, 90_000);
-		const known = (guid: string, id = shaPayload.installation.id) => inbox(id).internalKnows(guid);
-		const connection = (ids: number[]) => ({
+		const known = (guid: string, id: number | string = shaPayload.installation.id) => inbox(id).internalKnows(guid);
+		const connection = (ids: (number | string)[]) => ({
 			webhookLinked: true, connectedAt: Date.now(), user: { id: 7, login: "fixture" },
 			installations: ids.map(id => ({ id, account: { id, login: "fixture", type: "Organization" as const }, htmlUrl: "" })),
 		});
@@ -216,6 +216,23 @@ async function run() {
 			assert.equal(isAddressed(" \n@WINDLASS-FK4W fix it", standin.slug), "fix it");
 			assert.equal(isAddressed("/WINDLASS", standin.slug), "");
 			assert.equal(isAddressed("@windlass-fk4w-more hi", standin.slug), null);
+		});
+		const wideInstallation = 9007199254740993n;
+		await updateGithubAccount(accountContext, "wide", null, connection([String(wideInstallation)]));
+		await check("signed comments and reviews keep adjacent 64-bit repository, sender and subject ids", async () => {
+			for (const event of ["issue_comment", "pull_request_review_comment", "pull_request_review"]) {
+				const review = event === "pull_request_review", guid = randomUUID();
+				const subject = { id: 9007199254740995n, body: "/windlass fix", state: "changes_requested", commit_id: HEAD, path: "a" };
+				const payload = { action: review ? "submitted" : "created", installation: { id: wideInstallation },
+					repository: { id: 9007199254740996n }, sender: { id: 9007199254740997n, login: "ada", type: "User" },
+					issue: { number: 4 }, pull_request: { number: 4 }, [review ? "review" : "comment"]: subject };
+				assert.deepEqual(await (await standin.deliver(web, event, payload, { secret, guid })).json(), { taken: true });
+				const row = await fixture(String(wideInstallation)).checkRow(guid);
+				assert.equal(row?.repository, "9007199254740996");
+				const data = JSON.parse(row.data);
+				assert.equal(data.sender.id, "9007199254740997");
+				assert.equal(review ? data.reviewId : data.commentId, "9007199254740995");
+			}
 		});
 		await check("good signature and ignored G1 state", async () => {
 			const guid = randomUUID(), r = await send(shaPayload, guid);
@@ -405,7 +422,7 @@ async function run() {
 		});
 		for (const [name, valid, invalid] of [
 			["githubInbox", ["1"], ["1", "2"]], ["githubAccount", ["1"], ["01"]],
-			["githubRepository", ["1"], ["9007199254740992"]], ["githubHooks", ["app"], ["other"]],
+			["githubRepository", ["9007199254740993"], ["9223372036854775808"]], ["githubHooks", ["app"], ["other"]],
 		] as const) {
 			const actors = client[name];
 			const probe = (handle: unknown) => (handle as { checkConnection(): Promise<boolean> }).checkConnection();
@@ -422,7 +439,7 @@ async function run() {
 				}), 2500);
 			});
 		}
-		await check("sweep skips known, redelivers failed GUID once", async () => {
+		await check("sweep posts the exact 19-digit delivery id once and skips known GUIDs", async () => {
 			// Only these two failures belong to this scenario. Both are real signed HTTP attempts.
 			standin.deliveries.length = 0;
 			const existing = randomUUID(), missing = randomUUID(), unlinked = 96666;
@@ -435,7 +452,11 @@ async function run() {
 			const hooks = client.githubHooks.getOrCreate(["app"], service());
 			const started = await until("the first delivery to arm the sweep", () => (hooks as unknown as { checkStarted(): Promise<number | null> }).checkStarted(), 35_000);
 			assert.ok(started > Date.now() && started <= Date.now() + 600_000, "first delivery armed ten-minute sweep");
+			const failedId = standin.deliveries.find(d => d.guid === missing)!.id;
+			assert.notEqual(String(Number(failedId)), failedId);
 			await hooks.internalSweep();
+			assert.deepEqual(standin.requests.filter(r => r.method === "POST" && r.path.endsWith("/attempts")).map(r => r.path),
+				[`/api/v3/app/hook/deliveries/${failedId}/attempts`]);
 			assert.deepEqual(standin.deliveries.filter(d => d.redelivery).map(d => [d.guid, d.status_code]), [[missing, 202]]);
 			assert.equal(await known(missing), true);
 			await assert.rejects(client.githubInbox.get([String(unlinked)]).resolve(), absent);
@@ -453,23 +474,23 @@ async function run() {
 			try {
 				offline = true;
 				// Newest first at GitHub: the quiet installation is behind a full page of failures.
-				await standin.deliver(second, "push", { installation: { id: 92222 } }, { secret });
+				await standin.deliver(second, "push", { installation: { id: wideInstallation } }, { secret });
 				for (let i = 0; i < 101; i++) await standin.deliver(second, "push", { installation: { id: 91234 } }, { secret });
 			} finally { offline = false; }
 			const attempts = () => standin.deliveries.filter(d => d.redelivery).length;
 			await hooks.internalSweep(); assert.equal(attempts(), 50);
-			assert.ok(standin.deliveries.some(d => d.redelivery && d.installation_id === 92222), "quiet installation redelivered on first sweep");
+			assert.ok(standin.deliveries.some(d => d.redelivery && d.installation_id === wideInstallation), "quiet installation redelivered on first sweep");
 			await hooks.internalSweep(); assert.equal(attempts(), 100);
 			await hooks.internalSweep(); assert.equal(attempts(), 102);
 			const remembered = standin.deliveries.find(d => d.redelivery)!;
 			standin.deliveries.length = 0;
 			for (let i = 0; i < 301; i++)
-				standin.deliveries.push({ ...remembered, id: 100000 + i, delivered_at: new Date().toISOString(), status_code: 503 });
+				standin.deliveries.push({ ...remembered, id: String(3855090938003090001n + BigInt(i)), delivered_at: new Date().toISOString(), status_code: 503 });
 			const pages = () => standin.requests.filter(r => r.path.startsWith("/api/v3/app/hook/deliveries?")).length;
 			const start = pages();
 			await hooks.internalSweep(); assert.equal(pages() - start, 3);
 			await hooks.internalSweep(); assert.equal(pages() - start, 4);
-			assert.ok(standin.requests.at(-1)?.path.includes("cursor=100300"), "resumed at the fourth page");
+			assert.ok(standin.requests.at(-1)?.path.includes("cursor=3855090938003090301"), "resumed at the fourth page");
 		});
 		await check("inbox unreachable or timed out", async () => {
 			const transport = globalThis.fetch;

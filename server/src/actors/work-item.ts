@@ -394,10 +394,9 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 			const acceptance = verdict.acceptance.map((criterion) => `- ${commentText(criterion, 1000)}`);
 			const body = [marker, `**Windlass verdict at ${commentText(verdict.head.slice(0, 7), 7)}: ${verdict.result}**`, commentText(words, MAX_NOTE_CHARS), ...(acceptance.length ? [`Acceptance criteria left to you:\n\n${acceptance.join("\n")}`] : [])].join("\n\n");
 			// Every page, so that on a busy pull request a comment past the first hundred is edited, not posted a second time.
-			const { items: comments } = await app.pages({ path: `/repos/${owner}/${name}/issues/${number}/comments`, auth: { bearer: token }, what: "list the pull request's comments" }, (body) =>
-				(Array.isArray(body) ? body : []).map((entry: { id?: unknown; body?: unknown; user?: { login?: unknown } }) => ({ id: Number(entry.id), body: String(entry.body ?? ""), author: String(entry.user?.login ?? "") })),
-			);
+			const comments = await app.issueComments(token, owner, name, number);
 			const own = comments.find((one) => one.author.toLowerCase() === `${app.settings.slug.toLowerCase()}[bot]` && one.body.split("\n", 1)[0] === marker);
+			if (own?.id === null) throw new Error("GitHub returned an invalid verdict comment id");
 			if (own) await app.updateIssueComment(token, owner, name, own.id, body);
 			else await app.createIssueComment(token, owner, name, number, body);
 		});

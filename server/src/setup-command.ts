@@ -25,7 +25,8 @@
  * rules on their own.
  */
 
-import { MAX_SETUP_COMMAND_CHARS, SETUP_OUTPUT_CHARS } from "./contract.js";
+import { isGithubId } from "./github/ids.js";
+import { type GithubId, MAX_SETUP_COMMAND_CHARS, SETUP_OUTPUT_CHARS } from "./contract.js";
 
 /** How many repositories one user may have a setup command for; the ones saved longest ago go first. */
 export const MAX_SETUP_COMMANDS = 500;
@@ -45,7 +46,7 @@ export interface SetupProject {
 
 /** The key of a repository of a GitHub connection, by GitHub's id for it. Null for anything that is not such an id. */
 export function setupProjectKey(repositoryId: unknown): string | null {
-	return typeof repositoryId === "number" && Number.isSafeInteger(repositoryId) && repositoryId > 0 ? `github:${repositoryId}` : null;
+	return isGithubId(repositoryId) ? `github:${repositoryId}` : null;
 }
 
 /**
@@ -53,7 +54,7 @@ export function setupProjectKey(repositoryId: unknown): string | null {
  * launched on. Null for a session on a pasted address or with no repository: it has no setup. The
  * session's files have no say in it.
  */
-export function setupProjectOf(session: { repo?: { id: number; owner: string; name: string } | null }): SetupProject | null {
+export function setupProjectOf(session: { repo?: { id: GithubId; owner: string; name: string } | null }): SetupProject | null {
 	const repo = session.repo;
 	if (!repo) return null;
 	const key = setupProjectKey(repo.id);

@@ -18,6 +18,7 @@
  * the repository's; both lists say so.
  */
 import {
+	type GithubId,
 	MAX_ACCOUNT_SECRETS,
 	MAX_SECRET_NAME_CHARS,
 	MAX_SECRET_VALUE_BYTES,
@@ -71,7 +72,7 @@ interface SecretsOwner {
 	remove(api: UserApi, profile: SandboxProfileId, name: string): Promise<SecretList>;
 }
 
-function repositoryOwner(repositoryId: number, name: string, sessionId?: string): SecretsOwner {
+function repositoryOwner(repositoryId: GithubId, name: string, sessionId?: string): SecretsOwner {
 	return {
 		kind: "repository",
 		key: `repository:${repositoryId}:${sessionId ?? ""}`,
@@ -515,7 +516,7 @@ export function SecretsBlock({
 	title,
 	onChanged,
 }: {
-	repositoryId: number;
+	repositoryId: GithubId;
 	/** The repository in words. */
 	name: string;
 	profile: SandboxProfileId | null;
@@ -599,7 +600,7 @@ export function SecretsSection({ summary }: { summary: SessionSummary }) {
 }
 
 /** The launch form's field: what is saved for the chosen repository, and the way to the dialog. `repository` is the chosen one, in words. */
-export function SecretsField({ repositoryId, repository, profile, disabled }: { repositoryId: number; repository: string; profile: SandboxProfileId | null; disabled: boolean }) {
+export function SecretsField({ repositoryId, repository, profile, disabled }: { repositoryId: GithubId; repository: string; profile: SandboxProfileId | null; disabled: boolean }) {
 	const owner = useMemo(() => repositoryOwner(repositoryId, repository), [repositoryId, repository]);
 	const { list, error, set } = useSecrets(owner, profile);
 	const [open, setOpen] = useState(false);

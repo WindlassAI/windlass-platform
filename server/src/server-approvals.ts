@@ -32,7 +32,7 @@
  * against a real Windlass.
  */
 
-import type { SessionServer, SessionServerState, SessionServers } from "./contract.js";
+import type { GithubId, SessionServer, SessionServerState, SessionServers } from "./contract.js";
 import type { TurnServer } from "./sandbox/api.js";
 import { commandLine } from "./server-question.js";
 
@@ -55,7 +55,7 @@ export interface ApprovalProject {
 }
 
 /** The project of a session: its repository, or the session itself when it has none. */
-export function projectOf(session: { sessionId: string; repoUrl: string | null; repo?: { id: number; owner: string; name: string } | null }): ApprovalProject {
+export function projectOf(session: { sessionId: string; repoUrl: string | null; repo?: { id: GithubId; owner: string; name: string } | null }): ApprovalProject {
 	// A repository of the GitHub connection is known by GitHub's id: its owner and name can change.
 	if (session.repo) return { key: `github:${session.repo.id}`, kind: "github", label: `${session.repo.owner}/${session.repo.name}` };
 	// A pasted address is taken as it is stored. Two spellings of one repository are two projects: the second asks once more.

@@ -3,17 +3,19 @@
  * a session by its ID, a work item by its ID, and a repository's page by GitHub's id for it, with the new-agent dialog over
  * that page too. A reload stays on the same screen; `?mock=1` is carried from one address to the next.
  */
+import { githubId } from "../../../server/src/github/ids.js";
+import type { GithubId } from "@contract";
 import { useSyncExternalStore } from "react";
 
 export type Route =
 	| { name: "home" }
 	/** The launch form. With `repository`, GitHub's id for one, it opens over that repository's page with it chosen: over its settings with `over`. */
-	| { name: "new"; repository?: number; over?: "settings" }
+	| { name: "new"; repository?: GithubId; over?: "settings" }
 	/**
 	 * One repository of the user's GitHub connection: its work (the agents on it, its work items, its open pull requests),
 	 * or with `view: "settings"` what is kept for it. `section` opens the settings at one of theirs, as the address's fragment.
 	 */
-	| { name: "repository"; id: number; view?: "settings"; section?: RepositorySection }
+	| { name: "repository"; id: GithubId; view?: "settings"; section?: RepositorySection }
 	/** The user's sandbox time and kept sandboxes. */
 	| { name: "usage" }
 	/** What the user keeps for their account, whatever the repository: defaults, their own MCP servers, and those servers' secrets. */
@@ -47,9 +49,10 @@ export function parseRoute(pathname: string): Route {
 	if (path === "/machines/add") return { name: "machines", add: true };
 	if (path === "/signin") return { name: "signin" };
 	if (path === "/mock/authorize") return { name: "mock-authorize" };
-	const repository = /^\/repositories\/([1-9][0-9]{0,15})(\/new|\/settings|\/settings\/new)?$/.exec(path);
+	const repository = /^\/repositories\/([1-9][0-9]{0,18})(\/new|\/settings|\/settings\/new)?$/.exec(path);
 	if (repository?.[1]) {
-		const id = Number(repository[1]);
+		const id = githubId(repository[1]);
+		if (id === null) return { name: "notfound" };
 		if (repository[2] === "/new") return { name: "new", repository: id };
 		if (repository[2] === "/settings/new") return { name: "new", repository: id, over: "settings" };
 		return repository[2] === "/settings" ? { name: "repository", id, view: "settings" } : { name: "repository", id };

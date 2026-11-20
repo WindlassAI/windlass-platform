@@ -22,7 +22,7 @@
  * was removed.
  */
 
-import type { PublishMessage, PullRequestInfo, SessionRepository, Verified } from "../contract.js";
+import type { GithubId, PublishMessage, PullRequestInfo, SessionRepository, Verified } from "../contract.js";
 import type { SandboxHandle } from "../sandbox/api.js";
 import { type WorkDiff, verifiedSection, verifiedWords, withVerifiedSection, workFlags } from "../verified.js";
 import { type GithubApp, GithubError, type Pull } from "./app.js";
@@ -33,7 +33,7 @@ import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolve
 /** What a session keeps of the repository it was launched on. */
 export interface StoredRepository extends SessionRepository {
 	/** The installation that covered it when the session was made. A hint: the connection is asked again each time. */
-	installationId: number;
+	installationId: GithubId;
 }
 
 const fullName = (repository: { owner: string; name: string }) => `${repository.owner}/${repository.name}`;

@@ -20,7 +20,7 @@
  * its age, until when it holds, and the way to forget it. What a server is and whether it runs is a
  * session's to know, so that list has neither.
  */
-import type { PendingQuestion, RepositoryApproval, RepositoryView, SessionServer, SessionServers, SessionSummary } from "@contract";
+import type { GithubId, PendingQuestion, RepositoryApproval, RepositoryView, SessionServer, SessionServers, SessionSummary } from "@contract";
 import { useCallback, useEffect, useId, useState } from "react";
 import { absoluteTime, day, plural, relativeTime } from "../lib/format";
 import { linkProps } from "../lib/router";
@@ -361,7 +361,7 @@ function approvedAgo(at: number, now: number): string {
  * The approvals of MCP servers the user's actor remembers for one repository, on that repository's
  * page. `onChanged` is handed the page as it is after an approval was forgotten.
  */
-export function RepositoryApprovals({ repositoryId, name, approvals, forgetting, now, onChanged }: { repositoryId: number; name: string; approvals: RepositoryApproval[]; forgetting: string; now: number; onChanged(view: RepositoryView): void }) {
+export function RepositoryApprovals({ repositoryId, name, approvals, forgetting, now, onChanged }: { repositoryId: GithubId; name: string; approvals: RepositoryApproval[]; forgetting: string; now: number; onChanged(view: RepositoryView): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [acting, setActing] = useState<string | null>(null);

@@ -8,7 +8,7 @@
  * launch on it runs it once, in each new workspace, before the agent starts there. A workspace that
  * exists is not set up again, so a change made in the panel is for the workspaces that come after.
  */
-import { MAX_SETUP_COMMAND_CHARS, type SessionSummary } from "@contract";
+import { type GithubId, MAX_SETUP_COMMAND_CHARS, type SessionSummary } from "@contract";
 import { useCallback, useEffect, useId, useState } from "react";
 import { spelledDuration } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
@@ -26,7 +26,7 @@ function howItRuns(when: string, limitMs: number | null): string {
 
 interface Draft {
 	/** The repository the rest is about. */
-	repositoryId: number | null;
+	repositoryId: GithubId | null;
 	text: string;
 	/** What is saved for it; null until that was read, and when it could not be. */
 	saved: string | null;
@@ -46,7 +46,7 @@ export interface SetupDraft {
 }
 
 /** The launch form's setup command for the repository that is chosen: read when the choice changes. */
-export function useSetupDraft(repositoryId: number | null): SetupDraft {
+export function useSetupDraft(repositoryId: GithubId | null): SetupDraft {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [draft, setDraft] = useState<Draft>(NO_DRAFT);
@@ -121,7 +121,7 @@ export function SetupField({ setup, repository, disabled }: { setup: SetupDraft;
  * does. `labelledBy` is the heading it stands under; `applies` says what a change means where it is
  * shown; `onSaved` hears of a save.
  */
-export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved }: { repositoryId: number; name: string; labelledBy: string; applies: string; onSaved?(): void }) {
+export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved }: { repositoryId: GithubId; name: string; labelledBy: string; applies: string; onSaved?(): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const ids = { input: useId(), note: useId() };

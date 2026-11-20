@@ -1,6 +1,8 @@
 /** githubInbox[installationId] and githubHooks["app"]. Only service actions write or read rows.
  * A scheduled action must be fired by the engine. An empty actor has no work and arms no timer.
  */
+import type { GithubId } from "../contract.js";
+import { decimalId, githubId } from "../github/ids.js";
 import { actor } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { internalConnection, requireServiceFor, serviceParams } from "../auth.js";
@@ -51,7 +53,7 @@ export const HANDLERS: Partial<Record<Delivery["event"], (delivery: Delivery) =>
 	installation_repositories: logInstallation,
 };
 
-type Row = { guid: string; event: Delivery["event"]; action: string; repository: number | null; data: string; received_at: number; attempts: number };
+type Row = { guid: string; event: Delivery["event"]; action: string; repository: string | null; data: string; received_at: number; attempts: number };
 
 async function armInbox(c: Ctx) {
 	const [row] = await c.db.execute<{ at: number | null }>(`SELECT min(at) AS at FROM (
@@ -78,14 +80,17 @@ async function drainDue(c: Ctx) {
 		await queued(c, () => c.db.execute("UPDATE hook_start SET next_at = ?", Date.now() + SWEEP));
 	}
 	while (true) {
-		const [row] = await c.db.execute<Row>("SELECT * FROM deliveries WHERE state = 'received' AND next_at <= ? ORDER BY received_at, rowid LIMIT 1", Date.now());
+		const [row] = await c.db.execute<Row>("SELECT guid, event, action, CAST(repository AS TEXT) AS repository, data, received_at, attempts FROM deliveries WHERE state = 'received' AND next_at <= ? ORDER BY received_at, rowid LIMIT 1", Date.now());
 		if (!row) break;
 		const attempts = row.attempts + 1;
 		let state = "done", said = "", next = 0;
 		try {
 			const handler = HANDLERS[row.event];
-			if (handler) await handler({ guid: row.guid, event: row.event, action: row.action, installationId: Number(c.key[0]), repositoryId: row.repository, data: JSON.parse(row.data), at: row.received_at });
-			else { state = "ignored"; said = "no handler yet"; }
+			if (handler) {
+				// Older inbox rows have safe numeric comment and review IDs.
+				const data = JSON.parse(row.data, (key, value) => key === "commentId" || key === "reviewId" ? decimalId(value) : value);
+				await handler({ guid: row.guid, event: row.event, action: row.action, installationId: githubId(c.key[0])!, repositoryId: githubId(row.repository), data, at: row.received_at });
+			} else { state = "ignored"; said = "no handler yet"; }
 		} catch {
 			said = "handler failed"; // thrown errors can contain delivery text
 			state = attempts >= 8 ? "failed" : "received";
@@ -170,7 +175,7 @@ export const githubInbox = actor({
 	},
 });
 
-async function linked(db: RawAccess, installation: number) {
+async function linked(db: RawAccess, installation: GithubId) {
 	return (await db.execute("SELECT 1 FROM installation_links WHERE installation = ? LIMIT 1", installation)).length > 0;
 }
 
@@ -206,12 +211,12 @@ async function sweep(c: Ctx) {
 
 	// One candidate per installation before any installation gets a second. Continue after
 	// the last installation served so even more than 50 active installations get a turn.
-	const candidates = await c.db.execute<{ guid: string; delivery: number; installation: number }>(`
-		SELECT guid, delivery, installation FROM pending_redelivery
-		ORDER BY row_number() OVER (PARTITION BY installation ORDER BY at, delivery),
-			installation <= coalesce((SELECT installation FROM redelivery_turn), 0), installation
+	const candidates = await c.db.execute<{ guid: string; delivery: string; installation: string }>(`
+		SELECT guid, delivery, CAST(installation AS TEXT) AS installation FROM pending_redelivery
+		ORDER BY row_number() OVER (PARTITION BY installation ORDER BY at, length(delivery), delivery),
+			pending_redelivery.installation <= coalesce((SELECT installation FROM redelivery_turn), 0), pending_redelivery.installation
 		LIMIT 50`);
-	const unavailable = new Set<number>();
+	const unavailable = new Set<string>();
 	for (const d of candidates) {
 		if (unavailable.has(d.installation)) continue;
 		if (!await linked(c.db, d.installation)) continue;
@@ -267,8 +272,18 @@ export const githubHooks = actor({
 		await db.execute("CREATE TABLE IF NOT EXISTS sweeps (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), last_at INTEGER NOT NULL, started_at INTEGER NOT NULL, cursor TEXT)");
 		await db.execute("CREATE TABLE IF NOT EXISTS installation_links (installation INTEGER NOT NULL, uid TEXT NOT NULL, PRIMARY KEY (installation, uid))");
 		await db.execute("CREATE INDEX IF NOT EXISTS links_by_user ON installation_links(uid)");
-		await db.execute("CREATE TABLE IF NOT EXISTS pending_redelivery (guid TEXT PRIMARY KEY, delivery INTEGER NOT NULL, installation INTEGER NOT NULL, at INTEGER NOT NULL)");
-		await db.execute("CREATE INDEX IF NOT EXISTS pending_by_installation ON pending_redelivery(installation, at, delivery)");
+		const pending = "CREATE TABLE IF NOT EXISTS pending_redelivery (guid TEXT PRIMARY KEY, delivery TEXT NOT NULL, installation INTEGER NOT NULL, at INTEGER NOT NULL)";
+		await db.execute(pending);
+		const columns = await db.execute<{ name: string; type: string }>("PRAGMA table_info(pending_redelivery)");
+		if (columns.some(c => c.name === "delivery" && c.type === "INTEGER")) {
+			await db.execute("ALTER TABLE pending_redelivery RENAME TO old_pending_redelivery");
+			await db.execute(pending);
+			// The old reader stored 0 for every unsafe ID. Re-list the three-day window to recover them.
+			await db.execute("INSERT INTO pending_redelivery SELECT guid, CAST(delivery AS TEXT), installation, at FROM old_pending_redelivery WHERE delivery BETWEEN 1 AND 9007199254740991");
+			await db.execute("UPDATE sweeps SET last_at = 0, started_at = 0, cursor = NULL");
+			await db.execute("DROP TABLE old_pending_redelivery");
+		}
+		await db.execute("CREATE INDEX IF NOT EXISTS pending_by_installation ON pending_redelivery(installation, at, length(delivery), delivery)");
 		await db.execute("CREATE TABLE IF NOT EXISTS redelivery_turn (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), installation INTEGER NOT NULL)");
 		await db.execute("CREATE TABLE IF NOT EXISTS redelivered (guid TEXT PRIMARY KEY, at INTEGER NOT NULL)");
 	} }),
@@ -279,10 +294,10 @@ export const githubHooks = actor({
 		if (!timer || timer.at <= Date.now()) void c.keepAwake(runSweep(c).catch(() => console.warn("github.webhook.sweep_failed")));
 	},
 	actions: {
-		internalSetInstallations: async (c, uid: string, ids: number[]) => {
+		internalSetInstallations: async (c, uid: string, ids: GithubId[]) => {
 			requireServiceFor(c, "call");
 			await c.db.transaction(async tx => {
-				const old = await tx.execute<{ installation: number }>("DELETE FROM installation_links WHERE uid = ? RETURNING installation", uid);
+				const old = await tx.execute<{ installation: string }>("DELETE FROM installation_links WHERE uid = ? RETURNING CAST(installation AS TEXT) AS installation", uid);
 				await tx.execute("INSERT OR IGNORE INTO installation_links SELECT value, ? FROM json_each(?)", uid, JSON.stringify(ids));
 				for (const { installation } of old) {
 					await tx.execute(`DELETE FROM pending_redelivery WHERE installation = ?
@@ -290,7 +305,7 @@ export const githubHooks = actor({
 				}
 			});
 		},
-		internalLinked: async (c, installation: number) => {
+		internalLinked: async (c, installation: GithubId) => {
 			requireServiceFor(c, "call");
 			return linked(c.db, installation);
 		},

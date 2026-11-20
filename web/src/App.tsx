@@ -1,4 +1,5 @@
 /** The shell: which screen the address asks for, behind the sign-in where it has to be. */
+import type { GithubId } from "@contract";
 import { useEffect, useState } from "react";
 import { Mark } from "./components/Icons";
 import { TopBar } from "./components/TopBar";
@@ -71,7 +72,7 @@ function ItemRoute({ itemId, theme, onToggleTheme }: { itemId: string; theme: Re
 }
 
 /** `view`: the page's work, or its settings; the launch form opens over the one it was opened from. */
-function RepositoryRoute({ repositoryId, view, launching, theme, onToggleTheme }: { repositoryId: number; view: RepositoryTab; launching: boolean; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
+function RepositoryRoute({ repositoryId, view, launching, theme, onToggleTheme }: { repositoryId: GithubId; view: RepositoryTab; launching: boolean; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
 	const page = useRepository(repositoryId);
 	useEffect(() => {
 		document.title = `${page.name ?? "Repository"}${view === "settings" ? " · Settings" : ""} · Windlass`;

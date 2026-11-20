@@ -7,7 +7,7 @@
  * sessions, as their actor broadcasts them, the deployment's own information, and the user's models.
  * Nothing is asked of GitHub or of a sandbox to draw a list.
  */
-import type { ModelList, PlatformInfo, PullRequestInfo, RepositoryDefaults, SandboxProfileId, SessionRepository, SessionSummary } from "@contract";
+import type { GithubId, ModelList, PlatformInfo, PullRequestInfo, RepositoryDefaults, SandboxProfileId, SessionRepository, SessionSummary } from "@contract";
 
 // ---- the user's own agents, and the sessions of their work items -------------------------------------
 
@@ -134,7 +134,7 @@ export const shownLimit = (groups: number) => (groups <= 1 ? LONE_GROUP_SHOWN : 
 export const repositoryName = (repository: Pick<SessionRepository, "owner" | "name">) => `${repository.owner}/${repository.name}`;
 
 /** The user's sessions on one repository, their work items' among them (`ownAgents` leaves those out), the most recently used first. */
-export function sessionsOn(sessions: readonly SessionSummary[], repositoryId: number): SessionSummary[] {
+export function sessionsOn(sessions: readonly SessionSummary[], repositoryId: GithubId): SessionSummary[] {
 	return sessions.filter((session) => session.repository?.id === repositoryId).sort(byUse);
 }
 
@@ -161,7 +161,7 @@ export interface OpenPull {
  * last had them, the most recently pushed first. GitHub is not asked: a pull request that was merged
  * or closed at GitHub since is listed until its agent's panel next reads it.
  */
-export function openPulls(sessions: readonly SessionSummary[], repositoryId: number): OpenPull[] {
+export function openPulls(sessions: readonly SessionSummary[], repositoryId: GithubId): OpenPull[] {
 	const open: OpenPull[] = [];
 	for (const session of sessions) {
 		const pull = session.repository?.id === repositoryId ? (session.pullRequest ?? null) : null;

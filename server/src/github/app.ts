@@ -40,6 +40,8 @@
  *   pull requests            https://docs.github.com/en/rest/pulls/pulls ("Pull requests: write" to create)
  */
 
+import type { GithubId } from "../contract.js";
+import { decimalId, githubId, githubJsonInteger, parseGithubJson } from "./ids.js";
 import { createPrivateKey, createSign, type KeyObject } from "node:crypto";
 import { githubClientSecret, githubConfig, githubPrivateKey } from "../config.js";
 import { redact } from "./redact.js";
@@ -87,7 +89,7 @@ export type PermissionLevel = "read" | "write";
 /** What an installation token is asked for: one repository (or none: the installation's list) and the permissions of one step. */
 export interface TokenScope {
 	/** GitHub's id of the one repository the token is good for; omitted only to list the installation's repositories. */
-	repositoryId?: number;
+	repositoryId?: GithubId;
 	permissions: { metadata: "read"; contents?: PermissionLevel; pull_requests?: PermissionLevel; checks?: "read"; statuses?: "read"; actions?: "read" };
 }
 
@@ -98,20 +100,20 @@ export interface InstallationToken {
 }
 
 export interface GithubUser {
-	id: number;
+	id: GithubId;
 	login: string;
 }
 
 export interface Installation {
-	id: number;
-	account: { id: number; login: string; type: "User" | "Organization" };
+	id: GithubId;
+	account: { id: GithubId; login: string; type: "User" | "Organization" };
 	/** The installation's page at GitHub, where its repositories are chosen. */
 	htmlUrl: string;
 	suspended: boolean;
 }
 
 export interface Repository {
-	id: number;
+	id: GithubId;
 	owner: string;
 	name: string;
 	private: boolean;
@@ -255,7 +257,7 @@ export class GithubApp {
 		let body: unknown = null;
 		if (raw !== "") {
 			try {
-				body = JSON.parse(raw);
+				body = parseGithubJson(raw);
 			} catch {
 				body = null;
 			}
@@ -289,9 +291,11 @@ export class GithubApp {
 	async hookDeliveries(input: { cursor?: string; status: "failure" }) {
 		const answer = await this.call({ path: "/app/hook/deliveries", query: { status: input.status, ...(input.cursor ? { cursor: input.cursor } : {}), per_page: 100 }, auth: { bearer: this.jwt() }, what: "list failed webhook deliveries" });
 		if (!Array.isArray(answer.body)) throw new Error("GitHub returned no delivery list");
-		const deliveries = answer.body.map(value => {
+		const deliveries = answer.body.flatMap(value => {
 			const row = record(value);
-			return { id: whole(row.id), guid: text(row.guid), at: Date.parse(text(row.delivered_at)), installationId: whole(row.installation_id) || null };
+			const id = decimalId(row.id);
+			if (id === null) return [];
+			return { id, guid: text(row.guid), at: Date.parse(text(row.delivered_at)), installationId: githubId(row.installation_id) };
 		});
 		const next = /<([^>]+)>;\s*rel="next"/.exec(answer.link)?.[1];
 		// Use only the cursor, never a link's host or credentials.
@@ -300,16 +304,17 @@ export class GithubApp {
 
 	// https://docs.github.com/en/rest/apps/webhooks#redeliver-a-delivery-for-an-app-webhook
 	// "You must use a JWT"; GitHub answers "202 - Accepted".
-	async redeliver(id: number): Promise<void> {
+	async redeliver(id: string): Promise<void> {
+		if (typeof id !== "string" || decimalId(id) === null) throw new Error("Invalid webhook delivery id");
 		await this.call({ method: "POST", path: `/app/hook/deliveries/${id}/attempts`, auth: { bearer: this.jwt() }, what: "redeliver a failed webhook" });
 	}
 
 	// ---- installation tokens ------------------------------------------------------------------
 
 	/** Asks GitHub for a token of one installation, restricted to `scope`. Throws GithubError: 404 when the installation is gone, 422 when it does not cover the repository or the permission. */
-	async installationToken(installationId: number, scope: TokenScope, deadline?: number): Promise<InstallationToken> {
+	async installationToken(installationId: GithubId, scope: TokenScope, deadline?: number): Promise<InstallationToken> {
 		const body: Record<string, unknown> = { permissions: scope.permissions };
-		if (scope.repositoryId !== undefined) body.repository_ids = [scope.repositoryId];
+		if (scope.repositoryId !== undefined) body.repository_ids = [githubJsonInteger(scope.repositoryId)];
 		const answer = await this.call({ method: "POST", path: `/app/installations/${installationId}/access_tokens`, body, auth: { bearer: this.jwt() }, what: "get a token for the installation", deadline });
 		const fields = record(answer.body);
 		const token = text(fields.token);
@@ -334,7 +339,7 @@ export class GithubApp {
 	 * Runs `step` with a token of the installation for exactly `scope`. The token is not kept: one that
 	 * `step` took into a sandbox (`revokeAfter`) is revoked when the step has ended, however it ended.
 	 */
-	async withToken<T>(installationId: number, scope: TokenScope, step: (token: string) => Promise<T>, options: { revokeAfter?: boolean } = {}): Promise<T> {
+	async withToken<T>(installationId: GithubId, scope: TokenScope, step: (token: string) => Promise<T>, options: { revokeAfter?: boolean } = {}): Promise<T> {
 		const issued = await this.installationToken(installationId, scope);
 		try {
 			return await step(issued.token);
@@ -360,9 +365,10 @@ export class GithubApp {
 	async viewer(userToken: string): Promise<GithubUser> {
 		const answer = await this.call({ path: "/user", auth: { bearer: userToken }, what: "read who authorized" });
 		const fields = record(answer.body);
-		const user = { id: whole(fields.id), login: text(fields.login) };
-		if (user.id === 0 || user.login === "") throw new GithubError(answer.status, "the answer names no user", "could not read who authorized");
-		return user;
+		const id = githubId(fields.id);
+		const login = text(fields.login);
+		if (id === null || login === "") throw new GithubError(answer.status, "the answer names no user", "could not read who authorized");
+		return { id, login };
 	}
 
 	/** The installations of this app the user can reach: accounts they own, and ones they are a member or collaborator in. */
@@ -375,13 +381,13 @@ export class GithubApp {
 		for (const item of items) {
 			const fields = record(item);
 			const account = record(fields.account);
-			const id = whole(fields.id);
+			const id = githubId(fields.id);
 			const login = text(account.login);
 			// An enterprise's installation has a `slug` and no `login`: the platform works on repositories of users and organizations.
-			if (id === 0 || login === "") continue;
+			if (id === null || login === "") continue;
 			installations.push({
 				id,
-				account: { id: whole(account.id), login, type: text(account.type) === "Organization" ? "Organization" : "User" },
+				account: { id: githubId(account.id) ?? 0, login, type: text(account.type) === "Organization" ? "Organization" : "User" },
 				htmlUrl: text(fields.html_url),
 				suspended: fields.suspended_at !== null && fields.suspended_at !== undefined,
 			});
@@ -411,10 +417,10 @@ export class GithubApp {
 
 	private repositoryOf(value: unknown): Repository | null {
 		const fields = record(value);
-		const id = whole(fields.id);
+		const id = githubId(fields.id);
 		const owner = text(record(fields.owner).login);
 		const name = text(fields.name);
-		if (id === 0 || owner === "" || name === "") return null;
+		if (id === null || owner === "" || name === "") return null;
 		const pushed = Date.parse(text(fields.pushed_at));
 		return { id, owner, name, private: fields.private === true, archived: fields.archived === true, defaultBranch: text(fields.default_branch) || "main", pushedAt: Number.isFinite(pushed) ? pushed : null };
 	}
@@ -485,7 +491,7 @@ export class GithubApp {
 	}
 
 	/** Job logs redirect to short-lived storage URLs. Start a fresh request there without the installation token. */
-	async jobLog(token: string, owner: string, name: string, jobId: number): Promise<Response> {
+	async jobLog(token: string, owner: string, name: string, jobId: string): Promise<Response> {
 		const response = await this.request({ path: `/repos/${owner}/${name}/actions/jobs/${jobId}/logs`, auth: { bearer: token }, what: "read the job log" }, "manual");
 		const location = response.headers.get("location");
 		if (response.status < 300 || response.status >= 400 || !location) return response;
@@ -524,19 +530,21 @@ export class GithubApp {
 	}
 
 	async issueComments(token: string, owner: string, name: string, number: number) {
-		const answer = await this.call({ path: `/repos/${owner}/${name}/issues/${number}/comments`, query: { per_page: 100 }, auth: { bearer: token }, what: "list the pull request's comments" });
-		if (!Array.isArray(answer.body)) throw new GithubError(answer.status, "the answer is not a list", "could not read the comments");
-		return answer.body.map((entry) => {
-			const fields = record(entry);
-			return { id: whole(fields.id), body: text(fields.body), author: text(record(fields.user).login) };
+		const { items } = await this.pages({ path: `/repos/${owner}/${name}/issues/${number}/comments`, auth: { bearer: token }, what: "list the pull request's comments" }, body => {
+			if (!Array.isArray(body)) throw new Error("GitHub returned no comment list");
+			return body.map(entry => {
+				const fields = record(entry);
+				return { id: decimalId(fields.id), body: text(fields.body), author: text(record(fields.user).login) };
+			});
 		});
+		return items;
 	}
 
 	async createIssueComment(token: string, owner: string, name: string, number: number, body: string): Promise<void> {
 		await this.call({ method: "POST", path: `/repos/${owner}/${name}/issues/${number}/comments`, body: { body }, auth: { bearer: token }, what: "post the verdict comment" });
 	}
 
-	async updateIssueComment(token: string, owner: string, name: string, id: number, body: string): Promise<void> {
+	async updateIssueComment(token: string, owner: string, name: string, id: string, body: string): Promise<void> {
 		await this.call({ method: "PATCH", path: `/repos/${owner}/${name}/issues/comments/${id}`, body: { body }, auth: { bearer: token }, what: "edit the verdict comment" });
 	}
 

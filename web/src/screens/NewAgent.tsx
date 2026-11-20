@@ -36,7 +36,7 @@
  * kept sandboxes and the one on running agents are the platform's own sandboxes', so on a machine the
  * form says nothing of them.
  */
-import { MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type UsageNumbers } from "@contract";
+import { type GithubId, MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type UsageNumbers } from "@contract";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
@@ -117,7 +117,7 @@ function DefaultsNote({
 	/** "owner/name" of the chosen repository; null when none is chosen. */
 	repository: string | null;
 	/** GitHub's id for it, for the way to its settings. */
-	repositoryId: number | null;
+	repositoryId: GithubId | null;
 	defaults: LayeredChoices;
 	used: { profile: boolean; model: boolean };
 	profileName: string | null;
@@ -200,10 +200,10 @@ function launchLimit(numbers: UsageNumbers | null): { text: string; warn: boolea
 }
 
 /** What is saved as the defaults of the repository that is chosen: read when the choice changes. `defaults` is null while it is read and when it could not be. */
-function useDefaults(repositoryId: number | null): { defaults: RepositoryDefaults | null; reading: boolean; error: string | null } {
+function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefaults | null; reading: boolean; error: string | null } {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const [state, setState] = useState<{ repositoryId: number | null; defaults: RepositoryDefaults | null; error: string | null }>({ repositoryId: null, defaults: null, error: null });
+	const [state, setState] = useState<{ repositoryId: GithubId | null; defaults: RepositoryDefaults | null; error: string | null }>({ repositoryId: null, defaults: null, error: null });
 	useEffect(() => {
 		setState({ repositoryId, defaults: null, error: null });
 		if (repositoryId === null) return;
@@ -225,7 +225,7 @@ function useDefaults(repositoryId: number | null): { defaults: RepositoryDefault
 }
 
 /** `repositoryId`: GitHub's id for the repository the form opens with, when it was opened from that repository's page; `over`, the view of that page it was opened from. */
-export function NewAgent({ repositoryId, over }: { repositoryId?: number; over?: "settings" } = {}) {
+export function NewAgent({ repositoryId, over }: { repositoryId?: GithubId; over?: "settings" } = {}) {
 	const { client, platform, explain } = useApp();
 	const auth = useAuth();
 	const info = platform.info;

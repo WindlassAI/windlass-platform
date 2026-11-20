@@ -59,6 +59,7 @@
  * The world is rebuilt from the token on every page load, so the seeded sessions keep their IDs
  * across a reload and sessions created by hand do not survive one.
  */
+import { githubId } from "../../../server/src/github/ids.js";
 import {
 	MAX_IDEMPOTENCY_KEY_CHARS,
 	MAX_PROMPT_CHARS,
@@ -85,6 +86,7 @@ import {
 	type AuthResult,
 	type ChatgptStatus,
 	type CreateSessionInput,
+	type GithubId,
 	type GithubAccount,
 	type GithubBranchList,
 	type GithubConnection,
@@ -1131,15 +1133,15 @@ interface World {
 	/** The user's remembered approvals of projects' servers. */
 	approvals: MockApproval[];
 	/** The setup commands the user saved, by GitHub's id for the repository. */
-	setups: Map<number, { command: string; updatedAt: number }>;
+	setups: Map<GithubId, { command: string; updatedAt: number }>;
 	/** The checks the user saved for a repository, by GitHub's id for it. */
-	checks: Map<number, { checks: RepositoryCheck[]; updatedAt: number }>;
+	checks: Map<GithubId, { checks: RepositoryCheck[]; updatedAt: number }>;
 	/** The secrets the user saved, by repository and name. A value is not kept at all: nothing here could show one. */
-	secrets: Map<number, Map<string, { scope: SecretScope; updatedAt: number }>>;
+	secrets: Map<GithubId, Map<string, { scope: SecretScope; updatedAt: number }>>;
 	/** What new agents on a repository start with, where the user said so, by GitHub's id for it. */
-	defaults: Map<number, { profile: SandboxProfileId | null; model: string | null; updatedAt: number }>;
+	defaults: Map<GithubId, { profile: SandboxProfileId | null; model: string | null; updatedAt: number }>;
 	/** What a repository was called when something was last saved for it or GitHub was last asked: what names one that has no session. */
-	names: Map<number, string>;
+	names: Map<GithubId, string>;
 	/** What the user keeps for their account, whatever the repository. A secret's value is not kept at all. */
 	account: {
 		defaults: { profile: SandboxProfileId | null; model: string | null; updatedAt: number } | null;
@@ -2409,12 +2411,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	// ---- setup commands of repositories -----------------------------------------------------------
 
-	function setupOf(world: World, repositoryId: number): RepositorySetup {
+	function setupOf(world: World, repositoryId: GithubId): RepositorySetup {
 		const saved = world.setups.get(repositoryId);
 		return { command: saved?.command ?? "", updatedAt: saved?.updatedAt ?? null, timeoutMs: MOCK_SETUP_LIMIT_MS };
 	}
 
-	function saveSetup(world: World, repositoryId: number, raw: string): RepositorySetup {
+	function saveSetup(world: World, repositoryId: GithubId, raw: string): RepositorySetup {
 		const command = raw.replace(/\r\n?/g, "\n").trim();
 		if (command.length > MAX_SETUP_COMMAND_CHARS) throw new PlatformError("user", `The setup command is ${command.length} characters long; the limit is ${MAX_SETUP_COMMAND_CHARS}. Put a longer one in a script in the repository and run that.`, { reason: "bad_setup_command" });
 		if (command === "") world.setups.delete(repositoryId);
@@ -2424,13 +2426,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	// ---- checks of repositories -------------------------------------------------------------------
 
-	function checksOf(world: World, repositoryId: number): RepositoryChecks {
+	function checksOf(world: World, repositoryId: GithubId): RepositoryChecks {
 		const saved = world.checks.get(repositoryId);
 		return { checks: saved?.checks ?? [], updatedAt: saved?.updatedAt ?? null };
 	}
 
 	/** Saves as the server does (server/src/repository-checks.ts): the same refusals in the same words, and the list whole. */
-	function saveChecks(world: World, repositoryId: number, raw: RepositoryCheck[]): RepositoryChecks {
+	function saveChecks(world: World, repositoryId: GithubId, raw: RepositoryCheck[]): RepositoryChecks {
 		const refuse = (message: string): never => {
 			throw new PlatformError("user", message, { reason: "bad_checks" });
 		};
@@ -2460,7 +2462,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	// ---- secrets of repositories ------------------------------------------------------------------
 
 	/** As the server says it (server/src/actors/user.ts, `secretLists`): for a session's sandbox what its Windlass said, the older one for a sandbox nobody asked, and a sandbox made now otherwise. */
-	function secretsOf(world: World, repositoryId: number, profileId: SandboxProfileId, sessionId?: string): RepositorySecrets {
+	function secretsOf(world: World, repositoryId: GithubId, profileId: SandboxProfileId, sessionId?: string): RepositorySecrets {
 		const profile = profiles.find((item) => item.id === profileId);
 		if (!profile) throw new PlatformError("user", "Choose one of the listed sandboxes.", { reason: "bad_input" });
 		const session = sessionId === undefined ? undefined : world.sessions.get(sessionId)?.summary;
@@ -2470,7 +2472,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** Saves as the server does (server/src/repo-secrets.ts): the same refusals in the same words. The value is looked at and dropped. */
-	function saveSecret(world: World, repositoryId: number, secret: { name: string; value?: string; scope: SecretScope }): void {
+	function saveSecret(world: World, repositoryId: GithubId, secret: { name: string; value?: string; scope: SecretScope }): void {
 		const { name, scope } = secret;
 		checkSecretName(name);
 		if (scope !== "setup" && scope !== "agent") throw badSecret("A secret is for the setup command and MCP servers, or for the agent's commands as well.");
@@ -2507,24 +2509,24 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	// ---- a repository's page ---------------------------------------------------------------------
 
 	/** As the server names a repository without asking GitHub: by the newest session on it, then by what was noted when something was saved. */
-	function repositoryNameOf(world: World, repositoryId: number): string | null {
+	function repositoryNameOf(world: World, repositoryId: GithubId): string | null {
 		const newest = listOf(world).find((summary) => summary.repository?.id === repositoryId)?.repository;
 		return newest ? `${newest.owner}/${newest.name}` : (world.names.get(repositoryId) ?? null);
 	}
 
 	/** As the server does when something is saved for a repository nothing names yet: GitHub is asked what it is called, where the connection covers it. */
-	function nameAtSave(world: World, repositoryId: number): void {
+	function nameAtSave(world: World, repositoryId: GithubId): void {
 		if (repositoryNameOf(world, repositoryId) !== null || !githubOn || !world.github) return;
 		const found = GITHUB_REPOSITORIES.find((repository) => repository.id === repositoryId);
 		if (found) world.names.set(repositoryId, `${found.owner}/${found.name}`);
 	}
 
-	function defaultsOf(world: World, repositoryId: number): RepositoryDefaults {
+	function defaultsOf(world: World, repositoryId: GithubId): RepositoryDefaults {
 		const saved = world.defaults.get(repositoryId);
 		return { profile: saved?.profile ?? null, model: saved?.model ?? null, updatedAt: saved?.updatedAt ?? null };
 	}
 
-	function repositoryViewOf(world: World, repositoryId: number): RepositoryView {
+	function repositoryViewOf(world: World, repositoryId: GithubId): RepositoryView {
 		const approvals = new Map<string, RepositoryApproval>();
 		const mine = world.approvals.filter((approval) => approval.project === `github:${repositoryId}` && approval.expiresAt > now()).sort((a, b) => b.approvedAt - a.approvedAt);
 		for (const approval of mine) {
@@ -2543,7 +2545,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** Saves as the server does (server/src/repository-defaults.ts): the same refusals in the same words, and only the fields that are named. */
-	function saveDefaults(world: World, repositoryId: number, change: { profile?: SandboxProfileId | null; model?: string | null }): RepositoryDefaults {
+	function saveDefaults(world: World, repositoryId: GithubId, change: { profile?: SandboxProfileId | null; model?: string | null }): RepositoryDefaults {
 		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change, modelsFor(world.profile));
 		if (next === null) world.defaults.delete(repositoryId);
 		else world.defaults.set(repositoryId, next);
@@ -3033,45 +3035,45 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (!githubOn) throw new PlatformError("user", "This deployment has no GitHub App, so GitHub cannot be connected here.", { reason: "github_off" });
 				return { connection: world().github };
 			},
-			async repositorySetup(repositoryId: number): Promise<RepositorySetup> {
+			async repositorySetup(repositoryId: GithubId): Promise<RepositorySetup> {
 				await latency(180);
 				return setupOf(world(), repositoryId);
 			},
-			async saveRepositorySetup(repositoryId: number, command: string): Promise<RepositorySetup> {
+			async saveRepositorySetup(repositoryId: GithubId, command: string): Promise<RepositorySetup> {
 				await latency(320);
 				nameAtSave(world(), repositoryId);
 				return saveSetup(world(), repositoryId, command);
 			},
-			async repositoryChecks(repositoryId: number): Promise<RepositoryChecks> {
+			async repositoryChecks(repositoryId: GithubId): Promise<RepositoryChecks> {
 				await latency(180);
 				return checksOf(world(), repositoryId);
 			},
-			async saveRepositoryChecks(repositoryId: number, checks: RepositoryCheck[]): Promise<RepositoryChecks> {
+			async saveRepositoryChecks(repositoryId: GithubId, checks: RepositoryCheck[]): Promise<RepositoryChecks> {
 				await latency(320);
 				nameAtSave(world(), repositoryId);
 				return saveChecks(world(), repositoryId, checks);
 			},
-			async repositorySecrets(repositoryId: number, profile: SandboxProfileId, sessionId?: string): Promise<RepositorySecrets> {
+			async repositorySecrets(repositoryId: GithubId, profile: SandboxProfileId, sessionId?: string): Promise<RepositorySecrets> {
 				await latency(200);
 				return secretsOf(world(), repositoryId, profile, sessionId);
 			},
-			async saveRepositorySecret(repositoryId: number, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }, sessionId?: string): Promise<RepositorySecrets> {
+			async saveRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }, sessionId?: string): Promise<RepositorySecrets> {
 				await latency(340);
 				nameAtSave(world(), repositoryId);
 				saveSecret(world(), repositoryId, secret);
 				return secretsOf(world(), repositoryId, profile, sessionId);
 			},
-			async deleteRepositorySecret(repositoryId: number, profile: SandboxProfileId, name: string, sessionId?: string): Promise<RepositorySecrets> {
+			async deleteRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, name: string, sessionId?: string): Promise<RepositorySecrets> {
 				await latency(280);
 				world().secrets.get(repositoryId)?.delete(name);
 				if (world().secrets.get(repositoryId)?.size === 0) world().secrets.delete(repositoryId);
 				return secretsOf(world(), repositoryId, profile, sessionId);
 			},
-			async repository(repositoryId: number): Promise<RepositoryView> {
+			async repository(repositoryId: GithubId): Promise<RepositoryView> {
 				await latency(180);
 				return repositoryViewOf(world(), repositoryId);
 			},
-			async githubRepository(repositoryId: number): Promise<GithubRepository> {
+			async githubRepository(repositoryId: GithubId): Promise<GithubRepository> {
 				await latency(380);
 				requireGithub(world());
 				if (nextGithub === "list") {
@@ -3085,12 +3087,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				world().names.set(repositoryId, `${found.owner}/${found.name}`);
 				return describeRepository(found);
 			},
-			async saveRepositoryDefaults(repositoryId: number, change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults> {
+			async saveRepositoryDefaults(repositoryId: GithubId, change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults> {
 				await latency(300);
 				nameAtSave(world(), repositoryId);
 				return saveDefaults(world(), repositoryId, change);
 			},
-			async forgetRepositoryApproval(repositoryId: number, name: string): Promise<RepositoryView> {
+			async forgetRepositoryApproval(repositoryId: GithubId, name: string): Promise<RepositoryView> {
 				await serversLatency(360);
 				if (nextServers === "forget") {
 					nextServers = null;
@@ -3100,7 +3102,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				current.approvals = current.approvals.filter((approval) => !(approval.project === `github:${repositoryId}` && approval.name === name));
 				return repositoryViewOf(current, repositoryId);
 			},
-			async forgetRepository(repositoryId: number): Promise<RepositoryView> {
+			async forgetRepository(repositoryId: GithubId): Promise<RepositoryView> {
 				await latency(420);
 				const current = world();
 				current.secrets.delete(repositoryId);
@@ -3173,14 +3175,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const current = world();
 				// A deployment that never had a GitHub App has nothing saved for a repository.
 				if (!githubOn) return [];
-				const ids = new Set<number>([...current.setups.keys(), ...current.checks.keys(), ...current.secrets.keys(), ...current.defaults.keys()]);
+				const ids = new Set<GithubId>([...current.setups.keys(), ...current.checks.keys(), ...current.secrets.keys(), ...current.defaults.keys()]);
 				for (const approval of current.approvals) {
-					const id = /^github:([1-9][0-9]*)$/.exec(approval.project)?.[1];
-					if (id !== undefined && approval.expiresAt > now()) ids.add(Number(id));
+					const id = githubId(/^github:([1-9][0-9]*)$/.exec(approval.project)?.[1]);
+					if (id !== null && approval.expiresAt > now()) ids.add(id);
 				}
 				return [...ids]
 					.map((id) => ({ id, name: repositoryNameOf(current, id) }))
-					.sort((a, b) => Number(a.name === null) - Number(b.name === null) || (a.name ?? "").localeCompare(b.name ?? "") || a.id - b.id);
+					.sort((a, b) => Number(a.name === null) - Number(b.name === null) || (a.name ?? "").localeCompare(b.name ?? "") || String(a.id).localeCompare(String(b.id), "en", { numeric: true }));
 			},
 			async githubConnect(page: string): Promise<{ url: string }> {
 				await latency(420);
@@ -3221,7 +3223,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const matching = GITHUB_REPOSITORIES.filter((repository) => `${repository.owner}/${repository.name}`.toLowerCase().includes(wanted)).sort((a, b) => rank(a) - rank(b) || a.pushedHoursAgo - b.pushedHoursAgo);
 				return { repositories: matching.map(describeRepository), more: false, incomplete: false };
 			},
-			async githubBranches(repositoryId: number): Promise<GithubBranchList> {
+			async githubBranches(repositoryId: GithubId): Promise<GithubBranchList> {
 				await latency(320);
 				requireGithub(world());
 				const found = GITHUB_REPOSITORIES.find((repository) => repository.id === repositoryId);

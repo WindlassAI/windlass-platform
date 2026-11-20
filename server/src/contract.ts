@@ -322,7 +322,7 @@ export interface CreateSessionInput {
 	 * A repository of the user's GitHub connection to launch on, by GitHub's id for it (`GithubRepository.id`),
 	 * and the branch to start from (default: the repository's default branch). Not together with `repoUrl`.
 	 */
-	repository?: { id: number; branch?: string };
+	repository?: { id: GithubId; branch?: string };
 	/**
 	 * With `repository`: the setup command to save for that repository before the session is made
 	 * (`RepositorySetup`), in place of what was saved; "" saves none. Left out, what is saved stays.
@@ -359,10 +359,13 @@ export interface ChatgptStatus {
 
 // --- GitHub ----------------------------------------------------------------------------------
 
+/** Account, installation and repository IDs are numbers through MAX_SAFE_INTEGER, then decimal strings. */
+export type GithubId = number | string;
+
 /** An account the GitHub App is installed on, which the connected GitHub user can reach. */
 export interface GithubAccount {
 	/** The installation's id at GitHub. */
-	installationId: number;
+	installationId: GithubId;
 	/** The account's name: a user's or an organization's login. */
 	login: string;
 	kind: "user" | "organization";
@@ -385,7 +388,7 @@ export interface GithubStatus {
 /** A repository the connection covers and the connected GitHub user can open. */
 export interface GithubRepository {
 	/** GitHub's id for it: what `CreateSessionInput.repository` names. */
-	id: number;
+	id: GithubId;
 	owner: string;
 	name: string;
 	private: boolean;
@@ -416,7 +419,7 @@ export interface GithubBranchList {
 export interface SessionRepository {
 	provider: "github";
 	/** GitHub's id for the repository. */
-	id: number;
+	id: GithubId;
 	owner: string;
 	name: string;
 	/** The branch the agent started from, and the base of the session's pull request. */
@@ -741,7 +744,7 @@ export interface RepositoryApproval {
  */
 export interface RepositoryView {
 	/** GitHub's id for the repository. */
-	id: number;
+	id: GithubId;
 	/**
 	 * "owner/name" as the user's sessions on it, or what was saved for it, last had it; null when
 	 * nothing names it. GitHub is not asked: `githubRepository` says what it is called now.
@@ -758,7 +761,7 @@ export interface RepositoryView {
 
 /** A repository the user's actor keeps something for: a setup command, a secret, a default or a remembered approval. */
 export interface SavedRepository {
-	id: number;
+	id: GithubId;
 	/** As `RepositoryView.name`. */
 	name: string | null;
 }
@@ -1277,7 +1280,7 @@ export interface ItemView extends ItemSummary {
 
 export interface CreateItemInput {
 	/** A repository of the user's GitHub connection, by GitHub's id for it, and the base branch (default: the repository's default branch). */
-	repository: { id: number; branch?: string };
+	repository: { id: GithubId; branch?: string };
 	/** At most MAX_TITLE_CHARS. */
 	title: string;
 	/** At most MAX_ITEM_BODY_CHARS. */
@@ -1355,23 +1358,23 @@ export interface UserActions {
 	 * With `fresh`, GitHub is asked anew: for a repository that was added to an installation a moment ago.
 	 */
 	githubRepositories(query: string, fresh?: boolean): Promise<GithubRepositoryList>;
-	githubBranches(repositoryId: number): Promise<GithubBranchList>;
+	githubBranches(repositoryId: GithubId): Promise<GithubBranchList>;
 	/** The setup command the user saved for a repository, by GitHub's id for it. Asks GitHub nothing. */
-	repositorySetup(repositoryId: number): Promise<RepositorySetup>;
+	repositorySetup(repositoryId: GithubId): Promise<RepositorySetup>;
 	/**
 	 * Saves the user's setup command for a repository; "" saves none. It runs in sandboxes made from then
 	 * on: a sandbox that has its clone already is not set up again. Throws a UserError with code
 	 * `bad_setup_command` for one longer than MAX_SETUP_COMMAND_CHARS or with a character a shell cannot take.
 	 */
-	saveRepositorySetup(input: { repositoryId: number; command: string }): Promise<RepositorySetup>;
+	saveRepositorySetup(input: { repositoryId: GithubId; command: string }): Promise<RepositorySetup>;
 	/** The checks the user saved for a repository, by GitHub's id for it. Asks GitHub nothing. */
-	repositoryChecks(repositoryId: number): Promise<RepositoryChecks>;
+	repositoryChecks(repositoryId: GithubId): Promise<RepositoryChecks>;
 	/**
 	 * Saves the user's checks for a repository: the whole list, in place of what was saved; an empty
 	 * one saves none. They are handed to Windlass from each session's next turn on that repository.
 	 * Throws a UserError with code `bad_checks` for a list that cannot be saved, with what is wrong.
 	 */
-	saveRepositoryChecks(input: { repositoryId: number; checks: RepositoryCheck[] }): Promise<RepositoryChecks>;
+	saveRepositoryChecks(input: { repositoryId: GithubId; checks: RepositoryCheck[] }): Promise<RepositoryChecks>;
 	/**
 	 * The names, scopes and times of the secrets the user saved for a repository, and what each reaches
 	 * in a sandbox of `profile`. With `sessionId`, one of the user's sessions on that repository, it is
@@ -1379,7 +1382,7 @@ export interface UserActions {
 	 * without, for a sandbox made now. No value: a saved value is never sent to a client. Asks GitHub
 	 * nothing. `sessionId` means the same in the two actions below, which answer with the list.
 	 */
-	repositorySecrets(input: { repositoryId: number; profile: SandboxProfileId; sessionId?: string }): Promise<RepositorySecrets>;
+	repositorySecrets(input: { repositoryId: GithubId; profile: SandboxProfileId; sessionId?: string }): Promise<RepositorySecrets>;
 	/**
 	 * Saves a secret of a repository. With `value`: a new secret, or a new value for the one of that
 	 * name. Without: only the scope of the one of that name is changed. It reaches a setup command in
@@ -1387,38 +1390,38 @@ export interface UserActions {
 	 * code `bad_secret` for a name or value that cannot be saved, `too_many_secrets` at
 	 * MAX_SECRETS_PER_REPOSITORY, and `secret_not_found` for a scope change of a name that is not saved.
 	 */
-	saveRepositorySecret(input: { repositoryId: number; profile: SandboxProfileId; sessionId?: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
+	saveRepositorySecret(input: { repositoryId: GithubId; profile: SandboxProfileId; sessionId?: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
 	/** Deletes a secret of a repository. A sandbox whose setup command already had it keeps what that command made of it. */
-	deleteRepositorySecret(input: { repositoryId: number; profile: SandboxProfileId; sessionId?: string; name: string }): Promise<RepositorySecrets>;
+	deleteRepositorySecret(input: { repositoryId: GithubId; profile: SandboxProfileId; sessionId?: string; name: string }): Promise<RepositorySecrets>;
 	/**
 	 * What is kept for a repository, by GitHub's id for it: the defaults for new sessions and the
 	 * remembered approvals of its MCP servers. Asks GitHub nothing, and answers for a repository the
 	 * user can no longer reach, too: what was saved stays until its user deletes it.
 	 */
-	repository(repositoryId: number): Promise<RepositoryView>;
+	repository(repositoryId: GithubId): Promise<RepositoryView>;
 	/**
 	 * The repository as GitHub has it now, when the user's connection covers it and the connected user
 	 * may read it: what a new session can be launched on. Throws a UserError that says what is in the
 	 * way: `github_off`, `github_not_connected`, `github_gone` or `github_denied` when it cannot be used
 	 * for new sessions, `github_unreachable` or `github_failed` when GitHub could not be asked.
 	 */
-	githubRepository(repositoryId: number): Promise<GithubRepository>;
+	githubRepository(repositoryId: GithubId): Promise<GithubRepository>;
 	/**
 	 * Saves what new sessions on a repository start with. A field that is left out stays as it is;
 	 * null saves none for it. Throws a UserError with code `bad_input` for a sandbox this deployment
 	 * does not offer or cannot run, and `bad_model` for a model that is not among the user's.
 	 */
-	saveRepositoryDefaults(input: { repositoryId: number; profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(input: { repositoryId: GithubId; profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
 	/**
 	 * Forgets the user's remembered approvals of that MCP server for a repository, whatever its
 	 * definition was (`RepositoryView.forgetting` says what stays). Resolves when nothing was remembered, too.
 	 */
-	forgetRepositoryApproval(input: { repositoryId: number; name: string }): Promise<RepositoryView>;
+	forgetRepositoryApproval(input: { repositoryId: GithubId; name: string }): Promise<RepositoryView>;
 	/**
 	 * Deletes everything kept for a repository: its setup command, its checks, its secrets, its defaults
 	 * and the remembered approvals. The user's sessions on it stay, and their next sandbox is made without them.
 	 */
-	forgetRepository(repositoryId: number): Promise<RepositoryView>;
+	forgetRepository(repositoryId: GithubId): Promise<RepositoryView>;
 	/** The repositories something is kept for, by name. Asks GitHub nothing. */
 	savedRepositories(): Promise<SavedRepository[]>;
 	/** The account's settings: the defaults for new sessions and the user's own MCP servers. No secret's value. */

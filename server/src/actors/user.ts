@@ -75,10 +75,11 @@
  * whichever servers, and each takes its hold and its place here, so no server counts for itself.
  */
 
+import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
 import { launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
 import { ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
-import type { ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemSummary, ItemView } from "../contract.js";
+import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
@@ -565,7 +566,7 @@ async function listSecrets(db: RawAccess, project: string, profile: SandboxProfi
  * session, and for one that has no sandbox yet, it is said for a sandbox made now, from an image
  * with the Windlass this platform is built for (README, "Run it").
  */
-function secretLists(vars: UserVars, repositoryId: number, sessionId: unknown): boolean {
+function secretLists(vars: UserVars, repositoryId: GithubId, sessionId: unknown): boolean {
 	const session = typeof sessionId === "string" ? vars.sessions.get(sessionId) : undefined;
 	if (session === undefined || session.repository?.id !== repositoryId || session.sandbox === "none") return true;
 	return session.envLists === true;
@@ -619,16 +620,16 @@ function repositoryLabel(vars: UserVars, repositoryId: unknown): string {
 const MAX_SAVED_REPOSITORIES = 500;
 
 /** GitHub's id for the repository a key names; null for the key of a pasted address or of a session. */
-function repositoryIdOf(project: string): number | null {
-	const id = /^github:([1-9][0-9]{0,15})$/.exec(project)?.[1];
-	return id === undefined ? null : Number(id);
+function repositoryIdOf(project: string): GithubId | null {
+	const id = /^github:([1-9][0-9]{0,18})$/.exec(project)?.[1];
+	return githubId(id);
 }
 
 /**
  * "owner/name" of a repository without asking GitHub: as the newest session on it has it, and with no
  * session, as it was called when something was last saved for it. "" when nothing names it.
  */
-async function repositoryName(c: UserCtx, repositoryId: number, project: string): Promise<string> {
+async function repositoryName(c: UserCtx, repositoryId: GithubId, project: string): Promise<string> {
 	const known = repositoryLabel(c.vars, repositoryId);
 	if (known !== "") return known;
 	const [row] = await c.db.execute<{ label: string }>(
@@ -650,7 +651,7 @@ const NAMING_MS = 4_000;
  * launch form and never launches would otherwise leave a row no page could name. Never throws: a
  * repository GitHub does not name now is saved for all the same, without a name.
  */
-async function labelFor(c: UserCtx, repositoryId: number, project: string): Promise<string> {
+async function labelFor(c: UserCtx, repositoryId: GithubId, project: string): Promise<string> {
 	const known = await repositoryName(c, repositoryId, project);
 	const app = githubApp();
 	const connection = c.vars.github;
@@ -664,7 +665,7 @@ async function labelFor(c: UserCtx, repositoryId: number, project: string): Prom
 }
 
 /** What is kept for a repository beside its setup command and its secrets, which have their own actions. No value of a secret is read. */
-async function repositoryView(c: UserCtx, repositoryId: number, project: string): Promise<RepositoryView> {
+async function repositoryView(c: UserCtx, repositoryId: GithubId, project: string): Promise<RepositoryView> {
 	const defaults = await readDefaults(c.db, project);
 	const [setup] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM setup_command WHERE project = ?", project);
 	const [secrets] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ?", project);
@@ -949,7 +950,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	if (input.repository !== undefined && input.repository !== null) {
 		if (repoUrl !== null) throw new UserError("Choose a repository from GitHub or paste an address, not both.", { code: "bad_input" });
 		const { id, branch } = input.repository;
-		if (!Number.isSafeInteger(id) || id <= 0 || (branch !== undefined && branch !== null && !isBranchName(branch))) throw new UserError("Choose one of the listed repositories and one of its branches.", { code: "bad_input" });
+		if (!isGithubId(id) || (branch !== undefined && branch !== null && !isBranchName(branch))) throw new UserError("Choose one of the listed repositories and one of its branches.", { code: "bad_input" });
 		const app = requireGithub();
 		try {
 			const { installation, repository } = await resolveRepository(app, requireConnection(c), id, "read");
@@ -1560,11 +1561,11 @@ export const user = actor({
 			}
 		},
 
-		githubBranches: async (c, repositoryId: number): Promise<GithubBranchList> => {
+		githubBranches: async (c, repositoryId: GithubId): Promise<GithubBranchList> => {
 			requireUser(c);
 			const app = requireGithub();
 			const connection = requireConnection(c);
-			if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) throw new UserError("Choose one of the listed repositories.", { code: "bad_input" });
+			if (!isGithubId(repositoryId)) throw new UserError("Choose one of the listed repositories.", { code: "bad_input" });
 			try {
 				return await listBranches(app, connection, repositoryId);
 			} catch (error) {
@@ -1574,7 +1575,7 @@ export const user = actor({
 
 		// --- setup commands of repositories (setup-command.ts) --------------------------------------
 
-		repositorySetup: async (c, repositoryId: number): Promise<RepositorySetup> => {
+		repositorySetup: async (c, repositoryId: GithubId): Promise<RepositorySetup> => {
 			requireUser(c);
 			const project = setupKeyOf(repositoryId);
 			try {
@@ -1584,7 +1585,7 @@ export const user = actor({
 			}
 		},
 
-		saveRepositorySetup: async (c, input: { repositoryId: number; command: string }): Promise<RepositorySetup> => {
+		saveRepositorySetup: async (c, input: { repositoryId: GithubId; command: string }): Promise<RepositorySetup> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const command = setupCommandOf(input?.command);
@@ -1597,7 +1598,7 @@ export const user = actor({
 
 		// --- checks of repositories (repository-checks.ts) -------------------------------------------
 
-		repositoryChecks: async (c, repositoryId: number): Promise<RepositoryChecks> => {
+		repositoryChecks: async (c, repositoryId: GithubId): Promise<RepositoryChecks> => {
 			requireUser(c);
 			const project = setupKeyOf(repositoryId);
 			try {
@@ -1607,7 +1608,7 @@ export const user = actor({
 			}
 		},
 
-		saveRepositoryChecks: async (c, input: { repositoryId: number; checks: RepositoryCheck[] }): Promise<RepositoryChecks> => {
+		saveRepositoryChecks: async (c, input: { repositoryId: GithubId; checks: RepositoryCheck[] }): Promise<RepositoryChecks> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			let checks: RepositoryCheck[];
@@ -1636,7 +1637,7 @@ export const user = actor({
 
 		// --- secrets of repositories (repo-secrets.ts) ----------------------------------------------
 
-		repositorySecrets: async (c, input: { repositoryId: number; profile: string; sessionId?: string }): Promise<RepositorySecrets> => {
+		repositorySecrets: async (c, input: { repositoryId: GithubId; profile: string; sessionId?: string }): Promise<RepositorySecrets> => {
 			requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const profile = await secretProfile(input?.profile);
@@ -1647,7 +1648,7 @@ export const user = actor({
 			}
 		},
 
-		saveRepositorySecret: async (c, input: { repositoryId: number; profile: string; sessionId?: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets> => {
+		saveRepositorySecret: async (c, input: { repositoryId: GithubId; profile: string; sessionId?: string; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets> => {
 			const user = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const profile = await secretProfile(input?.profile);
@@ -1662,7 +1663,7 @@ export const user = actor({
 			}
 		},
 
-		deleteRepositorySecret: async (c, input: { repositoryId: number; profile: string; sessionId?: string; name: string }): Promise<RepositorySecrets> => {
+		deleteRepositorySecret: async (c, input: { repositoryId: GithubId; profile: string; sessionId?: string; name: string }): Promise<RepositorySecrets> => {
 			const user = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const profile = await secretProfile(input?.profile);
@@ -1705,7 +1706,7 @@ export const user = actor({
 
 		// --- a repository's page ----------------------------------------------------------------------
 
-		repository: async (c, repositoryId: number): Promise<RepositoryView> => {
+		repository: async (c, repositoryId: GithubId): Promise<RepositoryView> => {
 			requireUser(c);
 			const project = setupKeyOf(repositoryId);
 			try {
@@ -1716,7 +1717,7 @@ export const user = actor({
 		},
 
 		/** Asks GitHub whether the user's connection still reaches the repository, and what it is called now. */
-		githubRepository: async (c, repositoryId: number): Promise<GithubRepository> => {
+		githubRepository: async (c, repositoryId: GithubId): Promise<GithubRepository> => {
 			requireUser(c);
 			const project = setupKeyOf(repositoryId);
 			const app = requireGithub();
@@ -1737,7 +1738,7 @@ export const user = actor({
 			return found;
 		},
 
-		saveRepositoryDefaults: async (c, input: { repositoryId: number; profile?: string | null; model?: string | null }): Promise<RepositoryDefaults> => {
+		saveRepositoryDefaults: async (c, input: { repositoryId: GithubId; profile?: string | null; model?: string | null }): Promise<RepositoryDefaults> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			let change: DefaultsChange;
@@ -1757,7 +1758,7 @@ export const user = actor({
 			}
 		},
 
-		forgetRepositoryApproval: async (c, input: { repositoryId: number; name: string }): Promise<RepositoryView> => {
+		forgetRepositoryApproval: async (c, input: { repositoryId: GithubId; name: string }): Promise<RepositoryView> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const name = approvalText(input?.name, 200);
@@ -1770,7 +1771,7 @@ export const user = actor({
 			}
 		},
 
-		forgetRepository: async (c, repositoryId: number): Promise<RepositoryView> => {
+		forgetRepository: async (c, repositoryId: GithubId): Promise<RepositoryView> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(repositoryId);
 			try {
@@ -1794,7 +1795,7 @@ export const user = actor({
 					"SELECT project, MAX(label) AS label FROM (SELECT project, label FROM setup_command UNION ALL SELECT project, label FROM repository_checks UNION ALL SELECT project, label FROM repo_secret UNION ALL SELECT project, label FROM repository_defaults) GROUP BY project",
 				);
 				const now = Date.now();
-				const found = new Map<number, string>();
+				const found = new Map<GithubId, string>();
 				const note = (project: string, label: string) => {
 					const id = repositoryIdOf(project);
 					if (id !== null && (found.get(id) ?? "") === "") found.set(id, label);
@@ -1804,7 +1805,7 @@ export const user = actor({
 				return [...found]
 					.map(([id, label]) => ({ id, name: repositoryLabel(c.vars, id) || label || null }))
 					// By name, and those nothing names after them.
-					.sort((a, b) => Number(a.name === null) - Number(b.name === null) || (a.name ?? "").localeCompare(b.name ?? "") || a.id - b.id)
+					.sort((a, b) => Number(a.name === null) - Number(b.name === null) || (a.name ?? "").localeCompare(b.name ?? "") || String(a.id).localeCompare(String(b.id), "en", { numeric: true }))
 					.slice(0, MAX_SAVED_REPOSITORIES);
 			} catch (error) {
 				throw clientError(c.log, error, "The repositories something is saved for could not be listed. Try again.");

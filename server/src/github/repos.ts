@@ -19,7 +19,7 @@
  * restart forgets it. Nothing here is the record of anything.
  */
 
-import type { GithubRepository } from "../contract.js";
+import type { GithubId, GithubRepository } from "../contract.js";
 import { type GithubApp, GithubError, type Repository } from "./app.js";
 import type { ConfirmedConnection } from "./state.js";
 
@@ -65,8 +65,8 @@ interface Listed {
 	truncated: boolean;
 }
 
-const lists = new Map<number, Listed>();
-const listing = new Map<number, Promise<Listed>>();
+const lists = new Map<GithubId, Listed>();
+const listing = new Map<GithubId, Promise<Listed>>();
 const permissions = new Map<string, { at: number; level: Level }>();
 
 /** Forgets what this server remembers of GitHub: for the checks, and for a connection that changed. */
@@ -101,7 +101,7 @@ export function problemOf(error: unknown, account: string, repository?: string):
  * metadata only, asked for when first needed and dropped when the request is done.
  */
 class ReadTokens {
-	private readonly issued = new Map<number, Promise<string>>();
+	private readonly issued = new Map<GithubId, Promise<string>>();
 
 	constructor(
 		private readonly app: GithubApp,
@@ -241,7 +241,7 @@ export interface ResolvedRepository {
  * asked of GitHub now. Throws GithubProblem with a sentence that says what is in the way. With
  * `deadline`, ms since the epoch, every call to GitHub gets what is left until then.
  */
-export async function resolveRepository(app: GithubApp, connection: StoredConnection, repositoryId: number, need: "read" | "write", deadline?: number): Promise<ResolvedRepository> {
+export async function resolveRepository(app: GithubApp, connection: StoredConnection, repositoryId: GithubId, need: "read" | "write", deadline?: number): Promise<ResolvedRepository> {
 	const tokens = new ReadTokens(app, deadline);
 	let found: { installation: StoredInstallation; repository: Repository } | null = null;
 	let firstProblem: GithubProblem | null = null;
@@ -275,7 +275,7 @@ export async function resolveRepository(app: GithubApp, connection: StoredConnec
 }
 
 /** A repository's branch names, the default first. The connected user must be able to read it. */
-export async function listBranches(app: GithubApp, connection: StoredConnection, repositoryId: number): Promise<{ branches: string[]; defaultBranch: string; more: boolean }> {
+export async function listBranches(app: GithubApp, connection: StoredConnection, repositoryId: GithubId): Promise<{ branches: string[]; defaultBranch: string; more: boolean }> {
 	const { installation, repository } = await resolveRepository(app, connection, repositoryId, "read");
 	try {
 		const { branches, truncated } = await app.withToken(installation.id, { repositoryId, permissions: { metadata: "read", contents: "read" } }, (token) => app.branches(token, repository.owner, repository.name));

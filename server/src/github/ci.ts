@@ -31,6 +31,8 @@
  *   rate limits       https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api (403 or 429; `x-ratelimit-remaining: 0` with `x-ratelimit-reset`, or `retry-after`)
  */
 
+import type { GithubId } from "../contract.js";
+import { decimalId } from "./ids.js";
 import { type GithubApp, GithubError } from "./app.js";
 import { redact } from "./redact.js";
 
@@ -71,7 +73,7 @@ export interface CiRun {
 	/** The check output, job-not-started diagnostic, or status description. Untrusted and cut short. */
 	summary: string;
 	/** For a GitHub Actions check run: its job's id, whose log can be read. */
-	jobId: number | null;
+	jobId: string | null;
 }
 
 /** The end of a failing job's log. Untrusted: what code from the branch printed. */
@@ -111,7 +113,6 @@ const FAILING = new Set(["failure", "timed_out", "startup_failure", "action_requ
 
 const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {});
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
-const whole = (value: unknown): number | null => (typeof value === "number" && Number.isSafeInteger(value) ? value : null);
 
 /** Strips what a terminal would interpret and anything that is not printable text. */
 function plain(value: string): string {
@@ -151,7 +152,7 @@ function checkRunOf(fields: Record<string, unknown>, candidates: Map<CiRun, stri
 	const state = status !== "completed" ? "pending" : FAILING.has(conclusion) ? "failed" : conclusion === "success" ? "passed" : "neutral";
 	const output = record(fields.output);
 	const summary = plain([text(output.title), text(output.summary)].filter((part) => part !== "").join(": "));
-	const run: CiRun = { name, app, state, conclusion: status === "completed" ? conclusion : status, url: text(fields.html_url) || text(fields.details_url), summary: short(summary, 500), jobId: app === "github-actions" ? whole(fields.id) : null };
+	const run: CiRun = { name, app, state, conclusion: status === "completed" ? conclusion : status, url: text(fields.html_url) || text(fields.details_url), summary: short(summary, 500), jobId: app === "github-actions" ? decimalId(fields.id) : null };
 	const noDuration = fields.started_at === null || (typeof fields.started_at === "string" && fields.started_at === fields.completed_at);
 	if (app === "github-actions" && state === "failed" && conclusion === "failure" && noDuration) {
 		const explained = markNotRun(run, text(output.title)) || markNotRun(run, text(output.summary));
@@ -201,7 +202,7 @@ export function logTail(raw: string, cut: boolean): { text: string; truncated: b
  * fetched without the token. Only the end is kept while it streams; a log larger than LOG_MAX_BYTES is
  * not read to its end, and none of it is returned, since its end is what matters.
  */
-async function readLog(app: GithubApp, token: string, owner: string, name: string, run: CiRun & { jobId: number }): Promise<CiLog> {
+async function readLog(app: GithubApp, token: string, owner: string, name: string, run: CiRun & { jobId: string }): Promise<CiLog> {
 	const none = (why: string): CiLog => ({ name: run.name, untrusted: true, text: null, why });
 	let response: Response;
 	try {
@@ -245,8 +246,8 @@ async function readLog(app: GithubApp, token: string, owner: string, name: strin
 }
 
 export interface CiTarget {
-	installationId: number;
-	repositoryId: number;
+	installationId: GithubId;
+	repositoryId: GithubId;
 	owner: string;
 	name: string;
 	/** The commit, a full SHA. */
@@ -282,7 +283,7 @@ async function readRuns(app: GithubApp, token: string, target: CiTarget, head: s
 		}
 	}
 	runs = distinctChecks(runs);
-	const failing = runs.filter((run): run is CiRun & { jobId: number } => run.state === "failed" && run.jobId !== null).slice(0, LOGS_PER_READING);
+	const failing = runs.filter((run): run is CiRun & { jobId: string } => run.state === "failed" && run.jobId !== null).slice(0, LOGS_PER_READING);
 	const logs: CiLog[] = [];
 	for (const run of failing) logs.push(await readLog(app, token, target.owner, target.name, run));
 	return { kind: "read", head, runs, truncated, logs };

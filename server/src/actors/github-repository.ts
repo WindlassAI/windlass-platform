@@ -1,4 +1,6 @@
 /** githubRepository[repositoryId]. Every action requires the platform service credential. */
+import type { GithubId } from "../contract.js";
+import { githubId } from "../github/ids.js";
 import { actor } from "rivetkit";
 import { db } from "rivetkit/db";
 import { githubIdKey } from "../github/events.js";
@@ -8,7 +10,7 @@ import { githubApp, GithubError } from "../github/app.js";
 type Item = { itemId: string; uid: string; issue?: number; generation?: number; pr?: number; head?: string; live?: boolean };
 type Match = { itemId: string; uid: string; issue: number | null; generation: number | null; pr: number | null; head: string | null };
 type Level = "admin" | "write" | "read" | "none";
-type Permission = { installationId: number; owner: string; name: string; userId: number; login: string; associations: string };
+type Permission = { installationId: GithubId; owner: string; name: string; userId: GithubId; login: string; associations: string };
 const TTL = 10 * 60_000;
 
 export const githubRepository = actor({
@@ -47,7 +49,7 @@ export const githubRepository = actor({
 			if (!app) throw new Error("The GitHub App is unavailable.");
 			let level: Level;
 			try {
-				level = await app.withToken(input.installationId, { repositoryId: Number(c.key[0]), permissions: { metadata: "read" } },
+				level = await app.withToken(input.installationId, { repositoryId: githubId(c.key[0])!, permissions: { metadata: "read" } },
 					token => app.permission(token, input.owner, input.name, input.login));
 			} catch (error) {
 				if (!(error instanceof GithubError) || error.status !== 404) throw error;

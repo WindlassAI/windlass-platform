@@ -32,6 +32,7 @@ import {
 	type AuthResult,
 	type LiveDelta,
 	MAX_PROMPT_CHARS,
+	type GithubId,
 	type PendingQuestion,
 	type SessionSnapshot,
 	type SessionSummary,
@@ -3777,7 +3778,7 @@ async function serverApprovalChecks(server: Server, client: Client, demoSignIn: 
 		opened.push(session);
 		return session;
 	};
-	const launch = async (auth: AuthResult, input: { repoUrl?: string; repository?: { id: number } } = {}): Promise<Opened> => {
+	const launch = async (auth: AuthResult, input: { repoUrl?: string; repository?: { id: GithubId } } = {}): Promise<Opened> => {
 		const created = await userOf(auth).createSession({ profile: profile as never, title: "Servers", ...input });
 		const session = watchOf(auth, created.id);
 		await session.watch.conn.snapshot();

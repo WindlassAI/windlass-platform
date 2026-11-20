@@ -17,7 +17,7 @@
  * GitHub no longer shows to this user keeps its page, with what is saved for it and the way to
  * delete that, and with a plain sentence that no new agent can be launched on it.
  */
-import type { GithubRepository, RepositoryView, SessionSummary } from "@contract";
+import type { GithubId, GithubRepository, RepositoryView, SessionSummary } from "@contract";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { hasReason } from "../api/client";
 import { AgentList } from "../components/Agents";
@@ -45,7 +45,7 @@ export type RepositoryAccess =
 	| { state: "unknown"; why: string };
 
 export interface RepositoryPage {
-	id: number;
+	id: GithubId;
 	/** "owner/name": GitHub's own once it answered, otherwise as the agents on it or what was saved for it have it. Null when nothing names it. */
 	name: string | null;
 	/** Null until it was read. */
@@ -67,7 +67,7 @@ export interface RepositoryPage {
 const UNUSABLE = ["github_off", "github_not_connected", "github_gone", "github_denied"] as const;
 
 /** Everything a repository's page shows, live: what is saved, what GitHub says, and the agents on it. */
-export function useRepository(id: number): RepositoryPage {
+export function useRepository(id: GithubId): RepositoryPage {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const github = useGithub();
@@ -336,7 +336,7 @@ function Work({ page }: { page: RepositoryPage }) {
  * The Work tab's name while Settings is shown, with the mark a row has when it waits for its person's
  * answer, when an agent on the repository or one of its work items does.
  */
-function WorkLabel({ repositoryId, sessions }: { repositoryId: number; sessions: SessionSummary[] | null }) {
+function WorkLabel({ repositoryId, sessions }: { repositoryId: GithubId; sessions: SessionSummary[] | null }) {
 	const { platform } = useApp();
 	const items = useItems(Boolean(platform.info?.items));
 	const asks = ownAgents(sessions ?? []).some((session) => session.status === "waiting") || (items.list ?? []).some((item) => item.repository.id === repositoryId && item.question !== null);

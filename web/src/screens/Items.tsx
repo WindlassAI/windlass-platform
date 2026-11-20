@@ -11,7 +11,7 @@
  * launch form of an agent does (components/PlaceChoice.tsx): this platform, or one of the user's
  * machines. On a machine the server gives it that machine's first available sandbox.
  */
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemState, type ItemSummary } from "@contract";
+import { type GithubId, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemState, type ItemSummary } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
@@ -218,7 +218,7 @@ function Group({ state, items, now }: { state: ItemState; items: ItemSummary[]; 
 }
 
 /** The "Work items" section of a repository's page, where the deployment offers them. `launchable`: new work can be filed on it now. */
-export function RepositoryItems({ repositoryId, name, base, launchable, now }: { repositoryId: number; name: string; base: string | null; launchable: boolean; now: number }) {
+export function RepositoryItems({ repositoryId, name, base, launchable, now }: { repositoryId: GithubId; name: string; base: string | null; launchable: boolean; now: number }) {
 	const { platform } = useApp();
 	const offered = Boolean(platform.info?.items);
 	const items = useItems(offered);
@@ -293,7 +293,7 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now }: {
 const MACHINE_REFUSALS = ["machine_not_found", "machine_not_connected", "runner_outdated", "bad_profile"];
 
 /** Filing a work item: what to do, and what a person will check. It runs on a hosted sandbox, or on one of the user's machines where they have one. */
-export function NewItemDialog({ repositoryId, name, base, onClose }: { repositoryId: number; name: string; base: string | null; onClose(): void }) {
+export function NewItemDialog({ repositoryId, name, base, onClose }: { repositoryId: GithubId; name: string; base: string | null; onClose(): void }) {
 	const { client, explain, platform } = useApp();
 	const auth = useAuth();
 	// Where it runs: offered where the deployment has both work items and machines, and the user has a machine.

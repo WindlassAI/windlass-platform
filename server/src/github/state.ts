@@ -24,6 +24,8 @@
  * the callback claims it, and remembers the numbers of the tickets it took until they have expired.
  */
 
+import type { GithubId } from "../contract.js";
+import { isGithubId } from "./ids.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 
@@ -44,8 +46,8 @@ export interface StatePayload {
 
 /** What GitHub confirmed about the user who authorized: who they are, and the installations they can reach. */
 export interface ConfirmedConnection {
-	user: { id: number; login: string };
-	installations: Array<{ id: number; account: { id: number; login: string; type: "User" | "Organization" }; htmlUrl: string }>;
+	user: { id: GithubId; login: string };
+	installations: Array<{ id: GithubId; account: { id: GithubId; login: string; type: "User" | "Organization" }; htmlUrl: string }>;
 }
 
 export interface TicketPayload extends ConfirmedConnection {
@@ -108,7 +110,7 @@ export function verifyTicket(token: unknown, now = Date.now()): TicketPayload | 
 	const fields = decode(token, now);
 	if (!fields || fields.k !== "ticket") return null;
 	const user = fields.user as { id?: unknown; login?: unknown } | undefined;
-	if (typeof user !== "object" || user === null || typeof user.id !== "number" || typeof user.login !== "string" || !Array.isArray(fields.installations)) return null;
+	if (typeof user !== "object" || user === null || !isGithubId(user.id) || typeof user.login !== "string" || !Array.isArray(fields.installations)) return null;
 	return fields as unknown as TicketPayload;
 }
 

@@ -18,6 +18,7 @@ import type {
 	CreateItemInput,
 	CreateSessionInput,
 	FactoryLimits,
+	GithubId,
 	GithubBranchList,
 	GithubRepository,
 	GithubRepositoryList,
@@ -153,38 +154,38 @@ export interface UserApi {
 	githubComplete(ticket: string): Promise<GithubStatus>;
 	githubDisconnect(): Promise<GithubStatus>;
 	githubRepositories(query: string, fresh?: boolean): Promise<GithubRepositoryList>;
-	githubBranches(repositoryId: number): Promise<GithubBranchList>;
+	githubBranches(repositoryId: GithubId): Promise<GithubBranchList>;
 	/** The setup command the user saved for a repository of their GitHub connection; `command` is "" when there is none. */
-	repositorySetup(repositoryId: number): Promise<RepositorySetup>;
+	repositorySetup(repositoryId: GithubId): Promise<RepositorySetup>;
 	/** Saves it, or none with "". Throws with reason `bad_setup_command` for one that is too long. */
-	saveRepositorySetup(repositoryId: number, command: string): Promise<RepositorySetup>;
+	saveRepositorySetup(repositoryId: GithubId, command: string): Promise<RepositorySetup>;
 	/** The checks the user saved for a repository of their GitHub connection, in the order they run. */
-	repositoryChecks(repositoryId: number): Promise<RepositoryChecks>;
+	repositoryChecks(repositoryId: GithubId): Promise<RepositoryChecks>;
 	/** Saves the list whole, or none with an empty one. Throws with reason `bad_checks` for a list that cannot be saved. */
-	saveRepositoryChecks(repositoryId: number, checks: RepositoryCheck[]): Promise<RepositoryChecks>;
+	saveRepositoryChecks(repositoryId: GithubId, checks: RepositoryCheck[]): Promise<RepositoryChecks>;
 	/**
 	 * The secrets saved for a repository, without their values, and what each reaches in a sandbox of
 	 * `profile`: the sandbox of the session `sessionId` names, whose Windlass may be an older one, or
 	 * without it a sandbox made now. A value is sent to the server when it is saved and never comes back.
 	 */
-	repositorySecrets(repositoryId: number, profile: SandboxProfileId, sessionId?: string): Promise<RepositorySecrets>;
+	repositorySecrets(repositoryId: GithubId, profile: SandboxProfileId, sessionId?: string): Promise<RepositorySecrets>;
 	/** Saves a secret: with `value` a new one or a new value, without it only the scope. Throws with reason `bad_secret`, `too_many_secrets` or `secret_not_found`. */
-	saveRepositorySecret(repositoryId: number, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }, sessionId?: string): Promise<RepositorySecrets>;
-	deleteRepositorySecret(repositoryId: number, profile: SandboxProfileId, name: string, sessionId?: string): Promise<RepositorySecrets>;
+	saveRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }, sessionId?: string): Promise<RepositorySecrets>;
+	deleteRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, name: string, sessionId?: string): Promise<RepositorySecrets>;
 	/** What is kept for a repository beside its setup command and its secrets: the defaults for new agents and the remembered approvals of its MCP servers. Asks GitHub nothing. */
-	repository(repositoryId: number): Promise<RepositoryView>;
+	repository(repositoryId: GithubId): Promise<RepositoryView>;
 	/**
 	 * The repository as GitHub has it now: what a new agent can be launched on. Throws with reason `github_off`,
 	 * `github_not_connected`, `github_gone` or `github_denied` when it cannot be used for new agents, and
 	 * `github_unreachable` or `github_failed` when GitHub could not be asked.
 	 */
-	githubRepository(repositoryId: number): Promise<GithubRepository>;
+	githubRepository(repositoryId: GithubId): Promise<GithubRepository>;
 	/** Saves what new agents on a repository start with: a field left out stays, null saves none. Throws with reason `bad_input` or `bad_model` for what the deployment does not offer. */
-	saveRepositoryDefaults(repositoryId: number, change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(repositoryId: GithubId, change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
 	/** Forgets the remembered approvals of that MCP server for a repository. */
-	forgetRepositoryApproval(repositoryId: number, name: string): Promise<RepositoryView>;
+	forgetRepositoryApproval(repositoryId: GithubId, name: string): Promise<RepositoryView>;
 	/** Deletes everything kept for a repository: setup command, checks, secrets, defaults and remembered approvals. The agents on it stay. */
-	forgetRepository(repositoryId: number): Promise<RepositoryView>;
+	forgetRepository(repositoryId: GithubId): Promise<RepositoryView>;
 	/** The repositories something is kept for. Asks GitHub nothing. */
 	savedRepositories(): Promise<SavedRepository[]>;
 	/** The account's settings: the defaults for new agents and the user's own MCP servers. No secret's value. */

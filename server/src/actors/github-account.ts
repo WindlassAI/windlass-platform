@@ -1,11 +1,12 @@
 /** githubAccount[githubUserId]. Only a service action can populate, read or clear the link. */
+import type { GithubId } from "../contract.js";
 import { actor } from "rivetkit";
 import { db } from "rivetkit/db";
 import { githubIdKey } from "../github/events.js";
 import { internalConnection, requireServiceFor, serviceParams } from "../auth.js";
 import type { StoredConnection } from "../github/repos.js";
 
-type Link = { uid: string; login: string; installations: number[]; at: number };
+type Link = { uid: string; login: string; installations: GithubId[]; at: number };
 
 export const githubAccount = actor({
 	onBeforeConnect: internalConnection,
@@ -27,7 +28,7 @@ export const githubAccount = actor({
 			requireServiceFor(c, "call");
 			await c.db.execute("DELETE FROM link WHERE uid = ?", uid);
 		},
-		internalWho: async (c): Promise<{ uid: string; installations: number[] } | null> => {
+		internalWho: async (c): Promise<{ uid: string; installations: GithubId[] } | null> => {
 			requireServiceFor(c, "call");
 			const [row] = await c.db.execute<{ uid: string; installations: string }>("SELECT uid, installations FROM link");
 			return row ? { uid: row.uid, installations: JSON.parse(row.installations) } : null;
@@ -35,7 +36,7 @@ export const githubAccount = actor({
 	},
 });
 
-export async function setGithubInstallations(c: { client(): any }, uid: string, ids: number[]) {
+export async function setGithubInstallations(c: { client(): any }, uid: string, ids: GithubId[]) {
 	await c.client().githubHooks.getOrCreate(["app"], { params: serviceParams() }).internalSetInstallations(uid, ids);
 }
 
@@ -50,7 +51,7 @@ export async function updateGithubAccount(c: { client(): any }, uid: string, pre
 	}
 	await save?.();
 	if (next?.webhookLinked) await setGithubInstallations(c, uid, ids);
-	const account = (id: number) => c.client().githubAccount.getOrCreate([String(id)], { params: serviceParams() });
+	const account = (id: GithubId) => c.client().githubAccount.getOrCreate([String(id)], { params: serviceParams() });
 	if (previous?.webhookLinked && (!next?.webhookLinked || previous.user.id !== next.user.id)) {
 		try { await account(previous.user.id).internalUnlink(uid); }
 		catch { console.warn(`github.account.unlink_failed github=${previous.user.id} uid=${uid}`); }
