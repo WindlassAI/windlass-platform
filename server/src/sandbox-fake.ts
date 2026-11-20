@@ -619,7 +619,7 @@ class FakeWindlass implements Windlass {
 	}
 
 	async features(): Promise<WindlassFeatures> {
-		return { sessionHome: true, envLists: true, requiredChecks: true };
+		return { sessionHome: true, envLists: true, requiredChecks: true, hostTools: true };
 	}
 
 	demoScript(prompt: string, turn: number): ScriptedModel {
@@ -690,6 +690,8 @@ class FakeWindlass implements Windlass {
 
 		let seq = session.seq;
 		let emitted = 0;
+		/** Whether the platform's tools the prompt names were called: once, before the turn's end. */
+		let platformCalled = false;
 		let ended = false;
 		let promptSeen = false;
 		let executionId: string | null = null;
@@ -1025,6 +1027,24 @@ class FakeWindlass implements Windlass {
 
 				// A steered message reaches the model at the next step, or just before the turn would end.
 				if (recorded.type === "step.started" || TERMINAL.has(recorded.type)) deliverSteers();
+
+				// The platform's own tools the prompt names, called once before the turn ends, as a model calls a host tool: the call is the platform's to answer.
+				if (TERMINAL.has(recorded.type) && !platformCalled) {
+					platformCalled = true;
+					for (const [word, name, run] of [
+						["(fetch)", "fetch_base", input.onFetchBase],
+						["(push)", "push", input.onPush],
+						["(report)", "report", input.onReport],
+					] as const) {
+						if (!text.includes(word) || run === undefined || signal?.aborted) continue;
+						const call = { messageId: currentStep ?? "msg_fake", callId: `call_${name}`, arguments: name === "report" ? { title: `Report of turn ${turn}`, description: "What the fake agent did." } : name === "push" ? { message: `Push of turn ${turn}` } : {} };
+						// `input` as Windlass writes it for every call, a host tool's too: the model's arguments as JSON text (its event/durable.ts, `tool.called`).
+						emit({ type: "tool.called", v: 1, data: { messageId: call.messageId, callId: call.callId, name, input: JSON.stringify(call.arguments) }, seq: 0, time: 0 });
+						const output = await Promise.resolve(run(call, signal ?? new AbortController().signal)).catch(() => "The platform could not handle this call.");
+						emit({ type: "tool.settled", v: 1, data: { messageId: call.messageId, callId: call.callId, outcome: "success", output }, seq: 0, time: 0 });
+						await pause(gap);
+					}
+				}
 
 				// A server Windlass reports while the turn runs: its question does not hold the turn.
 				if (recorded.type === "step.started" && !lateAsked) {

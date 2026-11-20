@@ -1,7 +1,9 @@
 /**
  * The question about a project's MCP server, against a real Windlass. Run with:
  *
- *   cd server && flock /tmp/wlp-test.lock npx tsx ../scripts/mcp-check.ts
+ *   cd server && ../scripts/locked.sh mcp-check.ts
+ *   Add --report to check only the platform's own tools (its host tools) in both Docker profiles, and
+ *   --image <tag> to run against another sandbox image (one with an unreleased Windlass, say).
  *
  * It makes sandboxes on local Docker, puts the small repository of fixtures/mcp-repo into their
  * workspaces (a `.windlass/config.json` that names the server "harbor", and the server itself, which
@@ -44,9 +46,13 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
+import { FETCH_BASE_TOOL, PUBLISH_SERVER, PUBLISH_TOOL, PUSH_TOOL, REPORT_TAKEN, REPORT_TOOL, pushRequest } from "../server/src/agent-publish.js";
+import { WindlassUnaskedError } from "../server/src/sandbox/api.js";
+import { NO_REDACTION } from "../server/src/repo-secrets.js";
 import type { SandboxProfileId, WindlassEvent } from "../server/src/contract.js";
 import { unaskedNote } from "../server/src/personal-servers.js";
-import type { RunTurnResult, ScriptedModel, TurnPersonalServer, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "../server/src/sandbox/api.js";
+import type { RunTurnInput, RunTurnResult, ScriptedModel, TurnPersonalServer, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "../server/src/sandbox/api.js";
 import { DATA_DIR, IMAGE, LABEL_ARG, docker, randomId } from "../server/src/sandbox/docker.js";
 import { createSandboxLayer } from "../server/src/sandbox/index.js";
 import type { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
@@ -57,13 +63,15 @@ import { forgettingWords, serverApprovedNote, serverForgottenNote, serverNotNowN
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = join(root, "fixtures/mcp-repo");
-const layer = createSandboxLayer({ signIns: "memory", tokenNetwork: "none" });
+/** `--image <tag>`: the sandbox image to run against; the server's own by default. */
+const IMAGE_USED = process.argv.includes("--image") ? (process.argv[process.argv.indexOf("--image") + 1] ?? IMAGE) : IMAGE;
+const layer = createSandboxLayer({ signIns: "memory", tokenNetwork: "none", image: IMAGE_USED });
 const run = randomId(3);
 const uid = `mcp-${run}`;
 const uidOther = `mcp-${run}-b`;
 const created = new Set<string>();
 /** Every Docker user a sandbox was made for: each has a data volume to remove. */
-const users = new Set<string>([uid, uidOther]);
+const users = new Set<string>();
 let failures = 0;
 let passes = 0;
 
@@ -97,14 +105,14 @@ function fixtureFiles(directory = FIXTURE): Array<{ path: string; content: strin
 	});
 }
 
-/** A sandbox whose workspace holds the fixture repository. */
-async function sandbox(user: string, profile: SandboxProfileId, sessionId: string): Promise<DockerSandboxHandle> {
+/** A sandbox whose workspace holds the fixture repository by default. */
+async function sandbox(user: string, profile: SandboxProfileId, sessionId: string, files = fixtureFiles()): Promise<DockerSandboxHandle> {
 	users.add(user);
 	await layer.logins.ensureUserVolume(user);
 	const id = await layer.sandboxes.create({ uid: user, sessionId, profile });
 	created.add(id);
 	const handle = (await layer.sandboxes.connect(id)) as DockerSandboxHandle;
-	for (const file of fixtureFiles()) await handle.writeTextFile(`/workspace/${file.path}`, file.content);
+	for (const file of files) await handle.writeTextFile(`/workspace/${file.path}`, file.content);
 	return handle;
 }
 
@@ -149,6 +157,11 @@ interface TurnOptions {
 	server?: (question: TurnServerQuestion, signal: AbortSignal) => boolean | Promise<boolean>;
 	/** The answer to a tool call's question. Default "once". */
 	tool?: (question: TurnQuestion) => string | Promise<string>;
+	unattended?: boolean;
+	onReport?: RunTurnInput["onReport"];
+	onPublish?: RunTurnInput["onPublish"];
+	onPush?: RunTurnInput["onPush"];
+	onFetchBase?: RunTurnInput["onFetchBase"];
 	signal?: AbortSignal;
 	windlass?: Windlass;
 	/** Filled with the outcomes as they arrive, for an answer that has to wait for one. */
@@ -173,7 +186,11 @@ async function turn(handle: DockerSandboxHandle, prompt: string, script: Scripte
 		servers: options.own,
 		onUnasked: (allowed) => unasked.push(allowed),
 		onEvent: (event) => events.push(event),
-		onQuestion: async (question) => {
+		onReport: options.onReport,
+		onPublish: options.onPublish,
+		onPush: options.onPush,
+		onFetchBase: options.onFetchBase,
+		onQuestion: options.unattended ? undefined : async (question) => {
 			toolQuestions.push(question);
 			return { choice: options.tool ? await options.tool(question) : "once" };
 		},
@@ -203,6 +220,8 @@ const toolsBeforeFirstStep = (found: TurnRun): string | null => {
 	return appended >= 0 && firstStep >= 0 && appended < firstStep ? String(dataOf(found.events[appended]).text ?? "") : null;
 };
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** An approved server's outcome: running, or still starting when the layer's wait ran out on a loaded host. */
+const startedOrRunning = (state: string | undefined) => state === "running" || state === "starting";
 
 // ---------------------------------------------------------------------------------------------
 // A stand-in for the engine: a server reported while the turn runs
@@ -273,15 +292,118 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 // The checks
 // ---------------------------------------------------------------------------------------------
 
-async function main(): Promise<void> {
-	const image = await docker(["image", "inspect", "--format", "{{.Id}}", IMAGE]);
-	if (image.code !== 0) {
-		console.log(`The sandbox image ${IMAGE} is missing. Build it: sandbox/build.sh`);
-		process.exitCode = 1;
-		return;
-	}
-	info(`Windlass in the image: ${(await layer.windlass.version()) ?? "unknown"}; run ${run}`);
+/** The tools Windlass froze into the session's first baseline (`baseline.set`), by name. */
+const baselineTools = (found: TurnRun): string[] => ((dataOf(found.events.find((e) => e.type === "baseline.set")).tools as Array<{ name: string }> | undefined) ?? []).map((tool) => tool.name);
+/** A call's trace in the turn's events, for the log: what Windlass did with it. */
+const traceOf = (found: TurnRun, callId: string) =>
+	found.events
+		.filter((e) => (dataOf(e).callId === callId || e.callId === callId) && e.type !== "tool.input.delta")
+		.map((e) => [e.type, dataOf(e).choice ?? dataOf(e).outcome].filter(Boolean).join("="))
+		.join(" > ");
+const asked = (found: TurnRun, callId: string) => found.events.some((e) => e.type.startsWith("approval.") && dataOf(e).callId === callId);
 
+/**
+ * The platform's own tools as Windlass's host tools, in a profile where Windlass asks before risky
+ * calls (`docker-windlass-sandbox`, approval "auto") and in one where it does not (`docker-hardened`,
+ * "full"). The callbacks stand in for the session's (agent-session.ts), which decide and do the work;
+ * what is shown here is Windlass's side and the layer's: which tools a turn is offered, that no call
+ * is asked about or refused for want of a person, that each callback is called once with what the
+ * model wrote, and that its answer is the call's result.
+ */
+async function checkPlatformTools(profile: SandboxProfileId): Promise<void> {
+	const handle = await sandbox(uid, profile, `mcp-tools-${profile}`, []);
+	const given = { title: "Check the berth", description: "Berth four is free.\nThe schedule agrees.", concerns: "The tide was not checked." };
+	const where = { branch: "windlass/check-the-berth-abc123", title: "Check the berth" };
+	const pushes: Record<string, unknown>[] = [];
+	const fetches: number[] = [];
+	// The session's own check of a push, so that a push naming another branch is refused as it would be.
+	const onPush = async ({ arguments: args }: { arguments: Record<string, unknown> }) => {
+		pushes.push(args);
+		const checked = pushRequest(args, where, NO_REDACTION);
+		return checked.ok ? `Pushed to ${where.branch} (0123456). No pull request was opened.` : checked.told;
+	};
+	const onFetchBase = async () => {
+		fetches.push(1);
+		return "Fetched main from GitHub into the workspace as origin/main.";
+	};
+
+	// An item's turn: nobody attends it.
+	const received: Record<string, unknown>[] = [];
+	const item = await turn(handle, "File the report, push, fetch the base, push to main.", scripted(call(REPORT_TOOL, REPORT_TOOL, given), call(PUSH_TOOL, PUSH_TOOL, { message: "The berth" }), call(FETCH_BASE_TOOL, FETCH_BASE_TOOL, {}), call("push-main", PUSH_TOOL, { branch: "main" }), call(PUBLISH_TOOL, PUBLISH_TOOL, { title: "Not offered" }), say("Done.")), {
+		unattended: true,
+		server: () => false,
+		onReport: ({ arguments: args }) => {
+			received.push(args);
+			return REPORT_TAKEN;
+		},
+		onPush,
+		onFetchBase,
+		signal: AbortSignal.timeout(120_000),
+	});
+	for (const id of [REPORT_TOOL, PUSH_TOOL, FETCH_BASE_TOOL, "push-main", PUBLISH_TOOL]) info(`item ${id}: ${traceOf(item, id)}; ${outputOf(item, id).split("\n")[0]}`);
+	const tools = baselineTools(item);
+	expect(`${profile}: an item's turn is offered report, push and fetch_base as tools of its own, and not publish; no server of the platform's`, [REPORT_TOOL, PUSH_TOOL, FETCH_BASE_TOOL].every((name) => tools.includes(name)) && !tools.includes(PUBLISH_TOOL) && !(toolsBeforeFirstStep(item) ?? "").includes(PUBLISH_SERVER), tools.join(","));
+	expect(`${profile}: the item's unattended report is not asked about, reaches the platform once, and is told it was taken`, isDeepStrictEqual(received, [given]) && !asked(item, REPORT_TOOL) && dataOf(settled(item, REPORT_TOOL)).outcome === "success" && outputOf(item, REPORT_TOOL) === REPORT_TAKEN, outputOf(item, REPORT_TOOL));
+	expect(`${profile}: the item's push and fetch_base run unasked, each once, and the push's answer is the result`, !asked(item, PUSH_TOOL) && !asked(item, FETCH_BASE_TOOL) && isDeepStrictEqual(pushes[0], { message: "The berth" }) && fetches.length === 1 && outputOf(item, PUSH_TOOL).startsWith(`Pushed to ${where.branch}`), outputOf(item, PUSH_TOOL));
+	expect(`${profile}: a push that names main reaches the platform as written and is refused, with nothing pushed`, isDeepStrictEqual(pushes[1], { branch: "main" }) && pushes.length === 2 && outputOf(item, "push-main").startsWith("Not pushed. This session's work can only go to the session's own branch"), outputOf(item, "push-main"));
+	expect(`${profile}: publish, which the item is not offered, is refused by Windlass as no tool of its`, dataOf(settled(item, PUBLISH_TOOL)).outcome === "error", outputOf(item, PUBLISH_TOOL));
+	expect(`${profile}: the item's turn ended normally`, item.result.exitCode === 0 && outcomeOf(item) === "succeeded", outcomeOf(item) ?? item.result.stderrTail);
+
+	// A person's turn: attended. The platform's publish asks the person itself, inside the call; Windlass asks nothing.
+	const published: Record<string, unknown>[] = [];
+	const wait = profile === "docker-windlass-sandbox" ? 65_000 : 2_000;
+	const person = await turn(handle, "Publish, then push.", scripted(call(PUBLISH_TOOL, PUBLISH_TOOL, { title: "Check the berth" }), call("person-push", PUSH_TOOL, {}), say("Done.")), {
+		server: () => false,
+		tool: () => "deny",
+		// The person's yes, after a wait: past Windlass's default 60 s in one profile, which the declaration's time limit covers.
+		onPublish: async ({ arguments: args }, signal) => {
+			published.push(args);
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, wait);
+				signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+			});
+			return signal.aborted ? "withdrawn" : "Published. Opened pull request #7: https://github.invalid/ada/harbor/pull/7";
+		},
+		onPush,
+		onFetchBase,
+		signal: AbortSignal.timeout(180_000),
+	});
+	for (const id of [PUBLISH_TOOL, "person-push"]) info(`person ${id}: ${traceOf(person, id)}; ${outputOf(person, id).split("\n")[0]}`);
+	expect(`${profile}: a person's turn is offered publish, push and fetch_base, and not report`, [PUBLISH_TOOL, PUSH_TOOL, FETCH_BASE_TOOL].every((name) => baselineTools(person).includes(name)) && !baselineTools(person).includes(REPORT_TOOL), baselineTools(person).join(","));
+	expect(
+		`${profile}: the person's publish is not Windlass's question: the platform's callback is called once, waits ${wait / 1000} s for the person's yes, and its answer is the result`,
+		person.toolQuestions.length === 0 && !asked(person, PUBLISH_TOOL) && published.length === 1 && outputOf(person, PUBLISH_TOOL).startsWith("Published. Opened pull request #7"),
+		`${person.toolQuestions.map((q) => q.title).join(", ")} ${outputOf(person, PUBLISH_TOOL)}`,
+	);
+	expect(`${profile}: the person's push runs without a question`, !asked(person, "person-push") && pushes.length === 3 && outputOf(person, "person-push").startsWith("Pushed to"), outputOf(person, "person-push"));
+	expect(`${profile}: the person's turn ended normally`, person.result.exitCode === 0 && outcomeOf(person) === "succeeded", outcomeOf(person) ?? person.result.stderrTail);
+}
+
+/** A call the platform does not answer in time ends as Windlass's documented error, and the callback is told to stop waiting. */
+async function checkUnanswered(): Promise<void> {
+	const handle = await sandbox(uid, "docker-windlass-sandbox", "mcp-tools-late", []);
+	let aborted = false;
+	const found = await turn(handle, "File the report.", scripted(call(REPORT_TOOL, REPORT_TOOL, { title: "Late", description: "Never answered." }), say("Done.")), {
+		unattended: true,
+		server: () => false,
+		// The report's declaration takes Windlass's 60 s; this one never answers. (The session's own is answered at once.)
+		onReport: ((_: unknown, signal: AbortSignal) => new Promise<string>((resolve) => signal.addEventListener("abort", () => ((aborted = true), resolve("too late")), { once: true }))) as unknown as RunTurnInput["onReport"],
+		signal: AbortSignal.timeout(120_000),
+	});
+	info(`late report: ${traceOf(found, REPORT_TOOL)}; ${outputOf(found, REPORT_TOOL)}`);
+	expect("a call not answered within its time is cancelled with Windlass's sentence, and the platform's callback is aborted", dataOf(settled(found, REPORT_TOOL)).outcome === "error" && outputOf(found, REPORT_TOOL).startsWith("The client did not answer the call to report within 60 s, and it was cancelled.") && aborted, outputOf(found, REPORT_TOOL));
+	expect("the turn goes on and ends normally", outcomeOf(found) === "succeeded", outcomeOf(found) ?? found.result.stderrTail);
+}
+
+/** Asking a sandbox what its Windlass takes: a probe that never answers is no answer, not a Windlass without host tools. */
+async function checkFailedProbe(): Promise<void> {
+	const handle = await sandbox(uid, "docker-windlass-sandbox", "mcp-probe-fails", []);
+	const never = new DockerWindlass(layer.tokens, { image: IMAGE_USED, engineCommand: ["sh", "-c", "exit 1"] });
+	const refused = await never.features(handle).catch((error: unknown) => error);
+	expect("a probe that never answers is refused with the sentence that the sandbox could not be asked, not taken for a Windlass without host tools", refused instanceof WindlassUnaskedError && refused.message.startsWith("The sandbox did not answer when the platform asked what its Windlass can do"), refused instanceof Error ? refused.message : JSON.stringify(refused));
+}
+
+async function checkOtherServers(): Promise<void> {
 	await section("what the layer reads of a definition", async () => {
 		const file = JSON.stringify({ mcp: { servers: { harbor: { command: "x", env: { A: "${ONE}-${TWO}", B: "${ONE}", C: 7 }, headers: { Authorization: "Bearer ${THREE}" } }, other: { command: "y", env: { D: "${FOUR}" } } } } });
 		expect("the variables a definition reads are its own `${NAME}`s, each once, in order", JSON.stringify(variablesRead(file, "harbor")) === JSON.stringify(["ONE", "TWO", "THREE"]), JSON.stringify(variablesRead(file, "harbor")));
@@ -490,7 +612,8 @@ async function main(): Promise<void> {
 		const first = await disk("s-1");
 		const asked = await remembering("ada", harborRepo, first, "Which berth is free for Ada?", berth("p1", "Ada"), true);
 		const print = asked.put[0]?.fingerprint ?? "";
-		expect("the first session on a repository is asked, and the yes starts the server", asked.put.length === 1 && asked.recalled.length === 0 && asked.outcomes[0]?.outcome.state === "running" && mcpOutcome(asked, "p1") === "result", asked.lines.join(" | "));
+		// The layer reports "starting" when the server has not said it runs within its 5 s (a loaded host): the call's result shows it ran.
+		expect("the first session on a repository is asked, and the yes starts the server", asked.put.length === 1 && asked.recalled.length === 0 && startedOrRunning(asked.outcomes[0]?.outcome.state) && mcpOutcome(asked, "p1") === "result", asked.lines.join(" | "));
 		const record = bookOf("ada").find(harborRepo.key, "harbor", print, now);
 		expect("the platform remembers it for that user, repository and definition, for 30 days", record !== null && record.expiresAt - record.approvedAt === APPROVAL_TTL_MS && bookOf("ada").all().length === 1, JSON.stringify(record));
 		const words = serverQuestionWords(asked.put[0] as TurnServerQuestion, { profile: strict, demo: false, dataInSandbox: true, project: harborRepo });
@@ -577,7 +700,9 @@ async function main(): Promise<void> {
 			{ server: () => true },
 		);
 		const asked = found.asked[0]?.question;
-		expect("the question is put before the prompt here too, and approving starts the server", found.asked.length === 1 && asked?.holdsTurn === true && found.outcomes[0]?.outcome.state === "running", JSON.stringify(found.outcomes[0]?.outcome));
+		// "starting" on a loaded host, then running by the layer's later word (`onServers`).
+		const ranLater = found.servers.some((list) => list.some((server) => server.name === "harbor" && server.state === "running"));
+		expect("the question is put before the prompt here too, and approving starts the server", found.asked.length === 1 && asked?.holdsTurn === true && (found.outcomes[0]?.outcome.state === "running" || (found.outcomes[0]?.outcome.state === "starting" && ranLater)), JSON.stringify(found.outcomes[0]?.outcome));
 		if (asked) for (const detail of serverQuestionWords(asked, { profile: layer.sandboxes.profile("docker-hardened"), demo: true, dataInSandbox: false, project: projectOf({ sessionId: "mcp-hardened", repoUrl: null }) }).details) info(`  ${detail}`);
 		expect("Windlass runs the first MCP call without asking in this profile", found.toolQuestions.every((question) => question.callId !== "h1") && mcpOutcome(found, "h1") === "result");
 		// What the server returned is content Windlass does not control: from there on it asks before a command it cannot sandbox, in this profile too.
@@ -708,10 +833,27 @@ async function main(): Promise<void> {
 		const quietRun = await turn(hardened, "Find berths for Ada and Bo again", twoCalls(), { own: [quiet], windlassSessionId: plainRun.result.windlassSessionId ?? undefined });
 		expect("docker-hardened, setting on: nobody is asked, and the layer answered what Windlass asked", quietRun.toolQuestions.length === 0 && quietRun.unasked.length >= 1 && quietRun.unasked.length === answers(quietRun).length && ran(quietRun), `told of ${allowed(quietRun).join(", ")}; answered ${answers(quietRun).join(", ")}`);
 	});
+}
 
+async function main(): Promise<void> {
+	const image = await docker(["image", "inspect", "--format", "{{.Id}}", IMAGE_USED]);
+	if (image.code !== 0) {
+		console.log(`The sandbox image ${IMAGE_USED} is missing. Build it: sandbox/build.sh`);
+		process.exitCode = 1;
+		return;
+	}
+	info(`Windlass in ${IMAGE_USED}: ${(await layer.windlass.version()) ?? "unknown"}; run ${run}`);
+	if (!process.argv.includes("--report")) await checkOtherServers();
+	// The platform's tools need a Windlass that takes host tools: an image without one is not a case to check, but a broken image.
+	const probe = await sandbox(uid, "docker-windlass-sandbox", "mcp-probe", []);
+	if (expect(`the Windlass in ${IMAGE_USED} takes host tools`, (await layer.windlass.features(probe)).hostTools)) {
+		for (const profile of ["docker-windlass-sandbox", "docker-hardened"] as const) await section(`${profile}: the platform's own tools`, () => checkPlatformTools(profile));
+		await section("a call the platform does not answer in time", () => checkUnanswered());
+	}
+	await section("a sandbox that does not answer what its Windlass takes", () => checkFailedProbe());
 	await section("cleanup", async () => {
 		for (const id of created) await layer.sandboxes.destroy(id);
-		for (const user of users) await docker(["volume", "rm", "-f", `wlp-user-${user}`, `wlp-auth-${user}`]);
+		for (const user of users) await docker(["volume", "rm", `wlp-user-${user}`], { check: true });
 		const containers = await docker(["ps", "-a", "--filter", `label=${LABEL_ARG}`, "--format", "{{.Names}}"]);
 		const volumes = await docker(["volume", "ls", "--filter", `label=${LABEL_ARG}`, "--format", "{{.Name}}"]);
 		const mine = [...containers.stdout.split("\n"), ...volumes.stdout.split("\n")].filter((name) => name.includes(run) || [...created].some((id) => name === `wlp-session-${id}`));

@@ -4,9 +4,12 @@
  * number and state, and "Push changes". The platform commits, pushes and opens it; the dialog is where
  * the user reads and edits the message first.
  *
- * The agent can ask the platform for the same (the question about that is Question.tsx's). Whether it
- * is asked about each time is the session's own setting, which stands here under the push's button
- * and, for a session that is being launched, in the launch form: one check box and one sentence.
+ * The agent pushes the session's own branch by itself whenever it wants (its `push`, which the
+ * platform performs and nobody is asked about); the panel then says the branch is pushed, and opens a
+ * pull request from it. The agent can also ask the platform to open or update the pull request (the
+ * question about that is Question.tsx's). Whether that is asked about each time is the session's own
+ * setting, which stands here under the button and, for a session that is being launched, in the
+ * launch form: one check box and one sentence.
  */
 import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, type PublishState, type PullRequestInfo, type SandboxProfile, type SessionSummary } from "@contract";
 import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
@@ -17,7 +20,7 @@ import { Dialog } from "./Dialog";
 import { BranchIcon, CrossIcon, ExternalIcon, LockIcon, MergedIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "./Icons";
 
 /** What letting the agent publish without asking means, in one sentence: the launch form and the panel say the same. */
-const PUBLISH_UNASKED_MEANS = "The agent may have the platform commit and push this session's work to the session's own branch and open or update its pull request, without you being asked each time.";
+const PUBLISH_UNASKED_MEANS = "The agent may have the platform open or update this session's pull request, with the agent's title and description, without you being asked each time. Pushing the session's own branch is never asked about.";
 
 /**
  * Why the setting cannot be on in a sandbox of `profile`, or null where it can: only where Windlass
@@ -99,16 +102,31 @@ export function PullState({ state }: { state: PullRequestInfo["state"] }) {
 /** Whether a pull request still takes pushes: one that was merged or closed is done with. */
 const isOpen = (pull: PullRequestInfo | null): boolean => pull !== null && (pull.state === "open" || pull.state === "draft");
 
-/** The line above the action: what pushing would do now, or why there is nothing to push. */
-function situation(pull: PullRequestInfo | null, branch: string, nothing: boolean, unknown: boolean): string {
+/**
+ * Whether "Open pull request" opens one from what is pushed: the branch is at GitHub, no pull request
+ * was opened from it, and there is nothing to commit or push first. The server opens it then
+ * (github/publish.ts `publishWork`), so the button is not held back for having nothing new.
+ */
+export const opensFromPushed = (pull: PullRequestInfo | null, pushed: string | null, nothing: boolean): boolean => pull === null && pushed !== null && nothing;
+
+/**
+ * The line above the action: what pushing would do now, or why there is nothing to push. `pushed`
+ * is the commit the branch is at on GitHub; the panel does not know whether the agent or the panel
+ * pushed it, so the line names neither (the timeline says who).
+ */
+export function situation({ pull, branch, pushed, nothing, unknown }: { pull: PullRequestInfo | null; branch: string; pushed: string | null; nothing: boolean; unknown: boolean }): string {
 	// A paused sandbox is not started to be asked: saying that it has changes would be a guess.
 	if (pull && isOpen(pull) && unknown) return "Whether the workspace has more than the branch is not known while its sandbox is paused.";
 	if (pull && isOpen(pull)) return nothing ? "Everything in the workspace is on the branch." : "The workspace has changes that are not on the branch.";
 	if (pull) return nothing ? `#${pull.number} is ${STATE_WORD[pull.state]}, and nothing has changed since.` : `#${pull.number} is ${STATE_WORD[pull.state]}. New work goes into a new pull request.`;
+	if (pushed !== null) {
+		const at = `${branch} is pushed at ${pushed.slice(0, 7)}; no pull request is open.`;
+		return nothing || unknown ? at : `${at} The workspace has changes that are not on the branch.`;
+	}
 	return nothing ? "Nothing to push yet: no file differs from the last commit." : `The work goes to ${branch}.`;
 }
 
-function PublishDialog({ sessionId, state, files, onClose, onDone }: { sessionId: string; state: PublishState; files: number | null; onClose(): void; onDone(state: PublishState): void }) {
+function PublishDialog({ sessionId, state, files, fromPushed, onClose, onDone }: { sessionId: string; state: PublishState; files: number | null; fromPushed: boolean; onClose(): void; onDone(state: PublishState): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const ids = { form: useId(), title: useId(), body: useId(), note: useId() };
@@ -159,7 +177,7 @@ function PublishDialog({ sessionId, state, files, onClose, onDone }: { sessionId
 						Cancel
 					</button>
 					<button type="submit" form={ids.form} className="button button-primary" disabled={busy || title.trim() === ""}>
-						{busy ? (opening ? "Opening the pull request…" : "Pushing…") : opening ? "Commit, push and open" : "Commit and push"}
+						{busy ? (opening ? "Opening the pull request…" : "Pushing…") : fromPushed ? "Open pull request" : opening ? "Commit, push and open" : "Commit and push"}
 					</button>
 				</>
 			}
@@ -178,9 +196,11 @@ function PublishDialog({ sessionId, state, files, onClose, onDone }: { sessionId
 					<textarea id={ids.body} className="input textarea gh-publish-body" rows={6} value={body} maxLength={MAX_PUBLISH_BODY_CHARS} disabled={busy} onChange={(event) => setBody(event.target.value)} />
 				</div>
 				<p className="field-note" id={ids.note}>
-					{opening
-						? `The platform commits ${what} with this message, pushes the branch, and opens the pull request under the same title and description.`
-						: `The platform commits ${what} with this message and pushes it to pull request #${state.pullRequest?.number}.`}{" "}
+					{fromPushed
+						? `The platform opens the pull request from what is pushed to ${state.branch}, under this title and description. Nothing is committed.`
+						: opening
+							? `The platform commits ${what} with this message, pushes the branch, and opens the pull request under the same title and description.`
+							: `The platform commits ${what} with this message and pushes it to pull request #${state.pullRequest?.number}.`}{" "}
 					The agent's sandbox is never given your GitHub access.
 				</p>
 				{error ? (
@@ -245,6 +265,8 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 	const changes = files !== null && files > 0 && idle ? true : (state?.changes ?? null);
 	const nothing = blocked === null && changes === false;
 	const unknown = blocked === null && changes === null;
+	// Pushed with no pull request: "Open pull request" opens one from the branch, though nothing is new.
+	const fromPushed = blocked === null && state !== null && opensFromPushed(pull, state.pushed, nothing);
 
 	return (
 		<section className="panel-section" aria-labelledby="panel-pull">
@@ -293,8 +315,8 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 				</p>
 			) : (
 				<>
-					<p className="panel-empty gh-pull-note">{blocked ?? situation(pull, state.branch, nothing, unknown)}</p>
-					<button type="button" className="button button-outline button-small" onClick={() => setDialog(true)} disabled={blocked !== null || nothing}>
+					<p className="panel-empty gh-pull-note">{blocked ?? situation({ pull, branch: state.branch, pushed: state.pushed, nothing, unknown })}</p>
+					<button type="button" className="button button-outline button-small" onClick={() => setDialog(true)} disabled={blocked !== null || (nothing && !fromPushed)}>
 						{action}
 					</button>
 				</>
@@ -305,6 +327,7 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 					sessionId={sessionId}
 					state={state}
 					files={files}
+					fromPushed={fromPushed}
 					onClose={() => setDialog(false)}
 					onDone={(next) => {
 						setState(next);

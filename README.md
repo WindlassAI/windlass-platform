@@ -23,7 +23,9 @@ account's models on such a token, one JSON object on a line (`windlass --models 
 things the platform uses where a sandbox's Windlass has them, and does without where it has not: a home of the
 session's own for sandboxed commands ("Sandboxes" below), two lists that say by name which variables a
 command gets ("A repository's secrets"), and required checks, which a repository's own file cannot replace
-("A repository's checks"). The released 0.2.0 has the first two and not the third. The local builds before
+("A repository's checks"). 0.4.0 also takes tools its client runs itself, *host tools*, which is how the agent
+asks the platform to publish, push and fetch ("The agent's own tools"); the platform needs them, and a turn in a
+sandbox whose Windlass does not take them does not run. The released 0.2.0 has the first two and not the third. The local builds before
 0.2.0 all call themselves 0.1.1: `0.1.1+a9c3601d40` is the same code as 0.2.0, `0.1.1+739e1cbc09` has the
 token option and none of the three later things, and `0.1.1+dca57b2627` has `login token` without
 `--valid-for` and is too old.
@@ -35,7 +37,10 @@ repository's page say so. A sandbox made in its place has 0.3.0, which opens eve
 the user's checks are required from that turn on. The other way about does not work: 0.2.0 does not open a
 session in which 0.3.0 recorded check results. So a sandbox image is not to be rolled back to 0.2.0 while
 such sessions are in use ("A repository's checks", "Two kinds of Windlass", has what a turn then says and
-what its user can do).
+what its user can do). The same holds one release on: 0.3.0 does not open a session in which a host tool ran
+under Windlass's approval layer, which every session does once its agent has pushed or filed a report. So the
+image and the E2B template are not to be rolled back to 0.3.0 once such sessions exist; going back means a newer
+Windlass, never an older one.
 
 ```sh
 pnpm install
@@ -942,7 +947,7 @@ nothing of this, and a repository is a public address pasted into the launch for
   panel shows the pull request with its number and state, and "Push changes" updates the same branch. The
   timeline gets one line for each ("Opened pull request #12 in acme/harbor from windlass/fix-the-light-3f9a2c,
   with 3 files."). The agent's own git has nothing to push with, in any case: what it can do is ask the
-  platform for the same ("The agent asks to publish").
+  platform for the same ("The agent's own tools").
   The pull request's description ends with a section the platform writes, and writes again with every
   push: which checks ran before the agent's turn was called done, whose they are, how each ended, and
   what in the changes is worth a look ("What a pull request shows was verified").
@@ -1088,50 +1093,71 @@ for the seconds until the platform revokes it, and never for pull requests, anot
 account. A sandbox layer that could run the platform's command as another user than the agent's, or outside the
 sandbox altogether, would close these; `SandboxHandle.run` has no such option.
 
-### The agent asks to publish
+### The agent's own tools
 
 A user who tells the agent to "open a pull request", or whose long task ends while they are away, wants the
-agent to be able to get its work out. The agent still has no GitHub credential and still pushes nothing: it
-asks the platform, and the platform does what "Open pull request" does, with the same code
-(`publishWork`, `server/src/github/publish.ts`) and the same tokens, each for one step and revoked after it.
+agent to be able to get its work out. The agent still has no GitHub credential: it asks the platform, and the
+platform does the git and GitHub work with the code and the tokens of the panel's own buttons
+(`server/src/github/publish.ts`), each token for one step and revoked after it.
 
-- **What the agent can ask for.** That the session's work be committed and pushed to the session's own branch
-  and that the session's pull request be opened, or, when it is open, pushed to and given the title and
-  description of the request. It writes three things: the pull request's title and description, and the
-  commit's message (the title, when it gives none). It names no branch: a request that names a branch other
-  than the session's, or a base other than the branch the session started from, is refused, and so is
-  whatever a push from the panel is refused for (no write access, a branch that moved at GitHub, a workflow
-  file, nothing to push).
-- **How it asks** (`server/src/agent-publish.ts`). Windlass offers its model the tools of MCP servers, and
-  starts by itself the servers its user's own configuration file names. For a turn of a session on a
-  repository of the GitHub connection, the sandbox layer writes one server into that file in the sandbox
-  (`~/.config/windlass/config.json`), `windlass_platform`, with one tool, `publish`, and takes it out again
-  when the turn has ended. The model reads of the tool in the list Windlass gives it ("Publish this session's
-  work to GitHub: commit and push it to the session's own branch and open or update the session's pull
-  request."), with the rest of its description when it looks the tool up. A session without such a
-  repository, or on a deployment without a GitHub App, is given no such server and is told of no such tool.
-  The user's own MCP servers go into the same file ("Account settings"); `server/src/windlass-config.ts`
-  has what the platform writes there and how it is taken out.
-  (Windlass's protocol has a place for a client's servers, `mcpServers` in `session/new`; this Windlass
-  ignores it, which is why the server goes into the file.)
-- **What the platform acts on.** The server is a mailbox: a few lines of Python that do nothing with a call but
-  wait for an answer. The request is Windlass's own report of the call among the turn's events
-  (`tool.called`, with the arguments), which the engine writes on its connection to the platform. The
-  platform decides, publishes, and writes what the agent is to be told into a file the server waits for,
-  which the server returns as the tool's result: what was published and the pull request's address, or why
-  nothing was. The server names each call it gets in a progress notification, which Windlass passes on as
-  an event of that call, so the platform knows which call waits for which file. No network path leads from
-  the sandbox to the platform, and nothing the sandbox says is trusted: the server's name for a call is
-  only a file name, the file is only what the agent reads, and a repository whose own
-  `.windlass/config.json` names a server `windlass_platform` makes it the project's, which Windlass says,
-  and then no call is acted on.
-- **Windlass's own question.** Where it sandboxes commands, Windlass asks before every call of an MCP tool
-  ("Allow the MCP tool windlass_platform/publish?"), and anywhere once content it does not trust is in the
-  conversation. For this tool the sandbox layer answers that question itself, with "once": the call does
-  nothing in the sandbox but wait. The timeline says so under the call ("The platform allowed this itself:
-  the tool only hands the agent's request to the platform, which decides it."). The tool's results are the
-  platform's own words, so its server is marked as trusted, and a result does not make Windlass ask about
-  the commands that follow.
+- **Four tools** (`server/src/agent-publish.ts`, `platformTools`), in a session on a repository of the GitHub
+  connection, on a deployment with a GitHub App:
+  - `publish`: commit what is uncommitted, push the session's branch, and open the session's pull request, or,
+    when it is open, push to it and give it the call's title and description. A person's session only. It
+    writes three things: the pull request's title and description, and the commit's message (the title, when
+    it gives none). A request that names a branch other than the session's, or a base other than the branch
+    the session started from, is refused, and so is whatever a push from the panel is refused for.
+  - `push`: commit what is uncommitted with the agent's message and push the session's branch, as often as the
+    agent likes. It opens no pull request.
+  - `fetch_base`: fetch the branch the session started from into the workspace as `origin/<base>`, and the
+    session's own branch as GitHub has it as `origin/<branch>`, with a token that may only read, so that the
+    agent can rebase onto the base or merge it, merge what someone else pushed to its branch, and push again.
+  - `report`: a work item's agent files what it did, in place of `publish` ("Work items").
+  A session without such a repository is offered none of them.
+- **How the agent calls them.** They are Windlass's *host tools* (its docs/acp.md, "Tools the client runs"):
+  the platform declares them each time it opens or resumes the Windlass session (`_meta.windlass.hostTools`,
+  `server/src/sandbox/turn.ts`), the model finds them beside Windlass's own, and a call reaches the platform
+  as a request on the engine's connection (`_windlass/host_call`), answered for that turn's session while the
+  turn runs. The platform's answer is the call's result: what was pushed or published and the pull request's
+  address, or why nothing was, in the platform's own words with GitHub's refusal or the user's note quoted in
+  them. Nothing of the tools is in the sandbox: no file, no process, no server.
+- **Who is asked.** Each tool is declared `read`, which Windlass never asks about; what needs the user is asked
+  by the platform:
+  - `push` and `fetch_base` are never asked about, in any profile, whatever "Let the agent publish without
+    asking" says. A push goes only to the session's own branch, which the platform names: a call that names
+    another branch is refused, so the repository's default branch is out of reach. A push is a plain push
+    first, so a fast-forward goes whoever pushed before it. Only one GitHub refuses as no fast-forward (the
+    agent rebased) is tried again under a lease on the commit the platform itself last pushed there
+    (`--force-with-lease`, `pushScript` in `server/src/github/git.ts`; the session keeps that commit apart
+    from what a new sandbox's clone found, which may be someone else's): it replaces the platform's own push
+    and nothing else. A commit anyone else pushed since is never pushed away; the push is refused with a
+    sentence that says to fetch and merge it. A work item's publish step pushes the same way; the panel's
+    push never forces.
+  - Before sending work, the platform reads the message and patch of every outgoing commit as text,
+    including merge commits and binary files. It excludes history already seen on the base or work
+    branch. It refuses the push if the session's redaction finds a saved secret value, or if the history
+    read reaches 8 MB. Encoded values can escape redaction.
+    When it refuses the push, changes from the platform's own commit stay in the workspace.
+  - The platform's Git runs outside Windlass's sandbox. Before each workspace Git operation, its guard
+    checks the workspace as it stands. It refuses a redirected Git directory, a gitlink in the index
+    (including an unpopulated submodule), a nested `.git` found in the work tree, or a scan it cannot
+    finish. It skips Git-ignored `node_modules` directories. It also refuses local configuration for
+    filters and other program or transport settings checked by `wlp_guard` in `server/src/github/git.ts`.
+    The platform disables hooks and filesystem monitors and ignores home and system Git configuration.
+    Repositories using Git LFS cannot be pushed by the platform yet. During the agent's own `push`
+    or `fetch_base`, a concurrent command can still change `.git` between the guard and Git's use of it.
+    The platform still uses the workspace's Git directory for its commit. A private Git directory for
+    the platform commit has yet to be implemented.
+  - `publish` is put to the user unless the session lets the agent publish without asking (below).
+  - A push or a fetch may take five minutes; a publish may wait for the user's answer first, and is declared
+    with that time added, at most an hour. One at a time: a push or publish asked for while another is being
+    handled is refused with that sentence, and so is a call after its turn has ended.
+- **What a push sets off at GitHub.** A push to the session's branch is the GitHub App's push, and GitHub
+  starts the repository's workflows that run on a push to such a branch, as after a push from the panel. A
+  workflow that runs the repository's own code (its tests, its build, its install scripts) then runs the
+  agent's code, with whatever Actions secrets that workflow is given, and the agent's push is asked about
+  by nobody. The workflow files themselves are the branch's, and the app may not change them
+  (`.github/workflows`: such a push is refused). An agent that pushes often makes CI run often.
 - **The user decides.** Unless the session lets the agent publish without asking, each request is put to the
   user where a tool call's question is put: "Allow the agent to open a pull request?" (or "... to push to
   pull request #12?"), with the repository, the branch and its base, the commit's message, and the pull
@@ -1151,28 +1177,36 @@ asks the platform, and the platform does what "Open pull request" does, with the
   characters, the description and the commit's message 4,000 each; past it the request is refused with the
   limit, so that the agent asks again), control characters are taken out, and so is every saved secret of
   the repository, before the user is shown it and before it goes to GitHub.
-- **What the user sees afterwards.** One line in the timeline, as after a push from the panel, that begins
-  with who allowed it: "The agent asked to publish, and you allowed it once. Opened pull request #12 in
-  acme/harbor from windlass/fix-the-light-3f9a2c, with 3 files." and the pull request's address; or "...,
-  and you did not allow it: ...", or why it did not go through. The panel's "Pull request" section shows
-  the branch and the pull request as after a push of the user's own.
+- **What the user sees afterwards.** One line in the timeline for each call. For a publish, as after a push from
+  the panel, beginning with who allowed it: "The agent asked to publish, and you allowed it once. Opened pull
+  request #12 …", or "…, and you did not allow it: …", or why it did not go through. For a push: "The agent
+  pushed its work to windlass/fix-the-light-3f9a2c (1a2b3c4). Pull request #12 shows it; its description
+  reports: 2 checks passed.", or "The agent asked to push, and it did not go through: GitHub refused the push:
+  a rule of acme/quay protects branches named like windlass/…. …". For a fetch: "Fetched main from GitHub into
+  the workspace as origin/main, as the agent asked." An open pull request's verified section is written again
+  after a push, saying the turn's checks have not run on it yet, and once more when the turn has ended. With
+  no pull request open, the panel's "Open pull request" opens one from what the agent pushed.
 
 What a command the agent runs can do about any of this depends on where it runs:
 
-| Profile | A command the agent runs | Publishing without asking |
+| Profile | A command the agent runs | Without asking |
 |---|---|---|
-| commands sandboxed by Windlass (`docker-windlass-sandbox`, E2B with its sandbox promised) | cannot read Windlass's configuration file, cannot write where the answers go (its home is not the sandbox's), sees no process but its own, and what it prints is a tool's output and nothing more: it can neither make a request nor answer one | can be turned on |
-| commands not sandboxed (`docker-hardened`, `e2b-open`), or nothing promised (E2B before its check) | runs as Windlass's user: it can write a line on the engine's own connection to the platform (its standard output, through `/proc`), which reads as the engine's, and so can make a request in the agent's name, and it can write the answer the agent reads | cannot: every request is put to the user, whoever made it, the question says that a command could have asked it, and it offers no "Allow for this session" |
+| commands sandboxed by Windlass (`docker-windlass-sandbox`, E2B with its sandbox promised) | cannot write on the engine's connection to the platform: every call is the model's | `push` and `fetch_base` always; `publish` once the user allows it |
+| commands not sandboxed (`docker-hardened`, `e2b-open`), or nothing promised (E2B before its check) | runs as Windlass's user and can write on the engine's own connection (its standard output, through `/proc`), so it can make a call in the agent's name | `push` and `fetch_base` always, since a forged one pushes the workspace, which the command can change anyway, to the session's own branch; `publish` never: every request is put to the user, the question says a command could have asked it, and it offers no "Allow for this session" |
 
-So where commands are not sandboxed a command can raise the question, and cannot publish by itself. That is
-the same line as with a repository's secrets: where a promise does not hold by construction, the platform
-does not rely on it. Both rows were tried on local Docker, with a command that did each of these things;
-nothing of this has run on E2B yet.
+So where commands are not sandboxed a command can push the session's branch and raise the question, and
+cannot open a pull request by itself. That is the same line as with a repository's secrets: where a promise
+does not hold by construction, the platform does not rely on it. The second row is by reading of how the
+engine's connection works: a forged host call has not been tried.
 
-**A sandbox that keeps an older Windlass.** The tool is offered only to an engine that lists `_windlass/mcp`
-among its methods, which is what says whose a server is; an engine without it is told of no tool, and the
-panel's button works as before. The configuration keys the server's definition uses are as old as
-Windlass's MCP servers themselves.
+**A sandbox from before the tools.** The tools need a Windlass that lists `hostTools` among the keys it takes
+(0.4.0 does). Every sandbox the platform makes has one. A turn in a sandbox whose Windlass does not take them
+fails with "This agent's sandbox is from an older version of the platform, whose Windlass cannot give the
+agent the platform's tools, so nothing was run. Start a new agent." (on a person's machine: install the
+current runner there, then start a new agent), a work item's too (its person is asked, with that sentence).
+A sandbox that does not answer what its Windlass takes is not taken for an older one: the turn fails with
+"The sandbox did not answer when the platform asked what its Windlass can do, so the agent's turn did not
+start. Send the prompt again."
 
 ### When a sandbox is replaced
 
@@ -1220,10 +1254,12 @@ cd server && ../scripts/locked.sh github-check.ts --docker  # and the git comman
 cd server && pnpm e2e                                       # its last section: the route and the actors, on the fake layer
 ```
 
-`github-check.ts` has the rules of a request of the agent's as well ("The agent asks to publish"): what it
-may hold, the configuration file with the tool's server in it and out of it, and what `publishWork` does
-with an open pull request for the agent and for the panel. The fake sandbox layer plays no such tool, so the
-end-to-end test does not ask through the actors.
+`github-check.ts` has the rules of a request of the agent's as well ("The agent's own tools"): what it
+may hold, the tools' declarations, what `publishWork` does with an open pull request for the agent and for
+the panel, and the agent's push (its own branch only, under the lease, a rebase, a commit someone else
+pushed). `mcp-check.ts --report` calls the tools through a real Windlass; the fake sandbox layer's model calls
+`push`, `fetch_base` and `report` when the prompt says "(push)", "(fetch)" or "(report)", so the end-to-end
+test pushes through the actors.
 
 The web app's mock plays a deployment with a GitHub App (`?mock=1`; `&github=off` for one without), and
 `__wlpMock.mockNextGithub("list" | "connect" | "denied" | "protected" | "gone")` in the console makes its next
@@ -1565,8 +1601,8 @@ To look at:
 - **What it cannot say.** That the checks are good ones. That a check which passed tested what changed.
   On a Windlass without required checks, what the repository's file did in a turn the platform could
   not read it in. And where commands are not
-  sandboxed, a command can write on the engine's connection to the platform ("The agent asks to
-  publish"), so an agent that set out to could forge the events themselves; in the profiles where
+  sandboxed, a command can write on the engine's connection to the platform ("The agent's own
+  tools"), so an agent that set out to could forge the events themselves; in the profiles where
   Windlass sandboxes every command it cannot.
 
 **What a required check does not promise** (Windlass's docs/safety.md has the whole of it). Its command is
@@ -2258,9 +2294,12 @@ nobody can file, read or act on an item.
   app never approves, merges or dismisses a review. The person merges at GitHub, or sends the work back
   from the item's page with a note, which starts a new run.
 - **Turns are unattended.** An item's turn has nobody to ask: a tool call that would ask is refused at once,
-  and the model is told so. A turn takes at most 60 steps. The agent is not given the tool to publish,
-  since the platform pushes an item's work itself; it is given one, `report`, to file what it did, in a
-  title and a description that the platform puts on the pull request, and what it is unsure of.
+  and the model is told so. A turn takes at most 60 steps. The agent is not given `publish`, since the
+  platform opens an item's pull request itself; it is given `report`, to file what it did, in a title and a
+  description that the platform puts on the pull request, and what it is unsure of, and `push` and
+  `fetch_base` as a person's agent is ("The agent's own tools"): it may push the item's branch during its
+  turn, and the item's publish step pushes whatever it did not. A turn in which the agent pushed counts as
+  one that changed something.
 - **Every stop is a question.** The rounds above used up, the same failure again after a fix, a turn that
   changed nothing, a push GitHub refused, CI still running 90 minutes after the push, a step whose turn was
   cut off three times (by a deploy or a restart), or the item's budget used up: the item waits for its
@@ -2327,11 +2366,8 @@ routes answer 404, `not_found` ("There is no such route."), whatever the token.
 installation has accepted them, an item waits for no CI: it is handed over saying that CI was not read.
 
 What is not in this slice. Items run on hosted sandboxes only: one filed for a machine is refused
-(`bad_input`). Nothing of an item is pushed before the step that opens its pull request. Until the next Windlass release, in a profile where
-Windlass 0.3.0 asks before a call of an MCP tool (`docker-windlass-sandbox`, E2B with its sandbox
-promised), an item's agent is told that its report was not taken, since nobody is there to allow the
-call, although the platform has received it; in the profiles where Windlass asks nothing, it is told the
-report was taken. There is no planning step: an item starts by implementing. Items come from the web app
+(`bad_input`). An item's turn runs only in a sandbox whose Windlass takes host tools ("The agent's own
+tools"). There is no planning step: an item starts by implementing. Items come from the web app
 and the API, from their own user, and nothing is taken in from GitHub's issues.
 
 ```sh
@@ -2612,8 +2648,9 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
   agent; agentOS cannot run the Windlass executable at all.
 - **Where commands are not sandboxed, a command can ask to publish in the agent's name.** It runs as
   Windlass's user and can write on the engine's connection to the platform. The platform therefore asks the
-  user about every request in those profiles and never publishes unasked there ("The agent asks to
-  publish"), so a task that is to publish while its user is away needs a profile whose commands Windlass
+  user about every request in those profiles and never publishes unasked there ("The agent's own tools"; a
+  push is never asked about anywhere: a forged one pushes the workspace to the session's own branch, which the
+  agent may do itself), so a task that is to publish while its user is away needs a profile whose commands Windlass
   sandboxes. What would close it: an engine that runs as another user than its commands, or one whose
   connection a command cannot write to.
 - **In a sandbox that still has Windlass 0.2.0, a repository's own file can replace a user's checks,
@@ -2635,11 +2672,13 @@ is older than the session's home and the lists of variable names ("Sandboxes tha
 - **A pull request's section is as old as the last push.** It is written when the platform pushes, and
   once more after a turn in which the agent published. A turn that changes files and is not pushed
   leaves the description saying what was true of what is at GitHub.
-- **What a turn wrote into Windlass's configuration can outlast it until the next turn.** The tool to
-  publish, the repository's checks and the user's own MCP servers are written into Windlass's configuration file in the sandbox
+- **What a turn wrote into Windlass's configuration can outlast it until the next turn.** The
+  repository's checks and the user's own MCP servers are written into Windlass's configuration file in the sandbox
   for a turn and removed when the turn ends; a server that dies in between leaves them there. The
   session's next turn takes them out before it writes its own, by the platform's list of what it wrote.
-  Nothing reads the file in between: no Windlass runs between turns.
+  Nothing reads the file in between: no Windlass runs between turns. The agent's own tools are not written
+  anywhere: they are declared with each session's opening; a server called `windlass_platform` left there by
+  an earlier version is taken out (`server/src/windlass-config.ts`).
 - **A user's own MCP server runs unasked, with the network and the session's access token.** Windlass
   asks before it starts a project's server and not before one of its user's own configuration, and
   such a server is a process outside Windlass's sandbox around commands in every profile. The settings

@@ -59,6 +59,20 @@ describe("the one-line reading of a tool call", () => {
 		expect(summarizeTool(tool({ name: "write", state: "input", inputText: '{"path":"a\\"b.ts","content":"x' })).target).toBe('a"b.ts');
 	});
 
+	it("reads the platform's push and fetch_base from what the platform answered", () => {
+		const push = (inputText: string, output: string | null) => summarizeTool(tool({ name: "push", inputText, output }));
+		// Before the answer: the commit's message, as the agent wrote it.
+		expect(push('{"message":"Make add() add"}', null)).toEqual({ target: "Make add() add", facts: [], exitCode: null });
+		expect(push("{}", "Pushed to windlass/fix-1a2b3c (1a2b3c4). It replaced what the platform had pushed to the branch before. Pull request #12 shows it: https://github.com/acme/quay/pull/12")).toEqual({ target: "windlass/fix-1a2b3c", facts: ["1a2b3c4", "replaced the last push", "pull request #12"], exitCode: null });
+		expect(push("{}", "Nothing to push: windlass/fix-1a2b3c at GitHub already has everything in the workspace.")).toMatchObject({ target: "windlass/fix-1a2b3c", facts: ["nothing new"] });
+		expect(push('{"branch":"main"}', "Not pushed. This session's work can only go to the session's own branch, windlass/fix-1a2b3c; a request that names another branch is refused. Call the tool again without a branch.")).toMatchObject({ target: "main", facts: ["not pushed"] });
+		expect(push('{"message":"Make add() add"}', "Not pushed. GitHub refused the push: a rule of acme/quay protects branches named like windlass/fix-1a2b3c. Let the GitHub App create such branches in the repository's branch rules, then push again.")).toMatchObject({ target: "Make add() add", facts: ["not pushed"] });
+		const fetch = (output: string | null) => summarizeTool(tool({ name: "fetch_base", inputText: "{}", output }));
+		expect(fetch("Fetched release/2.4 from GitHub into the workspace as origin/release/2.4. Rebase onto it (git rebase origin/release/2.4) or merge it, then call push.")).toEqual({ target: "release/2.4", facts: ["as origin/release/2.4"], exitCode: null });
+		expect(fetch("Not fetched. GitHub could not be reached from the sandbox. Try again in a moment.")).toEqual({ target: "", facts: ["not fetched"], exitCode: null });
+		expect(summarizeTool(tool({ name: "publish", inputText: '{"description":"It subtracted.","title":"Make add() add"}' })).target).toBe("Make add() add");
+	});
+
 	it("falls back to the first string of an unknown tool's arguments", () => {
 		expect(summarizeTool(tool({ name: "fetch_page", inputText: '{"limit":3,"address":"https://example.com"}' })).target).toBe("https://example.com");
 		expect(summarizeTool(tool({ name: "noop", inputText: "{}" })).target).toBe("");

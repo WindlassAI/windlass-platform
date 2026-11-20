@@ -1,69 +1,68 @@
 /**
- * The agent asking the platform to publish: commit and push the session's work to the session's
- * branch and open or update the session's pull request, with a title and a description the agent
- * writes. The platform does the work, with the code and the token handling of a publish from the
+ * The platform's own tools for the agent: `publish` (commit and push the session's work to the
+ * session's branch and open or update its pull request, with a title and a description the agent
+ * writes), `push` (commit and push the session's branch, and nothing else), `fetch_base` (fetch the
+ * branch the session started from, to rebase onto) and `report` (a work item's agent hands over its
+ * result). The platform does the work, with the code and the token handling of a publish from the
  * side panel (github/publish.ts, git.ts); the agent has no GitHub credential, before or after.
  *
- * How the agent asks. Windlass offers a model the tools of MCP servers, and starts by itself the
- * servers its user's own configuration file names (`~/.config/windlass/config.json`; a server a
- * repository's file names waits for approval). So for a turn of a session that may publish, the
- * sandbox layer writes one server into that file, `windlass_platform`, with one tool, `publish`, and
- * takes it out again when the turn ends (sandbox/turn.ts; windlass-config.ts has the file, which
- * the user's own MCP servers go into as well). The model finds the tool in the list
- * Windlass gives it, with the description below, and calls it like any other.
+ * How the agent asks. Windlass lets the client that opens a session declare tools it runs itself
+ * (its docs/acp.md, "Tools the client runs"): the declarations go with every `session/new` and
+ * `session/resume` (`_meta.windlass.hostTools`), the model finds the tools beside Windlass's own,
+ * and a call reaches the platform as the request `_windlass/host_call` on the engine's connection;
+ * the platform's answer is the call's result. Nothing of it is in the sandbox: no file, no process,
+ * no server. A sandbox whose Windlass does not list `hostTools` among what it takes is from before
+ * them: a turn there does not run (`oldSandbox`, agent-session.ts).
  *
- * The server is a mailbox and nothing more: a few lines of Python that do nothing with a call but
- * wait for an answer. What the platform acts on is Windlass's own report of the call in the turn's
- * events (`tool.called`, with the arguments), which the engine writes on its connection to the
- * platform. The platform decides, publishes, and puts what the agent is to be told into a file the
- * server waits for; the server hands it back as the tool's result. Which file: the server names each
- * call it receives in a progress notification, which Windlass passes on as an event of that call,
- * so the platform knows which call waits where. Nothing travels on a network, and nothing the
- * sandbox says is trusted:
+ * What Windlass asks about. A declaration names its `effect`, and Windlass decides a call by it as it
+ * decides any tool's: `read` is never asked about, attended or not; `write`, `exec` and `network` are
+ * asked about in the approval modes the platform runs (`auto`), and refused in a turn nobody attends.
+ * Every tool here is declared `read`, each for its own reason (`platformTools`), and the one that
+ * needs the person, `publish`, asks them itself, inside the call. Two questions about one publish,
+ * Windlass's and the platform's, would be one too many; and only the platform's can be trusted
+ * where it matters. Where commands run directly in the sandbox machine they run as Windlass's user
+ * and can write on the engine's own connection: a command there can make a call in the agent's
+ * name without Windlass having decided anything, so Windlass's question would guard nothing. That
+ * is why such a session's agent is never let publish unasked (`publishUnaskedProblem`): there every
+ * request is put to the user, whoever made it. README, "The agent asks to publish", says the same.
  *
- *   - the request is the engine's event, never a file or a process's word;
- *   - the server's name for a call is only a file name (checked), and the file is only what the
- *     agent reads;
- *   - a repository's own configuration that names a server `windlass_platform` makes it the
- *     project's, which Windlass says (`origin`), and then no call is acted on at all.
- *
- * Where Windlass sandboxes the agent's commands they can do none of this: they see no process but
- * their own, cannot read Windlass's configuration and cannot write where the answers go. Where
- * commands run directly in the sandbox machine they run as Windlass's user and can write on the
- * engine's own connection, so there a command can ask in the agent's name. That cannot be closed
- * from here, and it is why such a session's agent is never let publish unasked
- * (`publishUnaskedProblem`): there every request is put to the user, whoever made it. README, "The
- * agent asks to publish", says the same.
- *
- * This file has what is the same everywhere: the server and its tool, what a request may hold, and
+ * This file has what is the same everywhere: the tools' declarations, what a request may hold, and
  * the words of the question, of the timeline's lines and of what the agent is told.
  */
 
 import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
 import type { CommandSandbox, Redactor } from "./repo-secrets.js";
 
-/** The server's name in Windlass's configuration, and its tools: the model calls `mcp_call` with these. */
+/**
+ * A name no MCP server of a user's may have (personal-servers.ts), and that the platform takes out of
+ * Windlass's configuration in a sandbox (windlass-config.ts): a server called so would look to the
+ * model, and to whoever reads its calls, like the platform's own.
+ */
 export const PUBLISH_SERVER = "windlass_platform";
 export const PUBLISH_TOOL = "publish";
 /**
- * The tool a work item's agent files its report with (Plans "software factory" §2.1): what it did, in
+ * The tool a work item's agent files its report with: what it did, in
  * a title and a description the platform puts on the pull request, and what it is unsure of. Offered
- * on the same server, in place of `publish`, which an item's agent is not given: the platform pushes
- * an item's work itself. Nothing is decided from a report; it is prose for the person.
+ * in place of `publish`, which an item's agent is not given: the pull request is the item's step to
+ * open. Nothing is decided from a report; it is prose for the person.
  */
 export const REPORT_TOOL = "report";
-
-/** Where the server waits for the platform's answers. */
-export const PUBLISH_STATE_DIR = "/home/agent/.local/state/windlass-platform";
-export const PUBLISH_DIR = `${PUBLISH_STATE_DIR}/publish`;
+/**
+ * The tool by which the agent pushes the session's branch whenever it wants. It is the platform's push,
+ * not a credential in the sandbox: the platform names the branch, holds the token for the one push, and
+ * may replace only its own last push there, so the agent reaches no other branch and no one else's commit.
+ */
+export const PUSH_TOOL = "push";
+/** The tool that fetches the session's base branch into the workspace, so that the agent can rebase onto it and push again. */
+export const FETCH_BASE_TOOL = "fetch_base";
 
 /** The longest commit message a request may carry. */
 export const MAX_PUBLISH_COMMIT_CHARS = 4_000;
 
-/** How long publishing itself may take once it is allowed: a commit, a push and GitHub's API, with room. */
+/** How long publishing itself may take once it is allowed: a commit, a push and GitHub's API, with room. Also a push's or a fetch's whole time. */
 const PUBLISHING_SECONDS = 5 * 60;
-/** The longest Windlass lets one call of an MCP tool take. */
-const WINDLASS_CALL_LIMIT_SECONDS = 3600;
+/** The longest Windlass lets one call of a client's tool take: a waiting call holds the turn, and the session with it. */
+const HOST_CALL_LIMIT_SECONDS = 3600;
 
 /**
  * What the model reads about the tool. Windlass's list shows the first sentence, at most 160
@@ -71,7 +70,7 @@ const WINDLASS_CALL_LIMIT_SECONDS = 3600;
  */
 const DESCRIPTION = [
 	"Publish this session's work to GitHub: commit and push it to the session's own branch and open or update the session's pull request.",
-	"You have no GitHub credential and `git push` does not work here: this tool is the only way to publish, and the platform that runs this session does the work.",
+	"You have no GitHub credential and `git push` does not work here: this tool and `push` are the only ways to get the work out, and the platform that runs this session does the work.",
 	"It commits whatever is uncommitted in the workspace with your commit message, pushes the session's branch (the platform names it; you cannot choose another, and never the repository's default branch), and opens a pull request into the branch the session started from, with your title and description.",
 	"When the session's pull request is open already, it pushes to that one and gives it the title and description of this call.",
 	"The user may be asked to allow it first, which can take minutes: wait for the result.",
@@ -80,8 +79,20 @@ const DESCRIPTION = [
 
 const REPORT_DESCRIPTION = [
 	"File your report on this turn's work, for the person who reviews it: a title and a description for the pull request, and what you are unsure of.",
-	"Call it once, at the end of your turn, after the work is done; a later call replaces the report. The platform commits and pushes your work and opens the pull request itself: you have no GitHub credential and do not push.",
+	"Call it once, at the end of your turn, after the work is done; a later call replaces the report. The platform opens the pull request itself once your turn has ended, and pushes whatever you did not push with `push`.",
 	"Whether the work is ready is decided from the checks and CI, not from the report: say plainly what you did not finish or could not verify.",
+].join(" ");
+
+const PUSH_DESCRIPTION = [
+	"Push this session's branch to GitHub: the platform commits whatever is uncommitted in the workspace with your message and pushes the session's own branch. Nobody is asked.",
+	"You have no GitHub credential and `git push` does not work here: this is how your commits get to GitHub. Push whenever you want, as often as you want, for example after each piece of work worth keeping.",
+	"The platform names the branch; you cannot choose another, and never the repository's default branch. It opens no pull request.",
+	"To bring in what changed on the branch the session started from: call `fetch_base`, rebase onto what it fetched (or merge it), and push again. A rebased branch replaces what the platform pushed last, and never a commit someone else pushed to the branch.",
+].join(" ");
+
+const FETCH_BASE_DESCRIPTION = [
+	"Fetch the branch this session started from, as it is at GitHub now, into the workspace as `origin/<that branch>`, and the session's own branch as `origin/<your branch>` once it is at GitHub (to merge what someone else pushed there). Nobody is asked.",
+	"It changes neither your working tree nor your branch: rebase or merge onto it yourself, then call `push`.",
 ].join(" ");
 
 const REPORT_SCHEMA = {
@@ -105,126 +116,79 @@ const INPUT_SCHEMA = {
 	required: ["title"],
 };
 
-/**
- * The server. One JSON-RPC message per line on standard input and output, the handshake of the MCP
- * revisions Windlass falls back to. A call of one of its tools is named (`request`), announced with
- * that name as the call's progress, and answered with the content of the file of that name once the
- * platform has written it; the file is removed when it was read. A call nobody answers in `wait`
- * seconds ends by saying so. Calls are taken one at a time.
- */
-const SERVER_SOURCE = String.raw`
-import json, os, secrets, sys, time
+const PUSH_SCHEMA = {
+	type: "object",
+	properties: {
+		message: { type: "string", description: `The message of the commit the platform makes of what is uncommitted, at most ${MAX_PUBLISH_COMMIT_CHARS} characters. Left out, it is the session's title. Not used when you committed everything yourself.` },
+		branch: { type: "string", description: "Leave it out. The push goes to the session's own branch, and a request that names any other branch is refused." },
+	},
+};
 
-DIRECTORY, WAIT, TOOLS = json.loads(sys.argv[1])
-os.makedirs(DIRECTORY, mode=0o700, exist_ok=True)
+/** A tool as Windlass takes it in `_meta.windlass.hostTools` (its docs/acp.md, "Tools the client runs"). */
+export interface HostToolDeclaration {
+	name: string;
+	description: string;
+	inputSchema: Record<string, unknown>;
+	effect: "read" | "write" | "exec" | "network";
+	untrustedResult: boolean;
+	timeoutSeconds?: number;
+}
 
-
-def send(message):
-    sys.stdout.write(json.dumps(message) + "\n")
-    sys.stdout.flush()
-
-
-def text(words, failed=False):
-    return {"content": [{"type": "text", "text": words}], "isError": failed}
-
-
-def call(params):
-    if params.get("name") not in [tool["name"] for tool in TOOLS]:
-        return text("There is no such tool.", True)
-    request = secrets.token_hex(12)
-    token = (params.get("_meta") or {}).get("progressToken")
-    if token is None:
-        return text("Not published: this Windlass gives the platform no way to tell which call waits for its answer.", True)
-    send({"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": token, "progress": 0, "total": 1, "message": "handed to the platform as request " + request}})
-    path = os.path.join(DIRECTORY, "result-" + request)
-    deadline = time.monotonic() + WAIT
-    while time.monotonic() < deadline:
-        try:
-            with open(path, encoding="utf-8") as answer:
-                words = answer.read()
-        except OSError:
-            time.sleep(0.2)
-            continue
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-        return text(words)
-    return text("The platform did not answer this request in time. Whether anything was published is not known here: tell the user to look at the session's panel.", True)
-
-
-for line in sys.stdin:
-    try:
-        message = json.loads(line)
-    except ValueError:
-        continue
-    if not isinstance(message, dict) or "id" not in message or "method" not in message:
-        continue
-    method = message["method"]
-    if method == "initialize":
-        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "windlass-platform", "version": "1"}}
-    elif method == "tools/list":
-        result = {"tools": TOOLS}
-    elif method == "tools/call":
-        result = call(message.get("params") or {})
-    elif method == "ping":
-        result = {}
-    else:
-        send({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32601, "message": "method not found: " + str(method)}})
-        continue
-    send({"jsonrpc": "2.0", "id": message["id"], "result": result})
-`;
+/** Which of the tools a turn is offered: `publish` in a person's session, `report` in a work item's, `push` and `fetch_base` in both. */
+export interface PlatformToolOffer {
+	publish: boolean;
+	report: boolean;
+	push: boolean;
+}
 
 /**
- * The server's definition, as Windlass's configuration takes it, with the tools of `offer`: `publish`
- * for a session the agent may publish from, `report` for a work item's. `questionTimeoutMs` is how
- * long the user has to answer: a call may wait that long and then for the publishing itself. What the
- * server returns is the platform's own words, so it is marked as trusted: its results do not count
- * as content from outside, after which Windlass would ask about every command it cannot sandbox.
+ * The declarations of the tools `offer` names. `questionTimeoutMs` is how long the user has to answer
+ * the platform's question about a publish: a call may wait that long and then for the publishing
+ * itself, so it declares that time (Windlass gives a call 60 s otherwise).
+ *
+ * Each is declared `read`, which Windlass never asks about, for what it does on the person's behalf
+ * outside the sandbox:
+ *
+ *   report      hands text to the platform and changes nothing anywhere. Answered at once.
+ *   push        changes one branch at GitHub: the session's own, which the platform names, to what is
+ *               in the workspace, which any command of the agent's can already change; under a lease
+ *               it can replace only the platform's own last push (github/git.ts). A call made by a
+ *               command instead of the model gains nothing the command did not have, so it is never
+ *               asked about, in any profile, attended or not (agent-session.ts, `agentPush`). Declared
+ *               `write`, Windlass would ask in `auto` and refuse it in an item's unattended turn.
+ *   fetch_base  reads the base branch into `origin/<base>` in the workspace, and changes nothing else.
+ *   publish     opens or updates a pull request under the person's name: the person is asked, by the
+ *               platform, inside the call (agent-session.ts, `agentPublish`), unless they let the
+ *               agent publish unasked where commands cannot make the call. Declared `write`, Windlass
+ *               would ask too in `auto` and not at all in `full`, and an approval it kept for the
+ *               session would stand beside the panel's own switch, which is the one the person sees.
+ *               Never offered in an item's turn.
+ *
+ * What each answers is the platform's own sentence (with the person's own note, or GitHub's refusal,
+ * quoted in it), so no answer is content the platform does not vouch for: `untrustedResult: false`,
+ * after which Windlass would ask about every command it cannot sandbox.
  */
-export function publishServerDefinition(questionTimeoutMs: number, offer: { publish: boolean; report: boolean } = { publish: true, report: false }): Record<string, unknown> {
-	const limit = Math.min(WINDLASS_CALL_LIMIT_SECONDS, Math.ceil(questionTimeoutMs / 1000) + PUBLISHING_SECONDS);
-	const tools = [
-		...(offer.publish ? [{ name: PUBLISH_TOOL, description: DESCRIPTION, inputSchema: INPUT_SCHEMA }] : []),
-		...(offer.report ? [{ name: REPORT_TOOL, description: REPORT_DESCRIPTION, inputSchema: REPORT_SCHEMA }] : []),
+export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: number): HostToolDeclaration[] {
+	const publishSeconds = Math.min(HOST_CALL_LIMIT_SECONDS, Math.ceil(questionTimeoutMs / 1000) + PUBLISHING_SECONDS);
+	const tool = (name: string, description: string, inputSchema: Record<string, unknown>, timeoutSeconds?: number): HostToolDeclaration => ({
+		name,
+		description,
+		inputSchema,
+		effect: "read",
+		untrustedResult: false,
+		...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+	});
+	return [
+		...(offer.publish ? [tool(PUBLISH_TOOL, DESCRIPTION, INPUT_SCHEMA, publishSeconds)] : []),
+		...(offer.report ? [tool(REPORT_TOOL, REPORT_DESCRIPTION, REPORT_SCHEMA)] : []),
+		...(offer.push ? [tool(PUSH_TOOL, PUSH_DESCRIPTION, PUSH_SCHEMA, PUBLISHING_SECONDS), tool(FETCH_BASE_TOOL, FETCH_BASE_DESCRIPTION, { type: "object", properties: {} }, PUBLISHING_SECONDS)] : []),
 	];
-	// The server gives up a little before Windlass would: its own sentence is the better one to end on.
-	return { command: "python3", args: ["-c", SERVER_SOURCE, JSON.stringify([PUBLISH_DIR, Math.max(30, limit - 30), tools])], untrusted: false, timeoutSeconds: limit };
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/**
- * A call of an MCP server's tool, from Windlass's `tool.called` event of an `mcp_call`: the server,
- * the tool as that server names it, and the arguments; null for any other call. Windlass takes the
- * tool's name with or without the server's in front, and asks about the call as `<server>/<tool>`.
- */
-export function mcpCall(name: unknown, input: unknown): { server: string; tool: string; arguments: Record<string, unknown> } | null {
-	if (name !== "mcp_call") return null;
-	let call: unknown = input;
-	if (typeof input === "string") {
-		try {
-			call = JSON.parse(input);
-		} catch {
-			return null;
-		}
-	}
-	if (!isObject(call) || typeof call.server !== "string" || typeof call.tool !== "string") return null;
-	const tool = call.tool.startsWith(`${call.server}/`) ? call.tool.slice(call.server.length + 1) : call.tool;
-	return { server: call.server, tool, arguments: isObject(call.arguments) ? call.arguments : {} };
-}
-
-/** The arguments of a call of the tool to publish, from Windlass's `tool.called` event; null for any other call. */
-export function publishArguments(name: unknown, input: unknown): Record<string, unknown> | null {
-	const call = mcpCall(name, input);
-	return call !== null && call.server === PUBLISH_SERVER && call.tool === PUBLISH_TOOL ? call.arguments : null;
-}
-
-/** The arguments of a call of the tool to report, as `publishArguments` reads those of the tool to publish. */
-export function reportArguments(name: unknown, input: unknown): Record<string, unknown> | null {
-	const call = mcpCall(name, input);
-	return call !== null && call.server === PUBLISH_SERVER && call.tool === REPORT_TOOL ? call.arguments : null;
-}
+/** A call's input as the platform reads it: an object, or none. Windlass checked it against the schema, which is the declaration's and asks for little. */
+export const callArguments = (input: unknown): Record<string, unknown> => (isObject(input) ? input : {});
 
 /** A report the agent filed, as its words are kept: cleaned as a request's are, cut to the limits. */
 export interface AgentReport {
@@ -247,14 +211,6 @@ export function reportOf(given: Record<string, unknown>, redactor: Redactor): Ag
 /** What the agent is told when its report was taken. */
 export const REPORT_TAKEN = "Your report was filed. The platform publishes your work when your turn ends; end your turn now.";
 export const REPORT_REFUSED = "Not filed: the report needs a title. Call the tool again with a title and a description.";
-
-/** The server's name for a call, from the progress Windlass reports of it; null when it names none. */
-export function publishRequestId(progress: unknown): string | null {
-	return typeof progress === "string" ? (/\brequest ([0-9a-f]{24})\b/.exec(progress)?.[1] ?? null) : null;
-}
-
-/** Where the server waits for the answer to the call it named `request`. */
-export const publishResultFile = (request: string) => `${PUBLISH_DIR}/result-${request}`;
 
 // ---------------------------------------------------------------------------------------------
 // What a request may hold
@@ -366,7 +322,7 @@ export function publishQuestionWords(input: PublishQuestionInput): { title: stri
 			open
 				? `The platform commits what is uncommitted in the workspace with this message and pushes it to pull request #${open.number}, which is given this title and description.`
 				: "The platform commits what is uncommitted in the workspace with this message, pushes it to the session's branch, and opens the pull request under this title and description.",
-			"Everything in the workspace goes to GitHub as it is: Changes, in the session's panel, lists it.",
+			"What is in the workspace and not yet at GitHub goes there as it is: Changes, in the session's panel, lists it.",
 			"The agent is given no GitHub access: the platform pushes, and tells the agent the pull request's address.",
 			...(input.sandbox === "windlass" ? [] : ["In this sandbox a command the agent ran could have asked this in the agent's name: its commands are not held in Windlass's sandbox."]),
 		],
@@ -382,12 +338,6 @@ export function publishQuestionWords(input: PublishQuestionInput): { title: stri
 // ---------------------------------------------------------------------------------------------
 // The timeline's lines, and what the agent is told
 // ---------------------------------------------------------------------------------------------
-
-/**
- * Said under Windlass's own question about the tool, which the platform answers itself: Windlass
- * asks before a call of an MCP tool, and this one does nothing but hand the request over.
- */
-export const PUBLISH_HANDED_OVER = "The platform allowed this itself: the tool only hands the agent's request to the platform, which decides it.";
 
 /** How a request came to be allowed. */
 export type PublishAllowed = "unasked" | "once" | "session";
@@ -430,4 +380,78 @@ export const PUBLISH_WITHDRAWN = "Not published. The request was withdrawn befor
 /** Publishing was allowed and did not go through. `why` is the sentence a publish from the panel fails with. */
 export function publishFailed(allowed: PublishAllowed, why: string): { said: string; told: string } {
 	return { said: `${publishAllowedWords(allowed)} It did not go through: ${why}`, told: `Not published. ${why}` };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The agent's push, and the base it fetches
+// ---------------------------------------------------------------------------------------------
+
+/** A push the agent asked for, checked: the commit's message, or why it is refused (`said` for the timeline, `told` for the agent). */
+export type PushRequest = { ok: true; commit: string } | { ok: false; said: string; told: string };
+
+/**
+ * A push's arguments, checked as a publish's are: a branch other than the session's is refused (the
+ * push goes to the session's branch whatever is named; naming another is a mistake to be told of),
+ * the message is cleaned of saved secrets and control characters, and one past the limit is
+ * refused. Without a message the commit is named for the session (`title`).
+ */
+export function pushRequest(given: Record<string, unknown>, where: { branch: string; title: string }, redactor: Redactor): PushRequest {
+	const branch = typeof given.branch === "string" ? given.branch.trim() : given.branch === undefined || given.branch === null ? "" : JSON.stringify(given.branch);
+	if (branch !== "" && branch !== where.branch) {
+		return {
+			ok: false,
+			said: `The agent asked to push to ${JSON.stringify(redactor.text(branch.replace(CONTROL, "")).slice(0, 120))}, which is not this session's branch (${where.branch}), so nothing was pushed.`,
+			told: `Not pushed. This session's work can only go to the session's own branch, ${where.branch}; a request that names another branch is refused. Call the tool again without a branch.`,
+		};
+	}
+	const value = given.message;
+	if (value !== undefined && value !== null && typeof value !== "string") return { ok: false, said: "The agent asked to push with a commit message that is not text, so nothing was pushed.", told: "Not pushed. The message has to be text. Call the tool again." };
+	const message = redactor.text(typeof value === "string" ? value : "").replace(/\r\n?/g, "\n").replace(CONTROL, "").trim();
+	if (message.length > MAX_PUBLISH_COMMIT_CHARS) {
+		return {
+			ok: false,
+			said: `The agent asked to push with a commit message of ${message.length} characters, and the limit is ${MAX_PUBLISH_COMMIT_CHARS}, so nothing was pushed.`,
+			told: `Not pushed. The message is ${message.length} characters long and the limit is ${MAX_PUBLISH_COMMIT_CHARS}. Shorten it and call the tool again.`,
+		};
+	}
+	return { ok: true, commit: message === "" ? where.title : message };
+}
+
+/** What the agent is told of a push that went out. `pull` is the session's open pull request, which now shows it. */
+export function pushedForAgent(input: { branch: string; head: string | null; forced: boolean; files: number | null; pull: PullRequestInfo | null }): string {
+	const head = input.head === null ? "" : ` (${input.head.slice(0, 7)})`;
+	const files = input.files === null ? "" : input.files === 0 ? " Nothing was uncommitted: your own commits went as they were." : ` The platform's commit holds ${input.files === 1 ? "1 file" : `${input.files} files`}.`;
+	const forced = input.forced ? " It replaced what the platform had pushed to the branch before." : "";
+	const pull = input.pull === null ? " No pull request was opened." : ` Pull request #${input.pull.number} shows it: ${input.pull.url}`;
+	return `Pushed to ${input.branch}${head}.${files}${forced}${pull}`;
+}
+
+/** The timeline's line for a push the agent asked for. */
+export function agentPushedLine(input: { branch: string; head: string | null; forced: boolean; pull: PullRequestInfo | null }): string {
+	const head = input.head === null ? "" : ` (${input.head.slice(0, 7)})`;
+	const forced = input.forced ? ", replacing what the platform had pushed there before" : "";
+	const pull = input.pull === null ? "" : ` Pull request #${input.pull.number} shows it${input.pull.verified ? `; its description reports: ${input.pull.verified}` : ""}.`;
+	return `The agent pushed its work to ${input.branch}${head}${forced}.${pull}`;
+}
+
+/** What the agent is told of a push that found nothing GitHub lacks. */
+export const nothingToPush = (branch: string) => `Nothing to push: ${branch} at GitHub already has everything in the workspace.`;
+
+/** What the agent is told once the base was fetched. */
+export const fetchedForAgent = (base: string, work: string | null) =>
+	`Fetched ${base} from GitHub into the workspace as origin/${base}${work === null ? "" : `, and your branch as GitHub has it as origin/${work}`}. Rebase onto origin/${base} (git rebase origin/${base}) or merge it${work === null ? "" : `; merge origin/${work} first if someone else pushed to your branch`}, then call push.`;
+
+// ---------------------------------------------------------------------------------------------
+// A sandbox from before the tools
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Why a turn does not run in a sandbox whose Windlass takes no host tools. Every sandbox the platform
+ * makes has a Windlass that does, so this is not a path that is supported, only one that fails
+ * loudly: for a person's turn and a work item's alike (the item is handed it as `turn_ended.refused`).
+ */
+export function oldSandbox(place: "hosted" | "machine"): string {
+	return place === "machine"
+		? "This agent's sandbox on your machine was made by a runner from an older version of the platform, whose Windlass cannot give the agent the platform's tools, so nothing was run. Install the current runner on the machine (Machines, in the menu), then start a new agent there."
+		: "This agent's sandbox is from an older version of the platform, whose Windlass cannot give the agent the platform's tools, so nothing was run. Start a new agent.";
 }

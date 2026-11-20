@@ -1,6 +1,8 @@
 /**
  * The one-line reading of a tool call: what it acts on (`read src/cart.js`, `shell bun test`) and a
  * few facts about how it went (`13 lines`, `exit 1`, `+1 -1`), as the terminal interface writes them.
+ * The platform's own tools (server/src/agent-publish.ts) are read from the platform's answer, which
+ * is the call's output: what a push went to and at which commit, what was fetched, or that it was not.
  */
 import { isRecord, type ToolBlock } from "./timeline";
 
@@ -40,7 +42,41 @@ const TARGET_KEYS: Record<string, string[]> = {
 	shell: ["command"],
 	glob: ["pattern"],
 	grep: ["pattern"],
+	// The platform's tools: a pull request's or a report's title, a push's commit message.
+	publish: ["title"],
+	report: ["title"],
+	push: ["message"],
 };
+
+/**
+ * A call of the platform's `push` or `fetch_base`, as the platform's answer says it went. The answers
+ * are the platform's sentences (agent-publish.ts `pushedForAgent`, `nothingToPush`, `fetchedForAgent`,
+ * and the refusals, which all begin "Not pushed." or "Not fetched."). Null while there is no answer,
+ * or for another tool.
+ */
+function platformCall(block: ToolBlock): { target: string | null; facts: string[] } | null {
+	const output = block.output;
+	if (output === null || (block.name !== "push" && block.name !== "fetch_base")) return null;
+	if (block.name === "push") {
+		if (output.startsWith("Not pushed.")) {
+			// A push refused for naming another branch reads as what it named.
+			const named = parseInput(block.inputText)?.branch;
+			return { target: typeof named === "string" && named.trim() !== "" ? named.trim() : null, facts: ["not pushed"] };
+		}
+		const nothing = /^Nothing to push: (\S+) at GitHub/.exec(output);
+		if (nothing) return { target: nothing[1] ?? null, facts: ["nothing new"] };
+		const pushed = /^Pushed to (\S+?)(?: \(([0-9a-f]{7,})\))?\.(?:\s|$)/.exec(output);
+		if (!pushed) return null;
+		const pull = /Pull request #(\d+) shows it/.exec(output);
+		return {
+			target: pushed[1] ?? null,
+			facts: [...(pushed[2] ? [pushed[2]] : []), ...(output.includes("It replaced what the platform had pushed") ? ["replaced the last push"] : []), ...(pull ? [`pull request #${pull[1]}`] : [])],
+		};
+	}
+	if (output.startsWith("Not fetched.")) return { target: null, facts: ["not fetched"] };
+	const fetched = /^Fetched (\S+) from GitHub into the workspace as (\S+?)\.(?:\s|$)/.exec(output);
+	return fetched ? { target: fetched[1] ?? null, facts: [`as ${fetched[2]}`] } : null;
+}
 
 function targetOf(block: ToolBlock): string {
 	const input = parseInput(block.inputText);
@@ -84,6 +120,8 @@ function diffStat(diff: string): { added: number; removed: number } {
 
 export function summarizeTool(block: ToolBlock): ToolSummary {
 	const facts: string[] = [];
+	const platform = platformCall(block);
+	if (platform) facts.push(...platform.facts);
 	const display = block.display ?? {};
 	let exitCode: number | null = null;
 	if (typeof display.lines === "number") facts.push(`${display.lines} ${display.lines === 1 ? "line" : "lines"}`);
@@ -99,7 +137,7 @@ export function summarizeTool(block: ToolBlock): ToolSummary {
 	} else if (typeof display.signal === "string") facts.push(display.signal);
 	if (display.timedOut === true) facts.push("timed out");
 	if (block.truncated) facts.push(`${block.truncated.originalLines.toLocaleString("en-US")} lines, capped`);
-	return { target: targetOf(block).replace(/\s*\n\s*/g, " ↵ "), facts, exitCode };
+	return { target: (platform?.target ?? targetOf(block)).replace(/\s*\n\s*/g, " ↵ "), facts, exitCode };
 }
 
 /** The call's arguments for the expanded body: pretty JSON, with a long string value kept readable. */

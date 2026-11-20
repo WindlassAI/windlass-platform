@@ -304,6 +304,14 @@ export interface TurnSecrets {
 	redactor: Redactor;
 }
 
+/** `features` had no answer: the sandbox's Windlass did not say what it takes, which is not the same as taking nothing. */
+export class WindlassUnaskedError extends Error {
+	constructor() {
+		super("The sandbox did not answer when the platform asked what its Windlass can do, so the agent's turn did not start. Send the prompt again.");
+		this.name = "WindlassUnaskedError";
+	}
+}
+
 /**
  * What the Windlass in a sandbox can be told when a session is opened, beyond what every Windlass the
  * platform runs takes. A sandbox keeps the Windlass of the image it was made from, so one made before
@@ -325,19 +333,25 @@ export interface WindlassFeatures {
 	 * its own configuration file, where a repository's list stands in for them (windlass-config.ts).
 	 */
 	requiredChecks: boolean;
+	/**
+	 * It takes `hostTools`: the platform's own tools (agent-publish.ts) can be declared when a session
+	 * is opened, and their calls reach the platform. Without it the agent is offered none of them.
+	 */
+	hostTools: boolean;
 }
 
 /**
- * A request of the agent's that the platform publish the session's work (agent-publish.ts): a call of
- * the tool the layer offered for this turn, as Windlass's engine reported it in the turn's events.
+ * A call of one of the platform's own tools (agent-publish.ts) that the layer declared for this turn,
+ * as Windlass's engine sent it to the platform (`_windlass/host_call`).
  */
 export interface TurnPublishRequest {
-	/** The call, as `tool.called` names it. */
+	/** The call, as the turn's events name it (`tool.called`): Windlass's `toolCallId` is `<messageId>/<callId>`. */
 	messageId: string;
 	callId: string;
 	/**
-	 * The tool's arguments as the model wrote them: of any type and any length, and to be trusted with
-	 * nothing. The turn's saved secrets were taken out of the event they came in.
+	 * The tool's arguments as the model wrote them, checked by Windlass against the declaration's schema,
+	 * which asks for little: of any length, and to be trusted with nothing. The turn's saved secrets
+	 * were taken out of the request they came in.
 	 */
 	arguments: Record<string, unknown>;
 }
@@ -459,32 +473,26 @@ export interface RunTurnInput {
 	/** Called once, when the turn has started and can be steered. */
 	onControl?: (control: TurnControl) => void;
 	/**
-	 * Given for a turn whose agent may ask the platform to publish the session's work. The layer then
-	 * offers the model a tool for it (agent-publish.ts says how, and what is trusted of it), for this
-	 * turn only: without this callback the agent is told of no such tool. It is called for each call
-	 * of the tool the engine reports, after that call's `tool.called` was handed to `onEvent`, and
-	 * resolves with what the agent is to be told, in full: the layer makes it the call's result. The
-	 * call waits for it, and with it the turn. `signal` aborts when the call ended before the answer
-	 * (it was stopped, or the turn was): what the promise does afterwards is ignored, and a rejection
-	 * tells the agent that the request could not be handled.
+	 * The platform's own tools (agent-publish.ts), each given for a turn whose agent is to have it. The
+	 * layer declares the tool when it opens the session, to a Windlass that takes them
+	 * (`WindlassFeatures.hostTools`), and to no other: without the callback, or with such a Windlass, the
+	 * agent is told of no such tool. A callback is called for each call of its tool that the turn's
+	 * engine sends while the turn runs, and resolves with what the agent is to be told, in full: the
+	 * layer makes it the call's result. The call waits for it, and with it the turn. `signal` aborts
+	 * when the call ended before the answer (Windlass stopped it, or its time ran out) or the turn did:
+	 * what the promise does afterwards is ignored, and a rejection tells the agent that the request
+	 * could not be handled. Each tool is declared so that Windlass never asks about its calls, and
+	 * `onQuestion` never sees them: what is done is the callback's to decide.
 	 *
-	 * Windlass asks before a call of an MCP tool where it sandboxes commands, and anywhere once
-	 * content it does not trust is in the conversation. For this tool the layer answers that question
-	 * itself, with "once", and `onQuestion` never sees it: the call does nothing in the sandbox but
-	 * wait, and whether anything is published is this callback's to decide.
-	 *
-	 * Not offered, and never called, where the sandbox's Windlass cannot say which servers a session
-	 * has (`_windlass/mcp`), where its own configuration file there cannot be read as one, and for a
-	 * project whose own configuration names a server by the tool's server's name.
+	 * `onPublish`: the agent asks the platform to publish the session's work; it may ask the user first.
 	 */
 	onPublish?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
-	/**
-	 * Given for a turn of a work item's session: the agent is offered the tool `report` on the same
-	 * server as `publish` (agent-publish.ts), and may not be offered both. Called with each call of it
-	 * the engine reports, with the arguments as the model wrote them; returns what the agent is told.
-	 * Not offered where `onPublish` would not be.
-	 */
+	/** A work item's agent files its report; returns what the agent is told. Not given with `onPublish`. */
 	onReport?: (request: TurnPublishRequest) => string;
+	/** The agent pushes the session's branch (`push`). Given with `onFetchBase`. */
+	onPush?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
+	/** The agent has the session's base branch fetched into the workspace (`fetch_base`). Given with `onPush`. */
+	onFetchBase?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 	/** The most model steps the turn may take (`_meta["windlass/maxSteps"]` on its prompt); a turn at the limit ends. Left out: Windlass's own. */
 	maxSteps?: number;
 }
@@ -608,8 +616,8 @@ export interface Windlass {
 	 * What the Windlass in this sandbox can be told when a session is opened. It is asked of the
 	 * sandbox's own Windlass, once per sandbox, by starting it for a moment and reading what it says of
 	 * itself (the keys of a session's metadata it lists in its answer to `initialize`): its version
-	 * does not tell. No feature, and nothing remembered, when the sandbox did not answer: what is
-	 * handed over and said is then what an older Windlass would be handed and told.
+	 * does not tell. A sandbox that did not answer is not taken for an older Windlass: this rejects,
+	 * with a sentence for the user, and nothing is remembered.
 	 */
 	features(sandbox: SandboxHandle): Promise<WindlassFeatures>;
 	/**

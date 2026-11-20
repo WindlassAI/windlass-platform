@@ -140,6 +140,12 @@ export type Fact =
 			changes: boolean;
 			/** What the agent filed with `report`, in words; for a refine step, the plan. */
 			report: string | null;
+			/**
+			 * Set when the session refused the turn before the agent ran, for a reason trying again will not
+			 * cure (today: its sandbox's Windlass is too old for the platform): the session's sentence for a
+			 * person. Absent for a turn that ran, or was cut off.
+			 */
+			refused?: string | null;
 			spend: TurnSpend;
 	  }
 	/** `openItems`: the user's items not done, failed or cancelled; it sets how often CI is polled. */

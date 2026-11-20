@@ -46,7 +46,7 @@ import {
 	saveAccountSecret,
 	turnEnvironment,
 } from "../server/src/account-secrets.js";
-import { PUBLISH_SERVER, publishServerDefinition } from "../server/src/agent-publish.js";
+import { PUBLISH_SERVER } from "../server/src/agent-publish.js";
 import { MAX_ACCOUNT_SECRETS, MAX_PERSONAL_SERVERS, MAX_SERVER_DEFINITION_BYTES, type SandboxProfile } from "../server/src/contract.js";
 import { PERSONAL_SERVERS_TABLE, SERVER_KEYS, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, definitionReads, deleteServer, isReservedServerName, listedServer, readServers } from "../server/src/personal-servers.js";
 import { type OpenedSecret, SecretRedactor, openSecret, sealSecret, secretReach, setupEnvironment } from "../server/src/repo-secrets.js";
@@ -459,7 +459,8 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 
 {
 	const servers = (text: string | null | undefined) => (text ? ((JSON.parse(text) as { mcp?: { servers?: Record<string, { command?: string }> } }).mcp?.servers ?? {}) : {});
-	const publish = { name: PUBLISH_SERVER, definition: publishServerDefinition(600_000) };
+	// The platform writes no server of its own any more (its tools are host tools); one handed in under its name still goes last and wins.
+	const publish = { name: PUBLISH_SERVER, definition: { command: "python3" } };
 	const tracker = { name: "tracker", definition: { command: "tracker-mcp" } };
 	const docs = { name: "docs", definition: { url: "https://docs.example.com/mcp" } };
 	/** What the file holds when the platform has nothing in it but its own setting: wake-ups off. */

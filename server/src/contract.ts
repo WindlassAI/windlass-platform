@@ -475,6 +475,8 @@ export interface PublishState {
 	draft: PublishMessage;
 	/** Why nothing can be pushed right now, in a sentence; null when it can. */
 	blocked: string | null;
+	/** The commit the platform last pushed to `branch`, by the panel or for the agent; null when nothing was pushed. With no pull request open, "Open pull request" opens one from it. */
+	pushed: string | null;
 }
 
 export interface PublishResult {
@@ -1134,7 +1136,8 @@ export interface FactoryLimits {
 	item: ItemBudget;
 }
 
-export type QuestionKind = "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout";
+/** "turn_refused": the session could not start the agent's turn (an old Windlass, a conversation it cannot open), in its words. */
+export type QuestionKind = "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused";
 
 /**
  *   approve     the plan is approved: implement it

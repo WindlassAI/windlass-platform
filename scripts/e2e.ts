@@ -3174,6 +3174,7 @@ const GITHUB_CHECKS = [
 	"a repository's checks: saved as one list, run before a turn ends, said on the turn's closing item, and written into the pull request's description with every push",
 	"nothing is pushed while a turn runs, or for a session with no repository of the connection",
 	"a user who may only read a repository is told so, and nothing is pushed in their name",
+	"the agent pushes its branch itself, unasked, with a token for that push, and Open pull request then opens one",
 	"a repository that is gone, and an app that was uninstalled, are each said in a sentence",
 	"disconnecting forgets the connection: nothing is listed, pushed or cloned any more",
 	"no token and no secret of GitHub's is in the server's output or in any timeline",
@@ -3186,7 +3187,7 @@ const GITHUB_CHECKS = [
  * The git commands themselves, against a real remote, are scripts/github-check.ts.
  */
 async function githubChecks(server: Server, client: Client, demoSignIn: () => Promise<AuthResult>, profile: string): Promise<void> {
-	const [off, on, connecting, once, notTheirs, listing, launching, page, opening, pushing, verifying, blocked, readOnly, gone, disconnecting, secrets] = GITHUB_CHECKS as [string, string, string, string, string, string, string, string, string, string, string, string, string, string, string, string];
+	const [off, on, connecting, once, notTheirs, listing, launching, page, opening, pushing, verifying, blocked, readOnly, agentPushed, gone, disconnecting, secrets] = GITHUB_CHECKS as [string, string, string, string, string, string, string, string, string, string, string, string, string, string, string, string, string];
 	const ORIGIN = "http://localhost:5173";
 	const userOf = (auth: AuthResult) => client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 	const sessionOf = (auth: AuthResult, id: string) => client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } });
@@ -3564,6 +3565,34 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			} finally {
 				await carolWatch.conn.dispose().catch(() => undefined);
 				await userOf(carol).deleteSession(created.id).catch(() => undefined);
+			}
+		});
+
+		await check(agentPushed, async () => {
+			const created = await userOf(alice).createSession({ profile: profile as never, title: "The agent pushes", repository: { id: harbor.id } });
+			const pushWatch = new Watch(client, alice.profile.uid, created.id, alice.token);
+			try {
+				// The fake's model calls the platform's push when the prompt says "(push)", as a model calls a host tool. The fake
+				// sandbox runs no git, so git names no commit: the line names the branch alone, and `pushed` is not set here
+				// (github-check.ts pushes with real git; `PublishState.pushed` is the session's `pushedHead`).
+				const from = standin.minted.length;
+				const { turn } = await pushWatch.conn.prompt({ text: "Write a short program (push)" });
+				const ended = await pushWatch.untilEnded(turn);
+				assert(ended.outcome === "succeeded", `the turn ended ${ended.outcome}: ${ended.message ?? ""}`);
+				const branchNow = (await sessionOf(alice, created.id).publishState()).branch;
+				const line = pushWatch.items.find((item) => item.kind === "platform" && item.text.startsWith("The agent pushed its work to"));
+				assert(line?.kind === "platform" && line.text === `The agent pushed its work to ${branchNow}.`, `the timeline says ${plain(line)}`);
+				const asked = pushWatch.items.some((item) => item.kind === "platform" && /asked to publish|Allow the agent/.test(item.text));
+				const pushToken = standin.minted.slice(from).find((entry) => entry.permissions?.contents === "write")?.token ?? "";
+				assert(!asked && pushToken !== "" && !standin.alive(pushToken), `asked: ${asked}; a push token ${pushToken === "" ? "was not minted" : "was not revoked"}`);
+				const state = await sessionOf(alice, created.id).publishState();
+				assert(state.pullRequest === null && state.blocked === null, `the state is ${plain({ ...state, draft: undefined })}`);
+				const opened = await sessionOf(alice, created.id).publish({ message: { title: "From what the agent pushed", body: "" } });
+				assert(opened.opened && opened.state.pullRequest?.branch === branchNow, `the result is ${plain(opened.state.pullRequest)}`);
+				return `"${line.text}", unasked, one push token revoked; then #${opened.state.pullRequest?.number} opened`;
+			} finally {
+				await pushWatch.conn.dispose().catch(() => undefined);
+				await userOf(alice).deleteSession(created.id).catch(() => undefined);
 			}
 		});
 

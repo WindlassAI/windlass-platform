@@ -444,10 +444,9 @@ class RunnerHandle implements TurnSandbox {
 
 	/**
 	 * Null when it could not be run, as the interface has it: the link is gone, or the machine with it.
-	 * Repeated after a lost conversation, which the slice B contract allows only for an `ask` that reads:
-	 * the two that do not (turn.ts, removing PUBLISH_STATE_DIR) remove one fixed path, which is the same
-	 * done twice, and the turn waits for the repeat before it writes there again. An `ask` that is not
-	 * the same done twice needs its own path through `request`, not this one.
+	 * Repeated after a lost conversation, which is safe only for an `ask` that reads: every `ask` of
+	 * turn.ts does. An `ask` that is not the same done twice needs its own path through `request`, not
+	 * this one.
 	 */
 	ask(argv: string[], options?: { env?: Record<string, string>; timeoutMs?: number }): Promise<Answer | null> {
 		return this.link.again("ask", { id: this.id, argv, options }).catch(() => null);

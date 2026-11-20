@@ -24,8 +24,9 @@
  * Windlass's source when that is beside this repository.
  *
  * Names. A server's name is its key in Windlass's configuration, and Windlass's rule for one. The
- * platform's own server (`windlass_platform`, agent-publish.ts) keeps its name: no server of a user's
- * may have it, or one that begins with it.
+ * platform's own name (`windlass_platform`, agent-publish.ts) is not a user's to take: a server so
+ * named would look to the model like the platform's own tools. No server may have it, or one that
+ * begins with it.
  *
  * A definition is not a place for a credential. It is stored as it is written, shown again on the
  * settings page, written into a file in the sandbox and shown in a session's panel. A value a server
@@ -84,7 +85,7 @@ export function cleanServerName(raw: unknown): string {
 	if (typeof raw !== "string" || raw === "") throw bad("A server needs a name.");
 	if (raw.length > MAX_SERVER_NAME_CHARS) throw bad(`A server's name can be at most ${MAX_SERVER_NAME_CHARS} characters long.`);
 	if (!SERVER_NAME.test(raw)) throw bad("A server's name is made of letters, digits, '_', '.' and '-', and starts with a letter or a digit.");
-	if (isReservedServerName(raw)) throw bad(`A name that begins with ${PUBLISH_SERVER} cannot be a server's: it is the platform's own server's, by which an agent asks to publish.`);
+	if (isReservedServerName(raw)) throw bad(`A name that begins with ${PUBLISH_SERVER} cannot be a server's: it is the platform's own, and a server by that name would pass for the platform's tools.`);
 	return raw;
 }
 

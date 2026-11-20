@@ -4,10 +4,10 @@
  *
  * Windlass starts by itself the servers its user's own configuration file names
  * (`~/.config/windlass/config.json`; a server a repository's file names waits for approval). The
- * platform uses that for two things: the server of the tool by which the agent asks the platform to
- * publish (agent-publish.ts), and the MCP servers of the session's user (personal-servers.ts). Both go
- * into that one file before the turn's Windlass opens its session, and both are taken out again when
- * the turn has ended (sandbox/turn.ts).
+ * platform uses that for the MCP servers of the session's user (personal-servers.ts): they go into
+ * that file before the turn's Windlass opens its session, and are taken out again when the turn has
+ * ended (sandbox/turn.ts). The platform's own tools for the agent are not servers: they are declared
+ * when the session is opened (agent-publish.ts).
  *
  * The file is not the platform's alone: the sandbox's image has none, but a repository's setup command
  * runs as the sandbox's user and may write one. So whatever else the file holds is kept, and what the
@@ -16,10 +16,9 @@
  * when the platform's goes. With that list a turn can also undo what an earlier turn left behind
  * because its server stopped under it: a server its user has deleted since does not go on starting.
  *
- * The platform's own server is written last and under its own name, which no server of a user's may
- * have (`isReservedServerName`), so a user's definition can neither take its name nor replace it; and
- * a server left in the file under that name without the platform's list knowing of it is removed all
- * the same: the name is the platform's.
+ * The platform's own name (`PUBLISH_SERVER`) is no server's: no server of a user's may have it
+ * (`isReservedServerName`), and a server left in the file under that name, by a command or by an
+ * older platform, is removed whether or not the platform's list knows of it.
  *
  * The checks the session's user saved for its repository (repository-checks.ts) are not in this file
  * where Windlass takes required checks: they are named when the session is opened, by the process
@@ -55,7 +54,7 @@ import { PUBLISH_SERVER } from "./agent-publish.js";
 
 /** Windlass's configuration file of the sandbox's user. */
 export const WINDLASS_CONFIG_FILE = "/home/agent/.config/windlass/config.json";
-/** The platform's list of the servers it wrote into that file, beside the directory the tool to publish keeps its answers in. */
+/** The platform's list of the servers it wrote into that file. */
 export const PLATFORM_SERVERS_FILE = "/home/agent/.local/state/windlass-platform-servers.json";
 
 /** The file's `wake` section: no session the platform opens is offered the wake-up tools. */

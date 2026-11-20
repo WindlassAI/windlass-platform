@@ -182,7 +182,7 @@ class Engine {
 		const reply = (result: unknown) => this.send({ id: m.id, result });
 		switch (m.method) {
 			case "initialize":
-				return reply({ protocolVersion: 1, agentCapabilities: { _meta: { windlass: { notifications: ["_windlass/event"] } } } });
+				return reply({ protocolVersion: 1, agentCapabilities: { _meta: { windlass: { notifications: ["_windlass/event"], openMeta: ["hostTools"] } } } });
 			case "session/new":
 				return reply({ sessionId: this.session });
 			case "_windlass/resolve":

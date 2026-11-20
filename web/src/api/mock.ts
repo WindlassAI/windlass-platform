@@ -531,6 +531,47 @@ interface Script {
 
 const run = (name: string, index = 0): WindlassEvent[] => splitRuns(fixture(name))[index] ?? [];
 
+/**
+ * The mock's stand-in for the platform answering one of its own tools (server/src/agent-publish.ts):
+ * where a recording has it, the platform's line goes into the timeline and the call settles with what
+ * the agent is told (`hostCall`). Never sent to a client.
+ */
+const MOCK_HOST_CALL = "mock.host_call";
+
+/** A call of the platform's `push` or `fetch_base` in a scripted turn. `changed`: the files the turn changed by then, which the platform commits. */
+interface MockHostCall {
+	tool: "push" | "fetch_base";
+	input: Record<string, unknown>;
+	changed?: string[];
+}
+
+/**
+ * A recorded run with calls of the platform's tools added before its last step, one step each, as a
+ * model makes them once its work is done. They are marked, so that a session with no repository,
+ * where the server offers no such tool, plays the run without them.
+ */
+function withHostCalls(events: WindlassEvent[], calls: MockHostCall[]): WindlassEvent[] {
+	const last = events.findLastIndex((event) => event.type === "step.started");
+	const usage = { inputTokens: 9300, cachedInputTokens: 9100, outputTokens: 28, reasoningTokens: 0 };
+	const added = calls.flatMap((call, index): WindlassEvent[] => {
+		const messageId = `h${index + 1}`;
+		const callId = `call_${call.tool}`;
+		const host = { messageId, callId, host: true };
+		return [
+			{ type: "step.started", v: 1, seq: 0, data: { ...host, attempt: 1, model: "gpt-test" } },
+			{ type: "tool.called", v: 1, seq: 0, data: { ...host, name: call.tool, input: JSON.stringify(call.input), providerData: null } },
+			{ type: "tool.started", v: 1, seq: 0, data: { ...host, effect: "read" } },
+			{ type: MOCK_HOST_CALL, data: { ...host, tool: call.tool, branch: call.input.branch ?? null, changed: call.changed ?? [] } },
+			{ type: "step.ended", v: 1, seq: 0, data: { ...host, finish: "tool_calls", usage } },
+		];
+	});
+	const out = [...events.slice(0, last), ...added, ...events.slice(last)];
+	// The turn's summary counts the added steps.
+	return out.map((event) => (event.type === "cli.summary" && typeof event.steps === "number" ? { ...event, steps: event.steps + calls.length } : event));
+}
+
+const isHostEvent = (event: WindlassEvent): boolean => event.type === MOCK_HOST_CALL || (event.data ?? {}).host === true;
+
 const ADD_TS_DIFF = `diff --git a/src/add.ts b/src/add.ts
 index 3b1f0c2..9d2e7aa 100644
 --- a/src/add.ts
@@ -628,6 +669,10 @@ const SCRIPTS = {
 	// Four subagents: one finishes, one fails, the user stops one, and one runs in the background. Played slowly enough to watch them run.
 	subagents: { events: run("acp-subagents"), stretch: 3 },
 	crash: { events: [], platformFailure: "The sandbox stopped responding and the turn was abandoned. Nothing it had written was lost; send the prompt again to carry on." },
+	// The fix, then the base fetched and the branch pushed by the agent: the platform commits the changed file, so nothing is left to push.
+	agentPush: { events: withHostCalls(run("demo-find-and-fix-a-failing-test"), [{ tool: "fetch_base", input: {} }, { tool: "push", input: { message: "Make add() add" }, changed: ["src/add.ts"] }]) },
+	// The fix, then a push to the repository's default branch, which is refused: the change stays in the workspace.
+	agentPushRefused: { events: withHostCalls(run("demo-find-and-fix-a-failing-test"), [{ tool: "push", input: { branch: "main", message: "Make add() add" } }]), workspace: { "src/add.ts": { status: " M", diff: ADD_TS_DIFF } } },
 } satisfies Record<string, Script>;
 
 type ScriptName = keyof typeof SCRIPTS;
@@ -640,6 +685,7 @@ function chooseScript(text: string, rotation: number): ScriptName {
 	if (/usage|limit|quota/.test(words)) return "usageLimit";
 	if (/sign.?in|signed out|auth/.test(words)) return "signedOut";
 	if (/crash/.test(words)) return "crash";
+	if (/\bpush\b/.test(words)) return /\b(main|default branch)\b/.test(words) ? "agentPushRefused" : "agentPush";
 	if (/\b(network|fetch|download|curl|https?|headers?|website|url)\b/.test(words)) return /subagent/.test(words) ? "subagentNetwork" : "network";
 	if (/subagent/.test(words)) return "subagents";
 	if (/refus|approv|unattended|without the sandbox/.test(words)) return "refused";
@@ -850,7 +896,7 @@ export function mockCleanServer(rawName: unknown, raw: unknown): { name: string;
 	if (typeof rawName !== "string" || rawName === "") throw bad("A server needs a name.");
 	if (rawName.length > MAX_SERVER_NAME_CHARS) throw bad(`A server's name can be at most ${MAX_SERVER_NAME_CHARS} characters long.`);
 	if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(rawName)) throw bad("A server's name is made of letters, digits, '_', '.' and '-', and starts with a letter or a digit.");
-	if (rawName.toLowerCase().startsWith("windlass_platform")) throw bad("A name that begins with windlass_platform cannot be a server's: it is the platform's own server's, by which an agent asks to publish.");
+	if (rawName.toLowerCase().startsWith("windlass_platform")) throw bad("A name that begins with windlass_platform cannot be a server's: it is the platform's own, and a server by that name would pass for the platform's tools.");
 
 	const isObject = (value: unknown): value is Record<string, unknown> => {
 		if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -1035,6 +1081,8 @@ interface MockSession {
 	servers: MockKnown[];
 	/** True once the platform pushed the session's branch. */
 	pushed: boolean;
+	/** The commit the branch is at on GitHub after the platform's last push, for the panel or for the agent (`PublishState.pushed`); null before any. */
+	pushedHead: string | null;
 	/** What the session's work rests on since its last turn ended, as the server keeps it (`Verified`). */
 	verified: Verified | null;
 	/** The messages that were taken with a key, by that key: the text, and what the prompt was answered. */
@@ -1206,7 +1254,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	function publishStateOf(session: MockSession): PublishState {
 		const repository = session.summary.repository ?? null;
-		if (!repository) return { repository: null, pullRequest: null, branch: "", changes: null, draft: { title: "", body: "" }, blocked: null };
+		if (!repository) return { repository: null, pullRequest: null, branch: "", changes: null, draft: { title: "", body: "" }, blocked: null, pushed: null };
 		const status = session.summary.status;
 		const answer = [...session.timeline].reverse().find((item) => item.kind === "windlass" && item.event.type === "text.ended");
 		const said = answer?.kind === "windlass" ? String((answer.event.data ?? {}).text ?? "").trim() : "";
@@ -1220,6 +1268,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			branch: session.summary.pullRequest?.branch ?? branchFor(session),
 			changes: status !== "idle" || session.summary.sandbox === "none" ? null : session.files.size > 0,
 			draft: { title: title.replace(/…$/, ""), body },
+			pushed: session.pushedHead,
 			blocked: !githubOn
 				? "This deployment has no GitHub App any more, so the platform cannot push."
 				: status !== "idle"
@@ -1350,6 +1399,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			submissions: new Map(),
 			servers: [],
 			pushed: false,
+			pushedHead: null,
 			verified: null,
 		};
 		world.sessions.set(input.id, session);
@@ -1533,7 +1583,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 
 		// Windlass writes `session.created` and freezes its prompt once per session, not once per run.
-		const events = script.events.filter((event) => first || (event.type !== "session.created" && event.type !== "baseline.set"));
+		// The platform's own tools are offered only on a repository of the GitHub connection.
+		const events = script.events.filter((event) => (first || (event.type !== "session.created" && event.type !== "baseline.set")) && (session.summary.repository || !isHostEvent(event)));
 		const server = script.server;
 		if (server && !server.late) {
 			// What waits is asked about before Windlass gets the prompt: the turn's events follow the answer.
@@ -1542,6 +1593,50 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		steps.push(...eventSteps(world, session, turn, events, input, script));
 		return steps;
+	}
+
+	/**
+	 * The platform answers a call of its `push` or `fetch_base`, as agent-session.ts `agentPush` and
+	 * `agentFetchBase` do: its line in the timeline, then the call settles with what the agent is told.
+	 * The push goes to the session's own branch, or is refused when the call names another; nobody is
+	 * asked. It commits what the turn changed, so nothing differs from the last commit afterwards.
+	 */
+	function hostCall(world: World, session: MockSession, turn: number, event: WindlassEvent, prompt: string): void {
+		const data = event.data ?? {};
+		const repository = session.summary.repository;
+		const say = (level: "info" | "warn", text: string) => store(session, { turn, kind: "platform", level, text });
+		let output: string;
+		if (!repository) {
+			output = data.tool === "push" ? "Not pushed. This session has no repository of the user's GitHub connection to push to." : "Not fetched. This session has no repository of the user's GitHub connection.";
+		} else if (data.tool === "fetch_base") {
+			const base = repository.branch;
+			say("info", `Fetched ${base} from GitHub into the workspace as origin/${base}, as the agent asked.`);
+			output = `Fetched ${base} from GitHub into the workspace as origin/${base}. Rebase onto it (git rebase origin/${base}) or merge it, then call push.`;
+		} else {
+			const branch = session.summary.pullRequest?.branch ?? branchFor(session);
+			const named = typeof data.branch === "string" ? data.branch.trim() : "";
+			const changed = new Set([...session.files.keys(), ...(Array.isArray(data.changed) ? data.changed.map(String) : [])]);
+			if (named !== "" && named !== branch) {
+				say("warn", `The agent asked to push to ${JSON.stringify(named)}, which is not this session's branch (${branch}), so nothing was pushed.`);
+				output = `Not pushed. This session's work can only go to the session's own branch, ${branch}; a request that names another branch is refused. Call the tool again without a branch.`;
+			} else if (changed.size === 0 && session.pushedHead !== null) {
+				say("info", `The agent asked to push; ${branch} at GitHub already had everything in the workspace.`);
+				output = `Nothing to push: ${branch} at GitHub already has everything in the workspace.`;
+			} else {
+				const head = hex(40);
+				session.files.clear();
+				session.pushed = true;
+				session.pushedHead = head;
+				const current = session.summary.pullRequest ?? null;
+				const open = current !== null && (current.state === "open" || current.state === "draft") ? { ...current, pushedAt: now(), verified: verifiedWords(session.verified) } : null;
+				if (open) setSummary(world, session, { pullRequest: open, updatedAt: now() });
+				say("info", `The agent pushed its work to ${branch} (${head.slice(0, 7)}).${open ? ` Pull request #${open.number} shows it; its description reports: ${open.verified}.` : ""}`);
+				const files = changed.size === 0 ? " Nothing was uncommitted: your own commits went as they were." : ` The platform's commit holds ${changed.size === 1 ? "1 file" : `${changed.size} files`}.`;
+				output = `Pushed to ${branch} (${head.slice(0, 7)}).${files}${open ? ` Pull request #${open.number} shows it: ${open.url}` : " No pull request was opened."}`;
+			}
+		}
+		const settled: WindlassEvent = { type: "tool.settled", v: 1, seq: 0, data: { messageId: data.messageId, callId: data.callId, outcome: "success", output, truncation: null, attachments: [], display: null } };
+		emit(session, turn, restamp(session, turn, settled, prompt));
 	}
 
 	/** Recorded events as timed steps: emitted as they are, with the turn's end and its question. */
@@ -1563,6 +1658,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					},
 				};
 			}
+			if (event.type === MOCK_HOST_CALL) return { wait, settles: key, run: () => hostCall(world, session, turn, event, input.text) };
 			if (event.type === "approval.requested" && script.question) {
 				const rest = script.question;
 				return {
@@ -2080,6 +2176,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const branch = branchFor(session);
 				const pushedAt = start - extra.pull.hoursAgo * HOUR;
 				session.pushed = true;
+				session.pushedHead = hex(40);
 				const verified = verifiedWords(session.verified);
 				session.summary = { ...session.summary, pullRequest: { number: extra.pull.number, url: `${repository.url}/pull/${extra.pull.number}`, state: extra.pull.state, title, branch, base: repository.branch, pushedAt, verified } };
 				if (extra.pull.clean) session.files.clear();
@@ -2120,6 +2217,22 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			],
 			{ sandbox: "running", repository: sessionRepository("ada", "tide-tables") },
 		);
+
+		// Three agents that pushed their own branch, or asked to, on acme/signal-flags: one pushed with no pull request open,
+		// so "Open pull request" opens one from what is there; one pushed and then changed more; one named main, and was refused.
+		history("agent-pushed", "Fix add() and push the branch", "docker-windlass-sandbox", 50 * MINUTE, [{ text: "The add test is failing. Fix it, bring in what changed on main, and push.", script: "agentPush", effort: "low" }], { repository: sessionRepository("acme", "signal-flags") });
+		history(
+			"agent-pushed-more",
+			"Push the fix, then add a test",
+			"docker-windlass-sandbox",
+			75 * MINUTE,
+			[
+				{ text: "The add test is failing. Fix it and push.", script: "agentPush", effort: "low" },
+				{ text: "Add a test for adding zero.", script: "steps" },
+			],
+			{ repository: sessionRepository("acme", "signal-flags") },
+		);
+		history("push-refused", "Fix add() and push it to main", "docker-windlass-sandbox", 90 * MINUTE, [{ text: "The add test is failing. Fix it and push it to main.", script: "agentPushRefused", effort: "low" }], { repository: sessionRepository("acme", "signal-flags") });
 
 		// One agent waits on a question when the user arrives: it asked half a minute ago.
 		const asking = history("headers", "Check the site's response headers", "docker-windlass-sandbox", 14 * MINUTE, [{ text: "What is 1 + 1, to be sure?", script: "answer" }], { sandbox: "running" });
@@ -3311,10 +3424,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					throw new PlatformError("user", sentence, { reason: failure === "gone" ? "github_gone" : "github_denied" });
 				}
 				const files = session.files.size;
-				if (files === 0) {
+				// Nothing new: refused, unless the branch is pushed and no pull request was opened from it, which is then opened from what is there (github/publish.ts `publishWork`).
+				const fromPushed = files === 0 && current === null && session.pushedHead !== null;
+				if (files === 0 && !fromPushed) {
 					throw new PlatformError("user", open ? `There is nothing to push: ${branch} at GitHub already has everything in the workspace.` : `There is nothing to open a pull request with: the workspace has no changes and no commit that ${repository.branch} does not have.`, { reason: "publish_failed" });
 				}
-				const what = files === 1 ? "1 file" : `${files} files`;
+				const what = fromPushed ? "the agent's commits" : files === 1 ? "1 file" : `${files} files`;
 				let pull: PullRequestInfo;
 				// The description's section is written with every push: what it says in a few words is kept with the pull request.
 				const verified = verifiedWords(session.verified);
@@ -3329,6 +3444,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				// Committed: nothing differs from the last commit any more.
 				session.files.clear();
 				session.pushed = true;
+				if (!fromPushed) session.pushedHead = hex(40);
 				setSummary(world, session, { pullRequest: pull, updatedAt: now() });
 				return { state: publishStateOf(session), opened: !open };
 			},

@@ -311,6 +311,13 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	item.spent.hostedSeconds = Math.max(item.spent.hostedSeconds, fact.spend.hostedSeconds);
 
 	const result = gateResult(fact.outcome, fact.verified);
+	// Refused by the session before the agent ran (an old Windlass, a conversation it cannot open): no cut-off, and no use trying
+	// again on its own. The person is asked, with the session's own sentence.
+	if (fact.refused) {
+		const resume: TurnPlan = { kind, text: `Your last turn could not start, so nothing of it reached you. Carry on with the task:\n\n${taskText(item.task)}`, newStep: false, charge: null, fingerprint: null, fetchBase: null };
+		// Two sentences: the session's own may be several, and starts with a capital.
+		return ask(c, "turn_refused", `The agent's turn could not start. ${fact.refused}`, [choice("again"), ...handOver(item), choice("give_up")], null, resume);
+	}
 	if (CUT_SHORT.has(fact.outcome) || result === "incomplete") {
 		step.interruptions += 1;
 		c.say(`The turn ${OUTCOME_WORDS[fact.outcome] ?? "did not finish"}; the step is tried again.`);

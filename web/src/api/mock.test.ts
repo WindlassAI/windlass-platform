@@ -1,10 +1,12 @@
 import type { AuthResult, LiveDelta, PendingQuestion, SessionSnapshot, SessionSummary, TimelineItem } from "@contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyDelta, applyItem, fromSnapshot, toolBlocks, type SessionView } from "../lib/timeline";
+import { applyDelta, applyItem, fromSnapshot, toolBlocks, type PlatformBlock, type SessionView } from "../lib/timeline";
 import { PlatformError, type ConnectionState, type SessionFeed } from "./client";
 import { LIVE_TYPES } from "./feed";
 import { PROFILES, profilesFor } from "../../../server/src/sandbox/profiles";
 import { createMockClient, MOCK_E2B_PROFILES, MOCK_PROFILES, type MockClient } from "./mock";
+import { opensFromPushed, situation } from "../components/PullRequest";
+import { summarizeTool } from "../lib/toolSummary";
 
 /** A feed that records what it is given and folds it, as the session screen does. */
 function recorder() {
@@ -549,5 +551,93 @@ describe("stopping one call", () => {
 	it("says why when the call is not running", async () => {
 		const { api } = await freshSession();
 		expect(await after(300, api.stopCall({ messageId: "a1", callId: "c1" }).catch((error: unknown) => error))).toMatchObject({ code: "user", message: "No turn is running." });
+	});
+});
+
+describe("the agent's own push", () => {
+	const ada: AuthResult = { token: "mock:chatgpt:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
+	/** The seeded session's timeline as the session screen folds it, and its platform lines. */
+	async function opened(mock: MockClient, id: string) {
+		const { record, feed } = recorder();
+		const close = mock.session(ada, id).open(feed);
+		await vi.advanceTimersByTimeAsync(500);
+		close();
+		const lines = (record.view?.turns ?? []).flatMap((turn) => turn.blocks.filter((block): block is PlatformBlock => block.kind === "platform").map((block) => `${block.level}: ${block.text}`));
+		return { view: record.view, lines };
+	}
+
+	it("has a session whose agent pushed with no pull request open, and opens one from what is pushed", async () => {
+		const mock = createMockClient({ origin: "http://localhost:5173" });
+		const session = mock.session(ada, "agent-pushed");
+		const state = await after(500, session.publishState());
+		expect(state).toMatchObject({ pullRequest: null, changes: false, blocked: null, branch: "windlass/fix-add-and-push-the-branch-pushed" });
+		expect(state.pushed).toMatch(/^[0-9a-f]{40}$/);
+		const short = (state.pushed ?? "").slice(0, 7);
+
+		// The panel says the branch is pushed, not that there is nothing to push, and its button opens the pull request.
+		const nothing = state.changes === false;
+		expect(situation({ pull: state.pullRequest, branch: state.branch, pushed: state.pushed, nothing, unknown: false })).toBe(`windlass/fix-add-and-push-the-branch-pushed is pushed at ${short}; no pull request is open.`);
+		expect(situation({ pull: null, branch: state.branch, pushed: null, nothing: true, unknown: false })).toBe("Nothing to push yet: no file differs from the last commit.");
+		expect(opensFromPushed(state.pullRequest, state.pushed, nothing)).toBe(true);
+		expect(opensFromPushed(state.pullRequest, null, nothing)).toBe(false);
+
+		// The timeline: the base fetched, then the agent's push, each in the server's words, and the calls read plainly.
+		const { view, lines } = await opened(mock, "agent-pushed");
+		expect(lines.slice(-2)).toEqual([`info: Fetched main from GitHub into the workspace as origin/main, as the agent asked.`, `info: The agent pushed its work to windlass/fix-add-and-push-the-branch-pushed (${short}).`]);
+		const calls = toolOf(view).filter((block) => block.name === "fetch_base" || block.name === "push");
+		expect(calls.map((block) => summarizeTool(block))).toEqual([
+			{ target: "main", facts: ["as origin/main"], exitCode: null },
+			{ target: "windlass/fix-add-and-push-the-branch-pushed", facts: [short], exitCode: null },
+		]);
+		expect(calls[1]?.output).toBe(`Pushed to windlass/fix-add-and-push-the-branch-pushed (${short}). The platform's commit holds 1 file. No pull request was opened.`);
+
+		const result = await after(2000, session.publish({ title: "Make add() add", body: "" }));
+		expect(result.opened).toBe(true);
+		expect(result.state).toMatchObject({ pushed: state.pushed, changes: false, pullRequest: { state: "open", branch: state.branch, base: "main", title: "Make add() add" } });
+		const reopened = await opened(mock, "agent-pushed");
+		expect(reopened.lines.at(-1)).toBe(`info: Opened pull request #${result.state.pullRequest?.number} in acme/signal-flags from windlass/fix-add-and-push-the-branch-pushed, with the agent's commits. Its description reports: nothing verified.`);
+		// Once it is open, nothing new is refused as before.
+		expect(await after(2000, session.publish({ title: "Again", body: "" }).catch((error: unknown) => error))).toMatchObject({ message: "There is nothing to push: windlass/fix-add-and-push-the-branch-pushed at GitHub already has everything in the workspace." });
+		mock.dispose();
+	});
+
+	it("says when the workspace changed after the push", async () => {
+		const mock = createMockClient({ origin: "http://localhost:5173" });
+		const state = await after(500, mock.session(ada, "agent-pushed-more").publishState());
+		expect(state).toMatchObject({ pullRequest: null, changes: true });
+		expect(state.pushed).toMatch(/^[0-9a-f]{40}$/);
+		expect(situation({ pull: null, branch: state.branch, pushed: state.pushed, nothing: false, unknown: false })).toBe(`${state.branch} is pushed at ${(state.pushed ?? "").slice(0, 7)}; no pull request is open. The workspace has changes that are not on the branch.`);
+		expect(opensFromPushed(null, state.pushed, false)).toBe(false);
+		mock.dispose();
+	});
+
+	it("has a session whose push to main was refused: nothing pushed, the change still in the workspace", async () => {
+		const mock = createMockClient({ origin: "http://localhost:5173" });
+		const state = await after(500, mock.session(ada, "push-refused").publishState());
+		expect(state).toMatchObject({ pullRequest: null, changes: true, pushed: null });
+		const { view, lines } = await opened(mock, "push-refused");
+		expect(lines.at(-1)).toBe(`warn: The agent asked to push to "main", which is not this session's branch (${state.branch}), so nothing was pushed.`);
+		const [push] = toolOf(view).filter((block) => block.name === "push");
+		expect(push && summarizeTool(push)).toEqual({ target: "main", facts: ["not pushed"], exitCode: null });
+		expect(push?.output).toBe(`Not pushed. This session's work can only go to the session's own branch, ${state.branch}; a request that names another branch is refused. Call the tool again without a branch.`);
+		mock.dispose();
+	});
+
+	it("pushes when a prompt asks it to, only on a repository of the GitHub connection", async () => {
+		const mock = createMockClient({ origin: "http://localhost:5173" });
+		const user = mock.user(ada);
+		const onRepo = await after(500, user.createSession({ profile: "docker-windlass-sandbox", repository: { id: 7106, branch: "main" } }));
+		await after(500, mock.session(ada, onRepo.id).prompt({ text: "Fix the add test and push." }));
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect((await after(500, mock.session(ada, onRepo.id).publishState())).pushed).toMatch(/^[0-9a-f]{40}$/);
+
+		const plain = await after(500, user.createSession({ profile: "docker-windlass-sandbox" }));
+		const { record, feed } = recorder();
+		mock.session(ada, plain.id).open(feed);
+		await after(500, mock.session(ada, plain.id).prompt({ text: "Fix the add test and push." }));
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(toolOf(record.view).map((block) => block.name)).not.toContain("push");
+		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended", outcome: "succeeded" });
+		mock.dispose();
 	});
 });
