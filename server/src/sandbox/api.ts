@@ -22,7 +22,7 @@
  * `wlp_profile`) is how a deployment's sandboxes are listed, counted and removed together. Windlass's
  * data directory is on the microVM's own disk there: no volume, and nothing shared between sessions.
  *
- * No sandbox holds a sign-in, and no provider stores one. A user's sign-in is kept, encrypted, in that
+ * The runner's optional Claude login volume is local to its machine. A user's ChatGPT sign-in is kept, encrypted, in that
  * user's `user` actor, which is the one place that reads it and refreshes it (server/src/signin/), and
  * a turn is handed a short-lived access token (see `Windlass.runTurn`). `ChatgptLogins` and
  * `AccessTokens` below are the same for every provider: signin/facade.ts implements them. How much time
@@ -32,6 +32,7 @@
 
 import type { RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
 import type { Redactor } from "../repo-secrets.js";
+import type { HarnessId } from "./harness.js";
 import type { ProjectChecks } from "../windlass-config.js";
 
 // ---------------------------------------------------------------------------------------------
@@ -92,6 +93,8 @@ export interface SandboxHandle {
 }
 
 export interface CreateSandboxInput {
+	/** Machine-only. The default harness uses the ordinary Windlass image. */
+	harness?: Exclude<HarnessId, "windlass">;
 	/** An item's reviewer keeps Windlass data inside its own sandbox, including approval records. */
 	privateData?: boolean;
 	/** Request the browser image when creating this work item sandbox. */

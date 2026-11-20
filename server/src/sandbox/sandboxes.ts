@@ -363,7 +363,7 @@ async function forgetTokenFile(id: string): Promise<void> {
 }
 
 /** What the hosted provider and a runner's differ in. */
-export interface DockerSandboxOptions {
+export type DockerSandboxOptions = {
 	/** The sandbox image; windlass-platform-sandbox:latest when left out. */
 	image?: string;
 	shotsImage?: string;
@@ -374,27 +374,32 @@ export interface DockerSandboxOptions {
 	 * other's sandboxes.
 	 */
 	machine: string | null;
+} & ({
 	/**
 	 * Makes sure the data volume of `uid`'s containers exists and returns its name: the one volume a
 	 * container mounts, at Windlass's data directory. The hosted provider's is `wlp-user-<uid>`, which
 	 * it also takes old sign-ins out of (volumes.ts); a runner's is its own, so the two never share one.
 	 */
 	dataVolume(uid: string): Promise<string>;
-}
+	claudeVolume?: never;
+} | {
+	/** Set only by the runner after it checks the volume belongs to this pairing. */
+	machine: string;
+	image: string;
+	claudeVolume: string;
+});
 
 export class DockerSandboxes implements Sandboxes {
 	private readonly image: string;
 	private readonly shotsImage: string;
 	private readonly machine: string;
-	private readonly dataVolume: (uid: string) => Promise<string>;
 
-	constructor(options: DockerSandboxOptions) {
+	constructor(private readonly options: DockerSandboxOptions) {
 		if (options.machine !== null && !NAME.test(options.machine)) throw new Error("invalid machine id");
 		this.image = options.image ?? IMAGE;
 		this.shotsImage = options.shotsImage ?? SHOTS_IMAGE;
 		// A container without the label reads as "" (Go templates), which is the hosted provider's.
 		this.machine = options.machine ?? "";
-		this.dataVolume = options.dataVolume;
 	}
 
 	private async inspect(id: string): Promise<Inspected | null> {
@@ -443,12 +448,16 @@ export class DockerSandboxes implements Sandboxes {
 
 	async create(input: CreateSandboxInput): Promise<string> {
 		assertUid(input.uid);
+		const claude = this.options.claudeVolume !== undefined;
+		if (claude !== (input.harness === "claude")) throw new SandboxUserError("Claude Code runs only on a machine offering it.");
+		if (claude && (input.profile !== "docker-hardened" || input.screenshots))
+			throw new SandboxUserError("The Claude login volume requires the hardened Claude Code image.");
 		const image = input.screenshots ? this.shotsImage : this.image;
 		const profile = findProfile(input.profile);
 		const flags = PROFILE_RUN_FLAGS[input.profile];
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
 		// The reviewer cannot share transcripts or project-wide MCP approvals with the user's other sessions.
-		const volume = input.privateData ? null : await this.dataVolume(input.uid);
+		const volume = input.privateData || this.options.claudeVolume !== undefined ? null : await this.options.dataVolume(input.uid);
 		const id = randomId(6);
 		const name = containerName(id);
 		const result = await docker(
@@ -470,6 +479,8 @@ export class DockerSandboxes implements Sandboxes {
 				...(this.machine === "" ? [] : ["--label", `${MACHINE_LABEL}=${this.machine}`]),
 				...COMMON_RUN_FLAGS,
 				...flags,
+				...(this.options.claudeVolume ? ["--label", `${LABEL}.harness=claude`, "--log-driver", "none",
+					"--mount", `type=volume,src=${this.options.claudeVolume},dst=/run/wlp-harness/claude,readonly,volume-nocopy`] : []),
 				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
 				image,
 			],

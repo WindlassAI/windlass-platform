@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import { mock } from "node:test";
 import { ConversationLost, RunnerChannel, ServerChannel, type ChannelSocket } from "../server/src/runner/channel.js";
-import { ACK_MS, DEAD_MS, MAX_FRAME_BYTES, MAX_MESSAGE_BYTES, MAX_OPS_IN_FLIGHT, OP_MS, PING_MS, RUNNER_GRACE_MS, WINDOW_BYTES, parseFrame, type Operation } from "../server/src/runner/protocol.js";
+import { ACK_MS, DEAD_MS, MAX_FRAME_BYTES, MAX_MESSAGE_BYTES, MAX_OPS_IN_FLIGHT, OP_MS, PING_MS, RUNNER_GRACE_MS, WINDOW_BYTES, parseFrame, validArgs, type Operation } from "../server/src/runner/protocol.js";
 
 let failures = 0;
 function expect(name: string, ok: boolean, detail = ""): void {
@@ -305,6 +305,27 @@ async function untrusted(): Promise<void> {
 	expect("what is never acknowledged is bounded: the conversation ends", writes < 100 && !!(await proc.ended).error?.message.includes("acknowledge"), `${writes} writes of 4 MiB`);
 }
 
+async function harnessCreate() {
+	const args = { profile: "docker-hardened", harness: "claude" } as const;
+	const { ch: s } = server();
+	const { ch: r } = runner((ch, op) => {
+		if (op.name !== "create") return answer(ch, op);
+		if ("harness" in op.args) ch.refuse(op, { kind: "refused", message: "This runner does not serve that operation." });
+		else ch.respond(op, "windlass-box");
+	});
+	const link = join(s, r);
+	const refused = outcome(s.request("create", args));
+	link.flush();
+	const error = await refused;
+	const next = s.request("create", { profile: args.profile });
+	link.flush();
+	expect("a Windlass-only runner refuses a Claude create with its sentence and accepts a Windlass create on the same socket",
+		error instanceof Error && error.message.includes("does not serve") && await next === "windlass-box");
+	expect("create admits the Claude id and refuses caller-supplied images, mounts and other harness ids",
+		validArgs("create", args) && !validArgs("create", { ...args, image: "anything" })
+		&& !validArgs("create", { ...args, mount: "/tmp" }) && !validArgs("create", { ...args, harness: "other" }));
+}
+
 async function mismatch(): Promise<void> {
 	const { ch: s } = server();
 	const pending = outcome(s.request("state", box));
@@ -457,7 +478,7 @@ async function strangers(): Promise<void> {
 async function main(): Promise<void> {
 	mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1_000_000 });
 	try {
-		for (const check of [dropAndResume, actorWakes, runnerRestarts, grace, stream, large, untrusted, mismatch, liveness, order, expiry, closing, strangers]) await check();
+		for (const check of [dropAndResume, actorWakes, runnerRestarts, grace, stream, large, untrusted, harnessCreate, mismatch, liveness, order, expiry, closing, strangers]) await check();
 	} finally { mock.timers.reset(); }
 	timers();
 	console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");

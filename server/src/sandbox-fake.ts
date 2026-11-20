@@ -443,6 +443,7 @@ class FakeSandboxes implements Sandboxes {
 	}
 
 	async create(input: CreateSandboxInput): Promise<string> {
+		if (input.harness) throw new SandboxUserError("Claude Code runs only on a machine of yours.");
 		if (!this.profile(input.profile).available) throw new Error(`sandbox profile ${input.profile} is not available`);
 		await delay(20);
 		const id = `fake-${randomBytes(6).toString("hex")}`;

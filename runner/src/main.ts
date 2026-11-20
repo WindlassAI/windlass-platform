@@ -1,20 +1,22 @@
 import { createInterface } from "node:readline/promises";
 import { setTimeout as wait } from "node:timers/promises";
 import { parseArgs } from "node:util";
-import { count, is, nullable, object, optional, text } from "../../server/src/runner/check.js";
+import { boolean, count, is, nullable, object, optional, text } from "../../server/src/runner/check.js";
 import { REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
 import { PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
 import type { Socket } from "node:net";
 import { audit, showLog } from "./audit.js";
 import { category, control, pair } from "./control.js";
-import { shotsImage } from "./policy.js";
+import { cleanClaudeOutput } from "./claude-output.js";
+import { changeClaudeLogin, claudeSignIn } from "./harness-login.js";
+import { harnessImage, shotsImage } from "./policy.js";
 import { Executor } from "./docker-executor.js";
-import { requestPair, waitForPair } from "./pair-command.js";
+import { requestPair, requestLoginReport, waitForPair } from "./pair-command.js";
 import { forgetKey, save, loadPair, tryLock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
 
 const positiveInteger = is<number>(v => count(v) && v > 0);
 const snapshot = object({ machineId: nullable(text(64)), connection: text(2048), idleSuspendMs: nullable(count), runnerVersion: text(64), protocol: count,
-	maxRunning: optional(positiveInteger), maxSandboxes: optional(positiveInteger) });
+	claude: optional(boolean), maxRunning: optional(positiveInteger), maxSandboxes: optional(positiveInteger) });
 function limit(flag: string, value: string | undefined) {
 	if (value === undefined) return undefined;
 	const n = Number(value);
@@ -22,12 +24,23 @@ function limit(flag: string, value: string | undefined) {
 	return n;
 }
 async function main() {
+	// An owner piping a token can already have it exported under a shell-specific name.
+	// Keep it out of every child, including Docker clients and the login helper.
+	for (const [key, value] of Object.entries(process.env)) {
+		if (key === "CLAUDE_CODE_OAUTH_TOKEN" || (value && cleanClaudeOutput(value) !== value)) delete process.env[key];
+	}
 	const { positionals, values } = parseArgs({ allowPositionals: true, options: {
-		platform: { type: "string" }, screenshots: { type: "boolean", default: false }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
+		platform: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
 	} });
 	const command = positionals[0] ?? "run";
-	if (positionals.length > 1 || !["run", "pair", "status", "log", "prune"].includes(command))
-		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune] [--platform URL] [--max-sandboxes N] [--max-running N] [--screenshots].");
+	const auth = command === "login" || command === "logout";
+	const claude = !!values.harness?.length;
+	const validCommand = auth ? positionals.length === 2 && positionals[1] === "claude"
+		: positionals.length <= 1 && ["run", "pair", "status", "log", "prune"].includes(command);
+	if (!validCommand)
+		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune|login claude|logout claude] [--platform URL] [--max-sandboxes N] [--max-running N] [--screenshots] [--harness claude].");
+	if (values.harness?.some(id => id !== "claude" || !harnessImage("claude")))
+		throw new RunnerError("Use --harness claude with a runner built with the pinned Claude Code image.");
 	if (values.screenshots && !shotsImage) throw new RunnerError("--screenshots requires a runner built with a pinned screenshots sandbox image.");
 	const limits = { maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]) };
 	if (command === "log") return showLog();
@@ -35,6 +48,15 @@ async function main() {
 	const stop = () => abort.abort();
 	process.on("SIGINT", stop); process.on("SIGTERM", stop);
 	try {
+		if (auth) {
+			const paired = loadPair();
+			if (!paired || (command === "login" && !paired.key)) throw new RunnerError("Pair this machine before signing in to Claude Code.");
+			const machine = new Executor(paired.current, limits);
+			await changeClaudeLogin(machine, command === "login", abort.signal);
+			await requestLoginReport();
+			console.log(command === "login" ? "Claude Code: signed in." : "Claude Code: signed out.");
+			return;
+		}
 		if (command !== "status" && !tryLock()) {
 			if (command === "pair") return requestPair(values.platform);
 			if (command === "prune") throw new RunnerError("The runner service or another command is using this state volume. Stop the runner container or finish the command, then run prune in a one-off runner container with the same state volume and Docker socket.");
@@ -57,6 +79,10 @@ async function main() {
 			if (paired) for (const machine of [paired.current, ...paired.previous]) {
 				console.log(`${machine.machineId}${machine === paired.current ? "" : " (previous pairing)"}`);
 				const executor = new Executor(machine, limits);
+				if (status?.claude || claude || harnessImage("claude")) {
+					const signIn = await claudeSignIn(executor);
+					console.log(`  Claude Code${status?.claude && machine === paired.current ? " (offered)" : ""}: ${signIn === "token" ? "signed in" : signIn === "none" ? "not signed in" : "unknown"}`);
+				}
 				try {
 					await executor.discover();
 					for (const [id, b] of executor.boxes) console.log(`  ${id}  ${b.sessionId}  ${b.state}`);
@@ -82,7 +108,7 @@ async function main() {
 		let resumePlatform: string | undefined;
 		function saveStatus(connection: string, idleSuspendMs?: number) {
 			save("status.json", { machineId: paired?.current.machineId ?? null, connection, idleSuspendMs: idleSuspendMs ?? null,
-				runnerVersion: VERSION, protocol: PROTOCOL_VERSION, ...limits });
+				runnerVersion: VERSION, protocol: PROTOCOL_VERSION, ...(claude ? { claude } : {}), ...limits });
 		}
 		if (command === "run") saveStatus(needsPair ? "Pairing" : "Connecting", status?.idleSuspendMs ?? undefined);
 		const say = (line: string) => { console.log(line); client?.write(line + "\n"); };
@@ -112,13 +138,17 @@ async function main() {
 				// the wrong account: the lock holder shuts its links before making a new key.
 				const connection = new AbortController();
 				const active = AbortSignal.any([abort.signal, connection.signal]);
-				const local = waitForPair(active, () => {}).then(request => {
+				const owner = new Executor(paired.current, limits, values.screenshots, claude);
+				const local = waitForPair(active, () => {}, async () => {
+					await owner.serial(() => owner.refreshLogin());
+					owner.publishReport?.();
+				}).then(request => {
 					if (request) connection.abort();
 					return request;
 				});
 				let removed: string | undefined;
 				try {
-					removed = await control(new Executor(paired.current, limits, values.screenshots), paired.key, platform, active, saveStatus,
+					removed = await control(owner, paired.key, platform, active, saveStatus,
 						status?.machineId === paired.current.machineId ? status.idleSuspendMs ?? undefined : undefined);
 				} finally { connection.abort(); }
 				const request = await local;

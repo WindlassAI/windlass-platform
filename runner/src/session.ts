@@ -6,17 +6,24 @@ import { DockerSandboxHandle, type DockerProcess, type StartOptions } from "../.
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { audit, safeSentence } from "./audit.js";
 import { type Box, Executor } from "./docker-executor.js";
+import { cleanClaudeOutput, claudeStream } from "./claude-output.js";
 import { shotsImage } from "./policy.js";
 import { Refusal } from "./state.js";
 
 // run() uses this same start() internally. Capture its pipes without reimplementing the
 // Docker provider's stdin handling, cancellation, signal escalation or output truncation.
 class Handle extends DockerSandboxHandle {
-	constructor(box: Box, uid: string, private readonly track: (p: DockerProcess) => void) {
+	constructor(private readonly box: Box, uid: string, private readonly track: (p: DockerProcess) => void) {
 		super(box.raw, box.profile, uid);
 	}
 	override start(argv: string[], options?: StartOptions, tag?: string) {
-		const p = super.start(argv, options, tag);
+		// Scrub before DockerSandboxHandle accumulates or truncates a run result and before
+		// the channel frames (and retains for replay) a single byte of streamed output.
+		const stdout = this.box.harness && options?.onStdout ? claudeStream(options.onStdout) : undefined;
+		const stderr = this.box.harness && options?.onStderr ? claudeStream(options.onStderr) : undefined;
+		const p = super.start(argv, { ...options, onStdout: stdout?.write ?? options?.onStdout,
+			onStderr: stderr?.write ?? options?.onStderr }, tag);
+		void p.ended.then(() => { stdout?.end(); stderr?.end(); });
 		this.track(p);
 		return p;
 	}
@@ -58,12 +65,15 @@ class Conversation {
 		const o = this.owner;
 		switch (op.name) {
 			case "create": {
-				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session); });
+				const { harness, profile } = op.args;
+				if (harness) o.requireClaude(profile);
+				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session, harness); });
 				if (existing) return existing;
-				const screenshots = op.args.screenshots === true && o.screenshots;
+				const screenshots = !harness && op.args.screenshots === true && o.screenshots;
 				await o.ensureImage(); // The disk-space helper always uses the base pin.
+				if (harness) await o.prepareClaude(profile);
 				if (screenshots) await o.ensureImage(shotsImage);
-				return o.serial(() => { this.requireActive(); return o.create(this.session, op.args.profile, screenshots); });
+				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness); });
 			}
 			case "connect": case "suspend": case "destroy": case "state":
 				return o.serial(async () => {
@@ -91,7 +101,7 @@ class Conversation {
 			switch (op.name) {
 				case "start": {
 					const p = h.start(op.args.argv, { ...op.args.options, ...streams }, op.args.tag);
-					const acp = basename(op.args.argv[0] ?? "") === "windlass" && op.args.argv.includes("acp");
+					const acp = (box.harness === "claude" && basename(op.args.argv[0] ?? "") === "wlp-claude-acp") || basename(op.args.argv[0] ?? "") === "windlass" && op.args.argv.includes("acp");
 					this.processes.set(op.id, { p, acp, handle: h, id });
 					box.busy++;
 					// start() returns synchronously. Answer in this stack, before any pipe event can run.
@@ -99,7 +109,8 @@ class Conversation {
 					void p.ended.then(end => {
 						box.busy--; box.usedAt = Date.now();
 						this.processes.delete(op.id);
-						if (this.active) this.channel.end(op.id, end);
+						if (this.active) this.channel.end(op.id, box.harness && end.error
+							? { ...end, error: new Error(cleanClaudeOutput(end.error.message)) } : end);
 					});
 					return null;
 				}
@@ -107,8 +118,14 @@ class Conversation {
 					const { exitCode, timedOut, aborted, stdout, stderr } = await h.run(op.args.command, { ...op.args.options, ...streams, signal: abort!.signal });
 					return { exitCode, timedOut, aborted, stdout, stderr };
 				}
-				case "ask": return await h.ask(op.args.argv, op.args.options);
-				case "readTextFile": return await h.readTextFile(op.args.path);
+				case "ask": {
+					const answer = await h.ask(op.args.argv, op.args.options);
+					return box.harness && answer ? { ...answer, stdout: cleanClaudeOutput(answer.stdout), stderr: cleanClaudeOutput(answer.stderr) } : answer;
+				}
+				case "readTextFile": {
+					const text = await h.readTextFile(op.args.path);
+					return box.harness ? cleanClaudeOutput(text) : text;
+				}
 				case "writeTextFile": case "writeSecretFile": await h[op.name](op.args.path, op.args.content); return null;
 				case "removeFiles": await h.removeFiles(op.args.paths); return null;
 				case "stopLeftovers": return await h.stopLeftovers(op.args.program);
@@ -131,7 +148,7 @@ class Conversation {
 		} catch (error) {
 			const kind = error instanceof Refusal ? "refused" : error instanceof SandboxUserError ? "user" : "sandbox";
 			outcome = kind;
-			if (this.active) this.channel.refuse(op, { kind, message: error instanceof Error ? error.message : String(error) });
+			if (this.active) this.channel.refuse(op, { kind, message: cleanClaudeOutput(error instanceof Error ? error.message : String(error)) });
 		} finally { this.runs.delete(op.id); audit(this.session, id, op.name, outcome); }
 	}
 }

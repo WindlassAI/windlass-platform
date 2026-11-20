@@ -673,8 +673,8 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   with the machine's key too.
 - **What the runner does.** What the server's Docker layer does, on the machine's Docker, and only what its
   protocol names: it makes a session's container, runs the platform's commands in it, starts and stops
-  it, and removes it when asked. It runs the base sandbox image and can optionally run the screenshots image. Both pins come from the runner build. It touches only containers it labelled for its own machine
-  (`dev.windlass-platform.machine=<machine id>`) and one data volume of its own,
+  it, and removes it when asked. It runs the base sandbox image and can optionally run the screenshots image. The base, screenshots and optional Claude Code image pins come from the runner build. It touches only containers it labelled for its own machine
+  (`dev.windlass-platform.machine=<machine id>`) and keeps Windlass data in
   `wlp-machine-<machine id>`, which is Windlass's data directory for the machine's sessions, as the user's
   volume is on Docker. Each container has the limits a hosted Docker sandbox has (1.5 CPUs, 1536 MiB of
   memory, 512 processes, no capabilities), and none is made with less than 5 GB of free disk. It stops a
@@ -683,9 +683,26 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   only: a container it finds after a restart whose workspace was never set up (no `/workspace/.git`: the
   runner stopped between starting it and preparing it) is removed when its session next asks for a
   sandbox, and a fresh one is made.
+- **Claude Code on this machine.** Build the runner with `WLP_RUNNER_HARNESSES=claude scripts/runner-build.sh`
+  and add `--harness claude` after the runner image in the pairing command. Only the hardened Docker
+  profile offers Claude Code. To sign in, run `docker exec -it windlass-runner windlass-runner login claude`.
+  Anthropic's `claude setup-token` opens its browser sign-in flow and prints a token in your attached
+  terminal. Paste it at the hidden prompt. A token minted on another computer works there too.
+
+  The runner stores the token in `wlp-harness-claude-<machine id>`. The local login helper writes it.
+  Among session containers, only this pairing's hardened Claude containers mount it, read-only. Their conversations stay in their individual containers. The platform receives
+  the harness id, adapter, image digest and sign-in state. The runner scrubs recognizable tokens from
+  command output and file replies. The platform can run commands in a Claude container, and those
+  commands and repository code can read, copy or transmit the token. Use this with a platform and code
+  you trust.
+
+  `docker exec windlass-runner windlass-runner status` shows the local sign-in state.
+  `docker exec windlass-runner windlass-runner logout claude` removes the token immediately.
+  If a sandbox still mounts the empty volume, the runner removes the volume when it destroys the last such sandbox. A running process that has already
+  loaded the token can retain it. The runner's `prune` command removes the login volume as well.
 - **What the runner cannot do, and what the platform cannot do.** The runner cannot start a container of
   another image, run anything on the machine outside the containers it made, touch a container or a volume
-  it did not make, or reach a session that did not hand it a ticket. It holds no sign-in: each turn is
+  it did not make, or reach a session that did not hand it a ticket. Each Windlass turn is
   handed a ChatGPT access token in a file, as on every place. The platform, for its part, cannot reach the
   machine except through its runner, and does not control it: whoever runs the machine can change what
   runs there and what it reports. The launch form, the profiles and a pull request's section say so.

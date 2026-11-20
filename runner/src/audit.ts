@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { cleanClaudeOutput } from "./claude-output.js";
 import { directory } from "./state.js";
 
 const files = () => existsSync(directory) ? readdirSync(directory).filter((name) => /^audit-\d{4}-\d{2}-\d{2}\.jsonl$/.test(name)).sort() : [];
@@ -23,5 +24,5 @@ export function showLog(): void {
 // A newer server can supply its own diagnostic. Keep URLs, long credentials and terminal
 // controls out of status, stderr and the operation log.
 export function safeSentence(message: string) {
-	return message.replace(/https?:\/\/\S+|Bearer\s+\S+|[\w.-]{40,}/gi, "[redacted]").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+	return cleanClaudeOutput(message).replace(/https?:\/\/\S+|Bearer\s+\S+|[\w.-]{40,}/gi, "[redacted]").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
 }

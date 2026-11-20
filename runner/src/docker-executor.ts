@@ -1,3 +1,4 @@
+import claudePackage from "../../sandbox/harness/claude/package.json";
 import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/control.js";
 import { type Operation } from "../../server/src/runner/protocol.js";
 import { SandboxUserError } from "../../server/src/sandbox/api.js";
@@ -6,11 +7,13 @@ import { BWRAP_PROBE, NAME, WORKSPACE } from "../../server/src/sandbox/provider.
 import { containerName, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { audit, safeSentence } from "./audit.js";
-import { bubblewrap, externalId, image, shotsImage, MachineDocker, rawId, type Limits, type Profile } from "./policy.js";
+import { bubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker, rawId, type Limits, type Profile } from "./policy.js";
+import { cleanClaudeOutput } from "./claude-output.js";
+import { claudeSignIn, loginFileState, dropDetachedLoginVolume, withLoginVolume } from "./harness-login.js";
 import { Refusal, RunnerError, type Identity } from "./state.js";
 
 type Lifecycle = Extract<Operation, { name: "connect" | "state" | "suspend" | "destroy" }>;
-export interface Box { raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; usedAt: number; busy: number; workspaceChecked: boolean }
+export interface Box { raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: "claude"; usedAt: number; busy: number; workspaceChecked: boolean }
 
 // Docker's archive HEAD stats just the path, even in a stopped or paused container.
 // Use the CLI's daemon connection so this also respects the owner's Docker context.
@@ -33,7 +36,7 @@ async function dockerOutput(args: string[]) {
 		if (result.code === 0) return result.stdout;
 		throw new Error(result.stderr.trim() || result.stdout.trim() || "Docker exited without a diagnostic.");
 	} catch (error) {
-		let line = error instanceof Error ? error.message.split(/[\r\n]/, 1)[0] : "";
+		let line = error instanceof Error ? cleanClaudeOutput(error.message).split(/[\r\n]/, 1)[0] : "";
 		// Docker may echo a setting (including a credential) verbatim in its diagnostic.
 		for (const value of Object.values(process.env).filter((v): v is string => !!v).sort((a, b) => b.length - a.length)) {
 			line = line.replaceAll(value, "[redacted]");
@@ -47,18 +50,38 @@ async function dockerOutput(args: string[]) {
 export class Executor extends MachineDocker {
 	readonly provider: DockerSandboxes;
 	readonly boxes = new Map<string, Box>();
+	private readonly claudePin?: string;
+	private readonly claudeProvider?: DockerSandboxes;
+	private signIn: "none" | "token" | "unknown" = "unknown";
 	private pending: Promise<unknown> = Promise.resolve();
 	private dockerHealth: Report["docker"] = { ok: false, reason: "Docker has not been checked." };
 	publishReport?: () => void;
 	private commandSandbox: Report["commandSandbox"] = { ok: false, reason: "The Windlass sandbox probe has not run." };
 	private freeDiskBytes: number | null = null;
 
-	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false) {
+	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false, readonly claude = false) {
 		super(identity);
 		this.provider = new DockerSandboxes({ machine: identity.machineId, image, shotsImage, dataVolume: async () => {
 			await this.ownedVolume(true);
 			return this.volume;
 		} });
+		if (claude) {
+			this.claudePin = harnessImage("claude");
+			if (!this.claudePin) throw new Refusal("This runner was built without the Claude Code image.");
+			this.claudeProvider = new DockerSandboxes({ machine: identity.machineId, image: this.claudePin, claudeVolume: this.claudeVolume });
+		}
+	}
+	requireClaude(profile: Profile) {
+		if (!this.claudeProvider) throw new Refusal("Claude Code is not turned on on this machine: start the runner with --harness claude.");
+		if (profile !== "docker-hardened") throw new Refusal("Claude Code requires the docker-hardened profile.");
+	}
+	async prepareClaude(profile: Profile) {
+		this.requireClaude(profile);
+		try { await this.ensureImage(this.claudePin); }
+		catch { throw new Refusal("The pinned Claude Code image is missing on this machine. Update the runner and start it with --harness claude."); }
+	}
+	async refreshLogin() {
+		if (this.claude) this.signIn = await claudeSignIn(this);
 	}
 	// Count, reserve and change a container under one ordering, including idle stops and prune.
 	serial<T>(work: () => Promise<T>): Promise<T> {
@@ -72,15 +95,15 @@ export class Executor extends MachineDocker {
 	async discover(onlySession?: string) {
 		const filters = this.filters();
 		if (onlySession) filters.push("--filter", `label=${LABEL}.session=${onlySession}`);
-		const rows = await dockerOutput(["ps", "-a", ...filters, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${LABEL}.profile"}}`]);
+		const rows = await dockerOutput(["ps", "-a", ...filters, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${LABEL}.profile"}}|{{.Label "${LABEL}.harness"}}`]);
 		const found = new Set<string>();
 		for (const line of rows.trim().split("\n")) {
-			const [name, state, sessionId, profile] = line.split("|");
+			const [name, state, sessionId, profile, harness] = line.split("|");
 			const raw = /^wlp-session-([a-f0-9]{12})$/.exec(name)?.[1];
-			if (!raw || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
+			if (!raw || (harness && harness !== "claude") || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
 			const id = externalId(this.identity.machineId, raw);
 			found.add(id);
-			const box = this.boxes.get(id) ?? { raw, sessionId, profile, usedAt: Date.now(), busy: 0, workspaceChecked: false };
+			const box = this.boxes.get(id) ?? { raw, sessionId, profile, ...(harness === "claude" ? { harness: "claude" as const } : {}), usedAt: Date.now(), busy: 0, workspaceChecked: false };
 			this.boxes.set(id, Object.assign(box, { state: state === "running" || state === "restarting" ? "running" as const : "paused" as const }));
 		}
 		for (const [id, box] of this.boxes) {
@@ -92,12 +115,14 @@ export class Executor extends MachineDocker {
 		try {
 			if (this.dockerHealth.ok) await dockerOutput(["version", "--format", "{{.Server.Version}}"]);
 			else await this.discover();
+			await this.refreshLogin();
 		} catch (error) {
 			const reason = error instanceof RunnerError ? error.message : "Docker did not provide a diagnostic.";
 			const category = /permission denied|EACCES/i.test(reason) ? "permission denied"
 				: /no such file|ENOENT/i.test(reason) ? "not found" : "unreachable";
 			audit(null, null, "docker", category);
 			this.dockerHealth = { ok: false, reason };
+			this.signIn = "unknown";
 		}
 	}
 	async welcome(signal: AbortSignal) {
@@ -105,6 +130,7 @@ export class Executor extends MachineDocker {
 		if (!this.dockerHealth.ok || signal.aborted) return;
 		try {
 			await this.ensureImage();
+			if (this.claudePin) await this.ensureImage(this.claudePin).catch(() => {}); // create explains a missing harness pin.
 			await this.serial(async () => {
 				if (signal.aborted) return;
 				// Once a real create has failed its probe, keep that result. A lightweight
@@ -124,6 +150,9 @@ export class Executor extends MachineDocker {
 	}
 	report(): Report {
 		return { kind: "report", docker: this.dockerHealth,
+			...(this.claudePin ? { harnesses: [{ id: "claude" as const,
+				adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
+				image: this.claudePin.slice(this.claudePin.lastIndexOf("@") + 1), signIn: this.signIn }] } : {}),
 			...(this.screenshots ? { screenshots: true } : {}),
 			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes,
 			sandboxes: [...this.boxes.entries()].slice(0, MAX_REPORTED_SANDBOXES).map(([id, { sessionId, state, usedAt }]) => ({ id, sessionId, state, usedAt })),
@@ -134,7 +163,7 @@ export class Executor extends MachineDocker {
 		if (this.limits.maxRunning !== undefined && [...this.boxes.values()].filter(b => b.state === "running").length >= this.limits.maxRunning)
 			throw new SandboxUserError("This machine has reached its own limit on running sandboxes, set by --max-running.");
 	}
-	async existing(sessionId: string) {
+	async existing(sessionId: string, harness?: "claude") {
 		// The owner may have removed the container since discovery. Refresh just this
 		// session once the rest of the inventory is known, before applying capacity limits.
 		if (!this.dockerHealth.ok) await this.discover();
@@ -142,6 +171,7 @@ export class Executor extends MachineDocker {
 		else return;
 		for (const [id, box] of this.boxes) {
 			if (box.sessionId === sessionId) {
+				if (box.harness !== harness) throw new Refusal("This session already has a sandbox with a different harness.");
 				if (!box.workspaceChecked) {
 					if (!await hasWorkspaceGit(box.raw)) {
 						await this.remove(id);
@@ -156,18 +186,23 @@ export class Executor extends MachineDocker {
 			}
 		}
 	}
-	async create(sessionId: string, profile: Profile, screenshots = false) {
+	async create(sessionId: string, profile: Profile, screenshots = false, harness?: "claude") {
 		// Another create could have finished while this one waited for the image.
-		const existing = await this.existing(sessionId);
+		if (harness) this.requireClaude(profile);
+		const existing = await this.existing(sessionId, harness);
 		if (existing) return existing;
 		if (this.limits.maxSandboxes !== undefined && this.boxes.size >= this.limits.maxSandboxes)
 			throw new SandboxUserError("This machine has reached its own limit on kept sandboxes, set by --max-sandboxes.");
 		this.room();
 		this.freeDiskBytes = await this.disk();
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
-		const raw = await this.provider.create({ uid: this.identity.uid, sessionId, profile, screenshots: this.screenshots && screenshots });
+		const input = { uid: this.identity.uid, sessionId, profile };
+		const raw = harness ? await withLoginVolume(this, async () => {
+			await this.ownedVolume(true, this.claudeVolume);
+			return this.claudeProvider!.create({ ...input, harness });
+		}) : await this.provider.create({ ...input, screenshots: this.screenshots && screenshots });
 		const id = externalId(this.identity.machineId, raw);
-		this.boxes.set(id, { raw, sessionId, profile, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
+		this.boxes.set(id, { raw, sessionId, profile, harness, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
 		if (profile === bubblewrap) {
 			const result = await new DockerSandboxHandle(raw, profile, this.identity.uid).ask(BWRAP_PROBE, { timeoutMs: 20_000 });
 			if (result?.code !== 0) {
@@ -191,6 +226,7 @@ export class Executor extends MachineDocker {
 	running(id: string, session: string) {
 		const box = this.owned(id, session);
 		if (!box || box.state !== "running") throw new Refusal("Commands require a running sandbox owned by this machine and session.");
+		if (box.harness) this.requireClaude(box.profile);
 		box.usedAt = Date.now();
 		return box;
 	}
@@ -219,11 +255,12 @@ export class Executor extends MachineDocker {
 			return state;
 		}
 		if (op === "connect") {
+			if (box.harness) this.requireClaude(box.profile);
 			if (box.state === "paused") this.room();
 			const handle = await this.provider.connect(box.raw);
 			this.noteState(id, box, handle ? "running" : "none");
 			if (!handle) return null;
-			return { cwd: handle.cwd, profile: box.profile, ...(this.screenshots ? { screenshots: true } : {}) };
+			return { cwd: handle.cwd, profile: box.profile, ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}) };
 		}
 		// The server names the token by the external sandbox id; the provider knows the raw id.
 		if (box.state === "running") {
@@ -247,7 +284,11 @@ export class Executor extends MachineDocker {
 	}
 	private async remove(id: string) {
 		await this.provider.destroy(rawId(this.identity.machineId, id));
+		const harness = this.boxes.get(id)?.harness;
 		this.boxes.delete(id);
+		if (harness) await withLoginVolume(this, async () => {
+			if (await loginFileState(this).catch(() => "unknown") === "none") await dropDetachedLoginVolume(this);
+		});
 		this.publishReport?.();
 	}
 	async idle(ms: number, connected: (session: string) => boolean) {
@@ -277,9 +318,11 @@ export class Executor extends MachineDocker {
 			audit(b.sessionId, id, "prune", "done");
 		}
 		// A killed runner can also have left a labelled probe or disk-check helper.
-		const helpers = await docker(["ps", "-aq", ...this.filters()], { check: true });
-		for (const id of helpers.stdout.trim().split(/\s+/).filter(Boolean)) await docker(["rm", "-fv", id], { check: true });
-		const volumes = await docker(["volume", "ls", "-q", ...this.filters()], { check: true });
-		for (const name of volumes.stdout.trim().split(/\s+/).filter(Boolean)) await this.dropVolume(name);
+		await withLoginVolume(this, async () => {
+			const helpers = await docker(["ps", "-aq", ...this.filters()], { check: true });
+			for (const id of helpers.stdout.trim().split(/\s+/).filter(Boolean)) await docker(["rm", "-fv", id], { check: true });
+			const volumes = await docker(["volume", "ls", "-q", ...this.filters()], { check: true });
+			for (const name of volumes.stdout.trim().split(/\s+/).filter(Boolean)) await this.dropVolume(name);
+		});
 	}
 }

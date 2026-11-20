@@ -1,5 +1,5 @@
 /** Run: cd server && npx tsx ../scripts/runner-check.ts
- * Use --screenshots-only to check the runner flag and both image pins.
+ * Use --screenshots-only to check the screenshots pins, or --harness-only for Claude login and isolation.
  * The five-minute Wi-Fi outage and two-minute laptop sleep are wall time.
  */
 import { imageId } from "./check-image.js";
@@ -156,7 +156,7 @@ async function realMachine(runnerImage: string) {
 		await stop(node);
 	}
 }
-async function check(image: string, shotsPin?: string) {
+async function check(image: string, shotsPin?: string, claudePin?: string) {
 	const srv = await stub(join(tmp, "engine"));
 	const { machineId, uid, sessionId } = srv;
 	const hostedRaw = randomBytes(6).toString("hex");
@@ -181,6 +181,223 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 	let hosted = false;
 	try {
 		await mkdir(state, { mode: 0o700 });
+		if (claudePin) {
+			const token = "sk-ant-oat01-" + randomBytes(30).toString("base64url");
+			const volume = "wlp-harness-claude-" + machineId;
+			const path = "/run/wlp-harness/claude/token";
+			const create = { profile: "docker-hardened", harness: "claude" } as const;
+			const clean = (text: string) => assert.ok(!text.includes(token.slice(0, 16)) && !text.includes(token.slice(-16)), "Claude login data escaped.");
+			const guard = join(tmp, "check-docker.cjs"), calls = join(tmp, "docker-calls");
+			// Observe every docker spawn in an owner command. Record only its verb and whether
+			// it violated the policy, so a regression cannot put the fixture token in the log.
+			await writeFile(guard, `const cp = require("node:child_process"), fs = require("node:fs");
+for (const method of ["spawn", "spawnSync"]) {
+ const original = cp[method];
+ cp[method] = function(file, args, opts) {
+  if (file === "docker") {
+   if (args.includes("setup-token")) {
+    const approved = ["run", "--rm", "-it", "--log-driver", "none", "--pull", "never", "--network", "bridge",
+     ${JSON.stringify(claudePin)}, "/opt/wlp-claude/node_modules/.bin/claude-agent-acp", "--cli", "setup-token"];
+    if (JSON.stringify(args) !== JSON.stringify(approved) || opts.stdio !== "inherit") throw Error("unsafe setup invocation");
+    fs.appendFileSync(${JSON.stringify(calls)}, "private-setup\\n");
+    return { status: 0 }; // The check has no Anthropic account.
+   }
+   if (/sk-ant-oat01-[A-Za-z0-9_-]+/.test(JSON.stringify([args, opts?.env ?? process.env]))) throw Error("credential passed to docker");
+   fs.appendFileSync(${JSON.stringify(calls)}, args[0] + "\\n");
+  }
+  return original.apply(this, arguments);
+ };
+}
+require("node:module").syncBuiltinESMExports();`);
+			async function owner(args: string[], input = "", settings = {}) {
+				const child = spawn(process.execPath, ["--require", guard, bundle, ...args], { env: { ...env(state), ...settings }, stdio: "pipe" });
+				let output = "";
+				child.stdout.on("data", s => output += s); child.stderr.on("data", s => output += s);
+				child.stdin.on("error", () => {}); child.stdin.end(input);
+				const code = await new Promise(resolve => child.on("close", resolve));
+				clean(output);
+				return { code, output };
+			}
+			const { E2bSandboxes } = await import("../server/src/sandbox/e2b/sandboxes.js");
+			const { FakeE2b } = await import("../server/src/sandbox/e2b/fake.js");
+			const { readE2bSettings } = await import("../server/src/sandbox/e2b/config.js");
+			const { createFakeSandboxLayer } = await import("../server/src/sandbox-fake.js");
+			const hostedDocker = new DockerSandboxes({ machine: null, dataVolume: async () => { throw new Error("unexpected volume"); } });
+			const hostedE2b = new E2bSandboxes(new FakeE2b(), readE2bSettings({}));
+			for (const provider of [hostedDocker, hostedE2b, createFakeSandboxLayer({ signIns: "memory" }).sandboxes])
+				await assert.rejects(provider.create({ ...create, uid, sessionId, profile: provider === hostedE2b ? "e2b" : create.profile }), /only on a machine/);
+			ok("Hosted Docker, E2B and the hosted test layer refuse a machine login harness.");
+			const baseOnly = join(tmp, "windlass-only.cjs");
+			await exec(process.execPath, ["runner/bundle.mjs", image, baseOnly], { cwd: root });
+			await assert.rejects(exec(process.execPath, [baseOnly, "--harness", "claude"], { env: env(state) }),
+				(error: { stderr?: string }) => !!error.stderr?.includes("pinned Claude Code image"));
+			let service = run();
+			await until(() => !!srv.state.report, "Runner did not pair.");
+			await srv.attach();
+			const ch = srv.channel(sessionId);
+			await assert.rejects(ch.request("create", create), /--harness claude/);
+			assert.equal(srv.state.lastErrorKind, "refused");
+			ok("Claude create needs the machine owner's opt-in.");
+			srv.detach(); await stop(service.child);
+			await until(() => !srv.online(), "Runner did not stop.");
+			const enabled = ["--harness", "claude", "--harness", "claude", "--screenshots"];
+			const report = () => srv.state.report?.harnesses?.[0];
+			const absentPin = join(tmp, "absent-claude.cjs");
+			await exec(process.execPath, ["runner/bundle.mjs", image, absentPin, image, "claude=sha256:" + randomBytes(32).toString("hex")], { cwd: root });
+			service = run(state, undefined, absentPin, {}, { flags: enabled });
+			await until(() => !!report(), "Missing image fixture did not connect.");
+			await srv.attach();
+			await assert.rejects(ch.request("create", create), /pinned Claude Code image is missing/);
+			srv.detach(); await stop(service.child); await until(() => !srv.online(), "Runner did not disconnect.");
+			srv.state.report = null;
+			service = run(state, undefined, bundle, {}, { flags: enabled });
+			await until(() => report()?.signIn === "none", "Enabled runner did not report the unsigned Claude harness.");
+			await srv.attach();
+			await assert.rejects(ch.request("create", { ...create, profile: "docker-windlass-sandbox" }), /docker-hardened/);
+
+			// An unlabelled namesake is never mounted or overwritten.
+			await docker(["volume", "create", volume], { check: true });
+			try {
+				assert.equal((await owner(["login", "claude"], token + "\n")).code, 1);
+				await assert.rejects(ch.request("create", create), /owned by this machine/);
+				assert.ok((await owner(["status"])).output.includes("unknown"));
+			} finally { await docker(["volume", "rm", volume], { check: true }); }
+			for (const invalid of ["wrong", token + "\nsecond", token + "x".repeat(512)]) {
+				assert.equal((await owner(["login", "claude"], invalid + "\n")).code, 1);
+			}
+			assert.equal((await docker(["volume", "inspect", volume])).code === 0, false);
+			assert.equal((await owner(["login", "claude"], token + "\n", { CLAUDE_CODE_OAUTH_TOKEN: token, CHECK_PASTED_TOKEN: token })).code, 0);
+			await until(() => report()?.signIn === "token", "Login did not publish a signed-in report.", 15_000);
+			assert.deepEqual(report(), { id: "claude", adapter: "claude-agent-acp 0.109.0", image: claudePin, signIn: "token" });
+			clean(JSON.stringify(srv.state.report));
+			const labels = JSON.parse((await docker(["volume", "inspect", "-f", "{{json .Labels}}", volume], { check: true })).stdout);
+			assert.equal(labels[MACHINE_LABEL], machineId); assert.equal(labels["dev.windlass-platform.uid"], uid);
+			const otherState = join(tmp, "another-pairing");
+			await mkdir(otherState, { mode: 0o700 });
+			const pairing = JSON.parse(await readFile(join(state, "pair.json"), "utf8"));
+			pairing.current.machineId = "m_" + randomBytes(8).toString("hex");
+			await writeFile(join(otherState, "pair.json"), JSON.stringify(pairing), { mode: 0o600 });
+			const otherEnv = { WLP_RUNNER_STATE_DIR: otherState };
+			assert.match((await owner(["status"], "", otherEnv)).output, /Claude Code.*not signed in/);
+			assert.equal((await owner(["logout", "claude"], "", otherEnv)).code, 0);
+			const staleVolume = "wlp-harness-claude-" + pairing.current.machineId;
+			const pending = spawn(process.execPath, [bundle, "login", "claude"], { env: env(otherState), stdio: "pipe" });
+			children.add(pending);
+			let notice = "";
+			pending.stdout.on("data", chunk => notice += chunk); pending.stderr.on("data", chunk => notice += chunk);
+			const done = new Promise(resolve => pending.on("close", code => { children.delete(pending); resolve(code); }));
+			await until(() => notice.includes("Anthropic"), "The pending login did not start.");
+			pairing.current.machineId = "m_" + randomBytes(8).toString("hex");
+			await writeFile(join(otherState, "pair.json"), JSON.stringify(pairing), { mode: 0o600 });
+			pending.stdin.end(token + "\n");
+			try {
+				assert.equal(await done, 1);
+				clean(notice); assert.match(notice, /pairing changed/);
+				assert.ok((await docker(["volume", "inspect", staleVolume])).code !== 0, "A superseded pairing received the login");
+			} finally { await docker(["volume", "rm", staleVolume]); }
+			assert.match((await owner(["status"])).output, /Claude Code.*: signed in/);
+			ok("Login validates one line, uses stdin, checks volume ownership and reports only the pinned harness and sign-in state.");
+
+			// The daemon still has its last signed-in report. Status must read the volume,
+			// including an empty file, without trusting that report or an earlier login.
+			await docker(["run", "--rm", "--pull", "never", "--network", "none", "--user", "0", "--mount",
+				"type=volume,src=" + volume + ",dst=/login,volume-nocopy", image, "truncate", "-s", "0", "/login/token"], { check: true });
+			assert.match((await owner(["status"])).output, /Claude Code.*not signed in/);
+
+			// Attach a real terminal with echo initially on. The local shim stands in only
+			// for Anthropic's browser flow. Wait for the private prompt before writing.
+			const terminal = spawn("script", ["--quiet", "--return", "--echo", "always", "--command",
+				'exec "$CHECK_NODE" --require "$CHECK_GUARD" "$CHECK_BUNDLE" login claude', "/dev/null"],
+				{ env: { ...env(state), CHECK_NODE: process.execPath, CHECK_GUARD: guard, CHECK_BUNDLE: bundle }, stdio: "pipe" });
+			children.add(terminal);
+			let transcript = "";
+			terminal.stdout.on("data", data => transcript += data); terminal.stderr.on("data", data => transcript += data);
+			const finished = new Promise(resolve => terminal.on("close", code => { children.delete(terminal); resolve(code); }));
+			await until(() => transcript.includes("Paste the token"), "Missing private terminal prompt.");
+			terminal.stdin.write(token + "\n");
+			assert.equal(await finished, 0);
+			clean(transcript);
+			assert.ok((await readFile(calls, "utf8")).includes("private-setup"));
+			ok("The setup CLI gets only its terminal, pinned image and bridge network with Docker logs disabled. The paste has echo off.");
+
+			const id = await ch.request("create", { ...create, screenshots: true });
+			const name = containerName(id.slice(-12));
+			const inspect = async (name: string) => JSON.parse((await docker(["inspect", name], { check: true })).stdout)[0];
+			const box = await inspect(name);
+			assert.equal(box.Config.Image, claudePin); assert.equal(box.Config.Labels["dev.windlass-platform.harness"], "claude");
+			assert.equal(box.HostConfig.LogConfig.Type, "none");
+			assert.ok(box.Mounts.some((m: { Name?: string; Destination: string; RW: boolean }) => m.Name === volume && m.Destination === "/run/wlp-harness/claude" && !m.RW));
+			assert.ok(box.HostConfig.Mounts.some((m: { Source: string; VolumeOptions?: { NoCopy?: boolean } }) => m.Source === volume && m.VolumeOptions?.NoCopy));
+			assert.ok(!box.Mounts.some((m: { Name?: string }) => m.Name?.startsWith("wlp-machine-")));
+			const stored = await docker(["exec", name, "sha256sum", path], { check: true });
+			assert.ok(stored.stdout.split(" ")[0] === createHash("sha256").update(token).digest("hex"), "Stored login differs from stdin");
+			const perms = await ch.request("run", { id, command: 'id -u; stat -c "%u %a" ' + path + '; test -r ' + path + ' && ! touch /run/wlp-harness/claude/write-test' });
+			assert.equal(perms.exitCode, 0); assert.equal(perms.stdout, "1000\n1000 400\n");
+			assert.match(perms.stderr, /read-only/i);
+			assert.equal((await ch.request("connect", { id }))?.harness, "claude");
+			await assert.rejects(ch.request("create", { profile: "docker-hardened" }), /different harness/);
+			await srv.attach(srv.other);
+			const windlass = srv.channel(srv.other);
+			const ordinary = await windlass.request("create", { profile: "docker-hardened" });
+			assert.ok(!(await inspect(containerName(ordinary.slice(-12)))).Mounts.some((m: { Name?: string }) => m.Name?.startsWith("wlp-harness-")));
+			assert.equal((await windlass.request("run", { id: ordinary, command: "test ! -e " + path })).exitCode, 0);
+			await assert.rejects(windlass.request("readTextFile", { id, path }), /another session/);
+			ok("Only the pinned hardened Claude session mounts this machine's login, read-only, with a uid-1000 mode-0400 file.");
+
+			// Exercise prefix and body boundaries on both file descriptors. No credential in the command.
+			const echo = 't=$(cat ' + path + '); for fd in 1 2; do printf "before <%s" "${t:0:6}" >&$fd; sleep .1; printf %s "${t:6:12}" >&$fd; sleep .1; printf "%s> after\\n" "${t:18}" >&$fd; done';
+			const expected = "before <[claude token]> after\n";
+			const outputs = ["", "", ""];
+			const collect = (fd: 1 | 2, text: string) => { outputs[fd] += text; };
+			const result = await ch.request("run", { id, command: echo }, { onOutput: collect });
+			assert.ok(result.stdout === expected && result.stderr === expected && outputs[1] === expected && outputs[2] === expected, "run leaked or damaged a stream or result");
+			outputs.fill("");
+			const proc = ch.start({ id, argv: ["bash", "-c", echo], tag: "claudecheck" }, collect);
+			await proc.ended;
+			assert.ok(outputs[1] === expected && outputs[2] === expected, "start leaked or damaged a stream");
+			const answer = await ch.request("ask", { id, argv: ["bash", "-c", echo] });
+			assert.ok(answer?.stdout === expected && answer.stderr === expected, "ask leaked or damaged a result");
+			assert.ok(await ch.request("readTextFile", { id, path }) === "[claude token]", "readTextFile leaked the token");
+			await writeFile(calls, "");
+			const status = await owner(["status"]);
+			assert.match(status.output, /Claude Code.*signed in/);
+			assert.ok(!(await readFile(calls, "utf8")).split("\n").some(v => ["run", "start", "exec"].includes(v)), "status started a container");
+			assert.match((await owner(["status"], "", { DOCKER_HOST: "unix:///missing/" + machineId })).output, /Claude Code.*unknown/);
+			clean(service.output()); clean((await owner(["log"])).output); clean(await readFile(join(state, "status.json"), "utf8"));
+			ok("Run, start, ask and file reads scrub Claude tokens. Status probes metadata without starting a container. Logs and status contain no token.");
+
+			srv.detach(srv.other); srv.detach(); await stop(service.child);
+			await until(() => !srv.online(), "Enabled runner did not disconnect.");
+			service = run();
+			await until(() => srv.online(), "Runner did not restart.");
+			await srv.attach();
+			await assert.rejects(ch.request("connect", { id }), /--harness claude/);
+			await assert.rejects(ch.request("readTextFile", { id, path }), /--harness claude/);
+			srv.detach(); await stop(service.child); await until(() => !srv.online(), "Runner did not disconnect.");
+			service = run(state, undefined, bundle, {}, { flags: enabled });
+			await until(() => srv.online(), "Runner did not restart with Claude.");
+			await srv.attach();
+			assert.equal((await ch.request("connect", { id }))?.harness, "claude");
+			// A killed login helper could leave its private staging file. Logout clears both.
+			await docker(["run", "--rm", "--pull", "never", "--network", "none", "--user", "0", "--mount",
+				"type=volume,src=" + volume + ",dst=/login,volume-nocopy", image, "touch", "/login/.token.abandoned"], { check: true });
+			assert.equal((await owner(["logout", "claude"])).code, 0);
+			await until(() => report()?.signIn === "none", "Logout did not publish a signed-out report.", 15_000);
+			assert.equal((await ch.request("run", { id, command: "test ! -e " + path + " && test ! -e /run/wlp-harness/claude/.token.abandoned" })).exitCode, 0);
+			await ch.request("destroy", { id });
+			assert.ok((await docker(["volume", "inspect", volume])).code !== 0, "Detached signed-out volume survived");
+			assert.equal((await owner(["login", "claude"], token)).code, 0);
+			await stop(service.child);
+			await until(() => !srv.online(), "Runner did not stop before the offline Docker probe.");
+			srv.state.report = null;
+			service = run(state, undefined, bundle, { DOCKER_HOST: "unix:///missing/" + machineId }, { flags: enabled });
+			await until(() => report()?.signIn === "unknown" && srv.state.report?.docker.ok === false, "A failed Docker query did not report unknown.");
+			await stop(service.child);
+			assert.equal((await owner(["prune"], "yes\n")).code, 0);
+			assert.ok((await docker(["volume", "inspect", volume])).code !== 0, "Prune kept the login volume");
+			ok("Discovery preserves the harness and opt-in. Logout unlinks a mounted token, removes the detached volume and publishes none. Prune removes a signed-in volume.");
+			return;
+		}
 		if (shotsPin) {
 			const baseOnly = join(tmp, "base-only.cjs");
 			await exec(process.execPath, ["runner/bundle.mjs", image, baseOnly], { cwd: root });
@@ -692,16 +909,28 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		for (const v of (await docker(["volume", "ls", "-q", ...ownedFilters])).stdout.trim().split(/\s+/).filter(Boolean)) await docker(["volume", "rm", v], { check: true });
 	}
 }
+const privateHarnessTag = "chk-" + randomUUID();
 const privateTag = process.env.WLP_RUNNER_CHECK_IMAGE ? undefined : `windlass-runner:chk-${randomUUID()}`;
 try {
 	const image = await imageId();
-	if (process.argv.includes("--screenshots-only")) {
+	if (process.argv.includes("--harness-only")) {
+		const { stdout } = await exec(join(root, "sandbox/harness/build.sh"), ["claude", image], { env: { ...process.env, WLP_HARNESS_TAG: privateHarnessTag } });
+		const pin = stdout.trim();
+		// A missing screenshots pin makes any attempt to fetch it for a Claude session fail.
+		const unusedShots = "sha256:" + randomBytes(32).toString("hex");
+		await exec(process.execPath, ["runner/bundle.mjs", image, bundle, unusedShots, "claude=" + pin], { cwd: root });
+		await check(image, undefined, pin);
+	} else if (process.argv.includes("--screenshots-only")) {
 		const shots = await imageId(SHOTS_IMAGE);
 		await exec(process.execPath, ["runner/bundle.mjs", image, bundle, shots], { cwd: root });
 		await check(image, shots);
 	} else {
+		if (!process.argv.includes("--real-machine")) {
+			const focused = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "--harness-only"], { stdio: "inherit" });
+			assert.equal(await new Promise(resolve => focused.on("exit", resolve)), 0);
+		}
 		if (privateTag) {
-			await exec(join(root, "scripts/runner-build.sh"), [image], { env: { ...process.env, WLP_RUNNER_BUILD_TAG: privateTag, WLP_RUNNER_PLATFORMS: "" } });
+			await exec(join(root, "scripts/runner-build.sh"), [image], { env: { ...process.env, WLP_RUNNER_BUILD_TAG: privateTag, WLP_RUNNER_HARNESSES: "claude", WLP_HARNESS_TAG: privateHarnessTag, WLP_RUNNER_PLATFORMS: "" } });
 		}
 		const runnerImage = await imageId(privateTag ?? process.env.WLP_RUNNER_CHECK_IMAGE);
 		if (!process.argv.includes("--real-machine")) {
@@ -716,6 +945,7 @@ try {
 	console.error(`FAIL  runner-check.ts line ${where ?? "unknown"}`);
 	process.exitCode = 1;
 } finally {
+	await docker(["image", "rm", "windlass-platform-claude:" + privateHarnessTag]);
 	if (privateTag && (await docker(["image", "inspect", privateTag])).code === 0) {
 		await docker(["image", "rm", privateTag], { check: true });
 	}

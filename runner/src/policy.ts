@@ -1,11 +1,13 @@
 import type { Args } from "../../server/src/runner/protocol.js";
-import { LABEL, LABEL_ARG, MACHINE_LABEL, createVolume, docker, removeVolume, runHelper, tmpName, volumeExists } from "../../server/src/sandbox/docker.js";
+import { LABEL, LABEL_ARG, MACHINE_LABEL, createVolume, docker, removeVolume, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
 import { COMMON_RUN_FLAGS, PROFILE_RUN_FLAGS } from "../../server/src/sandbox/profiles.js";
 import { BWRAP_PROBE, DATA_DIR } from "../../server/src/sandbox/provider.js";
 import { Refusal, RunnerError, type Identity } from "./state.js";
 
 declare const SANDBOX_IMAGE: string;
 declare const SHOTS_IMAGE_PIN: string;
+declare const HARNESS_IMAGES: Partial<Record<"claude", string>>;
+export const harnessImage = (id: "claude") => HARNESS_IMAGES[id];
 export const shotsImage = SHOTS_IMAGE_PIN;
 export const image = SANDBOX_IMAGE;
 export const bubblewrap = "docker-windlass-sandbox";
@@ -23,12 +25,15 @@ export function rawId(machine: string, id: string) {
 export class MachineDocker {
 	readonly labels: Record<string, string>;
 	readonly volume: string;
+	readonly claudeVolume: string;
 	constructor(readonly identity: Identity) {
 		this.labels = { [MACHINE_LABEL]: identity.machineId, [LABEL + ".uid"]: identity.uid };
+		this.claudeVolume = "wlp-harness-claude-" + identity.machineId;
 		this.volume = "wlp-machine-" + identity.machineId;
 	}
 	async ownedVolume(create: boolean, name = this.volume) {
-		if (!await volumeExists(name)) {
+		const volumes = await docker(["volume", "ls", "-q", "--filter", "name=" + name], { check: true });
+		if (!volumes.stdout.trim().split("\n").includes(name)) {
 			if (!create) return false;
 			await createVolume(name, this.labels);
 		}

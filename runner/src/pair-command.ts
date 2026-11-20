@@ -16,7 +16,19 @@ export async function requestPair(platform?: string) {
 		client.on("error", () => reject(new RunnerError("A runner command is already using the state volume. Wait for it to finish before pairing again.")));
 	});
 }
-export function waitForPair(signal: AbortSignal, ready: () => void): Promise<{ client: Socket; platform?: string } | undefined> {
+// The owner changed the volume. Only a fixed notification crosses this local socket;
+// the service rechecks Docker before reporting. While stopped it checks on next welcome.
+export async function requestLoginReport() {
+	await new Promise<void>(resolve => {
+		const client = connect(path, () => client.end("report-login"));
+		client.setTimeout(15_000, () => client.destroy());
+		client.resume();
+		client.on("error", () => {});
+		client.on("close", () => resolve());
+	});
+}
+
+export function waitForPair(signal: AbortSignal, ready: () => void, reportLogin?: () => Promise<void>): Promise<{ client: Socket; platform?: string } | undefined> {
 	if (signal.aborted) return Promise.resolve(undefined);
 	rmSync(path, { force: true }); // Only the state lock holder may replace a stale socket.
 	return new Promise((resolve, reject) => {
@@ -27,6 +39,11 @@ export function waitForPair(signal: AbortSignal, ready: () => void): Promise<{ c
 			client.on("data", chunk => { address += chunk; if (address.length > 2048) client.destroy(); });
 			client.on("error", () => client.destroy());
 			client.on("end", () => {
+				if (address === "report-login") {
+					if (reportLogin) void reportLogin().catch(() => {}).finally(() => client.end());
+					else client.end();
+					return;
+				}
 				if (accepted || signal.aborted) { client.end(); return; }
 				let platform: string | undefined;
 				try { if (address) platform = origin(address); }

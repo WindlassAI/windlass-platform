@@ -140,7 +140,9 @@ export type ServerFrame = Of<typeof serverFrame>;
  */
 const hello = object({ kind: oneOf("hello"), runnerVersion: version, epoch, time, signature });
 const cap = is<number>((v) => Number.isSafeInteger(v) && (v as number) >= 1);
+const harnesses = list(object({ id: oneOf("claude"), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown") }), 4);
 const report = object({
+	harnesses: optional(harnesses),
 	kind: oneOf("report"),
 	docker: probe,
 	/** The bubblewrap probe (BWRAP_PROBE) in a container of the "docker-windlass-sandbox" profile. */

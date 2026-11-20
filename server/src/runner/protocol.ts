@@ -12,7 +12,7 @@
  * apart, and the `Same` assertions at the end tie the operations to the provider interfaces they carry.
  */
 import type { SandboxProfileId } from "../contract.js";
-import type { ExecOptions, ExecResult } from "../sandbox/api.js";
+import type { CreateSandboxInput, ExecOptions, ExecResult } from "../sandbox/api.js";
 import { RUN_TAG, type Answer, type SandboxProcess, type StartOptions, type TurnSandbox } from "../sandbox/provider.js";
 import { type Assert, type Check, type Of, type Same, anything, boolean, count, either, integer, is, json, list, nil, nullable, object, oneOf, optional, plain, string, text } from "./check.js";
 
@@ -44,6 +44,7 @@ const tag = is<string>((v) => id(v) && RUN_TAG.test(v));
 const env = is<Record<string, string>>((v) => plain(v) && Object.entries(v).every(([k, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof value === "string"));
 /** A machine serves the two Docker profiles; E2B's and the rest are the deployment's. */
 const profile = oneOf("docker-windlass-sandbox", "docker-hardened");
+const harness = optional(oneOf("claude"));
 const sandbox = { id };
 const startOptions = { cwd: optional(string), env: optional(env), secretEnv: optional(env) };
 
@@ -53,8 +54,8 @@ const startOptions = { cwd: optional(string), env: optional(env), secretEnv: opt
  * `profiles`, `list`, `price` and the other facts come from the machine's report, not from here.
  */
 const operations = {
-	create: [object({ profile, screenshots: optional(boolean) }), id],
-	connect: [object(sandbox), nullable(object({ cwd: string, profile, screenshots: optional(boolean) }))],
+	create: [object({ profile, harness, screenshots: optional(boolean) }), id],
+	connect: [object(sandbox), nullable(object({ cwd: string, profile, harness, screenshots: optional(boolean) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],
 	suspend: [object(sandbox), nil],
 	destroy: [object(sandbox), nil],
@@ -138,6 +139,7 @@ export function protocolRefusal(runnerProtocol: number): string {
 
 // The wire types are the provider's, without what cannot cross a socket (callbacks, an AbortSignal).
 type Drift = [
+	Assert<Same<Args<"create">["harness"], CreateSandboxInput["harness"]>>,
 	Assert<Same<Args<"run">["options"], Omit<ExecOptions, "onStdout" | "onStderr" | "signal"> | undefined>>,
 	Assert<Same<Value<"run">, ExecResult>>,
 	Assert<Same<Args<"start">["options"], Omit<StartOptions, "onStdout" | "onStderr"> | undefined>>,

@@ -49,6 +49,11 @@ expect("and for the HTTP answers", never(parsePairStatus, [...junk, { state: "ap
 expect("a hello and a report pass", parseRunnerFrame(JSON.stringify(hello))?.kind === "hello"
 	&& parseRunnerFrame(JSON.stringify({ kind: "report", docker: { ok: false, reason: "permission denied" }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [{ id: "m_0123456789abcdef-0123456789ab", sessionId: "s_0123456789abcdef", state: "paused", usedAt: 5 }] }))?.kind === "report");
 const plainReport = { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [] };
+const harness = { id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fixture", signIn: "none" };
+expect("the server accepts each Claude sign-in state and refuses extra login fields or an unknown harness",
+	["token", "none", "unknown"].every(signIn => parseRunnerFrame(JSON.stringify({ ...plainReport, harnesses: [{ ...harness, signIn }] }))?.kind === "report")
+	&& [ { ...harness, signIn: "other" }, { ...harness, secret: "fixture" }, { ...harness, id: "other" } ].every(invalid =>
+		parseRunnerFrame(JSON.stringify({ ...plainReport, harnesses: [invalid] })) === null));
 const capped = parseRunnerFrame(JSON.stringify({ ...plainReport, maxRunning: 2, maxSandboxes: 5 }));
 expect("a report carries the caps its owner set, and a report with no caps also passes",
 	capped?.kind === "report" && capped.maxRunning === 2 && capped.maxSandboxes === 5 && parseRunnerFrame(JSON.stringify(plainReport))?.kind === "report");

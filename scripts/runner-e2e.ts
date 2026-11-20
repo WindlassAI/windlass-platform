@@ -339,6 +339,27 @@ async function linkChecks(): Promise<void> {
 	};
 	mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: Date.UTC(2026, 10, 19) });
 	try {
+		await check("link: create sends Claude only to a runner offering it and omits harness for Windlass", async () => {
+			const input = { uid: LINK_WHO.uid, sessionId: LINK_WHO.sessionId, profile: "docker-hardened" as const };
+			const received: unknown[] = [];
+			const serve = (op: Operation, ch: RunnerChannel) => {
+				if (op.name === "create") { received.push(op.args); ch.respond(op, LINK_SANDBOX); }
+			};
+			const old = fresh({ serve });
+			const refused = track(old.sandboxes.create({ ...input, harness: "claude" }));
+			await advance(50);
+			assert(refused.at instanceof Error && refused.at.message.includes("--harness claude") && !old.log.attaches.length, "missing preflight refusal");
+			const offered = fresh({ serve, report: { kind: "report", docker: { ok: true }, commandSandbox: { ok: true },
+				freeDiskBytes: null, sandboxes: [], harnesses: [{ id: "claude", image: "fixture", adapter: "fixture", signIn: "none" }] } });
+			for (const create of [offered.sandboxes.create({ ...input, harness: "claude" }), old.sandboxes.create(input)]) {
+				await advance(50);
+				await create;
+			}
+			assert(received.length === 2 && received.some(args => JSON.stringify(args) === JSON.stringify({ profile: input.profile, harness: "claude" }))
+				&& received.some(args => JSON.stringify(args) === JSON.stringify({ profile: input.profile })), "wrong create arguments");
+			return "checked both wire requests and the refusal before attach";
+		});
+
 		await check("link: a runner whose hello comes before the machine actor's answer is let in, with the key had first", async () => {
 			const b = fresh();
 			b.mode.reply = after(200);

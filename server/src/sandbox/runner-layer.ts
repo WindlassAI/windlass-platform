@@ -531,8 +531,11 @@ class RunnerSandboxes implements Sandboxes {
 		if (input.profile !== "docker-windlass-sandbox" && input.profile !== "docker-hardened") throw new SandboxUserError(`${findProfile(input.profile).name} does not run on a machine of yours.`);
 		// A `create` lost with its conversation may have made the sandbox: the runner answers the repeat with that one.
 		// Request the screenshots image only when this runner offers it.
-		const screenshots = input.screenshots && (await link.facts()).report?.screenshots;
-		return await link.again("create", { profile: input.profile, ...(screenshots ? { screenshots: true } : {}) });
+		const report = input.harness || input.screenshots ? (await link.facts()).report : null;
+		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
+			throw new SandboxUserError("This machine's runner does not offer Claude Code. Update it and start it with --harness claude.");
+		return await link.again("create", { profile: input.profile, ...(input.harness ? { harness: input.harness } : {}),
+			...(input.screenshots && !input.harness && report?.screenshots ? { screenshots: true } : {}) });
 	}
 
 	async connect(id: string): Promise<TurnSandbox | undefined> {
