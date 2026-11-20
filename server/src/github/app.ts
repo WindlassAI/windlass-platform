@@ -261,8 +261,8 @@ export class GithubApp {
 		}
 	}
 
-	private async call(call: Call): Promise<{ status: number; body: unknown; next: boolean; link: string }> {
-		const response = await this.request(call, "follow");
+	private async call(call: Call, redirect: RequestRedirect = "follow"): Promise<{ status: number; body: unknown; next: boolean; link: string }> {
+		const response = await this.request(call, redirect);
 		const raw = await response.text().catch(() => "");
 		let body: unknown = null;
 		if (raw !== "") {
@@ -577,11 +577,30 @@ export class GithubApp {
 	// https://docs.github.com/en/rest/issues/issues#get-an-issue
 	async issue(token: string, repo: Repository, number: number) {
 		const path = `/repos/${repo.owner}/${repo.name}/issues/${number}`;
-		const { body } = await this.call({ path, auth: { bearer: token }, what: "read the issue" });
-		const row = record(body), id = decimalId(row.id), author = githubPerson(row.user, true);
+		let answer;
+		try {
+			answer = await this.call({ path, auth: { bearer: token }, what: "read the issue" }, "manual");
+		} catch (error) {
+			if (!(error instanceof GithubError)) throw error;
+			if (error.status === 404 || error.status === 410) return "gone" as const;
+			if (![301, 302, 303, 307, 308].includes(error.status)) throw error;
+			const api = new URL(this.settings.apiUrl + "/");
+			const location = error.headers.get("location");
+			const target = location && URL.parse(location, this.settings.apiUrl + path);
+			if (!target || target.origin !== api.origin || !target.pathname.startsWith(api.pathname)) return null;
+			const route = target.pathname.slice(api.pathname.length);
+			const targetId = githubId(/^repositories\/(\d+)\/issues\/\d+$/.exec(route)?.[1]);
+			const targetName = /^repos\/([^/]+\/[^/]+)\/issues\/\d+$/.exec(route)?.[1];
+			if ((targetId && targetId !== repo.id) ||
+				(targetName && targetName.toLowerCase() !== (repo.owner + "/" + repo.name).toLowerCase())) return "gone" as const;
+			return null;
+		}
+		const row = record(answer.body), id = decimalId(row.id), author = githubPerson(row.user, true);
+		const repositoryId = githubId(record(row.repository).id ?? row.repository_id);
+		if (id && repositoryId && repositoryId !== repo.id) return { movedIssueId: id };
 		if (!id || !author || row.number !== number || row.url !== this.settings.apiUrl + path || row.pull_request || !Array.isArray(row.labels)) return null;
 		return { id, author, number, title: text(row.title), body: text(row.body), url: this.repositoryUrl(repo.owner, repo.name) + "/issues/" + number,
-			state: text(row.state), labels: row.labels.map(v => record(v).name), created: Date.parse(text(row.created_at)), updated: Date.parse(text(row.updated_at)) };
+			state: text(row.state), labels: row.labels.map(v => record(v).name), updated: Date.parse(text(row.updated_at)) };
 	}
 
 	// https://docs.github.com/en/rest/issues/comments#get-an-issue-comment

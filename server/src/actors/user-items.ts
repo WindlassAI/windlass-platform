@@ -84,7 +84,7 @@ export const ITEM_TABLES = [
 	// A creation's key and the digest of what it asked for, written before either of its actors is made: a creation tried
 	// again under that key with another body is refused even when the first never reached the index.
 	"CREATE TABLE IF NOT EXISTS item_keys (key TEXT PRIMARY KEY, sent TEXT NOT NULL, id TEXT NOT NULL)",
-	"CREATE TABLE IF NOT EXISTS github_item_keys (key TEXT PRIMARY KEY, sent TEXT NOT NULL, id TEXT NOT NULL, draft INTEGER NOT NULL)",
+	"CREATE TABLE IF NOT EXISTS github_item_keys (key TEXT PRIMARY KEY, sent TEXT NOT NULL, id TEXT NOT NULL, draft INTEGER NOT NULL, created_at INTEGER NOT NULL)",
 	// A turn of an item's session waiting for a slot: `wait` is what it was last told, `attempt` how often it waited.
 	"CREATE TABLE IF NOT EXISTS turn_request (key TEXT PRIMARY KEY, session TEXT NOT NULL, item TEXT NOT NULL, title TEXT NOT NULL, starts_run INTEGER NOT NULL, at INTEGER NOT NULL, attempt INTEGER NOT NULL, full INTEGER, full_until INTEGER, wait TEXT)",
 	// A slot given to the turn of `key`: released by its id, or when `expires_at` has passed.
@@ -295,7 +295,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		// The key is this body's from here, before anything is made: in memory now, so that a second attempt is judged by it at
 		// once, and stored before the first actor, so that it holds across a restart too.
 		c.vars.items.created.set(scopedKey(!!github, submission.key), { ...submission, id: itemId });
-		if (github) await c.db.execute("INSERT OR IGNORE INTO github_item_keys VALUES(?,?,?,?)", submission.key, submission.sent, itemId, Number(!input.start));
+		if (github) await c.db.execute("INSERT OR IGNORE INTO github_item_keys VALUES(?,?,?,?,?)", submission.key, submission.sent, itemId, Number(!input.start), Date.now());
 		else await c.db.execute("INSERT OR IGNORE INTO item_keys (key, sent, id) VALUES (?, ?, ?)", submission.key, submission.sent, itemId);
 	}
 	try {

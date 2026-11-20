@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import type { GithubId } from "../contract.js";
-import { recentSubject } from "../factory/intake.js";
 import { githubApp, GithubError } from "./app.js";
 
 export const contentDigest = (issue: { title: string; body: string }) => createHash("sha256").update(JSON.stringify([issue.title, issue.body])).digest("hex");
@@ -20,6 +19,8 @@ export async function readIssue(installationId: GithubId, repositoryId: GithubId
 	return subjectRead(() => app.withToken(installationId, { repositoryId, permissions: { metadata: "read", issues: "read" } }, async token => {
 		const repo = await app.repositoryById(token, repositoryId);
 		const issue = await app.issue(token, repo, number);
-		if (issue && recentSubject(issue.created)) return { app, token, repo, issue };
+		if (issue === "gone") return issue;
+		if (issue?.movedIssueId !== undefined) return { movedIssueId: issue.movedIssueId };
+		if (issue) return { app, token, repo, issue };
 	}));
 }

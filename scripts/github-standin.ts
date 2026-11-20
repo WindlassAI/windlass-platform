@@ -64,6 +64,7 @@ export interface StandinRepository {
 
 export interface StandinIssue {
 	id: number; number: number; repository: number; title: string; body: string; state: string; created_at: string; updated_at: string;
+	readResponse?: "timeout" | { status: number; headers?: Record<string, string>; body?: unknown };
 	user: StandinUser; labels: string[]; events: { id: number; actor: StandinUser; event: string; label?: { name: string }; created_at: string }[];
 	comments: { id: bigint; user: { id?: number; login: string; type?: string }; body: string; created_at: string }[];
 }
@@ -802,6 +803,10 @@ export class GithubStandin {
 			const base = `${this.apiUrl}/repos/${repository.owner}/${repository.name}/issues`;
 			if (issue) {
 				if (!this.allows(token, repository, "issues", method === "GET" ? "read" : "write")) return denied();
+				if (!resource[2] && method === "GET" && issue.readResponse) {
+					if (issue.readResponse === "timeout") return;
+					return answer(issue.readResponse.status, issue.readResponse.body ?? {}, issue.readResponse.headers);
+				}
 				if (!resource[2] && method === "GET") return answer(200, { ...issue, url: base + "/" + issue.number, user: { ...issue.user, type: "User" }, labels: issue.labels.map(name => ({ name })) });
 				if (resource[2] === "events" && method === "GET") return answer(200, issue.events.map(e => ({ ...e, actor: { ...e.actor, type: "User" } })));
 				if (resource[2] === "comments" && method === "GET") return answer(200, issue.comments);

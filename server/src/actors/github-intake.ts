@@ -10,7 +10,7 @@ import type { GithubApp, Repository } from "../github/app.js";
 import { isAddressed } from "../github/events.js";
 import { readDefaults } from "../repository-defaults.js";
 import type { IssueClaim, IssueDecision } from "./github-repository.js";
-import { isActorGone } from "./internal.js";
+import { isActorGone, itemActor } from "./internal.js";
 import type { ItemsCtx } from "./user-items.js";
 
 async function command(app: GithubApp, token: string, repo: Repository, trigger: IntakeTrigger) {
@@ -33,14 +33,32 @@ async function refusal(app: GithubApp, repo: Repository, t: IntakeTrigger, gener
 	});
 }
 
-async function quotaRefusal(c: ItemsCtx, draft: boolean) {
+async function existingItem(c: ItemsCtx, uid: string, id: string) {
+	try { return await itemActor(c, uid, id).internalSummary(); }
+	catch (error) { if (!isActorGone(error) && (error as { code?: string })?.code !== "item_not_found") throw error; }
+}
+
+async function quotaRefusal(c: ItemsCtx, draft: boolean, resuming?: string) {
 	const filed = [...c.vars.items.items.values()].filter(i => i.source === "github");
 	const midnight = Math.floor(Date.now() / 86_400_000) * 86_400_000;
-	// A file whose session exists but whose index write was interrupted still occupies its place.
-	const [pending] = await c.db.execute<{ count: number; drafts: number }>("SELECT count(*) AS count, coalesce(sum(draft),0) AS drafts FROM github_item_keys k WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.id=k.id)");
 	const { githubItemsPerDay, githubDrafts } = config.factory;
-	if (filed.filter(i => i.createdAt >= midnight).length + pending.count >= githubItemsPerDay) return refusals.daily(githubItemsPerDay);
-	if (draft && filed.filter(i => i.state === "draft").length + pending.drafts >= githubDrafts) return refusals.drafts(githubDrafts);
+	const unindexed = "FROM github_item_keys k WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.id=k.id)";
+	const [pending] = await c.db.execute<{ count: number; reserved: number }>(
+		`SELECT count(*) AS count, count(CASE WHEN id=? THEN 1 END) AS reserved ${unindexed} AND created_at >= ? AND created_at < ?`,
+		resuming ?? null, midnight, midnight + 86_400_000);
+	if (!pending.reserved && filed.filter(i => i.createdAt >= midnight && i.createdAt < midnight + 86_400_000).length + pending.count >= githubItemsPerDay) return refusals.daily(githubItemsPerDay);
+	if (draft) {
+		let drafts = filed.filter(i => i.state === "draft").length;
+		if (drafts >= githubDrafts) return refusals.drafts(githubDrafts);
+		// A session may have been made without its item, or the item without its index entry.
+		const candidates = await c.db.execute<{ id: string }>(`SELECT id ${unindexed} AND draft=1`);
+		if (drafts + candidates.length >= githubDrafts) {
+			for (const { id } of candidates) {
+				if ((await existingItem(c, c.key[0]!, id))?.state === "draft") drafts++;
+				if (drafts >= githubDrafts) return refusals.drafts(githubDrafts);
+			}
+		}
+	}
 	return null;
 }
 
@@ -57,7 +75,7 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 	// A reader's command gets no reply and costs no subject or repository read.
 	if (access !== "write" && (t.via === "mention" || access !== "read")) return;
 	const found = await readIssue(t.installationId, t.repositoryId, t.issue);
-	if (!found) return;
+	if (!found || found === "gone" || "movedIssueId" in found) return;
 	const { app, token, repo, issue } = found;
 	if (issue.state !== "open" || (t.via === "label" && !issue.labels.includes("windlass"))) return;
 	const subject = await subjectRead(() => command(app, token, repo, t));
@@ -70,8 +88,7 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 		const pending: IssueDecision = await directory.internalDecideIssue({ issue: t.issue, installation: t.installationId, uid,
 			subject: claim.subject, previous: claim.generation, decision: { kind: "ignore" } });
 		if (pending.kind !== "file" || pending.filing.binding.issueId !== issue.id) return;
-		const reserved = await c.db.execute("SELECT 1 FROM github_item_keys WHERE id=?", claim.itemId);
-		if (!c.vars.items.items.has(claim.itemId) && !reserved.length && await quotaRefusal(c, !pending.filing.input.start)) return;
+		if (!c.vars.items.items.has(claim.itemId) && !await existingItem(c, uid, claim.itemId) && await quotaRefusal(c, !pending.filing.input.start, claim.itemId)) return;
 		if (!connected()) return;
 		await file(profile, pending.filing);
 		await directory.internalFinishIssue(t.issue, claim.subject);
@@ -83,9 +100,7 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 	let create = !claim;
 	if (!reason && claim?.pending && claim.uid !== uid) reason = refusals.other;
 	if (!reason && claim && !claim.pending) {
-		let current: ItemSummary | undefined;
-		try { current = await c.client().workItem.get([claim.uid, claim.itemId], params).internalSummary(); }
-		catch (error) { if (!isActorGone(error)) throw error; }
+		const current = await existingItem(c, claim.uid, claim.itemId);
 		create = !current || current.state === "done" || current.state === "cancelled";
 		if (!create && claim.uid !== uid) reason = refusals.other;
 		else if (current?.state === "failed") decision = { kind: "retry", itemId: claim.itemId };

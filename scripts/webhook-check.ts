@@ -43,9 +43,23 @@ async function testNode() {
 	};
 	type ItemCtx = Parameters<NonNullable<typeof workItem.config.actions>["internalView"]>[0];
 	Object.assign(workItem.config.actions!, {
+		checkIssuePending: async (c: ItemCtx) => {
+			requireServiceFor(c, "call");
+			return (await c.db.execute("SELECT 1 FROM effects WHERE id='check_issue:pending'")).length > 0;
+		},
 		checkPoll: async (c: ItemCtx) => {
 			requireServiceFor(c, "call");
 			return (await c.db.execute("SELECT id, due_at, effect FROM effects WHERE id LIKE 'poll_%'"))[0] ?? null;
+		},
+	});
+	const { user } = await import("../server/src/actors/user.js");
+	type UserCtx = Parameters<NonNullable<typeof user.config.actions>["internalGithubIntake"]>[0];
+	Object.assign(user.config.actions!, {
+		checkInterruptedFiling: async (c: UserCtx, id: string, at: number) => {
+			requireServiceFor(c, "call");
+			await c.db.execute("DELETE FROM items WHERE id=?", id);
+			c.vars.items.items.delete(id);
+			await c.db.execute("INSERT INTO github_item_keys (key,sent,id,draft,created_at) VALUES (?,?,?,1,?)", "fixture-" + id, "", id, at);
 		},
 	});
 	const actions = githubInbox.config.actions!;
@@ -79,9 +93,10 @@ async function testNode() {
 		},
 	});
 	Object.assign(githubHooks.config.actions!, {
-		checkDailyLimit: (c: Ctx, limit: number) => {
+		checkDailyLimit: (c: Ctx, limit: number, drafts = 20) => {
 			requireServiceFor(c, "call");
 			config.factory.githubItemsPerDay = limit;
+			config.factory.githubDrafts = drafts;
 		},
 		checkFallback: (c: Ctx, ms: number | null) => {
 			requireServiceFor(c, "call");
@@ -376,6 +391,7 @@ async function run() {
 			assert.match(view.task.body, /written by @g3-reader/); assert.equal(view.spent.turns, 0);
 			await until("draft comment", async () => bots(issue).some(c => c.body.includes("Filed as a draft for @" + owner)));
 			issue.body = "New words"; issue.updated_at = new Date().toISOString(); await notify(issue, "edited");
+			await until("edit note", async () => (await g2User.item(item.id)).events.some(e => e.said.includes("issue was edited")), 25_000);
 			const edited = await g2User.item(item.id); assert.deepEqual(edited.task, view.task); assert.ok(edited.events.some(e => e.said.includes("issue was edited")));
 			await change(issue, "closed", reader); assert.equal((await g2User.item(item.id)).state, "draft");
 			await change(issue, "reopened"); await change(issue, "unlabeled"); assert.equal((await g2User.item(item.id)).state, "cancelled");
@@ -405,12 +421,103 @@ async function run() {
 			standin.issueEvent(issue, "labeled", writer); await notify(issue, "labeled", writer, neighbour.id);
 			assert.equal((await items(issue)).length, 0); assert.equal(bots(issue).length, 0);
 		});
-		await check("G3 refuses fetched issues, comments and label events older than three days", async () => {
-			const issue = make(46); const old = new Date(Date.now() - 4 * DAY).toISOString();
-			issue.created_at = old; await change(issue, "labeled"); assert.deepEqual(await items(issue), []);
-			issue.created_at = new Date().toISOString(); issue.events.at(-1)!.created_at = old; await notify(issue, "labeled");
+		await check("G3 review age: old triggers stay refused, a fresh label files an old issue and an unlabel cancels it", async () => {
+			const issue = make(46, reader), old = new Date(Date.now() - 7 * DAY).toISOString();
+			issue.created_at = old;
+			standin.issueEvent(issue, "labeled", writer); issue.events.at(-1)!.created_at = old;
+			await notify(issue, "labeled");
 			const msg = standin.issueComment(issue, writer, "@windlass-fk4w"); msg.created_at = old;
 			await mention(issue, msg.id); assert.deepEqual(await items(issue), []); assert.equal(bots(issue).length, 0);
+			await change(issue, "labeled"); const [item] = await items(issue); assert.equal(item?.state, "draft");
+			await change(issue, "unlabeled"); assert.equal((await g2User.item(item.id)).state, "cancelled");
+		});
+		await check("G3 review disappearance: 404, 410, transfer redirect and changed repository ID cancel", async () => {
+			const { person, account } = await newWriter("g3-disappearance");
+			const destination = standin.apiUrl + "/repositories/123456/issues/71";
+			const replies = (issue: Issue): Exclude<Issue["readResponse"], "timeout" | undefined>[] => [
+				{ status: 404 }, { status: 410 }, { status: 301, headers: { location: destination } },
+				{ status: 200, body: { id: issue.id, repository: { id: 123456 } } },
+			];
+			for (const [index, action] of ["deleted", "deleted", "transferred", "transferred"].entries()) {
+				const issue = make(60 + index, reader); await change(issue, "labeled", person);
+				const [item] = await items(issue, account); assert.equal(item?.state, "draft");
+				issue.readResponse = replies(issue)[index];
+				await notify(issue, action, person);
+				assert.equal((await account.item(item.id)).state, "cancelled", String(issue.readResponse.status));
+			}
+			assert.ok(!standin.requests.some(r => r.path.endsWith("/repositories/123456/issues/71")));
+		});
+		await check("G3 review disappearance: inconclusive and transient reads preserve the bound draft", async () => {
+			const issue = make(64, reader); await change(issue, "labeled"); const [item] = await items(issue);
+			const handle = client.workItem.get([uid, item.id], service());
+			const probe = () => handle.internalGithubIssue({ installationId: installation.id, repositoryId: projectG2.id, issue: issue.number, senderId: writer.id, action: "transferred" });
+			const revision = (await g2User.item(item.id)).revision;
+			standin.issueEvent(issue, "transferred", writer); await probe();
+			assert.equal((await g2User.item(item.id)).state, "draft");
+			for (const status of [503, 429, 403]) {
+				issue.readResponse = { status }; await assert.rejects(probe);
+			}
+			issue.readResponse = "timeout"; await assert.rejects(probe);
+			issue.readResponse = { status: 302, headers: { location: "/login" } }; await probe();
+			issue.readResponse = { status: 200, body: { id: issue.id + 1, repository: { id: 123456 } } }; await probe();
+			installation.repositories.delete(projectG2.id);
+			try { await probe(); } finally { installation.repositories.add(projectG2.id); }
+			const view = await g2User.item(item.id); assert.equal(view.state, "draft"); assert.equal(view.revision, revision);
+		});
+		await check("G3 review churn: twenty edits and closes share one read and each note is recorded once", async () => {
+			const repo = standin.addRepository({ owner, name: "churn-cost", installation });
+			const author = standin.addUser("g3-churn-author"); repo.access.set(author.login, "read");
+			const issue = standin.addIssue(repo, 65, author);
+			standin.issueEvent(issue, "labeled", writer);
+			await delivered("issues", { ...payload(issue), repository: { id: repo.id }, action: "labeled", label: { name: "windlass" } });
+			const [item] = await items(issue); assert.equal(item?.state, "draft");
+			await until("draft comment before churn", async () => bots(issue).length);
+			const handle = client.workItem.get([uid, item.id], service());
+			const signal = (action: string, sender = author) => handle.internalGithubIssue({ installationId: installation.id, repositoryId: repo.id, issue: issue.number, senderId: sender.id, action });
+			const requests = () => standin.requests.filter(r => r.path.includes("/churn-cost/") || r.path.endsWith("/repositories/" + repo.id) ||
+				(r.body as { repository_ids?: number[] })?.repository_ids?.includes(repo.id));
+			const before = requests().length;
+			const churn = async (n: number) => {
+				issue.body = "edit " + n; issue.updated_at = new Date().toISOString(); await signal("edited");
+				standin.issueEvent(issue, "reopened", author); standin.issueEvent(issue, "closed", author); await signal("closed");
+			};
+			for (let n = 0; n < 20; n++) await churn(n);
+			const notes = async () => (await g2User.item(item.id)).events.filter(e => /issue was (edited|closed)/.test(e.said));
+			await until("both churn notes", async () => (await notes()).length >= 2, 25_000);
+			const calls = requests().slice(before);
+			assert.equal(calls.filter(r => r.path.endsWith("/issues/65")).length, 1);
+			assert.ok(calls.length <= 6, `expected at most six stand-in requests, saw ${calls.length}`);
+			const revision = (await g2User.item(item.id)).revision;
+			await churn(20);
+			await until("second window corroborated", async () => requests().slice(before).filter(r => r.path.includes("/issues/65/events?")).length === 2, 25_000);
+			// Wait for the effect to commit any notes before checking lifetime counts.
+			await until("second window settled", async () => !(await (handle as unknown as { checkIssuePending(): Promise<boolean> }).checkIssuePending()));
+			const entries = await notes();
+			for (const kind of ["edited", "closed"]) assert.equal(entries.filter(e => e.said.includes("issue was " + kind)).length, 1);
+			const view = await g2User.item(item.id); assert.equal(view.state, "draft"); assert.equal(view.revision, revision);
+			repo.access.set(peer.login, "write");
+			standin.issueEvent(issue, "reopened", author); standin.issueEvent(issue, "closed", peer);
+			await signal("closed", peer); await signal("closed", author);
+			await until("writer's close despite an out-of-order stranger delivery", async () => (await g2User.item(item.id)).state === "cancelled", 25_000);
+		});
+		await check("G3 review limits: yesterday's interrupted filing expires and only an existing draft occupies a draft slot", async () => {
+			const { person, account } = await newWriter("g3-interrupted");
+			const who = await client.githubAccount.get([String(person.id)], service()).internalWho();
+			const fixture = client.user.get([who!.uid], service()) as unknown as { checkInterruptedFiling(id: string, at: number): Promise<void> };
+			const settings = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkDailyLimit(daily: number, drafts: number): Promise<void> };
+			const midnight = Math.floor(Date.now() / DAY) * DAY;
+			await fixture.checkInterruptedFiling("i_0000000000000000", midnight - 1);
+			await settings.checkDailyLimit(1, 1);
+			try {
+				const first = make(66, reader); await change(first, "labeled", person);
+				const [draft] = await items(first, account); assert.equal(draft?.state, "draft");
+				await fixture.checkInterruptedFiling(draft.id, midnight - 1);
+				const second = make(67, reader); await change(second, "labeled", person);
+				assert.match(bots(second)[0]?.body ?? "", /are drafts/);
+				await fixture.checkInterruptedFiling("i_0000000000000001", midnight);
+				const third = make(68, reader); await change(third, "labeled", person);
+				assert.match(bots(third)[0]?.body ?? "", /from GitHub today/);
+			} finally { await settings.checkDailyLimit(20, 20); }
 		});
 		await check("G3 two labels and a mention file once; handled IDs survive cancellation and a new generation", async () => {
 			const issue = make(47, reader); standin.issueEvent(issue, "labeled", writer);
@@ -438,7 +545,7 @@ async function run() {
 			await until("issue link updated with PR", async () => bots(issue).some(c => c.body.includes(`Pull request #${pull.number}.`)));
 			assert.equal(bots(issue).length, 1); const first = bots(issue)[0];
 			assert.ok(first.body.startsWith(`<!-- windlass-issue:${item.id} -->\n`)); assert.ok(first.body.includes(origin + "/items/" + item.id));
-			await change(issue, "closed"); assert.equal((await g2User.item(item.id)).state, "cancelled");
+			await change(issue, "closed"); await until("filer close", async () => (await g2User.item(item.id)).state === "cancelled");
 			await until("updated to cancelled", async () => bots(issue)[0]?.body.includes("cancelled"));
 			assert.deepEqual(bots(issue).map(c => c.id), [first.id]);
 		});
@@ -484,7 +591,7 @@ async function run() {
 			const [item] = await items(issue, account); assert.ok(item);
 			await until("running issue turn", async () => (await account.listSessions()).some(s => s.id === item.sessionId && s.status === "running"), 30_000);
 			await change(issue, "closed", person);
-			assert.equal((await account.item(item.id)).state, "cancelled");
+			await until("filer close while working", async () => (await account.item(item.id)).state === "cancelled");
 			await until("issue session interrupted", async () => (await account.listSessions()).find(s => s.id === item.sessionId)?.lastOutcome === "interrupted");
 		});
 		await check("G3 a fetched merge ends the issue item; a fresh label files generation two", async () => {

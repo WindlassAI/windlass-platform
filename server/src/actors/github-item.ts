@@ -7,35 +7,35 @@ import { contentDigest, readIssue, subjectRead } from "../github/issues.js";
 export interface IssueNotice { installationId: GithubId; repositoryId: GithubId; issue: number; senderId: GithubId; action: string }
 export interface ObservedIssue { subject: string; by: string; said: string; cancel: "draft" | "before_review" | null }
 
-export async function observeIssue(binding: IssueBinding, notice: IssueNotice, permission: (by: GithubUser) => Promise<string>): Promise<ObservedIssue | undefined> {
-	const found = await readIssue(binding.installationId, notice.repositoryId, notice.issue);
-	if (!found) return;
+/** Edits and closes share one issue read. Deliveries can arrive out of order. */
+export interface IssueChanges { edited?: boolean; closedBy?: GithubId[]; unlabeledBy?: GithubId }
+export async function observeIssue(binding: IssueBinding, repositoryId: GithubId, changes: IssueChanges, permission: (by: GithubUser) => Promise<string>): Promise<ObservedIssue[]> {
+	const number = binding.origin.issue.number;
+	const found = await readIssue(binding.installationId, repositoryId, number);
+	if (!found) return [];
+	if (found === "gone" || "movedIssueId" in found) {
+		if (found !== "gone" && found.movedIssueId !== binding.issueId) return [];
+		return [{ subject: "gone", by: "platform", said: "The issue was deleted (or moved) on GitHub.", cancel: "before_review" }];
+	}
 	const { app, token, repo, issue } = found;
-	if (issue.id !== binding.issueId) return;
-	if (notice.action === "edited") {
-		const digest = contentDigest(issue);
-		if (digest !== binding.contentDigest && recentSubject(issue.updated))
-			return { subject: "edit:" + digest, by: "platform", said: "The issue was edited on GitHub after it was filed; the item keeps the text it was filed with.", cancel: null };
-		return;
+	if (issue.id !== binding.issueId) return [];
+	const observations: ObservedIssue[] = [];
+	if (changes.edited && recentSubject(issue.updated) && contentDigest(issue) !== binding.contentDigest)
+		observations.push({ subject: "edited", by: "platform", said: "The issue was edited on GitHub after it was filed; the item keeps the text it was filed with.", cancel: null });
+	const action = changes.unlabeledBy && !issue.labels.includes("windlass") ? "unlabeled" : changes.closedBy && issue.state === "closed" ? "closed" : null;
+	if (!action) return observations;
+	const transition = await subjectRead(() => app.issueTransition(token, repo, number, action));
+	if (!transition || !recentSubject(transition.at) || transition.at < binding.triggeredAt) return observations;
+	const matched = action === "closed" ? changes.closedBy?.includes(transition.author.id) : transition.author.id === changes.unlabeledBy;
+	if (!matched) return observations;
+	const actor = transition.author, by = "github:" + actor.login;
+	if (action === "unlabeled")
+		observations.push({ subject: transition.id, by, said: `@${actor.login} removed the windlass label on GitHub.`, cancel: "draft" });
+	else {
+		const writer = actor.id === binding.senderId || await permission(actor) === "write";
+		observations.push({ subject: writer ? transition.id : "stranger-close", by, said: `The issue was closed on GitHub by @${actor.login}.`, cancel: writer ? "before_review" : null });
 	}
-	const transition = await subjectRead(() => app.issueTransition(token, repo, notice.issue, notice.action));
-	if (!transition || !recentSubject(transition.at) || transition.at < binding.triggeredAt || transition.author.id !== notice.senderId) return;
-	const actor = transition.author;
-	const base = { subject: transition.id, by: "github:" + actor.login };
-	switch (notice.action) {
-		case "unlabeled":
-			if (!issue.labels.includes("windlass")) return { ...base, said: `@${actor.login} removed the windlass label on GitHub.`, cancel: "draft" };
-			break;
-		case "closed":
-			if (issue.state === "closed") {
-				const writer = actor.id === binding.senderId || await permission(actor) === "write";
-				return { ...base, said: `The issue was closed on GitHub by @${actor.login}.`, cancel: writer ? "before_review" : null };
-			}
-			break;
-		case "deleted":
-		case "transferred":
-			return { ...base, said: "The issue was deleted (or moved) on GitHub.", cancel: "before_review" };
-	}
+	return observations;
 }
 
 export async function writeIssueComment(app: GithubApp, repo: { id: GithubId; owner: string; name: string }, binding: IssueBinding,

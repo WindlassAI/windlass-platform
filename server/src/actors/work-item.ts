@@ -28,7 +28,7 @@
  * item, with an id derived from the item's, so a creation tried again reaches the same two actors.
  */
 
-import { observeIssue, writeIssueComment, type IssueNotice, type ObservedIssue } from "./github-item.js";
+import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
 import type { IssueBinding } from "../factory/intake.js";
 import type { GithubUser } from "../github/app.js";
 import type { ItemReview } from "../contract.js";
@@ -126,7 +126,10 @@ export const DUE_ACTION = "internalDue";
 /** The item's page shows at most this many entries of its log, the newest. */
 const VIEW_EVENTS = 500;
 
-type Effect = BlueprintEffect | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string } | { kind: "forget"; key: string };
+type IssueCheck = IssueChanges & { kind: "check_issue"; key: "pending"; at: number };
+const ISSUE_CHANGE_WINDOW_MS = 15_000;
+
+type Effect = BlueprintEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string } | { kind: "forget"; key: string };
 type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
 
 type EffectRow = { id: string; effect: string; due_at: number; attempts: number };
@@ -308,7 +311,7 @@ async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { b
 		effects.push({ kind: "release_review", key: String(next.run.n), run: next.run.n, to: "review" });
 	}
 	if (stored.meta.github) {
-		if (before.pr?.number !== next.pr?.number || ENDED.has(before.state) !== ENDED.has(next.state))
+		if (issue?.subject !== "gone" && (before.pr?.number !== next.pr?.number || ENDED.has(before.state) !== ENDED.has(next.state)))
 			effects.push({ kind: "issue_comment", key: "link", revision: next.revision });
 		if (before.state === "failed" && !ENDED.has(next.state)) effects.push({ kind: "register_issue", key: String(next.revision) });
 	}
@@ -323,7 +326,7 @@ async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { b
 				await tx.execute("UPDATE item SET revision = ?, data = ? WHERE id = 1", next.revision, data);
 				// What this decision left behind goes with it: a publish waiting for its retry is not done for a cancelled item.
 				for (const old of await tx.execute<{ id: string; effect: string }>("SELECT id, effect FROM effects")) {
-					if (!live(next, JSON.parse(old.effect) as Effect)) await tx.execute("DELETE FROM effects WHERE id = ? AND effect = ?", old.id, old.effect);
+					if ((issue?.subject === "gone" && old.id === "issue_comment:link") || !live(next, JSON.parse(old.effect) as Effect)) await tx.execute("DELETE FROM effects WHERE id = ? AND effect = ?", old.id, old.effect);
 				}
 				for (const event of outcome.events) await tx.execute("INSERT INTO events (at, data) VALUES (?, ?)", event.at, JSON.stringify(event));
 				for (const effect of effects) {
@@ -594,7 +597,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
  */
 function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "issue_comment") return true;
-	if (effect.kind === "register_issue") return !ENDED.has(item.state);
+	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
 	if (effect.kind === "forget") return ENDED.has(item.state) || !item.run?.ci;
 	if (effect.kind === "register") return !ENDED.has(item.state) && item.head === effect.head && item.pr?.number === effect.pr;
 	if (effect.kind === "release_review" || effect.kind === "withdraw" || effect.kind === "ask") return true;
@@ -617,6 +620,46 @@ function live(item: FactoryItem, effect: Effect): boolean {
 	}
 }
 
+/** Merge into the first delivery's window. A delivery during the read needs a subsequent window. */
+async function queueIssueCheck(c: Ctx, input: IssueNotice) {
+	await queued(c, async () => {
+		if (!c.vars.stored || ENDED.has(c.vars.stored.item.state)) return;
+		const id = "check_issue:pending";
+		const [row] = await c.db.execute<EffectRow>("SELECT * FROM effects WHERE id=?", id);
+		const old: IssueCheck | undefined = row && JSON.parse(row.effect);
+		const now = Date.now();
+		const reading = c.vars.performing.has(id);
+		let at = old && !(reading && old.at <= now) ? old.at : now + ISSUE_CHANGE_WINDOW_MS;
+		if (!reading && input.action === "closed" && input.senderId === c.vars.stored.meta.github!.senderId) {
+			// Withdraw a running turn promptly when the filer closes. Respect the same read budget.
+			const [item] = await c.db.execute<{ issue_checked_at: number }>("SELECT issue_checked_at FROM item WHERE id=1");
+			at = Math.min(at, Math.max(now, item.issue_checked_at + ISSUE_CHANGE_WINDOW_MS));
+		}
+		const next: IssueCheck = { kind: "check_issue", key: "pending", ...old, at };
+		if (input.action === "edited") next.edited = true;
+		else if (!next.closedBy?.includes(input.senderId)) next.closedBy = [...(next.closedBy ?? []), input.senderId];
+		const data = JSON.stringify(next);
+		if (row?.effect !== data) {
+			await c.db.execute("INSERT OR REPLACE INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, ?)", id, data, row?.attempts ? Math.max(at, row.due_at) : at, row?.attempts ?? 0);
+		}
+		await armDueInQueue(c);
+	});
+}
+
+async function checkIssue(c: Ctx, meta: ItemMeta, changes: IssueChanges) {
+	const binding = meta.github!;
+	const connection = await userActor(c, meta.uid).internalGithubConnection();
+	if (!connection?.installations.some(i => i.id === binding.installationId)) return;
+	const observations = await observeIssue(binding, meta.repository.id, changes, by => repositoryDirectory(c, meta).internalIssuePermission(binding.installationId, by));
+	for (const seen of observations) {
+		if ((await c.db.execute("SELECT 1 FROM issue_actions WHERE subject=?", seen.subject)).length) continue;
+		const state = c.vars.stored!.item.state;
+		if (ENDED.has(state) || (state === "review" && (seen.cancel === "before_review" || seen.subject === "stranger-close"))) continue;
+		const cancel = seen.cancel === "draft" ? state === "draft" : seen.cancel === "before_review";
+		await take(c, cancel ? { kind: "cancel", at: Date.now(), by: seen.by } : { kind: "issue_note", at: Date.now() }, { issue: seen });
+	}
+}
+
 /**
  * Performs one effect: what comes of it is taken as a fact. Throws when it could not be done, to be
  * tried again; answers false when the item as it is now does not want it, and nothing was done.
@@ -631,6 +674,10 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 	if (!sessionId) throw new Error("Review delivery has no reviewer session.");
 	const session = sessionActor(c, meta.uid, sessionId);
 	switch (effect.kind) {
+		case "check_issue":
+			await c.db.execute("UPDATE item SET issue_checked_at=? WHERE id=1", Date.now());
+			await checkIssue(c, meta, effect);
+			return true;
 		case "issue_comment": {
 			const binding = meta.github!;
 			const hub = await github(c, meta);
@@ -789,7 +836,7 @@ export const workItem = actor({
 	db: db({
 		onMigrate: async (db) => {
 			// `due` is the schedule for the earliest effect: kept, so that a woken actor cancels it rather than adding another.
-			await db.execute("CREATE TABLE IF NOT EXISTS item (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, data TEXT NOT NULL, due TEXT)");
+			await db.execute("CREATE TABLE IF NOT EXISTS item (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, data TEXT NOT NULL, due TEXT, issue_checked_at INTEGER NOT NULL DEFAULT 0)");
 			await db.execute("CREATE TABLE IF NOT EXISTS effects (id TEXT PRIMARY KEY, effect TEXT NOT NULL, due_at INTEGER NOT NULL, attempts INTEGER NOT NULL)");
 			await db.execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, data TEXT NOT NULL)");
 			await db.execute(REPORTS_TABLE);
@@ -904,14 +951,8 @@ export const workItem = actor({
 			requireServiceFor(c, "call");
 			const meta = c.vars.stored?.meta, binding = meta?.github;
 			if (!meta || !binding || ENDED.has(c.vars.stored!.item.state) || binding.installationId !== input.installationId || meta.repository.id !== input.repositoryId || binding.origin.issue.number !== input.issue) return;
-			const connection = await userActor(c, meta.uid).internalGithubConnection();
-			if (!connection?.installations.some(i => i.id === binding.installationId)) return;
-			const seen = await observeIssue(binding, input, by => repositoryDirectory(c, meta).internalIssuePermission(binding.installationId, by));
-			if (!seen || (await c.db.execute("SELECT 1 FROM issue_actions WHERE subject=?", seen.subject)).length) return;
-			const state = c.vars.stored!.item.state;
-			if (ENDED.has(state) || (state === "review" && input.action === "closed")) return;
-			const cancel = seen.cancel === "draft" ? state === "draft" : seen.cancel === "before_review" && state !== "review";
-			await take(c, cancel ? { kind: "cancel", at: Date.now(), by: seen.by } : { kind: "issue_note", at: Date.now() }, { issue: seen });
+			if (input.action === "edited" || input.action === "closed") return queueIssueCheck(c, input);
+			await checkIssue(c, meta, input.action === "unlabeled" ? { unlabeledBy: input.senderId } : {});
 		},
 
 		internalGithubNudge: async (c, input: GithubNudge): Promise<boolean> => {
