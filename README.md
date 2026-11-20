@@ -697,7 +697,8 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   you trust.
 
   `docker exec windlass-runner windlass-runner status` shows the local sign-in state.
-  `docker exec windlass-runner windlass-runner logout claude` removes the token immediately.
+  `docker exec windlass-runner windlass-runner logout claude` removes the token from the current pairing and each previous
+  pairing, and prints one line per pairing.
   If a sandbox still mounts the empty volume, the runner removes the volume when it destroys the last such sandbox. A running process that has already
   loaded the token can retain it. The runner's `prune` command removes the login volume as well.
 - **What the runner cannot do, and what the platform cannot do.** The runner cannot start a container of

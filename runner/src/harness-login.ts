@@ -3,6 +3,7 @@ import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { LABEL_ARG, docker, helperFlags, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
+import { COMMON_RUN_FLAGS } from "../../server/src/sandbox/profiles.js";
 import { image, harnessImage, type MachineDocker } from "./policy.js";
 import { directory, loadPair, RunnerError } from "./state.js";
 
@@ -23,7 +24,7 @@ export async function withLoginVolume<T>(machine: MachineDocker, work: () => Pro
 }
 
 function volumeFlags(machine: MachineDocker, readonly: boolean) {
-	return [...Object.entries(machine.labels).flatMap(([k, v]) => ["--label", k + "=" + v]),
+	return [...machine.pairingLabelFlags,
 		"--pull", "never", "--log-driver", "none", "--mount",
 		`type=volume,src=${machine.claudeVolume},dst=${loginDir},volume-nocopy${readonly ? ",readonly" : ""}`];
 }
@@ -87,7 +88,7 @@ export async function changeClaudeLogin(machine: MachineDocker, login: boolean, 
 			if (!process.stdout.isTTY || !process.stderr.isTTY) throw new RunnerError("Attach a terminal to sign in interactively.");
 			await machine.ensureImage(pin);
 			// The CLI prints its token in the owner's attached terminal. Disable Docker log capture.
-			const setup = spawnSync("docker", ["run", "--rm", "-it", "--log-driver", "none", "--pull", "never", "--network", "bridge",
+			const setup = spawnSync("docker", ["run", "--rm", "-it", "--log-driver", "none", "--pull", "never", "--label", LABEL_ARG, ...machine.pairingLabelFlags, ...COMMON_RUN_FLAGS,
 				pin, "/opt/wlp-claude/node_modules/.bin/claude-agent-acp", "--cli", "setup-token"], { stdio: "inherit" });
 			if (setup.status !== 0) console.log("Setup did not finish. You can paste a token made on another computer.");
 		}

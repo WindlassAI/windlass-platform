@@ -7,7 +7,7 @@ import { localListeners } from "./check-listeners.js";
 import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash, createPublicKey, randomBytes, randomUUID } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 import { AcpConnection, LineSplitter } from "../server/src/sandbox/acp.js";
 import { docker, LABEL_ARG, MACHINE_LABEL, SHOTS_IMAGE } from "../server/src/sandbox/docker.js";
 import { containerName, DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
+import { COMMON_RUN_FLAGS } from "../server/src/sandbox/profiles.js";
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
 import { PAIRING_TTL_MS, REFUSED_RETRY_MS, refuse, type Refusal } from "../server/src/runner/control.js";
 import { RUNNER_GRACE_MS } from "../server/src/runner/protocol.js";
@@ -156,9 +157,23 @@ async function realMachine(runnerImage: string) {
 		await stop(node);
 	}
 }
+// Build the rollback target with its own state parser, discovery and session code.
+async function rollbackRunner(image: string) {
+	const previous = join(tmp, "b12b61e");
+	await mkdir(previous);
+	const archive = join(previous, "sources.tar");
+	await exec("git", ["archive", "-o", archive, "b12b61e", "runner", "server/src", "server/tsconfig.json"], { cwd: root });
+	await exec("tar", ["-xf", archive, "-C", previous]);
+	for (const dir of ["server", "runner"])
+		await symlink(join(root, dir, "node_modules"), join(previous, dir, "node_modules"));
+	const program = join(previous, "runner.cjs");
+	await exec(process.execPath, ["runner/bundle.mjs", image, program], { cwd: previous });
+	return program;
+}
 async function check(image: string, shotsPin?: string, claudePin?: string) {
 	const srv = await stub(join(tmp, "engine"));
 	const { machineId, uid, sessionId } = srv;
+	const setupName = "wlp-check-setup-" + randomBytes(6).toString("hex");
 	const hostedRaw = randomBytes(6).toString("hex");
 	const hostedName = containerName(hostedRaw);
 	const marker = "dev.windlass-platform.check=" + randomBytes(6).toString("hex");
@@ -195,14 +210,16 @@ for (const method of ["spawn", "spawnSync"]) {
  const original = cp[method];
  cp[method] = function(file, args, opts) {
   if (file === "docker") {
+   if (/sk-ant-oat01-[A-Za-z0-9_-]+/.test(JSON.stringify([args, opts?.env ?? process.env]))) throw Error("credential passed to docker");
    if (args.includes("setup-token")) {
-    const approved = ["run", "--rm", "-it", "--log-driver", "none", "--pull", "never", "--network", "bridge",
+    const approved = ["run", "--rm", "-it", "--log-driver", "none", "--pull", "never",
+     ...${JSON.stringify(["--label", LABEL_ARG, "--label", MACHINE_LABEL + "=" + machineId, "--label", "dev.windlass-platform.uid=" + uid, ...COMMON_RUN_FLAGS])},
      ${JSON.stringify(claudePin)}, "/opt/wlp-claude/node_modules/.bin/claude-agent-acp", "--cli", "setup-token"];
     if (JSON.stringify(args) !== JSON.stringify(approved) || opts.stdio !== "inherit") throw Error("unsafe setup invocation");
     fs.appendFileSync(${JSON.stringify(calls)}, "private-setup\\n");
-    return { status: 0 }; // The check has no Anthropic account.
+    // Leave these exact options on a real container without starting the browser flow.
+    return original.call(this, file, ["create", "--name", ${JSON.stringify(setupName)}, ...args.slice(1)], { stdio: "ignore" });
    }
-   if (/sk-ant-oat01-[A-Za-z0-9_-]+/.test(JSON.stringify([args, opts?.env ?? process.env]))) throw Error("credential passed to docker");
    fs.appendFileSync(${JSON.stringify(calls)}, args[0] + "\\n");
   }
   return original.apply(this, arguments);
@@ -295,6 +312,30 @@ require("node:module").syncBuiltinESMExports();`);
 				clean(notice); assert.match(notice, /pairing changed/);
 				assert.ok((await docker(["volume", "inspect", staleVolume])).code !== 0, "A superseded pairing received the login");
 			} finally { await docker(["volume", "rm", staleVolume]); }
+			// Exercise a re-pair with a login on both identities, independently of the service.
+			const previous = { ...pairing.current };
+			assert.equal((await owner(["login", "claude"], token, otherEnv)).code, 0);
+			pairing.previous = [previous];
+			pairing.current = { ...previous, machineId: "m_" + randomBytes(8).toString("hex") };
+			const pairIds = [previous.machineId, pairing.current.machineId];
+			try {
+				await writeFile(join(otherState, "pair.json"), JSON.stringify(pairing), { mode: 0o600 });
+				assert.equal((await owner(["login", "claude"], token, otherEnv)).code, 0);
+				const logout = await owner(["logout", "claude"], "", otherEnv);
+				assert.equal(logout.code, 0);
+				const status = await owner(["status"], "", otherEnv);
+				for (const id of pairIds) {
+					assert.ok((await docker(["volume", "inspect", "wlp-harness-claude-" + id])).code !== 0, "Logout left a pairing's login volume");
+					assert.ok(logout.output.split("\n").some(line => line.includes(id) && line.includes("signed out")));
+				}
+				assert.equal(logout.output.trim().split("\n").length, pairIds.length);
+				assert.equal(status.code, 0);
+				assert.equal(status.output.match(/: not signed in$/gm)?.length, pairIds.length);
+				assert.doesNotMatch(status.output, /: signed in/);
+			} finally {
+				for (const id of pairIds) await docker(["volume", "rm", "wlp-harness-claude-" + id]);
+			}
+			ok("Logout after a re-pair clears both login volumes and reports each pairing signed out.");
 			assert.match((await owner(["status"])).output, /Claude Code.*: signed in/);
 			ok("Login validates one line, uses stdin, checks volume ownership and reports only the pinned harness and sign-in state.");
 
@@ -313,15 +354,22 @@ require("node:module").syncBuiltinESMExports();`);
 			let transcript = "";
 			terminal.stdout.on("data", data => transcript += data); terminal.stderr.on("data", data => transcript += data);
 			const finished = new Promise(resolve => terminal.on("close", code => { children.delete(terminal); resolve(code); }));
-			await until(() => transcript.includes("Paste the token"), "Missing private terminal prompt.");
+			await until(() => transcript.includes("Paste the token") || terminal.exitCode !== null, "Missing private terminal prompt.");
+			assert.ok(transcript.includes("Paste the token"), "The setup invocation failed the Docker argument guard");
 			terminal.stdin.write(token + "\n");
 			assert.equal(await finished, 0);
 			clean(transcript);
 			assert.ok((await readFile(calls, "utf8")).includes("private-setup"));
-			ok("The setup CLI gets only its terminal, pinned image and bridge network with Docker logs disabled. The paste has echo off.");
+			const setup = JSON.parse((await docker(["inspect", setupName], { check: true })).stdout)[0];
+			assert.deepEqual(setup.HostConfig.CapDrop, ["ALL"]);
+			assert.ok(setup.HostConfig.SecurityOpt.includes("no-new-privileges"));
+			assert.equal(setup.Config.Labels[MACHINE_LABEL], machineId);
+			assert.equal(setup.Config.Labels["dev.windlass-platform.uid"], uid);
+			assert.deepEqual(setup.Mounts, []);
+			ok("The setup CLI has session hardening, pairing labels and no login mount. The paste has echo off.");
 
 			const id = await ch.request("create", { ...create, screenshots: true });
-			const name = containerName(id.slice(-12));
+			const name = containerName("claude-" + id.slice(-12));
 			const inspect = async (name: string) => JSON.parse((await docker(["inspect", name], { check: true })).stdout)[0];
 			const box = await inspect(name);
 			assert.equal(box.Config.Image, claudePin); assert.equal(box.Config.Labels["dev.windlass-platform.harness"], "claude");
@@ -368,11 +416,37 @@ require("node:module").syncBuiltinESMExports();`);
 
 			srv.detach(srv.other); srv.detach(); await stop(service.child);
 			await until(() => !srv.online(), "Enabled runner did not disconnect.");
+			const oldRunner = await rollbackRunner(image);
+			const oldStatus = await exec(process.execPath, [oldRunner, "status"], { env: env(state) });
+			assert.ok(oldStatus.stdout.includes(ordinary), "The old runner missed the Windlass session");
+			assert.ok(!oldStatus.stdout.includes(id), "The old runner adopted the token-mounted Claude session");
+			srv.state.report = null;
+			service = run(state, undefined, oldRunner);
+			await until(() => !!srv.state.report, "The old runner did not start from the harness-enabled state.");
+			assert.ok(reported(ordinary) && !reported(id));
+			await srv.attach();
+			assert.equal(await ch.request("connect", { id }), null);
+			await assert.rejects(ch.request("run", { id, command: "true" }), /require a running sandbox/);
+			await srv.attach(srv.other);
+			assert.equal((await windlass.request("connect", { id: ordinary }))?.profile, "docker-hardened");
+			srv.detach(srv.other); srv.detach(); await stop(service.child);
+			await until(() => !srv.online(), "The old runner did not stop.");
+			ok("The b12b61e runner reads harness-enabled state and serves only the ordinary session.");
+
+			// Recreate 8d01472's persisted name and snapshot. Upgrade with the harness disabled.
+			await docker(["rename", name, containerName(id.slice(-12))], { check: true });
+			await rm(join(state, "harness.json"));
+			const statusPath = join(state, "status.json");
+			await writeFile(statusPath, JSON.stringify({ ...JSON.parse(await readFile(statusPath, "utf8")), claude: true }));
 			service = run();
 			await until(() => srv.online(), "Runner did not restart.");
 			await srv.attach();
 			await assert.rejects(ch.request("connect", { id }), /--harness claude/);
 			await assert.rejects(ch.request("readTextFile", { id, path }), /--harness claude/);
+			assert.equal((await inspect(name)).Id, box.Id);
+			const migrated = await exec(process.execPath, [oldRunner, "status"], { env: env(state) });
+			assert.ok(migrated.stdout.includes(ordinary) && !migrated.stdout.includes(id));
+			ok("Upgrade preserves the existing Claude container and hides it from b12b61e discovery.");
 			srv.detach(); await stop(service.child); await until(() => !srv.online(), "Runner did not disconnect.");
 			service = run(state, undefined, bundle, {}, { flags: enabled });
 			await until(() => srv.online(), "Runner did not restart with Claude.");
@@ -395,6 +469,8 @@ require("node:module").syncBuiltinESMExports();`);
 			await stop(service.child);
 			assert.equal((await owner(["prune"], "yes\n")).code, 0);
 			assert.ok((await docker(["volume", "inspect", volume])).code !== 0, "Prune kept the login volume");
+			assert.ok((await docker(["container", "inspect", setupName])).code !== 0, "Prune left the setup-token container");
+			ok("Prune removes a leftover setup-token container.");
 			ok("Discovery preserves the harness and opt-in. Logout unlinks a mounted token, removes the detached volume and publishes none. Prune removes a signed-in volume.");
 			return;
 		}
@@ -904,6 +980,7 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 	} finally {
 		for (const p of children) await stop(p);
 		await srv.close();
+		if (claudePin) await docker(["rm", "-fv", setupName]);
 		if (hosted) await docker(["rm", "-f", hostedName], { check: true });
 		for (const id of (await docker(["ps", "-aq", ...ownedFilters])).stdout.trim().split(/\s+/).filter(Boolean)) await docker(["rm", "-fv", id], { check: true });
 		for (const v of (await docker(["volume", "ls", "-q", ...ownedFilters])).stdout.trim().split(/\s+/).filter(Boolean)) await docker(["volume", "rm", v], { check: true });

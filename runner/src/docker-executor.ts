@@ -92,6 +92,15 @@ export class Executor extends MachineDocker {
 	private filters() {
 		return [LABEL_ARG, ...Object.entries(this.labels).map(([k, v]) => k + "=" + v)].flatMap(label => ["--filter", "label=" + label]);
 	}
+	// Docker keeps the container and its workspace across a rename. Finish all such renames
+	// before writing a status.json the rollback runner can read.
+	async migrateClaudeNames() {
+		const names = await dockerOutput(["ps", "-a", ...this.filters(), "--filter", `label=${LABEL}.harness=claude`, "--format", "{{.Names}}"]);
+		for (const name of names.trim().split("\n")) {
+			const raw = /^wlp-session-([a-f0-9]{12})$/.exec(name)?.[1];
+			if (raw) await dockerOutput(["rename", name, containerName("claude-" + raw)]);
+		}
+	}
 	async discover(onlySession?: string) {
 		const filters = this.filters();
 		if (onlySession) filters.push("--filter", `label=${LABEL}.session=${onlySession}`);
@@ -99,8 +108,8 @@ export class Executor extends MachineDocker {
 		const found = new Set<string>();
 		for (const line of rows.trim().split("\n")) {
 			const [name, state, sessionId, profile, harness] = line.split("|");
-			const raw = /^wlp-session-([a-f0-9]{12})$/.exec(name)?.[1];
-			if (!raw || (harness && harness !== "claude") || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
+			const raw = /^wlp-session-((?:claude-)?[a-f0-9]{12})$/.exec(name)?.[1];
+			if (!raw || (raw.startsWith("claude-") && harness !== "claude") || (harness && harness !== "claude") || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
 			const id = externalId(this.identity.machineId, raw);
 			found.add(id);
 			const box = this.boxes.get(id) ?? { raw, sessionId, profile, ...(harness === "claude" ? { harness: "claude" as const } : {}), usedAt: Date.now(), busy: 0, workspaceChecked: false };
@@ -283,8 +292,8 @@ export class Executor extends MachineDocker {
 		// The control acknowledgement also covers a sandbox that was never this machine's.
 	}
 	private async remove(id: string) {
-		await this.provider.destroy(rawId(this.identity.machineId, id));
-		const harness = this.boxes.get(id)?.harness;
+		const { raw, harness } = this.boxes.get(id)!;
+		await this.provider.destroy(raw);
 		this.boxes.delete(id);
 		if (harness) await withLoginVolume(this, async () => {
 			if (await loginFileState(this).catch(() => "unknown") === "none") await dropDetachedLoginVolume(this);

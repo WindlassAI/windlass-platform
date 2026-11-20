@@ -15,6 +15,7 @@ import { requestPair, requestLoginReport, waitForPair } from "./pair-command.js"
 import { forgetKey, save, loadPair, tryLock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
 
 const positiveInteger = is<number>(v => count(v) && v > 0);
+// Accept the first C3b snapshot on upgrade. Only harness.json records opt-in on new writes.
 const snapshot = object({ machineId: nullable(text(64)), connection: text(2048), idleSuspendMs: nullable(count), runnerVersion: text(64), protocol: count,
 	claude: optional(boolean), maxRunning: optional(positiveInteger), maxSandboxes: optional(positiveInteger) });
 function limit(flag: string, value: string | undefined) {
@@ -51,10 +52,21 @@ async function main() {
 		if (auth) {
 			const paired = loadPair();
 			if (!paired || (command === "login" && !paired.key)) throw new RunnerError("Pair this machine before signing in to Claude Code.");
-			const machine = new Executor(paired.current, limits);
-			await changeClaudeLogin(machine, command === "login", abort.signal);
+			if (command === "login") {
+				await changeClaudeLogin(new Executor(paired.current, limits), true, abort.signal);
+				console.log("Claude Code: signed in.");
+			} else {
+				for (const identity of [paired.current, ...paired.previous]) {
+					try {
+						await changeClaudeLogin(new Executor(identity, limits), false, abort.signal);
+						console.log(`${identity.machineId} Claude Code: signed out.`);
+					} catch (error) {
+						console.error(`${identity.machineId} Claude Code: ${category(error)}`);
+						process.exitCode = 1;
+					}
+				}
+			}
 			await requestLoginReport();
-			console.log(command === "login" ? "Claude Code: signed in." : "Claude Code: signed out.");
 			return;
 		}
 		if (command !== "status" && !tryLock()) {
@@ -71,7 +83,10 @@ async function main() {
 		const stored = read("status.json");
 		if (stored !== undefined && !snapshot(stored)) throw new RunnerError("Invalid status.json. Repair or restore that file in the runner state volume.");
 		const status = snapshot(stored) && stored.machineId === (paired?.current.machineId ?? null) ? stored : undefined;
+		const harness = read("harness.json");
+		if (harness !== undefined && !boolean(harness)) throw new RunnerError("Invalid harness.json. Repair or restore that file in the runner state volume.");
 		if (command === "status") {
+			const offered = status && (harness ?? status.claude);
 			console.log(`Runner ${VERSION}, protocol ${PROTOCOL_VERSION}. ${paired && !serviceRunning() ? "Stopped" : status?.connection ?? (paired ? "Paired" : "Unpaired")}`);
 			const caps = status ?? limits;
 			console.log(`Running sandbox limit: ${caps.maxRunning ?? "no limit"}`);
@@ -79,9 +94,9 @@ async function main() {
 			if (paired) for (const machine of [paired.current, ...paired.previous]) {
 				console.log(`${machine.machineId}${machine === paired.current ? "" : " (previous pairing)"}`);
 				const executor = new Executor(machine, limits);
-				if (status?.claude || claude || harnessImage("claude")) {
+				if (offered || claude || harnessImage("claude")) {
 					const signIn = await claudeSignIn(executor);
-					console.log(`  Claude Code${status?.claude && machine === paired.current ? " (offered)" : ""}: ${signIn === "token" ? "signed in" : signIn === "none" ? "not signed in" : "unknown"}`);
+					console.log(`  Claude Code${offered && machine === paired.current ? " (offered)" : ""}: ${signIn === "token" ? "signed in" : signIn === "none" ? "not signed in" : "unknown"}`);
 				}
 				try {
 					await executor.discover();
@@ -108,9 +123,16 @@ async function main() {
 		let resumePlatform: string | undefined;
 		function saveStatus(connection: string, idleSuspendMs?: number) {
 			save("status.json", { machineId: paired?.current.machineId ?? null, connection, idleSuspendMs: idleSuspendMs ?? null,
-				runnerVersion: VERSION, protocol: PROTOCOL_VERSION, ...(claude ? { claude } : {}), ...limits });
+				runnerVersion: VERSION, protocol: PROTOCOL_VERSION, ...limits });
 		}
-		if (command === "run") saveStatus(needsPair ? "Pairing" : "Connecting", status?.idleSuspendMs ?? undefined);
+		if (command === "run") {
+			if (paired && (harness === undefined || status?.claude)) {
+				for (const identity of [paired.current, ...paired.previous])
+					await new Executor(identity, limits).migrateClaudeNames();
+			}
+			save("harness.json", claude);
+			saveStatus(needsPair ? "Pairing" : "Connecting", status?.idleSuspendMs ?? undefined);
+		}
 		const say = (line: string) => { console.log(line); client?.write(line + "\n"); };
 		while (!abort.signal.aborted) {
 			let idle: string;

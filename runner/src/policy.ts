@@ -14,7 +14,8 @@ export const bubblewrap = "docker-windlass-sandbox";
 export type Profile = Args<"create">["profile"];
 // The machine belongs to its owner, so the platform sets no default sandbox limits.
 export type Limits = { maxRunning?: number; maxSandboxes?: number };
-export const externalId = (machine: string, id: string) => `m${machine}-${id}`;
+// The Docker name distinguishes Claude containers. The platform keeps the original sandbox id across upgrades.
+export const externalId = (machine: string, raw: string) => `m${machine}-${raw.replace(/^claude-/, "")}`;
 export function rawId(machine: string, id: string) {
 	const prefix = externalId(machine, "");
 	const raw = id.slice(prefix.length);
@@ -46,9 +47,11 @@ export class MachineDocker {
 	async dropVolume(name = this.volume) {
 		if (await this.ownedVolume(false, name)) await removeVolume(name);
 	}
+	get pairingLabelFlags() {
+		return Object.entries(this.labels).flatMap(([k, v]) => ["--label", k + "=" + v]);
+	}
 	private flags(name: string, profile: Profile) {
-		const labels = Object.entries(this.labels).flatMap(([k, v]) => ["--label", k + "=" + v]);
-		return ["--rm", "--name", name, "--label", LABEL_ARG, ...labels, "--pull", "never", ...COMMON_RUN_FLAGS, ...PROFILE_RUN_FLAGS[profile]!];
+		return ["--rm", "--name", name, "--label", LABEL_ARG, ...this.pairingLabelFlags, "--pull", "never", ...COMMON_RUN_FLAGS, ...PROFILE_RUN_FLAGS[profile]!];
 	}
 	private helper(argv: string[], mount = false) {
 		const name = tmpName();

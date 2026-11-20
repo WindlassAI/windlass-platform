@@ -37,7 +37,7 @@ import { COMMON_RUN_FLAGS, PROFILE_RUN_FLAGS, findProfile, profilesFor } from ".
 import { type Answer, type InternalExecResult, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, markTurnSandbox } from "./provider.js";
 import { tokenFilePath } from "./token-file.js";
 
-const SANDBOX_ID = /^[a-f0-9]{12}$/;
+const SANDBOX_ID = /^(?:claude-)?[a-f0-9]{12}$/;
 const STDOUT_CAP = 4 * 1024 * 1024;
 const STDERR_CAP = 256 * 1024;
 
@@ -458,7 +458,8 @@ export class DockerSandboxes implements Sandboxes {
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
 		// The reviewer cannot share transcripts or project-wide MCP approvals with the user's other sessions.
 		const volume = input.privateData || this.options.claudeVolume !== undefined ? null : await this.options.dataVolume(input.uid);
-		const id = randomId(6);
+		// Older runners adopt only wlp-session-<12 hex>. A login mount must be outside that namespace from creation.
+		const id = (claude ? "claude-" : "") + randomId(6);
 		const name = containerName(id);
 		const result = await docker(
 			[
