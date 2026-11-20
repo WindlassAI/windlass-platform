@@ -200,6 +200,7 @@ import { reviewerTask } from "../factory/reviewer-task.js";
 import { fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
+import { type HarnessId, harnessOf } from "../sandbox/harness.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase } from "../github/publish.js";
 import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
@@ -300,6 +301,9 @@ interface SessionMeta {
 	accountSecrets?: string | null;
 	/** Whether `repoUrl` has been cloned into the current sandbox. */
 	cloned: boolean;
+	/** The agent this session's turns run (sandbox/harness.ts). Absent: Windlass, which every session so far is. */
+	harness?: HarnessId;
+	/** The harness's own id of its session (Windlass's, so far), kept by this name. */
 	windlassSessionId: string | null;
 	turnStartedAt: number | null;
 	/** When this session was created, last ran a turn, or last used its workspace. */
@@ -3062,6 +3066,17 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		active.secrets = await readSecrets(c, meta, turn);
 		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
 		used = sandbox;
+		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
+		const harness = harnessOf(layer, meta.harness ?? "windlass");
+		const caps = await harness.capabilities(sandbox);
+		const platformTool = (tool: (typeof caps.platformTools)[number]) => caps.platformTools.includes(tool);
+		// A reviewer runs only in the restricted session with its filing tool: a harness that has not both does not start one.
+		if (reviewer && (!caps.restrictedReview || !platformTool("file_review"))) {
+			const reason = REVIEW_PROFILE_REASON;
+			if (active.item) active.item.refused = reason;
+			throw new TurnProblem(reason);
+		}
+		if (meta.demo && !caps.demo) throw new TurnProblem("This agent's harness has no demo mode.");
 		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn);
 		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
 		resumed = meta.windlassSessionId;
@@ -3148,7 +3163,7 @@ fi`, { signal, timeoutMs: 5000 });
 			}
 			let filings = Promise.resolve("");
 			let calls = 0;
-			result = await layer.windlass.runTurn(sandbox, {
+			result = await harness.runTurn(sandbox, {
 				// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.
 				secrets: { ...turnEnvironment(reviewer ? [] : held.opened, reviewer ? [] : held.account, profile), redactor: held.redactor },
 				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
@@ -3162,7 +3177,7 @@ fi`, { signal, timeoutMs: 5000 });
 				prompt: reviewer ? text : `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${onBase ? setupOnBaseNote(onBase) : ""}${text}`,
 				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
 				reportScreenshots: browser,
-				onReview: reviewer && item && checkout && filingFiles ? (request, withdrawn) => {
+				onReview: reviewer && item && checkout && filingFiles && platformTool("file_review") ? (request, withdrawn) => {
 					const openFiles = filingFiles;
 					const file = async () => {
 						if (!open || withdrawn.aborted) return "The review call ended.";
@@ -3192,7 +3207,7 @@ fi`, { signal, timeoutMs: 5000 });
 					return tracked(filings);
 				} : undefined,
 				// A work item's agent files its report, which the platform puts on the pull request it pushes itself.
-				onReport: item && !reviewer ? (request, withdrawn) => {
+				onReport: item && !reviewer && platformTool("report") ? (request, withdrawn) => {
 					const file = async () => {
 						if (!open || withdrawn.aborted) return "The report call ended. File it again.";
 						if (!browser && Array.isArray(request.arguments?.screenshots) && request.arguments.screenshots.length) return unavailable;
@@ -3230,10 +3245,10 @@ fi`, { signal, timeoutMs: 5000 });
 					}
 				},
 				// The agent may ask the platform to publish where there is a repository to publish to and an app to do it with.
-				onPublish: tools && !active.item ? (request, withdrawn) => tracked(agentPublish(c, meta, active, sandbox, commandSandbox(profile), request, withdrawn)) : undefined,
+				onPublish: tools && !active.item && platformTool("publish") ? (request, withdrawn) => tracked(agentPublish(c, meta, active, sandbox, commandSandbox(profile), request, withdrawn)) : undefined,
 				// And push its branch, and have the base fetched to rebase onto, in a person's session and an item's alike.
-				onPush: tools ? (request) => tracked(agentPush(c, meta, active, sandbox, request)) : undefined,
-				onFetchBase: tools ? () => agentFetchBase(c, meta, active, sandbox) : undefined,
+				onPush: tools && platformTool("push") ? (request) => tracked(agentPush(c, meta, active, sandbox, request)) : undefined,
+				onFetchBase: tools && platformTool("fetch_base") ? () => agentFetchBase(c, meta, active, sandbox) : undefined,
 				// A person's session is attended, by whoever has it open now or opens it in time. A work item's turn is not:
 				// without the callback Windlass refuses a call that would ask, and tells the model.
 				onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
