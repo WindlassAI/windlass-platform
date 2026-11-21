@@ -258,7 +258,15 @@ if (!only.length || only.includes("orchestrator")) {
 			const ready = await waitFor("the single ready PR", () => standin.pulls.find(p=>p.number===done.pullRequest!.number && !p.draft && p.comments.length), 30_000);
 			assert(standin.branchHead(harbor, ready.head) === parent && standin.branchHead(harbor,"main") === base, "Incorrect ref after handoff.");
 			assert(!(await user.listItems()).some(i => i.parent), "A child leaked into the root list.");
-			return "two child heads fast-forwarded, one summary, one whole-feature review";
+			const second = await user.createItem({repository:{id:harbor.id}, title:"Cancel this feature", body:"Index and search documents.", mode:"orchestrate", start:true});
+			const proposal = await untilItem(user,second.id,"a second plan",v=>v.plan?.status==="proposed" && !!v.question);
+			await user.actOnItem({id:second.id,action:{kind:"approve_plan",version:proposal.plan!.version}});
+			const active = await untilItem(user,second.id,"a child before cancellation",v=>v.children?.length === 1);
+			await user.actOnItem({id:second.id,action:{kind:"cancel"}});
+			const stopped = await untilItem(user,active.children![0].id,"the cancelled child",v=>v.state === "cancelled");
+			const tree = await user.item(second.id);
+			assert(tree.state === "cancelled" && tree.children?.length === 1 && !stopped.pullRequest, "Cancellation dispatched more work.");
+			return "two child heads fast-forwarded, one summary, one whole-feature review; a second feature cancelled its child";
 		});
 	} finally { await server.stop(); server.remove(); }
 	if (only.length === 1) { await standin.stop(); process.exit(failed ? 1 : 0); }

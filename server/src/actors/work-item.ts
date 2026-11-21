@@ -28,6 +28,7 @@
  * item, with an id derived from the item's, so a creation tried again reaches the same two actors.
  */
 
+import { GithubProblem } from "../github/repos.js";
 import { PlanError } from "../factory/feature-plan.js";
 import { openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
@@ -490,7 +491,7 @@ async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read")
 	const app = githubApp();
 	if (!app) throw new Error("the deployment has no GitHub App");
 	const connection: StoredConnection | null = await userActor(c, meta.uid).internalGithubConnection();
-	if (!connection) throw new Error("the user's GitHub connection is gone");
+	if (!connection) throw new GithubProblem("github_gone", "The user’s GitHub connection is gone.");
 	const installationId = await binding(c) ?? (await resolveRepository(app, connection, meta.repository.id, "read")).installation.id;
 	const resolved = await resolveBoundRepository(app, connection, meta.repository.id, installationId, access);
 	const { owner, name } = resolved.repository;
@@ -711,8 +712,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 				if (v) await take(c, { kind: "child_update", key, child: v.id, state: v.state, head: v.head, spent: v.spent, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
 				return true;
 			}
-			const hub = await github(c, meta, "write");
 			try {
+				const hub = await github(c, meta, "write");
 				await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { contents: "write", metadata: "read", pull_requests: "write" } }, async token => {
 					if (!live(c.vars.stored!.item, effect)) return;
 					const { app, owner, name } = hub;
@@ -733,8 +734,9 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 					}
 				});
 			} catch (error) {
-				if (!(error instanceof GithubError) || ![403,404,409,422].includes(error.status)) throw error;
-				await take(c, { kind: "feature_problem", key, at: Date.now(), reason: error.message, rebase: effect.kind === "integrate" && [409,422].includes(error.status) });
+				const denied = error instanceof GithubProblem && (error.code === "github_denied" || error.code === "github_gone");
+				if (!denied && !(error instanceof GithubError && [403,404,409,422].includes(error.status))) throw error;
+				await take(c, { kind: "feature_problem", key, at: Date.now(), reason: error.message, rebase: effect.kind === "integrate" && error instanceof GithubError && [409,422].includes(error.status) });
 			}
 			return true;
 		}

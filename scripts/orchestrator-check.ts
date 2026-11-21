@@ -318,3 +318,21 @@ test("a person can cancel the current subtask by its approved key", () => {
 	assert.deepEqual(outcome.effects.find(e=>e.kind==="cancel_children")?.ids,[item.jobs![0].id]);
 	assert.equal(advance(outcome.item,cancel).item,outcome.item);
 });
+
+test("a withdrawn feature turn settles its late usage receipt exactly once", () => {
+	const feature = started(), key = currentKey(feature)!;
+	const running = advance(feature,{kind:"turn_started",key,at:2}).item;
+	const cancelled = advance(running,{kind:"cancel",by:"person",at:3}).item;
+	const ended = {kind:"turn_ended" as const,key,at:4,outcome:"stopped" as const,changes:false,report:null,flags:[],verified:null,spend:{tokens:1234,hostedSeconds:3}};
+	const settled = advance(cancelled,ended);
+	assert.equal(settled.item.spent.tokens,1234);
+	assert.equal(settled.item.state,"cancelled");
+	assert.deepEqual(settled.effects,[]);
+	assert.equal(advance(settled.item,ended).item,settled.item);
+});
+
+test("a disabled GitHub orchestration request is refused before claiming the issue", () => {
+	const asked = intake.issueMode("orchestrate", [], false);
+	assert.match(asked.refusal!,/disabled/i);
+	assert.equal(intake.issueMode("orchestrate",["bug"],false).refusal,null);
+});

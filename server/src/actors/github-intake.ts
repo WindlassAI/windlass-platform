@@ -107,12 +107,12 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 	}
 	if (!reason && create) {
 		const { task, trusted } = taskOfIssue({ ...issue, sender: subject.author, note: subject.note });
-		reason = await quotaRefusal(c, !trusted);
+		const { mode, reason: modeReason, refusal } = issueMode(subject.note, issue.labels, process.env.WLP_FACTORY_ORCHESTRATE !== "0");
+		reason = refusal ?? await quotaRefusal(c, !trusted);
 		if (!reason) {
 			const key = `github:${repo.id}#${issue.number}:${generation}`;
 			const defaults = await readDefaults(c.db, "github:" + repo.id);
 			const account = await readAccountDefaults(c.db);
-			const { mode, reason: modeReason } = issueMode(subject.note, issue.labels);
 			const binding = { modeReason, triggerLabel: t.via === "label" ? t.label : undefined, installationId: t.installationId, generation, triggeredAt: subject.at, senderId: subject.author.id, issueId: issue.id, contentDigest: contentDigest(issue),
 				origin: { issue: { number: issue.number, url: issue.url, author: issue.author.login, trusted }, sender: subject.author.login } };
 			decision = { kind: "file", itemId: itemId(key), filing: { binding, input: { ...task, mode, repository: { id: repo.id, branch: repo.defaultBranch },

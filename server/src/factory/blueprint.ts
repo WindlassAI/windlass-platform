@@ -113,9 +113,12 @@ export function currentKey(item: FactoryItem): string | null {
 /** The next state of `item` after `fact`, and what to do and record for it. A fact that changes nothing returns `item` itself, no effects and no events. */
 export function advance(item: FactoryItem, fact: Fact): Outcome {
 	const unchanged: Outcome = { item, effects: [], events: [] };
-	if (FINAL.has(item.state) && fact.kind !== "child_notice") return unchanged;
+	const receipt = (fact.kind === "turn_ended" || fact.kind === "review_ended") && item.state === "cancelled"
+		&& (item.parent || item.mode === "orchestrate") && item.run?.step.turn && fact.key === currentKey(item);
+	if (FINAL.has(item.state) && fact.kind !== "child_notice" && !receipt) return unchanged;
 	const change = new Change(structuredClone(item), fact.at, "by" in fact ? fact.by : "platform");
-	if (!apply(change, fact)) return unchanged;
+	if (receipt) spendTurn(change, fact.spend);
+	else if (!apply(change, fact)) return unchanged;
 	change.item.revision += 1;
 	return { item: change.item, effects: change.effects, events: change.events, ...(change.storeVerdict && { storeVerdict: change.storeVerdict }) };
 }
