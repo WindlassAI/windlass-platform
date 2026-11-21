@@ -213,18 +213,46 @@ const installation = standin.addInstallation("ada", "User");
 const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { ".github/workflows/build.yml": "on: pull_request\n", "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
 standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "read", statuses: "read", actions: "read" };
 
-if (!only.length || only.includes("orchestrator")) {
+if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
+	const singleServer = new Server();
+	try {
+		await check("orchestrator single: Run as single item resumes with builder permissions and passes its saved check", async () => {
+			const repo = standin.addRepository({ owner: "ada", name: "single-handoff", installation, files: { "README.md": "# Notes\n" } });
+			const { user, client, auth } = await world(singleServer, standin, { WLP_FEATURE_TEST_GIT: join(singleServer.storage, "git") });
+			await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
+			const item = await user.createItem({ repository: { id: repo.id }, title: "Add one note", body: "Write the requested note. (suggest-single)", mode: "orchestrate", start: true });
+			const proposed = await untilItem(user, item.id, "a single-item suggestion", v => !!v.question);
+			assert(proposed.plan?.singleSuggested && proposed.question?.kind === "single_suggested", "The planner did not suggest single.");
+			await user.actOnItem({ id: item.id, action: { kind: "answer", question: proposed.question.id, choice: "run_single" } });
+			const result = await untilItem(user, item.id, "the implementation result", v => !!v.pullRequest || !!v.question);
+			const session = client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } });
+			const { timeline } = await session.snapshot();
+			const opens = timeline.flatMap(e => e.kind === "windlass" && e.event.type === "fake.session_open" ? [e.event] : []);
+			const [plan, build] = opens;
+			assert(plan?.data?.method === "session/new" && build?.data?.method === "session/resume" && plan.sessionId === build.sessionId, "The handoff lost the planner conversation.");
+			const meta = (build.data.params as { _meta: { windlass: { agent?: string; hostTools: { name: string }[] } } })._meta.windlass;
+			assert(meta.agent === "none" && meta.hostTools.some(t => t.name === "report") && !meta.hostTools.some(t => t.name === "file_plan"), `Implement selected agent ${meta.agent} and tools ${meta.hostTools.map(t => t.name).join(", ")}.`);
+			assert(result.pullRequest && result.events.some(e => e.said === "The checks passed."), stateOf(result));
+			const branch = branchFor(item.title, item.sessionId);
+			assert(standin.fileOn(repo, branch, "notes/turn-2.md")?.includes("Write the requested note."), "The implement turn did not write the requested file.");
+			assert(standin.fileOn(repo, branch, "notes/turn-1.md") === null, "The planner wrote a file.");
+			return "the same conversation wrote a file on its second turn and passed build";
+		});
+	} finally { await singleServer.stop(); singleServer.remove(); }
 	const server = new Server();
 	try {
-		await check("orchestrator: real actors approve and integrate two checked children and hand over one reviewed PR", async () => {
+		await check("orchestrator: Orchestrate anyway replans, integrates two checked children and hands over one reviewed PR", async () => {
 			const { user } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{name:"build",command:"true"}] });
 			const single = (await user.factoryLimits()).item;
 			const token = (await user.createApiToken({ name: "feature", scopes: ["items:create", "items:read"] })).secret;
-			const filing = await api("/api/items", {method:"POST", token, key:"search-feature", body:JSON.stringify({repository:{id:harbor.id}, title:"Search documents", body:"Index documents and show the result.", mode:"orchestrate", start:true})});
+			const filing = await api("/api/items", {method:"POST", token, key:"search-feature", body:JSON.stringify({repository:{id:harbor.id}, title:"Search documents", body:"Index documents and show the result. (suggest-single)", mode:"orchestrate", start:true})});
 			assert(filing.status === 201 && typeof filing.body.id === "string", "The API refused feature filing.");
 			const feature = await user.item(filing.body.id);
-			const page = await untilItem(user, feature.id, "plan approval", v => !!v.question);
+			const suggestion = await untilItem(user, feature.id, "the single-item suggestion", v => !!v.question);
+			assert(suggestion.question?.kind === "single_suggested", "Expected a single-item suggestion.");
+			await user.actOnItem({id:feature.id, action:{kind:"answer", question:suggestion.question.id, choice:"orchestrate_anyway"}});
+			const page = await untilItem(user, feature.id, "split plan approval", v => v.question?.kind === "plan_approval");
 			assert(page.plan?.status === "proposed", "The planner did not file a valid plan: " + page.question?.text);
 			assert(!page.pullRequest && !page.children?.length, "Work started before approval.");
 			const invalid = structuredClone(page.plan);
@@ -255,7 +283,7 @@ if (!only.length || only.includes("orchestrator")) {
 			assert(read.status === 200 && Array.isArray(read.body.children) && read.body.children.length === 2, "The feature API omitted its children.");
 			assert(done.children?.length === 2 && done.children.every(s => s.verdict?.ci === "passed" && s.state === "done" && !s.pullRequest && s.review?.state === "off"), "Children did not finish as branches.");
 			assert(standin.fileOn(harbor, "windlass/feature-" + feature.id, "notes/turn-1.md") !== null, "Neither child built files on the feature branch");
-			assert(done.spent.turns === 5 && done.budget.tokens === 3*single.tokens, "Unexpected feature spend " + JSON.stringify(done.spent));
+			assert(done.spent.turns === 6 && done.budget.tokens === 3*single.tokens, "Unexpected feature spend " + JSON.stringify(done.spent));
 			const [first, secondChild] = done.children;
 			const firstHead = standin.branchHead(harbor, branchFor(first.title, first.sessionId))!;
 			const parent = standin.branchHead(harbor, branchFor(secondChild.title, secondChild.sessionId))!;
@@ -263,7 +291,7 @@ if (!only.length || only.includes("orchestrator")) {
 			assert(log("%P", parent) === firstHead, "The second child did not build directly on the first child's commit");
 			assert(log("%s", firstHead + "^") === "Start feature " + feature.id && log("%P", firstHead + "^") === base, "The first child missed the feature marker");
 			assert(done.head === parent && done.reviews.length === 1 && done.report && done.pullRequest, "Missing final head, summary, review or PR.");
-			const ready = await waitFor("the single ready PR", () => standin.pulls.find(p=>p.number===done.pullRequest!.number && !p.draft && p.comments.length), 30_000);
+			const ready = await waitFor("the single ready PR", () => standin.pulls.find(p=>p.repository===harbor.id && p.number===done.pullRequest!.number && !p.draft && p.comments.length), 30_000);
 			assert(standin.branchHead(harbor, ready.head) === parent && standin.branchHead(harbor,"main") === base, "Incorrect ref after handoff.");
 			assert(!(await user.listItems()).some(i => i.parent), "A child leaked into the root list.");
 			const second = await user.createItem({repository:{id:harbor.id}, title:"Cancel this feature", body:"Index and search documents.", mode:"orchestrate", start:true});

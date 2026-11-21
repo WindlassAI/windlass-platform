@@ -104,7 +104,7 @@
  * Nothing here is told by the words of a message; the switches above are this layer's own.
  */
 
-import { hostToolsMeta, sessionOpenParams, turnHostTools } from "./sandbox/turn.js";
+import { hostToolsMeta, sessionOpenParams, turnAgentMeta, turnHostTools } from "./sandbox/turn.js";
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -215,6 +215,8 @@ interface FakeSandbox {
 
 /** What the fake Windlass keeps of a session: enough to continue it, and to notice when it is gone. */
 interface FakeSession {
+	/** Windlass retains the selected agent when resume omits it. */
+	agent?: string;
 	/** The last `seq` written, so a continued session keeps counting. */
 	seq: number;
 	turns: number;
@@ -720,6 +722,8 @@ class FakeWindlass implements Windlass {
 			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: { reason: "session_not_found", message: `there is no session ${sessionId}` } };
 		}
 		const session: FakeSession = sessions.get(sessionId) ?? { seq: 0, turns: 0, padding: 0 };
+		const agentMeta = turnAgentMeta(input.planner ? "planner" : input.onReview ? "reviewer" : null, input.clearPlanner);
+		if (agentMeta.agent !== undefined) session.agent = agentMeta.agent;
 		sessions.set(sessionId, session);
 		session.turns += 1;
 		const turn = session.turns;
@@ -1076,12 +1080,13 @@ class FakeWindlass implements Windlass {
 				if (TERMINAL.has(recorded.type) && !platformCalled) {
 					platformCalled = true;
 					const offered = turnHostTools(input);
-					const params = sessionOpenParams(sandbox.cwd, hostToolsMeta(offered, input.reportScreenshots));
+					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...hostToolsMeta(offered, input.reportScreenshots) });
 					if (input.onPlan) {
 						if (!input.planner || offered.size !== 1 || input.servers?.length || input.checks?.length) throw new Error("Planner received builder privileges.");
+						const single = text.includes("(suggest-single)");
 						const reply = await input.onPlan({ messageId: "plan", callId: "file", arguments: {
 							spec: { goal: "Index and search documents", requirements:["Index documents"], outOfScope:[], acceptance:["Documents can be found."] },
-							questions: [], singleSuggested: null, subtasks:["index","search"].map((key,i) => ({
+							questions: [], singleSuggested: single ? "Only one file." : null, subtasks: single ? [] : ["index","search"].map((key,i) => ({
 								key,title:key,brief:"Implement " + key + ". (report)", acceptance:["Run pnpm test"],owns:[key+"/**"],dependsOn:i ? ["index"] : [],
 								budget:{tokens:600000,turns:3,activeSeconds:1440,hostedSeconds:1200},
 							})),
@@ -1170,7 +1175,7 @@ class FakeWindlass implements Windlass {
 			}
 			summarize();
 
-			const files = this.sandboxes.all.get(sandbox.id)?.files;
+			const files = session.agent === "planner" ? undefined : this.sandboxes.all.get(sandbox.id)?.files;
 			files?.set(`notes/turn-${turn}.md`, `# Turn ${turn}\n\n${input.prompt.slice(0, 200)}\n`);
 			if (turn === 1) files?.set("made.txt", "hello\n");
 			if (text.includes("(lose-sandbox)")) this.sandboxes.all.delete(sandbox.id);
