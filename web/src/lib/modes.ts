@@ -2,9 +2,8 @@
  * An agent's modes: how it asks before it acts. Each agent has its own list, and the session holds
  * the one chosen for its next prompt (`SessionSummary.mode`).
  *
- * - Claude Code: the modes its ACP adapter offers (`availableModes`, from the most recent open). Before
- *   its first open the session has none yet, so the list is the pinned adapter's (`CLAUDE_LAUNCH_MODES`),
- *   and Auto is the default.
+ * - External agents use the machine's report before their first turn, then the open session's
+ *   modes. Older runner reports can omit options. Claude defaults to Auto and OpenCode to Build.
  * - Windlass: Ask, and the approval the sandbox profile was built for (Auto with Windlass's command
  *   sandbox, Full without one), which is the default.
  *
@@ -19,6 +18,7 @@ export const CLAUDE_DEFAULT_MODE = "auto";
 /** The modes a new agent is offered in a sandbox profile, and the one it starts on. */
 export function launchModes(harness: HarnessId, profile: Pick<SandboxProfile, "approval"> | null): { modes: SessionMode[]; default: string } | null {
 	if (harness === "claude") return { modes: [...CLAUDE_LAUNCH_MODES], default: CLAUDE_DEFAULT_MODE };
+	if (harness === "opencode") return { modes: [], default: "build" };
 	if (profile === null) return null;
 	return { modes: windlassModes(profile.approval), default: profile.approval };
 }

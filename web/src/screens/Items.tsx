@@ -26,7 +26,7 @@ import { StatusBadge } from "../components/Status";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { clockTime, useMachines } from "./Machines";
-import { machineLabel } from "../lib/machines";
+import { hardenedItemNote, machineLabel } from "../lib/machines";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 
 export interface ItemsState {
@@ -603,7 +603,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 							<p className="field-note place-note">
 								It runs without asking on “{machineLabel(chosenMachine)}”, inside its container, and costs no hosted time.{" "}
 								{chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${machineLabel(chosenMachine)}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}
-								{chosenMachine.profiles.find((profile) => profile.available)?.id === "docker-hardened" ? " This machine cannot sandbox each command, so the agent's commands can reach the machine's network and its access token." : ""}
+								{hardenedItemNote(chosenMachine)}
 							</p>
 						) : null}
 					</PlaceChoice>

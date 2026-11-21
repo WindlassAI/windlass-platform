@@ -110,6 +110,8 @@ export interface MachinesInfo {
 	minRunnerVersion: string;
 	/** The runner image to install, pinned by digest; null while none is published, and the page says it cannot be installed yet. */
 	runnerImage: string | null;
+	/** Harnesses built into this exact published image, from its capabilities command. */
+	runnerHarnesses?: Array<Exclude<HarnessId, "windlass">>;
 	/** The platform's address as a runner on another machine reaches it: `--platform` in the install command. */
 	platformUrl: string;
 }
@@ -256,7 +258,7 @@ export type TurnOutcome =
 	/** The platform could not run the turn at all (sandbox failure, Windlass crashed). */
 	| "error";
 
-export type HarnessId = "windlass" | "claude";
+export type HarnessId = "windlass" | "claude" | "opencode";
 
 export interface SessionMode {
 	id: string;
@@ -265,7 +267,7 @@ export interface SessionMode {
 	description: string | null;
 }
 
-/** A machine's prompt-free ACP options. An unselected model has no advertised efforts until observed. */
+/** A machine's prompt-free ACP options. Efforts are the choices available for each model. */
 export interface HarnessOptions {
 	models: ModelChoice[];
 	defaultModel: string;
@@ -1048,8 +1050,10 @@ export function machineLabel(machine: { name: string; os?: string; arch?: string
 	return name ? what + " (" + name.slice(0, 6).toLowerCase() + ")" : what;
 }
 
-/** One of the user's machines, as the Machines page lists it. */
+/** Latest host sample for an already listed machine. */
+export interface MachineHostUpdate { machineId: string; host: NonNullable<MachineSummary["host"]> | null }
 export interface MachineDetails { whenToUse: string; tags: string[] }
+/** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary extends Partial<MachineDetails> {
 	turns?: { running: number; max: number | null; queued: number };
 	host?: { cpus: number; sandboxCpus: number; memoryBytes: number; memoryFreeBytes: number; load1: number | null };
@@ -1058,7 +1062,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	harnesses?: Array<{ id: "claude"; adapter: string; image: string; signIn: "token" | "none" | "unknown"; options?: HarnessOptions }>;
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -1200,7 +1204,7 @@ export interface FactoryLimits {
 	item: ItemBudget;
 }
 
-/** "turn_refused": the session could not start the agent's turn (an old Windlass, a conversation it cannot open), in its words. */
+/** "turn_refused": the session or provider refused the turn, in its words. */
 export type QuestionKind = "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
 
 /**
@@ -1746,6 +1750,7 @@ export interface UserActions {
 	 * `machines_off` when the deployment has no machines (`PlatformInfo.machines`).
 	 */
 	machines(): Promise<MachineSummary[]>;
+	machineCatalog(input: { machineId: string; id: "claude" | "opencode"; digest: string }): Promise<HarnessOptions | null>;
 	/**
 	 * Looks up the code a runner printed ("XXXX-XXXX": Crockford base32, so case, spaces and dashes do
 	 * not matter, O reads as 0 and I and L as 1) and answers with what that machine said of itself. The
@@ -1768,10 +1773,6 @@ export interface UserActions {
 	 * UserError with code `machine_not_found` for one that is not the user's. Answers with the list as it is then.
 	 */
 	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
-	/** Owner-only control of this pairing's ten-minute Claude Code setup. expiresAt is Unix time in milliseconds. */
-	startClaudeLogin(input: { machineId: string }): Promise<{ url: string; expiresAt: number }>;
-	finishClaudeLogin(input: { machineId: string; code: string }): Promise<{ signedIn: true }>;
-	cancelClaudeLogin(input: { machineId: string }): Promise<{ cancelled: true }>;
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
 	setMachineDetails(input: { machineId: string; whenToUse: string; tags: string[] }): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
@@ -1805,6 +1806,7 @@ export interface UserEvents {
 	usage: UsageNumbers;
 	/** The user's machines, after one was paired or removed, or its status, warnings or secrets switch changed. */
 	machines: MachineSummary[];
+	machineHost: MachineHostUpdate;
 	/** The user's work items, newest first, after any of them changed. */
 	items: ItemSummary[];
 }
@@ -1958,7 +1960,7 @@ export type TimelineItem =
 			usage: TurnUsage | null;
 			/** Share of input tokens read from the prompt cache, 0..1. */
 			cachedShare: number | null;
-			/** Set for "error": what went wrong, fit to show. */
+			/** What went wrong, including a provider refusal on a failed turn, fit to show. */
 			message: string | null;
 			/** What the session's work rests on after this turn. */
 			verified: Verified | null;

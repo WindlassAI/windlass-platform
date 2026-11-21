@@ -1,4 +1,5 @@
 /** cd server && npx tsx ../scripts/machine-check.ts */
+import { optionsDigest } from "../server/src/runner/catalog.js";
 import { localListeners } from "./check-listeners.js";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -9,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import type { MachineSummary } from "../server/src/contract.js";
+import type { MachineHostUpdate, MachineSummary } from "../server/src/contract.js";
 import type { Registry } from "../server/src/client.js";
 import { CONTROL_DEAD_MS, REFUSED_RETRY_MS, parseConnection, parseServerFrame, RUNNER_PAIR_PATH } from "../server/src/runner/control.js";
 import { FakeRunner, controlProxy, post } from "./runner-fake.js";
@@ -47,6 +48,8 @@ async function server() {
 	// A report of 404 bytes free stands for the user actor being briefly away (its node restarting) when the machine publishes it.
 	const { user } = await import("../server/src/actors/user.js");
 	const userActions = user.config.actions!;
+	for (const action of ["startClaudeLogin", "finishClaudeLogin", "cancelClaudeLogin"]) assert.ok(!Object.hasOwn(userActions, action));
+	assert.ok(!Object.hasOwn(machine.config.actions!, "internalClaudeLogin"));
 	const changed = userActions.internalMachineChanged;
 	userActions.internalMachineChanged = async (c, id, facts) => {
 		if (facts?.report?.freeDiskBytes === 404) { process.send?.({ hook: "publish-refused", id }); throw new Error("The user actor is away."); }
@@ -198,6 +201,8 @@ async function check() {
 		const row = async () => (await user.machines()).find(r => r.machineId === machineId)!;
 		const observer = user.connect();
 		const events: MachineSummary[][] = [];
+		const samples: MachineHostUpdate[] = [];
+		observer.on("machineHost", update => samples.push(update as MachineHostUpdate));
 		observer.on("machines", rows => events.push(rows as MachineSummary[]));
 		await observer.me();
 		step("wrong and replayed proofs, foreign origin, runner version and signed clock correction");
@@ -229,40 +234,33 @@ async function check() {
 		assert.equal((await row()).name, "F892B469D6C5");
 		loginSocket.send({ ...runner.report, name: "Workshop" });
 		await eventually(async () => (await row()).name === "Workshop");
-		for (const account of [other, user]) {
-			const reason = account === other ? "machine_not_found" : "claude_unavailable";
-			const attempts = await Promise.allSettled([account.startClaudeLogin({ machineId }), account.finishClaudeLogin({ machineId, code: "fixture" }), account.cancelClaudeLogin({ machineId })]);
-			for (const attempt of attempts) assert.ok(attempt.status === "rejected" && attempt.reason.code === reason, "Expected " + reason + " from each login action");
-		}
 		const harness = { id: "claude", adapter: "fixture", image: "fixture", signIn: "none" } as const;
+		// Exercise the actual gateway and action transport with more than 256 KiB.
+		const models = Array.from({ length: 1000 }, (_, i) => ({ id: "provider/model-" + i, name: "Model " + i + "x".repeat(256), efforts: [] }));
+		const options = { models, defaultModel: models[0]!.id, modes: [], checkedAt: 1000 };
+		const catalogDigest = optionsDigest(options);
+		const host = { cpus: 2, sandboxCpus: 1, memoryBytes: 12e9, memoryFreeBytes: 4e9, load1: 1 };
+		loginSocket.send({ kind: "catalog", id: "claude", options });
+		loginSocket.send({ ...runner.report, host, harnesses: [{ ...harness, optionsDigest: catalogDigest, optionsCheckedAt: options.checkedAt }] });
+		await eventually(() => events.at(-1)?.some(r => r.harnesses?.[0]?.optionsDigest === catalogDigest) === true);
+		assert.equal((await row()).harnesses?.[0]?.options, undefined);
+		assert.deepEqual(await user.machineCatalog({ machineId, id: "claude", digest: catalogDigest }), options);
+		const beforeSample = events.length;
+		// An older runner sends inline options even when only its load changes.
+		loginSocket.send({ ...runner.report, host: { ...host, load1: 2 }, harnesses: [{ ...harness, options }] });
+		await eventually(() => samples.some(sample => sample.machineId === machineId && sample.host?.load1 === 2));
+		assert.equal(events.length, beforeSample);
+		assert.equal((await row()).host?.load1, 2);
+		loginSocket.send({ kind: "host", host: { ...host, load1: 3 } });
+		await eventually(() => samples.at(-1)?.host?.load1 === 3);
+		assert.equal(events.length, beforeSample);
+		loginSocket.send({ ...runner.report, harnesses: [{ ...harness, optionsDigest: catalogDigest, optionsCheckedAt: 2000 }] });
+		await eventually(async () => (await row()).harnesses?.[0]?.optionsCheckedAt === 2000);
+		assert.equal((await user.machineCatalog({ machineId, id: "claude", digest: catalogDigest }))?.checkedAt, 2000);
 		loginSocket.send({ ...runner.report, harnesses: [harness] });
 		await eventually(async () => (await row()).harnesses?.[0]?.signIn === "none");
-		await refused(user.startClaudeLogin({ machineId }), "runner_outdated");
 		loginSocket.send({ ...runner.report, claudeLogin: true, harnesses: [harness] });
-		const url = "https://claude.com/cai/oauth/authorize?state=fixture&code_challenge=fixture";
-		const expiresAt = Date.now() + 600_000;
-		loginSocket.ws.addEventListener("message", ({ data }) => {
-			const frame = parseServerFrame(data);
-			if (frame?.kind === "harnessLogin.start") loginSocket.send({ kind: "harnessLogin.result", requestId: frame.requestId, result: { url, expiresAt } });
-			if (frame?.kind === "harnessLogin.finish") {
-				assert.ok(frame.code === "fixture#state", "The owner code did not reach the runner");
-				loginSocket.send({ ...runner.report, claudeLogin: true, harnesses: [{ ...harness, signIn: "token" }] });
-				loginSocket.send({ kind: "harnessLogin.result", requestId: frame.requestId, result: { signedIn: true } });
-			}
-			if (frame?.kind === "harnessLogin.cancel") loginSocket.send({ kind: "harnessLogin.result", requestId: frame.requestId, result: { cancelled: true } });
-		});
 		await eventually(async () => (await service().internalFacts()).report?.claudeLogin === true);
-		const startedLogin = await user.startClaudeLogin({ machineId });
-		assert.equal(startedLogin.url, url);
-		assert.ok(Math.abs(startedLogin.expiresAt - expiresAt) < 5000);
-		assert.deepEqual(await user.finishClaudeLogin({ machineId, code: "fixture#state" }), { signedIn: true });
-		assert.equal((await row()).harnesses?.[0]?.signIn, "token");
-		// Three unsupported calls, one old runner and two successful calls have used six slots.
-		for (let i = 0; i < 6; i++) assert.deepEqual(await user.cancelClaudeLogin({ machineId }), { cancelled: true });
-		await refused(user.startClaudeLogin({ machineId }), "rate_limited");
-		await refused(user.finishClaudeLogin({ machineId, code: "fixture" }), "rate_limited");
-		await refused(user.cancelClaudeLogin({ machineId }), "rate_limited");
-		console.log("ok   owner-only Claude sign-in, capability and release checks, reported sign-in and rate limits for all three actions");
 		const listed = await row();
 		assert.deepEqual(listed.profiles.map(p => p.id), ["docker-windlass-sandbox", "docker-hardened"]);
 		assert(listed.profiles.every(p => p.available && p.name.includes("Workshop")));

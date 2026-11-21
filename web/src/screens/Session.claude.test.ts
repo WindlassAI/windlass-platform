@@ -7,12 +7,14 @@
  * And every agent's mode on its page: the composer's picker before the model, which follows the live
  * summary, the panel's line, and none on a work item's agent, whose mode is its profile's.
  */
-import type { AuthResult, ModelList, SessionSummary } from "@contract";
+import type { MachineSummary, AuthResult, ModelList, SessionSummary } from "@contract";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockClient, type MockClient } from "../api/mock";
 import { Composer } from "../components/Composer";
+import acpSource from "../lib/acp.ts?raw";
+import { signInWords } from "../lib/acp";
 import { saveAuth } from "../lib/authStore";
 import { AppProvider } from "../state/app";
 import { useSession } from "../state/hooks";
@@ -37,13 +39,13 @@ async function until(ready: () => boolean, steps = 60): Promise<void> {
 	expect(ready()).toBe(true);
 }
 
-function Page({ id }: { id: string }) {
-	return createElement(Session, { sessionId: id, state: useSession(id) });
+function Page({ id, machine }: { id: string; machine?: MachineSummary }) {
+	return createElement(Session, { sessionId: id, state: useSession(id), machine });
 }
 
 /** Opens the agent `id`, or the one `pick` chooses of the user's agents. */
-async function open(id: string | ((sessions: SessionSummary[]) => SessionSummary | undefined)): Promise<void> {
-	client = createMockClient({ origin: "http://localhost:5173" });
+async function open(id: string | { harness: "claude" | "opencode" } | ((sessions: SessionSummary[]) => SessionSummary | undefined), machine?: MachineSummary): Promise<void> {
+	client = createMockClient({ origin: "http://localhost:5173", machine: typeof id === "object" ? "fresh" : "online" });
 	const begun = client.login.start();
 	vi.advanceTimersByTime(1000);
 	const { redirectPrefix, url } = await begun;
@@ -51,7 +53,11 @@ async function open(id: string | ((sessions: SessionSummary[]) => SessionSummary
 	vi.advanceTimersByTime(1000);
 	auth = await finished;
 	saveAuth("mock", auth);
-	if (typeof id !== "string") {
+	if (typeof id === "object") {
+		const pending = client.user(auth).createSession({ place: { kind: "machine", machineId: "m_workshop" }, harness: id.harness, profile: "docker-hardened" });
+		await vi.advanceTimersByTimeAsync(1000);
+		id = (await pending).id;
+	} else if (typeof id !== "string") {
 		const listed = client.user(auth).listSessions();
 		vi.advanceTimersByTime(1000);
 		const found = id(await listed);
@@ -59,7 +65,7 @@ async function open(id: string | ((sessions: SessionSummary[]) => SessionSummary
 		id = (found as SessionSummary).id;
 	}
 	const shown = id;
-	act(() => root.render(createElement(AppProvider, { client, children: createElement(Page, { id: shown }) })));
+	act(() => root.render(createElement(AppProvider, { client, children: createElement(Page, { id: shown, machine }) })));
 	await wait();
 }
 
@@ -82,6 +88,37 @@ afterEach(() => {
 
 const pickers = () => [...host.querySelectorAll(".composer-selects [data-picker]")].map((pill) => (pill as HTMLElement).dataset.picker);
 const text = () => host.textContent ?? "";
+
+it.each(["claude", "opencode"] as const)("shows %s models and modes in the idle composer and panel before its first turn", async harness => {
+	await open({ harness });
+	const names = harness === "claude" ? ["Default (recommended)", "Opus", "Haiku"] : ["OpenAI/GPT-5.4 (default)", "OpenAI/GPT-5.4 mini"];
+	const modeNames = harness === "claude" ? ["Manual", "Accept edits", "Plan", "Auto", "Bypass permissions"] : ["build", "plan"];
+	expect(host.querySelector("#panel-session")?.textContent).toContain("no turns yet");
+	act(() => (host.querySelector('[data-picker="model"]') as HTMLButtonElement).click());
+	expect(Array.from(document.querySelectorAll(".ui-pop .ui-item-label"), el => el.textContent)).toEqual(names);
+	const details = host.querySelector("#panel-session")!.closest("section")!.querySelector("details")!;
+	act(() => { details.open = true; details.dispatchEvent(new Event("toggle")); });
+	expect(Array.from(details.querySelectorAll('[aria-label="Available models"] li'), el => el.firstChild?.textContent)).toEqual(names.map(name => name.replace(" (default)", "")));
+	expect(Array.from(details.querySelectorAll('[aria-label="Available modes"] li'), el => el.textContent)).toEqual(modeNames);
+});
+
+it("documents the three sign-in labels used by the session and composer", () => {
+	const comment = acpSource.match(/Its sign-in in a few words: ([^\n]+) [*]\//)?.[1];
+	for (const signIn of ["token", "none", "unknown"] as const) {
+		const words = signInWords({ id: "opencode", signIn, adapter: "OpenCode", image: "fixture" });
+		expect(comment).toContain(JSON.stringify(words));
+	}
+});
+
+it.each(["token", "none", "unknown"] as const)("shows session login instructions only when OpenCode needs sign-in (%s)", async signIn => {
+	await open({ harness: "opencode" }, { name: "workshop", harnesses: [{ id: "opencode", signIn, adapter: "OpenCode", image: "fixture" }] } as MachineSummary);
+	const banner = host.querySelector(".session-main .machine-harness");
+	if (signIn === "token") expect(banner).toBeNull();
+	else {
+		expect(banner?.textContent).toContain("so this agent cannot run a turn");
+		expect(banner?.querySelector("pre")?.textContent).toContain("windlass-runner login opencode");
+	}
+});
 
 describe("a Claude Code agent's page", () => {
 	it("shows its turn in the platform's blocks: the plan, the calls with the edit's diff, the context instead of tokens", async () => {
@@ -134,7 +171,7 @@ describe("a Claude Code agent's page", () => {
 		await act(async () => (asked.querySelector(".q-choice") as HTMLButtonElement).click());
 		await until(() => second()?.querySelector(".turn-end") != null);
 		expect(second()?.querySelector(".tool-stop")).toBeNull();
-	}, 20_000);
+	}, 30_000);
 });
 
 describe("an agent's mode on its page", () => {

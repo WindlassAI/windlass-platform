@@ -5,7 +5,7 @@
  * nothing of the server's: no RivetKit, no configuration, only types.
  *
  * The control socket (`machine.get([uid, machineId]).webSocket("control")`). Every WebSocket message is
- * one JSON frame of at most MAX_CONTROL_FRAME_BYTES. Nothing is numbered or resent: a new socket starts
+ * one bounded JSON frame. Authenticated reports have extra space for harness inventories. Nothing is numbered or resent: a new socket starts
  * over with a new challenge, and what the actor still wants done (a removal) it asks again.
  *
  *   challenge  actor → runner   first frame on every socket: a nonce for the runner to sign
@@ -15,12 +15,12 @@
  *                               show; the actor then closes the socket
  *   report     runner → actor   what the machine has: Docker, the probe, free disk, its sandboxes. Sent
  *                               after welcome and whenever what it says changed, at most every REPORT_MS
+ *   catalog    runner → actor   changed options for one harness, before the report referencing their digest
+ *   host       runner → actor   changed host sample between inventory reports
  *   heartbeat  either way       sent every CONTROL_HEARTBEAT_MS; a socket that is silent for CONTROL_DEAD_MS is closed
  *   attach     actor → runner   a session wants its sandbox: open that session's socket with the ticket
  *   remove     actor → runner   remove one sandbox (its session was deleted); answered with `removed`
  *   removed    runner → actor   that sandbox is gone, or was never this machine's
- *   harnessLogin.start/finish/cancel  actor → runner   owner actions correlated by requestId on this socket
- *   harnessLogin.result              runner → actor   public result or a scrubbed refusal
  *   logout     actor → runner   the user's ChatGPT sign-in was forgotten: remove the access token files
  *                               of running turns
  *
@@ -34,12 +34,15 @@
  * ("bad-frame"), the runner drops the socket and connects again.
  */
 import type { HarnessOptions, MachineProbe, PlatformConnection } from "../contract.js";
-import { MACHINE_PROFILES, machineProfile, type MachineProfile, loginCommand, loginResultFrame, positiveLimit } from "./protocol.js";
+import { MACHINE_PROFILES, machineProfile, type MachineProfile, positiveLimit } from "./protocol.js";
 import { type Assert, type Of, type Same, boolean, count, either, integer, is, json, list, nullable, object, oneOf, optional, plain, text } from "./check.js";
 
 /** The oldest runner release this server serves: raise it when the server stops reading what older runners send. */
 export const MIN_RUNNER_VERSION = "0.1.0";
 export const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
+// Only a paired runner's inventory report needs room for full provider catalogs.
+const MAX_HARNESS_OPTIONS_BYTES = 768 * 1024;
+const MAX_REPORT_BYTES = MAX_CONTROL_FRAME_BYTES + 2 * MAX_HARNESS_OPTIONS_BYTES;
 /** A slow heartbeat: it costs no write on either side. */
 export const CONTROL_HEARTBEAT_MS = 30_000;
 export const CONTROL_DEAD_MS = 90_000;
@@ -117,7 +120,7 @@ const refusal = either(
 	 */
 	object({ kind: oneOf("refused"), reason: oneOf("key-in-use", "unknown", "bad-frame", "other"), message: line(500) }),
 );
-const serverFrame = either(loginCommand, either(
+const serverFrame = either(
 	either(
 		either(object({ kind: oneOf("challenge"), nonce }), object({ kind: oneOf("welcome"), idleSuspendMs: count })),
 		either(refusal, object({ kind: oneOf("heartbeat", "logout") })),
@@ -127,7 +130,7 @@ const serverFrame = either(loginCommand, either(
 		object({ kind: oneOf("attach"), sessionId: name, ticket: text(1024) }),
 		object({ kind: oneOf("remove"), sandbox: sandboxId }),
 	),
-));
+);
 export type Refusal = Of<typeof refusal>;
 export type ServerFrame = Of<typeof serverFrame>;
 
@@ -142,29 +145,34 @@ export type ServerFrame = Of<typeof serverFrame>;
  * said), the release (else "outdated", recorded for the page), then `secondHello`.
  */
 const hello = object({ kind: oneOf("hello"), runnerVersion: version, epoch, time, signature, maxTurns: optional(positiveLimit) });
-const modelChoice = object({ id: line(128), name: nullable(line(256)), efforts: list(line(64), 16) });
+const modelChoice = object({ id: line(512), name: nullable(line(512)), efforts: list(line(64), 16) });
 const optionsShape = object({
-	models: list(modelChoice, 32), defaultModel: line(128), checkedAt: time,
+	models: list(modelChoice, 16_384), defaultModel: line(512), checkedAt: time,
 	modes: list(object({ id: line(64), name: line(128), description: nullable(line(512)) }), 16),
 });
 /** Leave room for the sandbox inventory in the same control frame. */
 export const validHarnessOptions = is<HarnessOptions>(v => optionsShape(v)
 	&& v.models.some(model => model.id === v.defaultModel)
 	&& new Set(v.models.map(m => m.id)).size === v.models.length
-	&& Buffer.byteLength(JSON.stringify(v)) <= 16 * 1024);
-const harnesses = list(object({ id: oneOf("claude"), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) }), 4);
+	&& Buffer.byteLength(JSON.stringify(v)) <= MAX_HARNESS_OPTIONS_BYTES);
+const harnessId = oneOf("claude", "opencode");
+const digest = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v));
+const catalog = object({ kind: oneOf("catalog"), id: harnessId, options: validHarnessOptions });
+const harnesses = list(object({ id: harnessId, optionsDigest: optional(digest), optionsCheckedAt: optional(time), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) }), 4);
 const profileList = list(machineProfile, MACHINE_PROFILES.length);
 export const validAllowedProfiles = is<MachineProfile[]>(v => profileList(v) && v.includes("docker-hardened") && new Set(v).size === v.length);
 const nonnegative = is<number>(v => typeof v === "number" && Number.isFinite(v) && v >= 0);
 export const validMachineName = is<string>(v => typeof v === "string" && v.length <= 64 && v.trim().length > 0 && !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(v));
 export const egressMode = oneOf("open", "restricted", "none");
+const host = object({ cpus: positiveLimit, sandboxCpus: is<number>(v => nonnegative(v) && v > 0), memoryBytes: count, memoryFreeBytes: count, load1: nullable(nonnegative) });
+const hostFrame = object({ kind: oneOf("host"), host: nullable(host) });
 const report = object({
 	egress: optional(egressMode),
 	name: optional(validMachineName),
-	host: optional(object({ cpus: positiveLimit, sandboxCpus: is<number>(v => nonnegative(v) && v > 0), memoryBytes: count, memoryFreeBytes: count, load1: nullable(nonnegative) })),
+	host: optional(host),
 	/** Absent on pre-policy runners, which allowed both Docker profiles. */
 	allowedProfiles: optional(validAllowedProfiles),
-	/** The connected runner supports the pairing-wide login commands. Older ones omit this. */
+	/** Accepted for compatibility with older runner reports. */
 	claudeLogin: optional(oneOf(true)),
 	claudeRelay: optional(oneOf(true)),
 	harnesses: optional(harnesses),
@@ -181,20 +189,36 @@ const report = object({
 	maxRunning: optional(positiveLimit),
 	maxSandboxes: optional(positiveLimit),
 });
-export type LoginResultFrame = Of<typeof loginResultFrame>;
-const runnerFrame = either(either(hello, either(report, loginResultFrame)), either(object({ kind: oneOf("heartbeat") }), object({ kind: oneOf("removed"), sandbox: sandboxId })));
+const runnerFrame = either(either(hello, either(report, either(catalog, hostFrame))), either(object({ kind: oneOf("heartbeat") }), object({ kind: oneOf("removed"), sandbox: sandboxId })));
 export type Hello = Of<typeof hello>;
 export type Report = Of<typeof report>;
 export type RunnerFrame = Of<typeof runnerFrame>;
 
-function frameText(data: unknown): unknown {
-	if (typeof data !== "string" || data.length > MAX_CONTROL_FRAME_BYTES || Buffer.byteLength(data) > MAX_CONTROL_FRAME_BYTES) return undefined;
+/** Bound pending work before parsing another frame. Include the frame currently being processed. */
+export class ControlQueue {
+	private frames = 0;
+	private bytes = 0;
+	reserve(bytes: number) {
+		if (this.frames >= 128 || this.bytes + bytes > 2 * MAX_REPORT_BYTES) return false;
+		this.frames++;
+		this.bytes += bytes;
+		return true;
+	}
+	release(bytes: number) {
+		this.frames--;
+		this.bytes -= bytes;
+	}
+}
+
+function frameText(data: unknown, maxBytes = MAX_CONTROL_FRAME_BYTES): unknown {
+	if (typeof data !== "string" || data.length > maxBytes || Buffer.byteLength(data) > maxBytes) return undefined;
 	return json(data);
 }
 
 /** For the actor: null for anything a runner sent that is not a frame of this module. */
-export function parseRunnerFrame(data: unknown): RunnerFrame | null {
-	const v = frameText(data);
+export function parseRunnerFrame(data: unknown, allowLargeReport = true): RunnerFrame | null {
+	const v = frameText(data, allowLargeReport ? MAX_REPORT_BYTES : MAX_CONTROL_FRAME_BYTES);
+	if (plain(v) && v.kind !== "report" && v.kind !== "catalog" && typeof data === "string" && Buffer.byteLength(data) > MAX_CONTROL_FRAME_BYTES) return null;
 	return runnerFrame(v) ? v : null;
 }
 

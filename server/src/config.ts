@@ -225,7 +225,7 @@ import { type AccessRules, normalizeEmail, readAccessRules } from "./access.js";
 import { QUESTION_TIMEOUT_MS } from "./contract.js";
 import { APPROVAL_TTL_MS } from "./server-approvals.js";
 import { DEFAULT_DAILY_SECONDS, DEFAULT_HOLD_SECONDS, DEFAULT_MAX_KEPT, type UsageLimits } from "./usage.js";
-import type { FactoryLimits } from "./contract.js";
+import type { FactoryLimits, MachinesInfo } from "./contract.js";
 import { ATTACHMENT_LIMITS } from "./factory/attachments.js";
 import { FACTORY_DEFAULTS } from "./factory/budget.js";
 
@@ -259,6 +259,7 @@ export interface BrowserConnectionConfig {
 
 /** WLP_MACHINES and what goes with it; `Config.machines` is null when the feature is off. */
 export interface MachinesConfig {
+	runnerHarnesses?: MachinesInfo["runnerHarnesses"];
 	runnerImage: string | null;
 	/** WLP_PUBLIC_URL as an origin, without a trailing slash. */
 	publicUrl: string;
@@ -652,6 +653,20 @@ function readFactory(): FactoryLimits & { githubItemsPerDay: number; githubDraft
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
+/** Release metadata for the install dialog. An old image's report never enables options on a new digest.
+ * WLP_RUNNER_CAPABILITIES is the stdout of
+ * docker run --rm --network none -e WLP_RUNNER_IMAGE "$WLP_RUNNER_IMAGE" capabilities
+ * with WLP_RUNNER_IMAGE exported to the pinned release reference.
+ */
+export function publishedHarnesses(image: string, raw?: string): MachinesInfo["runnerHarnesses"] {
+	if (!raw || raw.length > 2048) return undefined;
+	try {
+		const report = JSON.parse(raw);
+		if (report?.image !== image || !Array.isArray(report.harnesses)) return undefined;
+		return (["claude", "opencode"] as const).filter(id => report.harnesses.includes(id));
+	} catch { return undefined; }
+}
+
 function readMachines(httpPort: number): MachinesConfig | null {
 	if (process.env.WLP_MACHINES !== "1") return null;
 	const image = (process.env.WLP_RUNNER_IMAGE ?? "").trim();
@@ -673,7 +688,7 @@ function readMachines(httpPort: number): MachinesConfig | null {
 		if (fit) publicUrl = url!.origin;
 		else unusable.push("WLP_PUBLIC_URL must be an https:// origin (or http:// on a loopback address), with no path, query or credentials");
 	}
-	return { runnerImage: pinned ? image : null, publicUrl };
+	return { runnerImage: pinned ? image : null, runnerHarnesses: pinned ? publishedHarnesses(image, process.env.WLP_RUNNER_CAPABILITIES) : undefined, publicUrl };
 }
 
 function readAccountEmails(): ReadonlyMap<string, string> {

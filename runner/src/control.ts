@@ -1,3 +1,4 @@
+import { reportPublisher } from "../../server/src/runner/catalog.js";
 import { generateKeyPairSync, randomUUID, sign, type KeyObject } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
 import {
@@ -9,7 +10,6 @@ import {
 import type { MachineProfile } from "../../server/src/runner/protocol.js";
 import { audit, safeSentence } from "./audit.js";
 import { Executor } from "./docker-executor.js";
-import { PageLogin } from "./page-login.js";
 import { cleanClaudeOutput } from "./claude-output.js";
 import { Session } from "./session.js";
 import { RunnerError, VERSION, origin, storePair } from "./state.js";
@@ -49,12 +49,12 @@ async function post(platform: string, path: string, body: PairRequest | PairPoll
 	try { value = JSON.parse(Buffer.concat(parts).toString("utf8")); } catch { /* Status still tells us whether to retry. */ }
 	return { status: response.status, value };
 }
-export async function pair(platform: string, signal: AbortSignal, say: (message: string) => void, name: string, profiles?: MachineProfile[]) {
+export async function pair(platform: string, signal: AbortSignal, say: (message: string) => void, name: string, profiles?: MachineProfile[], setup = false) {
 	const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 	const deadline = AbortSignal.any([signal, AbortSignal.timeout(PAIRING_TTL_MS)]);
 	const request: PairRequest = { publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
 		name, os: process.platform, arch: process.arch, runnerVersion: VERSION };
-	const again = "restart the container or run `windlass-runner pair` to get a new code.";
+	const again = setup ? "re-run the setup command to get a new code." : "restart the container or run `windlass-runner pair` to get a new code.";
 	let response;
 	for (let attempt = 1; ; attempt++) {
 		try {
@@ -159,7 +159,6 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 			let discarding: Promise<void> | undefined;
 			let slow = false;
 			let reason = "Disconnected";
-			const login = new PageLogin(owner);
 			const attempt = new AbortController();
 			const active = AbortSignal.any([signal, attempt.signal]);
 			try {
@@ -201,15 +200,14 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				const send = (f: RunnerFrame) => ws.send(JSON.stringify(f));
 				let phase: "challenge" | "welcome" | "online" = "challenge";
 				let heard = Date.now();
-				let loginReady = false;
+				let reportReady = false;
 				let policyReady: Promise<void>;
 				lastSent = Date.now();
-				let lastReport = "";
+				const publish = reportPublisher(send);
 				owner.publishReport = () => {
-					if (!loginReady || phase !== "online" || ws.readyState !== 1) return;
-					const report = { ...owner.report(), name };
-					const next = JSON.stringify(report);
-					if (next !== lastReport) { send(report); lastReport = next; lastSent = Date.now(); }
+					if (!reportReady || phase !== "online" || ws.readyState !== 1) return;
+					publish({ ...owner.report(), name });
+					lastSent = Date.now();
 				};
 				const attaching = new Map<string, string>();
 				const disconnect = () => ws.close();
@@ -243,22 +241,10 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						await policyReady;
 						if (active.aborted) return;
 						await owner.welcome(active);
-						loginReady = !active.aborted;
+						reportReady = !active.aborted;
 						if (!active.aborted) owner.publishReport?.();
 					} else if (phase !== "online") { reason = "Unexpected control handshake"; disconnect(); }
-					else if (f.kind === "harnessLogin.start" || f.kind === "harnessLogin.finish" || f.kind === "harnessLogin.cancel") {
-						const result = loginReady
-							? await login.request(f).catch(error => ({ error: safeSentence(category(error)) }))
-							: { error: "The runner is still connecting. Try again in a moment." };
-						audit(null, null, f.kind, "error" in result ? "refused" : "done");
-						if (!active.aborted && ws.readyState === 1)
-							ws.send(cleanClaudeOutput(JSON.stringify({ kind: "harnessLogin.result", requestId: f.requestId, result } satisfies RunnerFrame)));
-						if ("signedIn" in result) {
-							// A slow options probe must not delay the completed sign-in reply.
-							await owner.serial(() => owner.loginChanged(true));
-							owner.publishReport?.();
-						}
-					} else if (f.kind === "attach") {
+					else if (f.kind === "attach") {
 						await policyReady;
 						if (active.aborted || sessions.get(f.sessionId)?.refused) return;
 						attaching.set(f.sessionId, f.ticket);
@@ -293,7 +279,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				try { if (active.aborted) disconnect(); await closed; }
 				finally { clearInterval(heartbeat); active.removeEventListener("abort", disconnect); }
 			} catch (error) { reason = category(error); }
-			finally { attempt.abort(); owner.publishReport = undefined; await login.close().catch((error) => audit(null, null, "control", `the pending Claude sign-in could not be cleaned up: ${category(error)}`)); }
+			finally { attempt.abort(); owner.publishReport = undefined; }
 			if (signal.aborted) break;
 			if (refusal || slow) {
 				mayMaintain = false; idle = undefined;

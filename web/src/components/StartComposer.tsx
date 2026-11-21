@@ -33,14 +33,14 @@
  * factory's normal use. The repository starts on the page's, else the newest item's, else the newest
  * agent's.
  */
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type ItemSummary, type HarnessId, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
-import { HARNESS_NAMES } from "../lib/acp";
+import { HARNESS_NAMES, signInWords } from "../lib/acp";
 import { count, localTime, sandboxTime } from "../lib/format";
-import { effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault } from "../lib/models";
-import { CLAUDE_DEFAULT_MODE, OPEN_MODES, launchModes } from "../lib/modes";
+import { effortChoices, effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault } from "../lib/models";
+import { OPEN_MODES, launchModes } from "../lib/modes";
 import { itemOf, lastUsed, layerChoices, repositoryName, startingChoices, startingModel, startingProfile } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
@@ -56,14 +56,14 @@ import { HARNESS_PROFILE, machineUnusable, offeredHarnesses } from "./PlaceChoic
 import { repositoryMenu, useBranches, useRepositorySearch, type PickedRepository } from "./RepositoryMenu";
 import { SecretsField } from "./Secrets";
 import { SetupField, useSetupDraft } from "./SetupCommand";
-import { ClaudeSignIn } from "./ClaudeSignIn";
+import { HarnessStatus } from "./HarnessStatus";
 import { KeyHints, Kbd } from "./ui/Kbd";
 import { Menu, MenuSheet, PickerPanel, type MenuGroup, type MenuItem, type MenuSpec, type TriggerProps } from "./ui/Menu";
 import { AgentGlyph, Pill } from "./ui/Pill";
 import { SplitButton } from "./ui/Button";
 import { Tooltip } from "./ui/Tooltip";
 import { useSurface } from "./ui/useMediaQuery";
-import { machineLabel } from "../lib/machines";
+import { hardenedItemNote, machineLabel } from "../lib/machines";
 import { ITEM_MODE_WORDS, orchestrateProblem } from "../lib/feature";
 
 /** Whether any of the chosen sandbox's three facts is open: said in the warning tone. */
@@ -89,10 +89,12 @@ export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null
 			: profile.approval === "auto"
 				? { text: "commands sandboxed", long: "runs what the sandbox contains, refuses the rest", open: false }
 				: { text: "runs every call", long: "runs every call without asking", open: true },
-		claude && profile.claudeRelay && !profile.commandNetwork && profile.available
-			? { text: "Claude relay only", long: commandNetworkFact(profile, claude), open: false }
+		claude && (claude.opencode || profile.claudeRelay) && !profile.commandNetwork && profile.available
+			? { text: claude.opencode ? "OpenCode relay" : "Claude relay only", long: commandNetworkFact(profile, claude), open: false }
 			: { text: profile.commandNetwork ? "network on" : "no network", long: commandNetworkFact(profile, claude), open: profile.commandNetwork },
-		claude
+		claude?.opencode
+			? { text: "credentials on machine", long: "Commands can use the OpenCode model relay. Provider credentials stay on the machine.", open: true }
+			: claude
 			? { text: profile.claudeRelay ? "Claude login via relay" : "Claude login readable", long: `commands can use your Claude login. ${claudeLoginFact(profile)}`, open: true }
 			: profile.commandsCanReadAccessToken
 				? { text: "token readable", long: "commands can read the session's access token", open: true }
@@ -135,6 +137,27 @@ function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefau
 	// What was read for another repository is not this one's.
 	const mine = state.repositoryId === repositoryId;
 	return { defaults: mine ? state.defaults : null, checks: mine ? state.checks : null, reading: repositoryId !== null && (!mine || (state.defaults === null && state.error === null)), error: mine ? state.error : null };
+}
+
+/** Fetch the chosen machine's catalog once per digest, even as its host samples change. */
+function useCatalog(machine: MachineSummary | null, id: "claude" | "opencode") {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const machineId = machine?.machineId;
+	const digest = machine?.harnesses?.find(entry => entry.id === id)?.optionsDigest;
+	const [result, setResult] = useState<{ machineId: string; digest: string; options?: HarnessOptions; error?: string }>();
+	const [retry, setRetry] = useState(0);
+	useEffect(() => {
+		if (!machineId || !digest) return;
+		let current = true;
+		client.user(auth).machineCatalog({ machineId, id, digest }).then(
+			options => current && setResult({ machineId, digest, options: options ?? undefined }),
+			error => current && setResult({ machineId, digest, error: explain(error) }),
+		);
+		return () => { current = false; };
+	}, [client, auth, machineId, id, digest, explain, retry]);
+	const match = result?.machineId === machineId && result?.digest === digest ? result : undefined;
+	return { options: match?.options, reading: !!digest && !match, error: match?.error, retry: () => { setResult(undefined); setRetry(n => n + 1); } };
 }
 
 /** The pickers the composer opens: one at a time. The phone's settings sheet is one of them. */
@@ -192,7 +215,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const [effortChoice, setEffort] = useState(draft?.effort ?? "");
 	// Where it runs: undefined until chosen; null is this platform.
 	const [placeChoice, setPlace] = useState<string | null | undefined>(draft?.place === "platform" ? null : (draft?.place ?? undefined));
-	const [harnessChoice, setHarness] = useState<HarnessId | null>(draft?.harness === "windlass" || draft?.harness === "claude" ? draft.harness : null);
+	const [harnessChoice, setHarness] = useState<HarnessId | null>(draft?.harness === "windlass" || draft?.harness === "claude" || draft?.harness === "opencode" ? draft.harness : null);
 	const [modeChoice, setMode] = useState<string | null>(draft?.mode ?? null);
 	const [open, setOpen] = useState<Picker | null>(null);
 	const [busy, setBusy] = useState<"creating" | "prompting" | "filing" | null>(null);
@@ -306,7 +329,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const wantedHarness = harnessChoice ?? last.harness ?? "windlass";
 	const harness: HarnessId = wantedHarness !== "windlass" && hardened && offeredHarnesses(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
 	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
-	const options = harnessOptions(chosenMachine, harness);
+	const catalogs = { claude: useCatalog(item ? null : chosenMachine, "claude"), opencode: useCatalog(item ? null : chosenMachine, "opencode") };
+	const selectedCatalog = harness === "windlass" ? null : catalogs[harness];
+	const options = harnessOptions(chosenMachine, harness, selectedCatalog?.options);
 	const lastOf = last.of[harness] ?? null;
 
 	// ---- the sandbox, the model and effort, the mode ------------------------------------------
@@ -322,9 +347,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const chosenProfile = placeProfiles.find((candidate) => candidate.id === profile) ?? null;
 	const launch = launchModes(harness, chosenProfile);
 	// Claude Code's modes as its machine reported them, where it did.
-	const modes = launch && other && options.modes ? { modes: options.modes, default: options.modes.some((mode) => mode.id === CLAUDE_DEFAULT_MODE) ? CLAUDE_DEFAULT_MODE : (options.modes[0] as SessionMode).id } : launch;
+	const modes = launch && other && options.modes ? { modes: options.modes, default: options.modes.some((mode) => mode.id === launch.default) ? launch.default : (options.modes[0] as SessionMode).id } : launch;
 	const mode = modes ? (modes.modes.find((candidate) => candidate.id === modeChoice) ?? modes.modes.find((candidate) => candidate.id === lastOf?.mode) ?? modes.modes.find((candidate) => candidate.id === modes.default) ?? null) : null;
-	const claude: ClaudeFacts | null = harness === "claude" && mode ? { mode } : null;
+	const claude: ClaudeFacts | null = other ? { opencode: harness === "opencode", mode: mode ?? { id: "build", name: "Build", description: null } } : null;
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 
 	// Saved defaults that differ from what is chosen, and those that cannot be used.
@@ -341,7 +366,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// A work item waits for what its repository starts on, and where it runs; none of an agent's defaults.
 	const reading = item
 		? info === null || (items === null && repositoryId === undefined) || (sessions === null && repositoryId === undefined && newestItem === null) || repoReading || (machinesReading && wantedMachine !== null)
-		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || (machinesReading && wantedMachine !== null);
+		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || !!selectedCatalog?.reading || (machinesReading && wantedMachine !== null);
 	const canCreate = !item && !reading && profile !== null && !repoInvalid && busy === null;
 	const task = prompt.trim();
 	const maxChars = item ? MAX_ITEM_BODY_CHARS : MAX_PROMPT_CHARS;
@@ -647,7 +672,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		...defaultsErrors.map((line) => ({ text: line, warn: true })),
 		item && chosenMachine
 			? {
-					text: `It runs without asking on “${machineLabel(chosenMachine)}”, inside its container, and costs no hosted time. ${chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${machineLabel(chosenMachine)}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}${chosenMachine.profiles.find((candidate) => candidate.available)?.id === HARNESS_PROFILE ? " This machine cannot sandbox each command, so the agent's commands can reach the machine's network and its access token." : ""}`,
+					text: `It runs without asking on “${machineLabel(chosenMachine)}”, inside its container, and costs no hosted time. ${chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${machineLabel(chosenMachine)}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}${hardenedItemNote(chosenMachine)}`,
 					warn: false,
 				}
 			: null,
@@ -732,13 +757,12 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const modelRows = (harnessId: HarnessId, list: typeof modelList): MenuItem[] => {
 		if (list === null || list.models.length === 0) return [];
 		const isOther = harnessId !== "windlass";
-		return list.models.map(({ id }) => {
+		return list.models.map(({ id, name: reportedName, efforts: rowEfforts }) => {
 			const isDefault = id === list.defaultModel;
-			const name = isOther ? modelName(list, id) : id;
+			const name = isOther && reportedName ? reportedName : id;
 			const here = harness === harnessId;
 			// Another harness's reported default is its "": chosen, nothing is sent.
 			const checked = here && (isOther && model === "" ? isDefault : model === id);
-			const rowEfforts = effortsOf(list, id);
 			const pick = (to: string | null) => {
 				setHarness(harnessId);
 				setModel(id);
@@ -761,11 +785,11 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 									{
 										id: "efforts",
 										label: `Effort for ${name}`,
-										items: ["", ...rowEfforts].map((level, index) => ({
+										items: effortChoices(rowEfforts).map((level, index) => ({
 											id: level || "default",
 											label: level || "default",
 											icon: <EffortBars level={index} of={rowEfforts.length} />,
-											checked: checked && effort === level,
+											checked: checked && (effort || "default") === (level || "default"),
 											onSelect: () => pick(level),
 										})),
 									},
@@ -789,47 +813,44 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		},
 		...(chosenMachine && offersOther
 			? offeredHarnesses(chosenMachine).map((offered) => {
-					const options = harnessOptions(chosenMachine, offered.id);
+					const options = harnessOptions(chosenMachine, offered.id, catalogs[offered.id].options);
 					const name = HARNESS_NAMES[offered.id];
 					const rows = modelRows(offered.id, options.models);
 					return {
 						id: offered.id,
 						label: name,
-						note: `on ${machineLabel(chosenMachine)}`,
+						note: signInWords(offered),
 						items: !hardened
 							? [{ id: `${offered.id}:none`, label: name, icon: <AgentGlyph harness={name} />, description: `Runs only in the hardened container, which “${machineLabel(chosenMachine)}” cannot make now.`, disabled: true }]
 							: rows.length > 0
 								? rows
-								: [{ id: `${offered.id}:default`, value: offered.id, label: `${name}'s default model`, icon: <AgentGlyph harness={name} />, description: `“${machineLabel(chosenMachine)}”'s runner reports ${name}'s models once it has checked.`, checked: harness === offered.id, onSelect: () => setHarness(offered.id) }],
+								: [{ id: `${offered.id}:default`, value: offered.id, label: `${name}'s default model`, icon: <AgentGlyph harness={name} />, description: catalogs[offered.id].reading ? "Reading models…" : `“${machineLabel(chosenMachine)}”'s runner reports ${name}'s models once it has checked.`, checked: harness === offered.id, onSelect: () => setHarness(offered.id) }],
 					};
 				})
 			: []),
-		// Offered elsewhere: said where, as a row that cannot be chosen from here.
-		...(!offersOther && mine.some((machine) => why(machine) === null && offeredHarnesses(machine).length > 0)
-			? [
-					{
-						id: "elsewhere",
-						label: "Claude Code",
-						note: "on your machines",
-						items: [
-							{
-								id: "claude:elsewhere",
-								label: "Claude Code",
-								icon: <AgentGlyph harness="Claude Code" />,
-								description: `On ${mine
-									.filter((machine) => why(machine) === null && offeredHarnesses(machine).length > 0)
-									.map(machineLabel)
-									.join(", ")}: choose that machine first`,
-								disabled: true,
-							},
-						],
-					},
-				]
-			: []),
+		...(["claude", "opencode"] as const).flatMap(id => {
+			if (offeredHarnesses(chosenMachine).some(h => h.id === id)) return [];
+			const hosts = mine.filter(machine => why(machine) === null && offeredHarnesses(machine).some(h => h.id === id));
+			if (hosts.length === 0) return [];
+			const name = HARNESS_NAMES[id];
+			return [{
+				id: id + ":elsewhere",
+				label: name,
+				note: "on your machines",
+				items: [{
+					id: id + ":elsewhere",
+					label: name,
+					icon: <AgentGlyph harness={name} />,
+					description: `On ${hosts.map(machineLabel).join(", ")}: choose that machine first`,
+					disabled: true,
+				}],
+			}];
+		}),
 	];
 	const agentSpec: MenuSpec = {
 		label: "Agent and model",
 		width: 304,
+		maxHeight: 520,
 		submenuWidth: 200,
 		hints: { right: "effort" },
 		filter: agentGroups.reduce((sum, group) => sum + group.items.length, 0) > 7 ? { placeholder: "Filter models…" } : undefined,
@@ -837,25 +858,14 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			offersOther || (!other && ignored.model) ? (
 				<>
 					{chosenMachine && offersOther
-						? offeredHarnesses(chosenMachine).map((offered) =>
-								// Signed in, ClaudeSignIn draws nothing, or the line that says it just was.
-								hardened && offered.signIn !== "unknown" ? (
-									<ClaudeSignIn key={offered.id} machine={chosenMachine} className="harness-login">
-										{HARNESS_NAMES[offered.id]}: not signed in on “{machineLabel(chosenMachine)}”.
-										{chosenMachine.status === "online" ? null : (
-											<>
-												{" "}
-												Run <code>windlass-runner login {offered.id}</code> there.
-											</>
-										)}
-									</ClaudeSignIn>
-								) : hardened && offered.signIn === "unknown" ? (
-									<p key={offered.id}>
-										{HARNESS_NAMES[offered.id]}: the runner on “{machineLabel(chosenMachine)}” has not said whether it is signed in.
-									</p>
-								) : null,
-							)
+						? <details className="agent-commands">
+								<summary>Terminal sign-in commands</summary>
+								{offeredHarnesses(chosenMachine).map(offered => <HarnessStatus key={offered.id} harness={offered} />)}
+							</details>
 						: null}
+					{(["claude", "opencode"] as const).map(id => catalogs[id].error && <p key={id} role="status">
+						{HARNESS_NAMES[id]} models: {catalogs[id].error} <button type="button" className="link" onClick={catalogs[id].retry}>Retry</button>
+					</p>)}
 					{!other && ignored.model ? <p className="tone-warn">{ignored.model}</p> : null}
 				</>
 			) : undefined,
@@ -945,7 +955,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const hasSetup = chosen !== null && !item;
 	const setupForm = hasSetup ? (
 		<div className="start-setup">
-			<SetupField setup={setup} repository={repositoryName(chosen.repository)} disabled={busy !== null} />
+			<SetupField egress={chosenMachine?.egress} setup={setup} repository={repositoryName(chosen.repository)} disabled={busy !== null} />
 			{!other ? <SecretsField repositoryId={chosen.repository.id} repository={repositoryName(chosen.repository)} profile={profile} disabled={busy !== null} /> : null}
 		</div>
 	) : null;

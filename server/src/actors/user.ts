@@ -78,7 +78,7 @@ import { plannerMachines } from "../machines/details.js";
 
 import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
-import { launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
+import { machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
 import { ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -115,6 +115,8 @@ import {
 	type SandboxPlace,
 	type MachineSummary,
 	type MachineClaim,
+	type MachineHostUpdate,
+	type UserActions,
 	type SandboxProfile,
 	type SavedRepository,
 	type SecretScope,
@@ -133,7 +135,7 @@ import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, ver
 import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
-import { initialHarnessModels } from "../sandbox/harnesses.js";
+import { machineHarnesses, initialHarnessModels } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
@@ -929,12 +931,12 @@ const KEYED = "agent";
 async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4]): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
 	const harness = input.harness === undefined ? "windlass" : input.harness;
-	if (harness !== "windlass" && harness !== "claude") throw new UserError("Choose an available harness.", { code: "bad_input" });
+	if (harness !== "windlass" && harness !== "claude" && harness !== "opencode") throw new UserError("Choose an available harness.", { code: "bad_input" });
 	if (harness !== "windlass") {
 		if (item) throw new UserError("Work items and their reviewers run only with Windlass.", { code: "bad_input" });
-		if (place.kind !== "machine") throw new UserError("Claude Code runs only on a machine of yours.", { code: "bad_input" });
-		if (input.profile !== "docker-hardened") throw new UserError("Claude Code requires the docker-hardened profile.", { code: "bad_input" });
-		if (input.publishUnasked) throw new UserError("Claude Code has no publish tool. Publish from the session panel.", { code: "bad_input" });
+		if (place.kind !== "machine") throw new UserError(`${machineHarnesses[harness].name} runs only on a machine of yours.`, { code: "bad_input" });
+		if (input.profile !== "docker-hardened") throw new UserError(`${machineHarnesses[harness].name} requires the docker-hardened profile.`, { code: "bad_input" });
+		if (input.publishUnasked) throw new UserError(`${machineHarnesses[harness].name} has no publish tool. Publish from the session panel.`, { code: "bad_input" });
 	}
 	let repoUrl = cleanRepoUrl(input.repoUrl);
 	const givenTitle = input.title === undefined || input.title === null ? null : cleanTitle(input.title);
@@ -981,7 +983,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : null;
 		if (repoUrl && machine?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
-		if (harness === "claude" && !offered) throw new UserError("This machine does not offer Claude Code.", { code: "bad_input" });
+		if (harness !== "windlass" && !offered) throw new UserError(`This machine does not offer ${machineHarnesses[harness].name}.`, { code: "bad_input" });
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
 		const chosen = profiles.find((candidate) => candidate.id === input.profile);
 		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
@@ -991,15 +993,15 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
 		const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
-		const modes = initialSessionModes(chosen.id, harness, !!item);
+		const options = offered?.optionsDigest && place.kind === "machine" ? await machineCatalog(c, place.machineId, offered.id, offered.optionsDigest) : undefined;
+		if (offered?.optionsDigest && !options) throw new UserError("The machine’s model list changed. Choose the model again.", { code: "bad_input" });
+		const modes = initialSessionModes(chosen.id, harness, !!item, options?.modes);
 		if (input.mode !== undefined) {
 			if (typeof input.mode !== "string" || !input.mode.trim() || (harness === "windlass" && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
 			modes.mode = input.mode;
 		}
-		const options = offered?.options;
-		const models = harness === "claude" ? initialHarnessModels(options) : await modelsOf(c, profile.demo);
+		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options ? "bad_input" : undefined);
-		if (options) modes.availableModes = options.modes;
 
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
 		if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
@@ -1321,6 +1323,7 @@ export const user = actor({
 	},
 
 	events: {
+		machineHost: event<MachineHostUpdate>({ canSubscribe: (c) => maySubscribe(c) }),
 		machines: event<MachineSummary[]>({ canSubscribe: (c) => maySubscribe(c) }),
 		sessions: event<SessionSummary[]>({ canSubscribe: (c) => maySubscribe(c) }),
 		usage: event<UsageNumbers>({ canSubscribe: (c) => maySubscribe(c) }),
@@ -1388,11 +1391,9 @@ export const user = actor({
 			await revokeTokens(c);
 		},
 		machines: (c): Promise<MachineSummary[]> => machineActions.machines(c),
+		machineCatalog: (c, input: Parameters<UserActions["machineCatalog"]>[0]): ReturnType<UserActions["machineCatalog"]> => machineActions.machineCatalog(c, input),
 		claimMachine: (c, input: { code: string }): Promise<MachineClaim> => machineActions.claimMachine(c, input),
 		confirmMachine: (c, input: { code: string }): Promise<MachineSummary> => machineActions.confirmMachine(c, input),
-		startClaudeLogin: (c, input: { machineId: string }) => machineActions.startClaudeLogin(c, input),
-		finishClaudeLogin: (c, input: { machineId: string; code: string }) => machineActions.finishClaudeLogin(c, input),
-		cancelClaudeLogin: (c, input: { machineId: string }) => machineActions.cancelClaudeLogin(c, input),
 		removeMachine: (c, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> => machineActions.removeMachine(c, input),
 		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()]); },
 		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
@@ -1405,9 +1406,9 @@ export const user = actor({
 		},
 		internalMachineApproval: (c, id: string): Promise<{ login: string | null } | null> => machineActions.internalMachineApproval(c, id),
 		internalMachineChanged: async (c, id: string, facts: MachineUpdate | null): Promise<void> => {
-			await machineActions.internalMachineChanged(c, id, facts);
+			const inventoryChanged = await machineActions.internalMachineChanged(c, id, facts);
 			if (facts === null) await notifyRemovedMachines(c, id);
-			queueChanged(c);
+			if (inventoryChanged) queueChanged(c);
 		},
 		// --- work items, the turn queue and API tokens (user-items.ts) ---
 		internalReserveAttachment: (c, input: import("../sandbox/attach.js").Reservation) => itemActions.internalReserveAttachment(c, input),
@@ -1838,7 +1839,7 @@ export const user = actor({
 			const session = c.vars.sessions.get(id);
 			if (!session) return { project: null, secrets: [], checks: [], account: { secrets: [], servers: [] } };
 			const send = session.place.kind === "hosted" || await machineSecrets(c.db, session.place.machineId) === true;
-			const redactOnly = !send && session.harness === "claude";
+			const redactOnly = !send && !!session.harness && session.harness !== "windlass";
 			const kept = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name") : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], ACCOUNT_SECRET_PROJECT, kept);
 			const account = {

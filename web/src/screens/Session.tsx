@@ -15,11 +15,11 @@
  * An agent of another harness than Windlass (Claude Code, on one of the user's machines) says which
  * beside its title, and the page draws only what that harness does: its tool calls cannot be stopped
  * one by one, and the composer offers the models it offered. Where its machine says Claude Code is not
- * signed in, the line above the composer says so and signs it in from the page (components/ClaudeSignIn.tsx).
+ * signed in, the line above the composer shows the machine terminal command.
  */
 import { USAGE_LOW_SHARE, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
 import { useCallback, useMemo, useState } from "react";
-import { ClaudeSignIn } from "../components/ClaudeSignIn";
+import { HarnessStatus } from "../components/HarnessStatus";
 import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
 import { ArrowLeftIcon, Mark, PullRequestIcon, WarnIcon } from "../components/Icons";
@@ -332,11 +332,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 						{reach.text}
 					</p>
 				) : null}
-				{summary.harness === "claude" && machine ? (
-					<ClaudeSignIn machine={machine} className="banner session-signin">
-						Claude Code: not signed in on “{machineLabel(machine)}”, so this agent cannot run a turn.
-					</ClaudeSignIn>
-				) : null}
+				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />)}
 				<QuestionDock flow={flow} />
 				{summary.item ? (
 					<ItemNote item={summary.item} status={summary.status} online={online} onStop={stop} />
@@ -371,7 +367,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 					Session details, tokens and changes
 				</a>
 			</div>
-			<SidePanel sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
+			<SidePanel egress={machine?.egress} sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
 		</main>
 	);
 }

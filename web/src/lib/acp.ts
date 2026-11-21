@@ -23,7 +23,7 @@ import type { Block, PlanEntry, ReasoningBlock, SessionView, TextBlock, ToolBloc
 export const ACP_MESSAGE = "acp";
 
 /** Each harness by the name the screens give it. */
-export const HARNESS_NAMES: Record<HarnessId, string> = { windlass: "Windlass", claude: "Claude Code" };
+export const HARNESS_NAMES: Record<HarnessId, string> = { windlass: "Windlass", claude: "Claude Code", opencode: "OpenCode" };
 
 /** The name of the harness a session runs when it is not Windlass, which it is when the summary names none; null for Windlass. */
 export function acpHarnessName(summary: Pick<SessionSummary, "harness">): string | null {
@@ -35,16 +35,21 @@ export function harnessModelsOf(summary: Pick<SessionSummary, "harnessModels">):
 	return summary.harnessModels ?? { source: "harness", defaultModel: "default", models: [{ id: "default", name: null, efforts: [] }], fetchedAt: null };
 }
 
-/** The session's model in a few words for its panel: an ACP harness's model by the name the harness gave it ("Fable 5.2", not "fable"), its default as "Claude Code's default"; Windlass's by its id. */
+/** The session's model in a few words for its panel: an ACP harness's model by the name the harness gave it ("Fable 5.2", not "fable"), its unnamed default as "Claude Code's default"; Windlass's by its id. */
 export function sessionModelWords(summary: Pick<SessionSummary, "harness" | "harnessModels" | "model">): string {
 	const harness = acpHarnessName(summary);
 	if (!harness) return summary.model;
-	if (summary.model === "default") return `${harness}'s default`;
-	return harnessModelsOf(summary).models.find((model) => model.id === summary.model)?.name || summary.model;
+	const name = summary.harnessModels?.models.find(model => model.id === summary.model)?.name;
+	return name || (summary.model === "default" ? `${harness}'s default` : summary.model);
 }
 
 /** A harness a machine's runner reported, as `MachineSummary.harnesses` lists it. */
 export type ReportedHarness = NonNullable<MachineSummary["harnesses"]>[number];
+
+/** Its sign-in in a few words: "signed in", "sign in needed", "unknown". */
+export function signInWords(harness: ReportedHarness): string {
+	return harness.signIn === "token" ? "signed in" : harness.signIn === "none" ? "sign in needed" : "unknown";
+}
 
 /** The command that signs a harness in on its machine, run inside the runner's container. */
 export const loginCommand = (harness: ReportedHarness) => `docker exec -it windlass-runner windlass-runner login ${harness.id}`;

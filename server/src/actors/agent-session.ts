@@ -204,13 +204,14 @@ import { REPORT_TAKEN } from "../agent-publish.js";
 import { RULES } from "../factory/blueprint.js";
 import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
+import { type ProviderRefusal, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
 import { fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
-import type { Fact } from "../factory/types.js";
+import type { Fact, ItemProviderRefusal } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
-import { CLAUDE, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase } from "../github/publish.js";
@@ -280,6 +281,7 @@ const SETUP_FLUSH_MS = 120;
 const SETUP_FLUSH_CHARS = 8_000;
 
 const DELTA_TYPES = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]);
+const SIGN_IN_REMEDY = "Sign in with ChatGPT again, then send the prompt once more.";
 const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "failed", "stopped", "interrupted"];
 
 // ---------------------------------------------------------------------------------------------
@@ -498,7 +500,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; said?: string; pushedAtStart: string | null; refused?: string | null };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal };
 }
 
 /**
@@ -1557,7 +1559,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 		if (turn !== null) note(c, turn, "warn", `${shut.length === 1 ? `Your account's secret ${shut[0]}` : `Your account's secrets ${shut.join(", ")}`} could not be opened by this server, so ${shut.length === 1 ? "it is" : "they are"} not handed over. Save ${shut.length === 1 ? "it" : "them"} again in your settings.`);
 	}
 	if (meta.origin?.role === "reviewer" && (closed.length || shut.length || sealed.project !== project?.key)) throw new TurnProblem("The platform could not read all saved secrets to redact this review.");
-	if (meta.harness === "claude" && (closed.length || shut.length)) throw new TurnProblem("The platform could not read all saved values to redact the Claude Code session.");
+	if (capabilitiesOf(meta.harness).events === "acp" && (closed.length || shut.length)) throw new TurnProblem("The platform could not read all saved values to redact the harness session.");
 	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
 	return {
 		screenshots: sealed.screenshots === true,
@@ -2030,7 +2032,7 @@ function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, question: Tu
 		if (meta.status === "waiting") meta.status = "running";
 	} else if (active.question) {
 		// Windlass asks one question at a time, and the contract shows one. A second one is not left to hang.
-		note(c, active.number, "warn", `${meta.harness === "claude" ? CLAUDE.name : "Windlass"} asked "${title}" while another question was waiting for an answer, so it was declined.`);
+		note(c, active.number, "warn", `${meta.harness && meta.harness !== "windlass" ? machineHarnesses[meta.harness].name : "Windlass"} asked "${title}" while another question was waiting for an answer, so it was declined.`);
 		return declined("Another question was waiting for the user's answer, so the platform declined this call. Ask again if it is still needed.");
 	}
 
@@ -3178,6 +3180,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	let layer: SandboxLayer | null = null;
 	let result: RunTurnResult | null = null;
 	let problem: string | null = null;
+	let lastStepRefusal: ProviderRefusal | null = null;
 	const acpTimeline = acpRecorder(c, turn);
 	let events = 0;
 	let open = true;
@@ -3272,7 +3275,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 					if (!open) return;
 					meta.availableModes = offered;
 					if (!active.modeQueued) meta.mode = chosen;
-					if (fallbackFrom !== undefined) note(c, turn, "info", `Claude Code does not offer “${fallbackFrom}” here. Using its current mode “${chosen}”.`);
+					if (fallbackFrom !== undefined) note(c, turn, "info", `${harness.id === "opencode" ? "OpenCode" : "Claude Code"} does not offer “${fallbackFrom}” here. Using its current mode “${chosen}”.`);
 					publish(c);
 					void persist(c);
 				},
@@ -3434,6 +3437,7 @@ fi`, { signal, timeoutMs: 5000 });
 							event = { ...event, data: { ...event.data, content: [{ type: "text", text: storedBrief }] } };
 							storedBrief = null;
 						}
+						lastStepRefusal = stepRefusal(lastStepRefusal, event);
 						if (reviewer) commands.note(event);
 						active.checks.note(event);
 						onWindlassEvent(c, meta, turn, event);
@@ -3504,7 +3508,7 @@ fi`, { signal, timeoutMs: 5000 });
 		if (caps.events === "acp") {
 			const reason = result?.acp?.stopReason;
 			if (result?.acp && result.windlassSessionId) meta.harnessModels = result.acp.models;
-			if (resumed && result?.resumed === false && result.windlassSessionId) note(c, turn, "warn", "Claude Code could not continue the conversation; the files are as they were.");
+			if (resumed && result?.resumed === false && result.windlassSessionId) note(c, turn, "warn", `${meta.harness === "opencode" ? "OpenCode" : "Claude Code"} could not continue the conversation; the files are as they were.`);
 			if (result?.failure || problem) {
 				outcome = "error";
 				message = result?.failure?.message ?? problem;
@@ -3512,7 +3516,7 @@ fi`, { signal, timeoutMs: 5000 });
 			else if (reason === "end_turn") outcome = "succeeded";
 			else if (reason === "max_tokens" || reason === "max_turn_requests") outcome = "unresolved";
 			else if (reason === "refusal") outcome = "failed";
-			else { outcome = "error"; message = "Claude Code ended without a recognized stop reason."; }
+			else { outcome = "error"; message = `${meta.harness === "opencode" ? "OpenCode" : "Claude Code"} ended without a recognized stop reason.`; }
 		} else if (result?.aborted || (!result && signal.aborted)) {
 			outcome = "interrupted";
 		} else if (result) {
@@ -3523,7 +3527,7 @@ fi`, { signal, timeoutMs: 5000 });
 			if (failure?.reason === "auth_required") {
 				// No sign-in, one that could not be refreshed, or an access token the provider rejected: the remedy is the same.
 				outcome = "error";
-				message = "ChatGPT did not accept the saved sign-in. Sign in with ChatGPT again, then send the prompt once more.";
+				message = `ChatGPT did not accept the saved sign-in. ${SIGN_IN_REMEDY}`;
 				// The next prompt asks the sandbox layer about the sign-in instead of trusting an earlier answer.
 				c.vars.signedInUntil = 0;
 			} else if (failure?.reason === "session_not_found") {
@@ -3557,6 +3561,23 @@ fi`, { signal, timeoutMs: 5000 });
 		} else {
 			outcome = reviewer && !active.item?.refused ? "interrupted" : "error";
 			message = problem ?? "The turn could not be run.";
+		}
+		const refusal = turnRefusal(outcome, result, lastStepRefusal);
+		if (refusal) {
+			// Windlass describes a handed-in token to its host. Use the sandbox layer's remedy for its owner.
+			if (result?.failure?.reason === "auth_required" && message) {
+				if (refusal.message.includes("WINDLASS_ACCESS_TOKEN_FILE")) refusal.message = message;
+				else if (!refusal.message.includes(SIGN_IN_REMEDY)) refusal.message += ` ${SIGN_IN_REMEDY}`;
+			}
+			const redactor = active.secrets?.redactor;
+			const safe = redactor?.deep(refusal) ?? refusal;
+			message = refusalMessage(safe);
+			if (active.item) {
+				const { text, fetchBase } = active.item.row;
+				active.item.providerRefusal = { ...safe, retry: { text: redactor?.text(text) ?? text, fetchBase } };
+			} else if (safe.kind === "invalid_request" || safe.kind.startsWith("model_")) {
+				message += " You can change the model or reasoning effort with your next prompt.";
+			}
 		}
 		if (result?.windlassSessionId && (result.acp || outcome !== "error")) meta.windlassSessionId = result.windlassSessionId;
 
@@ -3732,7 +3753,7 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
 		note(c, turn, "info", "Sent when this turn ends.");
 		return queuePrompt(c, meta, { text: message }, message, submission);
 	};
-	if (active?.closed && meta.harness === "claude") return next(active.number);
+	if (active?.closed && capabilitiesOf(meta.harness).events === "acp") return next(active.number);
 	const stopping = meta.status === "stopping" || active?.controller.signal.aborted === true || active?.closed === true;
 	if (!active || !control || stopping || (meta.status !== "running" && meta.status !== "waiting")) {
 		const state = stopping ? "is being stopped" : "is still starting";
@@ -3748,7 +3769,7 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
 		const why = isSandboxUserError(error) ? ` ${error.message}` : "";
 		throw new UserError(`The running turn could not take the message.${why} Try again in a moment.`, { code: "steer_unavailable" });
 	}
-	if (active.closed && meta.harness !== "claude") {
+	if (active.closed && capabilitiesOf(meta.harness).events !== "acp") {
 		// The turn ended while Windlass was taking the message; nothing can be added to a closed turn.
 		throw new UserError("The turn ended just as the message arrived. Try again in a moment.", { code: "steer_unavailable" });
 	}
@@ -3772,7 +3793,7 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 	// A turn in progress takes the message itself; `model` and `effort` are for a turn that starts.
 	if ((c.vars.turn || c.vars.accepting) && capabilitiesOf(meta.harness).events === "acp" && (input.model || input.effort)) throw new UserError("Choose the model and effort when starting a turn.", { code: "bad_input" });
 	if (c.vars.turn || c.vars.accepting) return await steerTurn(c, meta, c.vars.turn, text, submission);
-	if (meta.harness === "claude") return queuePrompt(c, meta, input, text, submission);
+	if (capabilitiesOf(meta.harness).events === "acp") return queuePrompt(c, meta, input, text, submission);
 	return startPrompt(c, meta, input, text, submission);
 }
 
@@ -3818,8 +3839,8 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		if (meta.repoUrl && facts?.report?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
 		if (caps.signIn === "machine" && facts) {
 			const offered = facts.report?.harnesses?.find(entry => entry.id === meta.harness);
-			if (!offered) throw new UserError("This machine does not offer Claude Code.", { code: "bad_input" });
-			if (offered.signIn === "none") throw new UserError(machineLoginMessage(CLAUDE, facts.name), { code: "harness_signed_out" });
+			if (!offered) throw new UserError(`This machine does not offer ${meta.harness === "opencode" ? "OpenCode" : "Claude Code"}.`, { code: "bad_input" });
+			if (offered.signIn === "none") throw new UserError(machineLoginMessage(machineHarnesses[offered.id], facts.name), { code: "harness_signed_out" });
 		} else if (!meta.demo && Date.now() >= c.vars.signedInUntil) {
 			const { logins } = await layerOf(c, meta);
 			if (!(await logins.status(meta.uid))) {
@@ -4048,6 +4069,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
 		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage), pushedHead, ...(item.refused ? { refused: item.refused } : {}) };
 	}
+	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
 	if (attachmentStore()) {
 		// If the server stops after the ledger commits but before the outbox commits, retry the same keep list.
 		await serial(c, () => c.db.execute("INSERT OR REPLACE INTO attachment_filing VALUES (?,?)", row.key, JSON.stringify(fact)));
@@ -4140,8 +4162,8 @@ export const agentSession = actor({
 				machineName: typeof input.machineName === "string" ? input.machineName : null,
 				harness: input.harness,
 				profile: input.profile,
-				...initialSessionModes(input.profile, input.harness, !!input.origin),
-				...(input.harnessOptions && { harnessModels: initialHarnessModels(input.harnessOptions), availableModes: input.harnessOptions.modes }),
+				...initialSessionModes(input.profile, input.harness, !!input.origin, input.harnessOptions?.modes),
+				...(input.harnessOptions && { harnessModels: initialHarnessModels(input.harnessOptions) }),
 				...(input.mode !== undefined && { mode: input.mode }),
 				model: String(input.model),
 				repoUrl: typeof input.repoUrl === "string" ? input.repoUrl : null,
@@ -4430,8 +4452,8 @@ export const agentSession = actor({
 			const meta = liveMeta(c);
 			if (meta.origin) throw new UserError("A work item and its reviewer use the profile’s approval mode.", { code: "bad_input" });
 			const mode = input?.mode;
-			const beforeClaudeOpen = meta.harness === "claude" && !meta.availableModes.length;
-			if (typeof mode !== "string" || !mode.trim() || (!beforeClaudeOpen && !meta.availableModes.some(m => m.id === mode))) {
+			const beforeHarnessOpen = capabilitiesOf(meta.harness).events === "acp" && !meta.availableModes.length;
+			if (typeof mode !== "string" || !mode.trim() || (!beforeHarnessOpen && !meta.availableModes.some(m => m.id === mode))) {
 				throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
 			}
 			if (c.vars.turn) c.vars.turn.modeQueued = true;

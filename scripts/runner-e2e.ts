@@ -20,6 +20,7 @@ import { createWriteStream, existsSync, mkdtempSync, readFileSync, rmSync, write
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deepStrictEqual } from "node:assert/strict";
 import { mock } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createClient, type Registry } from "../server/src/client.js";
@@ -873,7 +874,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				const { end } = await play("signedout");
 				const name = (await user.machines()).find(m => m.machineId === place.machineId)!.name;
 				const sentence = `Claude Code on “${name}” is not signed in. Run windlass-runner login claude there.`;
-				assert(end.outcome === "error" && end.message === sentence, JSON.stringify(end));
+				assert(end.outcome === "error" && end.message?.includes("Authentication required") && end.message.includes(sentence), JSON.stringify(end));
 				const entry = runner.fake.report.harnesses![0]!;
 				entry.signIn = "none"; runner.report();
 				try {
@@ -991,9 +992,11 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				return "5,000 items, one omission note";
 			});
 			await check("Claude refusal and token limit preserve distinct turn outcomes", async () => {
+				const invalid = (await play("invalidparams")).end;
+				assert(invalid.outcome === "error" && invalid.message?.includes("The provider refused the request. Invalid reasoning effort."), JSON.stringify(invalid));
 				const refusal = (await play("refuse")).end;
 				const limit = (await play("maxtokens")).end;
-				assert(refusal.outcome === "failed" && limit.outcome === "unresolved", `${refusal.outcome}, ${limit.outcome}`);
+				assert(refusal.outcome === "failed" && refusal.message?.includes("The provider refused") && limit.outcome === "unresolved", `${refusal.outcome}, ${limit.outcome}`);
 				return "failed, unresolved";
 			});
 		} finally { await watch.conn.dispose(); }
@@ -1009,8 +1012,9 @@ async function main(): Promise<void> {
 	// Before anything imports auth.js, which reads it once: the service tokens this process makes are the server's.
 	process.env.WLP_SECRET = server.secret;
 	// First, and on a clock of their own: nothing of the server is needed for them.
-	if (process.argv[2] !== "fairness") await linkChecks();
-	const runner = new StandInRunner(ORIGIN, ENDPOINT);
+	const shortSuite = ["fairness", "inventory"].includes(process.argv[2] ?? "");
+	if (!shortSuite) await linkChecks();
+	const runner = new StandInRunner(ORIGIN, ENDPOINT, shortSuite ? { claude: true, stateDir: server.storage } : {});
 	const github = new GithubStandin({ callbackUrl: `${ORIGIN}/github/callback` });
 	await github.start();
 	try {
@@ -1025,10 +1029,33 @@ async function main(): Promise<void> {
 		const newSession = (repoUrl?: string): Promise<SessionSummary> => user.createSession({ place, profile: "docker-hardened", ...(repoUrl ? { repoUrl } : {}) });
 		const refusal = (p: Promise<unknown>) => p.then(() => "accepted", (error) => String((error as { code?: unknown }).code));
 
-		if (process.argv[2] === "fairness") {
+		if (shortSuite) {
+			const options = { models: [{ id: "opus", name: "Reported Opus", efforts: ["high"] }, { id: "sonnet", name: "Reported Sonnet", efforts: ["low"] }],
+				defaultModel: "opus", modes: [{ id: "plan", name: "Plan", description: "Plan first" }], checkedAt: Date.now() };
+			runner.fake.report.harnesses![0]!.options = options;
 			runner.fake.maxTurns = 2;
 			await runner.connectControl();
 			await until("machine report", async () => (await user.machines()).some(m => m.commandSandbox));
+			await check("a fresh Claude session shows the machine catalog before turn one, then adopts the live ACP catalog", async () => {
+				const created = await user.createSession({ place, profile: "docker-hardened", harness: "claude" });
+				const seen = new Watch(client, uid, created.id, token);
+				try {
+					const before = await seen.conn.snapshot();
+					assert(before.windlassSessionId === null && before.summary.turns === 0, "session already opened");
+					for (const summary of [created, before.summary]) {
+						deepStrictEqual(summary.harnessModels, { source: "harness", models: options.models, fetchedAt: options.checkedAt, defaultModel: "opus" });
+						deepStrictEqual(summary.availableModes, options.modes);
+						assert(summary.mode === "plan" && summary.model === "opus", "initial selection absent from report");
+					}
+					const { turn } = await seen.conn.prompt({ text: "plain" });
+					assert((await seen.untilEnded(turn)).outcome === "succeeded", "first turn failed");
+					const after = (await seen.conn.snapshot()).summary;
+					assert(after.harnessModels?.defaultModel === "default" && after.harnessModels.models.some(m => m.id === "default"), "first turn did not replace the catalog");
+					assert(after.availableModes?.some(m => m.id === "auto"), "first turn did not replace modes");
+				} finally { await seen.conn.dispose(); await user.deleteSession(created.id); }
+				return "model names, efforts, modes and report timestamp persisted before ACP opened";
+			});
+			if (process.argv[2] === "inventory") return;
 			const { machineFairnessChecks } = await import("./machine-fairness-check.js");
 			await machineFairnessChecks(check, client, runner, token, server.storage);
 			return;

@@ -160,17 +160,7 @@ To add the flag, put `--harness claude` after the runner image in the command ab
 
 ### Sign Claude in
 
-The Machines page shows "Claude Code: not signed in." for such a machine. While the machine is online:
-
-1. Choose **Sign in** beside it.
-2. Choose **Open Anthropic to authorize**. Anthropic's page opens in a new tab. The sign-in lasts 10 minutes.
-3. Authorize there, then paste the code Anthropic shows into **Paste the code Anthropic shows**, and choose **Finish**.
-
-It can take up to about 20 seconds. Your token is created on your machine, and the runner never sends it to the platform.
-
-> **Careful** Paste the code, never the token. If you paste a token, the page refuses it: "That is a Claude token, not the code."
-
-You can also sign in on the machine itself:
+The Machines page shows the sign-in state and a command to copy. Run it in a terminal on the paired machine.
 
 ```sh
 docker exec -it windlass-runner windlass-runner login claude

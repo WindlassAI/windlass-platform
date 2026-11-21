@@ -1969,6 +1969,14 @@ button.output-more:hover {
 	color: var(--ink);
 	background: var(--bg-hover);
 }
+.panel-catalog {
+	max-height: 18rem;
+	overflow: auto;
+	overflow-wrap: anywhere;
+}
+.panel-catalog ul {
+	padding-inline-start: 1.3rem;
+}
 .panel-more-chevron {
 	transition: transform 140ms var(--ease);
 }

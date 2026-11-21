@@ -13,7 +13,7 @@
  * which keeps its profile's. For Claude Code the sandbox's facts say that mode in place of the
  * profile's approval, and that its commands can use the Claude login it runs with.
  */
-import type { PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
+import type { EgressMode, PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { acpHarnessName, contextWords, costWords, sessionModelWords } from "../lib/acp";
 import { currentMode } from "../lib/modes";
@@ -34,6 +34,7 @@ import { AgentGlyph } from "./ui";
 
 function Facts({ summary, profile, view }: { summary: SessionSummary; profile: SandboxProfile; view: SessionView }) {
 	const id = view.windlassSessionId;
+	const [showOptions, setShowOptions] = useState(false);
 	const harness = acpHarnessName(summary);
 	const mode = currentMode(summary, profile);
 	return (
@@ -85,6 +86,18 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 				<dt>created</dt>
 				<dd>{absoluteTime(summary.createdAt)}</dd>
 			</dl>
+			{harness && summary.harnessModels && (
+				<details className="panel-more" onToggle={event => setShowOptions(event.currentTarget.open)}>
+					<summary><ChevronIcon size={12} className="panel-more-chevron" />Available models and modes</summary>
+					{showOptions && <div className="panel-catalog">
+						<strong>Models</strong>
+						<ul aria-label="Available models">{summary.harnessModels.models.map(model =>
+							<li key={model.id}>{model.name || model.id}{model.efforts.length > 0 && <small> · {model.efforts.join(", ")}</small>}</li>)}</ul>
+						{summary.availableModes.length > 0 && <><strong>Modes</strong><ul aria-label="Available modes">{summary.availableModes.map(mode =>
+							<li key={mode.id} title={mode.description ?? undefined}>{mode.name}</li>)}</ul></>}
+					</div>}
+				</details>
+			)}
 		</section>
 	);
 }
@@ -97,7 +110,7 @@ function Sandbox({ summary, profile }: { summary: SessionSummary; profile: Sandb
 				<SandboxState state={summary.sandbox} />
 			</h2>
 			<p className="panel-lede">{profile.name}</p>
-			<ProfileFacts profile={profile} claude={summary.harness === "claude" ? { mode: currentMode(summary, profile) } : null} />
+			<ProfileFacts profile={profile} claude={summary.harness && summary.harness !== "windlass" ? { opencode: summary.harness === "opencode", mode: currentMode(summary, profile) } : null} />
 			<details className="panel-more">
 				<summary>
 					<ChevronIcon size={12} className="panel-more-chevron" />
@@ -421,7 +434,7 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 	);
 }
 
-export function SidePanel({ sessionId, summary, profile, view, turnsEnded, question = null }: { sessionId: string; summary: SessionSummary; profile: SandboxProfile; view: SessionView; turnsEnded: number; question?: PendingQuestion | null }) {
+export function SidePanel({ sessionId, summary, profile, view, turnsEnded, question = null, egress }: { egress?: EgressMode; sessionId: string; summary: SessionSummary; profile: SandboxProfile; view: SessionView; turnsEnded: number; question?: PendingQuestion | null }) {
 	// How many files differ from the last commit, once the list was read; and a count that asks for it again.
 	const [files, setFiles] = useState<number | null>(null);
 	const [reloads, setReloads] = useState(0);
@@ -441,7 +454,7 @@ export function SidePanel({ sessionId, summary, profile, view, turnsEnded, quest
 			)}
 			<Changes sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} reloads={reloads} onFiles={setFiles} />
 			<PullRequestSection sessionId={sessionId} summary={summary} profile={profile} turnsEnded={turnsEnded} files={files} onPublished={published} />
-			<SetupSection summary={summary} />
+			<SetupSection egress={egress} summary={summary} />
 			{harness ? null : <SecretsSection summary={summary} />}
 			{/* Last: it is there only where the project names a server, and so its arrival moves no other section. */}
 			<ServersSection sessionId={sessionId} summary={summary} question={question} />

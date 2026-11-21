@@ -2071,6 +2071,8 @@ async function main(server: Server | null): Promise<void> {
 			assert(signedOut.outcome === "error" && /sign in with chatgpt again/i.test(signedOut.message ?? ""), `auth-fail: ${plain(signedOut)}`);
 			const outdated = await run("please (missing-host-tools)");
 			assert(outdated.outcome === "error" && /platform's tools/.test(outdated.message ?? ""), "a sandbox without host tools must refuse the turn");
+			const refused = await run("please (invalid-effort)");
+			assert(refused.outcome === "failed" && refused.message?.includes("The provider refused the request. HTTP 400: Invalid value: 'ultra'") && refused.message.includes("[param: reasoning.effort]"), `provider 400: ${plain(refused)}`);
 			const failed = await run("please (exec-fail)");
 			assert(failed.outcome === "failed" && failed.message === null && failed.steps === 1, `exec-fail: ${plain(failed)}`);
 			assert(scratchWatch.windlass(failed.turn, "execution.failed").some((item) => String(item.event.data?.message).includes("failed 4 times")), "the failed turn's events do not say how it failed");
@@ -2402,7 +2404,7 @@ async function main(server: Server | null): Promise<void> {
 				}
 			};
 			const expired = await turnOf("expired");
-			assert(expired.outcome === "error" && /sign in with chatgpt again/i.test(expired.message ?? ""), `expired: ${plain(expired)}`);
+			assert(expired.outcome === "error" && expired.message?.match(/sign in with chatgpt again/gi)?.length === 1, `expired: ${plain(expired)}`);
 			const offline = await turnOf("offline");
 			assert(offline.outcome === "error" && /could not get an access token/.test(offline.message ?? "") && /send the prompt again/.test(offline.message ?? "") && !/sign in with chatgpt again/i.test(offline.message ?? ""), `offline: ${plain(offline)}`);
 			return `expired: "${expired.message}"; offline: "${offline.message}"`;

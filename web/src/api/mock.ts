@@ -61,6 +61,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
  * across a reload and sessions created by hand do not survive one.
  */
 import { initialHarnessModels } from "../../../server/src/sandbox/harnesses.js";
+import { workspaceNetwork } from "../lib/machines";
 import { initialSessionModes } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
 import {
@@ -145,6 +146,7 @@ import {
 } from "@contract";
 import { PlatformError, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
 import { acpOutcome, acpRecorder, isDurable, isLive, isPermission, schedule, splitRuns, turnEnded, withSummary, type AcpPermission } from "./feed";
+import { HARNESS_NAMES } from "../lib/acp";
 import { acpFixture } from "./acp-fixtures";
 import { fixture } from "./fixtures";
 import { unifiedDiff } from "../lib/acp";
@@ -196,7 +198,7 @@ export type MockUsageState = "plenty" | "low" | "used" | "full";
  * a machine whose runner runs in a container and reported the container's id for its host name). In the add dialog any
  * well-formed code is found, except ZZZZ-ZZZZ.
  */
-export const MOCK_MACHINE_STATES = ["none", "online", "claude-signed-out", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed"] as const;
+export const MOCK_MACHINE_STATES = ["none", "online", "fresh", "claude-signed-out", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed"] as const;
 export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
 
 /**
@@ -226,13 +228,22 @@ const MOCK_CLAUDE_MODELS: ModelList = {
 	],
 };
 
+const MOCK_OPENCODE_MODELS: ModelList = {
+	source: "harness", defaultModel: "openai/gpt-5.4", fetchedAt: null,
+	models: [{ id: "openai/gpt-5.4", name: "OpenAI/GPT-5.4", efforts: ["low", "medium", "high", "xhigh", "default"] }, { id: "openai/gpt-5.4-mini", name: "OpenAI/GPT-5.4 mini", efforts: ["low", "medium", "high", "default"] }],
+};
+const MOCK_OPENCODE_MODES = [
+	{ id: "build", name: "build", description: "The default agent. Executes tools based on configured permissions." },
+	{ id: "plan", name: "plan", description: "Plan mode. Disallows all edit tools." },
+];
+
 /** What the mock's runners say they are, and what its platform asks of them. */
 const MOCK_RUNNER_VERSION = "0.2.1";
 const MOCK_MIN_RUNNER_VERSION = "0.2.0";
 const MOCK_RUNNER_IMAGE = "registry.example.com/windlass-runner@sha256:6b1f0c2d9e4a8b7c3f5e1d0a9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b";
 
 /** A machine's sandbox profiles as the server words them from its runner's report (server/src/runner/machine-profiles.ts): `docker` and `commandSandbox` are what failed, if anything. */
-function mockMachineProfiles(name: string, failed: { docker?: string; commandSandbox?: string } = {}): SandboxProfile[] {
+function mockMachineProfiles(name: string, failed: { docker?: string; commandSandbox?: string } = {}, egress: MachineSummary["egress"] = "open"): SandboxProfile[] {
 	const machine = `your machine "${name}"`;
 	const layers = [`Your machine "${name}" (yours; the platform does not control it)`, "Docker container made by the runner (non-root, no capabilities, limits)"];
 	const sandbox = failed.docker ?? failed.commandSandbox;
@@ -252,10 +263,11 @@ function mockMachineProfiles(name: string, failed: { docker?: string; commandSan
 		{
 			id: "docker-hardened",
 			name: `Hardened Docker on ${machine}`,
-			summary: `Commands run directly in a container on ${machine}, can reach its local network and can read the session's access token. ${trust}`,
+			summary: `Commands run directly in a container on ${machine} and can read the session's access token. ${workspaceNetwork(egress)} ${trust}`,
 			layers,
 			approval: "full",
-			commandNetwork: true,
+			commandNetwork: egress !== "none",
+			commandNetworkText: workspaceNetwork(egress),
 			commandsCanReadAccessToken: true,
 			available: failed.docker === undefined,
 			...(failed.docker !== undefined ? { unavailableReason: failed.docker } : {}),
@@ -2466,7 +2478,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const outcome = acpOutcome(stopReason);
 		store(session, { turn: state.turn, kind: "turn.ended", outcome, exitCode: null, steps: null, durationMs: now() - state.startedAt, usage: null, cachedShare: null, message: null, verified: null, context: state.acp?.context ?? null });
 		// Once it has run, the session has the models Claude Code listed.
-		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: outcome, updatedAt: now(), harnessModels: { ...MOCK_CLAUDE_MODELS, fetchedAt: now() } });
+		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: outcome, updatedAt: now(), harnessModels: { ...(session.summary.harness === "opencode" ? MOCK_OPENCODE_MODELS : MOCK_CLAUDE_MODELS), fetchedAt: now() } });
 		if (clock === null) {
 			session.pauseTimer = later(2 * MINUTE, () => {
 				if (session.run !== null || session.summary.sandbox !== "running") return;
@@ -3038,8 +3050,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		claims: Map<string, string | null>;
 		/** When this user looked a code up, for the limit of five in ten minutes. */
 		lookups: number[];
-		loginAttempts: number[];
-		logins: Map<string, number>;
 		/** For `stale`: whether the user's connection dropped yet, after which the list can no longer be read. */
 		dropped: "no" | "soon" | "yes";
 	}
@@ -3047,14 +3057,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	const machineState: MockMachineState = options.machine ?? "online";
 	const machineSession: MockMachineSession = options.machineSession ?? "answering";
 	// The agent on "nas" is seeded where "nas" is listed as its runner reported it, and, when its machine was removed, wherever machines are offered.
-	const machineSessionSeeded = machineSession === "removed" ? machineState !== "off" : !["none", "unpublished", "off", "pairing"].includes(machineState);
+	const machineSessionSeeded = machineState !== "fresh" && (machineSession === "removed" ? machineState !== "off" : !["none", "unpublished", "off", "pairing"].includes(machineState));
 	const machineSets = new Map<string, MockMachines>();
 
 	function machinesOf(auth: AuthResult): MockMachines {
 		const world = worldOf(auth);
 		let set = machineSets.get(world.profile.uid);
 		if (!set) {
-			set = { list: seedMachines(machineState), claims: new Map(), lookups: [], loginAttempts: [], logins: new Map(), dropped: "no" };
+			set = { list: seedMachines(machineState), claims: new Map(), lookups: [], dropped: "no" };
 			machineSets.set(world.profile.uid, set);
 		}
 		return set;
@@ -3063,7 +3073,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** The list as the server answers it: each sandbox named by its agent's title now, none for an agent that was deleted. */
 	function machinesView(auth: AuthResult): MachineSummary[] {
 		const world = worldOf(auth);
-		return machinesOf(auth).list.map((machine) => ({ ...machine, warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
+		return machinesOf(auth).list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map(({ options, ...entry }) => options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry), warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
 	}
 
 	function machinesChanged(auth: AuthResult): void {
@@ -3151,6 +3161,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** The machines a state starts with. Their sandboxes name the seeded agents; titles are looked up when the list is read. */
 	function seedMachines(state: MockMachineState): MachineSummary[] {
 		const at = realNow();
+		const claude = { ...MOCK_CLAUDE, options: { models: MOCK_CLAUDE_MODELS.models, defaultModel: MOCK_CLAUDE_MODELS.defaultModel, modes: [...CLAUDE_LAUNCH_MODES], checkedAt: at } };
+		const externalHarnesses: MachineSummary["harnesses"] = [{ ...claude, signIn: "none" }, { ...MOCK_CLAUDE, id: "opencode", adapter: "OpenCode 1.19.6", signIn: "token", options: { models: MOCK_OPENCODE_MODELS.models, defaultModel: MOCK_OPENCODE_MODELS.defaultModel, modes: MOCK_OPENCODE_MODES, checkedAt: at } }];
 		const nas = (patch: Partial<MachineSummary>): MachineSummary => ({
 			machineId: "m_nas",
 			name: "nas",
@@ -3166,10 +3178,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			],
 			commandSandbox: { ok: true },
 			freeDiskBytes: 61.4e9,
-			profiles: mockMachineProfiles(patch.name ?? "nas"),
+			egress: "open",
+			profiles: mockMachineProfiles(patch.name ?? "nas", {}, patch.egress),
 			sendSecrets: true, whenToUse: "Build and test", tags: ["big-build"], host: { cpus: 8, sandboxCpus: 4, memoryBytes: 16 * 2**30, memoryFreeBytes: 8 * 2**30, load1: 1 }, turns: { running: 0, queued: 0, max: 2 },
 			warnings: [],
-			harnesses: [{ ...MOCK_CLAUDE, options: { models: MOCK_CLAUDE_MODELS.models, defaultModel: MOCK_CLAUDE_MODELS.defaultModel, modes: [...CLAUDE_LAUNCH_MODES], checkedAt: at } }],
+			harnesses: [claude],
 			...patch,
 		});
 		switch (state) {
@@ -3184,8 +3197,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				return [nas({
 					...(machineSession === "offline" && { status: "offline", since: at - 12 * MINUTE }),
 				})];
+			case "fresh":
+				return [nas({ machineId: "m_workshop", name: "workshop", egress: "restricted", agents: 0, sandboxes: [], harnesses: externalHarnesses })];
 			case "claude-signed-out":
-				return [nas({ harnesses: [{ ...MOCK_CLAUDE, signIn: "none" }] })];
+				return [nas({ harnesses: [{ ...claude, signIn: "none" }] })];
 			case "pairing":
 				return [nas({ status: "waiting", since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [], harnesses: undefined })];
 			case "outdated":
@@ -3208,11 +3223,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						agents: 1,
 						sandboxes: [{ sessionId: "workshop-gone", title: null, state: "paused", usedAt: at - 2 * 24 * HOUR }],
 						commandSandbox: { ok: false, reason: WORKSHOP_NO_BUBBLEWRAP },
-						profiles: mockMachineProfiles("workshop", { commandSandbox: WORKSHOP_NO_BUBBLEWRAP }),
+						egress: "restricted",
+						profiles: mockMachineProfiles("workshop", { commandSandbox: WORKSHOP_NO_BUBBLEWRAP }, "restricted"),
 						freeDiskBytes: 3.2e9,
 						sendSecrets: false,
 						// Its runner was started with --harness claude, and nobody signed Claude Code in there.
-						harnesses: [{ ...MOCK_CLAUDE, signIn: "none" }],
+						harnesses: externalHarnesses,
 					}),
 					// Its owner started its runner with --max-running 2 --max-sandboxes 6; the others have no limit.
 					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9, maxRunning: 2, maxSandboxes: 6, harnesses: undefined }),
@@ -3248,21 +3264,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** The calls of the Machines page. A machine paired here waits for its runner, which connects a few seconds later. */
-	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineDetails" | "setMachineSecrets" | "startClaudeLogin" | "finishClaudeLogin" | "cancelClaudeLogin"> {
-		function loginMachine(id: string) {
-			machinesOn();
-			const set = machinesOf(auth);
-			const at = realNow();
-			set.loginAttempts = set.loginAttempts.filter(t => t > at - 10 * MINUTE);
-			if (set.loginAttempts.length >= 12) throw new PlatformError("user", "Too many Claude sign-in requests.", { reason: "rate_limited" });
-			set.loginAttempts.push(at);
-			const machine = machineOf(auth, id);
-			if (machine.status !== "online") throw new PlatformError("user", "The machine is offline.", { reason: "machine_not_connected" });
-			if (!machine.harnesses?.some(h => h.id === "claude")) throw new PlatformError("user", "This machine does not offer Claude Code.", { reason: "claude_unavailable" });
-			if ((set.logins.get(id) ?? 0) <= at) set.logins.delete(id);
-			return { machine, logins: set.logins };
-		}
+	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "machineCatalog" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineDetails" | "setMachineSecrets"> {
 		return {
+			async machineCatalog({ machineId, id, digest }) {
+				const entry = machineOf(auth, machineId).harnesses?.find(h => h.id === id);
+				return entry?.options && digest === String(entry.options.checkedAt) ? entry.options : null;
+			},
 			async machines() {
 				machinesOn();
 				const set = machinesOf(auth);
@@ -3303,25 +3310,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					machinesChanged(auth);
 				});
 				return machinesView(auth).find((one) => one.machineId === machineId) as MachineSummary;
-			},
-			async startClaudeLogin({ machineId }) {
-				const { logins } = loginMachine(machineId);
-				if (logins.has(machineId)) throw new PlatformError("user", "A Claude Code sign-in is already pending.", { reason: "claude_login_failed" });
-				const expiresAt = realNow() + 10 * MINUTE;
-				logins.set(machineId, expiresAt);
-				return { url: "https://claude.example.invalid/authorize", expiresAt };
-			},
-			async finishClaudeLogin({ machineId, code }) {
-				const { machine, logins } = loginMachine(machineId);
-				if (!logins.delete(machineId)) throw new PlatformError("user", "No Claude Code sign-in is pending.", { reason: "claude_login_failed" });
-				if (code !== "mock-approval") throw new PlatformError("user", "The mock approval code is mock-approval.", { reason: "claude_login_failed" });
-				machine.harnesses = machine.harnesses!.map(h => ({ ...h, signIn: "token" }));
-				machinesChanged(auth);
-				return { signedIn: true };
-			},
-			async cancelClaudeLogin({ machineId }) {
-				loginMachine(machineId).logins.delete(machineId);
-				return { cancelled: true };
 			},
 			async removeMachine({ machineId }) {
 				machinesOn();
@@ -3391,21 +3379,20 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const profile = (machine ? machine.profiles : profiles).find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
 				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());
-				const options = machine?.harnesses?.find(entry => entry.id === "claude")?.options;
+				const options = machine?.harnesses?.find(entry => entry.id === input.harness)?.options;
 				const harness: HarnessId = input.harness ?? "windlass";
 				if (harness !== "windlass") {
-					if (!machine) throw new PlatformError("user", "Claude Code runs only on a machine of yours.", { reason: "bad_input" });
-					if (input.profile !== "docker-hardened") throw new PlatformError("user", "Claude Code requires the docker-hardened profile.", { reason: "bad_input" });
-					if (input.publishUnasked) throw new PlatformError("user", "Claude Code has no publish tool. Publish from the session panel.", { reason: "bad_input" });
-					if (!machine.harnesses?.some((offered) => offered.id === harness)) throw new PlatformError("user", "This machine does not offer Claude Code.", { reason: "bad_input" });
+					if (!machine) throw new PlatformError("user", `${HARNESS_NAMES[harness]} runs only on a machine of yours.`, { reason: "bad_input" });
+					if (input.profile !== "docker-hardened") throw new PlatformError("user", `${HARNESS_NAMES[harness]} requires the docker-hardened profile.`, { reason: "bad_input" });
+					if (input.publishUnasked) throw new PlatformError("user", `${HARNESS_NAMES[harness]} has no publish tool. Publish from the session panel.`, { reason: "bad_input" });
+					if (!machine.harnesses?.some((offered) => offered.id === harness)) throw new PlatformError("user", `This machine does not offer ${HARNESS_NAMES[harness]}.`, { reason: "bad_input" });
 				}
-				const models = harness === "claude" ? initialHarnessModels(options) : modelsFor(world().profile);
+				const models = harness !== "windlass" ? initialHarnessModels(options) : modelsFor(world().profile);
 				if (input.model) {
-					if (harness === "claude" && options && !models.models.some(m => m.id === input.model)) throw new PlatformError("user", "Choose a model offered by this machine.", { reason: "bad_input" });
+					if (harness !== "windlass" && options && !models.models.some(m => m.id === input.model)) throw new PlatformError("user", "Choose a model offered by this machine.", { reason: "bad_input" });
 					checkModel(models, input.model);
 				}
-				const modes = initialSessionModes(profile.id, harness);
-				if (harness === "claude") modes.availableModes = options?.modes ?? [...CLAUDE_LAUNCH_MODES];
+				const modes = initialSessionModes(profile.id, harness, false, options?.modes ?? (harness === "claude" ? [...CLAUDE_LAUNCH_MODES] : undefined));
 				if (input.mode !== undefined) {
 					if (!modes.availableModes.some(m => m.id === input.mode)) throw new PlatformError("user", "Choose a mode offered by this agent.", { reason: "bad_input" });
 					modes.mode = input.mode;
@@ -3423,7 +3410,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
 				if (repository && input.setupCommand !== undefined) saveSetup(world(), repository.id, input.setupCommand);
 				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, harness, modes, model: input.model || models.defaultModel, repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
-				if (harness === "claude" && options) session.summary = { ...session.summary, harnessModels: models };
+				if (harness !== "windlass" && options) session.summary = { ...session.summary, harnessModels: models };
 				if (machine) {
 					session.summary = { ...session.summary, place: { kind: "machine", machineId: machine.machineId } };
 					session.machine = { profile, reach: null };
@@ -3770,6 +3757,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const status = session.summary.status;
 				if (status === "starting") throw new PlatformError("user", "The agent is still starting. Send this again once it is working.", { reason: "steer_unavailable" });
 				if (status === "stopping") throw new PlatformError("user", "The turn is stopping. Send this again once it has stopped.", { reason: "steer_unavailable" });
+				if ((status === "running" || status === "waiting") && session.run && session.summary.harness === "opencode")
+					throw new PlatformError("user", "OpenCode cannot steer this turn.", { reason: "steer_unavailable" });
 				if ((status === "running" || status === "waiting") && session.run && session.summary.harness === "claude") {
 					// Claude Code takes it through its steering extension: the server stores it as a steer.
 					if (input.model !== undefined || input.effort !== undefined) throw new PlatformError("user", "Choose the model and effort when starting a turn.", { reason: "bad_input" });
@@ -3794,22 +3783,24 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle" && (other.summary.item !== undefined || other.summary.place.kind === "hosted")).length;
 				if (hosted && running >= MOCK_FACTORY_LIMITS.runningTurns) throw new PlatformError("user", `You already have ${running} ${running === 1 ? "agent" : "agents"} working, which is your limit. Wait for one to finish, or stop one.`, { reason: "too_many_running" });
 				// A Claude Code agent's turn: the models are the ones it listed, and the machine's report says whether it is signed in.
-				if (session.summary.harness === "claude") {
+				const harness = session.summary.harness;
+				if (harness && harness !== "windlass") {
+					const name = HARNESS_NAMES[harness];
 					const unreachable = machineUnreachable(auth, session);
 					const place = session.summary.place;
 					const machine = place.kind === "machine" ? machinesOf(auth).list.find((one) => one.machineId === place.machineId) : undefined;
-					const offered = machine?.harnesses?.find((one) => one.id === "claude");
-					if (unreachable === null && !offered) throw new PlatformError("user", "This machine does not offer Claude Code.", { reason: "bad_input" });
-					if (unreachable === null && offered?.signIn === "none") throw new PlatformError("user", `Claude Code on “${machine?.name ?? "your machine"}” is not signed in. Run windlass-runner login claude there.`, { reason: "harness_signed_out" });
+					const offered = machine?.harnesses?.find((one) => one.id === harness);
+					if (unreachable === null && !offered) throw new PlatformError("user", `This machine does not offer ${name}.`, { reason: "bad_input" });
+					if (unreachable === null && offered?.signIn === "none") throw new PlatformError("user", `${name} on “${machine?.name ?? "your machine"}” is not signed in. Run windlass-runner login ${harness} there.`, { reason: "harness_signed_out" });
 					const listed = session.summary.harnessModels ?? null;
-					if (input.model !== undefined && !(listed?.models ?? [{ id: "default" }]).some((one) => one.id === input.model)) throw new PlatformError("user", `Claude Code offers no model "${input.model}".`, { reason: "bad_model" });
-					if ((!input.model || input.model === session.summary.model) && input.effort !== undefined && !(listed?.models.find((one) => one.id === (input.model ?? session.summary.model))?.efforts ?? []).includes(input.effort)) throw new PlatformError("user", "Claude Code offered no such effort.", { reason: "bad_effort" });
+					if (input.model !== undefined && !(listed?.models ?? [{ id: "default" }]).some((one) => one.id === input.model)) throw new PlatformError("user", `${name} offers no model "${input.model}".`, { reason: "bad_model" });
+					if ((!input.model || input.model === session.summary.model) && input.effort !== undefined && !(listed?.models.find((one) => one.id === (input.model ?? session.summary.model))?.efforts ?? []).includes(input.effort)) throw new PlatformError("user", `${name} offered no such effort.`, { reason: "bad_effort" });
 					const turn = session.summary.turns + 1;
 					if (unreachable !== null) {
 						play(session, plan(world, session, { ...input, text }, { events: [], platformFailure: unreachable, unreachable: true }));
 						return take({ turn, steered: false });
 					}
-					play(session, acpTurn(world, session, { ...input, text }, claudeScript(session, text)));
+					play(session, acpTurn(world, session, { ...input, text }, harness === "claude" ? claudeScript(session, text) : { entries: [{ wait: 200, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "OpenCode completed the mock turn." } } }], stopReason: "end_turn" }));
 					return take({ turn, steered: false });
 				}
 				const models = modelsFor(world.profile);
@@ -3873,7 +3864,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			async stop() {
 				await latency(90);
 				const { world, session } = find();
-				if (session.summary.harness === "claude") interruptAcp(world, session);
+				if (session.run?.acp) interruptAcp(world, session);
 				else interrupt(world, session);
 			},
 			async changes(): Promise<WorkspaceFile[]> {
@@ -4020,7 +4011,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		endpoint: null,
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
-			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, platformUrl: origin } };
+			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, runnerHarnesses: ["claude", "opencode"] as Array<"claude" | "opencode">, platformUrl: origin } };
 			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true } }) };
 		},
 		login: {

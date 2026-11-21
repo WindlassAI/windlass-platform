@@ -13,6 +13,10 @@ export const modelIds = (list: ModelList | null): string[] => list?.models.map((
 /** The efforts a model accepts; none for a model that takes no effort, and for one the list does not have. */
 export const effortsOf = (list: ModelList | null, model: string): string[] => list?.models.find((candidate) => candidate.id === model)?.efforts ?? [];
 
+/** Use an adapter's explicit reset value when it offers one. Other models reset by omitting effort. */
+export const effortChoices = (efforts: string[]): string[] =>
+	[efforts.includes("default") ? "default" : "", ...efforts.filter(level => level !== "default")];
+
 /** Whose list it is, in a sentence, for under a field. */
 export function modelsNote(list: ModelList): string {
 	switch (list.source) {
@@ -55,19 +59,20 @@ interface ReportedOptions {
 
 /**
  * The models and modes another harness offers on a machine before an agent of it runs there, as the
- * machine's runner reported them (`MachineSummary.harnesses[].options`). The server holds a launch's
+ * machine's runner reported them in its catalog. The server holds a launch's
  * model against that same report, so no other list is offered: a model an earlier agent listed may
  * not be one the server takes yet. Null where there is none: the harness starts on its own default.
  */
-export function harnessOptions(machine: MachineSummary | null, harness: HarnessId): { models: ModelList | null; modes: SessionMode[] | null } {
+export function harnessOptions(machine: MachineSummary | null, harness: HarnessId, catalog?: ReportedOptions): { models: ModelList | null; modes: SessionMode[] | null } {
 	if (machine === null || harness === "windlass") return { models: null, modes: null };
-	const reported = (machine.harnesses?.find((entry) => entry.id === harness) as { options?: ReportedOptions } | undefined)?.options;
+	const entry = machine.harnesses?.find(entry => entry.id === harness);
+	const reported = catalog ?? entry?.options;
 	const modes = reported?.modes && reported.modes.length > 0 ? reported.modes : null;
 	const first = reported?.models?.[0];
 	if (!reported?.models || first === undefined) return { models: null, modes };
 	// The runner reports the adapter's own default; the first listed model stands in only when it names none it lists.
 	const defaultModel = reported.models.some((model) => model.id === reported.defaultModel) ? (reported.defaultModel as string) : first.id;
-	return { models: { source: "harness", models: reported.models, defaultModel, fetchedAt: reported.checkedAt ?? null }, modes };
+	return { models: { source: "harness", models: reported.models, defaultModel, fetchedAt: entry?.optionsCheckedAt ?? reported.checkedAt ?? null }, modes };
 }
 
 /** What a model is called on screen: the harness's name for it where it gave one, its id otherwise. */

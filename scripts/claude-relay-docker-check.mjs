@@ -1,4 +1,5 @@
 // Run from server with: pnpm exec tsx ../scripts/claude-relay-docker-check.mjs sha256:<local Claude image id>
+import { checkIsolation } from '../fixtures/claude-relay/isolation.mjs';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
@@ -24,7 +25,6 @@ const { docker } = await import('../server/src/sandbox/docker.ts');
 const { Executor } = await import('../runner/src/docker-executor.ts');
 const { storePair } = await import('../runner/src/state.ts');
 const { storeClaudeLogin, loginFileState } = await import('../runner/src/harness-login.ts');
-const { probeClaudeOptions } = await import('../runner/src/claude-options.ts');
 const { containerName } = await import('../server/src/sandbox/sandboxes.ts');
 const { LABEL, LABEL_ARG } = await import('../server/src/sandbox/docker.ts');
 const cmd = async (args, opts) => (await docker(args, { check: true, timeoutMs: 45_000, ...opts })).stdout.trim();
@@ -46,43 +46,7 @@ async function status(name, bearer, host = '127.0.0.1:17892') {
 		{method:'POST', headers:{host:process.argv[2],authorization:'Bearer '+process.argv[1]}},res=>{console.log(res.statusCode);res.resume()});
 		r.on('error',()=>process.exit(1));r.end('{}');`, bearer, host]);
 }
-async function isolation(name) {
-	const audit = await cmd(['exec', '-i', name, 'python3', '-c', `import base64,glob,os,subprocess,sys
-marker=sys.stdin.buffer.read()
-assert marker and not os.path.exists('/run/wlp-harness/claude/token')
-envs=glob.glob('/proc/[0-9]*/environ')
-assert len(envs)>2
-saw_cli=False
-for path in ['/etc/hosts','/etc/hostname','/etc/resolv.conf',*envs,*glob.glob('/proc/[0-9]*/cmdline')]:
- if not os.path.exists(path): continue
- raw=subprocess.check_output(['cat','--',path])
- encoded=subprocess.check_output(['base64','-w0','--',path])
- assert marker not in raw and marker not in base64.b64decode(encoded)
- if path.endswith('/cmdline') and b'claude-agent-sdk-linux-' in raw.split(b'\\0')[0]: saw_cli=True
-assert saw_cli
-print("ok")
-`], {stdin: token.slice(0,31)});
-	assert.equal(audit, 'ok');
-	assert.ok(!JSON.stringify(JSON.parse(await cmd(['container','inspect',name]))[0].Config).includes(token));
-	// The immutable image predates the random sentinel. Scan the contents of every regular
-	// file created or modified in its writable layer; pass only a short search prefix.
-	const changes = await cmd(['diff', name]);
-	const paths = changes.split('\n').filter(s => /^[AC] /.test(s)).map(s => s.slice(2));
-	const result = await cmd(['exec', '-i', name, 'python3', '-c', `import sys,os
-marker,*paths=sys.stdin.buffer.read().splitlines()
-assert paths
-for raw in paths:
- p=os.fsdecode(raw)
- if os.path.isfile(p) and not os.path.islink(p):
-  with open(p,'rb') as f:
-   tail=b''
-   while block:=f.read(131072):
-    data=tail+block
-    assert marker not in data
-    tail=data[-len(marker):]
-`,], { stdin: token.slice(0,31) + '\n' + paths.join('\n') + '\n' });
-	assert.equal(result, '');
-}
+const isolation = name => checkIsolation(name, cmd, token, 'claude-agent-sdk-linux-', '/run/wlp-harness/claude/token');
 let adapter;
 async function turn(first, proxyEnv, scan) {
 	const child = adapter = spawn('docker', ['exec','-i',...proxyEnv,first,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
@@ -116,9 +80,18 @@ try {
 	await cmd(['run','-d','--pull','never','--network',uplink,'--network-alias','api.anthropic.com','--name',upstream,
 		'--user',String(process.getuid()),'--cap-drop','ALL',...mounts,image,'node','/fixture/upstream.cjs']);
 	storePair(identity, privateKey, 'https://fixture.invalid');
-	await storeClaudeLogin(owner, token);
-	const options = await probeClaudeOptions(owner, image);
-	assert.ok(options.models.length && options.defaultModel); ok('Pinned adapter discovers models with network disabled and no login volume.');
+	const bundle = join(dir, 'runner.cjs');
+	execFileSync(process.execPath, [join(root, 'runner/bundle.mjs'), image, bundle, 'claude=' + image]);
+	await owner.loginChanged(false);
+	const unsigned = owner.report().harnesses[0];
+	assert.equal(unsigned.signIn, 'none');
+	assert.ok(unsigned.options.checkedAt > 0 && unsigned.options.models.length > 1);
+	assert.ok(unsigned.options.models.find(model => model.id === 'opus').efforts.includes('high'));
+	assert.ok(unsigned.options.modes.some(mode => mode.id === 'plan'));
+	execFileSync(process.execPath, [bundle, 'login', 'claude'], { input: token + '\n' });
+	await owner.loginChanged(true);
+	assert.equal(owner.report().harnesses[0].signIn, 'token');
+	ok('Pinned adapter reports models, per-model efforts and modes before login and refreshes after login.');
 	const first = await create('first'), second = await create('second');
 	for (const name of [first, second]) {
 		const [box] = JSON.parse(await cmd(['inspect',name]));
@@ -181,7 +154,9 @@ try {
 	await assert.rejects(restarted.existing('legacy',profile,'claude'),/predates credential isolation/);
 	assert.throws(()=>restarted.running(legacyId,'legacy'));
 	ok('Upgrade stops legacy mounted sessions, keeps their workspace, and refuses reconnect, create and commands.');
-	await storeClaudeLogin(owner, undefined);
+	execFileSync(process.execPath, [bundle, 'logout', 'claude']);
+	await owner.loginChanged(false);
+	assert.deepEqual(owner.report().harnesses[0].options.models, unsigned.options.models);
 	assert.notEqual((await docker(['container','inspect',relayName])).code,0);
 	await storeClaudeLogin(owner, token);
 	await owner.loginChanged(true); assert.equal(await status(second,two.placeholder),'200');

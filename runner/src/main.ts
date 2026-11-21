@@ -10,7 +10,12 @@ import { resolveMachineName } from "./machine-name.js";
 import { category, control, pair } from "./control.js";
 import { cleanClaudeOutput } from "./claude-output.js";
 import { changeClaudeLogin, claudeSignIn, retireClaudeRelay } from "./harness-login.js";
-import { harnessImage, shotsImage } from "./policy.js";
+import { storeProvider, changeProviderLogin, currentProvider, installedProvider, terminalQuestion } from "./opencode-login.js";
+import { importOpenCode } from "./opencode-import.js";
+import { setupAgents, setupImageAndMounts, shellCommand } from "./setup.js";
+import { removeRelay } from "./claude-relay.js";
+import { withLoginVolume } from "./harness-login.js";
+import { harnessImage, shotsImage, type MachineHarness } from "./policy.js";
 import { Executor } from "./docker-executor.js";
 import { requestPair, requestLoginReport, waitForPair } from "./pair-command.js";
 import { egressFlags } from "./egress-policy.js";
@@ -33,25 +38,39 @@ async function main() {
 		if (key === "CLAUDE_CODE_OAUTH_TOKEN" || (value && cleanClaudeOutput(value) !== value)) delete process.env[key];
 	}
 	const { positionals, values } = parseArgs({ allowPositionals: true, options: {
-		egress: { type: "string" }, "egress-allow": { type: "string" },
+		provider: { type: "string" }, egress: { type: "string" }, "egress-allow": { type: "string" },
 		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, name: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
 	} });
 	const command = positionals[0] ?? "run";
+	// A release can publish this report without mounting runner state or a Docker socket.
+	if (command === "capabilities" && positionals.length === 1) {
+		const harnesses = (["claude", "opencode"] as const).filter(id => harnessImage(id));
+		console.log(JSON.stringify({ image: process.env.WLP_RUNNER_IMAGE ?? null, harnesses }));
+		return;
+	}
 	const auth = command === "login" || command === "logout";
-	const claude = !!values.harness?.length;
-	const validCommand = auth ? positionals.length === 2 && positionals[1] === "claude"
-		: positionals.length <= 1 && ["run", "pair", "status", "log", "prune"].includes(command);
+	const claude = !!values.harness?.includes("claude");
+	const opencode = !!values.harness?.includes("opencode");
+	const agents = [...new Set(values.harness ?? [])] as MachineHarness[];
+	const agent = positionals[1] as MachineHarness;
+	const changeLogin = agent === "opencode" ? changeProviderLogin : changeClaudeLogin;
+	const label = agent === "opencode" ? "OpenCode" : "Claude Code";
+	if (values.provider && !(agent === "opencode" && command === "login")) throw new RunnerError("Use --provider with login opencode.");
+	const validCommand = auth ? positionals.length === 2 && ["claude", "opencode"].includes(agent)
+		: positionals.length <= 1 && ["setup", "run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
-		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune|login claude|logout claude] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]].");
-	if (values.name !== undefined && (!["run", "pair"].includes(command) || !validMachineName(values.name)))
-		throw new RunnerError("Use --name with run or pair and a printable name of 1 to 64 characters.");
+		throw new RunnerError("Use windlass-runner [setup|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--harness opencode] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]].");
+	if (values.name !== undefined && (!["setup", "run", "pair"].includes(command) || !validMachineName(values.name)))
+		throw new RunnerError("Use --name with setup, run or pair and a printable name of 1 to 64 characters.");
 	const requestedEgress = egressFlags(values.egress, values["egress-allow"]);
-	if (requestedEgress && command !== "run") throw new RunnerError("Use --egress and --egress-allow with run.");
+	if (requestedEgress && command !== "run" && command !== "setup") throw new RunnerError("Use --egress and --egress-allow with setup or run.");
 	const flags = values["allow-profile"];
-	if (flags && (command !== "run" || flags.some(id => !machineProfile(id))))
-		throw new RunnerError("Use --allow-profile with run and a profile ID: docker-hardened or docker-windlass-sandbox.");
+	if (flags && ((command !== "run" && command !== "setup") || flags.some(id => !machineProfile(id))))
+		throw new RunnerError("Use --allow-profile with setup or run and a profile ID: docker-hardened or docker-windlass-sandbox.");
 	const profiles = flags && MACHINE_PROFILES.filter(id => id === "docker-hardened" || flags.includes(id));
-	if (values.harness?.some(id => id !== "claude" || !harnessImage("claude")))
+	if (agents.some(id => id !== "claude" && id !== "opencode")) throw new RunnerError("Choose --harness claude or --harness opencode.");
+	if (opencode && !harnessImage("opencode")) throw new RunnerError("Use --harness opencode with a runner built with the pinned OpenCode image.");
+	if (claude && !harnessImage("claude"))
 		throw new RunnerError("Use --harness claude with a runner built with the pinned Claude Code image.");
 	if (values.screenshots && !shotsImage) throw new RunnerError("--screenshots requires a runner built with a pinned screenshots sandbox image.");
 	const limits = { maxTurns: limit("max-turns", values["max-turns"]) ?? 2, maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]) };
@@ -62,17 +81,17 @@ async function main() {
 	try {
 		if (auth) {
 			const paired = loadPair();
-			if (!paired || (command === "login" && !paired.key)) throw new RunnerError("Pair this machine before signing in to Claude Code.");
+			if (!paired || (command === "login" && !paired.key)) throw new RunnerError("Pair this machine before signing in to " + label + ".");
 			if (command === "login") {
-				await changeClaudeLogin(new Executor(paired.current, limits), true, abort.signal);
-				console.log("Claude Code: signed in.");
+				await changeLogin(new Executor(paired.current, limits), true, abort.signal, values.provider);
+				console.log(label + ": signed in.");
 			} else {
 				for (const identity of [paired.current, ...paired.previous]) {
 					try {
-						await changeClaudeLogin(new Executor(identity, limits), false, abort.signal);
-						console.log(`${identity.machineId} Claude Code: signed out.`);
+						await changeLogin(new Executor(identity, limits), false, abort.signal);
+						console.log(`${identity.machineId} ${label}: signed out.`);
 					} catch (error) {
-						console.error(`${identity.machineId} Claude Code: ${category(error)}`);
+						console.error(`${identity.machineId} ${label}: ${category(error)}`);
 						process.exitCode = 1;
 					}
 				}
@@ -81,6 +100,7 @@ async function main() {
 			return;
 		}
 		if (command !== "status" && !tryLock()) {
+			if (command === "setup") throw new RunnerError("The runner is already using this state. Use login <agent> in the running runner.");
 			if (command === "pair") return requestPair(values.platform, values.name);
 			if (command === "prune") throw new RunnerError("The runner service or another command is using this state volume. Stop the runner container or finish the command, then run prune in a one-off runner container with the same state volume and Docker socket.");
 			// Docker's restart policy would immediately relaunch a service that exits here.
@@ -107,6 +127,9 @@ async function main() {
 			if (paired) for (const machine of [paired.current, ...paired.previous]) {
 				console.log(`${machine.machineId}${machine === paired.current ? "" : " (previous pairing)"}`);
 				const executor = new Executor(machine, limits);
+				if (opencode || harnessImage("opencode")) {
+					console.log(`  OpenCode${machine === paired.current && read("opencode-offered.json") === true ? " (offered)" : ""}: ${await installedProvider(executor) ? "signed in" : "not signed in"}`);
+				}
 				if (offered || claude || harnessImage("claude")) {
 					const signIn = await claudeSignIn(executor);
 					console.log(`  Claude Code${offered && machine === paired.current ? " (offered)" : ""}: ${signIn === "token" ? "signed in" : signIn === "none" ? "not signed in" : "unknown"}`);
@@ -132,7 +155,8 @@ async function main() {
 		}
 		let platform = origin(values.platform ?? paired?.platform ?? "");
 		let name = await resolveMachineName(values.name);
-		let needsPair = command === "pair" || !paired?.key;
+		const launch = command === "setup" ? await setupImageAndMounts() : undefined;
+		let needsPair = command === "setup" || command === "pair" || !paired?.key;
 		let client: Socket | undefined;
 		let resumePlatform: string | undefined;
 		function saveStatus(connection: string, idleSuspendMs?: number) {
@@ -145,24 +169,43 @@ async function main() {
 					await new Executor(identity, limits).migrateClaudeNames();
 			}
 			save("harness.json", claude);
+			save("opencode-offered.json", opencode);
 			saveStatus(needsPair ? "Pairing" : "Connecting", status?.idleSuspendMs ?? undefined);
 		}
 		const say = (line: string) => { console.log(line); client?.write(line + "\n"); };
 		while (!abort.signal.aborted) {
 			let idle: string;
 			if (needsPair) {
-				const result = await pair(platform, abort.signal, say, name, profiles);
+				const result = await pair(platform, abort.signal, say, name, profiles, command === "setup");
 				if (abort.signal.aborted) { client?.end(); return; }
 				if (result.paired) {
-					if (paired) await retireClaudeRelay(new Executor(paired.current, limits));
+					if (paired) {
+						const old = new Executor(paired.current, limits);
+						await retireClaudeRelay(old);
+						if (currentProvider(old)) await withLoginVolume(old, () => removeRelay(old, "opencode"));
+					}
 					paired = result.paired; resumePlatform = undefined;
 					client?.end(); client = undefined;
+					if (command === "setup") {
+						const machine = new Executor(result.paired.current, limits);
+						await setupAgents(agents, prompt => terminalQuestion(prompt, abort.signal),
+							async id => {
+								if (id === "claude") return changeClaudeLogin(machine, true, abort.signal);
+								const login = (provider?: string) => changeProviderLogin(machine, true, abort.signal, provider);
+								if (launch?.importFile && await importOpenCode(launch.importFile, p => terminalQuestion(p, abort.signal),
+									(provider,key) => storeProvider(machine,{provider,key}), login)) return;
+								await login();
+							});
+						const flags = process.argv.slice(2).filter((_, i) => i !== process.argv.slice(2).indexOf("setup"));
+						console.log("Start the runner on this machine:\n" + shellCommand([...launch!.command, "run", ...flags]));
+						return;
+					}
 					if (command === "pair") return;
 					needsPair = false;
 					continue;
 				}
 				idle = result.idle!;
-				if (command === "pair") { say(idle); process.exitCode = 1; return; }
+				if (command === "setup" || command === "pair") { say(idle); process.exitCode = 1; return; }
 				if (resumePlatform) {
 					say(idle); client?.end(); client = undefined;
 					platform = resumePlatform; resumePlatform = undefined; needsPair = false;
@@ -179,7 +222,7 @@ async function main() {
 				const note = egressNote(paired.current.machineId);
 				console.log(note);
 				audit(null, null, "egress", note);
-				const owner = new Executor(paired.current, limits, values.screenshots, claude, pairingProfiles(paired.current.machineId, profiles), policy);
+				const owner = new Executor(paired.current, limits, values.screenshots, claude, pairingProfiles(paired.current.machineId, profiles), policy, opencode);
 				// Quarantine old mounts even when the platform is offline. Docker health refresh
 				// reports and retries an unavailable daemon. Legacy sessions cannot reconnect.
 				await owner.secureCredentialPath().catch(() => {});
@@ -203,7 +246,7 @@ async function main() {
 					continue;
 				}
 				if (!removed) return;
-				try { await retireClaudeRelay(owner); } finally { forgetKey(); }
+				try { await retireClaudeRelay(owner); if (currentProvider(owner)) await withLoginVolume(owner, () => removeRelay(owner, "opencode")); } finally { forgetKey(); }
 				paired = { ...paired, key: null };
 				idle = removed;
 			}

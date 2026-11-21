@@ -109,7 +109,7 @@ describe("sessionModelWords", () => {
 
 	it("names a Claude Code session's model as Claude Code does, not by its id", () => {
 		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "fable" })).toBe("Fable 5.2");
-		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "default" })).toBe("Claude Code's default");
+		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "default" })).toBe("Default (recommended)");
 		// A model the list does not know, or no list yet: its id.
 		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "opus" })).toBe("opus");
 		expect(sessionModelWords({ harness: "claude", harnessModels: null, model: "fable" })).toBe("fable");

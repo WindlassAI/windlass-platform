@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { saveAuth } from "../lib/authStore";
 import { NewAgent } from "../screens/NewAgent";
 import { AppProvider } from "../state/app";
-import type { UserApi } from "./client";
+import type { UserFeed, UserApi } from "./client";
 import { createMockClient, MOCK_MACHINE_STATES, type MockClient, type MockMachineSession } from "./mock";
 
 const auth = { token: "mock:chatgpt:u_machines:ada@example.com", profile: { uid: "u_machines", email: "ada@example.com", demo: false } };
@@ -19,26 +19,6 @@ const make = (machine?: (typeof MOCK_MACHINE_STATES)[number]) => createMockClien
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 describe("the mock's machines", () => {
-	it("completes, cancels and refuses overlapping Claude logins", async () => {
-		const mock = make("claude-signed-out");
-		const user = mock.user(auth);
-		const input = { machineId: "m_nas" };
-		try {
-			expect((await user.machines())[0]?.harnesses?.[0]?.signIn).toBe("none");
-			const start = await user.startClaudeLogin(input);
-			expect(start.url).toMatch(/^https:\/\//);
-			expect(start.expiresAt).toBeGreaterThan(Date.now());
-			await expect(user.startClaudeLogin(input)).rejects.toThrow(/pending/);
-			await user.cancelClaudeLogin(input);
-			await expect(user.finishClaudeLogin({ ...input, code: "mock-approval" })).rejects.toThrow(/pending/);
-			await user.startClaudeLogin(input);
-			await expect(user.finishClaudeLogin({ ...input, code: "wrong" })).rejects.toThrow();
-			await user.startClaudeLogin(input);
-			expect(await user.finishClaudeLogin({ ...input, code: "mock-approval" })).toEqual({ signedIn: true });
-			expect((await user.machines()).find(m => m.machineId === input.machineId)?.harnesses?.[0]?.signIn).toBe("token");
-			await expect(user.startClaudeLogin({ machineId: "m_build" })).rejects.toMatchObject({ reason: "machine_not_found" });
-		} finally { mock.dispose(); }
-	});
 
 	it("offers machines unless told not to, with an install command only once a runner is published", async () => {
 		const on = make();
@@ -247,6 +227,8 @@ describe("the start composer's agent picker", () => {
 	let root: Root;
 	let client: MockClient;
 	let created: CreateSessionInput[];
+	let catalogsRead: string[];
+	let feeds: Set<UserFeed>;
 
 	/** Lets the mock answer, in steps: what one answer renders can ask the next. */
 	async function settle(steps = 12): Promise<void> {
@@ -258,18 +240,27 @@ describe("the start composer's agent picker", () => {
 	 * signed out, build-box not at all) and opens the new agent's page, on no repository: the agent
 	 * then starts as the user's newest did, on this platform in Windlass's sandbox.
 	 */
-	async function open(): Promise<void> {
+	async function open(machine: "full" | "fresh" = "full"): Promise<void> {
 		created = [];
+		catalogsRead = [];
+		feeds = new Set();
 		history.replaceState(null, "", "/new");
 		host = document.createElement("div");
 		document.body.append(host);
 		root = createRoot(host);
-		client = createMockClient({ pace: 0, origin: "http://localhost:5173", machine: "full" });
+		client = createMockClient({ pace: 0, origin: "http://localhost:5173", machine });
 		saveAuth("mock", auth);
 		const user = client.user.bind(client);
 		(client as { user: (auth: AuthResult) => UserApi }).user = (who) => {
 			const api = user(who);
-			return { ...api, createSession: (input: CreateSessionInput) => (created.push(input), api.createSession(input)) };
+			return { ...api, createSession: (input: CreateSessionInput) => (created.push(input), api.createSession(input)),
+				machineCatalog: input => { catalogsRead.push(input.id); return api.machineCatalog(input); },
+				watch: feed => {
+					feeds.add(feed);
+					const close = api.watch(feed);
+					return () => { feeds.delete(feed); close(); };
+				},
+			};
 		};
 		act(() => root.render(createElement(AppProvider, { client, children: createElement(NewAgent) })));
 		await settle();
@@ -339,20 +330,49 @@ describe("the start composer's agent picker", () => {
 		await act(async () => (host.querySelector('.start button[type="submit"]') as HTMLButtonElement).click());
 		await settle();
 	};
-	const LOGIN = "Claude Code: not signed in on “workshop”. Run windlass-runner login claude there.";
+	const showCommands = () => act(() => (pop()?.querySelector(".agent-commands summary") as HTMLElement).click());
 
 	it("offers Windlass or Claude Code on a machine that reports it, and its sign-in where it is not signed in", async () => {
 		await open();
 		place("m_workshop");
-		expect(agents()).toEqual(["Windlass", "Claude Code"]);
-		expect(text()).toContain(LOGIN);
-		expect(pop()?.querySelector(".harness-login pre")?.textContent).toBe("docker exec -it windlass-runner windlass-runner login claude");
+		expect(agents()).toEqual(["Windlass", "Claude Code", "OpenCode"]);
+		showCommands();
+		expect(text()).toContain("OpenCode: signed in");
+		expect(text()).toContain("Claude Code: sign in needed");
+		expect(pop()?.querySelector(".machine-harness pre")?.textContent).toBe("docker exec -it windlass-runner windlass-runner login claude");
 		chip("agent", true);
-		// Signed in on nas: the choice, and no sign-in line.
+		// The second machine reports its own sign-in state.
 		place("m_nas");
 		expect(agents()).toEqual(["Windlass", "Claude Code"]);
-		expect(text()).not.toContain("not signed in");
-	});
+		expect(text()).toContain("Claude Code: signed in");
+	}, 30_000);
+
+	it("offers both reported catalogs on a fresh machine and launches OpenCode in its selected mode", async () => {
+		await open("fresh");
+		const [machine] = await client.user(auth).machines();
+		expect(machine).toMatchObject({ agents: 0, sandboxes: [] });
+		expect(machine!.harnesses!.every(h => h.optionsDigest && !h.options)).toBe(true);
+		expect(catalogsRead).toEqual([]);
+		place("m_workshop");
+		agents();
+		await settle();
+		const catalog = (id: string) => Array.from(pop()!.querySelectorAll(`[data-value^="${id}:"] .ui-item-label`), row => row.textContent);
+		expect(catalog("claude")).toEqual(["Default (recommended)", "Opus", "Haiku"]);
+		expect(catalog("opencode")).toEqual(["OpenAI/GPT-5.4", "OpenAI/GPT-5.4 mini"]);
+		act(() => {
+			for (const feed of feeds) feed.onMachineHost?.({ machineId: machine!.machineId, host: { cpus: 2, sandboxCpus: 1, memoryBytes: 12e9, memoryFreeBytes: 4e9, load1: 1 } });
+		});
+		await settle();
+		expect(catalogsRead).toEqual(["claude", "opencode"]);
+		showCommands();
+		expect(text()).toContain("docker exec -it windlass-runner windlass-runner login opencode");
+		agent("opencode");
+		expect(value("agent")).toContain("OpenAI/GPT-5.4");
+		expect(modes().map(({ name, chosen }) => [name, chosen])).toEqual([["build", true], ["plan", false]]);
+		mode("plan");
+		await createWithout();
+		expect(created[0]).toMatchObject({ harness: "opencode", mode: "plan", profile: "docker-hardened" });
+	}, 30_000);
 
 	it("offers no other agent on a machine that reports none, nor on this platform", async () => {
 		await open();
@@ -375,6 +395,7 @@ describe("the start composer's agent picker", () => {
 	it("launches Claude Code in the hardened container, on its default model, with the line that says what that means", async () => {
 		await open();
 		place("m_nas");
+		await settle();
 		agents();
 		agent("claude");
 		agents();
@@ -399,6 +420,7 @@ describe("the start composer's agent picker", () => {
 	it("starts Claude Code on Auto, of its five modes, each said with what it does; another is sent when chosen", async () => {
 		await open();
 		place("m_nas");
+		await settle();
 		agents();
 		agent("claude");
 		const offered = modes();
@@ -436,6 +458,7 @@ describe("the start composer's agent picker", () => {
 	it("keeps a choice of Ask across sandboxes and agents, and stands on the default where the choice is not offered", async () => {
 		await open();
 		place("m_nas");
+		await settle();
 		mode("Ask");
 		// Claude Code has no Ask: Auto, its default.
 		agents();
@@ -456,6 +479,7 @@ describe("the start composer's agent picker", () => {
 		expect(sandboxLine()).toContain("runs what the sandbox contains, refuses the rest");
 		expect(sandboxLine()).toContain("commands cannot read the session's access token");
 		place("m_nas");
+		await settle();
 		agents();
 		agent("claude");
 		expect(sandboxLine()).toContain("runs in Auto mode");
@@ -482,4 +506,42 @@ describe("the start composer's agent picker", () => {
 			field.dispatchEvent(new Event("input", { bubbles: true }));
 		});
 	}
+});
+
+it.each([true, false])("offers OpenCode setup and import only for a runner image reporting support (%s)", async supported => {
+	HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
+	HTMLDialogElement.prototype.close ??= function () { this.open = false; };
+	const { Machines } = await import("../screens/Machines");
+	const host = document.createElement("div");
+	document.body.append(host);
+	const root = createRoot(host);
+	const client = make();
+	const info = await client.info();
+	if (!supported) vi.spyOn(client, "info").mockResolvedValue({ ...info, machines: { ...info.machines!, runnerHarnesses: ["claude"] } });
+	saveAuth("mock",auth);
+	try {
+		act(() => root.render(createElement(AppProvider,{client,children:createElement(Machines,{adding:true})})));
+		for (let i=0;i<30 && !host.querySelector(".machine-command");i++) await act(async () => {await tick();});
+		const command = () => host.querySelector('pre[aria-label="The setup command"]')?.textContent;
+		expect(command()).toContain("docker run -it --rm");
+		expect(command()).toContain(" setup --platform ");
+		expect(command()).not.toContain("/import/opencode");
+		const checkbox = (text: string) => [...host.querySelectorAll("label")].find(element => element.textContent?.includes(text))!.querySelector("input")!;
+		act(() => checkbox("Enable Claude Code").click());
+		if (!supported) {
+			expect(host.textContent).not.toContain("Enable OpenCode");
+			expect(host.textContent).not.toContain("Import existing OpenCode");
+			expect(command()).not.toMatch(/--harness opencode|\/import\/opencode/);
+			return;
+		}
+		act(() => checkbox("Enable OpenCode").click());
+		expect(command()).toContain("--harness claude --harness opencode");
+		const background = () => host.querySelector('pre[aria-label="The install command"]')?.textContent;
+		expect(background()).toContain("--harness claude --harness opencode");
+		expect(command()).toContain("--harness opencode");
+		expect(command()).not.toContain("/import/opencode");
+		act(() => checkbox("Import existing OpenCode API keys").click());
+		expect(command()).toContain('--mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly"');
+		expect(background()).not.toContain('/import/opencode');
+	} finally { act(() => root.unmount());host.remove();client.dispose();saveAuth("mock",null); }
 });

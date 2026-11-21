@@ -106,6 +106,7 @@ export const scenarios = {
 		const followUp = yield { steer: true };
 		yield message(followUp);
 	},
+	*invalidparams() { return { error: { code: -32602, message: "Invalid reasoning effort." } }; },
 	*refuse() { return "refusal"; },
 	*maxtokens() { return "max_tokens"; },
 	*signedout() { return { error: { code: -32000, message: "Authentication required" } }; },
