@@ -47,7 +47,7 @@ async function create(session, machine = owner) {
 	saved.set(name, { id, placeholder }); return name;
 }
 let adapter;
-async function turn(first, proxyEnv, scan) {
+async function turn(first, proxyEnv, scan, model) {
 	const child = adapter = spawn('docker', ['exec','-i',...proxyEnv,first,'wlp-opencode-acp'], { stdio:['pipe','pipe','pipe'] });
 	child.stderr.resume();
 	let reply = '';
@@ -66,6 +66,7 @@ async function turn(first, proxyEnv, scan) {
 	assert.deepEqual(opened.configOptions.find(o=>o.category==='mode').options.map(o=>o.value),['build','plan']);
 	const options = await call('session/set_config_option',{sessionId:opened.sessionId,configId:'mode',value:'plan'});
 	assert.equal(options.configOptions.find(o=>o.category==='mode').currentValue,'plan');
+	if (model) await call('session/set_config_option',{sessionId:opened.sessionId,configId:'model',value:model});
 	const result = await call('session/prompt',{sessionId:opened.sessionId,prompt:[{type:'text',text:'Say relay proof.'}]});
 	assert.equal(result.stopReason,'end_turn'); assert.equal(reply,'relay proof');
 	if (scan) await checkIsolation(first, cmd, token, 'opencode', '/run/wlp-harness/opencode/login.json');
@@ -154,7 +155,7 @@ try {
 	const log = await cmd(['logs',upstream]);
 	assert.match(log,/authorized opencode.ai \/inference\/go\/openai\/v1\/chat\/completions/);
 	assert.match(log,/authorized api.z.ai \/api\/coding\/paas\/v4\/chat\/completions/);
-	await checkIsolation(both, cmd, token, 'opencode', '/run/wlp-harness/opencode/login.json');
+	await turn(both, [], true, 'opencode-go/kimi-k3');
 	ok('Two stored providers, native Go and GLM streaming in one restricted sandbox, blocked direct CONNECT, placeholder scans.');
 	await storeProvider(owner);
 	} catch (error) {
