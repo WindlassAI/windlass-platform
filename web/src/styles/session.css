@@ -1215,31 +1215,35 @@ button.output-more:hover {
 	content: "”";
 }
 .composer-box {
-	display: flex;
-	align-items: flex-end;
-	gap: 8px;
-	padding: 7px 7px 7px 12px;
-	border: 1px solid var(--line-field);
-	border-radius: var(--radius-l);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--r-box);
 	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
 	transition:
 		border-color 140ms var(--ease),
 		box-shadow 140ms var(--ease);
 }
 .composer-box:focus-within {
-	border-color: var(--accent);
-	box-shadow: 0 0 0 1px var(--accent);
+	border-color: var(--accent-edge);
+	box-shadow:
+		0 0 0 4px var(--accent-wash),
+		var(--shadow-box);
 }
 .composer-busy .composer-box {
-	background: color-mix(in srgb, var(--bg-raised) 50%, var(--bg));
 	border-style: dashed;
+}
+.composer-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 6px 12px 0 14px;
 }
 .composer-caret {
 	display: grid;
 	place-items: center;
 	flex: none;
-	height: 36px;
-	color: var(--accent);
+	height: 34px;
+	color: var(--accent-text);
 }
 .composer-busy .composer-caret {
 	color: var(--ink-faint);
@@ -1247,14 +1251,14 @@ button.output-more:hover {
 .composer-text {
 	flex: 1;
 	min-width: 0;
-	min-height: 36px;
+	min-height: 34px;
 	max-height: 220px;
 	padding: 7px 0;
 	border: 0;
 	background: none;
 	resize: none;
-	font-size: 0.96875rem;
-	line-height: 1.4;
+	font-size: var(--text-15);
+	line-height: 1.45;
 	color: var(--ink);
 }
 .composer-text:focus-visible {
@@ -1264,23 +1268,38 @@ button.output-more:hover {
 	color: var(--ink-faint);
 	opacity: 1;
 }
+.composer-tools {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 4px;
+	padding: 4px 8px 8px;
+}
+.composer-tools-end {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-left: auto;
+}
+.composer-keys {
+	margin-right: 6px;
+	opacity: 0;
+	transition: opacity 120ms var(--ease);
+}
+.composer-box:has(.composer-text:focus) .composer-keys {
+	opacity: 1;
+}
 .composer-action {
 	flex: none;
 }
-.composer-foot {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	justify-content: space-between;
-	gap: 4px 16px;
-	margin-top: 7px;
-	padding: 0 4px;
+.composer-steer {
+	border-color: var(--accent-edge);
+	color: var(--accent-text);
 }
 .composer-selects {
 	display: flex;
-	flex-wrap: wrap;
-	gap: 2px 14px;
 }
+/* Kept for the Factory's filters (StartComposer's Chip), which still use them. */
 .mini-select {
 	display: inline-flex;
 	align-items: center;
@@ -1288,34 +1307,6 @@ button.output-more:hover {
 	font-family: var(--font-mono);
 	font-size: var(--size-mono-small);
 	color: var(--ink-faint);
-}
-.mini-select select {
-	appearance: none;
-	padding: 3px 18px 3px 4px;
-	border: 0;
-	border-radius: var(--radius-s);
-	background-color: transparent;
-	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12' fill='none' stroke='%238a8d93' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4.5L6 8l3.500-3.500'/%3E%3C/svg%3E");
-	background-repeat: no-repeat;
-	background-position: right 4px center;
-	font: inherit;
-	color: var(--ink);
-	cursor: pointer;
-}
-.mini-select select:hover:not(:disabled) {
-	background-color: var(--bg-hover);
-}
-.mini-select select:disabled {
-	color: var(--ink-dim);
-	cursor: not-allowed;
-}
-.mini-select option {
-	background: var(--bg-raised);
-	color: var(--ink);
-}
-/* The agent's mode: the pickers' look, with its list opening above it, each mode with what it does. */
-.mode-picker {
-	position: relative;
 }
 .mini-pick {
 	padding: 3px 18px 3px 4px;
@@ -1333,51 +1324,13 @@ button.output-more:hover {
 .mini-pick[aria-expanded="true"] {
 	background-color: var(--bg-hover);
 }
-.mini-pick:focus-visible {
-	outline: 2px solid var(--accent);
-	outline-offset: 1px;
-}
 .mini-pick:disabled {
 	color: var(--ink-dim);
 	cursor: not-allowed;
 }
-.mode-menu {
-	position: absolute;
-	bottom: calc(100% + 6px);
-	left: 0;
-	z-index: 30;
-	display: grid;
-	gap: 2px;
-	width: min(320px, calc(100vw - 32px));
-	margin: 0;
-	padding: 4px;
-	list-style: none;
-	border: 1px solid var(--line-strong);
-	border-radius: var(--radius-l);
-	background: var(--bg-raised);
-	box-shadow: var(--shadow);
-	font-family: var(--font-text);
-	animation: rise 140ms var(--ease);
-}
-.mode-menu:focus-visible {
-	outline: none;
-}
-.mode-option {
-	display: grid;
-	gap: 1px;
-	padding: 7px 10px;
-	border-radius: var(--radius-s);
-	cursor: pointer;
-}
-.mode-option-active {
-	background: var(--bg-hover);
-}
-.mode-option[aria-selected="true"] {
-	box-shadow: inset 2px 0 0 var(--accent);
-}
 .mode-option-name {
 	font-size: var(--size-small);
-	font-weight: 600;
+	font-weight: var(--weight-medium);
 	color: var(--ink);
 }
 .mode-option-text {
@@ -1385,20 +1338,24 @@ button.output-more:hover {
 	line-height: 1.35;
 	color: var(--ink-dim);
 }
-/* Whose list the models are: beside the pickers, as quiet as their labels. */
+/* A few quiet words beside the pills: whose list the models are, when a mode applies. */
 .mini-note {
 	align-self: center;
-	font-family: var(--font-mono);
-	font-size: var(--size-mono-small);
+	padding: 0 4px;
+	font-size: var(--text-12);
 	color: var(--ink-faint);
 }
 .composer-hint {
-	font-size: var(--size-mono-small);
-	font-family: var(--font-mono);
+	min-height: 0;
+	margin-top: 6px;
+	padding: 0 4px;
+	font-size: var(--text-12);
 	color: var(--ink-faint);
 }
+.composer-hint:empty {
+	display: none;
+}
 .composer-reason {
-	font-family: var(--font-text);
 	font-size: var(--size-small);
 	color: var(--ink-dim);
 }

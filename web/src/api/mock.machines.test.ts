@@ -285,45 +285,55 @@ describe("the start composer's agent picker", () => {
 		saveAuth("mock", null);
 	});
 
-	const text = () => host.textContent ?? "";
-	const button = (label: string) => [...host.querySelectorAll(".start-chips .mini-select")].find((select) => select.firstElementChild?.textContent === label)?.querySelector("button") as HTMLButtonElement;
-	/** Opens a chip's picker, by its label, unless it is open; `toggle` closes an open one. */
+	/** The page's text, with what is open in a picker (drawn at the end of the page). */
+	const text = () => document.body.textContent ?? "";
+	/** The pill of a picker, by the name its old chip had: where it runs and its sandbox are one pill. */
+	const PICKERS: Record<string, string> = { repo: "repo", on: "where", sandbox: "where", agent: "agent", mode: "mode" };
+	const button = (label: string) => host.querySelector(`[data-picker="${PICKERS[label] ?? label}"]`) as HTMLButtonElement;
+	/** Opens a pill's picker, by its label, unless it is open; `toggle` closes an open one. */
 	const chip = (label: string, toggle = false) => {
 		if (toggle || button(label).getAttribute("aria-expanded") !== "true") act(() => button(label).click());
 	};
-	const value = (label: string) => [...host.querySelectorAll(".start-chips .mini-select")].find((select) => select.firstElementChild?.textContent === label)?.querySelector("button")?.textContent ?? null;
-	const pop = () => host.querySelector(".start-pop") as HTMLElement | null;
+	const value = (label: string) => (label === "sandbox" ? button(label)?.dataset.sandbox : button(label)?.dataset.value) ?? null;
+	const pop = () => document.querySelector(".ui-pop") as HTMLElement | null;
 	const press = (words: string) => act(() => ([...(pop()?.querySelectorAll("button") ?? [])].find((button) => button.textContent === words) as HTMLButtonElement).click());
 	/** Chooses where it runs. */
 	const place = (machineId: string) => {
 		chip("on");
-		act(() => (pop()?.querySelector(`input[type="radio"][value="${machineId}"]`) as HTMLInputElement).click());
+		act(() => (pop()?.querySelector(`[data-value="${machineId}"]`) as HTMLElement).click());
 	};
-	/** Opens the agent's picker and says which agents it offers. */
+	/** Opens the agent's picker and says which agents it offers here: the groups with a row that can be chosen. */
 	const agents = () => {
 		chip("agent");
-		return [...(pop()?.querySelectorAll(".harness-pick .segment") ?? [])].map((segment) => segment.textContent);
+		return [...(pop()?.querySelectorAll(".ui-menu-group") ?? [])].filter((group) => group.querySelector('[role="menuitemradio"]:not([aria-disabled="true"])')).map((group) => group.querySelector(".ui-menu-group-label b")?.textContent);
 	};
-	const agent = (id: string) => act(() => (pop()?.querySelector(`.harness-pick input[type="radio"][value="${id}"]`) as HTMLInputElement).click());
-	/** The mode's own list, while it is open: not the rows of a chip's picker, which share its look. */
-	const modeRows = () => [...host.querySelectorAll(".start-chip-mode .mode-menu .mode-option")] as HTMLElement[];
-	/** The modes offered, by name, each with what it does, and the one chosen. Opening the list closes a chip's picker. */
+	/** Chooses an agent in its open picker: Claude Code on its reported default, Windlass on its default model. */
+	const agent = (id: string) => {
+		const rows = [...(pop()?.querySelectorAll(`[data-value^="${id}:"]`) ?? [])] as HTMLElement[];
+		const row = rows.find((candidate) => candidate.dataset.value === `${id}:default` || candidate.querySelector(".ui-tag")) ?? rows[0];
+		act(() => (row as HTMLElement).click());
+	};
+	/** The mode's menu, while it is open. */
+	const modeRows = () => [...(pop()?.querySelectorAll('[role="menuitemradio"]') ?? [])] as HTMLElement[];
+	/** The modes offered, by name, each with what it does, and the one chosen. Its menu is the only one open. */
 	const modes = () => {
 		chip("mode");
-		expect(pop()).toBeNull();
-		const list = modeRows().map((option) => ({ name: option.querySelector(".mode-option-name")?.textContent, text: option.querySelector(".mode-option-text")?.textContent, chosen: option.getAttribute("aria-selected") === "true" }));
+		expect(document.querySelectorAll(".ui-pop")).toHaveLength(1);
+		const list = modeRows().map((option) => ({ name: option.querySelector(".ui-item-label")?.textContent, text: option.querySelector(".ui-item-description")?.textContent, chosen: option.getAttribute("aria-checked") === "true" }));
 		chip("mode", true);
 		return list;
 	};
 	const mode = (name: string) => {
 		chip("mode");
-		act(() => (modeRows().find((option) => option.querySelector(".mode-option-name")?.textContent === name) as HTMLElement).click());
+		act(() => (modeRows().find((option) => option.querySelector(".ui-item-label")?.textContent === name) as HTMLElement).click());
 	};
-	const sandboxLine = () => {
-		chip("sandbox");
-		const line = pop()?.querySelector(".sandbox-chosen-facts")?.textContent ?? "";
-		chip("sandbox", true);
-		return line;
+	/** The line under the task: the chosen sandbox's facts, each with the sentence it stands for. */
+	const sandboxLine = () => host.querySelector(".start-sandbox")?.textContent ?? "";
+	/** Creates the agent from the launch button's menu. */
+	const createWithout = async () => {
+		act(() => (host.querySelector(".ui-split-more") as HTMLButtonElement).click());
+		await act(async () => ([...(pop()?.querySelectorAll('[role="menuitem"]') ?? [])].find((row) => row.querySelector(".ui-item-label")?.textContent === "Create without a prompt") as HTMLElement).click());
+		await settle();
 	};
 	const launchIt = async () => {
 		await act(async () => (host.querySelector('.start button[type="submit"]') as HTMLButtonElement).click());
@@ -337,6 +347,7 @@ describe("the start composer's agent picker", () => {
 		expect(agents()).toEqual(["Windlass", "Claude Code"]);
 		expect(text()).toContain(LOGIN);
 		expect(pop()?.querySelector(".harness-login pre")?.textContent).toBe("docker exec -it windlass-runner windlass-runner login claude");
+		chip("agent", true);
 		// Signed in on nas: the choice, and no sign-in line.
 		place("m_nas");
 		expect(agents()).toEqual(["Windlass", "Claude Code"]);
@@ -345,16 +356,20 @@ describe("the start composer's agent picker", () => {
 
 	it("offers no other agent on a machine that reports none, nor on this platform", async () => {
 		await open();
-		expect(agents()).toEqual([]);
-		expect(pop()?.querySelector(".field-fixed")?.textContent).toBe("Windlass");
+		expect(agents()).toEqual(["Windlass"]);
+		// Claude Code is said to be on nas, as a row that cannot be chosen from here.
+		expect(pop()?.querySelector('[data-value="claude:elsewhere"]')?.getAttribute("aria-disabled")).toBe("true");
+		chip("agent", true);
 		// The choice is on nas, and it goes with the machine.
 		place("m_nas");
 		expect(agents()).toEqual(["Windlass", "Claude Code"]);
+		chip("agent", true);
 		place("m_build");
 		expect(value("on")).toContain("build-box");
-		expect(agents()).toEqual([]);
+		expect(agents()).toEqual(["Windlass"]);
+		chip("agent", true);
 		place("platform");
-		expect(agents()).toEqual([]);
+		expect(agents()).toEqual(["Windlass"]);
 	});
 
 	it("launches Claude Code in the hardened container, on its default model, with the line that says what that means", async () => {
@@ -362,19 +377,20 @@ describe("the start composer's agent picker", () => {
 		place("m_nas");
 		agents();
 		agent("claude");
-		expect(text()).toContain("Claude Code runs in this container with your Claude subscription, in the mode chosen for it. It does not run this repository's checks; CI's result is on the pull request.");
+		agents();
+		expect(text()).toContain("Claude Code runs in the hardened container with your Claude subscription, in the mode chosen for it. It does not run this repository's checks; CI's result is on the pull request.");
 		expect(value("on")).toContain("nas");
 		expect(value("sandbox")).toContain('Hardened Docker on your machine "nas"');
 		// nas's runner reported Claude Code's models: its default is named as the adapter names it, and chosen.
 		expect(value("agent")).toBe("Claude Code · Default (recommended)");
-		const rows = [...(pop()?.querySelectorAll(".start-option") ?? [])].map((row) => [row.querySelector(".mode-option-name")?.textContent, row.querySelector("input")?.checked]);
+		const rows = [...(pop()?.querySelectorAll('[data-value^="claude:"]') ?? [])].map((row) => [row.querySelector(".ui-item-label")?.textContent, row.getAttribute("aria-checked") === "true"]);
 		expect(rows).toEqual([
 			["Default (recommended)", true],
 			["Opus", false],
 			["Haiku", false],
 		]);
-		await act(async () => ([...host.querySelectorAll(".start-foot button")].find((button) => button.textContent === "Create without a prompt") as HTMLButtonElement).click());
-		await settle();
+		chip("agent", true);
+		await createWithout();
 		expect(created).toHaveLength(1);
 		expect(created[0]).toMatchObject({ harness: "claude", profile: "docker-hardened", place: { kind: "machine", machineId: "m_nas" } });
 		expect(created[0]?.model).toBeUndefined();
@@ -390,8 +406,7 @@ describe("the start composer's agent picker", () => {
 		expect(offered.find((one) => one.chosen)).toEqual({ name: "Auto", text: "Automatically assess tool permissions.", chosen: true });
 		mode("Plan");
 		expect(value("mode")).toBe("Plan");
-		await act(async () => ([...host.querySelectorAll(".start-foot button")].find((button) => button.textContent === "Create without a prompt") as HTMLButtonElement).click());
-		await settle();
+		await createWithout();
 		expect(created[0]).toMatchObject({ harness: "claude", mode: "plan" });
 	});
 
@@ -405,12 +420,14 @@ describe("the start composer's agent picker", () => {
 		expect(modes().find((one) => one.chosen)?.text).toBe("Use Windlass’s command sandbox and ask when needed.");
 		// The hardened container has none: Ask and Full, on Full, in the warning tone.
 		chip("sandbox");
-		act(() => (pop()?.querySelector('input[type="radio"][value="docker-hardened"]') as HTMLInputElement).click());
+		act(() => void pop()?.querySelector('[data-value="platform"]')?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })));
+		act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+		act(() => (document.querySelector('.ui-pop-sub [data-value="docker-hardened"]') as HTMLElement).click());
 		expect(modes().map((one) => [one.name, one.chosen])).toEqual([
 			["Ask", false],
 			["Full", true],
 		]);
-		expect(host.querySelector(".start-chip-mode")?.classList.contains("start-chip-warn")).toBe(true);
+		expect(button("mode")?.classList.contains("ui-pill-warn")).toBe(true);
 		write("Run the tests");
 		await launchIt();
 		expect(created[0]).toMatchObject({ profile: "docker-hardened", mode: "full" });
@@ -445,12 +462,16 @@ describe("the start composer's agent picker", () => {
 		expect(sandboxLine()).toContain("commands can read your Claude login token");
 		expect(sandboxLine()).not.toContain("access token");
 		expect(sandboxLine()).not.toContain("without asking");
+		// The sandbox's row, in nas's sandboxes: its facts in a few words, and in sentences for its title.
 		chip("sandbox");
-		const facts = pop()?.querySelector(".profiles .facts")?.textContent ?? "";
-		expect(facts).toContain("approvalAutoAutomatically assess tool permissions.");
-		expect(facts).toContain("commands in this container can read your Claude login token");
-		expect(facts).not.toContain("ChatGPT");
-		expect(facts).not.toContain("runs every call without asking");
+		act(() => void pop()?.querySelector('[data-value="m_nas"]')?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })));
+		act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+		const row = document.querySelector('.ui-pop-sub [aria-checked="true"]') as HTMLElement;
+		expect(row.querySelector(".ui-item-description")?.textContent).toBe("Auto mode · network on · Claude login readable");
+		expect(row.title).toContain("runs in Auto mode");
+		expect(row.title).toContain("commands can read your Claude login token");
+		expect(row.title).not.toContain("ChatGPT");
+		expect(row.title).not.toContain("runs every call without asking");
 	});
 
 	/** Types the task, as a browser does. */

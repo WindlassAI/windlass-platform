@@ -66,7 +66,7 @@ async function show(path: string, options: MockOptions = {}): Promise<void> {
 /** The user's items as the mock has them. */
 const listed = (): Promise<ItemSummary[]> => client.user(ada).listItems();
 
-const tabs = () => host.querySelector('nav[aria-label="Lists"]') as HTMLElement | null;
+const tabs = () => host.querySelector('nav[aria-label="Main"]') as HTMLElement | null;
 const tab = (name: string) => [...(tabs()?.querySelectorAll("a") ?? [])].find((link) => link.textContent?.startsWith(name)) as HTMLAnchorElement | undefined;
 /** The groups shown, in order, with the titles of their rows; the ended ones only once unfolded. */
 const groups = () =>
@@ -76,6 +76,10 @@ const groups = () =>
 const rows = () => [...host.querySelectorAll(".factory-group .item-row")].filter((row) => !row.closest("[hidden]")) as HTMLElement[];
 const field = () => host.querySelector(".start textarea") as HTMLTextAreaElement;
 const chip = (label: string, within: string) => [...host.querySelectorAll(`${within} .mini-select`)].find((select) => select.firstElementChild?.textContent === label) as HTMLElement;
+/** The start composer's pill of a picker, by its name ("repo", "where", "agent", "mode", "criteria"). */
+const pill = (name: string) => host.querySelector(`.start [data-picker="${name}"]`) as HTMLButtonElement | null;
+/** The open picker, drawn at the end of the page. */
+const pop = () => document.querySelector(".ui-pop") as HTMLElement | null;
 const button = (words: string) => [...host.querySelectorAll("button")].find((candidate) => candidate.textContent === words) as HTMLButtonElement;
 
 function write(text: string, into: HTMLTextAreaElement = field()): void {
@@ -116,16 +120,16 @@ describe("the Factory page's address and the bar's tabs", () => {
 		expect(tab("Factory")?.textContent).toBe("Factory");
 	});
 
-	it("is not found, and has no tabs, where the deployment offers no work items", async () => {
+	it("is not found, and has no tab, where the deployment offers no work items", async () => {
 		await show("/factory", { items: "off" });
 		expect(host.textContent).toContain("Nothing at this address");
-		expect(tabs()).toBeNull();
+		expect(tab("Factory")).toBeUndefined();
 		act(() => root?.unmount());
 		root = null;
 		client.dispose();
 		await show("/", { items: "off" });
 		expect(host.querySelector("h1")?.textContent).toBe("Agents");
-		expect(tabs()).toBeNull();
+		expect(tab("Factory")).toBeUndefined();
 	});
 
 	it("reads its filters from the address, and writes them back", () => {
@@ -223,8 +227,8 @@ describe("filing a work item from the Factory page", () => {
 		write("Add the tests command to the README\nSay how to run the unit tests, with its command.");
 		expect(host.querySelector(".start-title")?.textContent).toBe("Title: Add the tests command to the README");
 		// Its acceptance criteria, one a line, in their own chip.
-		act(() => (chip("criteria", ".start-chips").querySelector("button") as HTMLButtonElement).click());
-		write("The README names the unit test command.\n\nIt says where the tests live.", host.querySelector(".start-pop textarea") as HTMLTextAreaElement);
+		act(() => (pill("criteria") as HTMLButtonElement).click());
+		write("The README names the unit test command.\n\nIt says where the tests live.", pop()?.querySelector("textarea") as HTMLTextAreaElement);
 		await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
 		await settle();
 		expect(filed).toHaveLength(1);
@@ -240,7 +244,8 @@ describe("filing a work item from the Factory page", () => {
 	it("files a draft from the line under it, into Drafts", async () => {
 		await show("/factory");
 		write("Rename the tide table columns again");
-		await act(async () => button("File as a draft").click());
+		act(() => (host.querySelector(".ui-split-more") as HTMLButtonElement).click());
+		await act(async () => ([...(pop()?.querySelectorAll('[role="menuitem"]') ?? [])].find((row) => row.querySelector(".ui-item-label")?.textContent === "File as a draft") as HTMLElement).click());
 		await settle();
 		expect(filed[0]).toMatchObject({ title: "Rename the tide table columns again", body: "", start: false });
 		expect(groups().find((group) => group.name === "Drafts")?.titles).toContain("Rename the tide table columns again");
@@ -253,35 +258,37 @@ describe("filing a work item from the Factory page", () => {
 		await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
 		await settle();
 		expect(filed).toHaveLength(0);
-		expect(host.querySelector(".start-foot .composer-hint")?.textContent).toBe("A work item needs a repository: choose one under “repo”.");
+		expect(host.querySelector(".start-status")?.textContent).toBe("A work item needs a repository: choose one under “repo”.");
 	});
 
 	it("switches to an agent and back, from the same composer", async () => {
 		await show("/factory");
 		const agent = host.querySelector('.start-kind input[value="agent"]') as HTMLInputElement;
 		act(() => agent.click());
-		expect(button("Create without a prompt")).toBeDefined();
-		expect(chip("agent", ".start-chips")).toBeDefined();
-		expect(chip("criteria", ".start-chips")).toBeUndefined();
+		act(() => (host.querySelector(".ui-split-more") as HTMLButtonElement).click());
+		expect(pop()?.textContent).toContain("Create without a prompt");
+		act(() => (host.querySelector(".ui-split-more") as HTMLButtonElement).click());
+		expect(pill("agent")).not.toBeNull();
+		expect(pill("criteria")).toBeNull();
 		act(() => (host.querySelector('.start-kind input[value="item"]') as HTMLInputElement).click());
-		expect(chip("criteria", ".start-chips")).toBeDefined();
-		expect(chip("agent", ".start-chips")).toBeUndefined();
+		expect(pill("criteria")).not.toBeNull();
+		expect(pill("agent")).toBeNull();
 	});
 });
 
 describe("the screenshots of a work item's repository", () => {
 	it("are said in the repository's picker once one is chosen, with the way to its setting", async () => {
 		await show("/factory", { items: "none", github: false });
-		act(() => (chip("repo", ".start-chips").querySelector("button") as HTMLButtonElement).click());
-		expect(host.querySelector(".start-pop")).not.toBeNull();
-		expect(host.querySelector(".start-shots")).toBeNull();
+		act(() => (pill("repo") as HTMLButtonElement).click());
+		expect(pop()).not.toBeNull();
+		expect(document.querySelector(".start-shots")).toBeNull();
 		act(() => root?.unmount());
 		root = null;
 		client.dispose();
 		await show("/factory");
-		act(() => (chip("repo", ".start-chips").querySelector("button") as HTMLButtonElement).click());
+		act(() => (pill("repo") as HTMLButtonElement).click());
 		await settle();
-		const note = host.querySelector(".start-shots") as HTMLElement;
+		const note = document.querySelector(".start-shots") as HTMLElement;
 		expect(note.textContent).toBe("Screenshots are off for this repository: turn them on.");
 		expect(note.querySelector("a")?.getAttribute("href")).toMatch(/^\/repositories\/[0-9]+\/settings#screenshots$/);
 	});

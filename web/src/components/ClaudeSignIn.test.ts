@@ -76,15 +76,16 @@ function AgentPage({ id }: { id: string }) {
 /** Opens the new agent's page on no repository, and chooses nas and its agent picker. */
 async function composer(machine: MockMachineState): Promise<void> {
 	await render(mock(machine), () => createElement(NewAgent), "/new");
-	const chip = (label: string) => [...host.querySelectorAll(".start-chips .mini-select")].find((select) => select.firstElementChild?.textContent === label)?.querySelector("button") as HTMLButtonElement;
-	const pop = () => host.querySelector(".start-pop") as HTMLElement;
+	const chip = (name: string) => host.querySelector(`[data-picker="${name}"]`) as HTMLButtonElement;
+	const pop = () => document.querySelector(".ui-pop") as HTMLElement;
 	act(() => chip("repo").click());
 	act(() => ([...pop().querySelectorAll("button")].find((button) => button.textContent === "No repository") as HTMLButtonElement).click());
 	await settle();
-	act(() => chip("on").click());
-	act(() => (pop().querySelector('input[type="radio"][value="m_nas"]') as HTMLInputElement).click());
+	act(() => chip("repo").click());
+	act(() => chip("where").click());
+	act(() => (pop().querySelector('[data-value="m_nas"]') as HTMLElement).click());
+	// The agent's menu stays open, with Claude Code's sign-in at its head where it is needed.
 	act(() => chip("agent").click());
-	act(() => (pop().querySelector('.harness-pick input[type="radio"][value="claude"]') as HTMLInputElement).click());
 }
 
 afterEach(() => {
@@ -95,11 +96,12 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-const signInButton = () => [...host.querySelectorAll(".claude-signin button")].find((button) => button.textContent === "Sign in") as HTMLButtonElement | undefined;
-const panel = () => host.querySelector(".claude-signin-panel") as HTMLElement | null;
+// The page and what is open over it: a picker is drawn at the end of the page.
+const signInButton = () => [...document.querySelectorAll(".claude-signin button")].find((button) => button.textContent === "Sign in") as HTMLButtonElement | undefined;
+const panel = () => document.querySelector(".claude-signin-panel") as HTMLElement | null;
 const field = () => panel()?.querySelector("input") as HTMLInputElement;
 const press = async (words: string) => {
-	const button = [...host.querySelectorAll("button")].find((one) => one.textContent === words) as HTMLButtonElement | undefined;
+	const button = [...document.querySelectorAll("button")].find((one) => one.textContent === words) as HTMLButtonElement | undefined;
 	expect(button, words).toBeDefined();
 	await act(async () => button?.click());
 	await settle();
@@ -111,7 +113,7 @@ const paste = (text: string) =>
 		Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, text);
 		input.dispatchEvent(new Event("input", { bubbles: true }));
 	});
-const text = () => host.textContent ?? "";
+const text = () => document.body.textContent ?? "";
 const sent = (call: string) => calls.filter((one) => one.call === call);
 
 describe("the Sign in button", () => {
@@ -143,14 +145,14 @@ describe("the Sign in button", () => {
 
 	it("is in the start composer's agent picker for Claude Code on a machine where it is not signed in, and not where it is", async () => {
 		await composer("claude-signed-out");
-		const pick = host.querySelector(".start-pop .harness-pick") as HTMLElement;
+		const pick = document.querySelector(".ui-pop .ui-menu-header") as HTMLElement;
 		expect(pick.querySelector(".claude-signin")?.textContent).toContain("Claude Code: not signed in on “nas”.");
 		expect(signInButton()).toBeDefined();
 		act(() => root.unmount());
 		host.remove();
 		client.dispose();
 		await composer("online");
-		expect(host.querySelector(".start-pop .harness-pick")).not.toBeNull();
+		expect(document.querySelector('.ui-pop [data-value^="claude:"]')).not.toBeNull();
 		expect(signInButton()).toBeUndefined();
 		expect(text()).not.toContain("not signed in");
 	});
@@ -227,7 +229,7 @@ describe("signing Claude Code in from the page", () => {
 		await press("Finish");
 		expect(sent("finish")).toEqual([{ call: "finish", input: { machineId: "m_nas", code: "mock-approval" } }]);
 		expect(panel()).toBeNull();
-		expect(host.querySelector(".claude-signin-done")?.textContent).toBe("Claude Code: signed in");
+		expect(document.querySelector(".claude-signin-done")?.textContent).toBe("Claude Code: signed in");
 		// The machine's own line, from the list the mock sent on.
 		expect(host.querySelector(".agent-meta")?.textContent).toContain("Claude Code signed in");
 		expect(text()).not.toContain("not signed in");
@@ -294,9 +296,9 @@ describe("signing Claude Code in from the page", () => {
 		await composer("claude-signed-out");
 		await press("Sign in");
 		const url = panel()?.querySelector("a")?.getAttribute("href");
-		const agentChip = () => [...host.querySelectorAll(".start-chips .mini-select")].find((select) => select.firstElementChild?.textContent === "agent")?.querySelector("button") as HTMLButtonElement;
+		const agentChip = () => host.querySelector('[data-picker="agent"]') as HTMLButtonElement;
 		act(() => agentChip().click());
-		expect(host.querySelector(".start-pop")).toBeNull();
+		expect(document.querySelector(".ui-pop")).toBeNull();
 		act(() => agentChip().click());
 		expect(panel()?.querySelector("a")?.getAttribute("href")).toBe(url);
 		expect(sent("start")).toHaveLength(1);
@@ -305,7 +307,7 @@ describe("signing Claude Code in from the page", () => {
 		act(() => field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
 		await settle();
 		expect(sent("finish")).toHaveLength(1);
-		expect(host.querySelector(".claude-signin-done")?.textContent).toBe("Claude Code: signed in");
+		expect(document.querySelector(".claude-signin-done")?.textContent).toBe("Claude Code: signed in");
 		expect(location.pathname).toBe("/new");
 	});
 });

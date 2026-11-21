@@ -64,9 +64,9 @@ describe("the composer's submissions", () => {
 		expect(sent.map((input) => input.text)).toEqual(["Fix the flaky test", "Fix the flaky test"]);
 		expect(sent[0]?.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
 		expect(sent[1]?.idempotencyKey).toBe(sent[0]?.idempotencyKey);
-		// Taken: the field is empty, and nothing shows a control for any of this.
+		// Taken: the field is empty, and nothing shows a control for any of this: Send, and the model's pill.
 		expect(field().value).toBe("");
-		expect(host.querySelectorAll("button")).toHaveLength(1);
+		expect(host.querySelectorAll("button:not(.ui-pill)")).toHaveLength(1);
 	});
 
 	it("gives a message whose text changed a key of its own", async () => {
@@ -160,13 +160,16 @@ describe("another harness's model picker", () => {
 	it("names its models as the harness does, and marks its default as the start composer does, wherever it is listed", () => {
 		const models = { source: "harness" as const, fetchedAt: null, defaultModel: "opus", models: [{ id: "haiku", name: "Haiku", efforts: [] }, { id: "opus", name: "Opus", efforts: [] }, { id: "sonnet", name: null, efforts: [] }] };
 		show({ harness: "Claude Code", model: "opus", models });
-		const select = host.querySelector(".composer-selects select") as HTMLSelectElement;
-		expect([...select.options].map((option) => [option.value, option.textContent])).toEqual([
+		const pill = host.querySelector('[data-picker="model"]') as HTMLButtonElement;
+		act(() => pill.click());
+		const rows = [...document.querySelectorAll('.ui-pop [role="menuitemradio"]')] as HTMLElement[];
+		expect(rows.map((row) => [row.dataset.value, row.querySelector(".ui-item-label")?.textContent])).toEqual([
 			["haiku", "Haiku"],
 			["opus", "Opus (default)"],
 			["sonnet", "sonnet"],
 		]);
-		expect(select.value).toBe("opus");
+		expect(rows.find((row) => row.getAttribute("aria-checked") === "true")?.dataset.value).toBe("opus");
+		expect(pill.dataset.value).toBe("opus");
 	});
 });
 
@@ -226,21 +229,21 @@ describe("the composer's mode", () => {
 		chosen = [];
 		refuse = null;
 	});
-	const picker = () => host.querySelector(".mode-picker .mini-pick") as HTMLButtonElement;
-	const options = () => [...host.querySelectorAll(".mode-menu .mode-option")] as HTMLElement[];
+	const picker = () => host.querySelector('[data-picker="mode"]') as HTMLButtonElement;
+	const options = () => [...document.querySelectorAll('.ui-pop [role="menuitemradio"]')] as HTMLElement[];
 	const pick = async (name: string) => {
 		await act(async () => picker().click());
-		await act(async () => options().find((option) => option.querySelector(".mode-option-name")?.textContent === name)?.click());
+		await act(async () => options().find((option) => option.querySelector(".ui-item-label")?.textContent === name)?.click());
 	};
 
 	it("sits before the model, and opens to each mode with what it does", async () => {
 		show({ modes: WINDLASS, mode: "auto", onMode });
-		expect([...host.querySelectorAll(".composer-selects .mini-select > span:first-child")].map((label) => label.textContent)).toEqual(["mode", "model", "effort"]);
+		expect([...host.querySelectorAll(".composer-selects [data-picker]")].map((pill) => (pill as HTMLElement).dataset.picker)).toEqual(["mode", "model"]);
 		expect(picker().textContent).toBe("Auto");
 		await act(async () => picker().click());
 		expect(picker().getAttribute("aria-expanded")).toBe("true");
 		expect(options().map((option) => option.textContent)).toEqual(["AskAsk before writes, commands, network access and MCP calls.", "AutoUse Windlass’s command sandbox and ask when needed."]);
-		expect(options().map((option) => option.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+		expect(options().map((option) => option.getAttribute("aria-checked"))).toEqual(["false", "true"]);
 	});
 
 	it("calls setMode with the chosen mode and shows it, then follows the summary", async () => {
@@ -248,7 +251,7 @@ describe("the composer's mode", () => {
 		await pick("Plan");
 		expect(chosen).toEqual(["plan"]);
 		expect(picker().textContent).toBe("Plan");
-		expect(host.querySelector(".mode-menu")).toBeNull();
+		expect(document.querySelector(".ui-pop")).toBeNull();
 		// The summary says so, and later says the agent left Plan by itself.
 		show({ modes: [...CLAUDE_LAUNCH_MODES], mode: "plan", onMode, harness: "Claude Code", model: "default" });
 		expect(picker().textContent).toBe("Plan");

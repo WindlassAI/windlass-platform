@@ -78,7 +78,7 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-const pickers = () => [...host.querySelectorAll(".composer-selects .mini-select > span")].map((label) => label.textContent);
+const pickers = () => [...host.querySelectorAll(".composer-selects [data-picker]")].map((pill) => (pill as HTMLElement).dataset.picker);
 const text = () => host.textContent ?? "";
 
 describe("a Claude Code agent's page", () => {
@@ -103,7 +103,8 @@ describe("a Claude Code agent's page", () => {
 		await open("nas-claude");
 		expect(pickers()).toEqual(["mode", "model"]);
 		// By the names Claude Code gave them; its default says so in its own name, so nothing is added to it.
-		expect([...host.querySelectorAll(".composer-selects option")].map((option) => [(option as HTMLOptionElement).value, option.textContent])).toEqual([
+		act(() => (host.querySelector('[data-picker="model"]') as HTMLButtonElement).click());
+		expect([...document.querySelectorAll('.ui-pop [role="menuitemradio"]')].map((row) => [(row as HTMLElement).dataset.value, row.querySelector(".ui-item-label")?.textContent])).toEqual([
 			["default", "Default (recommended)"],
 			["opus", "Opus"],
 			["haiku", "Haiku"],
@@ -129,14 +130,14 @@ describe("a Claude Code agent's page", () => {
 });
 
 describe("an agent's mode on its page", () => {
-	const picker = () => host.querySelector(".mode-picker .mini-pick") as HTMLButtonElement | null;
+	const picker = () => host.querySelector('[data-picker="mode"]') as HTMLButtonElement | null;
 	const panelMode = () => {
 		const facts = [...host.querySelectorAll("#panel-session ~ .kv dt")].find((term) => term.textContent === "mode");
 		return facts?.nextElementSibling?.textContent ?? null;
 	};
 	const pick = async (name: string) => {
 		await act(async () => picker()?.click());
-		await act(async () => ([...host.querySelectorAll(".mode-menu .mode-option")] as HTMLElement[]).find((option) => option.querySelector(".mode-option-name")?.textContent === name)?.click());
+		await act(async () => ([...document.querySelectorAll('.ui-pop [role="menuitemradio"]')] as HTMLElement[]).find((option) => option.querySelector(".ui-item-label")?.textContent === name)?.click());
 	};
 	/** The agent's mode as the mock holds it. */
 	const modeOf = async () => {
@@ -183,7 +184,7 @@ describe("an agent's mode on its page", () => {
 		await open((sessions) => sessions.find((session) => session.item === undefined && session.harness !== "claude" && session.profile === "docker-windlass-sandbox"));
 		expect(picker()?.textContent).toBe("Auto");
 		await act(async () => picker()?.click());
-		expect([...host.querySelectorAll(".mode-menu .mode-option-name")].map((name) => name.textContent)).toEqual(["Ask", "Auto"]);
+		expect([...document.querySelectorAll('.ui-pop [role="menuitemradio"] .ui-item-label')].map((name) => name.textContent)).toEqual(["Ask", "Auto"]);
 		expect(panelMode()).toBe("Auto");
 		expect(host.querySelector("#panel-sandbox")?.closest("section")?.textContent).toContain("your ChatGPT sign-in is never in the sandbox");
 	});
@@ -192,7 +193,7 @@ describe("an agent's mode on its page", () => {
 		await open((sessions) => sessions.find((session) => session.item?.role === "builder"));
 		expect(host.querySelector(".item-note")).not.toBeNull();
 		expect(host.querySelector(".mode-picker")).toBeNull();
-		expect(host.querySelector(".mode-menu")).toBeNull();
+		expect(document.querySelector(".ui-pop")).toBeNull();
 		expect(panelMode()).toBe("Auto");
 	});
 });
@@ -207,9 +208,9 @@ describe("the composer of a Claude Code agent", () => {
 		expect(text()).toContain("Claude Code's default model");
 		show(list(["low", "medium", "high"]), "Claude Code");
 		expect(pickers()).toEqual(["effort"]);
-		// Windlass's composer is as it was: both pickers, whatever the list.
+		// Windlass's composer has its model's pill whatever the list; a model's efforts are in its submenu.
 		show(list([]), null);
-		expect(pickers()).toEqual(["model", "effort"]);
+		expect(pickers()).toEqual(["model"]);
 	});
 
 	it("labels the agent with its harness beside the machine's name", () => {

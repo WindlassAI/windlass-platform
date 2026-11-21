@@ -871,7 +871,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				<>
 					{chosenMachine && offersOther
 						? offeredHarnesses(chosenMachine).map((offered) =>
-								hardened && offered.signIn === "none" ? (
+								// Signed in, ClaudeSignIn draws nothing, or the line that says it just was.
+								hardened && offered.signIn !== "unknown" ? (
 									<ClaudeSignIn key={offered.id} machine={chosenMachine} className="harness-login">
 										{HARNESS_NAMES[offered.id]}: not signed in on “{machineLabel(chosenMachine)}”.
 										{chosenMachine.status === "online" ? null : (
