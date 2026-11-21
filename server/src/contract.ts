@@ -1049,7 +1049,11 @@ export function machineLabel(machine: { name: string; os?: string; arch?: string
 }
 
 /** One of the user's machines, as the Machines page lists it. */
-export interface MachineSummary {
+export interface MachineDetails { whenToUse: string; tags: string[] }
+export interface MachineSummary extends Partial<MachineDetails> {
+	turns?: { running: number; max: number | null; queued: number };
+	host?: { cpus: number; sandboxCpus: number; memoryBytes: number; memoryFreeBytes: number; load1: number | null };
+	screenshots?: boolean;
 	egress?: EgressMode;
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
@@ -1767,6 +1771,7 @@ export interface UserActions {
 	finishClaudeLogin(input: { machineId: string; code: string }): Promise<{ signedIn: true }>;
 	cancelClaudeLogin(input: { machineId: string }): Promise<{ cancelled: true }>;
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
+	setMachineDetails(input: { machineId: string; whenToUse: string; tags: string[] }): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
 	/** The user's work items, the newest first. */
 	listItems(): Promise<ItemSummary[]>;

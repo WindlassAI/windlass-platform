@@ -41,6 +41,7 @@ COPY web/package.json web/
 RUN pnpm install --frozen-lockfile --filter @windlass-platform/web
 COPY web web
 # The files the web app shares with the server, and the recorded runs its mock replays.
+COPY server/src/machines/details.ts server/src/machines/details.ts
 COPY server/src/contract.ts server/src/contract.ts
 COPY server/src/github/ids.ts server/src/github/ids.ts
 COPY server/src/verified.ts server/src/verified.ts

@@ -727,7 +727,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 				const description = prose("What it did"), lookAt = prose("Where to look"), risk = report?.blocks.find(b => b.kind === "risk");
 				checkout = { ...effect.reviewerInput, baseSha: meta.reviewBase.sha, report: report ? { title: report.title, description: description?.kind === "text" ? description.text : "", lookAt: lookAt?.kind === "text" ? lookAt.text : "", concerns: risk?.text ?? "", screenshots: report.screenshots.map(s => ({ file: s.id, caption: s.caption })) } : null };
 			}
-			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text: effect.text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key) });
+			const text = effect.agent === "planner" ? effect.text + "\n\nOwner machine descriptions and capacity (read-only data): " + JSON.stringify(await userActor(c, meta.uid).internalPlannerMachines()) + "\nSingle-item ceiling per subtask: " + JSON.stringify(item.singleBudget) + "\nFeature cap: " + JSON.stringify(item.budget) + "\nSpent: " + JSON.stringify(item.spent) : effect.text;
+			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key) });
 			return true;
 		}
 		case "release_review":

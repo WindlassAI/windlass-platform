@@ -1,3 +1,4 @@
+import { plannerMachines } from "../machines/details.js";
 /**
  * `user`, key [uid]: a user's profile, the index of their sessions, and their ChatGPT sign-in.
  *
@@ -1288,6 +1289,8 @@ export const user = actor({
 		finishClaudeLogin: (c, input: { machineId: string; code: string }) => machineActions.finishClaudeLogin(c, input),
 		cancelClaudeLogin: (c, input: { machineId: string }) => machineActions.cancelClaudeLogin(c, input),
 		removeMachine: (c, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> => machineActions.removeMachine(c, input),
+		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()]); },
+		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
 		setMachineSecrets: (c, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> => machineActions.setMachineSecrets(c, input),
 		internalMachineCreated: (c, id: string): Promise<boolean> => machineActions.internalMachineCreated(c, id),
 		internalMachineSystem: async (c, id: string): Promise<{ os: string; arch: string } | null> => {

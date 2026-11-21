@@ -98,3 +98,22 @@ test("a planner can file a plan without any builder publication tools", async ()
 	assert.deepEqual([...tools.keys()], ["file_plan"]);
 	assert.deepEqual(hostToolsMeta(tools).hostTools.map(t => t.name), ["file_plan"]);
 });
+
+test("machine reports accept old runners and validate new compute figures", async () => {
+	const { parseRunnerFrame } = await import("../server/src/runner/control.js");
+	const frame = { kind: "report", commandSandbox: { ok: true }, docker: { ok: true }, freeDiskBytes: null, sandboxes: [] };
+	const host = { cpus: 8, sandboxCpus: 0.5, memoryBytes: 1024, memoryFreeBytes: 100, load1: 1.5 };
+	assert.ok(parseRunnerFrame(JSON.stringify(frame)));
+	assert.ok(parseRunnerFrame(JSON.stringify({ ...frame, host })));
+	assert.equal(parseRunnerFrame(JSON.stringify({ ...frame, host: { ...host, cpus: -1 } })), null);
+});
+test("planner inventory exposes capacity and validated owner text without session ids or secrets", async () => {
+	const { machineDetails, plannerMachines } = await import("../server/src/machines/details.js");
+	const details = machineDetails({ whenToUse: "Big builds", tags: ["big-build"] });
+	assert.deepEqual(details.tags, ["big-build"]);
+	for (const tags of [["harness:claude"], ["arch"], ["screenshots"], ["x".repeat(25)], Array(13).fill("a")]) assert.throws(() => machineDetails({ ...details, tags }));
+	assert.throws(() => machineDetails({ ...details, whenToUse: "x".repeat(501) }));
+	const [entry] = plannerMachines([{ ...details, name: "Box", sandboxes: [{ state: "running", sessionId: "private" }], turns: { running: 1, queued: 2, max: 1 }, sendSecrets: true }] as never);
+	assert.equal(entry.turns.queued, 2); assert.equal(entry.whenToUse, "Big builds");
+	assert.doesNotMatch(JSON.stringify(entry), /private|sendSecrets/);
+});

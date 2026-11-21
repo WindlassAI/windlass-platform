@@ -1,3 +1,4 @@
+import { machineDetails } from "../../../server/src/machines/details.js";
 /**
  * The mock `PlatformClient`: the whole backend in memory, with no network.
  *
@@ -3062,7 +3063,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			commandSandbox: { ok: true },
 			freeDiskBytes: 61.4e9,
 			profiles: mockMachineProfiles(patch.name ?? "nas"),
-			sendSecrets: true,
+			sendSecrets: true, whenToUse: "Build and test", tags: ["big-build"], host: { cpus: 8, sandboxCpus: 4, memoryBytes: 16 * 2**30, memoryFreeBytes: 8 * 2**30, load1: 1 }, turns: { running: 0, queued: 0, max: 2 },
 			warnings: [],
 			harnesses: [{ ...MOCK_CLAUDE, options: { models: MOCK_CLAUDE_MODELS.models, defaultModel: MOCK_CLAUDE_MODELS.defaultModel, modes: [...CLAUDE_LAUNCH_MODES], checkedAt: at } }],
 			...patch,
@@ -3143,7 +3144,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** The calls of the Machines page. A machine paired here waits for its runner, which connects a few seconds later. */
-	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineSecrets" | "startClaudeLogin" | "finishClaudeLogin" | "cancelClaudeLogin"> {
+	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineDetails" | "setMachineSecrets" | "startClaudeLogin" | "finishClaudeLogin" | "cancelClaudeLogin"> {
 		function loginMachine(id: string) {
 			machinesOn();
 			const set = machinesOf(auth);
@@ -3224,6 +3225,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				machineOf(auth, machineId);
 				const set = machinesOf(auth);
 				set.list = set.list.filter((one) => one.machineId !== machineId);
+				machinesChanged(auth);
+				return machinesView(auth);
+			},
+			async setMachineDetails(input) {
+				machinesOn();
+				const machine = machineOf(auth, input.machineId);
+				try { Object.assign(machine, machineDetails(input)); } catch (error) { throw new PlatformError("user", (error as Error).message, { reason: "bad_input" }); }
 				machinesChanged(auth);
 				return machinesView(auth);
 			},

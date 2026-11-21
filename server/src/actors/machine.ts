@@ -32,7 +32,7 @@ interface Ctx {
 }
 interface Input { grant: string; details: MachineClaim; publicKey: string; expires: number }
 type Row = { name: string; version: string; public_key: string; created: number; seen: number | null; removed_at: number | null; remove_sandboxes: number; offset: number; duplicate: number | null; report: string | null };
-export interface MachineUpdate { name?: string; status: MachineStatus; since: number; runnerVersion: string; warnings: MachineWarning[]; report: Report | null }
+export interface MachineUpdate { name?: string; turns?: { running: number; max: number | null; queued: number }; status: MachineStatus; since: number; runnerVersion: string; warnings: MachineWarning[]; report: Report | null }
 /** `publicKey` is the machine's Ed25519 key, SPKI in base64; it never changes (pairing again makes a new machine). */
 export interface MachineFacts { status: MachineStatus | "removed"; name: string; publicKey: string; report: Report | null }
 export type TurnSlot = { state: "granted" | "reconnecting" | "offline" | "removed" } | { state: "waiting"; busy: number; max: number };
@@ -70,6 +70,7 @@ async function requestSlot(c: Ctx, session: string, turn: number): Promise<TurnS
 	const grant = max === undefined || (busy < max && (!first || first === own));
 	if (!own) await c.db.execute("INSERT INTO turn_slots VALUES (?, ?, ?)", session, turn, Number(grant));
 	else if (grant) await c.db.execute("UPDATE turn_slots SET running = 1 WHERE session = ? AND turn = ?", session, turn);
+	if (!own || grant) await tell(c, await record(c));
 	return grant ? { state: "granted" } : { state: "waiting", busy, max: max! };
 }
 
@@ -82,7 +83,7 @@ async function reapSlots(c: Ctx) {
 			const summary = await sessionActor(c, c.key[0]!, row.session).internalSummary();
 			if (summary.turns === row.turn && summary.status !== "idle") return;
 		} catch (error) { if (!isActorGone(error)) return; }
-		await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", row.session, row.turn);
+		await ordered(c, async () => { await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", row.session, row.turn); await tell(c, await record(c)); });
 	}));
 }
 
@@ -101,6 +102,10 @@ function update(c: Ctx, row: Row): MachineUpdate {
 }
 async function publish(c: Ctx, row: Row) {
 	const facts = row.removed_at === null ? update(c, row) : null;
+	if (facts) {
+		const [slots] = await c.db.execute<{ running: number; queued: number }>("SELECT count(CASE WHEN running=1 THEN 1 END) AS running, count(CASE WHEN running=0 THEN 1 END) AS queued FROM turn_slots");
+		facts.turns = { ...slots, max: c.vars.live?.maxTurns ?? null };
+	}
 	const conflict = facts?.warnings.find(w => w.kind === "key");
 	if (conflict) {
 		// An earlier alarm rereads the last refusal. One alarm also covers repeated attempts and actor sleeps.
@@ -330,7 +335,7 @@ export const machine = actor({
 		},
 		internalReleaseTurnSlot: async (c, session: string, turn: number): Promise<void> => {
 			requireServiceFor(c, "call");
-			await ordered(c, async () => { await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", session, turn); });
+			await ordered(c, async () => { await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", session, turn); await tell(c, await record(c)); });
 		},
 		internalFacts: async (c): Promise<MachineFacts> => {
 			requireServiceFor(c, "call");
