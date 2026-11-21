@@ -3134,3 +3134,35 @@ button.user-platform-line:hover {
 		content: none;
 	}
 }
+
+/* The token counts of a turn, folded behind a quiet toggle at the end of its outcome line. */
+.turn-end-fold {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 0 4px;
+	margin: 0 -4px;
+	border: 0;
+	border-radius: var(--radius-s);
+	background: none;
+	font: inherit;
+	color: var(--ink-faint);
+	cursor: pointer;
+}
+.turn-end-fold:hover,
+.turn-end-fold[aria-expanded="true"] {
+	color: var(--ink-dim);
+}
+.turn-end-fold:hover {
+	background: var(--bg-hover);
+}
+.turn-end-fold:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+.turn-end-fold-chevron {
+	transition: transform 140ms var(--ease);
+}
+.turn-end-fold-open {
+	transform: rotate(90deg);
+}
