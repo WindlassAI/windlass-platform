@@ -6,7 +6,7 @@
  *   wlps1.<key id>.<nonce>.<ciphertext>.<tag>        each part base64url
  *
  * AES-256-GCM with a random 96-bit nonce per blob. The key is derived with HKDF-SHA256 from the
- * server's key secret (`signInKeySecret()`, config.ts: WLP_SIGNIN_KEY, or WLP_SECRET) under a label
+ * configured sealing root (the signing roots are the fallback) under a label
  * that names this use, so it is not the key tokens are signed with and cannot be had from one; each
  * purpose has a key of its own:
  *
@@ -21,7 +21,7 @@
  * sign-in put in another user's actor does not open there, nor does an attempt's material as a
  * sign-in, nor an answer to another request, nor one secret's value as another's.
  *
- * The key id is a few bytes derived from the same secret under another label. It says which secret a
+ * The key id is configured, or derived from a singleton secret under another label. It says which secret a
  * blob was sealed with, so that a server whose secret differs from the others' can say that, instead
  * of reporting every sign-in as damaged. It tells nothing about the key.
  *
@@ -29,8 +29,9 @@
  * is. With the secret it gives away everything: the secret is what must not be in the storage.
  */
 
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { signInKeySecret } from "../config.js";
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
+import type { Keyring } from "../keyring.js";
+import { signInKeys } from "../config.js";
 
 export type SealPurpose = "user" | "attempt" | "transit" | "secret";
 
@@ -52,6 +53,7 @@ export class SealError extends Error {
 }
 
 export interface Sealer {
+	isCurrent(blob: string): boolean;
 	seal(purpose: SealPurpose, subject: string, plaintext: string): string;
 	/** Throws `SealError`. */
 	open(purpose: SealPurpose, subject: string, blob: string): string;
@@ -62,38 +64,41 @@ const derive = (secret: Buffer, info: string, length: number) => Buffer.from(hkd
 /** What is authenticated beside the ciphertext: this format, the purpose, and whose it is. */
 const bound = (purpose: SealPurpose, subject: string) => Buffer.from(JSON.stringify([VERSION, purpose, subject]), "utf8");
 
-export function createSealer(secret: Buffer | string): Sealer {
-	const material = typeof secret === "string" ? Buffer.from(secret, "utf8") : secret;
-	if (material.length < 16) throw new Error("the secret a sign-in key is derived from must be at least 16 bytes long");
-	const keys = new Map<SealPurpose, Buffer>();
-	const keyOf = (purpose: SealPurpose) => {
-		let key = keys.get(purpose);
-		if (key === undefined) {
-			key = derive(material, `key ${purpose}`, 32);
-			keys.set(purpose, key);
+export function createSealer(source: Buffer | string | Keyring): Sealer {
+	const singleton = typeof source === "string" ? Buffer.from(source) : source;
+	const legacyId = (secret: Buffer) => derive(secret, "key id", 6).toString("base64url");
+	const roots = Buffer.isBuffer(singleton) ? [{ id: legacyId(singleton), secret: singleton }] : singleton;
+	const byId = new Map<string, Map<SealPurpose, Buffer>>();
+	for (const { id, secret } of roots) {
+		if (secret.length < 16) throw new Error("the secret a sign-in key is derived from must be at least 16 bytes long");
+		const keys = new Map<SealPurpose, Buffer>();
+		for (const purpose of ["user", "attempt", "transit", "secret"] as const) keys.set(purpose, derive(secret, `key ${purpose}`, 32));
+		// A pre-keyring blob names its root by this fingerprint. Keep reading it until that root retires.
+		for (const alias of new Set([id, legacyId(secret)])) {
+			if (byId.has(alias)) throw new Error("the sealing keyring contains colliding key ids");
+			byId.set(alias, keys);
 		}
-		return key;
-	};
-	const keyId = derive(material, "key id", 6);
+	}
+	const current = roots[0]!.id;
 
 	return {
+		isCurrent: blob => blob.startsWith(`${VERSION}.${current}.`),
 		seal(purpose, subject, plaintext) {
 			const nonce = randomBytes(12);
-			const cipher = createCipheriv("aes-256-gcm", keyOf(purpose), nonce);
+			const cipher = createCipheriv("aes-256-gcm", byId.get(current)!.get(purpose)!, nonce);
 			cipher.setAAD(bound(purpose, subject));
 			const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-			return [VERSION, keyId.toString("base64url"), nonce.toString("base64url"), ciphertext.toString("base64url"), cipher.getAuthTag().toString("base64url")].join(".");
+			return [VERSION, current, nonce.toString("base64url"), ciphertext.toString("base64url"), cipher.getAuthTag().toString("base64url")].join(".");
 		},
 		open(purpose, subject, blob) {
 			const parts = typeof blob === "string" ? blob.split(".") : [];
 			if (parts.length !== 5 || parts[0] !== VERSION) throw new SealError("format", "this is not a sealed sign-in");
-			const [id, nonce, ciphertext, tag] = parts.slice(1).map((part) => Buffer.from(part, "base64url"));
-			if (id!.length !== keyId.length || !timingSafeEqual(id!, keyId)) {
-				throw new SealError("key", "it was sealed with another secret than this server's (WLP_SIGNIN_KEY, or WLP_SECRET, must be the same on every server and must not change)");
-			}
+			const keys = byId.get(parts[1]!);
+			if (!keys) throw new SealError("key", "it was sealed with another secret; its key id is absent from this server's sealing keyring");
+			const [nonce, ciphertext, tag] = parts.slice(2).map(part => Buffer.from(part, "base64url"));
 			if (nonce!.length !== 12 || tag!.length !== 16) throw new SealError("format", "this is not a sealed sign-in");
 			try {
-				const decipher = createDecipheriv("aes-256-gcm", keyOf(purpose), nonce!);
+				const decipher = createDecipheriv("aes-256-gcm", keys.get(purpose)!, nonce!);
 				decipher.setAAD(bound(purpose, subject));
 				decipher.setAuthTag(tag!);
 				return Buffer.concat([decipher.update(ciphertext!), decipher.final()]).toString("utf8");
@@ -108,6 +113,6 @@ let own: Sealer | null = null;
 
 /** This server's sealer, from its configuration. */
 export function serverSealer(): Sealer {
-	own ??= createSealer(signInKeySecret());
+	own ??= createSealer(signInKeys());
 	return own;
 }

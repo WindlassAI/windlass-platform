@@ -315,7 +315,7 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 		setCi(harbor, head, "success");
 		const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=";
 		const { config } = await import("../server/src/config.js");
-		const { client, user, auth } = await world(server, standin, { WLP_SECRET: config.secret.toString(), WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_BACKUP_DIR: join(server.storage, "shots"), WLP_FAKE_BUCKET_SIGNING_SECRET: randomBytes(32).toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_IDLE_SUSPEND_MS: "1000" });
+		const { client, user, auth } = await world(server, standin, { WLP_SECRET: config.signingKeys[0].secret.toString(), WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_BACKUP_DIR: join(server.storage, "shots"), WLP_FAKE_BUCKET_SIGNING_SECRET: randomBytes(32).toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_IDLE_SUSPEND_MS: "1000" });
 		await check("reviewer: platform info says the second review is on", async () => {
 			const info = (await (await fetch(`${API}/platform/info`)).json()) as { items?: { reviewer?: unknown } };
 			assert(info.items?.reviewer === true, `platform info has items: ${JSON.stringify(info.items)}`);

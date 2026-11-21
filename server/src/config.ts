@@ -214,6 +214,7 @@
  * neither does anything else in `config`: the admin token is read where it is used (`engineAdminToken`).
  */
 
+import { configuredKeys, type Keyring } from "./keyring.js";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -270,7 +271,7 @@ export interface Config {
 	accountEmails: ReadonlyMap<string, string>;
 	sandbox: SandboxMode;
 	allowDockerHosted: boolean;
-	secret: Buffer;
+	signingKeys: Keyring;
 	/** False when a remote engine is configured and WLP_SECRET is not: the server refuses to start (startup.ts). */
 	secretConfigured: boolean;
 	/** The settings that are set to something that cannot be used, each in words that do not repeat its value: the server refuses to start (startup.ts). */
@@ -530,15 +531,13 @@ function readSecret(): Buffer {
 	return Buffer.from(generated, "utf8");
 }
 
-/**
- * What the key that encrypts sign-ins is derived from: WLP_SIGNIN_KEY when it is set, so the token
- * secret can be changed without every user having to sign in with ChatGPT again, and otherwise the
- * server's secret. Either way it is the derivation's input, never the key itself (signin/seal.ts), and
- * it has to be the same on every server: a sign-in sealed by one must open on the others.
- */
-export function signInKeySecret(): Buffer {
+// Preserve the legacy blob id for a singleton seal key. With no dedicated key, the
+// complete signing ring is available to decrypt blobs during a signing-key rotation.
+export function signInKeys(): Keyring | Buffer {
+	const ring = configuredKeys("WLP_SIGNIN_KEYS", 32);
+	if (ring) return ring;
 	const own = process.env.WLP_SIGNIN_KEY;
-	if (own === undefined) return config.secret;
+	if (own === undefined) return process.env.WLP_SECRET_KEYS === undefined ? config.signingKeys[0].secret : config.signingKeys;
 	if (own.length < 32) throw new Error("WLP_SIGNIN_KEY must be at least 32 characters long");
 	return Buffer.from(own, "utf8");
 }
@@ -700,8 +699,8 @@ export const config: Config = {
 	accountEmails: readAccountEmails(),
 	sandbox: readSandboxMode(),
 	allowDockerHosted: process.env.WLP_ALLOW_DOCKER_HOSTED === "1",
-	secret: readSecret(),
-	secretConfigured: !engine.remote || Boolean(process.env.WLP_SECRET),
+	signingKeys: configuredKeys("WLP_SECRET_KEYS", 16) ?? [{ id: "default", secret: readSecret() }],
+	secretConfigured: !engine.remote || Boolean(process.env.WLP_SECRET_KEYS || process.env.WLP_SECRET),
 	unusable,
 	engine,
 	browsers: readBrowsers(),

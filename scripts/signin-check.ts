@@ -1009,7 +1009,7 @@ async function main(): Promise<void> {
 					WLP_SIGNIN_RUNNER: "local",
 					WLP_WINDLASS_BIN: binary,
 					WLP_SIGNIN_TMPDIR: privateRoot,
-					WLP_SECRET: config.secret.toString("utf8"),
+					WLP_SECRET: config.signingKeys[0].secret.toString("utf8"),
 					WLP_DEMO: "0",
 					WLP_FAKE_DELAY_MS: "2",
 					RIVETKIT_STORAGE_PATH: storage,

@@ -10,6 +10,7 @@
  * someone else is no use to them either.
  */
 import { createPublicKey, randomBytes, verify } from "node:crypto";
+import { keyedDigest } from "../signatures.js";
 import { sessionProof } from "../runner/control.js";
 import type { Hello } from "../runner/protocol.js";
 
@@ -25,13 +26,13 @@ export interface Expected {
 }
 
 export class AttachTickets {
-	/** Ticket → when it stops being good. */
+	/** Keyed digest of the ticket → when it stops being good. */
 	private readonly issued = new Map<string, number>();
 
 	issue(now = Date.now()): string {
 		for (const [ticket, until] of this.issued) if (until <= now) this.issued.delete(ticket);
 		const ticket = randomBytes(32).toString("base64url");
-		this.issued.set(ticket, now + TICKET_MS);
+		this.issued.set(keyedDigest("attach-ticket", ticket).toString("hex"), now + TICKET_MS);
 		return ticket;
 	}
 
@@ -40,8 +41,9 @@ export class AttachTickets {
 	 * shown, whatever the answer: a hello that is refused does not leave it for another try.
 	 */
 	admits(hello: Hello, expected: Expected, now = Date.now()): boolean {
-		const until = this.issued.get(hello.ticket);
-		this.issued.delete(hello.ticket);
+		const digest = keyedDigest("attach-ticket", hello.ticket).toString("hex");
+		const until = this.issued.get(digest);
+		this.issued.delete(digest);
 		if (until === undefined || until <= now) return false;
 		if (hello.machineId !== expected.machineId || expected.publicKey === null) return false;
 		return signedBy(expected.publicKey, sessionProof(expected.uid, expected.sessionId, expected.machineId, hello.ticket), hello.signature);
