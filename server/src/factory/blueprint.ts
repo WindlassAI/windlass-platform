@@ -460,7 +460,12 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	if (cause !== null) return stop(c, cause, STOP_WORDS[cause as keyof typeof STOP_WORDS](item.task), plan);
 
 	const working = item.workingSince === null ? 0 : Math.max(0, c.at - item.workingSince) / 1000;
-	const over = budgetStop(item.budget, { ...item.spent, activeSeconds: item.spent.activeSeconds + working }, item.place);
+	const limit = { ...item.budget };
+	if (item.mode === "orchestrate" && plan.kind === "refine") {
+		const reserve = closingReserve(item.singleBudget!);
+		for (const d of dimensions) limit[d] -= reserve[d];
+	}
+	const over = budgetStop(limit, { ...item.spent, activeSeconds: item.spent.activeSeconds + working }, item.place);
 	if (over !== null) return stop(c, over.cause, over.sentence, plan);
 
 	if (plan.fingerprint !== null) run.lastFailure = plan.fingerprint;

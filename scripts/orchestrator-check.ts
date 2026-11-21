@@ -515,3 +515,12 @@ test("push CI must target the feature and child branches", async () => {
 		"on: {push: {branches: ['**','!windlass/**','windlass/feature-*']}}"])
 		assert.equal(workflowReportsPush(source, branch), true, source);
 });
+
+test("re-planning cannot start a turn with only the closing reserve left", () => {
+	const feature = approved();
+	const running = advance(feature, {kind:"feature_ready", key:currentKey(feature)!, at:5, head, pr}).item;
+	running.spent.turns = running.budget.turns - 4;
+	const stopped = advance(running, {kind:"child_update", key:currentKey(running)!, child:running.jobs![0].id, state:"failed", spent:zero, report:"Stopped", head:null, at:6});
+	assert.equal(stopped.item.question?.kind, "budget");
+	assert.equal(stopped.effects.some(e => e.kind === "deliver"), false);
+});
