@@ -3268,6 +3268,9 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			const held = active.secrets;
 			const planning = active.item?.row.agent === "planner";
 			const planner = planning || active.item?.row.agent === "summary";
+			// Resume keeps a named agent until explicitly switched. The inbox also records planners from before this handoff was supported.
+			const clearPlanner = !!(resumed && active.item && !planner && !reviewer &&
+				(await c.db.execute("SELECT 1 FROM inbox WHERE agent IN ('planner', 'summary') AND turn IS NOT NULL LIMIT 1")).length);
 			const tools = !planner && !reviewer && !!meta.repo && githubApp() !== null;
 			const item = active.item;
 			const servers: ServerQuestionContext = {
@@ -3382,6 +3385,7 @@ fi`, { signal, timeoutMs: 5000 });
 				} : undefined,
 				// A work item's agent files its report, which the platform puts on the pull request it pushes itself.
 				planner,
+				clearPlanner,
 				onPlan: planning && item ? (request) => tracked(itemActor(c, meta.uid, item.row.itemId).internalFilePlan({ key: item.row.key, plan: held.redactor.deep(request.arguments) })) : undefined,
 				onReport: item && !planning && !reviewer && platformTool("report") ? (request, withdrawn) => {
 					const file = async () => {

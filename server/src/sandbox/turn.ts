@@ -141,6 +141,12 @@ export function sessionOpenParams(cwd: string, meta: Record<string, unknown>) {
 	return { cwd, mcpServers: [], _meta: { windlass: meta } };
 }
 
+export function turnAgentMeta(restrictedAgent: string | null, clearPlanner?: boolean): { agent?: string; children?: false } {
+	// The agent definition refuses delegation. children controls only questions from a child.
+	if (restrictedAgent) return { agent: restrictedAgent, children: false };
+	return clearPlanner ? { agent: "none" } : {};
+}
+
 export function hostToolsMeta(tools: ReturnType<typeof turnHostTools>, screenshots?: boolean) {
 	return { hostTools: platformTools({ plan: tools.has("file_plan"), publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL), review: tools.has(REVIEW_TOOL), screenshots }, config.questionTimeoutMs) };
 }
@@ -760,8 +766,7 @@ class Turn {
 			...(input.model === undefined ? {} : { model: input.model }),
 			...(input.effort === undefined ? {} : { effort: input.effort }),
 			approval: this.approval,
-			// The agent definition refuses delegation. children controls only questions from a child.
-			...(this.reviewerAgent ? { agent: this.reviewerAgent, children: false } : {}),
+			...turnAgentMeta(this.reviewerAgent, input.clearPlanner),
 			// Whether anyone can answer a question. Without someone, a call that would ask is refused at once and the model is told.
 			attended: input.onQuestion !== undefined,
 			unattended: "deny",

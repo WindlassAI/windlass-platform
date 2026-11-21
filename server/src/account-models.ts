@@ -47,7 +47,9 @@ export const STAND_IN_MODELS: readonly ModelChoice[] = ["gpt-6.1-sol", "gpt-6-so
 
 export function plannerEffort(models: ModelChoice[], id: string): string | null {
 	const offered = models.find(model => model.id === id)?.efforts;
-	return ["ultra", "max", "xhigh", "high", "medium", "low", "minimal"].find(e => offered?.includes(e)) ?? null;
+	// High, not the top of the list: plans have advertised efforts their API then refused ("ultra"),
+	// and the top efforts multiply a plan's token use for little gain in a planning turn.
+	return ["high", "xhigh", "medium", "low", "minimal"].find(e => offered?.includes(e)) ?? null;
 }
 
 export function standInModels(source: Exclude<ModelList["source"], "account" | "harness">): ModelList {

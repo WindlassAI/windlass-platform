@@ -461,6 +461,8 @@ export interface RunTurnInput {
 	/** A work item's agent files its report; returns what the agent is told. Not given with `onPublish`. */
 	onPlan?: RunTurnInput["onReport"];
 	planner?: boolean;
+	/** Resume an item's conversation as a builder after it ran with the planner agent. */
+	clearPlanner?: boolean;
 	onReport?: (request: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
 	onReview?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 	reportScreenshots?: boolean;
