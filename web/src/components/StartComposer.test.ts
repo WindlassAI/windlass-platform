@@ -103,22 +103,38 @@ async function enter(): Promise<void> {
 	await settle();
 }
 
-/** The chip with this label, and its value as shown. */
-const chip = (label: string) => [...host.querySelectorAll(".start-chips .mini-select")].find((select) => select.firstElementChild?.textContent === label) as HTMLElement | undefined;
-const value = (label: string) => chip(label)?.querySelector("button")?.textContent ?? null;
-/** Opens the chip's picker. */
-const open = (label: string) => act(() => (chip(label)?.querySelector("button") as HTMLButtonElement).click());
-const pop = () => host.querySelector(".start-pop") as HTMLElement;
-/** Chooses the radio of this value in the open picker. */
-const pick = (value: string) => act(() => (pop().querySelector(`input[type="radio"][value="${value}"]`) as HTMLInputElement).click());
-/** Chooses a mode in the mode's own list, not among the rows of a chip's picker, which share its look. */
+/**
+ * The pill of a picker, by the name the chip it replaced had: where it runs and its sandbox are one
+ * pill now ("on" and "sandbox"), and its value is what the pill shows.
+ */
+const PICKERS: Record<string, string> = { repo: "repo", on: "where", sandbox: "where", agent: "agent", mode: "mode", criteria: "criteria", setup: "setup" };
+const pill = (label: string) => host.querySelector(`[data-picker="${PICKERS[label] ?? label}"]`) as HTMLButtonElement | null;
+const value = (label: string) => (label === "sandbox" ? pill(label)?.dataset.sandbox : pill(label)?.dataset.value) ?? null;
+/** Opens the pill's picker. */
+const open = (label: string) => act(() => (pill(label) as HTMLButtonElement).click());
+/** The open picker: a menu or a small form, drawn at the end of the page. */
+const pop = () => document.querySelector(".ui-pop") as HTMLElement;
+/** Chooses the row of this value in the open menu. */
+const pick = (value: string) => act(() => (pop().querySelector(`[data-value="${value}"]`) as HTMLElement).click());
+/** Opens a row's submenu as the keyboard does (→ on the highlighted row), and chooses in it. */
+function pickIn(row: string, value: string): void {
+	act(() => void pop().querySelector(`[data-value="${row}"]`)?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })));
+	act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+	act(() => (document.querySelector(`.ui-pop-sub [data-value="${value}"]`) as HTMLElement).click());
+}
+/** Chooses a mode in the mode's menu, by its name. */
 function mode(name: string): void {
 	open("mode");
-	const option = [...host.querySelectorAll(".start-chip-mode .mode-menu .mode-option")].find((candidate) => candidate.querySelector(".mode-option-name")?.textContent === name) as HTMLElement;
+	const option = [...pop().querySelectorAll('[role="menuitemradio"]')].find((candidate) => candidate.querySelector(".ui-item-label")?.textContent === name) as HTMLElement;
 	act(() => option.click());
 }
-/** A link-styled button in the open picker, by its words. */
+/** A button in the open picker, by its words. */
 const press = (words: string) => act(() => ([...pop().querySelectorAll("button")].find((button) => button.textContent === words) as HTMLButtonElement).click());
+/** Chooses in the launch button's menu, by its words. */
+async function launchMenu(words: string): Promise<void> {
+	act(() => (host.querySelector(".ui-split-more") as HTMLButtonElement).click());
+	await act(async () => ([...pop().querySelectorAll('[role="menuitem"]')].find((row) => row.querySelector(".ui-item-label")?.textContent === words) as HTMLElement).click());
+}
 
 describe("the start composer", () => {
 	it("starts an agent with the defaults when a task is typed and Enter pressed, and opens it", async () => {
@@ -140,7 +156,7 @@ describe("the start composer", () => {
 		await show();
 		await enter();
 		expect(created).toHaveLength(0);
-		await act(async () => ([...host.querySelectorAll(".start-foot button")].find((button) => button.textContent === "Create without a prompt") as HTMLButtonElement).click());
+		await launchMenu("Create without a prompt");
 		await settle();
 		expect(created).toHaveLength(1);
 		expect(created[0]?.title).toBeUndefined();
@@ -163,8 +179,8 @@ describe("the start composer where it offers no switch", () => {
 		await show();
 		expect(field().value).toBe("Add a health check");
 		expect(host.querySelector(".start-kind")).toBeNull();
-		expect(chip("agent")).toBeDefined();
-		expect(chip("criteria")).toBeUndefined();
+		expect(pill("agent")).not.toBeNull();
+		expect(pill("criteria")).toBeNull();
 	});
 });
 
@@ -193,9 +209,9 @@ describe("each picker of the start composer", () => {
 		expect(created[0]?.repository).toBeUndefined();
 	});
 
-	it("sends the setup command changed in the repository's picker, and offers its secrets there", async () => {
+	it("sends the setup command changed beside the repository's picker, and offers its secrets there", async () => {
 		await show();
-		open("repo");
+		open("setup");
 		await settle();
 		const setup = pop().querySelector("textarea.setup-input") as HTMLTextAreaElement;
 		expect(setup.value).toBe("npm ci");
@@ -208,7 +224,7 @@ describe("each picker of the start composer", () => {
 
 	it("sends the place chosen, with that machine's sandbox", async () => {
 		await show();
-		expect(value("on")).toBe("this platform");
+		expect(value("on")).toBe("Hosted");
 		open("on");
 		pick("m_nas");
 		expect(value("on")).toContain("nas");
@@ -222,10 +238,12 @@ describe("each picker of the start composer", () => {
 		open("on");
 		pick("m_nas");
 		open("agent");
-		pick("claude");
+		pick("claude:default");
 		// nas's runner reported Claude Code's models: the adapter's default, by the name it gives it.
 		expect(value("agent")).toBe("Claude Code · Default (recommended)");
+		open("agent");
 		expect(pop().textContent).toContain("The models “nas”'s runner reported for Claude Code.");
+		open("agent");
 		expect(value("mode")).toBe("Auto");
 		write("Add the test command to the README");
 		await enter();
@@ -236,8 +254,7 @@ describe("each picker of the start composer", () => {
 	it("sends the model chosen with the agent, and the effort with its first prompt", async () => {
 		await show();
 		open("agent");
-		pick("gpt-6.1-sol");
-		pick("low");
+		pickIn("windlass:gpt-6.1-sol", "low");
 		expect(value("agent")).toBe("Windlass · gpt-6.1-sol · low");
 		write("Fix the flaky test");
 		await enter();
@@ -248,8 +265,8 @@ describe("each picker of the start composer", () => {
 	/** The machines, each of whose Claude Code reports these options. */
 	const reporting = (options: { models: Array<{ id: string; name: string | null; efforts: string[] }>; defaultModel: string }) => (list: MachineSummary[]) =>
 		list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map((harness) => ({ ...harness, options: { ...options, modes: [], checkedAt: 1 } })) }));
-	/** The agent picker's model rows: each as shown, and whether it is chosen. */
-	const modelRows = () => [...pop().querySelectorAll(".start-options .start-option")].map((row) => [row.querySelector(".mode-option-name")?.textContent, (row.querySelector("input") as HTMLInputElement).checked]);
+	/** The agent picker's rows of Claude Code's models: each as shown (its "default" tag after it), and whether it is chosen. */
+	const modelRows = () => [...pop().querySelectorAll('[data-value^="claude:"]')].map((row) => [`${row.querySelector(".ui-item-label")?.textContent}${row.querySelector(".ui-tag") ? " default" : ""}`, row.getAttribute("aria-checked") === "true"]);
 
 	it("offers Claude Code's models and efforts as its machine's runner reported them, and sends the ones chosen", async () => {
 		const models = [
@@ -261,15 +278,15 @@ describe("each picker of the start composer", () => {
 		open("on");
 		pick("m_nas");
 		open("agent");
-		pick("claude");
+		pick("claude:opus");
+		open("agent");
 		// By the names the adapter gave them, its id where it gave none.
 		expect(modelRows()).toEqual([
 			["Opus default", true],
 			["Sonnet", false],
 			["haiku", false],
 		]);
-		pick("sonnet");
-		pick("high");
+		pickIn("claude:sonnet", "high");
 		expect(value("agent")).toBe("Claude Code · Sonnet · high");
 		write("Add the test command to the README");
 		await enter();
@@ -286,17 +303,18 @@ describe("each picker of the start composer", () => {
 		open("on");
 		pick("m_nas");
 		open("agent");
-		pick("claude");
+		pick("claude:opus");
 		expect(value("agent")).toBe("Claude Code · Opus (default)");
+		open("agent");
 		expect(modelRows()).toEqual([
 			["Haiku", false],
 			["Opus default", true],
 		]);
 		// Away and back: the default chosen again is still the adapter's own, and its efforts are offered.
-		pick("haiku");
+		pick("claude:haiku");
 		expect(value("agent")).toBe("Claude Code · Haiku");
-		pick("opus");
-		pick("high");
+		open("agent");
+		pickIn("claude:opus", "high");
 		expect(value("agent")).toBe("Claude Code · Opus (default) · high");
 		write("Add the test command to the README");
 		await enter();
@@ -319,9 +337,9 @@ describe("each picker of the start composer", () => {
 		await show();
 		expect(value("sandbox")).toContain("Docker, hardened");
 		open("sandbox");
-		pick("docker-windlass-sandbox");
+		pickIn("platform", "docker-windlass-sandbox");
 		expect(value("sandbox")).toContain("Docker + Windlass sandbox");
-		expect(chip("sandbox")?.parentElement?.classList.contains("start-chip-changed")).toBe(true);
+		expect(pill("sandbox")?.classList.contains("ui-pill-changed")).toBe(true);
 		open("sandbox");
 		expect(pop().textContent).toContain("Back to the default (acme/harbor's: Docker, hardened)");
 		write("Fix the flaky test");
@@ -366,9 +384,9 @@ describe("what the start composer starts on", () => {
 	it("puts a choice made here before every default", async () => {
 		await show({ repositoryId: 7101 });
 		open("agent");
-		pick("gpt-6-brisk");
+		pick("windlass:gpt-6-brisk");
 		open("sandbox");
-		pick("docker-windlass-sandbox");
+		pickIn("platform", "docker-windlass-sandbox");
 		write("Look around");
 		await enter();
 		expect(created[0]).toMatchObject({ profile: "docker-windlass-sandbox", model: "gpt-6-brisk" });

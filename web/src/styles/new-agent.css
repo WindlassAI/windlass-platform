@@ -274,7 +274,7 @@
 	}
 }
 
-/* ---- the start composer: the session's composer, with a row of chips under it ------------------- */
+/* ---- the start composer: Helm's box with a toolbar of pills inside it ------------------------------ */
 
 /* It sits in the page's own column, not the session's: no gutter of its own. */
 .composer.start {
@@ -282,164 +282,168 @@
 	margin: 0;
 	padding: 0;
 }
-.start-chips {
+.start-box {
 	position: relative;
-	align-items: center;
-	margin-top: 8px;
-	padding: 0 4px;
-}
-/* A chip is the composer's quiet picker: its label, its value, and the picker it opens under the row. */
-.start-chip .mini-pick {
-	display: inline-flex;
-	align-items: center;
-	gap: 6px;
-	max-width: min(46ch, 70vw);
-}
-.start-chip-value {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-.start-chip-changed .mini-pick {
-	color: var(--accent);
-	font-weight: 700;
-}
-.start-chip-warn .mini-pick {
-	color: var(--warn);
-}
-.start-dot {
-	flex: none;
-	width: 6px;
-	height: 6px;
-	border-radius: 50%;
-	background: var(--warn);
-}
-.start-chip .machine-state {
-	display: inline-flex;
-	vertical-align: middle;
-}
-.start-more {
-	padding-right: 4px;
-	background-image: none;
-	color: var(--ink-dim);
-}
-/* The pickers open under the row, as wide as it allows: the mode's too. */
-.start-chips .mode-picker {
-	position: static;
-}
-.start-chips .mode-menu {
-	top: calc(100% + 6px);
-	bottom: auto;
-}
-.start-pop {
-	position: absolute;
-	top: calc(100% + 6px);
-	left: 0;
-	z-index: 30;
-	display: grid;
-	gap: 0;
-	width: min(560px, 100%);
-	max-height: min(70dvh, 620px);
-	padding: 14px 16px 16px;
-	overflow-y: auto;
-	overscroll-behavior: contain;
 	border: 1px solid var(--line-strong);
-	border-radius: var(--radius-l);
+	border-radius: var(--r-box);
 	background: var(--bg-raised);
-	box-shadow: var(--shadow);
-	font-family: var(--font-text);
-	font-size: var(--size-text);
-	color: var(--ink);
-	animation: rise 140ms var(--ease);
+	box-shadow: var(--shadow-box);
+	transition:
+		border-color 140ms var(--ease),
+		box-shadow 140ms var(--ease);
 }
-.start-pop:focus-visible {
+.start-box:focus-within {
+	border-color: var(--accent-edge);
+	box-shadow:
+		0 0 0 4px var(--accent-wash),
+		var(--shadow-box);
+}
+.composer-busy .start-box {
+	border-style: dashed;
+}
+.start-text {
+	display: block;
+	width: 100%;
+	min-height: 76px;
+	max-height: 260px;
+	padding: 16px 150px 6px 18px;
+	border: 0;
+	background: none;
+	resize: none;
+	color: var(--ink);
+	font-size: var(--text-15);
+	line-height: 1.5;
+}
+.start-text:focus-visible {
 	outline: none;
 }
-.start-pop > .harness-pick:first-child {
-	margin-top: 0;
+.start-text::placeholder {
+	color: var(--ink-faint);
+	opacity: 1;
 }
-.start-pop .field {
-	margin-top: 14px;
+/* The keys: only while the box has focus, small, in its corner. */
+.start-keys {
+	position: absolute;
+	top: 15px;
+	right: 14px;
+	opacity: 0;
+	transition: opacity 120ms var(--ease);
+	pointer-events: none;
 }
-.start-pop .profiles {
-	grid-template-columns: minmax(0, 1fr);
-	gap: 10px;
+.start-box:has(.start-text:focus) .start-keys {
+	opacity: 1;
 }
-.start-pop .sandbox-chosen {
-	margin: 0 0 2px;
-}
-/* The repository list is part of the picker here, so a picker that scrolls never cuts it off. */
-.start-pop .gh-pop {
-	position: static;
-	margin-top: 6px;
-	box-shadow: none;
-}
-.start-pop .gh-field-head {
-	align-items: baseline;
-}
-.start-pop-links {
-	display: inline-flex;
-	gap: 14px;
-	font-size: var(--size-small);
-}
-.start-pop-section {
-	display: grid;
-	justify-items: start;
-	margin-top: 16px;
-}
-.start-pop-section > .label {
-	margin-bottom: 6px;
-}
-.start-pop-section > .field-note {
-	justify-self: stretch;
-}
-.start-options {
-	display: grid;
-	gap: 2px;
-	justify-self: stretch;
-	max-height: 232px;
-	overflow-y: auto;
-}
-.start-option {
-	position: relative;
+.start-tools {
 	display: flex;
 	align-items: center;
+	gap: 4px;
+	min-width: 0;
+	padding: 8px;
 }
-.start-option:hover {
+.start-tools > .ui-pill,
+.start-tools .ui-tooltip-anchor + .ui-pill {
+	flex: 0 1 auto;
+}
+.start-tools .ui-pill-value {
+	max-width: 22ch;
+}
+.start-tools .ui-pill-secondary {
+	max-width: 18ch;
+}
+.start-tools-end {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: 6px;
+	margin-left: auto;
+	padding-left: 6px;
+}
+.start-plus {
+	flex: none;
+	display: grid;
+	place-items: center;
+	width: 30px;
+	height: 30px;
+	margin-right: 2px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--r-control);
+	background: none;
+	color: var(--ink-dim);
+	transition: background-color var(--dur-hover) var(--ease);
+}
+.start-plus:hover,
+.start-plus[aria-expanded="true"] {
 	background: var(--bg-hover);
+	color: var(--ink);
 }
-.start-option-chosen {
-	box-shadow: inset 2px 0 0 var(--accent);
-	background: var(--bg-hover);
-}
-.start-option:has(.segment-radio:focus-visible) {
-	outline: 2px solid var(--accent);
-	outline-offset: -2px;
-}
-.start-option .mode-option-text {
-	font-weight: 400;
+.start-branch {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
 	color: var(--ink-faint);
 }
-.start-back {
-	justify-self: start;
-	margin-top: 14px;
-	font-size: var(--size-small);
+.start-branch-slash {
+	margin-right: 2px;
+	opacity: 0.6;
 }
-.start-line {
-	margin: 6px 4px 0;
+.start-launch .ui-split-main {
+	min-width: 92px;
 }
-.start-foot {
+
+/* Agent or work item. */
+.start-kind {
+	flex: none;
+	margin-right: 4px;
+}
+.start-kind .segment {
+	padding: 1px 10px;
+}
+.start-kinds {
+	margin-bottom: 8px;
+}
+
+/* The line under the box: what the sandbox lets its commands do, and where it runs. */
+.start-sandbox {
 	display: flex;
 	flex-wrap: wrap;
-	align-items: baseline;
-	justify-content: space-between;
-	gap: 4px 16px;
-	margin-top: 8px;
-	padding: 0 4px;
+	align-items: center;
+	gap: 2px 8px;
+	margin: 10px 4px 0;
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	color: var(--ink-faint);
 }
-.start-secondary {
-	font-size: var(--size-small);
-	margin-left: auto;
+.start-sandbox > svg {
+	flex: none;
+	color: var(--ink-faint);
+}
+.start-sandbox-open > svg {
+	color: var(--warn);
+}
+.start-sandbox > span + span::before {
+	content: "·";
+	margin-right: 8px;
+	opacity: 0.6;
+	color: var(--ink-faint);
+}
+.start-fact-open {
+	color: var(--warn);
+}
+
+.start-line {
+	margin: 6px 4px 0;
+	font-size: var(--text-13);
+}
+.start-status {
+	margin: 6px 4px 0;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.start-status:empty {
+	display: none;
+}
+.start-back {
+	color: var(--accent-text);
 }
 .start-allowance-low {
 	color: var(--warn);
@@ -447,20 +451,166 @@
 .start-failed {
 	margin-top: 22px;
 }
+.composer.start > .composer-error {
+	margin-bottom: 10px;
+}
+
+/* The forms in the pickers: the address, the setup command and secrets, the criteria. */
+.start-address,
+.start-setup,
+.start-criteria {
+	display: grid;
+	gap: 10px;
+}
+.start-address .ui-menu-actions {
+	margin: 0 -8px -6px;
+}
+.start-address .ui-menu-note,
+.start-address .field-note {
+	padding: 0;
+	margin: 0;
+}
+.start-setup .field + .field {
+	margin-top: 4px;
+}
+.start-criteria .item-criteria {
+	min-height: 96px;
+}
+.start-shots {
+	margin: 0;
+}
+
+/* A repository in its menu: the owner quieter; the chosen one's branch at its end. */
+.repo-label-owner {
+	color: var(--ink-faint);
+}
+.repo-branch-tag {
+	max-width: 12ch;
+	overflow: hidden;
+	color: var(--ink-faint);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.repo-access {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 2px 8px;
+}
+.repo-access-link {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	font-weight: var(--weight-regular);
+}
+.repo-reload {
+	margin-left: auto;
+}
+
+/* An effort as bars, filled to its level. */
+.effort-bars {
+	display: inline-flex;
+	align-items: flex-end;
+	gap: 2px;
+	height: 10px;
+}
+.effort-bars i {
+	width: 2px;
+	border-radius: 1px;
+	background: var(--line-field);
+}
+.effort-bars .effort-bar-on {
+	background: var(--ink-dim);
+}
+.ui-item[aria-checked="true"] .effort-bars .effort-bar-on {
+	background: var(--accent-text);
+}
+
+/* The phone: the task, one summary row of every setting, and send. */
+.start-phone .start-text {
+	min-height: 46px;
+	padding: 13px 14px 6px;
+	font-size: var(--text-16);
+}
+.start-phone .start-keys {
+	display: none;
+}
+.start-phone .start-tools {
+	gap: 6px;
+	padding: 6px;
+}
+.start-summary {
+	flex: 1;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	height: 36px;
+	padding: 0 10px;
+	border: 0;
+	border-radius: 10px;
+	background: var(--bg-active);
+	color: var(--ink-dim);
+	font-size: var(--text-13);
+	text-align: left;
+}
+.start-summary > svg {
+	flex: none;
+	color: var(--ink-faint);
+}
+.start-summary-text {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.start-summary-text b {
+	color: var(--ink);
+	font-weight: var(--weight-medium);
+}
+.start-send {
+	flex: none;
+	display: grid;
+	place-items: center;
+	width: 38px;
+	height: 38px;
+	border: 0;
+	border-radius: 11px;
+	background: var(--accent-fill);
+	color: var(--accent-ink);
+	box-shadow: var(--shadow-button);
+}
+.start-send:disabled {
+	background: var(--bg-active);
+	color: var(--ink-faint);
+	box-shadow: none;
+}
+.start-secondary {
+	justify-content: center;
+}
 
 /* On Home, under the heading; on its own page, in the reading column. */
 .home-start {
-	margin-top: 22px;
+	margin: 22px 0 10px;
 }
 .home-empty .composer.start {
 	max-width: var(--measure);
 	margin-top: 10px;
 	text-align: left;
 }
+.home-empty .composer.start p {
+	max-width: none;
+}
+.home-empty .composer.start .button {
+	margin-top: 0;
+}
 .start-page {
 	width: min(var(--measure), 100%);
 	margin: 0 auto;
-	padding: clamp(28px, 8vh, 88px) var(--gutter) 96px;
+	padding: clamp(28px, 8vh, 72px) var(--gutter) 96px;
 }
 .start-page-head {
 	display: flex;
@@ -474,53 +624,102 @@
 	font-size: var(--size-small);
 }
 
-@media (max-width: 600px) {
-	/* The task's field is the page's: Send keeps its word. */
-	.composer.start .composer-action span {
-		display: inline;
-	}
-	.start-pop {
-		width: 100%;
-		max-height: min(64dvh, 560px);
-		padding: 12px;
-	}
-	.start-chip .mini-pick {
-		max-width: 62vw;
-	}
-}
-.home-empty .composer.start p {
-	max-width: none;
-}
-.home-empty .composer.start .button {
-	margin-top: 0;
-}
-.start-chip {
-	display: inline-flex;
-}
-.home-start {
-	margin-bottom: 10px;
-}
-
-/* Agent or work item: the segmented choice at the size of the chips beside it. */
-.start-kind {
-	align-self: center;
-	margin-right: 4px;
-}
-.start-kind .segment {
-	padding: 1px 10px;
-}
-/* A work item's title, as it will be filed: as quiet as the hint under it. */
+/* A work item's title, as it will be filed: as quiet as the line under it. */
 .start-title {
 	overflow: hidden;
+	color: var(--ink-faint);
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 .start-title-text {
 	color: var(--ink-dim);
 }
-.start-pop .start-shots {
-	margin-top: 10px;
+
+/* The Factory's filters still use the chip pickers (StartComposer's Chip): their look, until that page is redone. */
+.start-chips {
+	position: relative;
+	align-items: center;
+	margin-top: 8px;
+	padding: 0 4px;
 }
-.start-pop .item-criteria {
-	min-height: 96px;
+.start-chip {
+	display: inline-flex;
+}
+.start-chip .mini-pick {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	max-width: min(46ch, 70vw);
+}
+.start-chip-value {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.start-chip-changed .mini-pick {
+	color: var(--accent-text);
+	font-weight: var(--weight-strong);
+}
+.start-chip-warn .mini-pick {
+	color: var(--warn);
+}
+.start-dot {
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--warn);
+}
+.start-pop {
+	position: absolute;
+	top: calc(100% + 6px);
+	left: 0;
+	z-index: 30;
+	display: grid;
+	width: min(340px, 100%);
+	max-height: min(70dvh, 420px);
+	padding: 6px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	border-radius: var(--r-pop);
+	background: var(--bg-overlay);
+	box-shadow: var(--shadow-pop);
+	font-size: var(--text-13);
+	color: var(--ink);
+	animation: ui-pop-in var(--dur-menu-in) var(--ease);
+}
+.start-pop:focus-visible {
+	outline: none;
+}
+.start-pop > .label {
+	padding: 4px 6px 2px;
+	font-size: 11.5px;
+	color: var(--ink-faint);
+}
+.start-options {
+	display: grid;
+	gap: 1px;
+}
+.start-option {
+	position: relative;
+	display: flex;
+	align-items: center;
+	min-height: 30px;
+	padding: 4px 8px;
+	border-radius: var(--r-item);
+	cursor: pointer;
+}
+.start-option:hover {
+	background: var(--bg-hover);
+}
+.start-option-chosen {
+	background: var(--bg-active);
+}
+.start-option:has(.segment-radio:focus-visible) {
+	outline: 2px solid var(--accent);
+	outline-offset: -2px;
+}
+.start-option .mode-option-text {
+	font-weight: 400;
+	color: var(--ink-faint);
 }

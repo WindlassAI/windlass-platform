@@ -1,18 +1,22 @@
 /**
  * The start of an agent: a composer, not a form. Typing the task and pressing Enter launches it with
- * the choices already standing; each other choice is a chip under the composer that shows its value
- * and opens the same controls the launch form had: the repository (with its setup command and its
- * secrets), where it runs, the agent with its model and effort, its mode, and the sandbox. Home has it
- * at the top, and `/new` on a page of its own.
+ * the choices already standing. The choices are a toolbar of pills inside the composer's box: the
+ * agent and its model (effort in a submenu), where it runs (hosted or one of the user's machines,
+ * each with its sandboxes in a submenu), the repository at a branch (filtered as you type, branches in
+ * a submenu), and the mode; "+" holds the repository's setup command and secrets. Launch is a split
+ * button whose menu creates the agent without sending the task. Under the box, one line says what
+ * the chosen sandbox lets the agent's commands do and where it runs. On a phone the pills fold into
+ * one summary row that opens a "Launch settings" sheet, each setting's list pushed into it. Home has
+ * it at the top, and `/new` on a page of its own.
  *
- * What each chip starts on, field by field: the choice made here, then the chosen repository's saved
+ * What each choice starts on, field by field: the choice made here, then the chosen repository's saved
  * default, then the account's, then what the user's newest agent on that repository was launched with
  * (their newest of all where the repository has none, `lastUsed`), then the deployment's first. Only
  * the sandbox and the model have saved defaults. The repository itself starts on the page it was
- * opened from, else the newest agent's. A chip that differs from its saved default is drawn
- * emphasised, and its picker offers to go back to it; a saved default that cannot be used, a last
+ * opened from, else the newest agent's. A pill that differs from its saved default is drawn in the
+ * accent, and its picker offers to go back to it; a saved default that cannot be used, a last
  * machine that cannot be used now, an open mode and an open sandbox fact are a warning dot on their
- * chip, said in its picker.
+ * pill, said in its picker.
  *
  * No title is sent: the server names the agent from its first prompt, with saved secret values taken
  * out of it. The model goes with the agent, the effort with its first prompt. An agent of another harness (Claude Code) starts on its own default model,
@@ -21,14 +25,11 @@
  * Connecting GitHub is offered only in the repository's picker. It leaves the page, so the task and
  * every choice made here are kept (`LaunchDraft`) and put back on the way in, with the picker open.
  *
- * Narrow, the chips after the second fold behind "more" where that hides more than one, until a
- * picker is used; an open mode or sandbox fact never folds.
- *
  * Where the deployment offers work items and the page asks for it (`switchable`, the Factory page), a
- * switch before the chips turns it to filing one ("Work item"): the text's first line is the item's
- * title and the rest what to do (`itemOf`), a repository of the GitHub connection is required, and
- * the chips are the repository, where it runs and its acceptance criteria; an item keeps its profile's mode and runs Windlass. Enter files and starts it,
- * the line under it files a draft, and the page stays where it is: filing several in a row is the
+ * switch turns it to filing one ("Work item"): the text's first line is the item's title and the rest
+ * what to do (`itemOf`), a repository of the GitHub connection is required, and the pills are the
+ * repository, where it runs and its acceptance criteria; an item keeps its profile's mode and runs Windlass. Enter files and starts it,
+ * the launch menu files a draft, and the page stays where it is: filing several in a row is the
  * factory's normal use. The repository starts on the page's, else the newest item's, else the newest
  * agent's.
  */
@@ -48,38 +49,21 @@ import { useApp, useAuth } from "../state/app";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 import { allowanceState, useAccount, useAllowance, useModels, useNow } from "../state/hooks";
-import { ChevronIcon, SendIcon, WarnIcon } from "./Icons";
-import { Layers, ProfileFacts, type ClaudeFacts } from "./Layers";
-import { ModePicker } from "./Modes";
-import { HARNESS_PROFILE, HarnessChoice, PlaceCards, machineUnusable, offeredHarnesses } from "./PlaceChoice";
-import { RepositoryPicker, type PickedRepository } from "./RepositoryPicker";
+import { ArrowUpIcon, BranchIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SendIcon, SlidersIcon, WarnIcon } from "./Icons";
+import type { ClaudeFacts } from "./Layers";
+import { ModePicker, modeMenu } from "./Modes";
+import { HARNESS_PROFILE, machineUnusable, offeredHarnesses } from "./PlaceChoice";
+import { repositoryMenu, useBranches, useRepositorySearch, type PickedRepository } from "./RepositoryMenu";
 import { SecretsField } from "./Secrets";
 import { SetupField, useSetupDraft } from "./SetupCommand";
+import { ClaudeSignIn } from "./ClaudeSignIn";
+import { KeyHints, Kbd } from "./ui/Kbd";
+import { Menu, MenuSheet, PickerPanel, type MenuGroup, type MenuItem, type MenuSpec, type TriggerProps } from "./ui/Menu";
+import { AgentGlyph, Pill } from "./ui/Pill";
+import { SplitButton } from "./ui/Button";
+import { Tooltip } from "./ui/Tooltip";
+import { useSurface } from "./ui/useMediaQuery";
 import { machineLabel } from "../lib/machines";
-
-function ProfileCard({ profile, name, checked, claude = null, onChoose }: { profile: SandboxProfile; name: string; checked: boolean; claude?: ClaudeFacts | null; onChoose(id: SandboxProfileId): void }) {
-	const id = useId();
-	const reasonId = `${id}-reason`;
-	return (
-		<label className={`profile${checked ? " profile-chosen" : ""}${profile.available ? "" : " profile-unavailable"}`} htmlFor={id}>
-			<input id={id} className="profile-radio" type="radio" name={name} value={profile.id} checked={checked} disabled={!profile.available} onChange={() => onChoose(profile.id)} aria-describedby={profile.available ? undefined : reasonId} />
-			<span className="profile-head">
-				<span className="profile-pick" aria-hidden="true" />
-				<span className="profile-name">{profile.name}</span>
-				{profile.available ? null : <span className="chip">not available</span>}
-			</span>
-			<span className="profile-summary">{profile.summary}</span>
-			<Layers profile={profile} compact={!profile.available} />
-			{profile.available ? (
-				<ProfileFacts profile={profile} claude={claude} />
-			) : (
-				<span className="profile-reason" id={reasonId}>
-					<strong>Why not yet.</strong> {profile.unavailableReason ?? "This deployment cannot run it."}
-				</span>
-			)}
-		</label>
-	);
-}
 
 /** Whether any of the chosen sandbox's three facts is open: said in the warning tone. */
 function sandboxOpen(profile: SandboxProfile, claude: ClaudeFacts | null): boolean {
@@ -87,26 +71,30 @@ function sandboxOpen(profile: SandboxProfile, claude: ClaudeFacts | null): boole
 	return profile.approval === "full" || profile.commandNetwork || profile.commandsCanReadAccessToken;
 }
 
-/** The chosen sandbox in one line: its name and the three facts of `ProfileFacts`, each in a few words. What is open is said in the warning tone. */
-function ChosenSandbox({ profile, claude = null }: { profile: SandboxProfile; claude?: ClaudeFacts | null }) {
-	return (
-		<span className="sandbox-chosen-text">
-			<span className="sandbox-chosen-name">{profile.name}</span>
-			<span className="sandbox-chosen-facts">
-				{claude ? (
-					<span className={OPEN_MODES.has(claude.mode.id) ? "fact-open" : undefined}>runs in {claude.mode.name} mode</span>
-				) : (
-					<span className={profile.approval === "full" ? "fact-open" : undefined}>{profile.approval === "auto" ? "runs what the sandbox contains, refuses the rest" : "runs every call without asking"}</span>
-				)}
-				<span className={profile.commandNetwork ? "fact-open" : undefined}>{profile.commandNetwork ? "commands can reach the network" : "commands have no network"}</span>
-				{claude ? (
-					<span className="fact-open">commands can read your Claude login token</span>
-				) : (
-					<span className={profile.commandsCanReadAccessToken ? "fact-open" : undefined}>{profile.commandsCanReadAccessToken ? "commands can read the session's access token" : "commands cannot read the session's access token"}</span>
-				)}
-			</span>
-		</span>
-	);
+interface Fact {
+	/** A few words: "network on". */
+	text: string;
+	/** The sentence it stands for, for a tooltip and assistive technology. */
+	long: string;
+	/** Something the sandbox leaves open: said in the warning tone. */
+	open: boolean;
+}
+
+/** A sandbox's three facts (components/Layers.tsx, `ProfileFacts`) in a few words each. For Claude Code the approval is its mode, and its commands can read its login. */
+export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null = null): Fact[] {
+	return [
+		claude
+			? { text: `${claude.mode.name} mode`, long: `runs in ${claude.mode.name} mode`, open: OPEN_MODES.has(claude.mode.id) }
+			: profile.approval === "auto"
+				? { text: "commands sandboxed", long: "runs what the sandbox contains, refuses the rest", open: false }
+				: { text: "runs every call", long: "runs every call without asking", open: true },
+		profile.commandNetwork ? { text: "network on", long: "commands can reach the network", open: true } : { text: "no network", long: "commands have no network", open: false },
+		claude
+			? { text: "Claude login readable", long: "commands can read your Claude login token", open: true }
+			: profile.commandsCanReadAccessToken
+				? { text: "token readable", long: "commands can read the session's access token", open: true }
+				: { text: "token sealed", long: "commands cannot read the session's access token", open: false },
+	];
 }
 
 /** What launching runs into now, before anything is sent: `warn` when the agent could not start at all. */
@@ -146,23 +134,9 @@ function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefau
 	return { defaults: mine ? state.defaults : null, reading: repositoryId !== null && (!mine || (state.defaults === null && state.error === null)), error: mine ? state.error : null };
 }
 
-/** Whether the screen is narrow enough for the chips to fold. */
-function useNarrow(): boolean {
-	const query = "(max-width: 600px)";
-	const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(query).matches);
-	useEffect(() => {
-		if (typeof window.matchMedia !== "function") return;
-		const list = window.matchMedia(query);
-		const onChange = () => setNarrow(list.matches);
-		onChange();
-		list.addEventListener("change", onChange);
-		return () => list.removeEventListener("change", onChange);
-	}, []);
-	return narrow;
-}
 
-/** The pickers a chip opens. The mode's is its own (`ModePicker`). */
-type Picker = "repo" | "place" | "agent" | "sandbox" | "criteria";
+/** The pickers the composer opens: one at a time. The phone's settings sheet is one of them. */
+type Picker = "repo" | "where" | "agent" | "mode" | "criteria" | "plus" | "settings";
 
 /**
  * One chip: a quiet label, its value, and the picker it opens under the row. `warn` puts the warning
@@ -230,8 +204,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const info = platform.info;
 	const github = useGithub();
 	const limit = launchLimit(useAllowance());
-	const narrow = useNarrow();
-	const ids = { text: useId(), hint: useId(), repo: useId(), repoLabel: useId(), repoNote: useId(), sandboxes: useId(), models: useId(), efforts: useId(), kind: useId(), criteria: useId(), criteriaNote: useId() };
+	const surface = useSurface();
+	const phone = surface === "sheet";
+	const ids = { text: useId(), hint: useId(), keys: useId(), repo: useId(), repoLabel: useId(), repoNote: useId(), sandboxes: useId(), models: useId(), efforts: useId(), kind: useId(), criteria: useId(), criteriaNote: useId() };
 	// What the composer held before its user left to connect GitHub, once.
 	const [draft] = useState(takeLaunchDraft);
 
@@ -254,29 +229,18 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const [harnessChoice, setHarness] = useState<HarnessId | null>(draft?.harness === "windlass" || draft?.harness === "claude" ? draft.harness : null);
 	const [modeChoice, setMode] = useState<string | null>(draft?.mode ?? null);
 	const [open, setOpen] = useState<Picker | null>(null);
-	const [more, setMore] = useState(false);
 	const [busy, setBusy] = useState<"creating" | "prompting" | "filing" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const area = useRef<HTMLTextAreaElement>(null);
-	const chips = useRef<HTMLDivElement>(null);
+	const anchors = { repo: useRef<HTMLButtonElement>(null), plus: useRef<HTMLButtonElement>(null), criteria: useRef<HTMLButtonElement>(null), settings: useRef<HTMLButtonElement>(null) };
+	const search = useRepositorySearch(open === "repo" || open === "settings");
+	const branches = useBranches();
 
 	// Back from GitHub: the repository's picker is open, where its user left.
 	const returned = github.notice?.where === "launch" || github.busy === "finishing";
 	useEffect(() => {
 		if (returned) setOpen("repo");
 	}, [returned]);
-
-	// A press outside the chips and their pickers closes the open one. A dialog opened from a picker is part of it.
-	useEffect(() => {
-		if (open === null) return;
-		const onPointer = (event: PointerEvent) => {
-			const target = event.target as Element | null;
-			if (!target || chips.current?.contains(target) || target.closest?.("dialog")) return;
-			setOpen(null);
-		};
-		document.addEventListener("pointerdown", onPointer);
-		return () => document.removeEventListener("pointerdown", onPointer);
-	}, [open]);
 
 	useEffect(() => {
 		if (autoFocus) area.current?.focus();
@@ -511,12 +475,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		else if (canLaunch) void start(true);
 	};
 
-	const toggle = (picker: Picker) => {
-		// Once a picker is used, nothing folds: a choice made in one must not fold away the chip it is in.
-		setMore(true);
-		setOpen((now) => (now === picker ? null : picker));
-	};
 	const close = () => setOpen(null);
+	/** Opens one picker, or closes it: one is open at a time. */
+	const openOnly = (picker: Picker) => (next: boolean) => setOpen((now) => (next ? picker : now === picker ? null : now));
 
 	if (!info && !platform.loading) {
 		return (
@@ -532,372 +493,464 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		);
 	}
 
-	// ---- the chips --------------------------------------------------------------------------------
+	// ---- the repository ---------------------------------------------------------------------------
 	const repoValue = repoReading ? "…" : repo.kind === "github" ? `${repositoryName(repo.picked.repository)} @ ${repo.picked.branch}` : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "choose one" : "none";
 	const repoMissing = item && !repoReading && chosen === null;
-	const repoChip = (
-		<Chip key="repo" label="repo" value={repoValue} open={open === "repo"} busy={repoReading} warn={repoMissing || repoInvalid || (opening.error !== null && repositoryId !== undefined && repoChoice === null) || notice?.tone === "bad"} onToggle={() => toggle("repo")} onClose={close}>
-			<div className="gh-field-head">
-				<label className="label" id={ids.repoLabel} htmlFor={ids.repo}>
-					{github.enabled ? "Repository" : "Git repository to clone"}
-				</label>
-				<span className="start-pop-links">
-					{connection && !item ? (
-						<button type="button" className="link gh-switch" onClick={() => setChosenSource(source === "github" ? "address" : "github")} disabled={busy !== null}>
-							{source === "github" ? "Paste an address" : "Choose from GitHub"}
-						</button>
-					) : null}
-					{repo.kind !== "none" && !item ? (
-						<button
-							type="button"
-							className="link"
-							onClick={() => {
-								setRepoChoice({ kind: "none" });
-								setRepoUrl("");
-							}}
-							disabled={busy !== null}
-						>
-							No repository
-						</button>
-					) : null}
-				</span>
-			</div>
-			{source === "github" && connection ? (
-				<RepositoryPicker
-					value={chosen}
-					onChange={(next) => {
-						setRepoChoice(next ? { kind: "github", picked: next } : { kind: "none" });
-						github.dismiss();
-					}}
-					accounts={connection.accounts}
-					disabled={busy !== null}
-					inputId={ids.repo}
-					labelledBy={ids.repoLabel}
-					describedBy={ids.repoNote}
-				/>
-			) : (
-				<input
-					id={ids.repo}
-					className={`input input-mono${repoInvalid ? " input-invalid" : ""}`}
-					type="url"
-					inputMode="url"
-					spellCheck={false}
-					autoComplete="off"
-					placeholder="https://github.com/you/project.git"
-					value={repo.kind === "address" ? repo.url : ""}
-					onChange={(event) => {
-						setRepoUrl(event.target.value);
-						setRepoChoice({ kind: "address" });
-					}}
-					onKeyDown={(event) => {
-						// Enter in the address takes it; it does not launch.
-						if (event.key === "Enter") {
-							event.preventDefault();
-							close();
-						}
-					}}
-					aria-invalid={repoInvalid}
-					aria-describedby={ids.repoNote}
-				/>
-			)}
-			<p className={`field-note${repoInvalid || (chosen && !chosen.repository.canPush) ? " tone-warn" : ""}`} id={ids.repoNote}>
-				{item
-					? !github.enabled
-						? "A work item is a pull request on a repository at GitHub, and this deployment has no GitHub App."
-						: !connection
-							? "A work item is a pull request on one of your repositories at GitHub."
-							: chosen
-								? chosen.repository.canPush
-									? `The work comes back as a pull request into ${chosen.branch}.`
-									: `You can read ${repositoryName(chosen.repository)} on GitHub but not push to it, so no pull request can be opened for the work.`
-								: "A work item is a pull request on one of your repositories, private ones included."
-					: source === "github" && connection
-					? chosen
-						? chosen.repository.canPush
-							? `Cloned at ${chosen.branch} when the sandbox is created. The work can come back as a pull request.`
-							: `You can read ${repositoryName(chosen.repository)} on GitHub but not push to it: the agent can work on it, and no pull request can be opened.`
-						: notice?.tone === "good"
-							? `${notice.text} Choose a repository, or leave this empty to start in an empty one.`
-							: "One of your repositories at GitHub, private ones included. Without one the agent starts in an empty repository."
-					: repoInvalid
-						? "Use the repository's https address, for example https://github.com/you/project.git."
-						: "Cloned into the workspace when the sandbox is created. Without one the agent starts in an empty repository."}
+	const repoWarn = repoMissing || repoInvalid || (opening.error !== null && repositoryId !== undefined && repoChoice === null) || notice?.tone === "bad";
+	const chooseRepo = (next: PickedRepository | null) => {
+		setRepoChoice(next ? { kind: "github", picked: next } : { kind: "none" });
+		github.dismiss();
+	};
+	const noRepository = () => {
+		setRepoChoice({ kind: "none" });
+		setRepoUrl("");
+	};
+	const repoNote = item
+		? !github.enabled
+			? "A work item is a pull request on a repository at GitHub, and this deployment has no GitHub App."
+			: !connection
+				? "A work item is a pull request on one of your repositories at GitHub."
+				: chosen
+					? chosen.repository.canPush
+						? `The work comes back as a pull request into ${chosen.branch}.`
+						: `You can read ${repositoryName(chosen.repository)} on GitHub but not push to it, so no pull request can be opened for the work.`
+					: "A work item is a pull request on one of your repositories, private ones included."
+		: source === "github" && connection
+			? chosen
+				? chosen.repository.canPush
+					? `Cloned at ${chosen.branch} when the sandbox is created. The work can come back as a pull request.`
+					: `You can read ${repositoryName(chosen.repository)} on GitHub but not push to it: the agent can work on it, and no pull request can be opened.`
+				: notice?.tone === "good"
+					? `${notice.text} Choose a repository, or leave this empty to start in an empty one.`
+					: "One of your repositories at GitHub, private ones included. Without one the agent starts in an empty repository."
+			: repoInvalid
+				? "Use the repository's https address, for example https://github.com/you/project.git."
+				: "Cloned into the workspace when the sandbox is created. Without one the agent starts in an empty repository.";
+	const repoNoteWarn = repoInvalid || (chosen !== null && !chosen.repository.canPush);
+	const openingNote =
+		opening.error !== null && repoChoice === null ? (
+			<p className="ui-menu-note tone-warn" role="status">
+				{repositoryId !== undefined ? opening.error : `The repository your newest ${item && newestItem ? "work item is on" : "agent was launched on"} could not be read: ${opening.error}`} {item ? "Choose another repository." : "Choose another repository, or launch without one."}
 			</p>
-			{opening.error !== null && repoChoice === null ? (
-				<p className="field-note tone-warn" role="status">
-					{repositoryId !== undefined ? opening.error : `The repository your newest ${item && newestItem ? "work item is on" : "agent was launched on"} could not be read: ${opening.error}`} {item ? "Choose another repository." : "Choose another repository, or launch without one."}
-				</p>
+		) : null;
+	const shots =
+		chosen && item && saved.defaults ? (
+			<p className="ui-menu-note start-shots">
+				{saved.defaults.screenshots ? "Its agents take screenshots of the app for their reports" : "Screenshots are off for this repository"}:{" "}
+				<a className="link" {...linkProps({ name: "repository", id: chosen.repository.id, view: "settings", section: "screenshots" })}>
+					{saved.defaults.screenshots ? "change it" : "turn them on"}
+				</a>
+				.
+			</p>
+		) : null;
+	const connectLine =
+		github.enabled && !connection ? (
+			<p className={`ui-menu-note gh-connect-line${notice?.tone === "bad" || github.error ? " tone-bad" : ""}`} role={notice?.tone === "bad" ? "alert" : undefined}>
+				{github.busy === "finishing" ? (
+					"Finishing the GitHub connection…"
+				) : github.busy === "leaving" ? (
+					"Going to GitHub…"
+				) : github.status === null && !github.error ? (
+					"Checking the GitHub connection…"
+				) : (
+					<>
+						{notice?.tone === "bad" ? `${notice.text} ` : github.error ? `${github.error} ` : null}
+						<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, criteria } })} disabled={busy !== null}>
+							Connect GitHub
+						</button>{" "}
+						to choose one of your own repositories, private ones included, and get the work back as a pull request. What you wrote here is kept.
+					</>
+				)}
+			</p>
+		) : null;
+	const repoActions = (
+		<div className="ui-menu-actions">
+			{connection && !item ? (
+				<button type="button" className="ui-menu-action" onClick={() => setChosenSource(source === "github" ? "address" : "github")} disabled={busy !== null}>
+					{source === "github" ? "Paste an address" : "Choose from GitHub"}
+				</button>
 			) : null}
-			{github.enabled && !connection ? (
-				<p className={`field-note gh-connect-line${notice?.tone === "bad" || github.error ? " tone-bad" : ""}`} role={notice?.tone === "bad" ? "alert" : undefined}>
-					{github.busy === "finishing" ? (
-						"Finishing the GitHub connection…"
-					) : github.busy === "leaving" ? (
-						"Going to GitHub…"
-					) : github.status === null && !github.error ? (
-						"Checking the GitHub connection…"
-					) : (
+			{repo.kind !== "none" && !item ? (
+				<button type="button" className="ui-menu-action" onClick={noRepository} disabled={busy !== null}>
+					No repository
+				</button>
+			) : null}
+		</div>
+	);
+	// Connected and choosing from GitHub: a menu. Otherwise a small form: the address, or the way to connect.
+	const repoSpec: MenuSpec | null =
+		source === "github" && connection
+			? repositoryMenu({
+					search,
+					branches,
+					chosen,
+					accounts: connection.accounts,
+					onChoose: chooseRepo,
+					header: openingNote,
+					footer: (
 						<>
-							{notice?.tone === "bad" ? `${notice.text} ` : github.error ? `${github.error} ` : null}
-							<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, criteria } })} disabled={busy !== null}>
-								Connect GitHub
-							</button>{" "}
-							to choose one of your own repositories, private ones included, and get the work back as a pull request. What you wrote here is kept.
+							{repoActions}
+							{repoNoteWarn || item ? <p className={`ui-menu-note${repoNoteWarn ? " tone-warn" : ""}`}>{repoNote}</p> : null}
+							{shots}
 						</>
-					)}
-				</p>
+					),
+				})
+			: null;
+	const addressForm = (
+		<div className="start-address">
+			{source !== "github" || !connection ? (
+				<>
+					<label className="label" htmlFor={ids.repo}>
+						{github.enabled ? "Repository address" : "Git repository to clone"}
+					</label>
+					<input
+						id={ids.repo}
+						className={`input input-mono${repoInvalid ? " input-invalid" : ""}`}
+						type="url"
+						inputMode="url"
+						spellCheck={false}
+						autoComplete="off"
+						placeholder="https://github.com/you/project.git"
+						value={repo.kind === "address" ? repo.url : ""}
+						data-autofocus
+						onChange={(event) => {
+							setRepoUrl(event.target.value);
+							setRepoChoice({ kind: "address" });
+						}}
+						onKeyDown={(event) => {
+							// Enter in the address takes it; it does not launch.
+							if (event.key === "Enter") {
+								event.preventDefault();
+								close();
+							}
+						}}
+						aria-invalid={repoInvalid}
+						aria-describedby={ids.repoNote}
+					/>
+					<p className={`field-note${repoNoteWarn ? " tone-warn" : ""}`} id={ids.repoNote}>
+						{repoNote}
+					</p>
+				</>
 			) : null}
-			{chosen && !item ? <SetupField setup={setup} repository={repositoryName(chosen.repository)} disabled={busy !== null} /> : null}
-			{chosen && !other && !item ? <SecretsField repositoryId={chosen.repository.id} repository={repositoryName(chosen.repository)} profile={profile} disabled={busy !== null} /> : null}
-			{chosen && item && saved.defaults ? (
-				<p className="field-note start-shots">
-					{saved.defaults.screenshots ? "Its agents take screenshots of the app for their reports" : "Screenshots are off for this repository"}:{" "}
-					<a className="link" {...linkProps({ name: "repository", id: chosen.repository.id, view: "settings", section: "screenshots" })}>
-						{saved.defaults.screenshots ? "change it" : "turn them on"}
-					</a>
-					.
-				</p>
-			) : null}
-		</Chip>
+			{openingNote}
+			{connectLine}
+			{shots}
+			{repoActions}
+		</div>
+	);
+	const repoPill = (props: TriggerProps) => (
+		<Pill {...props} data-picker="repo" data-value={repoValue} icon={<RepoIcon size={15} />} secondary={repo.kind === "github" ? <BranchSecondary branch={repo.picked.branch} /> : undefined} dot={repoWarn ? "warn" : null} dotLabel={repoWarn ? "needs a look" : undefined} aria-busy={repoReading} aria-label={`Repository: ${repoValue}`}>
+			{repoReading ? "…" : repo.kind === "github" ? repo.picked.repository.name : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "Choose a repository" : "No repository"}
+		</Pill>
 	);
 
-	const placeChip =
-		mine.length > 0 ? (
-			<Chip
-				key="place"
-				label="on"
-				value={
-					chosenMachine ? (
-						<>
-							{machineLabel(chosenMachine)} <span className={`machine-state machine-state-${chosenMachine.status}`} aria-label={chosenMachine.status}>
-								<span className="sandbox-state-dot" aria-hidden="true" />
-							</span>
-						</>
-					) : (
-						"this platform"
-					)
+	// ---- where it runs, and its sandbox -------------------------------------------------------------
+	const available = placeProfiles.filter((candidate) => candidate.available && (!other || candidate.id === HARNESS_PROFILE));
+	const sandboxWarn = (chosenProfile !== null && sandboxOpen(chosenProfile, claude)) || (!other && ignored.profile !== null) || defaultsErrors.length > 0 || available.length === 0;
+	/** The sandboxes of a place, as rows: choosing one chooses the place too. */
+	const profileRows = (machine: MachineSummary | null): MenuItem[] => {
+		const here = machine === null ? (chosenMachine === null) : chosenMachine?.machineId === machine.machineId;
+		const list = machine ? machine.profiles : (info?.profiles ?? []);
+		return list
+			.filter((candidate) => !other || candidate.id === HARNESS_PROFILE)
+			.map((candidate) => {
+				const facts = sandboxFacts(candidate, here ? claude : null);
+				return {
+					id: candidate.id,
+					label: candidate.name,
+					description: candidate.available ? facts.map((fact) => fact.text).join(" · ") : (candidate.unavailableReason ?? "This deployment cannot run it."),
+					title: candidate.available ? facts.map((fact) => fact.long).join("; ") : (candidate.unavailableReason ?? undefined),
+					tone: candidate.available && facts.some((fact) => fact.open) ? ("warn" as const) : undefined,
+					disabled: !candidate.available,
+					checked: here && profile === candidate.id,
+					onSelect: () => {
+						setPlace(machine?.machineId ?? null);
+						setProfile(candidate.id);
+					},
+				};
+			});
+	};
+	const profileMenu = (machine: MachineSummary | null): MenuSpec | undefined =>
+		item ? undefined : { label: `Sandbox ${machine ? `on ${machineLabel(machine)}` : "hosted"}`, width: 300, groups: [{ id: "profiles", label: "Sandbox", note: machine ? machineLabel(machine) : "hosted", items: profileRows(machine) }] };
+	const machineState = (machine: MachineSummary) => (machine.status === "online" ? "online" : machine.status === "offline" ? `offline since ${clockTime(machine.since, now)}` : "waiting for its runner");
+	const whereNotes = [
+		placeProblem ? { text: placeProblem, warn: true } : null,
+		available.length === 0 ? { text: chosenMachine ? `“${machineLabel(chosenMachine)}” has no sandbox that can be used right now.` : "This deployment has no sandbox that can be used right now.", warn: true } : null,
+		!other && ignored.profile ? { text: ignored.profile, warn: true } : null,
+		...defaultsErrors.map((line) => ({ text: line, warn: true })),
+		item && chosenMachine
+			? {
+					text: `It runs without asking on “${machineLabel(chosenMachine)}”, inside its container, and costs no hosted time. ${chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${machineLabel(chosenMachine)}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}${chosenMachine.profiles.find((candidate) => candidate.available)?.id === HARNESS_PROFILE ? " This machine cannot sandbox each command, so the agent's commands can reach the machine's network and its access token." : ""}`,
+					warn: false,
 				}
-				open={open === "place"}
-				warn={placeProblem !== null || chosenMachine?.status === "offline"}
-				onToggle={() => toggle("place")}
-				onClose={close}
-			>
-				<span className="label">Where it runs</span>
-				<p className="section-text">Where the agent's sandbox is made: by this platform, or by the runner on one of your machines.</p>
-				{placeProblem ? <p className="field-note tone-warn">{placeProblem}</p> : null}
-				<PlaceCards
-					machines={mine}
-					chosen={chosenMachine}
-					minRunnerVersion={machinesInfo?.minRunnerVersion ?? ""}
-					now={now}
-					purpose={item ? "item" : "agent"}
-					onChoose={(machineId) => {
-						setPlace(machineId);
-						close();
-					}}
-				/>
-				{item && chosenMachine ? (
-					<p className="field-note place-note">
-						It runs without asking on “{machineLabel(chosenMachine)}”, inside its container, and costs no hosted time.{" "}
-						{chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${machineLabel(chosenMachine)}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}
-						{chosenMachine.profiles.find((candidate) => candidate.available)?.id === HARNESS_PROFILE ? " This machine cannot sandbox each command, so the agent's commands can reach the machine's network and its access token." : ""}
-					</p>
-				) : null}
-			</Chip>
-		) : null;
+			: null,
+		other ? { text: `${other} runs in the hardened container only.`, warn: false } : null,
+	].filter((note) => note !== null);
+	const whereGroups: MenuGroup[] =
+		mine.length > 0
+			? [
+					{
+						id: "hosted",
+						label: "Hosted",
+						note: "counts against your daily sandbox time",
+						items: [{ id: "platform", label: "Hosted sandbox", icon: <CloudIcon size={15} />, description: chosenMachine === null && chosenProfile ? chosenProfile.name : "A sandbox the platform makes and controls", checked: chosenMachine === null, onSelect: () => setPlace(null), submenu: profileMenu(null) }],
+					},
+					{
+						id: "machines",
+						label: "Your machines",
+						note: item ? "costs no hosted time" : "the platform's limits do not apply",
+						items: mine.map((machine) => {
+							const unusable = why(machine);
+							const isChosen = chosenMachine?.machineId === machine.machineId;
+							return {
+								id: machine.machineId,
+								label: machineLabel(machine),
+								icon: <MachineIcon size={15} />,
+								description: unusable ?? `${machine.os} ${machine.arch} · ${machineState(machine)}${isChosen && chosenProfile ? ` · ${chosenProfile.name}` : ""}`,
+								title: unusable ?? undefined,
+								trailing: <span className={`ui-dot ui-dot-${machine.status === "online" ? "ok" : "off"}`} aria-hidden="true" />,
+								disabled: unusable !== null,
+								tone: unusable === null && machine.status !== "online" ? ("warn" as const) : undefined,
+								checked: isChosen,
+								onSelect: () => setPlace(machine.machineId),
+								submenu: unusable === null ? profileMenu(machine) : undefined,
+							};
+						}),
+					},
+				]
+			: [{ id: "profiles", label: "Sandbox", note: "hosted", items: profileRows(null) }];
+	const whereSpec: MenuSpec = {
+		label: mine.length > 0 ? "Where it runs" : "Sandbox",
+		width: 320,
+		hints: { right: "sandbox" },
+		header:
+			whereNotes.length > 0 ? (
+				<>
+					{whereNotes.map((note) => (
+						<p key={note.text} className={note.warn ? "tone-warn" : undefined}>
+							{note.text}
+						</p>
+					))}
+				</>
+			) : undefined,
+		groups: whereGroups,
+		footer: profileChanged ? (
+			<button type="button" className="ui-menu-action start-back" onClick={() => setProfile(null)}>
+				Back to the default ({whose(defaults.from.profile)}: {info?.profiles.find((candidate) => candidate.id === defaults.profile)?.name ?? defaults.profile})
+			</button>
+		) : undefined,
+	};
+	const placeName = chosenMachine ? machineLabel(chosenMachine) : "Hosted";
+	const whereWarn = placeProblem !== null || chosenMachine?.status === "offline" || (!item && sandboxWarn);
+	const showWhere = mine.length > 0 || !item;
+	const wherePill = (props: TriggerProps) => (
+		<Pill
+			{...props}
+			data-picker="where"
+			data-value={placeName}
+			data-sandbox={chosenProfile?.name ?? "none"}
+			icon={chosenMachine ? <MachineIcon size={15} /> : <CloudIcon size={15} />}
+			secondary={!item && chosenProfile ? `· ${chosenProfile.name}` : undefined}
+			dot={whereWarn ? "warn" : profileChanged ? "changed" : chosenMachine ? (chosenMachine.status === "online" ? "ok" : "off") : null}
+			dotLabel={whereWarn ? "something is open, or cannot be used: see its picker" : chosenMachine ? chosenMachine.status : undefined}
+			className={profileChanged ? "ui-pill-changed" : undefined}
+			aria-label={`Where it runs: ${placeName}${!item && chosenProfile ? `, ${chosenProfile.name}` : ""}`}
+		>
+			{placeName}
+		</Pill>
+	);
 
-	const criteriaChip = (
-		<Chip key="criteria" label="criteria" value={acceptance.length === 0 ? "none" : count(acceptance.length)} open={open === "criteria"} warn={criteriaWrong !== null} onToggle={() => toggle("criteria")} onClose={close}>
+	// ---- the agent and its model --------------------------------------------------------------------
+	/** The rows of one harness's models, each with its efforts in a submenu. */
+	const modelRows = (harnessId: HarnessId, list: typeof modelList): MenuItem[] => {
+		if (list === null || list.models.length === 0) return [];
+		const isOther = harnessId !== "windlass";
+		return list.models.map(({ id }) => {
+			const isDefault = id === list.defaultModel;
+			const name = isOther ? modelName(list, id) : id;
+			const here = harness === harnessId;
+			// Another harness's reported default is its "": chosen, nothing is sent.
+			const checked = here && (isOther && model === "" ? isDefault : model === id);
+			const rowEfforts = effortsOf(list, id);
+			const pick = (to: string | null) => {
+				setHarness(harnessId);
+				setModel(id);
+				if (to !== null) setEffort(to);
+			};
+			return {
+				id: `${harnessId}:${id}`,
+				label: name,
+				icon: <AgentGlyph harness={HARNESS_NAMES[harnessId]} accent={harnessId === "windlass" && isDefault} />,
+				description: rowEfforts.length > 0 ? (checked && effort ? `effort ${effort} · ${rowEfforts.length} levels` : `${rowEfforts.length} effort levels`) : undefined,
+				trailing: isDefault && !saysDefault(name) ? <span className="ui-tag">default</span> : undefined,
+				checked,
+				onSelect: () => pick(null),
+				submenu:
+					rowEfforts.length > 0
+						? {
+								label: `Effort for ${name}`,
+								width: 200,
+								groups: [
+									{
+										id: "efforts",
+										label: `Effort for ${name}`,
+										items: ["", ...rowEfforts].map((level, index) => ({
+											id: level || "default",
+											label: level || "default",
+											icon: <EffortBars level={index} of={rowEfforts.length} />,
+											checked: checked && effort === level,
+											onSelect: () => pick(level),
+										})),
+									},
+								],
+							}
+						: undefined,
+			};
+		});
+	};
+	const offersOther = chosenMachine !== null && offeredHarnesses(chosenMachine).length > 0;
+	const windlassList = models.list;
+	const agentGroups: MenuGroup[] = [
+		{
+			id: "windlass",
+			label: "Windlass",
+			note: chosenMachine ? `on ${machineLabel(chosenMachine)}` : "hosted or any machine",
+			items:
+				windlassList === null || windlassList.models.length === 0
+					? [{ id: "windlass:default", label: model && !other ? model : "Your default model", icon: <AgentGlyph harness="Windlass" accent />, description: models.reading ? "Reading your models…" : `${models.error ?? "Your models could not be read."} The agent starts on your default model.`, checked: harness === "windlass", onSelect: () => setHarness("windlass") }]
+					: modelRows("windlass", windlassList),
+		},
+		...(chosenMachine && offersOther
+			? offeredHarnesses(chosenMachine).map((offered) => {
+					const options = harnessOptions(chosenMachine, offered.id);
+					const name = HARNESS_NAMES[offered.id];
+					const rows = modelRows(offered.id, options.models);
+					return {
+						id: offered.id,
+						label: name,
+						note: `on ${machineLabel(chosenMachine)}`,
+						items: !hardened
+							? [{ id: `${offered.id}:none`, label: name, icon: <AgentGlyph harness={name} />, description: `Runs only in the hardened container, which “${machineLabel(chosenMachine)}” cannot make now.`, disabled: true }]
+							: rows.length > 0
+								? rows
+								: [{ id: `${offered.id}:default`, value: offered.id, label: `${name}'s default model`, icon: <AgentGlyph harness={name} />, description: `“${machineLabel(chosenMachine)}”'s runner reports ${name}'s models once it has checked.`, checked: harness === offered.id, onSelect: () => setHarness(offered.id) }],
+					};
+				})
+			: []),
+		// Offered elsewhere: said where, as a row that cannot be chosen from here.
+		...(!offersOther && mine.some((machine) => why(machine) === null && offeredHarnesses(machine).length > 0)
+			? [
+					{
+						id: "elsewhere",
+						label: "Claude Code",
+						note: "on your machines",
+						items: [
+							{
+								id: "claude:elsewhere",
+								label: "Claude Code",
+								icon: <AgentGlyph harness="Claude Code" />,
+								description: `On ${mine
+									.filter((machine) => why(machine) === null && offeredHarnesses(machine).length > 0)
+									.map(machineLabel)
+									.join(", ")}: choose that machine first`,
+								disabled: true,
+							},
+						],
+					},
+				]
+			: []),
+	];
+	const agentSpec: MenuSpec = {
+		label: "Agent and model",
+		width: 304,
+		submenuWidth: 200,
+		hints: { right: "effort" },
+		filter: agentGroups.reduce((sum, group) => sum + group.items.length, 0) > 7 ? { placeholder: "Filter models…" } : undefined,
+		header:
+			offersOther || (!other && ignored.model) ? (
+				<>
+					{chosenMachine && offersOther
+						? offeredHarnesses(chosenMachine).map((offered) =>
+								hardened && offered.signIn === "none" ? (
+									<ClaudeSignIn key={offered.id} machine={chosenMachine} className="harness-login">
+										{HARNESS_NAMES[offered.id]}: not signed in on “{machineLabel(chosenMachine)}”.
+										{chosenMachine.status === "online" ? null : (
+											<>
+												{" "}
+												Run <code>windlass-runner login {offered.id}</code> there.
+											</>
+										)}
+									</ClaudeSignIn>
+								) : hardened && offered.signIn === "unknown" ? (
+									<p key={offered.id}>
+										{HARNESS_NAMES[offered.id]}: the runner on “{machineLabel(chosenMachine)}” has not said whether it is signed in.
+									</p>
+								) : null,
+							)
+						: null}
+					{!other && ignored.model ? <p className="tone-warn">{ignored.model}</p> : null}
+				</>
+			) : undefined,
+		groups: agentGroups,
+		footer: (
+			<>
+				{other === "Claude Code" ? <p className="ui-menu-note">Claude Code runs in the hardened container with your Claude subscription, in the mode chosen for it. It does not run this repository's checks; CI's result is on the pull request.</p> : null}
+				<p className="ui-menu-note">{other ? `The models “${chosenMachine ? machineLabel(chosenMachine) : ""}”'s runner reported for ${other}.` : modelList ? modelsNote(modelList) : null}</p>
+				{modelChanged ? (
+					<button type="button" className="ui-menu-action start-back" onClick={() => setModel("")}>
+						Back to the default ({whose(defaults.from.model)}: {defaults.model})
+					</button>
+				) : null}
+			</>
+		),
+	};
+	const agentModel = !other ? model || "default model" : model !== "" ? modelName(modelList, model) : reportedDefault !== null && modelList ? modelLabel(modelList, reportedDefault) : "default model";
+	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}${effort ? ` · ${effort}` : ""}`;
+	const agentWarn = !other && ignored.model !== null;
+	const agentPill = (props: TriggerProps) => (
+		<Pill
+			{...props}
+			data-picker="agent"
+			data-value={agentValue}
+			icon={<AgentGlyph harness={HARNESS_NAMES[harness]} accent={harness === "windlass"} />}
+			secondary={`· ${agentModel}${effort ? ` · ${effort}` : ""}`}
+			dot={agentWarn ? "warn" : modelChanged ? "changed" : null}
+			dotLabel={agentWarn ? "the saved default cannot be used" : undefined}
+			className={modelChanged ? "ui-pill-changed" : undefined}
+			aria-label={`Agent: ${agentValue}`}
+		>
+			{HARNESS_NAMES[harness]}
+		</Pill>
+	);
+
+	// ---- the mode, the criteria, the setup ------------------------------------------------------------
+	const modeOpen = mode !== null && OPEN_MODES.has(mode.id);
+	const modeSpec = modes && mode ? modeMenu(modes.modes, mode.id, setMode, modeOpen) : null;
+	const modeControl = modes && mode ? <ModePicker modes={modes.modes} current={mode.id} disabled={busy !== null} warn={modeOpen} onChoose={setMode} open={open === "mode"} onOpenChange={openOnly("mode")} /> : null;
+
+	const criteriaValue = acceptance.length === 0 ? "none" : count(acceptance.length);
+	const criteriaField = (
+		<div className="start-criteria">
 			<label className="label" htmlFor={ids.criteria}>
 				Acceptance criteria<span className="label-optional">optional</span>
 			</label>
-			<textarea id={ids.criteria} className={`input textarea item-criteria${criteriaWrong ? " input-invalid" : ""}`} value={criteria} onChange={(event) => setCriteria(event.target.value)} readOnly={busy !== null} aria-describedby={ids.criteriaNote} aria-invalid={criteriaWrong !== null || undefined} />
+			<textarea id={ids.criteria} className={`input textarea item-criteria${criteriaWrong ? " input-invalid" : ""}`} value={criteria} onChange={(event) => setCriteria(event.target.value)} readOnly={busy !== null} aria-describedby={ids.criteriaNote} aria-invalid={criteriaWrong !== null || undefined} data-autofocus />
 			<p className={`field-note${criteriaWrong ? " tone-bad" : ""}`} id={ids.criteriaNote}>
 				{criteriaWrong ?? "One per line. The agent is given them, and the verdict lists them for you to check: no machine checks them."}
 			</p>
-		</Chip>
+		</div>
 	);
 
-	// Agent or work item: the first of the row, where the deployment offers work items.
-	const kindSwitch =
-		switchable && info?.items ? (
-			<div key="kind" className="segmented start-kind" role="radiogroup" aria-label="What to start">
-				{(["agent", "item"] as const).map((option) => (
-					<label key={option} className={`segment${kindChoice === option ? " segment-chosen" : ""}`}>
-						<input
-							className="segment-radio"
-							type="radio"
-							name={ids.kind}
-							value={option}
-							checked={kindChoice === option}
-							disabled={busy !== null}
-							onChange={() => {
-								setKind(option);
-								setOpen(null);
-								setError(null);
-								setFiled(null);
-							}}
-						/>
-						{option === "agent" ? "Agent" : "Work item"}
-					</label>
-				))}
-			</div>
-		) : null;
+	const hasSetup = chosen !== null && !item;
+	const setupForm = hasSetup ? (
+		<div className="start-setup">
+			<SetupField setup={setup} repository={repositoryName(chosen.repository)} disabled={busy !== null} />
+			{!other ? <SecretsField repositoryId={chosen.repository.id} repository={repositoryName(chosen.repository)} profile={profile} disabled={busy !== null} /> : null}
+		</div>
+	) : null;
+	const setupSummary = hasSetup ? (setup.draft.text.trim() === "" ? "no setup command" : setup.draft.text.trim().split("\n")[0]) : null;
 
-	const agentModel = !other ? model || "default model" : model !== "" ? modelName(modelList, model) : reportedDefault !== null && modelList ? modelLabel(modelList, reportedDefault) : "default model";
-	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}${effort ? ` · ${effort}` : ""}`;
-	const agentChip = (
-		<Chip key="agent" label="agent" value={agentValue} open={open === "agent"} changed={modelChanged} warn={!other && ignored.model !== null} onToggle={() => toggle("agent")} onClose={close}>
-			{chosenMachine && offeredHarnesses(chosenMachine).length > 0 ? (
-				<HarnessChoice machine={chosenMachine} chosen={harness} hardened={hardened} disabled={busy !== null} onChoose={setHarness} />
-			) : (
-				<div className="harness-pick">
-					<span className="label">Agent</span>
-					<p className="field-fixed">Windlass</p>
-					{mine.some((machine) => offeredHarnesses(machine).length > 0) ? <p className="field-note">Claude Code is offered on a machine whose runner reports it: choose that machine under “on” first.</p> : null}
-				</div>
-			)}
-			<div className="start-pop-section">
-				<span className="label" id={ids.models}>
-					Model
-				</span>
-				{modelList === null || (other && modelList.models.length === 0) ? (
-					<>
-						<p className="field-fixed">{other ? `${other}'s default model` : model || "Your default model"}</p>
-						<p className="field-note" aria-busy={models.reading}>
-							{other ? `“${chosenMachine ? machineLabel(chosenMachine) : "The machine"}”'s runner reports ${other}'s models once it has checked.` : models.reading ? "Reading your models…" : `${models.error ?? "Your models could not be read."} The agent starts on your default model.`}
-						</p>
-					</>
-				) : (
-					<>
-						<div className="start-options" role="radiogroup" aria-labelledby={ids.models}>
-							{modelList.models.map(({ id }) => {
-								const isDefault = id === modelList.defaultModel;
-								// Another harness's reported default is its "": chosen, nothing is sent.
-								const checked = other && model === "" ? isDefault : model === id;
-								const name = other ? modelName(modelList, id) : id;
-								return (
-									<label key={id} className={`mode-option start-option${checked ? " start-option-chosen" : ""}`}>
-										<input className="segment-radio" type="radio" name={ids.models} value={id} checked={checked} onChange={() => setModel(id)} disabled={busy !== null} />
-										<span className="mode-option-name">
-											{name}
-											{isDefault && !saysDefault(name) ? <span className="mode-option-text"> default</span> : null}
-										</span>
-									</label>
-								);
-							})}
-						</div>
-						<p className="field-note">{other ? `The models “${chosenMachine ? machineLabel(chosenMachine) : ""}”'s runner reported for ${other}.` : modelsNote(modelList)}</p>
-					</>
-				)}
-				{ignored.model && !other ? <p className="field-note tone-warn">{ignored.model}</p> : null}
-			</div>
-			{efforts.length > 0 ? (
-				<div className="start-pop-section">
-					<span className="label" id={ids.efforts}>
-						Effort
-					</span>
-					<div className="segmented" role="radiogroup" aria-labelledby={ids.efforts}>
-						{["", ...efforts].map((name) => (
-							<label key={name || "default"} className={`segment${effort === name ? " segment-chosen" : ""}`}>
-								<input className="segment-radio" type="radio" name={ids.efforts} value={name} checked={effort === name} onChange={() => setEffort(name)} disabled={busy !== null} />
-								{name || "default"}
-							</label>
-						))}
-					</div>
-				</div>
-			) : null}
-			{modelChanged ? (
-				<button type="button" className="link start-back" onClick={() => setModel("")}>
-					Back to the default ({whose(defaults.from.model)}: {defaults.model})
-				</button>
-			) : null}
-		</Chip>
-	);
-
-	const modeOpen = mode !== null && OPEN_MODES.has(mode.id);
-	const modeChip =
-		modes && mode ? (
-			<div
-				key="mode"
-				className={`start-chip-mode${modeOpen ? " start-chip-warn" : ""}`}
-				onPointerDownCapture={() => {
-					setMore(true);
-					close();
-				}}
-			>
-				{/* Opened from the keyboard too, it closes the chip's picker: one list is open at a time. */}
-				<ModePicker modes={modes.modes} current={mode.id} disabled={busy !== null} onChoose={setMode} onOpen={close} />
-			</div>
-		) : null;
-
-	const available = placeProfiles.filter((candidate) => candidate.available && (!other || candidate.id === HARNESS_PROFILE));
-	const unavailable = other ? [] : placeProfiles.filter((candidate) => !candidate.available);
-	const sandboxWarn = (chosenProfile !== null && sandboxOpen(chosenProfile, claude)) || (!other && ignored.profile !== null) || defaultsErrors.length > 0 || available.length === 0;
-	const sandboxChip = (
-		<Chip key="sandbox" label="sandbox" value={chosenProfile?.name ?? "none"} open={open === "sandbox"} changed={profileChanged} warn={sandboxWarn} onToggle={() => toggle("sandbox")} onClose={close}>
-			<span className="label">Sandbox</span>
-			{available.length === 0 ? <p className="field-note tone-warn">{chosenMachine ? `“${machineLabel(chosenMachine)}” has no sandbox that can be used right now.` : "This deployment has no sandbox that can be used right now."}</p> : null}
-			{chosenProfile ? (
-				<div className="sandbox-chosen">
-					<ChosenSandbox profile={chosenProfile} claude={claude} />
-				</div>
-			) : null}
-			<p className="section-text">Where the agent's files live and its commands run. The boxes show what isolates it, outermost first.{other ? ` ${other} runs in this one only.` : ""}</p>
-			<div className="profiles" id={ids.sandboxes}>
-				{available.map((candidate) => (
-					<ProfileCard
-						key={candidate.id}
-						profile={candidate}
-						name={ids.sandboxes}
-						checked={profile === candidate.id}
-						claude={claude}
-						onChoose={(id) => {
-							setProfile(id);
-							close();
-						}}
-					/>
-				))}
-			</div>
-			{unavailable.length > 0 ? (
-				<>
-					<p className="profiles-divider">{chosenMachine ? `Listed, but not usable on “${machineLabel(chosenMachine)}”` : "Listed, but not usable on this deployment"}</p>
-					<div className="profiles profiles-unavailable">
-						{unavailable.map((candidate) => (
-							<ProfileCard key={candidate.id} profile={candidate} name={ids.sandboxes} checked={false} onChoose={setProfile} />
-						))}
-					</div>
-				</>
-			) : null}
-			{!other && ignored.profile ? <p className="field-note tone-warn">{ignored.profile}</p> : null}
-			{defaultsErrors.map((line) => (
-				<p key={line} className="field-note tone-warn">
-					{line}
-				</p>
-			))}
-			{profileChanged ? (
-				<button type="button" className="link start-back" onClick={() => setProfile(null)}>
-					Back to the default ({whose(defaults.from.profile)}: {info?.profiles.find((candidate) => candidate.id === defaults.profile)?.name ?? defaults.profile})
-				</button>
-			) : null}
-		</Chip>
-	);
-
-	// Narrow, the chips after the second fold behind "more"; one that warns of something open stays. A work item has too few to fold.
-	const all: Array<{ chip: ReactNode; keep: boolean }> = item
-		? [{ chip: repoChip, keep: true }, ...(placeChip ? [{ chip: placeChip, keep: true }] : []), { chip: criteriaChip, keep: true }]
-		: [
-				{ chip: repoChip, keep: true },
-				...(placeChip ? [{ chip: placeChip, keep: true }] : []),
-				{ chip: agentChip, keep: !placeChip },
-				...(modeChip ? [{ chip: modeChip, keep: modeOpen }] : []),
-				{ chip: sandboxChip, keep: sandboxWarn && chosenProfile !== null && sandboxOpen(chosenProfile, claude) },
-			];
-	// A fold that would hide one chip is not worth its own.
-	const folds = narrow && !more && all.filter((entry) => !entry.keep).length > 1;
-	const folded = folds ? all.filter((entry) => !entry.keep) : [];
-	const shown = folds ? all.filter((entry) => entry.keep) : all;
-
+	// ---- the launch ----------------------------------------------------------------------------------
 	const reason = item
 		? info === null
 			? "Asking the server what it offers…"
@@ -920,10 +973,83 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 							? "Sending the task…"
 							: null;
 	const secondary = item ? "File as a draft" : task === "" ? "Create without a prompt" : "Create without sending it";
+	const secondaryDisabled = item ? !canFile : !canCreate || tooLong;
+	const runSecondary = () => void (item ? file(false) : start(false));
+	const launchMenu: MenuSpec = {
+		label: item ? "Filing options" : "Launch options",
+		width: 260,
+		hints: false,
+		groups: [
+			{
+				id: "launch",
+				items: [
+					{
+						id: "secondary",
+						label: secondary,
+						description: item ? "Filed, not started" : task === "" ? "An agent with an empty composer" : "The task waits in its composer",
+						trailing: <Kbd>⌥↵</Kbd>,
+						disabled: secondaryDisabled,
+						onSelect: runSecondary,
+					},
+				],
+			},
+		],
+	};
+	const launchWord = busy === "creating" ? "Creating" : busy === "prompting" ? "Sending" : busy === "filing" ? "Filing" : item ? "File" : "Launch";
+
+	// ---- the line under the box: what the sandbox lets its commands do, and where -----------------
+	const facts = !item && chosenProfile ? sandboxFacts(chosenProfile, claude) : [];
+	const where = chosenMachine ? `runs on ${machineLabel(chosenMachine)}` : "runs hosted";
+	const anyOpen = facts.some((fact) => fact.open);
+
+	// ---- the phone: one summary row, a sheet of settings --------------------------------------------------
+	const summary = [item ? null : agentModel, placeName, repo.kind === "github" ? repo.picked.repository.name : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "no repository" : null, item ? null : (mode?.name ?? null), item && acceptance.length > 0 ? `${count(acceptance.length)} criteria` : null].filter((part) => part !== null);
+	const anyWarn = repoWarn || whereWarn || agentWarn || modeOpen || criteriaWrong !== null;
+	const settingsSpec: MenuSpec = {
+		label: "Settings",
+		groups: [
+			{
+				id: "settings",
+				items: [
+					...(!item ? [{ id: "agent", label: "Agent & model", icon: <AgentGlyph harness={HARNESS_NAMES[harness]} accent={harness === "windlass"} />, description: agentValue, tone: agentWarn ? ("warn" as const) : undefined, submenu: agentSpec }] : []),
+					...(showWhere ? [{ id: "where", label: mine.length > 0 ? "Where it runs" : "Sandbox", icon: chosenMachine ? <MachineIcon size={16} /> : <CloudIcon size={16} />, description: !item && chosenProfile ? `${placeName} · ${chosenProfile.name}` : placeName, tone: whereWarn ? ("warn" as const) : undefined, submenu: whereSpec }] : []),
+					{ id: "repo", label: "Repository", icon: <RepoIcon size={16} />, description: repoValue, tone: repoWarn ? ("warn" as const) : undefined, onSubmenuOpen: () => setOpen("settings"), ...(repoSpec ? { submenu: repoSpec } : { panel: addressForm }) },
+					...(!item && modeSpec && mode ? [{ id: "mode", label: "Mode", icon: <ShieldGlyph />, description: mode.name, tone: modeOpen ? ("warn" as const) : undefined, submenu: modeSpec }] : []),
+					...(item ? [{ id: "criteria", label: "Acceptance criteria", icon: <SlidersIcon size={16} />, description: criteriaValue, tone: criteriaWrong ? ("warn" as const) : undefined, panel: criteriaField }] : []),
+					...(hasSetup && setupForm ? [{ id: "setup", label: "Setup and secrets", icon: <PlusIcon size={16} />, description: setupSummary ?? undefined, panel: setupForm }] : []),
+				],
+			},
+		],
+	};
+
+	const kindSwitch =
+		switchable && info?.items ? (
+			<div className="segmented start-kind" role="radiogroup" aria-label="What to start">
+				{(["agent", "item"] as const).map((option) => (
+					<label key={option} className={`segment${kindChoice === option ? " segment-chosen" : ""}`}>
+						<input
+							className="segment-radio"
+							type="radio"
+							name={ids.kind}
+							value={option}
+							checked={kindChoice === option}
+							disabled={busy !== null}
+							onChange={() => {
+								setKind(option);
+								setOpen(null);
+								setError(null);
+								setFiled(null);
+							}}
+						/>
+						{option === "agent" ? "Agent" : "Work item"}
+					</label>
+				))}
+			</div>
+		) : null;
 
 	return (
 		<form
-			className={`composer start${busy ? " composer-busy" : ""}`}
+			className={`composer start${busy ? " composer-busy" : ""}${phone ? " start-phone" : ""}`}
 			onSubmit={(event) => {
 				event.preventDefault();
 				if (item) void file(true);
@@ -946,42 +1072,97 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					</span>
 				</p>
 			) : null}
-			<div className="composer-box">
-				<label className="composer-caret" htmlFor={ids.text}>
-					<ChevronIcon size={16} />
-					<span className="visually-hidden">{item ? "What the work item asks for: its first line is the title" : "What the agent should do"}</span>
+			{phone && kindSwitch ? <div className="start-kinds">{kindSwitch}</div> : null}
+			<div className="start-box">
+				<label className="visually-hidden" htmlFor={ids.text}>
+					{item ? "What the work item asks for: its first line is the title" : "What the agent should do"}
 				</label>
 				<textarea
 					ref={area}
 					id={ids.text}
-					className="composer-text"
-					rows={1}
+					className="start-text"
+					rows={phone ? 1 : 2}
 					value={prompt}
-					placeholder={item ? "What should be done?" : "What should it do?"}
+					placeholder={item ? "What should be done? The first line is its title." : "What should an agent do?"}
 					onChange={(event) => setPrompt(event.target.value)}
 					onKeyDown={onKeyDown}
 					disabled={busy !== null}
-					aria-describedby={ids.hint}
+					aria-describedby={`${ids.hint} ${ids.keys}`}
 					enterKeyHint="send"
 				/>
-				<button type="submit" className="button button-primary composer-action" disabled={item ? !canFile : !canLaunch}>
-					<SendIcon size={15} />
-					<span>{busy === "creating" ? "Creating" : busy === "prompting" ? "Sending" : busy === "filing" ? "Filing" : item ? "File" : "Launch"}</span>
-				</button>
+				<KeyHints id={ids.keys} className="start-keys" hints={item ? [["↵", "file and start"], ["⇧↵", "new line"]] : [["↵", "launch"], ["⇧↵", "new line"]]} />
+				<div className="start-tools">
+					{phone ? (
+						<>
+							<button type="button" ref={anchors.settings} className="start-summary" data-picker="settings" aria-haspopup="dialog" aria-expanded={open === "settings"} onClick={() => setOpen(open === "settings" ? null : "settings")}>
+								<SlidersIcon size={15} />
+								<span className="start-summary-text">
+									{summary.map((part, index) => (
+										<span key={index}>{index === 0 ? <b>{part}</b> : ` · ${part}`}</span>
+									))}
+								</span>
+								{anyWarn ? <span className="ui-dot ui-dot-warn" role="img" aria-label="something needs a look" /> : chosenMachine?.status === "online" ? <span className="ui-dot ui-dot-ok" aria-hidden="true" /> : null}
+							</button>
+							<button type="submit" className="start-send" disabled={item ? !canFile : !canLaunch} aria-label={launchWord}>
+								<ArrowUpIcon size={16} />
+							</button>
+							<MenuSheet open={open === "settings"} spec={settingsSpec} title={item ? "Filing settings" : "Launch settings"} onClose={close} anchor={anchors.settings} settings footer={<button type="button" className="ui-menu-action start-secondary" onClick={() => (close(), runSecondary())} disabled={secondaryDisabled}>{secondary}</button>} />
+						</>
+					) : (
+						<>
+							{kindSwitch}
+							{hasSetup || (item && chosen) ? (
+								<Tooltip content={item ? "Repository notes" : "Setup command and secrets"}>
+									<button type="button" ref={anchors.plus} className="start-plus" data-picker="setup" aria-haspopup="dialog" aria-expanded={open === "plus"} aria-label={item ? "Repository notes" : `Setup command and secrets${setupSummary ? `: ${setupSummary}` : ""}`} onClick={() => setOpen(open === "plus" ? null : "plus")}>
+										<PlusIcon size={15} />
+									</button>
+								</Tooltip>
+							) : null}
+							{!item ? <Menu spec={agentSpec} open={open === "agent"} onOpenChange={openOnly("agent")} trigger={agentPill} surface="popover" /> : null}
+							{showWhere && (mine.length > 0 || !item) ? <Menu spec={whereSpec} open={open === "where"} onOpenChange={openOnly("where")} trigger={wherePill} surface="popover" /> : null}
+							{repoSpec ? (
+								<Menu spec={repoSpec} open={open === "repo"} onOpenChange={openOnly("repo")} trigger={repoPill} surface="popover" />
+							) : (
+								repoPill({ ref: anchors.repo, "aria-haspopup": "dialog", "aria-expanded": open === "repo", "data-state": open === "repo" ? "open" : "closed", onClick: () => setOpen(open === "repo" ? null : "repo"), onKeyDown: () => undefined })
+							)}
+							{item ? (
+								<Pill ref={anchors.criteria} data-picker="criteria" data-value={criteriaValue} icon={<SlidersIcon size={14} />} dot={criteriaWrong ? "warn" : null} aria-haspopup="dialog" aria-expanded={open === "criteria"} data-state={open === "criteria" ? "open" : "closed"} onClick={() => setOpen(open === "criteria" ? null : "criteria")} aria-label={`Acceptance criteria: ${criteriaValue}`}>
+									{acceptance.length === 0 ? "Criteria" : `${count(acceptance.length)} criteria`}
+								</Pill>
+							) : null}
+							<span className="start-tools-end">
+								{modeControl}
+								<SplitButton type="submit" className="start-launch" icon={<SendIcon size={14} />} disabled={item ? !canFile : !canLaunch} menu={launchMenu} menuLabel={item ? "Filing options" : "Launch options"}>
+									{launchWord}
+								</SplitButton>
+							</span>
+							<PickerPanel open={open === "repo" && !repoSpec} onClose={close} anchor={anchors.repo} title="Repository" surface="popover">
+								{addressForm}
+							</PickerPanel>
+							<PickerPanel open={open === "plus"} onClose={close} anchor={anchors.plus} title={item ? "Repository" : `Before the agent starts${chosen ? ` · ${chosen.repository.name}` : ""}`} width={380} surface="popover">
+								{item ? shots : setupForm}
+							</PickerPanel>
+							<PickerPanel open={open === "criteria"} onClose={close} anchor={anchors.criteria} title="Acceptance criteria" surface="popover">
+								{criteriaField}
+							</PickerPanel>
+						</>
+					)}
+				</div>
 			</div>
-			<div className="start-chips composer-selects" ref={chips}>
-				{kindSwitch}
-				{shown.map((entry) => entry.chip)}
-				{folded.length > 0 ? (
-					<span className="mini-select">
-						<button type="button" className="mini-pick start-more" onClick={() => setMore(true)}>
-							⋯ {folded.length} more
-						</button>
-					</span>
-				) : null}
-			</div>
+			{facts.length > 0 || chosenMachine ? (
+				<p className={`start-sandbox${anyOpen ? " start-sandbox-open" : ""}`} title={facts.map((fact) => fact.long).join("; ") || undefined}>
+					{anyOpen ? <WarnIcon size={13} /> : <ShieldGlyph />}
+					{facts.map((fact) => (
+						<span key={fact.text} className={fact.open ? "start-fact-open" : undefined}>
+							{fact.text}
+							<span className="visually-hidden"> ({fact.long})</span>
+						</span>
+					))}
+					<span>{where}</span>
+				</p>
+			) : null}
 			{filing ? (
-				<p className="composer-hint start-line start-title">
+				<p className="start-line start-title">
 					Title: <span className="start-title-text">{filing.title}</span>
 				</p>
 			) : null}
@@ -998,22 +1179,41 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					“{machineLabel(chosenMachine)}” is offline since {clockTime(chosenMachine.since, now)}. The agent is created now, and a prompt sent before the machine is back fails. {task === "" ? "Write to it once the machine is online." : "Create it without sending the task, and the task waits in its composer."}
 				</p>
 			) : null}
-			<div className="start-foot">
-				<p className={`composer-hint${reason ? " composer-reason" : ""}${tooLong ? " tone-bad" : ""}`} id={ids.hint} role={reason ? "status" : undefined}>
-					{tooLong ? (
-						`${count(prompt.length - maxChars)} characters over the limit of ${count(maxChars)}`
-					) : (
-						(reason ?? (
-							<>
-								<kbd>Enter</kbd> {item ? "file and start" : "launch"} <span aria-hidden="true">·</span> <kbd>Shift</kbd>+<kbd>Enter</kbd> new line
-							</>
-						))
-					)}
-				</p>
-				<button type="button" className="link start-secondary" onClick={() => void (item ? file(false) : start(false))} disabled={item ? !canFile : !canCreate || tooLong}>
-					{secondary}
-				</button>
-			</div>
+			<p className={`start-status${tooLong ? " tone-bad" : ""}`} id={ids.hint} role={reason || tooLong ? "status" : undefined}>
+				{tooLong ? `${count(prompt.length - maxChars)} characters over the limit of ${count(maxChars)}` : reason}
+			</p>
 		</form>
+	);
+}
+
+/** The branch after the repository's name: "/ ⑂ main". */
+function BranchSecondary({ branch }: { branch: string }) {
+	return (
+		<span className="start-branch">
+			<span className="start-branch-slash" aria-hidden="true">
+				/
+			</span>
+			<BranchIcon size={13} />
+			{branch}
+		</span>
+	);
+}
+
+/** An effort as bars, filled to its level. */
+function EffortBars({ level, of }: { level: number; of: number }) {
+	return (
+		<span className="effort-bars" aria-hidden="true">
+			{Array.from({ length: Math.max(of, 3) }, (_, index) => (
+				<i key={index} className={index < level ? "effort-bar-on" : undefined} style={{ height: 3 + index * (7 / Math.max(of - 1, 1)) }} />
+			))}
+		</span>
+	);
+}
+
+function ShieldGlyph() {
+	return (
+		<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
+			<path d="M8 2 13 4v3.6c0 3-2.2 5.2-5 6.4-2.8-1.2-5-3.4-5-6.4V4z" />
+		</svg>
 	);
 }

@@ -1,112 +1,61 @@
 /**
  * The agent's mode (lib/modes.ts says whose modes they are), where it is chosen: in a session's
- * composer beside the model, and in the start composer's row of chips. One word opens the list, each
- * mode with its description, so the choice can be made without knowing the names.
+ * composer and in the start composer's toolbar. A small pill with the mode's name opens the list, each
+ * mode with its description in a line under it, so the choice can be made without knowing the names.
  */
 import type { SessionMode } from "@contract";
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { ShieldIcon } from "./Icons";
+import { Menu, type MenuSpec } from "./ui/Menu";
+import { Pill } from "./ui/Pill";
+import { Tooltip } from "./ui/Tooltip";
 
 /**
- * "mode Auto", in the composer's quiet picker style; pressed, the modes open above it as a list, each
- * with its description. `current` is the mode shown as chosen; `title` says what a choice applies to.
+ * "Auto", in the composer's pill style; pressed, the modes open as a menu, each with its description.
+ * `current` is the mode shown as chosen; `title` says what a choice applies to; `warn` marks a mode
+ * that runs without asking.
  */
-export function ModePicker({ modes, current, disabled = false, title, onChoose, onOpen }: { modes: SessionMode[]; current: string; disabled?: boolean; title?: string; onChoose(mode: string): void; /** Told when the list opens, by pointer or keyboard, so that another open list can close. */ onOpen?(): void }) {
-	const [open, setOpen] = useState(false);
-	const [active, setActive] = useState(0);
-	const box = useRef<HTMLDivElement>(null);
-	const button = useRef<HTMLButtonElement>(null);
-	const list = useRef<HTMLUListElement>(null);
-	const ids = { label: useId(), button: useId(), list: useId(), option: useId() };
+/** The modes as a menu: each with its description under it, the current one checked. */
+export function modeMenu(modes: SessionMode[], current: string, onChoose: (mode: string) => void, warn = false): MenuSpec {
+	return {
+		label: "Mode",
+		width: 300,
+		groups: [
+			{
+				id: "modes",
+				items: modes.map((mode) => ({
+					id: mode.id,
+					label: mode.name,
+					description: mode.description || undefined,
+					title: mode.description || undefined,
+					checked: mode.id === current,
+					tone: warn && mode.id === current ? ("warn" as const) : undefined,
+					onSelect: () => {
+						if (mode.id !== current) onChoose(mode.id);
+					},
+				})),
+			},
+		],
+	};
+}
+
+export function ModePicker({ modes, current, disabled = false, title, warn = false, onChoose, onOpen, open, onOpenChange }: { modes: SessionMode[]; current: string; disabled?: boolean; title?: string; warn?: boolean; onChoose(mode: string): void; /** Told when the list opens, so that another open list can close. */ onOpen?(): void; open?: boolean; onOpenChange?(open: boolean): void }) {
 	const chosen = modes.find((mode) => mode.id === current) ?? null;
-	const chosenIndex = Math.max(0, modes.findIndex((mode) => mode.id === current));
-
-	useEffect(() => {
-		if (!open) return;
-		const onPointer = (event: PointerEvent) => {
-			if (box.current && !box.current.contains(event.target as Node)) setOpen(false);
-		};
-		document.addEventListener("pointerdown", onPointer);
-		list.current?.focus();
-		return () => document.removeEventListener("pointerdown", onPointer);
-	}, [open]);
-
-	useEffect(() => {
-		if (disabled) setOpen(false);
-	}, [disabled]);
-
-	const show = (at: number) => {
-		setActive(at);
-		setOpen(true);
-		onOpen?.();
-	};
-	const close = () => {
-		setOpen(false);
-		button.current?.focus();
-	};
-	const choose = (mode: SessionMode) => {
-		close();
-		if (mode.id !== current) onChoose(mode.id);
-	};
-
-	const onButtonKey = (event: KeyboardEvent<HTMLButtonElement>) => {
-		if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-		event.preventDefault();
-		show(chosenIndex);
-	};
-	const onListKey = (event: KeyboardEvent<HTMLUListElement>) => {
-		const last = modes.length - 1;
-		const moves: Record<string, number> = { ArrowDown: Math.min(last, active + 1), ArrowUp: Math.max(0, active - 1), Home: 0, End: last };
-		if (event.key in moves) {
-			event.preventDefault();
-			setActive(moves[event.key] as number);
-		} else if (event.key === "Enter" || event.key === " ") {
-			event.preventDefault();
-			const mode = modes[active];
-			if (mode) choose(mode);
-		} else if (event.key === "Escape") {
-			event.preventDefault();
-			event.stopPropagation();
-			close();
-		} else if (event.key === "Tab") setOpen(false);
-	};
-
-	return (
-		<div className="mini-select mode-picker" ref={box}>
-			<span id={ids.label}>mode</span>
-			<button
-				ref={button}
-				id={ids.button}
-				type="button"
-				className="mini-pick"
-				aria-haspopup="listbox"
-				aria-expanded={open}
-				aria-controls={open ? ids.list : undefined}
-				aria-labelledby={`${ids.label} ${ids.button}`}
-				disabled={disabled}
-				title={title}
-				onClick={() => (open ? setOpen(false) : show(chosenIndex))}
-				onKeyDown={onButtonKey}
-			>
-				{chosen?.name ?? current}
-			</button>
-			{open ? (
-				<ul ref={list} id={ids.list} className="mode-menu" role="listbox" aria-labelledby={ids.label} tabIndex={-1} aria-activedescendant={`${ids.option}-${active}`} onKeyDown={onListKey}>
-					{modes.map((mode, index) => (
-						<li
-							key={mode.id}
-							id={`${ids.option}-${index}`}
-							className={`mode-option${index === active ? " mode-option-active" : ""}`}
-							role="option"
-							aria-selected={mode.id === current}
-							onPointerEnter={() => setActive(index)}
-							onClick={() => choose(mode)}
-						>
-							<span className="mode-option-name">{mode.name}</span>
-							{mode.description ? <span className="mode-option-text">{mode.description}</span> : null}
-						</li>
-					))}
-				</ul>
-			) : null}
-		</div>
+	const spec = modeMenu(modes, current, onChoose, warn);
+	const pill = (
+		<Menu
+			spec={spec}
+			align="end"
+			open={open}
+			onOpenChange={(next) => {
+				if (next) onOpen?.();
+				onOpenChange?.(next);
+			}}
+			trigger={(props) => (
+				<Pill {...props} outlined className="mode-picker" data-picker="mode" data-value={chosen?.name ?? current} icon={<ShieldIcon size={14} />} dot={warn ? "warn" : null} dotLabel={warn ? "runs without asking" : undefined} disabled={disabled} aria-label={`Mode: ${chosen?.name ?? current}${title ? `. ${title}` : ""}`}>
+					{chosen?.name ?? current}
+				</Pill>
+			)}
+		/>
 	);
+	return title ? <Tooltip content={title}>{pill}</Tooltip> : pill;
 }
