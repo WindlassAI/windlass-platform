@@ -12,8 +12,12 @@
 
 import type { HarnessId, SandboxProfile, SandboxProfileId, SessionMode, SessionSummary } from "../contract.js";
 
+export function cpuFlags(cpus: number) {
+	return ["--cpu-shares", "256", "--cpus", String(cpus)];
+}
+
 /** What every session container gets: non-root, no privilege gain, no capabilities, limits for a 2-CPU host. */
-export const COMMON_RUN_FLAGS = [
+export const commonRunFlags = (cpus: number) => [
 	"--init",
 	"--user",
 	"agent",
@@ -27,13 +31,14 @@ export const COMMON_RUN_FLAGS = [
 	"1536m",
 	"--memory-swap",
 	"1536m",
-	"--cpus",
-	"1.5",
+	...cpuFlags(cpus),
 	"--pids-limit",
 	"512",
 	"--hostname",
 	"sandbox",
 ];
+
+export const COMMON_RUN_FLAGS = commonRunFlags(1);
 
 /** The extra `docker run` flags of each available profile. */
 export const PROFILE_RUN_FLAGS: Partial<Record<SandboxProfileId, string[]>> = {

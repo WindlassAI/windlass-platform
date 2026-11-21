@@ -696,8 +696,10 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   it, and removes it when asked. It runs the base sandbox image and can optionally run the screenshots image. The base, screenshots and optional Claude Code image pins come from the runner build. It touches only containers it labelled for its own machine
   (`dev.windlass-platform.machine=<machine id>`) and keeps Windlass data in
   `wlp-machine-<machine id>`, which is Windlass's data directory for the machine's sessions, as the user's
-  volume is on Docker. Each container has the limits a hosted Docker sandbox has (1.5 CPUs, 1536 MiB of
-  memory, 512 processes, no capabilities), and none is made with less than 5 GB of free disk. It stops a
+  volume is on Docker. Each agent container gets 256 CPU shares and a cap of half the CPUs available to
+  the runner (at least 0.5 CPU). Set `WLP_RUNNER_CPUS` in the runner's environment to override the cap.
+  The runner applies that policy when it creates or reconnects a sandbox. Each container gets 1536 MiB
+  of memory, 512 processes and no capabilities, and creation requires 5 GB of free disk. It stops a
   sandbox that has not been used for the idle time the platform names (`WLP_IDLE_SUSPEND_MS`), never while
   a command runs in it or the session's socket is connected, and it removes one by itself in one case
   only: a container it finds after a restart whose workspace was never set up (no `/workspace/.git`: the

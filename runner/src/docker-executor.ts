@@ -9,7 +9,7 @@ import { BWRAP_PROBE, NAME, WORKSPACE } from "../../server/src/sandbox/provider.
 import { containerName, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { audit, safeSentence } from "./audit.js";
-import { bubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker, rawId, type Limits, type Profile } from "./policy.js";
+import { bubblewrap, externalId, harnessImage, image, shotsImage, runnerCpus, MachineDocker, rawId, type Limits, type Profile } from "./policy.js";
 import { pageLoginLabel } from "./page-login.js";
 import { cleanClaudeOutput } from "./claude-output.js";
 import { claudeSignIn, loginFileState, dropDetachedLoginVolume, withLoginVolume } from "./harness-login.js";
@@ -66,14 +66,15 @@ export class Executor extends MachineDocker {
 
 	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false, readonly claude = false) {
 		super(identity);
-		this.provider = new DockerSandboxes({ machine: identity.machineId, image, shotsImage, dataVolume: async () => {
+		const cpus = runnerCpus();
+		this.provider = new DockerSandboxes({ cpus, machine: identity.machineId, image, shotsImage, dataVolume: async () => {
 			await this.ownedVolume(true);
 			return this.volume;
 		} });
 		if (claude) {
 			this.claudePin = harnessImage("claude");
 			if (!this.claudePin) throw new Refusal("This runner was built without the Claude Code image.");
-			this.claudeProvider = new DockerSandboxes({ machine: identity.machineId, image: this.claudePin, claudeVolume: this.claudeVolume });
+			this.claudeProvider = new DockerSandboxes({ cpus, machine: identity.machineId, image: this.claudePin, claudeVolume: this.claudeVolume });
 		}
 	}
 	requireClaude(profile: Profile) {

@@ -33,7 +33,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { SandboxProfile, SandboxProfileId } from "../contract.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "./api.js";
 import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, WORKSPACE, docker, randomId } from "./docker.js";
-import { COMMON_RUN_FLAGS, PROFILE_RUN_FLAGS, findProfile, profilesFor } from "./profiles.js";
+import { commonRunFlags, cpuFlags, PROFILE_RUN_FLAGS, findProfile, profilesFor } from "./profiles.js";
 import { type Answer, type InternalExecResult, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, markTurnSandbox } from "./provider.js";
 import { tokenFilePath } from "./token-file.js";
 
@@ -341,6 +341,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 }
 
 interface Inspected {
+	cpuPolicyMatches: boolean;
 	status: string;
 	profile: SandboxProfileId;
 	uid: string;
@@ -364,6 +365,7 @@ async function forgetTokenFile(id: string): Promise<void> {
 
 /** What the hosted provider and a runner's differ in. */
 export type DockerSandboxOptions = {
+	cpus?: number;
 	/** The sandbox image; windlass-platform-sandbox:latest when left out. */
 	image?: string;
 	shotsImage?: string;
@@ -404,11 +406,11 @@ export class DockerSandboxes implements Sandboxes {
 
 	private async inspect(id: string): Promise<Inspected | null> {
 		if (!SANDBOX_ID.test(id)) return null;
-		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{index .Config.Labels "${MACHINE_LABEL}"}}|{{index .Config.Labels "${LABEL}.profile"}}|{{index .Config.Labels "${LABEL}.uid"}}`, containerName(id)]);
+		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{index .Config.Labels "${MACHINE_LABEL}"}}|{{index .Config.Labels "${LABEL}.profile"}}|{{index .Config.Labels "${LABEL}.uid"}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}`, containerName(id)]);
 		if (result.code !== 0) return null;
-		const [status = "", ours = "", machine = "", profile = "", uid = ""] = result.stdout.trim().split("|");
+		const [status = "", ours = "", machine = "", profile = "", uid = "", shares, nanos] = result.stdout.trim().split("|");
 		if (ours !== "1" || machine !== this.machine) return null;
-		return { status, profile: profile as SandboxProfileId, uid };
+		return { status, profile: profile as SandboxProfileId, uid, cpuPolicyMatches: shares === "256" && Number(nanos) === (this.options.cpus ?? 1) * 1e9 };
 	}
 
 	/** The data directory is a volume of the user's (wlp-user-<uid>): it outlives every sandbox. */
@@ -478,7 +480,7 @@ export class DockerSandboxes implements Sandboxes {
 				"--label",
 				`${LABEL}.profile=${input.profile}`,
 				...(this.machine === "" ? [] : ["--label", `${MACHINE_LABEL}=${this.machine}`]),
-				...COMMON_RUN_FLAGS,
+				...commonRunFlags(this.options.cpus ?? 1),
 				...flags,
 				...(this.options.claudeVolume ? ["--label", `${LABEL}.harness=claude`, "--log-driver", "none",
 					"--mount", `type=volume,src=${this.options.claudeVolume},dst=/run/wlp-harness/claude,readonly,volume-nocopy`] : []),
@@ -504,6 +506,9 @@ export class DockerSandboxes implements Sandboxes {
 	async connect(id: string): Promise<SandboxHandle | undefined> {
 		const found = await this.inspect(id);
 		if (found === null || stateOf(found.status) === "none") return undefined;
+		if (this.options.cpus !== undefined && !found.cpuPolicyMatches) {
+			await docker(["update", ...cpuFlags(this.options.cpus), containerName(id)], { check: true });
+		}
 		if (found.status === "paused") await docker(["unpause", containerName(id)], { check: true });
 		else if (found.status !== "running") {
 			const started = await docker(["start", containerName(id)], { timeoutMs: 60_000 });
