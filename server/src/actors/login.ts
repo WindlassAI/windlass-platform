@@ -20,6 +20,7 @@ import type { AuthResult, LoginStart, UserProfile } from "../contract.js";
 import { NOT_INVITED, mayUse, normalizeEmail } from "../access.js";
 import { getLayer } from "../layer.js";
 import { claimAccountUid } from "./account-email.js";
+import { SealError, serverSealer } from "../signin/seal.js";
 import { issueUserToken } from "../tokens.js";
 
 /** How long a started attempt is accepted: ten minutes. */
@@ -98,6 +99,17 @@ export const login = actor({
 
 	createVars: async (c): Promise<LoginVars> => {
 		const [row] = await c.db.execute<AttemptRow>("SELECT state, expires_at, sealed, schedule_id FROM attempt WHERE id = 1");
+		if (row?.sealed && !serverSealer().isCurrent(row.sealed)) {
+			const sealer = serverSealer();
+			try {
+				const next = sealer.seal("attempt", c.key[0], sealer.open("attempt", c.key[0], row.sealed));
+				await c.db.execute("UPDATE attempt SET sealed = ? WHERE id = 1 AND sealed = ?", next, row.sealed);
+				row.sealed = next;
+			} catch (error) {
+				// An unreadable attempt can still expire, or be explicitly restarted.
+				if (!(error instanceof SealError)) throw error;
+			}
+		}
 		return {
 			attempt: row
 				? { state: row.state, expiresAt: row.expires_at, sealed: row.sealed, scheduleId: row.schedule_id }

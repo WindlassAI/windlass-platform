@@ -89,3 +89,21 @@ test("account and repository reads replace old ciphertext without overwriting co
 	})()`);
 	assert.equal(result, "ok");
 });
+
+test("loading a pending sign-in upgrades its saved blob before the next callback", () => {
+	const result = server(overlap, `await (async () => {
+		const { login } = await import("./src/actors/login.ts");
+		const { createSealer } = await import("./src/signin/seal.ts");
+		const { DatabaseSync } = await import("node:sqlite");
+		const db = new DatabaseSync(":memory:");
+		db.exec("CREATE TABLE attempt (id INTEGER PRIMARY KEY, state TEXT, expires_at INTEGER, sealed TEXT, schedule_id TEXT)");
+		const id = "attempt_fixture";
+		const blob = createSealer("${old}").seal("attempt", id, JSON.stringify({files:{}}));
+		db.prepare("INSERT INTO attempt VALUES (1,'started',10000,?,'job')").run(blob);
+		const vars = await login.config.createVars({key:[id], db:{execute:async (sql,...args) => db.prepare(sql).all(...args)}});
+		const saved = db.prepare("SELECT sealed FROM attempt").get().sealed;
+		if (saved !== vars.attempt.sealed) return "only rotated in memory";
+		return saved.split(".")[1];
+	})()`);
+	assert.equal(result, "new");
+});
