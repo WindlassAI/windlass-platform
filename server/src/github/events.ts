@@ -89,8 +89,10 @@ export function edge(event: string, payload: unknown, meta: { slug: string } & P
 	const n = id(issue.number);
 	if (event === "issues" && n) {
 		const label = str(obj(p.label).name);
-		if ((["labeled", "unlabeled"].includes(action) && ["windlass", "windlass:orchestrate", "windlass:quick"].includes(label)) || ["closed", "reopened", "edited", "deleted", "transferred"].includes(action))
-			return { ...base, event, data: { issue: n, sender, ...((label === "windlass:orchestrate" || label === "windlass:quick") && { label }) } };
+		if (["labeled", "unlabeled"].includes(action) && ["windlass", "windlass:orchestrate", "windlass:quick"].includes(label))
+			return { ...base, event, data: { issue: n, sender, ...(label !== "windlass" && { label }) } };
+		if (["closed", "reopened", "edited", "deleted", "transferred"].includes(action))
+			return { ...base, event, data: { issue: n, sender } };
 	}
 	const commentId = decimalId(subject.id);
 	if (!commentId || commentId === "0") return null;

@@ -28,6 +28,7 @@
 import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemView, type StepKind, type Verdict } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
+import { ITEM_MODE_WORDS } from "../lib/feature";
 import { PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown } from "../components/Blocks";
@@ -968,7 +969,7 @@ export function Item({ page }: { page: ItemPage }) {
 							</>
 						) : (
 							<>
-								{view.mode === "orchestrate" ? "Plan first" : view.plan?.status === "approved" ? "Plan first · one implementer" : "Quick"} · {view.source === "github" ? "from GitHub" : view.source === "api" ? "from the API" : "from the web"}
+								{view.mode === "orchestrate" ? "Plan first" : view.plan ? "Plan first · one implementer" : "Quick"} · {view.source === "github" ? "from GitHub" : view.source === "api" ? "from the API" : "from the web"}
 							</>
 						)}
 					</p>
@@ -997,6 +998,7 @@ export function Item({ page }: { page: ItemPage }) {
 							filed {relativeTime(view.createdAt, now)}
 						</span>
 					</p>
+					{!view.parent && !view.plan ? <p className="field-note">{ITEM_MODE_WORDS[view.mode ?? "single"].description}</p> : null}
 					{view.origin ? <IssueOrigin origin={view.origin} /> : null}
 				</div>
 				<div className="item-actions">

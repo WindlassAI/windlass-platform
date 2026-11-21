@@ -9,7 +9,7 @@ import { compact, sandboxTime } from "./format";
 /** How a work item runs, in the words of the composer's pill and the filing dialog. */
 export const ITEM_MODE_WORDS = {
 	single: { name: "Quick", description: "One implementer starts directly, without a planning turn." },
-	orchestrate: { name: "Plan first", description: "Approve a plan, then one implementer follows it or the planned subtasks run." },
+	orchestrate: { name: "Plan first", description: "A planner files the plan for your approval. Then one implementer follows it or the planned subtasks run." },
 } as const;
 
 /** Why an orchestrated plan could not be approved on this repository, as far as the page can tell before filing: null when nothing is known against it. */

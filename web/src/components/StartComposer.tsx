@@ -33,7 +33,7 @@
  * factory's normal use. The repository starts on the page's, else the newest item's, else the newest
  * agent's.
  */
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type ItemSummary, type HarnessId, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type ItemMode, type ItemSummary, type HarnessId, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
@@ -49,7 +49,7 @@ import { useApp, useAuth } from "../state/app";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 import { allowanceState, useAccount, useAllowance, useModels, useNow } from "../state/hooks";
-import { ArrowUpIcon, BranchIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SendIcon, SingleIcon, SlidersIcon, SplitIcon, WarnIcon } from "./Icons";
+import { ArrowUpIcon, BranchIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SendIcon, SlidersIcon, WarnIcon } from "./Icons";
 import { claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
 import { ModePicker, modeMenu } from "./Modes";
 import { HARNESS_PROFILE, machineUnusable, offeredHarnesses } from "./PlaceChoice";
@@ -65,7 +65,7 @@ import { Tooltip } from "./ui/Tooltip";
 import { useSurface } from "./ui/useMediaQuery";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
 import { ItemModePicker } from "./ItemModePicker";
-import { ITEM_MODE_WORDS, orchestrateProblem } from "../lib/feature";
+import { orchestrateProblem } from "../lib/feature";
 
 /** Whether any of the chosen sandbox's three facts is open: said in the warning tone. */
 function sandboxOpen(profile: SandboxProfile, claude: ClaudeFacts | null): boolean {
@@ -182,7 +182,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// Agent or work item: the page's, unless its user switched before leaving for GitHub on a page that offers the switch. Without work items on this deployment, an agent.
 	const [kindChoice, setKind] = useState<StartKind>((switchable ? draft?.kind : null) ?? startKind);
 	const item = kindChoice === "item" && Boolean(info?.items);
-	const [itemMode, setItemMode] = useState<"orchestrate" | "single">("orchestrate");
+	const [itemMode, setItemMode] = useState<ItemMode>(draft?.itemMode ?? "orchestrate");
 	const [criteria, setCriteria] = useState(draft?.criteria ?? "");
 	// The work item filed last from here, said under the field until another is written.
 	const [filed, setFiled] = useState<{ id: string; title: string; started: boolean; feature: boolean } | null>(null);
@@ -526,7 +526,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				) : (
 					<>
 						{notice?.tone === "bad" ? `${notice.text} ` : github.error ? `${github.error} ` : null}
-						<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, criteria } })} disabled={busy !== null}>
+						<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, itemMode, criteria } })} disabled={busy !== null}>
 							Connect GitHub
 						</button>{" "}
 						to choose one of your own repositories, private ones included, and get the work back as a pull request. What you wrote here is kept.
@@ -895,33 +895,12 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		</div>
 	);
 
-	// ---- how a work item runs: single, or a feature a planner splits ------------------------------------
+	// ---- how a work item runs: plan first or quick ------------------------------------
 	const orchestrateOffered = item && Boolean(info?.items?.orchestrate);
 	const orchestrating = orchestrateOffered && itemMode === "orchestrate";
 	const orchestrateWarn = orchestrating ? orchestrateProblem(saved.checks) : null;
-	const itemModeValue = orchestrating ? ITEM_MODE_WORDS.orchestrate.name : ITEM_MODE_WORDS.single.name;
-	const itemModeSpec: MenuSpec | null = orchestrateOffered
-		? {
-				label: "How it runs",
-				width: 340,
-				groups: [
-					{
-						id: "item-mode",
-						items: (["orchestrate", "single"] as const).map((id) => ({
-							id,
-							label: ITEM_MODE_WORDS[id].name,
-							icon: id === "single" ? <SingleIcon size={16} /> : <SplitIcon size={16} />,
-							description: ITEM_MODE_WORDS[id].description,
-							wrap: true,
-							checked: (id === "orchestrate") === orchestrating,
-							tone: id === "orchestrate" && orchestrating && orchestrateWarn ? ("warn" as const) : undefined,
-							onSelect: () => setItemMode(id),
-						})),
-					},
-				],
-				footer: <p className={`ui-menu-note${orchestrateWarn ? " tone-warn" : ""}`}>{orchestrateWarn ?? "Running subtasks needs saved checks and CI that reports on pushes."}</p>,
-			}
-		: null;
+	const itemModeControl = orchestrateOffered ? <ItemModePicker value={itemMode} onChange={setItemMode} disabled={busy !== null} /> : null;
+
 	const hasSetup = chosen !== null && !item;
 	const setupForm = hasSetup ? (
 		<div className="start-setup">
@@ -984,7 +963,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const anyOpen = facts.some((fact) => fact.open);
 
 	// ---- the phone: one summary row, a sheet of settings --------------------------------------------------
-	const summary = [item ? null : agentModel, placeName, repo.kind === "github" ? repo.picked.repository.name : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "no repository" : null, item ? null : (mode?.name ?? null), item ? itemModeValue : null, item && acceptance.length > 0 ? `${count(acceptance.length)} criteria` : null].filter((part) => part !== null);
+	const summary = [item ? null : agentModel, placeName, repo.kind === "github" ? repo.picked.repository.name : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "no repository" : null, item ? null : (mode?.name ?? null), item && acceptance.length > 0 ? `${count(acceptance.length)} criteria` : null].filter((part) => part !== null);
 	const anyWarn = repoWarn || whereWarn || agentWarn || modeOpen || criteriaWrong !== null || orchestrateWarn !== null;
 	const settingsSpec: MenuSpec = {
 		label: "Settings",
@@ -996,7 +975,6 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					...(showWhere ? [{ id: "where", label: mine.length > 0 ? "Where it runs" : "Sandbox", icon: chosenMachine ? <MachineIcon size={16} /> : <CloudIcon size={16} />, description: !item && chosenProfile ? `${placeName} · ${chosenProfile.name}` : placeName, tone: whereWarn ? ("warn" as const) : undefined, submenu: whereSpec }] : []),
 					{ id: "repo", label: "Repository", icon: <RepoIcon size={16} />, description: repoValue, tone: repoWarn ? ("warn" as const) : undefined, onSubmenuOpen: () => setOpen("settings"), ...(repoSpec ? { submenu: repoSpec } : { panel: addressForm }) },
 					...(!item && modeSpec && mode ? [{ id: "mode", label: "Mode", icon: <ShieldGlyph />, description: mode.name, tone: modeOpen ? ("warn" as const) : undefined, submenu: modeSpec }] : []),
-					...(itemModeSpec ? [{ id: "item-mode", label: "How it runs", icon: orchestrating ? <SplitIcon size={16} /> : <SingleIcon size={16} />, description: itemModeValue, tone: orchestrateWarn ? ("warn" as const) : undefined, submenu: itemModeSpec }] : []),
 					...(item ? [{ id: "criteria", label: "Acceptance criteria", icon: <SlidersIcon size={16} />, description: criteriaValue, tone: criteriaWrong ? ("warn" as const) : undefined, panel: criteriaField }] : []),
 					...(hasSetup && setupForm ? [{ id: "setup", label: "Setup and secrets", icon: <PlusIcon size={16} />, description: setupSummary ?? undefined, panel: setupForm }] : []),
 				],
@@ -1054,7 +1032,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					</span>
 				</p>
 			) : null}
-			{phone && kindSwitch ? <div className="start-kinds">{kindSwitch}</div> : null}
+			{phone && (kindSwitch || itemModeControl) ? <div className="start-kinds">{kindSwitch}{itemModeControl}</div> : null}
 			<div className="start-box">
 				<label className="visually-hidden" htmlFor={ids.text}>
 					{item ? "What the work item asks for: its first line is the title" : "What the agent should do"}
@@ -1113,7 +1091,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								</Pill>
 							) : null}
 							<span className="start-tools-end">
-								{orchestrateOffered ? <ItemModePicker value={itemMode} onChange={setItemMode} disabled={busy !== null} /> : modeControl}
+								{item ? itemModeControl : modeControl}
 								<SplitButton type="submit" className="start-launch" icon={<SendIcon size={14} />} disabled={item ? !canFile : !canLaunch} menu={launchMenu} menuLabel={item ? "Filing options" : "Launch options"}>
 									{launchWord}
 								</SplitButton>

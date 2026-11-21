@@ -1082,7 +1082,7 @@ function runSingle(c: Change) {
 }
 
 const CHOICES: Record<ChoiceId, string> = {
-	run_single: "Run as single item", orchestrate_anyway: "Orchestrate anyway",
+	run_single: "Approve for one implementer", orchestrate_anyway: "Ask for subtasks",
 	approve: "Approve the plan",
 	revise: "Revise the plan",
 	raise: "Raise the limit and go on",

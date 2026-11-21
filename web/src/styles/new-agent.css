@@ -413,10 +413,13 @@
 	flex: none;
 	margin-right: 4px;
 }
-.start-kind .segment {
+.start .segment {
 	padding: 1px 10px;
 }
 .start-kinds {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
 	margin-bottom: 8px;
 }
 

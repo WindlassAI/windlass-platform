@@ -75,7 +75,7 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 		if (!plan) return Promise.resolve(false);
 		const questions = plan.questions.map((question) => (answers[question.id]?.trim() ? { ...question, answer: answers[question.id]!.trim() } : question));
 		const subtasks: PlanSubtask[] = plan.subtasks.map((task) => ({ ...task, budget: parsed[task.key] ?? task.budget }));
-		return acting.act({ kind: "edit_plan", version: plan.version, plan: { questions, spec: plan.spec, subtasks, singleSuggested: plan.singleSuggested } });
+		return acting.act({ kind: "edit_plan", version: plan.version, plan: { questions, spec: plan.spec, subtasks, singleSuggested: plan.singleSuggested, overflow: plan.overflow } });
 	};
 	const approve = () => (plan ? acting.act({ kind: "approve_plan", version: plan.version }) : Promise.resolve(false));
 	const reset = () => {
@@ -272,42 +272,44 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 				</dl>
 				{view.mode === "single" && plan.status === "approved" ? <p className="plan-single">One implementer follows this plan within the single-item budget.</p> : plan.singleSuggested ? <p className="plan-single">The planner suggests one item instead: {plan.singleSuggested}</p> : null}
 
-				{view.mode !== "single" && plan.subtasks.length > 0 ? <>
-				<ol className="plan-tasks" aria-label="Subtasks">
-					{plan.subtasks.map((task) => (
-						<SubtaskRow key={task.key} task={task} n={numbers.get(task.key)!} numbers={numbers} child={children.get(task.key) ?? null} fields={fields} editing={editing} drafts={review.drafts[task.key]} problems={review.problems.fields[task.key] ?? {}} floor={floor} single={single} disabled={acting.busy !== null} onChange={(field, text) => review.setDraft(task.key, field, text)} />
-					))}
-				</ol>
+				{view.mode !== "single" && plan.subtasks.length > 0 ? (
+					<>
+						<ol className="plan-tasks" aria-label="Subtasks">
+							{plan.subtasks.map((task) => (
+								<SubtaskRow key={task.key} task={task} n={numbers.get(task.key)!} numbers={numbers} child={children.get(task.key) ?? null} fields={fields} editing={editing} drafts={review.drafts[task.key]} problems={review.problems.fields[task.key] ?? {}} floor={floor} single={single} disabled={acting.busy !== null} onChange={(field, text) => review.setDraft(task.key, field, text)} />
+							))}
+						</ol>
 
-				<div className="plan-total" aria-label="What the subtasks spend together">
-					<p className="plan-total-head">Together</p>
-					<dl className="plan-total-figures">
-						{fields.map((field) => {
-							const over = review.problems.total.includes(field.key);
-							const share = Math.min(100, (total[field.key] / Math.max(1, plan.budget[field.key])) * 100);
-							const kept = Math.min(100 - share, (reserve[field.key] / Math.max(1, plan.budget[field.key])) * 100);
-							return (
-								<div key={field.key} className={over ? "plan-total-over" : undefined}>
-									<dt>{field.label}</dt>
-									<dd className="plan-total-number">
-										{field.spelled(total[field.key])} <span className="tone-faint">of {field.spelled(pool[field.key])}</span>
-									</dd>
-									<dd>
-										<span className="usage-meter plan-meter" aria-hidden="true">
-											<span className={`usage-meter-used${over ? " item-meter-reached" : ""}`} style={{ width: `${share}%` }} />
-											<span className="plan-meter-kept" style={{ width: `${kept}%` }} />
-										</span>
-									</dd>
-									{over ? <dd className="plan-total-why tone-bad">over what the subtasks may share</dd> : null}
-								</div>
-							);
-						})}
-					</dl>
-					<p className="usage-note plan-total-note">
-						The feature may spend three single items ({PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} tokens, {plan.budget.turns} turns). {PLAN_FIELDS[0]!.spelled(reserve.tokens)} tokens and {reserve.turns} turns are kept for the summary and the review; the hatched part of each bar. A subtask gets at most one single item ({PLAN_FIELDS[0]!.spelled(single.tokens)} tokens, {single.turns} turns).
-					</p>
-				</div>
-				</> : null}
+						<div className="plan-total" aria-label="What the subtasks spend together">
+							<p className="plan-total-head">Together</p>
+							<dl className="plan-total-figures">
+								{fields.map((field) => {
+									const over = review.problems.total.includes(field.key);
+									const share = Math.min(100, (total[field.key] / Math.max(1, plan.budget[field.key])) * 100);
+									const kept = Math.min(100 - share, (reserve[field.key] / Math.max(1, plan.budget[field.key])) * 100);
+									return (
+										<div key={field.key} className={over ? "plan-total-over" : undefined}>
+											<dt>{field.label}</dt>
+											<dd className="plan-total-number">
+												{field.spelled(total[field.key])} <span className="tone-faint">of {field.spelled(pool[field.key])}</span>
+											</dd>
+											<dd>
+												<span className="usage-meter plan-meter" aria-hidden="true">
+													<span className={`usage-meter-used${over ? " item-meter-reached" : ""}`} style={{ width: `${share}%` }} />
+													<span className="plan-meter-kept" style={{ width: `${kept}%` }} />
+												</span>
+											</dd>
+											{over ? <dd className="plan-total-why tone-bad">over what the subtasks may share</dd> : null}
+										</div>
+									);
+								})}
+							</dl>
+							<p className="usage-note plan-total-note">
+								The feature may spend three single items ({PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} tokens, {plan.budget.turns} turns). {PLAN_FIELDS[0]!.spelled(reserve.tokens)} tokens and {reserve.turns} turns are kept for the summary and the review; the hatched part of each bar. A subtask gets at most one single item ({PLAN_FIELDS[0]!.spelled(single.tokens)} tokens, {single.turns} turns).
+							</p>
+						</div>
+					</>
+				) : null}
 			</div>
 		</section>
 	);

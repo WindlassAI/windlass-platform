@@ -84,7 +84,7 @@ describe("the mock's work items", () => {
 		expect(sessions.filter((session) => session.item).length).toBe(items.length);
 		expect(sessions.some((session) => session.id === "harbor-build" && session.item === undefined)).toBe(true);
 		// One filed here is the item's from the start, and is at work once it starts.
-		const filed = await user.createItem({ repository: { id: 7101 }, title: "Log the release's checksum", body: "", start: true });
+		const filed = await user.createItem({ repository: { id: 7101 }, mode: "single", title: "Log the release's checksum", body: "", start: true });
 		await new Promise((resolve) => setTimeout(resolve, 2700));
 		expect((await user.listSessions()).find((session) => session.id === filed.sessionId)).toMatchObject({ item: { id: filed.id }, status: "running" });
 		mock.dispose();
@@ -178,7 +178,7 @@ describe("the mock's work items", () => {
 		const seen: ItemSummary[][] = [];
 		const close = user.watch({ onSessions: () => undefined, onItems: (list) => seen.push(list) });
 		await tick();
-		const input = { repository: { id: 7101 }, title: "Cache the station list", body: "Once per run.", acceptance: ["Read once."], start: true, idempotencyKey: "key-1" };
+		const input = { mode: "single" as const, repository: { id: 7101 }, title: "Cache the station list", body: "Once per run.", acceptance: ["Read once."], start: true, idempotencyKey: "key-1" };
 		const first = await user.createItem(input);
 		const again = await user.createItem(input);
 		expect(again.id).toBe(first.id);
@@ -257,7 +257,7 @@ describe("the mock's work items", () => {
 	it("files an item on a machine as the server does: on its first available sandbox, and waiting while the machine is away", async () => {
 		const mock = make("none", "full");
 		const user = mock.user(auth);
-		const input = { repository: { id: 7101 }, title: "Cache the station list", body: "Once per run.", start: true };
+		const input = { mode: "single" as const, repository: { id: 7101 }, title: "Cache the station list", body: "Once per run.", start: true };
 		// The sandbox asked for is not the machine's: its first available one is taken.
 		const made = await user.createItem({ ...input, place: { kind: "machine", machineId: "m_nas" }, profile: "e2b" });
 		expect(made).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, state: "queued" });
@@ -302,7 +302,7 @@ describe("the mock's work items", () => {
 	it("asks the person when an item's machine is removed, and then offers only handing over or giving up", async () => {
 		const mock = make("none", "full");
 		const user = mock.user(auth);
-		const made = await user.createItem({ repository: { id: 7101 }, title: "On build-box", body: "", place: { kind: "machine", machineId: "m_build" }, start: true });
+		const made = await user.createItem({ repository: { id: 7101 }, mode: "single", title: "On build-box", body: "", place: { kind: "machine", machineId: "m_build" }, start: true });
 		await tick();
 		expect((await user.item(made.id)).state).toBe("working");
 		await user.removeMachine({ machineId: "m_build", removeSandboxes: false });
@@ -482,7 +482,7 @@ describe("the screenshots on an item's page", () => {
 it("files an orchestrated feature, edits its budget by version, and lists the children under one feature", async () => {
 	const mock = make(), user = mock.user(auth);
 	try {
-		const made = await user.createItem({ repository: { id: 7101 }, title: "Find documents", body: "Index and search.", mode: "orchestrate", start: true });
+		const made = await user.createItem({ repository: { id: 7101 }, title: "Find documents", body: "Index and search.", start: true });
 		const page = await user.item(made.id);
 		expect(page.mode).toBe("orchestrate");
 		const plan = structuredClone(page.plan!);

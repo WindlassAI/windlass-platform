@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * Orchestrated work items against the mock: the Factory composer's Single · Orchestrate pill, and a
+ * Orchestrated work items against the mock: the Factory composer's Plan first / Quick choice, and a
  * feature's page — its plan's questions, budgets checked as the server checks them, approval of the
  * version shown and a version that moved on meanwhile, the server's refusal on a repository without
  * checks, and the subtasks under a running feature.
@@ -50,13 +50,14 @@ async function settle(steps = 14): Promise<void> {
 	for (let step = 0; step < steps; step++) await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 2))));
 }
 
-function make(options: MockOptions): void {
+function make(options: MockOptions, page: (item: ItemView) => ItemView = item => item): void {
 	client = createMockClient({ pace: 0, origin: "http://localhost:5173", ...options });
 	const user = client.user.bind(client);
 	(client as { user: (auth: AuthResult) => UserApi }).user = (who) => {
 		const api = user(who);
 		return {
 			...api,
+			item: async id => page(await api.item(id)),
 			createItem: (input: CreateItemInput) => (filed.push(input), api.createItem(input)),
 			actOnItem: async (id: string, action: ItemAction) => {
 				const first = meanwhile;
@@ -78,8 +79,6 @@ async function show(path: string): Promise<void> {
 
 const api = () => client.user(ada);
 const field = () => host.querySelector(".start textarea") as HTMLTextAreaElement;
-const pill = (name: string) => host.querySelector(`.start [data-picker="${name}"]`) as HTMLButtonElement | null;
-const pop = () => document.querySelector(".ui-pop") as HTMLElement | null;
 const button = (words: string | RegExp) => [...host.querySelectorAll("button")].find((candidate) => (typeof words === "string" ? candidate.textContent === words : words.test(candidate.textContent ?? ""))) as HTMLButtonElement | undefined;
 
 function type(into: HTMLTextAreaElement | HTMLInputElement, text: string): void {
@@ -103,37 +102,44 @@ function budgetField(task: string, short: string): HTMLInputElement {
 	return row.querySelector(`#${CSS.escape(label.htmlFor)}`) as HTMLInputElement;
 }
 
-describe("the Factory composer's mode pill", () => {
-	it("files Single by default, and Orchestrate once chosen from its menu, with the line that says what it is", async () => {
+describe("the Factory composer's mode choice", () => {
+	const group = () => host.querySelector('[role="radiogroup"][aria-label="How it runs"]');
+	const option = (mode: string) => group()?.querySelector<HTMLInputElement>(`input[value="${mode}"]`);
+	async function file(title: string) {
+		type(field(), title);
+		await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+		await settle();
+	}
+
+	it("files Plan first by default and Quick for one item", async () => {
 		make({});
 		await show("/factory");
-		expect(pill("item-mode")?.dataset.value).toBe("Single");
-		type(field(), "Add the tide almanac export");
-		await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
-		await settle();
-		expect(filed).toHaveLength(1);
-		expect(filed[0]?.mode).toBeUndefined();
-
-		act(() => pill("item-mode")?.click());
-		const rows = [...(pop()?.querySelectorAll('[role="menuitemradio"]') ?? [])] as HTMLElement[];
-		expect(rows.map((row) => row.querySelector(".ui-item-label")?.textContent)).toEqual(["Single", "Orchestrate"]);
-		expect(rows[1]?.textContent).toContain("For a new feature with several parts. A planner splits it into subtasks you approve.");
-		expect(pop()?.textContent).toContain("Approving a plan needs saved checks and CI that reports on pushes. Without them, file it as single.");
-		await act(async () => rows[1]?.click());
-		expect(pill("item-mode")?.dataset.value).toBe("Orchestrate");
-
-		type(field(), "Search the docs\nIndex the docs and add a search command.");
-		await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
-		await settle();
-		expect(filed[1]).toMatchObject({ title: "Search the docs", mode: "orchestrate" });
-		expect(host.querySelector(".start-filed")?.textContent).toBe("Filed “Search the docs”: its plan comes to you for approval. Open");
+		expect(group()?.textContent).toBe("Plan firstQuick");
+		expect(option("orchestrate")?.checked).toBe(true);
+		await file("Search the docs");
+		expect(filed[0]).toMatchObject({ title: "Search the docs", mode: "orchestrate" });
+		expect(host.querySelector(".start-filed")?.textContent).toContain("its plan comes to you for approval");
+		act(() => option("single")!.click());
+		await file("Fix the report title");
+		expect(filed[1]).toMatchObject({ title: "Fix the report title", mode: "single" });
+		expect(option("orchestrate")?.checked).toBe(true);
 	});
 
-	it("is not offered for an agent", async () => {
+	it("files Quick when the deployment disables planning", async () => {
+		make({});
+		const info = client.info.bind(client);
+		client.info = async () => ({ ...await info(), items: { reviewer: true, orchestrate: false } });
+		await show("/factory");
+		expect(group()).toBeNull();
+		await file("Add an export");
+		expect(filed[0]?.mode).toBe("single");
+	});
+
+	it("offers the control only for work items", async () => {
 		make({});
 		await show("/factory");
 		act(() => (host.querySelector('.start-kind input[value="agent"]') as HTMLInputElement).click());
-		expect(pill("item-mode")).toBeNull();
+		expect(group()).toBeNull();
 	});
 });
 
@@ -230,6 +236,33 @@ describe("a feature's plan on its page", () => {
 		await act(async () => button("Run as a single item")?.click());
 		await settle();
 		expect((await api().item(made.id)).mode).toBe("single");
+		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toContain("Plan first · one implementer");
+		expect(host.querySelector(".plan-total")).toBeNull();
+	});
+
+	it.each([
+		{ state: "failed", canRetry: true, retry: true },
+		{ state: "failed", canRetry: false, retry: false },
+		{ state: "review", canRetry: false, retry: false },
+	] as const)("honours retry eligibility ($canRetry) and hides Send back on a $state feature", async ({ state, canRetry, retry }) => {
+		make({ items: "features" }, item => ({ ...item, state, canRetry }));
+		const feature = await featureNamed("Export the release manifest as CSV");
+		await show(`/items/${feature.id}`);
+		expect(Boolean(button("Retry"))).toBe(retry);
+		expect(button("Send back…")).toBeUndefined();
+		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toContain("Plan first");
+	});
+
+	it("hides handover on a subtask with an older stored CI question", async () => {
+		make({ items: "features" }, item => item.parent && item.question ? {
+			...item, question: { ...item.question, kind: "ci_timeout", choices: [
+				{ id: "wait", label: "Keep waiting" }, { id: "hand_over", label: "Hand it over as it is" }, { id: "give_up", label: "Give up" },
+			] },
+		} : item);
+		const child = (await api().listItems()).find(item => item.parent && item.question)!;
+		await show(`/items/${child.id}`);
+		expect(button("Keep waiting")).toBeDefined();
+		expect(button("Hand it over as it is")).toBeUndefined();
 	});
 
 	it("lists a running feature's subtasks with their state and track, and a subtask's question in Needs you under the feature", async () => {

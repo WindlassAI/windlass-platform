@@ -12,7 +12,7 @@
  * start composer of an agent does, with the same cards (components/PlaceChoice.tsx): this platform, or one of the user's
  * machines. On a machine the server gives it that machine's first available sandbox.
  */
-import { type GithubId, type StepKind, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemState, type ItemSummary } from "@contract";
+import { type GithubId, type StepKind, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemMode, type ItemState, type ItemSummary } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
@@ -496,7 +496,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [placeChoice, setPlace] = useState<string | null>(null);
 	// A machine that was removed or can no longer be chosen while the form is open leaves the item on this platform, which the line then says.
 	const chosenMachine = mine.find((machine) => machine.machineId === placeChoice && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
-	const [mode, setMode] = useState<"orchestrate" | "single">("orchestrate");
+	const [mode, setMode] = useState<ItemMode>("orchestrate");
 	const [title, setTitle] = useState("");
 	const [body, setBody] = useState("");
 	const [criteria, setCriteria] = useState("");
@@ -504,7 +504,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const last = useRef<Submission | null>(null);
-	const ids = { form: useId(), title: useId(), body: useId(), criteria: useId(), criteriaNote: useId(), mode: useId() };
+	const ids = { form: useId(), title: useId(), body: useId(), criteria: useId(), criteriaNote: useId() };
 	const acceptance = criteria
 		.split("\n")
 		.map((line) => line.trim())
@@ -558,7 +558,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 			<form id={ids.form} className="item-form" onSubmit={file}>
 				{platform.info?.items?.orchestrate ? (
 					<div>
-						<span className="label" id={ids.mode}>
+						<span className="label">
 							How it runs
 						</span>
 						<ItemModePicker value={mode} onChange={setMode} disabled={busy} />

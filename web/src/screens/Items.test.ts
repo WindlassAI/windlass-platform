@@ -115,6 +115,16 @@ describe("filing a work item", () => {
 		expect(sent[0]?.profile).toBeUndefined();
 	});
 
+	it.each([["orchestrate", "Plan first"], ["single", "Quick"]])("files the chosen %s mode", async (mode, label) => {
+		await start("none");
+		expect(radio("orchestrate")?.checked).toBe(true);
+		expect(radio(mode)?.parentElement?.textContent).toBe(label);
+		act(() => radio(mode)!.click());
+		typeTitle("Make the export available");
+		await file();
+		expect(sent[0]?.mode).toBe(mode);
+	});
+
 	it("says an offline machine makes the item wait", async () => {
 		await start("full");
 		act(() => radio("m_workshop")?.click());

@@ -11,7 +11,7 @@
  * result is said (`notice`) depends on where the user started: in the start composer, or in the account
  * menu, which opens for it.
  */
-import type { AuthResult, GithubStatus } from "@contract";
+import type { AuthResult, GithubStatus, ItemMode } from "@contract";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { errorMessage, type PlatformClient } from "../api/client";
 import { navigate, parseRoute, type Route } from "../lib/router";
@@ -102,6 +102,7 @@ export interface LaunchDraft {
 	harness: string | null;
 	mode: string | null;
 	kind: "agent" | "item" | null;
+	itemMode?: ItemMode;
 	criteria: string;
 }
 
@@ -110,7 +111,7 @@ export function takeLaunchDraft(): LaunchDraft | null {
 	if (typeof draft !== "object" || draft === null) return null;
 	const text = (value: unknown) => (typeof value === "string" ? value : "");
 	const chosen = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
-	return { prompt: text(draft.prompt), repoUrl: text(draft.repoUrl), profile: chosen(draft.profile), model: text(draft.model), effort: text(draft.effort), place: chosen(draft.place), harness: chosen(draft.harness), mode: chosen(draft.mode), kind: draft.kind === "agent" || draft.kind === "item" ? draft.kind : null, criteria: text(draft.criteria) };
+	return { prompt: text(draft.prompt), repoUrl: text(draft.repoUrl), profile: chosen(draft.profile), model: text(draft.model), effort: text(draft.effort), place: chosen(draft.place), harness: chosen(draft.harness), mode: chosen(draft.mode), kind: draft.kind === "agent" || draft.kind === "item" ? draft.kind : null, ...(draft.kind === "item" && (draft.itemMode === "single" || draft.itemMode === "orchestrate") && { itemMode: draft.itemMode }), criteria: text(draft.criteria) };
 }
 
 // ---- actions ------------------------------------------------------------------------------------

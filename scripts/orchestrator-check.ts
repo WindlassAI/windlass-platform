@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createItem, advance, currentKey } from "../server/src/factory/blueprint.js";
+import { createItem, advance, canRetry, currentKey } from "../server/src/factory/blueprint.js";
 import * as intake from "../server/src/factory/intake.js";
 import { edge } from "../server/src/github/events.js";
 import type { FeaturePlanEdit } from "../server/src/contract.js";
@@ -87,7 +87,7 @@ test("single suggestion waits for either explicit choice, and planning spend car
 	const p = { ...proposal(), subtasks: [], singleSuggested: "Only one file." };
 	const item = proposed(p);
 	assert.equal(item.question!.kind, "single_suggested");
-	assert.deepEqual(item.question!.choices.map(c => c.id), ["run_single", "orchestrate_anyway"]);
+	assert.deepEqual(item.question!.choices, [{ id: "run_single", label: "Approve for one implementer" }, { id: "orchestrate_anyway", label: "Ask for subtasks" }]);
 	for (const choice of ["run_single", "orchestrate_anyway"] as const) {
 		const next = advance(item, { kind: "answer", choice, question: item.question!.id, by: "person", at: 4 }).item;
 		assert.equal(next.run!.step.kind, choice === "run_single" ? "implement" : "refine");
@@ -108,6 +108,16 @@ test("run_single gives the builder the current approved scope, including the own
 		assert.equal(delivery.agent, null);
 		for (const text of [task.body, spec.goal, ...spec.requirements, ...spec.acceptance, ...spec.outOfScope]) assert.ok(delivery.text.includes(text), text);
 		assert.ok(!delivery.text.includes("Index documents"));
+	}
+});
+
+test("the page retry flag matches the blueprint before and after dispatch, including a placement wait", () => {
+	const failed = { ...started(), state: "failed" as const };
+	const fact = { kind: "retry" as const, at: 99, by: "owner" };
+	for (const item of [failed, { ...failed, machineRemoved: true }, { ...failed, parent: { itemId: "parent", key: "first", title: "Feature" } },
+		{ ...failed, jobs: [{ id: "i_child", task: proposal().subtasks[0]!, state: "draft" as const, spent: zero, head: null, report: "" }] }]) {
+		assert.equal(canRetry(item), item === failed);
+		assert.equal(advance(item, fact).item !== item, canRetry(item));
 	}
 });
 
@@ -396,6 +406,7 @@ test("a disabled GitHub orchestration request is refused before claiming the iss
 	assert.equal(ordinary.refusal, null);
 	const asked = intake.issueMode("orchestrate", [], false);
 	assert.match(asked.refusal!,/disabled/i);
+	assert.match(intake.issueMode("", ["windlass:orchestrate"], false).refusal!, /disabled/i);
 	assert.equal(intake.issueMode("orchestrate",["bug"],false).refusal,null);
 });
 

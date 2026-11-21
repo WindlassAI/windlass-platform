@@ -49,7 +49,7 @@ export function issueMode(note: string, labels: unknown[], enabled = true) {
 			: quick ? "Quick was requested. One implementer runs without a plan."
 			: "Plan first is disabled on this deployment. One implementer runs without a plan.",
 	};
-	return { mode: "orchestrate" as const, refusal: null, reason: "Plan first: review and approve the plan on the item page, then one implementer or the planned subtasks run." };
+	return { mode: "orchestrate" as const, refusal: null, reason: "Filed in Plan first mode. The owner approves the plan on the item page before one implementer or the planned subtasks run." };
 }
 
 export interface IssueBinding {
