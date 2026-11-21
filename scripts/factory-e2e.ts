@@ -16,12 +16,13 @@
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
+import { branchFor } from "../server/src/github/publish.js";
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
 import { verdictWords } from "../server/src/factory/verdict.js";
 import { localListeners } from "./check-listeners.js";
-import { type ChildProcess, spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { createWriteStream, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { createWriteStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
@@ -120,7 +121,7 @@ class Server {
 		};
 		delete full.RIVET_ADMIN_TOKEN;
 		delete full.RIVET_ENDPOINT;
-		const entry = env.WLP_FAKE_FEATURE_HEADS ? ["--input-type=module","--eval",'const {CI_POLLING} = await import("./src/github/ci.ts"); CI_POLLING.everyMs = 200; await import("./src/index.ts");'] : ["src/index.ts"];
+		const entry = env.WLP_FEATURE_TEST_GIT ? ["--import", "../scripts/feature-git-fixture.ts", "src/index.ts"] : ["src/index.ts"];
 		const child = spawn(process.execPath, ["--import", "tsx", ...entry], { cwd: SERVER_DIR, env: full, stdio: ["ignore", "pipe", "pipe"] });
 		this.child = child;
 		const keep = (chunk: Buffer) => {
@@ -207,8 +208,7 @@ async function api(path: string, init: RequestInit & { token?: string; key?: str
 
 const standin = new GithubStandin({ callbackUrl: `${API}/github/callback`, strictBranches: false });
 await standin.start();
-const ada = standin.addUser("ada");
-const identity = {name: ada.login, email: ada.id + "+" + ada.login + "@users.noreply.github.com"};
+standin.addUser("ada");
 const installation = standin.addInstallation("ada", "User");
 const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { ".github/workflows/build.yml": "on: pull_request\n", "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
 standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "read", statuses: "read", actions: "read" };
@@ -217,9 +217,7 @@ if (!only.length || only.includes("orchestrator")) {
 	const server = new Server();
 	try {
 		await check("orchestrator: real actors approve and integrate two checked children and hand over one reviewed PR", async () => {
-			const headsFile = join(server.storage, "fake-heads.json");
-			writeFileSync(headsFile, "{}");
-			const { user } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FAKE_FEATURE_HEADS: headsFile });
+			const { user } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{name:"build",command:"true"}] });
 			const single = (await user.factoryLimits()).item;
 			const token = (await user.createApiToken({ name: "feature", scopes: ["items:create", "items:read"] })).secret;
@@ -244,26 +242,26 @@ if (!only.length || only.includes("orchestrator")) {
 			assert(/single.*push/i.test(noCi), "Missing push CI guidance: " + noCi);
 			standin.commit(harbor, "main", {".github/workflows/build.yml":"on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n"}, "Run build on push");
 			const base = standin.branchHead(harbor,"main")!;
-			const seed = standin.featureCommit(harbor, base, "Start feature " + feature.id, new Date(feature.createdAt).toISOString(), identity);
-			const heads: Record<string,string> = {};
-			const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0,16);
-			let parent = seed;
-			for (const s of edited.plan!.subtasks) {
-				const id = "i_" + hash(JSON.stringify([feature.id,version,s.key]));
-				parent = standin.featureCommit(harbor,parent,s.title,new Date(feature.createdAt).toISOString(), identity);
-				heads["s_" + hash("item\n" + id)] = parent; setCi(harbor,parent,"success");
-			}
-			heads["s_" + hash("review\n" + feature.id)] = parent;
-			writeFileSync(headsFile, JSON.stringify(heads));
 			await user.actOnItem({id:feature.id,action:{kind:"approve_plan",version}});
 			const done = await untilItem(user,feature.id,"the feature handoff",v => {
+				for (const child of v.children ?? []) {
+					const pushed = standin.branchHead(harbor, branchFor(child.title, child.sessionId));
+					if (pushed && !harbor.ci.has(pushed)) setCi(harbor, pushed, "success");
+				}
 				if (v.question) throw new Error(v.question.text);
 				return v.state === "review";
 			}, 320_000);
 			const read = await api("/api/items/" + feature.id, {token});
 			assert(read.status === 200 && Array.isArray(read.body.children) && read.body.children.length === 2, "The feature API omitted its children.");
 			assert(done.children?.length === 2 && done.children.every(s => s.verdict?.ci === "passed" && s.state === "done" && !s.pullRequest && s.review?.state === "off"), "Children did not finish as branches.");
+			assert(standin.fileOn(harbor, "windlass/feature-" + feature.id, "notes/turn-1.md") !== null, "Neither child built files on the feature branch");
 			assert(done.spent.turns === 5 && done.budget.tokens === 3*single.tokens, "Unexpected feature spend " + JSON.stringify(done.spent));
+			const [first, secondChild] = done.children;
+			const firstHead = standin.branchHead(harbor, branchFor(first.title, first.sessionId))!;
+			const parent = standin.branchHead(harbor, branchFor(secondChild.title, secondChild.sessionId))!;
+			const log = (format: string, sha: string) => execFileSync("git", ["show","-s","--format="+format,sha], {cwd:harbor.path,encoding:"utf8"}).trim();
+			assert(log("%P", parent) === firstHead, "The second child did not build directly on the first child's commit");
+			assert(log("%s", firstHead + "^") === "Start feature " + feature.id && log("%P", firstHead + "^") === base, "The first child missed the feature marker");
 			assert(done.head === parent && done.reviews.length === 1 && done.report && done.pullRequest, "Missing final head, summary, review or PR.");
 			const ready = await waitFor("the single ready PR", () => standin.pulls.find(p=>p.number===done.pullRequest!.number && !p.draft && p.comments.length), 30_000);
 			assert(standin.branchHead(harbor, ready.head) === parent && standin.branchHead(harbor,"main") === base, "Incorrect ref after handoff.");

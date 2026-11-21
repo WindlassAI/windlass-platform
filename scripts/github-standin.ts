@@ -827,6 +827,7 @@ export class GithubStandin {
 				}
 				const pull: StandinPull = { number: this.pulls.filter((other) => other.repository === repository.id).length + 1, repository: repository.id, title: String(fields.title ?? ""), body: String(fields.body ?? ""), head, base, state: "open", merged: false, mergeable: null, draft: fields.draft === true, requestedReviewers: [], comments: [] };
 				this.pulls.push(pull);
+				if (this.branchHead(repository, head)) git(["symbolic-ref", `refs/pull/${pull.number}/head`, `refs/heads/${head}`], repository.path);
 				return answer(201, this.pullJson(pull));
 			}
 

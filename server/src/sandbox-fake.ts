@@ -244,7 +244,7 @@ function ok(stdout = ""): ExecResult {
 	return { exitCode: 0, timedOut: false, aborted: false, stdout, stderr: "" };
 }
 
-class FakeHandle implements SandboxHandle {
+export class FakeHandle implements SandboxHandle {
 	readonly cwd = WORKSPACE;
 
 	constructor(
@@ -307,8 +307,7 @@ class FakeHandle implements SandboxHandle {
 	/** Understands the few commands the platform runs; anything else succeeds with no output. */
 	private interpret(command: string): ExecResult {
 		const files = this.sandbox.files;
-		const fixture = process.env.WLP_FAKE_FEATURE_HEADS;
-		const head = fixture ? (JSON.parse(readFileSync(fixture, "utf8")) as Record<string,string>)[this.sandbox.sessionId] : process.env.WLP_FAKE_REVIEW_HEAD;
+		const head = process.env.WLP_FAKE_REVIEW_HEAD;
 		if (this.sandbox.privateData && command.includes("wlp_git clone --quiet --single-branch") && process.env.WLP_FAKE_REVIEW_CLONE_503_ONCE && !this.sandbox.reviewCloneFailed) {
 			this.sandbox.reviewCloneFailed = true;
 			return { ...ok(), exitCode: 128, stderr: "fatal: unable to access repository: The requested URL returned error: 503" };
