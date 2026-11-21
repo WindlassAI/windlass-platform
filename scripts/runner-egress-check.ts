@@ -1,7 +1,7 @@
 // Fast regressions, run from server with tsx ../scripts/runner-egress-check.ts.
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -67,5 +67,22 @@ test("both harness providers construct the same runner-owned network configurati
 		assert.equal(flags.name, mode === "open" ? "wlp-open-m_fixture" : "none");
 		assert.equal(flags.env.HTTPS_PROXY, mode === "restricted" ? "http://127.0.0.1:17891" : undefined);
 		assert.equal(flags.env.NO_PROXY, mode === "restricted" ? "localhost,127.0.0.1,::1" : undefined);
+	}
+});
+test("restoring a kept restricted session prepares the current helper image pin", async () => {
+	const { Executor } = await import("../runner/src/docker-executor.js");
+	const dir = mkdtempSync(join(tmpdir(), "egress-upgrade-"));
+	const path = process.env.PATH;
+	try {
+		writeFileSync(join(dir, "docker"), '#!/bin/sh\nif [ "$1" = container ]; then echo "No such container" >&2; fi\nexit 1\n', { mode: 0o700 });
+		process.env.PATH = dir + ":" + path;
+		const owner = new Executor({ uid: "u_test", machineId: "m_fixture" }, {}, false, false, ["docker-hardened"], { mode: "restricted", allow: [] });
+		owner.ownedVolume = async () => true;
+		const pulling = new Error("fetch current helper pin");
+		owner.ensureImage = async () => { throw pulling; };
+		await assert.rejects(owner.network.attach("0123456789ab", "fixture"), error => error === pulling);
+	} finally {
+		process.env.PATH = path;
+		rmSync(dir, { recursive: true, force: true });
 	}
 });

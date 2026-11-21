@@ -86,6 +86,8 @@ export class EgressNetwork {
 		const existing = await this.helper(name, role);
 		if (existing?.revision === revision && existing.running) return;
 		if (existing) await checked(["rm", "-f", existing.id]);
+		// A runner upgrade may restore a kept session before welcome prepares the new pin.
+		await this.machine.ensureImage();
 		const volume = this.prefix + "-socket";
 		const args = role === "broker" ? [JSON.stringify(this.policy.allow)] : [];
 		const started = await checked(["run", "-d", "--pull", "never", "--name", name,
