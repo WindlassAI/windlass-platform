@@ -328,6 +328,9 @@ function StopCallButton({ block, stop }: { block: ToolBlock; stop: (block: ToolB
 		<>
 			<button type="button" className="icon-button icon-button-small tool-stop" onClick={onClick} disabled={asking || block.stopRequested} aria-label={`Stop this call: ${block.name}${target ? ` ${target}` : ""}`} title="Stop this call">
 				<StopIcon size={12} />
+				<span className="tool-stop-label" aria-hidden="true">
+					Stop this call
+				</span>
 			</button>
 			{refusal ? (
 				<p className="tool-stop-refused" role="status">

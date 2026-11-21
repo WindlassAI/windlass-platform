@@ -29,7 +29,7 @@ import { currentMode, sessionModes } from "../lib/modes";
 import { SidePanel } from "../components/SidePanel";
 import { STATUS_WORD, StatusBadge, StatusGlyph } from "../components/Status";
 import { Tooltip } from "../components/ui";
-import { localTime, sandboxTime } from "../lib/format";
+import { clockDuration, localTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import type { ToolBlock } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
@@ -75,15 +75,6 @@ function CrumbState({ status, since }: { status: SessionSummary["status"]; since
 			{since !== null ? <span className="crumb-pill-time">{clockDuration(now - since)}</span> : null}
 		</span>
 	);
-}
-
-/** "1:48", "12:05", "1:02:09": how long a turn has run, as a clock reads it. */
-function clockDuration(ms: number): string {
-	const seconds = Math.max(0, Math.floor(ms / 1000));
-	const pad = (value: number) => String(value).padStart(2, "0");
-	const hours = Math.floor(seconds / 3600);
-	const minutes = Math.floor((seconds % 3600) / 60);
-	return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
 }
 
 /** The way out from the bar: "Publish pull request" asks the panel to open its dialog; an open pull request is a link to it. */

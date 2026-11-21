@@ -13,10 +13,15 @@ export function duration(ms: number): string {
 	return `${hours}h ${minutes - hours * 60}m`;
 }
 
-/** A running clock in whole seconds, never under one: 0 → "1s", 38_400 → "38s". `duration` alone would say "0ms" as a turn starts. */
-export function tickingDuration(ms: number): string {
-	return duration(Math.max(1000, Math.floor(ms / 1000) * 1000));
+/** How long something has run, as a clock reads it: 108_000 → "1:48", 3_729_000 → "1:02:09". */
+export function clockDuration(ms: number): string {
+	const seconds = Math.max(0, Math.floor(ms / 1000));
+	const pad = (value: number) => String(value).padStart(2, "0");
+	const hours = Math.floor(seconds / 3600);
+	const minutes = Math.floor((seconds % 3600) / 60);
+	return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
 }
+
 
 /** 45879 → "45,879". */
 /** A length of time in words, for a sentence: "10 minutes", "45 seconds", "1 hour". */
