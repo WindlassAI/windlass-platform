@@ -25,6 +25,10 @@ trap 'rm -f -- "$tmp"' EXIT
   echo "WLP_PUBLIC_ENDPOINT=http://127.0.0.1:$gateway"
   echo "RIVET_ADMIN_TOKEN=wlp_$admin_token"
   echo "WLP_SECRET=$signing_secret"
+  if [[ $stack == live ]]; then
+    signin_key=$(openssl rand -hex 32)
+    echo "WLP_SIGNIN_KEY=$signin_key"
+  fi
   echo "WLP_SANDBOX=fake"
   echo "WLP_DEMO=$demo"
   echo "SELFHOST_SERVER_TARGET=$target"

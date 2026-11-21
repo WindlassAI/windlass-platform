@@ -18,7 +18,7 @@ curl -fsS http://127.0.0.1:16440/health
 curl -fsS http://127.0.0.1:16440/ | head -c 80
 ```
 
-The initializer creates a private, git-ignored, mode-600 file and refuses to overwrite it. Keep a protected copy of the env file with the corresponding release. The app signing secret is also the default source of the sign-in encryption key. Engine archives contain actor data and engine signing keys. Restrict access to both.
+The initializer creates a private, git-ignored, mode-600 file and refuses to overwrite it. Keep a protected copy of the env file with the corresponding release. New live stacks generate independent signing and sealing secrets. Staging and legacy stacks use the signing secret for sealing when WLP_SIGNIN_KEY is unset. Engine archives contain actor data and engine signing keys. Restrict access to both.
 
 | Stack | Compose project | HTTP and web | Actor gateway | Initial volume |
 |---|---|---|---|---|
@@ -68,6 +68,10 @@ The engine has 4,096 CPU shares and a 2,304 MiB memory limit. The server has 3,0
 | Optional server settings | `WLP_SIGNIN_KEY`, `WLP_ALLOWED_EMAILS`, `WLP_ALLOWED_USERS`, `WLP_RUNNER_IMAGE`, `WLP_BUCKET_*` |
 
 The default optional server env file is `.data/selfhost/<compose-project>.server.env`. An explicit relative path is resolved from the Compose file's directory. Stack settings listed under `environment` in Compose take precedence over this file. Avoid printing expanded Compose configuration or unfiltered container inspections.
+
+### Migrate existing sign-ins at cutover
+
+If a deployment already sets `WLP_SIGNIN_KEY`, retain that exact key. If it used the `WLP_SECRET` fallback, verify privately that the old signing secret is at least 32 characters long, then replace the generated `WLP_SIGNIN_KEY` with that exact old value in the protected live stack env file. Pause the migration if the old secret is shorter: existing blobs need a separate re-sealing migration. Generate a **new** 32-byte random hex `WLP_SECRET` in the private configuration and apply the two settings together on every server. This signs users out of the platform while preserving sealed ChatGPT sign-ins and repository secrets. Retain protected copies of both keys for disaster recovery. When both stack and optional server env files provide the seal key, the stack value wins. An explicitly empty key is invalid.
 
 ## Backup and restore
 

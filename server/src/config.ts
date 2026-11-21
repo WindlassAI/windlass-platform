@@ -538,7 +538,7 @@ function readSecret(): Buffer {
  */
 export function signInKeySecret(): Buffer {
 	const own = process.env.WLP_SIGNIN_KEY;
-	if (own === undefined || own === "") return config.secret;
+	if (own === undefined) return config.secret;
 	if (own.length < 32) throw new Error("WLP_SIGNIN_KEY must be at least 32 characters long");
 	return Buffer.from(own, "utf8");
 }

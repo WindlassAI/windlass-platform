@@ -33,6 +33,7 @@ services:
     env_file:
       - path: ${SELFHOST_SERVER_ENV_FILE:-../../.data/selfhost/${COMPOSE_PROJECT_NAME}.server.env}
         required: false
+      - ./signin-key.env
     environment:
       RIVET_ENDPOINT: http://engine:6420
       RIVET_TOKEN: ${RIVET_ADMIN_TOKEN}
