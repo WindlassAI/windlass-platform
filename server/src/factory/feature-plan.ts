@@ -9,13 +9,18 @@ export function featureCap(single: ItemBudget): ItemBudget {
 	return cap;
 }
 
+/** Four closing turns allow the summary and reviewer a retry each. Scale time and tokens with the configured single item. */
+export function closingReserve(single: ItemBudget): ItemBudget {
+	return { tokens: Math.ceil(single.tokens / 6), turns: 4, activeSeconds: Math.ceil(single.activeSeconds / 6), hostedSeconds: Math.ceil(single.hostedSeconds / 6) };
+}
+
 export function approvalText(plan: FeaturePlan): string {
 	const words = (b: ItemBudget) => [
 		b.tokens.toLocaleString("en-US") + " tokens", b.turns + " turns",
 		b.activeSeconds + " active seconds", b.hostedSeconds + " hosted seconds",
 	].join(", ");
 	return [plan.spec.goal, ...plan.subtasks.map(s => s.key + ". " + s.title + " — " + words(s.budget)),
-		"Feature cap — " + words(plan.budget), "Single item — " + words(plan.compare.singleBudget),
+		"Reserved for summary and review — " + words(closingReserve(plan.compare.singleBudget)), "Feature cap — " + words(plan.budget), "Single item — " + words(plan.compare.singleBudget),
 		...plan.questions.filter(q => !q.answer).map(q => q.text)].join("\n");
 }
 
@@ -104,7 +109,7 @@ export function validatePlan(value: unknown, single: ItemBudget, available: Item
 			requirePlan(typeof n === "number" && Number.isSafeInteger(n) && n >= minimum[key] && n <= single[key], `Subtask ${key} must be a whole number between ${minimum[key]} and ${single[key]}.`);
 			budget[key] = n;
 			total[key] += n;
-			requirePlan(total[key] <= available[key], `Subtasks exceed the remaining ${key} budget.`);
+			requirePlan(total[key] <= available[key], `Subtasks exceed the remaining ${key} budget after the summary and review reserve.`);
 		}
 		const owns = lines(s.owns, 1, 32);
 		for (const path of owns) requirePlan(/^[\w.*@/-]+$/.test(path) && path.split("/").every(part => part && ![".", "..", ".git"].includes(part)), "Use repository-relative owned path globs.");

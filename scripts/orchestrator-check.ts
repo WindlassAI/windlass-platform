@@ -385,3 +385,30 @@ test("each subtask must fund a useful build and verification turn", async () => 
 		assert.throws(() => validatePlan(p, single, featureCap(single)), new RegExp(d));
 	}
 });
+
+test("filing, editing and dispatch preserve the closing budget", () => {
+	const full = proposal();
+	full.subtasks.push({ ...full.subtasks[1], key: "docs", owns: ["docs/**"] });
+	assert.throws(() => proposed(full), /reserve/i);
+	const pending = proposed(proposal());
+	assert.match(pending.question!.text, /summary and review.*1,667 tokens.*4 turns/i);
+	assert.throws(() => advance(pending, { kind: "edit_plan", at: 4, by: "person", version: 1, plan: full }), /reserve/i);
+	const feature = approved();
+	feature.spent.tokens = feature.budget.tokens - single.tokens - 100;
+	const next = advance(feature, { kind: "feature_ready", key: currentKey(feature)!, at: 5, head, pr });
+	assert.equal(next.item.question?.kind, "budget");
+	assert.equal(next.item.jobs?.length, 0);
+});
+test("feature budget raises require an explicit increase bounded in every dimension", () => {
+	const feature = started();
+	feature.spent.tokens = feature.budget.tokens;
+	const pending = advance(feature, {kind:"turn_ended", key:currentKey(feature)!, at:2, outcome:"succeeded", changes:false, verified:null, flags:[], report:null, spend:{tokens:0,hostedSeconds:0}}).item;
+	const stopped = advance(pending, {kind:"answer", choice:"revise", question:pending.question!.id, by:"person", at:3}).item;
+	assert.equal(stopped.question!.kind, "budget");
+	const raise = {kind:"answer" as const, choice:"raise" as const, question:stopped.question!.id, by:"person", at:4};
+	const cap = stopped.budget.tokens;
+	for (const budget of [undefined, {}, {turns:31}, {tokens:cap}, {tokens:cap+0.5}, {tokens:cap+single.tokens+1}, {tokens:cap+100,turns:1000}]) {
+		assert.throws(() => advance(stopped, {...raise, budget}), /raise|increase/i);
+	}
+	assert.equal(advance(stopped, {...raise, budget:{tokens:cap+single.tokens}}).item.budget.tokens, cap+single.tokens);
+});
