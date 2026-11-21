@@ -1,4 +1,4 @@
-import { copyFile, readFile } from "node:fs/promises";
+import { copyFile, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
@@ -17,8 +17,26 @@ for (const entry of pins) {
 }
 const relay = await build({ entryPoints: [fileURLToPath(new URL("../sandbox/relay/opencode.cjs", import.meta.url))],
 	bundle: true, platform: "node", format: "cjs", write: false });
+// These two public sandbox conventions also occur in the shared server implementation.
+// Ship them as explicit image configuration, so the executable scan can reject any host
+// home path or secret marker without an exception for arbitrary strings in the bundle.
+const layout = { dataDirectory: "/home/agent/.local/share/windlass", secretAlias: "WLP_SECRET_" };
+const sandboxLayout = {
+	name: "sandbox-layout",
+	setup(builder) {
+		builder.onLoad({ filter: /[/\\]server[/\\]src[/\\]sandbox[/\\](provider|sandboxes)\.ts$/ }, async ({ path }) => {
+			const text = await readFile(path, "utf8");
+			const [variable, key] = path.endsWith("provider.ts") ? ["DATA_DIR", "dataDirectory"] : ["SECRET_ALIAS", "secretAlias"];
+			const declaration = `const ${variable} = ${JSON.stringify(layout[key])};`;
+			if (!text.includes(declaration)) throw new Error(`Review the runner layout after changing ${variable}.`);
+			return { contents: text.replace(declaration, `const ${variable} = require("./sandbox-layout.json").${key};`), loader: "ts" };
+		});
+	},
+};
+await writeFile(join(dirname(outfile), "sandbox-layout.json"), JSON.stringify(layout));
 await build({
 	entryPoints: [fileURLToPath(new URL("src/main.ts", import.meta.url))], outfile,
+	plugins: [sandboxLayout], external: ["./sandbox-layout.json"], sourcemap: false,
 	banner: { js: "#!/usr/bin/env node" },
 	bundle: true, platform: "node", target: "node22", format: "cjs",
 	define: { EGRESS_SOURCE: JSON.stringify(await readFile(new URL("src/egress-proxy.mjs", import.meta.url), "utf8")), "import.meta.dirname": "__dirname", BUNDLED_SECCOMP_FILE: JSON.stringify("seccomp-bwrap.json"), SANDBOX_IMAGE: JSON.stringify(pin), SHOTS_IMAGE_PIN: JSON.stringify(shotsPin ?? ""), HARNESS_IMAGES: JSON.stringify(harnessImages),

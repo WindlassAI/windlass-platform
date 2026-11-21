@@ -6,12 +6,12 @@ import { directory, RunnerError } from "./state.js";
 export async function setupImageAndMounts() {
 	// Only inspect the setup container itself. Docker gives it its short id as the default hostname.
 	if (!/^[a-f0-9]{12}$/.test(hostname())) throw new RunnerError("Run setup in the runner image with its default Docker hostname.");
-	const result = await docker(["container", "inspect", "--format", "{{json .Image}} {{json .Mounts}}", hostname()]);
+	const result = await docker(["container", "inspect", "--format", "[{{json .Image}},{{json .Config.Image}},{{json .Mounts}}]", hostname()]);
 	if (result.code !== 0) throw new RunnerError("Could not inspect this setup container.");
-	const space = result.stdout.indexOf(" ");
-	const image = JSON.parse(result.stdout.slice(0, space));
-	const mounts: Array<{ Type: string; Name?: string; RW?: boolean; Destination: string; Source: string }> = JSON.parse(result.stdout.slice(space + 1));
-	if (!/^sha256:[a-f0-9]{64}$/.test(image)) throw new RunnerError("Could not determine the runner image ID.");
+	type Mount = { Type: string; Name?: string; RW?: boolean; Destination: string; Source: string };
+	const [imageId, configured, mounts]: [string, string, Mount[]] = JSON.parse(result.stdout);
+	if (!/^sha256:[a-f0-9]{64}$/.test(imageId)) throw new RunnerError("Could not determine the runner image ID.");
+	const image = /^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/.test(configured) ? configured : imageId;
 	const args = ["docker", "run", "-d", "--name", "windlass-runner", "--restart", "unless-stopped"];
 	for (const dst of ["/var/run/docker.sock", directory]) {
 		const mount = mounts.find(m => m.Destination === dst);

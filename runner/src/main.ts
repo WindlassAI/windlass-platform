@@ -15,7 +15,7 @@ import { importOpenCode } from "./opencode-import.js";
 import { setupAgents, setupImageAndMounts, shellCommand } from "./setup.js";
 import { removeRelay } from "./claude-relay.js";
 import { withLoginVolume } from "./harness-login.js";
-import { harnessImage, shotsImage, type MachineHarness } from "./policy.js";
+import { harnessImage, imagePins, prepareImages, shotsImage, type MachineHarness } from "./policy.js";
 import { Executor } from "./docker-executor.js";
 import { requestPair, requestLoginReport, waitForPair } from "./pair-command.js";
 import { egressFlags } from "./egress-policy.js";
@@ -46,6 +46,10 @@ async function main() {
 	if (command === "capabilities" && positionals.length === 1) {
 		const harnesses = (["claude", "opencode"] as const).filter(id => harnessImage(id));
 		console.log(JSON.stringify({ image: process.env.WLP_RUNNER_IMAGE ?? null, harnesses }));
+		return;
+	}
+	if (command === "image-pins" && positionals.length === 1) {
+		console.log(JSON.stringify(imagePins()));
 		return;
 	}
 	const auth = command === "login" || command === "logout";
@@ -156,6 +160,7 @@ async function main() {
 		let platform = origin(values.platform ?? paired?.platform ?? "");
 		let name = await resolveMachineName(values.name);
 		const launch = command === "setup" ? await setupImageAndMounts() : undefined;
+		if (command === "run" || command === "setup") await prepareImages(agents, values.screenshots, command);
 		let needsPair = command === "setup" || command === "pair" || !paired?.key;
 		let client: Socket | undefined;
 		let resumePlatform: string | undefined;

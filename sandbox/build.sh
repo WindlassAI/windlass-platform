@@ -12,6 +12,18 @@
 # Prints the installed Windlass version on its last line.
 set -eu
 
+context_only=false
+if [ "$#" -gt 0 ]; then
+  if [ "$#" != 2 ] || [ "$1" != --context ] || [ -z "$2" ]; then
+    echo "usage: build.sh [--context <empty directory>]" >&2
+    exit 2
+  fi
+  context_only=true
+  context=$2
+  mkdir -p "$context"
+  [ -z "$(ls -A "$context")" ] || { echo "build.sh: context directory must be empty" >&2; exit 2; }
+fi
+
 variant=${WLP_SANDBOX_VARIANT:-base}
 case "$variant" in
   base) tag=latest ;;
@@ -19,7 +31,9 @@ case "$variant" in
   *) echo "WLP_SANDBOX_VARIANT must be base or shots" >&2; exit 2 ;;
 esac
 IMAGE="${WLP_SANDBOX_IMAGE:-windlass-platform-sandbox:$tag}"
-if [ -n "${WLP_SANDBOX_IMAGE:-}" ]; then
+if [ "$context_only" = true ]; then
+  : # No local image tag is published.
+elif [ -n "${WLP_SANDBOX_IMAGE:-}" ]; then
   case "$IMAGE" in
     windlass-platform-sandbox:shots) echo "build.sh: omit WLP_SANDBOX_IMAGE to publish :shots" >&2; exit 2 ;;
   esac
@@ -52,11 +66,15 @@ if [ -z "$binary" ] || [ ! -f "$binary" ]; then
 fi
 
 # A small build context of its own: the Dockerfile, the helpers and the binary (hard-linked when possible).
-context=$(mktemp -d "${TMPDIR:-/tmp}/wlp-build.XXXXXX")
-trap 'rm -rf "$context"' EXIT INT TERM
+if [ "$context_only" = false ]; then
+  context=$(mktemp -d "${TMPDIR:-/tmp}/wlp-build.XXXXXX")
+  trap 'rm -rf "$context"' EXIT INT TERM
+fi
 cp "$here/Dockerfile" "$here/wlp-run" "$context/"
 if [ "$variant" = shots ]; then cp "$here/wlp-shot" "$context/"; fi
 ln "$binary" "$context/windlass" 2>/dev/null || cp "$binary" "$context/windlass"
+
+[ "$context_only" = false ] || exit 0
 
 echo "build.sh: building $IMAGE with $binary" >&2
 docker build --target "$variant" --progress=plain --label "$LABEL" --tag "$IMAGE" "$context" >&2

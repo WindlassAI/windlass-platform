@@ -768,6 +768,10 @@ require("node:module").syncBuiltinESMExports();`);
 		const wrappedDocker = { PATH: bin + ":" + env(state).PATH, CHECK_DOCKER_PATH: env(state).PATH };
 		// A delayed pull is entirely local. All container operations use the real daemon.
 		await writeFile(join(bin, "docker"), `#!/bin/sh
+if [ "$1" = manifest ] && [ "$2" = inspect ]; then
+  echo '{"manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64"}}]}'
+  exit 0
+fi
 if [ "$1" = "pull" ]; then
   echo start >> "$CHECK_PULL_STARTED"
   for i in $(seq 1 100); do [ -f "$CHECK_RELEASE_PULL" ] && break; sleep 0.1; done
