@@ -532,3 +532,65 @@
 	grid-area: auto;
 	align-self: auto;
 }
+
+/* A machine's agents: one line each, the name, its sign-in as a small signal, and the command that signs it in, to copy. */
+.machine-agents {
+	display: grid;
+	gap: 6px;
+	margin-top: 12px;
+}
+.machine-agent {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 0;
+	font-size: var(--text-13);
+}
+.machine-agent-name {
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.machine-agent-state {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	margin-right: 12px;
+	white-space: pre;
+	color: var(--ink-dim);
+}
+.machine-agent-token .machine-agent-state svg {
+	margin-left: 4px;
+	color: var(--ok);
+}
+.machine-agent-none .machine-agent-state {
+	color: var(--warn);
+}
+.machine-agent-command {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	min-width: 0;
+	max-width: 100%;
+	padding: 0 2px 0 8px;
+	border-radius: var(--r-item);
+	box-shadow: inset 0 0 0 1px var(--line);
+	background: var(--bg-sunk);
+}
+.machine-agent-command code {
+	overflow: hidden;
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	color: var(--ink-dim);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.machine-agent-command .copy-button {
+	opacity: 1;
+}
+/* The steps of adding a machine, each a short heading over its command. */
+.machine-step {
+	margin-bottom: 6px;
+	font-size: var(--text-13);
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
