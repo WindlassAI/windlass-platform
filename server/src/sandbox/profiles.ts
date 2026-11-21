@@ -40,21 +40,13 @@ export const commonRunFlags = (cpus: number) => [
 
 export const COMMON_RUN_FLAGS = commonRunFlags(1);
 
-/** The extra `docker run` flags of each available profile. */
-export const PROFILE_RUN_FLAGS: Partial<Record<SandboxProfileId, string[]>> = {
-	// bubblewrap needs to create namespaces and mount /proc: Docker's seccomp and AppArmor profiles and
-	// its masked /proc paths forbid that. Without them Windlass's own sandbox works inside the container.
-	"docker-windlass-sandbox": ["--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined", "--security-opt", "systempaths=unconfined"],
-	"docker-hardened": [],
-};
-
 export const PROFILES: SandboxProfile[] = [
 	{
 		id: "docker-windlass-sandbox",
 		name: "Docker + Windlass sandbox",
 		summary: "A container of its own, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the container.",
 		layers: [
-			"Docker container (non-root, no capabilities, resource limits)",
+			"Docker container (Docker’s seccomp profile with namespace and mount calls allowed, non-root, no capabilities, resource limits)",
 			"Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)",
 		],
 		approval: "auto",
@@ -206,7 +198,7 @@ export function profilesFor(provider: "docker" | "e2b", e2b: { windlassSandbox: 
 	return PROFILES.map((profile): SandboxProfile => {
 		if (provider === "e2b" && profile.id === "e2b") return e2bProfile(e2b);
 		if (provider === "e2b" && profile.id === "e2b-open") return e2bOpenProfile(e2b.openProfile ? { offered: true } : { offered: false, reason: OPEN_PROFILE_NOT_OFFERED });
-		if (provider === "e2b" && PROFILE_RUN_FLAGS[profile.id] !== undefined) {
+		if (provider === "e2b" && (profile.id === "docker-hardened" || profile.id === "docker-windlass-sandbox")) {
 			const { unavailableReason: _, ...rest } = profile;
 			return { ...rest, layers: [...profile.layers], available: false, unavailableReason: "This deployment runs its sandboxes on E2B, so that every server machine can reach them; a local Docker container is out of reach of the other machines." };
 		}

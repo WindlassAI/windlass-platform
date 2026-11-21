@@ -37,7 +37,8 @@ import { describeUsage, estimatedCostUsd } from "../server/src/sandbox/e2b/prici
 import { ACCOUNT_LIMIT, E2bSandboxHandle, E2bSandboxes, META, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
 import { sessionSandboxInput } from "../server/src/actors/internal.js";
 import { describeTemplate } from "../server/src/sandbox/e2b/template.js";
-import { OPEN_PROFILE_NOT_OFFERED, PROFILES, PROFILE_RUN_FLAGS, e2bProfile, profilesFor } from "../server/src/sandbox/profiles.js";
+import { PROFILE_RUN_FLAGS } from "../server/src/sandbox/docker-flags.js";
+import { OPEN_PROFILE_NOT_OFFERED, PROFILES, e2bProfile, profilesFor } from "../server/src/sandbox/profiles.js";
 import { BWRAP_PROBE, DATA_DIR, isTurnSandbox, randomId, shellQuote } from "../server/src/sandbox/provider.js";
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
 

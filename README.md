@@ -212,8 +212,10 @@ In neither profile can a command read the ChatGPT sign-in: it is not in the cont
 can read in the hardened profile lasts about an hour, and whoever reads it cannot renew it. When such a command
 prints the token as it is, the platform takes it out of the turn's events, so it does not reach the timeline.
 
-Bubblewrap only starts in a container run with `seccomp=unconfined`, `apparmor=unconfined` and
-`systempaths=unconfined`, so the first profile trades Docker's own filters for Windlass's sandbox. Containers
+The Windlass profile ships Docker 29.1.3’s default seccomp filter (moby/profiles
+`seccomp/v0.1.0`) with one rule for bubblewrap’s namespace and mount setup. The Docker CLI reads
+`sandbox/seccomp-bwrap.json` locally and sends its contents to the daemon. Bubblewrap still needs
+`apparmor=unconfined` and `systempaths=unconfined` to set up its filesystem. Containers
 share the host's kernel either way: for users you do not trust, the outer layer should be a virtual machine.
 
 **A home for sandboxed commands.** In Windlass's sandbox the home directory is read-only, and many tools write

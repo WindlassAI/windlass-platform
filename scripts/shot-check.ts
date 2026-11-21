@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { docker, LABEL_ARG, randomId } from "../server/src/sandbox/docker.js";
-import { PROFILE_RUN_FLAGS } from "../server/src/sandbox/profiles.js";
+import { PROFILE_RUN_FLAGS } from "../server/src/sandbox/docker-flags.js";
 import { shellQuote } from "../server/src/sandbox/provider.js";
 
 const cli = fileURLToPath(new URL("../sandbox/wlp-shot", import.meta.url));

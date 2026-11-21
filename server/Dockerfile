@@ -61,6 +61,7 @@ COPY --from=deps /app/server server
 COPY --from=deps --chown=node:node /app/.data .data
 COPY server/tsconfig.json server/
 COPY server/src server/src
+COPY sandbox/seccomp-bwrap.json sandbox/seccomp-bwrap.LICENSE sandbox/
 # The fake layer replays these; config.ts names the directory.
 COPY fixtures fixtures
 

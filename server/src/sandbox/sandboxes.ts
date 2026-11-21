@@ -33,7 +33,8 @@ import { StringDecoder } from "node:string_decoder";
 import type { SandboxProfile, SandboxProfileId } from "../contract.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "./api.js";
 import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, WORKSPACE, docker, randomId } from "./docker.js";
-import { commonRunFlags, cpuFlags, PROFILE_RUN_FLAGS, findProfile, profilesFor } from "./profiles.js";
+import { PROFILE_RUN_FLAGS } from "./docker-flags.js";
+import { commonRunFlags, cpuFlags, findProfile, profilesFor } from "./profiles.js";
 import { type Answer, type InternalExecResult, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, markTurnSandbox } from "./provider.js";
 import { tokenFilePath } from "./token-file.js";
 
@@ -406,7 +407,7 @@ export class DockerSandboxes implements Sandboxes {
 
 	private async inspect(id: string): Promise<Inspected | null> {
 		if (!SANDBOX_ID.test(id)) return null;
-		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{index .Config.Labels "${MACHINE_LABEL}"}}|{{index .Config.Labels "${LABEL}.profile"}}|{{index .Config.Labels "${LABEL}.uid"}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}`, containerName(id)]);
+		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{with index .Config.Labels "${MACHINE_LABEL}"}}{{.}}{{end}}|{{index .Config.Labels "${LABEL}.profile"}}|{{index .Config.Labels "${LABEL}.uid"}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}`, containerName(id)]);
 		if (result.code !== 0) return null;
 		const [status = "", ours = "", machine = "", profile = "", uid = "", shares, nanos] = result.stdout.trim().split("|");
 		if (ours !== "1" || machine !== this.machine) return null;

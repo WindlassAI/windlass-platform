@@ -5,7 +5,8 @@ import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/con
 import { type Operation } from "../../server/src/runner/protocol.js";
 import { SandboxUserError } from "../../server/src/sandbox/api.js";
 import { LABEL, LABEL_ARG, docker } from "../../server/src/sandbox/docker.js";
-import { BWRAP_PROBE, NAME, WORKSPACE } from "../../server/src/sandbox/provider.js";
+import { DOCKER_BWRAP_PROBE } from "../../server/src/sandbox/docker-flags.js";
+import { NAME, WORKSPACE } from "../../server/src/sandbox/provider.js";
 import { containerName, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { audit, safeSentence } from "./audit.js";
@@ -255,7 +256,7 @@ export class Executor extends MachineDocker {
 		const id = externalId(this.identity.machineId, raw);
 		this.boxes.set(id, { raw, sessionId, profile, harness, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
 		if (profile === bubblewrap) {
-			const result = await new DockerSandboxHandle(raw, profile, this.identity.uid).ask(BWRAP_PROBE, { timeoutMs: 20_000 });
+			const result = await new DockerSandboxHandle(raw, profile, this.identity.uid).ask(DOCKER_BWRAP_PROBE, { timeoutMs: 20_000 });
 			if (result?.code !== 0) {
 				const why = result?.stderr.trim();
 				const message = "Bubblewrap could not start in the new sandbox." + (why ? " " + why : "");

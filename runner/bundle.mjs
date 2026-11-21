@@ -1,3 +1,5 @@
+import { copyFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
 
@@ -17,5 +19,7 @@ await build({
 	entryPoints: [fileURLToPath(new URL("src/main.ts", import.meta.url))], outfile,
 	banner: { js: "#!/usr/bin/env node" },
 	bundle: true, platform: "node", target: "node22", format: "cjs",
-	define: { SANDBOX_IMAGE: JSON.stringify(pin), SHOTS_IMAGE_PIN: JSON.stringify(shotsPin ?? ""), HARNESS_IMAGES: JSON.stringify(harnessImages) },
+	define: { "import.meta.dirname": "__dirname", BUNDLED_SECCOMP_FILE: JSON.stringify("seccomp-bwrap.json"), SANDBOX_IMAGE: JSON.stringify(pin), SHOTS_IMAGE_PIN: JSON.stringify(shotsPin ?? ""), HARNESS_IMAGES: JSON.stringify(harnessImages) },
 });
+await copyFile(new URL("../sandbox/seccomp-bwrap.json", import.meta.url), join(dirname(outfile), "seccomp-bwrap.json"));
+await copyFile(new URL("../sandbox/seccomp-bwrap.LICENSE", import.meta.url), join(dirname(outfile), "seccomp-bwrap.LICENSE"));

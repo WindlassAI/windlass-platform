@@ -357,7 +357,7 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 		id: "docker-windlass-sandbox",
 		name: "Docker + Windlass sandbox",
 		summary: "A container of its own, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the container.",
-		layers: ["Docker container (non-root, no capabilities, resource limits)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)"],
+		layers: ["Docker container (Docker’s seccomp profile with namespace and mount calls allowed, non-root, no capabilities, resource limits)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)"],
 		approval: "auto",
 		commandNetwork: false,
 		commandsCanReadAccessToken: false,

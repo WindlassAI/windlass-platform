@@ -35,7 +35,10 @@
  *   WLP_CHECK_SECTIONS=image,failures   run only the sections whose names start with one of these
  */
 
+import { DOCKER_BWRAP_PROBE } from "../server/src/sandbox/docker-flags.js";
 import { imageId } from "./check-image.js";
+import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -867,6 +870,47 @@ async function main(): Promise<void> {
 			slow instanceof AcpError && slow.reason === "timeout" && /0\.1 s|0\.2 s/.test(slow.message) && lost instanceof AcpError && lost.reason === "closed" && /exited with code 9/.test(lost.message) && after instanceof AcpError && after.reason === "closed",
 			`${(slow as Error | null)?.message} / ${(lost as Error | null)?.message}`,
 		);
+	});
+
+	await section("seccomp", async () => {
+		const profile = "docker-windlass-sandbox";
+		const id = await layer.sandboxes.create({ uid, profile, sessionId: "seccomp" });
+		createdSandboxes.add(id);
+		everySandbox.add(id);
+		const handle = (await layer.sandboxes.connect(id)) as DockerSandboxHandle;
+		const security = await docker(["inspect", "--format", "{{json .HostConfig.SecurityOpt}}", handle.container], { check: true });
+		const option = (JSON.parse(security.stdout) as string[]).find(opt => opt.startsWith("seccomp="));
+		const policy = option?.startsWith("seccomp={") ? JSON.parse(option.slice(8)) : null;
+		expect("dockerd received the seccomp filter as JSON", policy?.defaultAction === "SCMP_ACT_ERRNO");
+		const [addition, ...syscalls] = policy?.syscalls ?? [];
+		const { comment: _source, ...rule } = addition ?? {};
+		// Removing our one rule reproduces the upstream seccomp/v0.1.0 default.json byte for byte,
+		// including its architecture map, capability tests, and clone3 ENOSYS rule.
+		const upstream = JSON.stringify({ ...policy, syscalls }, null, "\t");
+		expect("the daemon filter differs from Docker 29.1.3’s default by exactly five bubblewrap calls",
+			createHash("sha256").update(upstream).digest("hex") === "01536f1d1df938ae611eba20d6349e0de7a99b6ecdee1549427a0b01b8301e28"
+			&& isDeepStrictEqual(rule, { names: ["clone", "unshare", "mount", "umount2", "pivot_root"], action: "SCMP_ACT_ALLOW" }));
+		const probe = await handle.ask(DOCKER_BWRAP_PROBE);
+		expect("the runner’s create-time probe works in the session container", probe?.code === 0, probe?.stderr);
+		// io_uring_setup is syscall 425 on arm64 and amd64. Invalid arguments cannot create a ring.
+		const filter = await handle.run(`python3 - <<'PYTHON'
+import ctypes, errno
+libc = ctypes.CDLL(None, use_errno=True)
+rc = libc.syscall(425, 0, None)
+print(rc, ctypes.get_errno())
+assert rc == -1 and ctypes.get_errno() in (errno.EPERM, errno.ENOSYS)
+PYTHON`);
+		expect("the outer container denies io_uring_setup", filter.exitCode === 0, filter.stdout);
+		const t = await turn(handle, "Probe the sandbox, please.", probeScript);
+		const result = outputOf(settled(t.events, "probe"));
+		const run = dataOf(started(t.events, "probe")).run as { mode?: string; sandbox?: unknown } | undefined;
+		expect("a full Windlass turn executes the shell tool inside bubblewrap",
+			t.result.exitCode === 0 && outcomeOf(t) === "succeeded" && endsWithSummary(t)
+			&& run?.mode === "auto" && !!run.sandbox && result.includes("DATA_DIR_HIDDEN") && result.includes("NET_BLOCKED")
+			&& (await handle.readTextFile("probe.txt")) === "probe-1\n",
+			`${t.events.length} events, exit ${t.result.exitCode}, ${outcomeOf(t)}, ${result.trim()}`);
+		await layer.sandboxes.destroy(id);
+		createdSandboxes.delete(id);
 	});
 
 	await section("reviewer commands", async () => {

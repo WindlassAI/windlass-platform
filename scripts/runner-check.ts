@@ -115,6 +115,17 @@ async function realMachine(runnerImage: string) {
 			return current?.status === "online" && current.freeDiskBytes !== null;
 		}, "The real machine actor did not accept the runner's hello and report.", 60_000);
 		assert.match(output, /Paired with an account without a GitHub login/);
+		// The test client sees only the runner's filesystem. Inspect through the host daemon.
+		const filterPath = "/usr/local/bin/seccomp-bwrap.json";
+		const nameForFilter = "wlp-check-seccomp-" + randomBytes(6).toString("hex");
+		const { stdout: created } = await exec("docker", ["exec", name, "docker", "create", "--pull", "never",
+			"--name", nameForFilter, "--security-opt", "seccomp=" + filterPath, runnerImage, "status"]);
+		try {
+			const { stdout } = await exec("docker", ["inspect", "--format", "{{json .HostConfig.SecurityOpt}}", created.trim()]);
+			const option = (JSON.parse(stdout) as string[]).find(opt => opt.startsWith("seccomp="));
+			assert.deepEqual(JSON.parse(option!.slice(8)), JSON.parse(await readFile(join(root, "sandbox/seccomp-bwrap.json"), "utf8")));
+			ok("The runner image’s Docker CLI sent the bundled seccomp JSON to the host daemon.");
+		} finally { await docker(["rm", nameForFilter], { check: true }); }
 		const pruneStarted = performance.now();
 		await assert.rejects(exec("docker", ["exec", name, "windlass-runner", "prune"], { timeout: 3_000 }),
 			(error: { code?: number; stderr?: string }) => error.code === 1 && !!error.stderr?.includes("run prune in a one-off runner container with the same state volume and Docker socket"));

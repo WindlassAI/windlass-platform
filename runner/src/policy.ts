@@ -1,8 +1,9 @@
 import { availableParallelism } from "node:os";
 import type { Args } from "../../server/src/runner/protocol.js";
 import { LABEL, LABEL_ARG, MACHINE_LABEL, createVolume, docker, removeVolume, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
-import { COMMON_RUN_FLAGS, PROFILE_RUN_FLAGS } from "../../server/src/sandbox/profiles.js";
-import { BWRAP_PROBE, DATA_DIR } from "../../server/src/sandbox/provider.js";
+import { DOCKER_BWRAP_PROBE, PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
+import { COMMON_RUN_FLAGS } from "../../server/src/sandbox/profiles.js";
+import { DATA_DIR } from "../../server/src/sandbox/provider.js";
 import { Refusal, RunnerError, type Identity } from "./state.js";
 
 declare const SANDBOX_IMAGE: string;
@@ -96,7 +97,7 @@ export class MachineDocker {
 		try {
 			const started = await docker(["run", "-d", ...this.flags(name, bubblewrap), "-v", `${probeVolume}:${DATA_DIR}`, image, "sleep", "infinity"], { timeoutMs: 30_000 });
 			if (started.code !== 0) return false;
-			return (await docker(["exec", name, ...BWRAP_PROBE], { timeoutMs: 20_000 })).code === 0;
+			return (await docker(["exec", name, ...DOCKER_BWRAP_PROBE], { timeoutMs: 20_000 })).code === 0;
 		} finally {
 			await docker(["rm", "-f", name]);
 			await this.dropVolume(probeVolume);
