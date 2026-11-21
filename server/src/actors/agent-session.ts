@@ -4095,6 +4095,9 @@ export const agentSession = actor({
 	options: {
 		name: "Agent session",
 		icon: "robot",
+		// A browser connection must read its generation from the user actor, which may be waking
+		// and migrating its database after a restart. Allow that actor its migration window.
+		onBeforeConnectTimeout: 30_000,
 		// `changes`, `diff` and the internal destroy wait on the sandbox; a turn itself runs in the
 		// background under `keepAwake` and is not bound by this.
 		actionTimeout: 120_000,
