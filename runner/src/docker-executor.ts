@@ -149,7 +149,10 @@ export class Executor extends MachineDocker {
 		const generation = login?.generation ?? "signed-out";
 		if (!this.opencodePin || this.probedLogin === generation) return;
 		this.probedLogin = generation;
-		this.opencodeOptions = await probeHarnessOptions(this, this.opencodePin, login?.provider ?? "free").catch(() => undefined);
+		const options = await probeHarnessOptions(this, this.opencodePin, login?.provider ?? "free").catch(() => undefined);
+		// A terminal command can replace the credential while Docker is probing offline.
+		await this.refreshLogin();
+		if ((this.opencodeLogin?.generation ?? "signed-out") === generation) this.opencodeOptions = options;
 	}
 	private async restoreRelay() {
 		if (this.opencode && this.opencodeLogin && [...this.boxes.values()].some(b => b.harness === "opencode")) {

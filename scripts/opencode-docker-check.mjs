@@ -4,6 +4,8 @@ import { checkIsolation } from '../fixtures/claude-relay/isolation.mjs';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { setTimeout as wait } from 'node:timers/promises';
 import { copyFile, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -85,6 +87,21 @@ try {
 	assert.deepEqual(catalog.modes.map(m => m.id), ['build','plan']);
 	assert.ok(catalog.models.some(m => m.id === catalog.defaultModel));
 	ok('Offline inventory discovered public models and both modes without a credential volume.');
+	process.env.F3_PAUSE_PROBE = '1';
+	const probing = owner.loginChanged(true);
+	try {
+		const deadline = Date.now() + 15000;
+		while (!existsSync(join(dir, 'probing'))) {
+			assert.ok(Date.now() < deadline, 'The inventory probe did not start');
+			await wait(50);
+		}
+		await storeProvider(owner, {provider:'openai',key:token+'-key'});
+	} finally {
+		await writeFile(join(dir,'continue-probe'),'');
+		delete process.env.F3_PAUSE_PROBE;
+		await probing;
+	}
+	assert.equal(owner.report().harnesses[0].options, undefined, 'A superseded inventory reached the report');
 	const bundle = join(dir,'runner.cjs');
 	execFileSync(process.execPath,[join(root,'runner/bundle.mjs'),image,bundle,'opencode='+image]);
 	const cli = (...args) => execFileSync(process.execPath,[bundle,...args],{encoding:'utf8'});

@@ -10,7 +10,7 @@ import { cleanClaudeOutput } from "./claude-output.js";
 import { projection, relayUrl, type ProviderLogin } from "./claude-relay.js";
 import type { MachineDocker } from "./policy.js";
 
-/** The caller holds the login-volume lock and has checked its ownership. */
+/** Offline probe using a dummy credential and a fresh container filesystem. */
 export async function probeHarnessOptions(machine: MachineDocker, pin: string, provider?: ProviderLogin["provider"]) {
 	const name = tmpName();
 	const child = spawn("docker", ["run", "--rm", "-i", "--name", name, "--label", LABEL_ARG,
