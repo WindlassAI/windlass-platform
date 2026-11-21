@@ -101,6 +101,18 @@ function BarPublish({ summary }: { summary: SessionSummary }) {
 	);
 }
 
+/** The model and the mode, after what runs the session. */
+function CrumbModel({ summary }: { summary: SessionSummary }) {
+	const { platform } = useApp();
+	const profile = platform.info?.profiles.find((one) => one.id === summary.profile);
+	return (
+		<>
+			<span>{sessionModelWords(summary)}</span>
+			{profile ? <span>{currentMode(summary, profile).name}</span> : null}
+		</>
+	);
+}
+
 /** Shows or hides the side panel, on a screen wide enough to have it beside the conversation. */
 function PanelToggle() {
 	const hidden = usePanelHidden();
@@ -119,11 +131,9 @@ function PanelToggle() {
  * the item. `summary`, once known, adds the repository, the turn's time, the facts and the actions.
  */
 export function SessionCrumb({ title, status, place, machine, item, harness, summary = null }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: { id: string }; harness?: SessionSummary["harness"]; summary?: SessionSummary | null }) {
-	const { platform } = useApp();
 	const harnessName = acpHarnessName({ harness });
 	const machineName = machine ? machineLabel(machine) : null;
 	const repository = summary?.repository ?? null;
-	const profile = summary ? platform.info?.profiles.find((one) => one.id === summary.profile) : undefined;
 	const live = summary !== null && (summary.status === "running" || summary.status === "starting" || summary.status === "waiting");
 	return (
 		<>
@@ -157,8 +167,7 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
 			<div className="crumb-end">
 				<p className="crumb-facts">
 					{place?.kind === "machine" ? <span className="chip crumb-place">{harnessName ? `${harnessName} on ${machineName ? `“${machineName}”` : "your machine"}` : `On ${machineName ?? "your machine"}`}</span> : summary ? <span>{harnessName ?? "Windlass"}</span> : null}
-					{summary ? <span>{sessionModelWords(summary)}</span> : null}
-					{summary && profile ? <span>{currentMode(summary, profile).name}</span> : null}
+					{summary ? <CrumbModel summary={summary} /> : null}
 				</p>
 				{summary ? <BarPublish summary={summary} /> : null}
 				{summary ? <PanelToggle /> : null}
