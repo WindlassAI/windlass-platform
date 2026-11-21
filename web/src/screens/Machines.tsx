@@ -21,10 +21,10 @@ import { hasReason } from "../api/client";
 import { CopyButton } from "../components/Copy";
 import { ClaudeSignIn } from "../components/ClaudeSignIn";
 import { Dialog } from "../components/Dialog";
-import { ArrowLeftIcon, ChevronIcon, InfoIcon, Mark, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, CheckIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
 import { RowsSkeleton } from "../components/Skeleton";
 import { SandboxState } from "../components/Status";
-import { HARNESS_NAMES, loginCommand, signInWords } from "../lib/acp";
+import { HARNESS_NAMES, loginCommand, type ReportedHarness } from "../lib/acp";
 import { absoluteTime, plural, relativeTime, spelledDuration } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
@@ -57,6 +57,20 @@ function installCommand(info: MachinesInfo): string | null {
 		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
 		"  -v windlass-runner:/var/lib/windlass-runner \\",
 		`  ${info.runnerImage} --platform ${info.platformUrl}`,
+	].join("\n");
+}
+
+/**
+ * The command that sets a machine up from its terminal: it runs once, pairs the machine and signs its
+ * agents in, asking as it goes. Null while no runner image is published.
+ */
+function setupCommand(info: MachinesInfo): string | null {
+	if (info.runnerImage === null) return null;
+	return [
+		"docker run -it --rm \\",
+		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
+		"  -v windlass-runner:/var/lib/windlass-runner \\",
+		`  ${info.runnerImage} setup --platform ${info.platformUrl}`,
 	].join("\n");
 }
 
@@ -287,6 +301,39 @@ export function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: nu
 	);
 }
 
+/**
+ * A machine's agents as a status list: each one signed in or not, as its runner last said, with the
+ * command that signs it in on the machine. Signing in is done in the machine's terminal only.
+ */
+function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
+	if (harnesses.length === 0) return null;
+	return (
+		<ul className="machine-agents" aria-label="Agents on this machine">
+			{harnesses.map((harness) => {
+				const command = loginCommand(harness);
+				return (
+					<li key={harness.id} className={`machine-agent machine-agent-${harness.signIn}`}>
+						<span className="machine-agent-name">{HARNESS_NAMES[harness.id]}</span>
+						{harness.signIn === "token" ? (
+							<span className="machine-agent-state">
+								{" "}
+								<CheckIcon size={13} />
+								signed in
+							</span>
+						) : (
+							<span className="machine-agent-state">: {harness.signIn === "none" ? "sign in needed" : "sign-in not reported"}</span>
+						)}
+						<span className="machine-agent-command">
+							<code>{command}</code>
+							<CopyButton text={command} label={`Copy the command that signs ${HARNESS_NAMES[harness.id]} in`} />
+						</span>
+					</li>
+				);
+			})}
+		</ul>
+	);
+}
+
 function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: MachineSummary; info: MachinesInfo; now: number; onChanged(list: MachineSummary[]): void; onRemove(machine: MachineSummary): void }) {
 	const [open, setOpen] = useState(false);
 	const details = useId();
@@ -295,7 +342,10 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 	const claude = machine.harnesses?.some((harness) => harness.id === "claude") ?? false;
 	const host = machineHostNote(machine);
 	return (
-		<li className="usage-kept-row machine-row">
+		<li className={`usage-kept-row machine-row machine-row-${machine.warnings.some((warning) => warning.kind === "outdated") ? "outdated" : machine.status}`}>
+			<span className="machine-glyph" aria-hidden="true">
+				<MachineIcon size={17} />
+			</span>
 			<div className="usage-kept-main">
 				<div className="machine-name">
 					<h3 className="usage-kept-title">{machineLabel(machine)}</h3>
@@ -312,12 +362,14 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</div>
 				<p className="agent-meta">
 					<span>runner {machine.runnerVersion}</span>
-					<span>{machine.sandboxes.length === 0 ? "no sandbox on it" : plural(machine.sandboxes.length, "agent's sandbox", "agents' sandboxes")}</span>
-					{(machine.harnesses ?? []).map((harness) => (
-						<span key={harness.id} className={harness.signIn === "none" ? "tone-warn" : undefined}>
-							{HARNESS_NAMES[harness.id]} {signInWords(harness)}
-						</span>
-					))}
+					<span className="machine-sandbox-count">
+						{machine.sandboxes.length === 0 ? "no sandbox on it" : plural(machine.sandboxes.length, "agent's sandbox", "agents' sandboxes")}
+						{machine.maxSandboxes ? (
+							<span className="machine-meter" role="img" aria-label={`${machine.sandboxes.length} of at most ${machine.maxSandboxes} kept`}>
+								<span style={{ width: `${Math.min(100, (machine.sandboxes.length / machine.maxSandboxes) * 100)}%` }} />
+							</span>
+						) : null}
+					</span>
 					<span>
 						<button type="button" className="link machine-toggle" aria-expanded={open} aria-controls={details} onClick={() => setOpen((value) => !value)}>
 							<ChevronIcon size={11} className="machine-chevron" />
@@ -325,6 +377,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						</button>
 					</span>
 				</p>
+				<MachineAgents harnesses={machine.harnesses ?? []} />
 			</div>
 			<MachineState machine={machine} now={now} />
 			<button type="button" className="button button-outline button-small machine-remove" onClick={() => onRemove(machine)}>
@@ -366,27 +419,6 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						<dt>Commands sandboxed by Windlass</dt>
 						<dd>{machine.commandSandbox === null ? <span className="tone-faint">not reported yet</span> : machine.commandSandbox.ok ? "yes" : <>no: {machine.commandSandbox.reason}</>}</dd>
 					</div>
-					{machine.harnesses && machine.harnesses.length > 0 ? (
-						<div>
-							<dt>Other agents</dt>
-							<dd>
-								{machine.harnesses.map((harness) => (
-									<div key={harness.id} className="machine-harness">
-										{HARNESS_NAMES[harness.id]} ({harness.adapter}): <span className={harness.signIn === "none" ? "tone-warn" : undefined}>{signInWords(harness)}</span>
-										{/* Not signed in, the line above the details signs it in. */}
-										{harness.signIn !== "unknown" ? null : (
-											<>
-												<p className="field-note">
-													Its runner did not say whether it is signed in. To sign it in again, run <code>windlass-runner login {harness.id}</code> on the machine and approve in the browser.
-												</p>
-												<Command text={loginCommand(harness)} label={`The command that signs ${HARNESS_NAMES[harness.id]} in`} />
-											</>
-										)}
-									</div>
-								))}
-							</dd>
-						</div>
-					) : null}
 					<div>
 						<dt>Free disk</dt>
 						<dd>{machine.freeDiskBytes === null ? <span className="tone-faint">not reported yet</span> : diskSize(machine.freeDiskBytes)}</dd>
@@ -425,6 +457,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 		start.current = element;
 	};
 	const ids = { form: useId(), code: useId(), codeNote: useId(), trust: useId() };
+	const setup = setupCommand(info);
 	const install = installCommand(info);
 	const complete = code.replace(/-/g, "").length === 8;
 
@@ -577,7 +610,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	return (
 		<Dialog
 			title="Add a machine"
-			lede="Run this on a Linux machine with Docker. It starts the runner, which connects out to the platform; nothing needs to reach your machine from outside."
+			lede="Run this in a terminal on a Linux machine with Docker. The runner connects out to the platform; nothing needs to reach your machine from outside."
 			onClose={onClose}
 			footer={
 				<>
@@ -591,8 +624,16 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 			}
 		>
 			<div className="machine-dialog">
+				{setup ? (
+					<div>
+						<p className="machine-step">Set it up</p>
+						<Command text={setup} label="The setup command" />
+						<p className="field-note">It pairs the machine and signs its agents in, asking in the terminal as it goes. Sign an agent in or out later with <code>windlass-runner login</code> or <code>logout</code> and the agent's name.</p>
+					</div>
+				) : null}
 				{install ? (
 					<div>
+						<p className="machine-step">Or start the runner in the background</p>
 						<Command text={install} label="The install command" />
 						<p className="field-note">
 							Where rootless Docker works, use it: the runner then gets less of your machine. Mount <code>$XDG_RUNTIME_DIR/docker.sock</code> in place of <code>/var/run/docker.sock</code>.
@@ -604,7 +645,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						<span>The runner is not published yet, so there is nothing to install from here. Once it is, its command is shown here.</span>
 					</p>
 				)}
-				<p>When it starts, the runner prints a code, which the next step asks for.</p>
+				<p>The runner prints a code to pair the machine with: the next step asks for it.</p>
 			</div>
 		</Dialog>
 	);

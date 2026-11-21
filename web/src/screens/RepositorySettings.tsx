@@ -53,23 +53,25 @@ export function ScreenshotsSetting({ page, view }: { page: Pick<RepositoryPage, 
 				Screenshots
 			</h2>
 			<p className="usage-lede">Let builders and reviewers attach pictures of the app to their work item reports. Screenshots are off by default.</p>
-			<label className={`check${on ? " check-on" : ""}`}>
-				<input className="check-input" type="checkbox" checked={on} disabled={busy} onChange={(event) => set(event.target.checked)} />
-				<span className="check-box" aria-hidden="true" />
-				<span className="check-text">
-					<span className="check-name">Take screenshots for work items</span>
-					<span className="check-means">
-						{on
-							? "New work item sandboxes include a browser where available. Turning this off stops screenshot filing from the next turn."
-							: "Turning this on gives new work item sandboxes a browser where available. An existing builder keeps its sandbox."}
+			<div className="usage-card repo-form">
+				<label className={`check${on ? " check-on" : ""}`}>
+					<input className="check-input" type="checkbox" checked={on} disabled={busy} onChange={(event) => set(event.target.checked)} />
+					<span className="check-box" aria-hidden="true" />
+					<span className="check-text">
+						<span className="check-name">Take screenshots for work items</span>
+						<span className="check-means">
+							{on
+								? "New work item sandboxes include a browser where available. Turning this off stops screenshot filing from the next turn."
+								: "Turning this on gives new work item sandboxes a browser where available. An existing builder keeps its sandbox."}
+						</span>
 					</span>
-				</span>
-			</label>
-			{said ? (
-				<p className={`field-note tone-${said.tone}`} role={said.tone === "bad" ? "alert" : "status"}>
-					{said.text}
-				</p>
-			) : null}
+				</label>
+				{said ? (
+					<p className={`field-note tone-${said.tone}`} role={said.tone === "bad" ? "alert" : "status"}>
+						{said.text}
+					</p>
+				) : null}
+			</div>
 		</section>
 	);
 }
@@ -235,7 +237,9 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						<h2 className="usage-title" id={ids.setup}>
 							Setup command
 						</h2>
-						<SetupEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.setup} applies="A change applies to workspaces created after it: an agent that has one is not set up again." onSaved={page.reload} />
+						<div className="usage-card repo-form">
+							<SetupEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.setup} applies="A change applies to workspaces created after it: an agent that has one is not set up again." onSaved={page.reload} />
+						</div>
 					</section>
 
 					<section className="usage-section repo-saved" aria-labelledby={ids.checks}>
@@ -243,7 +247,9 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 							Checks
 							{view.saved.checks > 0 ? <span className="usage-count">{view.saved.checks}</span> : null}
 						</h2>
-						<ChecksEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.checks} onSaved={page.reload} />
+						<div className="usage-card repo-form">
+							<ChecksEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.checks} onSaved={page.reload} />
+						</div>
 					</section>
 
 					<section className="usage-section repo-saved" aria-labelledby="repo-secrets">

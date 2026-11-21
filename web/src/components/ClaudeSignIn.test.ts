@@ -231,7 +231,7 @@ describe("signing Claude Code in from the page", () => {
 		expect(panel()).toBeNull();
 		expect(document.querySelector(".claude-signin-done")?.textContent).toBe("Claude Code: signed in");
 		// The machine's own line, from the list the mock sent on.
-		expect(host.querySelector(".agent-meta")?.textContent).toContain("Claude Code signed in");
+		expect(host.querySelector(".machine-agents")?.textContent).toContain("Claude Code signed in");
 		expect(text()).not.toContain("not signed in");
 		expect(signInButton()).toBeUndefined();
 	});

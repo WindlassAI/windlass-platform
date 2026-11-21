@@ -34,7 +34,7 @@
  * agent's.
  */
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type ItemSummary, type HarnessId, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { HARNESS_NAMES } from "../lib/acp";
@@ -137,43 +137,6 @@ function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefau
 
 /** The pickers the composer opens: one at a time. The phone's settings sheet is one of them. */
 type Picker = "repo" | "where" | "agent" | "mode" | "criteria" | "plus" | "settings";
-
-/**
- * One chip: a quiet label, its value, and the picker it opens under the row. `warn` puts the warning
- * dot on it; `changed` draws it emphasised, for a value that differs from its saved default.
- */
-export function Chip({ label, value, open, warn = false, changed = false, busy = false, disabled = false, onToggle, onClose, children }: { label: string; value: ReactNode; open: boolean; warn?: boolean; changed?: boolean; busy?: boolean; disabled?: boolean; onToggle(): void; onClose(): void; children: ReactNode }) {
-	const ids = { label: useId(), button: useId(), pop: useId() };
-	const button = useRef<HTMLButtonElement>(null);
-	const pop = useRef<HTMLDivElement>(null);
-	useEffect(() => {
-		if (open) pop.current?.focus({ preventScroll: true });
-	}, [open]);
-	const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-		// A dialog opened from the picker (the secrets') has its own Escape.
-		if (event.key !== "Escape" || (event.target as Element).closest?.("dialog")) return;
-		event.preventDefault();
-		event.stopPropagation();
-		onClose();
-		button.current?.focus();
-	};
-	return (
-		<div className={`start-chip${warn ? " start-chip-warn" : ""}${changed ? " start-chip-changed" : ""}`}>
-			<span className="mini-select">
-				<span id={ids.label}>{label}</span>
-				<button ref={button} id={ids.button} type="button" className="mini-pick" aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? ids.pop : undefined} aria-labelledby={`${ids.label} ${ids.button}`} aria-busy={busy} disabled={disabled} onClick={onToggle}>
-					<span className="start-chip-value">{value}</span>
-					{warn ? <span className="start-dot" aria-hidden="true" /> : null}
-				</button>
-			</span>
-			{open ? (
-				<div ref={pop} id={ids.pop} className="start-pop" role="dialog" aria-labelledby={ids.label} tabIndex={-1} onKeyDown={onKeyDown}>
-					{children}
-				</div>
-			) : null}
-		</div>
-	);
-}
 
 /** "github.com/acme/web" for a pasted address: the chip's few words. */
 const shortAddress = (url: string) => url.replace(/^https:\/\//, "").replace(/\.git$/, "");

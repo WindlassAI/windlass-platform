@@ -13,9 +13,10 @@
  * heading says so and no row says a word of it.
  */
 import type { GithubId, ItemState, ItemSummary } from "@contract";
-import { useEffect, useId, useRef, useState } from "react";
-import { Chip, StartComposer } from "../components/StartComposer";
-import { ChevronIcon, Mark, WarnIcon } from "../components/Icons";
+import { useId, useState, type ReactNode } from "react";
+import { StartComposer } from "../components/StartComposer";
+import { ChevronIcon, FileIcon, Mark, RepoIcon, WarnIcon } from "../components/Icons";
+import { Menu, Pill, type MenuSpec } from "../components/ui";
 import { plural } from "../lib/format";
 import { repositoryName, workingCounts } from "../lib/repositories";
 import { ITEM_SOURCES, linkProps, navigate, type ItemSource } from "../lib/router";
@@ -57,12 +58,12 @@ function repositoriesOf(list: readonly ItemSummary[]): Array<{ id: GithubId; nam
 function Group({ id, name, items, now, reviewer, tone }: { id: string; name: string; items: ItemSummary[]; now: number; reviewer: boolean; tone?: "needs" }) {
 	if (items.length === 0) return null;
 	return (
-		<section className={`agent-group factory-group${tone === "needs" ? " needs-you" : ""}`} aria-labelledby={id}>
-			<h2 className="agent-group-head" id={id}>
+		<section className={`agent-group factory-group${tone === "needs" ? " needs-you factory-lane-needs" : ""}`} aria-labelledby={id}>
+			<h2 className="agent-group-head factory-lane-head" id={id}>
 				<span className="agent-group-name">{name}</span>
 				<span className="agent-group-count">{plural(items.length, "work item")}</span>
 			</h2>
-			<ul className="agents">
+			<ul className="agents factory-lane">
 				{items.map((item) => (
 					<ItemRow key={item.id} item={item} now={now} repository ci reviewer={reviewer} why={tone === "needs" ? item.question?.text : undefined} />
 				))}
@@ -71,24 +72,31 @@ function Group({ id, name, items, now, reviewer, tone }: { id: string; name: str
 	);
 }
 
-/** A filter's chip: its choices in its picker, "all" first. Choosing one changes the address. */
-function FilterChip({ label, value, choices, chosen, open, onToggle, onClose, onChoose }: { label: string; value: string; choices: Array<{ key: string; name: string }>; chosen: string | null; open: boolean; onToggle(): void; onClose(): void; onChoose(key: string | null): void }) {
-	const group = useId();
-	const heading = useId();
+/**
+ * A filter: a pill that says what it keeps, and its choices in a menu anchored to it ("all" first), a
+ * sheet on a phone. A long list of repositories gets a filter field. Choosing one changes the address.
+ */
+function FilterMenu({ name, label, icon, value, choices, chosen, onChoose }: { name: string; label: string; icon: ReactNode; value: string; choices: Array<{ key: string; name: string; note?: string }>; chosen: string | null; onChoose(key: string | null): void }) {
+	const spec: MenuSpec = {
+		label,
+		width: 264,
+		hints: false,
+		...(choices.length > 7 ? { filter: { placeholder: "Filter repositories…" } } : {}),
+		groups: [
+			{ id: "all", items: [{ id: "all", value: "", label: "all", textValue: "all", checked: chosen === null, onSelect: () => onChoose(null) }] },
+			{ id: "choices", items: choices.map((choice) => ({ id: choice.key, value: choice.key, label: choice.name, description: choice.note, checked: chosen === choice.key, onSelect: () => onChoose(choice.key) })) },
+		],
+	};
 	return (
-		<Chip label={label} value={value} open={open} changed={chosen !== null} onToggle={onToggle} onClose={onClose}>
-			<span className="label" id={heading}>
-				{label === "repo" ? "Repository" : "Filed from"}
-			</span>
-			<div className="start-options factory-options" role="radiogroup" aria-labelledby={heading}>
-				{[{ key: null, name: "all" }, ...choices].map((choice) => (
-					<label key={choice.key ?? "all"} className={`mode-option start-option${chosen === choice.key ? " start-option-chosen" : ""}`}>
-						<input className="segment-radio" type="radio" name={group} value={choice.key ?? ""} checked={chosen === choice.key} onChange={() => onChoose(choice.key)} />
-						<span className="mode-option-name">{choice.name}</span>
-					</label>
-				))}
-			</div>
-		</Chip>
+		<Menu
+			spec={spec}
+			trigger={(props) => (
+				<Pill {...props} icon={icon} data-picker={name} data-value={chosen ?? ""} dot={chosen === null ? null : "changed"} dotLabel={chosen === null ? undefined : "Filtered"} className="factory-filter" aria-label={`${label}: ${value}`}>
+					<span className="factory-filter-name">{name === "repository" ? "repo" : "from"}</span>
+					{value}
+				</Pill>
+			)}
+		/>
 	);
 }
 
@@ -128,21 +136,9 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	const now = useNow(15_000);
 	const limits = useFactoryLimits().value;
 	const reviewer = platform.info?.items?.reviewer !== false;
-	const [open, setOpen] = useState<"repo" | "from" | null>(null);
 	const [showEnded, setShowEnded] = useState(false);
-	const filtersRef = useRef<HTMLDivElement>(null);
 	const ended = useId();
 	const ids = { needs: useId(), ready: useId(), progress: useId(), drafts: useId(), ended: useId() };
-
-	// A press outside the filters closes the open one.
-	useEffect(() => {
-		if (open === null) return;
-		const onPointer = (event: PointerEvent) => {
-			if (!filtersRef.current?.contains(event.target as Node)) setOpen(null);
-		};
-		document.addEventListener("pointerdown", onPointer);
-		return () => document.removeEventListener("pointerdown", onPointer);
-	}, [open]);
 
 	const list = items.list;
 	const shown = list === null ? null : filterItems(list, filters);
@@ -151,52 +147,78 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	const filtered = filters.repository !== undefined || filters.from !== undefined;
 	const running = workingCounts(sessions ?? []).items;
 	const choose = (next: { repository?: GithubId; from?: ItemSource }) => {
-		setOpen(null);
 		navigate({ name: "factory", ...next }, { replace: true });
 	};
 	const chosenRepository = filters.repository === undefined ? null : (repositories.find((repository) => String(repository.id) === String(filters.repository)) ?? null);
 
-	// "Needs you" goes last, in the calm hue.
-	const counts = [
-		groups.progress.length > 0 ? `${groups.progress.length} in progress` : null,
-		groups.ready.length > 0 ? `${groups.ready.length} ready for you` : null,
-		groups.drafts.length > 0 ? plural(groups.drafts.length, "draft") : null,
-	].filter((part) => part !== null);
+	// What the page holds, as Helm's facts: the count in ink, each group with its dot; "Needs you" last, in its hue.
+	type Fact = { n: number; word: string; tone: "work" | "ready" | "draft" | "needs" };
+	const facts = ([
+		{ n: groups.progress.length, word: "in progress", tone: "work" },
+		{ n: groups.ready.length, word: "ready for you", tone: "ready" },
+		{ n: groups.drafts.length, word: groups.drafts.length === 1 ? "draft" : "drafts", tone: "draft" },
+		{ n: groups.needs.length, word: groups.needs.length === 1 ? "needs you" : "need you", tone: "needs" },
+	] satisfies Fact[]).filter((fact) => fact.n > 0);
+	const turnsUsed = limits && sessions !== null ? Math.min(running, limits.factoryTurns) : null;
 
 	return (
 		<main className="home factory">
-			<header className="home-head">
+			<header className="home-head factory-head">
 				<div>
-					<p className="eyebrow">
-						{shown === null ? "work items" : [plural(shown.length, "work item"), ...counts].join(" · ")}
-						{groups.needs.length > 0 ? (
-							<span className="eyebrow-waiting">
-								{" "}
-								· {groups.needs.length} {groups.needs.length === 1 ? "needs" : "need"} you
-							</span>
-						) : null}
-					</p>
 					<h1 className="display">Factory</h1>
-					<p className="home-account">
-						{limits ? (
+					<p className="eyebrow factory-facts">
+						{shown === null ? (
+							"work items"
+						) : (
 							<>
-								<span>
-									Up to {plural(limits.factoryTurns, "factory turn")} at once{sessions === null ? "" : `, ${running} running`}
+								<span className="factory-fact">
+									<strong>{shown.length}</strong> {shown.length === 1 ? "work item" : "work items"}
 								</span>
-								<span className="home-account-sep" aria-hidden="true">
-									·
-								</span>
-								<span>new items wait while {limits.reviewCap} are in review</span>
-								<span className="home-account-sep" aria-hidden="true">
-									·
-								</span>
+								{facts.map((fact) => (
+									<span key={fact.tone} className={`factory-fact factory-fact-${fact.tone}${fact.tone === "needs" ? " eyebrow-waiting" : ""}`}>
+										<span className="factory-fact-dot" aria-hidden="true" />
+										{fact.n} {fact.word}
+									</span>
+								))}
 							</>
-						) : null}
-						<a className="link" {...linkProps({ name: "usage" })}>
-							Usage
-						</a>
+						)}
 					</p>
 					{reviewer ? null : <p className="home-account factory-reviewer-off">No second review on this deployment: the verdict rests on CI and your checks.</p>}
+				</div>
+				<div className="home-account factory-turns">
+					{limits ? (
+						<>
+							<span className="factory-turns-line">
+								{turnsUsed !== null ? (
+									<span className="factory-meter" role="img" aria-label={`${turnsUsed} of ${limits.factoryTurns} factory turns in use`}>
+										{Array.from({ length: limits.factoryTurns }, (_, index) => (
+											<i key={index} className={index < turnsUsed ? "on" : undefined} />
+										))}
+									</span>
+								) : null}
+								{sessions === null ? (
+									<span>Up to {plural(limits.factoryTurns, "factory turn")} at once</span>
+								) : (
+									<span>
+										<span className="factory-turns-n">{running}</span> of {plural(limits.factoryTurns, "factory turn")} running
+									</span>
+								)}
+							</span>
+							<span className="factory-turns-line">
+								New items wait while {limits.reviewCap} are in review
+								<span className="home-account-sep" aria-hidden="true">
+									·
+								</span>
+								<a className="link factory-usage-link" {...linkProps({ name: "usage" })}>
+									Usage
+								</a>
+							</span>
+						</>
+					) : (
+						<a className="link factory-usage-link" {...linkProps({ name: "usage" })}>
+							Usage
+						</a>
+					)}
 				</div>
 			</header>
 
@@ -237,27 +259,30 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 							<span>{items.error} What is shown may be behind.</span>
 						</p>
 					) : null}
-					<div className="start-chips composer-selects factory-filters" ref={filtersRef} role="group" aria-label="Filters">
-						<FilterChip
-							label="repo"
+					<div className="factory-filters" role="group" aria-label="Filters">
+						<FilterMenu
+							name="repository"
+							label="Repository"
+							icon={<RepoIcon size={14} />}
 							value={chosenRepository?.name ?? (filters.repository === undefined ? "all" : "none of yours")}
-							choices={repositories.map((repository) => ({ key: String(repository.id), name: repository.name }))}
+							choices={repositories.map((repository) => ({ key: String(repository.id), name: repository.name, note: plural((list ?? []).filter((item) => String(item.repository.id) === String(repository.id)).length, "work item") }))}
 							chosen={filters.repository === undefined ? null : String(filters.repository)}
-							open={open === "repo"}
-							onToggle={() => setOpen((now) => (now === "repo" ? null : "repo"))}
-							onClose={() => setOpen(null)}
 							onChoose={(key) => choose({ repository: key === null ? undefined : (repositories.find((repository) => String(repository.id) === key)?.id ?? undefined), from: filters.from })}
 						/>
-						<FilterChip
-							label="from"
+						<FilterMenu
+							name="from"
+							label="Filed from"
+							icon={<FileIcon size={14} />}
 							value={filters.from ? SOURCE_WORD[filters.from] : "all"}
 							choices={ITEM_SOURCES.map((source) => ({ key: source, name: SOURCE_WORD[source] }))}
 							chosen={filters.from ?? null}
-							open={open === "from"}
-							onToggle={() => setOpen((now) => (now === "from" ? null : "from"))}
-							onClose={() => setOpen(null)}
 							onChoose={(key) => choose({ repository: filters.repository, from: ITEM_SOURCES.find((source) => source === key) })}
 						/>
+						{filtered ? (
+							<button type="button" className="link factory-clear" onClick={() => choose({})}>
+								Clear
+							</button>
+						) : null}
 					</div>
 					{shown && shown.length === 0 && filtered ? (
 						<p className="usage-empty factory-none">

@@ -12,7 +12,7 @@
  * start composer of an agent does, with the same cards (components/PlaceChoice.tsx): this platform, or one of the user's
  * machines. On a machine the server gives it that machine's first available sandbox.
  */
-import { type GithubId, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemState, type ItemSummary } from "@contract";
+import { type GithubId, type StepKind, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemState, type ItemSummary } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
@@ -182,6 +182,104 @@ export function ItemGlyph({ item }: { item: Pick<ItemSummary, "state" | "questio
 	}
 }
 
+/** What a wait is for, in a word or two beside the track. */
+const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { capacity: "for a turn", machine: "for its machine", review_cap: "review cap", ci: "CI", person: "for you", budget: "budget" };
+
+/**
+ * Where an item is on its way to you, as a track of short bars (Helm's steps): built, pushed, CI, the
+ * second review (where the deployment runs one), and yours. Read from the summary only: the bar it is
+ * at, whether it moves there now, and a word. Null for a draft and for an item that ended without
+ * reaching you.
+ */
+export function itemTrack(item: Pick<ItemSummary, "state" | "wait" | "pullRequest" | "review">, reviewer = true): { stages: string[]; at: number; now: boolean; word: string; tone: "work" | "wait" | "yours" | "done" } | null {
+	const stages = reviewer ? ["built", "pushed", "CI", "review", "yours"] : ["built", "pushed", "CI", "yours"];
+	const pushed = item.pullRequest !== null;
+	switch (item.state) {
+		case "queued":
+			return { stages, at: 0, now: false, word: "queued", tone: "wait" };
+		case "working":
+			return { stages, at: 1, now: true, word: pushed ? "fixing" : "building", tone: "work" };
+		case "waiting": {
+			const reason = item.wait?.reason;
+			if (reason === "ci") return { stages, at: 3, now: true, word: "CI", tone: "work" };
+			return { stages, at: pushed ? 2 : 0, now: false, word: reason ? WAIT_WORD[reason] : "waiting", tone: "wait" };
+		}
+		case "review":
+			if (reviewer && inSecondReview(item)) return { stages, at: 4, now: true, word: "review", tone: "work" };
+			return { stages, at: stages.length, now: false, word: "yours", tone: "yours" };
+		case "done":
+			return { stages, at: stages.length, now: false, word: "done", tone: "done" };
+		default:
+			return null;
+	}
+}
+
+/** The stage (from 1) a step of the blueprint belongs to: building and the checks, the push, CI and its fixes, the second review, the hand-over. */
+function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number {
+	switch (step) {
+		case "refine":
+		case "implement":
+		case "gate":
+			return 1;
+		case "publish":
+		case "conflict":
+			return 2;
+		case "ci":
+		case "ci_fix":
+			return 3;
+		case "review":
+			return reviewer ? 4 : 3;
+		case "handoff":
+		case "merged":
+			return stages;
+	}
+}
+
+/** The track beside a row: one bar a stage, the one it is at lit, and its word. Named for assistive technology in one phrase. */
+export function ItemTrack({ item, reviewer = true }: { item: Pick<ItemSummary, "state" | "wait" | "pullRequest" | "review">; reviewer?: boolean }) {
+	const track = itemTrack(item, reviewer);
+	if (track === null) return <span className="item-track item-track-none" aria-hidden="true" />;
+	const label = track.at === 0 ? `Not built yet: ${track.word}` : `${track.stages[Math.min(track.at, track.stages.length) - 1]}, ${Math.min(track.at, track.stages.length)} of ${track.stages.length}: ${track.word}`;
+	return (
+		<span className={`item-track item-track-${track.tone}`} role="img" aria-label={label} title={track.stages.join(" → ")}>
+			<span className="item-track-bars" aria-hidden="true">
+				{track.stages.map((stage, index) => (
+					<i key={stage} className={index < track.at - 1 || (index === track.at - 1 && !track.now) ? "f" : index === track.at - 1 ? "now" : undefined} />
+				))}
+			</span>
+			<span className="item-track-word" aria-hidden="true">
+				{track.word}
+			</span>
+		</span>
+	);
+}
+
+/**
+ * The item page's stepper: the same stages as a row's track, each named, the one it is at lit (and
+ * moving, while a turn or CI runs there). An ordered list, so a screen reader reads where it is.
+ */
+export function ItemStages({ item, reviewer = true, step = null }: { item: Pick<ItemSummary, "state" | "wait" | "pullRequest" | "review">; reviewer?: boolean; step?: StepKind | null }) {
+	const summary = itemTrack(item, reviewer);
+	if (summary === null) return null;
+	// The page knows the step the run is at, which the summary does not: a working or waiting item stands at that step's stage.
+	const at = step !== null && (item.state === "working" || item.state === "waiting") ? stageOfStep(step, summary.stages.length, reviewer) : null;
+	const track = at === null ? summary : { ...summary, at };
+	return (
+		<ol className={`item-stages item-stages-${track.tone}`} aria-label="Where it is on its way to you">
+			{track.stages.map((stage, index) => {
+				const done = index < track.at - 1 || (index === track.at - 1 && !track.now);
+				const now = index === track.at - 1 && track.now;
+				return (
+					<li key={stage} className={`item-stage${done ? " item-stage-done" : ""}${now ? " item-stage-now" : ""}`} aria-current={now || (track.at === index + 1 && !track.now) ? "step" : undefined}>
+						<span className="item-stage-bar" aria-hidden="true" />
+						<span className="item-stage-name">{stage}</span>
+					</li>
+				);
+			})}
+		</ol>
+	);
+}
+
 /** Why the item is where it is, in a line: the server's sentence while it waits, and what ended it. */
 function rowWhy(item: ItemSummary): string | null {
 	if (item.state === "waiting" && item.wait) return item.wait.sentence;
@@ -202,7 +300,7 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 	const asks = item.question !== null;
 	const line = why ?? rowWhy(item);
 	return (
-		<li className={`agent-row item-row${item.state === "working" ? " agent-row-active" : ""}`}>
+		<li className={`agent-row item-row item-row-is-${item.state}${asks ? " item-row-asks" : ""}${item.state === "working" ? " agent-row-active" : ""}`}>
 			<span className="agent-glyph">
 				<ItemGlyph item={item} />
 			</span>
@@ -252,6 +350,7 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 				{asks ? <StatusBadge status="waiting" /> : null}
 				<ItemStanding item={item} reviewer={reviewer} />
 			</div>
+			<ItemTrack item={item} reviewer={reviewer} />
 			<time className="agent-time" dateTime={new Date(item.updatedAt).toISOString()} title={absoluteTime(item.updatedAt)}>
 				{relativeTime(item.updatedAt, now)}
 			</time>
