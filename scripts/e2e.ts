@@ -18,13 +18,14 @@
 
 import { imageId } from "./check-image.js";
 import { localListeners } from "./check-listeners.js";
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createWriteStream, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { createClient, type Registry } from "../server/src/client.js";
 import { GithubStandin } from "./github-standin.js";
 import {
@@ -594,10 +595,10 @@ async function identityChecks(client: Client, server: Server) {
 		const { issueServiceToken } = await import("../server/src/tokens.js");
 		await refused(() => userOf(auth).internalRevokeTokens(), "forbidden");
 		await refused(() => client.user.get([uid], { params: { token: issueServiceToken("revoke:other") } }).internalRevokeTokens(), "forbidden");
-		const result = execFileSync(process.execPath, ["--import", "tsx", "src/revoke-user-tokens.ts", uid], {
+		const { stdout } = await promisify(execFile)(process.execPath, ["--import", "tsx", "src/revoke-user-tokens.ts", uid], {
 			cwd: SERVER_DIR, env: { ...process.env, WLP_SECRET: server.secret, RIVET_ENGINE: ENDPOINT }, encoding: "utf8", timeout: 30_000,
 		});
-		assert(result.includes(uid), "the revoke command did not acknowledge its uid");
+		assert(stdout.includes(uid), "the revoke command did not acknowledge its uid");
 		await server.stop();
 		await server.start({ WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
 		await refused(() => userOf(auth).me(), "invalid_token");
