@@ -110,6 +110,6 @@ export function readE2bSettings(env: NodeJS.ProcessEnv = process.env): E2bSettin
 /** The settings of a server or a script that talks to E2B. Throws, with what to set, when there is no API key. */
 export function readE2bConfig(env: NodeJS.ProcessEnv = process.env): E2bConfig {
 	const apiKey = (env.E2B_API_KEY ?? "").trim();
-	if (apiKey === "") throw new Error('E2B_API_KEY is not set. The E2B provider needs an API key of the E2B account that holds the template (https://e2b.dev/dashboard, "API Keys"); see README, "E2B"');
+	if (apiKey === "") throw new Error('E2B_API_KEY is not set. The E2B provider needs an API key of the E2B account that holds the template (https://e2b.dev/dashboard, "API Keys"); see docs/operating.md, "E2B"');
 	return { apiKey, ...readE2bSettings(env) };
 }

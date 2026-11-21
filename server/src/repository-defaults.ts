@@ -1,6 +1,6 @@
 /**
  * A repository's defaults for new sessions: the sandbox profile and the model a session on it starts
- * with, where its user said so (README, "A repository's page").
+ * with, where its user said so (docs/github-and-repositories.md, "A repository's page").
  *
  * Whose they are. The user's, kept in their `user` actor, one row per repository of their GitHub
  * connection, under the key the setup command and secrets use. Factory screenshots need an explicit

@@ -52,7 +52,7 @@ No. A saved value is never shown again. Keep your own copy.
 
 ## Can I run my own platform?
 
-Yes. The platform runs on one Linux host with Docker Compose. The [self-host guide](https://github.com/parthg1901/windlass-platform/blob/main/deploy/selfhost/README.md) is written for whoever runs it: how to bring the stack up, route it, back it up and update it. Agents never run on the platform host itself. Pair a machine of yours, or use hosted sandboxes, for them.
+Yes. The platform runs on one Linux host with Docker Compose. The [self-host guide](https://github.com/WindlassAI/windlass-platform/blob/main/deploy/selfhost/README.md) is written for whoever runs it: how to bring the stack up, route it, back it up and update it. Agents never run on the platform host itself. Pair a machine of yours, or use hosted sandboxes, for them.
 
 ## What license is the code under?
 
@@ -61,7 +61,7 @@ Two licenses, split by where the code runs:
 - **MIT** for the code that runs on your machine: the runner, the sandbox images and helpers, and the protocol and sandbox layer they share with the server.
 - **FSL-1.1-MIT** for everything else: the server, the web app, the Factory, the deployment kit and the scripts. You may read, use, change and self-host it for yourself or your organization. You may not offer it as a competing commercial product or service. Each version becomes MIT two years after it is released.
 
-The repository's [NOTICE.md](https://github.com/parthg1901/windlass-platform/blob/main/NOTICE.md) lists which paths are which. The license texts decide, not this summary.
+The repository's [NOTICE.md](https://github.com/WindlassAI/windlass-platform/blob/main/NOTICE.md) lists which paths are which. The license texts decide, not this summary.
 
 ## Where do I report a problem?
 

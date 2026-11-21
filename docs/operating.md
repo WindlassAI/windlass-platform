@@ -1,0 +1,357 @@
+# Operating
+
+How to run Windlass Platform beyond a laptop: several servers on one engine, the public HTTP rate limits,
+E2B sandboxes, the GitHub App, and the bucket that keeps a copy of each agent's memory. Every variable is
+listed in [configuration.md](configuration.md). Users' own machines are in [machines.md](machines.md).
+
+For a single Linux host, use the Docker Compose kit in [`deploy/selfhost/`](../deploy/selfhost/README.md): it
+brings up the engine, the server with the web app, backups and a synthetic load test, behind a Cloudflare
+Tunnel or another HTTPS front.
+
+
+## Running on several servers
+
+Every server is one Rivet node. With `RIVET_ENDPOINT` set it starts no engine of its own: it opens an outbound
+connection to the one engine all servers share, and that engine places each actor on one of them, wakes it on
+another when its server stops, keeps every actor's SQLite data and runs every actor's schedule. Nothing of a
+user or a session is kept on a server. Browsers reach the actors through the engine's gateway, never through a
+server, and so do the machines' runners once they are paired. A server's own port serves `GET /platform/info`,
+`GET /platform/connection`, `/health`, GitHub's callback (`GET /github/callback`), the three routes a
+machine's runner calls (`POST /runner/pair`, `POST /runner/pair/poll`, `POST /runner/connection`) where
+machines are on, the GitHub webhook (`POST /github/webhook`) where configured, and the API (`POST /api/items`, `GET /api/items/<id>`) where work items are, and any
+server answers each.
+
+What every server needs, the same on all of them:
+
+| Variable | Value |
+|---|---|
+| `RIVET_ENDPOINT` | `https://<namespace>:<token>@<engine host>`: the engine as the server reaches it, the namespace the actors live in, and the token a node joins with. `RIVET_NAMESPACE` and `RIVET_TOKEN` may carry the last two instead. A Rivet Cloud cluster sets these on its node itself |
+| `RIVET_POOL` | the node pool to join (default `default`); the engine refuses a node whose pool does not exist |
+| `RIVET_NODE_VERSION` | a number that goes up with every deploy, so that new and woken actors go to the newest servers |
+| `NODE_ENV` | `production`: RivetKit then never starts an engine of its own |
+| `WLP_SECRET` | one secret, at least 16 characters (`openssl rand -hex 32`), the same on every server: a token one server signs must pass on all. A server with `RIVET_ENDPOINT` and no `WLP_SECRET` stops with `[wlp] WLP_SECRET is not set: ...` and nothing else |
+| `WLP_SANDBOX` | `e2b`, or `fake` where agents run only on users' machines (as the self-host kit does). Docker sandboxes exist on the machine that made them, and a session's actor can wake on any server, so the Docker layer only works with one server; with a remote engine the server refuses it unless `WLP_ALLOW_DOCKER_HOSTED=1` |
+| `WLP_WEB_ORIGINS` | the web app's address |
+| `WLP_PUBLIC_ENDPOINT` | the engine's address for browsers, with no namespace and no token in it. It need not be the address in `RIVET_ENDPOINT`: on a cluster that one is internal to the node |
+| `RIVET_ADMIN_TOKEN` | the engine's admin token, a secret, where the engine asks browsers for a token ("What browsers connect with" below). With it set, a server without `WLP_PUBLIC_ENDPOINT` stops with `[wlp] WLP_PUBLIC_ENDPOINT is not set: ...` |
+| `WLP_CONNECTION_TOKEN_TTL_MS` | optional: how long a browser's token lasts (default one hour, at most 24) |
+| `WLP_WINDLASS_BIN` | a Windlass executable on the server, for the sign-in commands ([Sign-ins](architecture.md#sign-ins)). `server/Dockerfile` puts one at `/usr/local/bin/windlass` and sets this |
+| `WLP_SIGNIN_KEY` | optional; when set, the same on every server: what the key that encrypts sign-ins is derived from, in place of `WLP_SECRET` |
+| `WLP_DEMO`, `WLP_TURN_TIMEOUT_MS`, `WLP_QUESTION_TIMEOUT_MS`, `WLP_IDLE_SUSPEND_MS`, `WLP_IDLE_DESTROY_MS` | the same values everywhere: a session's limits are applied by whichever server holds its actor |
+| `WLP_DAILY_SANDBOX_SECONDS`, `WLP_MAX_KEPT_SANDBOXES`, `WLP_USAGE_HOLD_SECONDS` | the same values everywhere: a user's limits are applied by whichever server holds their `user` actor ([Usage and limits](architecture.md#usage-and-limits)) |
+| `WLP_FACTORY_*` | the same values everywhere: the limits of work items and of a user's running turns are applied by whichever server holds the user's actor ([Work items](work-items.md)) |
+| `WLP_ITEMS` | the same value everywhere, where users may file work items ([Work items](work-items.md)): a server without it answers the API's routes as unknown ones |
+| `WLP_MACHINES`, `WLP_PUBLIC_URL`, `WLP_RUNNER_IMAGE` | the same values everywhere, where users may pair machines of their own ([Machines of your own](machines.md)). `WLP_PUBLIC_URL` is required then: it is the address runners are given |
+| `WLP_HTTP_PORT` or `PORT` | the port the load balancer sends `/platform/info` to |
+| `WLP_GITHUB_*`, `WLP_BUCKET_*`, `E2B_API_KEY`, `WLP_E2B_*` | the same values everywhere, where used: see [configuration.md](configuration.md) |
+
+**What browsers connect with.** An engine that is shared is one that checks who connects. A Rivet Cloud
+cluster is such an engine, run for one customer, and it has one credential: an admin token, which may do
+everything in every namespace and so stays on the servers. It has none of the fixed tokens of a Rivet Cloud
+project (`pk_...`, `sk_...`, `ck_...`); those are another product's. What a browser holds is a scoped token: a
+JWT the engine issues when it is asked with the admin token, good for one namespace, for the operations it
+names, and for a limited time.
+
+The servers issue it. `GET /platform/connection`, under the same origin check as `/platform/info`, answers
+with the engine's address for browsers (`WLP_PUBLIC_ENDPOINT`), the namespace, and a token with its expiry. The
+token may create, list and read actors and call them through the gateway (`actor`: `create`, `list`, `read`;
+`actor_gateway`: `read`, `create`), which is what the web app does, and nothing else: no deleting, no nodes, no
+pools. It says only that its holder is a client of this deployment. Who the user is, and what is theirs, is
+still decided by the platform's own token in every actor. A server asks the engine once and hands the same
+token to every browser until half of its life is gone, so the engine is asked about twice an hour by each
+server, and a browser always gets one that is good for half an hour or more. Each server keeps a token of its
+own; all of them are good at the one engine.
+
+The web app is therefore built with one address, `VITE_WLP_API`: the address in front of the servers' HTTP
+port. It asks there for its connection when it starts, and has no token and no engine address built in. When
+its token runs out it asks again: the next request or reconnect is made with the new one, and nothing is
+reloaded. A feed that is open stays open, since the engine checks a token when a connection is opened and not
+afterwards. While the servers cannot be reached to renew it, a feed shows that it is reconnecting and goes on
+when they can.
+
+Shared by all servers: the engine with the actors' data and schedules, `WLP_SECRET`, the admin token, and the
+sandbox provider. Kept by each server for itself, and rebuilt when it is asked again: the cached platform
+information, the token it hands browsers, and the sandbox layer's own caches. Still on one machine: the Docker
+layer. The ChatGPT sign-ins are not: they are in
+the users' actors, and every server needs `WLP_WINDLASS_BIN` (and the same `WLP_SIGNIN_KEY`, when it is set) to
+run Windlass's sign-in commands ([Sign-ins](architecture.md#sign-ins)).
+
+**On a Rivet Cloud cluster.** A cluster is an engine run by Rivet with nodes run by Rivet: the server is built
+into an image and runs on the cluster's own node, which sets the connection and pool variables itself. From the
+repository root:
+
+```sh
+rivet cluster secret set WLP_SECRET           # prompts for the value
+rivet cluster secret set RIVET_ADMIN_TOKEN    # the cluster's admin token
+rivet cluster secret set E2B_API_KEY          # and whatever else the E2B layer reads
+server/stage-windlass.sh                      # the Windlass builds the image takes its own from
+rivet deploy --cluster <cluster> --dockerfile server/Dockerfile --build-context . \
+  --secret WLP_SECRET --secret RIVET_ADMIN_TOKEN --secret E2B_API_KEY \
+  --env WLP_SANDBOX=e2b --env WLP_WEB_ORIGINS=https://<name>.onrivet.dev \
+  --env WLP_PUBLIC_ENDPOINT=https://<name>-api.onrivet.dev
+```
+
+To let users pair machines of their own, add `--env WLP_MACHINES=1 --env WLP_PUBLIC_URL=https://<name>.onrivet.dev`,
+and `--env WLP_RUNNER_IMAGE=<name>@sha256:<digest>` once a runner image is published. With `WLP_MACHINES=1`
+and no `WLP_PUBLIC_URL`, a server on a remote engine does not start.
+
+The CLI builds the image for linux/amd64 (on an arm64 machine too: the image's build runs nothing of the other
+architecture) and prints the pool's public address, `https://<name>.onrivet.dev`, which serves the port in
+`PORT`. The image holds the web app as well and serves it there (`WLP_WEB_DIR`, `server/src/web.ts`), so that
+address is the platform: the web app is built with nothing set and asks the address it was loaded from, and
+`WLP_WEB_ORIGINS` names that same address. A web app hosted elsewhere is built with `VITE_WLP_API` set to it. The
+cluster's engine answers browsers at `https://<name>-api.onrivet.dev`, which is `WLP_PUBLIC_ENDPOINT`; the
+address the node itself is given in `RIVET_ENDPOINT` is an internal one. The server asks the engine for its
+first token when it starts, and says so if it is refused (`[wlp] WARNING: Browsers cannot connect: ...`). There
+is no Docker on a cluster's node, so `WLP_SANDBOX=e2b` is required there. The cluster rolls its pool from
+one build to the next itself; if the server says `node version defaulted` when it starts there, add
+`--env RIVET_NODE_VERSION=<n>`, a number that goes up with every deploy. Each actor creation grant binds its actor kind and key. The server logs refused grants as `[wlp] actor.create_refused`.
+
+**On servers of your own.** Each runs the same image, or `cd server && npx tsx src/index.ts`, with the
+variables above, behind a load balancer for port 6440. The Rivet docs describe such nodes joining an engine by
+`RIVET_ENDPOINT` and a secret token; whether a Rivet Cloud cluster accepts nodes of your own beside its hosted
+one, they do not say. An engine of your own that has an admin token (`auth.admin_token`) is told to the servers
+as a cluster's is, with `RIVET_ADMIN_TOKEN` and `WLP_PUBLIC_ENDPOINT`; one that lets everybody in needs neither,
+and the web app is then built with its address in `VITE_WLP_ENDPOINT`.
+
+## Public HTTP rate limits
+
+RivetKit gives these HTTP routes a web `Request` with ordinary headers and no socket peer address.
+With `WLP_CLIENT_IP_HEADER` unset (the default, including on Rivet Cloud), the server skips
+all per-address limits. Client-supplied `Forwarded`, `X-Forwarded-For` and `X-Real-IP` have
+no authority. With a trusted ingress, set `WLP_CLIENT_IP_HEADER` to the header it writes,
+for example `x-ingress-ip`. Every path to the node must go through an ingress that strips the
+caller's value and writes one verified IP. When configured, missing values, lists and malformed
+addresses share the unknown-address bucket. Equivalent IPv6 spellings and IPv4-mapped IPv6
+addresses identify the same client as their canonical addresses.
+
+| Route and setting | Without a trusted header | With a trusted header |
+|---|---|---|
+| Items API requests, `WLP_API_ADDRESS_PER_MINUTE` (240/min) | No address limit | Each node limits requests per address before body parsing or actor lookup |
+| Items API authorization, `WLP_API_TOKEN_PER_MINUTE` (60/UTC minute) | Each authorized token has one allowance across routes, scopes and nodes, stored in the owning user's database | Same per-token limit |
+| Items API invalid tokens, `WLP_API_FAILURES_PER_MINUTE` (12/min) | Each node counts refusals only after it identifies a missing, malformed, unknown, revoked or out-of-scope token. Excess refusals receive 429. Valid tokens can still proceed | Each node reserves a slot per address before lookup. Concurrent calls wait for pending results. Successful checks release their slots. Once the address exhausts the failure allowance, all its items API calls receive 429 until reset |
+| `POST /github/webhook`, `WLP_WEBHOOK_REFUSALS_PER_MINUTE` (30/min) | Each node counts refused webhook requests, including wrong methods, across all callers | Each node counts those refusals per address. In both modes an accepted delivery bypasses the refusal limit |
+| `POST /runner/pair` | The shared pairing directory allows 3 starts per canonical public key and 16 per secret-derived bucket in 10 minutes, across 64 buckets | Same pairing limits |
+| `POST /runner/pair/poll`, `WLP_RUNNER_POLLS_PER_MINUTE` (240/min) | No poll limit | Each node limits polls per address before the pairing lookup |
+| `POST /runner/connection`, `WLP_RUNNER_CONNECTIONS_PER_MINUTE` (120/min) | Each active machine has its own allowance per UTC minute, stored by the machine actor and charged only after signature verification. Each node also has a separate allowance at the same rate for malformed bodies, unknown machines and bad signatures | Each node limits attempts per address before looking up the machine or checking its signature |
+
+The items limits cover item creation, item reads and attachment downloads. Use the same settings
+on every node. Each per-minute setting accepts a whole number from 1 to 1,000,000. Node-local
+windows last 60 seconds and reset on restart. With *N* nodes a caller can spend up to *N*
+node-local allowances in the same period. When address limits are enabled, clients behind one
+NAT share an allowance. Each address table keeps up to 4,096 keys plus one shared overflow
+bucket per window.
+
+An exhausted limit returns HTTP 429 with a JSON `message` and an integer `Retry-After` in
+seconds. Each node logs one `github.webhook.refused` summary one minute after the first refusal,
+including total refusals, bad signatures and how many received 429. Quiet minutes produce no
+line. The summary contains only counts. RivetKit enforces its 3 MiB body cap before routing.
+
+
+## E2B
+
+With `WLP_SANDBOX=e2b` a session's sandbox is a microVM at [E2B](https://e2b.dev) instead of a container on the
+server's machine, so any server of a deployment reaches any session's sandbox. A deployment has one provider:
+a server on E2B offers the E2B profiles and no Docker profile of its own (a user's machine offers its own
+two, [Machines of your own](machines.md)). `scripts/e2b-check.ts` tries it against the real
+service; it first passed there on 2026-11-15.
+
+```sh
+E2B_API_KEY=e2b_... sandbox/e2b/build.sh                            # builds the template windlass-platform-sandbox at E2B, with the released x86_64 Windlass
+cd server && E2B_API_KEY=e2b_... npx tsx ../scripts/e2b-check.ts    # one sandbox, one scripted turn, about two minutes
+WLP_SANDBOX=e2b E2B_API_KEY=e2b_... WLP_WINDLASS_BIN=/path/to/windlass npx tsx src/index.ts
+```
+
+The default template is `windlass-platform-sandbox`. Build `windlass-platform-sandbox-shots` with
+`WLP_SANDBOX_VARIANT=shots sandbox/e2b/build.sh` for repositories that enable screenshots.
+`WLP_E2B_TEMPLATE` and `WLP_E2B_SHOTS_TEMPLATE` override their respective names for both build and server.
+Use `--print` with either variant to inspect it locally.
+
+`sandbox/e2b/build.sh --print` shows what E2B would be asked to build and needs no key. The template is made
+from the Docker image's own `sandbox/Dockerfile`, so a microVM has what a container has: the user `agent`,
+`/workspace`, Windlass's data directory, `wlp-run`, git, bubblewrap and Windlass. A server on E2B needs no
+Docker: Windlass's sign-in commands run from `WLP_WINDLASS_BIN`, an executable for the server's own machine.
+E2B's SDK (`e2b` 2.63.0, loaded only by a server on E2B) needs Node 22.19 or later.
+
+- **What the profile promises.** Whether Windlass's bubblewrap sandbox works inside a deployment's microVMs is
+  for the check to show (it worked in the template on 2026-11-15), so by default the profile promises nothing
+  of it: commands may have network and may read the session's access token. Windlass runs with
+  `--approval auto` and probes bubblewrap itself: where the probe passes it sandboxes commands, where it fails
+  it asks before every command. The check prints which (`ANSWER:`).
+  If bubblewrap works, `WLP_E2B_WINDLASS_SANDBOX=1` makes the profile promise what the first Docker profile
+  promises, and every new sandbox is held to it: one in which the probe fails is removed and not handed out.
+- **A second profile: E2B, microVM only** (`e2b-open`), offered only where the servers run with
+  `WLP_E2B_OPEN_PROFILE=1`; without it the picker lists it as not available, and a server refuses to launch a
+  session with it whatever the browser sends. Windlass runs with `--approval full` and sandboxes no command:
+  commands run directly in the microVM, with its network and a writable home directory (package installs,
+  tools that write `~/.config`), and nothing asks first. What that gives up: a command can reach any host, and
+  can read the session's access token, which is in a file in the microVM while a turn runs (the sign-in is
+  never in the microVM, in this profile too). One thing stays: once something from the web or an MCP server is
+  in the conversation, Windlass's taint rule sandboxes commands again and asks before network or a write
+  outside the workspace. A sandboxed command then finds a home of the session's own ([Sandboxes](architecture.md#sandbox-profiles) above): what
+  the commands before it left in the home is read-only there, and what it adds is kept apart for the session.
+  The user chooses per session; the E2B profile above stays the picker's default. A
+  sandbox's profile is in its metadata (`wlp_profile`), so every server runs a session's Windlass the same way;
+  sessions launched with `e2b-open` keep it after the flag is turned off, and only new ones are refused.
+- **A turn** is the same process as in a container, `wlp-run exec <tag> windlass acp`, started through E2B's
+  command API; the access token file is written the same way, the token on the command's standard input.
+- **Windlass's data directory is on the microVM's own disk**, not on a volume (E2B's volumes are a private beta
+  in which file locks can hang, and Windlass keeps SQLite databases there). A session's Windlass session lives
+  and ends with its sandbox, and no session sees another's files, also not the token file of the same user's
+  other turn. A pause keeps it. When a sandbox is gone (killed, or lost), the session gets a new one with an
+  empty workspace. With a bucket configured, the copy of Windlass's session is put into the new sandbox and
+  the agent goes on where it was ([The agent's memory outlives its sandbox](architecture.md#the-agents-memory-outlives-its-sandbox) below); without one it starts a
+  new Windlass session, and the timeline says so. On Docker the data directory is a volume of the user's and
+  outlives a sandbox.
+
+Using little of E2B is built in. The free Hobby plan runs on a one-time credit of $100 and allows 10 sandboxes
+at once and one hour of running without a pause; every default is well inside that.
+
+| What | How | Default |
+|---|---|---|
+| Size of a sandbox | the template's, set when it is built: `WLP_E2B_CPU`, `WLP_E2B_MEMORY_MB` for `sandbox/e2b/build.sh` | 1 vCPU, 1024 MiB |
+| Sandboxes running at once | `WLP_E2B_MAX_RUNNING`, counted from E2B's own list of the deployment's running sandboxes before one is created or resumed, and again after, so it holds across servers. At the cap the user reads: "This deployment runs at most 3 sandboxes at the same time, and all of them are in use. Try again in a few minutes; an agent's sandbox is freed shortly after its turn has ended." A work item's turn is not refused at the cap: it waits, and is tried again after 30 seconds, then twice as long each time up to five minutes ([Work items](work-items.md)) | 3 |
+| A sandbox nobody uses | its own timeout at E2B, `WLP_E2B_IDLE_TIMEOUT_MS`: E2B pauses it by itself that long after the last use | 2 minutes |
+| A sandbox whose server died | while a turn runs, the server pushes the timeout out to `WLP_E2B_TURN_LEASE_MS` every third of it; a dead server stops doing so, and E2B pauses the sandbox | 3 minutes |
+| Suspend and destroy | `suspend` pauses: files and memory are kept, nothing is billed, and E2B keeps a paused sandbox without limit. `destroy` kills. With `WLP_E2B_PAUSE=0`, for an account that cannot pause, both the timeout and `suspend` kill, and the session's files and Windlass session are lost each time | pause |
+| The plan's hour | a sandbox with too little left of `WLP_E2B_MAX_RUNTIME_MS` for a turn is paused and resumed before the turn starts, which starts the hour again | 1 hour |
+| Finding them again | every sandbox carries `wlp_deployment` (`WLP_E2B_DEPLOYMENT`), `wlp_uid`, `wlp_session` and `wlp_profile` in its metadata; only sandboxes with the deployment's mark are ever touched | `default` |
+
+A sandbox of the default size costs about $0.0000185 a second while it runs ($0.067 an hour) and nothing while
+it is paused, by E2B's published prices; with the default cap a deployment cannot spend more than about $0.20
+an hour. Each time a sandbox stops running through a server, a line says how long it ran and what that costs:
+
+```
+[wlp] e2b.sandbox.paused id=... uid=... session=...: it ran 182 s at 1 vCPU and 1024 MiB, $0.0034 (estimated)
+```
+
+Every such number is an estimate: the prices are in one file (`server/src/sandbox/e2b/pricing.ts`), the time is
+the server's own measurement, and E2B's usage page has what was billed.
+
+```sh
+cd server && E2B_API_KEY=e2b_... npx tsx ../scripts/e2b-cleanup.ts            # lists the deployment's sandboxes; changes nothing
+cd server && E2B_API_KEY=e2b_... npx tsx ../scripts/e2b-cleanup.ts --kill     # removes them, paused ones too
+cd server && npx tsx ../scripts/e2b-provider-test.ts                         # the provider on an in-memory E2B: no account, nothing sent
+cd server && npx tsx ../scripts/e2b-provider-test.ts --docker
+                                                                             # and real scripted turns through it, in local containers
+```
+
+The provider's logic is written against a small interface of its own (`server/src/sandbox/e2b/client.ts`);
+`sdk.ts` maps it to E2B's SDK and `fake.ts` keeps it in memory for the tests. Limits of this provider: a paused
+sandbox is kept at E2B, at no charge, until its session is deleted, the session's sandbox is removed for not
+being used (`WLP_IDLE_DESTROY_MS`) or by its user on the Usage page ([Usage and limits](architecture.md#usage-and-limits)), or `e2b-cleanup.ts`
+removes it; opening a session's changes in the browser resumes its sandbox for the length of the idle timeout;
+and a turn whose command stream to E2B breaks ends as a failed turn, though the sandbox goes on until its
+timeout.
+
+## The GitHub App
+
+What the platform does with GitHub, and why each permission is needed, is in
+[github-and-repositories.md](github-and-repositories.md). Register one at GitHub (Settings, Developer settings, GitHub Apps, New GitHub App), for the address the
+platform is served at, `https://<name>.onrivet.dev` below:
+
+| Setting | Value |
+|---|---|
+| GitHub App name | any; its address `https://github.com/apps/<slug>` gives `WLP_GITHUB_APP_SLUG` |
+| Homepage URL | `https://<name>.onrivet.dev` |
+| Callback URL | `https://<name>.onrivet.dev/github/callback`, and no other |
+| Expire user authorization tokens | selected |
+| Request user authorization (OAuth) during installation | selected. GitHub then sends the browser to the callback URL after an installation too, with a code |
+| Setup URL | none. GitHub takes none while the setting above is selected |
+| Enable Device Flow | not selected |
+| Webhook | "Active" selected where work items should hear from GitHub at once (issue intake, CI, pull request state): URL `https://<name>.onrivet.dev/github/webhook`, and a secret of at least 32 characters, which is `WLP_GITHUB_WEBHOOK_SECRET`. Without a webhook, items poll GitHub and nothing is taken in from issues |
+| Subscribe to events | Issues, Issue comment, Check run, Check suite, Status, Pull request (installation events come by themselves) |
+| Repository permissions | Contents: read and write. Pull requests: read and write. Issues: read and write. Checks: read-only. Commit statuses: read-only. Actions: read-only. Metadata: read-only (GitHub adds it). Nothing else |
+| Organization and account permissions | none |
+| Where can this GitHub App be installed? | Choose "Only on this account" for a single-owner deployment. Choose "Any account" if other accounts need to install the App. |
+
+Deliveries are checked against the secret (`X-Hub-Signature-256`) and kept in an inbox actor keyed by their
+delivery id, so a redelivery is taken once. GitHub does not redeliver failed deliveries by itself; the
+platform sweeps the recent ones and asks GitHub to redeliver what it missed, within GitHub's three days
+(`server/src/actors/github-inbox.ts`). To rotate the secret, set the new one as
+`WLP_GITHUB_WEBHOOK_SECRET` and the old one as `WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS` until GitHub uses the
+new one. With a webhook, `WLP_GITHUB_POLL_FALLBACK=1` keeps polling as a fallback at a slower pace: CI every
+five minutes (ten while the user has more than ten items open) and an item's pull request every 30 minutes,
+in place of every minute (three) and every ten minutes.
+
+When webhooks are active, Windlass acknowledges ordinary deliveries from installations outside every
+platform user's GitHub connection with HTTP 202 and `{"taken":false}`. It stores no delivery and skips
+that installation during redelivery sweeps. The endpoint still accepts `installation` and
+`installation_repositories` events so it can track changes to links.
+
+Then, on the app's page: note the App ID and the Client ID, generate a client secret, and generate a private
+key (a `.pem` file is downloaded).
+
+Issues is for filing work items from GitHub issues and commenting on them. The three read-only permissions are for work items ([work-items.md](work-items.md)), which read the CI of a commit the
+platform pushed: its check runs (Checks), its commit statuses (Commit statuses) and the log of a GitHub
+Actions job that failed (Actions). Nothing else uses them, and everything else works without them. An app
+that was registered with the first two only is changed on its page, under Permissions and events; GitHub
+then asks the owner of each account the app is installed on to accept the new permissions. Until an
+installation has accepted them GitHub refuses the platform its CI, and an item on that installation's
+repositories is handed over without it: its verdict says that CI was not read, that the app needs read
+access to Checks, Commit statuses and Actions, accepted on the installation, and that the pull request's
+own page shows the checks.
+
+| Variable | Effect |
+|---|---|
+| `WLP_GITHUB_APP_ID` | the App ID, a number |
+| `WLP_GITHUB_APP_SLUG` | the app's name as its address has it |
+| `WLP_GITHUB_CLIENT_ID` | the Client ID (`Iv23...`) |
+| `WLP_GITHUB_CLIENT_SECRET` | the client secret. A secret |
+| `WLP_GITHUB_PRIVATE_KEY` | the private key. A secret. The file as it is, or with `\n` for its line breaks, or in base64 (`base64 -w0 <file>.pem`), which is the form for a secret store that takes one line |
+| `WLP_GITHUB_API_URL`, `WLP_GITHUB_URL` | GitHub's API and GitHub itself (defaults `https://api.github.com`, `https://github.com`); for GitHub Enterprise Server (`https://<host>/api/v3`), and for the checks' stand-in |
+| `WLP_GITHUB_WEBHOOK_SECRET`, `WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS` | the webhook's secret, at least 32 characters, and the one before it while it is rotated. A secret |
+| `WLP_GITHUB_POLL_FALLBACK` | `1`: poll as a fallback beside the webhook; requires `WLP_GITHUB_WEBHOOK_SECRET` |
+
+All five of the first must be set, the same on every server. With some of them missing the feature is off and
+the server says which (`[wlp] WARNING: GitHub is off: ...`). On a Rivet Cloud cluster the two secrets are
+cluster secrets and the rest plain variables. A cluster's secret holds at most 1024 bytes and the key in base64
+is over two thousand, so it goes in as pieces, `WLP_GITHUB_PRIVATE_KEY_1`, `_2`, ..., which the server puts
+together in order:
+
+```sh
+rivet cluster secret set WLP_GITHUB_CLIENT_SECRET
+base64 -w0 <file>.pem | fold -w 1000 | { n=1; while read -r piece; do
+  printf %s "$piece" | rivet cluster secret set "WLP_GITHUB_PRIVATE_KEY_$n" --yes; n=$((n + 1)); done; }
+rivet deploy ... --secret WLP_GITHUB_CLIENT_SECRET \
+  --secret WLP_GITHUB_PRIVATE_KEY_1 --secret WLP_GITHUB_PRIVATE_KEY_2 --secret WLP_GITHUB_PRIVATE_KEY_3 \
+  --env WLP_GITHUB_APP_ID=<id> --env WLP_GITHUB_APP_SLUG=<slug> --env WLP_GITHUB_CLIENT_ID=<client id>
+```
+
+
+## The bucket for agent memory
+
+Where sandboxes are E2B's, a bucket keeps a copy of each agent's Windlass session so a replaced sandbox can
+go on with it ([architecture.md, "The agent's memory outlives its sandbox"](architecture.md#the-agents-memory-outlives-its-sandbox)).
+Work items' screenshots are stored in the same bucket ([work-items.md](work-items.md#screenshots-on-work-items)).
+
+The store is anything that speaks the S3 protocol; only presigned PUT and GET, HEAD and DELETE are used, so
+changing the provider is changing the settings. For Cloudflare R2: a bucket of its own, and an API token
+with "Object Read & Write" on that bucket only.
+
+| Variable | Value |
+|---|---|
+| `WLP_BUCKET_ENDPOINT` | the store's S3 endpoint without the bucket: for R2, `https://<account id>.r2.cloudflarestorage.com` |
+| `WLP_BUCKET_NAME` | the bucket |
+| `WLP_BUCKET_ACCESS_KEY_ID`, `WLP_BUCKET_SECRET_ACCESS_KEY` | an access key that may read, write and delete objects in that bucket. The second is a secret |
+| `WLP_BUCKET_REGION` | optional: the region the signatures name (default `auto`, which is R2's) |
+| `WLP_BUCKET_STYLE` | optional: `path` (default) or `virtual`, where the bucket's name goes in an address |
+| `WLP_BUCKET_PREFIX` | optional: put before every key, for a bucket that is shared |
+| `WLP_BACKUP_MAX_BYTES` | optional: the largest archive that is kept (default 67108864) |
+
+They are the same on every server. On a Rivet Cloud cluster the endpoint, the bucket's name and the two
+halves of the access key are set as secrets (`rivet cluster secret set WLP_BUCKET_ENDPOINT`, and so on, with
+a `--secret` for each on `rivet deploy`). With none of them set the feature is off; with only some, it is off
+and the server says which are missing when it starts.
+
+```sh
+cd server && npx tsx ../scripts/backup-check.ts                     # the seam and the backups: no network, no Docker
+cd server && npx tsx ../scripts/backup-check.ts --bucket --docker
+                                                                    # a real bucket, and a real Windlass in local containers
+cd server && E2B_API_KEY=e2b_... npx tsx ../scripts/e2b-backup-check.ts
+                                                                    # two E2B sandboxes, one after the other, for under half a minute
+```
+
+The last two read the bucket's settings from the variables above, or from `R2_ENDPOINT`, `R2_BUCKET`,
+`R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`; they write under a prefix of their own and remove it. Measured
+from an E2B sandbox to R2, for a session of one turn (24 kB): a save takes 1.3 seconds, a restore one.

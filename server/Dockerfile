@@ -7,7 +7,7 @@
 # There is no Docker inside it, so the Docker sandbox layer cannot run here: start it with WLP_SANDBOX=e2b.
 # The engine is not in it either. RIVET_ENDPOINT names the one it joins (a Rivet Cloud cluster sets it
 # for its own nodes), and WLP_SECRET must be set, to the same value on every server, or it refuses to
-# start. README, "Running on several servers", has the variables.
+# start. docs/operating.md, "Running on several servers", has the variables.
 
 # The image is built for the machine that runs it on the machine that builds it, which may be of another
 # architecture (`rivet deploy` builds linux/amd64, also on an arm64 machine): the first stage runs on the

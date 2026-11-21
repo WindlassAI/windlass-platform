@@ -52,7 +52,7 @@ async function main(): Promise<number> {
 	}
 	const built = await buildSandboxTemplate(context, { apiKey, name, shots, cpuCount, memoryMB });
 	console.log(`# Built: template "${built.name}" (id ${built.templateId}, build ${built.buildId}), ${built.cpuCount} vCPU and ${built.memoryMB} MiB per sandbox.`);
-	console.log(`# A server finds it by its name: WLP_SANDBOX=e2b ${shots ? "WLP_E2B_SHOTS_TEMPLATE" : "WLP_E2B_TEMPLATE"}=${name}. Next: scripts/e2b-check.ts (README, "E2B").`);
+	console.log(`# A server finds it by its name: WLP_SANDBOX=e2b ${shots ? "WLP_E2B_SHOTS_TEMPLATE" : "WLP_E2B_TEMPLATE"}=${name}. Next: scripts/e2b-check.ts (docs/operating.md, "E2B").`);
 	return 0;
 }
 

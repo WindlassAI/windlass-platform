@@ -33,11 +33,12 @@ pnpm sandbox:build
 pnpm --filter @windlass-platform/server e2e:docker
 ```
 
-The sandbox build fetches the checksum-pinned Windlass release. See the [full list of checks](README.md#checks)
+The sandbox build fetches the checksum-pinned Windlass release. See the [full list of checks](docs/development.md#checks)
 for focused commands and the [quick start](README.md#quick-start) for an interactive demo.
 
 ## Maintainer pull requests
 
 Keep each PR focused. Link the issue, describe the behavior change, and list the commands you ran,
-their results and any checks you skipped. Include a screenshot for visible UI changes. Run the
+their results and any checks you skipped. Include a screenshot for visible UI changes. To retake the README's
+screenshots from the web app's mock, run `pnpm shots` (`pnpm shots --help` lists the options). Run the
 fake suite for platform changes and the Docker checks when changing real sandbox behavior.

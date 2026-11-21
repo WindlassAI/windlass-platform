@@ -128,7 +128,7 @@ export interface ModelChoice {
 
 /**
  * The models a user may start a session on or switch a turn to, and the efforts each accepts
- * (README, "Models"). They are no fact of the deployment: they are what the user's ChatGPT plan
+ * (docs/architecture.md, "Models"). They are no fact of the deployment: they are what the user's ChatGPT plan
  * offers, as Windlass lists them with that user's sign-in, kept in the user's actor for about an hour.
  */
 export interface ModelList {
@@ -378,7 +378,7 @@ export interface CreateSessionInput {
  * every attempt of that submission: when no answer came, when the answer was a failure to reach the
  * server, and when the user sends again what was refused, unchanged. The server takes a key at most
  * once and answers a repeat with what the first attempt was answered, so a message that reaches it
- * twice is one message (README, "A message sent twice").
+ * twice is one message (docs/architecture.md, "A message sent twice").
  *
  * A string of 1 to MAX_IDEMPOTENCY_KEY_CHARS characters. Left out, or null: no key, and every call
  * is a submission of its own. Anything else is refused with the code `bad_idempotency_key` and is
@@ -482,7 +482,7 @@ export interface PullRequestInfo {
 	pushedAt: number;
 	/**
 	 * What the section the platform keeps in its description said when it was last written, in a few
-	 * words (`Verified`; README, "What a pull request shows was verified"): "2 checks passed",
+	 * words (`Verified`; docs/github-and-repositories.md, "What a pull request shows was verified"): "2 checks passed",
 	 * "1 of 2 checks failing", "nothing verified", with "1 thing to look at" where the section lists
 	 * observations.
 	 */
@@ -545,7 +545,7 @@ export interface RepositorySetup {
 /**
  * One of the checks a user saved for a repository of their GitHub connection: a command that tells
  * whether the code is right, which Windlass runs before it calls a turn done and sends the agent back
- * with when it fails (README, "A repository's checks"). The first four fields are Windlass's own
+ * with when it fails (docs/github-and-repositories.md, "A repository's checks"). The first four fields are Windlass's own
  * (`checks[]` in its configuration), with its limits.
  */
 export interface RepositoryCheck {
@@ -671,7 +671,7 @@ export type Verified = ({
 
 /**
  * Something in a pull request's changes that a reviewer would want to look at, as an observation
- * (README, "What a pull request shows was verified", says exactly what each one looks for):
+ * (docs/github-and-repositories.md, "What a pull request shows was verified", says exactly what each one looks for):
  *
  *   tests_removed    test files deleted, or renamed to a path that is not a test's
  *   tests_skipped    tests newly skipped or disabled in test files
@@ -688,7 +688,7 @@ export interface VerifiedFlag {
 }
 
 /**
- * Who a repository's secret is handed to (README, "A repository's secrets"). Every secret goes to the
+ * Who a repository's secret is handed to (docs/github-and-repositories.md, "A repository's secrets"). Every secret goes to the
  * repository's setup command. Beyond that:
  *
  *   "setup"   the MCP servers the repository names, and not the commands the agent runs
@@ -741,7 +741,7 @@ export interface RepositorySecrets {
 // --- A repository's page ---------------------------------------------------------------------
 
 /**
- * What a new session on a repository starts with, where its user said so (README, "A repository's
+ * What a new session on a repository starts with, where its user said so (docs/github-and-repositories.md, "A repository's
  * page"): the launch form starts from them when that repository is picked, and its user can still
  * choose otherwise for one session. Kept as they were saved: a default may come to name a sandbox
  * this deployment no longer offers or a model its user's account no longer does, and such a one is
@@ -802,7 +802,7 @@ export interface SavedRepository {
 
 /**
  * What a new session starts with where neither the launch form nor the chosen repository says so
- * (README, "Account settings"): a sandbox profile and a model, the user's own, whatever the
+ * (docs/github-and-repositories.md, "Account settings"): a sandbox profile and a model, the user's own, whatever the
  * repository. Kept as they were saved, as a repository's are: one that names a sandbox this
  * deployment no longer offers, or a model the account no longer does, is not used, and whoever reads
  * it says so.
@@ -899,7 +899,7 @@ export interface AccountSecrets {
 // --- Usage -----------------------------------------------------------------------------------
 
 /**
- * A user's sandbox time today and the sandboxes they keep, in numbers (README, "Usage and limits").
+ * A user's sandbox time today and the sandboxes they keep, in numbers (docs/architecture.md, "Usage and limits").
  *
  * Sandbox time is the time a hosted sandbox runs: from when it is created or resumed, for a turn or
  * to read the workspace, until it is suspended, removed or stops by itself. A sandbox that is paused

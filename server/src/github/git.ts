@@ -23,7 +23,7 @@
  *   - The token is revoked when the command has ended (`GithubApp.withToken`), so what a command could
  *     have kept of it is of no use afterwards.
  *
- * What an agent's command can still observe is said in README, "GitHub".
+ * What an agent's command can still observe is said in docs/github-and-repositories.md, "GitHub".
  *
  * The sandbox layer's fake runs none of this: there every command succeeds and prints nothing. So what
  * a script reports (`wlp:` lines) is read where it is there and never required.

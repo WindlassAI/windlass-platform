@@ -20,7 +20,7 @@ if [ "$WLP_SANDBOX" = "docker" ] && ! docker image inspect "${WLP_SANDBOX_IMAGE:
 fi
 
 if [ "$WLP_SANDBOX" = "e2b" ] && [ -z "${E2B_API_KEY:-}" ]; then
-	echo "E2B_API_KEY is not set. Sandboxes at E2B need it (README, \"E2B\"); run with WLP_SANDBOX=fake to spend nothing." >&2
+	echo "E2B_API_KEY is not set. Sandboxes at E2B need it (docs/operating.md, \"E2B\"); run with WLP_SANDBOX=fake to spend nothing." >&2
 	exit 1
 fi
 

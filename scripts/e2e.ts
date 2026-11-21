@@ -2799,7 +2799,7 @@ async function main(server: Server | null): Promise<void> {
 }
 
 /**
- * A message that reaches the platform twice (README, "A message sent twice"): with the key of its
+ * A message that reaches the platform twice (docs/architecture.md, "A message sent twice"): with the key of its
  * submission it is taken once and answered as its first attempt was, also after the session's actor
  * slept and after the server was restarted; without one it is what it always was.
  */

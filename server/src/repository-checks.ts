@@ -1,5 +1,5 @@
 /**
- * A repository's checks: the commands its user saved that tell whether the code is right (README, "A
+ * A repository's checks: the commands its user saved that tell whether the code is right (docs/github-and-repositories.md, "A
  * repository's checks"). Windlass runs them before it calls a turn done and sends the agent back with
  * what fails: its verification gate, which runs nothing while no check is set.
  *
