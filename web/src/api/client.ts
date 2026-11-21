@@ -121,6 +121,7 @@ export interface UserFeed {
 	/** Today's sandbox time and the count of kept sandboxes, whenever either changes. */
 	onUsage?(numbers: UsageNumbers): void;
 	/** The user's machines, whenever one is paired or removed or its status, warnings or secrets switch changes. */
+	onMachineHost?(update: import("@contract").MachineHostUpdate): void;
 	onMachines?(machines: MachineSummary[]): void;
 	/** The user's work items, newest first, whenever one of them changes. Not sent when the feed opens: `listItems` is. */
 	onItems?(items: ItemSummary[]): void;
@@ -215,6 +216,7 @@ export interface UserApi {
 	freeSandbox(sessionId: string): Promise<UsageView>;
 	/** The user's machines, the first paired first. The machine calls throw with reason `machines_off` where the deployment has none (`PlatformInfo.machines`). */
 	machines(): Promise<MachineSummary[]>;
+	machineCatalog: UserActions["machineCatalog"];
 	/** What the machine whose runner printed `code` says of itself. Throws with reason `pairing_not_found`, `too_many_claims` or `too_many_machines`. */
 	claimMachine(input: { code: string }): Promise<MachineClaim>;
 	/** Pairs the machine of a code this user looked up. Throws as `claimMachine` does. */

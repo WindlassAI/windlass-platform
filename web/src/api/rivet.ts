@@ -345,6 +345,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			usage: () => act("usage"),
 			freeSandbox: (sessionId) => act("freeSandbox", sessionId),
 			machines: () => act("machines"),
+			machineCatalog: input => act("machineCatalog", input),
 			claimMachine: (input) => act("claimMachine", input),
 			confirmMachine: (input) => act("confirmMachine", input),
 			removeMachine: (input) => act("removeMachine", input),
@@ -382,6 +383,9 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 						}),
 						conn.on("usage" satisfies keyof UserEvents, (numbers: UsageNumbers) => {
 							if (live) feed.onUsage?.(numbers);
+						}),
+						conn.on("machineHost" satisfies keyof UserEvents, (update: UserEvents["machineHost"]) => {
+							if (live) feed.onMachineHost?.(update);
 						}),
 						conn.on("machines" satisfies keyof UserEvents, (machines: MachineSummary[]) => {
 							if (live) feed.onMachines?.(machines);

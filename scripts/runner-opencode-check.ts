@@ -90,3 +90,93 @@ test("installer capability reports must describe the exact published runner", as
 	assert.equal(publishedHarnesses(image.replace("aa", "bb"), report), undefined);
 	assert.equal(publishedHarnesses(image), undefined);
 });
+
+test("one host sample per minute with a 493-model catalog sends only the host delta to a tab", async () => {
+	const { DatabaseSync } = await import("node:sqlite");
+	const { reportPublisher, optionsDigest } = await import("../server/src/runner/catalog.js");
+	const { parseRunnerFrame, ControlQueue } = await import("../server/src/runner/control.js");
+	const { machineTables, saveReport } = await import("../server/src/actors/machine.js");
+	const { machineTables: accountTables, publishMachineUpdate, listMachines } = await import("../server/src/actors/user-machines.js");
+	type Report = import("../server/src/runner/control.js").Report;
+	type RawAccess = Parameters<typeof machineTables>[0];
+	const sql = new DatabaseSync(":memory:");
+	const db = {
+		async execute(query: string, ...params: (string | number | null)[]) { return sql.prepare(query).all(...params); },
+		async transaction<T>(work: (tx: RawAccess) => Promise<T>) {
+			sql.exec("BEGIN");
+			try { const result = await work(db); sql.exec("COMMIT"); return result; }
+			catch (error) { sql.exec("ROLLBACK"); throw error; }
+		},
+	} as RawAccess;
+	const models = Array.from({ length: 493 }, (_, i) => ({ id: "openrouter/provider/model-" + i, name: "Provider Model " + i, efforts: ["low", "medium", "high"] }));
+	const options = { models, modes: [], defaultModel: models[0]!.id, checkedAt: 123456789 };
+	const report: Report = { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 8e9, sandboxes: [],
+		host: { cpus: 2, sandboxCpus: 1, memoryBytes: 12e9, memoryFreeBytes: 5e9, load1: 0.5 },
+		harnesses: [{ id: "opencode", adapter: "OpenCode", image: "fixture", signIn: "token", options }] };
+	const machineId = "m_aaaaaaaaaaaaaaaa";
+	const facts = { status: "online" as const, since: 1000, runnerVersion: "0.1.0", warnings: [] };
+	const events: [string, unknown][] = [];
+	const ctx = { db, vars: { sessions: new Map(), machines: new Map(), github: null }, key: ["u_fixture"], client: () => ({}),
+		broadcast(event: string, payload: unknown) { events.push([event, payload]); } };
+	try {
+		// Persist the pre-upgrade layout, then wake both actors before a runner reconnects.
+		sql.exec("CREATE TABLE machine (id INTEGER PRIMARY KEY, name TEXT, report TEXT, removed_at INTEGER)");
+		sql.prepare("INSERT INTO machine VALUES (1, 'Workshop', ?, NULL)").run(JSON.stringify(report));
+		sql.exec("CREATE TABLE machines (id TEXT PRIMARY KEY, name TEXT, os TEXT, arch TEXT, facts TEXT, send INTEGER DEFAULT 1, expires INTEGER)");
+		sql.prepare("INSERT INTO machines(id,name,os,arch,facts) VALUES (?, 'Workshop', 'linux', 'arm64', ?)").run(machineId, JSON.stringify({ ...facts, report }));
+		await machineTables(db);
+		await accountTables(db);
+		const digest = optionsDigest(options);
+		assert.deepEqual(JSON.parse(String(sql.prepare("SELECT options FROM catalogs WHERE digest = ?").get(digest)?.options)), options);
+		const [machine] = await listMachines(ctx);
+		assert.deepEqual(machine!.host, report.host);
+		assert.equal(machine!.harnesses![0]!.optionsDigest, digest);
+		assert.equal(machine!.harnesses![0]!.options, undefined);
+		assert.doesNotMatch(String(sql.prepare("SELECT facts FROM machines").get()?.facts), /Provider Model|memoryFreeBytes/);
+		// A new socket stages each changed catalog before advertising its digest.
+		const frames: import("../server/src/runner/control.js").RunnerFrame[] = [];
+		const publish = reportPublisher(frame => frames.push(frame));
+		publish(report);
+		assert.deepEqual(frames.map(f => f.kind), ["catalog", "report"]);
+		for (const frame of frames) assert.deepEqual(parseRunnerFrame(JSON.stringify(frame)), frame);
+		const compact = frames[1] as Report;
+		frames.length = 0;
+		const host = { ...report.host!, memoryFreeBytes: 4e9, load1: 0.75 };
+		publish({ ...report, host });
+		assert.deepEqual(frames, [{ kind: "host", host }]);
+		const sample = { ...compact, host };
+		assert.equal(sample.harnesses![0]!.options, undefined);
+		// Neither report format may rewrite an unchanged catalog or inventory.
+		sql.exec("CREATE TRIGGER no_catalog_write BEFORE INSERT ON catalogs BEGIN SELECT RAISE(ABORT, 'rewrote catalog'); END");
+		sql.exec("CREATE TRIGGER no_report_write BEFORE UPDATE OF report ON machine BEGIN SELECT RAISE(ABORT, 'rewrote inventory'); END");
+		const row = await saveReport(db, sample, new Map(), 0);
+		assert.ok(row?.report);
+		assert.equal(await saveReport(db, { ...report, host }, new Map(), 0), undefined);
+		ctx.vars.machines.set(machineId, machine);
+		await publishMachineUpdate(ctx, machineId, { ...facts, report: JSON.parse(row.report), host });
+		assert.deepEqual(events, [["machineHost", { machineId, host }]]);
+		assert.deepEqual((await listMachines(ctx))[0]?.host, host);
+		// Serialize identical application-level event envelopes. The old machines event
+		// joined the full reported harness to this same machine summary on each sample.
+		const before = Buffer.byteLength(JSON.stringify(["machines", [{ ...machine, host, harnesses: report.harnesses }]]));
+		const after = Buffer.byteLength(JSON.stringify(events[0]));
+		assert.ok(after < 256 && before > 40_000);
+		console.log(`493 models, one host update/tab/minute: ${before} bytes before, ${after} bytes after (UTF-8 event JSON).`);
+		sql.exec("DROP TRIGGER no_catalog_write; DROP TRIGGER no_report_write");
+		frames.length = 0;
+		const next = { ...options, defaultModel: models[1]!.id };
+		publish({ ...report, harnesses: [{ ...report.harnesses![0]!, options: next }] });
+		const [catalog, updated] = frames;
+		assert.ok(catalog?.kind === "catalog" && updated?.kind === "report");
+		await assert.rejects(saveReport(db, updated, new Map(), 0), /Missing harness catalog/);
+		await saveReport(db, updated, new Map([[catalog.id, catalog]]), 0);
+		assert.equal(sql.prepare("SELECT digest FROM catalogs").get()?.digest, optionsDigest(next));
+		await saveReport(db, { ...report, harnesses: [] }, new Map(), 0);
+		assert.equal(sql.prepare("SELECT digest FROM catalogs").get(), undefined);
+		const queue = new ControlQueue();
+		assert.ok(queue.reserve(1_600_000) && queue.reserve(1_600_000));
+		assert.equal(queue.reserve(1_600_000), false);
+		queue.release(1_600_000);
+		assert.ok(queue.reserve(1_600_000));
+	} finally { sql.close(); }
+});

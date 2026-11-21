@@ -59,13 +59,13 @@ interface ReportedOptions {
 
 /**
  * The models and modes another harness offers on a machine before an agent of it runs there, as the
- * machine's runner reported them (`MachineSummary.harnesses[].options`). The server holds a launch's
+ * machine's runner reported them in its catalog. The server holds a launch's
  * model against that same report, so no other list is offered: a model an earlier agent listed may
  * not be one the server takes yet. Null where there is none: the harness starts on its own default.
  */
-export function harnessOptions(machine: MachineSummary | null, harness: HarnessId): { models: ModelList | null; modes: SessionMode[] | null } {
+export function harnessOptions(machine: MachineSummary | null, harness: HarnessId, catalog?: ReportedOptions): { models: ModelList | null; modes: SessionMode[] | null } {
 	if (machine === null || harness === "windlass") return { models: null, modes: null };
-	const reported = (machine.harnesses?.find((entry) => entry.id === harness) as { options?: ReportedOptions } | undefined)?.options;
+	const reported = catalog ?? (machine.harnesses?.find((entry) => entry.id === harness) as { options?: ReportedOptions } | undefined)?.options;
 	const modes = reported?.modes && reported.modes.length > 0 ? reported.modes : null;
 	const first = reported?.models?.[0];
 	if (!reported?.models || first === undefined) return { models: null, modes };

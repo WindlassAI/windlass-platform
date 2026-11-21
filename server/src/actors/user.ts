@@ -78,7 +78,7 @@ import { plannerMachines } from "../machines/details.js";
 
 import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
-import { launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
+import { machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
 import { ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -115,6 +115,8 @@ import {
 	type SandboxPlace,
 	type MachineSummary,
 	type MachineClaim,
+	type MachineHostUpdate,
+	type UserActions,
 	type SandboxProfile,
 	type SavedRepository,
 	type SecretScope,
@@ -987,13 +989,14 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
 		const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
-		const options = offered?.options;
+		const options = offered?.optionsDigest && place.kind === "machine" ? await machineCatalog(c, place.machineId, offered.id, offered.optionsDigest) : undefined;
+		if (offered?.optionsDigest && !options) throw new UserError("The machine’s model list changed. Choose the model again.", { code: "bad_input" });
 		const modes = initialSessionModes(chosen.id, harness, !!item, options?.modes);
 		if (input.mode !== undefined) {
 			if (typeof input.mode !== "string" || !input.mode.trim() || (harness === "windlass" && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
 			modes.mode = input.mode;
 		}
-		const models = harness !== "windlass" ? initialHarnessModels(options) : await modelsOf(c, profile.demo);
+		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options ? "bad_input" : undefined);
 
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
@@ -1235,6 +1238,7 @@ export const user = actor({
 	},
 
 	events: {
+		machineHost: event<MachineHostUpdate>({ canSubscribe: (c) => maySubscribe(c) }),
 		machines: event<MachineSummary[]>({ canSubscribe: (c) => maySubscribe(c) }),
 		sessions: event<SessionSummary[]>({ canSubscribe: (c) => maySubscribe(c) }),
 		usage: event<UsageNumbers>({ canSubscribe: (c) => maySubscribe(c) }),
@@ -1282,6 +1286,7 @@ export const user = actor({
 
 	actions: {
 		machines: (c): Promise<MachineSummary[]> => machineActions.machines(c),
+		machineCatalog: (c, input: Parameters<UserActions["machineCatalog"]>[0]): ReturnType<UserActions["machineCatalog"]> => machineActions.machineCatalog(c, input),
 		claimMachine: (c, input: { code: string }): Promise<MachineClaim> => machineActions.claimMachine(c, input),
 		confirmMachine: (c, input: { code: string }): Promise<MachineSummary> => machineActions.confirmMachine(c, input),
 		removeMachine: (c, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> => machineActions.removeMachine(c, input),
@@ -1296,9 +1301,9 @@ export const user = actor({
 		},
 		internalMachineApproval: (c, id: string): Promise<{ login: string | null } | null> => machineActions.internalMachineApproval(c, id),
 		internalMachineChanged: async (c, id: string, facts: MachineUpdate | null): Promise<void> => {
-			await machineActions.internalMachineChanged(c, id, facts);
+			const inventoryChanged = await machineActions.internalMachineChanged(c, id, facts);
 			if (facts === null) await notifyRemovedMachines(c, id);
-			queueChanged(c);
+			if (inventoryChanged) queueChanged(c);
 		},
 		// --- work items, the turn queue and API tokens (user-items.ts) ---
 		internalReserveAttachment: (c, input: import("../sandbox/attach.js").Reservation) => itemActions.internalReserveAttachment(c, input),

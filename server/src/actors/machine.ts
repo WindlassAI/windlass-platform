@@ -1,13 +1,13 @@
 import { randomBytes } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
+import { compactReport, optionsDigest, type CatalogFrame, type CatalogId } from "../runner/catalog.js";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, requireServiceFor, serviceParams } from "../auth.js";
 import { config } from "../config.js";
-import { isMachineIdName, machineLabel, MACHINE_EXPIRY_MS, type MachineClaim, type MachineStatus, type MachineWarning } from "../contract.js";
+import { isMachineIdName, machineLabel, MACHINE_EXPIRY_MS, type HarnessOptions, type MachineClaim, type MachineStatus, type MachineWarning } from "../contract.js";
 import { MINUTE_MS } from "../http-limits.js";
 import { machineError, signed } from "../runner-keys.js";
-import { CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
+import { ControlQueue, CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
 import { grantIsValid, isActorGone, sessionActor } from "./internal.js";
 
 const SEEN_INTERVAL = 3 * 60_000;
@@ -29,8 +29,8 @@ interface Ctx {
 	client(): any;
 }
 interface Input { grant: string; details: MachineClaim; publicKey: string; expires: number }
-type Row = { name: string; version: string; public_key: string; created: number; seen: number | null; removed_at: number | null; remove_sandboxes: number; offset: number; duplicate: number | null; report: string | null };
-export interface MachineUpdate { name?: string; turns?: { running: number; max: number | null; queued: number }; status: MachineStatus; since: number; runnerVersion: string; warnings: MachineWarning[]; report: Report | null }
+type Row = { name: string; version: string; public_key: string; created: number; seen: number | null; removed_at: number | null; remove_sandboxes: number; offset: number; duplicate: number | null; report: string | null; host: string | null };
+export interface MachineUpdate { host?: Report["host"]; name?: string; turns?: { running: number; max: number | null; queued: number }; status: MachineStatus; since: number; runnerVersion: string; warnings: MachineWarning[]; report: Report | null }
 /** `publicKey` is the machine's Ed25519 key, SPKI in base64; it never changes (pairing again makes a new machine). */
 export interface MachineFacts { status: MachineStatus | "removed"; name: string; publicKey: string; report: Report | null }
 export type TurnSlot = { state: "granted" | "reconnecting" | "offline" | "removed" } | { state: "waiting"; busy: number; max: number };
@@ -96,7 +96,7 @@ function update(c: Ctx, row: Row): MachineUpdate {
 	if (report && !report.docker.ok) warnings.push({ kind: "docker", reason: report.docker.reason });
 	if (Math.abs(row.offset) > CLOCK_TOLERANCE_MS) warnings.push({ kind: "clock", offsetSeconds: Math.round(row.offset / 1000) });
 	if (row.duplicate !== null && Date.now() < row.duplicate + KEY_WARNING_MS) warnings.push({ kind: "key", at: row.duplicate });
-	return { name: row.name, status: c.vars.live ? "online" : row.seen === null ? "waiting" : "offline", since: c.vars.live?.connected ?? row.seen ?? row.created, runnerVersion: row.version, warnings, report };
+	return { host: row.host ? JSON.parse(row.host) : undefined, name: row.name, status: c.vars.live ? "online" : row.seen === null ? "waiting" : "offline", since: c.vars.live?.connected ?? row.seen ?? row.created, runnerVersion: row.version, warnings, report };
 }
 async function publish(c: Ctx, row: Row) {
 	const facts = row.removed_at === null ? update(c, row) : null;
@@ -162,14 +162,49 @@ async function revoke(c: Ctx, removeSandboxes: boolean, idle: boolean): Promise<
 	});
 }
 
+async function storeHost(db: RawAccess, sample: string | null) {
+	const [changed] = await db.execute<Row>("UPDATE machine SET host = ? WHERE removed_at IS NULL AND host IS NOT ? RETURNING *", sample, sample);
+	return changed;
+}
+
+export async function saveReport(db: RawAccess, frame: Report, staged: Map<CatalogId, CatalogFrame>, offset: number) {
+	const { host, ...rest } = frame;
+	const report = compactReport(rest, (id, options) => staged.set(id, { kind: "catalog", id, options }));
+	report.sandboxes = report.sandboxes.map(s => ({ ...s, usedAt: Math.max(0, s.usedAt - offset) }));
+	const metadata = JSON.stringify(report);
+	const sample = host ? JSON.stringify(host) : null;
+	return db.transaction(async tx => {
+		const stored = await tx.execute<{ id: CatalogId; digest: string }>("SELECT id, digest FROM catalogs");
+		for (const entry of report.harnesses ?? []) {
+			if (!entry.optionsDigest || stored.some(row => row.id === entry.id && row.digest === entry.optionsDigest)) continue;
+			const options = staged.get(entry.id)?.options;
+			if (!options || optionsDigest(options) !== entry.optionsDigest) throw new Error("Missing harness catalog");
+			await tx.execute("INSERT OR REPLACE INTO catalogs VALUES (?, ?, ?)", entry.id, entry.optionsDigest, JSON.stringify(options));
+		}
+		for (const row of stored) if (!report.harnesses?.some(h => h.id === row.id && h.optionsDigest))
+			await tx.execute("DELETE FROM catalogs WHERE id = ?", row.id);
+		const [inventory] = await tx.execute<Row>("UPDATE machine SET name = COALESCE(?, name), report = ?, host = ? WHERE removed_at IS NULL AND report IS NOT ? RETURNING *", report.name ?? null, metadata, sample, metadata);
+		if (inventory) return inventory;
+		return storeHost(tx, sample);
+	});
+}
+
+export async function machineTables(db: RawAccess) {
+	await db.execute(`CREATE TABLE IF NOT EXISTS machine (id INTEGER PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL,
+		public_key TEXT NOT NULL, created INTEGER NOT NULL, seen INTEGER, removed_at INTEGER, remove_sandboxes INTEGER NOT NULL DEFAULT 0, offset INTEGER NOT NULL DEFAULT 0, duplicate INTEGER, report TEXT)`);
+	await db.execute("CREATE TABLE IF NOT EXISTS catalogs (id TEXT PRIMARY KEY, digest TEXT NOT NULL, options TEXT NOT NULL)");
+	if (!(await db.execute<{ name: string }>("PRAGMA table_info(machine)")).some(column => column.name === "host")) {
+		await db.execute("ALTER TABLE machine ADD COLUMN host TEXT");
+	}
+	const [legacy] = await db.execute<{ report: string }>(`SELECT report FROM machine WHERE removed_at IS NULL AND (report LIKE '%"options":%' OR json_type(report, '$.host') IS NOT NULL)`);
+	if (legacy) await saveReport(db, JSON.parse(legacy.report), new Map(), 0);
+	await db.execute("CREATE TABLE IF NOT EXISTS connection_budget (id INTEGER PRIMARY KEY, minute INTEGER NOT NULL, used INTEGER NOT NULL)");
+	await db.execute("CREATE TABLE IF NOT EXISTS turn_slots (session TEXT NOT NULL, turn INTEGER NOT NULL, running INTEGER NOT NULL, PRIMARY KEY (session, turn))");
+	await db.execute("CREATE TABLE IF NOT EXISTS pending (sandbox TEXT PRIMARY KEY)");
+}
+
 export const machine = actor({
-	db: db({ onMigrate: async db => {
-		await db.execute(`CREATE TABLE IF NOT EXISTS machine (id INTEGER PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL,
-			public_key TEXT NOT NULL, created INTEGER NOT NULL, seen INTEGER, removed_at INTEGER, remove_sandboxes INTEGER NOT NULL DEFAULT 0, offset INTEGER NOT NULL DEFAULT 0, duplicate INTEGER, report TEXT)`);
-		await db.execute("CREATE TABLE IF NOT EXISTS connection_budget (id INTEGER PRIMARY KEY, minute INTEGER NOT NULL, used INTEGER NOT NULL)");
-		await db.execute("CREATE TABLE IF NOT EXISTS turn_slots (session TEXT NOT NULL, turn INTEGER NOT NULL, running INTEGER NOT NULL, PRIMARY KEY (session, turn))");
-		await db.execute("CREATE TABLE IF NOT EXISTS pending (sandbox TEXT PRIMARY KEY)");
-	} }),
+	db: db({ onMigrate: machineTables }),
 	createVars: (): Vars => ({ retryOnFrame: false, nextSlotCheck: 0, live: null, work: Promise.resolve(), greeting: null }),
 	onCreate: async (c, input?: Input) => {
 		if (!input || c.key.length !== 2 || !MACHINE_ID.test(c.key[1]!) || !grantIsValid(input.grant, c.key, "machine") || Date.now() >= input.expires) { c.destroy(); return; }
@@ -205,7 +240,8 @@ export const machine = actor({
 		const nonce = randomBytes(32).toString("base64url");
 		let hello = false;
 		let closed = false;
-		let queued = 0;
+		const queue = new ControlQueue();
+		const staged = new Map<CatalogId, CatalogFrame>();
 		// The raw socket need not deliver a close event when the actor initiates the close.
 		const gone = () => {
 			if (closed) return;
@@ -242,8 +278,10 @@ export const machine = actor({
 		raw.addEventListener("close", gone);
 		raw.addEventListener("message", ({ data }) => {
 			if (closed) return;
+			const bytes = typeof data === "string" ? Buffer.byteLength(data) : Infinity;
+			if (!queue.reserve(bytes)) { reject(ws, refuse("bad-frame")); return; }
 			const frame = parseRunnerFrame(data, c.vars.live?.ws === ws);
-			if (!frame || ++queued > 128 || (!hello && frame.kind !== "hello") || (hello && frame.kind === "hello")) {
+			if (!frame || (!hello && frame.kind !== "hello") || (hello && frame.kind === "hello")) {
 				reject(ws, refuse("bad-frame")); return;
 			}
 			if (!hello) {
@@ -291,16 +329,19 @@ export const machine = actor({
 					}
 					if (frame.kind === "heartbeat" && c.vars.retryOnFrame) await tell(c, await record(c));
 					if (frame.kind === "removed") await c.db.execute("DELETE FROM pending WHERE sandbox = ?", frame.sandbox);
+					if (frame.kind === "host") {
+						const sample = frame.host ? JSON.stringify(frame.host) : null;
+						const changed = await storeHost(c.db, sample);
+						if (changed) await tell(c, changed);
+					}
+					if (frame.kind === "catalog") staged.set(frame.id, frame);
 					if (frame.kind === "report") {
-						const r = await record(c);
-						const report: Report = { ...frame, sandboxes: frame.sandboxes.map(s => ({ ...s, usedAt: Math.max(0, s.usedAt - r.offset) })) };
-						if (!r.report || !isDeepStrictEqual(JSON.parse(r.report), report)) {
-							const [changed] = await c.db.execute<Row>("UPDATE machine SET name = COALESCE(?, name), report = ? WHERE removed_at IS NULL RETURNING *", report.name ?? null, JSON.stringify(report));
-							await tell(c, changed);
-						}
+						const changed = await saveReport(c.db, frame, staged, live.offset);
+						staged.clear();
+						if (changed) await tell(c, changed);
 					}
 				}
-			}).catch(fail).finally(() => { queued--; });
+			}).catch(fail).finally(() => queue.release(bytes));
 		});
 		ws.send({ kind: "challenge", nonce });
 	},
@@ -317,6 +358,11 @@ export const machine = actor({
 		internalReleaseTurnSlot: async (c, session: string, turn: number): Promise<void> => {
 			requireServiceFor(c, "call");
 			await ordered(c, async () => { await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", session, turn); await tell(c, await record(c)); });
+		},
+		internalCatalog: async (c, id: CatalogId, digest: string): Promise<HarnessOptions | null> => {
+			requireServiceFor(c, "call");
+			const [row] = await c.db.execute<{ options: string }>("SELECT options FROM catalogs WHERE id = ? AND digest = ? AND EXISTS (SELECT 1 FROM machine WHERE removed_at IS NULL)", id, digest);
+			return row ? JSON.parse(row.options) : null;
 		},
 		internalFacts: async (c): Promise<MachineFacts> => {
 			requireServiceFor(c, "call");

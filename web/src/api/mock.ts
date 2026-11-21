@@ -2970,7 +2970,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** The list as the server answers it: each sandbox named by its agent's title now, none for an agent that was deleted. */
 	function machinesView(auth: AuthResult): MachineSummary[] {
 		const world = worldOf(auth);
-		return machinesOf(auth).list.map((machine) => ({ ...machine, warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
+		return machinesOf(auth).list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map(({ options, ...entry }) => options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry), warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
 	}
 
 	function machinesChanged(auth: AuthResult): void {
@@ -3161,8 +3161,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** The calls of the Machines page. A machine paired here waits for its runner, which connects a few seconds later. */
-	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineDetails" | "setMachineSecrets"> {
+	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "machineCatalog" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineDetails" | "setMachineSecrets"> {
 		return {
+			async machineCatalog({ machineId, id, digest }) {
+				const entry = machineOf(auth, machineId).harnesses?.find(h => h.id === id);
+				return entry?.options && digest === String(entry.options.checkedAt) ? entry.options : null;
+			},
 			async machines() {
 				machinesOn();
 				const set = machinesOf(auth);

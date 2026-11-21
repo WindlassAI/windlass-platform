@@ -33,7 +33,7 @@
  * factory's normal use. The repository starts on the page's, else the newest item's, else the newest
  * agent's.
  */
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type ItemSummary, type HarnessId, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
@@ -137,6 +137,27 @@ function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefau
 	// What was read for another repository is not this one's.
 	const mine = state.repositoryId === repositoryId;
 	return { defaults: mine ? state.defaults : null, checks: mine ? state.checks : null, reading: repositoryId !== null && (!mine || (state.defaults === null && state.error === null)), error: mine ? state.error : null };
+}
+
+/** Fetch the chosen machine's catalog once per digest, even as its host samples change. */
+function useCatalog(machine: MachineSummary | null, id: "claude" | "opencode") {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const machineId = machine?.machineId;
+	const digest = machine?.harnesses?.find(entry => entry.id === id)?.optionsDigest;
+	const [result, setResult] = useState<{ machineId: string; digest: string; options?: HarnessOptions; error?: string }>();
+	const [retry, setRetry] = useState(0);
+	useEffect(() => {
+		if (!machineId || !digest) return;
+		let current = true;
+		client.user(auth).machineCatalog({ machineId, id, digest }).then(
+			options => current && setResult({ machineId, digest, options: options ?? undefined }),
+			error => current && setResult({ machineId, digest, error: explain(error) }),
+		);
+		return () => { current = false; };
+	}, [client, auth, machineId, id, digest, explain, retry]);
+	const match = result?.machineId === machineId && result?.digest === digest ? result : undefined;
+	return { options: match?.options, reading: !!digest && !match, error: match?.error, retry: () => { setResult(undefined); setRetry(n => n + 1); } };
 }
 
 /** The pickers the composer opens: one at a time. The phone's settings sheet is one of them. */
@@ -308,7 +329,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const wantedHarness = harnessChoice ?? last.harness ?? "windlass";
 	const harness: HarnessId = wantedHarness !== "windlass" && hardened && offeredHarnesses(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
 	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
-	const options = harnessOptions(chosenMachine, harness);
+	const catalogs = { claude: useCatalog(item ? null : chosenMachine, "claude"), opencode: useCatalog(item ? null : chosenMachine, "opencode") };
+	const selectedCatalog = harness === "windlass" ? null : catalogs[harness];
+	const options = harnessOptions(chosenMachine, harness, selectedCatalog?.options);
 	const lastOf = last.of[harness] ?? null;
 
 	// ---- the sandbox, the model and effort, the mode ------------------------------------------
@@ -343,7 +366,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// A work item waits for what its repository starts on, and where it runs; none of an agent's defaults.
 	const reading = item
 		? info === null || (items === null && repositoryId === undefined) || (sessions === null && repositoryId === undefined && newestItem === null) || repoReading || (machinesReading && wantedMachine !== null)
-		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || (machinesReading && wantedMachine !== null);
+		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || !!selectedCatalog?.reading || (machinesReading && wantedMachine !== null);
 	const canCreate = !item && !reading && profile !== null && !repoInvalid && busy === null;
 	const task = prompt.trim();
 	const maxChars = item ? MAX_ITEM_BODY_CHARS : MAX_PROMPT_CHARS;
@@ -790,7 +813,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		},
 		...(chosenMachine && offersOther
 			? offeredHarnesses(chosenMachine).map((offered) => {
-					const options = harnessOptions(chosenMachine, offered.id);
+					const options = harnessOptions(chosenMachine, offered.id, catalogs[offered.id].options);
 					const name = HARNESS_NAMES[offered.id];
 					const rows = modelRows(offered.id, options.models);
 					return {
@@ -801,7 +824,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 							? [{ id: `${offered.id}:none`, label: name, icon: <AgentGlyph harness={name} />, description: `Runs only in the hardened container, which “${machineLabel(chosenMachine)}” cannot make now.`, disabled: true }]
 							: rows.length > 0
 								? rows
-								: [{ id: `${offered.id}:default`, value: offered.id, label: `${name}'s default model`, icon: <AgentGlyph harness={name} />, description: `“${machineLabel(chosenMachine)}”'s runner reports ${name}'s models once it has checked.`, checked: harness === offered.id, onSelect: () => setHarness(offered.id) }],
+								: [{ id: `${offered.id}:default`, value: offered.id, label: `${name}'s default model`, icon: <AgentGlyph harness={name} />, description: catalogs[offered.id].reading ? "Reading models…" : `“${machineLabel(chosenMachine)}”'s runner reports ${name}'s models once it has checked.`, checked: harness === offered.id, onSelect: () => setHarness(offered.id) }],
 					};
 				})
 			: []),
@@ -840,6 +863,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								{offeredHarnesses(chosenMachine).map(offered => <HarnessStatus key={offered.id} harness={offered} />)}
 							</details>
 						: null}
+					{(["claude", "opencode"] as const).map(id => catalogs[id].error && <p key={id} role="status">
+						{HARNESS_NAMES[id]} models: {catalogs[id].error} <button type="button" className="link" onClick={catalogs[id].retry}>Retry</button>
+					</p>)}
 					{!other && ignored.model ? <p className="tone-warn">{ignored.model}</p> : null}
 				</>
 			) : undefined,
