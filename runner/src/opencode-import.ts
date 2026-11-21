@@ -43,7 +43,7 @@ export async function importOpenCode(file: string, ask: Ask, store: (id: string,
 		if (!data || Array.isArray(data) || typeof data !== "object") throw new Error();
 		entries = Object.entries(data).flatMap<{id:string; key?:string}>(([id,value]) => {
 			if (!/^[a-z0-9][a-z0-9._-]{0,100}$/.test(id) || !value || typeof value !== "object") return [];
-			if ("refresh" in value || ("type" in value && value.type === "oauth")) return [{id,key:undefined}];
+			if (["refresh","refresh_token","refreshToken"].some(field => Object.hasOwn(value,field)) || ("type" in value && value.type === "oauth")) return [{id,key:undefined}];
 			if ("type" in value && value.type === "api" && "key" in value && typeof value.key === "string" && /^[!-~]{1,4096}$/.test(value.key))
 				return [{id,key:value.key}];
 			return [];
@@ -53,7 +53,7 @@ export async function importOpenCode(file: string, ask: Ask, store: (id: string,
 	for (const {id,key} of entries) {
 		if (!key) {
 			if (await confirm(ask, id + " login can't be shared safely; sign in separately for the runner?"))
-				await login(id === "openai" ? "chatgpt" : undefined);
+				await login(id === "openai" ? "chatgpt" : supported(id) ? id : undefined);
 		} else if (supported(id)) {
 			if (await confirm(ask, providerName(id) + " (" + id + ") API key: import?")) await store(id,key);
 		} else console.log("Skipping " + id + ": no fixed inference route in this runner.");

@@ -31,6 +31,17 @@ test("setup reads the mounted file once and separately authorizes Go, Zen and a 
 	} finally { await rm(dir,{recursive:true,force:true}); }
 });
 
+test("an API-shaped subscription entry that also carries refresh material always requires separate sign-in", async () => {
+	const dir = await mkdtemp(join(process.cwd(), ".oauth-import-check-"));
+	try {
+		const file = join(dir, "auth.json");
+		await writeFile(file, JSON.stringify({openai:{type:"api",key:"subscription-key",refresh_token:"foreign-token"}}));
+		const logins: string[] = [];
+		await importOpenCode(file, async () => "y", async () => assert.fail("A subscription was imported"), async id => { logins.push(id!); });
+		assert.deepEqual(logins,["chatgpt"]);
+	} finally { await rm(dir,{recursive:true,force:true}); }
+});
+
 test("the short picker offers Go and Zen first, searches by name and accepts an exact provider ID",async () => {
 	const prompts: string[] = [];
 	const replies = ["coding plan","zai-coding-plan"];
