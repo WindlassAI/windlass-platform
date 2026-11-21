@@ -38,8 +38,12 @@ https.createServer({key:fs.readFileSync('/fixture/key.pem'),cert:fs.readFileSync
 		res.end();
 		return;
 	}
-	if (req.headers.host === 'opencode.ai') {
-		if (req.url !== '/inference/openai/v1/chat/completions' || req.headers.authorization !== 'Bearer public') return reject();
+	if (req.headers.host === 'opencode.ai' || req.headers.host === 'api.z.ai') {
+		const expected = req.headers.host === 'api.z.ai' ? (req.url === '/api/coding/paas/v4/chat/completions' && marker+'-glm')
+			: req.url === '/inference/go/openai/v1/chat/completions' ? marker+'-go' : req.url === '/inference/openai/v1/chat/completions' && 'public';
+		if (expected === marker+'-go' && (!req.headers['user-agent'] || !req.headers['x-opencode-session-id'])) return reject();
+		if (!expected || req.headers.authorization !== 'Bearer '+expected) return reject();
+		console.log('authorized',req.headers.host,req.url);
 		res.writeHead(200,{'content-type':'text/event-stream'});
 		for (const [delta,finish_reason] of [[{role:'assistant',content:'relay proof'},null],[{},'stop']]) {
 			res.write('data: '+JSON.stringify({id:'msg-free',created:1,model:JSON.parse(body).model,

@@ -115,3 +115,30 @@ test('a signed session routes Go, Zen and GLM keys independently and refuses unc
 		]);
 	} finally { relay.close();origin.closeAllConnections();origin.close(); }
 });
+
+test('Go preserves native client attribution and drops caller-supplied destination and credential headers', async () => {
+	const relay = providerFor('opencode-go','one',{load:async () => ({generation:'one',provider:'opencode-go',key:'go-key'})});
+	const target = await relay.target('/opencode-go/chat/completions',{'user-agent':'opencode/1.19.6','x-opencode-client':'acp',
+		'x-opencode-session-id':'session-id',host:'elsewhere','x-wlp-session':'signed-placeholder','x-api-key':'foreign-key'});
+	assert.equal(target.headers['x-opencode-client'],'acp');
+	assert.equal(target.headers['user-agent'],'opencode/1.19.6');
+	assert.equal(target.headers['x-opencode-session-id'],'session-id');
+	for (const key of ['host','x-wlp-session','x-api-key']) assert.ok(!(key in target.headers));
+});
+
+test('a missing credential on an enabled route fails closed even when another key exists on the same host', async () => {
+	const p = providerFor(['opencode','opencode-go'],'one',{load:async () => ({
+		generation:'one',records:{opencode:{provider:'opencode',key:'zen-only'}}})});
+	assert.ok(p.accepts('/opencode-go/chat/completions'));
+	assert.equal(await p.target('/opencode-go/chat/completions',{}),undefined);
+});
+
+test('rotating the runner-owned ChatGPT credential preserves other provider keys in the volume', async () => {
+	let store = {generation:'one',records:{chatgpt:{provider:'chatgpt',access:'expired',refresh:'old-refresh',expires:0},
+		'opencode-go':{provider:'opencode-go',key:'go-key'}}};
+	const p = providerFor(Object.keys(store.records),'one',{load:async () => store,persist:async next => {store=next;},
+		exchange:async () => Response.json({access_token:'renewed',refresh_token:'rotated',expires_in:3600})});
+	assert.equal((await p.target('/openai/responses',{})).headers.authorization,'Bearer renewed');
+	assert.equal((await p.target('/opencode-go/chat/completions',{})).headers.authorization,'Bearer go-key');
+	assert.equal(store.records.chatgpt.refresh,'rotated');
+});

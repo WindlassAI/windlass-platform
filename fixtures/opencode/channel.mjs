@@ -7,7 +7,7 @@ import { RunnerLink, machineLayer } from '../../server/src/sandbox/runner-layer.
 import { AcpHarness } from '../../server/src/sandbox/acp-harness.ts';
 import { OPENCODE } from '../../server/src/sandbox/harnesses.ts';
 
-export async function channelTurn(owner, session, id) {
+export async function channelTurn(owner, session, id, model) {
 	const runner = new Session(session, owner, () => {});
 	const messages = [new EventEmitter(),new EventEmitter()];
 	const endpoint = side => ({
@@ -36,7 +36,7 @@ export async function channelTurn(owner, session, id) {
 		for (const mode of (session === 'third' ? ['build', 'plan'] : ['plan'])) {
 			let reply = '', selected;
 			const turn = await harness.runTurn(box, {
-				prompt: 'Say relay proof.', mode, windlassSessionId: previous,
+				prompt: 'Say relay proof.', mode, model, windlassSessionId: previous,
 				signal: AbortSignal.timeout(90000),
 				onAcpModes(current, choices) {
 					assert.deepEqual(choices.map(c => c.id), ['build','plan']);

@@ -74,13 +74,13 @@ async function turn(first, proxyEnv, scan) {
 await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'));
 try {
 	execFileSync('openssl', ['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=api.anthropic.com',
-		'-addext','subjectAltName=DNS:auth.openai.com,DNS:chatgpt.com,DNS:api.openai.com,DNS:api.anthropic.com,DNS:opencode.ai','-keyout',join(dir,'key.pem'),'-out',join(dir,'cert.pem')], { stdio:'ignore' });
+		'-addext','subjectAltName=DNS:auth.openai.com,DNS:chatgpt.com,DNS:api.openai.com,DNS:api.anthropic.com,DNS:opencode.ai,DNS:api.z.ai','-keyout',join(dir,'key.pem'),'-out',join(dir,'cert.pem')], { stdio:'ignore' });
 	await writeFile(join(dir,'expected'),token);
 	await copyFile(join(root,'fixtures/opencode/upstream.cjs'),join(dir,'upstream.cjs'));
 	await cmd(['network','create','--internal',uplink]);
 	// Mount individual files; the recording origin has no access to the runner's pairing state.
 	const mounts = ['key.pem','cert.pem','expected','upstream.cjs'].flatMap(file => ['--mount',`type=bind,src=${dir}/${file},dst=/fixture/${file},readonly`]);
-	await cmd(['run','-d','--pull','never','--network',uplink,'--network-alias','auth.openai.com','--network-alias','chatgpt.com','--network-alias','api.openai.com','--network-alias','api.anthropic.com','--network-alias','opencode.ai','--name',upstream,
+	await cmd(['run','-d','--pull','never','--network',uplink,'--network-alias','auth.openai.com','--network-alias','chatgpt.com','--network-alias','api.openai.com','--network-alias','api.anthropic.com','--network-alias','opencode.ai','--network-alias','api.z.ai','--name',upstream,
 		'--user',String(process.getuid()),'--cap-drop','ALL',...mounts,image,'node','/fixture/upstream.cjs']);
 	storePair(identity, privateKey, 'https://fixture.invalid');
 	const catalog = await probeHarnessOptions(owner, image, 'free');
@@ -138,12 +138,24 @@ try {
 	ok('Open API-key turn and resumed plan turn through the server harness and runner channel.');
 	await storeProvider(owner, {provider:'anthropic',key:token+'-key'});
 	const anth = await create('anthropic',open);
-	await channelTurn(open,'anthropic',saved.get(anth).id);
+	await channelTurn(open,'anthropic',saved.get(anth).id,'anthropic/claude-opus-4-6');
 	ok('Anthropic API-key turn over the runner session channel.');
 	await storeProvider(owner,{provider:'free'});
 	const free = await create('free',owner);
-	await channelTurn(owner,'free',saved.get(free).id);
+	await channelTurn(owner,'free',saved.get(free).id,'opencode/big-pickle');
 	ok('Explicit public models completed a restricted turn without an owner credential.');
+	await storeProvider(owner,{provider:'opencode-go',key:token+'-go'});
+	await storeProvider(owner,{provider:'zai-coding-plan',key:token+'-glm'});
+	const both = await create('both',owner);
+	const blocked = await docker(['exec',both,'curl','--max-time','5','-sS','--noproxy','','-x','http://127.0.0.1:17891','-o','/dev/null','-w','%{http_connect}','https://api.z.ai/']);
+	assert.equal(blocked.stdout.trim(),'403');
+	await channelTurn(owner,'both',saved.get(both).id,'opencode-go/kimi-k3');
+	await channelTurn(owner,'both',saved.get(both).id,'zai-coding-plan/glm-5.3');
+	const log = await cmd(['logs',upstream]);
+	assert.match(log,/authorized opencode.ai \/inference\/go\/openai\/v1\/chat\/completions/);
+	assert.match(log,/authorized api.z.ai \/api\/coding\/paas\/v4\/chat\/completions/);
+	await checkIsolation(both, cmd, token, 'opencode', '/run/wlp-harness/opencode/login.json');
+	ok('Two stored providers, native Go and GLM streaming in one restricted sandbox, blocked direct CONNECT, placeholder scans.');
 	await storeProvider(owner);
 	} catch (error) {
 	const logs = await docker(['logs', upstream]);

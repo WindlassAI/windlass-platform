@@ -146,6 +146,10 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 			const record = await credential(provider);
 			if (!record) return;
 			const headers = { 'content-type': 'application/json' };
+			const attribution = ['user-agent', 'x-title', 'http-referer', 'x-source', 'x-cerebras-3rd-party-integration', 'x-billing-invoke-origin'];
+			if (endpoint.hostname === 'opencode.ai') attribution.push('x-opencode-client','x-opencode-session','x-opencode-session-id',
+				'x-opencode-parent-session-id','x-opencode-project','x-opencode-request');
+			for (const name of attribution) if (h[name]) headers[name] = h[name];
 			if (provider === 'free') headers.authorization = 'Bearer public';
 			else if (endpoint.kind === 'google') headers['x-goog-api-key'] = record.key;
 			else if (endpoint.kind === 'messages') {
