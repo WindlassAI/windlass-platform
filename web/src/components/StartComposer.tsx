@@ -100,7 +100,7 @@ function ChosenSandbox({ profile, claude = null }: { profile: SandboxProfile; cl
 				)}
 				<span className={profile.commandNetwork ? "fact-open" : undefined}>{profile.commandNetworkText ?? (profile.commandNetwork ? "commands can reach the network" : "commands have no network")}</span>
 				{claude ? (
-					<span className="fact-open">commands can read your Claude login token</span>
+					<span className="fact-open">commands can use your Claude login. Runners without a credential relay also expose the setup token.</span>
 				) : (
 					<span className={profile.commandsCanReadAccessToken ? "fact-open" : undefined}>{profile.commandsCanReadAccessToken ? "commands can read the session's access token" : "commands cannot read the session's access token"}</span>
 				)}

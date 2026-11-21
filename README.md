@@ -747,17 +747,26 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   terminal. Paste it at the hidden prompt. A token minted on another computer works there too.
 
   The runner stores the token in `wlp-harness-claude-<machine id>`. The local login helper writes it.
-  Among session containers, only this pairing's hardened Claude containers mount it, read-only. Their conversations stay in their individual containers. The platform receives
-  the harness id, adapter, image digest and sign-in state. The runner scrubs recognizable tokens from
-  command output and file replies. The platform can run commands in a Claude container, and those
-  commands and repository code can read, copy or transmit the token. Use this with a platform and code
-  you trust.
+  A per-machine relay reads this volume for each request. Each hardened Claude session gets a
+  signed placeholder bound to its endpoint on a private Docker bridge. Commands in the session
+  can use the login and consume quota while it runs. The setup token stays in the relay.
+  The relay sends Messages and token-count requests to `https://api.anthropic.com`.
+  Conversations stay in their individual containers.
+
+  The agent keeps its ordinary egress interface. The runner also attaches it to an internal
+  IPv4 machine bridge for `http://wlp-relay:8080`. Docker’s isolated gateway mode keeps the host off this bridge. An egress proxy must bypass this local hostname.
+  The relay needs its own outbound HTTPS route and Docker's embedded DNS on the internal bridge.
+  [Relay verification and Docker checks](sandbox/relay/README.md)
 
   `docker exec windlass-runner windlass-runner status` shows the local sign-in state.
-  `docker exec windlass-runner windlass-runner logout claude` removes the token from the current pairing and each previous
-  pairing, and prints one line per pairing.
-  If a sandbox still mounts the empty volume, the runner removes the volume when it destroys the last such sandbox. A running process that has already
-  loaded the token can retain it. The runner's `prune` command removes the login volume as well.
+  `docker exec windlass-runner windlass-runner logout claude` removes the relay and token for each
+  pairing. The runner's `prune` also removes the relay network and login volume.
+
+  For the upgrade, stop the previous runner and its Claude sessions, archive any needed workspaces
+  locally, then install the updated runner with its pinned Claude image. The runner stops legacy
+  sessions with credential mounts and refuses to reopen them. Recreate those sessions, revoke
+  the previously exposed setup token, and sign in with a fresh one. Restore archived work selectively.
+  Before rolling back to a runner that mounts credentials, log out and disable its Claude harness.
 - **What the runner cannot do, and what the platform cannot do.** The runner cannot start a container of
   another image, run anything on the machine outside the containers it made, touch a container or a volume
   it did not make, or reach a session that did not hand it a ticket. Each Windlass turn is

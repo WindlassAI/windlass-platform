@@ -1,9 +1,6 @@
 #!/bin/sh
 set -eu
-token_file=/run/wlp-harness/claude/token
-if [ -r "$token_file" ]; then
-    CLAUDE_CODE_OAUTH_TOKEN=$(cat "$token_file")
-    export CLAUDE_CODE_OAUTH_TOKEN
-fi
+export NO_PROXY="wlp-relay${NO_PROXY:+,$NO_PROXY}${no_proxy:+,$no_proxy}"
+export no_proxy="$NO_PROXY"
 export CLAUDE_AGENT_ACP_PROTOCOL=v1 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 exec /opt/wlp-claude/node_modules/.bin/claude-agent-acp "$@"

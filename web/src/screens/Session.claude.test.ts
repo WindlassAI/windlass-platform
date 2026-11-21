@@ -169,10 +169,10 @@ describe("an agent's mode on its page", () => {
 		expect(await modeOf()).toBe("acceptEdits");
 	});
 
-	it("says in the panel's sandbox that commands can read the Claude login, and nothing of ChatGPT", async () => {
+	it("says in the panel's sandbox that commands can use the Claude login, and nothing of ChatGPT", async () => {
 		await open("nas-claude");
 		const sandbox = host.querySelector("#panel-sandbox")?.closest("section")?.textContent ?? "";
-		expect(sandbox).toContain("commands in this container can read your Claude login token");
+		expect(sandbox).toContain("commands in this container can use your Claude login. Runners without a credential relay also expose the setup token.");
 		expect(sandbox).toContain("approvalAutoAutomatically assess tool permissions.");
 		expect(sandbox).not.toContain("ChatGPT");
 		expect(sandbox).not.toContain("access token");

@@ -442,13 +442,13 @@ describe("the start composer's agent picker", () => {
 		agents();
 		agent("claude");
 		expect(sandboxLine()).toContain("runs in Auto mode");
-		expect(sandboxLine()).toContain("commands can read your Claude login token");
+		expect(sandboxLine()).toContain("commands can use your Claude login. Runners without a credential relay also expose the setup token.");
 		expect(sandboxLine()).not.toContain("access token");
 		expect(sandboxLine()).not.toContain("without asking");
 		chip("sandbox");
 		const facts = pop()?.querySelector(".profiles .facts")?.textContent ?? "";
 		expect(facts).toContain("approvalAutoAutomatically assess tool permissions.");
-		expect(facts).toContain("commands in this container can read your Claude login token");
+		expect(facts).toContain("commands in this container can use your Claude login. Runners without a credential relay also expose the setup token.");
 		expect(facts).not.toContain("ChatGPT");
 		expect(facts).not.toContain("runs every call without asking");
 	});

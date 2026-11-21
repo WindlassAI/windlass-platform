@@ -4,17 +4,18 @@ import { AcpConnection, LineSplitter, MethodNotFound } from "../../server/src/sa
 import { modesOf, object, optionsOf, type Fields } from "../../server/src/sandbox/acp-options.js";
 import { LABEL_ARG, docker, tmpName } from "../../server/src/sandbox/docker.js";
 import { PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
-import { COMMON_RUN_FLAGS } from "../../server/src/sandbox/profiles.js";
+import { commonRunFlags } from "../../server/src/sandbox/profiles.js";
 import { WORKSPACE } from "../../server/src/sandbox/provider.js";
 import { cleanClaudeOutput } from "./claude-output.js";
-import { volumeFlags } from "./harness-login.js";
+import { relayUrl } from "./claude-relay.js";
 import type { MachineDocker } from "./policy.js";
 
 /** The caller holds the login-volume lock and has checked its ownership. */
 export async function probeClaudeOptions(machine: MachineDocker, pin: string) {
 	const name = tmpName();
 	const child = spawn("docker", ["run", "--rm", "-i", "--name", name, "--label", LABEL_ARG,
-		...volumeFlags(machine, true), ...COMMON_RUN_FLAGS, ...PROFILE_RUN_FLAGS["docker-hardened"]!,
+		...machine.pairingLabelFlags, "--pull", "never", "--log-driver", "none", ...commonRunFlags(1, "none"),
+		"-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=options-only", ...PROFILE_RUN_FLAGS["docker-hardened"]!,
 		pin, "wlp-claude-acp"], { stdio: ["pipe", "pipe", "ignore"] });
 	const rpc = new AcpConnection(line => child.stdin.write(line + "\n"), {
 		notification() {}, async request(method) { throw new MethodNotFound(method); },

@@ -9,7 +9,7 @@ import { audit, showLog } from "./audit.js";
 import { resolveMachineName } from "./machine-name.js";
 import { category, control, pair } from "./control.js";
 import { cleanClaudeOutput } from "./claude-output.js";
-import { changeClaudeLogin, claudeSignIn } from "./harness-login.js";
+import { changeClaudeLogin, claudeSignIn, retireClaudeRelay } from "./harness-login.js";
 import { harnessImage, shotsImage } from "./policy.js";
 import { Executor } from "./docker-executor.js";
 import { requestPair, requestLoginReport, waitForPair } from "./pair-command.js";
@@ -154,6 +154,7 @@ async function main() {
 				const result = await pair(platform, abort.signal, say, name, profiles);
 				if (abort.signal.aborted) { client?.end(); return; }
 				if (result.paired) {
+					if (paired) await retireClaudeRelay(new Executor(paired.current, limits));
 					paired = result.paired; resumePlatform = undefined;
 					client?.end(); client = undefined;
 					if (command === "pair") return;
@@ -179,6 +180,9 @@ async function main() {
 				console.log(note);
 				audit(null, null, "egress", note);
 				const owner = new Executor(paired.current, limits, values.screenshots, claude, pairingProfiles(paired.current.machineId, profiles), policy);
+				// Quarantine old mounts even when the platform is offline. Docker health refresh
+				// reports and retries an unavailable daemon. Legacy sessions cannot reconnect.
+				await owner.secureCredentialPath().catch(() => {});
 				const local = waitForPair(active, () => {}, async signedIn => {
 					await owner.serial(() => owner.loginChanged(signedIn));
 					owner.publishReport?.();
@@ -199,7 +203,7 @@ async function main() {
 					continue;
 				}
 				if (!removed) return;
-				forgetKey();
+				try { await retireClaudeRelay(owner); } finally { forgetKey(); }
 				paired = { ...paired, key: null };
 				idle = removed;
 			}

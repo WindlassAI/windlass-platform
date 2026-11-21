@@ -1,0 +1,19 @@
+#!/usr/bin/env node
+// Test namespace translation at the Docker CLI boundary. Never select existing session or login resources.
+const { spawnSync } = require('node:child_process');
+const { F3_PREFIX: prefix, F3_MACHINE: machine, F3_DIR: dir } = process.env;
+if (!/^f3-check-[a-f0-9]{16}$/.test(prefix) || !/^m_[a-f0-9]{16}$/.test(machine)) process.exit(2);
+const volume = 'wlp-harness-claude-' + machine;
+const args = process.argv.slice(2).map(s => s.replaceAll(volume, prefix + '-login').replace(/wlp-session-(?:claude-)?[a-f0-9]{12}\b/g, name => name.replace('wlp-session-', prefix + '-box-')));
+if (args.some(s => /wlp-session-|wlp-harness-claude-|wlp-user-|wlp-live[-_]|wlp-staging-|windlass-runner[-:]|windlass-tunnel|windlass-platform-sandbox:latest/.test(s))) throw Error('Unexpected resource name');
+if (args[args.indexOf('--network') + 1] === 'bridge' || args[0] === 'network' && args[1] === 'connect' && args[2] === 'bridge') {
+	const at = args.indexOf('bridge'); args[at] = prefix + '-uplink';
+}
+if (args[0] === 'create' && args.includes('WLP_CLAUDE_RELAY_MACHINE=' + machine)) {
+	args.splice(1, 0, '--mount', 'type=bind,src=' + dir + '/cert.pem,dst=/fixture-ca.pem,readonly', '-e', 'NODE_EXTRA_CA_CERTS=/fixture-ca.pem');
+}
+const translate = args.includes('inspect') || args[0] === 'ps' || args[0] === 'volume' && args[1] === 'ls';
+const result = spawnSync('/usr/bin/docker', args, { stdio: ['inherit', translate ? 'pipe' : 'inherit', 'inherit'], encoding: 'utf8' });
+if (translate && result.stdout) process.stdout.write(result.stdout.replaceAll(prefix + '-login', volume)
+	.replaceAll(prefix + '-box-', 'wlp-session-').replaceAll('"' + prefix + '-uplink":', '"bridge":'));
+process.exit(result.status ?? 1);

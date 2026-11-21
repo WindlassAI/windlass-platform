@@ -55,7 +55,7 @@ export interface ClaudeFacts {
 /**
  * The three plain facts of a profile. The ChatGPT sign-in is in no sandbox; what a profile decides is
  * whether the agent's commands can read the short-lived access token a turn is handed. For Claude Code
- * (`claude`) the approval is its mode, and its commands can read the Claude login it runs with.
+ * (`claude`) the approval is its mode, and its commands can use the Claude login it runs with.
  */
 export function ProfileFacts({ profile, claude = null }: { profile: SandboxProfile; claude?: ClaudeFacts | null }) {
 	return (
@@ -81,7 +81,7 @@ export function ProfileFacts({ profile, claude = null }: { profile: SandboxProfi
 			<li>
 				<span className="fact-key">sign-in</span>
 				{claude ? (
-					<span className="fact-value fact-open">commands in this container can read your Claude login token</span>
+					<span className="fact-value fact-open">commands in this container can use your Claude login. Runners without a credential relay also expose the setup token.</span>
 				) : (
 					<span className="fact-value">
 						your ChatGPT sign-in is never in the sandbox

@@ -1,4 +1,5 @@
 import type { HarnessOptions } from "../../server/src/contract.js";
+import { ensureRelay, prepareRelay, removeRelay, removeRelayNetwork, stopLegacyClaude } from "./claude-relay.js";
 import { probeClaudeOptions } from "./claude-options.js";
 import claudePackage from "../../sandbox/harness/claude/package.json";
 import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/control.js";
@@ -13,13 +14,13 @@ import { audit, safeSentence } from "./audit.js";
 import { bubblewrap, externalId, harnessImage, image, shotsImage, runnerCpus, MachineDocker, rawId, type Limits, type Profile } from "./policy.js";
 import { pageLoginLabel } from "./page-login.js";
 import { cleanClaudeOutput } from "./claude-output.js";
-import { claudeSignIn, loginFileState, dropDetachedLoginVolume, withLoginVolume } from "./harness-login.js";
+import { claudeSignIn, loginFileState, dropDetachedLoginVolume, retireClaudeRelay, withLoginVolume } from "./harness-login.js";
 import { open, type Egress } from "./egress-policy.js";
 import { EgressNetwork } from "./egress-network.js";
-import { Refusal, RunnerError, type Identity } from "./state.js";
+import { loadPair, Refusal, RunnerError, type Identity } from "./state.js";
 
 type Lifecycle = Extract<Operation, { name: "connect" | "state" | "suspend" | "destroy" }>;
-export interface Box { egress?: string; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: "claude"; usedAt: number; busy: number; workspaceChecked: boolean }
+export interface Box { egress?: string; legacyClaude?: boolean; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: "claude"; usedAt: number; busy: number; workspaceChecked: boolean }
 
 // Docker's archive HEAD stats just the path, even in a stopped or paused container.
 // Use the CLI's daemon connection so this also respects the owner's Docker context.
@@ -60,6 +61,7 @@ export class Executor extends MachineDocker {
 	readonly boxes = new Map<string, Box>();
 	private readonly claudePin?: string;
 	private readonly claudeProvider?: DockerSandboxes;
+	private credentialPathChecked = false;
 	private optionsPin?: string;
 	private claudeOptions?: HarnessOptions;
 	private signIn: "none" | "token" | "unknown" = "unknown";
@@ -84,9 +86,11 @@ export class Executor extends MachineDocker {
 		if (claude) {
 			this.claudePin = harnessImage("claude");
 			if (!this.claudePin) throw new Refusal("This runner was built without the Claude Code image.");
-			this.claudeProvider = new DockerSandboxes({ cpus, network, machine: identity.machineId, image: this.claudePin, claudeVolume: this.claudeVolume });
+			this.claudeProvider = new DockerSandboxes({ cpus, network, machine: identity.machineId, image: this.claudePin, claudeRelay: () => this.prepareClaudeRelay() });
 		}
 	}
+	/** Caller holds the login lock through relay setup and agent network attachment. */
+	prepareClaudeRelay() { return prepareRelay(this); }
 	requireClaude(profile: Profile) {
 		if (!this.claudeProvider) throw new Refusal("Claude Code is not turned on on this machine: start the runner with --harness claude.");
 		if (profile !== "docker-hardened") throw new Refusal("Claude Code requires the docker-hardened profile.");
@@ -103,7 +107,19 @@ export class Executor extends MachineDocker {
 	}
 	async loginChanged(signedIn: boolean) {
 		await this.refreshLogin();
-		if (signedIn) await this.refreshClaudeOptions(true);
+		if (signedIn) {
+			await this.restoreRelay();
+			await this.refreshClaudeOptions(true);
+		}
+	}
+	private async ensureSignedInRelay() {
+		await withLoginVolume(this, async () => {
+			if (await loginFileState(this) === "token") await ensureRelay(this);
+		});
+	}
+	private async restoreRelay() {
+		if (this.claude && this.signIn === "token" && [...this.boxes.values()].some(b => b.harness && !b.legacyClaude))
+			await this.ensureSignedInRelay();
 	}
 	private async refreshClaudeOptions(loginChanged = false) {
 		const pin = this.claudePin;
@@ -145,21 +161,31 @@ export class Executor extends MachineDocker {
 	async discover(onlySession?: string) {
 		const filters = this.filters();
 		if (onlySession) filters.push("--filter", `label=${LABEL}.session=${onlySession}`);
-		const rows = await dockerOutput(["ps", "-a", ...filters, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${LABEL}.profile"}}|{{.Label "${LABEL}.harness"}}|{{.Label "${LABEL}.egress"}}`]);
+		const rows = await dockerOutput(["ps", "-a", ...filters, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${LABEL}.profile"}}|{{.Label "${LABEL}.harness"}}|{{.Label "${LABEL}.egress"}}|{{.Label "${LABEL}.relay-session"}}`]);
 		const found = new Set<string>();
 		for (const line of rows.trim().split("\n")) {
-			const [name, state, sessionId, profile, harness, egress] = line.split("|");
+			const [name, state, sessionId, profile, harness, egress, relay] = line.split("|");
 			const raw = /^wlp-session-((?:claude-)?[a-f0-9]{12})$/.exec(name)?.[1];
 			if (!raw || (raw.startsWith("claude-") && harness !== "claude") || (harness && harness !== "claude") || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
 			const id = externalId(this.identity.machineId, raw);
 			found.add(id);
 			const box = this.boxes.get(id) ?? { raw, sessionId, profile, ...(harness === "claude" ? { harness: "claude" as const } : {}), usedAt: Date.now(), busy: 0, workspaceChecked: false };
-			this.boxes.set(id, Object.assign(box, { egress, state: state === "running" || state === "restarting" ? "running" as const : "paused" as const }));
+			this.boxes.set(id, Object.assign(box, { egress, legacyClaude: harness === "claude" && relay !== "1", state: state === "running" || state === "restarting" ? "running" as const : "paused" as const }));
 		}
 		for (const [id, box] of this.boxes) {
 			if ((!onlySession || box.sessionId === onlySession) && !found.has(id)) this.boxes.delete(id);
 		}
 		this.dockerHealth = { ok: true };
+	}
+	async secureCredentialPath() {
+		if (this.credentialPathChecked) return;
+		if (this.claude) await withLoginVolume(this, () => stopLegacyClaude(this));
+		else await retireClaudeRelay(this);
+		const pair = loadPair();
+		if (pair?.current.machineId === this.identity.machineId) {
+			for (const old of pair.previous) await retireClaudeRelay(new MachineDocker(old));
+		}
+		this.credentialPathChecked = true;
 	}
 	// Run only after this pairing's authenticated welcome. Stop an old container before
 	// advertising a tighter policy. Its workspace remains available to the owner.
@@ -182,6 +208,7 @@ export class Executor extends MachineDocker {
 	}
 	async refresh(): Promise<void> {
 		try {
+			await this.secureCredentialPath();
 			if (this.enforceEgress) {
 				try { await this.reconcileEgress(); this.egressError = undefined; }
 				catch (error) {
@@ -219,6 +246,7 @@ export class Executor extends MachineDocker {
 			await this.serial(async () => {
 				if (signal.aborted) return;
 				if (this.signIn === "unknown") await this.refreshLogin();
+				await this.restoreRelay();
 				await this.refreshClaudeOptions();
 				// Keep the result of a real sandbox create after this initial bubblewrap check.
 				const first = this.freeDiskBytes === null;
@@ -269,6 +297,7 @@ export class Executor extends MachineDocker {
 		else return;
 		for (const [id, box] of this.boxes) {
 			if (box.sessionId === sessionId) {
+				this.requireRelaySession(box);
 				this.requireProfile(box.profile);
 				this.requireEgress(box);
 				if (box.harness !== harness) throw new Refusal("This session already has a sandbox with a different harness.");
@@ -298,10 +327,7 @@ export class Executor extends MachineDocker {
 		this.freeDiskBytes = await this.disk();
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
 		const input = { uid: this.identity.uid, sessionId, profile };
-		const raw = harness ? await withLoginVolume(this, async () => {
-			await this.ownedVolume(true, this.claudeVolume);
-			return this.claudeProvider!.create({ ...input, harness });
-		}) : await this.provider.create({ ...input, screenshots: this.screenshots && screenshots });
+		const raw = harness ? await withLoginVolume(this, () => this.claudeProvider!.create({ ...input, harness })) : await this.provider.create({ ...input, screenshots: this.screenshots && screenshots });
 		const id = externalId(this.identity.machineId, raw);
 		this.boxes.set(id, { raw, sessionId, profile, harness, egress: this.network.policy.mode, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
 		try { await this.network.attach(raw, containerName(raw)); }
@@ -326,11 +352,15 @@ export class Executor extends MachineDocker {
 		if (box && session !== undefined && box.sessionId !== session) throw new Refusal("This sandbox belongs to another session.");
 		return box;
 	}
+	private requireRelaySession(box: Box) {
+		if (box.legacyClaude) throw new Refusal("This Claude session predates credential isolation. Archive its workspace locally and recreate the session.");
+	}
 	running(id: string, session: string) {
 		const box = this.owned(id, session);
 		if (!box || box.state !== "running") throw new Refusal("Commands require a running sandbox owned by this machine and session.");
 		this.requireProfile(box.profile);
 		this.requireEgress(box);
+		this.requireRelaySession(box);
 		if (box.harness) this.requireClaude(box.profile);
 		box.usedAt = Date.now();
 		return box;
@@ -360,9 +390,13 @@ export class Executor extends MachineDocker {
 			return state;
 		}
 		if (op === "connect") {
+			this.requireRelaySession(box);
 			this.requireProfile(box.profile);
 			this.requireEgress(box);
-			if (box.harness) this.requireClaude(box.profile);
+			if (box.harness) {
+				this.requireClaude(box.profile);
+				await this.ensureSignedInRelay();
+			}
 			if (box.state === "paused") this.room();
 			const handle = await this.provider.connect(box.raw);
 			this.noteState(id, box, handle ? "running" : "none");
@@ -398,7 +432,10 @@ export class Executor extends MachineDocker {
 		await this.provider.destroy(raw);
 		this.boxes.delete(id);
 		if (harness) await withLoginVolume(this, async () => {
-			if (await loginFileState(this).catch(() => "unknown") === "none") await dropDetachedLoginVolume(this);
+			if (await loginFileState(this).catch(() => "unknown") === "none") {
+				await removeRelay(this);
+				await dropDetachedLoginVolume(this);
+			}
 		});
 		this.publishReport?.();
 	}
@@ -435,6 +472,7 @@ export class Executor extends MachineDocker {
 			await this.network.prune();
 			const volumes = await docker(["volume", "ls", "-q", ...this.filters()], { check: true });
 			for (const name of volumes.stdout.trim().split(/\s+/).filter(Boolean)) await this.dropVolume(name);
+			await removeRelayNetwork(this);
 		});
 	}
 }

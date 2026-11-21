@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { LABEL_ARG, docker, helperFlags, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
 import { COMMON_RUN_FLAGS } from "../../server/src/sandbox/profiles.js";
+import { removeRelay, stopLegacyClaude } from "./claude-relay.js";
 import { image, harnessImage, type MachineDocker } from "./policy.js";
 import { directory, loadPair, RunnerError } from "./state.js";
 
@@ -21,6 +22,13 @@ export async function withLoginVolume<T>(machine: MachineDocker, work: () => Pro
 		});
 		return await work();
 	} finally { await fd.close(); }
+}
+
+export async function retireClaudeRelay(machine: MachineDocker) {
+	await withLoginVolume(machine, async () => {
+		await stopLegacyClaude(machine);
+		await removeRelay(machine);
+	});
 }
 
 export function volumeFlags(machine: MachineDocker, readonly: boolean) {
@@ -88,8 +96,7 @@ export async function changeClaudeLogin(machine: MachineDocker, login: boolean, 
 		const pin = harnessImage("claude");
 		if (!pin) throw new RunnerError("This runner was built without the Claude Code image.");
 		console.log("This makes a Claude Code token for this machine with Anthropic's own sign-in (claude setup-token). " +
-			"The token is kept in a Docker volume on this machine and is given only to Claude Code's containers. " +
-			"The platform never receives it during sign-in, but the platform runs commands in those containers, so it could read it there.");
+			"A relay on this machine holds the token. Claude sessions can use the login while they are running.");
 		if (process.stdin.isTTY) {
 			if (!process.stdout.isTTY || !process.stderr.isTTY) throw new RunnerError("Attach a terminal to sign in interactively.");
 			await machine.ensureImage(pin);
@@ -114,7 +121,11 @@ export async function storeClaudeLogin(machine: MachineDocker, token: string | u
 			if (!pair?.key || pair.current.machineId !== machine.identity.machineId || pair.current.uid !== machine.identity.uid)
 				throw new RunnerError("The machine pairing changed during login. Run windlass-runner login claude again.");
 		}
-		if (!await machine.ownedVolume(login, machine.claudeVolume)) return;
+		await stopLegacyClaude(machine);
+		if (!await machine.ownedVolume(login, machine.claudeVolume)) {
+			if (!login) await removeRelay(machine);
+			return;
+		}
 		signal?.throwIfAborted();
 		const name = tmpName();
 		// Use the base image, no network and a private temporary file. No login data in Docker's
@@ -131,12 +142,15 @@ mv -fT -- "$t" token` : 'rm -f -- "$1/token" "$1"/.token.*';
 		const result = await runHelper([...helperFlags(name, "none"), "--user", "0", "--cap-add", "CHOWN",
 			...volumeFlags(machine, false)], name, ["sh", "-c", script, "sh", loginDir], { image, stdin: token });
 		if (result.code !== 0) throw new RunnerError("Docker could not update the Claude login volume.");
-		if (!login) await dropDetachedLoginVolume(machine);
+		if (!login) {
+			await removeRelay(machine);
+			await dropDetachedLoginVolume(machine);
+		}
 	});
 }
 
 // Docker retains even a stopped container's volume reference. Logout unlinks the token
-// immediately. The last Claude sandbox's removal drops the empty volume.
+// immediately. Removing the last legacy mount lets the runner drop the empty volume.
 export async function dropDetachedLoginVolume(machine: MachineDocker) {
 	const refs = await docker(["ps", "-aq", "--filter", "volume=" + machine.claudeVolume], { check: true });
 	if (!refs.stdout.trim()) await machine.dropVolume(machine.claudeVolume);
