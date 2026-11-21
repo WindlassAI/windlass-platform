@@ -34,7 +34,7 @@
  * ("bad-frame"), the runner drops the socket and connects again.
  */
 import type { HarnessOptions, MachineProbe, PlatformConnection } from "../contract.js";
-import { loginCommand, loginResultFrame } from "./protocol.js";
+import { loginCommand, loginResultFrame, positiveLimit } from "./protocol.js";
 import { type Assert, type Of, type Same, boolean, count, either, integer, is, json, list, nullable, object, oneOf, optional, plain, text } from "./check.js";
 
 /** The oldest runner release this server serves: raise it when the server stops reading what older runners send. */
@@ -141,8 +141,7 @@ export type ServerFrame = Of<typeof serverFrame>;
  * `controlProof` (else "unknown"; a removed machine's key is kept to check it before "removed" is
  * said), the release (else "outdated", recorded for the page), then `secondHello`.
  */
-const hello = object({ kind: oneOf("hello"), runnerVersion: version, epoch, time, signature });
-const cap = is<number>((v) => Number.isSafeInteger(v) && (v as number) >= 1);
+const hello = object({ kind: oneOf("hello"), runnerVersion: version, epoch, time, signature, maxTurns: optional(positiveLimit) });
 const modelChoice = object({ id: line(128), name: nullable(line(256)), efforts: list(line(64), 16) });
 const optionsShape = object({
 	models: list(modelChoice, 32), defaultModel: line(128), checkedAt: time,
@@ -168,8 +167,8 @@ const report = object({
 	/** `usedAt` by the runner's clock: the actor corrects it by the offset from the hello. */
 	sandboxes: list(object({ id: sandboxId, sessionId: name, state: oneOf("running", "paused"), usedAt: count }), MAX_REPORTED_SANDBOXES),
 	/** The caps its owner set (`--max-running`, `--max-sandboxes`), left out where none is set. */
-	maxRunning: optional(cap),
-	maxSandboxes: optional(cap),
+	maxRunning: optional(positiveLimit),
+	maxSandboxes: optional(positiveLimit),
 });
 export type LoginResultFrame = Of<typeof loginResultFrame>;
 const runnerFrame = either(either(hello, either(report, loginResultFrame)), either(object({ kind: oneOf("heartbeat") }), object({ kind: oneOf("removed"), sandbox: sandboxId })));

@@ -58,3 +58,15 @@ test("a resumed sandbox adopts this runner's CPU policy", async () => {
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("runner advertises two turn slots by default, and accepts a positive whole-number override", async () => {
+	const { Executor } = await import("../runner/src/docker-executor.js");
+	const { parseRunnerFrame } = await import("../server/src/runner/control.js");
+	const hello = { kind: "hello", runnerVersion: "1.0.0", epoch: "e0123456789", time: Date.now(), signature: "A".repeat(86) };
+	const parse = (extra: object) => parseRunnerFrame(JSON.stringify({ ...hello, ...extra }));
+	assert.equal(new Executor(identity, {}).maxTurns, 2);
+	assert.equal(new Executor(identity, { maxTurns: 3 }).maxTurns, 3);
+	assert.ok(parse({ maxTurns: 2 }));
+	assert.ok(parse({}));
+	for (const cap of [0, -1, 1.5, "3", null]) assert.equal(parse({ maxTurns: cap }), null);
+});

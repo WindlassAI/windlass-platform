@@ -17,7 +17,7 @@ import { forgetKey, save, loadPair, tryLock, origin, read, RunnerError, serviceR
 const positiveInteger = is<number>(v => count(v) && v > 0);
 // Accept the first C3b snapshot on upgrade. Only harness.json records opt-in on new writes.
 const snapshot = object({ machineId: nullable(text(64)), connection: text(2048), idleSuspendMs: nullable(count), runnerVersion: text(64), protocol: count,
-	claude: optional(boolean), maxRunning: optional(positiveInteger), maxSandboxes: optional(positiveInteger) });
+	claude: optional(boolean), maxTurns: optional(positiveInteger), maxRunning: optional(positiveInteger), maxSandboxes: optional(positiveInteger) });
 function limit(flag: string, value: string | undefined) {
 	if (value === undefined) return undefined;
 	const n = Number(value);
@@ -31,7 +31,7 @@ async function main() {
 		if (key === "CLAUDE_CODE_OAUTH_TOKEN" || (value && cleanClaudeOutput(value) !== value)) delete process.env[key];
 	}
 	const { positionals, values } = parseArgs({ allowPositionals: true, options: {
-		platform: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
+		platform: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
 	} });
 	const command = positionals[0] ?? "run";
 	const auth = command === "login" || command === "logout";
@@ -39,11 +39,11 @@ async function main() {
 	const validCommand = auth ? positionals.length === 2 && positionals[1] === "claude"
 		: positionals.length <= 1 && ["run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
-		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune|login claude|logout claude] [--platform URL] [--max-sandboxes N] [--max-running N] [--screenshots] [--harness claude].");
+		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune|login claude|logout claude] [--platform URL] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude].");
 	if (values.harness?.some(id => id !== "claude" || !harnessImage("claude")))
 		throw new RunnerError("Use --harness claude with a runner built with the pinned Claude Code image.");
 	if (values.screenshots && !shotsImage) throw new RunnerError("--screenshots requires a runner built with a pinned screenshots sandbox image.");
-	const limits = { maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]) };
+	const limits = { maxTurns: limit("max-turns", values["max-turns"]) ?? 2, maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]) };
 	if (command === "log") return showLog();
 	const abort = new AbortController();
 	const stop = () => abort.abort();
@@ -89,6 +89,7 @@ async function main() {
 			const offered = status && (harness ?? status.claude);
 			console.log(`Runner ${VERSION}, protocol ${PROTOCOL_VERSION}. ${paired && !serviceRunning() ? "Stopped" : status?.connection ?? (paired ? "Paired" : "Unpaired")}`);
 			const caps = status ?? limits;
+			console.log(`Running turn limit: ${caps.maxTurns ?? "no limit"}`);
 			console.log(`Running sandbox limit: ${caps.maxRunning ?? "no limit"}`);
 			console.log(`Kept sandbox limit: ${caps.maxSandboxes ?? "no limit"}`);
 			if (paired) for (const machine of [paired.current, ...paired.previous]) {

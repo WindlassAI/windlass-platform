@@ -995,7 +995,7 @@ async function main(): Promise<void> {
 	// Before anything imports auth.js, which reads it once: the service tokens this process makes are the server's.
 	process.env.WLP_SECRET = server.secret;
 	// First, and on a clock of their own: nothing of the server is needed for them.
-	await linkChecks();
+	if (process.argv[2] !== "fairness") await linkChecks();
 	const runner = new StandInRunner(ORIGIN, ENDPOINT);
 	const github = new GithubStandin({ callbackUrl: `${ORIGIN}/github/callback` });
 	await github.start();
@@ -1011,6 +1011,14 @@ async function main(): Promise<void> {
 		const newSession = (repoUrl?: string): Promise<SessionSummary> => user.createSession({ place, profile: "docker-hardened", ...(repoUrl ? { repoUrl } : {}) });
 		const refusal = (p: Promise<unknown>) => p.then(() => "accepted", (error) => String((error as { code?: unknown }).code));
 
+		if (process.argv[2] === "fairness") {
+			runner.fake.maxTurns = 2;
+			await runner.connectControl();
+			await until("machine report", async () => (await user.machines()).some(m => m.commandSandbox));
+			const { machineFairnessChecks } = await import("./machine-fairness-check.js");
+			await machineFairnessChecks(check, client, runner, token);
+			return;
+		}
 		await check("launch on a paired machine that has never reported is refused", async () => {
 			const code = await refusal(newSession());
 			assert(code === "machine_not_connected", `launch was ${code}`);

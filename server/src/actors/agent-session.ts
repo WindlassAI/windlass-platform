@@ -101,6 +101,7 @@
  *   machine_unreachable `internalDestroy()` (the user's `deleteSession`): the machine's actor could not record the removal of the sandbox
  */
 
+import { setTimeout as delay } from "node:timers/promises";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
 import {
@@ -3105,6 +3106,16 @@ function itemPrompt(row: InboxRow): string {
 
 /** Runs one accepted turn to its `turn.ended`. `release` gives back the sandbox its acceptance took (`takeSandbox`). Never rejects. */
 async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: string, release: () => void): Promise<void> {
+	const machine = meta.place.kind === "machine" ? machineActor(() => c.client(), meta.uid, meta.place.machineId) : null;
+	try {
+		await executeTurn(c, meta, active, text, release, machine);
+	} finally {
+		if (machine) await machine.releaseSlot(meta.sessionId, active.number).catch(error =>
+			c.log.warn({ msg: "could not release machine turn slot", error: describeError(error) }));
+	}
+}
+
+async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: string, release: () => void, machine: ReturnType<typeof machineActor> | null): Promise<void> {
 	const startedAt = Date.now();
 	const turn = active.number;
 	const effort = active.effort;
@@ -3129,14 +3140,30 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 		return work;
 	};
 	// A turn that never ends would hold its sandbox, and one of the user's running slots, for ever.
-	const limit = setTimeout(() => {
-		if (!open) return;
-		note(c, turn, "warn", `This turn ran for ${duration(TURN_TIMEOUT_MS)}, which is the limit, so it was stopped.`);
-		abortTurn(c, meta, active);
-	}, TURN_TIMEOUT_MS);
-
+	let limit: ReturnType<typeof setTimeout> | undefined;
 	try {
 		await persist(c);
+		if (machine && meta.place.kind === "machine") {
+			let announced = false;
+			for (;;) {
+				signal.throwIfAborted();
+				const slot = await machine.turnSlot(meta.sessionId, turn);
+				signal.throwIfAborted();
+				if (slot.state === "granted") break;
+				if (slot.state === "offline" || slot.state === "removed") throw runnerLink(c, meta.place.machineId).away(slot.state);
+				if (!announced && slot.state === "waiting") {
+					note(c, turn, "info", `Waiting for a free slot on your machine (${slot.busy} of ${slot.max} busy).`);
+					announced = true;
+				}
+				await delay(1000, undefined, { signal });
+			}
+		}
+		limit = setTimeout(() => {
+			if (!open) return;
+			note(c, turn, "warn", `This turn ran for ${duration(TURN_TIMEOUT_MS)}, which is the limit, so it was stopped.`);
+			abortTurn(c, meta, active);
+		}, TURN_TIMEOUT_MS);
+
 		layer = await layerOf(c, meta);
 		if (meta.origin && meta.harness && meta.harness !== "windlass") throw new TurnProblem("Work items and their reviewers run only with Windlass.");
 		if (reviewer && (!checkout || !reviewerAllowed(meta.place, layer.sandboxes.profile(meta.profile)))) {

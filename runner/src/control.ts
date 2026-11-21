@@ -232,7 +232,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 					}
 					if (phase === "challenge" && f.kind === "challenge") {
 						phase = "welcome";
-						send({ kind: "hello", runnerVersion: VERSION, epoch, time: Date.now(), signature: proof(key, controlProof(uid, machineId, f.nonce)) });
+						send({ kind: "hello", maxTurns: owner.maxTurns, runnerVersion: VERSION, epoch, time: Date.now(), signature: proof(key, controlProof(uid, machineId, f.nonce)) });
 					} else if (phase === "welcome" && f.kind === "welcome") {
 						phase = "online"; idle = f.idleSuspendMs; backoff = 1000;
 						mayMaintain = true;

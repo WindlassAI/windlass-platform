@@ -52,6 +52,7 @@ async function dockerOutput(args: string[]) {
 
 export class Executor extends MachineDocker {
 	readonly provider: DockerSandboxes;
+	readonly maxTurns: number;
 	readonly boxes = new Map<string, Box>();
 	private readonly claudePin?: string;
 	private readonly claudeProvider?: DockerSandboxes;
@@ -66,6 +67,7 @@ export class Executor extends MachineDocker {
 
 	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false, readonly claude = false) {
 		super(identity);
+		this.maxTurns = limits.maxTurns ?? 2;
 		const cpus = runnerCpus();
 		this.provider = new DockerSandboxes({ cpus, machine: identity.machineId, image, shotsImage, dataVolume: async () => {
 			await this.ownedVolume(true);

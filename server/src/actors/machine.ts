@@ -9,7 +9,7 @@ import { MINUTE_MS } from "../http-limits.js";
 import { machineError, signed } from "../runner-keys.js";
 import { CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
 import { loginCommand, type LoginCommand, type LoginResult } from "../runner/protocol.js";
-import { grantIsValid } from "./internal.js";
+import { grantIsValid, isActorGone, sessionActor } from "./internal.js";
 
 const SEEN_INTERVAL = 3 * 60_000;
 // A refused copy has no open socket. Give it time to retry before retiring the warning.
@@ -21,9 +21,9 @@ const KEY_WARNING_MS = REFUSED_RETRY_MS + CONTROL_DEAD_MS;
 const HELLO_WAIT_MS = 10_000;
 const offline = () => new UserError("The machine disconnected during sign-in. Start again when it is online.", { code: "machine_not_connected" });
 interface Socket { login(command: LoginCommand): Promise<LoginResult>; send(frame: ServerFrame): boolean; close(code: number, reason: string): void }
-interface Live { offset: number; offersClaude?: boolean; claudeLogin?: boolean; ws: Socket; epoch: string; heardAt: number; connected: number; savedAt: number }
+interface Live { maxTurns?: number; offset: number; offersClaude?: boolean; claudeLogin?: boolean; ws: Socket; epoch: string; heardAt: number; connected: number; savedAt: number }
 /** `greeting` is the one control socket that has yet to say hello: a newer one replaces it. */
-interface Vars { live: Live | null; work: Promise<void>; greeting: Socket | null }
+interface Vars { nextSlotCheck: number; live: Live | null; work: Promise<void>; greeting: Socket | null }
 interface Ctx {
 	db: RawAccess; vars: Vars; key: string[];
 	schedule: { at(timestamp: number, action: string): Promise<string>; list(): Promise<Array<{ action: string; runAt: number }>> };
@@ -35,6 +35,8 @@ type Row = { name: string; version: string; public_key: string; created: number;
 export interface MachineUpdate { status: MachineStatus; since: number; runnerVersion: string; warnings: MachineWarning[]; report: Report | null }
 /** `publicKey` is the machine's Ed25519 key, SPKI in base64; it never changes (pairing again makes a new machine). */
 export interface MachineFacts { status: MachineStatus | "removed"; name: string; publicKey: string; report: Report | null }
+export type TurnSlot = { state: "granted" | "reconnecting" | "offline" | "removed" } | { state: "waiting"; busy: number; max: number };
+type SlotRow = { session: string; turn: number; running: number };
 export type Attachment = { ok: true } | { ok: false; reason: "offline" | "removed" | "unknown" };
 
 const controlPath = (r?: Request) => !!r && new URL(r.url).pathname === "/websocket/control";
@@ -49,6 +51,39 @@ function ordered<T>(c: Ctx, step: () => Promise<T>): Promise<T> {
 	const result = c.vars.work.then(step);
 	c.vars.work = result.then(() => {}, () => {});
 	return result;
+}
+
+// The FIFO belongs to the machine, across control sockets and actor sleeps. Only a new
+// request, a grant or a release writes SQLite. Polls of a full queue are read-only.
+async function requestSlot(c: Ctx, session: string, turn: number): Promise<TurnSlot> {
+	const rows = await c.db.execute<SlotRow>("SELECT session, turn, running FROM turn_slots ORDER BY rowid");
+	const own = rows.find(row => row.session === session && row.turn === turn);
+	if (!c.vars.live) {
+		const machine = await record(c);
+		if (!machine || machine.removed_at !== null) return { state: "removed" };
+		return { state: own ? "reconnecting" : "offline" };
+	}
+	if (own?.running) return { state: "granted" };
+	const max = c.vars.live.maxTurns;
+	const busy = rows.filter(row => row.running).length;
+	const first = rows.find(row => !row.running);
+	const grant = max === undefined || (busy < max && (!first || first === own));
+	if (!own) await c.db.execute("INSERT INTO turn_slots VALUES (?, ?, ?)", session, turn, Number(grant));
+	else if (grant) await c.db.execute("UPDATE turn_slots SET running = 1 WHERE session = ? AND turn = ?", session, turn);
+	return grant ? { state: "granted" } : { state: "waiting", busy, max: max! };
+}
+
+// A session node can die before its release arrives. Reconcile by turn number, outside
+// the machine's control queue, so a sleeping session can call back during recovery.
+async function reapSlots(c: Ctx) {
+	const rows = await c.db.execute<SlotRow>("SELECT session, turn, running FROM turn_slots");
+	await Promise.all(rows.map(async row => {
+		try {
+			const summary = await sessionActor(c, c.key[0]!, row.session).internalSummary();
+			if (summary.turns === row.turn && summary.status !== "idle") return;
+		} catch (error) { if (!isActorGone(error)) return; }
+		await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", row.session, row.turn);
+	}));
 }
 
 async function record(c: Ctx) {
@@ -116,9 +151,10 @@ export const machine = actor({
 		await db.execute(`CREATE TABLE IF NOT EXISTS machine (id INTEGER PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL,
 			public_key TEXT NOT NULL, created INTEGER NOT NULL, seen INTEGER, removed_at INTEGER, remove_sandboxes INTEGER NOT NULL DEFAULT 0, offset INTEGER NOT NULL DEFAULT 0, duplicate INTEGER, report TEXT)`);
 		await db.execute("CREATE TABLE IF NOT EXISTS connection_budget (id INTEGER PRIMARY KEY, minute INTEGER NOT NULL, used INTEGER NOT NULL)");
+		await db.execute("CREATE TABLE IF NOT EXISTS turn_slots (session TEXT NOT NULL, turn INTEGER NOT NULL, running INTEGER NOT NULL, PRIMARY KEY (session, turn))");
 		await db.execute("CREATE TABLE IF NOT EXISTS pending (sandbox TEXT PRIMARY KEY)");
 	} }),
-	createVars: (): Vars => ({ live: null, work: Promise.resolve(), greeting: null }),
+	createVars: (): Vars => ({ nextSlotCheck: 0, live: null, work: Promise.resolve(), greeting: null }),
 	onCreate: async (c, input?: Input) => {
 		if (!input || c.key.length !== 2 || !MACHINE_ID.test(c.key[1]!) || !grantIsValid(input.grant, c.key, "machine") || Date.now() >= input.expires) { c.destroy(); return; }
 		const now = Date.now();
@@ -238,7 +274,7 @@ export const machine = actor({
 					}
 					const [changed] = await c.db.execute<Row>("UPDATE machine SET seen = ?, version = ?, offset = ? WHERE removed_at IS NULL RETURNING *", now, frame.runnerVersion, frame.time - now);
 					if (!changed || closed) return;
-					c.vars.live = { ws, offset: frame.time - now, epoch: frame.epoch, heardAt: now, connected: now, savedAt: now };
+					c.vars.live = { ws, maxTurns: frame.maxTurns, offset: frame.time - now, epoch: frame.epoch, heardAt: now, connected: now, savedAt: now };
 					old?.ws.close(1001, "Reconnected");
 					ws.send({ kind: "welcome", idleSuspendMs: config.idleSuspendMs });
 					for (const { sandbox } of await c.db.execute<{ sandbox: string }>("SELECT sandbox FROM pending")) ws.send({ kind: "remove", sandbox });
@@ -269,6 +305,19 @@ export const machine = actor({
 		ws.send({ kind: "challenge", nonce });
 	},
 	actions: {
+		internalTurnSlot: async (c, session: string, turn: number): Promise<TurnSlot> => {
+			requireServiceFor(c, "call");
+			const slot = await ordered(c, () => requestSlot(c, session, turn));
+			if (slot.state === "waiting" && Date.now() >= c.vars.nextSlotCheck) {
+				c.vars.nextSlotCheck = Date.now() + 60_000;
+				void c.keepAwake(reapSlots(c).catch(error => machineError("check machine turn slots", error)));
+			}
+			return slot;
+		},
+		internalReleaseTurnSlot: async (c, session: string, turn: number): Promise<void> => {
+			requireServiceFor(c, "call");
+			await ordered(c, async () => { await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", session, turn); });
+		},
 		internalFacts: async (c): Promise<MachineFacts> => {
 			requireServiceFor(c, "call");
 			const r = await record(c);

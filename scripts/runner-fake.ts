@@ -16,6 +16,7 @@ export const post = (origin: string, path: string, body: unknown) => fetch(origi
 export class FakeRunner {
 	readonly key = generateKeyPairSync("ed25519").privateKey;
 	readonly epoch = randomUUID();
+	maxTurns?: number;
 	readonly report: Report = { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 1234567, sandboxes: [] };
 	readonly details: PairRequest = { name: "Test machine", os: "Linux", arch: "arm64", runnerVersion: MIN_RUNNER_VERSION,
 		publicKey: createPublicKey(this.key).export({ type: "spki", format: "pem" }).toString() };
@@ -46,7 +47,7 @@ export class FakeRunner {
 				case "challenge":
 					signature = this.sign(controlProof(id.uid, id.machineId, frame.nonce));
 					await options.beforeHello;
-					send({ kind: "hello", signature: options.signature ?? signature, runnerVersion: options.version ?? MIN_RUNNER_VERSION, epoch: options.epoch ?? this.epoch, time: Date.now() + (options.offset ?? 0) });
+					send({ kind: "hello", maxTurns: this.maxTurns, signature: options.signature ?? signature, runnerVersion: options.version ?? MIN_RUNNER_VERSION, epoch: options.epoch ?? this.epoch, time: Date.now() + (options.offset ?? 0) });
 					break;
 				case "welcome": send(this.report); break;
 				case "heartbeat": send({ kind: "heartbeat" }); break;

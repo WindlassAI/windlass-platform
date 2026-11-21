@@ -40,6 +40,8 @@ const loginResult = either(
 export type LoginResult = Of<typeof loginResult>;
 export const loginResultFrame = object({ kind: oneOf("harnessLogin.result"), requestId, result: loginResult });
 
+export const positiveLimit = is<number>(v => count(v) && v > 0);
+
 export const PROTOCOL_VERSION = 1;
 /** Under the 256 KiB RivetKit takes per incoming message (registry.ts); the probe measures the gateway. */
 export const MAX_FRAME_BYTES = 128 * 1024;

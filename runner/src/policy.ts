@@ -23,7 +23,7 @@ export function runnerCpus(): number {
 }
 
 // The machine belongs to its owner, so the platform sets no default sandbox limits.
-export type Limits = { maxRunning?: number; maxSandboxes?: number };
+export type Limits = { maxTurns?: number; maxRunning?: number; maxSandboxes?: number };
 // The Docker name distinguishes Claude containers. The platform keeps the original sandbox id across upgrades.
 export const externalId = (machine: string, raw: string) => `m${machine}-${raw.replace(/^claude-/, "")}`;
 export function rawId(machine: string, id: string) {

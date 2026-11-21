@@ -733,7 +733,10 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   sandbox time and no place among the kept sandboxes, have no price, and its turns are not among the
   user's agents working at once: one rule, `hostedLimitsApply` (`server/src/usage.ts`), holds a session
   to the daily time, the kept sandboxes and the running agents, and it holds only a hosted one.
-  What bounds a machine is the machine: its runner takes `--max-running` and `--max-sandboxes`, with no
+  A runner accepts two simultaneous turns by default. Set `--max-turns N` to change this.
+  The machine actor queues additional turns in arrival order and keeps them across runner reconnects.
+  Stop cancels a queued turn. Older runners omit the turn limit and allow unlimited concurrent turns.
+  For optional limits on Docker containers, its runner takes `--max-running` and `--max-sandboxes`, with no
   default, after the command above, and a turn that would pass one ends with "This machine has reached its
   own limit on kept sandboxes, set by --max-sandboxes." (or on running sandboxes, by `--max-running`). The
   Machines page shows what is in force under "Sandbox limit", "no limit" or the numbers, and says that a
@@ -2112,9 +2115,9 @@ Only hosted sandboxes, the layer `WLP_SANDBOX` chooses, are counted. A session s
 (`place` in `createSession`): hosted when left out,
 or one of its user's machines ("Machines of your own"). The platform's limits do not hold a machine's
 sessions (`hostedLimitsApply`): their sandboxes take no sandbox time and no kept place and have no price,
-and their turns do not count towards the limit on agents working at once. What bounds a machine is its
-runner's own caps, which its owner may set with `--max-running` and `--max-sandboxes`, and there are none
-unless they do. The usage page lists a machine's sandboxes apart, under "On your machines": "Not counted
+and their turns do not count towards the hosted limit on agents working at once. Each runner has its own
+`--max-turns` limit (default 2). Its owner can also cap running and kept containers with `--max-running`
+and `--max-sandboxes`. The usage page lists a machine's sandboxes apart, under "On your machines": "Not counted
 against your daily sandbox time, running agents or kept sandboxes."
 
 - **What is counted.** The time a session's sandbox runs: from the moment the session has it created or

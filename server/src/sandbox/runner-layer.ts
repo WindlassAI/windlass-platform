@@ -27,7 +27,7 @@
  * caller decides, and the turn's own `stopLeftovers` ends what a lost `start` left).
  */
 import { isActorGone } from "../actors/internal.js";
-import type { Attachment, MachineFacts } from "../actors/machine.js";
+import type { Attachment, MachineFacts, TurnSlot } from "../actors/machine.js";
 import type { SandboxProfile, SandboxProfileId, SessionSnapshot } from "../contract.js";
 import { describeError, serviceParams } from "../auth.js";
 import { type ChannelSocket, ConversationLost, ServerChannel } from "../runner/channel.js";
@@ -64,12 +64,14 @@ export interface MachineSeam {
 
 /** The real `machine` actor, through the actor's client. A check passes a stand-in instead. */
 // biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
-export function machineActor(client: () => any, uid: string, machineId: string): MachineSeam {
+export function machineActor(client: () => any, uid: string, machineId: string) {
 	const machine = () => client().machine.get([uid, machineId], { params: serviceParams() });
 	return {
-		attach: (sessionId, ticket) => machine().internalAttach({ sessionId, ticket }),
+		turnSlot: (sessionId: string, turn: number): Promise<TurnSlot> => machine().internalTurnSlot(sessionId, turn),
+		releaseSlot: (sessionId: string, turn: number): Promise<void> => machine().internalReleaseTurnSlot(sessionId, turn),
+		attach: (sessionId: string, ticket: string) => machine().internalAttach({ sessionId, ticket }),
 		facts: () => machine().internalFacts(),
-		removeSandbox: async (sandboxId, sessionId) => {
+		removeSandbox: async (sandboxId: string | null, sessionId?: string) => {
 			try {
 				await machine().internalRemoveSandbox({ sandboxId, sessionId });
 			} catch (error) {
@@ -311,16 +313,18 @@ export class RunnerLink {
 
 	/** Settles whoever waits for a socket. The name is what the link already has: nothing more is asked of an actor that may be what is slow. */
 	private unreachable(reason: "offline" | "removed"): void {
-		// While work waits on a lost socket, the banner goes on saying that the machine stopped answering, and since when.
+		const error = this.away(reason);
+		this.waiting?.settle(error);
+	}
+
+	away(reason: "offline" | "removed"): MachineUnreachable {
 		if (reason === "removed" || this.found?.state !== "not_answering") this.note(reason);
 		if (reason === "removed") {
-			// It never comes back: what waits on it (a turn whose socket the runner dropped) ends now, not after the grace.
 			this.channel.close(REMOVED);
-			this.waiting?.settle(new MachineUnreachable(reason, REMOVED));
-			return;
+			return new MachineUnreachable(reason, REMOVED);
 		}
-		const name = this.heard?.name;
-		this.waiting?.settle(new MachineUnreachable(reason, `${name ? `Your machine "${name}"` : "Your machine"} is offline. The agent's files are there; send the prompt again when it is back.`));
+		const name = this.heard?.name ?? this.who.machineName;
+		return new MachineUnreachable(reason, `${name ? `Your machine "${name}"` : "Your machine"} is offline. The agent's files are there; send the prompt again when it is back.`);
 	}
 
 	/** A hello made a socket current. */
