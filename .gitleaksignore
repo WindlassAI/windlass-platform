@@ -1,0 +1,2 @@
+# The GitHub App test asserts that a runtime-generated key starts with a PEM header.
+9696cb0352e2e2c95ab3bf07fbadaa3a8392372d:scripts/github-check.ts:private-key:250
