@@ -6,13 +6,82 @@
 
 /* ---- rows ------------------------------------------------------------------------------------ */
 
+/*
+ * "Needs you" in its own hue everywhere: the shared token once it lands (--needs), amber until then.
+ * Helm's row: the glyph, the title over its facts in mono, the track of stages, the verdict as a chip,
+ * the time. Hairlines between rows; a hovered row lifts into a rounded wash.
+ */
 .item-row {
-	grid-template-columns: 22px minmax(0, 1fr) auto 76px;
+	--needs-ink: var(--needs, var(--warn));
+	--needs-tint: var(--needs-wash, var(--warn-wash));
+	grid-template-columns: 22px minmax(0, 1fr) auto 142px 52px;
+	column-gap: 14px;
+	min-height: 56px;
+	padding: 10px 10px 10px 10px;
+}
+.item-row .agent-title {
+	font-size: var(--text-14);
+	font-weight: var(--weight-medium);
+	letter-spacing: -0.005em;
+}
+.item-row .agent-meta {
+	margin-top: 2px;
+	font-size: 11.5px;
+	color: var(--ink-faint);
+}
+.item-row .agent-meta > span:not(:last-child)::after {
+	content: "/";
+	margin: 0 0.55em;
+	opacity: 0.55;
+}
+.item-row .agent-repo {
+	color: var(--ink-dim);
+}
+.item-row .agent-state {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 4px 8px;
+	max-width: 260px;
+}
+.item-row .agent-time {
+	font-size: 11.5px;
+}
+/* A turn of it runs: a line pays out along its foot, as the drum turns. */
+.item-row-is-working::after {
+	content: "";
+	position: absolute;
+	left: 44px;
+	right: 10px;
+	bottom: -1px;
+	height: 1px;
+	background: linear-gradient(90deg, transparent, var(--accent-fill), transparent) no-repeat;
+	background-size: 28% 100%;
+	animation: item-pay 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+	pointer-events: none;
+}
+@keyframes item-pay {
+	from {
+		background-position: -40% 0;
+	}
+	to {
+		background-position: 140% 0;
+	}
+}
+/* The questions it asks are in its own hue, the pill too. */
+.item-row .status-badge-waiting {
+	border-color: color-mix(in srgb, var(--needs-ink) 50%, transparent);
+	background: var(--needs-tint);
+	color: var(--needs-ink);
+}
+.item-row .status-waiting {
+	color: var(--needs-ink);
 }
 /* Why it is where it is: the server's sentence, in the text face, between the title and the facts. */
 .item-row-why {
-	margin-top: 3px;
-	font-size: var(--size-small);
+	margin-top: 2px;
+	font-size: var(--text-13);
 	line-height: 1.45;
 	color: var(--ink-dim);
 }
@@ -23,12 +92,39 @@
 	align-items: center;
 	gap: 3px;
 	color: inherit;
+	text-decoration: none;
+	border-radius: 3px;
+	transition: color var(--dur-hover) var(--ease);
 }
 .item-pull:hover {
-	color: var(--accent-strong);
+	color: var(--accent-text);
 }
+/* The verdict's word as one of Helm's chips: 22 px, an inset edge, in its tone. */
 .item-verdict {
+	display: inline-flex;
+	font-family: var(--font-text);
+	align-items: center;
+	height: 22px;
+	padding: 0 8px;
+	border-radius: var(--r-item);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 32%, transparent);
+	font-size: 11.5px;
+	font-weight: var(--weight-medium);
 	white-space: nowrap;
+}
+.item-verdict.tone-good {
+	color: var(--accent-text);
+	background: var(--accent-wash);
+}
+.item-verdict.tone-warn {
+	background: var(--warn-wash);
+}
+.item-verdict.tone-bad {
+	background: var(--bad-wash);
+}
+.item-verdict.tone-dim {
+	color: var(--ink-dim);
+	box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 /* Queued, or waiting for something that ends by itself: a still ring, dashed. */
 .item-glyph-waiting {
@@ -39,31 +135,90 @@
 	border-radius: 50%;
 }
 
+/* The track: one short bar a stage, lit up to where the item is, the one it moves on in the accent. */
+.item-track {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	color: var(--ink-faint);
+	white-space: nowrap;
+}
+.item-track-none {
+	min-width: 0;
+}
+.item-track-bars {
+	display: inline-flex;
+	gap: 3px;
+}
+.item-track-bars i {
+	width: 10px;
+	height: 4px;
+	border-radius: 2px;
+	background: color-mix(in srgb, var(--ink-faint) 30%, transparent);
+	transition: background-color 240ms var(--ease);
+}
+.item-track-bars i.f {
+	background: var(--ink-faint);
+}
+.item-track-bars i.now {
+	background: var(--accent-text);
+	animation: item-now 1.8s ease-in-out infinite;
+}
+@keyframes item-now {
+	50% {
+		opacity: 0.45;
+	}
+}
+.item-track-work .item-track-word {
+	color: var(--accent-text);
+}
+.item-track-yours .item-track-bars i.f {
+	background: var(--accent-text);
+}
+/* Every row of "Ready for you" is yours: the lit track says it, the word would only repeat. */
+.item-track-yours .item-track-word {
+	color: var(--accent-text);
+	opacity: 0;
+}
+.item-track-done .item-track-bars i.f {
+	background: var(--line-field);
+}
+
 .items-group {
-	margin-top: 18px;
+	margin-top: 22px;
 }
 .items-group-head {
 	display: flex;
-	align-items: baseline;
-	gap: 10px;
-	padding: 0 8px 6px 12px;
+	align-items: center;
+	gap: 8px;
+	height: 32px;
+	padding: 0 2px;
 	border-bottom: 1px solid var(--line);
-	font-family: var(--font-mono);
-	font-size: var(--size-mono-small);
-	font-weight: 400;
-	letter-spacing: 0.08em;
-	text-transform: uppercase;
-	color: var(--ink-faint);
+	font-size: 12.5px;
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
 }
 .items-group-count {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	font-weight: 400;
 	font-variant-numeric: tabular-nums;
-	letter-spacing: 0;
+	color: var(--ink-faint);
 }
 .items-fold {
-	padding-left: 12px;
+	padding-left: 2px;
 }
 .needs-you .agent-group-name {
-	color: var(--info);
+	color: var(--needs, var(--warn));
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.item-row-is-working::after,
+	.item-track-bars i.now {
+		animation: none;
+	}
 }
 
 /* ---- the dialogs ------------------------------------------------------------------------------ */
@@ -657,9 +812,6 @@
 }
 
 @media (max-width: 760px) {
-	.item-row {
-		grid-template-columns: 22px minmax(0, 1fr) auto;
-	}
 	.item-actions {
 		justify-content: stretch;
 	}
@@ -722,23 +874,225 @@
 
 /* ---- the Factory page --------------------------------------------------------------------------- */
 
-/* Its filters, under the composer and over the groups, as the composer's own chips. */
+/* Its head: the title over Helm's facts (a count in ink, a dot a group), the factory's turns at the right with their meter. */
+.factory-head {
+	align-items: flex-end;
+	margin-bottom: 18px;
+}
+.factory-head .display {
+	margin-top: 0;
+}
+.factory-facts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 14px;
+	margin-top: 8px;
+	font-family: var(--font-text);
+	font-size: 12.5px;
+	letter-spacing: 0;
+	text-transform: none;
+	color: var(--ink-faint);
+}
+.factory-fact {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+.factory-fact strong {
+	color: var(--ink-dim);
+	font-weight: var(--weight-medium);
+}
+.factory-fact-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: currentColor;
+}
+.factory-fact-work {
+	color: var(--accent-text);
+}
+.factory-fact-ready {
+	color: var(--ink-dim);
+}
+.factory-fact-ready .factory-fact-dot {
+	background: transparent;
+	box-shadow: inset 0 0 0 1.5px var(--accent-text);
+}
+.factory-fact-draft .factory-fact-dot {
+	background: transparent;
+	box-shadow: inset 0 0 0 1.5px var(--ink-faint);
+}
+.factory-fact-needs {
+	color: var(--needs, var(--warn));
+}
+.factory-turns {
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 4px;
+	margin-top: 0;
+	text-align: right;
+}
+.factory-turns-line {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+}
+.factory-turns-n {
+	color: var(--ink);
+	font-family: var(--font-mono);
+}
+.factory-meter {
+	display: inline-flex;
+	gap: 3px;
+}
+.factory-meter i {
+	width: 12px;
+	height: 4px;
+	border-radius: 2px;
+	background: var(--line-strong);
+}
+.factory-meter i.on {
+	background: var(--accent-text);
+}
+.factory-usage-link {
+	color: var(--ink-dim);
+}
+
+/* The filters: two of the composer's pills under it, each opening its menu. */
 .factory-filters {
-	margin-top: 22px;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	margin-top: 28px;
 }
-.factory-filters + .agent-group,
-.factory-none + .agent-group {
-	margin-top: 14px;
+.factory-filter {
+	box-shadow: inset 0 0 0 1px var(--line-strong);
 }
-.factory-options {
-	margin-top: 6px;
+.factory-filter-name {
+	margin-right: 6px;
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
 }
+.factory-clear {
+	margin-left: 4px;
+	font-size: var(--text-12);
+	color: var(--ink-faint);
+}
+
+/* The lanes: Helm's section heads (a name and its count in mono) over a ruled list. */
+.factory-group {
+	margin-top: 30px;
+}
+.factory-filters + .factory-group,
+.factory-none + .factory-group {
+	margin-top: 18px;
+}
+.factory-lane-head {
+	display: flex;
+	justify-content: flex-start;
+	align-items: center;
+	gap: 8px;
+	height: 32px;
+	margin: 0;
+	padding: 0 2px;
+	border: 0;
+	font-family: var(--font-text);
+	font-size: 12.5px;
+	font-weight: var(--weight-medium);
+	letter-spacing: 0;
+	text-transform: none;
+	color: var(--ink-dim);
+}
+.factory-lane-head .agent-group-name {
+	font-family: inherit;
+	font-size: inherit;
+	letter-spacing: inherit;
+	text-transform: none;
+}
+.factory-lane-head .agent-group-count {
+	margin-left: 0;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	letter-spacing: 0;
+	text-transform: none;
+	color: var(--ink-faint);
+}
+.factory-lane {
+	border-top: 1px solid var(--line);
+}
+.factory-lane > .item-row:hover,
+.factory-lane > .item-row:focus-within {
+	border-radius: var(--r-control);
+	border-bottom-color: transparent;
+	background: var(--bg-hover);
+}
+.factory-lane > .item-row:has(+ .item-row:hover) {
+	border-bottom-color: transparent;
+}
+
+/* "Needs you": one card in its hue, a breathing ring at each row, the question in ink. */
+.factory-lane-needs .factory-lane-head .agent-group-name {
+	color: var(--ink-dim);
+}
+.factory-lane-needs .factory-lane {
+	padding: 4px;
+	border: 0;
+	border-radius: 12px;
+	background: var(--needs-wash, var(--warn-wash));
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--needs, var(--warn)) 24%, transparent);
+}
+.factory-lane-needs .item-row {
+	border-bottom-color: color-mix(in srgb, var(--needs, var(--warn)) 14%, transparent);
+	border-radius: var(--r-control);
+}
+.factory-lane-needs .item-row:last-child {
+	border-bottom: 0;
+}
+.factory-lane-needs .item-row:hover,
+.factory-lane-needs .item-row:focus-within {
+	background: color-mix(in srgb, var(--needs, var(--warn)) 7%, transparent);
+}
+.factory-lane-needs .agent-glyph {
+	position: relative;
+}
+.factory-lane-needs .agent-glyph > svg {
+	display: none;
+}
+.factory-lane-needs .agent-glyph::before {
+	content: "";
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--needs, var(--warn));
+	box-shadow: 0 0 0 4px color-mix(in srgb, var(--needs, var(--warn)) 18%, transparent);
+	animation: factory-breathe 2.4s ease-in-out infinite;
+}
+@keyframes factory-breathe {
+	50% {
+		box-shadow: 0 0 0 7px color-mix(in srgb, var(--needs, var(--warn)) 6%, transparent);
+	}
+}
+.factory-lane-needs .item-row-why {
+	color: var(--ink);
+}
+/* The lane says it already: no pill a row, and the question is the point, not the track. */
+.factory-lane-needs .status-badge-waiting,
+.factory-lane-needs .item-track {
+	display: none;
+}
+@media (min-width: 761px) {
+	.factory-lane-needs .item-row {
+		grid-template-columns: 22px minmax(0, 1fr) auto 52px;
+	}
+}
+
 .factory-none {
-	margin-top: 14px;
-	padding-left: 12px;
+	margin-top: 18px;
+	padding-left: 2px;
 }
 .factory-fold {
-	margin-top: 18px;
+	margin-top: 22px;
 }
 .factory-empty {
 	margin-top: 22px;
@@ -746,4 +1100,61 @@
 }
 .factory-empty p {
 	max-width: 62ch;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.factory-lane-needs .agent-glyph::before {
+		animation: none;
+	}
+}
+
+@media (max-width: 760px) {
+	.factory-head {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 10px;
+	}
+	.factory-turns {
+		align-items: flex-start;
+		text-align: left;
+	}
+	.factory-filters {
+		margin-top: 22px;
+	}
+	.item-row {
+		grid-template-columns: 22px auto minmax(0, 1fr) auto;
+		grid-template-areas:
+			"glyph main main main"
+			". state track time";
+		row-gap: 8px;
+		padding: 12px 6px 12px 8px;
+	}
+	.item-row .agent-main {
+		min-width: 0;
+	}
+	.item-row .item-track {
+		grid-area: track;
+		justify-self: end;
+		align-self: center;
+		min-width: 0;
+	}
+	.item-row .agent-time {
+		align-self: center;
+	}
+	.item-row .item-track-none {
+		display: none;
+	}
+	.item-row .agent-state {
+		justify-content: flex-start;
+		max-width: none;
+	}
+	.item-row .agent-state:empty {
+		display: none;
+	}
+	.item-row .item-track-word {
+		display: none;
+	}
+	.item-row-is-working::after {
+		left: 38px;
+	}
 }

@@ -75,7 +75,6 @@ const groups = () =>
 		.map((group) => ({ name: group.querySelector(".agent-group-name")?.textContent ?? "", titles: [...group.querySelectorAll(".agent-title")].map((title) => title.firstChild?.textContent ?? "") }));
 const rows = () => [...host.querySelectorAll(".factory-group .item-row")].filter((row) => !row.closest("[hidden]")) as HTMLElement[];
 const field = () => host.querySelector(".start textarea") as HTMLTextAreaElement;
-const chip = (label: string, within: string) => [...host.querySelectorAll(`${within} .mini-select`)].find((select) => select.firstElementChild?.textContent === label) as HTMLElement;
 /** The start composer's pill of a picker, by its name ("repo", "where", "agent", "mode", "criteria"). */
 const pill = (name: string) => host.querySelector(`.start [data-picker="${name}"]`) as HTMLButtonElement | null;
 /** The open picker, drawn at the end of the page. */
@@ -89,11 +88,11 @@ function write(text: string, into: HTMLTextAreaElement = field()): void {
 	});
 }
 
-/** Opens a filter's chip and chooses one of its choices, by its words. */
+/** Opens a filter's menu ("repo", "from") and chooses one of its choices, by its words. */
 async function filter(label: string, choice: string): Promise<void> {
-	act(() => (chip(label, ".factory-filters").querySelector("button") as HTMLButtonElement).click());
-	const option = [...host.querySelectorAll(".factory-filters .start-option")].find((candidate) => candidate.textContent === choice) as HTMLElement;
-	act(() => (option.querySelector("input") as HTMLInputElement).click());
+	act(() => (host.querySelector(`.factory-filters [data-picker="${label === "repo" ? "repository" : label}"]`) as HTMLButtonElement).click());
+	const option = [...(pop()?.querySelectorAll('[role="menuitemradio"]') ?? [])].find((candidate) => candidate.querySelector(".ui-item-label")?.textContent === choice) as HTMLElement;
+	await act(async () => option.click());
 	await settle(4);
 }
 
