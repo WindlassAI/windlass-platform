@@ -116,6 +116,7 @@ describe("the Factory composer's mode choice", () => {
 		make({});
 		await show("/factory");
 		expect(group()?.textContent).toBe("Plan firstQuick");
+		expect(document.getElementById(group()!.getAttribute("aria-describedby")!)?.textContent).toBe("Adds a planning turn you approve; may spend up to 3× a Quick item.");
 		expect(option("orchestrate")?.checked).toBe(true);
 		await file("Search the docs");
 		expect(filed[0]).toMatchObject({ title: "Search the docs", mode: "orchestrate" });
@@ -170,6 +171,23 @@ describe("a feature's plan on its page", () => {
 		expect(after.plan?.status).toBe("approved");
 		expect(host.querySelector(".feature-plan .usage-count")?.textContent).toBe("v3 · approved");
 		expect(host.querySelector(".plan-task:first-child .plan-task-title")?.tagName).toBe("A");
+	});
+
+	it("saves a single suggestion’s answers before approving one implementer", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Search the docs from the command line");
+		const edited = await api().actOnItem(feature.id, { kind: "edit_plan", version: feature.plan!.version,
+			plan: { ...feature.plan!, subtasks: [], singleSuggested: "One library change.", questions: [{ id: "db", text: "Which database?" }] } });
+		await show(`/items/${feature.id}`);
+		expect(host.querySelector(".plan-question")?.textContent).toContain("Which database?");
+		expect(button("Approve for one implementer")?.disabled).toBe(true);
+		type(host.querySelector(".plan-asks input")!, "SQLite");
+		await act(async () => button("Save as version " + (edited.plan!.version + 1))?.click());
+		await settle();
+		expect(button("Approve for one implementer")?.disabled).toBe(false);
+		await act(async () => button("Approve for one implementer")?.click());
+		await settle();
+		expect((await api().item(feature.id)).plan?.questions[0]?.answer).toBe("SQLite");
 	});
 
 	it("refreshes and says so when the plan moved on before the approval reached the server", async () => {
@@ -280,8 +298,8 @@ describe("a feature's plan on its page", () => {
 		expect(plan.textContent).toContain("Runs as one item after this plan");
 		expect(plan.querySelector(".plan-card")).toBeNull();
 		expect([...plan.querySelectorAll(".item-cost dt")].map(row => row.textContent)).toEqual(["Tokens", "Turns", "Working time"]);
-		const cap = stage === "suggested" ? 6 : 8;
-		expect([...plan.querySelectorAll(".item-cost .usage-number")].map(row => row.textContent)).toEqual([`2.9M of ${cap}M`, "5 of 14", "1 h 2 min of 4 h"]);
+		const cap = stage === "suggested" ? 8.9 : 8;
+		expect([...plan.querySelectorAll(".item-cost .usage-number")].map(row => row.textContent)).toEqual([`2.9M of ${cap}M`, stage === "suggested" ? "5 of 19" : "5 of 14", stage === "suggested" ? "1 h 2 min of 5 h 2 min" : "1 h 2 min of 4 h"]);
 		expect(parseFloat(plan.querySelector<HTMLElement>(".usage-meter-used")!.style.width)).toBeCloseTo(100 * 2.9 / cap);
 	});
 

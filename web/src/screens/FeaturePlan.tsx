@@ -15,6 +15,7 @@
  */
 import type { FeaturePlan, ItemAction, ItemBudget, ItemSummary, ItemView, PlanSubtask } from "@contract";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
 import { ChevronIcon, WarnIcon } from "../components/Icons";
 import { ItemSpend } from "../components/ItemSpend";
 import { budgetProblems, closingReserve, PLAN_FIELDS, subtaskFloor, subtaskPool, sumBudgets, type PlanField } from "../lib/feature";
@@ -30,7 +31,7 @@ export interface PlanActing {
 	act(action: ItemAction): Promise<boolean>;
 }
 
-const PLAN_QUESTIONS = new Set(["plan_approval", "replan_approval"]);
+const PLAN_QUESTIONS = new Set(["plan_approval", "replan_approval", "single_suggested"]);
 
 /** Whether the plan is the one its item asks about now: its budgets and questions can be changed, and it approved. */
 export function planOpen(view: ItemView): boolean {
@@ -78,7 +79,10 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 		const subtasks: PlanSubtask[] = plan.subtasks.map((task) => ({ ...task, budget: parsed[task.key] ?? task.budget }));
 		return acting.act({ kind: "edit_plan", version: plan.version, plan: { questions, spec: plan.spec, subtasks, singleSuggested: plan.singleSuggested, overflow: plan.overflow } });
 	};
-	const approve = () => (plan ? acting.act({ kind: "approve_plan", version: plan.version }) : Promise.resolve(false));
+	const approve = () => {
+		if (view?.question?.kind === "single_suggested") return acting.act({ kind: "answer", question: view.question.id, choice: "run_single" });
+		return plan ? acting.act({ kind: "approve_plan", version: plan.version }) : Promise.resolve(false);
+	};
 	const reset = () => {
 		if (plan) setDrafts(draftsOf(plan));
 		setAnswers({});
@@ -118,6 +122,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 	const ids = { title: useId() };
 	if (!plan || !view.question) return null;
 	const busy = acting.busy !== null;
+	const single = view.question.kind === "single_suggested";
 	const replan = view.question.kind === "replan_approval";
 	const tasks = plan.subtasks.length;
 	const totalTokens = sumBudgets(Object.values(review.parsed)).tokens;
@@ -132,7 +137,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 				<span className="item-question-when">{when}</span>
 			</p>
 			<p className="item-question-text">
-				{replan ? "A subtask stopped. Review the revised plan" : "Review the plan"}: {tasks} subtasks, {PLAN_FIELDS[0]!.spelled(totalTokens)} tokens of the {PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} the feature may spend.
+				{single ? view.question.text : <>{replan ? "A subtask stopped. Review the revised plan" : "Review the plan"}: {tasks} subtasks, {PLAN_FIELDS[0]!.spelled(totalTokens)} tokens of the {PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} the feature may spend.</>}
 				<span className="plan-version"> Version {plan.version}</span>
 			</p>
 
@@ -177,11 +182,16 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 					</>
 				) : (
 					<button type="button" className="button button-primary" disabled={busy || blocked !== null} onClick={() => void review.approve()} aria-describedby={blocked ? `${ids.title}-why` : undefined}>
-						{acting.busy === "approve_plan" ? "Approving…" : `Approve version ${plan.version}`}
+						{single ? "Approve for one implementer" : acting.busy === "approve_plan" ? "Approving…" : `Approve version ${plan.version}`}
+					</button>
+				)}
+				{single && !review.dirty && view.question.choices.some(option => option.id === "orchestrate_anyway") && (
+					<button type="button" className="button button-outline" disabled={busy} onClick={() => void acting.act({ kind: "answer", question: view.question!.id, choice: "orchestrate_anyway" })}>
+						Ask for subtasks
 					</button>
 				)}
 				{refused && SINGLE_INSTEAD.test(refused) && !replan ? (
-					<button type="button" className="button button-outline" disabled={busy} onClick={() => void acting.act({ kind: "run_single" })}>
+					<button type="button" className="button button-outline" disabled={busy || blocked !== null} onClick={() => void acting.act({ kind: "run_single" })}>
 						{acting.busy === "run_single" ? "Starting…" : "Run as a single item"}
 					</button>
 				) : null}
@@ -201,6 +211,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 					{blocked}
 				</p>
 			) : null}
+			{!single && <p className="field-note">Sizing beyond one slot is not supported by current runners.</p>}
 		</section>
 	);
 }
@@ -256,7 +267,7 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 	const singleSpend = view.mode === "single" || plan.subtasks.length === 0 ? (
 		<>
 			<p className="plan-single">Runs as one item after this plan</p>
-			<ItemSpend spent={view.spent} budget={view.mode === "single" ? view.budget : plan.compare.singleBudget} fields={PLAN_FIELDS.filter(field => field.key !== "hostedSeconds")} />
+			<ItemSpend spent={view.spent} budget={view.mode === "single" ? view.budget : singleAfterPlanning(plan.compare.singleBudget, view.spent, view.budget)} fields={PLAN_FIELDS.filter(field => field.key !== "hostedSeconds")} />
 		</>
 	) : null;
 	if (plan.status === "superseded") {

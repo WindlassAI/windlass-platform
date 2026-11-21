@@ -27,7 +27,7 @@ import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { clockTime, useMachines } from "./Machines";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
-import { ItemModePicker } from "../components/ItemModePicker";
+import { ItemModeCost, ItemModePicker } from "../components/ItemModePicker";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 
 export interface ItemsState {
@@ -561,7 +561,8 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 						<span className="label">
 							How it runs
 						</span>
-						<ItemModePicker value={mode} onChange={setMode} disabled={busy} />
+						<ItemModePicker costId={ids.form + "-cost"} value={mode} onChange={setMode} disabled={busy} />
+						<ItemModeCost id={ids.form + "-cost"} />
 						<p className="field-note">{ITEM_MODE_WORDS[mode].description}</p>
 					</div>
 				) : null}

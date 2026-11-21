@@ -1,4 +1,4 @@
-import { approvalText, featureCap, validatePlan } from "../../../server/src/factory/feature-plan.js";
+import { approvalText, featureCap, singleAfterPlanning, validatePlan } from "../../../server/src/factory/feature-plan.js";
 /**
  * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
  * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
@@ -1281,7 +1281,8 @@ export function createMockItems(deps: MockItemsDeps) {
 			}
 			case "run_single":
 				if (!current) throw conflict("The feature no longer has an open plan.");
-				item.mode = "single"; plan.status = "approved"; plan.approvedAt = at; plan.approvedBy = "person:" + auth.profile.uid; item.budget = { ...plan.compare.singleBudget };
+				if (plan.questions.some(q => !q.answer)) throw conflict("Answer and save the plan’s questions before approving one implementer.");
+				item.mode = "single"; plan.status = "approved"; plan.approvedAt = at; plan.approvedBy = "person:" + auth.profile.uid; item.budget = singleAfterPlanning(plan.compare.singleBudget, item.spent, item.budget);
 				return beginRun(auth, item, "Run as single item.");
 			case "edit_plan": {
 				if (!current || action.version !== plan.version) throw conflict("Read the latest plan before editing.");

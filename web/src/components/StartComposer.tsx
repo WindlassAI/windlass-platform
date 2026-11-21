@@ -64,7 +64,7 @@ import { SplitButton } from "./ui/Button";
 import { Tooltip } from "./ui/Tooltip";
 import { useSurface } from "./ui/useMediaQuery";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
-import { ItemModePicker } from "./ItemModePicker";
+import { ItemModePicker, ItemModeCost } from "./ItemModePicker";
 import { orchestrateProblem } from "../lib/feature";
 
 /** Whether any of the chosen sandbox's three facts is open: said in the warning tone. */
@@ -925,7 +925,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const orchestrateOffered = item && Boolean(info?.items?.orchestrate);
 	const orchestrating = orchestrateOffered && itemMode === "orchestrate";
 	const orchestrateWarn = orchestrating ? orchestrateProblem(saved.checks) : null;
-	const itemModeControl = orchestrateOffered ? <ItemModePicker value={itemMode} onChange={setItemMode} disabled={busy !== null} /> : null;
+	const itemModeControl = orchestrateOffered ? <ItemModePicker costId={ids.kind + "-cost"} value={itemMode} onChange={setItemMode} disabled={busy !== null} /> : null;
 
 	const hasSetup = chosen !== null && !item;
 	const setupForm = hasSetup ? (
@@ -1059,6 +1059,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				</p>
 			) : null}
 			{phone && (kindSwitch || itemModeControl) ? <div className="start-kinds">{kindSwitch}{itemModeControl}</div> : null}
+			{phone && itemModeControl && <ItemModeCost id={ids.kind + "-cost"} />}
 			<div className="start-box">
 				<label className="visually-hidden" htmlFor={ids.text}>
 					{item ? "What the work item asks for: its first line is the title" : "What the agent should do"}
@@ -1135,6 +1136,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					)}
 				</div>
 			</div>
+			{!phone && itemModeControl && <ItemModeCost id={ids.kind + "-cost"} />}
 			{facts.length > 0 || chosenMachine ? (
 				<p className={`start-sandbox${anyOpen ? " start-sandbox-open" : ""}`} title={facts.map((fact) => fact.long).join("; ") || undefined}>
 					{anyOpen ? <WarnIcon size={13} /> : <ShieldGlyph />}

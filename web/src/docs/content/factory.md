@@ -54,6 +54,8 @@ Make a token under **Settings** › **API tokens** › **New token…**. Give it
 - `POST /api/items` files a work item. Send `Authorization: Bearer <token>` and an `Idempotency-Key` header.
 - `GET /api/items/<id>` reads where an item is, its verdict and its cost.
 
+**API default change.** Clients that previously omitted `mode` to launch one implementer must now send `"mode": "single"`. Omitting `mode` selects Plan first and waits for owner approval when orchestration is enabled.
+
 The body names the repository, the title, the body and, optionally, the acceptance criteria, sandbox, model, place, whether to start it and `"mode"`: `"orchestrate"` for Plan first (the default when enabled), or `"single"` for Quick. A token cannot approve a plan: you approve it on the item's page. A title can be 80 characters long and a body 20,000. An item can have 20 criteria of up to 2,000 characters each. A token may make 60 requests a minute. The same `Idempotency-Key` with the same body answers with the item the first attempt made; with another body it is refused with `409` and `idempotency_key_reused`. A missing, invalid or out-of-scope token gets `401` and `invalid_token`. A rate limit gets `429` with `Retry-After`. Every error has a JSON `code` and `message`. Where the platform does not offer work items, both routes answer `404`.
 
 ## The pipeline
@@ -120,7 +122,7 @@ The choices depend on the item. A subtask can only integrate after its checks an
 Plan first starts with a plan whether the feature needs one implementer or several.
 
 1. **Planning**. A read-only planner examines the task, repository and available machines, then files a FeaturePlan with requirements, done-when checks and work that is out of scope.
-2. Review the plan on the item page. If the planner recommends one implementer, choose **Approve for one implementer** to approve that scope. The implementer receives the task and the plan. The plan shows actual tokens, turns and working time against the single-item cap, including the planning turn.
+2. Review the plan on the item page. If the planner recommends one implementer, choose **Approve for one implementer** to approve that scope. The implementer receives the task and the plan. Planning spend stays visible. The implementer gets one Quick allowance within the feature cap.
 3. If the planner proposes a split, review the subtask budgets and approve the plan. The Factory runs the subtasks in dependency order.
 4. **Feature summary**: once every subtask is done, an agent writes the pull request's summary.
 5. CI runs on the whole feature, a second review reads it, and the feature is handed to you as one pull request.
@@ -140,6 +142,8 @@ The plan says what the feature is for, what it must do, what is left out of it a
 
 On the item's page the plan's goal comes first, then **Requirements**, **Done when** and **Not in it** as short lists. A long list shows its first three lines and **Show N more**. A plan that was set aside, for example after its revisions were used, is marked **superseded** and folded into one line. Choose it to read the plan.
 
+Current runners support one sandbox slot per subtask. Approval requires a ready placement.
+
 The planner may ask you questions with the plan. It may also say that one item is enough. The item shows the planner’s reason and offers **Approve for one implementer** or **Ask for subtasks**.
 
 The planner reads what you wrote about your machines under [Say when to use it](/docs/machines#say-when-to-use-it).
@@ -158,7 +162,7 @@ If approval is refused because the repository lacks checks or push CI, **Run as 
 
 ### Budgets
 
-A feature may spend three times what one item may: by default 18,000,000 tokens, 42 turns, 12 hours of working time and 6 hours of hosted sandbox time. Part of that, 1,000,000 tokens and 4 turns by default, is kept for the summary and the review. A subtask gets at most what one item may, and at least 2 turns and a tenth of one item's tokens and times.
+A feature may spend three times what one item may: by default 18,000,000 tokens, 42 turns, 12 hours of working time and 6 hours of hosted sandbox time. Before each planning turn, the factory checks a planning allowance of 25% of a Quick item across all planning turns. Part of the feature budget, 1,000,000 tokens and 4 turns by default, is kept for the summary and the review. A subtask gets at most what one item may, and at least 2 turns and a tenth of one item's tokens and times.
 
 When a feature reaches its budget, it stops and asks you. **Raise the limit and go on** may raise each figure by at most one item's allowance at a time.
 
