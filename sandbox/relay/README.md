@@ -103,14 +103,20 @@ section of the repository README for the upgrade and credential rotation steps.
 
 ## OpenCode 1.19.6
 
-The OpenCode relay accepts one provider and one inference route per login. It
-sends OpenAI API requests to `api.openai.com`, ChatGPT subscription requests to
-`chatgpt.com`, Anthropic requests to `api.anthropic.com`, and explicitly selected
-public-model requests to `opencode.ai`. Only the relay exchanges a refresh token
-at `auth.openai.com`. It shares an in-flight refresh across concurrent requests
-and atomically replaces the credential in its private volume. Terminal setup
-stops that writer before changing the login. Logout removes local access.
-Account owners can revoke provider access separately.
+The relay accepts inference POSTs for providers enabled in the machine login. Its destination and authentication header come from the provider ID, model adapter and inference path. Each configured key stays in the relay’s private volume. Terminal setup takes the login lock and stops the relay before atomically merging a key. Only the relay exchanges ChatGPT refresh tokens at `auth.openai.com`. It shares in-flight refreshes and preserves the other providers when it saves a rotation. Logout removes the credential volume.
+
+The [route table](providers.json) comes from the models.dev snapshot embedded in the released OpenCode 1.19.6 arm64 executable. OpenCode’s build reads a models.dev snapshot and its runtime prefers model-level API and adapter overrides. The generator also uses the bundled SDK defaults for providers that omit a URL. To reproduce the table, unpack `opencode-linux-arm64@1.19.6` and run `node scripts/opencode-provider-registry.mjs /path/to/package/bin/opencode`. The generator verifies the executable digest. No registry fetch occurs during setup or inference. [Release build input](https://github.com/anomalyco/opencode/blob/v1.19.6/packages/opencode/script/generate.ts) · [Provider and SDK selection](https://github.com/anomalyco/opencode/blob/v1.19.6/packages/opencode/src/provider/provider.ts)
+
+| Provider ID | Base URL in the pinned registry | Authentication |
+| --- | --- | --- |
+| `opencode-go` | `https://opencode.ai/inference/go/` | Go-specific API key |
+| `opencode` (Zen) | `https://opencode.ai/inference/` | Pay-as-you-go API key |
+| `zai`, `zai-coding-plan` | `https://api.z.ai/api/paas/v4`, `https://api.z.ai/api/coding/paas/v4` | Bearer |
+| `zhipuai`, `zhipuai-coding-plan` | Same paths on `open.bigmodel.cn` | Bearer |
+
+For both OpenCode services the model selects the rest of the URL. OpenAI chat and Responses use `openai/v1/chat/completions` or `openai/v1/responses` with `Authorization: Bearer <key>`. Anthropic Messages uses `anthropic/v1/messages` with `x-api-key`. Gemini uses `google/v1beta/models/<model>:streamGenerateContent?alt=sse` with `x-goog-api-key`. [OpenCode Go](https://opencode.ai/docs/go) · [Pay-as-you-go models](https://opencode.ai/docs/zen)
+
+The table includes OpenAI, Anthropic, Google, OpenRouter, both Moonshot regions, Kimi coding plans, MiniMax, DeepSeek and Groq. The `unavailable` section lists each excluded provider and the reason. These include local and tenant-specific endpoints, separate credential exchanges and adapters outside the supported wire protocols. A provider’s `blocked` list excludes individual model endpoints outside those protocols. The restricted OpenCode command proxy denies direct access to catalog inference hostnames. Its ordinary public repository access stays available.
 
 The image supplies OpenCode’s native OAuth client with a non-expiring session
 placeholder, keeping request formatting and model discovery in the client.

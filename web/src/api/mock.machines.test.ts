@@ -457,3 +457,28 @@ describe("the start composer's agent picker", () => {
 		});
 	}
 });
+
+it("shows a terminal setup command with an optional read-only OpenCode import on Machines", async () => {
+	HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
+	HTMLDialogElement.prototype.close ??= function () { this.open = false; };
+	const { Machines } = await import("../screens/Machines");
+	const host = document.createElement("div");
+	document.body.append(host);
+	const root = createRoot(host);
+	const client = make();
+	saveAuth("mock",auth);
+	try {
+		act(() => root.render(createElement(AppProvider,{client,children:createElement(Machines,{adding:true})})));
+		for (let i=0;i<30 && !host.querySelector(".machine-command");i++) await act(async () => {await tick();});
+		const command = () => host.querySelector('pre[aria-label="The install command"]')?.textContent;
+		expect(command()).toContain("docker run -it --rm");
+		expect(command()).toContain(" setup --platform ");
+		expect(command()).not.toContain("/import/opencode");
+		const checkbox = (text: string) => [...host.querySelectorAll("label")].find(element => element.textContent?.includes(text))!.querySelector("input")!;
+		act(() => checkbox("Enable OpenCode").click());
+		expect(command()).toContain("--harness opencode");
+		expect(command()).not.toContain("/import/opencode");
+		act(() => checkbox("Import existing OpenCode API keys").click());
+		expect(command()).toContain('/opencode:/import/opencode:ro');
+	} finally { act(() => root.unmount());host.remove();client.dispose();saveAuth("mock",null); }
+});

@@ -50,13 +50,14 @@ export function MachinesCrumb() {
 }
 
 /** The command that starts the runner on a machine, as `MachinesInfo` describes it; null while no runner image is published. */
-function installCommand(info: MachinesInfo): string | null {
+function installCommand(info: MachinesInfo, setup?: {openCode: boolean; importKeys: boolean}): string | null {
 	if (info.runnerImage === null) return null;
 	return [
-		"docker run -d --name windlass-runner --restart unless-stopped \\",
+		(setup ? "docker run -it --rm" : "docker run -d --name windlass-runner --restart unless-stopped") + " \\",
 		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
 		"  -v windlass-runner:/var/lib/windlass-runner \\",
-		`  ${info.runnerImage} --platform ${info.platformUrl}`,
+		...(setup?.openCode && setup.importKeys ? ['  -v "${XDG_DATA_HOME:-$HOME/.local/share}/opencode:/import/opencode:ro" \\'] : []),
+		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${setup?.openCode ? " --harness opencode" : ""}`,
 	].join("\n");
 }
 
@@ -403,7 +404,9 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 		start.current = element;
 	};
 	const ids = { form: useId(), code: useId(), codeNote: useId(), trust: useId() };
-	const install = installCommand(info);
+	const [openCode, setOpenCode] = useState(false);
+	const [importKeys, setImportKeys] = useState(false);
+	const install = installCommand(info, {openCode,importKeys});
 	const complete = code.replace(/-/g, "").length === 8;
 
 	const shown = useRef(step.step);
@@ -571,6 +574,8 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 			<div className="machine-dialog">
 				{install ? (
 					<div>
+						<label><input type="checkbox" checked={openCode} onChange={e => setOpenCode(e.target.checked)} /> Enable OpenCode</label>
+						{openCode && <label><input type="checkbox" checked={importKeys} onChange={e => setImportKeys(e.target.checked)} /> Import existing OpenCode API keys during setup</label>}
 						<Command text={install} label="The install command" />
 						<p className="field-note">
 							Where rootless Docker works, use it: the runner then gets less of your machine. Mount <code>$XDG_RUNTIME_DIR/docker.sock</code> in place of <code>/var/run/docker.sock</code>.
