@@ -56,14 +56,12 @@
 }
 .home-fact-working::before {
 	background: var(--accent);
-	box-shadow: 0 0 0 3px var(--accent-wash);
 }
 .home-fact-needs {
 	color: var(--needs);
 }
 .home-fact-needs::before {
 	background: var(--needs);
-	box-shadow: 0 0 0 3px var(--needs-wash);
 }
 
 /* Who is signed in, quieter than the facts: one line, in the faint ink. */
@@ -356,43 +354,40 @@
 	font-weight: var(--weight-regular);
 	color: var(--ink-faint);
 }
+/* The same ruled list as the agents': the neutral page, hairline rows. Amber is the signal only. */
 .needs-card {
 	margin: 0;
 	padding: 0;
 	list-style: none;
-	border-radius: var(--radius-l);
-	background: linear-gradient(180deg, var(--needs-wash), transparent 140%), var(--bg-raised);
-	box-shadow: inset 0 0 0 1px var(--needs-edge), var(--shadow-box);
-	overflow: hidden;
+	border-top: 1px solid var(--line);
 }
 .needs-row {
 	position: relative;
 	display: grid;
-	grid-template-columns: 22px minmax(0, 1fr) auto;
+	grid-template-columns: 24px minmax(0, 1fr) auto;
 	align-items: center;
-	column-gap: 14px;
-	padding: 13px 14px 13px 14px;
-	transition: background-color var(--dur-hover) var(--ease);
+	column-gap: 12px;
+	padding: 11px 10px 11px 8px;
+	border-bottom: 1px solid var(--line);
+	transition:
+		background-color var(--dur-hover) var(--ease),
+		border-radius var(--dur-hover) var(--ease);
 }
-.needs-row + .needs-row {
-	border-top: 1px solid color-mix(in srgb, var(--needs) 14%, transparent);
+.needs-row:hover,
+.needs-row:focus-within {
+	background: var(--bg-hover);
+	border-radius: var(--r-control);
+	border-bottom-color: transparent;
 }
-.needs-row:hover {
-	background: color-mix(in srgb, var(--needs) 5%, transparent);
+.needs-row:has(+ .needs-row:hover) {
+	border-bottom-color: transparent;
 }
 .needs-lamp {
 	justify-self: center;
-	width: 8px;
-	height: 8px;
+	width: 7px;
+	height: 7px;
 	border-radius: 50%;
 	background: var(--needs);
-	box-shadow: 0 0 0 4px color-mix(in srgb, var(--needs) 18%, transparent);
-	animation: needs-breathe 2.4s ease-in-out infinite;
-}
-@keyframes needs-breathe {
-	50% {
-		box-shadow: 0 0 0 7px color-mix(in srgb, var(--needs) 6%, transparent);
-	}
 }
 .needs-main {
 	min-width: 0;
@@ -424,9 +419,9 @@
 	outline: none;
 }
 .needs-link:focus-visible::after {
-	outline: 2px solid var(--needs);
+	outline: 2px solid var(--accent);
 	outline-offset: -2px;
-	border-radius: var(--radius-l);
+	border-radius: var(--r-control);
 }
 .needs-tag {
 	flex: none;
@@ -472,27 +467,30 @@
 .needs-agent:hover {
 	color: var(--ink);
 }
+/* One quiet action per row: a secondary button, the neutral edge, no fill. */
 .needs-answer {
 	position: relative;
 	z-index: 1;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	gap: 4px;
-	height: 30px;
-	padding: 0 10px 0 12px;
+	gap: 3px;
+	height: 28px;
+	padding: 0 8px 0 11px;
 	border-radius: var(--r-control);
-	background: var(--ink);
-	color: var(--bg);
-	font-size: var(--text-13);
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	color: var(--ink);
+	font-size: var(--text-12);
 	font-weight: var(--weight-medium);
 	text-decoration: none;
 	white-space: nowrap;
-	box-shadow: var(--shadow-button);
-	transition: transform var(--dur-hover) var(--ease), background-color var(--dur-hover) var(--ease);
+	transition:
+		background-color var(--dur-hover) var(--ease),
+		box-shadow var(--dur-hover) var(--ease);
 }
 .needs-answer:hover {
-	background: color-mix(in srgb, var(--ink) 88%, var(--needs));
+	background: var(--bg-active);
+	box-shadow: inset 0 0 0 1px var(--line-field);
 }
 .needs-answer:active {
 	transform: translateY(1px);
@@ -632,6 +630,19 @@
 	font-weight: var(--weight-regular);
 	color: var(--accent-text);
 }
+.agent-chip-needs {
+	box-shadow: none;
+	padding: 0;
+	gap: 6px;
+	color: var(--needs);
+}
+.agent-chip-needs::before {
+	content: "";
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: currentColor;
+}
 .agent-chip-stopping {
 	color: var(--warn);
 }
@@ -646,7 +657,6 @@
 	height: 6px;
 	border-radius: 50%;
 	background: var(--ok);
-	box-shadow: 0 0 0 2px var(--ok-wash);
 }
 .agent-row-session .agent-time {
 	font-size: 0.71875rem;
@@ -714,9 +724,6 @@
 		width: 100%;
 		background: linear-gradient(90deg, var(--accent-wash-strong), var(--accent) 50%, var(--accent-wash-strong));
 		opacity: 0.6;
-	}
-	.needs-lamp {
-		animation: none;
 	}
 }
 
@@ -879,15 +886,18 @@
 			"lamp main"
 			". answer";
 		align-items: start;
-		row-gap: 12px;
+		row-gap: 10px;
 		column-gap: 10px;
-		padding: 13px 12px 12px 14px;
+		padding: 12px 2px 12px 10px;
+	}
+	.needs-row:hover,
+	.needs-row:focus-within {
+		border-radius: 0;
+		border-bottom-color: var(--line);
 	}
 	.needs-lamp {
 		grid-area: lamp;
-		margin-top: 6px;
-		width: 7px;
-		height: 7px;
+		margin-top: 7px;
 	}
 	.needs-main {
 		grid-area: main;
@@ -896,10 +906,9 @@
 		display: block;
 		font-size: 0.90625rem;
 	}
+	/* "its agent" in the line under says it is a work item; the tag would only wrap. */
 	.needs-tag {
-		display: inline-block;
-		margin-left: 6px;
-		vertical-align: 1px;
+		display: none;
 	}
 	.needs-link {
 		white-space: normal;
@@ -907,8 +916,8 @@
 	.needs-answer {
 		grid-area: answer;
 		justify-self: start;
-		height: 34px;
-		min-width: 112px;
+		height: 32px;
+		min-width: 96px;
 		margin-top: -2px;
 	}
 

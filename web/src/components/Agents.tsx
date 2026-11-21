@@ -13,7 +13,7 @@ import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { Dialog } from "./Dialog";
 import { MergedIcon, PencilIcon, PullRequestIcon, RingIcon, TrashIcon, WarnIcon } from "./Icons";
-import { OUTCOME_TONE, OUTCOME_WORD, OutcomeGlyph, STATUS_WORD, StatusBadge, StatusGlyph } from "./Status";
+import { OUTCOME_TONE, OUTCOME_WORD, OutcomeGlyph, STATUS_WORD, StatusGlyph } from "./Status";
 
 function repoName(url: string): string {
 	return url.replace(/^https:\/\//, "").replace(/\.git$/, "");
@@ -125,7 +125,7 @@ function AgentRow({ session, profileName, now, grouped, onDelete }: { session: S
 				</p>
 			</div>
 			<div className="agent-state">
-				{waiting ? <StatusBadge status="waiting" /> : active ? <span className={`agent-chip agent-chip-live agent-chip-${session.status}`}>{STATUS_WORD[session.status]}</span> : null}
+				{waiting ? <span className="agent-chip agent-chip-needs">needs you</span> : active ? <span className={`agent-chip agent-chip-live agent-chip-${session.status}`}>{STATUS_WORD[session.status]}</span> : null}
 				{pull ? <PullChip pull={pull} /> : null}
 				{/* A turn that ended well says so with its glyph; any other ending says it in words. */}
 				{active || session.lastOutcome === "succeeded" ? null : <OutcomeChip outcome={session.lastOutcome} />}
