@@ -1,5 +1,5 @@
 /**
- * The models a user may choose, and the reasoning efforts each accepts (README, "Models").
+ * The models a user may choose, and the reasoning efforts each accepts (docs/architecture.md, "Models").
  *
  * Whose they are. The user's: what their ChatGPT plan offers. Windlass lists them with an access token
  * of the user's sign-in (`windlass --models --json`, signin/commands.ts), and the user's `user` actor

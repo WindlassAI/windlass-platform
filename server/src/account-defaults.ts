@@ -1,6 +1,6 @@
 /**
  * The account's defaults for new sessions: the sandbox profile and the model a session starts with
- * where neither the launch form nor the chosen repository says so (README, "Account settings").
+ * where neither the launch form nor the chosen repository says so (docs/github-and-repositories.md, "Account settings").
  *
  * Whose they are. The user's, kept in their `user` actor in one row, beside the rows a repository's
  * defaults are kept in (repository-defaults.ts) and under the same rules: what may be saved is what

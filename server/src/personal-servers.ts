@@ -1,6 +1,6 @@
 /**
  * A user's own MCP servers: servers the user defines once, for their account, which Windlass then
- * starts (or reaches) in every session of theirs, whatever the repository (README, "Account settings").
+ * starts (or reaches) in every session of theirs, whatever the repository (docs/github-and-repositories.md, "Account settings").
  * This file has the rules: what a name and a definition may be, how many are kept, and how they are
  * stored.
  *

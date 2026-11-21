@@ -51,7 +51,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
  * agent's first prompt is refused); `freeSandbox()` removes one. The sentences are
  * server/src/usage.ts's, repeated here (mock.usage.test.ts compares the two).
  *
- * What a user keeps for their account (README, "Account settings") is here too: the defaults for new
+ * What a user keeps for their account (docs/github-and-repositories.md, "Account settings") is here too: the defaults for new
  * agents, their own MCP servers and those servers' secrets, with the server's refusals in the
  * server's words. A session's panel lists the user's own servers beside its project's from its next
  * turn. With `account: "seeded"`, which the page asks for, the user has two servers and two secrets
@@ -384,7 +384,7 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 		commandNetwork: true,
 		commandsCanReadAccessToken: false,
 		available: false,
-		unavailableReason: "This server runs its sandboxes on local Docker. E2B is built: a server started with WLP_SANDBOX=e2b, an E2B API key and the E2B template (README, \"E2B\") offers it in place of the Docker profiles, and says there what it promises.",
+		unavailableReason: "This server runs its sandboxes on local Docker. E2B is built: a server started with WLP_SANDBOX=e2b, an E2B API key and the E2B template (docs/operating.md, \"E2B\") offers it in place of the Docker profiles, and says there what it promises.",
 	},
 	{
 		id: "e2b-open",

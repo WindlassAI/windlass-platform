@@ -71,7 +71,7 @@
  * up, a turn that runs is stopped at the end of its hold, with a line that says so, and its sandbox
  * is suspended with its files as they are.
  *
- * A prompt can come with the key of its submission (submissions.ts; README, "A message sent twice"):
+ * A prompt can come with the key of its submission (submissions.ts; docs/architecture.md, "A message sent twice"):
  * the session takes a key once. The keys of its newest messages are in `meta.submissions`, each with
  * what its prompt was answered, kept in the synchronous step that takes the message, so a prompt with
  * one of them is answered from there before anything is awaited and adds nothing; a prompt that is

@@ -2,7 +2,7 @@
  * A message that reaches the platform twice, through the real actors on fake sandboxes: what a repeat
  * does without a key (two messages, two turns, two agents: as it always was), and that with the key
  * of its submission (`PromptInput.idempotencyKey`, `CreateSessionInput.idempotencyKey`) it is taken
- * once and answered as the first attempt was (README, "A message sent twice").
+ * once and answered as the first attempt was (docs/architecture.md, "A message sent twice").
  *
  *   cd server && npx tsx ../scripts/idempotency-check.ts
  *
