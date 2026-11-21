@@ -5,6 +5,6 @@ ingress:
   - hostname: app.example.com
     service: http://127.0.0.1:16440
   - hostname: engine.example.com
-    path: '^/gateway/((login|user|agentSession)/action/[A-Za-z][A-Za-z0-9]*|(user|agentSession)/connect|machine/websocket/control|agentSession/websocket/runner)$'
+    path: '^/(metadata|gateway/((login|user|agentSession)/action/[A-Za-z][A-Za-z0-9]*|(user|agentSession)/connect|machine/websocket/control|agentSession/websocket/runner))$'
     service: http://127.0.0.1:16420
   - service: http_status:404
