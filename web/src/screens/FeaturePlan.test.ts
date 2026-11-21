@@ -13,6 +13,7 @@ import type { UserApi } from "../api/client";
 import { createMockClient, type MockClient, type MockOptions } from "../api/mock";
 import { App } from "../App";
 import { saveAuth } from "../lib/authStore";
+import { compact } from "../lib/format";
 import { budgetProblems, subtaskFloor } from "../lib/feature";
 import { machineDetailsProblem, tagsOf } from "../lib/machines";
 import { AppProvider } from "../state/app";
@@ -265,12 +266,34 @@ describe("a feature's plan on its page", () => {
 		expect(button("Hand it over as it is")).toBeUndefined();
 	});
 
+	it.each(["suggested", "approved", "superseded"] as const)("shows actual spend and the single-item cap for a %s plan with no subtasks", async stage => {
+		const single = { tokens: 6_000_000, turns: 14, activeSeconds: 14_400, hostedSeconds: 7200 };
+		const spent = { tokens: 2_900_000, turns: 5, activeSeconds: 3750, hostedSeconds: 3800 };
+		make({ items: "features" }, item => ({
+			...item, mode: stage === "suggested" ? "orchestrate" : "single", spent, question: null,
+			budget: stage === "suggested" ? item.budget : { ...single, tokens: 8_000_000 },
+			plan: { ...item.plan!, status: stage === "suggested" ? "proposed" : stage, subtasks: [], singleSuggested: "One change.", compare: { singleBudget: single } },
+		}));
+		const feature = await featureNamed("Search the docs from the command line");
+		await show(`/items/${feature.id}`);
+		const plan = host.querySelector(".feature-plan")!;
+		expect(plan.textContent).toContain("Runs as one item after this plan");
+		expect(plan.querySelector(".plan-card")).toBeNull();
+		expect([...plan.querySelectorAll(".item-cost dt")].map(row => row.textContent)).toEqual(["Tokens", "Turns", "Working time"]);
+		const cap = stage === "suggested" ? 6 : 8;
+		expect([...plan.querySelectorAll(".item-cost .usage-number")].map(row => row.textContent)).toEqual([`2.9M of ${cap}M`, "5 of 14", "1 h 2 min of 4 h"]);
+		expect(parseFloat(plan.querySelector<HTMLElement>(".usage-meter-used")!.style.width)).toBeCloseTo(100 * 2.9 / cap);
+	});
+
 	it("lists a running feature's subtasks with their state and track, and a subtask's question in Needs you under the feature", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Export the release manifest as CSV");
 		await show(`/items/${feature.id}`);
 		const states = [...host.querySelectorAll(".plan-task")].map((row) => row.querySelector(".item-track-word, .plan-task-word")?.textContent);
 		expect(states).toEqual(["done", "building", "not started"]);
+		expect(host.querySelector(".plan-total-head")?.textContent).toBe("Allotted to subtasks");
+		const tokens = feature.children!.reduce((used, child) => used + child.spent.tokens, 0);
+		expect(host.querySelector(".plan-total-figures")?.textContent).toContain("Spent by subtasks: " + compact(tokens));
 		expect(host.querySelectorAll(".plan-task .item-track")).toHaveLength(2);
 		expect(host.querySelector(".plan-budget")).toBeNull();
 		act(() => root?.unmount());
@@ -308,7 +331,8 @@ describe("a plan that was set aside", () => {
 		expect(host.querySelector(".plan-spec-acceptance .plan-spec-more")).toBeNull();
 		expect(host.querySelector(".plan-spec-acceptance .plan-code")?.textContent).toBe("harbor upload");
 		// Its subtasks never ran.
-		expect([...host.querySelectorAll(".plan-task-word")].map((word) => word.textContent)).toEqual(["not run", "not run"]);
+		expect(host.querySelector(".plan-card")).toBeNull();
+		expect(host.querySelector(".feature-plan .item-cost")).not.toBeNull();
 	});
 });
 

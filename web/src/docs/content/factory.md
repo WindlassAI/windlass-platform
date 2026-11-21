@@ -120,7 +120,7 @@ The choices depend on the item. A subtask can only integrate after its checks an
 Plan first starts with a plan whether the feature needs one implementer or several.
 
 1. **Planning**. A read-only planner examines the task, repository and available machines, then files a FeaturePlan with requirements, done-when checks and work that is out of scope.
-2. Review the plan on the item page. If the planner recommends one implementer, choose **Approve for one implementer** to approve that scope. The implementer receives the task and the plan. Planning spend counts toward the single-item budget.
+2. Review the plan on the item page. If the planner recommends one implementer, choose **Approve for one implementer** to approve that scope. The implementer receives the task and the plan. The plan shows actual tokens, turns and working time against the single-item cap, including the planning turn.
 3. If the planner proposes a split, review the subtask budgets and approve the plan. The Factory runs the subtasks in dependency order.
 4. **Feature summary**: once every subtask is done, an agent writes the pull request's summary.
 5. CI runs on the whole feature, a second review reads it, and the feature is handed to you as one pull request.
@@ -140,7 +140,7 @@ The plan says what the feature is for, what it must do, what is left out of it a
 
 On the item's page the plan's goal comes first, then **Requirements**, **Done when** and **Not in it** as short lists. A long list shows its first three lines and **Show N more**. A plan that was set aside, for example after its revisions were used, is marked **superseded** and folded into one line. Choose it to read the plan.
 
-The planner may ask you questions with the plan. It may also say that one item is enough. The page then says "The planner suggests one item instead: …", and offers **Approve for one implementer** or **Ask for subtasks**.
+The planner may ask you questions with the plan. It may also say that one item is enough. The item shows the planner’s reason and offers **Approve for one implementer** or **Ask for subtasks**.
 
 The planner reads what you wrote about your machines under [Say when to use it](/docs/machines#say-when-to-use-it).
 
@@ -149,7 +149,7 @@ The planner reads what you wrote about your machines under [Say when to use it](
 When the plan is ready, the item waits under **Needs you**: "Its plan waits for your approval." Its page shows **It asks you**, "Review the plan: N subtasks, X tokens of the Y the feature may spend", and the plan below it.
 
 - Answer the plan's questions, if it has any.
-- Change a subtask's budget: tokens, turns, working minutes and, on this platform, hosted minutes. **Together** shows the total against what the subtasks may share.
+- Change a subtask's budget: tokens, turns, working minutes and, on this platform, hosted minutes. **Allotted to subtasks** shows the proposed total against what the subtasks may share. Once children exist, it also shows their actual spend.
 - Choose **Save as version N** to keep your changes, or **Discard changes**.
 - Choose **Approve version N** to start the subtasks.
 - Choose **Ask for a new plan** to have the planner try again, or **Give up**.

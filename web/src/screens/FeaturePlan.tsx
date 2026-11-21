@@ -16,6 +16,7 @@
 import type { FeaturePlan, ItemAction, ItemBudget, ItemSummary, ItemView, PlanSubtask } from "@contract";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { ChevronIcon, WarnIcon } from "../components/Icons";
+import { ItemSpend } from "../components/ItemSpend";
 import { budgetProblems, closingReserve, PLAN_FIELDS, subtaskFloor, subtaskPool, sumBudgets, type PlanField } from "../lib/feature";
 import { linkProps } from "../lib/router";
 import { ItemGlyph, ItemTrack, itemTrack, STATE_WORD } from "./Items";
@@ -252,6 +253,12 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 	const heading = useId();
 	const [opened, setOpened] = useState(false);
 	if (!plan || !pool) return null;
+	const singleSpend = view.mode === "single" || plan.subtasks.length === 0 ? (
+		<>
+			<p className="plan-single">Runs as one item after this plan</p>
+			<ItemSpend spent={view.spent} budget={view.mode === "single" ? view.budget : plan.compare.singleBudget} fields={PLAN_FIELDS.filter(field => field.key !== "hostedSeconds")} />
+		</>
+	) : null;
 	if (plan.status === "superseded") {
 		return (
 			<section className={`usage-section feature-plan plan-set-aside${opened ? " plan-set-aside-open" : ""}`} aria-labelledby={heading}>
@@ -271,6 +278,7 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 						<PlanBody view={view} review={review} acting={acting} pool={pool} />
 					</div>
 				) : null}
+				{singleSpend}
 			</section>
 		);
 	}
@@ -283,6 +291,7 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 				</span>
 			</h2>
 			<PlanBody view={view} review={review} acting={acting} pool={pool} />
+			{singleSpend}
 		</section>
 	);
 }
@@ -297,6 +306,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 	const floor = subtaskFloor(single);
 	const reserve = closingReserve(single);
 	const total = sumBudgets(Object.values(review.parsed));
+	const spent = view.children?.length ? sumBudgets(view.children.map(child => child.spent)) : null;
 	const numbers = new Map(plan.subtasks.map((task, index) => [task.key, index + 1]));
 	const setAside = plan.status === "superseded";
 	return (
@@ -310,7 +320,6 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 				{plan.spec.acceptance.length > 0 ? <SpecList term="Done when" kind="acceptance" lines={plan.spec.acceptance} /> : null}
 				{plan.spec.outOfScope.length > 0 ? <SpecList term="Not in it" kind="out" lines={plan.spec.outOfScope} /> : null}
 			</dl>
-			{plan.singleSuggested ? <p className="plan-single">The planner suggests one item instead: {plan.singleSuggested}</p> : null}
 
 			{view.mode !== "single" && plan.subtasks.length > 0 ? (
 				<div className="usage-card plan-card">
@@ -323,8 +332,8 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 						))}
 					</ol>
 
-					<div className="plan-total" aria-label="What the subtasks spend together">
-						<p className="plan-total-head">Together</p>
+					<div className="plan-total" aria-label="Allotted to subtasks">
+						<p className="plan-total-head">Allotted to subtasks</p>
 						<dl className="plan-total-figures">
 							{fields.map((field) => {
 								const over = review.problems.total.includes(field.key);
@@ -342,6 +351,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 												<span className="plan-meter-kept" style={{ width: `${kept}%` }} />
 											</span>
 										</dd>
+										{spent && <dd className="tone-dim">Spent by subtasks: {field.spelled(spent[field.key])}</dd>}
 										{over ? <dd className="plan-total-why tone-bad">over what the subtasks may share</dd> : null}
 									</div>
 								);

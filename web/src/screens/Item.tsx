@@ -30,6 +30,7 @@ import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type R
 import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 import { Inline, PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
+import { ItemSpend } from "../components/ItemSpend";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown } from "../components/Blocks";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
@@ -712,27 +713,7 @@ function Cost({ view }: { view: ItemView }) {
 			<h2 className="usage-title" id="item-cost">
 				Cost so far
 			</h2>
-			<dl className="usage-facts item-facts item-cost">
-				{rows.map((field) => {
-					const spent = view.spent[field.key];
-					const budget = view.budget[field.key];
-					const reached = spent >= budget;
-					return (
-						<div key={field.key}>
-							<dt>{field.label}</dt>
-							<dd className="usage-number">
-								{field.spelled(spent)} <span className="tone-faint">of {field.spelled(budget)}</span>
-							</dd>
-							<dd className="item-cost-meter">
-								<span className="usage-meter" aria-hidden="true">
-									<span className={`usage-meter-used${reached ? " item-meter-reached" : ""}`} style={{ width: `${Math.min(100, (spent / budget) * 100)}%` }} />
-								</span>
-								{reached ? <span className="tone-warn">reached</span> : null}
-							</dd>
-						</div>
-					);
-				})}
-			</dl>
+			<ItemSpend spent={view.spent} budget={view.budget} fields={rows} />
 			<p className="usage-note">
 				{hosted
 					? "Working time counts only while the item works: waiting for a turn, for CI or for you does not."
