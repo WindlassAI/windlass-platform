@@ -196,8 +196,10 @@ export async function machineTables(db: RawAccess) {
 	if (!(await db.execute<{ name: string }>("PRAGMA table_info(machine)")).some(column => column.name === "host")) {
 		await db.execute("ALTER TABLE machine ADD COLUMN host TEXT");
 	}
-	const [legacy] = await db.execute<{ report: string }>(`SELECT report FROM machine WHERE removed_at IS NULL AND (report LIKE '%"options":%' OR json_type(report, '$.host') IS NOT NULL)`);
-	if (legacy) await saveReport(db, JSON.parse(legacy.report), new Map(), 0);
+	// A report stored by an older runner (with inline catalogs or host figures) is dropped, not converted:
+	// converting it opened a transaction inside the migration's own and hung until the start timeout.
+	// The runner sends a full report again as soon as it connects.
+	await db.execute(`UPDATE machine SET report = NULL WHERE removed_at IS NULL AND (report LIKE '%"options":%' OR json_type(report, '$.host') IS NOT NULL)`);
 	await db.execute("CREATE TABLE IF NOT EXISTS connection_budget (id INTEGER PRIMARY KEY, minute INTEGER NOT NULL, used INTEGER NOT NULL)");
 	await db.execute("CREATE TABLE IF NOT EXISTS turn_slots (session TEXT NOT NULL, turn INTEGER NOT NULL, running INTEGER NOT NULL, PRIMARY KEY (session, turn))");
 	await db.execute("CREATE TABLE IF NOT EXISTS pending (sandbox TEXT PRIMARY KEY)");

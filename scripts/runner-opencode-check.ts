@@ -127,6 +127,11 @@ test("one host sample per minute with a 493-model catalog sends only the host de
 		await machineTables(db);
 		await accountTables(db);
 		const digest = optionsDigest(options);
+		// The machine actor drops an older runner's stored report in its migration (no nested transaction);
+		// the runner reports again when it connects.
+		assert.equal(sql.prepare("SELECT report FROM machine").get()?.report, null);
+		// The reconnecting runner's first full report stores the catalog again.
+		await saveReport(db, report, new Map(), 0);
 		assert.deepEqual(JSON.parse(String(sql.prepare("SELECT options FROM catalogs WHERE digest = ?").get(digest)?.options)), options);
 		const [machine] = await listMachines(ctx);
 		assert.deepEqual(machine!.host, report.host);
