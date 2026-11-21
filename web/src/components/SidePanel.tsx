@@ -14,7 +14,7 @@
  * profile's approval, and that its commands can read the Claude login it runs with.
  */
 import type { PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { acpHarnessName, contextWords, costWords, sessionModelWords } from "../lib/acp";
 import { currentMode } from "../lib/modes";
 import { absoluteTime, compact, count, percent, plural, shortId } from "../lib/format";
@@ -23,13 +23,14 @@ import { cachedShare, lastTurn, sessionUsage, turnUsage, type ModelCall, type Se
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
 import { DiffView } from "./DiffView";
-import { RefreshIcon, WarnIcon } from "./Icons";
+import { BranchIcon, ChevronIcon, RefreshIcon, WarnIcon } from "./Icons";
 import { Layers, ProfileFacts } from "./Layers";
 import { PullRequestSection } from "./PullRequest";
 import { ServersSection } from "./Servers";
 import { SecretsSection } from "./Secrets";
 import { SetupSection } from "./SetupCommand";
 import { SandboxState, StatusBadge } from "./Status";
+import { AgentGlyph } from "./ui";
 
 function Facts({ summary, profile, view }: { summary: SessionSummary; profile: SandboxProfile; view: SessionView }) {
 	const id = view.windlassSessionId;
@@ -39,30 +40,22 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 		<section className="panel-section" aria-labelledby="panel-session">
 			<h2 className="panel-title" id="panel-session">
 				Session
+				<span className="panel-title-aside">{summary.turns === 0 ? "no turns yet" : `turn ${summary.turns}`}</span>
 			</h2>
 			<dl className="kv">
-				<dt>title</dt>
-				<dd className="kv-clip" title={summary.title}>
-					{summary.title}
-				</dd>
-				<dt>id</dt>
-				<dd title={id ?? undefined}>{id ? <code className="plain-code">{shortId(id)}</code> : <span className="tone-faint">none until the first turn</span>}</dd>
-				<dt>state</dt>
+				<dt>agent</dt>
 				<dd>
-					<StatusBadge status={summary.status} />
+					<AgentGlyph harness={summary.harness ?? "windlass"} />
+					{harness ?? "Windlass"}
 				</dd>
-				{harness ? (
-					<>
-						<dt>agent</dt>
-						<dd>{harness}</dd>
-					</>
-				) : null}
 				<dt>model</dt>
 				<dd>{sessionModelWords(summary)}</dd>
 				<dt>mode</dt>
 				<dd title={mode.description ?? undefined}>{mode.name}</dd>
-				<dt>turns</dt>
-				<dd>{summary.turns}</dd>
+				<dt>state</dt>
+				<dd>
+					<StatusBadge status={summary.status} />
+				</dd>
 				{summary.repository ? (
 					<>
 						<dt>repo</dt>
@@ -70,7 +63,10 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 							<a className="kv-link" {...linkProps({ name: "repository", id: summary.repository.id })} title={`What is saved for ${summary.repository.owner}/${summary.repository.name}, and its other agents`}>
 								{summary.repository.owner}/{summary.repository.name}
 							</a>
-							<span className="tone-faint"> at </span>
+						</dd>
+						<dt>branch</dt>
+						<dd className="kv-clip kv-mono" title={summary.repository.branch}>
+							<BranchIcon size={12} className="tone-faint" />
 							{summary.repository.branch}
 						</dd>
 					</>
@@ -82,6 +78,10 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 						</dd>
 					</>
 				) : null}
+				<dt>id</dt>
+				<dd className="kv-mono" title={id ?? undefined}>
+					{id ? <code className="plain-code">{shortId(id)}</code> : <span className="tone-faint">none until the first turn</span>}
+				</dd>
 				<dt>created</dt>
 				<dd>{absoluteTime(summary.createdAt)}</dd>
 			</dl>
@@ -97,9 +97,34 @@ function Sandbox({ summary, profile }: { summary: SessionSummary; profile: Sandb
 				<SandboxState state={summary.sandbox} />
 			</h2>
 			<p className="panel-lede">{profile.name}</p>
-			<Layers profile={profile} />
 			<ProfileFacts profile={profile} claude={summary.harness === "claude" ? { mode: currentMode(summary, profile) } : null} />
+			<details className="panel-more">
+				<summary>
+					<ChevronIcon size={12} className="panel-more-chevron" />
+					How it is held
+				</summary>
+				<Layers profile={profile} />
+			</details>
 		</section>
+	);
+}
+
+/** A figure in a card: its name, the number, an optional meter, a line under it. */
+function Stat({ label, value, unit, share, meter, sub }: { label: string; value: string; unit?: string; share?: number | null; meter?: string; sub?: ReactNode }) {
+	return (
+		<div className="stat">
+			<p className="stat-label">{label}</p>
+			<p className="stat-value">
+				{value}
+				{unit ? <span className="stat-unit">{unit}</span> : null}
+			</p>
+			{share !== undefined && share !== null ? (
+				<div className="stat-meter" role="meter" aria-label={meter ?? label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(share * 100)}>
+					<span style={{ width: `${Math.min(100, share * 100)}%` }} />
+				</div>
+			) : null}
+			{sub ? <p className="stat-sub">{sub}</p> : null}
+		</div>
 	);
 }
 
@@ -119,7 +144,17 @@ function Tokens({ view }: { view: SessionView }) {
 		<section className="panel-section" aria-labelledby="panel-tokens">
 			<h2 className="panel-title" id="panel-tokens">
 				Tokens
+				<span className="panel-title-aside">{plural(calls, "call")}</span>
 			</h2>
+			<div className="stats">
+				<Stat label="Input" value={unreported ? "–" : compact(session.inputTokens)} share={unreported || session.inputTokens === 0 ? null : cachedShare(session)} meter="Input read from the prompt cache" sub={unreported ? "not reported" : `${percent(cachedShare(session))} cached`} />
+				<Stat label="Output" value={unreported ? "–" : compact(session.outputTokens)} sub={unreported ? "not reported" : `${compact(session.reasoningTokens)} reasoning`} />
+			</div>
+			<details className="panel-more">
+				<summary>
+					<ChevronIcon size={12} className="panel-more-chevron" />
+					Every count, this session and its last turn
+				</summary>
 			<table className="tokens">
 				<thead>
 					<tr>
@@ -161,13 +196,14 @@ function Tokens({ view }: { view: SessionView }) {
 					</tr>
 				</tbody>
 			</table>
+			</details>
 			{unreported ? <p className="panel-empty panel-note">No token counts were reported.</p> : null}
 		</section>
 	);
 }
 
 /** An ACP harness's usage: how full its context is, and its cost so far when it says. */
-function Context({ view, harness }: { view: SessionView; harness: string }) {
+function Context({ view, harness, turns }: { view: SessionView; harness: string; turns: number }) {
 	const context = view.context;
 	const share = context ? Math.min(1, context.used / context.size) : 0;
 	return (
@@ -176,26 +212,22 @@ function Context({ view, harness }: { view: SessionView; harness: string }) {
 				Usage
 			</h2>
 			{context ? (
-				<>
-					<dl className="kv">
-						<dt>context</dt>
-						<dd>
-							{contextWords(context)}{" "}
-							<span className="tone-faint">
-								{compact(context.used)} of {compact(context.size)} tokens
-							</span>
-						</dd>
-						{context.cost ? (
-							<>
-								<dt>cost</dt>
-								<dd>{costWords(context.cost)}</dd>
-							</>
-						) : null}
-					</dl>
-					<div className="usage-meter" role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={context.size} aria-valuenow={Math.min(context.size, context.used)} aria-valuetext={contextWords(context)}>
-						{share > 0 ? <span className="usage-meter-used" style={{ width: `${share * 100}%` }} /> : null}
+				<div className="stats">
+					<div className="stat">
+						<p className="stat-label">Context</p>
+						<p className="stat-value">
+							{contextWords(context).replace(/ used$/, "")}
+							<span className="stat-unit"> used</span>
+						</p>
+						<div className="stat-meter" role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={context.size} aria-valuenow={Math.min(context.size, context.used)} aria-valuetext={contextWords(context)}>
+							{share > 0 ? <span style={{ width: `${share * 100}%` }} /> : null}
+						</div>
+						<p className="stat-sub">
+							{compact(context.used)} of {compact(context.size)} tokens
+						</p>
 					</div>
-				</>
+					<Stat label="Cost so far" value={context.cost ? costWords(context.cost).replace(/ so far$/, "") : "–"} sub={context.cost ? plural(turns, "turn") : "not reported"} />
+				</div>
 			) : (
 				<p className="panel-empty">{harness} says how full its context is once a turn has run. It reports no token counts.</p>
 			)}
@@ -320,7 +352,8 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 	return (
 		<section className="panel-section" aria-labelledby="panel-changes">
 			<h2 className="panel-title" id="panel-changes">
-				Changes
+				Files changed
+				{files && files.length > 0 ? <span className="panel-title-aside">{files.length}</span> : null}
 				{hasSandbox ? (
 					<button type="button" className="icon-button icon-button-small" onClick={load} disabled={loading} aria-label="Reload the changed files" title="Reload">
 						<RefreshIcon size={13} className={loading ? "spin" : undefined} />
@@ -351,7 +384,8 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 										<span className="visually-hidden"> {word}</span>
 									</span>
 									<span className="change-path" title={file.path}>
-										{file.path}
+										<span className="change-dir">{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/") + 1) : ""}</span>
+										<span className="change-name">{file.path.slice(file.path.lastIndexOf("/") + 1)}</span>
 									</span>
 								</li>
 							);
@@ -398,7 +432,7 @@ export function SidePanel({ sessionId, summary, profile, view, turnsEnded, quest
 			<Facts summary={summary} profile={profile} view={view} />
 			<Sandbox summary={summary} profile={profile} />
 			{harness ? (
-				<Context view={view} harness={harness} />
+				<Context view={view} harness={harness} turns={summary.turns} />
 			) : (
 				<>
 					<Tokens view={view} />

@@ -1774,46 +1774,66 @@ button.output-more:hover {
 	position: relative;
 	min-width: 0;
 	min-height: 0;
-	padding: 4px 22px 32px;
+	padding: 0 0 32px;
 	border-left: 1px solid var(--line);
+	background: var(--bg-sunk);
 	overflow-y: auto;
 	overscroll-behavior: contain;
-	font-family: var(--font-mono);
-	font-size: var(--size-mono);
+	font-size: var(--text-13);
 }
 .session-loading .panel {
-	padding-top: 32px;
+	padding: 32px 22px;
 }
 
 .panel-section {
-	padding: 18px 0 20px;
+	padding: 16px 20px 18px;
+	border-bottom: 1px solid var(--line);
+	transition: background-color 600ms var(--ease);
 }
-.panel-section + .panel-section {
-	border-top: 1px solid var(--line);
+/* Asked for from the bar ("Publish pull request" while it cannot): the section says where it is. */
+.panel-section-flash {
+	background: var(--accent-wash);
+	transition-duration: 120ms;
 }
 
 .panel-title {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
+	gap: 8px;
 	min-height: 24px;
 	margin-bottom: 10px;
-	font-size: var(--size-mono-small);
-	font-weight: 700;
-	letter-spacing: 0.09em;
-	text-transform: uppercase;
+	font-size: var(--text-13);
+	font-weight: var(--weight-strong);
+	letter-spacing: -0.005em;
 	color: var(--ink);
+}
+.panel-title:focus-visible {
+	outline: none;
+	text-decoration: underline;
+	text-decoration-color: var(--accent);
+	text-underline-offset: 4px;
+}
+/* What stands at the title's right edge: a count, a state, the reload button. */
+.panel-title > :is(.panel-title-aside, .icon-button, .sandbox-state, .legend, .status-badge) {
+	margin-left: auto;
+}
+.panel-title > .panel-title-aside + * {
+	margin-left: 0;
+}
+.panel-title-aside {
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
 }
 .panel-lede {
 	margin-bottom: 8px;
-	font-family: var(--font-text);
-	font-size: 0.9375rem;
-	font-weight: 620;
+	font-size: var(--text-14);
+	font-weight: var(--weight-medium);
 }
 .panel-empty {
-	font-family: var(--font-text);
-	font-size: var(--size-small);
+	font-size: var(--text-13);
+	line-height: 1.5;
 	color: var(--ink-dim);
 }
 /* A line that says something failed keeps its tone: the line's own colour would win otherwise. */
@@ -1826,40 +1846,173 @@ button.output-more:hover {
 .panel-note {
 	margin-top: 8px;
 }
+.panel .facts {
+	font-family: var(--font-text);
+	font-size: var(--text-12);
+}
+.panel .facts li {
+	grid-template-columns: 76px minmax(0, 1fr);
+}
+
+/* More, folded: the layers of a sandbox, every token count. */
+.panel-more {
+	margin-top: 12px;
+}
+.panel-more > summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 6px;
+	margin-left: -6px;
+	border-radius: var(--r-item);
+	font-size: var(--text-12);
+	color: var(--ink-dim);
+	cursor: pointer;
+	list-style: none;
+	transition:
+		background-color var(--dur-hover) var(--ease),
+		color var(--dur-hover) var(--ease);
+}
+.panel-more > summary::-webkit-details-marker {
+	display: none;
+}
+.panel-more > summary:hover {
+	color: var(--ink);
+	background: var(--bg-hover);
+}
+.panel-more-chevron {
+	transition: transform 140ms var(--ease);
+}
+.panel-more[open] > summary .panel-more-chevron {
+	transform: rotate(90deg);
+}
+.panel-more[open] > :not(summary) {
+	margin-top: 8px;
+	animation: arrive 160ms var(--ease);
+}
 
 .kv {
 	display: grid;
-	grid-template-columns: max-content minmax(0, 1fr);
-	gap: 5px 18px;
+	grid-template-columns: 76px minmax(0, 1fr);
+	gap: 7px 12px;
 	align-items: baseline;
 }
 .kv dt {
 	color: var(--ink-faint);
 }
+.kv dt::first-letter {
+	text-transform: uppercase;
+}
 .kv dd {
+	display: flex;
+	align-items: center;
+	gap: 7px;
 	min-width: 0;
 	color: var(--ink);
 	overflow-wrap: anywhere;
 }
-/* An id is a value like the others: the same size, so the rows keep one rhythm. */
-.kv dd code {
-	font-size: inherit;
+.kv-mono {
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
 }
-/* The state's badge keeps the row the height of the others, in the size of the values beside it. */
+.kv dd code {
+	font-size: var(--text-12);
+}
 .kv dd > .status-badge {
-	vertical-align: top;
-	font-size: inherit;
+	font-size: var(--text-12);
 	line-height: inherit;
+}
+.kv dd > .ui-glyph {
+	flex: none;
 }
 .kv-clip {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+dd.kv-clip {
+	display: block;
+}
+dd.kv-clip > svg {
+	vertical-align: -2px;
+	margin-right: 6px;
+}
+
+/* Two figures side by side: the number large, a meter under it, a line in the mono. */
+.stats {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	margin: 0 -20px;
+	border-top: 1px solid var(--line);
+}
+.stats + .panel-more {
+	margin-top: 2px;
+}
+.panel-title + .stats {
+	margin-top: 2px;
+}
+.stat {
+	display: grid;
+	align-content: start;
+	gap: 8px;
+	min-width: 0;
+	padding: 14px 20px 16px;
+}
+.stat + .stat {
+	border-left: 1px solid var(--line);
+}
+.stat-label {
+	font-size: var(--text-12);
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+}
+.stat-value {
+	font-size: var(--text-24);
+	font-weight: var(--weight-strong);
+	letter-spacing: var(--tracking-display);
+	line-height: 1;
+	color: var(--ink);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+.stat-unit {
+	margin-left: 1px;
+	font-size: var(--text-13);
+	font-weight: var(--weight-regular);
+	letter-spacing: 0;
+	color: var(--ink-faint);
+}
+.stat-meter {
+	height: 4px;
+	border-radius: 2px;
+	background: var(--bg-active);
+	overflow: hidden;
+}
+.stat-meter > span {
+	display: block;
+	height: 100%;
+	border-radius: 2px;
+	background: var(--accent-fill);
+	transition: width 420ms var(--ease-out);
+}
+.stat-sub {
+	font-family: var(--font-mono);
+	font-size: var(--text-11);
+	color: var(--ink-faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+/* Cards that end their section run to its edges. */
+.panel-section:has(> .stats:last-child) {
+	padding-bottom: 0;
+}
 
 .tokens {
 	width: 100%;
 	border-collapse: collapse;
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
 	font-variant-numeric: tabular-nums;
 }
 .tokens th,
@@ -1924,6 +2077,8 @@ button.output-more:hover {
 .bars {
 	/* Positioned, as the scrolling columns are (see .panel), so its labels scroll and clip with it. */
 	position: relative;
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
 	display: grid;
 	gap: 3px;
 	max-height: 330px;
@@ -1979,8 +2134,15 @@ button.output-more:hover {
 
 .changes {
 	display: grid;
-	gap: 4px;
-	margin-bottom: 12px;
+	gap: 2px;
+	margin: 0 -8px 12px;
+}
+.changes li {
+	padding: 3px 8px;
+	border-radius: var(--r-item);
+}
+.changes li:hover {
+	background: var(--bg-hover);
 }
 .changes li {
 	display: grid;
@@ -1989,7 +2151,9 @@ button.output-more:hover {
 	align-items: baseline;
 }
 .change-status {
-	font-weight: 700;
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	font-weight: var(--weight-strong);
 	text-align: center;
 	color: var(--warn);
 }
@@ -2001,12 +2165,17 @@ button.output-more:hover {
 	color: var(--del);
 }
 .change-path {
-	color: var(--code);
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	color: var(--ink);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	direction: rtl;
 	text-align: left;
+}
+.change-dir {
+	color: var(--ink-faint);
 }
 
 /* ---- the project's MCP servers, in the panel ----------------------------------------------------- */
