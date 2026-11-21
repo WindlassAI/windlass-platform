@@ -532,6 +532,8 @@
 /* A machine's agents: one line each, the name, its sign-in as a small signal, and the command that signs it in, to copy. */
 .machine-agents {
 	display: grid;
+	/* Its column never grows past the row: a long command is cut short, not pushed out of the card. */
+	grid-template-columns: minmax(0, 1fr);
 	gap: 6px;
 	margin-top: 12px;
 }

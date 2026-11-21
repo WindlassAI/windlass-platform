@@ -99,6 +99,12 @@ a.agent-group-name:hover .agent-group-owner {
 	min-width: 0;
 	flex: 1 1 320px;
 }
+/* On a phone the head stacks (home.css), where a width basis would become a blank band of height. */
+@media (max-width: 640px) {
+	.repo-head {
+		flex-basis: auto;
+	}
+}
 /* A page's lede keeps the measure of the words under it. */
 .repo-head > p.home-account:not(.repo-facts) {
 	max-width: 74ch;

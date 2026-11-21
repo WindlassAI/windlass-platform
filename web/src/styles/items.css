@@ -874,6 +874,14 @@
 	.item-actions .button {
 		flex: 1;
 	}
+	/* A quiet action stays its own size at the start, not a wide bar of empty surface. */
+	.item-actions .button-quiet {
+		flex: none;
+		width: auto;
+	}
+	.item-actions > .button-quiet:first-child {
+		margin-left: -10px;
+	}
 	.item-facts > div,
 	.item-cost > div,
 	.factory-limits > div {
