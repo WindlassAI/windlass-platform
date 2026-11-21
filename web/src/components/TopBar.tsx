@@ -1,4 +1,7 @@
-/** The bar across the top: the wordmark, where you are, the theme toggle and the account. */
+/**
+ * The bar across the top: the wordmark, the app's places (Agents · Factory · Machines), where you are
+ * on a page further in, the docs, the theme toggle and the account, whose menu opens from its initial.
+ */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { absoluteTime, duration } from "../lib/format";
 import { linkProps } from "../lib/router";
@@ -6,7 +9,9 @@ import type { Theme } from "../lib/theme";
 import { useApp } from "../state/app";
 import { useGithub } from "../state/github";
 import { useChatgpt, useNow } from "../state/hooks";
-import { ExternalIcon, Mark, MoonIcon, SunIcon, UserIcon } from "./Icons";
+import { ExternalIcon, Mark, MoonIcon, SunIcon } from "./Icons";
+import { PickerPanel } from "./ui/Menu";
+import { Tooltip } from "./ui/Tooltip";
 
 export function Wordmark({ size = "small" }: { size?: "small" | "large" }) {
 	return (
@@ -20,9 +25,11 @@ export function Wordmark({ size = "small" }: { size?: "small" | "large" }) {
 export function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle(): void }) {
 	const next = theme === "dark" ? "light" : "dark";
 	return (
-		<button type="button" className="icon-button" onClick={onToggle} aria-label={`Switch to the ${next} theme`} title={`Switch to the ${next} theme`}>
-			{theme === "dark" ? <SunIcon /> : <MoonIcon />}
-		</button>
+		<Tooltip content={`Switch to the ${next} theme`} side="bottom">
+			<button type="button" className="icon-button" onClick={onToggle} aria-label={`Switch to the ${next} theme`}>
+				{theme === "dark" ? <SunIcon /> : <MoonIcon />}
+			</button>
+		</Tooltip>
 	);
 }
 
@@ -120,7 +127,7 @@ function SignedInMenu() {
 	const { auth, signOut, client, platform } = useApp();
 	const github = useGithub();
 	const [open, setOpen] = useState(false);
-	const ref = useRef<HTMLDivElement>(null);
+	const button = useRef<HTMLButtonElement>(null);
 	const { notice, dismiss } = github;
 
 	// Back from GitHub, when the connection was started here: the menu opens and says what came of it.
@@ -134,87 +141,89 @@ function SignedInMenu() {
 		wasOpen.current = open;
 	}, [open, dismiss]);
 
-	useEffect(() => {
-		if (!open) return;
-		const onPointer = (event: PointerEvent) => {
-			if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
-		};
-		const onKey = (event: KeyboardEvent) => {
-			if (event.key === "Escape") setOpen(false);
-		};
-		document.addEventListener("pointerdown", onPointer);
-		document.addEventListener("keydown", onKey);
-		return () => {
-			document.removeEventListener("pointerdown", onPointer);
-			document.removeEventListener("keydown", onKey);
-		};
-	}, [open]);
-
 	if (!auth) return null;
 	const name = auth.profile.demo ? "Demo user" : (auth.profile.email ?? auth.profile.uid);
+	const initial = (auth.profile.demo ? "D" : (auth.profile.email ?? auth.profile.uid).replace(/^u_/, "")).slice(0, 1).toUpperCase();
+	const close = () => setOpen(false);
 	return (
-		<div className="account" ref={ref}>
-			<button type="button" className="account-button" aria-haspopup="true" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-				<UserIcon size={15} />
-				<span className="account-name">{name}</span>
+		<div className="account">
+			<button ref={button} type="button" className="account-button" aria-haspopup="dialog" aria-expanded={open} aria-label={`Account: ${name}`} onClick={() => setOpen((value) => !value)}>
+				<span className="account-initial" aria-hidden="true">
+					{initial}
+				</span>
 			</button>
-			{open ? (
+			<PickerPanel open={open} onClose={close} anchor={button} title={name} width={320} id="account-menu">
 				<div className="menu" role="group" aria-label="Account">
-					<p className="menu-title">{name}</p>
 					<p className="menu-id">{auth.profile.uid}</p>
 					{auth.profile.demo ? <p className="menu-note">The demo runs a scripted model with real tool calls. It has no ChatGPT account.</p> : <ChatgptLine />}
 					{client.kind === "mock" ? <p className="menu-note">Mock backend: nothing leaves this page.</p> : null}
 					{github.enabled ? <GithubBlock github={github} /> : null}
 					{/* The account's own pages: closing the menu is the link's doing, the way there is the router's. */}
-					{platform.info?.machines ? (
-						<a className="button button-quiet menu-action" {...linkProps({ name: "machines" })} onClickCapture={() => setOpen(false)}>
-							Machines
+					<div className="menu-actions">
+						{platform.info?.machines ? (
+							<a className="menu-action menu-action-phone" {...linkProps({ name: "machines" })} onClickCapture={close}>
+								Machines
+							</a>
+						) : null}
+						<a className="menu-action" {...linkProps({ name: "usage" })} onClickCapture={close}>
+							Usage
 						</a>
-					) : null}
-					<a className="button button-quiet menu-action" {...linkProps({ name: "settings" })} onClickCapture={() => setOpen(false)}>
-						Settings
-					</a>
-					<button type="button" className="button button-quiet menu-action" onClick={() => signOut()}>
-						Sign out
-					</button>
+						<a className="menu-action" {...linkProps({ name: "settings" })} onClickCapture={close}>
+							Settings
+						</a>
+						<a className="menu-action menu-action-phone" {...linkProps({ name: "docs", slug: "" })} onClickCapture={close}>
+							Docs
+						</a>
+						<button type="button" className="menu-action menu-action-out" onClick={() => signOut()}>
+							Sign out
+						</button>
+					</div>
 				</div>
-			) : null}
+			</PickerPanel>
 		</div>
 	);
 }
 
 /**
- * "Agents · Factory": the two lists, as quiet tabs where the bar says where you are, on their own
- * pages and where the deployment offers work items. `asking`: how many work items ask their person
+ * The app's places: Agents, the Factory where the deployment offers work items, and Machines where it
+ * offers them. `current` is the one you are on; `asking`, how many work items ask their person
  * something, said beside "Factory" when there are any.
  */
-export function ListTabs({ current, asking }: { current: "home" | "factory"; asking: number }) {
+export function ListTabs({ current, asking = 0 }: { current?: "home" | "factory" | "machines"; asking?: number }) {
+	const { platform } = useApp();
 	return (
-		<nav className="topbar-tabs" aria-label="Lists">
+		<nav className="topbar-tabs" aria-label="Main">
 			<a className="topbar-tab" aria-current={current === "home" ? "page" : undefined} {...linkProps({ name: "home" })}>
 				Agents
 			</a>
-			<span className="topbar-tabs-sep" aria-hidden="true">
-				·
-			</span>
-			<a className="topbar-tab" aria-current={current === "factory" ? "page" : undefined} {...linkProps({ name: "factory" })}>
-				Factory
-				{asking > 0 ? (
-					<span className="topbar-tab-count">
-						<span aria-hidden="true"> · </span>
-						{asking}
-						<span className="visually-hidden"> {asking === 1 ? "needs" : "need"} you</span>
-					</span>
-				) : null}
-			</a>
+			{platform.info?.items ? (
+				<a className="topbar-tab" aria-current={current === "factory" ? "page" : undefined} {...linkProps({ name: "factory" })}>
+					Factory
+					{asking > 0 ? (
+						<span className="topbar-tab-count">
+							<span className="topbar-tab-dot" aria-hidden="true">
+								{" · "}
+							</span>
+							{asking}
+							<span className="visually-hidden"> {asking === 1 ? "needs" : "need"} you</span>
+						</span>
+					) : null}
+				</a>
+			) : null}
+			{platform.info?.machines ? (
+				<a className="topbar-tab" aria-current={current === "machines" ? "page" : undefined} {...linkProps({ name: "machines" })}>
+					Machines
+				</a>
+			) : null}
 		</nav>
 	);
 }
 
-export function TopBar({ theme, onToggleTheme, children }: { theme: Theme; onToggleTheme(): void; children?: ReactNode }) {
+/** `current`: the place in the bar's tabs you are on; `children`, where you are further in (a breadcrumb). */
+export function TopBar({ theme, onToggleTheme, current, asking, children }: { theme: Theme; onToggleTheme(): void; current?: "home" | "factory" | "machines"; asking?: number; children?: ReactNode }) {
 	const { auth, client } = useApp();
 	return (
-		<header className="topbar">
+		<header className={`topbar${children ? " topbar-deep" : ""}`}>
 			<a className="topbar-home" {...linkProps(auth ? { name: "home" } : { name: "signin" })} aria-label="Windlass, home">
 				<Wordmark />
 			</a>
@@ -223,6 +232,7 @@ export function TopBar({ theme, onToggleTheme, children }: { theme: Theme; onTog
 					mock
 				</span>
 			) : null}
+			{auth ? <ListTabs current={current} asking={asking} /> : null}
 			<div className="topbar-middle">{children}</div>
 			<div className="topbar-end">
 				<a className="topbar-docs" {...linkProps({ name: "docs", slug: "" })}>

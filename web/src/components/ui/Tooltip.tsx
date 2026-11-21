@@ -34,6 +34,7 @@ export function Tooltip({ content, side = "top", children }: { content: ReactNod
 		setOpen(false);
 	};
 	useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
+	const mine = (target: EventTarget) => target instanceof Node && wrap.current?.contains(target) === true;
 
 	useLayoutEffect(() => {
 		if (!open || !wrap.current || !tip.current) return;
@@ -49,9 +50,11 @@ export function Tooltip({ content, side = "top", children }: { content: ReactNod
 		<span
 			ref={wrap}
 			className="ui-tooltip-anchor"
-			onPointerEnter={(event) => event.pointerType === "mouse" && show(false)}
+			// Events from a menu or popover the control opened reach here through React's tree: only the control's own count.
+			onPointerEnter={(event) => event.pointerType === "mouse" && mine(event.target) && show(false)}
 			onPointerLeave={hide}
-			onFocus={(event) => (event.target as HTMLElement).matches?.(":focus-visible") && show(true)}
+			onPointerDown={hide}
+			onFocus={(event) => mine(event.target) && (event.target as HTMLElement).matches?.(":focus-visible") && show(true)}
 			onBlur={hide}
 			onKeyDown={(event) => event.key === "Escape" && open && hide()}
 		>

@@ -1,9 +1,9 @@
 /* Agents: a ruled list, one row per session. */
 
 .home {
-	width: min(1120px, 100%);
+	width: min(calc(var(--measure) + 2 * var(--gutter)), 100%);
 	margin: 0 auto;
-	padding: clamp(28px, 6vh, 64px) var(--gutter) 96px;
+	padding: clamp(24px, 5vh, 44px) var(--gutter) 96px;
 }
 
 .home-head {
@@ -12,12 +12,14 @@
 	justify-content: space-between;
 	gap: 20px 32px;
 	flex-wrap: wrap;
-	padding-bottom: 22px;
-	/* A ledger's double rule. */
-	border-bottom: 3px double var(--line-strong);
+	padding-bottom: 0;
 }
+/* The page's title at Helm's size: the composer under it is what the page is for. */
 .home-head .display {
-	margin-top: 6px;
+	margin-top: 4px;
+	font-size: var(--text-24);
+	line-height: 1.15;
+	letter-spacing: -0.025em;
 }
 
 .home-account {
@@ -25,9 +27,9 @@
 	flex-wrap: wrap;
 	align-items: center;
 	gap: 6px 8px;
-	margin-top: 12px;
-	font-size: var(--size-small);
-	color: var(--ink-dim);
+	margin-top: 8px;
+	font-size: var(--text-12);
+	color: var(--ink-faint);
 }
 .home-account strong {
 	color: var(--ink);

@@ -68,7 +68,8 @@ function Panel({ onClose, anchor, side = "bottom", align = "start", offset = 6, 
 	const parent = useLayer();
 	const layer = parent ?? own;
 	const panel = useRef<HTMLDivElement>(null);
-	const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden", left: 0, top: 0 });
+	// Unplaced, it is drawn transparent rather than hidden: what is in it can take focus from the start.
+	const [style, setStyle] = useState<CSSProperties>({ opacity: 0, left: 0, top: 0 });
 	const [placedSide, setPlacedSide] = useState<Side>(side);
 	const closeRef = useRef(onClose);
 	closeRef.current = onClose;

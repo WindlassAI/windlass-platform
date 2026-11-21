@@ -453,6 +453,7 @@
 	min-width: 0;
 }
 .ui-sheet-back span {
+	max-width: 26vw;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -736,4 +737,35 @@
 	.ui-tooltip {
 		animation: none;
 	}
+}
+
+/* A form pushed into a sheet. */
+.ui-sheet-panel {
+	display: grid;
+	gap: 14px;
+	padding: 4px 8px 8px;
+}
+
+/* A primary action that cannot be taken yet: quiet, not a muddied accent. */
+.button-primary:disabled {
+	opacity: 1;
+	background: var(--bg-active);
+	color: var(--ink-faint);
+	box-shadow: none;
+}
+.ui-split:has(.ui-split-main:disabled) {
+	box-shadow: none;
+}
+.ui-split:has(.ui-split-main:disabled) .ui-split-more {
+	background: var(--bg-active);
+	color: var(--ink-dim);
+	border-left-color: var(--line-strong);
+}
+.ui-split:has(.ui-split-main:disabled) .ui-split-more:hover {
+	color: var(--ink);
+}
+
+/* A long list keeps room for a few rows, however much its header and foot hold. */
+.ui-pop-menu .ui-menu-list {
+	min-height: 96px;
 }

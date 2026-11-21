@@ -43,6 +43,12 @@ export interface MenuItem {
 	keepOpen?: boolean;
 	/** A submenu, opened with → (or by hovering, on a wide screen). */
 	submenu?: MenuSpec;
+	/** Told when its submenu opens: what it lists can be asked for then. */
+	onSubmenuOpen?(): void;
+	/** In a sheet only: a page of its own (a form) pushed when the row is chosen. */
+	panel?: ReactNode;
+	/** The whole of a description that may be cut short. */
+	title?: string;
 }
 
 export interface MenuGroup {
@@ -77,6 +83,8 @@ export interface MenuSpec {
 	hints?: boolean | { right?: string };
 	/** Its width on a wide screen; 304 by default. */
 	width?: number;
+	/** The cap on its height on a wide screen; 360 by default. */
+	maxHeight?: number;
 	/** A submenu's width. */
 	submenuWidth?: number;
 }
@@ -182,7 +190,7 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 
 	const choose = (item: MenuItem) => {
 		if (item.disabled) return;
-		if (!item.onSelect && item.submenu) {
+		if (!item.onSelect && (item.submenu || item.panel)) {
 			openSub(item, true);
 			return;
 		}
@@ -191,9 +199,10 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 	};
 
 	const openSub = (item: MenuItem, focus: boolean) => {
-		if (!item.submenu || item.disabled) return;
+		if ((!item.submenu && !item.panel) || item.disabled) return;
+		item.onSubmenuOpen?.();
 		if (surface === "sheet") onPush?.(item);
-		else setSub({ id: item.id, focus });
+		else if (item.submenu) setSub({ id: item.id, focus });
 	};
 
 	const move = (to: number) => {
@@ -309,6 +318,7 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 										aria-haspopup={item.submenu ? "menu" : undefined}
 										aria-expanded={item.submenu && surface === "popover" ? sub?.id === item.id : undefined}
 										data-value={item.value ?? item.id}
+										title={item.title}
 										data-highlighted={highlighted || undefined}
 										className={`ui-item${item.tone ? ` ui-item-${item.tone}` : ""}${item.description ? " ui-item-two" : ""}`}
 										// The focus stays where it is (the list or the filter): a press must not take it.
@@ -317,7 +327,11 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 											if (item.disabled || index === current) return;
 											setActive(index);
 											if (hover.current) clearTimeout(hover.current);
-											if (surface === "popover") hover.current = setTimeout(() => setSub(item.submenu ? { id: item.id, focus: false } : null), item.submenu ? 120 : 160);
+											if (surface === "popover")
+												hover.current = setTimeout(() => {
+													if (item.submenu) item.onSubmenuOpen?.();
+													setSub(item.submenu ? { id: item.id, focus: false } : null);
+												}, item.submenu ? 120 : 160);
 										}}
 										onClick={() => choose(item)}
 									>
@@ -329,12 +343,12 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 										<span className="ui-item-end">
 											{item.trailing}
 											{item.checked ? <CheckIcon size={15} className="ui-item-check" /> : null}
-											{item.submenu ? (
+											{item.submenu || (item.panel && surface === "sheet") ? (
 												surface === "sheet" && item.onSelect ? (
 													<button
 														type="button"
 														className="ui-item-push"
-														aria-label={`${item.submenu.label}…`}
+														aria-label={`${item.submenu?.label ?? textOf(item)}…`}
 														onClick={(event) => {
 															event.stopPropagation();
 															openSub(item, true);
@@ -448,7 +462,7 @@ export function Menu({ spec, trigger, open: controlledOpen, onOpenChange, side =
 		<>
 			{trigger(triggerProps)}
 			{surface === "popover" ? (
-				<Popover open={open} anchor={anchor} onClose={close} side={side} align={align} width={spec.width ?? 304} role="group" label={spec.label} id={id} initialFocus="none" className="ui-pop-menu">
+				<Popover open={open} anchor={anchor} onClose={close} side={side} align={align} width={spec.width ?? 304} maxHeight={spec.maxHeight ?? 360} role="group" label={spec.label} id={id} initialFocus="none" className="ui-pop-menu">
 					<MenuList spec={spec} surface="popover" onClose={close} />
 				</Popover>
 			) : (
@@ -458,35 +472,69 @@ export function Menu({ spec, trigger, open: controlledOpen, onOpenChange, side =
 	);
 }
 
-/** A menu in a bottom sheet: its submenus pushed into the same sheet, with the way back. */
-export function MenuSheet({ open, spec, onClose, anchor, id, title }: { open: boolean; spec: MenuSpec; onClose(): void; anchor?: RefObject<HTMLElement | null>; id?: string; title?: string }) {
+/**
+ * A menu in a bottom sheet: its submenus (and its rows' own pages, `panel`) pushed into the same
+ * sheet, with the way back. With `settings`, choosing in a pushed list goes back to the first page
+ * rather than closing: a sheet of settings is left with Done.
+ */
+export function MenuSheet({ open, spec, onClose, anchor, id, title, settings = false, toolbar, footer }: { open: boolean; spec: MenuSpec; onClose(): void; anchor?: RefObject<HTMLElement | null>; id?: string; title?: string; settings?: boolean; toolbar?: ReactNode; footer?: ReactNode }) {
 	const [path, setPath] = useState<string[]>([]);
 	useEffect(() => {
 		if (!open) setPath([]);
 	}, [open]);
-	// The page shown: the spec, then each pushed row's submenu, found again in this render's spec so it is live.
-	const pages: MenuSpec[] = [spec];
+	// The page shown: the spec, then each pushed row's submenu or panel, found again in this render's spec so it is live.
+	const pages: Array<{ label: string; spec: MenuSpec | null; panel: ReactNode }> = [{ label: spec.label, spec, panel: null }];
 	for (const itemId of path) {
-		const page = pages[pages.length - 1] as MenuSpec;
-		const item = page.groups.flatMap((group) => group.items).find((candidate) => candidate.id === itemId);
-		if (!item?.submenu) break;
-		pages.push(item.submenu);
+		const page = pages[pages.length - 1]?.spec;
+		const item = page?.groups.flatMap((group) => group.items).find((candidate) => candidate.id === itemId);
+		if (!item || (!item.submenu && !item.panel)) break;
+		pages.push(item.submenu ? { label: item.submenu.label, spec: item.submenu, panel: null } : { label: textOf(item), spec: null, panel: item.panel });
 	}
-	const page = pages[pages.length - 1] as MenuSpec;
+	const page = pages[pages.length - 1] as (typeof pages)[number];
 	const depth = pages.length - 1;
+	const back = () => setPath((current) => current.slice(0, Math.max(0, depth - 1)));
 	return (
-		<Sheet open={open} onClose={onClose} title={depth === 0 ? (title ?? spec.label) : page.label} onBack={depth > 0 ? () => setPath((current) => current.slice(0, depth - 1)) : undefined} backLabel={depth > 0 ? (pages[depth - 1] as MenuSpec).label : undefined} returnFocus={anchor} id={id}>
-			<MenuList
-				key={depth}
-				spec={page}
-				surface="sheet"
-				nested={depth > 0}
-				onPush={(item) => setPath((current) => [...current.slice(0, depth), item.id])}
-				onClose={(reason) => {
-					if (reason === "back") setPath((current) => current.slice(0, Math.max(0, depth - 1)));
-					else onClose();
-				}}
-			/>
+		<Sheet open={open} onClose={onClose} title={depth === 0 ? (title ?? spec.label) : page.label} onBack={depth > 0 ? back : undefined} backLabel={depth > 0 ? (pages[depth - 1]?.label ?? "Back") : undefined} returnFocus={anchor} id={id} toolbar={toolbar} footer={depth === 0 ? footer : undefined}>
+			{page.spec ? (
+				<MenuList
+					key={depth}
+					spec={page.spec}
+					surface="sheet"
+					nested={depth > 0}
+					onPush={(item) => setPath((current) => [...current.slice(0, depth), item.id])}
+					onClose={(reason) => {
+						if (reason === "back") back();
+						else if (settings && depth > 0 && reason === "select") setPath([]);
+						else onClose();
+					}}
+				/>
+			) : (
+				<div className="ui-sheet-panel" key={depth}>
+					{page.panel}
+				</div>
+			)}
 		</Sheet>
+	);
+}
+
+/** A form that opens from a control: a popover anchored to it on a wide screen, a bottom sheet on a phone. */
+export function PickerPanel({ open, onClose, anchor, title, width = 340, surface: forced, children, id }: { open: boolean; onClose(): void; anchor: RefObject<HTMLElement | null>; title: string; width?: number; surface?: Surface; children: ReactNode; id?: string }) {
+	const auto = useSurface();
+	const surface = forced ?? auto;
+	const labelId = useId();
+	if (surface === "sheet") {
+		return (
+			<Sheet open={open} onClose={onClose} title={title} returnFocus={anchor} id={id}>
+				<div className="ui-sheet-panel">{children}</div>
+			</Sheet>
+		);
+	}
+	return (
+		<Popover open={open} anchor={anchor} onClose={onClose} width={width} labelledBy={labelId} id={id} maxHeight={520} className="ui-pop-panel">
+			<p className="ui-pop-panel-title" id={labelId}>
+				{title}
+			</p>
+			{children}
+		</Popover>
 	);
 }

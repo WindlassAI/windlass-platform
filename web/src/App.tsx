@@ -2,14 +2,14 @@
 import type { GithubId } from "@contract";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Mark } from "./components/Icons";
-import { ListTabs, TopBar } from "./components/TopBar";
+import { TopBar } from "./components/TopBar";
 import { linkProps, navigate, useRoute, type Route } from "./lib/router";
 import { useTheme } from "./lib/theme";
 import { Factory } from "./screens/Factory";
 import { Home } from "./screens/Home";
 import { Item, ItemCrumb, useItem } from "./screens/Item";
 import { asking, useItems } from "./screens/Items";
-import { Machines, MachinesCrumb } from "./screens/Machines";
+import { Machines } from "./screens/Machines";
 import { NewAgent } from "./screens/NewAgent";
 import { Repository, RepositoryCrumb, useRepository, type RepositoryTab } from "./screens/Repository";
 import { Session, SessionCrumb, useSessionMachine } from "./screens/Session";
@@ -107,9 +107,7 @@ function ListRoute({ route, theme, onToggleTheme }: { route: Extract<Route, { na
 	}, [route.name, waiting]);
 	return (
 		<div className="app">
-			<TopBar theme={theme} onToggleTheme={onToggleTheme}>
-				{offered ? <ListTabs current={route.name} asking={waiting} /> : null}
-			</TopBar>
+			<TopBar theme={theme} onToggleTheme={onToggleTheme} current={route.name} asking={offered ? waiting : 0} />
 			{route.name === "factory" ? <Factory filters={{ repository: route.repository, from: route.from }} items={items} /> : <Home items={offered ? items.list : []} />}
 		</div>
 	);
@@ -197,9 +195,7 @@ export function App() {
 	if (route.name === "machines") {
 		return (
 			<div className="app">
-				<TopBar theme={theme} onToggleTheme={toggleTheme}>
-					<MachinesCrumb />
-				</TopBar>
+				<TopBar theme={theme} onToggleTheme={toggleTheme} current="machines" />
 				<Machines adding={route.add === true} />
 			</div>
 		);
