@@ -389,7 +389,7 @@ interface SessionMeta {
 	 * commit GitHub had (`at`) only after it (`putWorkspaceOnWork`), in the clone's `directory`. Kept until
 	 * that is done, so a turn cut off in between does not run the setup on the branch next time.
 	 */
-	workDue?: { branch: string; at: string; directory: string } | null;
+	workDue?: { branch: string; at: string; directory: string; setupBase?: string; setUp?: boolean } | null;
 	/** The workspace was put on the session's branch after a setup run on the base, and the agent has not been told that its branch's dependencies were not installed by it. */
 	setupOnBase?: { branch: string; base: string } | null;
 	/**
@@ -1158,8 +1158,8 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	// What a setup run that was cut off with its server left running is not the agent's to find at work.
 	if (meta.setupUnfinished?.state === "interrupted" && !signal.aborted) await stopLeftoverSetup(handle);
 	// The repository's setup command, once in this sandbox, before Windlass is started in it, on the base; only then the session's branch.
-	const setUp = meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted ? await runSetup(c, meta, turn, handle, signal, secrets) : false;
-	if (meta.origin?.role !== "reviewer" && meta.repo && meta.workDue && !signal.aborted) await putWorkspaceOnWork(c, meta, turn, handle, setUp);
+	if (meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted) await runSetup(c, meta, turn, handle, signal, secrets);
+	if (meta.origin?.role !== "reviewer" && meta.repo && meta.workDue && !signal.aborted) await putWorkspaceOnWork(c, meta, turn, handle);
 	if (meta.repoUrl && !meta.cloned && !signal.aborted) {
 		note(c, turn, "info", `Cloning ${meta.repoUrl}`);
 		const cloned = await handle.run(cloneCommand(meta.repoUrl), { timeoutMs: CLONE_TIMEOUT_MS, signal });
@@ -1586,6 +1586,12 @@ function githubConnection(c: Ctx, meta: SessionMeta): Promise<StoredConnection |
 	return userActor(c, meta.uid).internalGithubConnection();
 }
 
+/** The work item owns its parent link, including for older sessions without owned-path metadata. */
+async function childSetupSeed(c: Ctx, meta: SessionMeta): Promise<string | undefined> {
+	if (!meta.origin || meta.origin.role === "reviewer") return undefined;
+	return (await itemActor(c, meta.uid, meta.origin.itemId).internalSetupSeed("child")) ?? undefined;
+}
+
 /**
  * Clones the session's repository into the sandbox that was just made, with a token GitHub issued for
  * reading that one repository; it is given to the one `git clone` and revoked after it (github/git.ts).
@@ -1596,19 +1602,20 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 	if (!repo) return true;
 	const app = githubApp();
 	if (!app) throw new ReviewRefused(`This agent was launched on ${repo.owner}/${repo.name} through your GitHub connection, and this deployment has no GitHub App any more to clone it with.`);
-	// A sandbox made in place of a lost one: what the platform pushed is all that is left of the work, so
-	// the workspace goes back on the session's branch as GitHub has it, but only once the setup command
-	// has run on the branch it started from (`putWorkspaceOnWork`): the setup command never runs on what
-	// the session pushed, which is the agent's, with the network and every secret saved for the repository.
-	const work = meta.origin?.role !== "reviewer" && meta.pushedHead && meta.publishBranch ? meta.publishBranch : undefined;
-	note(c, turn, "info", `Cloning ${repo.owner}/${repo.name} at ${repo.branch}`);
+	// Child sessions keep the feature branch as their publishing base. Setup uses its immutable seed,
+	// even after siblings have integrated or this child needs to recover its own published branch.
+	const childSeed = await childSetupSeed(c, meta);
+	const pinnedBase = meta.origin?.role === "reviewer" ? meta.reviewBase : childSeed;
+	const work = meta.origin?.role === "reviewer" ? undefined : (meta.pushedHead && meta.publishBranch) || (childSeed ? repo.branch : undefined);
+	note(c, turn, "info", `Cloning ${repo.owner}/${repo.name} at ${pinnedBase ?? repo.branch}`);
 	try {
-		const cloned = await cloneRepository(app, await githubConnection(c, meta), repo, sandbox, signal, work, meta.origin?.role === "reviewer" ? meta.reviewBase : undefined);
+		const cloned = await cloneRepository(app, await githubConnection(c, meta), repo, sandbox, signal, work, pinnedBase);
 		if (!cloned || signal.aborted) return false;
 		const directory = /^(?!\.\.$)[A-Za-z0-9._-]+$/.test(cloned.directory) ? cloned.directory : ".";
 		if (cloned.workAt && work) {
-			meta.workDue = { branch: work, at: cloned.workAt, directory };
-		} else if (cloned.workGone) {
+			meta.workDue = { branch: cloned.workGone ? repo.branch : work, at: cloned.workAt, directory, setupBase: childSeed };
+		}
+		if (cloned.workGone) {
 			meta.pushedHead = null;
 			note(c, turn, "warn", `${work} is no longer at GitHub, so the workspace starts from ${repo.branch} again. Work that was only on that branch is not in it.`);
 		}
@@ -1631,12 +1638,12 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 /**
  * Puts the new sandbox's clone on the session's branch, after the setup command ran on the base
  * (`meta.workDue`). Whatever was pushed to the branch since, by anyone, is in the workspace then: it is
- * what the next push starts from. `setUp` says a setup command ran in this sandbox: then what the
+ * what the next push starts from. The saved work records whether setup ran in this sandbox: then what the
  * branch changed in its dependencies was not installed by it, and the agent is told so with its next
  * prompt. Throws a TurnProblem when git could not do it: nothing is started, and the next turn tries
  * again, without running the setup a second time.
  */
-async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, setUp: boolean): Promise<void> {
+async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle): Promise<void> {
 	const due = meta.workDue;
 	const repo = meta.repo;
 	if (!due || !repo) return;
@@ -1647,10 +1654,11 @@ async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandb
 		throw new TurnProblem(`The new sandbox could not be put on ${due.branch}, so nothing was started (${describeError(error)}). Send the prompt again.`);
 	}
 	meta.workDue = null;
-	meta.pushedHead = head;
+	if (due.branch !== repo.branch) meta.pushedHead = head;
 	c.vars.unpushed = null;
-	if (setUp && capabilitiesOf(meta.harness).events === "windlass") meta.setupOnBase = { branch: due.branch, base: repo.branch };
-	note(c, turn, "info", `Put the workspace on ${due.branch} at ${head.slice(0, 7)}.${setUp ? ` The setup command ran on ${repo.branch} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
+	const base = due.setupBase ?? repo.branch;
+	if (due.setUp && capabilitiesOf(meta.harness).events === "windlass") meta.setupOnBase = { branch: due.branch, base };
+	note(c, turn, "info", `Put the workspace on ${due.branch} at ${head.slice(0, 7)}.${due.setUp ? ` The setup command ran on ${base} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
 	await persist(c);
 }
 
@@ -1683,19 +1691,19 @@ function setupOutput(c: Ctx, turn: number, id: string, text: string): void {
  * workspace be put on the session's branch (`meta.workDue`), before the next turn runs the setup there,
  * with the network and the repository's secrets, on what the agent wrote.
  */
-async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal, secrets: HeldSecrets | null): Promise<boolean> {
+async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal, secrets: HeldSecrets | null): Promise<void> {
 	const project = setupProjectOf(meta);
 	const directory = meta.setupDue;
-	if (!project || typeof directory !== "string") return false;
+	if (!project || typeof directory !== "string") return;
 	const saved = await orNull(userActor(c, meta.uid).internalSetupCommand(project.key), RECALL_WAIT_MS);
-	if (signal.aborted) return false;
+	if (signal.aborted) return;
 	// It stays due, and nothing of the turn is started: the setup only ever runs before the agent's first turn in the sandbox.
 	if (saved === null) throw new TurnProblem(`The setup command for ${project.label} could not be read, so nothing was started in the new sandbox. Send the prompt again.`);
 	meta.setupDue = null;
 	const command = typeof saved.command === "string" ? saved.command.trim() : "";
 	if (command === "") {
 		void persist(c);
-		return false;
+		return;
 	}
 
 	const handed = (secrets?.opened ?? []).filter(secret => meta.origin?.role !== "reviewer" || secret.scope === "setup");
@@ -1703,6 +1711,7 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	const id = `su_${randomBytes(6).toString("hex")}`;
 	const limitMs = config.setupTimeoutMs;
 	meta.setupRunning = { id, command, limitMs };
+	if (meta.workDue) meta.workDue.setUp = true;
 	append(c, { turn, kind: "setup", id, command, state: "started", exitCode: null, durationMs: null, limitMs, output: "", truncated: false });
 	await persist(c);
 
@@ -1741,7 +1750,6 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	meta.setupUnfinished = result.state === "succeeded" ? null : { command, state: result.state, exitCode: result.exitCode, limitMs, output: lastLines(result.problem === null ? output : `${output}\n${result.problem}`) };
 	console.log(`[wlp] setup.ran session=${meta.sessionId} sandbox=${sandbox.id} project=${project.key} state=${result.state} exit=${result.exitCode ?? "none"} ms=${result.durationMs}`);
 	await persist(c);
-	return true;
 }
 
 /** Shortens `text` to about `limit` characters, at the end of a paragraph or a sentence where there is one. */
@@ -3958,6 +3966,10 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 		// Confirm the session socket before recording a turn. An online control socket alone cannot run it.
 		if (meta.place.kind === "machine") await runnerLink(c, meta.place.machineId).ready();
+		if (meta.sandboxId && meta.cloned && typeof meta.setupDue === "string" && !meta.workDue?.setupBase && await childSetupSeed(c, meta)) {
+			// An older server left setup pending on an unpinned child checkout. No agent has run there yet.
+			await removeSandbox(c, meta, meta.sandboxId, "Recreating the subtask sandbox to run setup at the feature’s base commit.");
+		}
 		if (row.checkout) {
 			const run = Number(row.key.split(":")[1]);
 			if (meta.sandboxId && (meta.reviewRun !== run || meta.reviewBase !== row.checkout.baseSha)) {

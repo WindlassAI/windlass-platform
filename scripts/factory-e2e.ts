@@ -270,7 +270,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 	const server = new Server();
 	try {
 		await check("orchestrator: Orchestrate anyway replans, integrates two checked children and hands over one reviewed PR", async () => {
-			const { user } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
+			const { user, client, auth } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{name:"build",command:"true"}] });
 			const single = (await user.factoryLimits()).item;
 			const token = (await user.createApiToken({ name: "feature", scopes: ["items:create", "items:read"] })).secret;
@@ -286,7 +286,10 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const invalid = structuredClone(page.plan);
 			invalid.subtasks[0].budget.tokens = 0;
 			await refused(() => user.actOnItem({id:feature.id, action:{kind:"edit_plan", version:invalid.version, plan:invalid}}), "bad_input");
-			const edited = await user.actOnItem({id:feature.id, action:{ kind:"edit_plan", version:page.plan.version, plan:page.plan }});
+			const checkedPlan = structuredClone(page.plan);
+			checkedPlan.subtasks[0].brief += " (change-setup-fixture)";
+			checkedPlan.subtasks[1].brief += " (consume-setup-fixture)";
+			const edited = await user.actOnItem({id:feature.id, action:{ kind:"edit_plan", version:page.plan.version, plan:checkedPlan }});
 			await refused(() => user.actOnItem({id:feature.id,action:{kind:"approve_plan",version:page.plan!.version}}), "item_conflict");
 			const version = edited.plan!.version;
 			await user.saveRepositoryChecks({repositoryId:harbor.id,checks:[]});
@@ -297,6 +300,9 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const noCi = await refused(() => user.actOnItem({id:feature.id, action:{kind:"answer",question:edited.question!.id,choice:"approve"}}), "bad_input");
 			assert(/single.*push/i.test(noCi), "Missing push CI guidance: " + noCi);
 			standin.commit(harbor, "main", {".github/workflows/build.yml":"on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n"}, "Run build on push");
+			standin.commit(harbor, "main", { "index/setup.sh": 'test -n "$SETUP_FIXTURE" && echo seed-setup\n' }, "Add setup fixture");
+			await user.saveRepositorySetup({ repositoryId: harbor.id, command: "sh index/setup.sh" });
+			await user.saveRepositorySecret({ repositoryId: harbor.id, profile: "docker-windlass-sandbox", name: "SETUP_FIXTURE", scope: "setup", value: "fixture-only" });
 			const base = standin.branchHead(harbor,"main")!;
 			await user.actOnItem({id:feature.id,action:{kind:"approve_plan",version}});
 			const done = await untilItem(user,feature.id,"the feature handoff",v => {
@@ -304,9 +310,9 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 					const pushed = standin.branchHead(harbor, branchFor(child.title, child.sessionId));
 					if (pushed && !harbor.ci.has(pushed)) setCi(harbor, pushed, "success");
 				}
-				if (v.question) throw new Error(v.question.text);
-				return v.state === "review";
+				return v.state === "review" || !!v.question || !!v.children?.some(child => child.question);
 			}, 320_000);
+			assert(done.state === "review", done.question?.text ?? done.children?.find(child => child.question)?.question?.text ?? stateOf(done));
 			const read = await api("/api/items/" + feature.id, {token});
 			assert(read.status === 200 && Array.isArray(read.body.children) && read.body.children.length === 2, "The feature API omitted its children.");
 			assert(done.children?.length === 2 && done.children.every(s => s.verdict?.ci === "passed" && s.state === "done" && !s.pullRequest && s.review?.state === "off"), "Children did not finish as branches.");
@@ -314,6 +320,10 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			assert(done.spent.turns === 6 && done.budget.tokens === 3*single.tokens, "Unexpected feature spend " + JSON.stringify(done.spent));
 			const [first, secondChild] = done.children;
 			const firstHead = standin.branchHead(harbor, branchFor(first.title, first.sessionId))!;
+			assert(standin.fileOn(harbor, branchFor(first.title, first.sessionId), "index/setup.sh") === "echo child-setup\n", "The first subtask did not change the setup script.");
+			const snapshot = await client.agentSession.get([auth.profile.uid, secondChild.sessionId], { params: { token: auth.token } }).snapshot();
+			const setup = snapshot.timeline.find(e => e.kind === "setup" && e.state === "succeeded");
+			assert(setup?.kind === "setup" && setup.output.trim() === "seed-setup", "The second subtask must run the seed setup with the fixture secret. Observed " + (setup?.kind === "setup" ? setup.output : "no successful setup"));
 			const parent = standin.branchHead(harbor, branchFor(secondChild.title, secondChild.sessionId))!;
 			const log = (format: string, sha: string) => execFileSync("git", ["show","-s","--format="+format,sha], {cwd:harbor.path,encoding:"utf8"}).trim();
 			assert(log("%P", parent) === firstHead, "The second child did not build directly on the first child's commit");

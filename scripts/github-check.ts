@@ -1449,6 +1449,22 @@ await section("a replaced sandbox: the setup command runs on the base, never on 
 	);
 });
 
+await section("replaced subtask sandbox: setup at the seed, then recover the subtask branch", async () => {
+	const feature = "windlass/feature-check", child = "windlass/child-check";
+	const seed = standin.branchHead(harbor, "main")!;
+	standin.commit(harbor, feature, { "sibling.txt": "first subtask" }, "Integrate first subtask", "main");
+	standin.commit(harbor, child, { "resumed.txt": "second subtask" }, "Push second subtask", feature);
+	const repository = stored(harbor, adaInstallation, feature);
+	for (const work of [child, "windlass/deleted-child"]) {
+		const box = localSandbox("replaced-subtask");
+		const cloned = await publish.cloneRepository(app, adaConnection, repository, box, undefined, work, seed);
+		expect("setup starts on the feature seed, before either child's changes", (await box.run("git rev-parse HEAD")).stdout.trim() === seed && !existsSync(join(box.cwd, "sibling.txt")));
+		const branch = work === child ? child : feature;
+		expect("restore the published work or fall back to the integrated feature", cloned !== false && cloned.workAt === standin.branchHead(harbor, branch)
+			&& cloned.workGone === (work !== child) && await publish.putOnWork(box, cloned.directory, branch) === cloned.workAt);
+	}
+});
+
 async function verifyReviewCheckout(box: SandboxHandle) {
 	const repository = stored(harbor, adaInstallation);
 	const base = standin.branchHead(harbor, "main")!;

@@ -163,6 +163,8 @@ export interface SessionInternal {
 
 /** Actions of `workItem` that only actors may call. */
 export interface ItemInternal {
+	/** Immutable commit the feature was created from, including for children made before a restart. */
+	internalSetupSeed(source: "child" | "feature"): Promise<string | null>;
 	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { integratedHead?: string }): Promise<void>;
 	internalChildRequest(child: string): Promise<{ job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; context: string } | null>;
 	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;

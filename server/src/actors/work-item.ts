@@ -1052,6 +1052,18 @@ export const workItem = actor({
 			requireServiceFor(c, "call");
 			await take(c, {kind: "child_notice", at: Date.now(), child: child.id, spent: child.spent, state: child.state, integratedHead: child.integratedHead});
 		},
+		// The seed belongs to the parent. Looking it up on clone also covers previously created child sessions.
+		internalSetupSeed: async (c, source: "child" | "feature"): Promise<string | null> => {
+			requireServiceFor(c, "call");
+			const stored = c.vars.stored;
+			if (!stored) throw new Error("The work item is unavailable for setup.");
+			if (source === "child") {
+				const parent = stored.item.parent;
+				return parent ? itemActor(c, stored.meta.uid, parent.itemId).internalSetupSeed("feature") : null;
+			}
+			if (!stored.item.seed) throw new Error("The feature has no recorded setup commit.");
+			return stored.item.seed;
+		},
 		internalChildRequest: (c, id: string) => {
 			requireService(c);
 			const s = c.vars.stored, job = s?.item.jobs?.at(-1);
