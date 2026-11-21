@@ -91,7 +91,7 @@ export interface PlatformInfo {
  *   docker run -d --name windlass-runner --restart unless-stopped \
  *     -v /var/run/docker.sock:/var/run/docker.sock \
  *     -v windlass-runner:/var/lib/windlass-runner \
- *     <runnerImage> --platform <platformUrl>
+ *     <runnerImage> --platform <platformUrl> [--name "Build host"]
  *
  * For rootless Docker the socket to mount is `$XDG_RUNTIME_DIR/docker.sock`. To update, the same
  * command after `docker rm -f windlass-runner`: the volume keeps the key, so the machine stays paired.
@@ -1023,13 +1023,26 @@ export interface MachineSandbox {
 	usedAt: number;
 }
 
+/** Docker may supply a short or full container ID as the local hostname. */
+export function isMachineIdName(name: string): boolean {
+	return /^(?:[0-9a-f]{12}|[0-9a-f]{64})?$/i.test(name.trim());
+}
+
+export function machineLabel(machine: { name: string; os?: string; arch?: string }): string {
+	const name = machine.name.trim();
+	if (!isMachineIdName(name)) return name;
+	const kind = [machine.os?.trim(), machine.arch?.trim()].filter(Boolean).join(" ");
+	const what = kind ? kind + " machine" : "Machine";
+	return name ? what + " (" + name.slice(0, 6).toLowerCase() + ")" : what;
+}
+
 /** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary {
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
 	harnesses?: Array<{ id: "claude"; adapter: string; image: string; signIn: "token" | "none" | "unknown"; options?: HarnessOptions }>;
 	machineId: string;
-	/** What the machine said of itself when it was paired: its host name, OS and architecture. Nobody checked them. */
+	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
 	os: string;
 	arch: string;

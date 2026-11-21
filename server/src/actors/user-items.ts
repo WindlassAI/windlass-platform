@@ -36,6 +36,7 @@ import { attachmentKey } from "../factory/attachments.js";
 import { ATTACHMENT_PUT_TTL_MS, attachmentStore, type AttachmentLedger, type Reservation, type ReserveResult } from "../sandbox/attach.js";
 import { backupConfig, config } from "../config.js";
 import {
+	machineLabel,
 	type GithubId,
 	type ApiToken,
 	type ApiTokenScope,
@@ -470,7 +471,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			inReview,
 			// The session's own sandbox, running already, is not one more for its turn.
 			place: machine ? {
-				kind: "machine", name: machine.name, online: machine.status === "online",
+				kind: "machine", name: machineLabel(machine), online: machine.status === "online",
 				attachRetryAt: machine.since <= request.at ? request.deferUntil : null,
 				running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
 				max: machine.maxRunning ?? Infinity,

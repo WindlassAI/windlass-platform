@@ -155,7 +155,9 @@ export const validHarnessOptions = is<HarnessOptions>(v => optionsShape(v)
 const harnesses = list(object({ id: oneOf("claude"), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) }), 4);
 const profileList = list(machineProfile, MACHINE_PROFILES.length);
 export const validAllowedProfiles = is<MachineProfile[]>(v => profileList(v) && v.includes("docker-hardened") && new Set(v).size === v.length);
+export const validMachineName = is<string>(v => typeof v === "string" && v.length <= 64 && v.trim().length > 0 && !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(v));
 const report = object({
+	name: optional(validMachineName),
 	/** Absent on pre-policy runners, which allowed both Docker profiles. */
 	allowedProfiles: optional(validAllowedProfiles),
 	/** The connected runner supports the pairing-wide login commands. Older ones omit this. */

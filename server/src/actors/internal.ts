@@ -73,6 +73,7 @@ export type ReserveAnswer = { ok: true; hold: { id: string; seconds: number }; n
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
+	internalMachineSystem(id: string): Promise<{ os: string; arch: string } | null>;
 	internalSessionChanged(summary: SessionSummary): Promise<void>;
 	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
 	internalRemoveBackupLater(sessionId: string): Promise<void>;

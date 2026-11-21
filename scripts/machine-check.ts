@@ -89,7 +89,7 @@ async function realRunner() {
 	const owner = new Executor(id, { maxRunning: 1, maxSandboxes: 1 });
 	// The connection's state in status.json, as runner/src/main.ts keeps it: the check reads "key-in-use" there.
 	const saveStatus = (connection: string, idleSuspendMs?: number) => save("status.json", { machineId: id.machineId, connection, idleSuspendMs: idleSuspendMs ?? null });
-	await control(owner, createPrivateKey({ key, type: "pkcs8", format: "der" }), process.env.WLP_PUBLIC_URL!, new AbortController().signal, saveStatus, undefined);
+	await control(owner, createPrivateKey({ key, type: "pkcs8", format: "der" }), process.env.WLP_PUBLIC_URL!, new AbortController().signal, saveStatus, undefined, "Test machine");
 }
 
 async function check() {
@@ -144,6 +144,7 @@ async function check() {
 		}
 		const accounts = await Promise.all([account(), account()]);
 		const runner = new FakeRunner();
+		runner.details.name = "0123456789ab";
 		const wrong = new FakeRunner();
 		step("pairing, racing claims, repeat confirmation and the account shown to the runner");
 		const pair = await runner.pair(origin);
@@ -191,7 +192,7 @@ async function check() {
 		await refused(other.setMachineSecrets({ machineId, send: false }), "machine_not_found");
 		await refused(other.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } }), "machine_not_found");
 		// Paired, but its runner has not reported yet: told so, not that the sandbox does not exist.
-		await refused(user.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } }), "machine_not_connected");
+		await assert.rejects(user.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } }), { code: "machine_not_connected", message: /Linux arm64 machine \(012345\)/ });
 		assert.equal((await user.setMachineSecrets({ machineId, send: false }))[0].sendSecrets, false);
 		const service = () => client.machine.get([uid, machineId], { params: serviceParams() });
 		const row = async () => (await user.machines()).find(r => r.machineId === machineId)!;
@@ -209,7 +210,7 @@ async function check() {
 		const old = await runner.connect(conn, id, { version: "0.0.9" });
 		await eventually(() => old.frames.some(f => f.kind === "refused" && f.reason === "outdated"));
 		await eventually(async () => (await row()).warnings.some(w => w.kind === "outdated"));
-		await refused(user.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } }), "runner_outdated");
+		await assert.rejects(user.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } }), { code: "runner_outdated", message: /Linux arm64 machine \(012345\)/ });
 		const replay = await runner.connect(conn, id, { signature: old.proof() });
 		await eventually(() => replay.frames.some(f => f.kind === "refused" && f.reason === "unknown"));
 		const foreign = new WebSocket(old.ws.url, { headers: { Origin: "https://foreign.invalid" } } as unknown as string[]);
@@ -219,6 +220,15 @@ async function check() {
 		proxy = await controlProxy(port);
 		const loginSocket = await runner.connect({ ...conn, endpoint: proxy.endpoint }, id);
 		await eventually(() => events.some(rows => rows.some(r => r.status === "online" && r.freeDiskBytes === runner.report.freeDiskBytes)));
+		loginSocket.send({ ...runner.report, name: "F892B469D6C5" });
+		await eventually(async () => (await row()).name === "F892B469D6C5");
+		assert((await row()).profiles.every(p => p.name.includes("Linux arm64 machine (f892b4)")));
+		assert.equal((await service().internalFacts()).name, "Linux arm64 machine (f892b4)");
+		loginSocket.send({ ...runner.report, freeDiskBytes: 123 });
+		await eventually(async () => (await row()).freeDiskBytes === 123);
+		assert.equal((await row()).name, "F892B469D6C5");
+		loginSocket.send({ ...runner.report, name: "Workshop" });
+		await eventually(async () => (await row()).name === "Workshop");
 		for (const account of [other, user]) {
 			const reason = account === other ? "machine_not_found" : "claude_unavailable";
 			const attempts = await Promise.allSettled([account.startClaudeLogin({ machineId }), account.finishClaudeLogin({ machineId, code: "fixture" }), account.cancelClaudeLogin({ machineId })]);
@@ -255,7 +265,7 @@ async function check() {
 		console.log("ok   owner-only Claude sign-in, capability and release checks, reported sign-in and rate limits for all three actions");
 		const listed = await row();
 		assert.deepEqual(listed.profiles.map(p => p.id), ["docker-windlass-sandbox", "docker-hardened"]);
-		assert(listed.profiles.every(p => p.available && p.name.includes(runner.details.name)));
+		assert(listed.profiles.every(p => p.available && p.name.includes("Workshop")));
 		const launched = await user.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } });
 		await user.saveAccountSecret({ name: "EXAMPLE_SETTING", value: "fixture value", scope: "setup", profile: "docker-hardened" });
 		const readSecrets = () => secretsActor({ client: () => client }, uid, launched.id).internalSessionSecrets(launched.id);

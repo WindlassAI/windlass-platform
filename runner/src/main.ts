@@ -2,10 +2,11 @@ import { createInterface } from "node:readline/promises";
 import { setTimeout as wait } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { boolean, count, is, nullable, object, optional, text } from "../../server/src/runner/check.js";
-import { REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
+import { validMachineName, REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
 import { MACHINE_PROFILES, machineProfile, PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
 import type { Socket } from "node:net";
 import { audit, showLog } from "./audit.js";
+import { resolveMachineName } from "./machine-name.js";
 import { category, control, pair } from "./control.js";
 import { cleanClaudeOutput } from "./claude-output.js";
 import { changeClaudeLogin, claudeSignIn } from "./harness-login.js";
@@ -31,7 +32,7 @@ async function main() {
 		if (key === "CLAUDE_CODE_OAUTH_TOKEN" || (value && cleanClaudeOutput(value) !== value)) delete process.env[key];
 	}
 	const { positionals, values } = parseArgs({ allowPositionals: true, options: {
-		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
+		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, name: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
 	} });
 	const command = positionals[0] ?? "run";
 	const auth = command === "login" || command === "logout";
@@ -39,7 +40,9 @@ async function main() {
 	const validCommand = auth ? positionals.length === 2 && positionals[1] === "claude"
 		: positionals.length <= 1 && ["run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
-		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune|login claude|logout claude] [--platform URL] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--allow-profile ID ...].");
+		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune|login claude|logout claude] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--allow-profile ID ...].");
+	if (values.name !== undefined && (!["run", "pair"].includes(command) || !validMachineName(values.name)))
+		throw new RunnerError("Use --name with run or pair and a printable name of 1 to 64 characters.");
 	const flags = values["allow-profile"];
 	if (flags && (command !== "run" || flags.some(id => !machineProfile(id))))
 		throw new RunnerError("Use --allow-profile with run and a profile ID: docker-hardened or docker-windlass-sandbox.");
@@ -74,7 +77,7 @@ async function main() {
 			return;
 		}
 		if (command !== "status" && !tryLock()) {
-			if (command === "pair") return requestPair(values.platform);
+			if (command === "pair") return requestPair(values.platform, values.name);
 			if (command === "prune") throw new RunnerError("The runner service or another command is using this state volume. Stop the runner container or finish the command, then run prune in a one-off runner container with the same state volume and Docker socket.");
 			// Docker's restart policy would immediately relaunch a service that exits here.
 			console.error("Another runner holds the state lock. Waiting to retry.");
@@ -123,6 +126,7 @@ async function main() {
 			return;
 		}
 		let platform = origin(values.platform ?? paired?.platform ?? "");
+		let name = await resolveMachineName(values.name);
 		let needsPair = command === "pair" || !paired?.key;
 		let client: Socket | undefined;
 		let resumePlatform: string | undefined;
@@ -142,7 +146,7 @@ async function main() {
 		while (!abort.signal.aborted) {
 			let idle: string;
 			if (needsPair) {
-				const result = await pair(platform, abort.signal, say, profiles);
+				const result = await pair(platform, abort.signal, say, name, profiles);
 				if (abort.signal.aborted) { client?.end(); return; }
 				if (result.paired) {
 					paired = result.paired; resumePlatform = undefined;
@@ -176,10 +180,11 @@ async function main() {
 				let removed: string | undefined;
 				try {
 					removed = await control(owner, paired.key, platform, active, saveStatus,
-						status?.machineId === paired.current.machineId ? status.idleSuspendMs ?? undefined : undefined);
+						status?.machineId === paired.current.machineId ? status.idleSuspendMs ?? undefined : undefined, name);
 				} finally { connection.abort(); }
 				const request = await local;
 				if (request && !abort.signal.aborted) {
+					if (request.name !== undefined) name = await resolveMachineName(request.name);
 					resumePlatform = platform;
 					client = request.client; platform = request.platform ?? platform; needsPair = true;
 					continue;
@@ -195,6 +200,7 @@ async function main() {
 				audit(null, null, "idle", idle); say(idle);
 				client?.end(); client = undefined;
 			});
+			if (requested?.name !== undefined) name = await resolveMachineName(requested.name);
 			client = requested?.client;
 			platform = requested?.platform ?? platform;
 			needsPair = true;

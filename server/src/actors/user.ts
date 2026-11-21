@@ -1288,6 +1288,11 @@ export const user = actor({
 		removeMachine: (c, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> => machineActions.removeMachine(c, input),
 		setMachineSecrets: (c, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> => machineActions.setMachineSecrets(c, input),
 		internalMachineCreated: (c, id: string): Promise<boolean> => machineActions.internalMachineCreated(c, id),
+		internalMachineSystem: async (c, id: string): Promise<{ os: string; arch: string } | null> => {
+			requireServiceFor(c, "call");
+			const [row] = await c.db.execute<{ os: string; arch: string }>("SELECT os, arch FROM machines WHERE id = ?", id);
+			return row ?? null;
+		},
 		internalMachineApproval: (c, id: string): Promise<{ login: string | null } | null> => machineActions.internalMachineApproval(c, id),
 		internalMachineChanged: async (c, id: string, facts: MachineUpdate | null): Promise<void> => {
 			await machineActions.internalMachineChanged(c, id, facts);

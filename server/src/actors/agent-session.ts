@@ -129,6 +129,8 @@ import { assertOrigin, authenticate, clientError, describeError, isSandboxUserEr
 import { config } from "../config.js";
 import {
 	generatedSessionTitle,
+	isMachineIdName,
+	machineLabel,
 	type AcpUpdate,
 	type ModelList,
 	type LiveDelta,
@@ -4124,6 +4126,10 @@ export const agentSession = actor({
 		const [row] = await c.db.execute<{ data: string }>("SELECT data FROM meta WHERE id = 1");
 		const [last] = await c.db.execute<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM timeline");
 		const meta = row ? (JSON.parse(row.data) as SessionMeta) : null;
+		if (meta?.place.kind === "machine" && typeof meta.machineName === "string" && isMachineIdName(meta.machineName)) {
+			const system = await userActor(c, meta.uid).internalMachineSystem(meta.place.machineId).catch(() => null);
+			meta.machineName = machineLabel({ name: meta.machineName, ...system });
+		}
 		return {
 			meta,
 			nextSeq: (last?.seq ?? 0) + 1,

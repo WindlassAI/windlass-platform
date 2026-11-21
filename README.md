@@ -653,6 +653,11 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
     <WLP_RUNNER_IMAGE> --platform <WLP_PUBLIC_URL>
   ```
 
+  Append `--name "Build host"` after the image and its platform argument to set the name shown on the
+  Machines page. Use 1 to 64 printable characters. The runner remembers this name in its state volume.
+  Restarting the paired runner with a new name updates the listing on its next report. Without a configured name it
+  uses the Docker daemon’s host name when available, then its local hostname.
+
   For rootless Docker the socket to mount is `$XDG_RUNTIME_DIR/docker.sock`. The runner makes an Ed25519
   key pair, keeps the private key in its volume, sends the public key with its machine's host name,
   system, architecture and its own version to `POST /runner/pair`, and prints a code in

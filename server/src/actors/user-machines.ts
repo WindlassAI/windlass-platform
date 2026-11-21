@@ -4,7 +4,7 @@ import type { createClient } from "rivetkit/client";
 import type { RawAccess } from "rivetkit/db";
 import { requireServiceFor, requireUser, serviceParams } from "../auth.js";
 import { config } from "../config.js";
-import { MAX_MACHINES, type MachineClaim, type MachineSummary, type SandboxPlace, type SessionSummary } from "../contract.js";
+import { machineLabel, MAX_MACHINES, type MachineClaim, type MachineSummary, type SandboxPlace, type SessionSummary } from "../contract.js";
 import type { Registry } from "../registry.js";
 import { machineProfiles } from "../machines/profiles.js";
 import { codeDigest } from "../runner-keys.js";
@@ -57,7 +57,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 		const titles = new Map(sessions.map(s => [s.id, s.title]));
 		return {
 			name: row.name, os: row.os, arch: row.arch, ...facts, machineId: row.id,
-			profiles: report ? machineProfiles(row.name, report) : [], sendSecrets: !!row.send, agents: sessions.length,
+			profiles: report ? machineProfiles(machineLabel(row), report) : [], sendSecrets: !!row.send, agents: sessions.length,
 			sandboxes: (report?.sandboxes ?? []).map(({ sessionId, state, usedAt }) => ({ sessionId, state, usedAt, title: titles.get(sessionId) ?? null })).sort((a, b) => b.usedAt - a.usedAt),
 			freeDiskBytes: report?.freeDiskBytes ?? null, commandSandbox: report?.commandSandbox ?? null,
 			...(report && { allowedProfiles: report.allowedProfiles ?? [...MACHINE_PROFILES] }),
@@ -84,15 +84,16 @@ export async function machineSecrets(db: RawAccess, id: string): Promise<boolean
  */
 export async function launchMachineProfiles(db: RawAccess, id: string) {
 	enabled();
-	const [row] = await db.execute<{ name: string; facts: string }>("SELECT name, facts FROM machines WHERE id = ? AND expires IS NULL", id);
+	const [row] = await db.execute<{ name: string; os: string; arch: string; facts: string }>("SELECT name, os, arch, facts FROM machines WHERE id = ? AND expires IS NULL", id);
 	if (!row) throw missing();
+	const name = machineLabel(row);
 	const { report, runnerVersion }: MachineUpdate = JSON.parse(row.facts);
 	// First: an outdated runner is refused before it can report, so it has no report either.
 	if (!versionAtLeast(runnerVersion, MIN_RUNNER_VERSION)) {
-		throw new UserError(`The runner on "${row.name}" is older than this platform takes: update it to ${MIN_RUNNER_VERSION} or later, then start the agent again.`, { code: "runner_outdated" });
+		throw new UserError(`The runner on "${name}" is older than this platform takes: update it to ${MIN_RUNNER_VERSION} or later, then start the agent again.`, { code: "runner_outdated" });
 	}
-	if (!report) throw new UserError(`"${row.name}" has not connected yet. Start its runner, and once the Machines page shows it online, start the agent again.`, { code: "machine_not_connected" });
-	return { name: row.name, allowedProfiles: report.allowedProfiles, harnesses: report.harnesses, profiles: machineProfiles(row.name, report) };
+	if (!report) throw new UserError(`"${name}" has not connected yet. Start its runner, and once the Machines page shows it online, start the agent again.`, { code: "machine_not_connected" });
+	return { name, allowedProfiles: report.allowedProfiles, harnesses: report.harnesses, profiles: machineProfiles(name, report) };
 }
 
 /**
@@ -214,7 +215,7 @@ export const machineActions = {
 		requireServiceFor(c, "call");
 		const rows = facts === null
 			? await c.db.execute("DELETE FROM machines WHERE id = ? RETURNING id", id)
-			: await c.db.execute("UPDATE machines SET facts = ? WHERE id = ? AND expires IS NULL AND facts <> ? RETURNING id", JSON.stringify(facts), id, JSON.stringify(facts));
+			: await c.db.execute("UPDATE machines SET name = COALESCE(?, name), facts = ? WHERE id = ? AND expires IS NULL AND facts <> ? RETURNING id", facts.name ?? null, JSON.stringify(facts), id, JSON.stringify(facts));
 		if (rows.length) await changed(c);
 	},
 };
