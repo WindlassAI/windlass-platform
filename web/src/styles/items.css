@@ -1687,7 +1687,7 @@ a.plan-task-title:hover {
 	color: var(--ink-faint);
 }
 .plan-set-aside-open .plan-set-aside-goal {
-	visibility: hidden;
+	display: none;
 }
 .plan-set-aside-body {
 	padding-left: 20px;

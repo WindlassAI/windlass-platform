@@ -3121,4 +3121,8 @@ button.user-platform-line:hover {
 	.work-row > .line-chevron {
 		display: none;
 	}
+	/* Its figures may start a line of their own: no separator before the first. */
+	.work-facts > span:first-child::before {
+		content: none;
+	}
 }
