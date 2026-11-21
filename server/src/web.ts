@@ -5,7 +5,9 @@
  * WLP_WEB_DIR unset.
  *
  * The web app keeps its place in the address (`/agents/<id>`, web/src/lib/router.ts), so an address
- * that names no file and has no extension is a page of the app and gets `index.html`. Vite names the
+ * that names no file and has no extension is a page: a public page where the build prerendered one
+ * (`<path>/index.html`, the landing at `/`; web/src/site/pages.tsx lists them), and otherwise the app's
+ * shell, `app.html` (`index.html` in a build from before there were public pages). Vite names the
  * files under `assets/` after their content, so those may be kept for ever; everything else is asked
  * for again each time. Source maps are built but not served: they hold the source.
  */
@@ -25,6 +27,7 @@ const TYPES: Record<string, string> = {
 	".woff2": "font/woff2",
 	".woff": "font/woff",
 	".txt": "text/plain; charset=utf-8",
+	".xml": "application/xml; charset=utf-8",
 	".webmanifest": "application/manifest+json",
 };
 
@@ -91,7 +94,7 @@ export function webFiles(directory: string, { endpoint, publicUrl }: { endpoint?
 		let found = path === root ? null : await file(path);
 		let page = false;
 		if (found === null && extname(pathname) === "") {
-			found = await file(resolve(root, "index.html"));
+			found = (await file(resolve(path, "index.html"))) ?? (await file(resolve(root, "app.html"))) ?? (await file(resolve(root, "index.html")));
 			page = true;
 		}
 		if (found === null) return null;

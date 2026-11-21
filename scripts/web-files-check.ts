@@ -14,10 +14,21 @@ import { webFiles } from "../server/src/web.js";
 const root = mkdtempSync(join(tmpdir(), "wlp-web-files-"));
 const site = join(root, "site");
 mkdirSync(join(site, "assets"), { recursive: true });
-writeFileSync(join(site, "index.html"), "<!doctype html><title>app</title>\n");
+writeFileSync(join(site, "index.html"), "<!doctype html><title>landing</title>\n");
 writeFileSync(join(site, "assets", "app-abc123.js"), "console.log(1)\n");
 writeFileSync(join(site, "assets", "app-abc123.js.map"), "{}\n");
 writeFileSync(join(root, "outside.txt"), "not the web app's\n");
+// The public pages the build prerenders (web/site-build.ts): the landing takes index.html, a page of its own
+// directory takes <path>/index.html, and the app's shell is app.html.
+writeFileSync(join(site, "app.html"), "<!doctype html><title>shell</title>\n");
+mkdirSync(join(site, "docs", "start"), { recursive: true });
+writeFileSync(join(site, "docs", "start", "index.html"), "<!doctype html><title>docs start</title>\n");
+writeFileSync(join(site, "sitemap.xml"), "<?xml version=\"1.0\"?><urlset/>\n");
+writeFileSync(join(site, "robots.txt"), "User-agent: *\n");
+// A build from before there were public pages: index.html is the shell, and there is no app.html.
+const legacy = join(root, "legacy");
+mkdirSync(legacy);
+writeFileSync(join(legacy, "index.html"), "<!doctype html><title>legacy shell</title>\n");
 
 const HTML = "200 text/html; charset=utf-8 no-cache";
 const cases: Array<[method: string, address: string, want: string]> = [
@@ -37,6 +48,26 @@ const cases: Array<[method: string, address: string, want: string]> = [
 	["GET", "/%00", "none"],
 	["GET", "/%zz", "none"],
 	["POST", "/", "none"],
+	["GET", "/docs/start", HTML],
+	["GET", "/sitemap.xml", "200 application/xml; charset=utf-8 no-cache"],
+	["GET", "/robots.txt", "200 text/plain; charset=utf-8 no-cache"],
+];
+
+/** Which file an address is answered with, by the served page's title. */
+const pages: Array<[directory: string, address: string, title: string]> = [
+	[site, "/", "landing"],
+	[site, "/index.html", "landing"],
+	[site, "/agents/s_123", "shell"],
+	[site, "/signin", "shell"],
+	[site, "/factory", "shell"],
+	[site, "/assets", "shell"],
+	[site, "/docs/start", "docs start"],
+	[site, "/docs/start/", "docs start"],
+	[site, "/docs", "shell"],
+	[site, "/docs/missing", "shell"],
+	[site, "/docs/%2e%2e/%2e%2e/agents", "shell"],
+	[legacy, "/", "legacy shell"],
+	[legacy, "/agents/s_123", "legacy shell"],
 ];
 
 let passed = 0;
@@ -69,6 +100,14 @@ try {
 		if (response && method === "GET" && body === 0) got += " (without a body)";
 		const ok = got === want;
 		console.log(`${ok ? "PASS" : "FAIL"}  ${method} ${address}  ->  ${got}${ok ? "" : `   (wanted ${want})`}`);
+		if (ok) passed += 1;
+		else failed += 1;
+	}
+	for (const [directory, address, want] of pages) {
+		const response = await webFiles(directory)(new Request(`http://web.test${address}`));
+		const got = response ? (/<title>([^<]*)<\/title>/.exec(await response.text())?.[1] ?? "no title") : "none";
+		const ok = got === want;
+		console.log(`${ok ? "PASS" : "FAIL"}  GET ${address}${directory === legacy ? " (a build without app.html)" : ""}  ->  ${got}${ok ? "" : `   (wanted ${want})`}`);
 		if (ok) passed += 1;
 		else failed += 1;
 	}
