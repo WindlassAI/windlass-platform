@@ -1,6 +1,6 @@
-import type { AcpContent, AcpUpdate, SessionMode } from "../contract.js";
+import type { AcpContent, AcpUpdate } from "../contract.js";
 import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
-import { configChoices, modesOf, object, objects, optionsOf, text, type Fields } from "./acp-options.js";
+import { configChoices, modeSelection, object, objects, optionsOf, text, type Fields } from "./acp-options.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { SandboxUserError, type RunTurnInput, type RunTurnResult, type SandboxHandle } from "./api.js";
 import type { Harness, HarnessCapabilities } from "./harness.js";
@@ -167,6 +167,7 @@ export class AcpHarness implements Harness {
 		let cancelDeadline: ReturnType<typeof setTimeout> | undefined;
 		let phase: "setup" | "running" | "ended" = "setup";
 		let configs = optionsOf([]);
+		let modes = modeSelection(null, []);
 		const readConfigs = (raw: unknown) => {
 			configs = optionsOf(raw, acp.models ?? input.harnessModels);
 			acp.models = configs.list;
@@ -182,6 +183,10 @@ export class AcpHarness implements Harness {
 				}
 				if (update.sessionUpdate === "config_option_update") {
 					readConfigs(update.configOptions);
+					if (modes.select) {
+						modes = modeSelection(null, update.configOptions);
+						if (modes.current) input.onAcpModes?.(modes.current, modes.modes);
+					}
 				}
 				stream.push(isKnownUpdate(update) ? update : { ...update, sessionUpdate: "unknown", originalSessionUpdate: update.sessionUpdate });
 			},
@@ -219,13 +224,9 @@ export class AcpHarness implements Harness {
 			const prior = input.windlassSessionId;
 			// Enable updates synchronously at the open reply. Replay preceding a load reply is
 			// ignored, while updates in the very same stdout read after that reply are live.
-			let offered: SessionMode[] = [];
-			let currentMode = "";
 			const accept = (previous?: string) => (opened: Fields) => {
 				result.windlassSessionId = previous ?? text(opened.sessionId);
-				const modes = object(opened.modes);
-				currentMode = text(modes.currentModeId);
-				offered = modesOf(modes);
+				modes = modeSelection(opened.modes, opened.configOptions);
 				readConfigs(opened.configOptions);
 			};
 			if (prior) {
@@ -243,11 +244,19 @@ export class AcpHarness implements Harness {
 			if (!result.windlassSessionId) await request("session/new", settings, accept());
 			const sessionId = result.windlassSessionId;
 			if (!sessionId) throw new Error(`${profile.name} returned no session id.`);
-			const requested = input.mode ?? "auto";
-			const modeId = offered.some(m => m.id === requested) ? requested : currentMode;
-			if (!modeId) throw new Error(`${profile.name} did not report its current permission mode.`);
-			input.onAcpModes?.(modeId, offered, modeId === requested ? undefined : requested);
-			await request("session/set_mode", { sessionId, modeId });
+			const requested = input.mode ?? (modes.select ? modes.current : "auto");
+			const chosen = modes.modes.some(m => m.id === requested) ? requested : modes.current;
+			if (!chosen) throw new Error(`${profile.name} did not report its current mode.`);
+			if (modes.select) {
+				const reply = await request("session/set_config_option", { sessionId, configId: modes.select.id, value: chosen });
+				readConfigs(reply.configOptions);
+				modes = modeSelection(null, reply.configOptions);
+				if (!modes.current || !modes.modes.some(m => m.id === modes.current)) throw new Error(`${profile.name} did not acknowledge its mode.`);
+				input.onAcpModes?.(modes.current, modes.modes, modes.current === requested ? undefined : requested);
+			} else {
+				input.onAcpModes?.(chosen, modes.modes, chosen === requested ? undefined : requested);
+				await request("session/set_mode", { sessionId, modeId: chosen });
+			}
 			const priorModel = text(configs.model?.currentValue);
 			const priorEffort = text(configs.effort?.currentValue);
 			const select = (option: Fields, value: string) => request("session/set_config_option", { sessionId, configId: option.id, value }, set => {

@@ -309,7 +309,9 @@ async function clientCheck(state: string) {
 	}
 	ok(`all ${guards.length} unsupported inputs are refused before the sandbox is touched`);
 
-	let variant: "normal" | "load" | "wrong-version" | "without-auto" | "adapter-default" = "normal";
+	let variant: "normal" | "load" | "wrong-version" | "without-auto" | "adapter-default" | "config-modes" = "normal";
+	const configMode = (currentValue: string) => ({ id: "agent-mode", category: "mode", type: "select", currentValue,
+		options: [{ value: "build", name: "Build" }, { value: "plan", name: "Plan", description: "Plan only" }] });
 	let duringShutdown: (() => void) | undefined;
 	const methods: string[] = [];
 	const updates: AcpUpdate[] = [];
@@ -344,6 +346,10 @@ async function clientCheck(state: string) {
 				if (variant === "adapter-default" && frame.result?.modes) frame.result.configOptions = [
 					{ id: "model", category: "model", type: "select", currentValue: "opus", options: [{ value: "opus", name: "Opus" }] },
 				];
+				if (frame.result?.modes && variant === "config-modes") {
+					delete frame.result.modes;
+					frame.result.configOptions.push(configMode("build"));
+				}
 				const update = frame.params?.update;
 				if (update?.sessionUpdate === "agent_message_chunk" && update.content.text === secret) {
 					for (const part of [secret.slice(0, 8), secret.slice(8)]) {
@@ -371,6 +377,11 @@ async function clientCheck(state: string) {
 				write(line: string) {
 					const frame = JSON.parse(line);
 					methods.push(frame.method);
+					if (variant === "config-modes" && frame.method === "session/set_config_option") {
+						assert.equal(frame.params.configId, "agent-mode");
+						emit({ jsonrpc: "2.0", id: frame.id, result: { configOptions: [configMode(frame.params.value)] } });
+						return true;
+					}
 					if (frame.method === "session/load") {
 						emit({ method: "session/update", params: { sessionId: frame.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "old transcript" } } } });
 						frame.method = "session/resume";
@@ -473,6 +484,21 @@ async function clientCheck(state: string) {
 		assert.deepEqual(opened, ["plan", mode ?? "auto"]);
 	}
 	ok("absent auto and an unavailable requested mode both select the advertised current mode and report one fallback");
+	variant = "config-modes";
+	for (const mode of [undefined, "plan"]) {
+		methods.length = 0;
+		const selected: string[] = [];
+		const turn = await harness.runTurn(handle, { prompt: "plain", mode, windlassSessionId: first.windlassSessionId!,
+			onAcpModes: (id, choices) => {
+				assert.equal(choices[1]?.description, "Plan only");
+				selected.push(id);
+			} });
+		assert.equal(turn.failure, null);
+		assert.deepEqual(selected, [mode ?? "build"]);
+		assert(methods.includes("session/set_config_option"));
+		assert(!methods.includes("session/set_mode"));
+	}
+	ok("config-only modes use the reported current mode and reapply a saved mode on resume");
 	variant = "wrong-version";
 	methods.length = 0;
 	const wrongVersion = await harness.runTurn(handle, { prompt: "plain" });
