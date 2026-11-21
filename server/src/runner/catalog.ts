@@ -10,8 +10,9 @@ const digests = new WeakMap<HarnessOptions, string>();
 export function optionsDigest(options: HarnessOptions) {
 	let digest = digests.get(options);
 	if (!digest) {
-		// Old machine and user rows may have crossed different serializers.
-		const json = JSON.stringify(options, ["models", "defaultModel", "checkedAt", "modes", "id", "name", "efforts", "description"]);
+		// Old machine and user rows may have crossed different serializers. The
+		// check timestamp travels in the summary so a fresh probe can reuse its models.
+		const json = JSON.stringify(options, ["models", "defaultModel", "modes", "id", "name", "efforts", "description"]);
 		digest = createHash("sha256").update(json).digest("hex");
 		digests.set(options, digest);
 	}
@@ -25,7 +26,7 @@ export function compactReport(report: Report, catalog?: (id: CatalogId, options:
 		if (!options) return entry;
 		const digest = optionsDigest(options);
 		catalog?.(entry.id, options, digest);
-		return { ...entry, optionsDigest: digest };
+		return { ...entry, optionsDigest: digest, optionsCheckedAt: options.checkedAt };
 	}) };
 }
 

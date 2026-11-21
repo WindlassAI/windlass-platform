@@ -65,13 +65,14 @@ interface ReportedOptions {
  */
 export function harnessOptions(machine: MachineSummary | null, harness: HarnessId, catalog?: ReportedOptions): { models: ModelList | null; modes: SessionMode[] | null } {
 	if (machine === null || harness === "windlass") return { models: null, modes: null };
-	const reported = catalog ?? (machine.harnesses?.find((entry) => entry.id === harness) as { options?: ReportedOptions } | undefined)?.options;
+	const entry = machine.harnesses?.find(entry => entry.id === harness);
+	const reported = catalog ?? entry?.options;
 	const modes = reported?.modes && reported.modes.length > 0 ? reported.modes : null;
 	const first = reported?.models?.[0];
 	if (!reported?.models || first === undefined) return { models: null, modes };
 	// The runner reports the adapter's own default; the first listed model stands in only when it names none it lists.
 	const defaultModel = reported.models.some((model) => model.id === reported.defaultModel) ? (reported.defaultModel as string) : first.id;
-	return { models: { source: "harness", models: reported.models, defaultModel, fetchedAt: reported.checkedAt ?? null }, modes };
+	return { models: { source: "harness", models: reported.models, defaultModel, fetchedAt: entry?.optionsCheckedAt ?? reported.checkedAt ?? null }, modes };
 }
 
 /** What a model is called on screen: the harness's name for it where it gave one, its id otherwise. */

@@ -164,6 +164,12 @@ test("one host sample per minute with a 493-model catalog sends only the host de
 		console.log(`493 models, one host update/tab/minute: ${before} bytes before, ${after} bytes after (UTF-8 event JSON).`);
 		sql.exec("DROP TRIGGER no_catalog_write; DROP TRIGGER no_report_write");
 		frames.length = 0;
+		const reprobe = { ...options, checkedAt: options.checkedAt + 60_000 };
+		publish({ ...report, harnesses: [{ ...report.harnesses![0]!, options: reprobe }] });
+		assert.deepEqual(frames.map(frame => frame.kind), ["report"]);
+		assert.equal((frames[0] as Report).harnesses![0]!.optionsCheckedAt, reprobe.checkedAt);
+		assert.equal((frames[0] as Report).harnesses![0]!.optionsDigest, digest);
+		frames.length = 0;
 		const next = { ...options, defaultModel: models[1]!.id };
 		publish({ ...report, harnesses: [{ ...report.harnesses![0]!, options: next }] });
 		const [catalog, updated] = frames;

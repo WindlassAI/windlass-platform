@@ -361,8 +361,15 @@ export const machine = actor({
 		},
 		internalCatalog: async (c, id: CatalogId, digest: string): Promise<HarnessOptions | null> => {
 			requireServiceFor(c, "call");
-			const [row] = await c.db.execute<{ options: string }>("SELECT options FROM catalogs WHERE id = ? AND digest = ? AND EXISTS (SELECT 1 FROM machine WHERE removed_at IS NULL)", id, digest);
-			return row ? JSON.parse(row.options) : null;
+			// A later probe can confirm the same catalog without sending its models again.
+			const [row] = await c.db.execute<{ options: string; checkedAt: number | null }>(`SELECT catalogs.options,
+				json_extract(h.value, '$.optionsCheckedAt') AS checkedAt
+				FROM machine, json_each(machine.report, '$.harnesses') h JOIN catalogs ON catalogs.id = json_extract(h.value, '$.id')
+				WHERE removed_at IS NULL AND catalogs.id = ? AND catalogs.digest = ?`, id, digest);
+			if (!row) return null;
+			const options: HarnessOptions = JSON.parse(row.options);
+			if (row.checkedAt !== null) options.checkedAt = row.checkedAt;
+			return options;
 		},
 		internalFacts: async (c): Promise<MachineFacts> => {
 			requireServiceFor(c, "call");

@@ -241,7 +241,7 @@ async function check() {
 		const catalogDigest = optionsDigest(options);
 		const host = { cpus: 2, sandboxCpus: 1, memoryBytes: 12e9, memoryFreeBytes: 4e9, load1: 1 };
 		loginSocket.send({ kind: "catalog", id: "claude", options });
-		loginSocket.send({ ...runner.report, host, harnesses: [{ ...harness, optionsDigest: catalogDigest }] });
+		loginSocket.send({ ...runner.report, host, harnesses: [{ ...harness, optionsDigest: catalogDigest, optionsCheckedAt: options.checkedAt }] });
 		await eventually(() => events.at(-1)?.some(r => r.harnesses?.[0]?.optionsDigest === catalogDigest) === true);
 		assert.equal((await row()).harnesses?.[0]?.options, undefined);
 		assert.deepEqual(await user.machineCatalog({ machineId, id: "claude", digest: catalogDigest }), options);
@@ -254,6 +254,9 @@ async function check() {
 		loginSocket.send({ kind: "host", host: { ...host, load1: 3 } });
 		await eventually(() => samples.at(-1)?.host?.load1 === 3);
 		assert.equal(events.length, beforeSample);
+		loginSocket.send({ ...runner.report, harnesses: [{ ...harness, optionsDigest: catalogDigest, optionsCheckedAt: 2000 }] });
+		await eventually(async () => (await row()).harnesses?.[0]?.optionsCheckedAt === 2000);
+		assert.equal((await user.machineCatalog({ machineId, id: "claude", digest: catalogDigest }))?.checkedAt, 2000);
 		loginSocket.send({ ...runner.report, harnesses: [harness] });
 		await eventually(async () => (await row()).harnesses?.[0]?.signIn === "none");
 		loginSocket.send({ ...runner.report, claudeLogin: true, harnesses: [harness] });
