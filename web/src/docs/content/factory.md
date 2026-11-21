@@ -138,6 +138,8 @@ Without them, approval is refused. File it as single instead. The **How it runs*
 
 The plan says what the feature is for, what it must do, what is left out of it and when it is done. Then it lists 2 to 6 subtasks. Each subtask has a title, a brief, the paths it owns, the subtasks it waits for, how it is checked and a budget. Subtasks that do not wait for each other may not own the same paths.
 
+On the item's page the plan's goal comes first, then **Requirements**, **Done when** and **Not in it** as short lists. A long list shows its first three lines and **Show N more**. A plan that was set aside, because the feature runs as a single item or its revisions were used, is marked **superseded** and folded into one line. Choose it to read the plan.
+
 The planner may ask you questions with the plan. It may also say that one item is enough. The page then says "The planner suggests one item instead: …", and offers **Run as single item** or **Orchestrate anyway**.
 
 The planner reads what you wrote about your machines under [Say when to use it](/docs/machines#say-when-to-use-it).
