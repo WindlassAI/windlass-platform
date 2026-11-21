@@ -680,7 +680,8 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   `--allow-profile docker-hardened` alone to withdraw the Windlass opt-in. Its existing workspaces
   stay on disk and can be used again when the owner restores the flag.
 - **Network access on this machine.** New pairings use `--egress restricted`. Git over HTTPS,
-  package registries and model APIs use an HTTP proxy. Each agent has a loopback-only Docker
+  package registries and model APIs use an HTTP proxy. The platform’s own clone, fetch and push
+  commands use the same proxy. Each agent has a loopback-only Docker
   network. A small helper in that namespace carries proxy traffic over a private Unix socket.
   Only the upstream helper uses Docker host networking so it can identify the host's own
   interface addresses. It listens on the socket, runs unprivileged and has no Docker socket.
@@ -690,8 +691,11 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   To reach a private HTTP service, add exact DNS names with `--egress-allow git.office,mirror.office`.
   This permits those names on RFC1918 or ULA addresses. Host interfaces, Linux bridge subnets,
   loopback, link-local, cloud metadata and CGNAT remain blocked. Public sites are accessible
-  without listing them. Use `--egress none` to disable general networking. Claude sessions can still send Messages
-  and token-count requests through their local credential relay. Use `--egress open` for direct networking. Open sessions use a machine bridge with inter-container communication disabled.
+  without listing them. Use `--egress none` to disable general networking. This mode refuses
+  repository sessions at launch and when starting a turn. Use restricted mode for cloning and
+  publishing. Claude sessions can still send Messages and token-count requests through their local
+  credential relay. Use `--egress open` for direct networking. Open sessions use a machine bridge
+  with inter-container communication disabled.
 
   Existing pairings keep open networking on upgrade. The status and log give the opt-in flag.
   Restart the service with the chosen flags to save the mode and exceptions for this pairing.

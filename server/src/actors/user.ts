@@ -151,6 +151,7 @@ import { getSignIns } from "../signin/index.js";
 import { serverSealer } from "../signin/seal.js";
 import { ownerOfAccount } from "./account-email.js";
 import { USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
+import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
@@ -973,6 +974,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	let summary: SessionSummary;
 	try {
 		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : null;
+		if (repoUrl && machine?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
 		if (harness === "claude" && !offered) throw new UserError("This machine does not offer Claude Code.", { code: "bad_input" });
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();

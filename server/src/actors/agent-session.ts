@@ -165,6 +165,7 @@ import {
 } from "../contract.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
 import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutReview } from "../github/git.js";
+import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, problemOf, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
@@ -3775,8 +3776,11 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 			}
 		}
 
-		if (caps.signIn === "machine" && meta.place.kind === "machine") {
-			const facts = await runnerLink(c, meta.place.machineId).facts();
+		// The owner can change egress between session creation and its first prompt.
+		const facts = meta.place.kind === "machine" && (meta.repoUrl || caps.signIn === "machine")
+			? await runnerLink(c, meta.place.machineId).facts() : null;
+		if (meta.repoUrl && facts?.report?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
+		if (caps.signIn === "machine" && facts) {
 			const offered = facts.report?.harnesses?.find(entry => entry.id === meta.harness);
 			if (!offered) throw new UserError("This machine does not offer Claude Code.", { code: "bad_input" });
 			if (offered.signIn === "none") throw new UserError(machineLoginMessage(CLAUDE, facts.name), { code: "harness_signed_out" });
