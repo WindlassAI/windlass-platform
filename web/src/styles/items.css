@@ -1195,28 +1195,109 @@
 /* ---- a feature's plan ------------------------------------------------------------------------ */
 
 /*
- * An orchestrated item's plan (screens/FeaturePlan.tsx): one neutral card, the spec over the subtasks
- * over their total, hairlines between. Keys, paths, commands and figures in the mono face; the accent
- * only where something moves (a subtask's track) and the warning hues only on a figure that is wrong.
+ * An orchestrated item's plan (screens/FeaturePlan.tsx): what it is for first, in the ink at reading
+ * size; then the spec as one column, each part's name in the margin and its lines as a short list
+ * between hairlines; then one neutral card with the subtasks over their total. Keys, paths, commands
+ * and figures in the mono face; the accent only where something moves (a subtask's track) and the
+ * warning hues only on a figure that is wrong.
  */
 .plan-goal {
-	max-width: 74ch;
-	margin-top: 6px;
-	font-size: var(--text-14);
+	max-width: 72ch;
+	margin-top: 8px;
+	font-size: var(--text-15);
 	line-height: 1.55;
-	color: var(--ink-dim);
+	color: var(--ink);
 }
 .plan-card {
-	margin-top: 14px;
+	margin-top: 18px;
 	overflow: hidden;
+}
+.plan-card-head {
+	padding: 12px 18px 0;
+	font-size: var(--text-13);
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.plan-card-count {
+	margin-left: 6px;
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
 }
 .plan-spec {
 	display: grid;
-	grid-template-columns: repeat(3, minmax(0, 1fr));
-	gap: 14px 24px;
-	padding: 14px 18px 16px;
+	margin-top: 16px;
+	border-top: 1px solid var(--line);
 }
-.plan-spec dt,
+.plan-spec-part {
+	display: grid;
+	grid-template-columns: 120px minmax(0, 1fr);
+	gap: 4px 20px;
+	padding: 12px 0 13px;
+	border-bottom: 1px solid var(--line);
+}
+.plan-spec-part > dt {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	padding-top: 1px;
+	font-size: var(--text-13);
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.plan-spec-count {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
+}
+.plan-spec-part > dd {
+	min-width: 0;
+}
+.plan-spec-part ul {
+	display: grid;
+	gap: 6px;
+	max-width: 72ch;
+	list-style: none;
+	font-size: var(--text-14);
+	line-height: 1.5;
+	color: var(--ink-dim);
+}
+.plan-spec-part li {
+	position: relative;
+	padding-left: 18px;
+}
+/* The markers say what kind of line it is: a requirement a dash, a test of done a ring to tick, what is left out a cross-bar. */
+.plan-spec-part li::before {
+	content: "";
+	position: absolute;
+	left: 2px;
+	top: 0.72em;
+	width: 7px;
+	height: 1.5px;
+	border-radius: 1px;
+	background: var(--ink-faint);
+}
+.plan-spec-acceptance li::before {
+	top: calc(0.75em - 3.5px);
+	width: 7px;
+	height: 7px;
+	box-sizing: border-box;
+	border: 1.5px solid var(--ink-faint);
+	border-radius: 50%;
+	background: none;
+}
+.plan-spec-out li {
+	color: var(--ink-faint);
+}
+.plan-spec-out li::before {
+	opacity: 0.7;
+}
+.plan-spec-more {
+	margin: 6px 0 0 18px;
+	font-size: var(--text-13);
+}
 .plan-task-facts dt,
 .plan-total-head,
 .plan-total-figures dt,
@@ -1224,10 +1305,6 @@
 	font-size: 11.5px;
 	color: var(--ink-faint);
 }
-.plan-spec dd {
-	margin-top: 4px;
-}
-.plan-spec ul,
 .plan-checks {
 	display: grid;
 	gap: 3px;
@@ -1236,7 +1313,6 @@
 	line-height: 1.5;
 	color: var(--ink-dim);
 }
-.plan-spec li::marker,
 .plan-checks li::marker {
 	color: var(--ink-faint);
 }
@@ -1247,14 +1323,13 @@
 	color: var(--ink);
 }
 .plan-single {
-	padding: 0 18px 14px;
+	margin-top: 10px;
 	font-size: var(--text-13);
 	color: var(--ink-dim);
 }
 
 .plan-tasks {
 	list-style: none;
-	border-top: 1px solid var(--line);
 }
 .plan-task {
 	display: grid;
@@ -1520,9 +1595,12 @@ a.plan-task-title:hover {
 }
 
 @media (max-width: 760px) {
-	.plan-spec {
+	.plan-spec-part {
 		grid-template-columns: minmax(0, 1fr);
-		padding: 12px 14px 14px;
+		gap: 8px;
+	}
+	.plan-card-head {
+		padding: 12px 14px 0;
 	}
 	.plan-task {
 		grid-template-columns: 22px minmax(0, 1fr);
@@ -1553,4 +1631,106 @@ a.plan-task-title:hover {
 	.plan-total-figures {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
+}
+
+/*
+ * A plan that was set aside: one line, its version, its state and the start of its goal, the whole
+ * plan under it once opened. Quieter than the plan the item works by.
+ */
+.plan-set-aside-title {
+	display: block;
+}
+.plan-set-aside-row {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	width: calc(100% + 16px);
+	min-width: 0;
+	margin: 0 -8px;
+	padding: 6px 8px;
+	border: 0;
+	border-radius: var(--radius-s);
+	background: none;
+	color: var(--ink-dim);
+	font: inherit;
+	text-align: left;
+	transition: background-color 120ms var(--ease), color 120ms var(--ease);
+}
+.plan-set-aside-row:hover {
+	background: var(--bg-hover);
+	color: var(--ink);
+}
+.plan-set-aside-chevron {
+	flex: none;
+	align-self: center;
+	color: var(--ink-faint);
+	transition: transform 140ms var(--ease);
+}
+.plan-set-aside-chevron-open {
+	transform: rotate(90deg);
+}
+.plan-set-aside-name {
+	flex: none;
+}
+.plan-set-aside-row > .usage-count {
+	flex: none;
+	margin-left: 0;
+}
+.plan-set-aside-goal {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: var(--text-13);
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
+}
+.plan-set-aside-open .plan-set-aside-goal {
+	display: none;
+}
+.plan-set-aside-body {
+	padding-left: 20px;
+	animation: arrive 160ms var(--ease);
+}
+.plan-set-aside-note {
+	margin-top: 2px;
+	font-size: var(--text-13);
+	color: var(--ink-faint);
+}
+.plan-set-aside-body .plan-goal {
+	color: var(--ink-dim);
+}
+@media (max-width: 760px) {
+	.plan-set-aside-row {
+		flex-wrap: wrap;
+		row-gap: 2px;
+	}
+	.plan-set-aside-goal {
+		flex-basis: 100%;
+		padding-left: 20px;
+	}
+	.plan-set-aside-body {
+		padding-left: 0;
+	}
+}
+
+/* What checks a subtask: the spec's dash before each line, not a browser's bullet. */
+.plan-checks {
+	padding-left: 0;
+	list-style: none;
+}
+.plan-checks > li {
+	position: relative;
+	padding-left: 14px;
+}
+.plan-checks > li::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: 0.72em;
+	width: 6px;
+	height: 1.5px;
+	border-radius: 1px;
+	background: var(--ink-faint);
 }

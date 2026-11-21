@@ -29,7 +29,7 @@ import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type I
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
-import { PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
+import { Inline, PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown } from "../components/Blocks";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
@@ -847,7 +847,8 @@ function IssueOrigin({ origin }: { origin: NonNullable<ItemView["origin"]> }) {
 }
 
 /** What the agent is given, as it is given it: plain text, never Markdown or links. */
-function TaskText({ task }: { task: ItemView["task"] }) {
+/** `codeSpans`: `code` in the criteria drawn in the mono face; not for text shown as the agent will be given it. */
+function TaskText({ task, codeSpans = false }: { task: ItemView["task"]; codeSpans?: boolean }) {
 	return (
 		<>
 			{task.body ? <p className="item-body-text">{task.body}</p> : <p className="usage-empty">Only the title was given.</p>}
@@ -856,7 +857,7 @@ function TaskText({ task }: { task: ItemView["task"] }) {
 					<p className="machine-label item-task-label">Acceptance criteria</p>
 					<ul className="item-criteria-list">
 						{task.acceptance.map((line) => (
-							<li key={line}>{line}</li>
+							<li key={line}>{codeSpans ? <Inline text={line} /> : line}</li>
 						))}
 					</ul>
 				</>
@@ -1076,7 +1077,7 @@ export function Item({ page }: { page: ItemPage }) {
 					<h2 className="usage-title" id="item-task">
 						The task
 					</h2>
-					<TaskText task={view.task} />
+					<TaskText task={view.task} codeSpans />
 				</section>
 			)}
 

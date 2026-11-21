@@ -22,7 +22,9 @@ When a turn ends, its outcome is one of **done**, **done, checks unresolved**, *
 
 The timeline shows everything the agent does, live: your prompts, its reasoning (**thinking**, then **thought**), its tool calls and its answers. Each tool call shows its state, such as **running**, **done**, **failed** or **refused**.
 
-Above the field, a status line says what is happening, for example **working · step 3**, with a timer. If you scroll up, **Jump to latest** takes you back to the end.
+Tool calls that finished one after another are folded into one line that says what they did, for example **Read 4 files, searched twice and ran 1 command**, with how many failed. Choose the line to see each call, and a call to see its input and output. A call that is running, asks you something, was refused or was answered stays on its own line, as do subagents and pushes.
+
+Above the field, a status line says what is happening, for example **running `bun test` · step 3**, with a timer. If you scroll up, **Jump to latest** takes you back to the end. When you hide the side panel, the timeline stays in the middle of the page.
 
 At the end of each turn, a summary line gives the outcome, the number of steps, the time it took, the files it changed and the tokens it used. For Claude Code it gives how full the context is and the cost so far.
 
@@ -97,9 +99,58 @@ In the Windlass sandbox profile, the panel offers **Let the agent publish withou
 
 > **Note** Before it pushes, the platform looks for the values of your saved secrets in the changes. If it finds one, nothing is pushed, and it names the files.
 
+The agent can also push its work to the session's branch, and fetch the branch it started from, without asking you. It pushes only to the session's own branch, never to the default branch. A commit someone else pushed to that branch is never pushed away: the push is refused, and the agent is told to fetch and merge it first.
+
+### What was verified
+
+Every pull request the platform opens ends its description with a section, **What was verified**. The platform writes it from what Windlass recorded of the checks, not from what the agent wrote, and writes it again with every push. Text you add elsewhere in the description stays.
+
+The section says:
+
+- how the checks of the agent's last turn ended, and each check's name, command, whose it is, result and time;
+- the end of the output of a check that did not pass;
+- which of your checks did not run, and why;
+- when nothing was verified, why: for example, no checks are set for the repository;
+- under **To look at**, what a reviewer may want to check: test files deleted or renamed away, tests newly skipped, a change to what the checks run, a check's command that now ignores an exit status, or files changed after the checks last ran.
+
+It ends by saying that it is not a review. A push the agent makes during its turn comes before that turn's checks, so the section first says that what the turn changed had not been checked yet. The platform writes it again once the turn has ended.
+
+For a session on one of your machines, the section adds that the checks ran on that machine, and that this is what the machine reported.
+
+## The repository's setup command
+
+Where the repository has a [setup command](/docs/settings#setup-command), it runs once in each new sandbox, after the clone and before the agent's first turn there. The timeline shows the command, what it prints as it runs, how it ended and how long it took. **Stop** stops it, and the turn with it.
+
+If it fails or runs out of time, the session goes on. The agent is told before its next prompt, with the command, how it ended and the last 20 lines it printed.
+
+You can change the command in the side panel, under **Setup command**. A change applies to sandboxes made after it. A sandbox that already has its clone is not set up again.
+
+## MCP servers of the repository
+
+A repository can name MCP servers in `.windlass/config.json`. Windlass does not start them by itself, because opening a repository must not run a command the repository chose. Before a turn, the agent asks you: **Start this project's MCP server "…"?** The question shows the server's command with every argument, or its address, and the file that defines it. It also says what the server can do: it runs outside Windlass's sandbox around commands, so it has the network and can read the session's access token.
+
+- **Start it for this project** starts it. The agent has its tools from this turn on.
+- **Not now** leaves it stopped. Your next message asks again.
+
+A question nobody answers within 10 minutes counts as **Not now**. If a server's definition reads a secret, the question says which saved secret approving hands over, or which secret to save if it is not set.
+
+Your approval is remembered for 30 days, for that repository and exactly that definition. A changed definition is asked about again. A changed script that the definition runs is not.
+
+The side panel's **MCP servers** section lists each server with its command, its state in the last turn and, where an approval is remembered, until when, with **Forget**. A server that waits because you said **Not now** has **Approve…** there; it starts with the next turn.
+
+> **Note** Forgetting holds for new sessions and new sandboxes. A sandbox where the server already started goes on starting it, and a running server is not stopped. On a Docker platform, Windlass's own approval holds in all your sessions, since they share its data.
+
+A repository's hooks do not run, and its language servers do not start.
+
 ## Sandboxes after the work
 
 A sandbox is paused 10 minutes after its last turn. A paused sandbox uses no sandbox time. On this platform it is removed after 7 days without use. The timeline stays either way. If the sandbox is gone, the next prompt starts a new one.
+
+### When a sandbox is replaced
+
+A new sandbox has a fresh workspace. The platform clones the repository at the branch the session started from and runs its setup command. Where the session's work was pushed, it then puts the workspace on the session's branch as GitHub has it. What was only in the old sandbox is lost. The agent is told with its next prompt.
+
+Where the platform keeps a copy of the agent's memory of the conversation, it restores it, and the timeline says "Restored the agent's memory of the conversation into the new sandbox." Otherwise the agent starts without it, and the timeline says so.
 
 On one of your machines, a sandbox is not removed after a time. It goes when you delete its agent, when you remove the machine with its sandboxes, or when you prune the runner.
 
@@ -108,3 +159,7 @@ On this platform you can keep up to 5 sandboxes at once. To free one, go to **Us
 ## Rename or delete an agent
 
 On the list of agents, each row has **Rename** and **Delete**. Deleting asks first: **Delete this agent?**
+
+An agent that works for a work item cannot be deleted while the item has it. Cancel the item instead.
+
+Deleting an agent on one of your machines records that its sandbox must be removed, and the runner removes it now or when it is next online. If that record cannot be written, the delete is refused: "The agent could not be deleted: its machine's record of the sandbox to remove could not be written. Try again in a moment."

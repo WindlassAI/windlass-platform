@@ -1,5 +1,5 @@
 /**
- * What a session's work was verified with, and how a pull request says so (README, "What a pull
+ * What a session's work was verified with, and how a pull request says so (docs/github-and-repositories.md, "What a pull
  * request shows was verified").
  *
  * Three things are worked out here, and nothing else is: what a turn's checks came to, from the

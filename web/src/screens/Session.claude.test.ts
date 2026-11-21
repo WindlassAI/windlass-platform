@@ -105,6 +105,12 @@ describe("a Claude Code agent's page", () => {
 		await open("nas-claude");
 		const turn = host.querySelector(".turn") as HTMLElement;
 		expect(turn.querySelector(".block-plan")).not.toBeNull();
+		// The three calls, settled one after the other, are one row of work, folded until it is opened.
+		const work = turn.querySelector(".work-row") as HTMLButtonElement;
+		expect(work.querySelector(".work-text")?.textContent).toBe("Read 1 file, changed 1 file and ran 1 command");
+		expect(work.getAttribute("aria-expanded")).toBe("false");
+		expect(turn.querySelectorAll(".tool-name")).toHaveLength(0);
+		act(() => work.click());
 		expect([...turn.querySelectorAll(".tool-name")].map((name) => name.textContent)).toEqual(["read", "edit", "shell"]);
 		expect([...turn.querySelectorAll(".tool-target")].map((target) => target.textContent)).toEqual(["README.md", "README.md", "npm test"]);
 		// The edit's diff, counted as Windlass's edits are.

@@ -5,7 +5,7 @@ import { plannerMachines } from "../machines/details.js";
  * Stored in SQLite: the profile last seen on a valid token, one row per session holding its summary,
  * and the sign-in. The summaries are also held in memory so that counting the running sessions and
  * marking one as running happen in one synchronous step. A session that was created with the key of
- * its submission (submissions.ts; README, "A message sent twice") has that key in its row, and in
+ * its submission (submissions.ts; docs/architecture.md, "A message sent twice") has that key in its row, and in
  * memory with the summaries: `createSession` with the same key answers with that session and makes none.
  *
  * The sign-in is what Windlass saves of it (`auth.json`, `host-id`), in one row, sealed with a key that
@@ -16,7 +16,7 @@ import { plannerMachines } from "../machines/details.js";
  * sign-in is saved here before its token leaves. What leaves is sealed for the server that asked
  * (`internalAccessToken`): the engine that carries the answer does not see the token either.
  *
- * The user's GitHub connection is here too (README, "GitHub"): the GitHub user who connected and the
+ * The user's GitHub connection is here too (docs/github-and-repositories.md, "GitHub"): the GitHub user who connected and the
  * installations of the deployment's GitHub App that user could reach then, as GitHub confirmed them to
  * the server's callback route (github/connect.ts). It is one row of plain JSON: names and ids, and no
  * credential, because there is none to keep. What the platform does at GitHub it does with a token of
@@ -52,7 +52,7 @@ import { plannerMachines } from "../machines/details.js";
  * an object here: it is the key those five tables share, GitHub's id for it, and its page
  * (`repository`) is what they hold under that key, beside the user's sessions on it.
  *
- * And what the user keeps for their account, whatever the repository (README, "Account settings"):
+ * And what the user keeps for their account, whatever the repository (docs/github-and-repositories.md, "Account settings"):
  * the defaults a new session starts with where neither the form nor its repository says
  * (account-defaults.ts), the user's own MCP servers (personal-servers.ts), one row each, and the
  * secrets those servers read (account-secrets.ts), one row per name, the value sealed as a

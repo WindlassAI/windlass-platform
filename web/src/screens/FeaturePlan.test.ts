@@ -284,6 +284,34 @@ describe("a feature's plan on its page", () => {
 	});
 });
 
+describe("a plan that was set aside", () => {
+	it("is one line with its version, state and goal, that opens to the plan, its long spec parts folded after three lines", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Resume interrupted uploads");
+		await show(`/items/${feature.id}`);
+		const row = host.querySelector(".plan-set-aside-row") as HTMLButtonElement;
+		expect(row.getAttribute("aria-expanded")).toBe("false");
+		expect(row.querySelector(".usage-count")?.textContent).toBe("v1 · superseded");
+		expect(row.querySelector(".plan-set-aside-goal")?.textContent).toMatch(/^Resume an interrupted upload from the last confirmed chunk/);
+		expect(host.querySelector(".plan-spec")).toBeNull();
+		act(() => row.click());
+		expect(host.querySelector(".plan-set-aside-note")?.textContent).toBe("Set aside: the work runs as one item, under its own budget.");
+		const requirements = host.querySelector(".plan-spec-requirements") as HTMLElement;
+		expect(requirements.querySelector("dt")?.textContent).toBe("Requirements6");
+		expect(requirements.querySelectorAll("li")).toHaveLength(3);
+		const more = requirements.querySelector(".plan-spec-more") as HTMLButtonElement;
+		expect(more.textContent).toBe("Show 3 more");
+		act(() => more.click());
+		expect(requirements.querySelectorAll("li")).toHaveLength(6);
+		expect(more.textContent).toBe("Show fewer");
+		// Three lines are shown whole: nothing to fold.
+		expect(host.querySelector(".plan-spec-acceptance .plan-spec-more")).toBeNull();
+		expect(host.querySelector(".plan-spec-acceptance .plan-code")?.textContent).toBe("harbor upload");
+		// Its subtasks never ran.
+		expect([...host.querySelectorAll(".plan-task-word")].map((word) => word.textContent)).toEqual(["not run", "not run"]);
+	});
+});
+
 describe("the rules the page checks before sending", () => {
 	const single = { tokens: 6_000_000, turns: 14, activeSeconds: 4 * 3600, hostedSeconds: 2 * 3600 };
 	it("takes a subtask's floor as a tenth of a single item, two turns, at least 1,000 tokens and a minute", () => {

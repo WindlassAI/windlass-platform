@@ -61,8 +61,8 @@
  *                              is reached makes work wait, with a sentence, and never refuses it
  *   WLP_FACTORY_ITEM_TOKENS, WLP_FACTORY_ITEM_TURNS, WLP_FACTORY_ITEM_ACTIVE_SECONDS,
  *   WLP_FACTORY_ITEM_HOSTED_SECONDS
- *                              a new work item's budget (default 4,000,000 tokens, 10 turns, 4 hours
- *                              working, 1.5 hours of hosted sandbox); a person raises one item's when
+ *                              a new work item's budget (default 6,000,000 tokens, 14 turns, 4 hours
+ *                              working, 2 hours of hosted sandbox); a person raises one item's when
  *                              it stops on it. The same on every server, like all of these
  *   WLP_HTTP_PORT, PORT        where the platform's HTTP routes listen (`/platform/info`, `/health`);
  *                              WLP_HTTP_PORT first, then PORT, which Rivet Cloud sets on its nodes
@@ -73,7 +73,7 @@
  *                              on that port (web.ts): one address for the whole platform. Unset: it
  *                              serves none, and the web app is hosted elsewhere. server/Dockerfile sets it
  *
- * What browsers connect with (`GET /platform/connection`, platform-info.ts; README, "Running on several
+ * What browsers connect with (`GET /platform/connection`, platform-info.ts; docs/operating.md, "Running on several
  * servers"). None of it is needed with the local engine, which asks for no token:
  *
  *   WLP_PUBLIC_ENDPOINT        the Rivet endpoint browsers connect to, without a namespace or a token in
@@ -94,7 +94,7 @@
  *                              minute, and at most the 24 hours a Rivet Cloud cluster issues one for).
  *                              A server hands one token to every browser until half of that is gone
  *
- * With WLP_SANDBOX=e2b (read in sandbox/e2b/config.ts; README, "E2B"). The defaults are sized for E2B's
+ * With WLP_SANDBOX=e2b (read in sandbox/e2b/config.ts; docs/operating.md, "E2B"). The defaults are sized for E2B's
  * free Hobby plan, which runs on a one-time credit: every one of them errs on the side of using less.
  *
  *   E2B_API_KEY                the E2B account's API key. Required: without it the server does not start
@@ -132,7 +132,7 @@
  *   WLP_E2B_WINDLASS_VERSION   the Windlass version in the template, to show it before the first sandbox
  *                              was made (default: learned from the first sandbox)
  *
- * The bucket (read by `backupConfig` below; README, "The agent's memory outlives its sandbox"). Where
+ * The bucket (read by `backupConfig` below; docs/architecture.md, "The agent's memory outlives its sandbox"). Where
  * Windlass's own session data lives on the sandbox's disk (E2B), a copy of it is kept in a bucket after
  * every turn and put back into the sandbox that replaces a lost one (sandbox/backup.ts). Any store
  * that speaks the S3 protocol will do, and changing the provider is changing these. With none of the
@@ -163,7 +163,7 @@
  *                              fake layer's Windlass sessions live in its sandboxes, as on E2B, and
  *                              are copied to that directory and restored from it (sandbox-fake.ts)
  *
- * GitHub (read by `githubConfig` below; README, "GitHub"). A GitHub App of this deployment's own lets a
+ * GitHub (read by `githubConfig` below; docs/github-and-repositories.md, "GitHub"). A GitHub App of this deployment's own lets a
  * user connect GitHub, launch an agent on a repository the app was installed on, private ones included,
  * and get the work back as a pull request. With none of the first five set the feature is off: the web
  * app shows nothing of it and every session behaves as before. With only some of them set it is off
@@ -209,7 +209,7 @@
  *
  * The Rivet engine is RivetKit's to configure, from its own variables: without RIVET_ENDPOINT it starts
  * a local engine on :6420 (development), with it the server joins that engine as one of its nodes
- * (RIVET_ENDPOINT, RIVET_NAMESPACE, RIVET_TOKEN, RIVET_POOL, RIVET_NODE_VERSION; README, "Running on
+ * (RIVET_ENDPOINT, RIVET_NAMESPACE, RIVET_TOKEN, RIVET_POOL, RIVET_NODE_VERSION; docs/operating.md, "Running on
  * several servers"). `engine` below is what this server makes of them; it never holds the token, and
  * neither does anything else in `config`: the admin token is read where it is used (`engineAdminToken`).
  */

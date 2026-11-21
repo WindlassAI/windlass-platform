@@ -24,7 +24,7 @@
  * and can write on the engine's own connection: a command there can make a call in the agent's
  * name without Windlass having decided anything, so Windlass's question would guard nothing. That
  * is why such a session's agent is never let publish unasked (`publishUnaskedProblem`): there every
- * request is put to the user, whoever made it. README, "The agent asks to publish", says the same.
+ * request is put to the user, whoever made it. docs/github-and-repositories.md, "The agent's own tools", says the same.
  *
  * This file has what is the same everywhere: the tools' declarations, what a request may hold, and
  * the words of the question, of the timeline's lines and of what the agent is told.
