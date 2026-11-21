@@ -17,11 +17,18 @@ export function isMachineIdName(name: string): boolean {
 	return trimmed === "" || /^[0-9a-f]{12}$/i.test(trimmed) || /^[0-9a-f]{64}$/i.test(trimmed);
 }
 
+/** An OS as runners report it ("linux", "darwin") by the name people use: "Linux", "macOS". */
+function osName(os: string): string {
+	const trimmed = os.trim();
+	const known: Record<string, string> = { linux: "Linux", darwin: "macOS", windows: "Windows", win32: "Windows" };
+	return known[trimmed.toLowerCase()] ?? trimmed;
+}
+
 /** The machine's name for every place the page names it. */
 export function machineLabel(machine: Described): string {
 	const name = machine.name.trim();
 	if (!isMachineIdName(name)) return name;
-	const kind = [machine.os.trim(), machine.arch.trim()].filter(Boolean).join(" ");
+	const kind = [osName(machine.os), machine.arch.trim()].filter(Boolean).join(" ");
 	const what = kind === "" ? "Machine" : `${kind} machine`;
 	return name === "" ? what : `${what} (${name.slice(0, 6).toLowerCase()})`;
 }

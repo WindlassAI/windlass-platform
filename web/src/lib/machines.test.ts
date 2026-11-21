@@ -28,3 +28,11 @@ describe("machineLabel", () => {
 		expect(isMachineIdName("F892B469D6C5")).toBe(true);
 	});
 });
+
+describe("machineLabel's OS words", () => {
+	it("names the OS as people do, whatever case the runner reported it in", () => {
+		expect(machineLabel({ name: "d5eb81162177", os: "linux", arch: "arm64" })).toBe("Linux arm64 machine (d5eb81)");
+		expect(machineLabel({ name: "d5eb81162177", os: "darwin", arch: "arm64" })).toBe("macOS arm64 machine (d5eb81)");
+		expect(machineLabel({ name: "d5eb81162177", os: "FreeBSD", arch: "x64" })).toBe("FreeBSD x64 machine (d5eb81)");
+	});
+});
