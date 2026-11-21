@@ -1229,11 +1229,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	// ---- identity -------------------------------------------------------------------------------
 
-	const tokenFor = (profile: UserProfile) => `mock:${profile.demo ? "demo" : "chatgpt"}:${profile.uid}:${profile.email ?? ""}`;
+	const revoked = new Map<string, string>();
+	const generation = (uid: string) => recall("wlp.mock.tokenGen." + uid) ?? revoked.get(uid) ?? "";
+	const tokenFor = (profile: UserProfile) => `mock:${profile.demo ? "demo" : "chatgpt"}:${profile.uid}:${profile.email ?? ""}${generation(profile.uid) ? ":" + generation(profile.uid) : ""}`;
 
 	function worldOf(auth: AuthResult): World {
-		const [scheme, kind, uid, email] = auth.token.split(":");
-		if (scheme !== "mock" || !uid || uid !== auth.profile.uid || (kind !== "demo" && kind !== "chatgpt")) {
+		const [scheme, kind, uid, email, gen = ""] = auth.token.split(":");
+		if (scheme !== "mock" || !uid || gen !== generation(uid) || uid !== auth.profile.uid || (kind !== "demo" && kind !== "chatgpt")) {
 			throw new PlatformError("unauthorized", "This sign-in is no longer accepted. Sign in again.");
 		}
 		let world = worlds.get(uid);
@@ -3253,6 +3255,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		return {
 			...machineCalls(auth),
 			...items.calls(auth),
+			async signOutEverywhere() {
+				const { uid } = world().profile;
+				const next = crypto.randomUUID();
+				revoked.set(uid, next);
+				keep("wlp.mock.tokenGen." + uid, next);
+			},
 			async me() {
 				await latency();
 				return world().profile;
