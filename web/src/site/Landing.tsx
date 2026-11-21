@@ -74,7 +74,7 @@ function SiteBar({ onToggleTheme }: { onToggleTheme?: () => void }) {
 						<SunIcon className="lp-theme-sun" />
 						<MoonIcon className="lp-theme-moon" />
 					</button>
-					<a className={`lp-btn ${ACCESS_URL ? "lp-btn-line lp-bar-signin" : "lp-btn-accent"}`} href="/signin">
+					<a className={`lp-btn lp-btn-line${ACCESS_URL ? " lp-bar-signin" : ""}`} href="/signin">
 						Sign in
 					</a>
 					{ACCESS_URL ? (
