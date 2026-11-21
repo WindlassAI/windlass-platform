@@ -10,7 +10,7 @@ export async function setupImageAndMounts() {
 	if (result.code !== 0) throw new RunnerError("Could not inspect this setup container.");
 	const space = result.stdout.indexOf(" ");
 	const image = JSON.parse(result.stdout.slice(0, space));
-	const mounts: Array<{ Type: string; Name?: string; Destination: string; Source: string }> = JSON.parse(result.stdout.slice(space + 1));
+	const mounts: Array<{ Type: string; Name?: string; RW?: boolean; Destination: string; Source: string }> = JSON.parse(result.stdout.slice(space + 1));
 	if (!/^sha256:[a-f0-9]{64}$/.test(image)) throw new RunnerError("Could not determine the runner image ID.");
 	const args = ["docker", "run", "-d", "--name", "windlass-runner", "--restart", "unless-stopped"];
 	for (const dst of ["/var/run/docker.sock", directory]) {
@@ -19,7 +19,9 @@ export async function setupImageAndMounts() {
 		args.push("-v", (mount.Type === "volume" ? mount.Name : mount.Source) + ":" + dst);
 	}
 	if (directory !== "/var/lib/windlass-runner") args.push("-e", "WLP_RUNNER_STATE_DIR=" + directory);
-	return [...args, image];
+	const source = mounts.find(m => m.Destination === "/import/opencode");
+	if (source && (source.Type !== "bind" || source.RW !== false)) throw new RunnerError("Mount /import/opencode read-only with :ro.");
+	return { command: [...args, image], importFile: source && "/import/opencode/auth.json" };
 }
 
 export async function setupAgents(harnesses: MachineHarness[], ask: (message: string) => Promise<string>, login: (harness: MachineHarness) => Promise<void>) {

@@ -10,7 +10,8 @@ import { resolveMachineName } from "./machine-name.js";
 import { category, control, pair } from "./control.js";
 import { cleanClaudeOutput } from "./claude-output.js";
 import { changeClaudeLogin, claudeSignIn, retireClaudeRelay } from "./harness-login.js";
-import { changeProviderLogin, currentProvider, installedProvider, terminalQuestion } from "./opencode-login.js";
+import { storeProvider, changeProviderLogin, currentProvider, installedProvider, terminalQuestion } from "./opencode-login.js";
+import { importOpenCode } from "./opencode-import.js";
 import { setupAgents, setupImageAndMounts, shellCommand } from "./setup.js";
 import { removeRelay } from "./claude-relay.js";
 import { withLoginVolume } from "./harness-login.js";
@@ -182,9 +183,15 @@ async function main() {
 					if (command === "setup") {
 						const machine = new Executor(result.paired.current, limits);
 						await setupAgents(agents, prompt => terminalQuestion(prompt, abort.signal),
-							id => id === "claude" ? changeClaudeLogin(machine, true, abort.signal) : changeProviderLogin(machine, true, abort.signal));
+							async id => {
+								if (id === "claude") return changeClaudeLogin(machine, true, abort.signal);
+								const login = (provider?: string) => changeProviderLogin(machine, true, abort.signal, provider);
+								if (launch?.importFile && await importOpenCode(launch.importFile, p => terminalQuestion(p, abort.signal),
+									(provider,key) => storeProvider(machine,{provider,key}), login)) return;
+								await login();
+							});
 						const flags = process.argv.slice(2).filter((_, i) => i !== process.argv.slice(2).indexOf("setup"));
-						console.log("Start the runner on this machine:\n" + shellCommand([...launch!, "run", ...flags]));
+						console.log("Start the runner on this machine:\n" + shellCommand([...launch!.command, "run", ...flags]));
 						return;
 					}
 					if (command === "pair") return;

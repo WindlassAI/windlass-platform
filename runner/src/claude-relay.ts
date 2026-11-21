@@ -1,3 +1,4 @@
+import { providers } from "./opencode-providers.js";
 import { createHash, createPublicKey, randomBytes, sign } from "node:crypto";
 import { docker, LABEL, LABEL_ARG } from "../../server/src/sandbox/docker.js";
 import { waitForListener } from "./helper-ready.js";
@@ -6,13 +7,25 @@ import { loadPair, Refusal, RunnerError } from "./state.js";
 
 declare const CLAUDE_RELAY_SCRIPT: string;
 declare const OPENCODE_RELAY_SCRIPT: string;
-export interface ProviderLogin { provider: "openai" | "anthropic" | "chatgpt" | "free"; generation: string }
-export function projection(provider: ProviderLogin["provider"], placeholder: string) {
-	if (provider === "free") return ["-e", "WLP_OPENCODE_PROVIDER=free", "-e", "WLP_SESSION_BEARER=" + placeholder, "-e", "OPENCODE_AUTH_CONTENT={}"];
-	const id = provider === "chatgpt" ? "openai" : provider;
-	const record = provider === "chatgpt" ? { type: "oauth", refresh: "", access: placeholder, expires: Number.MAX_SAFE_INTEGER }
-		: { type: "api", key: placeholder };
-	return ["-e", "WLP_OPENCODE_PROVIDER=" + provider, "-e", "OPENCODE_AUTH_CONTENT=" + JSON.stringify({ [id]: record })];
+export interface ProviderLogin { provider: string; providers?: string[]; generation: string }
+export function projection(selected: string | string[], placeholder: string) {
+	const ids = typeof selected === "string" ? [selected] : selected;
+	const auth: Record<string, unknown> = {}, config: Record<string, unknown> = {};
+	for (const selected of ids) {
+		const id = selected === "free" ? "opencode" : selected === "chatgpt" ? "openai" : selected;
+		const route = selected === "chatgpt" ? "openai" : selected;
+		const p = providers[id];
+		config[id] = {
+			options: { baseURL: relayUrl + "/" + route, ...(selected === "free" && { headers: { "x-wlp-session": placeholder } }) },
+			...(p?.blocked && { blacklist: p.blocked }),
+			...(p?.variants && { models: Object.fromEntries(Object.keys(p.variants).map(model => [model, {headers: {"x-wlp-route":model}}])) }),
+		};
+		if (selected !== "free") auth[id] = selected === "chatgpt" ? { type:"oauth", refresh:"", access:placeholder, expires:Number.MAX_SAFE_INTEGER }
+			: { type:"api", key:placeholder };
+	}
+	return ["-e", "WLP_OPENCODE_PROVIDER=" + ids.join(","), "-e", "WLP_SESSION_BEARER=" + placeholder,
+		"-e", "OPENCODE_AUTH_CONTENT=" + JSON.stringify(auth),
+		"-e", "OPENCODE_CONFIG_CONTENT=" + JSON.stringify({ enabled_providers:Object.keys(config), provider:config })];
 }
 const role = LABEL + ".credential-relay";
 export const relaySocketVolume = (m: MachineDocker, harness: MachineHarness = "claude") => "wlp-" + harness + "-socket-" + m.identity.machineId;
@@ -79,7 +92,7 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 			"--network", "bridge", "--mount", `type=volume,src=${socketVolume},dst=/workspace`,
 			"--mount", `type=volume,src=${credentials},dst=/run/wlp-harness/${harness},${login ? "" : "readonly,"}volume-nocopy`,
 			"-e", prefix + "PUBLIC_KEY=" + publicKey, "-e", prefix + "MACHINE=" + m.identity.machineId,
-			...(login ? ["-e", "WLP_OPENCODE_GENERATION=" + login.generation, "-e", "WLP_OPENCODE_PROVIDER=" + login.provider] : []),
+			...(login ? ["-e", "WLP_OPENCODE_GENERATION=" + login.generation, "-e", "WLP_OPENCODE_PROVIDER=" + (login.providers ?? [login.provider]).join(",")] : []),
 			image, "node", "-e", script], { check: true });
 		box = await ownedRelay(m, harness);
 	}
@@ -97,7 +110,7 @@ export async function prepareRelay(m: MachineDocker, login?: ProviderLogin) {
 	const nonce = randomBytes(16).toString("hex");
 	const signature = sign(null, Buffer.from(domain + "\n" + m.identity.machineId + "\n" + nonce), key);
 	return {
-		env: login ? projection(login.provider, nonce + "." + signature.toString("base64url")) : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=" + nonce + "." + signature.toString("base64url")],
+		env: login ? projection(login.providers ?? login.provider, nonce + "." + signature.toString("base64url")) : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=" + nonce + "." + signature.toString("base64url")],
 		nonce,
 	};
 }
