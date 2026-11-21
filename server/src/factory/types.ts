@@ -10,6 +10,7 @@
  * None of them reads a clock, stores anything or talks to anything: every time comes in on a fact.
  */
 
+import type { ProviderRefusal } from "../provider-refusal.js";
 import type { AgentReport } from "../agent-publish.js";
 import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { ReviewerTaskInput } from "./reviewer-task.js";
@@ -163,6 +164,11 @@ export interface TurnPlan {
 // Facts and effects
 // ---------------------------------------------------------------------------------------------
 
+/** The owner's explicit retry replays this delivery, including a conflict step's base fetch. */
+export interface ItemProviderRefusal extends ProviderRefusal {
+	retry: Pick<TurnPlan, "text" | "fetchBase">;
+}
+
 /** Who caused a fact a person or GitHub caused (§1.3): "person:<uid>". Facts from the platform have none. */
 export type Cause = string;
 
@@ -216,9 +222,10 @@ export type Fact =
 			 * person. Absent for a turn that ran, or was cut off.
 			 */
 			refused?: string | null;
+			providerRefusal?: ItemProviderRefusal;
 			spend: TurnSpend;
 	  }
-	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; review: ItemReview | null; said: string | null; refused?: string | null; spend: TurnSpend }
+	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; spend: TurnSpend }
 	/** `openItems`: the user's items not done, failed or cancelled; it sets how often CI is polled. */
 	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string } | null; openItems: number; webhooks: boolean }
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */

@@ -289,7 +289,10 @@ export class AcpHarness implements Harness {
 		} catch (error) {
 			if (!input.signal?.aborted) {
 				const signedOut = error instanceof AcpError && profile.signedOutCodes.includes(error.code);
-				result.failure = { reason: signedOut ? "harness_signed_out" : "engine", message: redactor.text(signedOut ? machineLoginMessage(profile, this.machine) : error instanceof Error ? error.message : String(error)) };
+				const said = error instanceof Error ? error.message : String(error);
+				const invalid = phase === "running" && error instanceof AcpError && error.code === -32602;
+				const reason = signedOut ? "harness_signed_out" : invalid ? "invalid_request" : "engine";
+				result.failure = { reason, message: redactor.text(signedOut ? `${said} ${machineLoginMessage(profile, this.machine)}` : said) };
 				result.timedOut = error instanceof AcpError && error.reason === "timeout";
 			}
 		} finally {

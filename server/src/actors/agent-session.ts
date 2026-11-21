@@ -204,8 +204,9 @@ import { REPORT_TAKEN } from "../agent-publish.js";
 import { RULES } from "../factory/blueprint.js";
 import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
+import { type ProviderRefusal, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
 import { fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
-import type { Fact } from "../factory/types.js";
+import type { Fact, ItemProviderRefusal } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
@@ -280,6 +281,7 @@ const SETUP_FLUSH_MS = 120;
 const SETUP_FLUSH_CHARS = 8_000;
 
 const DELTA_TYPES = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]);
+const SIGN_IN_REMEDY = "Sign in with ChatGPT again, then send the prompt once more.";
 const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "failed", "stopped", "interrupted"];
 
 // ---------------------------------------------------------------------------------------------
@@ -498,7 +500,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; said?: string; pushedAtStart: string | null; refused?: string | null };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal };
 }
 
 /**
@@ -3157,6 +3159,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	let layer: SandboxLayer | null = null;
 	let result: RunTurnResult | null = null;
 	let problem: string | null = null;
+	let lastStepRefusal: ProviderRefusal | null = null;
 	const acpTimeline = acpRecorder(c, turn);
 	let events = 0;
 	let open = true;
@@ -3413,6 +3416,7 @@ fi`, { signal, timeoutMs: 5000 });
 							event = { ...event, data: { ...event.data, content: [{ type: "text", text: storedBrief }] } };
 							storedBrief = null;
 						}
+						lastStepRefusal = stepRefusal(lastStepRefusal, event);
 						if (reviewer) commands.note(event);
 						active.checks.note(event);
 						onWindlassEvent(c, meta, turn, event);
@@ -3502,7 +3506,7 @@ fi`, { signal, timeoutMs: 5000 });
 			if (failure?.reason === "auth_required") {
 				// No sign-in, one that could not be refreshed, or an access token the provider rejected: the remedy is the same.
 				outcome = "error";
-				message = "ChatGPT did not accept the saved sign-in. Sign in with ChatGPT again, then send the prompt once more.";
+				message = `ChatGPT did not accept the saved sign-in. ${SIGN_IN_REMEDY}`;
 				// The next prompt asks the sandbox layer about the sign-in instead of trusting an earlier answer.
 				c.vars.signedInUntil = 0;
 			} else if (failure?.reason === "session_not_found") {
@@ -3536,6 +3540,23 @@ fi`, { signal, timeoutMs: 5000 });
 		} else {
 			outcome = reviewer && !active.item?.refused ? "interrupted" : "error";
 			message = problem ?? "The turn could not be run.";
+		}
+		const refusal = turnRefusal(outcome, result, lastStepRefusal);
+		if (refusal) {
+			// Windlass describes a handed-in token to its host. Use the sandbox layer's remedy for its owner.
+			if (result?.failure?.reason === "auth_required" && message) {
+				if (refusal.message.includes("WINDLASS_ACCESS_TOKEN_FILE")) refusal.message = message;
+				else if (!refusal.message.includes(SIGN_IN_REMEDY)) refusal.message += ` ${SIGN_IN_REMEDY}`;
+			}
+			const redactor = active.secrets?.redactor;
+			const safe = redactor?.deep(refusal) ?? refusal;
+			message = refusalMessage(safe);
+			if (active.item) {
+				const { text, fetchBase } = active.item.row;
+				active.item.providerRefusal = { ...safe, retry: { text: redactor?.text(text) ?? text, fetchBase } };
+			} else if (safe.kind === "invalid_request" || safe.kind.startsWith("model_")) {
+				message += " You can change the model or reasoning effort with your next prompt.";
+			}
 		}
 		if (result?.windlassSessionId && (result.acp || outcome !== "error")) meta.windlassSessionId = result.windlassSessionId;
 
@@ -4027,6 +4048,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
 		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage), pushedHead, ...(item.refused ? { refused: item.refused } : {}) };
 	}
+	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
 	if (attachmentStore()) {
 		// If the server stops after the ledger commits but before the outbox commits, retry the same keep list.
 		await serial(c, () => c.db.execute("INSERT OR REPLACE INTO attachment_filing VALUES (?,?)", row.key, JSON.stringify(fact)));

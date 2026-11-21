@@ -31,6 +31,7 @@
  *   "(session-busy)"  another process holds the session: "session_in_use", no events
  *   "(session-unread)" the session holds a record this Windlass does not read, as when a later one
  *                     has worked in it: "unreadable_session", with Windlass's sentence, no events
+ *   "(invalid-effort)" the Responses API rejects the reasoning effort with HTTP 400
  *   "(exec-fail)"     the model call fails for good: outcome `failed`, "execution_failed"
  *   "(lose-sandbox)"  the sandbox is gone when the turn ends, as if its container had been removed
  *   "(big-memory)"    Windlass's session grows by two mebibytes in this turn, for a copy that is over
@@ -730,6 +731,8 @@ class FakeWindlass implements Windlass {
 		if (text.includes("(big-memory)")) session.padding += 2 * 1024 * 1024;
 		const gap = this.eventDelayMs * (text.includes("(slow)") ? 20 : 1);
 		const crashAfter = text.includes("(crash)") ? 6 : Number.POSITIVE_INFINITY;
+		const invalidEffort = text.includes("(invalid-effort)");
+		const executionFailure = invalidEffort ? "The model rejected the request." : EXEC_FAIL_MESSAGE;
 		const execFailAfter = text.includes("(exec-fail)") ? 8 : Number.POSITIVE_INFINITY;
 		const approval = !text.includes("(auth-fail)") && APPROVAL_WORDS.test(text) ? approvalScenario() : null;
 		const signal = input.signal;
@@ -1064,11 +1067,14 @@ class FakeWindlass implements Windlass {
 						failure: { reason: "engine", message: "Windlass stopped before the turn was finished (exit code 1)." },
 					};
 				}
-				if (emitted >= execFailAfter && recorded.type !== "step.failed" && !TERMINAL.has(recorded.type)) {
-					const error = { kind: "provider", error: { kind: "server", retryable: true, message: "The provider answered 503.", status: 503, code: null, retryAfterMs: null, requestId: null } };
+				if ((emitted >= execFailAfter || (invalidEffort && currentStep !== null)) && recorded.type !== "step.failed" && !TERMINAL.has(recorded.type)) {
+					const provider = invalidEffort
+						? { kind: "invalid_request", retryable: false, status: 400, message: "HTTP 400: Invalid value: 'ultra'. Supported values are: 'none','minimal','low','medium','high','xhigh','max'. [param: reasoning.effort] (fixture-secret-value)" }
+						: { kind: "server", retryable: true, status: 503, message: "The provider answered 503." };
+					const error = { kind: "provider", error: { ...provider, code: null, retryAfterMs: null, requestId: null } };
 					queue = [
 						{ type: "step.failed", v: 1, data: { messageId: currentStep, error, usage: null }, seq: 0, time: 0 },
-						{ type: "execution.failed", v: 1, data: { executionId, message: EXEC_FAIL_MESSAGE }, seq: 0, time: 0 },
+						{ type: "execution.failed", v: 1, data: { executionId, message: executionFailure }, seq: 0, time: 0 },
 					];
 					continue;
 				}
@@ -1077,7 +1083,7 @@ class FakeWindlass implements Windlass {
 				if (recorded.type === "step.started" || TERMINAL.has(recorded.type)) deliverSteers();
 
 				// The platform's own tools the prompt names, called once before the turn ends, as a model calls a host tool: the call is the platform's to answer.
-				if (TERMINAL.has(recorded.type) && !platformCalled) {
+				if (TERMINAL.has(recorded.type) && !invalidEffort && !platformCalled) {
 					platformCalled = true;
 					const offered = turnHostTools(input);
 					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...hostToolsMeta(offered, input.reportScreenshots) });
@@ -1182,7 +1188,7 @@ class FakeWindlass implements Windlass {
 
 			let failure: RunTurnResult["failure"] = null;
 			if (text.includes("(auth-fail)")) failure = { reason: "auth_required", message: "Signed out: sign in again to continue." };
-			else if (finished() === "failed") failure = { reason: "execution_failed", message: EXEC_FAIL_MESSAGE };
+			else if (finished() === "failed") failure = { reason: "execution_failed", message: executionFailure };
 			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure, checks: { project: null } };
 		} finally {
 			ended = true;

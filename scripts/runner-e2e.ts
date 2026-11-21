@@ -873,7 +873,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				const { end } = await play("signedout");
 				const name = (await user.machines()).find(m => m.machineId === place.machineId)!.name;
 				const sentence = `Claude Code on “${name}” is not signed in. Run windlass-runner login claude there.`;
-				assert(end.outcome === "error" && end.message === sentence, JSON.stringify(end));
+				assert(end.outcome === "error" && end.message?.includes("Authentication required") && end.message.includes(sentence), JSON.stringify(end));
 				const entry = runner.fake.report.harnesses![0]!;
 				entry.signIn = "none"; runner.report();
 				try {
@@ -991,9 +991,11 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				return "5,000 items, one omission note";
 			});
 			await check("Claude refusal and token limit preserve distinct turn outcomes", async () => {
+				const invalid = (await play("invalidparams")).end;
+				assert(invalid.outcome === "error" && invalid.message?.includes("The provider refused the request. Invalid reasoning effort."), JSON.stringify(invalid));
 				const refusal = (await play("refuse")).end;
 				const limit = (await play("maxtokens")).end;
-				assert(refusal.outcome === "failed" && limit.outcome === "unresolved", `${refusal.outcome}, ${limit.outcome}`);
+				assert(refusal.outcome === "failed" && refusal.message?.includes("The provider refused") && limit.outcome === "unresolved", `${refusal.outcome}, ${limit.outcome}`);
 				return "failed, unresolved";
 			});
 		} finally { await watch.conn.dispose(); }

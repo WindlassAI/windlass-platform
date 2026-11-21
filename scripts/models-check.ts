@@ -169,6 +169,18 @@ const OTHER: ListedModels = { models: [{ id: "gpt-8-terra", name: null, efforts:
 
 {
 	const user = new Account();
+	const advertised = { id: "test-model", name: null, efforts: ["none", "minimal", "high", "max", "ultra"] };
+	user.answer = { defaultModel: advertised.id, models: [advertised] };
+	const expected = ["none", "minimal", "high", "max"];
+	const current = await user.keeper().current(user.source());
+	expect("a new account listing offers only the model's Responses API efforts", plain(current.models[0]?.efforts) === plain(expected), plain(current.models));
+	await user.store.db.execute("UPDATE model_list SET list = ?", JSON.stringify(user.answer));
+	const cached = await user.keeper().current(user.source());
+	expect("cached listings from before the filter reject an unsupported effort without relisting", user.asked === 1 && plain(cached.models[0]?.efforts) === plain(expected) && problem(() => checkEffort(cached, advertised.id, "ultra"))?.startsWith("bad_effort:") === true, plain(cached.models));
+}
+
+{
+	const user = new Account();
 	const models = user.keeper();
 	user.generation = null;
 	const before = await models.current(user.source());

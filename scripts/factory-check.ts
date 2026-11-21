@@ -390,6 +390,12 @@ function retryReview(fact: Row["fact"], instruction: string, interruptions: numb
 }
 const reviewCutOff = (outcome: ReviewEnd["outcome"], n: number) => retryReview(endReview({ outcome, review: filing("approve") }), "You were interrupted.", n);
 const personHandover = (reading = freshCi) => [refresh(answer("hand_over")), handoverWithout(reading, "handed over as it is, as you asked")];
+drive("review: provider refusal asks the owner and their retry uses the pinned checkout", reviewerOn(), [...reviewing,
+	{ fact: endReview({ outcome: "failed", providerRefusal: { kind: "usage_limit", message: "Quota exhausted.", retry: { text: "", fetchBase: null } } }), state: "waiting", wait: "person", effects: ["ask"],
+		also: o => holds(o.item.question?.text.includes("Quota exhausted.") === true && o.item.run?.step.interruptions === 0, "the reviewer lost the provider refusal") },
+	retryReview(answer("again"), "", 0),
+]);
+
 drive("review: three cutoffs ask the person", reviewerOn(), [...reviewing, reviewCutOff("failed", 1), reviewCutOff("stopped", 2), {
 	fact: endReview({ outcome: "interrupted" }), state: "waiting", wait: "person", effects: ["ask"],
 	also: o => holds(o.item.question?.cause === "interruptions" && o.item.question.choices.some(c => c.id === "hand_over"), "expected the interruptions question with hand over"),
@@ -966,6 +972,41 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		question?.kind === "turn_refused" && question.text === "The agent's turn could not start. This agent's sandbox has a Windlass too old for its conversation." && refused.item.run?.step.interruptions === 0 && again !== null && effect(again.last, "deliver")?.key.endsWith(":1:1:2") === true,
 		`${question?.kind}: ${question?.text}; interruptions ${refused.item.run?.step.interruptions}`,
 	);
+}
+
+{
+	const { stepRefusal, turnRefusal } = await import("../server/src/provider-refusal.js");
+	const message = "The provider's sentence.";
+	const failedStep = (fields: Record<string, unknown>) => stepRefusal(null, { type: "step.failed", data: { error: { kind: "provider", error: { message, ...fields } } } });
+	for (const fields of [
+		{ kind: "invalid_request", retryable: false, status: 400 }, { kind: "auth", status: 401 },
+		{ kind: "usage_limit", status: 429 }, { kind: "rate_limit", code: "insufficient_quota" },
+		{ kind: "rate_limit", retryable: true, retryAfterMs: 60_000 }, { kind: "model_not_found", status: 404 },
+	]) {
+		expect(`the terminal provider error ${JSON.stringify(fields)} keeps its kind and sentence`, isDeepStrictEqual(failedStep(fields), { kind: fields.kind, message }));
+	}
+	for (const fields of [
+		{ kind: "rate_limit", retryable: true, retryAfterMs: 1_000 }, { kind: "transport", retryable: false }, { kind: "server", status: 503, retryable: true },
+	]) expect(`a transient provider error stays on the retry path: ${JSON.stringify(fields)}`, failedStep(fields) === null);
+	const step = failedStep({ kind: "auth" });
+	const result = { aborted: false, timedOut: false, exitCode: 0, stderrTail: "", summary: null, windlassSessionId: null, failure: { reason: "invalid_request", message } };
+	expect("an ACP invalid request before the first step keeps the provider's reason", isDeepStrictEqual(turnRefusal("error", result, null), { kind: "invalid_request", message }));
+	expect("a later attempt, a successful turn and a cut connection supersede an earlier refusal",
+		stepRefusal(step, { type: "step.started" }) === null && turnRefusal("succeeded", result, step) === null
+		&& turnRefusal("interrupted", result, step) === null && turnRefusal("error", { ...result, failure: { reason: "engine", message: "closed" } }, step) === null);
+}
+
+{
+	const providerRefusal = { kind: "invalid_request", message: "HTTP 400: Invalid reasoning effort.", retry: { text: "Use the original instructions.", fetchBase: null } };
+	const running = walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }]);
+	const failed = walk(running.item, [{ ...turnEnded("succeeded", null), outcome: "failed", providerRefusal }]);
+	const question = failed.item.question;
+	expect("a provider refusal asks once with its sentence and does not charge an interruption or deliver a retry",
+		question?.text.includes(providerRefusal.message) === true && failed.item.run?.step.interruptions === 0
+		&& failed.last.effects.filter(e => e.kind === "ask").length === 1 && !effect(failed.last, "deliver"),
+		`interruptions ${failed.item.run?.step.interruptions}, effects ${failed.last.effects.map(e => e.kind)}`);
+	const again = walk(failed.item, [{ kind: "answer", choice: "again" }]);
+	expect("the owner can retry the original delivery on the same step", effect(again.last, "deliver")?.text === providerRefusal.retry.text && again.item.run?.step.attempt === 2);
 }
 
 {

@@ -239,6 +239,29 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			return "the same conversation wrote a file on its second turn and passed build";
 		});
 	} finally { await singleServer.stop(); singleServer.remove(); }
+	const refusalServer = new Server();
+	try {
+		await check("orchestrator refusal: a planner's provider 400 reaches the owner on its first attempt", async () => {
+			const { user, client, auth } = await world(refusalServer, standin);
+			const profile = "docker-windlass-sandbox";
+			await user.saveRepositorySecret({ repositoryId: harbor.id, profile, name: "TEST_VALUE", scope: "agent", value: "fixture-secret-value" });
+			const item = await user.createItem({ repository: { id: harbor.id }, profile, title: "Plan the search", body: "Search the repository. (invalid-effort)", mode: "orchestrate", start: true });
+			const view = await untilItem(user, item.id, "the planner's question", v => !!v.question);
+			const session = client.agentSession.get([auth.profile.uid, view.sessionId], { params: { token: auth.token } });
+			const snapshot = await session.snapshot();
+			const end = snapshot.timeline.find(e => e.kind === "turn.ended");
+			const reason = "HTTP 400: Invalid value: 'ultra'. Supported values are: 'none','minimal','low','medium','high','xhigh','max'. [param: reasoning.effort]";
+			assert(end?.kind === "turn.ended" && end.outcome === "failed" && end.message?.includes(reason), "turn ending: " + JSON.stringify(end));
+			assert(view.question?.kind === "turn_refused" && view.question.text.includes(reason), stateOf(view));
+			assert(view.spent.turns === 1 && snapshot.summary.turns === 1 && view.question.choices.map(c => c.id).join() === "again,give_up", stateOf(view));
+			assert(!JSON.stringify([snapshot.timeline, view]).includes("fixture-secret-value"), "provider error leaked a saved secret");
+			return view.question.text;
+		});
+	} finally { await refusalServer.stop(); refusalServer.remove(); }
+	if (only.length === 1 && only[0] === "orchestrator refusal") { await standin.stop(); process.exit(failed ? 1 : 0); }
+}
+
+if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 	const server = new Server();
 	try {
 		await check("orchestrator: Orchestrate anyway replans, integrates two checked children and hands over one reviewed PR", async () => {
