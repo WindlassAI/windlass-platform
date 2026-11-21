@@ -654,8 +654,11 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		return handoff(c, review);
 	}
 
-	if (c.item.mode === "orchestrate" && (fact.mergeable === false || state === "failed" || ci.moved))
-		return ask(c, "rounds", "The complete feature head changed, conflicts or failed CI. Inspect the feature PR.", [choice("give_up")], null, null);
+	if (c.item.mode === "orchestrate" && (fact.mergeable === false || state === "failed" || ci.moved)) {
+		const reason = ci.moved ? "The feature PR moved after the last verified commit." : fact.mergeable === false ? "The feature PR conflicts with its base." : "CI failed on the complete feature.";
+		const retry = ci.moved ? [] : [{ id: "wait" as const, label: "Check the feature PR again" }];
+		return ask(c, "rounds", reason, [...retry, ...handOver(c.item), choice("give_up")], null, null);
+	}
 	if (ci.moved !== null) {
 		c.say(`The pull request is now at ${shortSha(ci.moved)}, pushed after the agent's ${shortSha(ci.head)}: it is handed over as it is.`);
 		return afterCi(c, ci);

@@ -286,7 +286,20 @@ test("the whole-feature review uses child evidence and needs the pinned head and
 	const ci = {kind:"ci_read" as const,key:currentKey(item)!, at:9, head, reading:{kind:"read" as const,head,runs:[{name:"build",app:"status",state:"passed" as const,conclusion:"success",url:null,summary:null}],logs:[],truncated:false},prHead:head,mergeable:true,openItems:1,webhooks:false};
 	const review = advance(item, ci as never).effects.find(e=>e.kind === "deliver");
 	assert.ok(review?.to === "review" && review.reviewerInput?.task.body.includes("page evidence") && review.reviewerInput.task.body.includes("index evidence"));
-	for (const blocked of [advance({...item,reviewer:{off:"deployment"}},ci as never), advance(item,{...ci,prHead:"b".repeat(40)} as never)]) {
+	for (const reading of [
+		{...ci, prHead:"b".repeat(40)}, {...ci, mergeable:false},
+		{...ci, reading:{...ci.reading, runs:[{...ci.reading.runs[0], state:"failed", conclusion:"failure"}]}},
+	]) {
+		const blocked = advance(item, reading as never).item;
+		assert.ok(blocked.question!.choices.some(c => c.id === "hand_over"));
+		const handoff = advance(blocked, {kind:"answer", choice:"hand_over", question:blocked.question!.id, by:"person", at:10});
+		assert.equal(handoff.item.run!.step.kind, "handoff");
+		if (reading.prHead === head) {
+			const retry = advance(blocked, {kind:"answer", choice:"wait", question:blocked.question!.id, by:"person", at:10});
+			assert.ok(retry.effects.some(e => e.kind === "poll_ci"));
+		}
+	}
+	for (const blocked of [advance({...item,reviewer:{off:"deployment"}},ci as never)]) {
 		assert.ok(blocked.item.question);
 		assert.equal(blocked.effects.some(e => e.kind === "handoff"),false);
 	}
