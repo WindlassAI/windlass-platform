@@ -1498,6 +1498,8 @@ export interface ItemSummary {
 export interface ItemView extends ItemSummary {
 	plan?: FeaturePlan | null;
 	children?: ItemSummary[];
+	/** Current owner policy for the places named in the proposed plan. */
+	placementReview?: { name: string; sendSecrets: boolean }[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
 	report: ItemReport | null;
 	/** Last ten, oldest first. */

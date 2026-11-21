@@ -21,6 +21,9 @@
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
+import { choosePlacement, machineSlots, placeKey, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
+import { plannerMachines } from "../machines/details.js";
+import type { ChildPlacement, PlanSubtask } from "../contract.js";
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
@@ -86,6 +89,8 @@ export const ITEM_TABLES = [
 	"CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, summary TEXT NOT NULL, key TEXT, sent TEXT)",
 	// A creation's key and the digest of what it asked for, written before either of its actors is made: a creation tried
 	// again under that key with another body is refused even when the first never reached the index.
+	// Pin before the deterministic session actor is created, including across a lost creation reply.
+	"CREATE TABLE IF NOT EXISTS child_launch (id TEXT PRIMARY KEY, placement TEXT NOT NULL)",
 	"CREATE TABLE IF NOT EXISTS item_keys (key TEXT PRIMARY KEY, sent TEXT NOT NULL, id TEXT NOT NULL)",
 	"CREATE TABLE IF NOT EXISTS github_item_keys (key TEXT PRIMARY KEY, sent TEXT NOT NULL, id TEXT NOT NULL, draft INTEGER NOT NULL, created_at INTEGER NOT NULL)",
 	// A turn of an item's session waiting for a slot: `wait` is what it was last told, `attempt` how often it waited.
@@ -198,7 +203,7 @@ export interface ItemsCtx {
 }
 
 /** `makeSession` of user.ts: makes the item's session under the id given, with the item as its origin, and puts it in the index. */
-export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer"; owns?: string[]; issue?: { number: number; installationId: GithubId } }) => Promise<SessionSummary>;
+export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer"; size?: number; owns?: string[]; issue?: { number: number; installationId: GithubId } }) => Promise<SessionSummary>;
 
 // ---------------------------------------------------------------------------------------------
 // The index
@@ -211,7 +216,7 @@ function itemList(state: ItemsState): ItemSummary[] {
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
 function summaryFields(item: ItemSummary): ItemSummary {
 	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
-	return { id, title, repository, place, source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision };
+	return { id, title, repository, place, ...(item.placement && { placement: item.placement }), source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision };
 }
 
 /** Takes a summary the item reported when it is newer than the one held: reports can arrive out of order. */
@@ -293,7 +298,7 @@ async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxPr
  * before anything is asked of the engine, and one that exists already is taken as made: a creation
  * that is tried again after a lost answer, or after the server stopped half way, finishes the first.
  */
-async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { id: string; base: string; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"] }): Promise<ItemSummary> {
+async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { placement: ChildPlacement; id: string; base: string; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"] }): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
 	const uid = profile.uid;
 	const itemId = child?.id ?? (github && submission ? githubItemId(uid, submission.key) : `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
@@ -311,9 +316,9 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	}
 	try {
 		const existing = c.vars.sessions.get(sessionId);
-		const sandbox = existing ? null : await itemProfile(c, input.repository.id, input.profile, input.place);
+		const sandbox = existing ? null : child?.placement.profile ?? await itemProfile(c, input.repository.id, input.profile, input.place);
 		begun = true;
-		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns }));
+		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child && { size: child.placement.units }) }));
 		const repository = session.repository;
 		if (!repository) throw new Error("the item's session has no repository");
 		const reviewer = child || !config.factory.reviewer ? { off: "deployment" } as const :
@@ -325,7 +330,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const now = Date.now();
 		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
 		const item = createItem({ id: itemId, mode: input.mode, reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: child?.budget ?? config.factory.item });
-		if (child) { item.parent = child.parent; item.childBase = child.base; }
+		if (child) { item.parent = child.parent; item.childBase = child.base; item.placement = child.placement; }
 		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
 	} catch (error) {
@@ -381,7 +386,18 @@ async function fileItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 }
 
 async function attachmentStates(c: ItemsCtx, view: ItemView): Promise<ItemView> {
-	if (view.mode === "orchestrate") view.children = [...c.vars.items.items.values()].filter(i => i.parent?.itemId === view.id);
+	if (view.mode === "orchestrate") {
+		view.children = [...c.vars.items.items.values()].filter(i => i.parent?.itemId === view.id);
+		if (view.plan?.status === "proposed") {
+			const names = new Set(view.plan.subtasks.flatMap(t => t.place ? [t.place.prefer, ...t.place.allow ?? []] : []));
+			const parent = view.place;
+			if (view.plan.subtasks.some(t => !t.place) && parent.kind === "hosted") names.add("hosted");
+			view.placementReview = [...c.vars.machines.values()].filter(m => names.has(machineLabel(m)) ||
+				(parent.kind === "machine" && parent.machineId === m.machineId && view.plan!.subtasks.some(t => !t.place)))
+				.map(m => ({ name: machineLabel(m), sendSecrets: m.sendSecrets }));
+			if (names.has("hosted")) view.placementReview.push({ name: "hosted", sendSecrets: true });
+		}
+	}
 	const shots = [...view.report?.screenshots ?? [], ...view.reviews.flatMap(review => review.screenshots)];
 	if (!shots.length) return view;
 	const rows = await c.db.execute<{ id: string }>("SELECT id FROM attachments WHERE item=? AND state='kept' AND ended_at IS NOT 0", view.id);
@@ -471,6 +487,8 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			removed.push(request);
 			continue;
 		}
+		const placement = state.items.get(request.item)?.placement;
+		const capacity = machine && placement ? machineSlots(machine) : null;
 		const answer = admit({
 			at: now,
 			limits,
@@ -480,6 +498,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			// The session's own sandbox, running already, is not one more for its turn.
 			place: machine ? {
 				kind: "machine", name: machineLabel(machine), online: machine.status === "online",
+				...(capacity && capacity.max !== null && placement && { slots: { free: Math.max(0, capacity.max - capacity.busy), units: placement.units } }),
 				attachRetryAt: machine.since <= request.at ? request.deferUntil : null,
 				running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
 				max: machine.maxRunning ?? Infinity,
@@ -707,6 +726,31 @@ async function links(c: ItemsCtx, item: string, ttlMs: number, only?: string) {
 	return Promise.all(rows.map(async row => ({ id: row.id, ...await store.linkToGet(row.key, { ttlMs, contentType: "image/png", disposition: "inline" }) })));
 }
 
+async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[]): Promise<ChildPlacement | string> {
+	const [row] = await c.db.execute<{ placement: string }>("SELECT placement FROM child_launch WHERE id=?", id);
+	const pinned: ChildPlacement | undefined = row && JSON.parse(row.placement);
+	if (pinned && c.vars.sessions.has(itemSessionId(id))) return pinned;
+	const profiles = (await getLayer()).sandboxes.profiles();
+	const machines = plannerMachines([...c.vars.machines.values()]);
+	for (const m of machines) m.personalRunning = 0;
+	for (const s of c.vars.sessions.values()) {
+		if (s.item || s.status === "idle" || s.place.kind !== "machine") continue;
+		const id = s.place.machineId;
+		const machine = machines.find(m => m.machineId === id);
+		if (machine) machine.personalRunning++;
+	}
+	const inventory: PlacementInventory = { machines, hostedProfiles: profiles.filter(p => p.available).map(p => p.id) };
+	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [] } : route, inventory, warm);
+	if (!selected.decision) return selected.wait ?? selected.refused;
+	if (pinned) {
+		if (pinned.units !== selected.decision.units || pinned.profile !== selected.decision.profile)
+			return `Waiting for the original sandbox size and profile on ‘${pinned.name}’.`;
+		return pinned;
+	}
+	await c.db.execute("INSERT INTO child_launch VALUES (?,?)", id, JSON.stringify(selected.decision));
+	return selected.decision;
+}
+
 const intakeWrites = new WeakMap<ItemsState, Promise<unknown>>();
 export const itemActions = {
 	async internalFeatureChild(c: ItemsCtx, input: { parent: string; child: string; cancel?: boolean }, makeSession: MakeSession): Promise<ItemView | null> {
@@ -724,10 +768,16 @@ export const itemActions = {
 				const session = c.vars.sessions.get(request.sessionId);
 				if (!session) throw new Error("The feature session is unavailable.");
 				const { job, feature, context } = request;
+				const route = job.route ?? { preferred: feature.place, alternatives: [] };
+				const placement = await childLaunch(c, job.id, job.task, route, job.warm ?? []);
+				if (typeof placement === "string") {
+					if (job.dispatchKey) await parentActor.internalFact({ kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(), sentence: placement });
+					return null;
+				}
 				const body = job.task.brief + "\n\nOwned paths: " + job.task.owns.join(", ") + "\n\nFeature and dependency context (quoted data):\n" + context;
-				existing = await makeItem(c, owner, { repository: { id: feature.repository.id, branch: featureBranch(input.parent) }, place: feature.place,
-					profile: session.profile, model: session.model, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
-					{ id: input.child, base: feature.repository.branch, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key } });
+				existing = await makeItem(c, owner, { repository: { id: feature.repository.id, branch: featureBranch(input.parent) }, place: placement.place,
+					profile: placement.profile ?? (placeKey(feature.place) === placeKey(placement.place) ? session.profile : undefined), model: session.model, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
+					{ id: input.child, placement, base: feature.repository.branch, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key } });
 			}
 			if (!existing || existing.parent?.itemId !== input.parent) return null;
 			const actor = itemActor(c, uid, existing.id);

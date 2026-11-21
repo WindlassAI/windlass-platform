@@ -547,3 +547,149 @@ test("re-planning cannot start a turn with only the closing reserve left", () =>
 	assert.equal(stopped.item.question?.kind, "budget");
 	assert.equal(stopped.effects.some(e => e.kind === "deliver"), false);
 });
+
+const GiB = 2 ** 30;
+const macId = "m_0000000000000001", linuxId = "m_0000000000000002";
+function machineReport(name = "Mac", machineId = macId, overrides: Partial<import("../server/src/contract.js").MachineSummary> = {}): import("../server/src/contract.js").MachineSummary {
+	return { name, machineId, os: "darwin", arch: "arm64", status: "online", since: 0, runnerVersion: "1.0.0", agents: 0,
+		warnings: [], sandboxes: [], profiles: [{ id: "docker-hardened", available: true } as never], commandSandbox: { ok: true },
+		allowedProfiles: ["docker-hardened"], screenshots: true, egress: "restricted", tags: ["build"], sendSecrets: false, freeDiskBytes: 5 * GiB,
+		turns: { running: 0, queued: 0, max: 4 }, host: { cpus: 64, sandboxCpus: 1, memoryBytes: 128 * GiB, memoryFreeBytes: 80 * GiB, load1: 0 }, ...overrides };
+}
+import { plannerMachines, machineDetails } from "../server/src/machines/details.js";
+import type { MachineSummary, PlacementNeeds } from "../server/src/contract.js";
+function placementFeature(machines: MachineSummary[], needs: PlacementNeeds = {}, allow: string[] = [], overflow = false, prefer = "Mac") {
+	const plan = proposal();
+	plan.overflow = overflow;
+	for (const sub of plan.subtasks) Object.assign(sub, { place: { prefer, reason: "Build on the owner's machine", allow }, needs });
+	const item = proposed(plan);
+	const inventory = { machines: plannerMachines(machines), hostedProfiles: ["docker-hardened" as const] };
+	const approved = advance(item, { kind: "approve_plan", at: 4, by: "person", version: 1, inventory }).item;
+	return advance(approved, { kind: "feature_ready", key: currentKey(approved)!, at: 5, head, pr }).item;
+}
+function dispatch(item: ReturnType<typeof placementFeature>, machines: MachineSummary[]) {
+	return advance(item, { kind: "place_child", at: 6, key: currentKey(item)!, inventory: { machines: plannerMachines(machines), hostedProfiles: ["docker-hardened"] } }).item;
+}
+test("placement preserves the editable proposal and bounds its reason, needs and overflow", () => {
+	const p = proposal();
+	const proposalPlace = { prefer: "Mac", reason: "Build here", allow: ["Linux box"] };
+	Object.assign(p.subtasks[0], { place: proposalPlace, needs: { cpus: 2 } });
+	const filed = proposed(p);
+	assert.deepEqual(filed.featurePlan?.subtasks[0].place, proposalPlace);
+	assert.equal(filed.featurePlan?.overflow, false);
+	for (const invalid of [{ place: { ...proposalPlace, reason: "x".repeat(201) } }, { needs: { cpus: 0 } },
+		{ needs: { memoryGiB: Infinity } }, { needs: { screenshots: "yes" } }, { needs: { egress: "invalid" } }])
+		assert.throws(() => proposed({ ...p, subtasks: [{ ...p.subtasks[0], ...invalid }, p.subtasks[1]] } as FeaturePlanEdit));
+	assert.throws(() => proposed({ ...p, overflow: "yes" } as never));
+});
+test("placement 1 binds the approved Mac by id and keeps the reason after a rename", () => {
+	const mac = machineReport();
+	const item = placementFeature([mac]);
+	const placed = dispatch(item, [{ ...mac, name: "Renamed" }]).jobs![0].placement;
+	assert.deepEqual(placed?.place, { kind: "machine", machineId: macId });
+	assert.equal(placed?.reason, "Build on the owner's machine");
+	assert.equal(placed?.sendSecrets, false);
+	assert.throws(() => placementFeature([]), /Mac/);
+	assert.throws(() => placementFeature([mac, machineReport("Mac", linuxId)]), /ambiguous|more than one/i);
+});
+test("placement 2 refuses approval for missing screenshots, tags, profile, disk, egress or sign-in", () => {
+	const mac = machineReport();
+	assert.throws(() => placementFeature([{ ...mac, screenshots: false }], { screenshots: true }), /screenshot/i);
+	for (const [needs, reason] of [[{ tags: ["gpu"] }, /gpu/], [{ profile: "docker-windlass-sandbox" }, /profile/],
+		[{ egress: "open" }, /egress/], [{ harness: "claude" }, /sign.in|signed/i]] as const)
+		assert.throws(() => placementFeature([mac], needs as PlacementNeeds), reason);
+	assert.throws(() => placementFeature([{ ...mac, freeDiskBytes: 5 * GiB - 1 }]), /disk/i);
+	assert.doesNotThrow(() => placementFeature([mac], { tags: ["build", "os:darwin", "arch:arm64", "screenshots", "harness:windlass"] }));
+});
+test("placement 3 measures requested CPU and memory in sandbox units", () => {
+	const mac = machineReport();
+	assert.throws(() => placementFeature([mac], { cpus: 8 }), /slots|units/i);
+	const sized = { ...mac, slots: { max: 3, busy: 1, queued: 0, unit: { cpus: 4, memoryBytes: 4 * GiB, pids: 1024 } } };
+	const item = placementFeature([sized], { cpus: 8, memoryGiB: 8 });
+	assert.equal(dispatch(item, [sized]).jobs![0].placement?.units, 2);
+	const legacy = machineReport("Mac", macId, { host: { ...mac.host!, sandboxCpus: 4 } });
+	assert.match(dispatch(placementFeature([legacy], { cpus: 8 }), [legacy]).wait!.sentence, /multi.slot|sizing/i);
+});
+test("placement 4 waits for slots unless both overflow and that alternative are approved", () => {
+	const full = machineReport("Mac", macId, { turns: { running: 4, max: 4, queued: 1 } });
+	const linux = machineReport("Linux box", linuxId);
+	const machines = [full, linux];
+	for (const [allow, overflow] of [[["Linux box"], false], [[], true]] as const) {
+		const item = dispatch(placementFeature(machines, {}, [...allow], overflow), machines);
+		assert.match(item.wait!.sentence, /Waiting for 1 free slot on ‘Mac’/);
+	}
+	const alternative = dispatch(placementFeature(machines, {}, ["Linux box"], true), machines);
+	assert.deepEqual(alternative.jobs![0].placement?.place, { kind: "machine", machineId: linuxId });
+});
+test("placement 5 enforces owner participation and explicit naming", () => {
+	const named = machineReport("Mac", macId, { orchestrator: "named" });
+	assert.equal(machineDetails({ whenToUse: "", tags: [] }).orchestrator, "yes");
+	assert.throws(() => machineDetails({ whenToUse: "", tags: [], orchestrator: "sometimes" } as never));
+	assert.throws(() => placementFeature([{ ...named, orchestrator: "never" }]), /never/i);
+	assert.deepEqual(dispatch(placementFeature([named]), [named]).jobs![0].placement?.place, { kind: "machine", machineId: macId });
+	const p = proposal(), pending = proposed(p);
+	pending.place = { kind: "machine", machineId: macId };
+	assert.throws(() => advance(pending, { kind: "approve_plan", at: 4, by: "owner", version: 1, inventory: { machines: plannerMachines([named]), hostedProfiles: [] } }), /named/i);
+});
+test("placement 6 keeps the running child pinned and waits for an offline machine at the next boundary", () => {
+	const mac = machineReport(), offline = { ...mac, status: "offline" as const, turns: { max: null, running: 0, queued: 0 } };
+	const first = dispatch(placementFeature([mac]), [mac]);
+	const working = advance(first, { kind: "child_update", key: currentKey(first)!, child: first.jobs![0].id, state: "working", head: null, report: "", spent: zero, at: 7 }).item;
+	assert.equal(dispatch(working, [offline]), working);
+	const second = advance(working, { kind: "child_update", key: currentKey(working)!, child: working.jobs![0].id, state: "done", head, report: "", spent: zero, at: 8 }).item;
+	const waiting = dispatch(second, [offline]);
+	assert.match(waiting.wait!.sentence, /Mac.*online/);
+	assert.deepEqual(waiting.jobs![0].placement?.place, { kind: "machine", machineId: macId });
+});
+test("placement 7 scores available slots, queue, personal turns and direct dependencies", () => {
+	const mac = machineReport("Mac", macId, { turns: { max: 4, running: 4, queued: 0 } });
+	const linux = machineReport("Linux box", linuxId, { host: { ...mac.host!, cpus: 2 } });
+	const machines = [mac, linux];
+	const chosen = dispatch(placementFeature(machines, {}, ["Linux box"], true), machines);
+	assert.deepEqual(chosen.jobs![0].placement?.place, { kind: "machine", machineId: linuxId });
+	const next = advance(chosen, { kind: "child_update", key: currentKey(chosen)!, child: chosen.jobs![0].id, state: "done", head, report: "", spent: zero, at: 7 }).item;
+	const busy = { ...mac, turns: { max: 4, running: 3, queued: 1 } }; // 3 preferred + 1 free - 1 queued = 3
+	assert.deepEqual(dispatch(next, [busy, linux]).jobs![1].placement?.place, { kind: "machine", machineId: linuxId }); // 3 free + 1 warm
+	assert.deepEqual(dispatch(next, [busy, { ...linux, personalRunning: 2 }]).jobs![1].placement?.place, { kind: "machine", machineId: macId });
+});
+
+test("child creation rechecks owner policy and sends the chosen machine and size to its session", async () => {
+	const { itemActions, ITEM_TABLES } = await import("../server/src/actors/user-items.js");
+	const { serviceParams } = await import("../server/src/auth.js");
+	const { DatabaseSync } = await import("node:sqlite");
+	const mac = machineReport("Mac", macId, { slots: { max: 3, busy: 0, queued: 0, unit: { cpus: 4, memoryBytes: 4 * GiB, pids: 1024 } } });
+	const feature = placementFeature([mac], { cpus: 8 });
+	const selected = dispatch(feature, [mac]), job = selected.jobs![0];
+	const raw = new DatabaseSync(":memory:");
+	for (const sql of ITEM_TABLES) raw.exec(sql);
+	const owner = "u_fixture", sessionId = "s_feature", repository = { id: 42, branch: "main" };
+	const request = { job, sessionId, feature: { ...feature, title: "Feature", repository, source: "web" }, context: "{}" };
+	const machines = new Map([[macId, mac]]);
+	const itemIndex = new Map();
+	let child: typeof feature | undefined;
+	const parent = { internalChildRequest: async () => request, internalFact: async () => {} };
+	const childActor = { internalSummary: async () => ({ ...child, title: "Child", createdAt: 1, sessionId: "s_child" }), internalView: async () => child, internalAct: async () => child };
+	const ctx = { key: [owner], conn: { params: serviceParams() }, broadcast() {}, log: { error() {}, warn() {} },
+		vars: { items: { items: itemIndex }, profile: { uid: owner }, sessions: new Map([[sessionId, { profile: "docker-hardened", place: { kind: "hosted" } }]]), machines },
+		db: { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args) },
+		client: () => ({ workItem: { get: ([, id]: string[]) => id === job.id ? childActor : parent,
+			create: async (_key: string[], { input }: { input: { item: typeof feature } }) => { child = input.item; } } }) };
+	const delivered: { place: unknown; size?: number }[] = [];
+	const create = () => itemActions.internalFeatureChild(ctx as never, { parent: feature.id, child: job.id }, async (_c, _owner, input, _submission, origin) => {
+		delivered.push({ place: input.place, size: origin.size });
+		return { ...input, repository, id: origin.sessionId } as never;
+	});
+	try {
+		machines.set(macId, { ...mac, orchestrator: "never" });
+		await create();
+		assert.equal(delivered.length, 0, "revoked placement reached session creation");
+		machines.set(macId, mac);
+		await create();
+		assert.deepEqual(delivered, [{ place: { kind: "machine", machineId: macId }, size: 2 }]);
+		assert.deepEqual(child?.place, delivered[0].place);
+		assert.equal(child?.placement?.reason, "Build on the owner's machine");
+		machines.set(macId, { ...mac, status: "offline" });
+		await create();
+		assert.equal(delivered.length, 1);
+	} finally { raw.close(); }
+});
