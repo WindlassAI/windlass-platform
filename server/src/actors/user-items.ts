@@ -21,7 +21,7 @@
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
-import { choosePlacement, machineSlots, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
+import { choosePlacement, machineSlots, placeKey, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, PlanSubtask } from "../contract.js";
 import { itemSessionId } from "../factory/feature-ids.js";
@@ -727,7 +727,7 @@ async function links(c: ItemsCtx, item: string, ttlMs: number, only?: string) {
 	return Promise.all(rows.map(async row => ({ id: row.id, ...await store.linkToGet(row.key, { ttlMs, contentType: "image/png", disposition: "inline" }) })));
 }
 
-async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId): Promise<ChildPlacement | string> {
+async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId): Promise<ReturnType<typeof choosePlacement>> {
 	const [row] = await c.db.execute<{ placement: string }>("SELECT placement FROM child_launch WHERE id=?", id);
 	const pinned: ChildPlacement | undefined = row && JSON.parse(row.placement);
 	// A partial creation stays pinned, and must still pass current owner policy.
@@ -736,15 +736,15 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	const machines = plannerMachines([...c.vars.machines.values()]);
 	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
 	const inventory: PlacementInventory = { machines, defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id) };
-	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [] } : route, inventory, warm);
-	if (!selected.decision) return selected.wait ?? selected.refused;
+	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
+	if (!selected.decision) return selected;
 	if (pinned) {
 		if (pinned.units !== selected.decision.units || pinned.profile !== selected.decision.profile)
-			return `Waiting for the original sandbox size and profile on ‘${pinned.name}’.`;
-		return pinned;
+			return { refused: "The original sandbox size or profile is no longer available on ‘" + pinned.name + "’." };
+		return { decision: pinned };
 	}
 	await c.db.execute("INSERT INTO child_launch VALUES (?,?)", id, JSON.stringify(selected.decision));
-	return selected.decision;
+	return selected;
 }
 
 const intakeWrites = new WeakMap<ItemsState, Promise<unknown>>();
@@ -766,11 +766,15 @@ export const itemActions = {
 				if (!session) throw new Error("The feature session is unavailable.");
 				const { job, feature, context } = request;
 				const route = job.route ?? { preferred: feature.place, alternatives: [] };
-				const placement = await childLaunch(c, job.id, job.task, route, job.warm ?? [], session.profile);
-				if (typeof placement === "string") {
-					if (job.dispatchKey) await parentActor.internalFact({ kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(), sentence: placement });
+				const fit = await childLaunch(c, job.id, job.task, route, job.warm ?? [], session.profile);
+				if (!fit.decision) {
+					if (job.dispatchKey) await parentActor.internalFact({
+						kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(),
+						sentence: fit.refused ?? fit.wait, refused: fit.refused !== undefined,
+					});
 					return null;
 				}
+				const placement = fit.decision;
 				const body = job.task.brief + "\n\nOwned paths: " + job.task.owns.join(", ") + "\n\nFeature and dependency context (quoted data):\n" + context;
 				existing = await makeItem(c, owner, { mode: "single", repository: { id: feature.repository.id, branch: featureBranch(input.parent) }, place: placement.place,
 					profile: placement.profile, model: session.model, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,

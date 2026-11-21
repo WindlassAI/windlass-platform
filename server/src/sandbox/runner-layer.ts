@@ -559,7 +559,7 @@ class RunnerSandboxes implements Sandboxes {
 		if (report?.allowedProfiles && !report.allowedProfiles.includes(input.profile)) throw new SandboxUserError(PROFILE_DENIED);
 		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
 			throw new SandboxUserError(`This machine's runner does not offer ${input.harness === "claude" ? "Claude Code" : "OpenCode"}. Update it and start it with --harness ${input.harness}.`);
-		return await link.again("create", { profile: input.profile, ...(input.harness ? { harness: input.harness } : {}),
+		return await link.again("create", { profile: input.profile, ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness ? { harness: input.harness } : {}),
 			...(input.screenshots && !input.harness && report?.screenshots ? { screenshots: true } : {}) });
 	}
 

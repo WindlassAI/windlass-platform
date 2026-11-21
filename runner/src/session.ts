@@ -66,6 +66,7 @@ class Conversation {
 		switch (op.name) {
 			case "create": {
 				const { harness, profile } = op.args;
+				if ((op.args.size ?? 1) > 1) throw new Refusal("This runner does not support sizing beyond one slot.");
 				if (harness) o.requireHarness(profile, harness);
 				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session, profile, harness); });
 				if (existing) return existing;

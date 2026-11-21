@@ -43,13 +43,13 @@ export interface SessionCreateInput {
 	demo: boolean;
 	createdAt: number;
 	/** Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's. */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[] };
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[]; size?: number };
 }
 
 /** The repository setting selects an image only for work item sessions, at sandbox creation. */
 export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "origin" | "harness">, screenshots = false): CreateSandboxInput {
 	const { uid, sessionId, profile, origin } = session;
-	return { uid, sessionId, profile, ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: origin?.kind === "item" && screenshots };
+	return { uid, sessionId, profile, ...(origin?.size && { size: origin.size }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: origin?.kind === "item" && screenshots };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */

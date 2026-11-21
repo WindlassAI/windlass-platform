@@ -1208,7 +1208,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. */
-export type QuestionKind = "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
+export type QuestionKind = "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
 
 /**
  *   approve     the plan is approved: implement it

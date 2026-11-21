@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { createItem, advance, canRetry, currentKey } from "../server/src/factory/blueprint.js";
 import * as intake from "../server/src/factory/intake.js";
 import { edge } from "../server/src/github/events.js";
-import type { FeaturePlanEdit } from "../server/src/contract.js";
+import { MAX_ITEM_BODY_CHARS, type FeaturePlanEdit } from "../server/src/contract.js";
 
 const single = { tokens: 10000, turns: 10, activeSeconds: 1000, hostedSeconds: 500 };
 const zero = { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 };
@@ -56,12 +56,12 @@ test("validate the entire plan, including dependencies, paths and every budget d
 	}
 });
 
-function started() {
-	const item = createItem({ id: "i_feature", task, mode: "orchestrate", place: { kind: "hosted" }, budget: single, reviewer: { on: true } });
+function started(budget = single) {
+	const item = createItem({ id: "i_feature", task, mode: "orchestrate", place: { kind: "hosted" }, budget, reviewer: { on: true } });
 	return advance(item, { kind: "start", at: 1, by: "person" }).item;
 }
-function proposed(p: FeaturePlanEdit) {
-	const item = started(), key = currentKey(item)!;
+function proposed(p: FeaturePlanEdit, budget = single) {
+	const item = started(budget), key = currentKey(item)!;
 	const filed = advance(item, { kind: "file_plan", key, plan: p, at: 2 });
 	assert.equal(filed.item.featurePlan?.version, 1);
 	return advance(filed.item, { kind: "turn_ended", key, at: 3, outcome: "succeeded", changes: false, report: null, verified: null, flags: [], spend: { tokens: 10, hostedSeconds: 1 } }).item;
@@ -92,7 +92,7 @@ test("single suggestion waits for either explicit choice, and planning spend car
 		const next = advance(item, { kind: "answer", choice, question: item.question!.id, by: "person", at: 4 }).item;
 		assert.equal(next.run!.step.kind, choice === "run_single" ? "implement" : "refine");
 		assert.equal(next.spent.tokens, 10);
-		if (choice === "run_single") assert.deepEqual(next.budget, single);
+		if (choice === "run_single") assert.equal(next.budget.tokens - next.spent.tokens, single.tokens);
 	}
 });
 test("run_single gives the builder the current approved scope, including the owner’s edits", () => {
@@ -109,6 +109,54 @@ test("run_single gives the builder the current approved scope, including the own
 		for (const text of [task.body, spec.goal, ...spec.requirements, ...spec.acceptance, ...spec.outOfScope]) assert.ok(delivery.text.includes(text), text);
 		assert.ok(!delivery.text.includes("Index documents"));
 	}
+});
+
+test("one implementer requires saved answers through both approval actions", () => {
+	const p = { ...proposal(), subtasks: [], singleSuggested: "Small change.", questions: [{ id: "storage", text: "Which database?" }] };
+	const pending = proposed(p);
+	for (const action of [{ kind: "run_single" }, { kind: "answer", choice: "run_single", question: pending.question!.id }] as const) {
+		assert.throws(() => advance(pending, { ...action, at: 4, by: "owner" }), /answer.*questions/i);
+	}
+	const plan = { ...p, questions: [{ ...p.questions[0]!, answer: "SQLite" }] };
+	const edited = advance(pending, { kind: "edit_plan", plan, version: 1, at: 5, by: "owner" }).item;
+	const handoff = advance(edited, { kind: "answer", question: edited.question!.id, choice: "run_single", at: 6, by: "owner" });
+	assert.match(handoff.effects.find(e => e.kind === "deliver")!.text, /Which database\?[\s\S]*SQLite/);
+});
+
+test("the owner-approved plan is bounded quoted data in the implementing prompt", () => {
+	const p = proposal();
+	p.spec.requirements = Array.from({ length: 20 }, () => "x".repeat(2000));
+	const result = advance(proposed(p), { kind: "run_single", at: 5, by: "owner" });
+	const prompt = result.effects.find(e => e.kind === "deliver")!.text;
+	const payload = /owner-approved plan \(quoted data\):\n([\s\S]*)/i.exec(prompt)?.[1];
+	assert.equal(payload?.length, MAX_ITEM_BODY_CHARS);
+});
+
+test("planning stops before a second turn after a quarter of a Quick allowance", () => {
+	const feature = started();
+	const pending = advance(feature, { kind: "turn_ended", key: currentKey(feature)!, at: 2, outcome: "succeeded", changes: false, verified: null, flags: [], report: null, spend: { tokens: single.tokens / 4, hostedSeconds: 1 } }).item;
+	const denied = advance(pending, { kind: "answer", choice: "revise", question: pending.question!.id, by: "owner", at: 3 });
+	assert.equal(denied.item.question?.kind, "budget");
+	assert.match(denied.item.question!.text, /planning/i);
+	assert.ok(!denied.effects.some(e => e.kind === "deliver"));
+	const build = advance(denied.item, { kind: "answer", choice: "run_single", question: denied.item.question!.id, by: "owner", at: 4 });
+	assert.equal(build.item.budget.tokens - build.item.spent.tokens, single.tokens);
+	assert.ok(build.effects.some(e => e.kind === "deliver" && e.agent === null));
+});
+
+test("a large final planner receipt stays charged and leaves room for a Quick implementation", () => {
+	const p = { ...proposal(), subtasks: [], singleSuggested: "One change.", questions: [{ id: "db", text: "Which database?" }] };
+	const start = started(), key = currentKey(start)!;
+	const filed = advance(start, { kind: "file_plan", key, at: 2, plan: p }).item;
+	const spent = 15_000;
+	const pending = advance(filed, { kind: "turn_ended", key, at: 3, outcome: "succeeded", changes: false, report: null, verified: null, flags: [], spend: { tokens: spent, hostedSeconds: 1 } }).item;
+	assert.ok(!pending.question!.choices.some(c => c.id === "orchestrate_anyway"));
+	const plan = { ...p, questions: [{ ...p.questions[0]!, answer: "SQLite" }] };
+	const edited = advance(pending, { kind: "edit_plan", version: 1, plan, by: "owner", at: 4 }).item;
+	const build = advance(edited, { kind: "run_single", at: 5, by: "owner" });
+	assert.equal(build.item.spent.tokens, spent);
+	assert.equal(build.item.budget.tokens, spent + single.tokens);
+	assert.match(build.effects.find(e => e.kind === "deliver")!.text, /SQLite/);
 });
 
 test("the page retry flag matches the blueprint before and after dispatch, including a placement wait", () => {
@@ -150,8 +198,8 @@ test("planner inventory exposes capacity and validated owner text without sessio
 	assert.doesNotMatch(JSON.stringify(entry), /private|sendSecrets/);
 });
 
-function approved() {
-	const item = proposed(proposal());
+function approved(budget = single) {
+	const item = proposed(proposal(), budget);
 	return advance(item, { kind: "approve_plan", version: 1, at: 4, by: "person" }).item;
 }
 const head = "a".repeat(40);
@@ -263,7 +311,7 @@ test("a stopped feature cannot turn its cap into a builder retry or lose child s
 	assert.deepEqual(revised.item.spent, next.spent);
 });
 test("a second re-plan can move only unused allocation and a third stop cannot dispatch a planner", () => {
-	let item = approved();
+	let item = approved({ ...single, turns: 12 }); // Three planning turns fit in this allowance.
 	item = advance(item, {kind:"feature_ready",key:currentKey(item)!,pr,head,at:5}).item;
 	for (let i=0;i<3;i++) {
 		const last = item.jobs!.at(-1)!;
@@ -642,19 +690,55 @@ test("placement 3 measures requested CPU and memory in sandbox units", () => {
 	const item = placementFeature([sized], { cpus: 8, memoryGiB: 8 });
 	assert.equal(dispatch(item, [sized]).jobs![0].placement?.units, 2);
 	const legacy = machineReport("Mac", macId, { host: { ...mac.host!, sandboxCpus: 4 } });
-	assert.match(dispatch(placementFeature([legacy], { cpus: 8 }), [legacy]).wait!.sentence, /multi.slot|sizing/i);
+	for (const needs of [{ cpus: 8 }, { memoryGiB: 2 }]) {
+		assert.throws(() => placementFeature([legacy], needs), /Mac.*sizing beyond one slot/i);
+	}
+	assert.match(proposed(proposal()).question!.text, /sizing beyond one slot/i);
 });
 test("placement 4 waits for slots unless both overflow and that alternative are approved", () => {
 	const full = machineReport("Mac", macId, { turns: { running: 4, max: 4, queued: 1 } });
 	const linux = machineReport("Linux box", linuxId);
 	const machines = [full, linux];
 	for (const [allow, overflow] of [[["Linux box"], false], [[], true]] as const) {
-		const item = dispatch(placementFeature(machines, {}, [...allow], overflow), machines);
+		assert.throws(() => placementFeature(machines, {}, [...allow], overflow), /Waiting for 1 free slot on ‘Mac’/);
+		const item = dispatch(placementFeature([machineReport(), linux], {}, [...allow], overflow), machines);
 		assert.match(item.wait!.sentence, /Waiting for 1 free slot on ‘Mac’/);
 	}
 	const alternative = dispatch(placementFeature(machines, {}, ["Linux box"], true), machines);
 	assert.deepEqual(alternative.jobs![0].placement?.place, { kind: "machine", machineId: linuxId });
 });
+test("a removed machine or changed policy asks the owner at dispatch and at launch", () => {
+	const mac = machineReport();
+	const ready = placementFeature([mac]);
+	const placed = dispatch(ready, [mac]);
+	for (const machines of [[], [{ ...mac, orchestrator: "never" as const }]]) {
+		const pending = dispatch(ready, machines);
+		const late = advance(placed, { kind: "placement_wait", child: placed.jobs![0].id, key: currentKey(placed)!, at: 8, sentence: pending.wait!.sentence, refused: true }).item;
+		for (const item of [pending, late]) {
+			assert.equal(item.wait?.reason, "person");
+			assert.equal(item.wait?.retryAt, null);
+			assert.match(item.question!.text, /Mac/);
+			assert.ok(!item.question!.text.includes(macId));
+			const answer = (choice: "revise" | "again" | "give_up") => advance(item, { kind: "answer", choice, question: item.question!.id, at: 9, by: "owner" });
+			assert.equal(answer("revise").item.run?.step.kind, "refine");
+			assert.ok(answer("again").effects.some(e => e.kind === "dispatch"));
+			const cancelled = answer("give_up");
+			assert.ok(cancelled.item.jobs!.at(-1)?.cancelRequested);
+			assert.ok(cancelled.effects.some(e => e.kind === "cancel_children"));
+		}
+	}
+});
+
+test("retrying a refused placement can launch on a newly available approved alternative", () => {
+	const mac = machineReport(), linux = machineReport("Linux box", linuxId);
+	const ready = placementFeature([mac, linux], {}, ["Linux box"], true);
+	const denied = dispatch(ready, [{ ...linux, orchestrator: "never" }]);
+	assert.equal(denied.question?.kind, "placement_refused");
+	const retry = advance(denied, { kind: "answer", choice: "again", question: denied.question!.id, at: 8, by: "owner" }).item;
+	const placed = dispatch(retry, [linux]);
+	assert.deepEqual(placed.jobs![0].placement?.place, { kind: "machine", machineId: linuxId });
+});
+
 test("placement 5 enforces owner participation and explicit naming", () => {
 	const named = machineReport("Mac", macId, { orchestrator: "named" });
 	assert.equal(machineDetails({ whenToUse: "", tags: [] }).orchestrator, "yes");
@@ -671,7 +755,7 @@ test("placement 6 keeps the running child pinned and waits for an offline machin
 	const working = advance(first, { kind: "child_update", key: currentKey(first)!, child: first.jobs![0].id, state: "working", head: null, report: "", spent: zero, at: 7 }).item;
 	assert.equal(dispatch(working, [offline]), working);
 	const second = advance(working, { kind: "child_update", key: currentKey(working)!, child: working.jobs![0].id, state: "done", head, report: "", spent: zero, at: 8 }).item;
-	const waiting = dispatch(second, [offline]);
+	const waiting = dispatch(second, [{ ...offline, profiles: [], freeDiskBytes: null }]);
 	assert.match(waiting.wait!.sentence, /Mac.*online/);
 	assert.deepEqual(waiting.jobs![0].placement?.place, { kind: "machine", machineId: macId });
 });
@@ -700,11 +784,12 @@ async function childCreation(t: import("node:test").TestContext) {
 	t.after(() => raw.close());
 	for (const sql of ITEM_TABLES) raw.exec(sql);
 	const owner = "u_fixture", sessionId = "s_feature", repository = { id: 42, branch: "main" };
-	const request = { job, sessionId, feature: { ...feature, title: "Feature", repository, source: "web" }, context: "{}" };
+	const request = { job: { ...job, dispatchKey: currentKey(selected)! }, sessionId, feature: { ...feature, title: "Feature", repository, source: "web" }, context: "{}" };
 	const machines = new Map([[macId, mac]]);
 	const itemIndex = new Map();
 	let child: typeof feature | undefined;
-	const parent = { internalChildRequest: async () => request, internalFact: async () => {} };
+	const facts: import("../server/src/factory/types.js").Fact[] = [];
+	const parent = { internalChildRequest: async () => request, internalFact: async (fact: typeof facts[number]) => facts.push(fact) };
 	const childActor = { internalSummary: async () => ({ ...child, title: "Child", createdAt: 1, sessionId: "s_child" }), internalView: async () => child, internalAct: async () => child };
 	const ctx = { key: [owner], conn: { params: serviceParams() }, broadcast() {}, log: { error() {}, warn() {} },
 		vars: { items: { items: itemIndex }, profile: { uid: owner }, sessions: new Map([[sessionId, { profile: "docker-hardened", place: { kind: "hosted" } }]]), machines },
@@ -716,8 +801,14 @@ async function childCreation(t: import("node:test").TestContext) {
 		delivered.push({ place: input.place, size: origin.size, profile: input.profile });
 		return { ...input, repository, id: origin.sessionId } as never;
 	});
-	return { create, delivered, machines, mac, child: () => child };
+	return { create, delivered, facts, machines, mac, child: () => child };
 }
+
+test("session sandbox creation retains a reported multi-slot size for replacement", async () => {
+	const { sessionSandboxInput } = await import("../server/src/actors/internal.js");
+	const origin = { kind: "item" as const, role: "builder" as const, itemId: "i_child", size: 2 };
+	assert.equal(sessionSandboxInput({ uid: "owner", sessionId: "child", profile: "docker-hardened", origin }).size, 2);
+});
 
 test("child creation sends the chosen machine and size to its session and preserves them on replay", async t => {
 	const { create, delivered, machines, mac, child } = await childCreation(t);
@@ -731,10 +822,12 @@ test("child creation sends the chosen machine and size to its session and preser
 });
 
 test("child creation rechecks the owner's policy after dispatch", async t => {
-	const { create, delivered, machines, mac } = await childCreation(t);
+	const { create, delivered, facts, machines, mac } = await childCreation(t);
 	machines.set(macId, { ...mac, orchestrator: "never" });
 	await create();
 	assert.deepEqual(delivered, []);
+	assert.equal(facts[0]?.kind, "placement_wait");
+	assert.ok(facts[0]?.kind === "placement_wait" && facts[0].refused && facts[0].sentence.includes("Mac"));
 });
 
 test("cancelling a placement wait creates no child session", async t => {

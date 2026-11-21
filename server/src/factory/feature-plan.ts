@@ -10,6 +10,13 @@ export function featureCap(single: ItemBudget): ItemBudget {
 	return cap;
 }
 
+/** Planning receipts stay on the ledger. The implementer gets one Quick allowance within the feature cap. */
+export function singleAfterPlanning(single: ItemBudget, spent: ItemBudget, feature: ItemBudget): ItemBudget {
+	const budget = emptyBudget();
+	for (const d of dimensions) budget[d] = Math.min(feature[d], Math.ceil(spent[d]) + single[d]);
+	return budget;
+}
+
 /** Four closing turns allow the summary and reviewer a retry each. Scale time and tokens with the configured single item. */
 export function closingReserve(single: ItemBudget): ItemBudget {
 	return { tokens: Math.ceil(single.tokens / 6), turns: 4, activeSeconds: Math.ceil(single.activeSeconds / 6), hostedSeconds: Math.ceil(single.hostedSeconds / 6) };
@@ -21,6 +28,7 @@ export function approvalText(plan: FeaturePlan): string {
 		b.activeSeconds + " active seconds", b.hostedSeconds + " hosted seconds",
 	].join(", ");
 	return [plan.spec.goal, ...plan.subtasks.map(s => s.key + ". " + s.title + " — " + words(s.budget) + (s.place ? ` on ‘${s.place.prefer}’: ${s.place.reason}` : "")),
+		"Sizing beyond one slot is not supported by current runners.",
 		"Reserved for summary and review — " + words(closingReserve(plan.compare.singleBudget)), "Feature cap — " + words(plan.budget), "Single item — " + words(plan.compare.singleBudget),
 		...plan.questions.filter(q => !q.answer).map(q => q.text)].join("\n");
 }
