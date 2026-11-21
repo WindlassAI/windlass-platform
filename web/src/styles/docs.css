@@ -1050,6 +1050,9 @@
 .docs-drawer .docs-search-field {
 	height: 40px;
 }
+.docs-drawer .docs-search-key {
+	display: none;
+}
 .docs-drawer .docs-results {
 	position: static;
 	width: auto;
