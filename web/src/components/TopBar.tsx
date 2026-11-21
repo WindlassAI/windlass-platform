@@ -225,6 +225,9 @@ export function TopBar({ theme, onToggleTheme, children }: { theme: Theme; onTog
 			) : null}
 			<div className="topbar-middle">{children}</div>
 			<div className="topbar-end">
+				<a className="topbar-docs" {...linkProps({ name: "docs", slug: "" })}>
+					Docs
+				</a>
 				<ThemeToggle theme={theme} onToggle={onToggleTheme} />
 				<AccountMenu />
 			</div>

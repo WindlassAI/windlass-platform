@@ -1,7 +1,7 @@
 /**
  * Routing by URL with the History API: sign-in, home, the new agent's page, the usage page, the account's settings and machines,
  * a session by its ID, a work item by its ID, the Factory page with its filters, and a repository's page by GitHub's id for
- * it, with a new agent's page of its own too. A reload stays on the same screen; `?mock=1` is carried from one address to the next.
+ * it, with a new agent's page of its own too, and the public docs. A reload stays on the same screen; `?mock=1` is carried from one address to the next.
  */
 import { githubId } from "../../../server/src/github/ids.js";
 import type { GithubId, ItemSummary } from "@contract";
@@ -30,6 +30,8 @@ export type Route =
 	| { name: "factory"; repository?: GithubId; from?: ItemSource }
 	/** The mock's stand-in for OpenAI's sign-in page. */
 	| { name: "mock-authorize" }
+	/** The public docs: `slug` names the page ("" for the overview), `section` one of its headings, as the fragment. */
+	| { name: "docs"; slug: string; section?: string }
 	| { name: "notfound" };
 
 /** How a work item was filed, as the Factory page filters by it. */
@@ -62,6 +64,9 @@ export function parseRoute(pathname: string, search = ""): Route {
 	if (path === "/machines/add") return { name: "machines", add: true };
 	if (path === "/signin") return { name: "signin" };
 	if (path === "/mock/authorize") return { name: "mock-authorize" };
+	if (path === "/docs") return { name: "docs", slug: "" };
+	const docs = /^\/docs\/([^/]+)$/.exec(path);
+	if (docs?.[1]) return { name: "docs", slug: docs[1] };
 	const repository = /^\/repositories\/([1-9][0-9]{0,18})(\/new|\/settings|\/settings\/new)?$/.exec(path);
 	if (repository?.[1]) {
 		const id = githubId(repository[1]);
@@ -101,6 +106,8 @@ function pathOf(route: Route): string {
 			return "/factory";
 		case "mock-authorize":
 			return "/mock/authorize";
+		case "docs":
+			return route.slug === "" ? "/docs" : `/docs/${route.slug}`;
 		case "notfound":
 			return "/404";
 	}
@@ -112,7 +119,7 @@ export function href(route: Route): string {
 	if (route.name === "factory" && route.repository !== undefined) query.set("repository", String(route.repository));
 	if (route.name === "factory" && route.from) query.set("from", route.from);
 	if (mock !== null) query.set("mock", mock);
-	const fragment = route.name === "repository" && route.section ? `#${route.section}` : "";
+	const fragment = (route.name === "repository" || route.name === "docs") && route.section ? `#${route.section}` : "";
 	const search = query.toString();
 	return pathOf(route) + (search ? `?${search}` : "") + fragment;
 }

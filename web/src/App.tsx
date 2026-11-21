@@ -1,6 +1,6 @@
 /** The shell: which screen the address asks for, behind the sign-in where it has to be. */
 import type { GithubId } from "@contract";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Mark } from "./components/Icons";
 import { ListTabs, TopBar } from "./components/TopBar";
 import { linkProps, navigate, useRoute, type Route } from "./lib/router";
@@ -20,6 +20,9 @@ import { LANDING_TITLE } from "./site/content";
 import { Landing } from "./site/Landing";
 import { useApp } from "./state/app";
 import { useSession } from "./state/hooks";
+
+/** The public docs, in their own chunk: the app reaches them when one of its links leads there without a page load. */
+const DocsApp = lazy(() => import("./docs/Docs").then((module) => ({ default: module.DocsApp })));
 
 /** Whether the page is in a background tab. */
 function useHidden(): boolean {
@@ -131,6 +134,7 @@ export function App() {
 	}, [needsAuth, auth, route.name]);
 
 	useEffect(() => {
+		if (route.name === "docs") return;
 		if ((route.name !== "session" && route.name !== "item" && route.name !== "home" && route.name !== "factory" && repositoryId === null) || noItems) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines || noItems ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : route.name === "new" ? "New agent · Windlass" : "Agents · Windlass";
 	}, [route.name, repositoryId, noMachines, noItems]);
 
@@ -139,6 +143,15 @@ export function App() {
 	}, [route.name, auth]);
 
 	if (route.name === "mock-authorize" && client.kind === "mock") return <MockAuthorize />;
+
+	// Open to everyone, signed in or not.
+	if (route.name === "docs") {
+		return (
+			<Suspense fallback={null}>
+				<DocsApp theme={theme} onToggleTheme={toggleTheme} />
+			</Suspense>
+		);
+	}
 
 	if (route.name === "notfound" || route.name === "mock-authorize" || noMachines || noItems) {
 		return (

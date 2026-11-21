@@ -8,7 +8,7 @@ import { useId, useState, type FormEvent } from "react";
 import { ExternalIcon, InfoIcon, Mark, WarnIcon } from "../components/Icons";
 import { ThemeToggle, Wordmark } from "../components/TopBar";
 import { countdown } from "../lib/format";
-import { navigate } from "../lib/router";
+import { linkProps, navigate } from "../lib/router";
 import type { Theme } from "../lib/theme";
 import { useApp } from "../state/app";
 import { useNow } from "../state/hooks";
@@ -79,7 +79,12 @@ export function SignIn({ theme, onToggleTheme }: { theme: Theme; onToggleTheme()
 		<div className="signin">
 			<div className="signin-bar">
 				<Wordmark />
-				<ThemeToggle theme={theme} onToggle={onToggleTheme} />
+				<div className="signin-bar-end">
+					<a className="topbar-docs" {...linkProps({ name: "docs", slug: "" })}>
+						Docs
+					</a>
+					<ThemeToggle theme={theme} onToggle={onToggleTheme} />
+				</div>
 			</div>
 
 			<main className="signin-main">

@@ -18,6 +18,7 @@ import "./styles/repository.css";
 import "./styles/machines.css";
 import "./styles/items.css";
 import "./styles/landing.css";
+import "./styles/docs.css";
 import { QUESTION_TIMEOUT_MS } from "@contract";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -94,7 +95,18 @@ if (container.hasAttribute("data-public")) {
 }
 const root = createRoot(container);
 
-createPlatformClient().then(
+/** The docs are public and need no server: they load on their own, without the platform's client. */
+const docs = location.pathname === "/docs" || location.pathname.startsWith("/docs/");
+
+if (docs) {
+	void import("./docs/Docs").then(({ DocsApp }) => {
+		root.render(
+			<StrictMode>
+				<DocsApp />
+			</StrictMode>,
+		);
+	});
+} else createPlatformClient().then(
 	(client) => {
 		root.render(
 			<StrictMode>
