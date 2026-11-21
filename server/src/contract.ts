@@ -1200,7 +1200,7 @@ export interface FactoryLimits {
 	item: ItemBudget;
 }
 
-/** "turn_refused": the session could not start the agent's turn (an old Windlass, a conversation it cannot open), in its words. */
+/** "turn_refused": the session or provider refused the turn, in its words. */
 export type QuestionKind = "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
 
 /**
@@ -1957,7 +1957,7 @@ export type TimelineItem =
 			usage: TurnUsage | null;
 			/** Share of input tokens read from the prompt cache, 0..1. */
 			cachedShare: number | null;
-			/** Set for "error": what went wrong, fit to show. */
+			/** What went wrong, including a provider refusal on a failed turn, fit to show. */
 			message: string | null;
 			/** What the session's work rests on after this turn. */
 			verified: Verified | null;

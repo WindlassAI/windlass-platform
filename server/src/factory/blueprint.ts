@@ -36,8 +36,9 @@ import type { ReviewRecord, TurnOutcome, Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
 import { childItemId, emptyBudget, closingReserve, featureCap, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
+import { refusalMessage } from "../provider-refusal.js";
 import { budgetStop, retryAt } from "./budget.js";
-import type { ChoiceId, CiProgress, Fact, HandoffReview, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
+import type { ChoiceId, CiProgress, Fact, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";
 import { ciFingerprint, ciSentence, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
 
@@ -505,12 +506,18 @@ function spendTurn(c: Change, spend: TurnSpend): void {
 	if (c.item.place.kind === "hosted") c.item.spent.hostedSeconds = Math.max(c.item.spent.hostedSeconds, spend.hostedSeconds);
 }
 
+function askProviderRefusal(c: Change, refusal: ItemProviderRefusal, plan: TurnPlan): void {
+	ask(c, "turn_refused", refusalMessage(refusal), [choice("again"), ...handOver(c.item), choice("give_up")], null,
+		{ ...plan, ...refusal.retry, newStep: false });
+}
+
 function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void {
 	const { item, run } = c;
 	const step = run.step;
 	const kind = step.kind as TurnStepKind;
 	spendTurn(c, fact.spend);
 
+	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, { ...IMPLEMENT, kind });
 	const result = gateResult(fact.outcome, fact.verified);
 	// Refused by the session before the agent ran (an old Windlass, a conversation it cannot open): no cut-off, and no use trying
 	// again on its own. The person is asked, with the session's own sentence.
@@ -821,6 +828,7 @@ function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): 
 	if (!pending || !ci) throw new Error("the review turn has no verdict");
 	spendTurn(c, fact.spend);
 	if (fact.refused) return readForHandoff(c, ci, skippedReview(fact.refused));
+	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, reviewPlan(c));
 	if (CUT_SHORT.has(fact.outcome)) {
 		c.run.step.interruptions += 1;
 		c.say(`The review ${OUTCOME_WORDS[fact.outcome]}.`);
