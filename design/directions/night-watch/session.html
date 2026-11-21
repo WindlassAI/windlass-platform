@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Mona+Sans:wdth,wght@75..125,200..900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script>(() => { const q = new URLSearchParams(location.search); const d = document.documentElement; d.dataset.theme = q.get("theme") || "dark"; d.dataset.state = q.get("state") || ""; })();</script>
+
+<title>Metres and feet settings panel · Windlass — Night Watch</title>
+<style>
+/* ---- Night Watch tokens: one set of names, dark (default) and dawn-deck light ---- */
+:root {
+	--sans: "Mona Sans", ui-sans-serif, system-ui, sans-serif;
+	--mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+	--wide: 118%;
+	--t-11: 11px; --t-12: 12px; --t-13: 13px; --t-14: 14px; --t-16: 16px;
+	--r-item: 8px; --r-pop: 12px; --r-card: 16px;
+	--ease: cubic-bezier(.2, .8, .2, 1);
+	--spring: cubic-bezier(.3, 1.3, .5, 1);
+}
+:root, :root[data-theme="dark"] {
+	color-scheme: dark;
+	--bg: #0A1214; --sunk: #070D0F; --raised: #0F1A1D; --overlay: #142226;
+	--line: rgba(190, 230, 230, .08); --line-strong: rgba(190, 230, 230, .14); --line-field: rgba(190, 230, 230, .22);
+	--hover: rgba(190, 230, 230, .05); --active: rgba(190, 230, 230, .08);
+	--ink: #E6EEEC; --dim: #9DB0AE; --faint: #6C807E;
+	--lamp: #F2B544; --lamp-ink: #1A1204; --lamp-text: #F2B544; --lamp-wash: rgba(242, 181, 68, .10); --lamp-line: rgba(242, 181, 68, .38);
+	--lamp-glow: rgba(242, 181, 68, .07);
+	--ok: #6FC7A8; --ok-wash: rgba(111, 199, 168, .10); --bad: #F07A6E; --bad-wash: rgba(240, 122, 110, .10); --code: #C9A6F0; --code-wash: rgba(201, 166, 240, .10);
+	--add-wash: rgba(111, 199, 168, .09); --del-wash: rgba(240, 122, 110, .09);
+	--shadow-card: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 24px 48px -24px rgba(0, 0, 0, .7), 0 2px 6px rgba(0, 0, 0, .25);
+	--shadow-pop: 0 1px 0 rgba(255, 255, 255, .05) inset, 0 16px 40px -12px rgba(0, 0, 0, .75), 0 4px 12px rgba(0, 0, 0, .35);
+	--scrim: rgba(3, 7, 8, .62);
+	--grain: .05;
+}
+:root[data-theme="light"] {
+	color-scheme: light;
+	--bg: #F3F1EC; --sunk: #EAE7DF; --raised: #FFFFFF; --overlay: #FFFFFF;
+	--line: rgba(16, 25, 27, .09); --line-strong: rgba(16, 25, 27, .15); --line-field: rgba(16, 25, 27, .26);
+	--hover: rgba(16, 25, 27, .04); --active: rgba(16, 25, 27, .065);
+	--ink: #10191B; --dim: #46555A; --faint: #66736F;
+	--lamp: #F2B544; --lamp-ink: #1A1204; --lamp-text: #9A6200; --lamp-wash: rgba(242, 181, 68, .16); --lamp-line: rgba(176, 116, 0, .42);
+	--lamp-glow: rgba(242, 181, 68, .16);
+	--ok: #1E7A5B; --ok-wash: rgba(30, 122, 91, .09); --bad: #B3392E; --bad-wash: rgba(179, 57, 46, .08); --code: #6B3DB0; --code-wash: rgba(107, 61, 176, .08);
+	--add-wash: rgba(30, 122, 91, .09); --del-wash: rgba(179, 57, 46, .08);
+	--shadow-card: 0 1px 0 rgba(255, 255, 255, .8) inset, 0 20px 40px -24px rgba(40, 34, 18, .28), 0 1px 3px rgba(40, 34, 18, .08);
+	--shadow-pop: 0 16px 36px -12px rgba(40, 34, 18, .28), 0 3px 10px rgba(40, 34, 18, .10);
+	--scrim: rgba(30, 28, 20, .38);
+	--grain: .035;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 400 var(--t-14)/1.45 var(--sans); font-stretch: 100%; }
+body::after { /* grain */
+	content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 100; opacity: var(--grain); mix-blend-mode: overlay;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+code, .mono { font-family: var(--mono); font-size: var(--t-12); font-stretch: 100%; }
+svg { display: block; flex: none; }
+.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.i-14 { width: 14px; height: 14px; }
+.i-12 { width: 12px; height: 12px; }
+kbd { font: 500 10.5px/1 var(--mono); padding: 3px 5px; border-radius: 5px; border: 1px solid var(--line-strong); border-bottom-width: 2px; color: var(--dim); background: var(--hover); }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+.dot-ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-wash); }
+.dot-lamp { background: var(--lamp); box-shadow: 0 0 0 3px var(--lamp-wash); }
+.dot-off { background: transparent; border: 1.5px solid var(--faint); }
+.hl { color: var(--lamp-text); font-weight: 650; background: var(--lamp-wash); border-radius: 3px; box-shadow: 0 0 0 1px var(--lamp-wash); }
+@keyframes drum { to { transform: rotate(360deg); } }
+.drum-turn { transform-box: fill-box; transform-origin: center; animation: drum 3.2s linear infinite; }
+@keyframes pay { from { transform: scaleX(.15); } to { transform: scaleX(1); } }
+@keyframes breathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.shimmer { background: linear-gradient(90deg, var(--dim) 30%, var(--lamp-text) 50%, var(--dim) 70%) 0 0 / 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 2.4s linear infinite; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* ---- the left rail ---- */
+.rail { position: fixed; inset: 0 auto 0 0; width: 56px; background: var(--sunk); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 14px 0 12px; gap: 4px; z-index: 20; }
+.rail-mark { width: 32px; height: 32px; display: grid; place-items: center; color: var(--ink); margin-bottom: 14px; }
+.rail-mark svg { width: 24px; height: 24px; }
+.rail a { position: relative; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: var(--faint); transition: background .15s, color .15s; }
+.rail a:hover { background: var(--hover); color: var(--ink); }
+.rail a[aria-current] { background: var(--active); color: var(--ink); }
+.rail a[aria-current]::before { content: ""; position: absolute; left: -10px; top: 9px; bottom: 9px; width: 2px; border-radius: 2px; background: var(--ink); }
+.rail a .badge { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--lamp); box-shadow: 0 0 0 2px var(--sunk); }
+.rail .tip { position: absolute; left: 46px; white-space: nowrap; font-size: var(--t-12); font-weight: 550; color: var(--ink); background: var(--overlay); border: 1px solid var(--line-strong); border-radius: 7px; padding: 4px 8px; box-shadow: var(--shadow-pop); opacity: 0; pointer-events: none; transform: translateX(-4px); transition: .15s var(--ease); }
+.rail a:hover .tip { opacity: 1; transform: none; }
+.rail .grow { flex: 1; }
+.avatar { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font: 650 12px/1 var(--sans); color: var(--lamp-ink); background: linear-gradient(140deg, #F7CF7E, #C98E2A); margin-top: 6px; }
+
+html, body { height: 100%; overflow: hidden; }
+.app { margin-left: 56px; height: 100vh; display: grid; grid-template-columns: minmax(0, 1fr) 340px; }
+.main { position: relative; display: grid; grid-template-rows: 56px minmax(0, 1fr) auto; min-width: 0; }
+.main::before { content: ""; position: absolute; left: 50%; bottom: 0; width: 900px; height: 360px; transform: translateX(-50%); pointer-events: none; background: radial-gradient(50% 60% at 50% 100%, var(--lamp-glow), transparent 70%); }
+
+/* header */
+.top { display: flex; align-items: center; gap: 12px; padding: 0 20px 0 24px; border-bottom: 1px solid var(--line); }
+.crumb { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--t-13); color: var(--dim); white-space: nowrap; }
+.crumb .title { color: var(--ink); font-weight: 650; font-size: var(--t-14); }
+.crumb .sep { color: var(--faint); }
+.status { display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px 0 8px; border-radius: 999px; background: var(--lamp-wash); color: var(--lamp-text); font: 500 var(--t-12)/1 var(--mono); border: 1px solid color-mix(in srgb, var(--lamp) 25%, transparent); }
+.grow { flex: 1; }
+.tbtn { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 10px; border-radius: 8px; font-size: var(--t-13); color: var(--dim); }
+.tbtn:hover { background: var(--hover); color: var(--ink); }
+.tbtn .n { font: 400 11px/1 var(--mono); color: var(--faint); }
+.tbtn[disabled] { opacity: .5; cursor: not-allowed; }
+.tbtn kbd { margin-left: 2px; }
+
+/* the timeline, hanging from the line */
+.scroll { position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+.scroll::before { content: ""; position: absolute; z-index: 2; left: 0; right: 0; top: 0; height: 48px; background: linear-gradient(var(--bg), transparent); }
+.tl { position: relative; width: min(780px, 100% - 48px); margin: 0 auto; padding: 24px 0 20px 44px; list-style: none; }
+.rope { position: absolute; left: 13px; top: -400px; height: calc(100% + 400px - 136px); width: 3px; border-radius: 2px; background: repeating-linear-gradient(-55deg, var(--line-field) 0 3px, var(--line-strong) 3px 6px); }
+.weight { position: absolute; left: 9px; bottom: 120px; width: 11px; height: 11px; border-radius: 3px; background: var(--lamp); box-shadow: 0 0 0 4px var(--lamp-wash), 0 0 18px var(--lamp); }
+.step { position: relative; margin: 0 0 6px; }
+.step::before { /* the knot */ content: ""; position: absolute; left: -36px; top: 9px; width: 9px; height: 9px; border-radius: 50%; background: var(--bg); border: 2px solid var(--line-field); }
+.step.ok::before { border-color: var(--dim); }
+.step.person::before { width: 11px; height: 11px; left: -37px; top: 14px; border-color: var(--ink); background: var(--ink); }
+.step.now::before { display: none; }
+
+.person-card { padding: 12px 16px 14px; border-radius: 14px; background: var(--raised); border: 1px solid var(--line-strong); }
+.person-head { display: flex; gap: 8px; align-items: center; font: 400 var(--t-12)/1 var(--mono); color: var(--faint); margin-bottom: 8px; }
+.person-head b { font-family: var(--sans); font-size: var(--t-13); color: var(--ink); font-weight: 600; }
+.person-card p { margin: 0; font-size: 15px; line-height: 1.5; }
+
+.tool { display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 4px 8px; margin-left: -8px; border-radius: 8px; font-size: var(--t-13); color: var(--dim); }
+.tool:hover { background: var(--hover); }
+.tool > svg { color: var(--faint); }
+.verb { font: 500 var(--t-12)/1 var(--mono); color: var(--ink); width: 40px; }
+.path { font: 400 12.5px/1 var(--mono); color: var(--ink); }
+.path .dir { color: var(--faint); }
+.facts { font: 400 var(--t-12)/1 var(--mono); color: var(--faint); }
+.add { color: var(--ok); } .del { color: var(--bad); }
+.tool .chev { margin-left: auto; color: var(--faint); }
+.thought .verb { color: var(--dim); width: auto; margin-right: 6px; }
+.thought .said { color: var(--dim); font-size: var(--t-13); }
+
+.diff { margin: 6px 0 8px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--sunk); }
+.diff-head { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--raised); font: 400 var(--t-12)/1 var(--mono); color: var(--dim); }
+.diff-head .path { font-size: var(--t-12); }
+.diff pre { margin: 0; padding: 6px 0; font: 400 12px/1.65 var(--mono); color: var(--dim); }
+.diff pre span { display: block; padding: 0 14px; }
+.diff .ln { display: inline-block; width: 28px; color: var(--faint); opacity: .7; }
+.diff .a { background: var(--add-wash); color: var(--ink); }
+.diff .a .sign { color: var(--ok); }
+.diff .d { background: var(--del-wash); color: var(--dim); }
+.diff .d .sign { color: var(--bad); }
+.sign { display: inline-block; width: 14px; }
+.diff .k { color: var(--code); }
+
+.plan { margin: 4px 0 8px; padding: 10px 14px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--raised); }
+.plan-head { display: flex; justify-content: space-between; font: 500 10.5px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin-bottom: 8px; }
+.plan ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 5px; font-size: var(--t-13); }
+.plan li { display: flex; align-items: center; gap: 10px; color: var(--dim); }
+.plan li.done { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--line-field); }
+.plan li .box { width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid var(--line-field); display: grid; place-items: center; }
+.plan li.done .box { background: var(--dim); border-color: var(--dim); color: var(--bg); }
+.plan li.now { color: var(--ink); font-weight: 560; }
+.plan li.now .box { border-color: var(--lamp); box-shadow: 0 0 0 3px var(--lamp-wash); }
+.plan li.now .box::after { content: ""; width: 6px; height: 6px; border-radius: 2px; background: var(--lamp); }
+
+.run { margin: 6px 0 4px; border-radius: 14px; border: 1px solid var(--lamp-line); background: linear-gradient(180deg, var(--lamp-wash), transparent 60%), var(--raised); box-shadow: 0 0 0 4px var(--lamp-wash), 0 18px 40px -20px rgba(242, 181, 68, .25); overflow: hidden; }
+.run-head { display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 14px; }
+.run-head .verb { color: var(--lamp-text); width: auto; }
+.run-head code { font-size: 12.5px; color: var(--ink); }
+.run-time { font: 500 var(--t-12)/1 var(--mono); color: var(--lamp-text); }
+.stopcall { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 8px; font-size: var(--t-12); font-weight: 560; color: var(--ink); border: 1px solid var(--line-strong); background: var(--raised); }
+.stopcall:hover { border-color: var(--bad); color: var(--bad); }
+.tail { margin: 0; padding: 10px 14px 12px; border-top: 1px solid var(--line); background: var(--sunk); font: 400 12px/1.7 var(--mono); color: var(--dim); }
+.tail .okk { color: var(--ok); }
+.tail .live { color: var(--ink); }
+.tail .cur { display: inline-block; width: 7px; height: 13px; vertical-align: -2px; background: var(--lamp); animation: blink 1.1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.working { display: flex; align-items: center; gap: 10px; padding: 8px 0 0; font-size: var(--t-13); }
+.working .facts { margin-left: 2px; }
+
+/* steering */
+.steer-wrap { position: relative; z-index: 3; padding: 0 24px 20px; }
+.steer { width: min(780px, 100%); margin: 0 auto; background: var(--raised); border: 1px solid var(--line-strong); border-radius: var(--r-card); box-shadow: var(--shadow-card); }
+.steer-text { padding: 14px 16px 6px; min-height: 52px; color: var(--faint); font-size: 15px; }
+.steer-foot { display: flex; align-items: center; gap: 8px; padding: 6px 10px 10px 16px; }
+.steer-note { display: flex; align-items: center; gap: 8px; font: 400 var(--t-12)/1 var(--mono); color: var(--faint); }
+.btn { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 9px; font-size: var(--t-13); font-weight: 600; border: 1px solid var(--line-strong); background: var(--raised); color: var(--ink); }
+.btn-lamp { background: var(--lamp); color: var(--lamp-ink); border-color: transparent; }
+.btn-lamp kbd { color: var(--lamp-ink); background: rgba(26, 18, 4, .1); border-color: rgba(26, 18, 4, .2); }
+.btn-stop svg { color: var(--bad); }
+
+/* side panel */
+.panel { border-left: 1px solid var(--line); background: var(--sunk); overflow: hidden; padding: 8px 0 24px; }
+.psec { padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.psec:last-child { border-bottom: 0; }
+.ptitle { display: flex; justify-content: space-between; align-items: center; margin: 0 0 12px; font: 500 10.5px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.ptitle .val { font: 600 var(--t-13)/1 var(--sans); letter-spacing: 0; text-transform: none; color: var(--ink); }
+dl { margin: 0; display: grid; grid-template-columns: 76px 1fr; gap: 9px 12px; font-size: var(--t-13); }
+dt { color: var(--faint); }
+dd { margin: 0; color: var(--ink); display: flex; align-items: center; gap: 7px; min-width: 0; }
+dd .sub { color: var(--faint); font: 400 11.5px/1 var(--mono); }
+dd code { font-size: 12px; }
+.warnline { display: flex; gap: 7px; align-items: center; margin-top: 12px; padding: 8px 10px; border-radius: 9px; background: var(--lamp-wash); font-size: var(--t-12); color: var(--dim); }
+.warnline svg { color: var(--lamp-text); }
+.meter { height: 6px; border-radius: 6px; background: var(--line-strong); overflow: hidden; }
+.meter span { display: block; height: 100%; width: 38%; border-radius: 6px; background: linear-gradient(90deg, var(--dim), var(--ink)); }
+.meter-legend { display: flex; justify-content: space-between; margin-top: 8px; font: 400 var(--t-12)/1 var(--mono); color: var(--faint); }
+.twin { display: grid; grid-template-columns: 1fr 1fr; }
+.twin .psec + .psec { border-left: 1px solid var(--line); }
+.big { font-size: 22px; font-weight: 700; font-stretch: 112%; letter-spacing: -.01em; }
+.big-sub { font: 400 var(--t-12)/1.4 var(--mono); color: var(--faint); margin-top: 4px; }
+.files { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.files li { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; margin: 0 -8px; border-radius: 7px; font: 400 12px/1 var(--mono); color: var(--ink); }
+.files li:hover { background: var(--hover); }
+.files .dir { color: var(--faint); }
+.files .nums { margin-left: auto; }
+.pbtn { width: 100%; justify-content: center; margin-top: 10px; opacity: .55; }
+.pnote { margin: 8px 0 0; font-size: var(--t-12); color: var(--faint); }
+.ok-line { display: flex; align-items: center; gap: 8px; font-size: var(--t-13); }
+.ok-line svg { color: var(--ok); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+	<symbol id="i-mark" viewBox="0 0 28 28"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11.5" cy="11.5" r="7.5"/><path d="M11.5 4v4.2M5 15.25l3.64-2.1M18 15.25l-3.64-2.1"/><circle cx="11.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/><path d="M19 11.5V23"/><rect x="17" y="22" width="4" height="4" rx="1" fill="currentColor" stroke="none"/></g></symbol>
+	<symbol id="i-drum" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 4v4.5M5.1 16l3.9-2.25M18.9 16l-3.9-2.25"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></g></symbol>
+	<symbol id="i-agents" viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h16M4 17.5h10"/></symbol>
+	<symbol id="i-factory" viewBox="0 0 24 24"><path d="M3 20V10l5 3V10l5 3V6h4l1 14z"/><path d="M3 20h18"/></symbol>
+	<symbol id="i-machine" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="7" rx="2"/><rect x="3.5" y="13" width="17" height="7" rx="2"/><path d="M7.5 7.5h.01M7.5 16.5h.01"/></symbol>
+	<symbol id="i-docs" viewBox="0 0 24 24"><path d="M5 4.5h9l5 5V19.5H5z"/><path d="M14 4.5v5h5M8.5 13h7M8.5 16h5"/></symbol>
+	<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/></symbol>
+	<symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/></symbol>
+	<symbol id="i-chev" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></symbol>
+	<symbol id="i-right" viewBox="0 0 24 24"><path d="M10 7l5 5-5 5"/></symbol>
+	<symbol id="i-left" viewBox="0 0 24 24"><path d="M14 7l-5 5 5 5"/></symbol>
+	<symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+	<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></symbol>
+	<symbol id="i-repo" viewBox="0 0 24 24"><path d="M6 19.5V5.5A1.5 1.5 0 0 1 7.5 4H19v13H7.5A1.5 1.5 0 0 0 6 18.5 1.5 1.5 0 0 0 7.5 20H19"/></symbol>
+	<symbol id="i-branch" viewBox="0 0 24 24"><circle cx="7" cy="5.5" r="2"/><circle cx="7" cy="18.5" r="2"/><circle cx="17" cy="7.5" r="2"/><path d="M7 7.5v9M17 9.5c0 4-10 2-10 7"/></symbol>
+	<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4.5M12 17.2h.01"/></symbol>
+	<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+	<symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+	<symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></symbol>
+	<symbol id="i-pr" viewBox="0 0 24 24"><circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="18.5" r="2"/><path d="M6.5 7.5v9M17.5 16.5V9a2 2 0 0 0-2-2H11M13.5 4.5L11 7l2.5 2.5"/></symbol>
+	<symbol id="i-merge" viewBox="0 0 24 24"><circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="12" r="2"/><path d="M6.5 7.5v9M6.5 7.5c0 3 3 4.5 9 4.5"/></symbol>
+	<symbol id="i-ask" viewBox="0 0 24 24"><path d="M4.5 18.5V6a1.5 1.5 0 0 1 1.5-1.5h12A1.5 1.5 0 0 1 19.5 6v9a1.5 1.5 0 0 1-1.5 1.5H8z"/><path d="M10 9.2a2 2 0 1 1 2.6 1.9c-.4.2-.6.5-.6.9v.4M12 14.2h.01"/></symbol>
+	<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5v17M3.5 12h17M6 6l12 12M18 6L6 18"/></symbol>
+	<symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18.5a4.5 4.5 0 0 1-.4-9A5.5 5.5 0 0 1 17.2 8a4.3 4.3 0 0 1-.2 10.5z"/></symbol>
+	<symbol id="i-shell" viewBox="0 0 24 24"><path d="M5 8l4 4-4 4M11 17h8"/></symbol>
+	<symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v4h4"/></symbol>
+	<symbol id="i-edit" viewBox="0 0 24 24"><path d="M4.5 19.5l1-4L15 6l3 3-9.5 9.5z"/><path d="M13 8l3 3"/></symbol>
+	<symbol id="i-thought" viewBox="0 0 24 24"><circle cx="7" cy="16" r="1.4"/><circle cx="12" cy="9" r="1.4"/><circle cx="17" cy="16" r="1.4"/></symbol>
+	<symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6.5h11M9 12h11M9 17.5h11M4.5 6.5h.01M4.5 12h.01M4.5 17.5h.01"/></symbol>
+	<symbol id="i-dots" viewBox="0 0 24 24"><path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.6"/></symbol>
+	<symbol id="i-diff" viewBox="0 0 24 24"><path d="M12 4.5v7M8.5 8h7M8.5 17.5h7"/><rect x="4" y="2.5" width="16" height="19" rx="2"/></symbol>
+	<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
+	<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.6 2.5 14.4 0 17M12 3.5c-2.5 2.6-2.5 14.4 0 17"/></symbol>
+	<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2.5 2.5"/></symbol>
+	<symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></symbol>
+	<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+	<symbol id="i-arrow-out" viewBox="0 0 24 24"><path d="M12 20V9M7 13l5-5 5 5M5 4.5h14"/></symbol>
+</svg>
+
+<nav class="rail" aria-label="Main">
+	<a class="rail-mark" href="#" aria-label="Windlass"><svg><use href="#i-mark"/></svg></a>
+	<a href="#" aria-current="page"><svg class="i"><use href="#i-agents"/></svg><span class="badge"></span><span class="tip">Agents</span></a>
+	<a href="#"><svg class="i"><use href="#i-factory"/></svg><span class="tip">Factory</span></a>
+	<a href="#"><svg class="i"><use href="#i-machine"/></svg><span class="tip">Machines</span></a>
+	<a href="#"><svg class="i"><use href="#i-docs"/></svg><span class="tip">Docs</span></a>
+	<span class="grow"></span>
+	<a href="#"><svg class="i"><use href="#i-moon"/></svg><span class="tip">Theme</span></a>
+	<span class="avatar">P</span>
+</nav>
+
+<div class="app">
+	<section class="main">
+		<header class="top">
+			<div class="crumb"><span>harbor-web</span><span class="sep">/</span><span class="title">Metres and feet settings panel</span></div>
+			<span class="status"><svg class="i i-14"><use class="drum-turn" href="#i-drum"/></svg>working · 1m 48s</span>
+			<span class="facts">turn 3</span>
+			<span class="grow"></span>
+			<button class="tbtn"><svg class="i i-14"><use href="#i-diff"/></svg>Diff <span class="n">3</span></button>
+			<button class="tbtn" disabled><svg class="i i-14"><use href="#i-pr"/></svg>Pull request</button>
+			<button class="tbtn" aria-label="More"><svg class="i"><use href="#i-dots"/></svg></button>
+		</header>
+
+		<div class="scroll">
+			<ol class="tl">
+				<span class="rope"></span>
+				<span class="weight"></span>
+				<li class="step person">
+					<div class="person-card">
+						<div class="person-head"><b>You</b> · turn 3 · 2 min ago</div>
+						<p>Let people switch the settings panel between metres and feet. Keep it per user.</p>
+					</div>
+				</li>
+				<li class="step ok" style="margin-top:10px">
+					<div class="tool thought"><svg class="i i-14"><use href="#i-thought"/></svg><span class="verb">thought</span><span class="said">The unit lives in two places: the panel and the formatter.</span><svg class="i i-14 chev"><use href="#i-right"/></svg></div>
+				</li>
+				<li class="step ok"><div class="tool"><svg class="i i-14"><use href="#i-file"/></svg><span class="verb">read</span><span class="path"><span class="dir">web/src/settings/</span>Panel.tsx</span><span class="facts">212 lines · 9 ms</span></div></li>
+				<li class="step ok"><div class="tool"><svg class="i i-14"><use href="#i-file"/></svg><span class="verb">read</span><span class="path"><span class="dir">web/src/lib/</span>format.ts</span><span class="facts">88 lines · 6 ms</span></div></li>
+				<li class="step ok"><div class="tool"><svg class="i i-14"><use href="#i-edit"/></svg><span class="verb">edit</span><span class="path"><span class="dir">web/src/settings/</span>UnitsToggle.tsx</span><span class="facts">new file · <span class="add">+48</span></span><svg class="i i-14 chev"><use href="#i-right"/></svg></div></li>
+				<li class="step ok">
+					<div class="tool"><svg class="i i-14"><use href="#i-edit"/></svg><span class="verb">edit</span><span class="path"><span class="dir">web/src/lib/</span>format.ts</span><span class="facts"><span class="add">+11</span> <span class="del">−3</span></span><svg class="i i-14 chev" style="transform:rotate(90deg)"><use href="#i-right"/></svg></div>
+					<div class="diff">
+						<pre><span><i class="ln">41</i><i class="sign"> </i><b class="k">export function</b> length(m: number, unit: Unit) {</span><span class="d"><i class="ln">42</i><i class="sign">−</i>  return `${m.toFixed(1)} m`;</span><span class="a"><i class="ln">42</i><i class="sign">+</i>  if (unit === "metres") return `${m.toFixed(1)} m`;</span><span class="a"><i class="ln">43</i><i class="sign">+</i>  const feet = m * FEET_PER_METRE;</span><span class="a"><i class="ln">44</i><i class="sign">+</i>  return `${feet.toFixed(0)} ft`;</span><span><i class="ln">45</i><i class="sign"> </i>}</span></pre>
+					</div>
+				</li>
+				<li class="step ok">
+					<div class="plan">
+						<div class="plan-head"><span>Plan</span><span>2 of 4</span></div>
+						<ol>
+							<li class="done"><span class="box"><svg class="i i-12"><use href="#i-check"/></svg></span>Add the toggle to the panel</li>
+							<li class="done"><span class="box"><svg class="i i-12"><use href="#i-check"/></svg></span>Store the choice per user</li>
+							<li class="now"><span class="box"></span>Format lengths in the chosen unit</li>
+							<li><span class="box"></span>Test both units</li>
+						</ol>
+					</div>
+				</li>
+				<li class="step now">
+					<div class="run">
+						<div class="run-head"><svg class="i i-14" style="color:var(--lamp-text)"><use href="#i-shell"/></svg><span class="verb">shell</span><code>pnpm vitest run settings</code><span class="grow"></span><span class="run-time">running 12 s</span><button class="stopcall"><svg class="i i-12"><use href="#i-stop"/></svg>Stop this call</button></div>
+						<pre class="tail"><span class="okk">✓</span> format › metres (3)
+<span class="okk">✓</span> format › feet (3)
+<span class="live">… UnitsToggle › persists the choice</span> <span class="cur"></span></pre>
+					</div>
+				</li>
+			</ol>
+		</div>
+
+		<div class="steer-wrap">
+			<div class="steer">
+				<div class="steer-text">Steer — read at its next step</div>
+				<div class="steer-foot">
+					<span class="steer-note"><svg class="i i-14"><use class="drum-turn" href="#i-drum"/></svg><span class="shimmer">Claude Code is running the tests</span></span>
+					<span class="grow"></span>
+					<button class="btn btn-stop"><svg class="i i-14"><use href="#i-stop"/></svg>Stop turn</button>
+					<button class="btn btn-lamp">Send <kbd>↵</kbd></button>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<aside class="panel" aria-label="Session">
+		<section class="psec">
+			<h2 class="ptitle">Session</h2>
+			<dl>
+				<dt>Agent</dt><dd><svg class="i i-14"><use href="#i-spark"/></svg>Claude Code</dd>
+				<dt>Model</dt><dd>Sonnet 5.5</dd>
+				<dt>Mode</dt><dd>Auto <span class="sub">assesses its own tools</span></dd>
+				<dt>Machine</dt><dd><i class="dot dot-ok"></i>d5eb81 <span class="sub">Linux arm64</span></dd>
+				<dt>Sandbox</dt><dd>Hardened Docker</dd>
+				<dt>Branch</dt><dd><svg class="i i-14" style="color:var(--faint)"><use href="#i-branch"/></svg><code>wl/metres-feet</code></dd>
+			</dl>
+			<p class="warnline"><svg class="i i-14"><use href="#i-warn"/></svg>Network on · commands can read the token</p>
+		</section>
+		<section class="psec">
+			<h2 class="ptitle">Context <span class="val">38%</span></h2>
+			<div class="meter"><span></span></div>
+			<div class="meter-legend"><span>76k of 200k</span><span>compacts at 90%</span></div>
+		</section>
+		<div class="twin">
+			<section class="psec">
+				<h2 class="ptitle">Cost so far</h2>
+				<div class="big">$0.42</div>
+				<div class="big-sub">this turn $0.11</div>
+			</section>
+			<section class="psec">
+				<h2 class="ptitle">Changed</h2>
+				<div class="big">3 <span style="font-size:13px;font-weight:500;font-stretch:100%;color:var(--faint)">files</span></div>
+				<div class="big-sub"><span class="add">+63</span> <span class="del">−3</span></div>
+			</section>
+		</div>
+		<section class="psec">
+			<h2 class="ptitle">Files</h2>
+			<ul class="files">
+				<li><span class="dir">settings/</span>UnitsToggle.tsx<span class="nums add">+48</span></li>
+				<li><span class="dir">lib/</span>format.ts<span class="nums"><span class="add">+11</span> <span class="del">−3</span></span></li>
+				<li><span class="dir">settings/</span>Panel.tsx<span class="nums add">+4</span></li>
+			</ul>
+		</section>
+		<section class="psec">
+			<h2 class="ptitle">Pull request <span class="val" style="color:var(--faint);font-weight:500">none yet</span></h2>
+			<button class="btn pbtn" disabled><svg class="i i-14"><use href="#i-pr"/></svg>Publish pull request</button>
+			<p class="pnote">Available when this turn ends.</p>
+		</section>
+		<section class="psec">
+			<h2 class="ptitle">Checks</h2>
+			<div class="ok-line"><svg class="i i-14"><use href="#i-check"/></svg>Last run passed <span class="facts">· 6 min ago</span></div>
+		</section>
+	</aside>
+</div>
+</body>
+</html>

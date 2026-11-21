@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Mona+Sans:wdth,wght@75..125,200..900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script>(() => { const q = new URLSearchParams(location.search); const d = document.documentElement; d.dataset.theme = q.get("theme") || "dark"; d.dataset.state = q.get("state") || ""; })();</script>
+
+<title>Agents · Windlass — Night Watch</title>
+<style>
+/* ---- Night Watch tokens: one set of names, dark (default) and dawn-deck light ---- */
+:root {
+	--sans: "Mona Sans", ui-sans-serif, system-ui, sans-serif;
+	--mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+	--wide: 118%;
+	--t-11: 11px; --t-12: 12px; --t-13: 13px; --t-14: 14px; --t-16: 16px;
+	--r-item: 8px; --r-pop: 12px; --r-card: 16px;
+	--ease: cubic-bezier(.2, .8, .2, 1);
+	--spring: cubic-bezier(.3, 1.3, .5, 1);
+}
+:root, :root[data-theme="dark"] {
+	color-scheme: dark;
+	--bg: #0A1214; --sunk: #070D0F; --raised: #0F1A1D; --overlay: #142226;
+	--line: rgba(190, 230, 230, .08); --line-strong: rgba(190, 230, 230, .14); --line-field: rgba(190, 230, 230, .22);
+	--hover: rgba(190, 230, 230, .05); --active: rgba(190, 230, 230, .08);
+	--ink: #E6EEEC; --dim: #9DB0AE; --faint: #6C807E;
+	--lamp: #F2B544; --lamp-ink: #1A1204; --lamp-text: #F2B544; --lamp-wash: rgba(242, 181, 68, .10); --lamp-line: rgba(242, 181, 68, .38);
+	--lamp-glow: rgba(242, 181, 68, .07);
+	--ok: #6FC7A8; --ok-wash: rgba(111, 199, 168, .10); --bad: #F07A6E; --bad-wash: rgba(240, 122, 110, .10); --code: #C9A6F0; --code-wash: rgba(201, 166, 240, .10);
+	--add-wash: rgba(111, 199, 168, .09); --del-wash: rgba(240, 122, 110, .09);
+	--shadow-card: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 24px 48px -24px rgba(0, 0, 0, .7), 0 2px 6px rgba(0, 0, 0, .25);
+	--shadow-pop: 0 1px 0 rgba(255, 255, 255, .05) inset, 0 16px 40px -12px rgba(0, 0, 0, .75), 0 4px 12px rgba(0, 0, 0, .35);
+	--scrim: rgba(3, 7, 8, .62);
+	--grain: .05;
+}
+:root[data-theme="light"] {
+	color-scheme: light;
+	--bg: #F3F1EC; --sunk: #EAE7DF; --raised: #FFFFFF; --overlay: #FFFFFF;
+	--line: rgba(16, 25, 27, .09); --line-strong: rgba(16, 25, 27, .15); --line-field: rgba(16, 25, 27, .26);
+	--hover: rgba(16, 25, 27, .04); --active: rgba(16, 25, 27, .065);
+	--ink: #10191B; --dim: #46555A; --faint: #66736F;
+	--lamp: #F2B544; --lamp-ink: #1A1204; --lamp-text: #9A6200; --lamp-wash: rgba(242, 181, 68, .16); --lamp-line: rgba(176, 116, 0, .42);
+	--lamp-glow: rgba(242, 181, 68, .16);
+	--ok: #1E7A5B; --ok-wash: rgba(30, 122, 91, .09); --bad: #B3392E; --bad-wash: rgba(179, 57, 46, .08); --code: #6B3DB0; --code-wash: rgba(107, 61, 176, .08);
+	--add-wash: rgba(30, 122, 91, .09); --del-wash: rgba(179, 57, 46, .08);
+	--shadow-card: 0 1px 0 rgba(255, 255, 255, .8) inset, 0 20px 40px -24px rgba(40, 34, 18, .28), 0 1px 3px rgba(40, 34, 18, .08);
+	--shadow-pop: 0 16px 36px -12px rgba(40, 34, 18, .28), 0 3px 10px rgba(40, 34, 18, .10);
+	--scrim: rgba(30, 28, 20, .38);
+	--grain: .035;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 400 var(--t-14)/1.45 var(--sans); font-stretch: 100%; }
+body::after { /* grain */
+	content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 100; opacity: var(--grain); mix-blend-mode: overlay;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+code, .mono { font-family: var(--mono); font-size: var(--t-12); font-stretch: 100%; }
+svg { display: block; flex: none; }
+.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.i-14 { width: 14px; height: 14px; }
+.i-12 { width: 12px; height: 12px; }
+kbd { font: 500 10.5px/1 var(--mono); padding: 3px 5px; border-radius: 5px; border: 1px solid var(--line-strong); border-bottom-width: 2px; color: var(--dim); background: var(--hover); }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+.dot-ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-wash); }
+.dot-lamp { background: var(--lamp); box-shadow: 0 0 0 3px var(--lamp-wash); }
+.dot-off { background: transparent; border: 1.5px solid var(--faint); }
+.hl { color: var(--lamp-text); font-weight: 650; background: var(--lamp-wash); border-radius: 3px; box-shadow: 0 0 0 1px var(--lamp-wash); }
+@keyframes drum { to { transform: rotate(360deg); } }
+.drum-turn { transform-box: fill-box; transform-origin: center; animation: drum 3.2s linear infinite; }
+@keyframes pay { from { transform: scaleX(.15); } to { transform: scaleX(1); } }
+@keyframes breathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.shimmer { background: linear-gradient(90deg, var(--dim) 30%, var(--lamp-text) 50%, var(--dim) 70%) 0 0 / 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 2.4s linear infinite; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* ---- the left rail ---- */
+.rail { position: fixed; inset: 0 auto 0 0; width: 56px; background: var(--sunk); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 14px 0 12px; gap: 4px; z-index: 20; }
+.rail-mark { width: 32px; height: 32px; display: grid; place-items: center; color: var(--ink); margin-bottom: 14px; }
+.rail-mark svg { width: 24px; height: 24px; }
+.rail a { position: relative; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: var(--faint); transition: background .15s, color .15s; }
+.rail a:hover { background: var(--hover); color: var(--ink); }
+.rail a[aria-current] { background: var(--active); color: var(--ink); }
+.rail a[aria-current]::before { content: ""; position: absolute; left: -10px; top: 9px; bottom: 9px; width: 2px; border-radius: 2px; background: var(--ink); }
+.rail a .badge { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--lamp); box-shadow: 0 0 0 2px var(--sunk); }
+.rail .tip { position: absolute; left: 46px; white-space: nowrap; font-size: var(--t-12); font-weight: 550; color: var(--ink); background: var(--overlay); border: 1px solid var(--line-strong); border-radius: 7px; padding: 4px 8px; box-shadow: var(--shadow-pop); opacity: 0; pointer-events: none; transform: translateX(-4px); transition: .15s var(--ease); }
+.rail a:hover .tip { opacity: 1; transform: none; }
+.rail .grow { flex: 1; }
+.avatar { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font: 650 12px/1 var(--sans); color: var(--lamp-ink); background: linear-gradient(140deg, #F7CF7E, #C98E2A); margin-top: 6px; }
+
+
+/* ---- page ---- */
+.page { margin-left: 56px; min-height: 100vh; position: relative; }
+.page::before { /* the lamp: a low warm glow behind the composer */
+	content: ""; position: absolute; left: 50%; top: 40px; width: 1100px; height: 520px; transform: translateX(-50%); pointer-events: none;
+	background: radial-gradient(50% 50% at 50% 42%, var(--lamp-glow), transparent 70%);
+}
+.wrap { position: relative; max-width: 940px; margin: 0 auto; padding: 36px 20px 64px; }
+
+.head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+.head h1 { margin: 0; font-size: 30px; line-height: 1.1; font-weight: 740; font-stretch: var(--wide); letter-spacing: -.012em; }
+.head-facts { margin: 8px 0 0; display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: var(--t-12); }
+.head-facts .sep { color: var(--faint); }
+.head-facts .working { color: var(--lamp-text); display: inline-flex; align-items: center; gap: 7px; }
+.head-facts .working .dot { animation: breathe 1.8s ease-in-out infinite; }
+.allowance { display: grid; gap: 6px; justify-items: end; font-size: var(--t-12); color: var(--faint); }
+.allowance b { color: var(--ink); font-weight: 600; }
+.allowance-bar { width: 168px; height: 4px; border-radius: 4px; background: var(--line-strong); overflow: hidden; }
+.allowance-bar span { display: block; width: 12%; height: 100%; background: var(--dim); border-radius: 4px; }
+
+/* ---- composer: the manifest card ---- */
+.composer { position: relative; margin-top: 22px; background: var(--raised); border: 1px solid var(--line-strong); border-radius: var(--r-card); box-shadow: var(--shadow-card); transition: border-color .2s, box-shadow .2s; }
+html:not([data-state="open"]) .composer { border-color: var(--lamp-line); box-shadow: 0 0 0 4px var(--lamp-wash), var(--shadow-card); }
+.manifest { display: grid; grid-template-columns: 1.25fr 1.4fr 1.2fr .75fr; border-bottom: 1px solid var(--line); }
+.cell-wrap { position: relative; }
+.cell-wrap + .cell-wrap { border-left: 1px solid var(--line); }
+.cell { position: relative; width: 100%; text-align: left; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 8px; padding: 11px 14px 12px 16px; transition: background .15s; }
+.cell-wrap:first-child .cell { border-top-left-radius: 15px; }
+.cell-wrap:last-child .cell { border-top-right-radius: 15px; }
+.cell:hover { background: var(--hover); }
+.cell-label { grid-column: 1; display: flex; align-items: center; gap: 6px; font: 500 10.5px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.cell-value { grid-column: 1; display: flex; align-items: center; gap: 7px; min-width: 0; font-size: var(--t-13); font-weight: 560; white-space: nowrap; }
+.cell-value .sub { color: var(--dim); font-weight: 450; overflow: hidden; text-overflow: ellipsis; }
+.cell-value .slash { color: var(--faint); font-weight: 400; }
+.cell-value svg { color: var(--dim); }
+.cell > .chev { grid-column: 2; grid-row: 1 / 3; color: var(--faint); opacity: .55; transition: transform .16s var(--ease), opacity .15s; }
+.cell:hover > .chev { opacity: 1; }
+.cell .flag { width: 6px; height: 6px; border-radius: 50%; }
+.flag-warn { background: var(--lamp); }
+.flag-changed { background: var(--dim); }
+[data-state="open"] .cell-wrap.is-open .cell { background: var(--active); }
+[data-state="open"] .cell-wrap.is-open .cell::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--lamp); }
+[data-state="open"] .cell-wrap.is-open .chev { transform: rotate(180deg); opacity: 1; color: var(--ink); }
+
+.prompt { padding: 16px 20px 6px; min-height: 92px; font-size: var(--t-16); line-height: 1.5; }
+.prompt .placeholder { color: var(--faint); }
+.prompt .typed { display: none; }
+html:not([data-state="open"]) .prompt .typed { display: inline; }
+html:not([data-state="open"]) .prompt .placeholder { display: none; }
+.caret { display: inline-block; width: 1.5px; height: 1.15em; margin-left: 1px; vertical-align: -3px; background: var(--lamp); animation: blink 1.1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.composer-foot { display: flex; align-items: center; gap: 12px; padding: 8px 12px 12px 20px; }
+.preflight { margin: 0; display: flex; align-items: center; gap: 8px; font: 400 var(--t-12)/1 var(--mono); color: var(--faint); }
+.preflight svg { color: var(--lamp-text); }
+.preflight .sep { opacity: .6; }
+.grow { flex: 1; }
+.hints { display: none; align-items: center; gap: 6px; font-size: var(--t-12); color: var(--faint); }
+html:not([data-state="open"]) .hints { display: inline-flex; }
+.launch { display: inline-flex; border-radius: 9px; box-shadow: 0 1px 0 rgba(255, 255, 255, .25) inset, 0 6px 16px -6px rgba(242, 181, 68, .5); }
+.launch button { height: 34px; background: var(--lamp); color: var(--lamp-ink); font-weight: 650; display: inline-flex; align-items: center; gap: 10px; transition: filter .15s; }
+.launch button:hover { filter: brightness(1.06); }
+.launch-main { padding: 0 10px 0 14px; border-radius: 9px 0 0 9px; }
+.launch-main kbd { color: var(--lamp-ink); background: rgba(26, 18, 4, .1); border-color: rgba(26, 18, 4, .22); }
+.launch-more { width: 30px; justify-content: center; border-radius: 0 9px 9px 0; border-left: 1px solid rgba(26, 18, 4, .2) !important; }
+
+/* ---- the repository popover ---- */
+.pop { display: none; position: absolute; z-index: 30; top: calc(100% + 6px); left: 4px; width: 320px; background: var(--overlay); border: 1px solid var(--line-strong); border-radius: var(--r-pop); box-shadow: var(--shadow-pop); transform-origin: top left; animation: pop-in .14s var(--ease); }
+[data-state="open"] .pop { display: block; }
+@keyframes pop-in { from { opacity: 0; transform: scale(.98) translateY(-2px); } }
+.pop-filter { display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 12px; border-bottom: 1px solid var(--line); color: var(--faint); }
+.pop-filter .typed { color: var(--ink); font-size: var(--t-13); }
+.pop-filter .count { margin-left: auto; font: 400 11px/1 var(--mono); color: var(--faint); }
+.pop-scroll { position: relative; max-height: 300px; overflow: hidden; padding: 4px; }
+.pop-scroll::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 28px; background: linear-gradient(transparent, var(--overlay)); pointer-events: none; }
+.thumb { position: absolute; right: 3px; top: 8px; width: 3px; height: 150px; border-radius: 3px; background: var(--line-strong); }
+.pop-group { margin: 0; padding: 8px 8px 4px; font: 500 10.5px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.pop hr { margin: 4px 6px; border: 0; border-top: 1px solid var(--line); }
+.opt { display: flex; align-items: center; gap: 9px; height: 32px; padding: 0 8px; border-radius: var(--r-item); font-size: var(--t-13); color: var(--ink); white-space: nowrap; }
+.opt > svg:first-child { color: var(--faint); }
+.opt .owner { color: var(--dim); }
+.opt .sub { margin-left: auto; font: 400 11px/1 var(--mono); color: var(--faint); }
+.opt .check { color: var(--lamp-text); }
+.opt.is-active { background: var(--active); }
+.opt.is-active > svg:first-child { color: var(--ink); }
+.opt .go { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font: 400 11px/1 var(--mono); color: var(--dim); }
+.opt .go kbd { padding: 2px 4px; }
+.pop-foot { border-top: 1px solid var(--line); padding: 4px; }
+.pop-foot .opt { color: var(--dim); }
+.pop-keys { display: flex; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--line); font: 400 11px/1 var(--mono); color: var(--faint); background: var(--hover); border-radius: 0 0 var(--r-pop) var(--r-pop); }
+.pop-keys b { color: var(--dim); font-weight: 500; }
+
+.sub-pop { display: none; position: absolute; z-index: 31; top: 136px; left: calc(4px + 320px + 4px); width: 228px; background: var(--overlay); border: 1px solid var(--line-strong); border-radius: var(--r-pop); box-shadow: var(--shadow-pop); padding: 4px; animation: pop-in .14s var(--ease) .05s backwards; }
+[data-state="open"] .sub-pop { display: block; }
+.sub-pop .pop-group { display: flex; justify-content: space-between; }
+.tag { font: 500 10.5px/1 var(--mono); padding: 3px 6px; border-radius: 5px; color: var(--dim); background: var(--hover); border: 1px solid var(--line); }
+
+/* ---- the watch list ---- */
+.watch { margin-top: 32px; }
+.group-head { display: flex; align-items: center; gap: 8px; padding: 0 4px 10px; color: var(--dim); font-size: var(--t-13); }
+.group-head b { color: var(--ink); font-weight: 600; }
+.group-head .count { font: 400 11px/1 var(--mono); color: var(--faint); padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); }
+.ghost { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 8px; color: var(--dim); font-size: var(--t-12); }
+.ghost:hover { background: var(--hover); color: var(--ink); }
+.rows { list-style: none; margin: 0; padding: 0; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; }
+.row { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto 72px; align-items: center; gap: 4px 14px; padding: 13px 18px 13px 16px; transition: background .15s; }
+.row + .row { border-top: 1px solid var(--line); }
+.row:hover { background: var(--hover); }
+.row-glyph { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; color: var(--dim); }
+.row-title { font-size: var(--t-14); font-weight: 600; letter-spacing: -.003em; }
+.row-meta { margin-top: 2px; font: 400 var(--t-12)/1.3 var(--mono); color: var(--faint); }
+.row-time { text-align: right; font: 400 var(--t-12)/1 var(--mono); color: var(--faint); }
+.row-side { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; border-radius: 7px; font: 500 11.5px/1 var(--mono); color: var(--dim); border: 1px solid var(--line-strong); white-space: nowrap; }
+.chip-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent); background: var(--ok-wash); }
+.chip-merged { color: var(--code); border-color: color-mix(in srgb, var(--code) 28%, transparent); background: var(--code-wash); }
+
+.row-working .row-glyph { color: var(--lamp); background: var(--lamp-wash); }
+.line { display: grid; gap: 6px; justify-items: end; }
+.line-track { position: relative; width: 148px; height: 2px; background: var(--line-strong); border-radius: 2px; }
+.line-track span { position: absolute; inset: 0 30% 0 0; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--lamp)); transform-origin: left; animation: pay 6s var(--ease) infinite alternate; }
+.line-track i { position: absolute; left: 70%; top: 50%; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px; border-radius: 50%; background: var(--lamp); box-shadow: 0 0 0 3px var(--lamp-wash), 0 0 12px var(--lamp); }
+.line-label { font: 400 11.5px/1 var(--mono); color: var(--dim); }
+.row-working .row-time { color: var(--lamp-text); }
+
+.row-ask { background: linear-gradient(90deg, var(--lamp-wash), transparent 70%); align-items: start; padding-top: 15px; padding-bottom: 16px; }
+.row-ask:hover { background: linear-gradient(90deg, var(--lamp-wash), transparent 70%); }
+.row-ask::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 2px; border-radius: 0 2px 2px 0; background: var(--lamp); }
+.row-ask .row-glyph { color: var(--lamp-text); background: var(--lamp-wash); }
+.ask-q { margin: 10px 0 2px; font-size: var(--t-14); color: var(--ink); }
+.ask-q code { font-size: 12.5px; padding: 2px 5px; border-radius: 5px; background: var(--hover); border: 1px solid var(--line); }
+.ask-why { margin: 0; font-size: var(--t-12); color: var(--faint); }
+.ask-actions { display: flex; gap: 8px; margin-top: 12px; }
+.btn { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px; border-radius: 8px; font-size: var(--t-13); font-weight: 560; border: 1px solid var(--line-strong); color: var(--ink); background: var(--raised); transition: background .15s, border-color .15s; }
+.btn:hover { background: var(--hover); border-color: var(--line-field); }
+.btn-lamp { background: var(--lamp); border-color: transparent; color: var(--lamp-ink); }
+.btn-quiet { border-color: transparent; background: none; color: var(--dim); }
+.btn kbd { padding: 2px 4px; }
+.btn-lamp kbd { color: var(--lamp-ink); background: rgba(26, 18, 4, .1); border-color: rgba(26, 18, 4, .2); }
+.row-ask .row-side { align-self: start; padding-top: 3px; }
+
+.row-done .row-glyph { color: var(--ok); }
+.row-merged .row-glyph { color: var(--code); }
+
+.pipe { display: grid; gap: 6px; justify-items: end; }
+.pipe-steps { display: flex; gap: 3px; }
+.pipe-steps i { width: 18px; height: 4px; border-radius: 2px; background: var(--dim); opacity: .75; }
+.pipe-steps i.now { background: var(--lamp); opacity: 1; box-shadow: 0 0 8px var(--lamp); animation: breathe 1.8s ease-in-out infinite; }
+.pipe-steps i.todo { background: var(--line-strong); opacity: 1; }
+.item-tag { margin-left: 8px; font: 500 10.5px/1 var(--mono); letter-spacing: .04em; color: var(--dim); padding: 3px 6px; border: 1px solid var(--line-strong); border-radius: 5px; vertical-align: 2px; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+	<symbol id="i-mark" viewBox="0 0 28 28"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11.5" cy="11.5" r="7.5"/><path d="M11.5 4v4.2M5 15.25l3.64-2.1M18 15.25l-3.64-2.1"/><circle cx="11.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/><path d="M19 11.5V23"/><rect x="17" y="22" width="4" height="4" rx="1" fill="currentColor" stroke="none"/></g></symbol>
+	<symbol id="i-drum" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 4v4.5M5.1 16l3.9-2.25M18.9 16l-3.9-2.25"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></g></symbol>
+	<symbol id="i-agents" viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h16M4 17.5h10"/></symbol>
+	<symbol id="i-factory" viewBox="0 0 24 24"><path d="M3 20V10l5 3V10l5 3V6h4l1 14z"/><path d="M3 20h18"/></symbol>
+	<symbol id="i-machine" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="7" rx="2"/><rect x="3.5" y="13" width="17" height="7" rx="2"/><path d="M7.5 7.5h.01M7.5 16.5h.01"/></symbol>
+	<symbol id="i-docs" viewBox="0 0 24 24"><path d="M5 4.5h9l5 5V19.5H5z"/><path d="M14 4.5v5h5M8.5 13h7M8.5 16h5"/></symbol>
+	<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/></symbol>
+	<symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/></symbol>
+	<symbol id="i-chev" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></symbol>
+	<symbol id="i-right" viewBox="0 0 24 24"><path d="M10 7l5 5-5 5"/></symbol>
+	<symbol id="i-left" viewBox="0 0 24 24"><path d="M14 7l-5 5 5 5"/></symbol>
+	<symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+	<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></symbol>
+	<symbol id="i-repo" viewBox="0 0 24 24"><path d="M6 19.5V5.5A1.5 1.5 0 0 1 7.5 4H19v13H7.5A1.5 1.5 0 0 0 6 18.5 1.5 1.5 0 0 0 7.5 20H19"/></symbol>
+	<symbol id="i-branch" viewBox="0 0 24 24"><circle cx="7" cy="5.5" r="2"/><circle cx="7" cy="18.5" r="2"/><circle cx="17" cy="7.5" r="2"/><path d="M7 7.5v9M17 9.5c0 4-10 2-10 7"/></symbol>
+	<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4.5M12 17.2h.01"/></symbol>
+	<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+	<symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+	<symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></symbol>
+	<symbol id="i-pr" viewBox="0 0 24 24"><circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="18.5" r="2"/><path d="M6.5 7.5v9M17.5 16.5V9a2 2 0 0 0-2-2H11M13.5 4.5L11 7l2.5 2.5"/></symbol>
+	<symbol id="i-merge" viewBox="0 0 24 24"><circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="12" r="2"/><path d="M6.5 7.5v9M6.5 7.5c0 3 3 4.5 9 4.5"/></symbol>
+	<symbol id="i-ask" viewBox="0 0 24 24"><path d="M4.5 18.5V6a1.5 1.5 0 0 1 1.5-1.5h12A1.5 1.5 0 0 1 19.5 6v9a1.5 1.5 0 0 1-1.5 1.5H8z"/><path d="M10 9.2a2 2 0 1 1 2.6 1.9c-.4.2-.6.5-.6.9v.4M12 14.2h.01"/></symbol>
+	<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5v17M3.5 12h17M6 6l12 12M18 6L6 18"/></symbol>
+	<symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18.5a4.5 4.5 0 0 1-.4-9A5.5 5.5 0 0 1 17.2 8a4.3 4.3 0 0 1-.2 10.5z"/></symbol>
+	<symbol id="i-shell" viewBox="0 0 24 24"><path d="M5 8l4 4-4 4M11 17h8"/></symbol>
+	<symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v4h4"/></symbol>
+	<symbol id="i-edit" viewBox="0 0 24 24"><path d="M4.5 19.5l1-4L15 6l3 3-9.5 9.5z"/><path d="M13 8l3 3"/></symbol>
+	<symbol id="i-thought" viewBox="0 0 24 24"><circle cx="7" cy="16" r="1.4"/><circle cx="12" cy="9" r="1.4"/><circle cx="17" cy="16" r="1.4"/></symbol>
+	<symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6.5h11M9 12h11M9 17.5h11M4.5 6.5h.01M4.5 12h.01M4.5 17.5h.01"/></symbol>
+	<symbol id="i-dots" viewBox="0 0 24 24"><path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.6"/></symbol>
+	<symbol id="i-diff" viewBox="0 0 24 24"><path d="M12 4.5v7M8.5 8h7M8.5 17.5h7"/><rect x="4" y="2.5" width="16" height="19" rx="2"/></symbol>
+	<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
+	<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.6 2.5 14.4 0 17M12 3.5c-2.5 2.6-2.5 14.4 0 17"/></symbol>
+	<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2.5 2.5"/></symbol>
+	<symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></symbol>
+	<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+	<symbol id="i-arrow-out" viewBox="0 0 24 24"><path d="M12 20V9M7 13l5-5 5 5M5 4.5h14"/></symbol>
+</svg>
+
+<nav class="rail" aria-label="Main">
+	<a class="rail-mark" href="#" aria-label="Windlass"><svg><use href="#i-mark"/></svg></a>
+	<a href="#" aria-current="page"><svg class="i"><use href="#i-agents"/></svg><span class="badge"></span><span class="tip">Agents</span></a>
+	<a href="#"><svg class="i"><use href="#i-factory"/></svg><span class="tip">Factory</span></a>
+	<a href="#"><svg class="i"><use href="#i-machine"/></svg><span class="tip">Machines</span></a>
+	<a href="#"><svg class="i"><use href="#i-docs"/></svg><span class="tip">Docs</span></a>
+	<span class="grow"></span>
+	<a href="#"><svg class="i"><use href="#i-moon"/></svg><span class="tip">Theme</span></a>
+	<span class="avatar">P</span>
+</nav>
+
+<main class="page">
+	<div class="wrap">
+		<header class="head">
+			<div>
+				<h1>Agents</h1>
+				<p class="head-facts mono">5 agents <span class="sep">·</span> <span class="working"><i class="dot dot-lamp"></i>1 working</span> <span class="sep">·</span> 1 needs you</p>
+			</div>
+			<div class="allowance mono">
+				<span>sandbox today <b>14 min</b> of 2 h · 3 of 5 kept</span>
+				<span class="allowance-bar"><span></span></span>
+			</div>
+		</header>
+
+		<form class="composer" onsubmit="return false">
+			<div class="manifest">
+				<div class="cell-wrap">
+					<button type="button" class="cell" aria-haspopup="listbox">
+						<span class="cell-label">Agent</span>
+						<span class="cell-value"><svg class="i i-14"><use href="#i-spark"/></svg>Claude Code <span class="slash">/</span> <span class="sub">Sonnet 5.5</span></span>
+						<svg class="i i-14 chev"><use href="#i-chev"/></svg>
+					</button>
+				</div>
+				<div class="cell-wrap">
+					<button type="button" class="cell" aria-haspopup="listbox">
+						<span class="cell-label">Where <span class="flag flag-warn" title="Open sandbox: network on"></span></span>
+						<span class="cell-value"><i class="dot dot-ok"></i>d5eb81 <span class="slash">/</span> <span class="sub">Hardened Docker</span></span>
+						<svg class="i i-14 chev"><use href="#i-chev"/></svg>
+					</button>
+				</div>
+				<div class="cell-wrap is-open">
+					<button type="button" class="cell" aria-haspopup="listbox" aria-expanded="true">
+						<span class="cell-label">Repository</span>
+						<span class="cell-value"><svg class="i i-14"><use href="#i-repo"/></svg>harbor-web <span class="slash">@</span> <span class="sub">main</span></span>
+						<svg class="i i-14 chev"><use href="#i-chev"/></svg>
+					</button>
+
+					<div class="pop" role="listbox" aria-label="Repository">
+						<div class="pop-filter"><svg class="i i-14"><use href="#i-search"/></svg><span class="typed">har<span class="caret"></span></span><span class="count">7 of 23</span></div>
+						<div class="pop-scroll">
+							<span class="thumb"></span>
+							<p class="pop-group">Recent</p>
+							<div class="opt"><svg class="i i-14"><use href="#i-repo"/></svg><span><span class="owner">northwind/</span><span class="hl">har</span>bor-web</span><span class="sub">main · 2 h</span><svg class="i i-14 check"><use href="#i-check"/></svg></div>
+							<div class="opt is-active"><svg class="i i-14"><use href="#i-repo"/></svg><span><span class="owner">northwind/</span><span class="hl">har</span>bor-api</span><span class="go">branches <kbd>→</kbd></span></div>
+							<hr>
+							<p class="pop-group">northwind</p>
+							<div class="opt"><svg class="i i-14"><use href="#i-repo"/></svg><span><span class="owner">northwind/</span><span class="hl">har</span>bor-infra</span><span class="sub">3 d</span></div>
+							<div class="opt"><svg class="i i-14"><use href="#i-repo"/></svg><span><span class="owner">northwind/</span>c<span class="hl">har</span>ts</span><span class="sub">1 w</span></div>
+							<div class="opt"><svg class="i i-14"><use href="#i-repo"/></svg><span><span class="owner">northwind/</span>tide-c<span class="hl">har</span>ts</span><span class="sub">2 w</span></div>
+							<hr>
+							<p class="pop-group">personal</p>
+							<div class="opt"><svg class="i i-14"><use href="#i-repo"/></svg><span><span class="owner">personal/</span><span class="hl">har</span>dware-notes</span></div>
+							<div class="opt"><svg class="i i-14"><use href="#i-repo"/></svg><span><span class="owner">personal/</span>s<span class="hl">har</span>p-cli</span></div>
+						</div>
+						<div class="pop-foot"><div class="opt"><svg class="i i-14"><use href="#i-plus"/></svg>Connect another repository</div></div>
+						<div class="pop-keys"><span><b>↑↓</b> move</span><span><b>→</b> branches</span><span><b>↵</b> choose</span><span><b>esc</b> close</span></div>
+					</div>
+
+					<div class="sub-pop" role="listbox" aria-label="Branches of harbor-api">
+						<p class="pop-group"><span>harbor-api · branch</span></p>
+						<div class="opt is-active"><svg class="i i-14"><use href="#i-branch"/></svg><span class="mono">main</span><span class="sub">default</span></div>
+						<div class="opt"><svg class="i i-14"><use href="#i-branch"/></svg><span class="mono">release/2.4</span></div>
+						<div class="opt"><svg class="i i-14"><use href="#i-branch"/></svg><span class="mono">wl/rate-limit</span><span class="sub">agent</span></div>
+					</div>
+				</div>
+				<div class="cell-wrap">
+					<button type="button" class="cell" aria-haspopup="listbox">
+						<span class="cell-label">Mode <span class="flag flag-changed" title="Not your saved default"></span></span>
+						<span class="cell-value">Auto</span>
+						<svg class="i i-14 chev"><use href="#i-chev"/></svg>
+					</button>
+				</div>
+			</div>
+
+			<div class="prompt">
+				<span class="placeholder">What should an agent do?</span>
+				<span class="typed">Add a units switch to the route planner — metres or feet, kept per user<span class="caret"></span></span>
+			</div>
+
+			<div class="composer-foot">
+				<p class="preflight"><svg class="i i-14"><use href="#i-warn"/></svg>network on <span class="sep">·</span> token readable <span class="sep">·</span> runs on d5eb81</p>
+				<span class="grow"></span>
+				<span class="hints"><kbd>⇧</kbd><kbd>↵</kbd> new line</span>
+				<span class="launch">
+					<button type="submit" class="launch-main">Launch <kbd>↵</kbd></button>
+					<button type="button" class="launch-more" aria-label="More ways to launch: launch without a prompt"><svg class="i i-14"><use href="#i-chev"/></svg></button>
+				</span>
+			</div>
+		</form>
+
+		<section class="watch" aria-label="Agents">
+			<header class="group-head">
+				<svg class="i i-14"><use href="#i-repo"/></svg><span>northwind/<b>harbor-web</b></span><span class="count">5</span>
+				<span class="grow"></span>
+				<button class="ghost">Newest first <svg class="i i-12"><use href="#i-chev"/></svg></button>
+			</header>
+			<ol class="rows">
+				<li class="row row-ask">
+					<span class="row-glyph"><svg class="i"><use href="#i-ask"/></svg></span>
+					<div>
+						<div class="row-title">Bump vite to 7 and fix the types</div>
+						<div class="row-meta">Claude Code · Sonnet 5.5 · d5eb81 · asks you</div>
+						<p class="ask-q">Run <code>pnpm install</code> with network access?</p>
+						<p class="ask-why">The command needs the registry. This sandbox has no network.</p>
+						<div class="ask-actions">
+							<button class="btn btn-lamp">Allow once <kbd>A</kbd></button>
+							<button class="btn">For this session</button>
+							<button class="btn btn-quiet">Decline…</button>
+						</div>
+					</div>
+					<span class="row-side"><span class="chip">turn 2</span></span>
+					<span class="row-time">4 min</span>
+				</li>
+				<li class="row row-working">
+					<span class="row-glyph"><svg class="i"><use class="drum-turn" href="#i-drum"/></svg></span>
+					<div>
+						<div class="row-title">Fix the flaky slug test</div>
+						<div class="row-meta">Windlass · GPT-6.1 Sol · hosted</div>
+					</div>
+					<span class="line"><span class="line-track"><span></span><i></i></span><span class="line-label">step 6 · shell <span style="color:var(--ink)">pnpm test</span></span></span>
+					<span class="row-time">2m 14s</span>
+				</li>
+				<li class="row">
+					<span class="row-glyph"><svg class="i"><use href="#i-factory"/></svg></span>
+					<div>
+						<div class="row-title">Rate-limit the public API<span class="item-tag">work item</span></div>
+						<div class="row-meta">Windlass · hosted · second agent reviewing</div>
+					</div>
+					<span class="pipe"><span class="pipe-steps"><i></i><i></i><i></i><i></i><i></i><i class="now"></i><i class="todo"></i></span><span class="line-label">review · 6 of 7</span></span>
+					<span class="row-time">12 min</span>
+				</li>
+				<li class="row row-done">
+					<span class="row-glyph"><svg class="i"><use href="#i-check"/></svg></span>
+					<div>
+						<div class="row-title">Metres and feet settings panel</div>
+						<div class="row-meta">Claude Code · Sonnet 5.5 · d5eb81 · 37 turns</div>
+					</div>
+					<span class="row-side"><span class="chip chip-ok"><svg class="i i-12"><use href="#i-pr"/></svg>#142 open</span><span class="chip"><svg class="i i-12"><use href="#i-check"/></svg>checks</span></span>
+					<span class="row-time">2 h ago</span>
+				</li>
+				<li class="row row-merged">
+					<span class="row-glyph"><svg class="i"><use href="#i-merge"/></svg></span>
+					<div>
+						<div class="row-title">Add CSV export to orders</div>
+						<div class="row-meta">Windlass · GPT-6 Sol · hosted · 12 turns</div>
+					</div>
+					<span class="row-side"><span class="chip chip-merged"><svg class="i i-12"><use href="#i-merge"/></svg>#139 merged</span></span>
+					<span class="row-time">yesterday</span>
+				</li>
+			</ol>
+		</section>
+	</div>
+</main>
+</body>
+</html>

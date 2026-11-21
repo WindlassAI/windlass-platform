@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Three directions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Schibsted+Grotesk:wght@500;700;800&family=Fragment+Mono&family=Mona+Sans:wdth,wght@75..125,200..900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+	--bg: #101113; --raised: #17181b; --line: rgba(255,255,255,.08); --ink: #ecedee; --dim: #a1a4ab; --faint: #757982;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 Geist, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+.page { padding: 40px 40px 48px; }
+header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 28px; }
+header h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; display: flex; align-items: center; gap: 10px; }
+header h1 svg { width: 22px; height: 22px; color: #cfdb6e; }
+header p { margin: 0; color: var(--dim); font-family: "Geist Mono", monospace; font-size: 12px; }
+.grid { display: flex; flex-direction: column; gap: 20px; }
+.col { background: var(--raised); border: 1px solid var(--line); border-radius: 16px; padding: 22px; display: grid; grid-template-columns: 300px 1fr 420px; gap: 24px; align-items: start; }
+.about { display: flex; flex-direction: column; gap: 16px; }
+.name { display: flex; align-items: baseline; gap: 10px; }
+.name .n { font-family: "Geist Mono", monospace; font-size: 12px; color: var(--faint); }
+.name h2 { margin: 0; font-size: 30px; line-height: 1.1; }
+.helm h2 { font-family: Geist; font-weight: 600; letter-spacing: -0.03em; }
+.chart h2 { font-family: "Schibsted Grotesk"; font-weight: 800; letter-spacing: -0.035em; }
+.watch h2 { font-family: "Mona Sans"; font-stretch: 125%; font-weight: 800; letter-spacing: -0.01em; }
+.tag { font-size: 13.5px; color: var(--dim); margin: 0; }
+.spec { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-family: "Geist Mono", monospace; font-size: 11.5px; color: var(--dim); }
+.sw { display: flex; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+.sw span { width: 22px; height: 22px; }
+.type b { color: var(--ink); font-weight: 500; }
+figure { margin: 0; }
+figcaption a { color: inherit; }
+figcaption { font-family: "Geist Mono", monospace; font-size: 11px; color: var(--faint); margin-top: 6px; }
+.shot { display: block; width: 100%; border-radius: 10px; border: 1px solid var(--line); background: #000; }
+.crop { position: relative; overflow: hidden; border-radius: 10px; border: 1px solid var(--line); aspect-ratio: 1180 / 660; }
+.crop img { position: absolute; width: calc(100% * 1440 / 1180); max-width: none; left: calc(-100% * var(--x) / 1180); top: calc(-100% * var(--y) / 660); }
+.helm .crop img { --x: 260; --y: 140; }
+.chart .crop img { --x: 200; --y: 80; }
+.watch .crop img { --x: 260; --y: 100; }
+.phones { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.phones .shot { border-radius: 18px; }
+.changes { margin: 0; padding: 0 0 0 16px; color: var(--dim); font-size: 13px; }
+.changes li { margin: 2px 0; }
+.changes b { color: var(--ink); font-weight: 500; }
+.pick { margin-top: 2px; font-family: "Geist Mono", monospace; font-size: 11.5px; color: #cfdb6e; }
+</style>
+</head>
+<body>
+<div class="page">
+	<header>
+		<h1><svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11.5" cy="11.5" r="7.5"/><path d="M11.5 4v4.2M5 15.25l3.64-2.1M18 15.25l-3.64-2.1"/><circle cx="11.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/><path d="M19 11.5V23"/><rect x="17" y="22" width="4" height="4" rx="1" fill="currentColor" stroke="none"/></svg>Windlass — three directions for the composer</h1>
+		<p>Agents home · picker open · desktop 1440 and phone 390 · each also has a session page and a landing</p>
+	</header>
+	<div class="grid">
+		<section class="col helm">
+			<div class="about"><div class="name"><span class="n">A</span><h2>Helm</h2></div><p class="tag">The instrument panel. Dark-first, dense and calm; pickers live inside the composer as a toolbar, the way the best chat and agent tools do it — made Windlass by the brass accent and the paying-out line.</p><div class="spec"><span class="sw"><span style="background:#0B0C0E"></span><span style="background:#121316"></span><span style="background:#ECEDEE"></span><span style="background:#CFDB6E"></span></span><span class="type"><b>Geist</b> + Geist Mono</span></div><ul class="changes">
+				<li><b>Toolbar in the box:</b> agent·model, where, repo@branch as pills; mode as a small control.</li>
+				<li><b>Launch</b> is a split button; hints only on focus.</li>
+				<li><b>Phone:</b> one summary row → a settings sheet.</li>
+			</ul></div>
+			<figure><div class="crop"><img src="helm/shots/home-dark-open.png" alt=""></div><figcaption>Agent + model picker open, dark · close-up of the 1440 page (<a href="helm/shots/home-dark-open.png">full</a>)</figcaption></figure>
+			<div class="phones">
+				<figure><img class="shot" src="helm/shots/phone-dark.png" alt=""><figcaption>Phone</figcaption></figure>
+				<figure><img class="shot" src="helm/shots/phone-dark-sheet.png" alt=""><figcaption>Model sheet</figcaption></figure>
+			</div>
+			
+		</section>
+		<section class="col chart">
+			<div class="about"><div class="name"><span class="n">B</span><h2>Chart</h2></div><p class="tag">The route on the chart. Light-first on chart paper with one buoy-orange signal; the composer reads as a sentence — the route the agent will take — and every word of it is a picker.</p><div class="spec"><span class="sw"><span style="background:#F5F4EF"></span><span style="background:#FFFFFF"></span><span style="background:#0F1B2D"></span><span style="background:#E4572E"></span></span><span class="type"><b>Schibsted Grotesk</b> + Fragment Mono</span></div><ul class="changes">
+				<li><b>Route sentence:</b> “Run Claude Code with Sonnet 5.5 on d5eb81 against harbor-web, mode Auto”.</li>
+				<li><b>Where + sandbox</b> as one menu with a submenu.</li>
+				<li><b>Phone:</b> the sentence wraps; each word opens a sheet.</li>
+			</ul></div>
+			<figure><div class="crop"><img src="chart/shots/home-light-open.png" alt=""></div><figcaption>Where picker open with a machine's profiles, light · close-up of the 1440 page (<a href="chart/shots/home-light-open.png">full</a>)</figcaption></figure>
+			<div class="phones">
+				<figure><img class="shot" src="chart/shots/phone-light.png" alt=""><figcaption>Phone</figcaption></figure>
+				<figure><img class="shot" src="chart/shots/phone-light-sheet.png" alt=""><figcaption>Where sheet</figcaption></figure>
+			</div>
+			
+		</section>
+		<section class="col watch">
+			<div class="about"><div class="name"><span class="n">C</span><h2>Night Watch</h2></div><p class="tag">The lit binnacle. Deep petrol surfaces and one lamp amber; the windlass line is the motif — a rope that pays out down every timeline. The composer is a manifest: four labelled cells, then the task, then a preflight line.</p><div class="spec"><span class="sw"><span style="background:#0A1214"></span><span style="background:#0F1A1D"></span><span style="background:#E6EEEC"></span><span style="background:#F2B544"></span></span><span class="type"><b>Mona Sans</b> + JetBrains Mono</span></div><ul class="changes">
+				<li><b>Manifest cells:</b> agent, where, repository, mode, labelled, above the task.</li>
+				<li><b>Preflight line</b> says what the sandbox allows before launch.</li>
+				<li><b>Phone:</b> 2×2 cells; pickers as sheets.</li>
+			</ul></div>
+			<figure><div class="crop"><img src="night-watch/shots/home-dark-open.png" alt=""></div><figcaption>Repository picker open, filtering, dark · close-up of the 1440 page (<a href="night-watch/shots/home-dark-open.png">full</a>)</figcaption></figure>
+			<div class="phones">
+				<figure><img class="shot" src="night-watch/shots/phone-dark.png" alt=""><figcaption>Phone</figcaption></figure>
+				<figure><img class="shot" src="night-watch/shots/phone-dark-sheet.png" alt=""><figcaption>Repository sheet</figcaption></figure>
+			</div>
+			
+		</section>
+	</div>
+</div>
+</body>
+</html>
