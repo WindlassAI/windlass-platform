@@ -2,7 +2,7 @@
 # Builds the x86_64 Windlass that E2B's microVMs need, from a local Windlass checkout, and writes
 # nothing into that checkout.
 #
-#   git clone --branch v0.5.0 https://github.com/parthg1901/windlass.git ../windlass
+#   git clone --branch v0.5.0 https://github.com/WindlassAI/windlass.git ../windlass
 #   sandbox/e2b/build-windlass-x64.sh
 #   WINDLASS_SOURCE=<checkout> WINDLASS_OUT=<directory> sandbox/e2b/build-windlass-x64.sh
 #

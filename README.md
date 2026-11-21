@@ -1,6 +1,6 @@
 # Windlass Platform
 
-A hosted home for [Windlass](https://github.com/parthg1901/windlass), the terminal coding agent: sign in with
+A hosted home for [Windlass](https://github.com/WindlassAI/windlass), the terminal coding agent: sign in with
 ChatGPT, launch agents, choose the sandbox each one works in, and watch every turn live in the browser.
 
 It is built on [Rivet Actors](https://www.rivet.dev/actors/docs). Each agent session is one actor that owns the

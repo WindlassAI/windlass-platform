@@ -4,7 +4,7 @@ The current `main` branch is supported for security fixes.
 
 ## Report a vulnerability privately
 
-Use [Report a vulnerability](https://github.com/parthg1901/windlass-platform/security/advisories/new)
+Use [Report a vulnerability](https://github.com/WindlassAI/windlass-platform/security/advisories/new)
 to send the maintainer a private report. Keep vulnerability details out of public issues,
 discussions and pull requests.
 

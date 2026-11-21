@@ -5,7 +5,7 @@ rest (see [NOTICE.md](NOTICE.md)). A contribution is licensed under the same lic
 (inbound equals outbound). Add a `Signed-off-by:` line to each commit (`git commit -s`) to certify the
 [Developer Certificate of Origin](https://developercertificate.org/).
 
-For bugs, questions or design ideas, [open an issue](https://github.com/parthg1901/windlass-platform/issues/new)
+For bugs, questions or design ideas, [open an issue](https://github.com/WindlassAI/windlass-platform/issues/new)
 or join the discussion on an existing issue. For bugs, include your operating system, Node.js
 and pnpm versions, sandbox mode, steps to reproduce, and what you expected and observed.
 Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
