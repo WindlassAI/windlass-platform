@@ -1180,7 +1180,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					“{machineLabel(chosenMachine)}” is offline since {clockTime(chosenMachine.since, now)}. The agent is created now, and a prompt sent before the machine is back fails. {task === "" ? "Write to it once the machine is online." : "Create it without sending the task, and the task waits in its composer."}
 				</p>
 			) : null}
-			<p className={`start-status${tooLong ? " tone-bad" : ""}`} id={ids.hint} role={reason || tooLong ? "status" : undefined}>
+			{/* A reason that only says what is loading (it ends in "…") is announced, not drawn: the pills and Launch show it, and nothing moves when it goes. */}
+			<p className={`start-status${tooLong ? " tone-bad" : ""}${!tooLong && reason?.endsWith("…") ? " visually-hidden" : ""}`} id={ids.hint} role={reason || tooLong ? "status" : undefined}>
 				{tooLong ? `${count(prompt.length - maxChars)} characters over the limit of ${count(maxChars)}` : reason}
 			</p>
 		</form>

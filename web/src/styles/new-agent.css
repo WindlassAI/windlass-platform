@@ -339,16 +339,35 @@
 	gap: 4px;
 	min-width: 0;
 	padding: 8px;
+	container-type: inline-size;
 }
 .start-tools > .ui-pill,
 .start-tools .ui-tooltip-anchor + .ui-pill {
 	flex: 0 1 auto;
 }
+/* A pill's value stays whole (long names end in an ellipsis at their own cap); its quieter part gives way first. */
 .start-tools .ui-pill-value {
+	flex: none;
 	max-width: 22ch;
 }
 .start-tools .ui-pill-secondary {
+	flex: 0 1 auto;
 	max-width: 18ch;
+}
+/* The branch is short and says what is used: whole. */
+.start-tools [data-picker="repo"] .ui-pill-secondary {
+	flex: none;
+}
+/* A tight row drops the sandbox's name from "where" (its picker and the line under the box say it) before anything is cut. */
+@container (max-width: 960px) {
+	.start-tools [data-picker="where"] .ui-pill-secondary {
+		display: none;
+	}
+}
+@container (max-width: 680px) {
+	.start-tools [data-picker="agent"] .ui-pill-secondary {
+		display: none;
+	}
 }
 .start-tools-end {
 	display: flex;
