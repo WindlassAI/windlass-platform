@@ -198,7 +198,7 @@ export type MockUsageState = "plenty" | "low" | "used" | "full";
  * a machine whose runner runs in a container and reported the container's id for its host name). In the add dialog any
  * well-formed code is found, except ZZZZ-ZZZZ.
  */
-export const MOCK_MACHINE_STATES = ["none", "online", "fresh", "claude-signed-out", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed"] as const;
+export const MOCK_MACHINE_STATES = ["none", "online", "fresh", "claude-signed-out", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed", "placement"] as const;
 export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
 
 /**
@@ -3052,7 +3052,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		dropped: "no" | "soon" | "yes";
 	}
 
-	const machineState: MockMachineState = options.machine ?? "online";
+	// The features of `?items=features` name the machines of "placement".
+	const machineState: MockMachineState = options.machine ?? (options.items === "features" ? "placement" : "online");
 	const machineSession: MockMachineSession = options.machineSession ?? "answering";
 	// The agent on "nas" is seeded where "nas" is listed as its runner reported it, and, when its machine was removed, wherever machines are offered.
 	const machineSessionSeeded = machineState !== "fresh" && (machineSession === "removed" ? machineState !== "off" : !["none", "unpublished", "off", "pairing"].includes(machineState));
@@ -3231,6 +3232,17 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					// Its owner started its runner with --max-running 2 --max-sandboxes 6; the others have no limit.
 					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9, maxRunning: 2, maxSandboxes: 6, harnesses: undefined }),
 				];
+			// Feature placement (`?items=features` lists these by default): one machine of each policy. "studio" is
+			// the only one with screenshots, and both its slots are taken; "ci-box" takes no subtask of a feature.
+			case "placement": {
+				const slots = (max: number, busy: number) => ({ max, busy, queued: 0, unit: { cpus: 2, memoryBytes: 4 * 2 ** 30, pids: 512 } });
+				const allowed: MachineSummary["allowedProfiles"] = ["docker-windlass-sandbox", "docker-hardened"];
+				return [
+					nas({ allowedProfiles: allowed, slots: slots(2, 0) }),
+					nas({ machineId: "m_studio", name: "studio", arch: "x64", since: at - 5 * HOUR, agents: 2, sandboxes: [], freeDiskBytes: 240e9, orchestrator: "named", screenshots: true, whenToUse: "Browser tests and screenshots", tags: ["browser"], allowedProfiles: allowed, slots: slots(2, 2), turns: { running: 2, queued: 0, max: 2 }, harnesses: undefined }),
+					nas({ machineId: "m_ci", name: "ci-box", arch: "x64", since: at - 26 * HOUR, agents: 0, sandboxes: [], freeDiskBytes: 88e9, orchestrator: "never", sendSecrets: false, whenToUse: "Release builds only", tags: ["release"], allowedProfiles: allowed, slots: slots(4, 0), harnesses: undefined }),
+				];
+			}
 			case "unnamed":
 				return [
 					nas({}),
