@@ -263,22 +263,84 @@
 	margin-top: 16px;
 }
 
-/* Where it is: one line in words, with its glyph. */
+/* Where it is: the stages it goes through, then one card in words, with its glyph. */
+.item {
+	--needs-ink: var(--needs, var(--warn));
+	--needs-tint: var(--needs-wash, var(--warn-wash));
+}
 .item-where {
 	display: grid;
 	gap: 14px;
+	margin-top: 28px;
+}
+.item-stages {
+	display: grid;
+	grid-auto-columns: minmax(0, 1fr);
+	grid-auto-flow: column;
+	gap: 6px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.item-stage {
+	display: grid;
+	gap: 7px;
+	min-width: 0;
+}
+.item-stage-bar {
+	height: 4px;
+	border-radius: 2px;
+	background: var(--bg-active);
+}
+.item-stage-name {
+	overflow: hidden;
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	color: var(--ink-faint);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.item-stage-done .item-stage-bar {
+	background: var(--ink-faint);
+}
+.item-stage-done .item-stage-name {
+	color: var(--ink-dim);
+}
+.item-stage-now .item-stage-bar {
+	background: linear-gradient(90deg, var(--accent-text) 0 40%, color-mix(in srgb, var(--accent-text) 30%, transparent) 40%) 0 0 / 250% 100%;
+	animation: item-stage-run 1.6s linear infinite;
+}
+@keyframes item-stage-run {
+	from {
+		background-position: 100% 0;
+	}
+	to {
+		background-position: -50% 0;
+	}
+}
+.item-stage-now .item-stage-name,
+.item-stages-yours .item-stage-name {
+	color: var(--accent-text);
+}
+.item-stages-yours .item-stage-bar {
+	background: var(--accent-text);
+}
+.item-stages-done .item-stage-bar {
+	background: var(--line-field);
 }
 .item-now {
 	display: grid;
 	grid-template-columns: 22px minmax(0, 1fr);
 	column-gap: 12px;
-	padding: 12px 12px 12px 10px;
+	padding: 14px 16px 14px 14px;
 	border: 1px solid var(--line);
-	border-radius: var(--radius-m);
+	border-radius: var(--r-box);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
 }
 .item-now-asks {
-	border-color: color-mix(in srgb, var(--info) 35%, var(--line));
-	background: var(--info-wash);
+	border-color: color-mix(in srgb, var(--needs-ink) 30%, var(--line));
+	background: var(--needs-tint);
 }
 .item-now-glyph {
 	display: grid;
@@ -290,7 +352,7 @@
 	flex-wrap: wrap;
 	align-items: baseline;
 	gap: 2px 10px;
-	font-weight: 650;
+	font-weight: var(--weight-strong);
 }
 .item-now-step {
 	font-family: var(--font-mono);
@@ -325,32 +387,47 @@
 	gap: 2px 18px;
 }
 
-/* What it asks. */
+/* What it asks: Helm's "needs you" card, in its hue, a breathing ring at its head. */
 .item-question {
 	display: grid;
 	gap: 12px;
-	padding: 14px 14px 16px;
-	border: 1px solid color-mix(in srgb, var(--info) 26%, transparent);
+	padding: 16px 18px 18px;
 	border-radius: var(--r-box);
-	background: var(--info-wash);
+	background: var(--needs-tint);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--needs-ink) 24%, transparent);
 }
 .item-question-head {
 	display: flex;
-	align-items: baseline;
+	align-items: center;
 	gap: 10px;
-	font-family: var(--font-mono);
-	font-size: var(--size-mono-small);
-	letter-spacing: 0.08em;
-	text-transform: uppercase;
-	color: var(--info);
+	font-size: 12.5px;
+	font-weight: var(--weight-medium);
+	color: var(--needs-ink);
+}
+.item-question-head::before {
+	content: "";
+	flex: none;
+	width: 8px;
+	height: 8px;
+	margin: 0 4px 0 3px;
+	border-radius: 50%;
+	background: var(--needs-ink);
+	box-shadow: 0 0 0 4px color-mix(in srgb, var(--needs-ink) 18%, transparent);
+	animation: factory-breathe 2.4s ease-in-out infinite;
 }
 .item-question-when {
-	letter-spacing: 0;
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	font-weight: var(--weight-regular);
 	color: var(--ink-faint);
+}
+.item-question .input {
+	background: var(--bg-raised);
 }
 .item-question-text {
 	max-width: 74ch;
-	font-size: var(--size-title);
+	font-size: var(--text-16);
+	font-weight: var(--weight-medium);
 	line-height: 1.5;
 	overflow-wrap: anywhere;
 }
@@ -762,11 +839,18 @@
 	font-size: inherit;
 }
 .item-log {
-	border-top: 1px solid var(--line);
+	margin-top: 10px;
+	overflow: hidden;
+	border: 1px solid var(--line);
+	border-radius: var(--r-box);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
 }
-.item-log-run + .item-log-run .item-log,
-.items-group-head + .item-log {
-	border-top: 0;
+.item-event:last-child {
+	border-bottom: 0;
+}
+.item-log-head {
+	border-bottom: 0;
 }
 .item-log[hidden] {
 	display: none;
@@ -776,7 +860,7 @@
 	grid-template-columns: 96px 150px minmax(0, 1fr);
 	column-gap: 14px;
 	align-items: baseline;
-	padding: 7px 8px 7px 12px;
+	padding: 8px 16px;
 	border-bottom: 1px solid var(--line);
 	font-size: var(--size-small);
 	line-height: 1.5;
@@ -1103,7 +1187,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.factory-lane-needs .agent-glyph::before {
+	.factory-lane-needs .agent-glyph::before,
+	.item-question-head::before,
+	.item-stage-now .item-stage-bar {
 		animation: none;
 	}
 }

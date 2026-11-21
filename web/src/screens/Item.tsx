@@ -38,7 +38,7 @@ import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
-import { inSecondReview, ItemGlyph, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
+import { inSecondReview, ItemGlyph, ItemStages, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
 import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
 
@@ -900,6 +900,7 @@ export function Item({ page }: { page: ItemPage }) {
 	const [dialog, setDialog] = useState<"cancel" | "send_back" | null>(null);
 	// Undefined for a hosted item and while the list is read; null once its machine is known to be removed.
 	const machine = useSessionMachine(view?.place);
+	const { platform } = useApp();
 
 	if (view === null) {
 		return (
@@ -934,6 +935,7 @@ export function Item({ page }: { page: ItemPage }) {
 
 	const ended = view.state === "done" || view.state === "cancelled";
 	const busy = acting.busy !== null;
+	const reviewer = platform.info?.items?.reviewer !== false;
 	const { repository } = view;
 	const reading = readFirst(view);
 
@@ -1002,6 +1004,7 @@ export function Item({ page }: { page: ItemPage }) {
 			{dialog === null && !view.question && !reading ? <Failure error={acting.error} /> : null}
 
 			<section className="usage-section item-where" aria-label="Where it is">
+				<ItemStages item={view} reviewer={reviewer} step={view.run?.step.kind ?? null} />
 				{/* A question is where the item is: its own block says so, with when it was asked. */}
 				{view.question ? <Question key={view.question.id} view={view} question={view.question} acting={acting} now={now} /> : <Now view={view} now={now} />}
 				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
