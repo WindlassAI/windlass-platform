@@ -15,7 +15,7 @@
  */
 import type { FeaturePlan, ItemAction, ItemBudget, ItemSummary, ItemView, PlanSubtask } from "@contract";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
-import { WarnIcon } from "../components/Icons";
+import { ChevronIcon, WarnIcon } from "../components/Icons";
 import { budgetProblems, closingReserve, PLAN_FIELDS, subtaskFloor, subtaskPool, sumBudgets, type PlanField } from "../lib/feature";
 import { linkProps } from "../lib/router";
 import { ItemGlyph, ItemTrack, itemTrack, STATE_WORD } from "./Items";
@@ -238,11 +238,57 @@ function PlanAsk({ question, value, disabled, onChange }: { question: FeaturePla
 
 const STATUS_WORD: Record<FeaturePlan["status"], string> = { proposed: "proposed", approved: "approved", superseded: "superseded" };
 
-/** The plan's section: the spec, the subtasks, and what they may spend together. */
+/** How long a part of the spec may be before the rest of it waits behind "Show more". */
+const SPEC_SHOWN = 3;
+
+/**
+ * The plan's section: what it is for, then the spec as one column of short lists, the subtasks, and
+ * what they may spend together. A plan that was set aside (superseded: the item runs as one item, or
+ * the re-plans ran out) is one line, its version, its state and the start of its goal, that opens to
+ * the whole plan.
+ */
 export function PlanSection({ view, review, acting }: { view: ItemView; review: PlanReview; acting: PlanActing }) {
 	const { plan, pool } = review;
 	const heading = useId();
+	const [opened, setOpened] = useState(false);
 	if (!plan || !pool) return null;
+	if (plan.status === "superseded") {
+		return (
+			<section className={`usage-section feature-plan plan-set-aside${opened ? " plan-set-aside-open" : ""}`} aria-labelledby={heading}>
+				<h2 className="usage-title plan-set-aside-title" id={heading}>
+					<button type="button" className="plan-set-aside-row" aria-expanded={opened} onClick={() => setOpened((value) => !value)}>
+						<ChevronIcon size={12} className={`plan-set-aside-chevron${opened ? " plan-set-aside-chevron-open" : ""}`} />
+						<span className="plan-set-aside-name">The plan</span>
+						<span className="usage-count">
+							v{plan.version} · {STATUS_WORD[plan.status]}
+						</span>
+						<span className="plan-set-aside-goal">{plan.spec.goal.replace(/`/g, "")}</span>
+					</button>
+				</h2>
+				{opened ? (
+					<div className="plan-set-aside-body">
+						<p className="plan-set-aside-note">{view.mode === "single" ? "Set aside: the work runs as one item, under its own budget." : "Set aside: no subtask of it runs any more."}</p>
+						<PlanBody view={view} review={review} acting={acting} pool={pool} />
+					</div>
+				) : null}
+			</section>
+		);
+	}
+	return (
+		<section className="usage-section feature-plan" aria-labelledby={heading}>
+			<h2 className="usage-title" id={heading}>
+				The plan
+				<span className="usage-count">
+					v{plan.version} · {STATUS_WORD[plan.status]}
+				</span>
+			</h2>
+			<PlanBody view={view} review={review} acting={acting} pool={pool} />
+		</section>
+	);
+}
+
+function PlanBody({ view, review, acting, pool }: { view: ItemView; review: PlanReview; acting: PlanActing; pool: ItemBudget }) {
+	const plan = review.plan!;
 	const hosted = view.place.kind === "hosted";
 	const fields = PLAN_FIELDS.filter((field) => hosted || field.key !== "hostedSeconds");
 	const editing = review.open;
@@ -252,29 +298,27 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 	const reserve = closingReserve(single);
 	const total = sumBudgets(Object.values(review.parsed));
 	const numbers = new Map(plan.subtasks.map((task, index) => [task.key, index + 1]));
+	const setAside = plan.status === "superseded";
 	return (
-		<section className="usage-section feature-plan" aria-labelledby={heading}>
-			<h2 className="usage-title" id={heading}>
-				The plan
-				<span className="usage-count">
-					v{plan.version} · {STATUS_WORD[plan.status]}
-				</span>
-			</h2>
+		<>
 			<p className="plan-goal">
 				<Inline text={plan.spec.goal} />
 			</p>
 
-			<div className="usage-card plan-card">
-				<dl className="plan-spec">
-					{plan.spec.requirements.length > 0 ? <SpecList term="Requirements" lines={plan.spec.requirements} /> : null}
-					{plan.spec.acceptance.length > 0 ? <SpecList term="Done when" lines={plan.spec.acceptance} /> : null}
-					{plan.spec.outOfScope.length > 0 ? <SpecList term="Not in it" lines={plan.spec.outOfScope} /> : null}
-				</dl>
-				{plan.singleSuggested ? <p className="plan-single">The planner suggests one item instead: {plan.singleSuggested}</p> : null}
+			<dl className="plan-spec">
+				{plan.spec.requirements.length > 0 ? <SpecList term="Requirements" kind="requirements" lines={plan.spec.requirements} /> : null}
+				{plan.spec.acceptance.length > 0 ? <SpecList term="Done when" kind="acceptance" lines={plan.spec.acceptance} /> : null}
+				{plan.spec.outOfScope.length > 0 ? <SpecList term="Not in it" kind="out" lines={plan.spec.outOfScope} /> : null}
+			</dl>
+			{plan.singleSuggested ? <p className="plan-single">The planner suggests one item instead: {plan.singleSuggested}</p> : null}
 
+			<div className="usage-card plan-card">
+				<p className="plan-card-head">
+					Subtasks <span className="plan-card-count">{plan.subtasks.length}, in order</span>
+				</p>
 				<ol className="plan-tasks" aria-label="Subtasks">
 					{plan.subtasks.map((task) => (
-						<SubtaskRow key={task.key} task={task} n={numbers.get(task.key)!} numbers={numbers} child={children.get(task.key) ?? null} fields={fields} editing={editing} drafts={review.drafts[task.key]} problems={review.problems.fields[task.key] ?? {}} floor={floor} single={single} disabled={acting.busy !== null} onChange={(field, text) => review.setDraft(task.key, field, text)} />
+						<SubtaskRow key={task.key} task={task} n={numbers.get(task.key)!} numbers={numbers} child={children.get(task.key) ?? null} setAside={setAside} fields={fields} editing={editing} drafts={review.drafts[task.key]} problems={review.problems.fields[task.key] ?? {}} floor={floor} single={single} disabled={acting.busy !== null} onChange={(field, text) => review.setDraft(task.key, field, text)} />
 					))}
 				</ol>
 
@@ -307,29 +351,43 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 					</p>
 				</div>
 			</div>
-		</section>
+		</>
 	);
 }
 
-function SpecList({ term, lines }: { term: string; lines: string[] }) {
+/** One part of the spec: its name in the margin, its lines as a list, the first few shown and the rest behind "Show more". */
+function SpecList({ term, kind, lines }: { term: string; kind: "requirements" | "acceptance" | "out"; lines: string[] }) {
+	const [all, setAll] = useState(false);
+	const list = useId();
+	// Folding away a single line saves nothing: a part one longer than the shown lines is shown whole.
+	const folds = lines.length > SPEC_SHOWN + 1;
+	const shown = folds && !all ? lines.slice(0, SPEC_SHOWN) : lines;
 	return (
-		<div>
-			<dt>{term}</dt>
+		<div className={`plan-spec-part plan-spec-${kind}`}>
+			<dt>
+				{term}
+				<span className="plan-spec-count">{lines.length}</span>
+			</dt>
 			<dd>
-				<ul>
-					{lines.map((line, index) => (
+				<ul id={list}>
+					{shown.map((line, index) => (
 						<li key={index}>
 							<Inline text={line} />
 						</li>
 					))}
 				</ul>
+				{folds ? (
+					<button type="button" className="link plan-spec-more" aria-expanded={all} aria-controls={list} onClick={() => setAll((value) => !value)}>
+						{all ? "Show fewer" : `Show ${lines.length - SPEC_SHOWN} more`}
+					</button>
+				) : null}
 			</dd>
 		</div>
 	);
 }
 
-/** Text with `code` in the mono face, as the planner writes commands. */
-function Inline({ text }: { text: string }) {
+/** Text with `code` in the mono face, as the planner writes commands. Nothing else in it is read as markup. */
+export function Inline({ text }: { text: string }) {
 	const parts = text.split(/(`[^`]+`)/);
 	return (
 		<>
@@ -346,7 +404,7 @@ function Inline({ text }: { text: string }) {
 	);
 }
 
-function SubtaskRow({ task, n, numbers, child, fields, editing, drafts, problems, floor, single, disabled, onChange }: { task: PlanSubtask; n: number; numbers: Map<string, number>; child: ItemSummary | null; fields: PlanField[]; editing: boolean; drafts: Record<keyof ItemBudget, string> | undefined; problems: Partial<Record<keyof ItemBudget, string>>; floor: ItemBudget; single: ItemBudget; disabled: boolean; onChange(field: keyof ItemBudget, text: string): void }) {
+function SubtaskRow({ task, n, numbers, child, setAside, fields, editing, drafts, problems, floor, single, disabled, onChange }: { task: PlanSubtask; n: number; numbers: Map<string, number>; child: ItemSummary | null; setAside: boolean; fields: PlanField[]; editing: boolean; drafts: Record<keyof ItemBudget, string> | undefined; problems: Partial<Record<keyof ItemBudget, string>>; floor: ItemBudget; single: ItemBudget; disabled: boolean; onChange(field: keyof ItemBudget, text: string): void }) {
 	const base = useId();
 	return (
 		<li className={`plan-task${child ? ` plan-task-is-${child.state}` : ""}`}>
@@ -447,7 +505,7 @@ function SubtaskRow({ task, n, numbers, child, fields, editing, drafts, problems
 						<span className="plan-task-word">{STATE_WORD[child.state].toLowerCase()}</span>
 					)
 				) : (
-					<span className="plan-task-word tone-faint">{editing ? "planned" : "not started"}</span>
+					<span className="plan-task-word tone-faint">{editing ? "planned" : setAside ? "not run" : "not started"}</span>
 				)}
 			</div>
 		</li>
