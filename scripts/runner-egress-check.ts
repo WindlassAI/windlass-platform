@@ -1,10 +1,12 @@
 // Fast regressions, run from server with tsx ../scripts/runner-egress-check.ts.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { CLONE_GIT_START, cloneScript } from "../server/src/github/git.js";
 import { parseRunnerFrame } from "../server/src/runner/control.js";
 import { machineProfiles } from "../server/src/machines/profiles.js";
 
@@ -66,7 +68,8 @@ test("both harness providers construct the same runner-owned network configurati
 		assert.equal(owner.report().egress, mode);
 		const flags = owner.network.sandboxNetwork();
 		assert.equal(flags.name, mode === "open" ? "wlp-open-m_fixture" : "none");
-		assert.equal(flags.env.HTTPS_PROXY, mode === "restricted" ? "http://127.0.0.1:17891" : undefined);
+		for (const key of ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"])
+			assert.equal(flags.env[key], mode === "restricted" ? "http://127.0.0.1:17891" : undefined);
 		assert.equal(flags.env.NO_PROXY, mode === "restricted" ? "localhost,127.0.0.1,::1" : undefined);
 	}
 });
@@ -86,4 +89,22 @@ test("restoring a kept restricted session prepares the current helper image pin"
 		process.env.PATH = path;
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("both platform clone paths hand only the runner proxy to clean Git", () => {
+	const dir = mkdtempSync(join(tmpdir(), "clean-git-"));
+	try {
+		// Inspect the clean environment at the point where the shell would exec Git.
+		const inspect = `env() { local args=(); while [ "$1" != git ]; do args+=("$1"); shift; done; command env "\${args[@]}" /usr/bin/env; exit 72; }`;
+		for (const script of [CLONE_GIT_START + "\ngit clone fixture", cloneScript("https://example.invalid/repo", "main", "repo")]) {
+			for (const proxy of ["http://127.0.0.1:17891", "http://untrusted.invalid"]) {
+				const result = spawnSync("bash", ["-ec", inspect + "\n" + script], {
+					cwd: dir, input: "fixture-token\n", encoding: "utf8", env: { https_proxy: proxy, SECRET: "fixture-secret" },
+				});
+				assert.equal(result.status, 72, result.stderr);
+				assert.doesNotMatch(result.stdout, /fixture-secret|fixture-token|untrusted/);
+				if (proxy.includes("127.0.0.1")) assert.match(result.stdout, /^https_proxy=http:\/\/127\.0\.0\.1:17891$/m);
+			}
+		}
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });

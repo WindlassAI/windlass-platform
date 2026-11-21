@@ -1,3 +1,4 @@
+import { RUNNER_HTTP_PROXY as proxy } from "../../server/src/runner/egress.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { image, type MachineDocker } from "./policy.js";
 import { Refusal } from "./state.js";
 
 declare const EGRESS_SOURCE: string;
-const proxy = "http://127.0.0.1:17891";
+
 const roleLabel = LABEL + ".egress-helper";
 const revisionLabel = LABEL + ".egress-revision";
 const checked = (args: string[]) => docker(args, { check: true, timeoutMs: 30_000 });
@@ -24,7 +25,7 @@ export class EgressNetwork {
 	sandboxNetwork() {
 		const env: Record<string, string> = {};
 		if (this.policy.mode === "restricted") Object.assign(env, {
-			HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy,
+			HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy, ALL_PROXY: proxy, all_proxy: proxy,
 			NO_PROXY: "localhost,127.0.0.1,::1", no_proxy: "localhost,127.0.0.1,::1", NODE_USE_ENV_PROXY: "1",
 		});
 		return { name: this.policy.mode === "open" ? this.openNet : "none", env, mode: this.policy.mode };
