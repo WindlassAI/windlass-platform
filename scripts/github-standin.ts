@@ -768,10 +768,19 @@ export class GithubStandin {
 				return answer(200, { permission: level, role_name: level, user: this.users.get(login) });
 			}
 
+			if (rest === "/actions/workflows" && method === "GET") {
+				if (!this.allows(token, repository, "actions", "read")) return denied();
+				const paths = git(["ls-tree","-r","--name-only",repository.defaultBranch,"--",".github/workflows"],repository.path);
+				return pageOf("workflows", paths.split("\n").filter(Boolean).map(path => ({path,state:"active"})));
+			}
 			if (rest.startsWith("/git/")) {
 				if (!this.allows(token,repository,"contents",method === "GET" ? "read" : "write")) return denied();
 				const fields = body as {ref:string; sha:string; tree:string; parents:string[]; message:string; author:{date:string; name:string; email:string}; force:boolean};
 				try {
+					if (rest === "/git/matching-refs/heads/windlass/" && method === "GET") {
+						const refs = git(["for-each-ref","--format=%(refname) %(objectname)","refs/heads/windlass/"],repository.path);
+						return answer(200, refs.split("\n").filter(Boolean).map(row => { const [ref,sha] = row.split(" "); return {ref,object:{sha}}; }));
+					}
 					if (rest.startsWith("/git/ref/heads/") && method === "GET") {
 						const sha = this.branchHead(repository,decodeURIComponent(rest.slice("/git/ref/heads/".length)));
 						return answer(sha ? 200 : 404,{object:{sha}});

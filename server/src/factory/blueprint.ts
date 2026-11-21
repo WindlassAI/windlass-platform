@@ -35,8 +35,7 @@
 import type { ReviewRecord, TurnOutcome, Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
-import { createHash } from "node:crypto";
-import { emptyBudget, closingReserve, featureCap, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
+import { childItemId, emptyBudget, closingReserve, featureCap, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
 import { budgetStop, retryAt } from "./budget.js";
 import type { ChoiceId, CiProgress, Fact, HandoffReview, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";
@@ -980,7 +979,7 @@ function nextChild(c: Change) {
 	const reserve = closingReserve(item.singleBudget!);
 	for (const d of dimensions) if (item.spent[d] + task.budget[d] + reserve[d] > item.budget[d])
 		return ask(c, "budget", "The remaining feature budget cannot cover " + task.title + " (" + d + ").", [...((item.replans ?? 0) < 2 ? [choice("revise")] : []), choice("give_up")], null, null);
-	const id = "i_" + createHash("sha256").update(JSON.stringify([item.id, plan.version, task.key])).digest("hex").slice(0,16);
+	const id = childItemId(item.id, plan.version, task.key);
 	jobs.push({ id, task, state: "draft", spent: emptyBudget(), head: null, report: "" });
 	dispatchAgain(c);
 }

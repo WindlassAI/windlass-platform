@@ -502,3 +502,14 @@ test("a missing integration prerequisite stops the feature at its last integrate
 		assert.ok(handoff.effects.some(e => e.kind === "poll_ci" && e.head === head));
 	}
 });
+
+test("push CI must target the feature and child branches", async () => {
+	const { workflowReportsPush } = await import("../server/src/github/feature-ci.js");
+	const branch = "windlass/feature-i_feature";
+	for (const source of ["on: pull_request", "on: [pull_request, workflow_dispatch]", "on: {push: {branches: [main]}}",
+		"on: {push: {tags: ['v*']}}", "on: {push: {branches-ignore: ['windlass/**']}}", "on: {push: {branches: ['**','!windlass/**']}}"])
+		assert.equal(workflowReportsPush(source, branch), false, source);
+	for (const source of ["on: push", "on: [push, pull_request]", "on: {push: null}", "on: {push: {branches: ['windlass/*']}}",
+		"on: {push: {branches: ['**','!windlass/**','windlass/feature-*']}}"])
+		assert.equal(workflowReportsPush(source, branch), true, source);
+});

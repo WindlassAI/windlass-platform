@@ -210,7 +210,7 @@ await standin.start();
 const ada = standin.addUser("ada");
 const identity = {name: ada.login, email: ada.id + "+" + ada.login + "@users.noreply.github.com"};
 const installation = standin.addInstallation("ada", "User");
-const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
+const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { ".github/workflows/build.yml": "on: pull_request\n", "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
 standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "read", statuses: "read", actions: "read" };
 
 if (!only.length || only.includes("orchestrator")) {
@@ -234,7 +234,16 @@ if (!only.length || only.includes("orchestrator")) {
 			await refused(() => user.actOnItem({id:feature.id, action:{kind:"edit_plan", version:invalid.version, plan:invalid}}), "bad_input");
 			const edited = await user.actOnItem({id:feature.id, action:{ kind:"edit_plan", version:page.plan.version, plan:page.plan }});
 			await refused(() => user.actOnItem({id:feature.id,action:{kind:"approve_plan",version:page.plan!.version}}), "item_conflict");
-			const base = standin.branchHead(harbor,"main")!, version = edited.plan!.version;
+			const version = edited.plan!.version;
+			await user.saveRepositoryChecks({repositoryId:harbor.id,checks:[]});
+			const approve = () => user.actOnItem({id:feature.id, action:{kind:"approve_plan", version}});
+			const noChecks = await refused(approve, "bad_input");
+			assert(/single.*checks/i.test(noChecks), "Missing saved-check guidance: " + noChecks);
+			await user.saveRepositoryChecks({repositoryId:harbor.id,checks:[{name:"build",command:"true"}]});
+			const noCi = await refused(() => user.actOnItem({id:feature.id, action:{kind:"answer",question:edited.question!.id,choice:"approve"}}), "bad_input");
+			assert(/single.*push/i.test(noCi), "Missing push CI guidance: " + noCi);
+			standin.commit(harbor, "main", {".github/workflows/build.yml":"on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n"}, "Run build on push");
+			const base = standin.branchHead(harbor,"main")!;
 			const seed = standin.featureCommit(harbor, base, "Start feature " + feature.id, new Date(feature.createdAt).toISOString(), identity);
 			const heads: Record<string,string> = {};
 			const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0,16);

@@ -12,7 +12,9 @@
   },
   "dependencies": {
     "e2b": "2.63.0",
-    "rivetkit": "3.1.1"
+    "minimatch": "11.0.8",
+    "rivetkit": "3.1.1",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

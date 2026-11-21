@@ -1667,6 +1667,10 @@ export const user = actor({
 		},
 
 		/** The setup command of a session's repository, for that session when its sandbox is new. */
+		internalHasChecks: async (c, repositoryId: GithubId): Promise<boolean> => {
+			requireService(c);
+			return (await readChecks(c.db, setupKeyOf(repositoryId))).checks.length > 0;
+		},
 		internalSetupCommand: async (c, project: string): Promise<RepositorySetup> => {
 			requireService(c);
 			return readSetup(c.db, approvalText(project, 600));

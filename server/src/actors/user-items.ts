@@ -21,6 +21,7 @@
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
+import { itemSessionId } from "../factory/feature-plan.js";
 import { featureBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
 import type { IntakeTrigger, IssueBinding } from "../factory/intake.js";
@@ -296,7 +297,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	const input = cleanItemInput(raw);
 	const uid = profile.uid;
 	const itemId = child?.id ?? (github && submission ? githubItemId(uid, submission.key) : `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
-	const sessionId = `s_${hex16(`item\n${itemId}`)}`;
+	const sessionId = itemSessionId(itemId);
 	const issue = github && { number: github.origin.issue.number, installationId: github.installationId };
 	let summary: ItemSummary;
 	// Set just before the session is made: a refusal before that made nothing, and leaves the key unused.

@@ -10,7 +10,7 @@
 
 import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
-import type { HarnessOptions, HarnessId, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { GithubId, HarnessOptions, HarnessId, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import type { ItemCreateInput, ItemPublishAnswer } from "./work-item.js";
@@ -92,6 +92,7 @@ export interface UserInternal {
 	/** Forgets the user's approvals of that server for a project. Answers with how many there were, and the project's approvals that are left. */
 	internalServerForget(input: { project: string; name: string }): Promise<{ forgotten: number; approvals: ServerApproval[] }>;
 	/** The setup command the user saved for a repository, by its key (setup-command.ts); `command` is "" when there is none. */
+	internalHasChecks(repositoryId: GithubId): Promise<boolean>;
 	internalSetupCommand(project: string): Promise<RepositorySetup>;
 	/** Takes a hold of the user's sandbox time for the session, and a place among the kept sandboxes when it needs one: both, or neither. */
 	internalReserve(input: ReserveRequest): Promise<ReserveAnswer>;

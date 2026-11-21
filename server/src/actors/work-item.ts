@@ -30,8 +30,10 @@
 
 import { GithubProblem } from "../github/repos.js";
 import { PlanError } from "../factory/feature-plan.js";
-import { authorOf } from "../github/publish.js";
-import { openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
+import { childItemId, itemSessionId } from "../factory/feature-plan.js";
+import { hasPushCi } from "../github/feature-ci.js";
+import { authorOf, branchFor } from "../github/publish.js";
+import { featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
 import type { IssueBinding } from "../factory/intake.js";
 import type { GithubUser } from "../github/app.js";
@@ -500,6 +502,19 @@ async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read")
 	const { owner, name } = resolved.repository;
 	const pull = (number: number) => app.withToken(resolved.installation.id, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, owner, name, number));
 	return { app, installationId: resolved.installation.id, owner, name, pull, author: authorOf(connection), login: connection.user.login };
+}
+
+async function checkFeatureCi(c: Ctx, stored: Stored) {
+	const { item, meta } = stored;
+	if (!await userActor(c, meta.uid).internalHasChecks(meta.repository.id))
+		throw new PlanError("Use a single item or add saved repository checks before approving orchestration.");
+	const hub = await github(c, meta, "write");
+	const plan = item.featurePlan!;
+	const pending = plan.subtasks.filter(s => !item.jobs?.some(j => j.task.key === s.key && j.state === "done"));
+	const branches = [featureBranch(item.id), ...pending.map(s => branchFor(s.title, itemSessionId(childItemId(item.id, plan.version, s.key))))];
+	const eligible = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" } },
+		token => hasPushCi(hub.app, token, hub.owner, hub.name, item.pr ? featureBranch(item.id) : meta.repository.branch, branches));
+	if (!eligible) throw new PlanError("Use a single item or add CI that reports on pushes to the feature and child branches before approving orchestration.");
 }
 
 function repositoryDirectory(c: Ctx, meta: ItemMeta) {
@@ -1032,6 +1047,8 @@ export const workItem = actor({
 			const fact = factOf(input?.action, String(input?.by), Date.now());
 			let changed: boolean;
 			try {
+				const approving = stored.item.featurePlan?.status === "proposed" && (fact.kind === "approve_plan" || (fact.kind === "answer" && fact.choice === "approve"));
+				if (approving && advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored);
 				changed = await take(c, fact);
 			} catch (error) {
 				if (error instanceof PlanError) throw new UserError(error.message, { code: "bad_input" });
