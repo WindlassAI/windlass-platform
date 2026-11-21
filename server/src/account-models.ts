@@ -34,6 +34,14 @@ export interface ListedModels {
 	defaultModel: string;
 }
 
+// The Responses endpoint validates reasoning.effort against this enum. Windlass's
+// account listing can advertise additional levels that the endpoint rejects.
+const RESPONSES_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+function responsesModels(listed: ListedModels): ListedModels {
+	return { ...listed, models: listed.models.map(model => ({ ...model, efforts: model.efforts.filter(effort => RESPONSES_EFFORTS.has(effort)) })) };
+}
+
 /** The efforts the stand-in's models are offered with: the ones `windlass --effort` knows (Windlass's user guide, "Models and effort"). */
 const STAND_IN_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -160,7 +168,7 @@ export class AccountModels {
 		const [row] = await db.execute<{ list: string; fetched_at: number }>("SELECT list, fetched_at FROM model_list WHERE id = 1 AND generation = ?", generation);
 		if (!row) return null;
 		try {
-			const listed = JSON.parse(row.list) as ListedModels;
+			const listed = responsesModels(JSON.parse(row.list) as ListedModels);
 			return { source: "account", models: listed.models, defaultModel: listed.defaultModel, fetchedAt: row.fetched_at };
 		} catch {
 			return null;
@@ -170,7 +178,7 @@ export class AccountModels {
 	/** Lists, stores, and only then answers. Null when the list could not be had or stored. */
 	private async fetch(source: ModelsSource, generation: number): Promise<ModelList | null> {
 		try {
-			const listed = await source.list();
+			const listed = responsesModels(await source.list());
 			// The sign-in was replaced or forgotten while Windlass was asked: this is nobody's list.
 			if ((await source.generation()) !== generation) return null;
 			const list: ModelList = { source: "account", models: listed.models, defaultModel: listed.defaultModel, fetchedAt: Date.now() };
