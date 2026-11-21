@@ -34,7 +34,7 @@
  * ("bad-frame"), the runner drops the socket and connects again.
  */
 import type { HarnessOptions, MachineProbe, PlatformConnection } from "../contract.js";
-import { loginCommand, loginResultFrame, positiveLimit } from "./protocol.js";
+import { MACHINE_PROFILES, machineProfile, type MachineProfile, loginCommand, loginResultFrame, positiveLimit } from "./protocol.js";
 import { type Assert, type Of, type Same, boolean, count, either, integer, is, json, list, nullable, object, oneOf, optional, plain, text } from "./check.js";
 
 /** The oldest runner release this server serves: raise it when the server stops reading what older runners send. */
@@ -153,7 +153,11 @@ export const validHarnessOptions = is<HarnessOptions>(v => optionsShape(v)
 	&& new Set(v.models.map(m => m.id)).size === v.models.length
 	&& Buffer.byteLength(JSON.stringify(v)) <= 16 * 1024);
 const harnesses = list(object({ id: oneOf("claude"), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) }), 4);
+const profileList = list(machineProfile, MACHINE_PROFILES.length);
+export const validAllowedProfiles = is<MachineProfile[]>(v => profileList(v) && v.includes("docker-hardened") && new Set(v).size === v.length);
 const report = object({
+	/** Absent on pre-policy runners, which allowed both Docker profiles. */
+	allowedProfiles: optional(validAllowedProfiles),
 	/** The connected runner supports the pairing-wide login commands. Older ones omit this. */
 	claudeLogin: optional(oneOf(true)),
 	harnesses: optional(harnesses),

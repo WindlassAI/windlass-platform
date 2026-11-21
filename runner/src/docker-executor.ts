@@ -2,7 +2,7 @@ import type { HarnessOptions } from "../../server/src/contract.js";
 import { probeClaudeOptions } from "./claude-options.js";
 import claudePackage from "../../sandbox/harness/claude/package.json";
 import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/control.js";
-import { type Operation } from "../../server/src/runner/protocol.js";
+import { PROFILE_DENIED, type Operation } from "../../server/src/runner/protocol.js";
 import { SandboxUserError } from "../../server/src/sandbox/api.js";
 import { LABEL, LABEL_ARG, docker } from "../../server/src/sandbox/docker.js";
 import { DOCKER_BWRAP_PROBE } from "../../server/src/sandbox/docker-flags.js";
@@ -66,7 +66,7 @@ export class Executor extends MachineDocker {
 	private commandSandbox: Report["commandSandbox"] = { ok: false, reason: "The Windlass sandbox probe has not run." };
 	private freeDiskBytes: number | null = null;
 
-	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false, readonly claude = false) {
+	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false, readonly claude = false, private readonly allowedProfiles: Profile[] = ["docker-hardened"]) {
 		super(identity);
 		this.maxTurns = limits.maxTurns ?? 2;
 		const cpus = runnerCpus();
@@ -188,7 +188,7 @@ export class Executor extends MachineDocker {
 				// Keep the result of a real sandbox create after this initial bubblewrap check.
 				const first = this.freeDiskBytes === null;
 				this.freeDiskBytes = await this.disk();
-				if (first) this.commandSandbox = await this.probeAvailable();
+				if (first) this.commandSandbox = this.allowedProfiles.includes(bubblewrap) ? await this.probeAvailable() : { ok: false, reason: PROFILE_DENIED };
 			});
 		} catch (error) {
 			if (signal.aborted) return;
@@ -200,7 +200,7 @@ export class Executor extends MachineDocker {
 		return await this.probe() ? { ok: true } : { ok: false, reason: "Bubblewrap could not start in a sandbox on this machine." };
 	}
 	report(): Report {
-		return { kind: "report", docker: this.dockerHealth,
+		return { kind: "report", allowedProfiles: this.allowedProfiles, docker: this.dockerHealth,
 			...(this.claudePin ? { claudeLogin: true as const, harnesses: [{ id: "claude" as const,
 				adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
 				image: this.claudePin.slice(this.claudePin.lastIndexOf("@") + 1), signIn: this.signIn,
@@ -215,7 +215,11 @@ export class Executor extends MachineDocker {
 		if (this.limits.maxRunning !== undefined && [...this.boxes.values()].filter(b => b.state === "running").length >= this.limits.maxRunning)
 			throw new SandboxUserError("This machine has reached its own limit on running sandboxes, set by --max-running.");
 	}
-	async existing(sessionId: string, harness?: "claude") {
+	private requireProfile(profile: Profile) {
+		if (!this.allowedProfiles.includes(profile)) throw new Refusal(PROFILE_DENIED);
+	}
+	async existing(sessionId: string, profile: Profile, harness?: "claude") {
+		this.requireProfile(profile);
 		// The owner may have removed the container since discovery. Refresh just this
 		// session once the rest of the inventory is known, before applying capacity limits.
 		if (!this.dockerHealth.ok) await this.discover();
@@ -223,6 +227,7 @@ export class Executor extends MachineDocker {
 		else return;
 		for (const [id, box] of this.boxes) {
 			if (box.sessionId === sessionId) {
+				this.requireProfile(box.profile);
 				if (box.harness !== harness) throw new Refusal("This session already has a sandbox with a different harness.");
 				if (!box.workspaceChecked) {
 					if (!await hasWorkspaceGit(box.raw)) {
@@ -241,7 +246,7 @@ export class Executor extends MachineDocker {
 	async create(sessionId: string, profile: Profile, screenshots = false, harness?: "claude") {
 		// Another create could have finished while this one waited for the image.
 		if (harness) this.requireClaude(profile);
-		const existing = await this.existing(sessionId, harness);
+		const existing = await this.existing(sessionId, profile, harness);
 		if (existing) return existing;
 		if (this.limits.maxSandboxes !== undefined && this.boxes.size >= this.limits.maxSandboxes)
 			throw new SandboxUserError("This machine has reached its own limit on kept sandboxes, set by --max-sandboxes.");
@@ -278,6 +283,7 @@ export class Executor extends MachineDocker {
 	running(id: string, session: string) {
 		const box = this.owned(id, session);
 		if (!box || box.state !== "running") throw new Refusal("Commands require a running sandbox owned by this machine and session.");
+		this.requireProfile(box.profile);
 		if (box.harness) this.requireClaude(box.profile);
 		box.usedAt = Date.now();
 		return box;
@@ -307,6 +313,7 @@ export class Executor extends MachineDocker {
 			return state;
 		}
 		if (op === "connect") {
+			this.requireProfile(box.profile);
 			if (box.harness) this.requireClaude(box.profile);
 			if (box.state === "paused") this.room();
 			const handle = await this.provider.connect(box.raw);

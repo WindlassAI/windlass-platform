@@ -667,13 +667,20 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   any other it is not found. A runner whose code expired waits and says so: "The pairing code expired, so
   restart the container or run `windlass-runner pair` to get a new code." To update the runner, the same
   command after `docker rm -f windlass-runner`: the volume keeps the key, so the machine stays paired.
+- **Profiles allowed on this machine.** A new pairing allows `docker-hardened`. Add
+  `--allow-profile docker-windlass-sandbox` to the runner service command to also allow Windlass’s
+  inner command sandbox. The flag accepts either Docker profile ID and can be repeated. Hardened
+  is always allowed. Starting with explicit flags saves the choice for this pairing. With no flags,
+  restarts use the saved choice. Upgrading an older pairing keeps both profiles. Start with
+  `--allow-profile docker-hardened` alone to withdraw the Windlass opt-in. Its existing workspaces
+  stay on disk and can be used again when the owner restores the flag.
 - **Launching on it.** The launch form lists the user's machines beside the platform's own sandboxes, each
   with its state. A machine whose runner has not reported yet cannot be chosen ("“nas” has not connected
   yet. Start its runner, and once the Machines page shows it online, start the agent again."), nor one
   whose runner is older than the platform takes ("The runner on “nas” is older than this platform takes:
   update it to 0.1.0 or later, then start the agent again."). A machine offers the two Docker profiles,
   `docker-windlass-sandbox` and `docker-hardened`, as its runner last reported them: the first only where
-  bubblewrap starts in a container there.
+  the owner allows it and bubblewrap starts in a container there.
 - **Claude Code sessions.** When the machine reports Claude Code, `createSession` accepts
   `harness: "claude"` with `docker-hardened`. Its runner owns the sign-in. Run
   `windlass-runner login claude` on that machine when it needs a login. The platform clones the
@@ -882,8 +889,7 @@ uses the base image even when a repository enables screenshots. Its builder can 
 
 Give it a sandbox image pinned by id, so that a rebuild of
 `windlass-platform-sandbox:latest` does not change what an existing runner runs. `docker-windlass-sandbox` is offered on a machine only where the
-runner's probe found that bubblewrap starts in a container there, which is the machine's kernel's to allow;
-elsewhere only `docker-hardened` is. Work items can use either available profile ("Work items").
+owner allows it and the runner’s bubblewrap probe passes. Work items can use either available profile ("Work items").
 
 ## The agent's memory outlives its sandbox
 
@@ -2420,7 +2426,7 @@ cd server && npx tsx ../scripts/factory-e2e.ts                          # items 
 | `server/src/factory/` | Work items as pure modules: the fixed sequence (`blueprint.ts`), the verdict, the budgets and waits, and the types they share ("Work items") |
 | `server/src/api-tokens.ts` | The API's tokens: how one is made, kept as a digest, checked and revoked |
 | `sandbox/` | The sandbox image, `build.sh`, `cleanup.sh` |
-| `runner/` | The runner program for a user's machine (Node, bundled with esbuild into one file by `bundle.mjs`), and its `Dockerfile`; `scripts/runner-build.sh` builds the image |
+| `runner/` | The runner program for a user’s machine. `bundle.mjs` bundles the Node executable and stages its seccomp profile. `scripts/runner-build.sh` builds the image with its `Dockerfile`. |
 | `web/` | The web app (Vite, React); `src/api/rivet.ts` is the real client, `src/api/connection.ts` where it gets its connection and renews its token, `src/api/mock.ts` the mock |
 | `fixtures/windlass-events/` | Recorded Windlass events, used by the fake layer, the mock and the reducer's tests |
 | `fixtures/mcp-repo/` | A small repository whose `.windlass/config.json` names an MCP server, and the server (Python, nothing else), for `scripts/mcp-check.ts` |

@@ -306,6 +306,15 @@ async function untrusted(): Promise<void> {
 	expect("what is never acknowledged is bounded: the conversation ends", writes < 100 && !!(await proc.ended).error?.message.includes("acknowledge"), `${writes} writes of 4 MiB`);
 }
 
+const profileReport = (allowedProfiles?: unknown) => parseRunnerFrame(JSON.stringify({
+	kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: null, sandboxes: [], allowedProfiles,
+}));
+const hardened = "docker-hardened", windlass = "docker-windlass-sandbox";
+expect("the control report accepts both owner policies and legacy reports",
+	[undefined, [hardened], [hardened, windlass], [windlass, hardened]].every(ids => profileReport(ids)?.kind === "report"));
+expect("malformed owner policies are refused", [null, hardened, [], [windlass], [hardened, hardened],
+	[hardened, "e2b"], [hardened, windlass, hardened], [hardened, {}]].every(ids => profileReport(ids) === null));
+
 async function harnessCreate() {
 	const model = { id: "opus", name: "Opus", efforts: ["low", "high"] };
 	const options = { models: [model], defaultModel: "opus", modes: [], checkedAt: 1000 };

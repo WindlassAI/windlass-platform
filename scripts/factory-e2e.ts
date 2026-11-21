@@ -1260,6 +1260,42 @@ async function machineChecks(): Promise<void> {
 		runner.report();
 		await waitFor("available machine profiles", async () => (await user.machines())[0]?.profiles.some(p => p.available), 15_000);
 
+		await check("machine: the owner policy gates personal and item launches", async () => {
+			const profile = "docker-windlass-sandbox";
+			const waiting = await user.createSession({ place, profile });
+			runner.fake.report.allowedProfiles = ["docker-hardened"];
+			runner.report();
+			try {
+				const machine = await waitFor("the owner policy in the Machines page", async () => {
+					const row = (await user.machines())[0];
+					return row?.allowedProfiles?.length === 1 && row;
+				}, 5_000);
+				const denied = machine.profiles.find(p => p.id === profile);
+				assert(denied?.available === false && denied.unavailableReason?.includes("--allow-profile " + profile), "missing refusal in the launch picker");
+				assert(machine.profiles.some(p => p.id === "docker-hardened" && p.available), "hardened unavailable");
+				for (const launch of [() => user.createSession({ place, profile }), () => user.createItem({ ...task, profile })]) {
+					const message = await refused(launch, "profile_unavailable");
+					assert(message.includes(denied.unavailableReason!), message);
+				}
+				const creates = runner.creates;
+				const session = client.agentSession.get([auth.profile.uid, waiting.id], { params: { token: auth.token } });
+				await session.prompt({ text: "Write the primes" });
+				const ended = await waitFor("the pending session’s first turn", async () =>
+					(await session.snapshot()).timeline.find(item => item.kind === "turn.ended"), 20_000);
+				assert(ended.outcome === "error" && ended.message?.includes(denied.unavailableReason!) && runner.creates === creates,
+					"a session opened before revocation reached the runner or missed the refusal");
+				return denied.unavailableReason!;
+			} finally {
+				delete runner.fake.report.allowedProfiles;
+				runner.report();
+				await waitFor("legacy report to offer both profiles", async () => {
+					const row = (await user.machines())[0];
+					return row?.allowedProfiles?.length === 2 && row.profiles.filter(p => p.available).length === 2;
+				}, 5_000);
+				await user.deleteSession(waiting.id);
+			}
+		});
+
 		await check("machine: a generated title applies to a personal session and leaves an item's title with its builder", async () => {
 			const prompt = "Read the repo (session title)";
 			const personal = await user.createSession({ place, profile: "docker-hardened" });

@@ -1,4 +1,5 @@
 import type { SandboxProfile } from "../contract.js";
+import { PROFILE_DENIED } from "../runner/protocol.js";
 import type { Report } from "../runner/control.js";
 
 /** The last report is the runner's account of its Docker daemon and probe, including while offline. */
@@ -7,7 +8,8 @@ export function machineProfiles(name: string | null | undefined, report: Report 
 	const machine = `your machine${named}`;
 	const layers = [`Your machine${named} (yours; the platform does not control it)`, "Docker container made by the runner (non-root, no capabilities, limits)"];
 	const docker = !report ? "The machine's report is unavailable." : report.docker.ok ? null : report.docker.reason;
-	const sandbox = docker ?? (report && !report.commandSandbox.ok ? report.commandSandbox.reason : null);
+	const ownerDenies = report?.allowedProfiles && !report.allowedProfiles.includes("docker-windlass-sandbox");
+	const sandbox = ownerDenies ? PROFILE_DENIED : docker ?? (report && !report.commandSandbox.ok ? report.commandSandbox.reason : null);
 	const trust = "The platform does not control this machine. It receives the repository, the saved secrets you allow and a ChatGPT token that lasts about an hour. The checks and changes shown are what your machine reports.";
 	return [
 		{ id: "docker-windlass-sandbox", name: `Docker + Windlass sandbox on ${machine}`,

@@ -67,7 +67,7 @@ class Conversation {
 			case "create": {
 				const { harness, profile } = op.args;
 				if (harness) o.requireClaude(profile);
-				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session, harness); });
+				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session, profile, harness); });
 				if (existing) return existing;
 				const screenshots = !harness && op.args.screenshots === true && o.screenshots;
 				await o.ensureImage(); // The disk-space helper always uses the base pin.

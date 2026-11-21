@@ -7,6 +7,7 @@ import {
 	parseConnection, parseConnectionRefusal, parsePairStarted, parsePairStatus, parseServerFrame, refuse,
 	type ConnectionRequest, type PairRequest, type PairPoll, type Refusal, type RunnerFrame,
 } from "../../server/src/runner/control.js";
+import type { MachineProfile } from "../../server/src/runner/protocol.js";
 import { audit, safeSentence } from "./audit.js";
 import { Executor } from "./docker-executor.js";
 import { PageLogin } from "./page-login.js";
@@ -49,7 +50,7 @@ async function post(platform: string, path: string, body: PairRequest | PairPoll
 	try { value = JSON.parse(Buffer.concat(parts).toString("utf8")); } catch { /* Status still tells us whether to retry. */ }
 	return { status: response.status, value };
 }
-export async function pair(platform: string, signal: AbortSignal, say: (message: string) => void) {
+export async function pair(platform: string, signal: AbortSignal, say: (message: string) => void, profiles?: MachineProfile[]) {
 	const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 	const deadline = AbortSignal.any([signal, AbortSignal.timeout(PAIRING_TTL_MS)]);
 	const request: PairRequest = { publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
@@ -82,7 +83,7 @@ export async function pair(platform: string, signal: AbortSignal, say: (message:
 			return { idle: `Pairing was refused (HTTP ${response.status}), so ${again}` };
 		if (status.state === "gone") break;
 		if (status.state === "approved") {
-			const paired = storePair({ machineId: status.machineId, uid: status.uid }, privateKey, platform);
+			const paired = storePair({ machineId: status.machineId, uid: status.uid }, privateKey, platform, profiles);
 			say(`Paired with ${safeSentence(status.githubLogin ?? "an account without a GitHub login")}. If that is not you, run \`windlass-runner pair\` again.`);
 			return { paired };
 		}

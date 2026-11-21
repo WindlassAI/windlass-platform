@@ -170,6 +170,22 @@ async function checkControl(name: string, run: () => Promise<void>) {
 	catch (error) { expect(name, false); console.error(error instanceof Error ? error.message : "Runner check failed."); }
 }
 try {
+	const { Executor: LocalExecutor } = await import("../runner/src/docker-executor.js");
+	const { Refusal } = await import("../runner/src/state.js");
+	const machineId = "m_0123456789abcdef", raw = "0123456789ab", id = `m${machineId}-${raw}`;
+	const owner = new LocalExecutor({ uid: "u_fixture", machineId }, {});
+	const session = "s_recovered", profile = "docker-windlass-sandbox";
+	owner.boxes.set(id, { raw, sessionId: session, state: "running", profile, usedAt: 0, busy: 0, workspaceChecked: true });
+	owner.discover = async () => {};
+	owner.provider.connect = async () => { throw new Error("Docker was asked to start the container."); };
+	const attempts = {
+		"create cannot adopt a container when the requested profile is denied": () => owner.create(session, profile),
+		"a hardened create cannot recover a container with a denied profile": () => owner.create(session, "docker-hardened"),
+		"connect refuses the saved container before Docker can resume it": () => owner.lifecycle("connect", id, session),
+		"direct operations on an already-running denied container are refused": async () => owner.running(id, session),
+	};
+	for (const [name, attempt] of Object.entries(attempts))
+		await checkControl(name, () => assert.rejects(attempt, error => error instanceof Refusal && error.message.includes("--allow-profile " + profile)));
 	await checkControl("an idle stop reports the paused sandbox immediately", async () => {
 		const machineId = "m_0123456789abcdef";
 		Object.assign(globalThis, { SANDBOX_IMAGE: "sha256:" + "0".repeat(64) });

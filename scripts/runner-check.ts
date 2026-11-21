@@ -102,7 +102,7 @@ async function realMachine(runnerImage: string) {
 		service = spawn("docker", ["run", "--rm", "--pull", "never", "--name", name, "--label", LABEL_ARG,
 			"--log-driver", "none", "--network", "host", "--user", `${process.getuid!()}:${process.getgid!()}`,
 			"--group-add", String((await stat(socket)).gid), "-e", "HOME=/tmp",
-			"-v", socket + ":" + socket, "-v", directory + ":/var/lib/windlass-runner", runnerImage, "--platform", platform],
+			"-v", socket + ":" + socket, "-v", directory + ":/var/lib/windlass-runner", runnerImage, "--platform", platform, "--allow-profile", "docker-windlass-sandbox"],
 			{ stdio: ["ignore", "pipe", "pipe"] });
 		service.stderr!.on("data", chunk => { stderr = (stderr + chunk).slice(-8192); });
 		service.stdout!.on("data", chunk => { output = (output + chunk).slice(-8192); });
@@ -114,6 +114,9 @@ async function realMachine(runnerImage: string) {
 			health = current?.commandSandbox?.ok === false ? current.commandSandbox.reason : "";
 			return current?.status === "online" && current.freeDiskBytes !== null;
 		}, "The real machine actor did not accept the runner's hello and report.", 60_000);
+		const connected = (await user.machines()).find(m => m.machineId === machine.machineId)!;
+		assert.deepEqual(connected.allowedProfiles, ["docker-hardened", "docker-windlass-sandbox"]);
+		ok("The packaged runner reported its opt-in and bubblewrap probe: " + (connected.commandSandbox?.ok ? "passed." : health));
 		assert.match(output, /Paired with an account without a GitHub login/);
 		// The test client sees only the runner's filesystem. Inspect through the host daemon.
 		const filterPath = "/usr/local/bin/seccomp-bwrap.json";
@@ -207,6 +210,72 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 	let hosted = false;
 	try {
 		await mkdir(state, { mode: 0o700 });
+		if (process.argv.includes("--profiles-only")) {
+			const windlass = "docker-windlass-sandbox", hardened = "docker-hardened";
+			const policyFlag = "--allow-profile";
+			const denied = /--allow-profile docker-windlass-sandbox/;
+			let service: ReturnType<typeof run>;
+			async function start(flags: string[] = [], dir = state) {
+				srv.state.report = null;
+				service = run(dir, undefined, bundle, {}, { flags });
+				await until(() => {
+					assert.equal(service.child.exitCode, null, "Runner rejected its service flags");
+					return !!srv.state.report;
+				}, "Runner did not report");
+				return srv.state.report!;
+			}
+			async function stopRunner() {
+				srv.reset(sessionId);
+				await stop(service.child);
+				await until(() => !srv.online(), "Runner stayed connected");
+			}
+			const initial = await start();
+			assert.deepEqual(initial.allowedProfiles, [hardened]);
+			assert(!initial.commandSandbox.ok && denied.test(initial.commandSandbox.reason));
+			await srv.attach();
+			const refuse = async (request: Promise<unknown>) => {
+				await assert.rejects(request, denied);
+				assert.equal(srv.state.lastErrorKind, "refused");
+			};
+			await refuse(srv.channel(sessionId).request("create", { profile: windlass }));
+			ok("A new pairing reports hardened only and refuses a Windlass create on the wire.");
+			await stopRunner();
+			const legacy = join(tmp, "legacy");
+			await mkdir(legacy, { mode: 0o700 });
+			// The pre-policy state volume contained a pair.json but no profile policy.
+			await copyFile(join(state, "pair.json"), join(legacy, "pair.json"));
+			assert.deepEqual((await start([], legacy)).allowedProfiles, [hardened, windlass]);
+			await stopRunner();
+			const allowed = await start([policyFlag, hardened, policyFlag, windlass]);
+			assert.deepEqual(allowed.allowedProfiles, [hardened, windlass]);
+			await stopRunner();
+			assert.deepEqual((await start()).allowedProfiles, [hardened, windlass]);
+			ok("An upgraded pairing keeps both profiles and an explicit opt-in survives restart.");
+			// Even a runner on a host without user namespaces can discover a pre-existing container.
+			await stopRunner();
+			const raw = randomBytes(6).toString("hex"), id = "m" + machineId + "-" + raw;
+			await docker(["run", "-d", "--pull", "never", "--name", containerName(raw), "--label", LABEL_ARG,
+				"--label", MACHINE_LABEL + "=" + machineId, "--label", "dev.windlass-platform.uid=" + uid,
+				"--label", "dev.windlass-platform.session=" + sessionId, "--label", "dev.windlass-platform.profile=" + windlass, image], { check: true });
+			assert.deepEqual((await start([policyFlag, hardened])).allowedProfiles, [hardened]);
+			await srv.attach();
+			const channel = srv.channel(sessionId);
+			await refuse(channel.request("connect", { id }));
+			await refuse(channel.request("create", { profile: hardened }));
+			await refuse(channel.request("ask", { id, argv: ["true"] }));
+			assert.equal(await channel.request("state", { id }), "running");
+			await channel.request("destroy", { id });
+			ok("After revocation connect, repeat create and direct commands are refused while removal works.");
+			await stopRunner();
+			await assert.rejects(exec(process.execPath, [bundle, "run", policyFlag, "e2b"], { env: env(state) }),
+				(e: { stderr?: string }) => !!e.stderr?.includes("--allow-profile"));
+			ok("The CLI rejects an unknown profile id before connecting.");
+			await writeFile(join(state, `profiles-${machineId}.json`), '["e2b"]');
+			await assert.rejects(exec(process.execPath, [bundle, "run"], { env: env(state), timeout: 10_000 }),
+				(e: { stderr?: string }) => !!e.stderr?.includes("Invalid profile policy"));
+			ok("A malformed saved policy stops the service before connecting.");
+			return;
+		}
 		if (claudePin) {
 			const token = "sk-ant-oat01-" + randomBytes(30).toString("base64url");
 			const volume = "wlp-harness-claude-" + machineId;
@@ -881,7 +950,7 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		await stopService();
 		ok("--max-sandboxes 1 counts the suspended sandbox and refuses a second create with the owner's flag in the session message.");
 		srv.state.gatewayLifetime = 2000;
-		srv.state.report = null; service = run(state, undefined, bundle, { ...wrappedDocker, CHECK_DF_LOG: measured }); await until(() => !!srv.state.report, "Healthy runner did not report again.");
+		srv.state.report = null; service = run(state, undefined, bundle, { ...wrappedDocker, CHECK_DF_LOG: measured }, { flags: ["--allow-profile", "docker-windlass-sandbox"] }); await until(() => !!srv.state.report, "Healthy runner did not report again.");
 		ok("An unavailable daemon is reported, and a missing pin or less than 5 GB free prevents sandbox creation.");
 		assert.equal(await readFile(measured, "utf8"), "df\n");
 		const connections = srv.state.connections, requests = srv.state.connectionRequests;
@@ -1141,7 +1210,10 @@ const privateHarnessTag = "chk-" + randomUUID();
 const privateTag = process.env.WLP_RUNNER_CHECK_IMAGE ? undefined : `windlass-runner:chk-${randomUUID()}`;
 try {
 	const image = await imageId();
-	if (process.argv.includes("--harness-only")) {
+	if (process.argv.includes("--profiles-only")) {
+		await exec(process.execPath, ["runner/bundle.mjs", image, bundle], { cwd: root });
+		await check(image);
+	} else if (process.argv.includes("--harness-only")) {
 		const { stdout } = await exec(join(root, "sandbox/harness/build.sh"), ["claude", image], { env: { ...process.env, WLP_HARNESS_TAG: privateHarnessTag } });
 		const pin = stdout.trim();
 		// A missing screenshots pin makes any attempt to fetch it for a Claude session fail.
@@ -1154,8 +1226,10 @@ try {
 		await check(image, shots);
 	} else {
 		if (!process.argv.includes("--real-machine")) {
-			const focused = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "--harness-only"], { stdio: "inherit" });
-			assert.equal(await new Promise(resolve => focused.on("exit", resolve)), 0);
+			for (const suite of ["--profiles-only", "--harness-only"]) {
+				const focused = spawn(process.execPath, [...process.execArgv, process.argv[1]!, suite], { stdio: "inherit" });
+				assert.equal(await new Promise(resolve => focused.on("exit", resolve)), 0);
+			}
 		}
 		if (privateTag) {
 			await exec(join(root, "scripts/runner-build.sh"), [image], { env: { ...process.env, WLP_RUNNER_BUILD_TAG: privateTag, WLP_RUNNER_HARNESSES: "claude", WLP_HARNESS_TAG: privateHarnessTag, WLP_RUNNER_PLATFORMS: "" } });

@@ -1025,6 +1025,8 @@ export interface MachineSandbox {
 
 /** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary {
+	/** Owner policy, independent of Docker health. Absent until the first report. */
+	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
 	harnesses?: Array<{ id: "claude"; adapter: string; image: string; signIn: "token" | "none" | "unknown"; options?: HarnessOptions }>;
 	machineId: string;
 	/** What the machine said of itself when it was paired: its host name, OS and architecture. Nobody checked them. */

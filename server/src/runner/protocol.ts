@@ -69,7 +69,10 @@ const id = text(255);
 const tag = is<string>((v) => id(v) && RUN_TAG.test(v));
 const env = is<Record<string, string>>((v) => plain(v) && Object.entries(v).every(([k, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof value === "string"));
 /** A machine serves the two Docker profiles; E2B's and the rest are the deployment's. */
-const profile = oneOf("docker-windlass-sandbox", "docker-hardened");
+export const MACHINE_PROFILES = ["docker-hardened", "docker-windlass-sandbox"] as const;
+export type MachineProfile = typeof MACHINE_PROFILES[number];
+export const machineProfile = oneOf(...MACHINE_PROFILES);
+export const PROFILE_DENIED = "This machine’s owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it.";
 const harness = optional(oneOf("claude"));
 const sandbox = { id };
 const startOptions = { cwd: optional(string), env: optional(env), secretEnv: optional(env) };
@@ -80,8 +83,8 @@ const startOptions = { cwd: optional(string), env: optional(env), secretEnv: opt
  * `profiles`, `list`, `price` and the other facts come from the machine's report, not from here.
  */
 const operations = {
-	create: [object({ profile, harness, screenshots: optional(boolean) }), id],
-	connect: [object(sandbox), nullable(object({ cwd: string, profile, harness, screenshots: optional(boolean) }))],
+	create: [object({ profile: machineProfile, harness, screenshots: optional(boolean) }), id],
+	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, screenshots: optional(boolean) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],
 	suspend: [object(sandbox), nil],
 	destroy: [object(sandbox), nil],

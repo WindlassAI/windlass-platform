@@ -3,7 +3,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { boolean, count, is, nullable, object, optional, text } from "../../server/src/runner/check.js";
 import { REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
-import { PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
+import { MACHINE_PROFILES, machineProfile, PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
 import type { Socket } from "node:net";
 import { audit, showLog } from "./audit.js";
 import { category, control, pair } from "./control.js";
@@ -12,7 +12,7 @@ import { changeClaudeLogin, claudeSignIn } from "./harness-login.js";
 import { harnessImage, shotsImage } from "./policy.js";
 import { Executor } from "./docker-executor.js";
 import { requestPair, requestLoginReport, waitForPair } from "./pair-command.js";
-import { forgetKey, save, loadPair, tryLock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
+import { forgetKey, save, loadPair, pairingProfiles, tryLock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
 
 const positiveInteger = is<number>(v => count(v) && v > 0);
 // Accept the first C3b snapshot on upgrade. Only harness.json records opt-in on new writes.
@@ -31,7 +31,7 @@ async function main() {
 		if (key === "CLAUDE_CODE_OAUTH_TOKEN" || (value && cleanClaudeOutput(value) !== value)) delete process.env[key];
 	}
 	const { positionals, values } = parseArgs({ allowPositionals: true, options: {
-		platform: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
+		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
 	} });
 	const command = positionals[0] ?? "run";
 	const auth = command === "login" || command === "logout";
@@ -39,7 +39,11 @@ async function main() {
 	const validCommand = auth ? positionals.length === 2 && positionals[1] === "claude"
 		: positionals.length <= 1 && ["run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
-		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune|login claude|logout claude] [--platform URL] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude].");
+		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune|login claude|logout claude] [--platform URL] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--allow-profile ID ...].");
+	const flags = values["allow-profile"];
+	if (flags && (command !== "run" || flags.some(id => !machineProfile(id))))
+		throw new RunnerError("Use --allow-profile with run and a profile ID: docker-hardened or docker-windlass-sandbox.");
+	const profiles = flags && MACHINE_PROFILES.filter(id => id === "docker-hardened" || flags.includes(id));
 	if (values.harness?.some(id => id !== "claude" || !harnessImage("claude")))
 		throw new RunnerError("Use --harness claude with a runner built with the pinned Claude Code image.");
 	if (values.screenshots && !shotsImage) throw new RunnerError("--screenshots requires a runner built with a pinned screenshots sandbox image.");
@@ -138,7 +142,7 @@ async function main() {
 		while (!abort.signal.aborted) {
 			let idle: string;
 			if (needsPair) {
-				const result = await pair(platform, abort.signal, say);
+				const result = await pair(platform, abort.signal, say, profiles);
 				if (abort.signal.aborted) { client?.end(); return; }
 				if (result.paired) {
 					paired = result.paired; resumePlatform = undefined;
@@ -161,7 +165,7 @@ async function main() {
 				// the wrong account: the lock holder shuts its links before making a new key.
 				const connection = new AbortController();
 				const active = AbortSignal.any([abort.signal, connection.signal]);
-				const owner = new Executor(paired.current, limits, values.screenshots, claude);
+				const owner = new Executor(paired.current, limits, values.screenshots, claude, pairingProfiles(paired.current.machineId, profiles));
 				const local = waitForPair(active, () => {}, async signedIn => {
 					await owner.serial(() => owner.loginChanged(signedIn));
 					owner.publishReport?.();
@@ -199,6 +203,6 @@ async function main() {
 }
 void main().catch(error => {
 	console.error(error?.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
-		? "Give each sandbox limit a positive whole number and --platform a URL." : category(error));
+		? "Give --allow-profile a profile ID, each sandbox limit a positive whole number and --platform a URL." : category(error));
 	process.exitCode = 1;
 });

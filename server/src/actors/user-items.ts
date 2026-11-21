@@ -265,6 +265,8 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxProfileId | null, place: SandboxPlace): Promise<SandboxProfileId> {
 	if (place.kind === "machine") {
 		const machine = await launchMachineProfiles(c.db, place.machineId);
+		// Honor an explicit owner-denied choice. makeSession returns the same refusal as a personal launch.
+		if (asked === "docker-windlass-sandbox" && machine.allowedProfiles && !machine.allowedProfiles.includes(asked)) return asked;
 		const available = machine.profiles.filter(profile => profile.available);
 		const chosen = available.find(profile => profile.id === asked) ?? available[0];
 		if (!chosen) throw new UserError(`Your machine "${machine.name}" offers no available sandbox profile for this item.`, { code: "bad_profile" });

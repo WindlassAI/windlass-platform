@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import { createPrivateKey, randomUUID, type KeyObject } from "node:crypto";
 import { chmodSync, closeSync, existsSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { MACHINE_ID } from "../../server/src/runner/control.js";
+import { MACHINE_PROFILES, type MachineProfile } from "../../server/src/runner/protocol.js";
+import { MACHINE_ID, validAllowedProfiles } from "../../server/src/runner/control.js";
 import { list, object, is, text, json, nullable } from "../../server/src/runner/check.js";
 import { NAME } from "../../server/src/sandbox/provider.js";
 import manifest from "../package.json";
@@ -65,9 +66,24 @@ export function forgetKey() {
 	const paired = loadPair();
 	if (paired) save("pair.json", { ...paired, key: null });
 }
-export function storePair(current: Identity, key: KeyObject, platform: string) {
+// A separate file keeps pair.json readable by the previous runner on rollback. Its
+// name scopes consent to this pairing, including when an owner pairs again in place.
+const policyFile = (id: string) => `profiles-${id}.json`;
+export function pairingProfiles(id: string, requested?: MachineProfile[]): MachineProfile[] {
+	if (requested) {
+		save(policyFile(id), requested);
+		return requested;
+	}
+	const stored = read(policyFile(id));
+	if (stored === undefined) return [...MACHINE_PROFILES]; // Only pre-policy pairings lack the file.
+	if (!validAllowedProfiles(stored)) throw new RunnerError("Invalid profile policy in the runner state volume. Start the runner with --allow-profile docker-hardened to reset it.");
+	return stored;
+}
+export function storePair(current: Identity, key: KeyObject, platform: string, profiles: MachineProfile[] = ["docker-hardened"]) {
 	const prior = loadPair();
 	const previous = prior ? [...prior.previous, prior.current].filter(m => m.machineId !== current.machineId) : [];
+	// Commit the policy before publishing the new key, including for standalone pairing.
+	save(policyFile(current.machineId), profiles);
 	save("pair.json", { current, previous, platform, key: key.export({ type: "pkcs8", format: "pem" }).toString() });
 	return { current, previous, key, platform };
 }

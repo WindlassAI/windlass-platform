@@ -32,7 +32,7 @@ import type { SandboxProfile, SandboxProfileId, SessionSnapshot } from "../contr
 import { describeError, serviceParams } from "../auth.js";
 import { type ChannelSocket, ConversationLost, ServerChannel } from "../runner/channel.js";
 import { machineProfiles } from "../machines/profiles.js";
-import type { Args, Name, Value } from "../runner/protocol.js";
+import { PROFILE_DENIED, type Args, type Name, type Value } from "../runner/protocol.js";
 import { AttachTickets } from "../machines/ticket.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxLayer, type Sandboxes, SandboxUserError } from "./api.js";
 import { findProfile } from "./profiles.js";
@@ -555,7 +555,8 @@ class RunnerSandboxes implements Sandboxes {
 		// A `create` lost with its conversation may have made the sandbox: the runner answers the repeat with that one.
 		// Request the screenshots image only when this runner offers it.
 		if (input.harness === "claude" && input.profile !== "docker-hardened") throw new SandboxUserError("Claude Code requires the docker-hardened profile.");
-		const report = input.harness || input.screenshots ? (await link.facts()).report : null;
+		const report = input.profile === "docker-windlass-sandbox" || input.harness || input.screenshots ? (await link.facts()).report : null;
+		if (report?.allowedProfiles && !report.allowedProfiles.includes(input.profile)) throw new SandboxUserError(PROFILE_DENIED);
 		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
 			throw new SandboxUserError("This machine's runner does not offer Claude Code. Update it and start it with --harness claude.");
 		return await link.again("create", { profile: input.profile, ...(input.harness ? { harness: input.harness } : {}),
