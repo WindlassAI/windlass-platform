@@ -157,6 +157,8 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 	const { repository } = meta;
 	return {
 		id: item.id,
+		mode: item.mode ?? "single",
+		parent: item.parent ?? null,
 		title: item.task.title,
 		repository: { provider: repository.provider, id: repository.id, owner: repository.owner, name: repository.name, branch: repository.branch, private: repository.private, url: repository.url },
 		place: item.place,
@@ -227,6 +229,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 	const verdicts = await c.db.execute<{ data: string }>("SELECT data FROM verdicts ORDER BY at, id");
 	return {
 		...summaryOf(stored),
+		plan: stored.item.featurePlan ?? null,
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
 		reviewNone: stored.meta.handoffReview?.reason ?? (!stored.item.reviewer ? "this item was created before second reviews were available" : "off" in stored.item.reviewer ? stored.item.reviewer.off === "profile" ? REVIEW_PROFILE_REASON : "turned off for this deployment" : null),
 		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),

@@ -1455,6 +1455,8 @@ export interface RoundCaps {
 
 /** An item as the user's index lists it. */
 export interface ItemSummary {
+	mode?: ItemMode;
+	parent?: { itemId: string; key: string; title: string } | null;
 	id: string;
 	title: string;
 	/** The repository of the user's GitHub connection it is on; `branch` is the base its pull request goes into. */
@@ -1486,6 +1488,8 @@ export interface ItemSummary {
 
 /** An item's page. */
 export interface ItemView extends ItemSummary {
+	plan?: FeaturePlan | null;
+	children?: ItemSummary[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
 	report: ItemReport | null;
 	/** Last ten, oldest first. */
@@ -1503,7 +1507,36 @@ export interface ItemView extends ItemSummary {
 	verdicts: Verdict[];
 }
 
+export type ItemMode = "single" | "orchestrate";
+
+export interface PlanSubtask {
+	key: string;
+	title: string;
+	brief: string;
+	acceptance: string[];
+	dependsOn: string[];
+	owns: string[];
+	budget: ItemBudget;
+}
+
+export interface FeaturePlanEdit {
+	questions: { id: string; text: string; options?: string[]; answer?: string }[];
+	spec: { goal: string; requirements: string[]; outOfScope: string[]; acceptance: string[] };
+	subtasks: PlanSubtask[];
+	singleSuggested: string | null;
+}
+
+export interface FeaturePlan extends FeaturePlanEdit {
+	version: number;
+	status: "proposed" | "approved" | "superseded";
+	budget: ItemBudget;
+	compare: { singleBudget: ItemBudget };
+	approvedBy?: string;
+	approvedAt?: number;
+}
+
 export interface CreateItemInput {
+	mode?: ItemMode;
 	/** A repository of the user's GitHub connection, by GitHub's id for it, and the base branch (default: the repository's default branch). */
 	repository: { id: GithubId; branch?: string };
 	/** At most MAX_TITLE_CHARS. */

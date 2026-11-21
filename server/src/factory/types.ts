@@ -75,6 +75,10 @@ export interface Run extends ItemRun {
 export type Task = ItemTask;
 
 export interface FactoryItem {
+	mode?: import("../contract.js").ItemMode;
+	singleBudget?: ItemBudget;
+	featurePlan?: import("../contract.js").FeaturePlan;
+	parent?: NonNullable<import("../contract.js").ItemSummary["parent"]>;
 	id: string;
 	/** Increased by every change; the actor stores a state only over the revision it read. */
 	revision: number;

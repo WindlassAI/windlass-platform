@@ -622,14 +622,14 @@ export class GithubApp {
 
 	// Issue webhooks carry no labeler's event ID. Use the latest relevant transition in the issue's own history.
 	// https://docs.github.com/en/rest/issues/events#list-issue-events
-	async issueTransition(token: string, repo: Repository, number: number, action: string) {
+	async issueTransition(token: string, repo: Repository, number: number, action: string, triggerLabel = "windlass") {
 		const label = action === "labeled" || action === "unlabeled";
 		const { items, truncated } = await this.pages({ path: `/repos/${repo.owner}/${repo.name}/issues/${number}/events`, auth: { bearer: token }, what: "read the issue's events" }, body => {
 			if (!Array.isArray(body)) throw new Error("GitHub returned no issue event list");
 			return body.map(record);
 		});
 		if (truncated) return null;
-		const last = items.filter(r => label ? (r.event === "labeled" || r.event === "unlabeled") && record(r.label).name === "windlass"
+		const last = items.filter(r => label ? (r.event === "labeled" || r.event === "unlabeled") && record(r.label).name === triggerLabel
 			: r.event === action || (action === "closed" && r.event === "reopened")).at(-1);
 		if (!last || last.event !== action) return null;
 		const id = decimalId(last.id), author = githubPerson(last.actor);

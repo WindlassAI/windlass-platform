@@ -150,6 +150,8 @@ export async function loadItems(db: RawAccess): Promise<ItemsState> {
 	for (const row of await db.execute<{ summary: string; key: string | null; sent: string | null }>("SELECT summary, key, sent FROM items")) {
 		const summary = JSON.parse(row.summary) as ItemSummary;
 		summary.origin ??= null;
+		summary.mode ??= "single";
+		summary.parent ??= null;
 		items.set(summary.id, summary);
 		if (row.key !== null && row.sent !== null) created.set(scopedKey(summary.source === "github", row.key), { key: row.key, sent: row.sent, id: summary.id });
 	}
@@ -207,7 +209,7 @@ function itemList(state: ItemsState): ItemSummary[] {
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
 function summaryFields(item: ItemSummary): ItemSummary {
 	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
-	return { id, title, repository, place, source, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision };
+	return { id, title, repository, place, source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision };
 }
 
 /** Takes a summary the item reported when it is newer than the one held: reports can arrive out of order. */
@@ -232,10 +234,11 @@ const githubItemId = (uid: string, key: string) => `i_${hex16(JSON.stringify(["g
 const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
 /** The input of a new item, checked. */
-function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; profile: SandboxProfileId | null; model: string | null; start: boolean } {
+function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; profile: SandboxProfileId | null; model: string | null; start: boolean; mode: "single" | "orchestrate" } {
 	const bad = (message: string) => new UserError(message, { code: "bad_input" });
 	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput | "harness" | "mode", unknown>>;
-	if (input.mode !== undefined) throw bad("A work item and its reviewer use the profile’s approval mode.");
+	if (input.mode !== undefined && input.mode !== "single" && input.mode !== "orchestrate") throw bad("Choose single or orchestrate for the work item.");
+	if (input.mode === "orchestrate" && process.env.WLP_FACTORY_ORCHESTRATE === "0") throw bad("Orchestrated work items are disabled.");
 	if (input.harness !== undefined && input.harness !== "windlass") throw bad("Work items and their reviewers run only with Windlass.");
 	const title = typeof input.title === "string" ? input.title.replace(/\s+/g, " ").trim() : "";
 	if (title === "" || title.length > MAX_TITLE_CHARS) throw bad(`Give the item a title of at most ${MAX_TITLE_CHARS} characters.`);
@@ -251,6 +254,7 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 	if (input.start !== undefined && input.start !== null && typeof input.start !== "boolean") throw bad("Say yes or no to starting the item at once.");
 	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 	return {
+		mode: input.mode ?? "single",
 		place,
 		title,
 		body,
@@ -318,7 +322,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		}
 		const now = Date.now();
 		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
-		const item = createItem({ id: itemId, reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: config.factory.item });
+		const item = createItem({ id: itemId, mode: input.mode, reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: config.factory.item });
 		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
 	} catch (error) {

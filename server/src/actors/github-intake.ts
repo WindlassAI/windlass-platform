@@ -5,7 +5,7 @@ import { readAccountDefaults } from "../account-defaults.js";
 import { serviceParams } from "../auth.js";
 import { config } from "../config.js";
 import type { ItemSummary, UserProfile } from "../contract.js";
-import { recentSubject, refusals, taskOfIssue, type IntakeTrigger, type IssueFiling } from "../factory/intake.js";
+import { issueMode, recentSubject, refusals, taskOfIssue, type IntakeTrigger, type IssueFiling } from "../factory/intake.js";
 import type { GithubApp, Repository } from "../github/app.js";
 import { isAddressed } from "../github/events.js";
 import { readDefaults } from "../repository-defaults.js";
@@ -15,7 +15,7 @@ import type { ItemsCtx } from "./user-items.js";
 
 async function command(app: GithubApp, token: string, repo: Repository, trigger: IntakeTrigger) {
 	if (trigger.via === "label") {
-		const event = await app.issueTransition(token, repo, trigger.issue, "labeled");
+		const event = await app.issueTransition(token, repo, trigger.issue, "labeled", trigger.label);
 		return event && { ...event, note: "" };
 	}
 	const comment = await app.issueCommand(token, repo, trigger.issue, trigger.commentId);
@@ -77,7 +77,7 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 	const found = await readIssue(t.installationId, t.repositoryId, t.issue);
 	if (!found || found === "gone" || "movedIssueId" in found) return;
 	const { app, token, repo, issue } = found;
-	if (issue.state !== "open" || (t.via === "label" && !issue.labels.includes("windlass"))) return;
+	if (issue.state !== "open" || (t.via === "label" && !issue.labels.includes(t.label ?? "windlass"))) return;
 	const subject = await subjectRead(() => command(app, token, repo, t));
 	if (!subject || !recentSubject(subject.at) || subject.author.id !== t.senderId || !connected()) return;
 	let reason = !config.items ? refusals.off : access === "read" ? refusals.read : repo.archived ? refusals.archived : null;
@@ -112,9 +112,10 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 			const key = `github:${repo.id}#${issue.number}:${generation}`;
 			const defaults = await readDefaults(c.db, "github:" + repo.id);
 			const account = await readAccountDefaults(c.db);
-			const binding = { installationId: t.installationId, generation, triggeredAt: subject.at, senderId: subject.author.id, issueId: issue.id, contentDigest: contentDigest(issue),
+			const { mode, reason: modeReason } = issueMode(subject.note, issue.labels);
+			const binding = { modeReason, triggerLabel: t.via === "label" ? t.label : undefined, installationId: t.installationId, generation, triggeredAt: subject.at, senderId: subject.author.id, issueId: issue.id, contentDigest: contentDigest(issue),
 				origin: { issue: { number: issue.number, url: issue.url, author: issue.author.login, trusted }, sender: subject.author.login } };
-			decision = { kind: "file", itemId: itemId(key), filing: { binding, input: { ...task, repository: { id: repo.id, branch: repo.defaultBranch },
+			decision = { kind: "file", itemId: itemId(key), filing: { binding, input: { ...task, mode, repository: { id: repo.id, branch: repo.defaultBranch },
 				profile: defaults.profile ?? account.profile ?? undefined, model: defaults.model ?? account.model ?? undefined, start: trusted, idempotencyKey: key } } };
 		}
 	}

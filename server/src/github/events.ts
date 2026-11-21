@@ -4,7 +4,7 @@ import { decimalId, githubId } from "./ids.js";
 /** The edge keeps just the inputs to a later lookup. GUID and receipt time come from the route. */
 type Sender = { id: GithubId; login: string; association: string };
 type Fields = {
-	issues: { issue: number; sender: Sender };
+	issues: { issue: number; sender: Sender; label?: string };
 	issue_comment: { issue: number; sender: Sender; commentId: string; body: string; isPullRequest: boolean };
 	pull_request: { pr: number; head: string; merged: boolean };
 	pull_request_review: { pr: number; reviewId: string; state: string; body: string; commitId: string; sender: Sender };
@@ -88,8 +88,8 @@ export function edge(event: string, payload: unknown, meta: { slug: string } & P
 	const sender = { id: userId, login, association: sameAuthor ? str(subject.author_association) || "NONE" : "NONE" };
 	const n = id(issue.number);
 	if (event === "issues" && n) {
-		if ((["labeled", "unlabeled"].includes(action) && obj(p.label).name === "windlass") || ["closed", "reopened", "edited", "deleted", "transferred"].includes(action))
-			return { ...base, event, data: { issue: n, sender } };
+		if ((["labeled", "unlabeled"].includes(action) && ["windlass", "windlass:orchestrate"].includes(str(obj(p.label).name))) || ["closed", "reopened", "edited", "deleted", "transferred"].includes(action))
+			return { ...base, event, data: { issue: n, sender, ...(obj(p.label).name === "windlass:orchestrate" && { label: "windlass:orchestrate" }) } };
 	}
 	const commentId = decimalId(subject.id);
 	if (!commentId || commentId === "0") return null;

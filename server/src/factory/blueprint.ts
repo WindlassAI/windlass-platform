@@ -35,6 +35,7 @@
 import type { ReviewRecord, TurnOutcome, Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
+import { featureCap } from "./feature-plan.js";
 import { budgetStop } from "./budget.js";
 import type { ChoiceId, CiProgress, Fact, HandoffReview, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";
@@ -69,6 +70,7 @@ export function stepKey(itemId: string, run: number, step: number, attempt: numb
 }
 
 export interface NewItem {
+	mode?: FactoryItem["mode"];
 	id: string;
 	task: Task;
 	/** §3.2: "none" unless asked for. */
@@ -86,11 +88,13 @@ export function createItem(input: NewItem): FactoryItem {
 		state: "draft",
 		wait: null,
 		task: input.task,
-		plan: input.plan ?? "none",
+		mode: input.mode ?? "single",
+		plan: input.mode === "orchestrate" ? "approve" : input.plan ?? "none",
 		reviewer: input.reviewer,
 		place: input.place,
 		machineRemoved: false,
-		budget: input.budget,
+		singleBudget: input.budget,
+		budget: input.mode === "orchestrate" ? featureCap(input.budget) : input.budget,
 		spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
 		workingSince: null,
 		run: null,
@@ -175,12 +179,12 @@ function apply(c: Change, fact: Fact): boolean {
 		case "start":
 			if (item.state !== "draft") return false;
 			c.say("Started.");
-			beginRun(c, firstPlan(item.task, item.plan, null));
+			beginRun(c, firstPlan(item, null));
 			return true;
 		case "retry":
 			if (item.state !== "failed" || item.machineRemoved) return false;
 			c.say("Started again.");
-			beginRun(c, firstPlan(item.task, item.plan, null));
+			beginRun(c, firstPlan(item, null));
 			return true;
 		case "send_back":
 			if (item.state !== "review" || item.machineRemoved) return false;
@@ -284,8 +288,9 @@ function taskText(task: Task): string {
 }
 
 /** A run's first turn: the plan (step 0) when the item's plan is "approve", the task otherwise. */
-function firstPlan(task: Task, plan: FactoryItem["plan"], note: string | null): TurnPlan {
+function firstPlan({ task, plan, mode }: FactoryItem, note: string | null): TurnPlan {
 	const text = withNote(taskText(task), note);
+	if (mode === "orchestrate") return { ...IMPLEMENT, kind: "refine", charge: "plan", text: `Read the repository. File a proposal with file_plan. Suggest a single item for small or unverifiable work. Include open questions and budget each verifiable subtask.\n\n${text}` };
 	if (plan === "approve") return { ...IMPLEMENT, kind: "refine", charge: "plan", text: `Plan this work; do not change any file. File the plan with your report.\n\n${text}` };
 	return { ...IMPLEMENT, text };
 }
@@ -848,7 +853,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 		case "retry":
 			run.stopReason = "retried";
 			run.endedAt = c.at;
-			beginRun(c, firstPlan(item.task, item.plan, note));
+			beginRun(c, firstPlan(item, note));
 			break;
 		case "wait":
 			if (run.ci !== null) run.ci.since = c.at;

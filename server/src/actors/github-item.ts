@@ -22,9 +22,9 @@ export async function observeIssue(binding: IssueBinding, repositoryId: GithubId
 	const observations: ObservedIssue[] = [];
 	if (changes.edited && recentSubject(issue.updated) && contentDigest(issue) !== binding.contentDigest)
 		observations.push({ subject: "edited", by: "platform", said: "The issue was edited on GitHub after it was filed; the item keeps the text it was filed with.", cancel: null });
-	const action = changes.unlabeledBy && !issue.labels.includes("windlass") ? "unlabeled" : changes.closedBy && issue.state === "closed" ? "closed" : null;
+	const action = changes.unlabeledBy && !issue.labels.includes(binding.triggerLabel ?? "windlass") ? "unlabeled" : changes.closedBy && issue.state === "closed" ? "closed" : null;
 	if (!action) return observations;
-	const transition = await subjectRead(() => app.issueTransition(token, repo, number, action));
+	const transition = await subjectRead(() => app.issueTransition(token, repo, number, action, binding.triggerLabel));
 	if (!transition || !recentSubject(transition.at) || transition.at < binding.triggeredAt) return observations;
 	const matched = action === "closed" ? changes.closedBy?.includes(transition.author.id) : transition.author.id === changes.unlabeledBy;
 	if (!matched) return observations;
@@ -41,7 +41,7 @@ export async function observeIssue(binding: IssueBinding, repositoryId: GithubId
 export async function writeIssueComment(app: GithubApp, repo: { id: GithubId; owner: string; name: string }, binding: IssueBinding,
 	itemId: string, state: ItemState, pr: number | undefined, commentId?: string) {
 	const number = binding.origin.issue.number;
-	const body = issueComment(itemId, binding.origin, state, pr, `${config.origins[0]}/items/${itemId}`);
+	const body = issueComment(itemId, binding.origin, state, pr, `${config.origins[0]}/items/${itemId}`) + (binding.modeReason ? " " + binding.modeReason : "");
 	const marker = body.split("\n", 1)[0];
 	return app.withToken(binding.installationId, { repositoryId: repo.id, permissions: { metadata: "read", issues: "write" } }, async token => {
 		if (!commentId) {
