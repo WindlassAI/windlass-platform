@@ -28,7 +28,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AuthResult, ItemSummary, ItemView } from "../server/src/contract.js";
+import type { AuthResult, ItemSummary, ItemView, PlatformInfo } from "../server/src/contract.js";
 import { createClient, type Registry } from "../server/src/client.js";
 import { StandInRunner } from "./runner-standin.js";
 import { GithubStandin, type StandinRepository, type StandinPull } from "./github-standin.js";
@@ -1495,9 +1495,9 @@ try {
 	});
 
 	await check("on: with WLP_ITEMS=1 platform info says items are offered", async () => {
-		const info = (await (await fetch(`${API}/platform/info`)).json()) as { items?: { reviewer?: unknown } };
-		assert(info.items?.reviewer === false && Object.keys(info.items).length === 1, `platform info has items: ${JSON.stringify(info.items)}`);
-		return "items: { reviewer: false }";
+		const info = (await (await fetch(`${API}/platform/info`)).json()) as PlatformInfo;
+		assert(info.items?.reviewer === false && info.items.orchestrate === true, `platform info has items: ${JSON.stringify(info.items)}`);
+		return "orchestration enabled, reviewer disabled";
 	});
 
 	await check("ci: implement, gate, publish, CI with the stand-in's check runs, handoff with a verdict", async () => {
