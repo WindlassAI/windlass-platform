@@ -1080,10 +1080,6 @@ h3 {
 	color: var(--warn);
 }
 .status-badge-waiting {
-	padding: 1px 8px 1px 5px;
-	border: 1px solid var(--needs-edge);
-	border-radius: var(--radius-pill);
-	background: var(--needs-wash);
 	font-weight: var(--weight-strong);
 	color: var(--needs);
 }

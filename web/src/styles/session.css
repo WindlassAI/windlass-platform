@@ -50,9 +50,9 @@
 	gap: 6px;
 	height: 24px;
 	padding: 0 9px 0 7px;
-	border: 1px solid var(--accent-edge);
+	border: 1px solid var(--line-strong);
 	border-radius: var(--radius-pill);
-	background: var(--accent-wash);
+	background: none;
 	font-size: var(--text-12);
 	font-weight: var(--weight-medium);
 	color: var(--accent-text);
@@ -60,8 +60,6 @@
 	animation: arrive 200ms var(--ease) both;
 }
 .crumb-pill-waiting {
-	border-color: var(--needs-edge);
-	background: var(--needs-wash);
 	color: var(--needs);
 }
 .crumb-pill-time {
@@ -127,9 +125,9 @@
 .bar-pull {
 	font-family: var(--font-mono);
 	font-size: var(--text-12);
+}
+.bar-pull > svg {
 	color: var(--ok);
-	border-color: color-mix(in srgb, var(--ok) 35%, var(--line));
-	background: var(--ok-wash);
 }
 .bar-pull-state {
 	color: var(--ink-dim);
@@ -468,12 +466,9 @@
  */
 .timeline > .turn > .block > .tool-running {
 	margin: 4px 0 6px;
-	border: 1px solid var(--accent-edge);
+	border: 1px solid var(--line-strong);
 	border-radius: var(--radius-l);
-	background: linear-gradient(180deg, var(--accent-wash), transparent 70%), var(--bg-raised);
-	box-shadow:
-		0 0 0 4px color-mix(in srgb, var(--accent-wash) 60%, transparent),
-		0 18px 40px -24px color-mix(in srgb, var(--accent-fill) 40%, transparent);
+	background: var(--bg-raised);
 	overflow: hidden;
 	animation: arrive 200ms var(--ease) both;
 }
@@ -487,7 +482,7 @@
 	background: none;
 }
 .timeline > .turn > .block > .tool-running .tool-name {
-	color: var(--accent-text);
+	color: var(--ink);
 }
 .timeline > .turn > .block > .tool-running > .tool-preview {
 	margin: 0;
@@ -1353,23 +1348,30 @@ button.output-more:hover {
 	scroll-margin: 24px;
 	animation: arrive 200ms var(--ease) both;
 }
-/* In the conversation, a question is the one amber card: what waits on you, where it waits. */
+/*
+ * In the conversation, a question is a plain card on the page's own surface, where it waits. Amber is
+ * a signal, not a fill: a 2px marker down the card's start, and the knot on the line beside it.
+ */
 .q-inline > .q {
-	padding: 12px 14px 13px;
-	border: 1px solid var(--needs-edge);
+	position: relative;
+	padding: 12px 14px 13px 16px;
+	border: 1px solid var(--line-strong);
 	border-radius: var(--radius-l);
-	background: linear-gradient(180deg, var(--needs-wash), transparent 85%), var(--bg-raised);
-	box-shadow: var(--shadow-box);
+	background: var(--bg-raised);
+	overflow: hidden;
+}
+.q-inline > .q::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: 2px;
+	background: var(--needs);
 }
 .q-inline .q-approve > .q-choice-approve:first-child {
-	border-color: transparent;
-	background: var(--ink);
-	color: var(--bg);
-	box-shadow: var(--shadow-button);
-}
-.q-inline .q-approve > .q-choice-approve:first-child:hover:not(:disabled) {
-	border-color: transparent;
-	background: color-mix(in srgb, var(--ink) 88%, var(--bg));
+	border-color: var(--line-field);
+	font-weight: var(--weight-strong);
 }
 
 .q-head {
@@ -1915,7 +1917,7 @@ button.output-more:hover {
 }
 /* Asked for from the bar ("Publish pull request" while it cannot): the section says where it is. */
 .panel-section-flash {
-	background: var(--accent-wash);
+	background: var(--bg-hover);
 	transition-duration: 120ms;
 }
 
