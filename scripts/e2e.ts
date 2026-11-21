@@ -3141,10 +3141,16 @@ async function idleChecks(server: Server, client: Client, uid: string, token: st
 				const countedBefore = (await row())?.seconds ?? 0;
 				const { turn } = await handle.prompt({ text: "Fix the failing test (slow)" });
 				await sleep(PROVIDER_MS + 1_500);
-				const mid = await handle.snapshot();
-				const held = (await row())?.heldSeconds ?? 0;
-				assert(mid.summary.status === "running", `the turn is ${mid.summary.status} when it is looked at`);
-				assert(held > 0, "mid-turn the session holds 0 s: the wake closed the prompt's hold");
+				// A waking provider can still be starting at the first sample. Check the hold
+				// throughout startup and on the running turn, before it can legitimately settle.
+				const { mid, held } = await waitFor("the resumed turn to run with its hold", async () => {
+					const mid = await handle.snapshot();
+					const held = (await row())?.heldSeconds ?? 0;
+					assert(held > 0, "mid-turn the session holds 0 s: the wake closed the prompt's hold");
+					if (mid.summary.status === "starting") return undefined;
+					assert(mid.summary.status === "running", `the turn is ${mid.summary.status} when it is looked at`);
+					return { mid, held };
+				}, TURN_MS, 100);
 				assert(mid.summary.sandbox === "running", `the running sandbox is recorded as ${mid.summary.sandbox}`);
 				const done = await waitFor("the turn to end", async () => {
 					const now = await handle.snapshot();
