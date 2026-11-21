@@ -48,6 +48,7 @@ else process.exitCode=2;
 		assert.match(output,/ABCD-EFGH/);
 		assert.deepEqual(asked,['/runner/pair','/runner/pair/poll']);
 		assert.equal(JSON.parse(await readFile(join(dir,'stored'),'utf8')).key,'setup-fixture-secret');
+		assert.ok(output.includes('-e WLP_RUNNER_STATE_DIR='+dir));
 		assert.ok(output.includes(pin+' run --platform '+origin+' --harness claude --harness opencode'));
 	} finally { server.closeAllConnections();server.close();await rm(dir,{recursive:true,force:true}); }
 });

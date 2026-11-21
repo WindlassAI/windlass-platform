@@ -18,6 +18,7 @@ export async function setupImageAndMounts() {
 		if (!mount || (mount.Type !== "bind" && mount.Type !== "volume")) throw new RunnerError("Mount the Docker socket and runner state for setup.");
 		args.push("-v", (mount.Type === "volume" ? mount.Name : mount.Source) + ":" + dst);
 	}
+	if (directory !== "/var/lib/windlass-runner") args.push("-e", "WLP_RUNNER_STATE_DIR=" + directory);
 	return [...args, image];
 }
 

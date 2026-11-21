@@ -47,6 +47,8 @@ async function server() {
 	// A report of 404 bytes free stands for the user actor being briefly away (its node restarting) when the machine publishes it.
 	const { user } = await import("../server/src/actors/user.js");
 	const userActions = user.config.actions!;
+	for (const action of ["startClaudeLogin", "finishClaudeLogin", "cancelClaudeLogin"]) assert.ok(!Object.hasOwn(userActions, action));
+	assert.ok(!Object.hasOwn(machine.config.actions!, "internalClaudeLogin"));
 	const changed = userActions.internalMachineChanged;
 	userActions.internalMachineChanged = async (c, id, facts) => {
 		if (facts?.report?.freeDiskBytes === 404) { process.send?.({ hook: "publish-refused", id }); throw new Error("The user actor is away."); }

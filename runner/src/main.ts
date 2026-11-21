@@ -52,7 +52,7 @@ async function main() {
 	const validCommand = auth ? positionals.length === 2 && ["claude", "opencode"].includes(agent)
 		: positionals.length <= 1 && ["setup", "run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
-		throw new RunnerError("Use windlass-runner [setup|run|pair|status|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]].");
+		throw new RunnerError("Use windlass-runner [setup|run|pair|status|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--harness opencode] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]].");
 	if (values.name !== undefined && (!["setup", "run", "pair"].includes(command) || !validMachineName(values.name)))
 		throw new RunnerError("Use --name with run or pair and a printable name of 1 to 64 characters.");
 	const requestedEgress = egressFlags(values.egress, values["egress-allow"]);
@@ -74,7 +74,7 @@ async function main() {
 	try {
 		if (auth) {
 			const paired = loadPair();
-			if (!paired || (command === "login" && !paired.key)) throw new RunnerError("Pair this machine before signing in to Claude Code.");
+			if (!paired || (command === "login" && !paired.key)) throw new RunnerError("Pair this machine before signing in to " + label + ".");
 			if (command === "login") {
 				await changeLogin(new Executor(paired.current, limits), true, abort.signal, values.provider);
 				console.log(label + ": signed in.");
