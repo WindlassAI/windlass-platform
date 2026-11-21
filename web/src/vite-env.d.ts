@@ -14,6 +14,10 @@ interface ImportMetaEnv {
 	 * port 6440 when the endpoint is on port 6420, else to DEFAULT_PLATFORM_URL.
 	 */
 	readonly VITE_WLP_API?: string;
+	/** The public origin the prerendered pages are canonical at (src/site/config.ts). */
+	readonly VITE_WLP_SITE_URL?: string;
+	/** Where the public pages' "Request access" leads; unset, they offer "Sign in" alone (src/site/config.ts). */
+	readonly VITE_WLP_ACCESS_URL?: string;
 }
 
 interface ImportMeta {

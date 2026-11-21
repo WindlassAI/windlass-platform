@@ -2392,6 +2392,39 @@ cd server && npx tsx ../scripts/factory-check.ts                          # the 
 cd server && npx tsx ../scripts/factory-e2e.ts                          # items through the real actors, on fake sandboxes and the GitHub stand-in
 ```
 
+## Public pages
+
+Signed-out visitors to `/` get a landing page; everything else in the web app is behind the sign-in. The
+landing page, and any other public page (the docs, say), is prerendered at build time to static HTML, so a
+visitor, a crawler or an answer engine reads it with no JavaScript at all.
+
+- **One list.** `web/src/site/pages.tsx` lists every public page (`PUBLIC_PAGES`): its path, title,
+  description, body (a React element rendered with `renderToStaticMarkup`), its Markdown for
+  `llms-full.txt`, its line in `llms.txt`, and its JSON-LD. To add pages, make `PublicPage`s in a module of
+  your own and spread them into that list; `web/src/site/pages.test.ts` holds every page to the rules
+  (title and description lengths, one `h1`, no inline script, JSON-LD that parses, Markdown). A page's
+  styles go into the app's stylesheet, imported in `web/src/main.tsx`: the public pages link the app's own.
+- **The build.** `vite build` (the Dockerfile's web stage included) runs `web/site-build.ts` after the app
+  is written. It renders every page into `dist/<path>/index.html` (the landing into `dist/index.html`),
+  keeps the app's shell as `dist/app.html` with `noindex`, and writes `sitemap.xml`, `robots.txt`,
+  `llms.txt` and `llms-full.txt` from the same list. Each page has its canonical address, Open Graph and
+  Twitter tags (`web/public/og.png`), the favicon set and the web manifest.
+- **Serving.** `server/src/web.ts` answers an address without an extension with `<path>/index.html` where
+  the build wrote one, and with `app.html` otherwise (`index.html` in an older build); `vite preview` does
+  the same. `vite` in development has no prerender: the app renders the landing itself for a signed-out
+  visitor at `/`.
+- **Signed in at `/`.** The landing names the app's entry module in `<meta name="wlp-app">`.
+  `web/public/site.js` sees a saved sign-in, hides the page before first paint and loads the app, which
+  starts from an empty root. Everyone else gets the static page, whose only script wires the theme button.
+- **The content security policy.** The pages run no inline script: `theme.js` and `site.js` are files, and
+  JSON-LD is a `<script type="application/ld+json">` data block, which browsers do not run and do not check
+  against `script-src`.
+- **Where they are published.** `VITE_WLP_SITE_URL` (build time) is the origin the pages are canonical at,
+  `https://windlass.parthg.dev` when unset. `VITE_WLP_ACCESS_URL` is where "Request access" leads (a form or
+  a `mailto:` link); unset, the pages offer "Sign in" alone and say that access is by invitation.
+- **Images.** `web/site-assets/og.html` is the source of `og.png` and `web/site-assets/icons.js` of the
+  PNG icons and `favicon.ico`; neither is built, and each says how to make its files again.
+
 ## Layout
 
 | Path | What it holds |
@@ -2427,7 +2460,7 @@ cd server && npx tsx ../scripts/factory-e2e.ts                          # items 
 | `server/src/api-tokens.ts` | The API's tokens: how one is made, kept as a digest, checked and revoked |
 | `sandbox/` | The sandbox image, `build.sh`, `cleanup.sh` |
 | `runner/` | The runner program for a user’s machine. `bundle.mjs` bundles the Node executable and stages its seccomp profile. `scripts/runner-build.sh` builds the image with its `Dockerfile`. |
-| `web/` | The web app (Vite, React); `src/api/rivet.ts` is the real client, `src/api/connection.ts` where it gets its connection and renews its token, `src/api/mock.ts` the mock |
+| `web/` | The web app (Vite, React); `src/api/rivet.ts` is the real client, `src/api/connection.ts` where it gets its connection and renews its token, `src/api/mock.ts` the mock; `src/site/` the public pages, prerendered by `site-build.ts` ("Public pages") |
 | `fixtures/windlass-events/` | Recorded Windlass events, used by the fake layer, the mock and the reducer's tests |
 | `fixtures/mcp-repo/` | A small repository whose `.windlass/config.json` names an MCP server, and the server (Python, nothing else), for `scripts/mcp-check.ts` |
 | `scripts/` | `dev.sh`, `e2e.ts` (the actors), `sandbox-check.ts` (the sandbox layer), `signin-check.ts` (the sign-ins), `connection-check.ts` and `connection-e2e.ts` (what browsers connect with, and its renewal), the stand-ins the checks use (`github-standin.ts`; `runner-fake.ts` and `runner-stub-server.ts` for a runner and for the platform), and the checks listed under "Checks" |

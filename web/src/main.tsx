@@ -4,6 +4,7 @@ import "@fontsource/commit-mono/700.css";
 import "@fontsource-variable/instrument-sans/wght.css";
 import "@fontsource-variable/instrument-sans/wght-italic.css";
 import "@fontsource-variable/newsreader/opsz.css";
+import "@fontsource-variable/newsreader/opsz-italic.css";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/shell.css";
@@ -16,6 +17,7 @@ import "./styles/usage.css";
 import "./styles/repository.css";
 import "./styles/machines.css";
 import "./styles/items.css";
+import "./styles/landing.css";
 import { QUESTION_TIMEOUT_MS } from "@contract";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -83,7 +85,14 @@ async function createPlatformClient(): Promise<PlatformClient> {
 	return createRivetClient();
 }
 
-const root = createRoot(document.getElementById("root") as HTMLElement);
+const container = document.getElementById("root") as HTMLElement;
+// On a prerendered public page (the landing, for someone signed in: public/site.js loaded the app there),
+// the page's static markup is hidden until now and is not the app's: the app starts from an empty root.
+if (container.hasAttribute("data-public")) {
+	container.replaceChildren();
+	container.removeAttribute("data-public");
+}
+const root = createRoot(container);
 
 createPlatformClient().then(
 	(client) => {

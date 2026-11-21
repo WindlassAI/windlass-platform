@@ -16,6 +16,8 @@ import { Session, SessionCrumb, useSessionMachine } from "./screens/Session";
 import { Settings, SettingsCrumb } from "./screens/Settings";
 import { MockAuthorize, SignIn } from "./screens/SignIn";
 import { Usage, UsageCrumb } from "./screens/Usage";
+import { LANDING_TITLE } from "./site/content";
+import { Landing } from "./site/Landing";
 import { useApp } from "./state/app";
 import { useSession } from "./state/hooks";
 
@@ -115,7 +117,8 @@ export function App() {
 	const { auth, client, platform } = useApp();
 	const [theme, toggleTheme] = useTheme();
 
-	const needsAuth = route.name === "home" || route.name === "factory" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "machines" || route.name === "session" || route.name === "item" || route.name === "repository";
+	// Home is the landing page for someone who is not signed in, so it is the one list that does not send them to sign in.
+	const needsAuth = route.name === "factory" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "machines" || route.name === "session" || route.name === "item" || route.name === "repository";
 	/** A deployment that does not offer machines has no such page. While its information loads, the page says it is loading. */
 	const noMachines = route.name === "machines" && auth !== null && platform.info !== null && !platform.info.machines;
 	/** Nor one that does not offer work items an item's page. */
@@ -130,6 +133,10 @@ export function App() {
 	useEffect(() => {
 		if ((route.name !== "session" && route.name !== "item" && route.name !== "home" && route.name !== "factory" && repositoryId === null) || noItems) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines || noItems ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : route.name === "new" ? "New agent · Windlass" : "Agents · Windlass";
 	}, [route.name, repositoryId, noMachines, noItems]);
+
+	useEffect(() => {
+		if (route.name === "home" && !auth) document.title = LANDING_TITLE;
+	}, [route.name, auth]);
 
 	if (route.name === "mock-authorize" && client.kind === "mock") return <MockAuthorize />;
 
@@ -149,6 +156,8 @@ export function App() {
 			</div>
 		);
 	}
+
+	if (route.name === "home" && !auth) return <Landing onToggleTheme={toggleTheme} />;
 
 	if (route.name === "signin" || !auth) {
 		// While the redirect above is on its way, the sign-in screen is the right thing to show.

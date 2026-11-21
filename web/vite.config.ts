@@ -1,17 +1,19 @@
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
+import { publicSite } from "./site-build.ts";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
+const alias = {
+	// The one file shared with the server: types and constants only, no server code.
+	"@contract": fileURLToPath(new URL("../server/src/contract.ts", import.meta.url)),
+};
+
 export default defineConfig({
-	plugins: [react()],
-	resolve: {
-		alias: {
-			// The one file shared with the server: types and constants only, no server code.
-			"@contract": fileURLToPath(new URL("../server/src/contract.ts", import.meta.url)),
-		},
-	},
+	// publicSite: the public pages, prerendered after the build (site-build.ts).
+	plugins: [react(), publicSite({ alias })],
+	resolve: { alias },
 	server: {
 		port: 5173,
 		strictPort: true,

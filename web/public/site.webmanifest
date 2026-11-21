@@ -1,0 +1,14 @@
+{
+	"name": "Windlass",
+	"short_name": "Windlass",
+	"description": "Coding agents in sandboxes you choose: watch every turn, answer its questions, take the work as a pull request.",
+	"start_url": "/",
+	"display": "standalone",
+	"background_color": "#15161a",
+	"theme_color": "#15161a",
+	"icons": [
+		{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+		{ "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+		{ "src": "/mark.svg", "sizes": "any", "type": "image/svg+xml" }
+	]
+}
