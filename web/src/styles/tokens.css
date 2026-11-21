@@ -8,14 +8,34 @@
 	--font-text: "Instrument Sans Variable", "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
 	--font-display: "Newsreader Variable", "Newsreader", "Iowan Old Style", Georgia, serif;
 
+	/* Type: one scale for every screen. Mono for facts and code, sans for words, the serif for headings. */
+	--size-tiny: 0.6875rem;
 	--size-mono: 0.8125rem;
 	--size-mono-small: 0.75rem;
 	--size-text: 0.9375rem;
 	--size-small: 0.8125rem;
+	--size-title: 1.0625rem;
+	--size-heading: 1.5rem;
+	--size-dialog: 1.625rem;
+
+	/* Space: a 4px step. Rows, sections and pages take their padding and gaps from here. */
+	--space-1: 4px;
+	--space-2: 8px;
+	--space-3: 12px;
+	--space-4: 16px;
+	--space-5: 20px;
+	--space-6: 24px;
+	--space-7: 32px;
+	--space-8: 48px;
+	--space-9: 64px;
 
 	--radius-s: 4px;
 	--radius-m: 7px;
 	--radius-l: 12px;
+	--radius-pill: 999px;
+
+	/* The focus ring every control draws (base.css :focus-visible). */
+	--focus-width: 2px;
 
 	--topbar: 52px;
 	--gutter: clamp(16px, 4vw, 40px);
@@ -34,9 +54,12 @@
 	--bg-hover: #22252b;
 	--line: #2a2d34;
 	--line-strong: #3d414a;
+	/* A form control's edge: 3:1 against the page, so a field is seen as one. */
+	--line-field: #636872;
 	--ink: #dddfd7;
 	--ink-dim: #a0a3a8;
-	--ink-faint: #71757d;
+	/* Faint is still text: at least 4.5:1 on the page and on raised surfaces. */
+	--ink-faint: #858991;
 	--accent: #bcc46a;
 	--accent-strong: #d6de8a;
 	--accent-fill: #bcc46a;
@@ -68,9 +91,10 @@
 	--bg-hover: #ebe7d9;
 	--line: #dad5c4;
 	--line-strong: #b9b39e;
+	--line-field: #88826c;
 	--ink: #1e1f1a;
-	--ink-dim: #585a50;
-	--ink-faint: #85867a;
+	--ink-dim: #4f5148;
+	--ink-faint: #66675c;
 	--accent: #5a6510;
 	--accent-strong: #434c08;
 	--accent-fill: #bcc558;

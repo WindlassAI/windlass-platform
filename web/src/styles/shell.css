@@ -49,7 +49,7 @@
 	border: 1px dashed var(--line-strong);
 	border-radius: var(--radius-s);
 	font-family: var(--font-mono);
-	font-size: 0.6875rem;
+	font-size: var(--size-tiny);
 	letter-spacing: 0.06em;
 	color: var(--ink-faint);
 }
