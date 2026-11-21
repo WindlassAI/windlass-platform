@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Dependabot uses the npm ecosystem for pnpm workspaces as well.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /sandbox/harness/claude
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directories:
+      - /deploy/selfhost
+      - /runner
+      - /sandbox
+      - /sandbox/harness/claude
+      - /server
+    schedule:
+      interval: weekly
