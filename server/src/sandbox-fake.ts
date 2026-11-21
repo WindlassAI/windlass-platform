@@ -1084,7 +1084,7 @@ class FakeWindlass implements Windlass {
 							spec: { goal: "Index and search documents", requirements:["Index documents"], outOfScope:[], acceptance:["Documents can be found."] },
 							questions: [], singleSuggested: null, subtasks:["index","search"].map((key,i) => ({
 								key,title:key,brief:"Implement " + key + ". (report)", acceptance:["Run pnpm test"],owns:[key+"/**"],dependsOn:i ? ["index"] : [],
-								budget:{tokens:500000,turns:3,activeSeconds:1200,hostedSeconds:1200},
+								budget:{tokens:600000,turns:3,activeSeconds:1440,hostedSeconds:1200},
 							})),
 						} }, signal ?? new AbortController().signal);
 						emit({type:"fake.plan_reply",data:{reply},seq:0});

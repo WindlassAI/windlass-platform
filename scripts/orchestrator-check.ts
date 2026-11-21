@@ -373,3 +373,15 @@ test("only an unsupported draft retries as an in-progress ordinary PR", async ()
 	assert.deepEqual(pulls[1], { ...pulls[0], draft: false, body: "Original goal\n\nFeature in progress." });
 	for (const error of [refused(403, message), refused(422, "Invalid head")]) await assert.rejects(opening(error), error);
 });
+
+test("each subtask must fund a useful build and verification turn", async () => {
+	const { validatePlan, featureCap, dimensions } = await plans();
+	const minimum = { tokens: 1000, turns: 2, activeSeconds: 100, hostedSeconds: 60 };
+	for (const d of dimensions) {
+		const p = proposal();
+		p.subtasks[0].budget[d] = minimum[d];
+		validatePlan(p, single, featureCap(single));
+		p.subtasks[0].budget[d]--;
+		assert.throws(() => validatePlan(p, single, featureCap(single)), new RegExp(d));
+	}
+});

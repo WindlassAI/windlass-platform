@@ -2285,8 +2285,9 @@ An issue with the `bug` label runs as a single item and the issue reply explains
 
 The planner reads the repository and proposes two to six subtasks with owned paths, dependencies,
 acceptance checks and individual caps. The feature starts with three times the single-item allowance
-in each dimension. Planning, children, summary and review share it. Each subtask gets at least one
-token, turn, active second and hosted second, up to the single-item caps. The approval question shows
+in each dimension. Planning, children, summary and review share it. Each subtask needs two turns for implementation and verification, and at least 10% of the single-item
+tokens, active time and hosted time, with minimums of 1,000 tokens and 60 seconds of each time allowance.
+Each dimension is capped at the single-item limit. The approval question shows
 the proposed split. A client can answer plan questions or edit the split using `edit_plan` with the
 displayed version. `approve_plan` requires that same version and answered questions. On
 `item_conflict`, fetch the item again. A single-item suggestion needs an explicit choice.

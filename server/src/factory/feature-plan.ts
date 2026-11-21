@@ -91,12 +91,17 @@ export function validatePlan(value: unknown, single: ItemBudget, available: Item
 	});
 	unique(questions.map(q => q.id));
 	requirePlan(Array.isArray(p.subtasks) && (singleSuggested && p.subtasks.length === 0 || p.subtasks.length >= 2 && p.subtasks.length <= 6), "Propose two to six subtasks or suggest one single item.");
+	const minimum = {
+		tokens: Math.max(1000, Math.ceil(single.tokens / 10)), turns: 2,
+		activeSeconds: Math.max(60, Math.ceil(single.activeSeconds / 10)),
+		hostedSeconds: Math.max(60, Math.ceil(single.hostedSeconds / 10)),
+	};
 	const total = emptyBudget();
 	const subtasks: PlanSubtask[] = p.subtasks.map(raw => {
 		const s = record(raw), asked = record(s.budget), budget = emptyBudget();
 		for (const key of dimensions) {
 			const n = asked[key];
-			requirePlan(typeof n === "number" && Number.isSafeInteger(n) && n >= 1 && n <= single[key], `Subtask ${key} must be a whole number between 1 and ${single[key]}.`);
+			requirePlan(typeof n === "number" && Number.isSafeInteger(n) && n >= minimum[key] && n <= single[key], `Subtask ${key} must be a whole number between ${minimum[key]} and ${single[key]}.`);
 			budget[key] = n;
 			total[key] += n;
 			requirePlan(total[key] <= available[key], `Subtasks exceed the remaining ${key} budget.`);
