@@ -18,12 +18,13 @@ import { USAGE_LOW_SHARE, type ItemSummary, type SavedRepository, type UsageNumb
 import { useEffect, useId, useState } from "react";
 import { AgentList } from "../components/Agents";
 import { Mark, WarnIcon } from "../components/Icons";
+import { NeedsYouCard } from "../components/NeedsYouCard";
 import { StartComposer } from "../components/StartComposer";
 import { count, localTime, plural, sandboxTime } from "../lib/format";
 import { NO_REPOSITORY, groupSessions, ownAgents, shownLimit, workingCounts, workingWords, type SessionGroup } from "../lib/repositories";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { NeedsYou } from "./Items";
+import { asking } from "./Items";
 import { allowanceState, useAllowance, useChatgpt, useFactoryLimits, useNow, useSessions } from "../state/hooks";
 
 /** One repository's agents under its name, or the agents on none. `headed` is false for a list that has only the latter. */
@@ -95,41 +96,69 @@ function AccountLine() {
 	}
 	return (
 		<p className="home-account">
-			Signed in as <strong>{auth.profile.email ?? auth.profile.uid}</strong>
-			<span className="home-account-sep" aria-hidden="true">
-				·
-			</span>
-			{status === null ? <span className="tone-dim">checking ChatGPT…</span> : status.connected ? <span className="tone-good">ChatGPT connected</span> : <span className="tone-warn">ChatGPT not connected</span>}
+			<span className="home-account-who">{auth.profile.email ?? auth.profile.uid}</span>
+			{status === null ? <span className="tone-faint">checking ChatGPT…</span> : status.connected ? <span className="home-account-ok">ChatGPT connected</span> : <span className="tone-warn">ChatGPT not connected</span>}
 		</p>
 	);
 }
 
-/** The day's sandbox time and the sandboxes kept, in one line, with the way to the usage page. */
-function UsageLine({ numbers }: { numbers: UsageNumbers | null }) {
+/**
+ * The day's sandbox time as a small meter, and the sandboxes kept, leading to the usage page. It takes
+ * the warning hue when the day's time runs low or out, or no more sandboxes may be kept.
+ */
+function UsageMeter({ numbers }: { numbers: UsageNumbers | null }) {
 	if (numbers === null) return null;
 	const { allowanceSeconds, leftSeconds, sandboxes } = numbers;
 	const spent = numbers.usedSeconds + numbers.heldSeconds;
 	const state = allowanceState(numbers, USAGE_LOW_SHARE);
 	const full = sandboxes.limit !== null && sandboxes.kept >= sandboxes.limit;
+	const share = allowanceSeconds === null || allowanceSeconds === 0 ? null : Math.min(1, spent / allowanceSeconds);
+	const kept = sandboxes.limit === null ? plural(sandboxes.kept, "sandbox kept", "sandboxes kept") : `${count(sandboxes.kept)} of ${count(sandboxes.limit)} kept`;
 	return (
-		<p className="home-account home-usage">
-			<span>
-				Sandbox time today: <strong>{sandboxTime(spent)}</strong>
+		<a className={`home-usage${state !== "plenty" ? " home-usage-warn" : ""}`} {...linkProps({ name: "usage" })} title="Usage: sandbox time and sandboxes">
+			<span className="home-usage-time">
+				Sandbox today <strong>{sandboxTime(spent)}</strong>
 				{allowanceSeconds === null ? null : ` of ${sandboxTime(allowanceSeconds)}`}
+				{state !== "plenty" && leftSeconds !== null ? <span className="home-usage-left">{state === "used" ? `, used up until ${localTime(numbers.resetsAt)}` : `, ${sandboxTime(leftSeconds)} left`}</span> : null}
 			</span>
-			{state !== "plenty" && leftSeconds !== null ? <span className="tone-warn">{state === "used" ? `used up until ${localTime(numbers.resetsAt)}` : `${sandboxTime(leftSeconds)} left`}</span> : null}
-			<span className="home-account-sep" aria-hidden="true">
-				·
+			{share === null ? null : (
+				<span className="home-meter" role="meter" aria-label="Sandbox time used today" aria-valuemin={0} aria-valuemax={allowanceSeconds ?? 0} aria-valuenow={Math.min(spent, allowanceSeconds ?? spent)} aria-valuetext={`${sandboxTime(spent)} of ${sandboxTime(allowanceSeconds ?? 0)}`}>
+					<span className="home-meter-fill" style={{ width: `${Math.max(share, spent > 0 ? 0.04 : 0) * 100}%` }} />
+				</span>
+			)}
+			<span className={full ? "home-usage-full" : undefined}>
+				{kept}
+				{full ? <span className="visually-hidden"> (the most an account may keep)</span> : null}
 			</span>
-			<span className={full ? "tone-warn" : undefined}>
-				{sandboxes.limit === null ? plural(sandboxes.kept, "sandbox kept", "sandboxes kept") : `${count(sandboxes.kept)} of ${count(sandboxes.limit)} sandboxes kept`}
+		</a>
+	);
+}
+
+/** What the page holds at a glance: how many agents, how many at work, and how many wait on their user. */
+function Facts({ agents, counts, ceiling, waiting }: { agents: number | null; counts: ReturnType<typeof workingCounts>; ceiling: number | null; waiting: number }) {
+	const sep = <span className="visually-hidden">, </span>;
+	const working = counts.ceilinged + counts.onMachines;
+	return (
+		<p className="home-facts">
+			<span>
+				<strong>{agents === null ? "–" : count(agents)}</strong> {agents === 1 ? "agent" : "agents"}
 			</span>
-			<span className="home-account-sep" aria-hidden="true">
-				·
-			</span>
-			<a className="link" {...linkProps({ name: "usage" })}>
-				Usage
-			</a>
+			{sep}
+			<span className={`home-fact${working > 0 ? " home-fact-working" : ""}`}>{workingWords(counts, ceiling)}</span>
+			{counts.onMachines > 0 ? (
+				<>
+					{sep}
+					<span className="home-fact home-fact-working">{counts.onMachines}&nbsp;on&nbsp;your&nbsp;machines</span>
+				</>
+			) : null}
+			{waiting > 0 ? (
+				<>
+					{sep}
+					<span className="home-fact home-fact-needs">
+						{waiting} {waiting === 1 ? "needs" : "need"} you
+					</span>
+				</>
+			) : null}
 		</p>
 	);
 }
@@ -148,21 +177,19 @@ export function Home({ items }: { items: readonly ItemSummary[] | null }) {
 	const groups = sessions === null ? [] : groupSessions(sessions);
 	const saved = useSavedWithoutAgents(sessions);
 	const waiting = agents?.filter((session) => session.status === "waiting").length ?? 0;
+	const asked = asking(items ?? []).length;
 	// Without agents the composer stands in the empty page; otherwise at the top, over the list.
 	const empty = sessions !== null && connection !== "failed" && groups.length === 0;
 
 	return (
-		<main className="home">
+		<main className="home home-agents">
 			<header className="home-head">
-				<div>
-					<p className="eyebrow">
-						{agents === null ? "agents" : `${plural(agents.length, "agent")} · ${workingWords(counts, ceiling)}${counts.onMachines > 0 ? ` · ${counts.onMachines}\u00a0on\u00a0your\u00a0machines` : ""}`}
-						{waiting > 0 ? <span className="eyebrow-waiting"> · {waiting} {waiting === 1 ? "needs" : "need"} you</span> : null}
-					</p>
+				<div className="home-title">
 					<h1 className="display">Agents</h1>
+					<Facts agents={agents === null ? null : agents.length} counts={counts} ceiling={ceiling} waiting={waiting + asked} />
 					<AccountLine />
-					<UsageLine numbers={usage} />
 				</div>
+				<UsageMeter numbers={usage} />
 			</header>
 
 			{empty ? null : (
@@ -178,7 +205,7 @@ export function Home({ items }: { items: readonly ItemSummary[] | null }) {
 				</p>
 			) : null}
 
-			<NeedsYou now={now} list={items} />
+			<NeedsYouCard sessions={agents ?? []} items={items} now={now} />
 
 			{connection === "failed" ? (
 				<div className="state state-error" role="alert">

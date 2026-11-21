@@ -3,15 +3,17 @@
  * and delete, and a long list folded so that the page stays readable. What a fold hides is said in
  * numbers, and an agent that is at work or waits on its user is never among it.
  */
-import { MAX_TITLE_CHARS, type SessionSummary } from "@contract";
+import { MAX_TITLE_CHARS, type PullRequestInfo, type SessionSummary, type TurnOutcome } from "@contract";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { absoluteTime, plural, relativeTime } from "../lib/format";
+import { acpHarnessName, sessionModelWords } from "../lib/acp";
+import { absoluteTime, clockDuration, plural, relativeTime } from "../lib/format";
 import { foldGroup } from "../lib/repositories";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
+import { useNow } from "../state/hooks";
 import { Dialog } from "./Dialog";
-import { PencilIcon, TrashIcon, WarnIcon } from "./Icons";
-import { OutcomeWord, SandboxState, StatusBadge, StatusGlyph } from "./Status";
+import { MergedIcon, PencilIcon, PullRequestIcon, RingIcon, TrashIcon, WarnIcon } from "./Icons";
+import { OUTCOME_TONE, OUTCOME_WORD, OutcomeGlyph, STATUS_WORD, StatusBadge, StatusGlyph } from "./Status";
 
 function repoName(url: string): string {
 	return url.replace(/^https:\/\//, "").replace(/\.git$/, "");
@@ -55,10 +57,14 @@ function AgentRow({ session, profileName, now, grouped, onDelete }: { session: S
 
 	const active = session.status !== "idle";
 	const waiting = session.status === "waiting";
+	const working = active && !waiting;
+	const pull = session.pullRequest ?? null;
+	// Finished with: its pull request was merged or closed. The row steps back a shade.
+	const settled = !active && (pull?.state === "merged" || pull?.state === "closed");
 	return (
-		<li className={`agent-row${active && !waiting ? " agent-row-active" : ""}`} data-status={session.status}>
+		<li className={`agent-row agent-row-session${working ? " agent-row-active" : ""}${settled ? " agent-row-settled" : ""}`} data-status={session.status}>
 			<span className="agent-glyph">
-				<StatusGlyph status={session.status} />
+				<RowGlyph session={session} />
 			</span>
 			<div className="agent-main">
 				{renaming ? (
@@ -109,19 +115,29 @@ function AgentRow({ session, profileName, now, grouped, onDelete }: { session: S
 					</a>
 				)}
 				<p className="agent-meta">
-					<span>{profileName}</span>
-					<span>{session.model}</span>
-					<span>{session.turns === 0 ? "no turns" : plural(session.turns, "turn")}</span>
+					<span className="agent-harness" title={profileName}>
+						{acpHarnessName(session) ?? "Windlass"}
+						<span className="agent-model"> · {sessionModelWords(session)}</span>
+					</span>
+					<span>{session.place.kind === "machine" ? "your machine" : "hosted"}</span>
 					{grouped && session.repository ? <span className="agent-repo">{session.repository.branch}</span> : session.repoUrl ? <span className="agent-repo">{repoName(session.repoUrl)}</span> : null}
+					<span>{session.turns === 0 ? "no turns" : plural(session.turns, "turn")}</span>
 				</p>
 			</div>
 			<div className="agent-state">
-				{active ? <StatusBadge status={session.status} /> : <OutcomeWord outcome={session.lastOutcome} />}
-				<SandboxState state={session.sandbox} />
+				{waiting ? <StatusBadge status="waiting" /> : active ? <span className={`agent-chip agent-chip-live agent-chip-${session.status}`}>{STATUS_WORD[session.status]}</span> : null}
+				{pull ? <PullChip pull={pull} /> : null}
+				{/* A turn that ended well says so with its glyph; any other ending says it in words. */}
+				{active || session.lastOutcome === "succeeded" ? null : <OutcomeChip outcome={session.lastOutcome} />}
+				{session.sandbox === "running" && !active ? (
+					<span className="agent-chip agent-chip-sandbox" title="Its sandbox is running">
+						<span className="agent-chip-dot" aria-hidden="true" />
+						sandbox
+						<span className="visually-hidden"> running</span>
+					</span>
+				) : null}
 			</div>
-			<time className="agent-time" dateTime={new Date(session.updatedAt).toISOString()} title={absoluteTime(session.updatedAt)}>
-				{relativeTime(session.updatedAt, now)}
-			</time>
+			<RowTime session={session} now={now} working={working} />
 			<div className="agent-actions">
 				<button
 					ref={renameButton}
@@ -140,7 +156,69 @@ function AgentRow({ session, profileName, now, grouped, onDelete }: { session: S
 					<TrashIcon />
 				</button>
 			</div>
+			{/* The line paying out under an agent at work: it runs while the drum turns. */}
+			{working ? <span className="agent-line" aria-hidden="true" /> : null}
 		</li>
+	);
+}
+
+/** The row's glyph: the drum turning while it works, the amber ask while it waits, how its last turn ended otherwise. */
+function RowGlyph({ session }: { session: SessionSummary }) {
+	if (session.status !== "idle") return <StatusGlyph status={session.status} size={16} />;
+	const outcome = session.lastOutcome;
+	if (outcome === null) return <RingIcon size={16} className="status-glyph status-idle" />;
+	if (outcome === "succeeded") return <DoneGlyph open={session.pullRequest?.state === "open" || session.pullRequest?.state === "draft"} />;
+	return <OutcomeGlyph outcome={outcome} size={15} />;
+}
+
+/** A turn that ended well: a check in a ring, in the good hue while its pull request is open, quiet once that is settled. */
+function DoneGlyph({ open }: { open: boolean }) {
+	return (
+		<svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false" className={open ? "agent-done agent-done-open" : "agent-done"}>
+			<circle cx="8" cy="8" r="6.2" />
+			<path d="M5.4 8.2l1.8 1.8 3.4-3.6" />
+		</svg>
+	);
+}
+
+const PULL_WORD: Record<PullRequestInfo["state"], string> = { open: "open", draft: "draft", merged: "merged", closed: "closed" };
+
+function PullChip({ pull }: { pull: PullRequestInfo }) {
+	return (
+		<span className={`agent-chip agent-chip-pull agent-chip-pull-${pull.state}`} title={pull.title}>
+			{pull.state === "merged" ? <MergedIcon size={12} /> : <PullRequestIcon size={12} />}#{pull.number} {PULL_WORD[pull.state]}
+		</span>
+	);
+}
+
+function OutcomeChip({ outcome }: { outcome: TurnOutcome | null }) {
+	if (outcome === null) return <span className="agent-chip agent-chip-quiet">no turns yet</span>;
+	const tone = OUTCOME_TONE[outcome];
+	return (
+		<span className={`agent-chip agent-chip-${tone}`}>
+			<OutcomeGlyph outcome={outcome} size={11} />
+			{OUTCOME_WORD[outcome]}
+		</span>
+	);
+}
+
+/** When it was last used; for an agent at work, how long its turn has run, ticking. */
+function RowTime({ session, now, working }: { session: SessionSummary; now: number; working: boolean }) {
+	const tick = useNow(1000, working);
+	const iso = new Date(session.updatedAt).toISOString();
+	if (working) {
+		const clock = clockDuration(Math.max(1000, tick - session.updatedAt));
+		return (
+			<time className="agent-time agent-time-live" dateTime={iso} title={`Working since ${absoluteTime(session.updatedAt)}`}>
+				<span className="visually-hidden">working for </span>
+				{clock}
+			</time>
+		);
+	}
+	return (
+		<time className="agent-time" dateTime={iso} title={absoluteTime(session.updatedAt)}>
+			{relativeTime(session.updatedAt, now)}
+		</time>
 	);
 }
 

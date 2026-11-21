@@ -80,7 +80,7 @@ describe("a work item's agent session", () => {
 		const own = sessions.filter((session) => session.item === undefined);
 		const rows = lists.reduce((sum, list) => sum + list.querySelectorAll("li.agent-row").length, 0);
 		expect(rows).toBeLessThanOrEqual(own.length);
-		expect(host.querySelector(".home-head .eyebrow")?.textContent).toMatch(new RegExp(`^${own.length} agents · \\d+ of 6 working, \\d+ of them work items`));
+		expect(host.querySelector(".home-head .home-facts")?.textContent).toMatch(new RegExp(`^${own.length} agents, \\d+ of 6 working, \\d+ of them work items`));
 		// acme/lighthouse-docs has one agent of the user's own and some work items (a repository with only items keeps its heading: lib/repositories.test.ts).
 		const docs = [...host.querySelectorAll(".agent-group-head")].find((head) => head.textContent?.includes("lighthouse-docs"));
 		expect(docs?.querySelector("a")?.getAttribute("href")).toBe("/repositories/7103");
