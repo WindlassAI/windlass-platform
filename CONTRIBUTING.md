@@ -1,8 +1,7 @@
 # Contributing to Windlass Platform
 
-Windlass Platform is licensed by path: MIT for the code that runs on your machine and FSL-1.1-MIT for the
-rest (see [NOTICE.md](NOTICE.md)). A contribution is licensed under the same license as the files it changes
-(inbound equals outbound). Add a `Signed-off-by:` line to each commit (`git commit -s`) to certify the
+Windlass Platform is under the Apache License 2.0 (see [LICENSE](LICENSE)). Contributions are accepted under the same
+license (inbound equals outbound). Add a `Signed-off-by:` line to each commit (`git commit -s`) to certify the
 [Developer Certificate of Origin](https://developercertificate.org/).
 
 For bugs, questions or design ideas, [open an issue](https://github.com/WindlassAI/windlass-platform/issues/new)

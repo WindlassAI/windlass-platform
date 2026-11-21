@@ -56,12 +56,7 @@ Yes. The platform runs on one Linux host with Docker Compose. The [self-host gui
 
 ## What license is the code under?
 
-Two licenses, split by where the code runs:
-
-- **MIT** for the code that runs on your machine: the runner, the sandbox images and helpers, and the protocol and sandbox layer they share with the server.
-- **FSL-1.1-MIT** for everything else: the server, the web app, the Factory, the deployment kit and the scripts. You may read, use, change and self-host it for yourself or your organization. You may not offer it as a competing commercial product or service. Each version becomes MIT two years after it is released.
-
-The repository's [NOTICE.md](https://github.com/WindlassAI/windlass-platform/blob/main/NOTICE.md) lists which paths are which. The license texts decide, not this summary.
+The Apache License 2.0, for all of it: the runner, the sandbox images, the server, the web app, the Factory and the deployment kit. You may use, change, self-host and redistribute it, including commercially. It also grants a license to any patents contributors hold on their contributions. See the repository's [LICENSE](https://github.com/WindlassAI/windlass-platform/blob/main/LICENSE).
 
 ## Where do I report a problem?
 

@@ -106,7 +106,4 @@ the user docs' [Sandboxes and security](https://windlass.parthg.dev/docs/securit
 
 ## License
 
-The code that runs on your machine (`runner/`, `sandbox/`, `server/src/runner/` and `server/src/sandbox/`) is
-[MIT](LICENSE-MIT). Everything else is [FSL-1.1-MIT](LICENSE.md): you may use, change and self-host it, but
-not offer it as a competing service, and each release becomes MIT two years later. [NOTICE.md](NOTICE.md)
-says which paths are which. Third-party components keep their own licenses.
+[Apache-2.0](LICENSE). Third-party components keep their own licenses; see [NOTICE.md](NOTICE.md).
