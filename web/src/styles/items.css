@@ -175,9 +175,8 @@
 	display: grid;
 	gap: 12px;
 	padding: 14px 14px 16px;
-	border: 1px solid color-mix(in srgb, var(--info) 35%, var(--line));
-	border-left: 3px solid var(--info);
-	border-radius: var(--radius-m);
+	border: 1px solid color-mix(in srgb, var(--info) 26%, transparent);
+	border-radius: var(--r-box);
 	background: var(--info-wash);
 }
 .item-question-head {

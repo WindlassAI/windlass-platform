@@ -838,7 +838,8 @@ button.output-more:hover {
 	border: 1px solid var(--line-strong);
 	border-radius: var(--radius-pill);
 	background: var(--bg-raised);
-	box-shadow: var(--shadow);
+	/* Its border is its edge: a shadow without the ring --shadow draws. */
+	box-shadow: var(--shadow-box);
 	font-size: var(--size-small);
 	font-weight: 600;
 	color: var(--ink);
