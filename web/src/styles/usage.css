@@ -460,3 +460,9 @@
 	padding-left: 20px;
 	padding-right: 20px;
 }
+
+/* A callout on these pages sits on the neutral surface: its tone is the icon's colour, never a tinted box or a coloured edge. */
+:is(.usage, .factory) :is(.callout-warn, .callout-bad, .callout-info) {
+	border-color: var(--line);
+	background: var(--bg-raised);
+}

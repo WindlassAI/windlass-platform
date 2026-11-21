@@ -9,12 +9,76 @@
 	gap: 2px;
 }
 
+/* Each machine is a card of its own, on the neutral surface: a glyph tile, its name and chips, the facts in mono, its state in a neutral chip, and Remove kept quiet. */
+.machines .usage-kept {
+	display: grid;
+	gap: 12px;
+	overflow: visible;
+	border: 0;
+	background: none;
+	box-shadow: none;
+}
 .machine-row {
-	grid-template-columns: minmax(0, 1fr) auto auto;
-	align-items: start;
+	grid-template-columns: 36px minmax(0, 1fr) auto auto;
+	align-items: center;
+	column-gap: 14px;
+	padding: 16px 16px 16px 16px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-box);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
+}
+.machine-row:last-child {
+	border-bottom: 1px solid var(--line);
+}
+.machine-row:hover {
+	background: var(--bg-raised);
+	border-color: var(--line-strong);
+}
+.machine-glyph {
+	position: relative;
+	display: grid;
+	place-items: center;
+	width: 36px;
+	height: 36px;
+	border-radius: 10px;
+	background: var(--bg-active);
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	color: var(--ink-dim);
+	align-self: start;
+}
+.machine-row-online .machine-glyph {
+	color: var(--ink);
 }
 .machine-row > .machine-state {
-	margin-top: 4px;
+	margin-top: 0;
+}
+/* Its state as one of Helm's chips. */
+.machine-row > .machine-state {
+	height: 24px;
+	padding: 0 9px 0 8px;
+	border-radius: var(--r-item);
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	font-family: var(--font-text);
+	font-size: 12px;
+	font-weight: var(--weight-medium);
+}
+.machine-row > .machine-state {
+	color: var(--ink-dim);
+}
+.machine-row-online > .machine-state .sandbox-state-dot {
+	border-color: var(--ok);
+	background: var(--ok);
+}
+.machine-remove {
+	border-color: transparent;
+	background: transparent;
+	color: var(--ink-dim);
+}
+.machine-remove:hover:not(:disabled) {
+	border-color: var(--line-strong);
+	background: var(--bg-hover);
+	color: var(--bad);
 }
 .machine-name {
 	display: flex;
@@ -23,11 +87,49 @@
 	gap: 4px 8px;
 	min-width: 0;
 }
-/* A machine's name is its row's title, in the face and weight of an agent's title on the other pages. */
+.machine-name .chip {
+	height: 20px;
+	padding: 0 6px;
+	border: 0;
+	border-radius: 5px;
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--ink-dim);
+	background: none;
+}
+/* A machine's name is its card's title. */
 .machine-row .usage-kept-title {
 	min-width: 0;
-	font-size: inherit;
-	font-weight: 600;
+	font-size: var(--text-15);
+	font-weight: var(--weight-strong);
+	letter-spacing: -0.01em;
+}
+.machine-row .agent-meta {
+	margin-top: 4px;
+	font-size: 11.5px;
+	color: var(--ink-faint);
+}
+.machine-row .agent-meta > span:not(:last-child)::after {
+	content: "/";
+	margin: 0 0.55em;
+	opacity: 0.55;
+}
+.machine-meter {
+	display: inline-block;
+	margin-left: 8px;
+	vertical-align: 1px;
+	width: 48px;
+	height: 4px;
+	border-radius: 2px;
+	background: var(--bg-active);
+	overflow: hidden;
+}
+.machine-meter > span {
+	display: block;
+	height: 100%;
+	border-radius: 2px;
+	background: var(--accent-text);
 }
 /* The host name a runner in a container reported, beside the name the page gives the machine. */
 .machine-host {
@@ -48,7 +150,8 @@
 	display: inline-flex;
 	align-items: center;
 	gap: 3px;
-	font-weight: 400;
+	font-family: var(--font-text);
+	font-weight: var(--weight-medium);
 	color: var(--ink-dim);
 	text-decoration: none;
 }
@@ -81,20 +184,38 @@
 /* Under the row, the width of it: what needs the user, then what the runner reported. */
 .machine-notes,
 .machine-details {
-	grid-column: 1 / -1;
+	grid-column: 2 / -1;
 	display: grid;
 	grid-template-columns: minmax(0, 1fr);
 	gap: 10px;
 	min-width: 0;
-	margin-top: 10px;
+	margin-top: 12px;
 }
 .machine-notes > .usage-note {
 	margin-top: 0;
 }
+/* What the runner reported: a sunk panel inside the card. */
 .machine-details {
 	gap: 16px;
-	padding: 14px 0 6px;
-	border-top: 1px dashed var(--line);
+	padding: 14px 16px 16px;
+	border-radius: var(--r-pop);
+	background: var(--bg-sunk);
+	box-shadow: inset 0 0 0 1px var(--line);
+	animation: machine-open var(--dur-menu-in) var(--ease);
+}
+@keyframes machine-open {
+	from {
+		opacity: 0;
+		transform: translateY(-3px);
+	}
+}
+.machine-details .eyebrow {
+	font-family: var(--font-text);
+	font-size: 12px;
+	font-weight: var(--weight-medium);
+	letter-spacing: 0;
+	text-transform: none;
+	color: var(--ink-dim);
 }
 .machine-details[hidden] {
 	display: none;
@@ -237,17 +358,23 @@
 
 @media (max-width: 760px) {
 	.machine-row {
-		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-columns: 36px minmax(0, 1fr) auto;
 		grid-template-areas:
-			"main remove"
-			"state remove";
-		row-gap: 6px;
+			"glyph main remove"
+			". state state";
+		row-gap: 10px;
+		column-gap: 12px;
+		padding: 14px;
+	}
+	.machine-row > .machine-glyph {
+		grid-area: glyph;
 	}
 	.machine-row > .usage-kept-main {
 		grid-area: main;
 	}
 	.machine-row > .machine-state {
 		grid-area: state;
+		justify-self: start;
 		margin-top: 0;
 		white-space: normal;
 	}

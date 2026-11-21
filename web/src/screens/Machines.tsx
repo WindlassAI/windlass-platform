@@ -21,7 +21,7 @@ import { hasReason } from "../api/client";
 import { CopyButton } from "../components/Copy";
 import { ClaudeSignIn } from "../components/ClaudeSignIn";
 import { Dialog } from "../components/Dialog";
-import { ArrowLeftIcon, ChevronIcon, InfoIcon, Mark, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
 import { RowsSkeleton } from "../components/Skeleton";
 import { SandboxState } from "../components/Status";
 import { HARNESS_NAMES, loginCommand, signInWords } from "../lib/acp";
@@ -295,7 +295,10 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 	const claude = machine.harnesses?.some((harness) => harness.id === "claude") ?? false;
 	const host = machineHostNote(machine);
 	return (
-		<li className="usage-kept-row machine-row">
+		<li className={`usage-kept-row machine-row machine-row-${machine.warnings.some((warning) => warning.kind === "outdated") ? "outdated" : machine.status}`}>
+			<span className="machine-glyph" aria-hidden="true">
+				<MachineIcon size={17} />
+			</span>
 			<div className="usage-kept-main">
 				<div className="machine-name">
 					<h3 className="usage-kept-title">{machineLabel(machine)}</h3>
@@ -312,7 +315,14 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</div>
 				<p className="agent-meta">
 					<span>runner {machine.runnerVersion}</span>
-					<span>{machine.sandboxes.length === 0 ? "no sandbox on it" : plural(machine.sandboxes.length, "agent's sandbox", "agents' sandboxes")}</span>
+					<span className="machine-sandbox-count">
+						{machine.sandboxes.length === 0 ? "no sandbox on it" : plural(machine.sandboxes.length, "agent's sandbox", "agents' sandboxes")}
+						{machine.maxSandboxes ? (
+							<span className="machine-meter" role="img" aria-label={`${machine.sandboxes.length} of at most ${machine.maxSandboxes} kept`}>
+								<span style={{ width: `${Math.min(100, (machine.sandboxes.length / machine.maxSandboxes) * 100)}%` }} />
+							</span>
+						) : null}
+					</span>
 					{(machine.harnesses ?? []).map((harness) => (
 						<span key={harness.id} className={harness.signIn === "none" ? "tone-warn" : undefined}>
 							{HARNESS_NAMES[harness.id]} {signInWords(harness)}

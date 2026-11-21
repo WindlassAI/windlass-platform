@@ -9,11 +9,10 @@
 /*
  * "Needs you" in its own hue everywhere: the shared token once it lands (--needs), amber until then.
  * Helm's row: the glyph, the title over its facts in mono, the track of stages, the verdict as a chip,
- * the time. Hairlines between rows; a hovered row lifts into a rounded wash.
+ * the time. Hairlines between rows; a hovered row lifts into the neutral hover surface.
  */
 .item-row {
 	--needs-ink: var(--needs, var(--warn));
-	--needs-tint: var(--needs-wash, var(--warn-wash));
 	grid-template-columns: 22px minmax(0, 1fr) auto 142px 52px;
 	column-gap: 14px;
 	min-height: 56px;
@@ -48,31 +47,11 @@
 .item-row .agent-time {
 	font-size: 11.5px;
 }
-/* A turn of it runs: a line pays out along its foot, as the drum turns. */
-.item-row-is-working::after {
-	content: "";
-	position: absolute;
-	left: 44px;
-	right: 10px;
-	bottom: -1px;
-	height: 1px;
-	background: linear-gradient(90deg, transparent, var(--accent-fill), transparent) no-repeat;
-	background-size: 28% 100%;
-	animation: item-pay 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
-	pointer-events: none;
-}
-@keyframes item-pay {
-	from {
-		background-position: -40% 0;
-	}
-	to {
-		background-position: 140% 0;
-	}
-}
-/* The questions it asks are in its own hue, the pill too. */
+/* What asks its person: the word in its hue on a neutral badge, never a tinted one. */
 .item-row .status-badge-waiting {
-	border-color: color-mix(in srgb, var(--needs-ink) 50%, transparent);
-	background: var(--needs-tint);
+	border-color: var(--line-strong);
+	background: none;
+	font-weight: var(--weight-medium);
 	color: var(--needs-ink);
 }
 .item-row .status-waiting {
@@ -99,32 +78,42 @@
 .item-pull:hover {
 	color: var(--accent-text);
 }
-/* The verdict's word as one of Helm's chips: 22 px, an inset edge, in its tone. */
+/* The verdict's word as a small neutral badge: a hairline edge, the word in ink, its tone a dot. */
 .item-verdict {
 	display: inline-flex;
+	gap: 6px;
 	font-family: var(--font-text);
 	align-items: center;
 	height: 22px;
-	padding: 0 8px;
+	padding: 0 8px 0 7px;
 	border-radius: var(--r-item);
-	box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 32%, transparent);
+	box-shadow: inset 0 0 0 1px var(--line-strong);
 	font-size: 11.5px;
 	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
 	white-space: nowrap;
 }
-.item-verdict.tone-good {
-	color: var(--accent-text);
-	background: var(--accent-wash);
+.item-verdict::before {
+	content: "";
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--ink-faint);
 }
-.item-verdict.tone-warn {
-	background: var(--warn-wash);
+.item-verdict.tone-good::before {
+	background: var(--accent-text);
 }
+.item-verdict.tone-warn::before {
+	background: var(--warn);
+}
+.item-verdict.tone-bad::before {
+	background: var(--bad);
+}
+.item-verdict.tone-good,
+.item-verdict.tone-warn,
 .item-verdict.tone-bad {
-	background: var(--bad-wash);
-}
-.item-verdict.tone-dim {
-	color: var(--ink-dim);
-	box-shadow: inset 0 0 0 1px var(--line-strong);
+	color: var(--ink);
 }
 /* Queued, or waiting for something that ends by itself: a still ring, dashed. */
 .item-glyph-waiting {
@@ -215,7 +204,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.item-row-is-working::after,
 	.item-track-bars i.now {
 		animation: none;
 	}
@@ -266,7 +254,6 @@
 /* Where it is: the stages it goes through, then one card in words, with its glyph. */
 .item {
 	--needs-ink: var(--needs, var(--warn));
-	--needs-tint: var(--needs-wash, var(--warn-wash));
 }
 .item-where {
 	display: grid;
@@ -307,16 +294,8 @@
 	color: var(--ink-dim);
 }
 .item-stage-now .item-stage-bar {
-	background: linear-gradient(90deg, var(--accent-text) 0 40%, color-mix(in srgb, var(--accent-text) 30%, transparent) 40%) 0 0 / 250% 100%;
-	animation: item-stage-run 1.6s linear infinite;
-}
-@keyframes item-stage-run {
-	from {
-		background-position: 100% 0;
-	}
-	to {
-		background-position: -50% 0;
-	}
+	background: var(--accent-text);
+	animation: item-now 1.8s ease-in-out infinite;
 }
 .item-stage-now .item-stage-name,
 .item-stages-yours .item-stage-name {
@@ -338,9 +317,8 @@
 	background: var(--bg-raised);
 	box-shadow: var(--shadow-box);
 }
-.item-now-asks {
-	border-color: color-mix(in srgb, var(--needs-ink) 30%, var(--line));
-	background: var(--needs-tint);
+.item-now-asks .item-now-state {
+	color: var(--needs-ink);
 }
 .item-now-glyph {
 	display: grid;
@@ -387,14 +365,15 @@
 	gap: 2px 18px;
 }
 
-/* What it asks: Helm's "needs you" card, in its hue, a breathing ring at its head. */
+/* What it asks: the neutral card; its hue only in the dot and the label at its head. */
 .item-question {
 	display: grid;
 	gap: 12px;
 	padding: 16px 18px 18px;
+	border: 1px solid var(--line);
 	border-radius: var(--r-box);
-	background: var(--needs-tint);
-	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--needs-ink) 24%, transparent);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
 }
 .item-question-head {
 	display: flex;
@@ -407,13 +386,10 @@
 .item-question-head::before {
 	content: "";
 	flex: none;
-	width: 8px;
-	height: 8px;
-	margin: 0 4px 0 3px;
+	width: 7px;
+	height: 7px;
 	border-radius: 50%;
 	background: var(--needs-ink);
-	box-shadow: 0 0 0 4px color-mix(in srgb, var(--needs-ink) 18%, transparent);
-	animation: factory-breathe 2.4s ease-in-out infinite;
 }
 .item-question-when {
 	font-family: var(--font-mono);
@@ -422,7 +398,7 @@
 	color: var(--ink-faint);
 }
 .item-question .input {
-	background: var(--bg-raised);
+	background: var(--bg);
 }
 .item-question-text {
 	max-width: 74ch;
@@ -1115,47 +1091,19 @@
 	border-bottom-color: transparent;
 }
 
-/* "Needs you": one card in its hue, a breathing ring at each row, the question in ink. */
-.factory-lane-needs .factory-lane-head .agent-group-name {
-	color: var(--ink-dim);
-}
-.factory-lane-needs .factory-lane {
-	padding: 4px;
-	border: 0;
-	border-radius: 12px;
-	background: var(--needs-wash, var(--warn-wash));
-	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--needs, var(--warn)) 24%, transparent);
-}
-.factory-lane-needs .item-row {
-	border-bottom-color: color-mix(in srgb, var(--needs, var(--warn)) 14%, transparent);
-	border-radius: var(--r-control);
-}
-.factory-lane-needs .item-row:last-child {
-	border-bottom: 0;
-}
-.factory-lane-needs .item-row:hover,
-.factory-lane-needs .item-row:focus-within {
-	background: color-mix(in srgb, var(--needs, var(--warn)) 7%, transparent);
-}
-.factory-lane-needs .agent-glyph {
-	position: relative;
+/* "Needs you": the lane's rows as the others', its hue only in the count and a dot at each row. */
+.factory-lane-needs .factory-lane-head .agent-group-count {
+	color: var(--needs, var(--warn));
 }
 .factory-lane-needs .agent-glyph > svg {
 	display: none;
 }
 .factory-lane-needs .agent-glyph::before {
 	content: "";
-	width: 8px;
-	height: 8px;
+	width: 7px;
+	height: 7px;
 	border-radius: 50%;
 	background: var(--needs, var(--warn));
-	box-shadow: 0 0 0 4px color-mix(in srgb, var(--needs, var(--warn)) 18%, transparent);
-	animation: factory-breathe 2.4s ease-in-out infinite;
-}
-@keyframes factory-breathe {
-	50% {
-		box-shadow: 0 0 0 7px color-mix(in srgb, var(--needs, var(--warn)) 6%, transparent);
-	}
 }
 .factory-lane-needs .item-row-why {
 	color: var(--ink);
@@ -1187,8 +1135,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.factory-lane-needs .agent-glyph::before,
-	.item-question-head::before,
 	.item-stage-now .item-stage-bar {
 		animation: none;
 	}
@@ -1239,8 +1185,5 @@
 	}
 	.item-row .item-track-word {
 		display: none;
-	}
-	.item-row-is-working::after {
-		left: 38px;
 	}
 }
