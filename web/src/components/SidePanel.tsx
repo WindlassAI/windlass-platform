@@ -15,7 +15,7 @@
  */
 import type { PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
 import { useCallback, useEffect, useState } from "react";
-import { acpHarnessName, contextWords, costWords } from "../lib/acp";
+import { acpHarnessName, contextWords, costWords, sessionModelWords } from "../lib/acp";
 import { currentMode } from "../lib/modes";
 import { absoluteTime, compact, count, percent, plural, shortId } from "../lib/format";
 import { linkProps } from "../lib/router";
@@ -58,7 +58,7 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 					</>
 				) : null}
 				<dt>model</dt>
-				<dd>{harness && summary.model === "default" ? `${harness}'s default` : summary.model}</dd>
+				<dd>{sessionModelWords(summary)}</dd>
 				<dt>mode</dt>
 				<dd title={mode.description ?? undefined}>{mode.name}</dd>
 				<dt>turns</dt>

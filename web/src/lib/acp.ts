@@ -35,6 +35,14 @@ export function harnessModelsOf(summary: Pick<SessionSummary, "harnessModels">):
 	return summary.harnessModels ?? { source: "harness", defaultModel: "default", models: [{ id: "default", name: null, efforts: [] }], fetchedAt: null };
 }
 
+/** The session's model in a few words for its panel: an ACP harness's model by the name the harness gave it ("Fable 5.2", not "fable"), its default as "Claude Code's default"; Windlass's by its id. */
+export function sessionModelWords(summary: Pick<SessionSummary, "harness" | "harnessModels" | "model">): string {
+	const harness = acpHarnessName(summary);
+	if (!harness) return summary.model;
+	if (summary.model === "default") return `${harness}'s default`;
+	return harnessModelsOf(summary).models.find((model) => model.id === summary.model)?.name || summary.model;
+}
+
 /** A harness a machine's runner reported, as `MachineSummary.harnesses` lists it. */
 export type ReportedHarness = NonNullable<MachineSummary["harnesses"]>[number];
 

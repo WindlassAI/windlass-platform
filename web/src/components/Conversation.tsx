@@ -5,7 +5,7 @@
  */
 import type { SandboxProfile, SessionSummary } from "@contract";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { duration } from "../lib/format";
+import { tickingDuration } from "../lib/format";
 import type { SessionView, TurnView } from "../lib/timeline";
 import { useNow } from "../state/hooks";
 import { PlatformPrompts, Turn } from "./Blocks";
@@ -26,7 +26,7 @@ function Working({ summary, turn }: { summary: SessionSummary; turn: TurnView | 
 		<p className={`working working-${summary.status}`} role="status">
 			{waiting ? <AskIcon size={16} /> : <Mark size={17} turning={summary.status !== "stopping"} />}
 			<span>{words}</span>
-			<span className="working-time">{duration(Math.floor(elapsed / 1000) * 1000)}</span>
+			<span className="working-time">{tickingDuration(elapsed)}</span>
 		</p>
 	);
 }

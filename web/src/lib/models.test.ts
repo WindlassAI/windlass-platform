@@ -5,6 +5,7 @@ import { ModelProblem, checkEffort, chosenModel, standInModels } from "../../../
 import { PlatformError } from "../api/client";
 import { createMockClient, mockStandInModels } from "../api/mock";
 import { effortsOf, modelIds, modelsNote, modelsNoteShort } from "./models";
+import { sessionModelWords } from "./acp";
 
 const ada = { token: "mock:chatgpt:u_models:ada@example.com", profile: { uid: "u_models", email: "ada@example.com", demo: false } };
 const SOURCES = ["demo", "signed-out", "unavailable"] as const;
@@ -92,5 +93,29 @@ describe("the mock's models", () => {
 		const other = await refusal(api.prompt({ text: "hello", model: "gpt-nope" }));
 		expect(other.reason).toBe("bad_model");
 		mock.dispose();
+	});
+});
+
+describe("sessionModelWords", () => {
+	const claudeModels: ModelList = {
+		source: "harness",
+		defaultModel: "default",
+		models: [
+			{ id: "default", name: "Default (recommended)", efforts: [] },
+			{ id: "fable", name: "Fable 5.2", efforts: [] },
+		],
+		fetchedAt: null,
+	};
+
+	it("names a Claude Code session's model as Claude Code does, not by its id", () => {
+		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "fable" })).toBe("Fable 5.2");
+		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "default" })).toBe("Claude Code's default");
+		// A model the list does not know, or no list yet: its id.
+		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "opus" })).toBe("opus");
+		expect(sessionModelWords({ harness: "claude", harnessModels: null, model: "fable" })).toBe("fable");
+	});
+
+	it("keeps a Windlass session's model id", () => {
+		expect(sessionModelWords({ harness: "windlass", harnessModels: null, model: "gpt-6.1-sol" })).toBe("gpt-6.1-sol");
 	});
 });

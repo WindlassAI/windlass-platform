@@ -13,6 +13,11 @@ export function duration(ms: number): string {
 	return `${hours}h ${minutes - hours * 60}m`;
 }
 
+/** A running clock in whole seconds, never under one: 0 → "1s", 38_400 → "38s". `duration` alone would say "0ms" as a turn starts. */
+export function tickingDuration(ms: number): string {
+	return duration(Math.max(1000, Math.floor(ms / 1000) * 1000));
+}
+
 /** 45879 → "45,879". */
 /** A length of time in words, for a sentence: "10 minutes", "45 seconds", "1 hour". */
 export function spelledDuration(ms: number): string {
