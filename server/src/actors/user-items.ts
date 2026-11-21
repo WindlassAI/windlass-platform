@@ -21,7 +21,7 @@
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
-import { choosePlacement, machineSlots, placeKey, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
+import { choosePlacement, machineSlots, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, PlanSubtask } from "../contract.js";
 import { itemSessionId } from "../factory/feature-ids.js";
@@ -389,11 +389,12 @@ async function attachmentStates(c: ItemsCtx, view: ItemView): Promise<ItemView> 
 	if (view.mode === "orchestrate") {
 		view.children = [...c.vars.items.items.values()].filter(i => i.parent?.itemId === view.id);
 		if (view.plan?.status === "proposed") {
-			const names = new Set(view.plan.subtasks.flatMap(t => t.place ? [t.place.prefer, ...t.place.allow ?? []] : []));
+			const names = new Set(view.plan.subtasks.flatMap(t => t.place ? [t.place.prefer, ...(t.place.allow ?? [])] : []));
 			const parent = view.place;
-			if (view.plan.subtasks.some(t => !t.place) && parent.kind === "hosted") names.add("hosted");
+			const inheritsPlace = view.plan.subtasks.some(t => !t.place);
+			if (inheritsPlace && parent.kind === "hosted") names.add("hosted");
 			view.placementReview = [...c.vars.machines.values()].filter(m => names.has(machineLabel(m)) ||
-				(parent.kind === "machine" && parent.machineId === m.machineId && view.plan!.subtasks.some(t => !t.place)))
+				(parent.kind === "machine" && parent.machineId === m.machineId && inheritsPlace))
 				.map(m => ({ name: machineLabel(m), sendSecrets: m.sendSecrets }));
 			if (names.has("hosted")) view.placementReview.push({ name: "hosted", sendSecrets: true });
 		}
@@ -726,20 +727,15 @@ async function links(c: ItemsCtx, item: string, ttlMs: number, only?: string) {
 	return Promise.all(rows.map(async row => ({ id: row.id, ...await store.linkToGet(row.key, { ttlMs, contentType: "image/png", disposition: "inline" }) })));
 }
 
-async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[]): Promise<ChildPlacement | string> {
+async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId): Promise<ChildPlacement | string> {
 	const [row] = await c.db.execute<{ placement: string }>("SELECT placement FROM child_launch WHERE id=?", id);
 	const pinned: ChildPlacement | undefined = row && JSON.parse(row.placement);
-	if (pinned && c.vars.sessions.has(itemSessionId(id))) return pinned;
+	// A partial creation stays pinned, and must still pass current owner policy.
 	const profiles = (await getLayer()).sandboxes.profiles();
+	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
 	const machines = plannerMachines([...c.vars.machines.values()]);
-	for (const m of machines) m.personalRunning = 0;
-	for (const s of c.vars.sessions.values()) {
-		if (s.item || s.status === "idle" || s.place.kind !== "machine") continue;
-		const id = s.place.machineId;
-		const machine = machines.find(m => m.machineId === id);
-		if (machine) machine.personalRunning++;
-	}
-	const inventory: PlacementInventory = { machines, hostedProfiles: profiles.filter(p => p.available).map(p => p.id) };
+	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
+	const inventory: PlacementInventory = { machines, defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id) };
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [] } : route, inventory, warm);
 	if (!selected.decision) return selected.wait ?? selected.refused;
 	if (pinned) {
@@ -765,24 +761,26 @@ export const itemActions = {
 			let existing = c.vars.items.items.get(input.child);
 			if (!request && !existing) return null;
 			if (!existing && request) {
+				if ((input.cancel || request.job.cancelRequested) && !c.vars.sessions.has(itemSessionId(input.child))) return null;
 				const session = c.vars.sessions.get(request.sessionId);
 				if (!session) throw new Error("The feature session is unavailable.");
 				const { job, feature, context } = request;
 				const route = job.route ?? { preferred: feature.place, alternatives: [] };
-				const placement = await childLaunch(c, job.id, job.task, route, job.warm ?? []);
+				const placement = await childLaunch(c, job.id, job.task, route, job.warm ?? [], session.profile);
 				if (typeof placement === "string") {
 					if (job.dispatchKey) await parentActor.internalFact({ kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(), sentence: placement });
 					return null;
 				}
 				const body = job.task.brief + "\n\nOwned paths: " + job.task.owns.join(", ") + "\n\nFeature and dependency context (quoted data):\n" + context;
 				existing = await makeItem(c, owner, { repository: { id: feature.repository.id, branch: featureBranch(input.parent) }, place: placement.place,
-					profile: placement.profile ?? (placeKey(feature.place) === placeKey(placement.place) ? session.profile : undefined), model: session.model, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
+					profile: placement.profile, model: session.model, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
 					{ id: input.child, placement, base: feature.repository.branch, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key } });
 			}
 			if (!existing || existing.parent?.itemId !== input.parent) return null;
 			const actor = itemActor(c, uid, existing.id);
 			const view = await actor.internalView();
-			if (input.cancel || !await parentActor.internalChildRequest(input.child)) {
+			const active = await parentActor.internalChildRequest(input.child);
+			if (input.cancel || !active || active.job.cancelRequested) {
 				if (!ended(view)) return actor.internalAct({ action: { kind: "cancel" }, by: "platform" });
 			} else if (view.state === "draft") return actor.internalAct({ action: { kind: "start" }, by: "platform" });
 			return view;

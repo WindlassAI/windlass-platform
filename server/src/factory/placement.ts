@@ -1,5 +1,5 @@
 // Names are a proposal. Only the owner's inventory may turn them into durable destinations.
-import type { ChildPlacement, FeaturePlanEdit, PlacementNeeds, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
+import type { ChildPlacement, FeaturePlanEdit, MachineSummary, PlacementNeeds, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
 import { slotWait } from "./budget.js";
@@ -8,6 +8,7 @@ type Machine = ReturnType<typeof plannerMachines>[number];
 export interface PlacementInventory {
 	machines: Machine[];
 	hostedProfiles: SandboxProfileId[];
+	defaultProfile?: SandboxProfileId;
 	/** Account state from provider routing, when available. */
 	limited?: { machineId: string; harness: string }[];
 }
@@ -32,7 +33,7 @@ export function bindRoute(task: PlanSubtask, parent: SandboxPlace, overflow: boo
 }
 
 type Candidate = { refused: string } | { wait: string } | { decision: ChildPlacement; score: number };
-export function machineSlots(machine: Pick<Machine, "slots" | "turns" | "host">) {
+export function machineSlots(machine: Pick<MachineSummary, "slots" | "turns" | "host">) {
 	if (machine.slots) return machine.slots;
 	// A disconnected runner loses its hello max. Its busy count is still reported.
 	return { max: machine.turns?.max ?? null, busy: machine.turns?.running ?? 0, queued: machine.turns?.queued ?? 0,
@@ -42,7 +43,7 @@ export function machineSlots(machine: Pick<Machine, "slots" | "turns" | "host">)
 function machineFit(machine: Machine, needs: PlacementNeeds, named: boolean): string | null {
 	if (machine.orchestrator === "never" || (machine.orchestrator === "named" && !named)) return `owner placement policy is ${machine.orchestrator}`;
 	const tags = new Set([...machine.tags, machine.os, machine.arch, "os:" + machine.os, "arch:" + machine.arch, "harness:windlass",
-		...(machine.screenshots ? ["screenshots"] : []), ...machine.harnesses?.map(h => "harness:" + h.id) ?? []]);
+		...(machine.screenshots ? ["screenshots"] : []), ...(machine.harnesses?.map(h => "harness:" + h.id) ?? [])]);
 	const missing = needs.tags?.find(t => !tags.has(t));
 	if (missing) return `missing tag ‘${missing}’`;
 	if (needs.screenshots && !machine.screenshots) return "screenshots are unavailable";
@@ -63,14 +64,16 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 		if (!inventory.hostedProfiles.length || (needs.profile && !inventory.hostedProfiles.includes(needs.profile))) return { refused: "hosted has no available matching profile" };
 		if (needs.harness && needs.harness !== "windlass" || needs.tags?.length || needs.egress || needs.cpus || needs.memoryGiB)
 			return { refused: "hosted does not report the required machine capabilities" };
-		return { decision: { name: "hosted", place, units: 1, reason, sendSecrets: true, profile: needs.profile }, score: bonus };
+		const profile = needs.profile ?? inventory.hostedProfiles.find(p => p === inventory.defaultProfile);
+		return { decision: { name: "hosted", place, units: 1, reason, sendSecrets: true, profile }, score: bonus };
 	}
 	const m = inventory.machines.find(m => m.machineId === place.machineId);
 	if (!m) return { refused: `‘${place.machineId}’ is no longer one of your machines` };
 	const refused = (message: string): Candidate => ({ refused: `‘${m.name}’: ${message}.` });
 	const failure = machineFit(m, needs, !!task.place);
 	if (failure) return refused(failure);
-	const profile = m.availableProfiles.find(p => (!needs.profile || p === needs.profile) && m.allowedProfiles?.some(allowed => allowed === p));
+	const allowed = m.availableProfiles.filter(p => m.allowedProfiles?.some(id => id === p));
+	const profile = needs.profile ? allowed.find(p => p === needs.profile) : allowed.find(p => p === inventory.defaultProfile) ?? allowed[0];
 	if (!profile) return refused("no available owner-allowed profile matches");
 	const slots = machineSlots(m);
 	if (needs.cpus && slots.unit.cpus <= 0) return refused("per-slot CPU capacity is unknown");

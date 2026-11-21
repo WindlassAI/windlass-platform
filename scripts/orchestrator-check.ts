@@ -653,14 +653,17 @@ test("placement 7 scores available slots, queue, personal turns and direct depen
 	assert.deepEqual(dispatch(next, [busy, { ...linux, personalRunning: 2 }]).jobs![1].placement?.place, { kind: "machine", machineId: macId });
 });
 
-test("child creation rechecks owner policy and sends the chosen machine and size to its session", async () => {
+async function childCreation(t: import("node:test").TestContext) {
 	const { itemActions, ITEM_TABLES } = await import("../server/src/actors/user-items.js");
 	const { serviceParams } = await import("../server/src/auth.js");
 	const { DatabaseSync } = await import("node:sqlite");
-	const mac = machineReport("Mac", macId, { slots: { max: 3, busy: 0, queued: 0, unit: { cpus: 4, memoryBytes: 4 * GiB, pids: 1024 } } });
+	const mac = machineReport("Mac", macId, {
+		allowedProfiles: ["docker-windlass-sandbox", "docker-hardened"],
+		profiles: ["docker-windlass-sandbox", "docker-hardened"].map(id => ({ id, available: true } as never)), slots: { max: 3, busy: 0, queued: 0, unit: { cpus: 4, memoryBytes: 4 * GiB, pids: 1024 } } });
 	const feature = placementFeature([mac], { cpus: 8 });
 	const selected = dispatch(feature, [mac]), job = selected.jobs![0];
 	const raw = new DatabaseSync(":memory:");
+	t.after(() => raw.close());
 	for (const sql of ITEM_TABLES) raw.exec(sql);
 	const owner = "u_fixture", sessionId = "s_feature", repository = { id: 42, branch: "main" };
 	const request = { job, sessionId, feature: { ...feature, title: "Feature", repository, source: "web" }, context: "{}" };
@@ -674,22 +677,76 @@ test("child creation rechecks owner policy and sends the chosen machine and size
 		db: { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args) },
 		client: () => ({ workItem: { get: ([, id]: string[]) => id === job.id ? childActor : parent,
 			create: async (_key: string[], { input }: { input: { item: typeof feature } }) => { child = input.item; } } }) };
-	const delivered: { place: unknown; size?: number }[] = [];
-	const create = () => itemActions.internalFeatureChild(ctx as never, { parent: feature.id, child: job.id }, async (_c, _owner, input, _submission, origin) => {
-		delivered.push({ place: input.place, size: origin.size });
+	const delivered: { place: unknown; size?: number; profile?: string }[] = [];
+	const create = (cancel = false) => itemActions.internalFeatureChild(ctx as never, { parent: feature.id, child: job.id, cancel }, async (_c, _owner, input, _submission, origin) => {
+		delivered.push({ place: input.place, size: origin.size, profile: input.profile });
 		return { ...input, repository, id: origin.sessionId } as never;
 	});
-	try {
-		machines.set(macId, { ...mac, orchestrator: "never" });
-		await create();
-		assert.equal(delivered.length, 0, "revoked placement reached session creation");
-		machines.set(macId, mac);
-		await create();
-		assert.deepEqual(delivered, [{ place: { kind: "machine", machineId: macId }, size: 2 }]);
-		assert.deepEqual(child?.place, delivered[0].place);
-		assert.equal(child?.placement?.reason, "Build on the owner's machine");
-		machines.set(macId, { ...mac, status: "offline" });
-		await create();
-		assert.equal(delivered.length, 1);
-	} finally { raw.close(); }
+	return { create, delivered, machines, mac, child: () => child };
+}
+
+test("child creation sends the chosen machine and size to its session and preserves them on replay", async t => {
+	const { create, delivered, machines, mac, child } = await childCreation(t);
+	await create();
+	assert.deepEqual(delivered, [{ place: { kind: "machine", machineId: macId }, size: 2, profile: "docker-hardened" }]);
+	assert.deepEqual(child()?.place, delivered[0].place);
+	assert.equal(child()?.placement?.reason, "Build on the owner's machine");
+	machines.set(macId, { ...mac, status: "offline" });
+	await create();
+	assert.equal(delivered.length, 1);
+});
+
+test("child creation rechecks the owner's policy after dispatch", async t => {
+	const { create, delivered, machines, mac } = await childCreation(t);
+	machines.set(macId, { ...mac, orchestrator: "never" });
+	await create();
+	assert.deepEqual(delivered, []);
+});
+
+test("cancelling a placement wait creates no child session", async t => {
+	const { create, delivered } = await childCreation(t);
+	await create(true);
+	assert.deepEqual(delivered, []);
+});
+
+test("budget-only edits from older forms retain the approved overflow choice", () => {
+	const plan = proposal();
+	plan.overflow = true;
+	const pending = proposed(plan);
+	const { overflow, ...edit } = plan;
+	const edited = advance(pending, { kind: "edit_plan", version: 1, plan: edit, at: 4, by: "owner" }).item;
+	assert.equal(edited.featurePlan?.overflow, true);
+});
+
+test("unknown hard requirements cannot disappear during plan validation", () => {
+	const p = proposal();
+	Object.assign(p.subtasks[0], { needs: { memoryGB: 16 } });
+	assert.throws(() => proposed(p), /memoryGB/);
+});
+
+test("a limited account waits or uses an approved alternative at the child boundary", () => {
+	const machines = [machineReport(), machineReport("Linux box", linuxId)];
+	for (const overflow of [false, true]) {
+		const item = placementFeature(machines, {}, ["Linux box"], overflow);
+		const selected = advance(item, { kind: "place_child", key: currentKey(item)!, at: 6, inventory: {
+			machines: plannerMachines(machines), hostedProfiles: [], limited: [{ machineId: macId, harness: "windlass" }],
+		} }).item;
+		if (overflow) assert.deepEqual(selected.jobs![0].placement?.place, { kind: "machine", machineId: linuxId });
+		else assert.match(selected.wait!.sentence, /usage limit.*Mac/);
+	}
+});
+
+test("hosted requires an approved route and a deployment profile", () => {
+	const mac = machineReport();
+	const item = placementFeature([mac]);
+	assert.match(dispatch(item, []).wait!.sentence, /no longer one of your machines/);
+	const p = proposal();
+	p.subtasks[0].place = { prefer: "hosted", reason: "Use the hosted sandbox" };
+	assert.throws(() => advance(proposed(p), { kind: "approve_plan", version: 1, by: "person", at: 5,
+		inventory: { machines: plannerMachines([mac]), hostedProfiles: [] } }), /hosted.*profile/);
+});
+
+test("a signed-in Claude installation cannot silently launch a Windlass child", () => {
+	const mac = machineReport("Mac", macId, { harnesses: [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token" }] });
+	assert.throws(() => placementFeature([mac], { harness: "claude" }), /work items.*Windlass/i);
 });

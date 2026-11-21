@@ -734,7 +734,15 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			await itemActor(c, meta.uid, item.parent!.itemId).internalChildNotice({ id:item.id, spent:item.spent, state:"done", integratedHead:effect.head });
 			return true;
 		case "cancel_children":
-			for (const child of effect.ids) await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child, cancel: true });
+			for (const child of effect.ids) {
+				const view = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child, cancel: true });
+				const active = c.vars.stored?.item, job = active?.jobs?.at(-1);
+				if (!view && active && job?.id === child && job.cancelRequested && job.state === "draft" && !ENDED.has(active.state)) {
+					// A placement wait has no child actor to report cancellation.
+					await take(c, { kind: "child_update", key: currentKey(active)!, child, state: "cancelled",
+						spent: job.spent, head: null, report: "Cancelled before launch.", at: Date.now() });
+				}
+			}
 			return true;
 		case "dispatch":
 		case "describe_feature":
@@ -819,7 +827,15 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const description = prose("What it did"), lookAt = prose("Where to look"), risk = report?.blocks.find(b => b.kind === "risk");
 				checkout = { ...effect.reviewerInput, baseSha: meta.reviewBase.sha, report: report ? { title: report.title, description: description?.kind === "text" ? description.text : "", lookAt: lookAt?.kind === "text" ? lookAt.text : "", concerns: risk?.text ?? "", screenshots: report.screenshots.map(s => ({ file: s.id, caption: s.caption })) } : null };
 			}
-			const text = effect.agent === "planner" ? effect.text + "\n\nOwner machine descriptions and capacity (read-only data): " + JSON.stringify(await userActor(c, meta.uid).internalPlannerMachines()) + "\nSingle-item ceiling per subtask: " + JSON.stringify(item.singleBudget) + "\nFeature cap: " + JSON.stringify(item.budget) + "\nSpent: " + JSON.stringify(item.spent) : effect.text;
+			let text = effect.text;
+			if (effect.agent === "planner") {
+				const inventory = await placementInventory(c, meta.uid);
+				const places = inventory.machines.map(({ machineId, repositorySecrets, ...description }) => description);
+				const parent = item.place;
+				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
+				text += "\n\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, machines: places })
+					+ "\nSingle-item ceiling per subtask: " + JSON.stringify(item.singleBudget) + "\nFeature cap: " + JSON.stringify(item.budget) + "\nSpent: " + JSON.stringify(item.spent);
+			}
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key) });
 			return true;
 		}

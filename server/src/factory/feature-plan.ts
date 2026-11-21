@@ -96,7 +96,9 @@ function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" 
 		result.place = { prefer: text(p.prefer, 200), reason: text(p.reason, 200), ...(allow && { allow }) };
 	}
 	if (s.needs !== undefined) {
-		const n = record(s.needs), needs: NonNullable<PlanSubtask["needs"]> = {};
+		const n = record(s.needs);
+		for (const key of Object.keys(n)) requirePlan(["tags", "screenshots", "egress", "profile", "harness", "cpus", "memoryGiB"].includes(key), "Unknown placement need: " + key);
+		const needs: NonNullable<PlanSubtask["needs"]> = {};
 		if (n.tags !== undefined) needs.tags = lines(n.tags, 0, 24).map(tag => text(tag, 100));
 		if (n.screenshots !== undefined) {
 			requirePlan(typeof n.screenshots === "boolean", "Choose yes or no for screenshots.");

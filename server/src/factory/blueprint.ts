@@ -210,6 +210,7 @@ function apply(c: Change, fact: Fact): boolean {
 			const completed = item.jobs?.filter(j => j.state === "done") ?? [];
 			for (const d of dimensions) available[d] += completed.reduce((n,j) => n + j.task.budget[d], 0);
 			const plan = validatePlan(fact.plan, item.singleBudget, available);
+			if (fact.kind === "edit_plan" && !Object.hasOwn(fact.plan as object, "overflow")) plan.overflow = item.featurePlan?.overflow ?? false;
 			if (item.forceSplit && plan.singleSuggested) throw new PlanError("Propose two to six subtasks as requested.");
 			const keys = [...(item.jobs ?? []).map(job => job.task.key), ...plan.subtasks.map(task => task.key)];
 			if (new Set(keys).size > 6) throw new PlanError("A feature may have at most six distinct subtasks across its plans.");
