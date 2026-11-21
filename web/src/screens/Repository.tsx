@@ -312,9 +312,17 @@ function Work({ page }: { page: RepositoryPage }) {
 					page.connection === "failed" ? (
 						<p className="usage-empty tone-bad">The list of agents could not be loaded.</p>
 					) : (
-						<p className="usage-empty" aria-busy="true">
-							Reading your agents…
-						</p>
+						<ul className="agents agents-loading repo-agents" aria-busy="true" aria-label="Reading your agents">
+							{[0, 1].map((row) => (
+								<li key={row} className="agent-row agent-row-skeleton">
+									<span className="skeleton skeleton-dot" />
+									<div className="agent-main">
+										<span className="skeleton skeleton-title" style={{ width: `${46 - row * 9}%` }} />
+										<span className="skeleton skeleton-meta" style={{ width: `${62 - row * 8}%` }} />
+									</div>
+								</li>
+							))}
+						</ul>
 					)
 				) : sessions.length === 0 ? (
 					<p className="usage-empty">No agent of yours is on this repository.{launchable ? " Launch one with New agent." : ""}</p>

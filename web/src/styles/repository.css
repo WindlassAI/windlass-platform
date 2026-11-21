@@ -99,6 +99,10 @@ a.agent-group-name:hover .agent-group-owner {
 	min-width: 0;
 	flex: 1 1 320px;
 }
+/* A page's lede keeps the measure of the words under it. */
+.repo-head > p.home-account:not(.repo-facts) {
+	max-width: 74ch;
+}
 .repo-name {
 	overflow-wrap: anywhere;
 	text-wrap: wrap;

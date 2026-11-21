@@ -157,7 +157,7 @@
 	margin-top: 0;
 }
 .item-facts > div {
-	grid-template-columns: 132px minmax(0, 1fr);
+	grid-template-columns: 160px minmax(0, 1fr);
 }
 .item-facts dd {
 	min-width: 0;
@@ -196,7 +196,7 @@
 }
 .item-question-text {
 	max-width: 74ch;
-	font-size: 1.0625rem;
+	font-size: var(--size-title);
 	line-height: 1.5;
 	overflow-wrap: anywhere;
 }
@@ -540,7 +540,7 @@
 
 /* Cost: each figure against its budget, with a thin bar. */
 .item-cost > div {
-	grid-template-columns: 132px 220px minmax(0, 1fr);
+	grid-template-columns: 160px 220px minmax(0, 1fr);
 }
 .item-cost .usage-number {
 	text-align: left;

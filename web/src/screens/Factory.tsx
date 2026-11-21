@@ -15,7 +15,7 @@
 import type { GithubId, ItemState, ItemSummary } from "@contract";
 import { useEffect, useId, useRef, useState } from "react";
 import { Chip, StartComposer } from "../components/StartComposer";
-import { ChevronIcon, WarnIcon } from "../components/Icons";
+import { ChevronIcon, Mark, WarnIcon } from "../components/Icons";
 import { plural } from "../lib/format";
 import { repositoryName, workingCounts } from "../lib/repositories";
 import { ITEM_SOURCES, linkProps, navigate, type ItemSource } from "../lib/router";
@@ -96,6 +96,7 @@ function FilterChip({ label, value, choices, chosen, open, onToggle, onClose, on
 function FactoryEmpty({ github }: { github: boolean }) {
 	return (
 		<div className="state state-empty factory-empty">
+			<Mark size={56} />
 			<h2>No work items yet</h2>
 			<p>
 				Write what you want done on one of your repositories, and an agent works on it by itself in a sandbox, runs your checks and hands it to you as a pull request. When it needs a decision from you, it waits here under Needs you, and merging always stays yours.{" "}

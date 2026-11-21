@@ -565,7 +565,7 @@ button.line-button:hover {
 	gap: 4px 12px;
 	margin-bottom: 5px;
 	font-family: var(--font-mono);
-	font-size: 0.6875rem;
+	font-size: var(--size-tiny);
 	font-weight: 400;
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
@@ -836,7 +836,7 @@ button.output-more:hover {
 	gap: 6px;
 	padding: 7px 14px;
 	border: 1px solid var(--line-strong);
-	border-radius: 999px;
+	border-radius: var(--radius-pill);
 	background: var(--bg-raised);
 	box-shadow: var(--shadow);
 	font-size: var(--size-small);
@@ -1219,7 +1219,7 @@ button.output-more:hover {
 	align-items: flex-end;
 	gap: 8px;
 	padding: 7px 7px 7px 12px;
-	border: 1px solid var(--line-strong);
+	border: 1px solid var(--line-field);
 	border-radius: var(--radius-l);
 	background: var(--bg-raised);
 	transition:
@@ -1507,6 +1507,15 @@ button.output-more:hover {
 	color: var(--ink);
 	overflow-wrap: anywhere;
 }
+/* An id is a value like the others: the same size, so the rows keep one rhythm. */
+.kv dd code {
+	font-size: inherit;
+}
+/* The state's badge sits on the line's baseline as the words around it do. */
+.kv dd .status-badge {
+	vertical-align: baseline;
+	line-height: inherit;
+}
 .kv-clip {
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -1550,7 +1559,7 @@ button.output-more:hover {
 .legend {
 	display: inline-flex;
 	gap: 12px;
-	font-size: 0.6875rem;
+	font-size: var(--size-tiny);
 	font-weight: 400;
 	letter-spacing: 0;
 	text-transform: none;
