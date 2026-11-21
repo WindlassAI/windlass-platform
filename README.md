@@ -740,6 +740,18 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   only: a container it finds after a restart whose workspace was never set up (no `/workspace/.git`: the
   runner stopped between starting it and preparing it) is removed when its session next asks for a
   sandbox, and a fresh one is made.
+- **Pair and sign in from a terminal.** Build with `WLP_RUNNER_HARNESSES="claude opencode" scripts/runner-build.sh`. Run the interactive setup on the machine, using the runner image you built or its published digest.
+
+  ```sh
+  docker run -it --rm \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v windlass-runner:/var/lib/windlass-runner \
+    <image> setup --platform <url> --harness claude --harness opencode
+  ```
+
+  Enter the pairing code on the Machines page and choose **Connect**. Setup asks about each selected agent. Answer **n** to skip its sign-in. For OpenCode choose **chatgpt** for the OpenAI device link and code, **openai** for an OpenAI API key, **anthropic** for an Anthropic API key, or **free** to use OpenCode’s public models. Paste keys at the hidden terminal prompt. The final command starts the background runner with the same image, volumes and flags. Run that command on the machine.
+
+  Switch providers or renew a login with `docker exec -it windlass-runner windlass-runner login opencode`. Use `logout opencode` to clear it locally across pairings. OpenCode 1.19.6 runs in personal hardened Docker sessions. The per-machine relay keeps the selected provider credential in its private volume and refreshes ChatGPT credentials there. Sessions receive signed placeholders. Their commands can consume model quota. Replacing or clearing a login invalidates previously issued OpenCode placeholders. Recreate the affected sessions to use the replacement login. Open and restricted egress both use the session’s loopback model relay.
 - **Claude Code on this machine.** Build the runner with `WLP_RUNNER_HARNESSES=claude scripts/runner-build.sh`
   and add `--harness claude` after the runner image in the pairing command. Only the hardened Docker
   profile offers Claude Code. To sign in, run `docker exec -it windlass-runner windlass-runner login claude`.

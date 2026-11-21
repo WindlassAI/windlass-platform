@@ -19,6 +19,7 @@ export const CLAUDE_DEFAULT_MODE = "auto";
 /** The modes a new agent is offered in a sandbox profile, and the one it starts on. */
 export function launchModes(harness: HarnessId, profile: Pick<SandboxProfile, "approval"> | null): { modes: SessionMode[]; default: string } | null {
 	if (harness === "claude") return { modes: [...CLAUDE_LAUNCH_MODES], default: CLAUDE_DEFAULT_MODE };
+	if (harness === "opencode") return { modes: [], default: "build" };
 	if (profile === null) return null;
 	return { modes: windlassModes(profile.approval), default: profile.approval };
 }

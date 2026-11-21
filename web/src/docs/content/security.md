@@ -68,8 +68,7 @@ The platform can ask the runner only for what its protocol names. In short, it c
 - create a sandbox, giving only the profile, the agent and whether it takes screenshots;
 - connect to a sandbox, read its state, pause it and remove it;
 - run commands in a sandbox, and start, signal and stop its processes;
-- read and write text files in a sandbox, and write secret files there;
-- start and finish a Claude Code sign-in on the machine.
+- read and write text files in a sandbox, and write secret files there.
 
 > **Careful** The platform can run any command in the containers the runner made, Claude Code's containers included. In a Claude Code container, commands can use the session’s model relay and consume your quota. Older runners with the login volume mounted in the session also expose the setup token.
 

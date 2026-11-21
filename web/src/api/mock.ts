@@ -2933,8 +2933,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		claims: Map<string, string | null>;
 		/** When this user looked a code up, for the limit of five in ten minutes. */
 		lookups: number[];
-		loginAttempts: number[];
-		logins: Map<string, number>;
 		/** For `stale`: whether the user's connection dropped yet, after which the list can no longer be read. */
 		dropped: "no" | "soon" | "yes";
 	}
@@ -2949,7 +2947,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const world = worldOf(auth);
 		let set = machineSets.get(world.profile.uid);
 		if (!set) {
-			set = { list: seedMachines(machineState), claims: new Map(), lookups: [], loginAttempts: [], logins: new Map(), dropped: "no" };
+			set = { list: seedMachines(machineState), claims: new Map(), lookups: [], dropped: "no" };
 			machineSets.set(world.profile.uid, set);
 		}
 		return set;
@@ -3107,7 +3105,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						freeDiskBytes: 3.2e9,
 						sendSecrets: false,
 						// Its runner was started with --harness claude, and nobody signed Claude Code in there.
-						harnesses: [{ ...MOCK_CLAUDE, signIn: "none" }],
+						harnesses: [{ ...MOCK_CLAUDE, signIn: "none" }, { ...MOCK_CLAUDE, id: "opencode", adapter: "OpenCode 1.19.6", signIn: "token" }],
 					}),
 					// Its owner started its runner with --max-running 2 --max-sandboxes 6; the others have no limit.
 					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9, maxRunning: 2, maxSandboxes: 6, harnesses: undefined }),
@@ -3143,20 +3141,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** The calls of the Machines page. A machine paired here waits for its runner, which connects a few seconds later. */
-	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineSecrets" | "startClaudeLogin" | "finishClaudeLogin" | "cancelClaudeLogin"> {
-		function loginMachine(id: string) {
-			machinesOn();
-			const set = machinesOf(auth);
-			const at = realNow();
-			set.loginAttempts = set.loginAttempts.filter(t => t > at - 10 * MINUTE);
-			if (set.loginAttempts.length >= 12) throw new PlatformError("user", "Too many Claude sign-in requests.", { reason: "rate_limited" });
-			set.loginAttempts.push(at);
-			const machine = machineOf(auth, id);
-			if (machine.status !== "online") throw new PlatformError("user", "The machine is offline.", { reason: "machine_not_connected" });
-			if (!machine.harnesses?.some(h => h.id === "claude")) throw new PlatformError("user", "This machine does not offer Claude Code.", { reason: "claude_unavailable" });
-			if ((set.logins.get(id) ?? 0) <= at) set.logins.delete(id);
-			return { machine, logins: set.logins };
-		}
+	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineSecrets"> {
 		return {
 			async machines() {
 				machinesOn();
@@ -3198,25 +3183,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					machinesChanged(auth);
 				});
 				return machinesView(auth).find((one) => one.machineId === machineId) as MachineSummary;
-			},
-			async startClaudeLogin({ machineId }) {
-				const { logins } = loginMachine(machineId);
-				if (logins.has(machineId)) throw new PlatformError("user", "A Claude Code sign-in is already pending.", { reason: "claude_login_failed" });
-				const expiresAt = realNow() + 10 * MINUTE;
-				logins.set(machineId, expiresAt);
-				return { url: "https://claude.example.invalid/authorize", expiresAt };
-			},
-			async finishClaudeLogin({ machineId, code }) {
-				const { machine, logins } = loginMachine(machineId);
-				if (!logins.delete(machineId)) throw new PlatformError("user", "No Claude Code sign-in is pending.", { reason: "claude_login_failed" });
-				if (code !== "mock-approval") throw new PlatformError("user", "The mock approval code is mock-approval.", { reason: "claude_login_failed" });
-				machine.harnesses = machine.harnesses!.map(h => ({ ...h, signIn: "token" }));
-				machinesChanged(auth);
-				return { signedIn: true };
-			},
-			async cancelClaudeLogin({ machineId }) {
-				loginMachine(machineId).logins.delete(machineId);
-				return { cancelled: true };
 			},
 			async removeMachine({ machineId }) {
 				machinesOn();
@@ -3272,7 +3238,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const profile = (machine ? machine.profiles : profiles).find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
 				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());
-				const options = machine?.harnesses?.find(entry => entry.id === "claude")?.options;
+				const options = machine?.harnesses?.find(entry => entry.id === input.harness)?.options;
 				const harness: HarnessId = input.harness ?? "windlass";
 				if (harness !== "windlass") {
 					if (!machine) throw new PlatformError("user", "Claude Code runs only on a machine of yours.", { reason: "bad_input" });
@@ -3280,9 +3246,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					if (input.publishUnasked) throw new PlatformError("user", "Claude Code has no publish tool. Publish from the session panel.", { reason: "bad_input" });
 					if (!machine.harnesses?.some((offered) => offered.id === harness)) throw new PlatformError("user", "This machine does not offer Claude Code.", { reason: "bad_input" });
 				}
-				const models = harness === "claude" ? initialHarnessModels(options) : modelsFor(world().profile);
+				const models = harness !== "windlass" ? initialHarnessModels(options) : modelsFor(world().profile);
 				if (input.model) {
-					if (harness === "claude" && options && !models.models.some(m => m.id === input.model)) throw new PlatformError("user", "Choose a model offered by this machine.", { reason: "bad_input" });
+					if (harness !== "windlass" && options && !models.models.some(m => m.id === input.model)) throw new PlatformError("user", "Choose a model offered by this machine.", { reason: "bad_input" });
 					checkModel(models, input.model);
 				}
 				const modes = initialSessionModes(profile.id, harness);
@@ -3304,7 +3270,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
 				if (repository && input.setupCommand !== undefined) saveSetup(world(), repository.id, input.setupCommand);
 				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, harness, modes, model: input.model || models.defaultModel, repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
-				if (harness === "claude" && options) session.summary = { ...session.summary, harnessModels: models };
+				if (harness !== "windlass" && options) session.summary = { ...session.summary, harnessModels: models };
 				if (machine) {
 					session.summary = { ...session.summary, place: { kind: "machine", machineId: machine.machineId } };
 					session.machine = { profile, reach: null };

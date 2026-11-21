@@ -4,7 +4,7 @@ Yes. You sign in with ChatGPT, and Windlass agents call the model through your C
 
 ## Can I use Claude Code?
 
-Yes, on one of your own machines. Start its runner with `--harness claude`, sign Claude in from the Machines page, then choose the machine under **on** and **Claude Code** under **agent**. Claude Code runs with your Claude subscription. See [Claude Code on your machine](/docs/machines#claude-code-on-your-machine).
+Yes, on one of your own machines. Start its runner with `--harness claude`, run `windlass-runner login claude` in the runner terminal, then choose the machine under **on** and **Claude Code** under **agent**. Claude Code runs with your Claude subscription. See [Claude Code on your machine](/docs/machines#claude-code-on-your-machine).
 
 ## Does the agent get my ChatGPT password or sign-in?
 

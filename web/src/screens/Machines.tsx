@@ -13,18 +13,18 @@
  *
  * A runner started with another harness (`--harness claude`) reports it with its adapter's version and
  * whether it is signed in there; each machine says so. Where Claude Code is not signed in, its line signs it in
- * from the page (components/ClaudeSignIn.tsx), with the command that does it on the machine beside it.
+ * with the command to run in the machine terminal.
  */
 import { MAX_MACHINES, type MachineClaim, type MachineSandbox, type MachineSummary, type MachineWarning, type MachinesInfo } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { hasReason } from "../api/client";
 import { CopyButton } from "../components/Copy";
-import { ClaudeSignIn } from "../components/ClaudeSignIn";
+import { HarnessStatus } from "../components/HarnessStatus";
 import { Dialog } from "../components/Dialog";
 import { ArrowLeftIcon, ChevronIcon, InfoIcon, Mark, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
 import { RowsSkeleton } from "../components/Skeleton";
 import { SandboxState } from "../components/Status";
-import { HARNESS_NAMES, loginCommand, signInWords } from "../lib/acp";
+import { HARNESS_NAMES, signInWords } from "../lib/acp";
 import { absoluteTime, plural, relativeTime, spelledDuration } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
@@ -292,7 +292,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 	const details = useId();
 	const reported = machine.commandSandbox !== null;
 	const paired = relativeTime(machine.since, now);
-	const claude = machine.harnesses?.some((harness) => harness.id === "claude") ?? false;
+
 	const host = machineHostNote(machine);
 	return (
 		<li className="usage-kept-row machine-row">
@@ -334,9 +334,9 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</span>
 			</button>
 
-			{machine.status === "waiting" || machine.warnings.length > 0 || claude ? (
+			{machine.status === "waiting" || machine.warnings.length > 0 || (machine.harnesses?.length ?? 0) > 0 ? (
 				<div className="machine-notes">
-					{claude ? <ClaudeSignIn machine={machine}>Claude Code: not signed in.</ClaudeSignIn> : null}
+					{machine.harnesses?.map(harness => <HarnessStatus key={harness.id} harness={harness} />)}
 					{machine.status === "waiting" && machine.warnings.length === 0 ? (
 						<p className="usage-note">
 							Paired {paired === "now" ? "a moment ago" : paired}; its runner has not connected since. Check <code>docker logs windlass-runner</code> on the machine. A runner that lost its key before it connected never will: remove this machine and add it again.
@@ -373,16 +373,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 								{machine.harnesses.map((harness) => (
 									<div key={harness.id} className="machine-harness">
 										{HARNESS_NAMES[harness.id]} ({harness.adapter}): <span className={harness.signIn === "none" ? "tone-warn" : undefined}>{signInWords(harness)}</span>
-										{/* Not signed in, the line above the details signs it in. */}
-										{harness.signIn !== "unknown" ? null : (
-											<>
-												<p className="field-note">
-													Its runner did not say whether it is signed in. To sign it in again, run <code>windlass-runner login {harness.id}</code> on the machine and approve in the browser.
-												</p>
-												<Command text={loginCommand(harness)} label={`The command that signs ${HARNESS_NAMES[harness.id]} in`} />
-											</>
-										)}
-									</div>
+										</div>
 								))}
 							</dd>
 						</div>

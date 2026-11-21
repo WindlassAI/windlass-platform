@@ -100,7 +100,7 @@ function ChosenSandbox({ profile, claude = null }: { profile: SandboxProfile; cl
 				)}
 				<span className={profile.commandNetwork ? "fact-open" : undefined}>{commandNetworkFact(profile, claude)}</span>
 				{claude ? (
-					<span className="fact-open">commands can use your Claude login. {claudeLoginFact(profile)}</span>
+					<span className="fact-open">{claude.opencode ? "Commands can use the OpenCode model relay. Provider credentials stay on the machine." : <>commands can use your Claude login. {claudeLoginFact(profile)}</>}</span>
 				) : (
 					<span className={profile.commandsCanReadAccessToken ? "fact-open" : undefined}>{profile.commandsCanReadAccessToken ? "commands can read the session's access token" : "commands cannot read the session's access token"}</span>
 				)}
@@ -251,7 +251,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const [effortChoice, setEffort] = useState(draft?.effort ?? "");
 	// Where it runs: undefined until chosen; null is this platform.
 	const [placeChoice, setPlace] = useState<string | null | undefined>(draft?.place === "platform" ? null : (draft?.place ?? undefined));
-	const [harnessChoice, setHarness] = useState<HarnessId | null>(draft?.harness === "windlass" || draft?.harness === "claude" ? draft.harness : null);
+	const [harnessChoice, setHarness] = useState<HarnessId | null>(draft?.harness === "windlass" || draft?.harness === "claude" || draft?.harness === "opencode" ? draft.harness : null);
 	const [modeChoice, setMode] = useState<string | null>(draft?.mode ?? null);
 	const [open, setOpen] = useState<Picker | null>(null);
 	const [more, setMore] = useState(false);
@@ -394,7 +394,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// Claude Code's modes as its machine reported them, where it did.
 	const modes = launch && other && options.modes ? { modes: options.modes, default: options.modes.some((mode) => mode.id === CLAUDE_DEFAULT_MODE) ? CLAUDE_DEFAULT_MODE : (options.modes[0] as SessionMode).id } : launch;
 	const mode = modes ? (modes.modes.find((candidate) => candidate.id === modeChoice) ?? modes.modes.find((candidate) => candidate.id === lastOf?.mode) ?? modes.modes.find((candidate) => candidate.id === modes.default) ?? null) : null;
-	const claude: ClaudeFacts | null = harness === "claude" && mode ? { mode } : null;
+	const claude: ClaudeFacts | null = other ? { opencode: harness === "opencode", mode: mode ?? { id: "build", name: "Build", description: null } } : null;
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 
 	// Saved defaults that differ from what is chosen, and those that cannot be used.

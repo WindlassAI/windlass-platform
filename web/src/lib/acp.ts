@@ -23,7 +23,7 @@ import type { Block, PlanEntry, ReasoningBlock, SessionView, TextBlock, ToolBloc
 export const ACP_MESSAGE = "acp";
 
 /** Each harness by the name the screens give it. */
-export const HARNESS_NAMES: Record<HarnessId, string> = { windlass: "Windlass", claude: "Claude Code" };
+export const HARNESS_NAMES: Record<HarnessId, string> = { windlass: "Windlass", claude: "Claude Code", opencode: "OpenCode" };
 
 /** The name of the harness a session runs when it is not Windlass, which it is when the summary names none; null for Windlass. */
 export function acpHarnessName(summary: Pick<SessionSummary, "harness">): string | null {
@@ -48,7 +48,7 @@ export type ReportedHarness = NonNullable<MachineSummary["harnesses"]>[number];
 
 /** Its sign-in in a few words: "signed in", "not signed in", "unknown". */
 export function signInWords(harness: ReportedHarness): string {
-	return harness.signIn === "token" ? "signed in" : harness.signIn === "none" ? "not signed in" : "unknown";
+	return harness.signIn === "token" ? "signed in" : harness.signIn === "none" ? "sign in needed" : "unknown";
 }
 
 /** The command that signs a harness in on its machine, run inside the runner's container. */

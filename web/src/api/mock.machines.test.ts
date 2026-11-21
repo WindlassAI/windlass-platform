@@ -19,26 +19,6 @@ const make = (machine?: (typeof MOCK_MACHINE_STATES)[number]) => createMockClien
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 describe("the mock's machines", () => {
-	it("completes, cancels and refuses overlapping Claude logins", async () => {
-		const mock = make("claude-signed-out");
-		const user = mock.user(auth);
-		const input = { machineId: "m_nas" };
-		try {
-			expect((await user.machines())[0]?.harnesses?.[0]?.signIn).toBe("none");
-			const start = await user.startClaudeLogin(input);
-			expect(start.url).toMatch(/^https:\/\//);
-			expect(start.expiresAt).toBeGreaterThan(Date.now());
-			await expect(user.startClaudeLogin(input)).rejects.toThrow(/pending/);
-			await user.cancelClaudeLogin(input);
-			await expect(user.finishClaudeLogin({ ...input, code: "mock-approval" })).rejects.toThrow(/pending/);
-			await user.startClaudeLogin(input);
-			await expect(user.finishClaudeLogin({ ...input, code: "wrong" })).rejects.toThrow();
-			await user.startClaudeLogin(input);
-			expect(await user.finishClaudeLogin({ ...input, code: "mock-approval" })).toEqual({ signedIn: true });
-			expect((await user.machines()).find(m => m.machineId === input.machineId)?.harnesses?.[0]?.signIn).toBe("token");
-			await expect(user.startClaudeLogin({ machineId: "m_build" })).rejects.toMatchObject({ reason: "machine_not_found" });
-		} finally { mock.dispose(); }
-	});
 
 	it("offers machines unless told not to, with an install command only once a runner is published", async () => {
 		const on = make();
@@ -329,18 +309,19 @@ describe("the start composer's agent picker", () => {
 		await act(async () => (host.querySelector('.start button[type="submit"]') as HTMLButtonElement).click());
 		await settle();
 	};
-	const LOGIN = "Claude Code: not signed in on “workshop”. Run windlass-runner login claude there.";
+	const LOGIN = "Claude Code: sign in needed";
 
 	it("offers Windlass or Claude Code on a machine that reports it, and its sign-in where it is not signed in", async () => {
 		await open();
 		place("m_workshop");
-		expect(agents()).toEqual(["Windlass", "Claude Code"]);
+		expect(agents()).toEqual(["Windlass", "Claude Code", "OpenCode"]);
+		expect(text()).toContain("OpenCode: signed in");
 		expect(text()).toContain(LOGIN);
-		expect(pop()?.querySelector(".harness-login pre")?.textContent).toBe("docker exec -it windlass-runner windlass-runner login claude");
+		expect(pop()?.querySelector(".machine-harness pre")?.textContent).toBe("docker exec -it windlass-runner windlass-runner login claude");
 		// Signed in on nas: the choice, and no sign-in line.
 		place("m_nas");
 		expect(agents()).toEqual(["Windlass", "Claude Code"]);
-		expect(text()).not.toContain("not signed in");
+		expect(text()).toContain("Claude Code: signed in");
 	});
 
 	it("offers no other agent on a machine that reports none, nor on this platform", async () => {
