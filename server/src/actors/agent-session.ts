@@ -225,7 +225,7 @@ const MAX_DIFF_CHARS = 400_000;
 /** Timeline rows per INSERT statement. */
 const WRITE_BATCH = 100;
 /** Items wait at most this long before they are written, or until this many have gathered. */
-const FLUSH_DELAY_MS = 100;
+const FLUSH_DELAY_MS = 400;
 const FLUSH_AT = 200;
 /** The most streaming deltas kept for late joiners; the oldest go first. */
 const MAX_PENDING = 5_000;
@@ -446,6 +446,7 @@ type PublishAnswer =
 	| { kind: "withdrawn" };
 
 interface ActiveTurn {
+	openAcp?: () => NewItem | null;
 	/** A user choice queued for the next prompt takes precedence over this turn’s ACP updates. */
 	modeQueued?: boolean;
 	number: number;
@@ -713,15 +714,19 @@ function serial<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 	return run;
 }
 
+async function insertItems(c: Ctx, batch: TimelineItem[]): Promise<void> {
+	await c.db.execute(
+		`INSERT OR REPLACE INTO timeline (seq, turn, kind, at, item) VALUES ${batch.map(() => "(?, ?, ?, ?, ?)").join(", ")}`,
+		...batch.flatMap(item => [item.seq, item.turn, item.kind, item.at, JSON.stringify(item)]),
+	);
+}
+
 /** Writes the waiting items, a batch per statement. Only ever called from inside the queue. */
 async function writeItems(c: Ctx): Promise<void> {
 	const waiting = c.vars.unwritten;
 	while (waiting.length > 0) {
 		const batch = waiting.slice(0, WRITE_BATCH);
-		await c.db.execute(
-			`INSERT OR REPLACE INTO timeline (seq, turn, kind, at, item) VALUES ${batch.map(() => "(?, ?, ?, ?, ?)").join(", ")}`,
-			...batch.flatMap((item) => [item.seq, item.turn, item.kind, item.at, JSON.stringify(item)]),
-		);
+		await insertItems(c, batch);
 		// Items made meanwhile were added behind the batch.
 		waiting.splice(0, batch.length);
 	}
@@ -735,6 +740,11 @@ function persist(c: Ctx): Promise<void> {
 	}
 	return serial(c, async () => {
 		await writeItems(c);
+		// Cancel can outlive the actor's shutdown grace. Save the current run at the next
+		// sequence number without closing it to live clients. Its next real item replaces
+		// this row; on wake MAX(seq) includes it as the final text before interruption.
+		const partial = c.vars.turn?.stopping && c.vars.turn.openAcp?.();
+		if (partial) await insertItems(c, [numberItem(c, partial)]);
 		if (c.vars.meta) await c.db.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(c.vars.meta));
 	}).catch((error) => {
 		// The items stay in `unwritten`, so the next write tries again and snapshots still show them.
@@ -767,15 +777,19 @@ function scheduleWrite(c: Ctx): void {
 	}, FLUSH_DELAY_MS);
 }
 
+function numberItem(c: Ctx, item: NewItem): TimelineItem {
+	const redactor = c.vars.turn?.secrets?.redactor;
+	const numbered = { ...(redactor ? redactor.deep(item) : item), seq: c.vars.nextSeq, at: Date.now() } as TimelineItem;
+	return numbered.kind === "acp" ? boundedAcpItem(numbered) : numbered;
+}
+
 /**
  * Adds an item to the timeline: numbers it, announces it, and queues it for SQLite. Synchronous. While
  * a turn holds its repository's secrets, their values are taken out of every text of the item first,
  * whatever wrote it: nothing a turn adds to the timeline carries one.
  */
 function append(c: Ctx, item: NewItem): TimelineItem {
-	const redactor = c.vars.turn?.secrets?.redactor;
-	const numbered = { ...(redactor ? redactor.deep(item) : item), seq: c.vars.nextSeq, at: Date.now() } as TimelineItem;
-	const full = numbered.kind === "acp" ? boundedAcpItem(numbered) : numbered;
+	const full = numberItem(c, item);
 	c.vars.nextSeq += 1;
 	c.vars.unwritten.push(full);
 	c.broadcast("item", full);
@@ -895,7 +909,7 @@ function settleDeltas(vars: SessionVars, durable: WindlassEvent): void {
 }
 
 /** One durable item per contiguous run of text; a reconnect sees the same prefix as live clients. */
-function acpRecorder(c: Ctx, turn: number) {
+export function acpRecorder(c: Ctx, turn: number) {
 	type TextKind = "agent_message_chunk" | "agent_thought_chunk";
 	let run: { kind: TextKind; key: string; text: string; remaining: number; truncated: boolean } | null = null;
 	let items = 0;
@@ -912,12 +926,18 @@ function acpRecorder(c: Ctx, turn: number) {
 	function textUpdate(kind: TextKind, text: string): AcpUpdate {
 		return { sessionUpdate: kind, content: { type: "text", text } };
 	}
+	function current(): NewItem | null {
+		if (!run) return null;
+		return { turn, kind: "acp", messageKey: run.key, update: textUpdate(run.kind, run.text), ...(run.truncated && { truncated: true }) };
+	}
+	if (c.vars.turn) c.vars.turn.openAcp = current;
 	function flush() {
-		if (!run) return;
-		const { kind, key, text, truncated } = run;
+		const item = current();
+		if (!run || !item) return;
+		const { key } = run;
 		run = null;
 		c.vars.pending = c.vars.pending.filter(delta => !("acp" in delta && delta.messageKey === key));
-		append(c, { turn, kind: "acp", messageKey: key, update: textUpdate(kind, text), ...(truncated && { truncated }) });
+		append(c, item);
 	}
 	return {
 		flush,
@@ -3624,6 +3644,7 @@ async function stopTurn(c: Ctx): Promise<void> {
 	if (!turn) return;
 	if (c.vars.meta) abortTurn(c, c.vars.meta, turn);
 	else turn.controller.abort();
+	await persist(c);
 	await within(turn.done, STOP_WAIT_MS);
 }
 
@@ -4325,7 +4346,10 @@ export const agentSession = actor({
 				const profile = sandboxes.profile(meta.profile);
 				return await serial(c, async () => {
 					await writeItems(c).catch((error) => c.log.error({ msg: "could not write the timeline", error: describeError(error) }));
-					const rows = await c.db.execute<{ item: string }>("SELECT item FROM timeline ORDER BY seq");
+					// A stop checkpoint is provisional while this instance is alive. If its
+					// replacement failed to write, the in-memory item at that sequence wins.
+					const end = c.vars.unwritten[0]?.seq ?? c.vars.nextSeq;
+					const rows = await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE seq < ? ORDER BY seq", end);
 					// No write can run between the read above and here, so what SQLite did not return is
 					// exactly what still waits in memory.
 					const timeline = rows.map((row) => JSON.parse(row.item) as TimelineItem);
@@ -4390,7 +4414,7 @@ export const agentSession = actor({
 			return await attempt;
 		},
 
-		stop: (c): void => {
+		stop: async (c): Promise<void> => {
 			requireUser(c);
 			const meta = liveMeta(c);
 			const turn = c.vars.turn;
@@ -4401,11 +4425,11 @@ export const agentSession = actor({
 			if (meta.status !== "stopping") {
 				meta.status = "stopping";
 				publish(c);
-				void persist(c);
 			} else if (withdrawn) {
 				publish(c);
 			}
 			turn.controller.abort();
+			await persist(c);
 		},
 
 		// Synchronous from the check to the settling, so of two answers sent at once exactly one finds
