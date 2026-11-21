@@ -48,16 +48,6 @@ export function OutcomeGlyph({ outcome, size = 14 }: { outcome: TurnOutcome; siz
 	return <StopIcon size={size} className={`tone-${tone}`} />;
 }
 
-export function OutcomeWord({ outcome }: { outcome: TurnOutcome | null }) {
-	if (outcome === null) return <span className="outcome tone-faint">no turns yet</span>;
-	return (
-		<span className={`outcome tone-${OUTCOME_TONE[outcome]}`}>
-			<OutcomeGlyph outcome={outcome} size={13} />
-			{OUTCOME_WORD[outcome]}
-		</span>
-	);
-}
-
 const SANDBOX_WORD: Record<SessionSummary["sandbox"], string> = { none: "no sandbox yet", running: "sandbox running", paused: "sandbox paused" };
 
 export function SandboxState({ state }: { state: SessionSummary["sandbox"] }) {

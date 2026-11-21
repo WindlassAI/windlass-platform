@@ -245,12 +245,11 @@
 	color: var(--ink);
 	background: var(--bg-active);
 }
+/* How many work items ask for their person: the number in the needs-you hue, no pill behind it. */
 .topbar-tab-count {
 	min-width: 16px;
-	padding: 0 5px;
-	border-radius: var(--radius-pill);
-	background: var(--warn-wash);
-	color: var(--warn);
+	padding: 0 2px;
+	color: var(--needs);
 	font-family: var(--font-mono);
 	font-size: var(--text-11);
 	line-height: 16px;

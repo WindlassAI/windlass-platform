@@ -588,28 +588,9 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	);
 }
 
-// ---- the home page's "Needs you" ----------------------------------------------------------------
+// ---- what asks its person ---------------------------------------------------------------------
 
 /** The items that ask their person something, across repositories, the longest waiting first. */
 export function asking(list: readonly ItemSummary[]): ItemSummary[] {
 	return list.filter((item) => item.question !== null).sort((a, b) => (a.question?.askedAt ?? 0) - (b.question?.askedAt ?? 0));
-}
-
-/** The items that ask their person something, across repositories, the longest waiting first. Nothing when there is none. `list`: the user's items, as the page read them. */
-export function NeedsYou({ now, list }: { now: number; list: readonly ItemSummary[] | null }) {
-	const waiting = asking(list ?? []);
-	if (waiting.length === 0) return null;
-	return (
-		<section className="agent-group needs-you" aria-labelledby="needs-you">
-			<h2 className="agent-group-head" id="needs-you">
-				<span className="agent-group-name">Needs you</span>
-				<span className="agent-group-count">{plural(waiting.length, "work item")} asking</span>
-			</h2>
-			<ul className="agents">
-				{waiting.map((item) => (
-					<ItemRow key={item.id} item={item} now={now} repository why={item.question?.text} />
-				))}
-			</ul>
-		</section>
-	);
 }

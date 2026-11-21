@@ -7,12 +7,11 @@
 /* ---- rows ------------------------------------------------------------------------------------ */
 
 /*
- * "Needs you" in its own hue everywhere: the shared token once it lands (--needs), amber until then.
- * Helm's row: the glyph, the title over its facts in mono, the track of stages, the verdict as a chip,
- * the time. Hairlines between rows; a hovered row lifts into the neutral hover surface.
+ * "Needs you" in its own hue everywhere (--needs). Helm's row: the glyph, the title over its facts in
+ * mono, the track of stages, the verdict as a chip, the time. Hairlines between rows; a hovered row
+ * lifts into the neutral hover surface.
  */
 .item-row {
-	--needs-ink: var(--needs, var(--warn));
 	grid-template-columns: 22px minmax(0, 1fr) auto 142px 52px;
 	column-gap: 14px;
 	min-height: 56px;
@@ -52,10 +51,10 @@
 	border-color: var(--line-strong);
 	background: none;
 	font-weight: var(--weight-medium);
-	color: var(--needs-ink);
+	color: var(--needs);
 }
 .item-row .status-waiting {
-	color: var(--needs-ink);
+	color: var(--needs);
 }
 /* Why it is where it is: the server's sentence, in the text face, between the title and the facts. */
 .item-row-why {
@@ -200,7 +199,7 @@
 	padding-left: 2px;
 }
 .needs-you .agent-group-name {
-	color: var(--needs, var(--warn));
+	color: var(--needs);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -252,9 +251,6 @@
 }
 
 /* Where it is: the stages it goes through, then one card in words, with its glyph. */
-.item {
-	--needs-ink: var(--needs, var(--warn));
-}
 .item-where {
 	display: grid;
 	gap: 14px;
@@ -318,7 +314,7 @@
 	box-shadow: var(--shadow-box);
 }
 .item-now-asks .item-now-state {
-	color: var(--needs-ink);
+	color: var(--needs);
 }
 .item-now-glyph {
 	display: grid;
@@ -381,7 +377,7 @@
 	gap: 10px;
 	font-size: 12.5px;
 	font-weight: var(--weight-medium);
-	color: var(--needs-ink);
+	color: var(--needs);
 }
 .item-question-head::before {
 	content: "";
@@ -389,7 +385,7 @@
 	width: 7px;
 	height: 7px;
 	border-radius: 50%;
-	background: var(--needs-ink);
+	background: var(--needs);
 }
 .item-question-when {
 	font-family: var(--font-mono);
@@ -983,7 +979,7 @@
 	box-shadow: inset 0 0 0 1.5px var(--ink-faint);
 }
 .factory-fact-needs {
-	color: var(--needs, var(--warn));
+	color: var(--needs);
 }
 .factory-turns {
 	flex-direction: column;
@@ -1093,7 +1089,7 @@
 
 /* "Needs you": the lane's rows as the others', its hue only in the count and a dot at each row. */
 .factory-lane-needs .factory-lane-head .agent-group-count {
-	color: var(--needs, var(--warn));
+	color: var(--needs);
 }
 .factory-lane-needs .agent-glyph > svg {
 	display: none;
@@ -1103,7 +1099,7 @@
 	width: 7px;
 	height: 7px;
 	border-radius: 50%;
-	background: var(--needs, var(--warn));
+	background: var(--needs);
 }
 .factory-lane-needs .item-row-why {
 	color: var(--ink);

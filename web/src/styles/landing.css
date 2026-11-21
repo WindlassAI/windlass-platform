@@ -1102,7 +1102,7 @@
 	align-items: center;
 	gap: 6px;
 	margin: 0;
-	color: var(--warn);
+	color: var(--needs);
 	font-size: 11.5px;
 	font-weight: var(--weight-strong);
 }

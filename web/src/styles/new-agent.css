@@ -57,13 +57,6 @@
 	display: none;
 }
 
-/* A field whose value is set by another choice: said as text, not offered as a control. */
-.field-fixed {
-	padding: 8px 0 2px;
-	font-weight: 600;
-	color: var(--ink);
-}
-
 /* Which agent runs on the chosen machine: a segmented choice under the place, its notes under it. */
 .harness-pick {
 	display: grid;

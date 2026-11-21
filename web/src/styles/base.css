@@ -706,13 +706,16 @@ h3 {
 
 /* ---- callouts and chips --------------------------------------------------------------------- */
 
+/* A callout sits on the neutral surface with a hairline: its tone is only the icon's colour, never a tinted
+ * box or a coloured edge. */
 .callout {
 	display: flex;
 	gap: 10px;
 	align-items: flex-start;
 	padding: 10px 12px;
-	border: 1px solid var(--line-strong);
+	border: 1px solid var(--line);
 	border-radius: var(--r-pop);
+	background: var(--bg-raised);
 	font-size: var(--size-small);
 	line-height: 1.5;
 }
@@ -724,23 +727,11 @@ h3 {
 .callout > span {
 	min-width: 0;
 }
-.callout-warn {
-	border-color: color-mix(in srgb, var(--warn) 24%, transparent);
-	background: var(--warn-wash);
-}
 .callout-warn > svg {
 	color: var(--warn);
 }
-.callout-bad {
-	border-color: color-mix(in srgb, var(--bad) 24%, transparent);
-	background: var(--bad-wash);
-}
 .callout-bad > svg {
 	color: var(--bad);
-}
-.callout-info {
-	border-color: color-mix(in srgb, var(--info) 24%, transparent);
-	background: var(--info-wash);
 }
 .callout-info > svg {
 	color: var(--info);

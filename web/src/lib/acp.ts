@@ -46,11 +46,6 @@ export function sessionModelWords(summary: Pick<SessionSummary, "harness" | "har
 /** A harness a machine's runner reported, as `MachineSummary.harnesses` lists it. */
 export type ReportedHarness = NonNullable<MachineSummary["harnesses"]>[number];
 
-/** Its sign-in in a few words: "signed in", "not signed in", "unknown". */
-export function signInWords(harness: ReportedHarness): string {
-	return harness.signIn === "token" ? "signed in" : harness.signIn === "none" ? "not signed in" : "unknown";
-}
-
 /** The command that signs a harness in on its machine, run inside the runner's container. */
 export const loginCommand = (harness: ReportedHarness) => `docker exec -it windlass-runner windlass-runner login ${harness.id}`;
 

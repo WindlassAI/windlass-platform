@@ -115,25 +115,6 @@
 
 /* ---- the launch form's repository field ----------------------------------------------------------- */
 
-.gh-field-head {
-	display: flex;
-	align-items: baseline;
-	justify-content: space-between;
-	gap: 12px;
-}
-/* The other way to name a repository: there, and quiet. */
-.gh-switch {
-	flex: none;
-	font-size: var(--size-small);
-	font-weight: 500;
-	color: var(--ink-dim);
-	text-decoration-color: var(--line-strong);
-}
-.gh-switch:hover:not(:disabled) {
-	color: var(--ink);
-	text-decoration-color: currentColor;
-}
-
 .gh-pick {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) minmax(150px, 32%);
@@ -464,13 +445,6 @@
 @media (max-width: 640px) {
 	.gh-pick {
 		grid-template-columns: minmax(0, 1fr);
-	}
-	.gh-field-head {
-		flex-wrap: wrap;
-		gap: 0 12px;
-	}
-	.gh-switch {
-		margin-bottom: 6px;
 	}
 	.gh-options {
 		max-height: 210px;

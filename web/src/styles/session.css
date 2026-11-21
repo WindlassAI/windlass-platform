@@ -194,13 +194,14 @@
 	font-size: var(--size-small);
 	border-bottom: 1px solid var(--line);
 }
+/* A banner's tone is its words' colour and a thin marker at its edge, never a tinted strip. */
 .banner-warn {
 	color: var(--warn);
-	background: var(--warn-wash);
+	box-shadow: inset 2px 0 0 var(--warn);
 }
 .banner-bad {
 	color: var(--bad);
-	background: var(--bad-wash);
+	box-shadow: inset 2px 0 0 var(--bad);
 }
 .banner .link {
 	margin-left: 6px;
@@ -281,8 +282,8 @@
 		background-color 120ms var(--ease);
 }
 .starter:hover {
-	border-color: var(--accent);
-	background: var(--accent-wash);
+	border-color: var(--line-field);
+	background: var(--bg-hover);
 }
 
 .turn {
