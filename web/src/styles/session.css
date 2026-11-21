@@ -1511,9 +1511,10 @@ button.output-more:hover {
 .kv dd code {
 	font-size: inherit;
 }
-/* The state's badge sits on the line's baseline as the words around it do. */
-.kv dd .status-badge {
-	vertical-align: baseline;
+/* The state's badge keeps the row the height of the others, in the size of the values beside it. */
+.kv dd > .status-badge {
+	vertical-align: top;
+	font-size: inherit;
 	line-height: inherit;
 }
 .kv-clip {
