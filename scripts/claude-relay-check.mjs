@@ -115,10 +115,17 @@ test('logout takes effect on the next request', async () => {
 	reset(); login = undefined; assert.equal(await responseStatus(), 401); assert.equal(sent, undefined);
 });
 test('upstream redirect and diagnostics cannot disclose the credential', async () => {
-	for (const status of [302, 401, 429, 500]) {
+	for (const [status, expected, message] of [
+		[302, 502, "The provider failed or couldn't be reached."],
+		[400, 400, 'The provider rejected the request.'],
+		[401, 401, 'Provider sign-in is missing or the session placeholder is no longer valid.'],
+		[403, 403, 'This request is not allowed by the relay.'],
+		[429, 429, "The provider's usage or rate limit was reached."],
+		[503, 503, "The provider failed or couldn't be reached."],
+	]) {
 		reset(); upstream = { statusCode: status, headers: { location: 'https://foreign.invalid/' + token, 'x-secret': token } };
 		const res = await call(); let body = ''; for await (const data of res) body += data;
-		assert.ok(res.statusCode >= 400); assert.equal(res.headers.location, undefined);
+		assert.equal(res.statusCode, expected); assert.equal(JSON.parse(body).error.message, message); assert.equal(res.headers.location, undefined);
 		assert.ok(!JSON.stringify(res.headers).includes(token)); assert.ok(!body.includes(token));
 	}
 });

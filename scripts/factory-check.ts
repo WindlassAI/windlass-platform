@@ -988,6 +988,10 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	for (const fields of [
 		{ kind: "rate_limit", retryable: true, retryAfterMs: 1_000 }, { kind: "transport", retryable: false }, { kind: "server", status: 503, retryable: true },
 	]) expect(`a transient provider error stays on the retry path: ${JSON.stringify(fields)}`, failedStep(fields) === null);
+	expect("an HTTP 429 with no retry scheduled is a usage limit", isDeepStrictEqual(
+		failedStep({kind:"rate_limit",status:429}), {kind:"usage_limit",message}));
+	expect("an HTTP 429 with a short scheduled retry stays on the retry path",
+		failedStep({kind:"rate_limit",status:429,retryable:true,retryAfterMs:1_000}) === null);
 	const step = failedStep({ kind: "auth" });
 	const result = { aborted: false, timedOut: false, exitCode: 0, stderrTail: "", summary: null, windlassSessionId: null, failure: { reason: "invalid_request", message } };
 	expect("an ACP invalid request before the first step keeps the provider's reason", isDeepStrictEqual(turnRefusal("error", result, null), { kind: "invalid_request", message }));

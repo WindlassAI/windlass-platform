@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
+import { gzipSync } from 'node:zlib';
 import { text } from 'node:stream/consumers';
 import test from 'node:test';
 import { providerFor } from '../sandbox/relay/opencode.cjs';
@@ -35,8 +36,17 @@ test('concurrent ChatGPT requests share a machine-side refresh and retain the ro
 test('explicit free model access uses only the public provider credential', async () => {
 	const p = providerFor('free', 'one', {load: async () => ({provider:'free',generation:'one'})});
 	assert.equal(p.bearer({'x-wlp-session':'placeholder'}), 'Bearer placeholder');
-	assert.deepEqual(await p.target('/free/chat/completions', {}), {hostname:'opencode.ai',
-		path:'/inference/openai/v1/chat/completions',headers:{'content-type':'application/json',authorization:'Bearer public'}});
+	assert.equal(p.bearer({authorization:'Bearer session'}, '/free/chat/completions'), 'Bearer session');
+	assert.equal(p.bearer({authorization:'Bearer public', 'x-wlp-session':'legacy'}, '/free/chat/completions'), 'Bearer legacy');
+	const native = {accept:'*/*', 'content-length':'123', 'accept-encoding':'gzip, br', 'user-agent':'client',
+		'x-opencode-client':'acp', 'x-opencode-project':'project', 'x-opencode-request':'request',
+		'x-opencode-session':'session', 'x-opencode-session-id':'session', 'x-opencode-parent-session-id':'parent',
+		'x-parent-session-id':'parent'};
+	const target = await p.target('/free/chat/completions', {...native, authorization:'Bearer session',
+		'x-wlp-session':'legacy', cookie:'private', 'x-opencode-extra':'private', 'x-source':'untrusted',
+		'transfer-encoding':'chunked', host:'foreign.invalid'});
+	assert.deepEqual(target, {hostname:'opencode.ai', path:'/inference/openai/v1/chat/completions',
+		headers:{...native, 'content-type':'application/json', authorization:'Bearer public'}});
 });
 
 test('API keys are scoped to the configured inference route and host', async () => {
@@ -81,7 +91,8 @@ test('a signed session routes Go, Zen and GLM keys independently and refuses unc
 	const recorded = [];
 	const origin = createServer(async (req, res) => {
 		recorded.push([req.headers.host, req.url, req.headers.authorization, req.headers['x-api-key'], req.headers['x-goog-api-key']]);
-		res.writeHead(200, {'content-type':'text/event-stream'}); res.end('fixture stream');
+		res.writeHead(200, {'content-type':'text/event-stream', 'content-encoding':'gzip'});
+		res.end(gzipSync('fixture stream ' + (req.headers.authorization?.slice(7) ?? req.headers['x-api-key'] ?? req.headers['x-goog-api-key'])));
 	});
 	const {publicKey, privateKey} = generateKeyPairSync('ed25519');
 	const nonce = 'a'.repeat(32);
@@ -104,7 +115,7 @@ test('a signed session routes Go, Zen and GLM keys independently and refuses unc
 				req.on('error',fail);req.end('{}');
 			});
 			assert.equal(response.statusCode,status,url);
-			if (status === 200) assert.equal(await text(response),'fixture stream'); else response.resume();
+			if (status === 200) assert.equal(await text(response),'fixture stream [redacted]'); else response.resume();
 		}
 		assert.deepEqual(recorded,[
 			['api.z.ai','/api/coding/paas/v4/chat/completions','Bearer secret-zai-coding-plan',undefined,undefined],

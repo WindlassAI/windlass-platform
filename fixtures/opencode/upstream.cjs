@@ -3,6 +3,18 @@ const fs = require('node:fs');
 const https = require('node:https');
 const marker = fs.readFileSync('/fixture/expected','utf8');
 let polls = 0;
+let nativeFree;
+function freeRequestMatches(req, body) {
+	const headers = req.headers;
+	if (Number(headers['content-length']) !== Buffer.byteLength(body) || !headers['x-opencode-session-id']
+		|| headers['x-opencode-session'] !== headers['x-opencode-session-id']) return false;
+	const stable = Object.fromEntries(['accept', 'accept-encoding', 'authorization', 'user-agent', 'content-type',
+		'x-opencode-client'].map(k => [k, headers[k]]));
+	const shape = JSON.stringify([Object.keys(headers).sort(), stable]);
+	// The direct native ACP turn runs first on the fixture network. Keep values in memory only.
+	if (!nativeFree) nativeFree = shape;
+	return shape === nativeFree;
+}
 https.createServer({key:fs.readFileSync('/fixture/key.pem'),cert:fs.readFileSync('/fixture/cert.pem')},async (req,res)=>{
 	let body = '';
 	for await (const chunk of req) body += chunk;
@@ -43,6 +55,12 @@ https.createServer({key:fs.readFileSync('/fixture/key.pem'),cert:fs.readFileSync
 			: req.url === '/inference/go/openai/v1/chat/completions' ? marker+'-go' : req.url === '/inference/openai/v1/chat/completions' && 'public';
 		if (expected === marker+'-go' && (!req.headers['user-agent'] || !req.headers['x-opencode-session-id'])) return reject();
 		if (!expected || req.headers.authorization !== 'Bearer '+expected) return reject();
+		if (expected === 'public') {
+			if (!freeRequestMatches(req, body)) return reject();
+			if (JSON.parse(body).model === 'big-pickle') {
+				res.writeHead(429); res.end(marker); return;
+			}
+		}
 		console.log('authorized',req.headers.host,req.url);
 		res.writeHead(200,{'content-type':'text/event-stream'});
 		for (const [delta,finish_reason] of [[{role:'assistant',content:'relay proof'},null],[{},'stop']]) {

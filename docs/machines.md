@@ -125,6 +125,9 @@ Enter the pairing code on the Machines page and choose **Connect**. Setup asks a
 answer **n** to skip its sign-in. For OpenCode, enter a provider ID or search by name. Pick **opencode-go**
 for a Go subscription key or **opencode** for a Zen pay-as-you-go key, and paste the key at the hidden
 prompt. **chatgpt** starts a separate OpenAI device login, and **free** enables OpenCode's public models.
+Public sessions use OpenCode’s anonymous catalog and carry their own ACP client identity. If the
+provider returns HTTP 429, the turn reports that its usage or rate limit was reached. A working
+interactive terminal session can coexist with a refused anonymous ACP request on the same machine.
 
 To import existing API keys, add
 `--mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly"` before the image name

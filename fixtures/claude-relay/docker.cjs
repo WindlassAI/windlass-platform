@@ -5,8 +5,14 @@ const { F3_PREFIX: prefix, F3_MACHINE: machine, F3_DIR: dir } = process.env;
 if (!/^f3-check-[a-f0-9]{16}$/.test(prefix) || !/^m_[a-f0-9]{16}$/.test(machine)) process.exit(2);
 const harness = process.env.F3_HARNESS === 'opencode' ? 'opencode' : 'claude';
 const volume = 'wlp-harness-' + harness + '-' + machine;
-const args = process.argv.slice(2).map(s => s.replaceAll(volume, prefix + '-login').replace(/wlp-session-(?:(?:claude|opencode)-)?[a-f0-9]{12}\b/g, name => name.replace('wlp-session-', prefix + '-box-')));
-if (args.some(s => /wlp-session-|wlp-harness-|wlp-user-|wlp-live[-_]|wlp-staging-|windlass-runner[-:]|windlass-tunnel|windlass-platform-sandbox:latest/.test(s))) throw Error('Unexpected resource name');
+const names = [
+	[volume, prefix + '-login'],
+	['wlp-' + harness + '-relay-' + machine, prefix + '-relay'],
+	['wlp-' + harness + '-socket-' + machine, prefix + '-socket'],
+	['wlp-egress-' + machine, prefix + '-egress'],
+];
+const args = process.argv.slice(2).map(arg => names.reduce((s, [from,to]) => s.replaceAll(from,to), arg).replace(/wlp-session-(?:(?:claude|opencode)-)?[a-f0-9]{12}\b/g, name => name.replace('wlp-session-', prefix + '-box-')));
+if (args.some(s => /wlp-(?:opencode|claude)-relay-m_|wlp-egress-m_|wlp-session-|wlp-harness-|wlp-user-|wlp-live[-_]|wlp-staging-|windlass-runner[-:]|windlass-tunnel|windlass-platform-sandbox:latest/.test(s))) throw Error('Unexpected resource name');
 if (args[args.indexOf('--network') + 1] === 'bridge' || args[0] === 'network' && args[1] === 'connect' && args[2] === 'bridge') {
 	const at = args.indexOf('bridge'); args[at] = prefix + '-uplink';
 }
@@ -29,6 +35,6 @@ if (process.env.F3_PAUSE_PROBE && args[0] === 'run' && args.at(-1) === 'wlp-open
 }
 const translate = args.includes('inspect') || args[0] === 'ps' || args[0] === 'volume' && args[1] === 'ls';
 const result = spawnSync('/usr/bin/docker', args, { stdio: ['inherit', translate ? 'pipe' : 'inherit', 'inherit'], encoding: 'utf8' });
-if (translate && result.stdout) process.stdout.write(result.stdout.replaceAll(prefix + '-login', volume)
+if (translate && result.stdout) process.stdout.write(names.reduce((s, [original,fixture]) => s.replaceAll(fixture,original), result.stdout)
 	.replaceAll(prefix + '-box-', 'wlp-session-').replaceAll('"' + prefix + '-uplink":', '"bridge":'));
 process.exit(result.status ?? 1);

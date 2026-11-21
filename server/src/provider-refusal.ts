@@ -25,10 +25,10 @@ export function stepRefusal(previous: ProviderRefusal | null, event: WindlassEve
 	const { kind, status, code, retryable, retryAfterMs } = provider;
 	const rateLimit = kind === "rate_limit" || status === 429;
 	const terminal = REFUSALS.has(kind) || (typeof code === "string" && REFUSALS.has(code))
-		|| status === 401 || status === 403 || status === 404
+		|| status === 401 || status === 403 || status === 404 || (status === 429 && retryable !== true)
 		|| (kind === "invalid_request" && retryable !== true)
 		|| (rateLimit && (retryable === false || (typeof retryAfterMs === "number" && retryAfterMs >= LONG_RETRY_MS)));
-	return terminal ? { kind, message: sentence(provider.message) } : null;
+	return terminal ? { kind: status === 429 ? "usage_limit" : kind, message: sentence(provider.message) } : null;
 }
 
 function sentence(value: unknown): string {

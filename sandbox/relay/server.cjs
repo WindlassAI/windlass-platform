@@ -2,19 +2,34 @@
 // The trusted namespace forwarder prefixes each Unix stream with its fixed session nonce.
 const { createPublicKey, verify } = require('node:crypto');
 const net = require('node:net');
+const { pipeline } = require('node:stream');
+const { createGunzip, createInflate, createBrotliDecompress, createZstdDecompress } = require('node:zlib');
 const { rmSync } = require('node:fs');
 const { readFile } = require('node:fs/promises');
 const http = require('node:http');
 const https = require('node:https');
 
+const decoders = new Map([['gzip', createGunzip], ['deflate', createInflate], ['br', createBrotliDecompress], ['zstd', createZstdDecompress]]);
 const messages = new Set(['/v1/messages', '/v1/messages?beta=true', '/v1/messages/count_tokens', '/v1/messages/count_tokens?beta=true']);
 const requestHeaders = new Set(['accept', 'content-type', 'anthropic-beta', 'anthropic-version', 'user-agent', 'x-app',
 	'anthropic-dangerous-direct-browser-access', 'x-client-request-id', 'x-claude-code-session-id']);
 
 function reject(res, status) {
+	let type = 'api_error', message = 'The provider rejected the request.';
+	if (status === 401) {
+		type = 'authentication_error';
+		message = 'Provider sign-in is missing or the session placeholder is no longer valid.';
+	} else if (status === 403) {
+		type = 'permission_error';
+		message = 'This request is not allowed by the relay.';
+	} else if (status === 429) {
+		type = 'rate_limit_error';
+		message = "The provider's usage or rate limit was reached.";
+	} else if (status >= 500) {
+		message = "The provider failed or couldn't be reached.";
+	}
 	res.writeHead(status, { 'content-type': 'application/json' });
-	res.end(JSON.stringify({ type: 'error', error: { type: status === 401 ? 'authentication_error' : 'api_error',
-		message: 'Credential relay refused the request.' } }));
+	res.end(JSON.stringify({ type: 'error', error: { type, message } }));
 }
 
 exports.createRelay = function createRelay({ publicKey, machine,
@@ -56,15 +71,18 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				if (type !== 'text/event-stream' && type !== 'application/json') {
 					reject(res, 502); reply.destroy(); return;
 				}
-				res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
-				reply.on('error', () => res.destroy());
-				res.on('close', () => reply.destroy());
+				// Decode before redaction. Only the whitelisted media type reaches the client.
+				const stages = [reply];
+				const encoding = reply.headers['content-encoding']?.toLowerCase();
+				if (encoding && encoding !== 'identity') {
+					const decode = decoders.get(encoding);
+					if (!decode) { reject(res, 502); reply.destroy(); return; }
+					stages.push(decode());
+				}
 				const filter = provider?.responseFilter?.();
-				if (filter) {
-					filter.on('error', () => res.destroy());
-					res.on('close', () => filter.destroy());
-					reply.pipe(filter).pipe(res);
-				} else reply.pipe(res);
+				if (filter) stages.push(filter);
+				res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
+				pipeline([...stages, res], () => {});
 			});
 			up.on('error', () => {
 				if (res.destroyed || res.writableEnded) return;
