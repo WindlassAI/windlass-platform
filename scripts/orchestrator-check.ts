@@ -290,9 +290,11 @@ test("an explicit orchestration choice cannot lead to another single suggestion"
 	assert.throws(() => advance(forced, {kind:"file_plan", key:currentKey(forced)!, at:8, plan:p}), /subtasks/);
 });
 
-test("the planner uses the highest advertised reasoning effort of its model", async () => {
+test("the planner uses high effort when its model offers it, never ultra or max", async () => {
 	const {plannerEffort} = await import("../server/src/account-models.js");
-	assert.equal(plannerEffort([{id:"requested",name:null,efforts:["medium","max","high"]}], "requested"),"max");
+	assert.equal(plannerEffort([{id:"requested",name:null,efforts:["medium","max","high"]}], "requested"),"high");
+	assert.equal(plannerEffort([{id:"requested",name:null,efforts:["low","medium","high","xhigh","max","ultra"]}], "requested"),"high");
+	assert.equal(plannerEffort([{id:"requested",name:null,efforts:["ultra","max"]}], "requested"),null);
 	assert.equal(plannerEffort([{id:"other",name:null,efforts:["high"]}], "requested"),null);
 });
 
