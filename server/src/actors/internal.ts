@@ -73,6 +73,7 @@ export type ReserveAnswer = { ok: true; hold: { id: string; seconds: number }; n
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
+	internalTokenGeneration(): Promise<number>;
 	internalMachineSystem(id: string): Promise<{ os: string; arch: string } | null>;
 	internalFeatureChild(input: { parent: string; child: string; cancel?: boolean }): Promise<ItemView | null>;
 	internalPlannerMachines(): Promise<ReturnType<typeof import("../machines/details.js").plannerMachines>>;
@@ -141,6 +142,7 @@ export interface UserSecretsInternal {
 
 /** Actions of `agentSession` that only actors may call. */
 export interface SessionInternal {
+	internalDisconnectRevoked(generation: number): Promise<void>;
 	internalSummary(): Promise<SessionSummary>;
 	internalRename(title: string): Promise<SessionSummary>;
 	/** Destroys the sandbox, then the actor. */

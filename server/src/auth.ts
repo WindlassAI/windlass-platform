@@ -60,11 +60,29 @@ function callerOf(c: HasCaller): Caller {
 	return authenticate(c.key, c.conn.params);
 }
 
-/** For the actions of the contract: the caller is the user the actor belongs to. */
-export function requireUser(c: HasCaller): UserProfile {
+export function checkGeneration(caller: Caller, generation: number): void {
+	if (caller.kind === "user" && caller.generation !== generation) {
+		throw new UserError("Your sign-in is not valid any more. Sign in again.", { code: "invalid_token" });
+	}
+}
+
+/** The user's own actor has the durable generation in its vars. */
+export function requireUser(c: HasCaller & { vars: { tokenGen: number } }): UserProfile {
 	const caller = callerOf(c);
 	if (caller.kind !== "user") throw new UserError("This action is for users.", { code: "forbidden" });
+	checkGeneration(caller, c.vars.tokenGen);
 	return caller.profile;
+}
+
+export async function disconnectRevoked(conns: ReadonlyMap<string, { params: unknown; disconnect(reason: string): Promise<void> }>, generation: number): Promise<void> {
+	const closing: Promise<void>[] = [];
+	for (const conn of conns.values()) {
+		const token = tokenOf(conn.params);
+		if (typeof token !== "string") continue;
+		const caller = verifyToken(token);
+		if (!caller || (caller.kind === "user" && caller.generation < generation)) closing.push(conn.disconnect("user.invalid_token"));
+	}
+	await Promise.all(closing);
 }
 
 /** For the actions actors call on each other: the caller holds a service token. */
@@ -88,9 +106,10 @@ export function internalConnection(c: HasRequest & { key: string[] }, params: un
 }
 
 /** For `canSubscribe`: true only for the actor's own user. */
-export function maySubscribe(c: HasCaller): boolean {
+export function maySubscribe(c: HasCaller & { vars: { tokenGen: number } }): boolean {
 	try {
-		return callerOf(c).kind === "user";
+		requireUser(c);
+		return true;
 	} catch {
 		return false;
 	}

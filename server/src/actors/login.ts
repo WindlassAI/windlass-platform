@@ -14,7 +14,7 @@
 import { randomBytes } from "node:crypto";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
-import { assertOrigin, clientError } from "../auth.js";
+import { assertOrigin, clientError, serviceParams } from "../auth.js";
 import { config } from "../config.js";
 import type { AuthResult, LoginStart, UserProfile } from "../contract.js";
 import { NOT_INVITED, mayUse, normalizeEmail } from "../access.js";
@@ -175,7 +175,8 @@ export const login = actor({
 					// The user's actor has it: nothing of the sign-in stays here.
 					attempt.sealed = null;
 
-					const token = issueUserToken(profile);
+					const generation: number = await c.client().user.getOrCreate([uid], { params: serviceParams() }).internalTokenGeneration();
+					const token = issueUserToken(profile, generation);
 					const replaced = attempt.scheduleId;
 					attempt.scheduleId = await c.schedule.after(CLEANUP_DELAY_MS, "expire");
 					attempt.state = "done";
@@ -199,7 +200,8 @@ export const login = actor({
 					await logins.ensureUserVolume(uid);
 
 					const profile: UserProfile = { uid, email: null, demo: true };
-					const token = issueUserToken(profile);
+					const generation: number = await c.client().user.getOrCreate([uid], { params: serviceParams() }).internalTokenGeneration();
+					const token = issueUserToken(profile, generation);
 					const replaced = attempt.scheduleId;
 					attempt.scheduleId = await c.schedule.after(CLEANUP_DELAY_MS, "expire");
 					attempt.state = "done";

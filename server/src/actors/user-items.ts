@@ -184,7 +184,7 @@ export interface ItemFacts {
 
 /** What the factory's functions need of the user actor's context. */
 export interface ItemsCtx {
-	vars: { github?: StoredConnection | null; items: ItemsState; machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; usage: UsageBook; profile: UserProfile | null };
+	vars: { tokenGen: number; github?: StoredConnection | null; items: ItemsState; machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; usage: UsageBook; profile: UserProfile | null };
 	db: RawAccess;
 	key: string[];
 	log: { warn(entry: unknown): void; error(entry: unknown): void };

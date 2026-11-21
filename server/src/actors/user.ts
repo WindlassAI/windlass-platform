@@ -85,7 +85,7 @@ import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
-import { assertOrigin, authenticate, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
+import { checkGeneration, disconnectRevoked, assertOrigin, authenticate, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { config, githubConfig } from "../config.js";
 import {
 	type AccountDefaults,
@@ -176,6 +176,7 @@ interface ConnParams {
 }
 
 interface UserVars {
+	tokenGen: number;
 	profile: UserProfile | null;
 	/** False until a valid token of this user has been seen: until then the actor may be a stranger's doing. */
 	reached: boolean;
@@ -1058,11 +1059,30 @@ function itemSession(c: CreateCtx): MakeSession {
 	return (_, profile, input, submission, item) => makeSession(c, profile, input, submission, item);
 }
 
+async function revokeTokens(c: UserCtx & { key: string[]; client(): unknown; conns: Parameters<typeof disconnectRevoked>[0] }): Promise<void> {
+	const [{ gen }] = await c.db.execute<{ gen: number }>("UPDATE token_generation SET gen = gen + 1 WHERE id = 1 RETURNING gen");
+	c.vars.tokenGen = Math.max(c.vars.tokenGen, gen);
+	c.vars.reached = true;
+	// Subscriptions already admitted can receive events without making another authenticated call.
+	await Promise.all([
+		disconnectRevoked(c.conns, gen),
+		...Array.from(c.vars.sessions.keys(), async id => {
+			try {
+				await sessionActor(c, c.key[0], id).internalDisconnectRevoked(gen);
+			} catch (error) {
+				if (!isActorGone(error)) throw error;
+			}
+		}),
+	]);
+}
+
 export const user = actor({
 	options: { name: "User", icon: "user", actionTimeout: 180_000 },
 
 	db: db({
 		onMigrate: async (db) => {
+			await db.execute("CREATE TABLE IF NOT EXISTS token_generation (id INTEGER PRIMARY KEY CHECK(id = 1), gen INTEGER NOT NULL)");
+			await db.execute("INSERT OR IGNORE INTO token_generation VALUES (1, 0)");
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS profile (
 					id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1214,6 +1234,7 @@ export const user = actor({
 	}),
 
 	createVars: async (c): Promise<UserVars> => {
+		const [{ gen }] = await c.db.execute<{ gen: number }>("SELECT gen FROM token_generation WHERE id = 1");
 		const [row] = await c.db.execute<{ uid: string; email: string | null; demo: number }>("SELECT uid, email, demo FROM profile WHERE id = 1");
 		const rows = await c.db.execute<{ summary: string; key: string | null; sent: string | null; launch_until: number | null; launch_claim: number | null }>("SELECT summary, key, sent, launch_until, launch_claim FROM sessions");
 		const launchUntil = new Map<string, number>();
@@ -1233,7 +1254,7 @@ export const user = actor({
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items: await loadItems(c.db) };
+		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items: await loadItems(c.db) };
 	},
 
 	events: {
@@ -1247,6 +1268,7 @@ export const user = actor({
 		assertOrigin(c);
 		try {
 			const caller = authenticate(c.key, params);
+			checkGeneration(caller, c.vars.tokenGen);
 			if (caller.kind === "user") c.vars.reached = true;
 		} catch (error) {
 			// `getOrCreate` makes the actor before this hook runs, so a call without a valid token can
@@ -1258,6 +1280,7 @@ export const user = actor({
 
 	onConnect: async (c, conn) => {
 		const caller = authenticate(c.key, conn.params);
+		checkGeneration(caller, c.vars.tokenGen);
 		if (caller.kind === "user") await rememberProfile(c, caller.profile);
 	},
 
@@ -1283,6 +1306,15 @@ export const user = actor({
 	},
 
 	actions: {
+		internalTokenGeneration: (c): number => { requireServiceFor(c, "call"); return c.vars.tokenGen; },
+		signOutEverywhere: async (c): Promise<void> => {
+			requireUser(c);
+			await revokeTokens(c);
+		},
+		internalRevokeTokens: async (c): Promise<void> => {
+			requireServiceFor(c, "revoke:" + c.key[0]);
+			await revokeTokens(c);
+		},
 		machines: (c): Promise<MachineSummary[]> => machineActions.machines(c),
 		claimMachine: (c, input: { code: string }): Promise<MachineClaim> => machineActions.claimMachine(c, input),
 		confirmMachine: (c, input: { code: string }): Promise<MachineSummary> => machineActions.confirmMachine(c, input),

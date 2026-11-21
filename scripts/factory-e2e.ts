@@ -1019,7 +1019,7 @@ async function memoryChecks(): Promise<void> {
 				return promise;
 			},
 			schedule: { at: async () => "alarm", cancel: async () => true },
-			vars: { items: await loadItems(db as never), machines: new Map<string, { name: string; since: number; status: string; sandboxes: unknown[] }>(), sessions, usage: new UsageBook({ dailySeconds: 100_000, holdSeconds: 60, maxKept: 20 }), profile: null },
+			vars: { tokenGen: 0, items: await loadItems(db as never), machines: new Map<string, { name: string; since: number; status: string; sandboxes: unknown[] }>(), sessions, usage: new UsageBook({ dailySeconds: 100_000, holdSeconds: 60, maxKept: 20 }), profile: null },
 			client: () => ({
 				agentSession: { get: ([, id]: string[]) => ({ internalGrant: async () => (grantFails ? Promise.reject(new Error("the reply was lost")) : void grants.push(id as string)) }) },
 				workItem: { get: () => ({ internalFact: async () => undefined }) },
@@ -1086,7 +1086,7 @@ async function memoryChecks(): Promise<void> {
 		const q = await queue({});
 		const { issueUserToken } = await import("../server/src/tokens.js");
 		const profile = { uid: "u", email: null, demo: false };
-		(q.c.conn as { params: unknown }).params = { token: issueUserToken(profile) };
+		(q.c.conn as { params: unknown }).params = { token: issueUserToken(profile, 0) };
 		const items = config.items;
 		config.items = true;
 		let made: Item | null = null;

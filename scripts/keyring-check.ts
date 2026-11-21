@@ -24,16 +24,16 @@ function server(roots: string, operation: string, input = ""): string {
 }
 
 test("old tokens verify during overlap and stop at retirement", () => {
-	const token = server(`old:${old}`, "issueUserToken(profile)");
+	const token = server(`old:${old}`, "issueUserToken(profile, 0)");
 	assert.equal(server(overlap, "verifyToken(input)?.kind", token), "user");
 	assert.equal(server(`new:${fresh}`, "verifyToken(input)", token), "null");
 	assert.equal(token.split(".")[1], "old");
-	assert.equal(server(overlap, "issueUserToken(profile)").split(".")[1], "new");
+	assert.equal(server(overlap, "issueUserToken(profile, 0)").split(".")[1], "new");
 });
 
 test("each signer uses its designated HKDF key", () => {
 	for (const [operation, purpose] of [
-		["issueUserToken(profile)", "user-token"], ["issueServiceToken()", "service-token"],
+		["issueUserToken(profile, 0)", "user-token"], ["issueServiceToken()", "service-token"],
 		['issueState("u","n","https://example.invalid")', "github-state"],
 		['issueTicket("u",{user:{id:1,login:"fixture"},installations:[]})', "github-ticket"],
 	]) {
