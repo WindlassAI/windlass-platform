@@ -363,3 +363,13 @@ test("the feature marker credits the connected user as author and committer", as
 	assert.deepEqual(marker.author, expected);
 	assert.deepEqual(marker.committer, expected);
 });
+
+test("only an unsupported draft retries as an in-progress ordinary PR", async () => {
+	const { GithubError } = await import("../server/src/github/app.js");
+	const refused = (status: number, message: string) => new GithubError(status, message, "open PR");
+	const message = "Draft pull requests are not supported in this repository.";
+	const { pulls } = await opening(refused(422, "Validation Failed: " + message));
+	assert.equal(pulls.length, 2);
+	assert.deepEqual(pulls[1], { ...pulls[0], draft: false, body: "Original goal\n\nFeature in progress." });
+	for (const error of [refused(403, message), refused(422, "Invalid head")]) await assert.rejects(opening(error), error);
+});

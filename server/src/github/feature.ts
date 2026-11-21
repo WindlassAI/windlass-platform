@@ -37,7 +37,16 @@ export async function openFeature(app: GithubApp, token: string, owner: string, 
 	} catch (e) {
 		if (!(e instanceof GithubError && e.status === 422) || await refHead(app, token, owner, repo, branch) !== head) throw e;
 	}
-	const pull = await app.openPull(token, owner, repo, branch, input.base) ?? await app.createPull(token, owner, repo, { title: input.title, body: input.body, head: branch, base: input.base, draft: true });
+	let pull = await app.openPull(token, owner, repo, branch, input.base);
+	if (!pull) {
+		const fields = { title: input.title, body: input.body, head: branch, base: input.base };
+		try {
+			pull = await app.createPull(token, owner, repo, { ...fields, draft: true });
+		} catch (error) {
+			if (!(error instanceof GithubError && error.status === 422 && /(?:^|: )draft pull requests are not supported in this repository\.?$/i.test(error.said))) throw error;
+			pull = await app.createPull(token, owner, repo, { ...fields, draft: false, body: fields.body + "\n\nFeature in progress." });
+		}
+	}
 	if (pull.headSha !== head || pull.base !== input.base) throw new Error("The feature PR changed during creation.");
 	return { head, pr: { number: pull.number, url: pull.url } };
 }
