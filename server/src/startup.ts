@@ -18,11 +18,14 @@ export function reportWebhook(enabled: boolean): void {
  * server is one of several, and a token one of them signs must be accepted by all the others: a
  * secret each would make up for itself, or keep in its own `.data/secret`, would not be.
  */
-export function startupProblem(config: Pick<Config, "engine" | "secretConfigured" | "browsers" | "unusable">): string | null {
+export function startupProblem(config: Pick<Config, "engine" | "secretConfigured" | "browsers" | "unusable" | "sandbox" | "allowDockerHosted">): string | null {
 	// A setting that is set means something: one that cannot be used is not replaced by its default unsaid.
 	if (config.unusable.length > 0) return `[wlp] ${config.unusable.join("; ")}.`;
 	if (config.engine.remote && !config.secretConfigured) {
 		return "[wlp] WLP_SECRET is not set: with a remote Rivet engine (RIVET_ENDPOINT) every server must sign tokens with the same secret, so set WLP_SECRET to one value of at least 16 characters on all of them.";
+	}
+	if (config.engine.remote && config.sandbox === "docker" && !config.allowDockerHosted) {
+		return "[wlp] WLP_SANDBOX=docker with a remote Rivet engine would run hosted agents on the server host. Use fake or e2b and pair a runner on another machine, or explicitly set WLP_ALLOW_DOCKER_HOSTED=1.";
 	}
 	// A browser needs its reachable gateway address as well as the scoped token the server issues.
 	if (config.browsers.tokens && config.browsers.endpoint === null) {

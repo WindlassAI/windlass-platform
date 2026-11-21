@@ -1,6 +1,6 @@
 # Windlass on one Linux host
 
-The server serves the built web app and platform HTTP routes. A separate Rivet 3.1.1 engine runs the actor gateway, scheduler and durable actor storage. The server opens an outbound node connection over the private Compose network. A paired Windlass runner on the host starts agent containers. Staging uses demo sign-in, fake sandboxes and a runner stand-in for the load test.
+The server serves the built web app and platform HTTP routes. A separate Rivet 3.1.1 engine runs the actor gateway, scheduler and durable actor storage. The server opens an outbound node connection over the private Compose network. Staging uses demo sign-in, fake sandboxes and a runner stand-in for the load test.
 
 The arm64 staging run includes per-probe timings and a restore of the measured timeline. [Validation results](VALIDATION.md)
 
@@ -46,11 +46,15 @@ Before first live boot, run `deploy/selfhost/init-env.sh live`, stage the target
 
 The gateway URL clients dial (`WLP_PUBLIC_ENDPOINT`) and the engine's canonical leader URL (`SELFHOST_ENGINE_ORIGIN`) are separate settings. The latter determines the JWT issuer persisted in the signing ring. Keep it stable for the life of the data, including restores. For an existing loopback staging volume, keep its original canonical URL when assigning it a client-facing hostname. Changing the issuer of an existing ring can produce `503 auth.issuance_unavailable` even with correct admin credentials.
 
-The live preset selects the production image, disables demo login and runs real Windlass sign-in commands locally. Choose paired-machine sessions for real on-box workloads. The preset's hosted provider is fake. Configure a supported real provider separately if hosted sessions are required. Additional application settings, including the user allowlist, can go in a mode-600 server env file under `.data/selfhost/`. Configure and pair a runner for the intended stack independently. A runner paired to another deployment has its own identity and session data.
+The live preset selects the production image, disables demo login and runs real Windlass sign-in commands locally. Choose paired-machine sessions for workloads on a separate machine. The preset's hosted provider is fake. Configure a supported real provider separately if hosted sessions are required. Additional application settings, including the user allowlist, can go in a mode-600 server env file under `.data/selfhost/`. Configure and pair a runner for the intended stack independently. A runner paired to another deployment has its own identity and session data.
+
+## Agents never run on the platform host
+
+An agent container escape or a compromised runner with the Docker socket can expose the engine data, tunnel credentials and every user's sealed sign-ins and their decryption key. Keep hosted sandboxes set to `fake` or `e2b` and pair a runner on a separate machine, since running the owner's development agents under a root-equivalent account on the platform host exposes the same secrets.
 
 ### Resource allocation
 
-The engine has 4,096 CPU shares and a 2,304 MiB memory limit. The server has 3,072 shares and 1,792 MiB. Both restart unless explicitly stopped. For agent containers on the same Docker host and cgroup parent, use `--cpu-shares 256 --cpus 1.5 --memory 1536m`. Shares give the engine and server priority when CPUs are contended. Four busy agents each using their full memory allowance would consume 6 GiB before the platform, kernel, runner or another stack. Size both stacks together on a 12 GB host.
+The engine has 4,096 CPU shares and a 2,304 MiB memory limit. The server has 3,072 shares and a 1,792 MiB memory limit. Both restart unless explicitly stopped. Size both stacks together on a 12 GB host.
 
 ### Configuration names
 

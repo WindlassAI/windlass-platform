@@ -7,6 +7,7 @@
  *                              comma-separated. Unset, both: anyone with a ChatGPT account. Asked at
  *                              the sign-in and at every call, so a removal holds at once (access.ts)
  *   WLP_ACCOUNT_EMAILS           comma-separated email=u_... seeds for first sign-in
+ *   WLP_ALLOW_DOCKER_HOSTED=1 explicitly allow the Docker sandbox layer with a remote engine
  *   WLP_SANDBOX=docker|e2b|fake
  *                              the sandbox layer (default docker). docker: containers on this machine, for
  *                              one server. e2b: E2B microVMs, which every server of a deployment reaches
@@ -268,6 +269,7 @@ export interface Config {
 	access: AccessRules;
 	accountEmails: ReadonlyMap<string, string>;
 	sandbox: SandboxMode;
+	allowDockerHosted: boolean;
 	secret: Buffer;
 	/** False when a remote engine is configured and WLP_SECRET is not: the server refuses to start (startup.ts). */
 	secretConfigured: boolean;
@@ -697,6 +699,7 @@ export const config: Config = {
 	access: readAccessRules(),
 	accountEmails: readAccountEmails(),
 	sandbox: readSandboxMode(),
+	allowDockerHosted: process.env.WLP_ALLOW_DOCKER_HOSTED === "1",
 	secret: readSecret(),
 	secretConfigured: !engine.remote || Boolean(process.env.WLP_SECRET),
 	unusable,

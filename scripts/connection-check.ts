@@ -419,10 +419,15 @@ async function main(): Promise<void> {
 		reset();
 		const engineConfig = { remote: true, endpoint: "http://internal.example", namespace: "default", pool: "default" };
 		const browsers = (endpoint: string | null, withTokens: boolean) => ({ endpoint, tokens: withTokens, tokenTtlMs: HOUR });
-		const missing = startupProblem({ engine: engineConfig, secretConfigured: true, unusable: [], browsers: browsers(null, true) });
+		const hosted = { engine: engineConfig, secretConfigured: true, unusable: [], browsers: browsers(null, false), sandbox: "docker" as const, allowDockerHosted: false };
+		expect("remote engine refuses the hosted Docker layer", startupProblem(hosted)?.includes("WLP_ALLOW_DOCKER_HOSTED") === true);
+		expect("explicit operator override permits the hosted Docker layer", startupProblem({ ...hosted, allowDockerHosted: true }) === null);
+		expect("embedded engine permits the Docker layer", startupProblem({ ...hosted, engine: { ...engineConfig, remote: false } }) === null);
+		const fake = { ...hosted, sandbox: "fake" as const };
+		const missing = startupProblem({ ...fake, browsers: browsers(null, true) });
 		expect("an admin token without the engine's address for browsers: the server refuses to start, in one sentence", missing !== null && missing.startsWith("[wlp] WLP_PUBLIC_ENDPOINT is not set:") && !missing.includes("\n"), missing ?? "");
-		expect("with both, and with neither, it starts", startupProblem({ engine: engineConfig, secretConfigured: true, unusable: [], browsers: browsers("https://engine.example", true) }) === null && startupProblem({ engine: { ...engineConfig, remote: false, endpoint: null }, secretConfigured: true, unusable: [], browsers: browsers(null, false) }) === null);
-		expect("an address without an admin token is an engine that asks for none: it starts", startupProblem({ engine: engineConfig, secretConfigured: true, unusable: [], browsers: browsers("https://engine.example", false) }) === null);
+		expect("with both, and with neither, it starts", startupProblem({ ...fake, browsers: browsers("https://engine.example", true) }) === null && startupProblem({ ...fake, engine: { ...engineConfig, remote: false, endpoint: null }, browsers: browsers(null, false) }) === null);
+		expect("an address without an admin token is an engine that asks for none: it starts", startupProblem({ ...fake, browsers: browsers("https://engine.example", false) }) === null);
 
 		const printed: string[] = [];
 		expect("no admin token: nothing is asked and nothing is said", (await warnAboutConnectionTokens(null, (line) => printed.push(line))) === null && printed.length === 0);
