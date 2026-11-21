@@ -1055,7 +1055,44 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 	const tokens = child(theme, "tokens", { n: 66, title: "", on: HARBOR, state: "waiting", filed: 47, question: { kind: "no_change", text: "The agent ended its turn without changing anything.", choices: choices("again", "give_up"), asked: 6 }, run: { n: 1, started: 47, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 46 } }, spent: { tokens: 410_000, turns: 1, activeSeconds: 19 * 60, hostedSeconds: 19 * 60 } });
 	theme.children = [tokens].map(summaryOf);
 
-	return [search, exporting, writer, flag, theme, tokens];
+	// 4. Run as one item after its plan: the plan stays on the page, superseded. The planner wrote its spec as long sentences, as planners do.
+	const resumePlan = featurePlan(
+		1,
+		"superseded",
+		{
+			goal: "Resume an interrupted upload from the last confirmed chunk instead of starting the file again, so that a dropped connection on a large release artefact costs seconds rather than the whole transfer.",
+			requirements: [
+				"Uploads are split into chunks of 8 MiB, and after each chunk the server's confirmation is written to a small state file beside the artefact, so that a restarted upload can read which chunks the server already holds.",
+				"When an upload starts and a state file for the same artefact and the same checksum exists, the client asks the server which chunks it holds and sends only the missing ones, in order, before it finalises the upload.",
+				"A state file whose checksum no longer matches the artefact on disk is discarded with a warning, and the upload starts from the first chunk, so that a rebuilt artefact is never stitched together with parts of the old one.",
+				"The retry policy of the HTTP client is used for each chunk, with its capped backoff, and an upload gives up after five failed attempts on the same chunk with an error that names the chunk and the last status the server answered.",
+				"The progress line counts the chunks already confirmed when it resumes, and says that it resumed and from which chunk.",
+				"`harbor upload --restart` ignores any state file and starts again from the first chunk.",
+			],
+			outOfScope: ["Uploading several chunks at once: chunks stay sequential, as the server expects them in order.", "Resuming downloads, which go through another client.", "Changing the server's chunk API, which already answers which chunks it holds."],
+			acceptance: [
+				"Killing `harbor upload` halfway through a 200 MiB artefact and running it again sends only the remaining chunks, which the test checks against the stand-in server's request log.",
+				"A state file left from a different build of the artefact is discarded with the warning, and the whole file is sent.",
+				"`pnpm test src/upload` and `pnpm test test/e2e/upload.test.ts` pass.",
+			],
+		},
+		[
+			{ key: "state", title: "Keep the chunk state beside the artefact", brief: "Write and read the state file, keyed by the artefact's checksum.", acceptance: ["Run `pnpm test src/upload/state.test.ts`."], dependsOn: [], owns: ["src/upload/state/**"], budget: { tokens: 1_400_000, turns: 4, activeSeconds: 50 * 60, hostedSeconds: 30 * 60 } },
+			{ key: "resume", title: "Send only the missing chunks", brief: "Ask the server which chunks it holds, then send the rest in order.", acceptance: ["Run `pnpm test src/upload`."], dependsOn: ["state"], owns: ["src/upload/client.ts", "src/upload/chunks.ts"], budget: { tokens: 2_200_000, turns: 6, activeSeconds: 1.5 * HOUR_S, hostedSeconds: 45 * 60 } },
+		],
+	);
+	const resuming = feature(
+		{ n: 67, title: "Resume interrupted uploads", on: HARBOR, state: "working", filed: 95, body: "A dropped connection near the end of a large upload starts the whole file again. Resume from the last chunk the server confirmed.", acceptance: resumePlan.spec.acceptance,
+			run: { n: 2, started: 40, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 39, turn: "started" } },
+			events: [[94, "Started.", undefined, true], [80, "The planner filed a proposal.", [1, 1, "refine"]], [41, "Run as single item.", [1, 1, "refine"], true], [40, "Started run 2 as a single item.", [2, 1, "implement"]]],
+			spent: { tokens: 640_000, turns: 2, activeSeconds: 21 * 60, hostedSeconds: 21 * 60 } },
+		resumePlan,
+		null,
+	);
+	resuming.mode = "single";
+	resuming.budget = { ...resumePlan.compare.singleBudget };
+
+	return [search, exporting, writer, flag, theme, tokens, resuming];
 }
 
 /** The server's reason for no second review on a deployment without the reviewer (factory/blueprint.ts). */
