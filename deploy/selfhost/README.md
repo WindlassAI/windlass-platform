@@ -118,6 +118,10 @@ The generator signs in as a new demo user, pairs an in-process runner, opens K i
 
 Every probe interval launches four concurrent reads, with a 30 s deadline per read. The page probe reads and checks the HTML. Actor probes use the browser's scoped token and read the user's session list, models and one rotating session's snapshot. The report prints successful-sample p50/p95/max in milliseconds (nearest rank), errors, completed turns, streamed updates, log severity and stall-signature counts, and engine/server restart deltas per run. Samples are grouped by request start time into idle, first 15 minutes, subsequent load and recovery. The load test can be interrupted with Ctrl-C.
 
+The served page allows scripts and fonts from its own origin, inline styles, and HTTP and WebSocket connections to the configured `WLP_PUBLIC_ENDPOINT` origin. Set this endpoint at runtime when using a custom gateway. The page forbids framing. An HTTPS `WLP_PUBLIC_URL` enables one-year HSTS on web responses, including behind a tunnel that reaches the server over HTTP.
+
+To check the built app on a loopback demo stack, run `node scripts/selfhost-csp-check.cjs http://127.0.0.1:16440` with Playwright and its Chromium available to Node. Set `CHROMIUM_EXECUTABLE` to use an installed Chromium. The check signs in to the demo, receives a user actor WebSocket frame, and attempts an inline script insertion in the rendered page.
+
 ## Logs, upgrade and rollback
 
 ```sh

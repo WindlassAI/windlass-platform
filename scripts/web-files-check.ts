@@ -43,6 +43,24 @@ let passed = 0;
 let failed = 0;
 try {
 	const serve = webFiles(site);
+	for (const scheme of ["http", "https"]) {
+		const secure = scheme === "https";
+		const origin = scheme + "://engine.example:7443";
+		const socket = (secure ? "wss" : "ws") + "://engine.example:7443";
+		const served = webFiles(site, { publicUrl: scheme + "://app.example", endpoint: origin + "/prefix" });
+		const response = await served(new Request("http://internal/agents/fixture"));
+		const csp = response?.headers.get("content-security-policy") ?? "";
+		const hsts = response?.headers.get("strict-transport-security");
+		for (const [name, ok] of [
+			["scoped HTTP and WebSocket connections", csp.split("; ").includes("connect-src 'self' " + origin + " " + socket)],
+			["frame, object, base and script restrictions", ["frame-ancestors 'none'", "base-uri 'none'", "object-src 'none'", "script-src 'self'"].every(rule => csp.split("; ").includes(rule))],
+			["app styles and images", ["style-src 'self' 'unsafe-inline'", "img-src 'self' data: https:"].every(rule => csp.split("; ").includes(rule))],
+			["HSTS follows the external web origin", secure ? hsts === "max-age=31536000" : hsts === null],
+		] as const) {
+			console.log((ok ? "PASS" : "FAIL") + "  " + scheme + " " + name);
+			if (ok) passed++; else failed++;
+		}
+	}
 	for (const [method, address, want] of cases) {
 		const response = await serve(new Request(`http://web.test${address}`, { method }));
 		const body = response ? (await response.arrayBuffer()).byteLength : 0;

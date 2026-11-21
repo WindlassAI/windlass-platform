@@ -37,8 +37,21 @@ interface Found {
  * A handler for the files under `directory`: a response for a GET or HEAD that names one of them or a
  * page of the app, and null for everything else, which the caller answers itself.
  */
-export function webFiles(directory: string): (request: Request) => Promise<Response | null> {
+export function webFiles(directory: string, { endpoint, publicUrl }: { endpoint?: string | null; publicUrl?: string } = {}): (request: Request) => Promise<Response | null> {
 	const root = resolve(directory);
+	const connect = ["'self'"];
+	if (endpoint) {
+		const engine = new URL(endpoint);
+		connect.push(engine.origin);
+		engine.protocol = engine.protocol === "https:" ? "wss:" : "ws:";
+		connect.push(engine.origin);
+	}
+	const csp = [
+		"default-src 'self'", "script-src 'self'", "connect-src " + connect.join(" "),
+		"img-src 'self' data: https:", "style-src 'self' 'unsafe-inline'",
+		"frame-ancestors 'none'", "base-uri 'none'", "object-src 'none'",
+	].join("; ");
+	const https = publicUrl && URL.canParse(publicUrl) && new URL(publicUrl).protocol === "https:";
 	// The files of an image never change while it runs, so each is read once. A path that names no file
 	// is not kept: anyone may ask for any number of them, and the files there are cannot grow.
 	const read = new Map<string, Promise<Found | null>>();
@@ -92,6 +105,8 @@ export function webFiles(directory: string): (request: Request) => Promise<Respo
 				"cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
 				"x-content-type-options": "nosniff",
 				"referrer-policy": "no-referrer",
+				"content-security-policy": csp,
+				...(https ? { "strict-transport-security": "max-age=31536000" } : {}),
 			},
 		});
 	};

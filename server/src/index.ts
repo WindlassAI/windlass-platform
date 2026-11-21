@@ -15,7 +15,7 @@ import { runnerResponse } from "./runner-routes.js";
 import { apiRoute } from "./api-routes.js";
 import { RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH } from "./runner/control.js";
 import { config, githubConfig } from "./config.js";
-import { PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH } from "./contract.js";
+import { DEFAULT_ENDPOINT, PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH } from "./contract.js";
 import { webhookRoute } from "./github/webhook.js";
 import { githubApp } from "./github/app.js";
 import { GITHUB_CALLBACK_PATH, githubCallbackResponse } from "./github/connect.js";
@@ -85,7 +85,10 @@ try {
 }
 
 // The web app, where this server serves it too (WLP_WEB_DIR): its files, and its page for every address of the app.
-const web = config.webDir ? webFiles(config.webDir) : null;
+const web = config.webDir ? webFiles(config.webDir, {
+	endpoint: config.browsers.endpoint ?? (config.engine.remote ? null : DEFAULT_ENDPOINT),
+	publicUrl: process.env.WLP_PUBLIC_URL,
+}) : null;
 if (config.webDir) console.log(`[wlp] web app: served from ${config.webDir}`);
 
 async function route(request: Request): Promise<Response> {
