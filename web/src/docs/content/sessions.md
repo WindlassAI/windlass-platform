@@ -22,7 +22,9 @@ When a turn ends, its outcome is one of **done**, **done, checks unresolved**, *
 
 The timeline shows everything the agent does, live: your prompts, its reasoning (**thinking**, then **thought**), its tool calls and its answers. Each tool call shows its state, such as **running**, **done**, **failed** or **refused**.
 
-Above the field, a status line says what is happening, for example **working · step 3**, with a timer. If you scroll up, **Jump to latest** takes you back to the end.
+Tool calls that finished one after another are folded into one line that says what they did, for example **Read 4 files, searched twice and ran 1 command**, with how many failed. Choose the line to see each call, and a call to see its input and output. A call that is running, asks you something, was refused or was answered stays on its own line, as do subagents and pushes.
+
+Above the field, a status line says what is happening, for example **running `bun test` · step 3**, with a timer. If you scroll up, **Jump to latest** takes you back to the end. When you hide the side panel, the timeline stays in the middle of the page.
 
 At the end of each turn, a summary line gives the outcome, the number of steps, the time it took, the files it changed and the tokens it used. For Claude Code it gives how full the context is and the cost so far.
 

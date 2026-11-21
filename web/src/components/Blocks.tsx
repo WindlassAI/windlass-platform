@@ -9,6 +9,7 @@ import { reasoningTitle, renderInlineMarkdown, renderMarkdown } from "../lib/mar
 import { contextWords, costWords } from "../lib/acp";
 import { asksAbout, toolBlocks, ZERO_USAGE, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlanBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type SubagentRun, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
 import { formatInput, parseInput, summarizeTool } from "../lib/toolSummary";
+import { summarizeWork, turnRows, type WorkBlock } from "../lib/workGroups";
 import { checkLine, gateWord, overruledLine, ranEarlier, unneededLine, unresolvedLine, unrunLine } from "../lib/verified";
 import { useNow } from "../state/hooks";
 import { CopyButton, useLatest } from "./Copy";
@@ -999,19 +1000,62 @@ function renderBlock(block: Block, nested = false, first = false): ReactNode {
 	}
 }
 
+// ---------------------------------------------------------------------------------------------
+// A row of work: calls folded into one line (lib/workGroups.ts)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The calls the agent made between two things it said, as one line that says what they did, folded.
+ * Opened, each call is its own row, with its glyph, as a subagent's calls are.
+ */
+const WorkRow = memo(function WorkRow({ blocks }: { blocks: WorkBlock[] }) {
+	const [open, setOpen] = useState(false);
+	const body = useId();
+	const summary = summarizeWork(blocks);
+	return (
+		<div className={`work${open ? " work-open" : ""}${summary.failed > 0 ? " work-failed" : ""}`}>
+			<button type="button" className="line-button work-row" aria-expanded={open} aria-controls={body} onClick={() => setOpen((value) => !value)}>
+				<span className="line-glyph">{summary.failed > 0 ? <CrossIcon size={13} className="tone-bad" /> : <CheckIcon size={13} className="tone-dim" />}</span>
+				<span className="work-text">{summary.text}</span>
+				<span className="tool-facts work-facts">
+					{summary.failed > 0 ? <span className="tone-bad">{summary.failed} failed</span> : null}
+					{summary.durationMs !== null ? <span>{duration(summary.durationMs)}</span> : null}
+				</span>
+				<ChevronIcon size={12} className={`line-chevron${open ? " line-chevron-open" : ""}`} />
+			</button>
+			{open ? (
+				<div className="work-body" id={body}>
+					{blocks.map((block) => (
+						<div key={block.id} className={blockClass(block)}>
+							{renderBlock(block)}
+						</div>
+					))}
+				</div>
+			) : null}
+		</div>
+	);
+});
+
 /** One turn: the prompt, what happened, and how it ended. Re-renders only when the turn changed. */
 export const Turn = memo(function Turn({ turn }: { turn: TurnView }) {
 	const interactive = useInteractive();
 	const question = interactive?.flow.question ?? null;
 	// A question about a call this timeline does not show (a subagent's own call) goes at the end of its turn.
 	const loose = question !== null && question.turn === turn.turn && !turn.blocks.some((block) => block.kind === "tool" && asksAbout(block, question)) ? question : null;
+	const rows = useMemo(() => turnRows(turn.blocks, question ? (block) => asksAbout(block, question) : null), [turn.blocks, question]);
 	return (
 		<section className="turn" aria-label={`Turn ${turn.turn}`}>
-			{turn.blocks.map((block, index) => (
-				<div key={block.id} className={blockClass(block)}>
-					{renderBlock(block, false, turn.turn === 1 && index === 0)}
-				</div>
-			))}
+			{rows.map((row) =>
+				row.kind === "work" ? (
+					<div key={row.id} className="block block-work">
+						<WorkRow blocks={row.blocks} />
+					</div>
+				) : (
+					<div key={row.block.id} className={blockClass(row.block)}>
+						{renderBlock(row.block, false, turn.turn === 1 && row.index === 0)}
+					</div>
+				),
+			)}
 			{loose && interactive ? (
 				<InlineQuestion question={loose} flow={interactive.flow} className="block block-question" />
 			) : null}

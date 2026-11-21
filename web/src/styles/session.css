@@ -153,8 +153,8 @@
 	color: var(--ink);
 	background: var(--bg-active);
 }
-/* Hidden, the conversation takes the panel's room. */
-.session-panel-hidden {
+/* Hidden, the conversation takes the panel's room, and its column stays in the middle of it. */
+.session.session-panel-hidden {
 	grid-template-columns: minmax(0, 1fr);
 }
 .session-panel-hidden > .panel {
@@ -168,6 +168,8 @@
 }
 
 .session {
+	/* The reading column: the conversation, the question dock and the composer share it. */
+	--transcript: 800px;
 	flex: 1;
 	min-height: 0;
 	display: grid;
@@ -234,7 +236,7 @@
 }
 
 .conversation-inner {
-	width: min(var(--measure), 100%);
+	width: min(var(--transcript, var(--measure)), 100%);
 	margin: 0 auto;
 	padding: 28px var(--gutter) 28px;
 }
@@ -1567,7 +1569,7 @@ button.output-more:hover {
 /* The dock: the same question in a slim bar above the composer, for when its call is out of view. */
 .q-dock-wrap {
 	flex: none;
-	width: min(var(--measure), 100%);
+	width: min(var(--transcript, var(--measure)), 100%);
 	margin: 0 auto;
 	padding: 10px var(--gutter) 0;
 }
@@ -1682,7 +1684,7 @@ button.output-more:hover {
 
 .composer {
 	flex: none;
-	width: min(var(--measure), 100%);
+	width: min(var(--transcript, var(--measure)), 100%);
 	margin: 0 auto;
 	padding: 10px var(--gutter) 14px;
 }
@@ -2961,5 +2963,162 @@ button.user-platform-line:hover {
 	}
 	.composer-tools-end {
 		flex: none;
+	}
+}
+
+/* ---- rows of work (lib/workGroups.ts) -------------------------------------------------------- */
+
+/*
+ * The calls between two things the agent said, folded into one line in the text face that says what
+ * they did; the figures after it in the mono face, as a call's are. Its knot is a lashing on the rope:
+ * a long ring, for several calls bound together. Opened, its calls hang under it from a hairline, each
+ * with its own glyph.
+ */
+.block-work {
+	margin: 2px 0;
+}
+.work-row {
+	align-items: center;
+}
+.work-text {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--font-text);
+	font-size: var(--text-14);
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+	transition: color 120ms var(--ease);
+}
+.work-row:hover .work-text,
+.work-open .work-text {
+	color: var(--ink);
+}
+.work-facts {
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+}
+.work-body {
+	margin: 2px 0 10px 3px;
+	padding: 2px 0 2px 14px;
+	border-left: 1px solid var(--line-strong);
+	animation: arrive 160ms var(--ease);
+}
+.work-body > .block + .block-text,
+.work-body > .block-text + .block {
+	margin-top: 6px;
+}
+/* A whipping: turns of twine bound round the rope, one band for the calls held together. */
+.timeline > .turn > .block-work::before {
+	--twine: var(--ink-dim);
+	left: calc(var(--on-rope) - 4.5px);
+	top: 5px;
+	width: 9px;
+	height: 15px;
+	border: 0;
+	border-radius: 2.5px;
+	background: repeating-linear-gradient(180deg, var(--twine) 0 1.5px, transparent 1.5px 3.5px), var(--bg);
+	background-clip: content-box, border-box;
+	padding: 1px 0;
+	box-shadow: 0 0 0 2px var(--bg);
+}
+.timeline > .turn > .block-work:has(> .work-failed)::before {
+	--twine: var(--bad);
+}
+.timeline > .turn > .block-work:has(> .work-open)::before {
+	--twine: var(--ink);
+}
+.timeline > .turn > .block > .work > .work-row > .line-glyph {
+	display: none;
+}
+
+/*
+ * A call's row: its name in the dim ink, at the text's weight, and what it acts on in the ink, so
+ * that a column of calls reads by what they touched and the agent's words stay the loudest thing.
+ */
+.tool-name {
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+}
+.tool-facts {
+	color: var(--ink-faint);
+}
+
+/* The agent's words: the column's whole width, a little more air around them than around a call. */
+.answer {
+	max-width: none;
+}
+.answer > .prose {
+	max-width: none;
+}
+.block-text {
+	margin: 14px 0;
+}
+
+/* A prompt: as wide as what was typed, never more than the column. */
+.user:not(.user-platform) {
+	width: fit-content;
+	min-width: min(300px, 100%);
+	max-width: 100%;
+}
+
+/* The end of a live turn: what it does now, on what, at which step. */
+.working-words {
+	flex: none;
+}
+.working-target {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	font-weight: var(--weight-regular);
+	color: var(--ink-dim);
+}
+.working-step {
+	flex: none;
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
+}
+.working-step::before {
+	content: "·";
+	margin-right: 8px;
+}
+.working-time {
+	flex: none;
+}
+/* A row of work says it opens: its chevron stays by its figures, faint until the row is pointed at. */
+.work-row {
+	width: fit-content;
+	max-width: calc(100% + 16px);
+	padding-right: 10px;
+}
+.work-row > .line-chevron {
+	margin-left: 2px;
+	opacity: 0.55;
+}
+.work-row:hover > .line-chevron,
+.work-row:focus-visible > .line-chevron,
+.work-row > .line-chevron-open {
+	opacity: 1;
+}
+/* On a phone the sentence wraps rather than losing its end. */
+@media (max-width: 600px) {
+	.work-row {
+		width: auto;
+		align-items: baseline;
+		flex-wrap: wrap;
+		row-gap: 0;
+	}
+	.work-text {
+		white-space: normal;
+	}
+	.work-row > .line-chevron {
+		display: none;
 	}
 }
