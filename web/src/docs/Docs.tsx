@@ -6,7 +6,7 @@
  * build step can render a page to HTML. `DocsApp` is the page in a browser: it follows the address, the theme and
  * the title.
  */
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { ArrowLeftIcon, ChevronIcon, CrossIcon, SearchIcon } from "../components/Icons";
 import { ThemeToggle, Wordmark } from "../components/TopBar";
 import { href, navigate, useHash, useRoute } from "../lib/router";
@@ -72,9 +72,28 @@ function Highlight({ text, query }: { text: string; query: string }) {
 	return <>{parts.map((part, at) => (at % 2 === 1 ? <mark key={at}>{part}</mark> : part))}</>;
 }
 
-function DocsSearch({ autoFocus = false, onDone }: { autoFocus?: boolean; onDone?(): void }) {
-	const [query, setQuery] = useState("");
-	const [open, setOpen] = useState(false);
+/**
+ * What a visitor typed into the prerendered page's search before the app took the page over: the app starts
+ * its search from it, so no keystroke is lost while the docs load.
+ */
+export interface StaticSearch {
+	query: string;
+	focused: boolean;
+	selection: [number, number] | null;
+}
+
+/** The prerendered search field's state, read just before the app replaces the static page. */
+export function takeStaticSearch(container: HTMLElement): StaticSearch | null {
+	const field = container.querySelector<HTMLInputElement>("input[data-docs-search]");
+	if (!field) return null;
+	const focused = document.activeElement === field;
+	if (!focused && field.value === "") return null;
+	return { query: field.value, focused, selection: field.selectionStart !== null && field.selectionEnd !== null ? [field.selectionStart, field.selectionEnd] : null };
+}
+
+function DocsSearch({ autoFocus = false, onDone, initial, bar = false }: { autoFocus?: boolean; onDone?(): void; initial?: StaticSearch; bar?: boolean }) {
+	const [query, setQuery] = useState(initial?.query ?? "");
+	const [open, setOpen] = useState(initial?.focused ?? false);
 	const [active, setActive] = useState(0);
 	const input = useRef<HTMLInputElement>(null);
 	const listId = useId();
@@ -85,20 +104,45 @@ function DocsSearch({ autoFocus = false, onDone }: { autoFocus?: boolean; onDone
 		if (autoFocus) input.current?.focus();
 	}, [autoFocus]);
 
-	// "/" anywhere but a field puts you in the search.
+	// Take over the static page's field where the visitor left it: focused, with the caret where it was.
+	const carried = useRef(initial);
+	useLayoutEffect(() => {
+		const from = carried.current;
+		const field = input.current;
+		carried.current = undefined;
+		if (!from?.focused || !field) return;
+		field.focus({ preventScroll: true });
+		if (from.selection) field.setSelectionRange(from.selection[0], from.selection[1]);
+	}, []);
+
+	// ⌘K (Ctrl K elsewhere) from anywhere, or "/" from anywhere but a field, puts you in the search.
 	useEffect(() => {
 		if (autoFocus) return;
 		const onKey = (event: KeyboardEvent) => {
-			const target = event.target as HTMLElement | null;
-			if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
-			if (target && (target.closest("input, textarea, select, [contenteditable='true']") !== null)) return;
-			if (!input.current || input.current.offsetParent === null) return;
+			if (event.defaultPrevented || event.isComposing || event.repeat) return;
+			const chord = (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k";
+			const slash = event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey;
+			if (!chord && !slash) return;
+			const target = event.target instanceof Element ? event.target : null;
+			if (slash && target?.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+			const field = input.current;
+			if (!field || field.offsetParent === null) return;
 			event.preventDefault();
-			input.current.focus();
+			field.focus();
+			field.select();
+			setOpen(true);
 		};
-		document.addEventListener("keydown", onKey);
-		return () => document.removeEventListener("keydown", onKey);
+		// The capture phase, so that nothing on the page can swallow the key first.
+		window.addEventListener("keydown", onKey, true);
+		return () => window.removeEventListener("keydown", onKey, true);
 	}, [autoFocus]);
+
+	// The chord as this machine writes it: known only in a browser, so the static page shows "/".
+	const [chordLabel, setChordLabel] = useState<string | null>(null);
+	useEffect(() => {
+		const platform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ?? navigator.platform ?? navigator.userAgent;
+		setChordLabel(/mac|iphone|ipad/i.test(platform) ? "⌘K" : "Ctrl K");
+	}, []);
 
 	const follow = (hit: DocsHit) => {
 		setOpen(false);
@@ -123,6 +167,8 @@ function DocsSearch({ autoFocus = false, onDone }: { autoFocus?: boolean; onDone
 				follow(hit);
 			}
 		} else if (event.key === "Escape") {
+			// A query or open results close first; the drawer around the field closes on the next Escape.
+			if (query || showing) event.stopPropagation();
 			if (query) setQuery("");
 			else input.current?.blur();
 			setOpen(false);
@@ -137,6 +183,7 @@ function DocsSearch({ autoFocus = false, onDone }: { autoFocus?: boolean; onDone
 				<input
 					ref={input}
 					type="search"
+					data-docs-search={bar ? "" : undefined}
 					placeholder="Search the docs"
 					value={query}
 					role="combobox"
@@ -157,7 +204,7 @@ function DocsSearch({ autoFocus = false, onDone }: { autoFocus?: boolean; onDone
 				/>
 				{autoFocus ? null : (
 					<kbd className="docs-search-key" aria-hidden="true">
-						/
+						{chordLabel ?? "/"}
 					</kbd>
 				)}
 			</label>
@@ -199,6 +246,18 @@ function DocsSearch({ autoFocus = false, onDone }: { autoFocus?: boolean; onDone
 							))}
 						</ul>
 					)}
+					<p className="docs-results-keys" aria-hidden="true">
+						<span>
+							<kbd>↑</kbd>
+							<kbd>↓</kbd> move
+						</span>
+						<span>
+							<kbd>↵</kbd> open
+						</span>
+						<span>
+							<kbd>esc</kbd> close
+						</span>
+					</p>
 				</div>
 			) : null}
 		</div>
@@ -297,9 +356,11 @@ export interface DocsViewProps {
 	onToggleTheme(): void;
 	/** The heading you are reading, for the contents. */
 	activeHeading?: string;
+	/** What was typed into the static page's search before the app started. */
+	initialSearch?: StaticSearch;
 }
 
-export function DocsView({ slug, theme, onToggleTheme, activeHeading = "" }: DocsViewProps) {
+export function DocsView({ slug, theme, onToggleTheme, activeHeading = "", initialSearch }: DocsViewProps) {
 	const page = docsPage(slug);
 	const rendered = useMemo(() => (page ? renderDocs(docsSource(page)) : null), [page]);
 	const [menu, setMenu] = useState<"closed" | "nav" | "search">("closed");
@@ -328,15 +389,16 @@ export function DocsView({ slug, theme, onToggleTheme, activeHeading = "" }: Doc
 			const code = copy.closest(".docs-code")?.querySelector("code")?.textContent ?? "";
 			void navigator.clipboard?.writeText(code).then(
 				() => {
-					copy.textContent = "Copied";
+					const label = copy.querySelector("span") ?? copy;
+					label.textContent = "Copied";
 					copy.dataset.state = "done";
 					setTimeout(() => {
-						copy.textContent = "Copy";
+						label.textContent = "Copy";
 						delete copy.dataset.state;
 					}, 1600);
 				},
 				() => {
-					copy.textContent = "Select and copy";
+					(copy.querySelector("span") ?? copy).textContent = "Select and copy";
 				},
 			);
 			return;
@@ -361,7 +423,7 @@ export function DocsView({ slug, theme, onToggleTheme, activeHeading = "" }: Doc
 					<span className="docs-brand-tag">docs</span>
 				</DocsLink>
 				<div className="docs-bar-search">
-					<DocsSearch />
+					<DocsSearch bar initial={initialSearch} />
 				</div>
 				<div className="docs-bar-end">
 					<button type="button" className="icon-button docs-bar-narrow" aria-label="Search the docs" onClick={() => setMenu("search")}>
@@ -523,7 +585,7 @@ function setDescription(text: string): void {
 }
 
 /** The docs in a browser: the address's page, its title, and the scroll to where the address points. */
-export function DocsApp({ theme: given, onToggleTheme: givenToggle }: { theme?: Theme; onToggleTheme?(): void } = {}) {
+export function DocsApp({ theme: given, onToggleTheme: givenToggle, initialSearch }: { theme?: Theme; onToggleTheme?(): void; initialSearch?: StaticSearch } = {}) {
 	const route = useRoute();
 	const hash = useHash();
 	const [ownTheme, ownToggle] = useTheme();
@@ -549,6 +611,6 @@ export function DocsApp({ theme: given, onToggleTheme: givenToggle }: { theme?: 
 		first.current = false;
 	}, [slug, hash]);
 
-	return <DocsView slug={slug} theme={theme} onToggleTheme={onToggleTheme} activeHeading={active} />;
+	return <DocsView slug={slug} theme={theme} onToggleTheme={onToggleTheme} activeHeading={active} initialSearch={initialSearch} />;
 }
 

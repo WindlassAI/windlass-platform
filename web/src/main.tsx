@@ -17,6 +17,7 @@ import "./styles/landing.css";
 import "./styles/docs.css";
 import { QUESTION_TIMEOUT_MS } from "@contract";
 import { StrictMode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import type { PlatformClient } from "./api/client";
@@ -83,23 +84,31 @@ async function createPlatformClient(): Promise<PlatformClient> {
 }
 
 const container = document.getElementById("root") as HTMLElement;
-// On a prerendered public page (the landing, for someone signed in: public/site.js loaded the app there),
-// the page's static markup is hidden until now and is not the app's: the app starts from an empty root.
-if (container.hasAttribute("data-public")) {
-	container.replaceChildren();
-	container.removeAttribute("data-public");
-}
-const root = createRoot(container);
-
 /** The docs are public and need no server: they load on their own, without the platform's client. */
 const docs = location.pathname === "/docs" || location.pathname.startsWith("/docs/");
+/** Empty a prerendered page's root: its static markup is not the app's, which starts from nothing. */
+const clearStatic = () => {
+	if (!container.hasAttribute("data-public")) return;
+	container.replaceChildren();
+	container.removeAttribute("data-public");
+};
+// On the landing for someone signed in (public/site.js loaded the app there), the static page is hidden
+// until now. A docs page stays readable, and its search usable, until the docs' own chunk has arrived.
+if (!docs) clearStatic();
+const root = createRoot(container);
 
 if (docs) {
-	void import("./docs/Docs").then(({ DocsApp }) => {
-		root.render(
-			<StrictMode>
-				<DocsApp />
-			</StrictMode>,
+	void import("./docs/Docs").then(({ DocsApp, takeStaticSearch }) => {
+		// What was typed into the static page's search carries over, and the swap happens in one task, so no
+		// frame shows an empty page and no keystroke falls between the two.
+		const initialSearch = takeStaticSearch(container) ?? undefined;
+		clearStatic();
+		flushSync(() =>
+			root.render(
+				<StrictMode>
+					<DocsApp initialSearch={initialSearch} />
+				</StrictMode>,
+			),
 		);
 	});
 } else createPlatformClient().then(
