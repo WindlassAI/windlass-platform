@@ -30,7 +30,7 @@ Some deployments offer a demo. The sign-in page then shows **Try the demo**. The
 
 ### Sign out
 
-Open the account menu and choose **Sign out**. This signs you out in this browser.
+Open the account menu and choose **Sign out**. This signs you out in this browser. Only this browser forgets its sign-in: the platform's token itself stays valid for up to 30 days. An account taken off the invitation list is refused at every call, whatever token it holds.
 
 ## Connect GitHub
 

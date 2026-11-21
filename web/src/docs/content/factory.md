@@ -52,7 +52,7 @@ Make a token under **Settings** › **API tokens** › **New token…**. Give it
 - `POST /api/items` files a work item. Send `Authorization: Bearer <token>` and an `Idempotency-Key` header.
 - `GET /api/items/<id>` reads where an item is, its verdict and its cost.
 
-The body names the repository, the title, the body and, optionally, the acceptance criteria, sandbox, model, place, whether to start it and `"mode"`: `"single"`, the default, or `"orchestrate"`. A token cannot approve a plan: you approve it on the item's page. A title can be 80 characters long and a body 20,000. An item can have 20 criteria of up to 2,000 characters each. A token may make 60 requests a minute.
+The body names the repository, the title, the body and, optionally, the acceptance criteria, sandbox, model, place, whether to start it and `"mode"`: `"single"`, the default, or `"orchestrate"`. A token cannot approve a plan: you approve it on the item's page. A title can be 80 characters long and a body 20,000. An item can have 20 criteria of up to 2,000 characters each. A token may make 60 requests a minute. The same `Idempotency-Key` with the same body answers with the item the first attempt made; with another body it is refused with `409` and `idempotency_key_reused`. A missing, invalid or out-of-scope token gets `401` and `invalid_token`. A rate limit gets `429` with `Retry-After`. Every error has a JSON `code` and `message`. Where the platform does not offer work items, both routes answer `404`.
 
 ## The pipeline
 

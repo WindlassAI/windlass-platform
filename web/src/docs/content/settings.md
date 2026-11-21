@@ -91,7 +91,13 @@ When less than a fifth of the day's time is left, the session and the composer w
 
 ### Sandboxes you keep
 
-You can keep 5 sandboxes at once, running or paused. Nothing is removed to make room by itself. To free one, choose **Free…** beside it, then **Free sandbox**. The dialog says what is lost and what is kept. The agent's next prompt starts a new sandbox. This cannot be undone.
+You can keep 5 sandboxes at once, running or paused. Nothing is removed to make room by itself. To free one, choose **Free…** beside it, then **Free sandbox**. The dialog says what is lost and what is kept: the workspace's files that are not on GitHub go with the sandbox, while the agent, its conversation and, where the platform keeps one, the copy of the agent's memory stay. The agent's next prompt starts a new sandbox. This cannot be undone.
+
+A sandbox left behind by an agent that no longer exists is listed too, and can be freed the same way.
+
+### Estimated cost
+
+Where the platform's sandboxes are billed by the second, as on E2B, the page shows an estimated cost: the counted seconds times the provider's published price for the sandbox size. It is labelled as an estimate. The provider's bill can differ by a few seconds, and by more when a server stops under a running sandbox.
 
 ### Other sections
 
