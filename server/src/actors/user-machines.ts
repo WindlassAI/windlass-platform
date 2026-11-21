@@ -17,7 +17,7 @@ import { asPairingError, pairingGone } from "./machine-pairing.js";
 
 interface Ctx {
 	db: RawAccess; key: string[]; client(): unknown; conn?: { params: unknown } | null;
-	vars: { machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; github: { user: { login: string } } | null };
+	vars: { tokenGen: number; machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; github: { user: { login: string } } | null };
 	broadcast(name: string, ...args: unknown[]): void;
 }
 const actors = (c: Ctx) => c.client() as ReturnType<typeof createClient<Registry>>;

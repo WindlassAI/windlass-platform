@@ -4,6 +4,10 @@ Your ChatGPT sign-in is never in a sandbox. The platform keeps it. For each turn
 
 Whether the agent's commands can read that token depends on the sandbox. Each sandbox says so when you choose it.
 
+## Signing out on all devices
+
+In **Settings**, choose **Sign out everywhere** to end all browser sign-ins for your account. Leave **Also revoke all API tokens** checked to disable every API token, including any created by someone with access to your browser sign-in. Clearing it keeps those tokens valid. Running agents and paired machines keep working. On the **Machines** page, review your pairings and [remove any unfamiliar machines](/docs/machines#remove-a-machine).
+
 ## Where sandboxes run
 
 - **On this platform.** The platform makes and controls the sandbox. A platform runs its sandboxes on one provider: Docker, or E2B microVMs. The **sandbox** chip lists the ones it offers, with the layers that isolate each.

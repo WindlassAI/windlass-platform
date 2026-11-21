@@ -1594,6 +1594,7 @@ export interface ApiToken {
 }
 
 export interface UserActions {
+	signOutEverywhere(options?: { revokeApiTokens: boolean }): Promise<void>;
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
 	/**

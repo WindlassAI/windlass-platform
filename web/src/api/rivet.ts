@@ -309,6 +309,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		const act = <K extends keyof UserActions & string>(name: K, ...args: Parameters<UserActions[K]>) => call<UserActions, K>(handle(), name, ...(args as never));
 		return {
 			me: () => act("me"),
+			signOutEverywhere: (...args) => act("signOutEverywhere", ...args),
 			chatgpt: () => act("chatgpt"),
 			models: () => act("models"),
 			listSessions: () => act("listSessions"),

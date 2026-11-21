@@ -73,13 +73,34 @@ The engine has 4,096 CPU shares and a 2,304 MiB memory limit. The server has 3,0
 | Credentials and node version | `WLP_SECRET`, `RIVET_ADMIN_TOKEN`, `RIVET_NODE_VERSION` |
 | Application modes | `WLP_DEMO`, `WLP_SANDBOX`, `WLP_SIGNIN_RUNNER` |
 | Set by Compose for the server | `RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE`, `RIVET_POOL`, `WLP_TOKEN_ENDPOINT`, `WLP_WEB_ORIGINS`, `WLP_MACHINES`, `WLP_HTTP_PORT` |
-| Optional server settings | `WLP_SIGNIN_KEY`, `WLP_ALLOWED_EMAILS`, `WLP_ALLOWED_USERS`, `WLP_RUNNER_IMAGE`, `WLP_BUCKET_*` |
+| Optional server settings | `WLP_SECRET_KEYS`, `WLP_SIGNIN_KEYS`, `WLP_SIGNIN_KEY`, `WLP_ALLOWED_EMAILS`, `WLP_ALLOWED_USERS`, `WLP_RUNNER_IMAGE`, `WLP_BUCKET_*` |
 
 The default optional server env file is `.data/selfhost/<compose-project>.server.env`. An explicit relative path is resolved from the Compose file's directory. Stack settings listed under `environment` in Compose take precedence over this file. Avoid printing expanded Compose configuration or unfiltered container inspections.
 
 ### Migrate existing sign-ins at cutover
 
 If a deployment already sets `WLP_SIGNIN_KEY`, retain that exact key. If it used the `WLP_SECRET` fallback, verify privately that the old signing secret is at least 32 characters long, then replace the generated `WLP_SIGNIN_KEY` with that exact old value in the protected live stack env file. Pause the migration if the old secret is shorter: existing blobs need a separate re-sealing migration. Generate a **new** 32-byte random hex `WLP_SECRET` in the private configuration and apply the two settings together on every server. This signs users out of the platform while preserving sealed ChatGPT sign-ins and repository secrets. Retain protected copies of both keys for disaster recovery. When both stack and optional server env files provide the seal key, the stack value wins. An explicitly empty key is invalid.
+
+### Rotate signing and sealing keys
+
+The **first deployment of this release ends existing 30-day platform sessions**, including the owner’s browser session. Sign in again. Finish any GitHub connection already underway before upgrading, or restart it afterward. Existing GitHub installations, saved ChatGPT sign-ins, and account and repository secrets survive when their original sealing material is retained. Switch all servers to this release together. Older servers cannot verify the new tokens.
+
+In the mode-600 optional **server env file**, set `WLP_SECRET_KEYS` for platform signatures and `WLP_SIGNIN_KEYS` for encryption. Each is an ordered comma-separated list of `id:secret` entries. The first entry issues new material and every entry can read material bearing its id. Use a distinct `openssl rand -hex 32` value per root and keep its id for its lifetime. Ids permit 1–32 letters, digits, underscores or dashes. Each list overrides its single-key setting. Without a dedicated sealing setting, encryption follows the signing keyring, so retiring a signing root also retires its decryption capability.
+
+1. Back up the actor data and its corresponding protected configuration. For the initial conversion from singleton settings, use `default` as the id of the exact existing `WLP_SECRET` to retain sessions issued by this release. Put the exact existing seal secret in the sealing ring under a stable id. Legacy ciphertext carries a derived id that the reader recognizes automatically. Switch all servers together for this first conversion, because a singleton seal reader only recognizes the derived id.
+2. Before each subsequent rotation, distribute the old and new roots to every server with the **old entry first**. For example, the signing list has the form `default:<existing>,nov26:<new>`. Recreate the server with `dc up -d --no-deps --force-recreate --wait server` for each configuration change. Once all readers have both entries, promote the new root by reversing the order on each server. Signing and sealing can rotate independently.
+3. For routine signing rotation, keep the old entry for 30 days after the last server stopped issuing with it. Removing it sooner ends any remaining sessions signed under that id. For a compromised root, remove it immediately across all servers and sign in again. Keep the required Compose `WLP_SECRET` and any singleton sealing fallback aligned with the current roots when retiring old material, to keep retired root material off the server. Keep the named rings configured so previously issued ids remain recognizable.
+4. For sealing rotation, check the saved ChatGPT sign-in and use each account and repository secret after promotion. Reading stored material re-seals it with the current key. Opening a metadata-only secret list leaves the ciphertext untouched. Re-save dormant values individually or retain the previous key until every needed value has been migrated. Allow pending sign-in attempts to finish or expire. Verify a restored copy with only the new key before dropping the previous key from servers. Keep the old key protected alongside any historical backups that still require it.
+
+### Revoke one user's platform sessions
+
+**Settings → Sign-in → Sign out everywhere** ends the current browser session and the user's other platform sessions. To do the same as an operator, run the following inside the selected stack using its existing server configuration. Substitute the platform uid.
+
+```sh
+dc exec -T server node --import tsx src/revoke-user-tokens.ts u_example
+```
+
+The user's actor stores the new token generation durably and closes existing user and agent-session feeds. If a session actor is temporarily unreachable, the server retries its feed cleanup. Every subsequent user action checks the new generation. Their next login receives that generation. Running agents, saved credentials, paired machines and independently managed API tokens keep working. Restoring actor data also restores the generations in that backup. After a restore, revoke affected uids again before reopening the gateway if more recent sign-outs must be honored.
 
 ## Backup and restore
 

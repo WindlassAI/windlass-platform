@@ -1,8 +1,8 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { actor, UserError } from "rivetkit";
 import { db } from "rivetkit/db";
 import { internalConnection, requireServiceFor, serviceParams } from "../auth.js";
-import { config } from "../config.js";
+import { keyedDigest } from "../signatures.js";
 import type { MachineClaim } from "../contract.js";
 import { PAIRING_TTL_MS, type PairStatus } from "../runner/control.js";
 import { grantIsValid, isActorGone } from "./internal.js";
@@ -29,7 +29,7 @@ export const pairingDirectory = actor({
 			requireServiceFor(c, "call");
 			const now = Date.now();
 			const expires = now + PAIRING_TTL_MS;
-			const tag = createHmac("sha256", config.secret).update("pairing-budget/1|").update(publicKey).digest();
+			const tag = keyedDigest("pairing-budget", publicKey);
 			const bucket = tag[0]! % BUCKETS;
 			await c.db.execute("DELETE FROM starts WHERE expires <= ?", now);
 			const rows = await c.db.execute(`INSERT INTO starts SELECT ?, ?, ?, ?, ?
