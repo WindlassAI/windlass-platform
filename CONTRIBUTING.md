@@ -33,7 +33,7 @@ pnpm sandbox:build
 pnpm --filter @windlass-platform/server e2e:docker
 ```
 
-The sandbox build fetches the checksum-pinned Windlass release. See the [full list of checks](README.md#checks)
+The sandbox build fetches the checksum-pinned Windlass release. See the [full list of checks](docs/development.md#checks)
 for focused commands and the [quick start](README.md#quick-start) for an interactive demo.
 
 ## Maintainer pull requests
