@@ -104,6 +104,7 @@
  * Nothing here is told by the words of a message; the switches above are this layer's own.
  */
 
+import { machineHarnesses } from "./sandbox/harnesses.js";
 import { hostToolsMeta, sessionOpenParams, turnHostTools } from "./sandbox/turn.js";
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -443,7 +444,7 @@ class FakeSandboxes implements Sandboxes {
 	}
 
 	async create(input: CreateSandboxInput): Promise<string> {
-		if (input.harness) throw new SandboxUserError("Claude Code runs only on a machine of yours.");
+		if (input.harness) throw new SandboxUserError(`${machineHarnesses[input.harness].name} runs only on a machine of yours.`);
 		if (!this.profile(input.profile).available) throw new Error(`sandbox profile ${input.profile} is not available`);
 		await delay(20);
 		const id = `fake-${randomBytes(6).toString("hex")}`;

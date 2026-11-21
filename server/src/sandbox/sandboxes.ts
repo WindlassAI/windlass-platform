@@ -455,9 +455,10 @@ export class DockerSandboxes implements Sandboxes {
 	async create(input: CreateSandboxInput): Promise<string> {
 		assertUid(input.uid);
 		const harness = this.options.sessionRelay ? this.options.harness ?? "claude" : undefined;
-		if (harness !== input.harness) throw new SandboxUserError("Claude Code runs only on a machine offering it.");
+		const harnessName = (input.harness ?? harness) === "opencode" ? "OpenCode" : "Claude Code";
+		if (harness !== input.harness) throw new SandboxUserError(`${harnessName} runs only on a machine offering it.`);
 		if (harness && (input.profile !== "docker-hardened" || input.screenshots))
-			throw new SandboxUserError("Claude Code requires the hardened Claude Code image.");
+			throw new SandboxUserError(`${harnessName} requires the hardened ${harnessName} image.`);
 		const image = input.screenshots ? this.shotsImage : this.image;
 		const profile = findProfile(input.profile);
 		const flags = PROFILE_RUN_FLAGS[input.profile];

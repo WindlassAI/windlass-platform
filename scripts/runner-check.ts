@@ -350,8 +350,12 @@ require("node:module").syncBuiltinESMExports();`);
 			const { createFakeSandboxLayer } = await import("../server/src/sandbox-fake.js");
 			const hostedDocker = new DockerSandboxes({ machine: null, dataVolume: async () => { throw new Error("unexpected volume"); } });
 			const hostedE2b = new E2bSandboxes(new FakeE2b(), readE2bSettings({}));
-			for (const provider of [hostedDocker, hostedE2b, createFakeSandboxLayer({ signIns: "memory" }).sandboxes])
-				await assert.rejects(provider.create({ ...create, uid, sessionId, profile: provider === hostedE2b ? "e2b" : create.profile }), /only on a machine/);
+			for (const provider of [hostedDocker, hostedE2b, createFakeSandboxLayer({ signIns: "memory" }).sandboxes]) {
+				for (const harness of ["claude", "opencode"] as const) {
+					const name = harness === "claude" ? "Claude Code" : "OpenCode";
+					await assert.rejects(provider.create({ ...create, harness, uid, sessionId, profile: provider === hostedE2b ? "e2b" : create.profile }), new RegExp(name + " runs only on a machine"));
+				}
+			}
 			ok("Hosted Docker, E2B and the hosted test layer refuse a machine login harness.");
 			const baseOnly = join(tmp, "windlass-only.cjs");
 			await exec(process.execPath, ["runner/bundle.mjs", image, baseOnly], { cwd: root });
