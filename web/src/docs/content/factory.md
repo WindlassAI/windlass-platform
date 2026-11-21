@@ -4,6 +4,11 @@ A work item is a task on one of your GitHub repositories that an agent carries t
 
 Work items need a repository from your GitHub connection, and they always run with Windlass. The Factory is offered where the platform turns work items on. Then **Agents · Factory** appears in the bar.
 
+A work item runs in one of two ways:
+
+- **Single**: "One agent builds it and hands over one pull request." This is the default.
+- **Orchestrate**: "For a new feature with several parts. A planner splits it into subtasks you approve." See [Orchestrate a feature](#orchestrate-a-feature).
+
 ## File a work item
 
 ### From the Factory page
@@ -13,13 +18,14 @@ Work items need a repository from your GitHub connection, and they always run wi
 3. Type the task in **What should be done?** The first line becomes the title. The rest is the body.
 4. Choose the repository under **repo**, and the machine under **on** if you like.
 5. Optionally, add **Acceptance criteria** under **criteria**, one per line. The agent is given them, and the verdict lists them for you to check. No machine checks them.
-6. Press <kbd>Enter</kbd>, or choose **File**, to file it and start it.
+6. Where the platform offers orchestration, choose **Single** or **Orchestrate** on the **How it runs** pill beside the button.
+7. Press <kbd>Enter</kbd>, or choose **File**, to file it and start it.
 
 To file it without starting it, choose **File as a draft**, or press <kbd>Alt</kbd>+<kbd>Enter</kbd>. Start a draft later from its page.
 
 ### From a repository's page
 
-Choose **New work item…**. Fill in **Title**, **What to do** and, if you like, **Acceptance criteria**. Leave **Start now** ticked and choose **File and start**, or choose **File as a draft**.
+Choose **New work item…**. Fill in **Title**, **What to do** and, if you like, **Acceptance criteria**. Choose **Single** or **Orchestrate** under **How it runs**, where it is offered. Leave **Start now** ticked and choose **File and start**, or choose **File as a draft**.
 
 ### From a GitHub issue
 
@@ -29,6 +35,8 @@ Where the platform receives GitHub's events, you can file a work item from an is
 - write a comment whose first word is the App's handle, `@` and its name, or `/windlass`. The rest of the comment is added to the task as a note.
 
 For this to work, you must have connected that GitHub account in Windlass, and you must have write access to the repository. Lines like `- [ ] text` in the issue become acceptance criteria.
+
+To orchestrate it, add the label `windlass:orchestrate` instead, or start the comment after the App's handle with the word `orchestrate`. An issue labelled `bug` always runs as a single item, and the App's comment ends with "This issue has the bug label, so it runs as a single item."
 
 - If you wrote the issue yourself, the item starts at once.
 - If someone else wrote it, the item is filed as a draft for you to start. Its page says the text was written by them, not by you, and the agent is told to take it as a description of what is wanted, not as instructions.
@@ -44,7 +52,7 @@ Make a token under **Settings** › **API tokens** › **New token…**. Give it
 - `POST /api/items` files a work item. Send `Authorization: Bearer <token>` and an `Idempotency-Key` header.
 - `GET /api/items/<id>` reads where an item is, its verdict and its cost.
 
-The body names the repository, the title, the body and, optionally, the acceptance criteria, sandbox, model, place and whether to start it. A title can be 80 characters long and a body 20,000. An item can have 20 criteria of up to 2,000 characters each. A token may make 60 requests a minute.
+The body names the repository, the title, the body and, optionally, the acceptance criteria, sandbox, model, place, whether to start it and `"mode"`: `"single"`, the default, or `"orchestrate"`. A token cannot approve a plan: you approve it on the item's page. A title can be 80 characters long and a body 20,000. An item can have 20 criteria of up to 2,000 characters each. A token may make 60 requests a minute.
 
 ## The pipeline
 
@@ -105,6 +113,81 @@ Each such stop offers **Raise the limit and go on**, **Retry from scratch**, **G
 - **Send back…** an item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. A review you leave on the pull request at GitHub is not read, so say what the agent should know in the note.
 - **Cancel…** an item.
 
+## Orchestrate a feature
+
+Use **Orchestrate** for a new feature with several parts that one agent would struggle to hold at once. Use **Single** for a fix, a small change or anything one pull request from one agent can carry.
+
+An orchestrated item, a feature, works like this:
+
+1. **Planning**: a planner agent reads the task, the repository and your machines, and files a plan. It cannot write, edit or run commands.
+2. You review the plan on the item's page, set its budgets and approve it.
+3. **Subtasks**: each subtask runs as a work item of its own, under the feature, one at a time, in the order the plan's dependencies allow.
+4. **Feature summary**: once every subtask is done, an agent writes the pull request's summary.
+5. CI runs on the whole feature, a second review reads it, and the feature is handed to you as one pull request.
+
+### What you need first
+
+Approving a plan needs two things on the repository:
+
+- saved [checks](/docs/settings#checks);
+- CI that reports on pushes to the feature's branches, `windlass/feature-<id>` and its subtasks' branches. An enabled GitHub Actions workflow with `on: push` will do, as long as its branch filters do not leave those branches out. CI of another kind counts once it has passed on an earlier `windlass/` branch pushed without a pull request. A workflow that runs only on pull requests is not enough.
+
+Without them, approval is refused. File it as single instead. The **How it runs** pill warns you before you file when the repository has no saved checks: "No checks are saved for this repository, so a plan cannot be approved. File it as single, or save checks first."
+
+### The plan
+
+The plan says what the feature is for, what it must do, what is left out of it and when it is done. Then it lists 2 to 6 subtasks. Each subtask has a title, a brief, the paths it owns, the subtasks it waits for, how it is checked and a budget. Subtasks that do not wait for each other may not own the same paths.
+
+The planner may ask you questions with the plan. It may also say that one item is enough. The page then says "The planner suggests one item instead: …", and offers **Run as single item** or **Orchestrate anyway**.
+
+The planner reads what you wrote about your machines under [Say when to use it](/docs/machines#say-when-to-use-it).
+
+### Review and approve it
+
+When the plan is ready, the item waits under **Needs you**: "Its plan waits for your approval." Its page shows **It asks you**, "Review the plan: N subtasks, X tokens of the Y the feature may spend", and the plan below it.
+
+- Answer the plan's questions, if it has any.
+- Change a subtask's budget: tokens, turns, working minutes and, on this platform, hosted minutes. **Together** shows the total against what the subtasks may share.
+- Choose **Save as version N** to keep your changes, or **Discard changes**.
+- Choose **Approve version N** to start the subtasks.
+- Choose **Ask for a new plan** to have the planner try again, or **Give up**.
+
+If approval is refused because the repository lacks checks or push CI, **Run as a single item** turns the feature into one ordinary item and starts it. The tokens spent on planning stay counted.
+
+### Budgets
+
+A feature may spend three times what one item may: by default 18,000,000 tokens, 42 turns, 12 hours of working time and 6 hours of hosted sandbox time. Part of that, 1,000,000 tokens and 4 turns by default, is kept for the summary and the review. A subtask gets at most what one item may, and at least 2 turns and a tenth of one item's tokens and times.
+
+When a feature reaches its budget, it stops and asks you. **Raise the limit and go on** may raise each figure by at most one item's allowance at a time.
+
+### Subtasks
+
+Each subtask is a work item with its own page, which says **subtask of** the feature. It starts from the feature's branch, runs in the feature's place, sandbox and model, and has the subtask's budget. It is given its brief, its paths and the reports of the subtasks it waits for.
+
+A subtask opens no pull request of its own. It pushes its branch, and joins the feature only when its checks pass and CI passes on its commit. The platform then moves the feature's branch forward to it. If the feature's branch moved meanwhile, the subtask rebases onto it and is checked again.
+
+Subtasks are not listed on the Factory page unless they ask you something.
+
+If a subtask fails or is cancelled, the planner revises the plan for the work left. Done subtasks stay as they are. You review and approve the revised plan again. A feature can be revised this way twice.
+
+### The pull request
+
+When you approve the plan, the platform opens a draft pull request from `windlass/feature-<id>` into the base branch. Each subtask's work lands on that branch. When the feature is handed over, the pull request is marked ready for review. As with every item, merging stays yours.
+
+A feature gets no turns of its own to fix CI or merge its base. If CI fails on the whole feature, or the pull request conflicts with its base, the feature asks you, with **Check the feature PR again**, **Hand it over as it is** and **Give up**.
+
+### When orchestration stops
+
+These stop the feature and ask you:
+
+- a subtask has no passing checks or no CI on its push: "Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up.";
+- two subtasks stopped with the same failure;
+- both revisions of the plan have been used;
+- the budget left cannot cover the next subtask: "The remaining feature budget cannot cover …";
+- no CI passed on the whole feature within 10 minutes: "No passing CI reported on the complete feature. Wait for a check or hand over the PR."
+
+Cancelling a feature cancels its subtasks too.
+
 ## The Factory page
 
 The Factory page lists your items by what you must do:
@@ -119,7 +202,7 @@ Filter it with **repo** and **from**: filed from the web, the API or a GitHub is
 
 ## Limits
 
-Limits make items wait. They never refuse them. A waiting item says what it waits for. The platform sets these, and the **Work items** section of the **Usage** page shows them. By default:
+Limits make items wait. They never refuse them. (Approving a feature's plan can be refused, but that is a requirement of the repository, not a limit. See [What you need first](#what-you-need-first).) A waiting item says what it waits for. The platform sets these, and the **Work items** section of the **Usage** page shows them. By default:
 
 | Limit | Default |
 | --- | --- |
@@ -133,4 +216,4 @@ Limits make items wait. They never refuse them. A waiting item says what it wait
 | Items filed from GitHub per day | 20 |
 | Drafts from GitHub waiting | 20 |
 
-When an item reaches its own budget of tokens, turns, working time or hosted sandbox time, it stops and asks you, for example "This item has used 6M of its 6M tokens."
+When an item reaches its own budget of tokens, turns, working time or hosted sandbox time, it stops and asks you, for example "This item has used 6M of its 6M tokens." A feature's budget is three times an item's. See [Budgets](#budgets).

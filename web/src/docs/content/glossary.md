@@ -13,6 +13,9 @@ Commands you set for a repository. Windlass runs them before it calls a turn don
 ### Claude Code
 Anthropic's coding agent. On Windlass it runs only on your own machines, with your Claude subscription.
 
+### Credential relay
+The container on your machine that holds an agent's login and forwards the agent's model requests with it, so the login is never inside the agent's container.
+
 ### Docker + Windlass sandbox
 A Docker profile in which Windlass sandboxes every command again: no network, and the access token out of reach. Its ID is `docker-windlass-sandbox`.
 
@@ -24,6 +27,9 @@ How hard the model reasons. The levels come from the model.
 
 ### Factory
 The page that lists your work items, and the pipeline that carries them from a task to a pull request.
+
+### Feature
+An orchestrated work item: a planner splits it into subtasks you approve, and they land together as one pull request.
 
 ### GitHub App
 The Windlass App you install on your GitHub accounts. The platform acts as its installation to clone, push and open pull requests.
@@ -42,6 +48,12 @@ What the agent may do without asking you: for Windlass, **Ask**, **Auto** or **F
 
 ### Pairing code
 The `XXXX-XXXX` code the runner prints, which you enter on the Machines page to pair the machine. It lasts ten minutes.
+
+### Network mode
+What the agents' commands on one of your machines can reach: `restricted`, `open` or `none`. Set with the runner's `--egress`.
+
+### Planner
+The agent that writes a feature's plan. It reads but cannot write, edit or run commands.
 
 ### Profile
 A kind of sandbox, with what isolates it and what it allows.
@@ -63,6 +75,9 @@ A value you save for a repository or your account, given to the setup command, M
 
 ### Setup command
 A command that runs once when a repository's workspace is created, before the agent starts.
+
+### Subtask
+One part of a feature's plan. It runs as a work item of its own, under the feature.
 
 ### Steer
 A message you send to an agent while it works. It reads it after its current step.

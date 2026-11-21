@@ -96,6 +96,21 @@ The limit is set on the machine. Start the runner with a higher `--max-running`,
 **"Docker needs at least 5 GB free to create a sandbox."**\
 Free disk space on the machine.
 
+**"This machine uses --egress none. Start the session without a repository or restart the runner with --egress restricted."**\
+In `none` mode nothing can be cloned. Choose **No repository**, or restart the runner with `--egress restricted` or `--egress open`. See [Network access](/docs/machines#network-access).
+
+**"This kept sandbox has a different network policy. Save its workspace and recreate the sandbox to use the runner’s current --egress setting."**\
+The runner's network mode changed after this sandbox was made. Take what you need from it, delete the agent and start a new one.
+
+**"blocked by runner egress policy"**, or `403 Forbidden` in a command's output\
+The machine is in `restricted` mode, and the command tried to reach your private network, the machine itself or a blocked address. To allow a private host, start the runner with `--egress-allow` and its DNS name.
+
+**"Docker could not apply the runner’s network policy."**\
+The runner could not set up a sandbox's network. Check Docker on the machine, then restart the runner.
+
+**"Claude credential relay refused the request."**\
+The machine's relay refused a Claude request. Either it was not one of Claude's model requests, its session placeholder did not match, the machine has no valid token, or Anthropic answered with an error, such as a rate limit. The relay does not pass Anthropic's own reason on. If it keeps happening, sign Claude in again on the machine.
+
 **"Claude Code is not turned on on this machine: start the runner with --harness claude."**\
 See [Claude Code on your machine](/docs/machines#claude-code-on-your-machine).
 
@@ -112,6 +127,37 @@ Start or cancel drafts on the Factory page.
 
 **"Waiting for one of your … factory turns; … are running …"**\
 Not an error. The item waits for a free place and starts by itself.
+
+**"No checks are saved for this repository, so a plan cannot be approved. File it as single, or save checks first."**\
+Shown before you file a feature. Save [checks](/docs/settings#checks) for the repository, or choose **Single**.
+
+**"Use a single item or add saved repository checks before approving orchestration."**\
+**"Use a single item or add CI that reports on pushes to the feature and child branches before approving orchestration."**\
+A feature's plan needs saved checks and CI that runs on pushes. See [What you need first](/docs/factory#what-you-need-first), or choose **Run as a single item**.
+
+**"The plan changed while you read it, here or in another tab: version … is shown now. Check it, then approve again."**\
+Someone saved a new version of the plan. Read the version shown, then approve it.
+
+**"Subtasks exceed the remaining … budget after the summary and review reserve."**\
+The subtasks' budgets add up to more than the feature may share. Lower some of them. See [Budgets](/docs/factory#budgets).
+
+**"Subtask … must be a whole number between … and …."**\
+A subtask's budget is below the least a subtask needs, or above what one item may spend.
+
+**"No passing CI reported on the subtask push. Wait for an external check or stop orchestration."**\
+CI did not report on a subtask's branch. Check that your CI runs on pushes to `windlass/` branches. Choose **Keep waiting** or **Give up**.
+
+**"Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up."**\
+A subtask could not join the feature. The pull request holds the subtasks that did. Hand it over as it is, or give up.
+
+**"The remaining feature budget cannot cover …"**\
+The next subtask needs more than the feature has left. Choose **Revise the plan**, or **Give up**.
+
+**"No passing CI reported on the complete feature. Wait for a check or hand over the PR."**\
+No CI passed on the whole feature within 10 minutes. Check CI on the pull request at GitHub.
+
+**"Not taken: orchestrated work items are disabled on this deployment."**\
+The App's comment on your issue. This platform does not offer orchestration. File the issue as a single item.
 
 ## Still stuck
 
