@@ -2,6 +2,8 @@
 
 The server serves the built web app and platform HTTP routes. A separate Rivet 3.1.1 engine runs the actor gateway, scheduler and durable actor storage. The server opens an outbound node connection over the private Compose network. A paired Windlass runner on the host starts agent containers. Staging uses demo sign-in, fake sandboxes and a runner stand-in for the load test.
 
+The arm64 staging run includes per-probe timings and a restore of the measured timeline. [Validation results](VALIDATION.md)
+
 ## Bring up staging
 
 Use Docker Engine, Compose v2.24 or later, Bash, Git and OpenSSL. Run these commands from the repository root.
