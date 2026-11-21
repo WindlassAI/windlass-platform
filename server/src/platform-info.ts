@@ -77,7 +77,7 @@ export async function platformInfo(): Promise<PlatformInfo> {
 	// Left out without a GitHub App: the answer is then what it was before there could be one.
 	const app = githubInfo();
 	if (app) info.github = app;
-	if (config.machines) info.machines = { minRunnerVersion: MIN_RUNNER_VERSION, runnerImage: config.machines.runnerImage, platformUrl: config.machines.publicUrl };
+	if (config.machines) info.machines = { minRunnerVersion: MIN_RUNNER_VERSION, runnerImage: config.machines.runnerImage, runnerHarnesses: config.machines.runnerHarnesses, platformUrl: config.machines.publicUrl };
 	if (config.items) info.items = { reviewer: config.factory.reviewer, orchestrate: process.env.WLP_FACTORY_ORCHESTRATE !== "0" };
 	return info;
 }

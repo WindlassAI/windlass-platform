@@ -42,12 +42,12 @@ async function inspect(name: string) {
 	const result = await docker(["container", "inspect", name], { timeoutMs: 15_000 });
 	if (result.code === 0) return JSON.parse(result.stdout)[0];
 	if (/no such (container|object)/i.test(result.stderr)) return;
-	throw new RunnerError("Docker could not inspect the Claude relay.");
+	throw new RunnerError("Docker could not inspect the credential relay.");
 }
 
 async function ownedRelay(m: MachineDocker, harness: MachineHarness) {
 	const box = await inspect(relayName(m, harness));
-	if (box && !owned(box.Config.Labels, m)) throw new Refusal("The Claude relay container belongs to a different pairing.");
+	if (box && !owned(box.Config.Labels, m)) throw new Refusal("The credential relay container belongs to a different pairing.");
 	return box;
 }
 
@@ -73,8 +73,8 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 	const credentials = login ? m.opencodeVolume : m.claudeVolume;
 	const pair = loadPair();
 	if (!pair?.key || pair.current.machineId !== m.identity.machineId || pair.current.uid !== m.identity.uid)
-		throw new Refusal("The machine pairing changed while preparing the Claude relay.");
-	if (!await m.ownedVolume(!login, credentials)) throw new Refusal("Run windlass-runner login opencode on this machine.");
+		throw new Refusal("The machine pairing changed while preparing the credential relay.");
+	if (!await m.ownedVolume(!login, credentials)) throw new Refusal(`Run windlass-runner login ${harness} on this machine.`);
 	await m.ensureImage();
 	const socketVolume = relaySocketVolume(m, harness);
 	await m.ownedVolume(true, socketVolume);

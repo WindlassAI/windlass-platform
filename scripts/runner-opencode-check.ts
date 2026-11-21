@@ -78,3 +78,12 @@ test("authenticated reports carry a full provider catalog while other frames ret
 	assert.equal(validHarnessOptions({ ...options, models: models.map(m => ({ ...m, id: m.id.padEnd(512, "x"), name: "y".repeat(512) })),
 		defaultModel: options.defaultModel.padEnd(512, "x") }), false);
 });
+
+test("installer capability reports must describe the exact published runner", async () => {
+	const { publishedHarnesses } = await import("../server/src/config.js");
+	const image = "registry.invalid/runner@sha256:" + "a".repeat(64);
+	const report = JSON.stringify({ image, harnesses: ["claude"] });
+	assert.deepEqual(publishedHarnesses(image, report), ["claude"]);
+	assert.equal(publishedHarnesses(image.replace("aa", "bb"), report), undefined);
+	assert.equal(publishedHarnesses(image), undefined);
+});

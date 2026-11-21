@@ -1,6 +1,6 @@
 /** A machine whose runner reported a container's id for its host name is called by what it is. */
 import { describe, expect, it } from "vitest";
-import { isMachineIdName, machineHostNote, machineLabel } from "./machines";
+import { isMachineIdName, machineHostNote, machineLabel, workspaceNetwork } from "./machines";
 
 describe("machineLabel", () => {
 	it("keeps a name a person gave the host", () => {
@@ -35,4 +35,11 @@ describe("machineLabel's OS words", () => {
 		expect(machineLabel({ name: "d5eb81162177", os: "darwin", arch: "arm64" })).toBe("macOS arm64 machine (d5eb81)");
 		expect(machineLabel({ name: "d5eb81162177", os: "FreeBSD", arch: "x64" })).toBe("FreeBSD x64 machine (d5eb81)");
 	});
+});
+
+it("describes the actual workspace egress for commands outside the command sandbox", () => {
+	expect(workspaceNetwork("open")).toContain("local network");
+	expect(workspaceNetwork("restricted")).toContain("through the web proxy");
+	expect(workspaceNetwork("none")).toContain("no direct outbound network access");
+	expect(workspaceNetwork()).toContain("workspace’s network policy");
 });

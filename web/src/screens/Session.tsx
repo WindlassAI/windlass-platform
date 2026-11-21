@@ -367,7 +367,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 					Session details, tokens and changes
 				</a>
 			</div>
-			<SidePanel sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
+			<SidePanel egress={machine?.egress} sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
 		</main>
 	);
 }

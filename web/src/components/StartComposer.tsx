@@ -63,7 +63,7 @@ import { AgentGlyph, Pill } from "./ui/Pill";
 import { SplitButton } from "./ui/Button";
 import { Tooltip } from "./ui/Tooltip";
 import { useSurface } from "./ui/useMediaQuery";
-import { machineLabel } from "../lib/machines";
+import { hardenedItemNote, machineLabel } from "../lib/machines";
 import { ITEM_MODE_WORDS, orchestrateProblem } from "../lib/feature";
 
 /** Whether any of the chosen sandbox's three facts is open: said in the warning tone. */
@@ -649,7 +649,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		...defaultsErrors.map((line) => ({ text: line, warn: true })),
 		item && chosenMachine
 			? {
-					text: `It runs without asking on “${machineLabel(chosenMachine)}”, inside its container, and costs no hosted time. ${chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${machineLabel(chosenMachine)}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}${chosenMachine.profiles.find((candidate) => candidate.available)?.id === HARNESS_PROFILE ? " This machine cannot sandbox each command, so the agent's commands can reach the machine's network and its access token." : ""}`,
+					text: `It runs without asking on “${machineLabel(chosenMachine)}”, inside its container, and costs no hosted time. ${chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${machineLabel(chosenMachine)}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}${hardenedItemNote(chosenMachine)}`,
 					warn: false,
 				}
 			: null,
@@ -929,7 +929,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const hasSetup = chosen !== null && !item;
 	const setupForm = hasSetup ? (
 		<div className="start-setup">
-			<SetupField setup={setup} repository={repositoryName(chosen.repository)} disabled={busy !== null} />
+			<SetupField egress={chosenMachine?.egress} setup={setup} repository={repositoryName(chosen.repository)} disabled={busy !== null} />
 			{!other ? <SecretsField repositoryId={chosen.repository.id} repository={repositoryName(chosen.repository)} profile={profile} disabled={busy !== null} /> : null}
 		</div>
 	) : null;

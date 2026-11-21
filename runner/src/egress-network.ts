@@ -110,9 +110,9 @@ export class EgressNetwork {
 		const started = await checked(["inspect", "-f", `{{.Id}}|{{.State.StartedAt}}|{{with index .Config.Labels "${LABEL}.relay-session"}}{{.}}{{end}}`, container]);
 		const [id, since, nonce] = started.stdout.trim().split("|");
 		if (harness) {
-			if (!/^[0-9a-f]{32}$/.test(nonce)) throw new Refusal("This Claude session needs a new relay endpoint.");
+			if (!/^[0-9a-f]{32}$/.test(nonce)) throw new Refusal("This session needs a new relay endpoint.");
 			const volume = relaySocketVolume(this.machine, harness);
-			if (!await this.machine.ownedVolume(false, volume)) throw new Refusal("The Claude relay socket volume is missing.");
+			if (!await this.machine.ownedVolume(false, volume)) throw new Refusal("The session relay socket volume is missing.");
 			mounts.push(`type=volume,src=${volume},dst=/run/wlp-relay,readonly,volume-nocopy`);
 			probes.push("17892");
 		}

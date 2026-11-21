@@ -484,7 +484,7 @@ describe("the start composer's agent picker", () => {
 	}
 });
 
-it("shows a terminal setup command with an optional read-only OpenCode import on Machines", async () => {
+it.each([true, false])("offers OpenCode setup and import only for a runner image reporting support (%s)", async supported => {
 	HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
 	HTMLDialogElement.prototype.close ??= function () { this.open = false; };
 	const { Machines } = await import("../screens/Machines");
@@ -492,6 +492,8 @@ it("shows a terminal setup command with an optional read-only OpenCode import on
 	document.body.append(host);
 	const root = createRoot(host);
 	const client = make();
+	const info = await client.info();
+	if (!supported) vi.spyOn(client, "info").mockResolvedValue({ ...info, machines: { ...info.machines!, runnerHarnesses: ["claude"] } });
 	saveAuth("mock",auth);
 	try {
 		act(() => root.render(createElement(AppProvider,{client,children:createElement(Machines,{adding:true})})));
@@ -502,6 +504,12 @@ it("shows a terminal setup command with an optional read-only OpenCode import on
 		expect(command()).not.toContain("/import/opencode");
 		const checkbox = (text: string) => [...host.querySelectorAll("label")].find(element => element.textContent?.includes(text))!.querySelector("input")!;
 		act(() => checkbox("Enable Claude Code").click());
+		if (!supported) {
+			expect(host.textContent).not.toContain("Enable OpenCode");
+			expect(host.textContent).not.toContain("Import existing OpenCode");
+			expect(command()).not.toMatch(/--harness opencode|\/import\/opencode/);
+			return;
+		}
 		act(() => checkbox("Enable OpenCode").click());
 		expect(command()).toContain("--harness claude --harness opencode");
 		const background = () => host.querySelector('pre[aria-label="The install command"]')?.textContent;

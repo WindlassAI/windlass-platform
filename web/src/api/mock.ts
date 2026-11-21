@@ -61,6 +61,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
  * across a reload and sessions created by hand do not survive one.
  */
 import { initialHarnessModels } from "../../../server/src/sandbox/harnesses.js";
+import { workspaceNetwork } from "../lib/machines";
 import { initialSessionModes } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
 import {
@@ -242,7 +243,7 @@ const MOCK_MIN_RUNNER_VERSION = "0.2.0";
 const MOCK_RUNNER_IMAGE = "registry.example.com/windlass-runner@sha256:6b1f0c2d9e4a8b7c3f5e1d0a9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b";
 
 /** A machine's sandbox profiles as the server words them from its runner's report (server/src/runner/machine-profiles.ts): `docker` and `commandSandbox` are what failed, if anything. */
-function mockMachineProfiles(name: string, failed: { docker?: string; commandSandbox?: string } = {}): SandboxProfile[] {
+function mockMachineProfiles(name: string, failed: { docker?: string; commandSandbox?: string } = {}, egress: MachineSummary["egress"] = "open"): SandboxProfile[] {
 	const machine = `your machine "${name}"`;
 	const layers = [`Your machine "${name}" (yours; the platform does not control it)`, "Docker container made by the runner (non-root, no capabilities, limits)"];
 	const sandbox = failed.docker ?? failed.commandSandbox;
@@ -262,10 +263,11 @@ function mockMachineProfiles(name: string, failed: { docker?: string; commandSan
 		{
 			id: "docker-hardened",
 			name: `Hardened Docker on ${machine}`,
-			summary: `Commands run directly in a container on ${machine}, can reach its local network and can read the session's access token. ${trust}`,
+			summary: `Commands run directly in a container on ${machine} and can read the session's access token. ${workspaceNetwork(egress)} ${trust}`,
 			layers,
 			approval: "full",
-			commandNetwork: true,
+			commandNetwork: egress !== "none",
+			commandNetworkText: workspaceNetwork(egress),
 			commandsCanReadAccessToken: true,
 			available: failed.docker === undefined,
 			...(failed.docker !== undefined ? { unavailableReason: failed.docker } : {}),
@@ -3073,7 +3075,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			],
 			commandSandbox: { ok: true },
 			freeDiskBytes: 61.4e9,
-			profiles: mockMachineProfiles(patch.name ?? "nas"),
+			egress: "open",
+			profiles: mockMachineProfiles(patch.name ?? "nas", {}, patch.egress),
 			sendSecrets: true, whenToUse: "Build and test", tags: ["big-build"], host: { cpus: 8, sandboxCpus: 4, memoryBytes: 16 * 2**30, memoryFreeBytes: 8 * 2**30, load1: 1 }, turns: { running: 0, queued: 0, max: 2 },
 			warnings: [],
 			harnesses: [claude],
@@ -3092,7 +3095,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					...(machineSession === "offline" && { status: "offline", since: at - 12 * MINUTE }),
 				})];
 			case "fresh":
-				return [nas({ machineId: "m_workshop", name: "workshop", agents: 0, sandboxes: [], harnesses: externalHarnesses })];
+				return [nas({ machineId: "m_workshop", name: "workshop", egress: "restricted", agents: 0, sandboxes: [], harnesses: externalHarnesses })];
 			case "claude-signed-out":
 				return [nas({ harnesses: [{ ...claude, signIn: "none" }] })];
 			case "pairing":
@@ -3117,7 +3120,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						agents: 1,
 						sandboxes: [{ sessionId: "workshop-gone", title: null, state: "paused", usedAt: at - 2 * 24 * HOUR }],
 						commandSandbox: { ok: false, reason: WORKSHOP_NO_BUBBLEWRAP },
-						profiles: mockMachineProfiles("workshop", { commandSandbox: WORKSHOP_NO_BUBBLEWRAP }),
+						egress: "restricted",
+						profiles: mockMachineProfiles("workshop", { commandSandbox: WORKSHOP_NO_BUBBLEWRAP }, "restricted"),
 						freeDiskBytes: 3.2e9,
 						sendSecrets: false,
 						// Its runner was started with --harness claude, and nobody signed Claude Code in there.
@@ -3893,7 +3897,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		endpoint: null,
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
-			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, platformUrl: origin } };
+			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, runnerHarnesses: ["claude", "opencode"] as Array<"claude" | "opencode">, platformUrl: origin } };
 			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true } }) };
 		},
 		login: {

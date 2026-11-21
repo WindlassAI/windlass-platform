@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, readFile, readdir } from 'node:fs/promises';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
+import { promisify } from 'node:util';
+import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -11,9 +13,11 @@ for (const importing of [false,true]) test(importing ? 'setup imports two API ke
 	const dir = await mkdtemp(join(root, '.setup-check-'));
 	const pin = 'sha256:'+'1'.repeat(64), id = 'm_'+'a'.repeat(16);
 	const asked = [];
+	let refuseSetup = false;
 	const server = createServer(async (req,res) => {
 		let body=''; for await(const c of req) body+=c;
 		asked.push(req.url);
+		if (refuseSetup) { res.writeHead(403); res.end("{}"); return; }
 		res.setHeader('content-type','application/json');
 		res.end(JSON.stringify(req.url === '/runner/pair' ? {code:'ABCD-EFGH',pairing:'a'.repeat(43),pollSecret:'b'.repeat(43)}
 			: {state:'approved',uid:'fixture',machineId:id,githubLogin:'fixture-owner'}));
@@ -70,5 +74,23 @@ else process.exitCode=2;
 		if (importing) assert.equal(await readFile(source,'utf8'),fixture);
 		assert.doesNotMatch(output,/fixture-existing-|fixture-foreign-|\/import\/opencode|\/fixture\/source/);
 		assert.ok(output.includes(pin+' run --platform '+origin+' --harness claude --harness opencode'));
+		if (!importing) {
+			const bundle = join(dir, 'runner.cjs');
+			const published = 'registry.invalid/runner@' + pin;
+			const report = () => JSON.parse(execFileSync(process.execPath, [bundle,'capabilities'], {env:{...env,WLP_RUNNER_IMAGE:published}}));
+			assert.deepEqual(report(), { image:published, harnesses:['claude','opencode'] });
+			execFileSync(process.execPath,[join(root,'runner/bundle.mjs'),pin,bundle,'claude='+pin]);
+			assert.deepEqual(report(), { image:published, harnesses:['claude'] });
+			const run = (...args) => promisify(execFile)(process.execPath, ['--require',preload,bundle,...args], {env, timeout:10000});
+			await assert.rejects(run('status','--name','example'), /with setup, run or pair/);
+			await assert.rejects(run('pair','--egress','none'), /with setup or run/);
+			refuseSetup = true;
+			await assert.rejects(run('setup','--platform',origin), error => {
+				assert.match(error.stdout, /re-run the setup command/);
+				assert.doesNotMatch(error.stdout, /restart the container/);
+				return true;
+			});
+		}
+
 	} finally { server.closeAllConnections();server.close();await rm(dir,{recursive:true,force:true}); }
 });

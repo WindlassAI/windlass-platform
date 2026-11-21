@@ -8,8 +8,9 @@
  * launch on it runs it once, in each new workspace, before the agent starts there. A workspace that
  * exists is not set up again, so a change made in the panel is for the workspaces that come after.
  */
-import { type GithubId, MAX_SETUP_COMMAND_CHARS, type SessionSummary } from "@contract";
+import { type EgressMode, type GithubId, MAX_SETUP_COMMAND_CHARS, type SessionSummary } from "@contract";
 import { useCallback, useEffect, useId, useState } from "react";
+import { workspaceNetwork } from "../lib/machines";
 import { spelledDuration } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { WarnIcon } from "./Icons";
@@ -20,8 +21,8 @@ function clean(text: string): string {
 }
 
 /** When and how it runs, in one sentence: the same wherever the command is shown. */
-function howItRuns(when: string, limitMs: number | null): string {
-	return `Runs once ${when}, before the agent starts: with network access, outside the agent's command sandbox${limitMs === null ? "" : `, for at most ${spelledDuration(limitMs)}`}.`;
+function howItRuns(when: string, limitMs: number | null, egress?: EgressMode): string {
+	return `Runs once ${when}, before the agent starts, outside the agent's command sandbox${limitMs === null ? "" : `, for at most ${spelledDuration(limitMs)}`}. ${workspaceNetwork(egress)}`;
 }
 
 interface Draft {
@@ -79,7 +80,7 @@ export function useSetupDraft(repositoryId: GithubId | null): SetupDraft {
 }
 
 /** The start composer's field. `repository` is the chosen one, in words. */
-export function SetupField({ setup, repository, disabled }: { setup: SetupDraft; repository: string; disabled: boolean }) {
+export function SetupField({ setup, repository, disabled, egress }: { egress?: EgressMode; setup: SetupDraft; repository: string; disabled: boolean }) {
 	const ids = { input: useId(), note: useId() };
 	const { draft } = setup;
 	const reading = draft.saved === null && draft.error === null;
@@ -105,7 +106,7 @@ export function SetupField({ setup, repository, disabled }: { setup: SetupDraft;
 				aria-describedby={ids.note}
 			/>
 			<p className="field-note" id={ids.note}>
-				{howItRuns("when the workspace is created", draft.limitMs)} Saved for {repository}, and run for every agent you launch on it.
+				{howItRuns("when the workspace is created", draft.limitMs, egress)} Saved for {repository}, and run for every agent you launch on it.
 			</p>
 			{draft.error ? (
 				<p className="field-note tone-warn" role="status">
@@ -121,7 +122,7 @@ export function SetupField({ setup, repository, disabled }: { setup: SetupDraft;
  * does. `labelledBy` is the heading it stands under; `applies` says what a change means where it is
  * shown; `onSaved` hears of a save.
  */
-export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved }: { repositoryId: GithubId; name: string; labelledBy: string; applies: string; onSaved?(): void }) {
+export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, egress }: { egress?: EgressMode; repositoryId: GithubId; name: string; labelledBy: string; applies: string; onSaved?(): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const ids = { input: useId(), note: useId() };
@@ -213,7 +214,7 @@ export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved }
 						) : null}
 					</p>
 					<p className="panel-empty setup-note" id={ids.note}>
-						{howItRuns(`when a workspace is created for ${name}`, saved.limitMs)} {applies}
+						{howItRuns(`when a workspace is created for ${name}`, saved.limitMs, egress)} {applies}
 					</p>
 				</>
 			)}
@@ -227,7 +228,7 @@ export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved }
 }
 
 /** The side panel's section, for a session on a repository of the GitHub connection. */
-export function SetupSection({ summary }: { summary: SessionSummary }) {
+export function SetupSection({ summary, egress }: { egress?: EgressMode; summary: SessionSummary }) {
 	const title = useId();
 	const repository = summary.repository ?? null;
 	if (!repository) return null;
@@ -237,6 +238,7 @@ export function SetupSection({ summary }: { summary: SessionSummary }) {
 				Setup command
 			</h2>
 			<SetupEditor
+				egress={egress}
 				repositoryId={repository.id}
 				name={`${repository.owner}/${repository.name}`}
 				labelledBy={title}

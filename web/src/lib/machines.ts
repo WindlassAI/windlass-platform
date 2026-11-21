@@ -12,7 +12,7 @@ interface Described {
 }
 
 export { isMachineIdName, machineLabel } from "@contract";
-import { isMachineIdName } from "@contract";
+import { type EgressMode, type MachineSummary, isMachineIdName } from "@contract";
 
 /** The host name the runner reported, where the label does not show it whole: shown beside the label, for finding the container. */
 export function machineHostNote(machine: Described): string | null {
@@ -41,4 +41,19 @@ export function machineDetailsProblem(whenToUse: string, tags: string[]): string
 	const bad = tags.find((tag) => !TAG.test(tag));
 	if (bad) return `“${bad}” is not a tag: letters, digits, - and _, at most 24, starting with a letter or digit.`;
 	return null;
+}
+
+/** Network reach of a process outside a per-command sandbox, including repository setup. */
+export function workspaceNetwork(egress?: EgressMode): string {
+	switch (egress) {
+		case "open": return "The workspace can reach the internet and the local network.";
+		case "restricted": return "The workspace can reach public sites and hosts allowed by the owner through the web proxy.";
+		case "none": return "The workspace has no direct outbound network access.";
+		default: return "Network access follows the workspace’s network policy.";
+	}
+}
+
+export function hardenedItemNote(machine: MachineSummary): string {
+	if (machine.profiles.find(profile => profile.available)?.id !== "docker-hardened") return "";
+	return " This machine runs commands directly in the container, where they can read the session’s access token. " + workspaceNetwork(machine.egress);
 }

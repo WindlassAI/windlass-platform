@@ -110,6 +110,8 @@ export interface MachinesInfo {
 	minRunnerVersion: string;
 	/** The runner image to install, pinned by digest; null while none is published, and the page says it cannot be installed yet. */
 	runnerImage: string | null;
+	/** Harnesses built into this exact published image, from its capabilities command. */
+	runnerHarnesses?: Array<Exclude<HarnessId, "windlass">>;
 	/** The platform's address as a runner on another machine reaches it: `--platform` in the install command. */
 	platformUrl: string;
 }

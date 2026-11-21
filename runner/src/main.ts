@@ -42,6 +42,12 @@ async function main() {
 		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, name: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
 	} });
 	const command = positionals[0] ?? "run";
+	// A release can publish this report without mounting runner state or a Docker socket.
+	if (command === "capabilities" && positionals.length === 1) {
+		const harnesses = (["claude", "opencode"] as const).filter(id => harnessImage(id));
+		console.log(JSON.stringify({ image: process.env.WLP_RUNNER_IMAGE ?? null, harnesses }));
+		return;
+	}
 	const auth = command === "login" || command === "logout";
 	const claude = !!values.harness?.includes("claude");
 	const opencode = !!values.harness?.includes("opencode");
@@ -53,14 +59,14 @@ async function main() {
 	const validCommand = auth ? positionals.length === 2 && ["claude", "opencode"].includes(agent)
 		: positionals.length <= 1 && ["setup", "run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
-		throw new RunnerError("Use windlass-runner [setup|run|pair|status|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--harness opencode] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]].");
+		throw new RunnerError("Use windlass-runner [setup|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--harness opencode] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]].");
 	if (values.name !== undefined && (!["setup", "run", "pair"].includes(command) || !validMachineName(values.name)))
-		throw new RunnerError("Use --name with run or pair and a printable name of 1 to 64 characters.");
+		throw new RunnerError("Use --name with setup, run or pair and a printable name of 1 to 64 characters.");
 	const requestedEgress = egressFlags(values.egress, values["egress-allow"]);
-	if (requestedEgress && command !== "run" && command !== "setup") throw new RunnerError("Use --egress and --egress-allow with run.");
+	if (requestedEgress && command !== "run" && command !== "setup") throw new RunnerError("Use --egress and --egress-allow with setup or run.");
 	const flags = values["allow-profile"];
 	if (flags && ((command !== "run" && command !== "setup") || flags.some(id => !machineProfile(id))))
-		throw new RunnerError("Use --allow-profile with run and a profile ID: docker-hardened or docker-windlass-sandbox.");
+		throw new RunnerError("Use --allow-profile with setup or run and a profile ID: docker-hardened or docker-windlass-sandbox.");
 	const profiles = flags && MACHINE_PROFILES.filter(id => id === "docker-hardened" || flags.includes(id));
 	if (agents.some(id => id !== "claude" && id !== "opencode")) throw new RunnerError("Choose --harness claude or --harness opencode.");
 	if (opencode && !harnessImage("opencode")) throw new RunnerError("Use --harness opencode with a runner built with the pinned OpenCode image.");
@@ -170,7 +176,7 @@ async function main() {
 		while (!abort.signal.aborted) {
 			let idle: string;
 			if (needsPair) {
-				const result = await pair(platform, abort.signal, say, name, profiles);
+				const result = await pair(platform, abort.signal, say, name, profiles, command === "setup");
 				if (abort.signal.aborted) { client?.end(); return; }
 				if (result.paired) {
 					if (paired) {

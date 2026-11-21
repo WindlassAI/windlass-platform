@@ -540,7 +540,9 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	const [claude, setClaude] = useState(false);
 	const [openCode, setOpenCode] = useState(false);
 	const [importKeys, setImportKeys] = useState(false);
-	const agents = { claude, openCode };
+	const offersOpenCode = info.runnerHarnesses?.includes("opencode") === true;
+	const offersClaude = info.runnerHarnesses?.includes("claude") ?? true;
+	const agents = { claude: offersClaude && claude, openCode: offersOpenCode && openCode };
 	const setup = installCommand(info, agents, { importKeys });
 	const install = installCommand(info, agents);
 	const complete = code.replace(/-/g, "").length === 8;
@@ -682,7 +684,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 							ref={aim}
 						/>
 						<p className="field-note" id={ids.codeNote}>
-							It is in <code>docker logs windlass-runner</code> on the machine, and lasts ten minutes.
+							Setup prints the code in your terminal. For a background runner, read <code>docker logs windlass-runner</code>. The code lasts ten minutes.
 						</p>
 					</div>
 					{failed}
@@ -712,9 +714,9 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 					<div>
 						<p className="machine-step">Set it up</p>
 						<div className="machine-setup-agents">
-							<label><input type="checkbox" checked={claude} onChange={event => setClaude(event.target.checked)} /> Enable Claude Code</label>
-							<label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>
-							{openCode && <label><input type="checkbox" checked={importKeys} onChange={event => setImportKeys(event.target.checked)} /> Import existing OpenCode API keys during setup</label>}
+							{offersClaude && <label><input type="checkbox" checked={claude} onChange={event => setClaude(event.target.checked)} /> Enable Claude Code</label>}
+							{offersOpenCode && <label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>}
+							{agents.openCode && <label><input type="checkbox" checked={importKeys} onChange={event => setImportKeys(event.target.checked)} /> Import existing OpenCode API keys during setup</label>}
 						</div>
 						<Command text={setup} label="The setup command" />
 						<p className="field-note">It pairs the machine and signs its agents in, asking in the terminal as it goes. Sign an agent in or out later with <code>windlass-runner login</code> or <code>logout</code> and the agent's name.</p>

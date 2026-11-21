@@ -119,6 +119,8 @@ describe("filing a work item", () => {
 		await start("full");
 		act(() => radio("m_workshop")?.click());
 		expect(text()).toMatch(/“workshop” is offline since .+, so the item waits until it is back\./);
+		expect(text()).toContain("through the web proxy");
+		expect(text()).not.toContain("can reach the machine's network");
 	});
 
 	it("lists a machine with an old runner, or no usable sandbox, without letting it be chosen", async () => {

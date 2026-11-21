@@ -48,12 +48,12 @@ async function post(platform: string, path: string, body: PairRequest | PairPoll
 	try { value = JSON.parse(Buffer.concat(parts).toString("utf8")); } catch { /* Status still tells us whether to retry. */ }
 	return { status: response.status, value };
 }
-export async function pair(platform: string, signal: AbortSignal, say: (message: string) => void, name: string, profiles?: MachineProfile[]) {
+export async function pair(platform: string, signal: AbortSignal, say: (message: string) => void, name: string, profiles?: MachineProfile[], setup = false) {
 	const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 	const deadline = AbortSignal.any([signal, AbortSignal.timeout(PAIRING_TTL_MS)]);
 	const request: PairRequest = { publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
 		name, os: process.platform, arch: process.arch, runnerVersion: VERSION };
-	const again = "restart the container or run `windlass-runner pair` to get a new code.";
+	const again = setup ? "re-run the setup command to get a new code." : "restart the container or run `windlass-runner pair` to get a new code.";
 	let response;
 	for (let attempt = 1; ; attempt++) {
 		try {

@@ -13,7 +13,7 @@
  * which keeps its profile's. For Claude Code the sandbox's facts say that mode in place of the
  * profile's approval, and that its commands can use the Claude login it runs with.
  */
-import type { PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
+import type { EgressMode, PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { acpHarnessName, contextWords, costWords, sessionModelWords } from "../lib/acp";
 import { currentMode } from "../lib/modes";
@@ -434,7 +434,7 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 	);
 }
 
-export function SidePanel({ sessionId, summary, profile, view, turnsEnded, question = null }: { sessionId: string; summary: SessionSummary; profile: SandboxProfile; view: SessionView; turnsEnded: number; question?: PendingQuestion | null }) {
+export function SidePanel({ sessionId, summary, profile, view, turnsEnded, question = null, egress }: { egress?: EgressMode; sessionId: string; summary: SessionSummary; profile: SandboxProfile; view: SessionView; turnsEnded: number; question?: PendingQuestion | null }) {
 	// How many files differ from the last commit, once the list was read; and a count that asks for it again.
 	const [files, setFiles] = useState<number | null>(null);
 	const [reloads, setReloads] = useState(0);
@@ -454,7 +454,7 @@ export function SidePanel({ sessionId, summary, profile, view, turnsEnded, quest
 			)}
 			<Changes sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} reloads={reloads} onFiles={setFiles} />
 			<PullRequestSection sessionId={sessionId} summary={summary} profile={profile} turnsEnded={turnsEnded} files={files} onPublished={published} />
-			<SetupSection summary={summary} />
+			<SetupSection egress={egress} summary={summary} />
 			{harness ? null : <SecretsSection summary={summary} />}
 			{/* Last: it is there only where the project names a server, and so its arrival moves no other section. */}
 			<ServersSection sessionId={sessionId} summary={summary} question={question} />
