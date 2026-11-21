@@ -180,3 +180,13 @@ test("one host sample per minute with a 493-model catalog sends only the host de
 		assert.ok(queue.reserve(1_600_000));
 	} finally { sql.close(); }
 });
+
+test("the self-host env example advertises its pinned runner and documents the release order", async () => {
+	const { parseEnv } = await import("node:util");
+	const { publishedHarnesses } = await import("../server/src/config.js");
+	const read = (name: string) => readFile(new URL("../deploy/selfhost/" + name, import.meta.url), "utf8");
+	const { WLP_RUNNER_IMAGE, WLP_RUNNER_CAPABILITIES } = parseEnv(await read(".env.example"));
+	assert.match(WLP_RUNNER_IMAGE!, /@sha256:[a-f0-9]{64}$/);
+	assert.deepEqual(publishedHarnesses(WLP_RUNNER_IMAGE!, WLP_RUNNER_CAPABILITIES), ["claude", "opencode"]);
+	assert.match(await read("runner-release.md"), /1\. Deploy the server[\s\S]+2\. Publish the runner image[\s\S]+3\. Update `WLP_RUNNER_IMAGE` and `WLP_RUNNER_CAPABILITIES` together/);
+});

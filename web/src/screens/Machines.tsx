@@ -54,7 +54,7 @@ function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode
 		(setup ? "docker run -it --rm" : "docker run -d --name windlass-runner --restart unless-stopped") + " \\",
 		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
 		"  -v windlass-runner:/var/lib/windlass-runner \\",
-		...(agents.openCode && setup?.importKeys ? ['  -v "${XDG_DATA_HOME:-$HOME/.local/share}/opencode:/import/opencode:ro" \\'] : []),
+		...(agents.openCode && setup?.importKeys ? ['  --mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly" \\'] : []),
 		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}`,
 	].join("\n");
 }
@@ -725,6 +725,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						<div className="machine-setup-agents">
 							{offersClaude && <label><input type="checkbox" checked={claude} onChange={event => setClaude(event.target.checked)} /> Enable Claude Code</label>}
 							{offersOpenCode && <label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>}
+							{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
 							{agents.openCode && <label><input type="checkbox" checked={importKeys} onChange={event => setImportKeys(event.target.checked)} /> Import existing OpenCode API keys during setup</label>}
 						</div>
 						<Command text={setup} label="The setup command" />
