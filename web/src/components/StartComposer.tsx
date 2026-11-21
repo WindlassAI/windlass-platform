@@ -828,6 +828,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const agentSpec: MenuSpec = {
 		label: "Agent and model",
 		width: 304,
+		maxHeight: 520,
 		submenuWidth: 200,
 		hints: { right: "effort" },
 		filter: agentGroups.reduce((sum, group) => sum + group.items.length, 0) > 7 ? { placeholder: "Filter models…" } : undefined,
