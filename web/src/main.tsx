@@ -1,4 +1,5 @@
 import "@fontsource-variable/geist/wght.css";
+import "@fontsource-variable/geist/wght-italic.css";
 import "@fontsource-variable/geist-mono/wght.css";
 import "./styles/tokens.css";
 import "./styles/base.css";

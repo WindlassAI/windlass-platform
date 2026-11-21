@@ -641,7 +641,7 @@ button.output-more:hover {
 /* Reasoning. */
 .reasoning-word {
 	flex: none;
-	font-style: italic;
+	color: var(--ink-faint);
 }
 .reasoning-title {
 	min-width: 0;
@@ -1168,7 +1168,6 @@ button.output-more:hover {
 .q-history-platform .q-history-answer,
 .q-asked .q-history-answer {
 	font-weight: 400;
-	font-style: italic;
 	color: var(--ink-dim);
 }
 .q-history-note {
@@ -1953,7 +1952,6 @@ button.output-more:hover {
 	color: var(--del);
 }
 .diff-meta .diff-text {
-	font-style: italic;
 	color: var(--ink-faint);
 }
 .diff-note {
