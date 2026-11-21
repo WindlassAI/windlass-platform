@@ -72,3 +72,46 @@ test('an active stream survives expiry while the next request rotates the accoun
 	stream.end('access '+renewed);
 	assert.equal(await reading,'[redacted] [redacted]');
 });
+
+test('a signed session routes Go, Zen and GLM keys independently and refuses unconfigured providers', async () => {
+	const { createServer, request } = await import('node:http');
+	const { connect } = await import('node:net');
+	const { generateKeyPairSync, sign } = await import('node:crypto');
+	const { createRelay } = await import('../sandbox/relay/server.cjs');
+	const recorded = [];
+	const origin = createServer(async (req, res) => {
+		recorded.push([req.headers.host, req.url, req.headers.authorization, req.headers['x-api-key'], req.headers['x-goog-api-key']]);
+		res.writeHead(200, {'content-type':'text/event-stream'}); res.end('fixture stream');
+	});
+	const {publicKey, privateKey} = generateKeyPairSync('ed25519');
+	const nonce = 'a'.repeat(32);
+	const placeholder = nonce + '.' + sign(null, Buffer.from('test\nmachine\n' + nonce), privateKey).toString('base64url');
+	const records = Object.fromEntries(['zai-coding-plan','opencode-go','opencode'].map(provider => [provider, {provider,key:'secret-' + provider}]));
+	const relay = createRelay({publicKey, machine:'machine', domain:'test',
+		provider:providerFor(Object.keys(records), 'one', {load:async () => ({generation:'one',records})}),
+		forward: (options, cb) => request({...options, hostname:'127.0.0.1', port:origin.address().port, headers:{...options.headers,host:options.hostname}}, cb)});
+	try {
+		for (const s of [origin,relay]) await new Promise(done => s.listen(0,'127.0.0.1',done));
+		for (const [url,header,status] of [
+			['/zai-coding-plan/chat/completions','authorization',200], ['/opencode-go/chat/completions','authorization',200],
+			['/opencode-go/messages','x-api-key',200], ['/opencode/models/gemini-fixture:streamGenerateContent?alt=sse','x-goog-api-key',200],
+			['/opencode/responses','authorization',200], ['/groq/chat/completions','authorization',403],
+			['/opencode-go/../opencode/chat/completions','authorization',403],
+		]) {
+			const response = await new Promise((ok,fail) => {
+				const req = request({method:'POST', path:url, headers:{host:'127.0.0.1:17892',[header]:(header === 'authorization' ? 'Bearer ' : '') + placeholder},
+					createConnection:() => { const socket=connect(relay.address().port,'127.0.0.1');socket.write(nonce);return socket; }}, ok);
+				req.on('error',fail);req.end('{}');
+			});
+			assert.equal(response.statusCode,status,url);
+			if (status === 200) assert.equal(await text(response),'fixture stream'); else response.resume();
+		}
+		assert.deepEqual(recorded,[
+			['api.z.ai','/api/coding/paas/v4/chat/completions','Bearer secret-zai-coding-plan',undefined,undefined],
+			['opencode.ai','/inference/go/openai/v1/chat/completions','Bearer secret-opencode-go',undefined,undefined],
+			['opencode.ai','/inference/go/anthropic/v1/messages',undefined,'secret-opencode-go',undefined],
+			['opencode.ai','/inference/google/v1beta/models/gemini-fixture:streamGenerateContent?alt=sse',undefined,undefined,'secret-opencode'],
+			['opencode.ai','/inference/openai/v1/responses','Bearer secret-opencode',undefined,undefined],
+		]);
+	} finally { relay.close();origin.closeAllConnections();origin.close(); }
+});

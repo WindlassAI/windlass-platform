@@ -8,12 +8,35 @@ const { createRelay } = require('./server.cjs');
 
 const clientId = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const filename = '/run/wlp-harness/opencode/login.json';
-const api = {
-	free: { hostname: 'opencode.ai', route: '/free/chat/completions', path: '/inference/openai/v1/chat/completions' },
-	openai: { hostname: 'api.openai.com', route: '/openai/responses', path: '/v1/responses' },
-	chatgpt: { hostname: 'chatgpt.com', route: '/openai/responses', path: '/backend-api/codex/responses' },
-	anthropic: { hostname: 'api.anthropic.com', route: '/anthropic/messages', path: '/v1/messages' },
+const { providers } = require('./providers.json');
+
+const kinds = {
+	'/chat/completions': 'chat', '/responses': 'responses', '/messages': 'messages',
+	'/openai/chat/completions': 'deepinfra', '/chat': 'cohere', '/language-model': 'gateway',
 };
+
+function endpointFor(allowed, url, headers = {}) {
+	const at = url.indexOf('/', 1);
+	if (!url.startsWith('/') || at < 2) return;
+	let id = url.slice(1, at);
+	const suffix = url.slice(at);
+	if (id === 'openai' && allowed.has('chatgpt')) id = 'chatgpt';
+	if (!allowed.has(id)) return;
+	if (id === 'chatgpt') return suffix === '/responses' && { id, kind:'responses', hostname:'chatgpt.com', path:'/backend-api/codex/responses' };
+	if (id === 'free') return suffix === '/chat/completions' && { id, kind:'free', hostname:'opencode.ai', path:'/inference/openai/v1/chat/completions' };
+	const p = providers[id];
+	const kind = Object.hasOwn(kinds, suffix) ? kinds[suffix]
+		: /^\/models\/[A-Za-z0-9_.-]+:(?:generateContent|streamGenerateContent\?alt=sse)$/.test(suffix) ? 'google' : undefined;
+	if (!kind || !p?.routes[kind]) return;
+	let base = p.routes[kind];
+	if (headers['x-wlp-route']) {
+		const variant = p.variants?.[headers['x-wlp-route']];
+		if (!Array.isArray(variant) || variant[0] !== kind) return;
+		base = variant[1];
+	}
+	const dest = new URL(base);
+	return {id, kind, hostname:dest.hostname, path:dest.pathname.replace(/\/$/, '') + suffix};
+}
 
 function claims(token) {
 	try { return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()); }
@@ -68,22 +91,28 @@ async function save(record) {
 	} finally { await unlink(temp).catch(() => {}); }
 }
 function providerFor(provider, generation, { load = async () => JSON.parse(await readFile(filename, 'utf8')), persist = save, exchange = fetch } = {}) {
-	const endpoint = api[provider];
-	if (!endpoint) throw new Error('Unsupported provider.');
+	const allowed = new Set(Array.isArray(provider) ? provider : [provider]);
+	for (const id of allowed) if (!['chatgpt','free'].includes(id) && !Object.hasOwn(providers,id)) throw new Error('Unsupported provider.');
 	let refresh;
 	const secrets = new Set();
 	function remember(record) {
 		for (const value of [record.key, record.refresh, record.access]) if (value) secrets.add(value);
 	}
-	async function credential() {
-		const record = await load();
-		if (record.generation !== generation || record.provider !== provider) return;
+	function select(store, id) {
+		if (store.generation !== generation) return;
+		const record = store.records ? store.records[id] : store;
+		if (record?.provider === id && (id === 'free' || (id === 'chatgpt' ? record.refresh && record.access : record.key))) return record;
+	}
+	async function credential(provider) {
+		const record = select(await load(), provider);
+		if (!record) return;
 		remember(record);
 		if (provider !== 'chatgpt' || record.expires > Date.now() + 30000) return record;
 		// Re-read inside the single flight: a concurrent request may have already rotated.
 		return refresh ??= (async () => {
-			const latest = await load();
-			if (latest.provider !== provider || latest.generation !== generation) return;
+			const store = await load();
+			const latest = select(store, provider);
+			if (!latest) return;
 			if (latest.expires > Date.now() + 30000) return latest;
 			const res = await exchange('https://auth.openai.com/oauth/token', {
 				method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20000),
@@ -95,27 +124,41 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 			const id = accountId(tokens.id_token) || accountId(tokens.access_token);
 			const next = { ...latest, access: tokens.access_token, refresh: tokens.refresh_token,
 				accountId: id || latest.accountId, expires: Date.now() + 1000 * tokens.expires_in };
-			await persist(next);
+			await persist(store.records ? { ...store, records: { ...store.records, [provider]: next } } : next);
 			remember(next);
 			return next;
 		})().finally(() => { refresh = undefined; });
 	}
 	return {
 		responseFilter: () => secrets.size ? scrubStream(secrets) : undefined,
-		accepts: url => url === endpoint.route,
-		bearer: h => provider === 'free' ? 'Bearer ' + h['x-wlp-session'] : provider === 'anthropic' ? 'Bearer ' + h['x-api-key'] : h.authorization,
+		accepts: url => Boolean(endpointFor(allowed, url)),
+		bearer(h, url) {
+			const kind = url ? endpointFor(allowed,url,h)?.kind : provider;
+			if (kind === 'free') return 'Bearer ' + h['x-wlp-session'];
+			if (kind === 'messages') return 'Bearer ' + h['x-api-key'];
+			if (kind === 'google') return 'Bearer ' + h['x-goog-api-key'];
+			return h.authorization;
+		},
 		async target(url, h) {
-			if (url !== endpoint.route) return;
-			const record = await credential();
+			const endpoint = endpointFor(allowed,url,h);
+			if (!endpoint) return;
+			const provider = endpoint.id;
+			const record = await credential(provider);
 			if (!record) return;
 			const headers = { 'content-type': 'application/json' };
 			if (provider === 'free') headers.authorization = 'Bearer public';
-			else if (provider === 'anthropic') {
+			else if (endpoint.kind === 'google') headers['x-goog-api-key'] = record.key;
+			else if (endpoint.kind === 'messages') {
 				headers['x-api-key'] = record.key;
 				headers['anthropic-version'] = '2023-06-01';
 				if (h['anthropic-beta']) headers['anthropic-beta'] = h['anthropic-beta'];
 			} else {
 				headers.authorization = 'Bearer ' + (provider === 'chatgpt' ? record.access : record.key);
+				if (endpoint.kind === 'gateway') {
+					headers['ai-gateway-auth-method'] = 'api-key';
+					for (const k of ['ai-gateway-protocol-version','ai-language-model-specification-version','ai-language-model-id','ai-language-model-streaming'])
+						if (h[k]) headers[k] = h[k];
+				}
 				if (provider === 'chatgpt') {
 					headers.originator = 'opencode';
 					if (record.accountId) headers['chatgpt-account-id'] = record.accountId;
@@ -135,5 +178,5 @@ if (process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY) {
 	const socket = '/workspace/relay.sock';
 	rmSync(socket, { force: true });
 	createRelay({ publicKey, machine: process.env.WLP_OPENCODE_RELAY_MACHINE,
-		domain: 'windlass-opencode-relay-v1-' + generation, provider: providerFor(process.env.WLP_OPENCODE_PROVIDER, generation) }).listen(socket);
+		domain: 'windlass-opencode-relay-v1-' + generation, provider: providerFor((process.env.WLP_OPENCODE_PROVIDER || '').split(','), generation) }).listen(socket);
 }

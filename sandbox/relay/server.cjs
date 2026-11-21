@@ -25,7 +25,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 		try {
 			if (req.headers.host !== '127.0.0.1:17892' || req.method !== 'POST' || !(provider ? provider.accepts(req.url) : messages.has(req.url)))
 				return reject(res, 403);
-			const bearer = provider ? provider.bearer(req.headers) : req.headers.authorization;
+			const bearer = provider ? provider.bearer(req.headers, req.url) : req.headers.authorization;
 			const match = /^Bearer ([a-f0-9]{32})\.([A-Za-z0-9_-]{86})$/.exec(bearer ?? '');
 			if (!match || !verify(null, Buffer.from(domain + '\n' + machine + '\n' + match[1]),
 				publicKey, Buffer.from(match[2], 'base64url'))) return reject(res, 401);
