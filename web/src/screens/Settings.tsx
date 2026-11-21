@@ -152,13 +152,14 @@ function SessionSettings() {
 	const { client, signOut, explain } = useApp();
 	const auth = useAuth();
 	const [confirm, setConfirm] = useState(false);
+	const [revokeApiTokens, setRevokeApiTokens] = useState(true);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	async function revoke() {
 		setBusy(true);
 		setError(null);
 		try {
-			await client.user(auth).signOutEverywhere();
+			await client.user(auth).signOutEverywhere({ revokeApiTokens });
 			signOut("You signed out everywhere.");
 		} catch (failure) {
 			setError(explain(failure));
@@ -168,7 +169,7 @@ function SessionSettings() {
 	return (
 		<section className="usage-section" aria-labelledby="settings-sessions">
 			<h2 className="usage-title" id="settings-sessions">Sign-in</h2>
-			<button type="button" className="button button-quiet button-small" onClick={() => { setError(null); setConfirm(true); }}>
+			<button type="button" className="button button-quiet button-small" onClick={() => { setError(null); setRevokeApiTokens(true); setConfirm(true); }}>
 				Sign out everywhere
 			</button>
 			{confirm && (
@@ -178,6 +179,10 @@ function SessionSettings() {
 						<button type="button" className="button button-danger" disabled={busy} onClick={revoke}>{busy ? "Signing out…" : "Sign out everywhere"}</button>
 					</>}>
 					<p>You’ll need to sign in again on every device, including this one. Your running agents will keep working.</p>
+					<p>Paired machines keep working. You can remove them on the <a className="link" {...linkProps({ name: "machines" })}>Machines</a> page.</p>
+					<label>
+						<input type="checkbox" checked={revokeApiTokens} disabled={busy} onChange={event => setRevokeApiTokens(event.target.checked)} /> Also revoke all API tokens
+					</label>
 					{error && <p className="callout callout-warn" role="alert">{error}</p>}
 				</Dialog>
 			)}

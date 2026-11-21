@@ -3255,8 +3255,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		return {
 			...machineCalls(auth),
 			...items.calls(auth),
-			async signOutEverywhere() {
+			async signOutEverywhere(options) {
 				const { uid } = world().profile;
+				if (options?.revokeApiTokens) items.revokeAllApiTokens(auth);
 				const next = crypto.randomUUID();
 				revoked.set(uid, next);
 				keep("wlp.mock.tokenGen." + uid, next);

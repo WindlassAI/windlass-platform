@@ -1095,10 +1095,14 @@ async function closeRevokedFeeds(c: RevocationContext, generation: number): Prom
 	}
 }
 
-async function revokeTokens(c: RevocationContext): Promise<void> {
+async function revokeTokens(c: RevocationContext, revokeApiTokens = false): Promise<void> {
 	// Arm recovery before committing the bump, including when the actor stops between the two writes.
 	await c.schedule.after(30_000, RETRY_DISCONNECT);
-	const [{ gen }] = await c.db.execute<{ gen: number }>("UPDATE token_generation SET gen = gen + 1 WHERE id = 1 RETURNING gen");
+	const gen = await c.db.transaction(async tx => {
+		if (revokeApiTokens) await tx.execute("DELETE FROM api_token");
+		const [row] = await tx.execute<{ gen: number }>("UPDATE token_generation SET gen = gen + 1 WHERE id = 1 RETURNING gen");
+		return row.gen;
+	});
 	c.vars.tokenGen = Math.max(c.vars.tokenGen, gen);
 	c.vars.reached = true;
 	await closeRevokedFeeds(c, gen);
@@ -1342,9 +1346,9 @@ export const user = actor({
 			}
 		},
 		internalTokenGeneration: (c): number => { requireServiceFor(c, "call"); return c.vars.tokenGen; },
-		signOutEverywhere: async (c): Promise<void> => {
+		signOutEverywhere: async (c, options?: { revokeApiTokens: boolean }): Promise<void> => {
 			requireUser(c);
-			await revokeTokens(c);
+			await revokeTokens(c, options?.revokeApiTokens === true);
 		},
 		internalRevokeTokens: async (c): Promise<void> => {
 			requireServiceFor(c, "revoke:" + c.key[0]);

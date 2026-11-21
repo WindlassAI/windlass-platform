@@ -1477,7 +1477,7 @@ export function createMockItems(deps: MockItemsDeps) {
 
 	/** Seeds the user's items, and with them their sessions, before anything is asked of either. */
 	const prepare = (auth: AuthResult): void => void keptOf(auth);
-	return { calls, machinesChanged, prepare };
+	return { calls, machinesChanged, prepare, revokeAllApiTokens(auth: AuthResult) { keptOf(auth).tokens = []; } };
 }
 
 // ---- the agent's reports on the item's page (Reviewer slice R1-C) -----------------------------------

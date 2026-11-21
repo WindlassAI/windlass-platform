@@ -28,6 +28,10 @@ Where the platform offers work items, you can make up to 20 API tokens for scrip
 
 A token works until you revoke it. Choose **Revoke token** to stop it at once. Work items it filed stay.
 
+### Sign out everywhere
+
+**Sign out everywhere** signs you out on every device, including this one. **Also revoke all API tokens** is checked by default. Clear it to keep your scripts working with their existing tokens. Running agents continue, and paired machines keep working. On the **Machines** page, you can [remove a pairing](/docs/machines#remove-a-machine).
+
 ## Repository settings
 
 Open a repository's page and choose **Settings**. Each section has its own address, for example `/repositories/<id>/settings#checks`.

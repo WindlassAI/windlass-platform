@@ -856,7 +856,12 @@ export const itemActions = {
 	createApiToken: async (c: ItemsCtx, input: { name: string; scopes: ApiTokenScope[] }): Promise<{ token: ApiToken; secret: string }> => {
 		const profile = requireUser(c);
 		enabled();
-		const made = await tokenInput(() => createApiToken(c.db, profile.uid, input, Date.now()));
+		// Admission and minting must agree even if sign-out commits while this call waits for SQLite.
+		const made = await c.db.transaction(async tx => {
+			const [{ gen }] = await tx.execute<{ gen: number }>("SELECT gen FROM token_generation WHERE id = 1");
+			requireUser({ key: c.key, conn: c.conn, vars: { tokenGen: gen } });
+			return tokenInput(() => createApiToken(tx, profile.uid, input, Date.now()));
+		});
 		console.log(`[wlp] api_token.created uid=${profile.uid} token=${made.token.id} scopes=${made.token.scopes.join(",")}`);
 		return made;
 	},

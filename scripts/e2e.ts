@@ -589,6 +589,22 @@ async function identityChecks(client: Client, server: Server) {
 		return "both browsers refused, other account kept, new login works";
 	});
 
+	await check("sign out everywhere can revoke every API token of just this user", async () => {
+		const owner = await signIn("my-sub");
+		const other = await signIn("their-sub");
+		const mint = async (auth: AuthResult, name: string) => (await userOf(auth).createApiToken({ name, scopes: ["items:read"] })).secret;
+		const status = async (token: string) => (await fetch(API + "/api/items/missing", { headers: { authorization: "Bearer " + token } })).status;
+		const a = await mint(owner, "one");
+		const b = await mint(owner, "two");
+		const theirs = await mint(other, "other");
+		await userOf(owner).signOutEverywhere({ revokeApiTokens: false });
+		assert(await status(a) === 404, "opting out revoked an API token");
+		await userOf(await signIn("my-sub")).signOutEverywhere({ revokeApiTokens: true });
+		for (const token of [a, b]) assert(await status(token) === 401, "the API still accepted a revoked token");
+		assert(await status(theirs) === 404, "another user's API token was revoked");
+		return "opt-out preserved tokens, opt-in returned HTTP 401 for both, other account kept access";
+	});
+
 	await check("admin revocation targets one uid and survives restart", async () => {
 		const auth = await signIn("my-sub");
 		const uid = auth.profile.uid;
@@ -600,7 +616,7 @@ async function identityChecks(client: Client, server: Server) {
 		});
 		assert(stdout.includes(uid), "the revoke command did not acknowledge its uid");
 		await server.stop();
-		await server.start({ WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
+		await server.start({ WLP_ITEMS: "1", WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
 		await refused(() => userOf(auth).me(), "invalid_token");
 		await userOf(await signIn("my-sub")).me();
 		return "old generation still refused after restart";
@@ -4369,7 +4385,7 @@ try {
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
 		if (FAKE) {
-			await server.start({ WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
+			await server.start({ WLP_ITEMS: "1", WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
 			const identityClient = newClient();
 			try {
 				await identityChecks(identityClient, server);

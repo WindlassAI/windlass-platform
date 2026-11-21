@@ -7,7 +7,18 @@ import { issueUserToken } from "../server/src/tokens.js";
 
 test("a failed session disconnect is retried after the user's old token is invalid", async () => {
 	const sql = new DatabaseSync(":memory:");
-	const db = { execute: async (query: string, ...args: SQLInputValue[]) => sql.prepare(query).all(...args) };
+	const execute = async (query: string, ...args: SQLInputValue[]) => sql.prepare(query).all(...args);
+	const db = { execute, transaction: async <T>(step: (tx: { execute: typeof execute }) => Promise<T>) => {
+		sql.exec("BEGIN");
+		try {
+			const result = await step({ execute });
+			sql.exec("COMMIT");
+			return result;
+		} catch (error) {
+			sql.exec("ROLLBACK");
+			throw error;
+		}
+	} };
 	const actions = user.config.actions!;
 	const scheduled: string[] = [];
 	const cut: number[] = [];
