@@ -265,6 +265,7 @@ export function Usage() {
 				<h2 className="usage-title" id="usage-today">
 					Sandbox time today
 				</h2>
+				<div className="usage-card usage-today">
 				<p className="usage-figure">
 					<strong>{sandboxTime(spent)}</strong>
 					{allowance === null ? <span> used. This deployment sets no daily limit.</span> : <span> of {sandboxTime(allowance)} used</span>}
@@ -273,12 +274,18 @@ export function Usage() {
 				<Meter view={view} />
 				<dl className="usage-facts">
 					<div>
-						<dt>Counted</dt>
+						<dt>
+							<span className="usage-swatch usage-swatch-used" aria-hidden="true" />
+							Counted
+						</dt>
 						<dd className="usage-number">{sandboxClock(view.usedSeconds)}</dd>
 						<dd className="usage-gloss">what your sandboxes ran today before they stopped</dd>
 					</div>
 					<div>
-						<dt>Held</dt>
+						<dt>
+							<span className="usage-swatch usage-swatch-held" aria-hidden="true" />
+							Held
+						</dt>
 						<dd className="usage-number">{sandboxClock(view.heldSeconds)}</dd>
 						<dd className="usage-gloss">
 							{running === 0 ? "no sandbox is running now" : `for ${plural(running, "sandbox", "sandboxes")} running now, a few minutes at a time; what one does not use is free again when it stops`}
@@ -286,7 +293,10 @@ export function Usage() {
 					</div>
 					{left !== null ? (
 						<div>
-							<dt>Left</dt>
+							<dt>
+								<span className="usage-swatch usage-swatch-left" aria-hidden="true" />
+								Left
+							</dt>
 							<dd className="usage-number">{sandboxClock(left)}</dd>
 							<dd className="usage-gloss">{left < view.startSeconds ? "a turn needs more than this to start, and one that is running is stopped when the time it holds is over" : "for turns that start now"}</dd>
 						</div>
@@ -311,6 +321,7 @@ export function Usage() {
 						</dd>
 					</div>
 				</dl>
+				</div>
 			</section>
 
 			<section className="usage-section" aria-labelledby="usage-agents">
