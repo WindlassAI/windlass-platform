@@ -169,6 +169,9 @@ h3 {
 .tone-info {
 	color: var(--info);
 }
+.tone-needs {
+	color: var(--needs);
+}
 .tone-dim {
 	color: var(--ink-dim);
 }
@@ -1054,9 +1057,9 @@ h3 {
 	color: var(--warn);
 	animation: pulse 1s ease-in-out infinite;
 }
-/* Waiting on the user: the one status in the calm hue, and still. */
+/* Waiting on the user: the one status in the lamp's amber, and still. */
 .status-waiting {
-	color: var(--info);
+	color: var(--needs);
 }
 
 .status-badge {
@@ -1078,11 +1081,11 @@ h3 {
 }
 .status-badge-waiting {
 	padding: 1px 8px 1px 5px;
-	border: 1px solid color-mix(in srgb, var(--info) 55%, transparent);
+	border: 1px solid var(--needs-edge);
 	border-radius: var(--radius-pill);
-	background: var(--info-wash);
-	font-weight: 700;
-	color: var(--info);
+	background: var(--needs-wash);
+	font-weight: var(--weight-strong);
+	color: var(--needs);
 }
 
 .outcome {

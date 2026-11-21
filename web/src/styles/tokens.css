@@ -127,6 +127,12 @@
 	--bad-wash: rgb(238 125 119 / 0.1);
 	--warn: #e5b062;
 	--warn-wash: rgb(229 176 98 / 0.1);
+	/* "Needs you": the amber of a lamp left on, everywhere an agent or an item waits on its user. */
+	--needs: #f0b85c;
+	--needs-wash: rgb(240 184 92 / 0.1);
+	--needs-edge: rgb(240 184 92 / 0.34);
+	--needs-fill: #f0b85c;
+	--needs-ink: #1d1304;
 	--info: #82c6d6;
 	--info-wash: rgb(130 198 214 / 0.09);
 	--add: #a9d98b;
@@ -175,6 +181,11 @@
 	--bad-wash: rgb(194 65 47 / 0.08);
 	--warn: #945808;
 	--warn-wash: rgb(200 130 20 / 0.1);
+	--needs: #8f5500;
+	--needs-wash: rgb(214 140 20 / 0.1);
+	--needs-edge: rgb(176 112 10 / 0.38);
+	--needs-fill: #f0b85c;
+	--needs-ink: #1d1304;
 	--info: #1c6a80;
 	--info-wash: rgb(28 106 128 / 0.08);
 	--add: #2f6f17;

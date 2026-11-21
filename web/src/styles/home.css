@@ -80,7 +80,7 @@
 	opacity: 1;
 }
 .eyebrow-waiting {
-	color: var(--info);
+	color: var(--needs);
 }
 
 .agent-glyph {

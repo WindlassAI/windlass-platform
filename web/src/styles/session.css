@@ -513,7 +513,7 @@ button.line-button:hover {
 	color: var(--warn);
 }
 .tool-state-asking {
-	color: var(--info);
+	color: var(--needs);
 }
 .tool-state-failed {
 	color: var(--bad);
@@ -815,7 +815,7 @@ button.output-more:hover {
 	color: var(--warn);
 }
 .working-waiting {
-	color: var(--info);
+	color: var(--needs);
 }
 .working-time {
 	color: var(--ink-faint);
@@ -859,7 +859,7 @@ button.output-more:hover {
  * rule and nothing else.
  */
 .q {
-	--q-edge: color-mix(in srgb, var(--info) 55%, var(--line));
+	--q-edge: color-mix(in srgb, var(--needs) 55%, var(--line));
 	padding: 1px 0 3px 14px;
 	border-left: 2px solid var(--q-edge);
 	font-family: var(--font-text);
@@ -1076,7 +1076,7 @@ button.output-more:hover {
 	animation: rise 180ms var(--ease) both;
 }
 .q-dock:focus-visible {
-	outline: 2px solid var(--info);
+	outline: 2px solid var(--needs);
 	outline-offset: 2px;
 }
 .q-dock .q {
@@ -1118,7 +1118,7 @@ button.output-more:hover {
 .q-gone svg {
 	flex: none;
 	margin-top: 3px;
-	color: var(--info);
+	color: var(--needs);
 }
 
 /* After it was settled: one line of history under the call. */
@@ -1134,7 +1134,7 @@ button.output-more:hover {
 	line-height: 1.5;
 }
 .q-asked .q-history {
-	border-left-color: color-mix(in srgb, var(--info) 60%, transparent);
+	border-left-color: color-mix(in srgb, var(--needs) 60%, transparent);
 }
 .q-history-glyph {
 	display: inline-grid;
@@ -1148,7 +1148,7 @@ button.output-more:hover {
 }
 .q-history-platform .q-history-glyph,
 .q-asked .q-history-glyph {
-	color: var(--info);
+	color: var(--needs);
 }
 .q-history-text {
 	min-width: 0;
@@ -1685,10 +1685,10 @@ button.output-more:hover {
 }
 /* Waiting on the user: the calm hue, as everywhere a question waits. */
 .server-state-ask {
-	color: var(--info);
+	color: var(--needs);
 }
 .server-state-ask .server-dot {
-	border-color: var(--info);
+	border-color: var(--needs);
 }
 .server-state-bad {
 	color: var(--bad);

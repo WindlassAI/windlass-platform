@@ -216,7 +216,7 @@ function ToolGlyph({ block }: { block: ToolBlock }) {
 		case "queued":
 			return <RingIcon size={14} className="tone-faint" />;
 		case "asking":
-			return <AskIcon size={14} className="tone-info" />;
+			return <AskIcon size={14} className="tone-needs" />;
 		case "running":
 			return block.stopRequested ? <StopIcon size={14} className="tone-warn pulse" /> : <Mark size={15} turning className="tone-accent" />;
 		case "done":
