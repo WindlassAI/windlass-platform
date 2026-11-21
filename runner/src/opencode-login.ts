@@ -25,17 +25,35 @@ export async function installedProvider(m: MachineDocker) {
 	return login && await m.ownedVolume(false, m.opencodeVolume) ? login : undefined;
 }
 
-export async function storeProvider(m: MachineDocker, credential?: Credential) {
+const attemptFile = (m: MachineDocker) => "opencode-attempt-" + m.identity.machineId + ".json";
+
+export async function beginProviderLogin(m: MachineDocker) {
+	return withLoginVolume(m, async () => {
+		const attempt = randomBytes(16).toString("hex");
+		save(attemptFile(m), attempt);
+		return attempt;
+	});
+}
+
+export async function storeProvider(m: MachineDocker, credential?: Credential, attempt?: string) {
 	await m.ensureImage();
 	await withLoginVolume(m, async () => {
+		if (attempt && read(attemptFile(m)) !== attempt)
+			throw new RunnerError("A later login or logout superseded this OpenCode sign-in.");
+		save(attemptFile(m), null);
 		const pair = loadPair();
 		if (credential && (!pair?.key || pair.current.machineId !== m.identity.machineId || pair.current.uid !== m.identity.uid))
 			throw new RunnerError("The pairing changed during OpenCode login. Sign in again.");
 		// Stop the sole refresh writer before replacing or unlinking the credential.
+		if (!credential) {
+			save(metadata(m), null);
+			try { await removeRelay(m, "opencode"); }
+			finally { await m.dropVolume(m.opencodeVolume); }
+			return;
+		}
 		await removeRelay(m, "opencode");
 		save(metadata(m), null);
-		if (!await m.ownedVolume(!!credential, m.opencodeVolume)) return;
-		if (!credential) { await m.dropVolume(m.opencodeVolume); return; }
+		await m.ownedVolume(true, m.opencodeVolume);
 		const login = { provider: credential.provider, generation: randomBytes(16).toString("hex") };
 		const name = tmpName();
 		const script = `set -eu
@@ -90,6 +108,7 @@ export async function changeProviderLogin(machine: MachineDocker, login: boolean
 	if (!login) return storeProvider(machine);
 	const pin = harnessImage("opencode");
 	if (!pin) throw new RunnerError("This runner was built without the OpenCode image.");
+	const attempt = await beginProviderLogin(machine);
 	const provider = method ?? ((await terminalQuestion("OpenCode provider [chatgpt/openai/anthropic/free] (chatgpt): ", signal)) || "chatgpt");
 	let record: Credential;
 	if (provider === "chatgpt") {
@@ -101,5 +120,5 @@ export async function changeProviderLogin(machine: MachineDocker, login: boolean
 	} else if (provider === "free") record = { provider };
 	else throw new RunnerError("Choose chatgpt, openai, anthropic or free.");
 	signal.throwIfAborted();
-	await storeProvider(machine, record);
+	await storeProvider(machine, record, attempt);
 }

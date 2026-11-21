@@ -307,16 +307,21 @@ export class Executor extends MachineDocker {
 		return await this.probe() ? { ok: true } : { ok: false, reason: "Bubblewrap could not start in a sandbox on this machine." };
 	}
 	report(): Report {
+		const harnesses: NonNullable<Report["harnesses"]> = [];
+		if (this.claudePin) harnesses.push({
+			id: "claude", adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
+			image: this.claudePin.split("@").at(-1)!, signIn: this.signIn,
+			...(this.signIn === "token" && this.claudeOptions && { options: this.claudeOptions }),
+		});
+		if (this.opencodePin) harnesses.push({
+			id: "opencode", adapter: "OpenCode 1.19.6", image: this.opencodePin.split("@").at(-1)!,
+			signIn: !this.dockerHealth.ok ? "unknown" : this.opencodeLogin ? "token" : "none",
+			...(this.opencodeOptions && { options: this.opencodeOptions }),
+		});
 		return { kind: "report", egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
 			...(this.claudePin && { claudeRelay: true as const }),
-			...(this.claudePin || this.opencodePin ? { harnesses: [...(this.claudePin ? [{ id: "claude" as const,
-				adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
-				image: this.claudePin.slice(this.claudePin.lastIndexOf("@") + 1), signIn: this.signIn,
-				...(this.signIn === "token" && this.claudeOptions && { options: this.claudeOptions }) }] : []),
-				...(this.opencodePin ? [{ id: "opencode" as const, adapter: "OpenCode 1.19.6", image: this.opencodePin.split("@").at(-1)!,
-					signIn: !this.dockerHealth.ok ? "unknown" as const : this.opencodeLogin ? "token" as const : "none" as const,
-					...(this.opencodeOptions && { options: this.opencodeOptions }) }] : [])] } : {}),
+			...(harnesses.length ? { harnesses } : {}),
 			...(this.screenshots ? { screenshots: true } : {}),
 			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes,
 			sandboxes: [...this.boxes.entries()].slice(0, MAX_REPORTED_SANDBOXES).map(([id, { sessionId, state, usedAt }]) => ({ id, sessionId, state, usedAt })),

@@ -49,6 +49,9 @@ else process.exitCode=2;
 		assert.deepEqual(asked,['/runner/pair','/runner/pair/poll']);
 		assert.equal(JSON.parse(await readFile(join(dir,'stored'),'utf8')).key,'setup-fixture-secret');
 		assert.ok(output.includes('-e WLP_RUNNER_STATE_DIR='+dir));
+		const pairing = await readFile(join(dir,'opencode-'+id+'.json'),'utf8');
+		assert.equal(JSON.parse(pairing).provider,'openai');
+		assert.ok(!pairing.includes('setup-fixture-secret'));
 		assert.ok(output.includes(pin+' run --platform '+origin+' --harness claude --harness opencode'));
 	} finally { server.closeAllConnections();server.close();await rm(dir,{recursive:true,force:true}); }
 });
