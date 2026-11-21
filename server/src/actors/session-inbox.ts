@@ -18,6 +18,7 @@
  * is harmless.
  */
 
+import { ownsPath } from "../factory/feature-plan.js";
 import type { RawAccess } from "rivetkit/db";
 import type { RepositoryCheck, TurnOutcome, TurnUsage, Verified } from "../contract.js";
 import { turnTokens } from "../factory/budget.js";
@@ -302,9 +303,9 @@ export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 }
 
 /** The observations on the turn's changes that a reviewer would want to look at (verified.ts), from git in the sandbox; none when git says nothing. */
-export async function turnFlags(sandbox: SandboxHandle, base: string, checks: ReadonlyArray<RepositoryCheck>, verified: Verified | null) {
+export async function turnFlags(sandbox: SandboxHandle, base: string, checks: ReadonlyArray<RepositoryCheck>, verified: Verified | null, owns?: string[]) {
 	const work = await readWork(sandbox, base);
-	return work === null ? [] : workFlags(work, [...checks, ...(verified?.run?.checks ?? [])]);
+	return work === null ? [] : workFlags(work, [...checks, ...(verified?.run?.checks ?? [])], owns && (path => ownsPath(owns, path)));
 }
 
 /** The fact of a turn's end, for the item. `hostedSeconds` is the ledger's, which the item reads from the user's actor. */

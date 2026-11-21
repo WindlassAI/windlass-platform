@@ -221,10 +221,16 @@ if (!only.length || only.includes("orchestrator")) {
 			const { user } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FAKE_FEATURE_HEADS: headsFile });
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{name:"build",command:"true"}] });
 			const single = (await user.factoryLimits()).item;
-			const feature = await user.createItem({ repository: {id:harbor.id}, title:"Search documents", body:"Index documents and show the result.", mode:"orchestrate", start:true });
+			const token = (await user.createApiToken({ name: "feature", scopes: ["items:create", "items:read"] })).secret;
+			const filing = await api("/api/items", {method:"POST", token, key:"search-feature", body:JSON.stringify({repository:{id:harbor.id}, title:"Search documents", body:"Index documents and show the result.", mode:"orchestrate", start:true})});
+			assert(filing.status === 201 && typeof filing.body.id === "string", "The API refused feature filing.");
+			const feature = await user.item(filing.body.id);
 			const page = await untilItem(user, feature.id, "plan approval", v => !!v.question);
 			assert(page.plan?.status === "proposed", "The planner did not file a valid plan: " + page.question?.text);
 			assert(!page.pullRequest && !page.children?.length, "Work started before approval.");
+			const invalid = structuredClone(page.plan);
+			invalid.subtasks[0].budget.tokens = 0;
+			await refused(() => user.actOnItem({id:feature.id, action:{kind:"edit_plan", version:invalid.version, plan:invalid}}), "bad_input");
 			const edited = await user.actOnItem({id:feature.id, action:{ kind:"edit_plan", version:page.plan.version, plan:page.plan }});
 			await refused(() => user.actOnItem({id:feature.id,action:{kind:"approve_plan",version:page.plan!.version}}), "item_conflict");
 			const base = standin.branchHead(harbor,"main")!, version = edited.plan!.version;
@@ -244,7 +250,9 @@ if (!only.length || only.includes("orchestrator")) {
 				if (v.question) throw new Error(v.question.text);
 				return v.state === "review";
 			}, 320_000);
-			assert(done.children?.length === 2 && done.children.every(s => s.state === "done" && !s.pullRequest && s.review?.state === "off"), "Children did not finish as branches.");
+			const read = await api("/api/items/" + feature.id, {token});
+			assert(read.status === 200 && Array.isArray(read.body.children) && read.body.children.length === 2, "The feature API omitted its children.");
+			assert(done.children?.length === 2 && done.children.every(s => s.verdict?.ci === "passed" && s.state === "done" && !s.pullRequest && s.review?.state === "off"), "Children did not finish as branches.");
 			assert(done.spent.turns === 5 && done.budget.tokens === 3*single.tokens, "Unexpected feature spend " + JSON.stringify(done.spent));
 			assert(done.head === parent && done.reviews.length === 1 && done.report && done.pullRequest, "Missing final head, summary, review or PR.");
 			const ready = await waitFor("the single ready PR", () => standin.pulls.find(p=>p.number===done.pullRequest!.number && !p.draft && p.comments.length), 30_000);

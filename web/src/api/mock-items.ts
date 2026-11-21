@@ -1,4 +1,4 @@
-import { featureCap, validatePlan } from "../../../server/src/factory/feature-plan.js";
+import { approvalText, featureCap, validatePlan } from "../../../server/src/factory/feature-plan.js";
 /**
  * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
  * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
@@ -795,6 +795,8 @@ function flagWords(kind: Verdict["flags"][number]["kind"]): string {
 			return "Tests were newly skipped or disabled";
 		case "checks_changed":
 			return "What the checks run was changed in this work";
+		case "outside_scope":
+			return "The subtask changed files outside its approved paths";
 		case "agent_instructions_changed":
 			return "Instructions for agents were changed in this work";
 		case "exit_ignored":
@@ -1005,8 +1007,15 @@ export function createMockItems(deps: MockItemsDeps) {
 		if (state === "off") throw new PlatformError("user", "Work items are not available on this platform.", { reason: "items_off" });
 	}
 
+	function listedItems(auth: AuthResult): ItemSummary[] {
+		return keptOf(auth).items.filter(i => !i.parent || i.question).map(i => {
+			const row = summaryOf(i);
+			return i.parent ? { ...row, title: i.parent.title + " — " + i.title } : row;
+		});
+	}
+
 	function changed(auth: AuthResult): void {
-		const list = keptOf(auth).items.filter(i => !i.parent || i.question).map(summaryOf);
+		const list = listedItems(auth);
 		for (const feed of deps.feeds(auth)) feed.onItems?.(list);
 	}
 
@@ -1084,7 +1093,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				subtasks: ["implementation", "verification"].map((key, i) => ({ key, title: i ? "Verify the feature" : item.title, brief: i ? "Add regression coverage." : item.task.body,
 					acceptance: ["Run pnpm test"], dependsOn: i ? ["implementation"] : [], owns: [i ? "tests/**" : "src/**"], budget: { ...MOCK_FACTORY_LIMITS.item } })),
 			};
-			const text = plan.spec.goal;
+			const text = approvalText(plan);
 			return change(auth, item, { run, state: "waiting", wait: { reason: "person", since: at, retryAt: null, sentence: text }, question: { id: item.id + ":plan" + version, kind: "plan_approval", text, askedAt: at, choices: choices("approve","revise","give_up") } }, [said,"The planner filed a proposal."], "platform");
 		}
 		if (before && before.endedAt === null) Object.assign(before, { endedAt: at, stopReason: "retried" });
@@ -1114,6 +1123,11 @@ export function createMockItems(deps: MockItemsDeps) {
 		const current = plan?.status === "proposed" && ["plan_approval","single_suggested","replan_approval"].includes(item.question?.kind ?? "");
 		const at = deps.now();
 		switch (action.kind) {
+			case "cancel_subtask": {
+				const child = keptOf(auth).items.find(c => c.parent?.itemId === item.id && c.parent.key === action.key && !["done","failed","cancelled"].includes(c.state));
+				if (!child) throw conflict("This subtask is no longer running.");
+				return act(auth, child, {kind:"cancel"});
+			}
 			case "run_single":
 				if (!current) throw conflict("The feature no longer has an open plan.");
 				item.mode = "single"; plan.status = "superseded"; item.budget = { ...plan.compare.singleBudget };
@@ -1125,14 +1139,15 @@ export function createMockItems(deps: MockItemsDeps) {
 				catch (error) { throw new PlatformError("user", (error as Error).message, { reason: "bad_input" }); }
 				const kind = edited.singleSuggested ? "single_suggested" : item.question?.kind === "replan_approval" ? "replan_approval" : "plan_approval";
 				const offered = kind === "single_suggested" ? choices("run_single","orchestrate_anyway") : edited.questions.some(q => !q.answer) ? choices("revise","give_up") : choices("approve","revise","give_up");
-				return change(auth, item, { plan: { ...plan, ...edited, version: plan.version+1 }, question: { ...item.question!, kind, choices: offered, id: item.id + ":plan" + (plan.version+1), text: edited.singleSuggested ?? edited.spec.goal } }, ["Edited the plan."], "person");
+				return change(auth, item, { plan: { ...plan, ...edited, version: plan.version+1 }, question: { ...item.question!, kind, choices: offered, id: item.id + ":plan" + (plan.version+1), text: edited.singleSuggested ?? approvalText({ ...plan, ...edited }) } }, ["Edited the plan."], "person");
 			}
 			case "approve_plan": {
 				if (!current || action.version !== plan.version || plan.singleSuggested || plan.questions.some(q => !q.answer)) throw conflict("Answer all questions on the current plan first.");
 				const sub = plan.subtasks.find(s => s.dependsOn.length === 0)!;
 				const session = await deps.session(auth, { title: sub.title, place: item.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id } });
 				if (item.plan !== plan || !item.question || plan.status !== "proposed") throw conflict("The plan changed.");
-				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } } };
+				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:"Subtasks share the feature review.",
+					pullRequest:null, head:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } } };
 				keptOf(auth).items.push(child); deps.itemChanged(auth, child);
 				return change(auth, item, { plan: { ...plan, status: "approved", approvedAt: at, approvedBy: "person:" + auth.profile.uid }, children: keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf), state: "waiting", question: null,
 					wait: { reason: "children", sentence: "Running " + sub.title, since: at, retryAt: null }, run: { ...item.run!, step: { ...item.run!.step, kind: "subtasks" } },
@@ -1202,7 +1217,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		return {
 			async listItems() {
 				await answer(240);
-				return keptOf(auth).items.filter(i => !i.parent || i.question).map(summaryOf);
+				return listedItems(auth);
 			},
 			async item(id) {
 				await answer(220);

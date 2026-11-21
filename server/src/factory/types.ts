@@ -76,6 +76,7 @@ export type Task = ItemTask;
 
 export interface FeatureJob {
 	failure?: string | null;
+	cancelRequested?: boolean;
 	id: string;
 	task: import("../contract.js").PlanSubtask;
 	state: import("../contract.js").ItemState;
@@ -173,6 +174,7 @@ export interface TurnSpend {
 export type Fact =
 	| { kind: "feature_seed"; at: number; key: string; sha: string }
 	| { kind: "feature_ready"; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]> }
+	| { kind: "cancel_subtask"; key: string; by: string; at: number }
 	| { kind: "child_notice"; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
 	| { kind: "child_update"; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; at: number; key: string }

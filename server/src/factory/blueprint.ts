@@ -36,7 +36,7 @@ import type { ReviewRecord, TurnOutcome, Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
 import { createHash } from "node:crypto";
-import { emptyBudget, featureCap, dimensions, validatePlan, planScope, PlanError } from "./feature-plan.js";
+import { emptyBudget, featureCap, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
 import { budgetStop } from "./budget.js";
 import type { ChoiceId, CiProgress, Fact, HandoffReview, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";
@@ -170,6 +170,14 @@ class Change {
 function apply(c: Change, fact: Fact): boolean {
 	const { item } = c;
 	switch (fact.kind) {
+		case "cancel_subtask": {
+			const job = item.jobs?.at(-1);
+			if (!job || job.task.key !== fact.key || job.cancelRequested || item.run?.step.kind !== "subtasks" || item.question || item.state !== "waiting") return false;
+			job.cancelRequested = true;
+			c.say("Requested cancellation of " + job.task.title + ".");
+			c.effects.push({kind:"cancel_children", key:String(item.revision+1), ids:[job.id]});
+			return true;
+		}
 		case "child_notice": {
 			const job = item.jobs?.find(j => j.id === fact.child);
 			if (!job) return false;
@@ -260,7 +268,7 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "machine_removed" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "machine_removed" }>): boolean {
 	const run = c.item.run;
 	if (run === null) return false;
 	const step = run.step;
@@ -902,7 +910,7 @@ function askPlan(c: Change) {
 	if (p.singleSuggested && !c.item.replans)
 		return ask(c, "single_suggested", p.singleSuggested, [choice("run_single"), choice("orchestrate_anyway")], null, null);
 	const unanswered = p.questions.filter(q => !q.answer);
-	const text = [p.spec.goal, ...p.subtasks.map(s => s.key + ". " + s.title), ...unanswered.map(q => q.text)].join("\n");
+	const text = approvalText(p);
 	ask(c, c.item.replans ? "replan_approval" : "plan_approval", text, [...(unanswered.length ? [] : [choice("approve")]), ...revise, choice("give_up")], null, null);
 }
 

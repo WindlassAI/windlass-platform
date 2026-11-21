@@ -1,4 +1,4 @@
-import type { FeaturePlanEdit, ItemBudget, PlanSubtask } from "../contract.js";
+import type { FeaturePlan, FeaturePlanEdit, ItemBudget, PlanSubtask } from "../contract.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
 
 export const dimensions = ["tokens", "turns", "activeSeconds", "hostedSeconds"] as const;
@@ -7,6 +7,16 @@ export function featureCap(single: ItemBudget): ItemBudget {
 	const cap = emptyBudget();
 	for (const key of dimensions) cap[key] = 3 * single[key];
 	return cap;
+}
+
+export function approvalText(plan: FeaturePlan): string {
+	const words = (b: ItemBudget) => [
+		b.tokens.toLocaleString("en-US") + " tokens", b.turns + " turns",
+		b.activeSeconds + " active seconds", b.hostedSeconds + " hosted seconds",
+	].join(", ");
+	return [plan.spec.goal, ...plan.subtasks.map(s => s.key + ". " + s.title + " — " + words(s.budget)),
+		"Feature cap — " + words(plan.budget), "Single item — " + words(plan.compare.singleBudget),
+		...plan.questions.filter(q => !q.answer).map(q => q.text)].join("\n");
 }
 
 export class PlanError extends Error {}
@@ -46,7 +56,7 @@ function unique(keys: string[]) {
 
 // Intersect the two small glob languages. A wildcard may consume an element or advance
 // without consuming. Remember each pair of positions to bound the search.
-function intersect(a: string[], b: string[], wildcard: string, match: (a: string, b: string) => boolean) {
+function intersect(a: string[], b: string[], wildcard: string, match: (a: string, b: string) => boolean, literalRight = false) {
 	const pending: [number, number][] = [[0, 0]];
 	const seen = new Set<string>();
 	while (pending.length) {
@@ -54,17 +64,21 @@ function intersect(a: string[], b: string[], wildcard: string, match: (a: string
 		if (seen.has(key)) continue;
 		seen.add(key);
 		if (i === a.length && j === b.length) return true;
-		const x = a[i], y = b[j];
+		const x = a[i], y = b[j], rightWildcard = !literalRight && y === wildcard;
 		if (x === wildcard) pending.push([i + 1, j]);
-		if (y === wildcard) pending.push([i, j + 1]);
-		if (x !== undefined && y !== undefined && (x === wildcard || y === wildcard || match(x, y)))
-			pending.push([x === wildcard ? i : i + 1, y === wildcard ? j : j + 1]);
+		if (rightWildcard) pending.push([i, j + 1]);
+		if (x !== undefined && y !== undefined && (x === wildcard || rightWildcard || match(x, y)))
+			pending.push([x === wildcard ? i : i + 1, rightWildcard ? j : j + 1]);
 	}
 	return false;
 }
 
-function overlaps(a: string, b: string) {
-	return intersect(a.split("/"), b.split("/"), "**", (x, y) => intersect([...x], [...y], "*", (m,n) => m === n));
+function overlaps(a: string, b: string, literalRight = false) {
+	return intersect(a.split("/"), b.split("/"), "**", (x, y) => intersect([...x], [...y], "*", (m,n) => m === n, literalRight), literalRight);
+}
+
+export function ownsPath(owns: string[], path: string): boolean {
+	return owns.some(pattern => overlaps(pattern, path, true));
 }
 
 export function validatePlan(value: unknown, single: ItemBudget, available: ItemBudget): FeaturePlanEdit {

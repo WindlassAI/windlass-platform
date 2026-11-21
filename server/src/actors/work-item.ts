@@ -865,6 +865,7 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 		return value;
 	};
 	switch (action?.kind) {
+		case "cancel_subtask": return { kind: action.kind, key: action.key, by, at };
 		case "edit_plan": return { kind: action.kind, version: action.version, plan: action.plan, by, at };
 		case "approve_plan": return { kind: action.kind, version: action.version, by, at };
 		case "run_single": return { kind: action.kind, by, at };
@@ -891,6 +892,7 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 }
 
 const CONFLICT: Record<ItemAction["kind"], string> = {
+	cancel_subtask: "This subtask is no longer running.",
 	edit_plan: "That plan has changed. Read the latest version.", approve_plan: "Review the latest plan and answer its questions first.", run_single: "This item cannot switch to single mode.",
 	start: "Only a draft can be started.",
 	cancel: "The item is done or cancelled already.",

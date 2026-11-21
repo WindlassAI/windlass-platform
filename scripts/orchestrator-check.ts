@@ -292,3 +292,29 @@ test("the whole-feature review uses child evidence and needs the pinned head and
 	}
 });
 
+test("the child verdict flags both sides of a rename outside its declared ownership", async () => {
+	const {workFlags} = await import("../server/src/verified.js");
+	const {ownsPath} = await plans();
+	const diff = {files:[{status:"R",path:"src/a.ts",to:"test/a.ts"},{status:"M",path:"src/deep/x.ts"},{status:"M",path:".env"}], patch:"", config:{before:null,after:null},packageJson:{before:null,after:null}};
+	const flags = workFlags(diff, [], path => ownsPath(["src/**/*.ts"], path));
+	assert.deepEqual(flags.find(f=>f.kind==="outside_scope")?.where, ["test/a.ts",".env"]);
+	assert.equal(workFlags(diff, []).some(f=>f.kind==="outside_scope"),false);
+});
+
+test("the existing approval question shows each subtask cap and the single-item comparison", () => {
+	const {question} = proposed(proposal());
+	assert.match(question!.text,/index.*10,000 tokens/);
+	assert.match(question!.text,/page.*10 turns/);
+	assert.match(question!.text,/30,000 tokens/);
+	assert.match(question!.text,/Single item.*10,000 tokens/);
+});
+
+test("a person can cancel the current subtask by its approved key", () => {
+	const initial = approved();
+	const item = advance(initial,{kind:"feature_ready",key:currentKey(initial)!,at:1,head,pr}).item;
+	const cancel = {kind:"cancel_subtask" as const,key:"index",at:2,by:"person"};
+	assert.equal(advance(item,{...cancel,key:"page"}).item,item);
+	const outcome = advance(item,cancel);
+	assert.deepEqual(outcome.effects.find(e=>e.kind==="cancel_children")?.ids,[item.jobs![0].id]);
+	assert.equal(advance(outcome.item,cancel).item,outcome.item);
+});

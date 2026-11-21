@@ -495,6 +495,10 @@ it("files an orchestrated feature, edits its budget by version, and lists the ch
 		const approved = await user.actOnItem(made.id, { kind: "approve_plan", version: edited.plan!.version });
 		expect(approved.children?.[0]?.parent?.itemId).toBe(made.id);
 		expect(approved.pullRequest).toBeTruthy();
+		const child = await user.item(approved.children![0]!.id);
+		expect(child.reviewerSessionId).toBeNull();
+		expect(child.review?.state).toBe("off");
+		expect(child.pullRequest).toBeNull();
 		expect((await user.listItems()).some(i => i.parent)).toBe(false);
 		const cancelled = await user.actOnItem(made.id, {kind: "cancel"});
 		expect(cancelled.children?.[0]?.state).toBe("cancelled");
@@ -510,10 +514,9 @@ it("lets a designer exercise the single suggestion and re-plan decisions", async
 		expect(suggestion.question?.kind).toBe("single_suggested");
 		const split = await user.actOnItem(feature.id,{kind:"answer",question:suggestion.question!.id,choice:"orchestrate_anyway"});
 		const approved = await user.actOnItem(feature.id,{kind:"approve_plan",version:split.plan!.version});
-		await user.actOnItem(approved.children![0]!.id,{kind:"cancel"});
+		await user.actOnItem(feature.id,{kind:"cancel_subtask",key:approved.children![0]!.parent!.key});
 		const revision = await user.item(feature.id);
 		expect(revision.question?.kind).toBe("replan_approval");
 		expect(revision.budget).toEqual(view.budget);
 	} finally { mock.dispose(); }
 });
-

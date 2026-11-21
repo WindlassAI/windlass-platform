@@ -127,6 +127,7 @@ const FLAG_WORDS: Record<VerifiedFlag["kind"], string> = {
 	tests_skipped: "tests were newly skipped or disabled",
 	checks_changed: "what the person's checks run was changed",
 	exit_ignored: "a check's command came to ignore an exit status",
+	outside_scope: "the subtask changed files outside its approved paths",
 	agent_instructions_changed: "instructions for agents were changed",
 };
 

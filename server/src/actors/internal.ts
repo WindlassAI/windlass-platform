@@ -43,7 +43,7 @@ export interface SessionCreateInput {
 	demo: boolean;
 	createdAt: number;
 	/** Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's. */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer" };
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[] };
 }
 
 /** The repository setting selects an image only for work item sessions, at sandbox creation. */

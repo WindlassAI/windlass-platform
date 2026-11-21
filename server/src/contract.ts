@@ -682,7 +682,7 @@ export type Verified = ({
  * from the changes: `Verified.changedAfter`.
  */
 export interface VerifiedFlag {
-	kind: "tests_removed" | "tests_skipped" | "checks_changed" | "exit_ignored" | "agent_instructions_changed";
+	kind: "tests_removed" | "tests_skipped" | "checks_changed" | "exit_ignored" | "agent_instructions_changed" | "outside_scope";
 	/** What it was seen in: paths, at most a few. */
 	where: string[];
 }
@@ -1562,6 +1562,7 @@ export interface CreateItemInput {
 
 /** What a person does to an item: each is refused (`item_conflict`) where the item's state does not allow it. */
 export type ItemAction =
+	| { kind: "cancel_subtask"; key: string }
 	| { kind: "edit_plan"; version: number; plan: FeaturePlanEdit }
 	| { kind: "approve_plan"; version: number }
 	| { kind: "run_single" }

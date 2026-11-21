@@ -398,7 +398,7 @@ const FLAG_PATHS = 5;
  * and a test's file run as the check (`node test/a.test.js`) is the work under test, which changes in
  * ordinary work and has the two flags above. Flagging those would put the line on most pull requests.
  */
-export function workFlags(diff: WorkDiff, checks: ReadonlyArray<{ name: string; command: string }>): VerifiedFlag[] {
+export function workFlags(diff: WorkDiff, checks: ReadonlyArray<{ name: string; command: string }>, owns?: (path: string) => boolean): VerifiedFlag[] {
 	const lines = changedLines(diff.patch);
 	const flags: VerifiedFlag[] = [];
 	const flag = (kind: VerifiedFlag["kind"], where: string[]) => {
@@ -454,6 +454,7 @@ export function workFlags(diff: WorkDiff, checks: ReadonlyArray<{ name: string; 
 	flag("checks_changed", changed);
 	flag("exit_ignored", ignored);
 	// Both sides of a rename matter: instructions can move into or out of the work. The root config has its own check above.
+	if (owns) flag("outside_scope", [...touched].filter(path => !owns(path)));
 	flag("agent_instructions_changed", [...touched].filter(isAgentInstructionPath));
 	return flags;
 }
@@ -618,6 +619,8 @@ export function flagWords(kind: VerifiedFlag["kind"]): string {
 			return "Tests were newly skipped or disabled";
 		case "checks_changed":
 			return "What the checks run was changed in this work";
+		case "outside_scope":
+			return "The subtask changed files outside its approved paths";
 		case "agent_instructions_changed":
 			return "Instructions for agents were changed in this work";
 		case "exit_ignored":
