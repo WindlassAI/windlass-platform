@@ -107,3 +107,22 @@ test("loading a pending sign-in upgrades its saved blob before the next callback
 	})()`);
 	assert.equal(result, "new");
 });
+
+test("pairing budgets and attach-ticket lookups use independent HKDF keys", () => {
+	const actual = server(overlap, `await (async () => {
+		const { keyedDigest } = await import("./src/signatures.ts");
+		return ["pairing-budget", "attach-ticket"].map(label => keyedDigest(label, "fixture").toString("hex")).join(",");
+	})()`);
+	const expected = ["pairing-budget", "attach-ticket"].map(label => {
+		const key = Buffer.from(hkdfSync("sha256", fresh, "", "windlass-platform v2 " + label, 32));
+		return createHmac("sha256", key).update("fixture").digest("hex");
+	});
+	assert.equal(actual, expected.join(","));
+});
+
+test("a genuine pre-upgrade user token ends at cutover", () => {
+	const legacy = { k: "u", uid: "u_test", email: null, demo: true, exp: Date.now() + 60_000 };
+	const body = "v1." + Buffer.from(JSON.stringify(legacy)).toString("base64url");
+	const token = body + "." + createHmac("sha256", old).update(body).digest("base64url");
+	assert.equal(server(overlap, "verifyToken(input)", token), "null");
+});
