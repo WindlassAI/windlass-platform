@@ -63,11 +63,18 @@ test("the ACP projection enables every selected provider with separate placehold
 	}
 });
 
-test("pre-launch discovery keeps the ACP default and models from each provider within the machine report budget", async () => {
-	const { inventoryModels } = await import("../runner/src/harness-options.js");
-	const models = ["opencode","opencode-go","openrouter"].flatMap(provider => Array.from({length:45},(_,i) => ({id:provider+"/model-"+i,name:null,efforts:[]})));
-	const result = inventoryModels(models, "opencode-go/model-44");
-	assert.equal(result.length,32);
-	assert.ok(result.some(m => m.id === "opencode-go/model-44"));
-	assert.ok(result.some(m => m.id === "openrouter/model-0"));
+test("authenticated reports carry a full provider catalog while other frames retain the control limit", async () => {
+	const { MAX_CONTROL_FRAME_BYTES, parseRunnerFrame, validHarnessOptions } = await import("../server/src/runner/control.js");
+	const models = Array.from({ length: 1400 }, (_, i) => ({ id: "openrouter/model-" + i, name: "Model " + i, efforts: ["low", "high"] }));
+	const options = { models, defaultModel: models[1399]!.id, modes: [{ id: "plan", name: "Plan", description: null }], checkedAt: Date.now() };
+	const frame = JSON.stringify({ kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 0, sandboxes: [],
+		harnesses: [{ id: "opencode", signIn: "token", adapter: "OpenCode", image: "fixture", options }] });
+	assert.ok(Buffer.byteLength(frame) > MAX_CONTROL_FRAME_BYTES);
+	const report = parseRunnerFrame(frame);
+	assert.deepEqual(report?.kind === "report" && report.harnesses?.[0]?.options, options);
+	assert.equal(parseRunnerFrame(frame, false), null);
+	assert.equal(parseRunnerFrame(" ".repeat(MAX_CONTROL_FRAME_BYTES) + '{"kind":"heartbeat"}'), null);
+	assert.equal(validHarnessOptions({ ...options, models: [...models, models[0]] }), false);
+	assert.equal(validHarnessOptions({ ...options, models: models.map(m => ({ ...m, id: m.id.padEnd(512, "x"), name: "y".repeat(512) })),
+		defaultModel: options.defaultModel.padEnd(512, "x") }), false);
 });

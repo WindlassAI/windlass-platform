@@ -14,17 +14,18 @@ export function configChoices(option: Fields | undefined) {
 	return choiceFields(option).map(value => ({ id: text(value.value), name: text(value.name) || null }));
 }
 
-export function optionsOf(raw: unknown, previous?: ModelList | null) {
+export function optionsOf(raw: unknown, previous?: ModelList | null, freshSession = false) {
 	const options = objects(raw);
 	const model = options.find(o => (o.category === "model" || o.id === "model") && o.type === "select");
 	const effort = options.find(o => o.category === "thought_level" && o.type === "select");
 	const efforts = configChoices(effort).map(value => value.id);
 	const current = text(model?.currentValue);
+	const priorEfforts = new Map(previous?.models.map(m => [m.id, m.efforts]));
 	const models = configChoices(model).map(choice => ({
-		...choice, efforts: choice.id === current ? efforts : previous?.models.find(m => m.id === choice.id)?.efforts ?? [],
+		...choice, efforts: choice.id === current ? efforts : priorEfforts.get(choice.id) ?? [],
 	}));
 	const list: ModelList | null = models.length ? {
-		source: "harness", models, defaultModel: previous && models.some(m => m.id === previous.defaultModel) ? previous.defaultModel : current, fetchedAt: Date.now(),
+		source: "harness", models, defaultModel: !freshSession && previous && models.some(m => m.id === previous.defaultModel) ? previous.defaultModel : current, fetchedAt: Date.now(),
 	} : null;
 	return { model, effort, list };
 }

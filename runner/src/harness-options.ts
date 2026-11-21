@@ -1,7 +1,8 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { validHarnessOptions } from "../../server/src/runner/control.js";
 import { AcpConnection, LineSplitter, MethodNotFound } from "../../server/src/sandbox/acp.js";
-import { modeSelection, object, optionsOf, type Fields } from "../../server/src/sandbox/acp-options.js";
+import { configChoices, modeSelection, objects, optionsOf, type Fields } from "../../server/src/sandbox/acp-options.js";
 import { LABEL_ARG, docker, tmpName } from "../../server/src/sandbox/docker.js";
 import { PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
 import { commonRunFlags } from "../../server/src/sandbox/profiles.js";
@@ -10,24 +11,20 @@ import { cleanClaudeOutput } from "./claude-output.js";
 import { projection, relayUrl } from "./claude-relay.js";
 import type { MachineDocker } from "./policy.js";
 
-// Keep the machine report bounded. The active ACP session supplies the full selector.
-export function inventoryModels<T extends {id:string}>(models: T[], current: string) {
-	if (models.length <= 32) return models;
-	const selected = models.filter(m => m.id === current);
-	const groups = new Map<string,T[]>();
-	for (const model of models) {
-		if (model.id === current) continue;
-		const provider = model.id.split("/",1)[0]!;
-		if (!groups.has(provider)) groups.set(provider,[]);
-		groups.get(provider)!.push(model);
+/** The pinned OpenCode CLI lists every model's variants in one offline read. ACP adds
+ * its "default" reset to nonempty variant selectors. Reading them together avoids
+ * requesting the complete model list again for each model on a large provider. */
+async function openCodeEfforts(container: string) {
+	const { stdout } = await promisify(execFile)("docker", ["exec", "-e", "OPENCODE_DISABLE_MODELS_FETCH=true",
+		"-e", "OPENCODE_DISABLE_AUTOUPDATE=true", "-e", "XDG_CONFIG_HOME=/etc/wlp-opencode",
+		// This CLI can exit before its stdout pipe drains. A regular file keeps the last models.
+		container, "sh", "-ec", "ulimit -f 65536; opencode models --pure --verbose >/tmp/wlp-models.txt; cat /tmp/wlp-models.txt"], { timeout: 20_000, maxBuffer: 32 * 1024 * 1024 });
+	const efforts = new Map<string, string[]>();
+	for (const block of stdout.matchAll(/^(\S+)\n(\{[\s\S]*?^\})$/gm)) {
+		const variants = Object.keys(JSON.parse(block[2]!).variants ?? {});
+		efforts.set(block[1]!, variants.length ? [...variants.filter(id => id !== "default"), "default"] : []);
 	}
-	for (let i = 0; selected.length < 32; i++) {
-		for (const group of groups.values()) {
-			if (group[i]) selected.push(group[i]!);
-			if (selected.length === 32) break;
-		}
-	}
-	return selected;
+	return efforts;
 }
 
 /** Offline probe using a dummy credential and a fresh container filesystem. */
@@ -53,12 +50,24 @@ export async function probeHarnessOptions(machine: MachineDocker, pin: string, p
 	const deadline = setTimeout(() => rpc.end("Options probe timed out."), 25_000);
 	try {
 		const init = await rpc.request<Fields>("initialize", { protocolVersion: 1, clientCapabilities: {} });
-		if (init.protocolVersion !== 1 || (!provider && object(object(init.agentCapabilities).sessionCapabilities).options == null))
-			throw new Error("Options unavailable.");
-		const result = provider ? await rpc.request<Fields>("session/new", { cwd: WORKSPACE, mcpServers: [] }) : await rpc.request<Fields>("session/options", { cwd: WORKSPACE });
-		const { list } = optionsOf(result.configOptions);
-		if (!list) throw new Error("No models reported.");
-		const options = { models: provider ? inventoryModels(list.models,list.defaultModel) : list.models, defaultModel: list.defaultModel, modes: modeSelection(result.modes, result.configOptions).modes, checkedAt: Date.now() };
+		if (init.protocolVersion !== 1) throw new Error("Options unavailable.");
+		const result = await rpc.request<Fields>("session/new", { cwd: WORKSPACE, mcpServers: [] });
+		const { model, list } = optionsOf(result.configOptions);
+		if (!model || !list) throw new Error("No models reported.");
+		const catalog = provider ? await openCodeEfforts(name) : null;
+		for (const choice of list.models) {
+			if (choice.id === list.defaultModel) continue;
+			const efforts = catalog?.get(choice.id);
+			if (efforts) { choice.efforts = efforts; continue; }
+			// Claude exposes efforts only after selecting a model in this temporary session.
+			const selected = await rpc.request<Fields>("session/set_config_option", {
+				sessionId: result.sessionId, configId: model.id, value: choice.id,
+			});
+			const configs = objects(selected.configOptions);
+			if (!configs.some(option => option.id === model.id && option.currentValue === choice.id)) throw new Error("Model selection failed.");
+			choice.efforts = configChoices(configs.find(option => option.category === "thought_level")).map(effort => effort.id);
+		}
+		const options = { models: list.models, defaultModel: list.defaultModel, modes: modeSelection(result.modes, result.configOptions).modes, checkedAt: Date.now() };
 		const serialized = JSON.stringify(options);
 		if (!validHarnessOptions(options) || cleanClaudeOutput(serialized) !== serialized)
 			throw new Error("Invalid model options.");

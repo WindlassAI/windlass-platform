@@ -32,7 +32,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent
 import { errorMessage, hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { count } from "../lib/format";
-import { effortsOf, modelIds, modelLabel, modelsNote, modelsNoteShort } from "../lib/models";
+import { effortChoices, effortsOf, modelIds, saysDefault, modelsNote, modelsNoteShort } from "../lib/models";
 import { linkProps } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { ArrowUpIcon, ChevronIcon, SteerIcon, StopIcon, WarnIcon } from "./Icons";
@@ -184,7 +184,12 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 	// Another harness's pickers are drawn only where it offers a choice.
 	const modelPicker = harness === null || offered.length > 1;
 	// Another harness's models by the names it gave them, its default marked as the start composer marks it; Windlass's by their ids, as before.
-	const harnessModelLabel = (id: string) => (harness === null || !models ? id : modelLabel(models, id));
+	const modelById = new Map(models?.models.map(row => [row.id, row]));
+	const harnessModelLabel = (id: string) => {
+		if (!harness) return id;
+		const name = modelById.get(id)?.name || id;
+		return id === models?.defaultModel && !saysDefault(name) ? `${name} (default)` : name;
+	};
 	const effortPicker = harness === null || efforts.length > 0;
 	const tooLong = text.length > MAX_PROMPT_CHARS;
 	const canSend = writable && online && !sending && text.trim() !== "" && !tooLong;
@@ -312,7 +317,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 				label: harness === null ? "Model" : `${harness}'s models`,
 				note: models && harness === null ? modelsNoteShort(models) : undefined,
 				items: listed.map((id) => {
-					const rowEfforts = effortsOf(models, id);
+					const rowEfforts = modelById.get(id)?.efforts ?? [];
 					const choose = (level: string | null) => {
 						setChosenModel(id);
 						if (level !== null) setEffort(level);
@@ -320,15 +325,15 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 					return {
 						id,
 						label: harnessModelLabel(id),
-						description: effortPicker && rowEfforts.length > 0 ? (id === currentModel && currentEffort ? `effort ${currentEffort}` : `${rowEfforts.length} effort levels`) : undefined,
+						description: rowEfforts.length > 0 ? (id === currentModel && currentEffort ? `effort ${currentEffort}` : `${rowEfforts.length} effort levels`) : undefined,
 						checked: id === currentModel,
 						onSelect: () => choose(null),
 						submenu:
-							effortPicker && rowEfforts.length > 0
+							rowEfforts.length > 0
 								? {
 										label: `Effort for ${harnessModelLabel(id)}`,
 										width: 200,
-										groups: [{ id: "efforts", label: `Effort for ${harnessModelLabel(id)}`, items: ["", ...rowEfforts].map((level) => ({ id: level || "default", label: level || "default", checked: id === currentModel && currentEffort === level, onSelect: () => choose(level) })) }],
+										groups: [{ id: "efforts", label: `Effort for ${harnessModelLabel(id)}`, items: effortChoices(rowEfforts).map((level) => ({ id: level || "default", label: level || "default", checked: id === currentModel && (currentEffort || "default") === (level || "default"), onSelect: () => choose(level) })) }],
 									}
 								: undefined,
 					};
@@ -354,7 +359,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 	const effortMenu: MenuSpec = {
 		label: "Effort",
 		width: 200,
-		groups: [{ id: "efforts", label: `Effort for ${harnessModelLabel(currentModel)}`, items: ["", ...efforts].map((level) => ({ id: level || "default", label: level || "default", checked: currentEffort === level, onSelect: () => setEffort(level) })) }],
+		groups: [{ id: "efforts", label: `Effort for ${harnessModelLabel(currentModel)}`, items: effortChoices(efforts).map((level) => ({ id: level || "default", label: level || "default", checked: (currentEffort || "default") === (level || "default"), onSelect: () => setEffort(level) })) }],
 	};
 	const effortPill =
 		!modelPicker && effortPicker && efforts.length > 0 ? (
@@ -460,7 +465,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 						<>
 							{effortPill}
 							<span className="mini-note" title={`The model is the one ${harness} starts on; it offered no other.`}>
-								{harness}'s default model
+								{offered.length === 1 && (currentModel !== "default" || models?.models[0]?.name) ? harnessModelLabel(currentModel) : `${harness}'s default model`}
 							</span>
 						</>
 					)}

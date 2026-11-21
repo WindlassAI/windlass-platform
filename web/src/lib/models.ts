@@ -13,6 +13,10 @@ export const modelIds = (list: ModelList | null): string[] => list?.models.map((
 /** The efforts a model accepts; none for a model that takes no effort, and for one the list does not have. */
 export const effortsOf = (list: ModelList | null, model: string): string[] => list?.models.find((candidate) => candidate.id === model)?.efforts ?? [];
 
+/** Use an adapter's explicit reset value when it offers one. Other models reset by omitting effort. */
+export const effortChoices = (efforts: string[]): string[] =>
+	[efforts.includes("default") ? "default" : "", ...efforts.filter(level => level !== "default")];
+
 /** Whose list it is, in a sentence, for under a field. */
 export function modelsNote(list: ModelList): string {
 	switch (list.source) {

@@ -25,7 +25,6 @@ const { docker } = await import('../server/src/sandbox/docker.ts');
 const { Executor } = await import('../runner/src/docker-executor.ts');
 const { storePair } = await import('../runner/src/state.ts');
 const { storeClaudeLogin, loginFileState } = await import('../runner/src/harness-login.ts');
-const { probeHarnessOptions } = await import('../runner/src/harness-options.ts');
 const { containerName } = await import('../server/src/sandbox/sandboxes.ts');
 const { LABEL, LABEL_ARG } = await import('../server/src/sandbox/docker.ts');
 const cmd = async (args, opts) => (await docker(args, { check: true, timeoutMs: 45_000, ...opts })).stdout.trim();
@@ -83,9 +82,16 @@ try {
 	storePair(identity, privateKey, 'https://fixture.invalid');
 	const bundle = join(dir, 'runner.cjs');
 	execFileSync(process.execPath, [join(root, 'runner/bundle.mjs'), image, bundle, 'claude=' + image]);
+	await owner.loginChanged(false);
+	const unsigned = owner.report().harnesses[0];
+	assert.equal(unsigned.signIn, 'none');
+	assert.ok(unsigned.options.checkedAt > 0 && unsigned.options.models.length > 1);
+	assert.ok(unsigned.options.models.find(model => model.id === 'opus').efforts.includes('high'));
+	assert.ok(unsigned.options.modes.some(mode => mode.id === 'plan'));
 	execFileSync(process.execPath, [bundle, 'login', 'claude'], { input: token + '\n' });
-	const options = await probeHarnessOptions(owner, image);
-	assert.ok(options.models.length && options.defaultModel); ok('Pinned adapter discovers models with network disabled and no login volume.');
+	await owner.loginChanged(true);
+	assert.equal(owner.report().harnesses[0].signIn, 'token');
+	ok('Pinned adapter reports models, per-model efforts and modes before login and refreshes after login.');
 	const first = await create('first'), second = await create('second');
 	for (const name of [first, second]) {
 		const [box] = JSON.parse(await cmd(['inspect',name]));
@@ -149,6 +155,8 @@ try {
 	assert.throws(()=>restarted.running(legacyId,'legacy'));
 	ok('Upgrade stops legacy mounted sessions, keeps their workspace, and refuses reconnect, create and commands.');
 	execFileSync(process.execPath, [bundle, 'logout', 'claude']);
+	await owner.loginChanged(false);
+	assert.deepEqual(owner.report().harnesses[0].options.models, unsigned.options.models);
 	assert.notEqual((await docker(['container','inspect',relayName])).code,0);
 	await storeClaudeLogin(owner, token);
 	await owner.loginChanged(true); assert.equal(await status(second,two.placeholder),'200');

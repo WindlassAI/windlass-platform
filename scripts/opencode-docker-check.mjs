@@ -84,10 +84,16 @@ try {
 	await cmd(['run','-d','--pull','never','--network',uplink,'--network-alias','auth.openai.com','--network-alias','chatgpt.com','--network-alias','api.openai.com','--network-alias','api.anthropic.com','--network-alias','opencode.ai','--network-alias','api.z.ai','--name',upstream,
 		'--user',String(process.getuid()),'--cap-drop','ALL',...mounts,image,'node','/fixture/upstream.cjs']);
 	storePair(identity, privateKey, 'https://fixture.invalid');
-	const catalog = await probeHarnessOptions(owner, image, 'free');
+	await owner.loginChanged(false);
+	const catalog = owner.report().harnesses[0].options;
+	assert.ok(catalog.checkedAt > 0);
 	assert.deepEqual(catalog.modes.map(m => m.id), ['build','plan']);
 	assert.ok(catalog.models.some(m => m.id === catalog.defaultModel));
-	ok('Offline inventory discovered public models and both modes without a credential volume.');
+	const multi = await probeHarnessOptions(owner, image, ['opencode-go','openai','openrouter']);
+	assert.ok(multi.models.length > 32);
+	assert.deepEqual(multi.models.find(m => m.id === 'openai/gpt-5.4')?.efforts, ['none','low','medium','high','xhigh','default']);
+	assert.deepEqual(multi.models.find(m => m.id === 'openrouter/moonshotai/kimi-k2.5')?.efforts, []);
+	ok('Offline inventory includes public models, both modes and model-specific efforts across ' + multi.models.length + ' configured provider models.');
 	process.env.F3_PAUSE_PROBE = '1';
 	const probing = owner.loginChanged(true);
 	try {
@@ -112,6 +118,8 @@ try {
 	assert.match(transcript,/ABCD-EFGH/);
 	assert.match(transcript,/signed in/i);
 	assert.ok(!transcript.includes(token));
+	await owner.loginChanged(true);
+	assert.ok(owner.report().harnesses[0].options.models.some(m => m.id.startsWith('openai/')));
 	ok('Native terminal device challenge, approval and private credential transfer against a TLS fixture.');
 	const first = await create('first'), second = await create('second');
 	assert.equal(await cmd(['exec',first,'ls','/sys/class/net']), 'lo');
@@ -128,6 +136,8 @@ try {
 	ok('Restricted ACP streams through the relay after OAuth expiry. Process, file and Docker env scans pass. Peer bearer refused.');
 	const waiting = await beginProviderLogin(owner);
 	cli('logout','opencode');
+	await owner.loginChanged(false);
+	assert.deepEqual(owner.report().harnesses[0].options.models, catalog.models);
 	await assert.rejects(storeProvider(owner, {provider:'openai',key:token+'-key'}, waiting), /superseded/);
 	assert.equal(await owner.ownedVolume(false, owner.opencodeVolume), false);
 	assert.notEqual((await docker(['container','inspect',relayName])).code,0);

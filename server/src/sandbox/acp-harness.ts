@@ -168,8 +168,8 @@ export class AcpHarness implements Harness {
 		let phase: "setup" | "running" | "ended" = "setup";
 		let configs = optionsOf([]);
 		let modes = modeSelection(null, []);
-		const readConfigs = (raw: unknown) => {
-			configs = optionsOf(raw, acp.models ?? input.harnessModels);
+		const readConfigs = (raw: unknown, freshSession = false) => {
+			configs = optionsOf(raw, acp.models ?? input.harnessModels, freshSession);
 			acp.models = configs.list;
 		};
 		const rpc = new AcpConnection(line => run?.write(line + "\n") ?? false, {
@@ -227,7 +227,7 @@ export class AcpHarness implements Harness {
 			const accept = (previous?: string) => (opened: Fields) => {
 				result.windlassSessionId = previous ?? text(opened.sessionId);
 				modes = modeSelection(opened.modes, opened.configOptions);
-				readConfigs(opened.configOptions);
+				readConfigs(opened.configOptions, !previous);
 			};
 			if (prior) {
 				const method = object(caps.sessionCapabilities).resume != null ? "session/resume" : caps.loadSession === true ? "session/load" : null;

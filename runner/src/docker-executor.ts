@@ -56,6 +56,9 @@ async function dockerOutput(args: string[]) {
 	}
 }
 
+const INVENTORY_TTL_MS = 6 * 60 * 60_000;
+const INVENTORY_RETRY_MS = 5 * 60_000;
+
 export class Executor extends MachineDocker {
 	readonly provider: DockerSandboxes;
 	readonly network: EgressNetwork;
@@ -69,10 +72,12 @@ export class Executor extends MachineDocker {
 	private readonly claudePin?: string;
 	private readonly claudeProvider?: DockerSandboxes;
 	private credentialPathChecked = false;
-	private optionsPin?: string;
+	private nextClaudeProbe = 0;
+	private nextOpenCodeProbe = 0;
 	private claudeOptions?: HarnessOptions;
 	private signIn: "none" | "token" | "unknown" = "unknown";
 	private enforceEgress = false;
+	private inventoryStarted = false;
 	private egressError?: string;
 	private pending: Promise<unknown> = Promise.resolve();
 	private dockerHealth: Report["docker"] = { ok: false, reason: "Docker has not been checked." };
@@ -130,30 +135,35 @@ export class Executor extends MachineDocker {
 		}
 		if (!this.claudePin) return;
 		this.signIn = await claudeSignIn(this);
-		if (this.signIn === "none") this.claudeOptions = undefined;
 	}
 	async loginChanged(signedIn: boolean) {
 		await this.refreshLogin();
-		if (signedIn) {
-			await this.restoreRelay();
-			await this.refreshClaudeOptions(true);
-			await this.refreshOpenCodeOptions();
-		}
+		if (signedIn) await this.restoreRelay();
+		await this.refreshClaudeOptions(true);
+		await this.refreshOpenCodeOptions(true);
 	}
 	private async ensureSignedInRelay() {
 		await withLoginVolume(this, async () => {
 			if (await loginFileState(this) === "token") await ensureRelay(this);
 		});
 	}
-	private async refreshOpenCodeOptions() {
+	private async refreshOpenCodeOptions(force = false) {
+		const pin = this.opencodePin;
 		const login = this.opencodeLogin;
 		const generation = login?.generation ?? "signed-out";
-		if (!this.opencodePin || this.probedLogin === generation) return;
+		if (!pin || (!force && this.probedLogin === generation && Date.now() < this.nextOpenCodeProbe)) return;
 		this.probedLogin = generation;
-		const options = await probeHarnessOptions(this, this.opencodePin, login?.providers ?? login?.provider ?? "free").catch(() => undefined);
-		// A terminal command can replace the credential while Docker is probing offline.
-		await this.refreshLogin();
-		if ((this.opencodeLogin?.generation ?? "signed-out") === generation) this.opencodeOptions = options;
+		this.nextOpenCodeProbe = Date.now() + INVENTORY_RETRY_MS;
+		try {
+			await this.ensureImage(pin);
+			const options = await probeHarnessOptions(this, pin, login?.providers ?? login?.provider ?? "free");
+			// The terminal can replace the credential while the offline probe is running.
+			await this.refreshLogin();
+			if ((this.opencodeLogin?.generation ?? "signed-out") === generation) {
+				this.opencodeOptions = options;
+				this.nextOpenCodeProbe = Date.now() + INVENTORY_TTL_MS;
+			}
+		} catch { console.log("Could not read OpenCode model options."); }
 	}
 	private async restoreRelay() {
 		if (this.opencode && this.opencodeLogin && [...this.boxes.values()].some(b => b.harness === "opencode")) {
@@ -162,24 +172,16 @@ export class Executor extends MachineDocker {
 		if (this.claude && this.signIn === "token" && [...this.boxes.values()].some(b => b.harness === "claude" && !b.legacyClaude))
 			await this.ensureSignedInRelay();
 	}
-	private async refreshClaudeOptions(loginChanged = false) {
+	private async refreshClaudeOptions(force = false) {
 		const pin = this.claudePin;
-		if (!pin || this.signIn !== "token") return;
-		// The pin is immutable for this runner build. Reconnects and inventory refreshes reuse the result.
-		if (this.optionsPin === pin && !loginChanged) return;
-		this.optionsPin = pin;
-		this.claudeOptions = undefined;
-		for (let attempt = 0; attempt < 2; attempt++) {
-			try {
-				await this.ensureImage(pin);
-				this.claudeOptions = await withLoginVolume(this, async () => {
-					if (await loginFileState(this) !== "token") return undefined;
-					return probeHarnessOptions(this, pin);
-				});
-				return;
-			} catch { /* A transient adapter startup failure gets one retry. */ }
-		}
-		console.log("Could not read Claude Code model options.");
+		if (!pin || (!force && Date.now() < this.nextClaudeProbe)) return;
+		this.nextClaudeProbe = Date.now() + INVENTORY_RETRY_MS;
+		try {
+			await this.ensureImage(pin);
+			// Read the pinned adapter with a dummy token, even before login.
+			this.claudeOptions = await probeHarnessOptions(this, pin);
+			this.nextClaudeProbe = Date.now() + INVENTORY_TTL_MS;
+		} catch { console.log("Could not read Claude Code model options."); }
 	}
 	// Count, reserve and change a container under one ordering, including idle stops and prune.
 	serial<T>(work: () => Promise<T>): Promise<T> {
@@ -264,6 +266,10 @@ export class Executor extends MachineDocker {
 			} else if (this.dockerHealth.ok) await dockerOutput(["version", "--format", "{{.Server.Version}}"]);
 			else await this.discover();
 			await this.refreshLogin();
+			if (this.inventoryStarted) {
+				await this.refreshClaudeOptions();
+				await this.refreshOpenCodeOptions();
+			}
 		} catch (error) {
 			const reason = error instanceof RunnerError ? error.message : "Docker did not provide a diagnostic.";
 			const category = /permission denied|EACCES/i.test(reason) ? "permission denied"
@@ -288,13 +294,12 @@ export class Executor extends MachineDocker {
 				await docker(["rm", "-f", id]);
 			}
 			await this.ensureImage();
-			if (this.claudePin) await this.ensureImage(this.claudePin).catch(() => {}); // create explains a missing harness pin.
 			await this.serial(async () => {
 				if (signal.aborted) return;
 				if (this.signIn === "unknown") await this.refreshLogin();
 				await this.restoreRelay();
+				this.inventoryStarted = true;
 				await this.refreshClaudeOptions();
-				if (this.opencodePin) await this.ensureImage(this.opencodePin);
 				await this.refreshOpenCodeOptions();
 				// Keep the result of a real sandbox create after this initial bubblewrap check.
 				const first = this.freeDiskBytes === null;
@@ -315,7 +320,7 @@ export class Executor extends MachineDocker {
 		if (this.claudePin) harnesses.push({
 			id: "claude", adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
 			image: this.claudePin.split("@").at(-1)!, signIn: this.signIn,
-			...(this.signIn === "token" && this.claudeOptions && { options: this.claudeOptions }),
+			...(this.claudeOptions && { options: this.claudeOptions }),
 		});
 		if (this.opencodePin) harnesses.push({
 			id: "opencode", adapter: "OpenCode 1.19.6", image: this.opencodePin.split("@").at(-1)!,

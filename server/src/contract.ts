@@ -265,7 +265,7 @@ export interface SessionMode {
 	description: string | null;
 }
 
-/** A machine's prompt-free ACP options. An unselected model has no advertised efforts until observed. */
+/** A machine's prompt-free ACP options. Efforts are the choices available for each model. */
 export interface HarnessOptions {
 	models: ModelChoice[];
 	defaultModel: string;

@@ -238,13 +238,13 @@ describe("the start composer's agent picker", () => {
 	 * signed out, build-box not at all) and opens the new agent's page, on no repository: the agent
 	 * then starts as the user's newest did, on this platform in Windlass's sandbox.
 	 */
-	async function open(): Promise<void> {
+	async function open(machine: "full" | "fresh" = "full"): Promise<void> {
 		created = [];
 		history.replaceState(null, "", "/new");
 		host = document.createElement("div");
 		document.body.append(host);
 		root = createRoot(host);
-		client = createMockClient({ pace: 0, origin: "http://localhost:5173", machine: "full" });
+		client = createMockClient({ pace: 0, origin: "http://localhost:5173", machine });
 		saveAuth("mock", auth);
 		const user = client.user.bind(client);
 		(client as { user: (auth: AuthResult) => UserApi }).user = (who) => {
@@ -336,10 +336,14 @@ describe("the start composer's agent picker", () => {
 		expect(text()).toContain("Claude Code: signed in");
 	}, 30_000);
 
-	it("launches OpenCode with its reported models, modes and terminal command", async () => {
-		await open();
+	it("offers both reported catalogs on a fresh machine and launches OpenCode in its selected mode", async () => {
+		await open("fresh");
+		expect((await client.user(auth).machines())[0]).toMatchObject({ agents: 0, sandboxes: [] });
 		place("m_workshop");
 		agents();
+		const catalog = (id: string) => Array.from(pop()!.querySelectorAll(`[data-value^="${id}:"] .ui-item-label`), row => row.textContent);
+		expect(catalog("claude")).toEqual(["Default (recommended)", "Opus", "Haiku"]);
+		expect(catalog("opencode")).toEqual(["OpenAI/GPT-5.4", "OpenAI/GPT-5.4 mini"]);
 		showCommands();
 		expect(text()).toContain("docker exec -it windlass-runner windlass-runner login opencode");
 		agent("opencode");

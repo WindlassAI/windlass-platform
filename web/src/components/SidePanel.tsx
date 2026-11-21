@@ -34,6 +34,7 @@ import { AgentGlyph } from "./ui";
 
 function Facts({ summary, profile, view }: { summary: SessionSummary; profile: SandboxProfile; view: SessionView }) {
 	const id = view.windlassSessionId;
+	const [showOptions, setShowOptions] = useState(false);
 	const harness = acpHarnessName(summary);
 	const mode = currentMode(summary, profile);
 	return (
@@ -85,6 +86,18 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 				<dt>created</dt>
 				<dd>{absoluteTime(summary.createdAt)}</dd>
 			</dl>
+			{harness && summary.harnessModels && (
+				<details className="panel-more" onToggle={event => setShowOptions(event.currentTarget.open)}>
+					<summary><ChevronIcon size={12} className="panel-more-chevron" />Available models and modes</summary>
+					{showOptions && <div className="panel-catalog">
+						<strong>Models</strong>
+						<ul aria-label="Available models">{summary.harnessModels.models.map(model =>
+							<li key={model.id}>{model.name || model.id}{model.efforts.length > 0 && <small> · {model.efforts.join(", ")}</small>}</li>)}</ul>
+						{summary.availableModes.length > 0 && <><strong>Modes</strong><ul aria-label="Available modes">{summary.availableModes.map(mode =>
+							<li key={mode.id} title={mode.description ?? undefined}>{mode.name}</li>)}</ul></>}
+					</div>}
+				</details>
+			)}
 		</section>
 	);
 }

@@ -987,15 +987,14 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
 		const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
-		const modes = initialSessionModes(chosen.id, harness, !!item);
+		const options = offered?.options;
+		const modes = initialSessionModes(chosen.id, harness, !!item, options?.modes);
 		if (input.mode !== undefined) {
 			if (typeof input.mode !== "string" || !input.mode.trim() || (harness === "windlass" && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
 			modes.mode = input.mode;
 		}
-		const options = offered?.options;
 		const models = harness !== "windlass" ? initialHarnessModels(options) : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options ? "bad_input" : undefined);
-		if (options) modes.availableModes = options.modes;
 
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
 		if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);

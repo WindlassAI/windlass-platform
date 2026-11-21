@@ -39,7 +39,7 @@ import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { HARNESS_NAMES, signInWords } from "../lib/acp";
 import { count, localTime, sandboxTime } from "../lib/format";
-import { effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault } from "../lib/models";
+import { effortChoices, effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault } from "../lib/models";
 import { OPEN_MODES, launchModes } from "../lib/modes";
 import { itemOf, lastUsed, layerChoices, repositoryName, startingChoices, startingModel, startingProfile } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
@@ -734,13 +734,12 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const modelRows = (harnessId: HarnessId, list: typeof modelList): MenuItem[] => {
 		if (list === null || list.models.length === 0) return [];
 		const isOther = harnessId !== "windlass";
-		return list.models.map(({ id }) => {
+		return list.models.map(({ id, name: reportedName, efforts: rowEfforts }) => {
 			const isDefault = id === list.defaultModel;
-			const name = isOther ? modelName(list, id) : id;
+			const name = isOther && reportedName ? reportedName : id;
 			const here = harness === harnessId;
 			// Another harness's reported default is its "": chosen, nothing is sent.
 			const checked = here && (isOther && model === "" ? isDefault : model === id);
-			const rowEfforts = effortsOf(list, id);
 			const pick = (to: string | null) => {
 				setHarness(harnessId);
 				setModel(id);
@@ -763,11 +762,11 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 									{
 										id: "efforts",
 										label: `Effort for ${name}`,
-										items: ["", ...rowEfforts].map((level, index) => ({
+										items: effortChoices(rowEfforts).map((level, index) => ({
 											id: level || "default",
 											label: level || "default",
 											icon: <EffortBars level={index} of={rowEfforts.length} />,
-											checked: checked && effort === level,
+											checked: checked && (effort || "default") === (level || "default"),
 											onSelect: () => pick(level),
 										})),
 									},

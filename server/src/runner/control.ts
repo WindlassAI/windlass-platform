@@ -5,7 +5,7 @@
  * nothing of the server's: no RivetKit, no configuration, only types.
  *
  * The control socket (`machine.get([uid, machineId]).webSocket("control")`). Every WebSocket message is
- * one JSON frame of at most MAX_CONTROL_FRAME_BYTES. Nothing is numbered or resent: a new socket starts
+ * one bounded JSON frame. Authenticated reports have extra space for harness inventories. Nothing is numbered or resent: a new socket starts
  * over with a new challenge, and what the actor still wants done (a removal) it asks again.
  *
  *   challenge  actor → runner   first frame on every socket: a nonce for the runner to sign
@@ -38,6 +38,9 @@ import { type Assert, type Of, type Same, boolean, count, either, integer, is, j
 /** The oldest runner release this server serves: raise it when the server stops reading what older runners send. */
 export const MIN_RUNNER_VERSION = "0.1.0";
 export const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
+// Only a paired runner's inventory report needs room for full provider catalogs.
+const MAX_HARNESS_OPTIONS_BYTES = 768 * 1024;
+const MAX_REPORT_BYTES = MAX_CONTROL_FRAME_BYTES + 2 * MAX_HARNESS_OPTIONS_BYTES;
 /** A slow heartbeat: it costs no write on either side. */
 export const CONTROL_HEARTBEAT_MS = 30_000;
 export const CONTROL_DEAD_MS = 90_000;
@@ -140,16 +143,16 @@ export type ServerFrame = Of<typeof serverFrame>;
  * said), the release (else "outdated", recorded for the page), then `secondHello`.
  */
 const hello = object({ kind: oneOf("hello"), runnerVersion: version, epoch, time, signature, maxTurns: optional(positiveLimit) });
-const modelChoice = object({ id: line(128), name: nullable(line(256)), efforts: list(line(64), 16) });
+const modelChoice = object({ id: line(512), name: nullable(line(512)), efforts: list(line(64), 16) });
 const optionsShape = object({
-	models: list(modelChoice, 32), defaultModel: line(128), checkedAt: time,
+	models: list(modelChoice, 16_384), defaultModel: line(512), checkedAt: time,
 	modes: list(object({ id: line(64), name: line(128), description: nullable(line(512)) }), 16),
 });
 /** Leave room for the sandbox inventory in the same control frame. */
 export const validHarnessOptions = is<HarnessOptions>(v => optionsShape(v)
 	&& v.models.some(model => model.id === v.defaultModel)
 	&& new Set(v.models.map(m => m.id)).size === v.models.length
-	&& Buffer.byteLength(JSON.stringify(v)) <= 16 * 1024);
+	&& Buffer.byteLength(JSON.stringify(v)) <= MAX_HARNESS_OPTIONS_BYTES);
 const harnesses = list(object({ id: oneOf("claude", "opencode"), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) }), 4);
 const profileList = list(machineProfile, MACHINE_PROFILES.length);
 export const validAllowedProfiles = is<MachineProfile[]>(v => profileList(v) && v.includes("docker-hardened") && new Set(v).size === v.length);
@@ -184,14 +187,15 @@ export type Hello = Of<typeof hello>;
 export type Report = Of<typeof report>;
 export type RunnerFrame = Of<typeof runnerFrame>;
 
-function frameText(data: unknown): unknown {
-	if (typeof data !== "string" || data.length > MAX_CONTROL_FRAME_BYTES || Buffer.byteLength(data) > MAX_CONTROL_FRAME_BYTES) return undefined;
+function frameText(data: unknown, maxBytes = MAX_CONTROL_FRAME_BYTES): unknown {
+	if (typeof data !== "string" || data.length > maxBytes || Buffer.byteLength(data) > maxBytes) return undefined;
 	return json(data);
 }
 
 /** For the actor: null for anything a runner sent that is not a frame of this module. */
-export function parseRunnerFrame(data: unknown): RunnerFrame | null {
-	const v = frameText(data);
+export function parseRunnerFrame(data: unknown, allowLargeReport = true): RunnerFrame | null {
+	const v = frameText(data, allowLargeReport ? MAX_REPORT_BYTES : MAX_CONTROL_FRAME_BYTES);
+	if (plain(v) && v.kind !== "report" && typeof data === "string" && Buffer.byteLength(data) > MAX_CONTROL_FRAME_BYTES) return null;
 	return runnerFrame(v) ? v : null;
 }
 

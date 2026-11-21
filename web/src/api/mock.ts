@@ -197,7 +197,7 @@ export type MockUsageState = "plenty" | "low" | "used" | "full";
  * a machine whose runner runs in a container and reported the container's id for its host name). In the add dialog any
  * well-formed code is found, except ZZZZ-ZZZZ.
  */
-export const MOCK_MACHINE_STATES = ["none", "online", "claude-signed-out", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed"] as const;
+export const MOCK_MACHINE_STATES = ["none", "online", "fresh", "claude-signed-out", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed"] as const;
 export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
 
 /**
@@ -229,7 +229,7 @@ const MOCK_CLAUDE_MODELS: ModelList = {
 
 const MOCK_OPENCODE_MODELS: ModelList = {
 	source: "harness", defaultModel: "openai/gpt-5.4", fetchedAt: null,
-	models: [{ id: "openai/gpt-5.4", name: "OpenAI/GPT-5.4", efforts: [] }, { id: "openai/gpt-5.4-mini", name: "OpenAI/GPT-5.4 mini", efforts: [] }],
+	models: [{ id: "openai/gpt-5.4", name: "OpenAI/GPT-5.4", efforts: ["low", "medium", "high", "xhigh", "default"] }, { id: "openai/gpt-5.4-mini", name: "OpenAI/GPT-5.4 mini", efforts: ["low", "medium", "high", "default"] }],
 };
 const MOCK_OPENCODE_MODES = [
 	{ id: "build", name: "build", description: "The default agent. Executes tools based on configured permissions." },
@@ -2952,7 +2952,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	const machineState: MockMachineState = options.machine ?? "online";
 	const machineSession: MockMachineSession = options.machineSession ?? "answering";
 	// The agent on "nas" is seeded where "nas" is listed as its runner reported it, and, when its machine was removed, wherever machines are offered.
-	const machineSessionSeeded = machineSession === "removed" ? machineState !== "off" : !["none", "unpublished", "off", "pairing"].includes(machineState);
+	const machineSessionSeeded = machineState !== "fresh" && (machineSession === "removed" ? machineState !== "off" : !["none", "unpublished", "off", "pairing"].includes(machineState));
 	const machineSets = new Map<string, MockMachines>();
 
 	function machinesOf(auth: AuthResult): MockMachines {
@@ -3056,6 +3056,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** The machines a state starts with. Their sandboxes name the seeded agents; titles are looked up when the list is read. */
 	function seedMachines(state: MockMachineState): MachineSummary[] {
 		const at = realNow();
+		const claude = { ...MOCK_CLAUDE, options: { models: MOCK_CLAUDE_MODELS.models, defaultModel: MOCK_CLAUDE_MODELS.defaultModel, modes: [...CLAUDE_LAUNCH_MODES], checkedAt: at } };
+		const externalHarnesses: MachineSummary["harnesses"] = [{ ...claude, signIn: "none" }, { ...MOCK_CLAUDE, id: "opencode", adapter: "OpenCode 1.19.6", signIn: "token", options: { models: MOCK_OPENCODE_MODELS.models, defaultModel: MOCK_OPENCODE_MODELS.defaultModel, modes: MOCK_OPENCODE_MODES, checkedAt: at } }];
 		const nas = (patch: Partial<MachineSummary>): MachineSummary => ({
 			machineId: "m_nas",
 			name: "nas",
@@ -3074,7 +3076,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			profiles: mockMachineProfiles(patch.name ?? "nas"),
 			sendSecrets: true, whenToUse: "Build and test", tags: ["big-build"], host: { cpus: 8, sandboxCpus: 4, memoryBytes: 16 * 2**30, memoryFreeBytes: 8 * 2**30, load1: 1 }, turns: { running: 0, queued: 0, max: 2 },
 			warnings: [],
-			harnesses: [{ ...MOCK_CLAUDE, options: { models: MOCK_CLAUDE_MODELS.models, defaultModel: MOCK_CLAUDE_MODELS.defaultModel, modes: [...CLAUDE_LAUNCH_MODES], checkedAt: at } }],
+			harnesses: [claude],
 			...patch,
 		});
 		switch (state) {
@@ -3089,8 +3091,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				return [nas({
 					...(machineSession === "offline" && { status: "offline", since: at - 12 * MINUTE }),
 				})];
+			case "fresh":
+				return [nas({ machineId: "m_workshop", name: "workshop", agents: 0, sandboxes: [], harnesses: externalHarnesses })];
 			case "claude-signed-out":
-				return [nas({ harnesses: [{ ...MOCK_CLAUDE, signIn: "none" }] })];
+				return [nas({ harnesses: [{ ...claude, signIn: "none" }] })];
 			case "pairing":
 				return [nas({ status: "waiting", since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [], harnesses: undefined })];
 			case "outdated":
@@ -3117,7 +3121,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						freeDiskBytes: 3.2e9,
 						sendSecrets: false,
 						// Its runner was started with --harness claude, and nobody signed Claude Code in there.
-						harnesses: [{ ...MOCK_CLAUDE, signIn: "none" }, { ...MOCK_CLAUDE, id: "opencode", adapter: "OpenCode 1.19.6", signIn: "token", options: { models: MOCK_OPENCODE_MODELS.models, defaultModel: MOCK_OPENCODE_MODELS.defaultModel, modes: MOCK_OPENCODE_MODES, checkedAt: at } }],
+						harnesses: externalHarnesses,
 					}),
 					// Its owner started its runner with --max-running 2 --max-sandboxes 6; the others have no limit.
 					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9, maxRunning: 2, maxSandboxes: 6, harnesses: undefined }),
@@ -3270,9 +3274,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					if (harness !== "windlass" && options && !models.models.some(m => m.id === input.model)) throw new PlatformError("user", "Choose a model offered by this machine.", { reason: "bad_input" });
 					checkModel(models, input.model);
 				}
-				const modes = initialSessionModes(profile.id, harness);
-				if (options) modes.availableModes = options.modes;
-				else if (harness === "claude") modes.availableModes = [...CLAUDE_LAUNCH_MODES];
+				const modes = initialSessionModes(profile.id, harness, false, options?.modes ?? (harness === "claude" ? [...CLAUDE_LAUNCH_MODES] : undefined));
 				if (input.mode !== undefined) {
 					if (!modes.availableModes.some(m => m.id === input.mode)) throw new PlatformError("user", "Choose a mode offered by this agent.", { reason: "bad_input" });
 					modes.mode = input.mode;

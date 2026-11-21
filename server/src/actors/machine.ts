@@ -242,7 +242,7 @@ export const machine = actor({
 		raw.addEventListener("close", gone);
 		raw.addEventListener("message", ({ data }) => {
 			if (closed) return;
-			const frame = parseRunnerFrame(data);
+			const frame = parseRunnerFrame(data, c.vars.live?.ws === ws);
 			if (!frame || ++queued > 128 || (!hello && frame.kind !== "hello") || (hello && frame.kind === "hello")) {
 				reject(ws, refuse("bad-frame")); return;
 			}
