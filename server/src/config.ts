@@ -12,6 +12,8 @@
  *                              the sandbox layer (default docker). docker: containers on this machine, for
  *                              one server. e2b: E2B microVMs, which every server of a deployment reaches
  *                              (the variables below). fake keeps everything in memory
+ *   WLP_SECRET_KEYS            ordered signing roots (id:secret,id:secret), overriding WLP_SECRET
+ *   WLP_SIGNIN_KEYS            ordered sealing roots, overriding WLP_SIGNIN_KEY
  *   WLP_SECRET                 signs tokens; when unset one is generated and kept in .data/secret.
  *                              Required with a remote engine: every server must sign with the same one
  *   WLP_SIGNIN_KEY             what the key that encrypts ChatGPT sign-ins in actor storage is derived from
@@ -272,7 +274,7 @@ export interface Config {
 	sandbox: SandboxMode;
 	allowDockerHosted: boolean;
 	signingKeys: Keyring;
-	/** False when a remote engine is configured and WLP_SECRET is not: the server refuses to start (startup.ts). */
+	/** False when a remote engine is configured without a shared signing key: the server refuses to start (startup.ts). */
 	secretConfigured: boolean;
 	/** The settings that are set to something that cannot be used, each in words that do not repeat its value: the server refuses to start (startup.ts). */
 	unusable: string[];

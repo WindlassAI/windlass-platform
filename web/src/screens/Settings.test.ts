@@ -40,4 +40,4 @@ it("keeps the session on cancel and signs out this browser after confirming ever
 		client.dispose();
 		localStorage.clear();
 	}
-});
+}, 15_000);

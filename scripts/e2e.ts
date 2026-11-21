@@ -54,6 +54,8 @@ const API = process.env.WLP_E2E_API ?? `${new URL(ENDPOINT).protocol}//${new URL
 const MODE = (process.env.WLP_SANDBOX ?? "fake") as "fake" | "docker";
 const OWN_SERVER = endpointArg === undefined;
 const FAKE = MODE === "fake";
+const identityOnly = args.includes("--identity-only");
+if (identityOnly && (!OWN_SERVER || !FAKE)) throw new Error("--identity-only requires a local fake server");
 const sandboxImage = OWN_SERVER && MODE === "docker" ? await imageId() : undefined;
 /** How long one turn may take. A Docker turn creates a container and runs real commands. */
 const TURN_MS = FAKE ? 30_000 : 240_000;
@@ -4369,9 +4371,9 @@ try {
 			}
 			await server.stop();
 		}
-		if (!args.includes("--identity-only")) await server.start();
+		if (!identityOnly) await server.start();
 	}
-	if (!args.includes("--identity-only")) await main(server);
+	if (!identityOnly) await main(server);
 } catch (error) {
 	crashed = true;
 	console.log(`FAIL  the run stopped early  -- ${describe(error)}`);

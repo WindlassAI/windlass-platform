@@ -5,7 +5,7 @@ import type { Registry } from "./registry.js";
 import { issueServiceToken } from "./tokens.js";
 
 const [uid, extra] = process.argv.slice(2);
-if (!uid || extra || !/^[A-Za-z0-9_-]{1,64}$/.test(uid)) {
+if (!uid || extra || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(uid)) {
 	console.error("Usage: node --import tsx src/revoke-user-tokens.ts <uid>");
 	process.exitCode = 2;
 } else {
