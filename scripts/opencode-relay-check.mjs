@@ -142,3 +142,27 @@ test('rotating the runner-owned ChatGPT credential preserves other provider keys
 	assert.equal((await p.target('/opencode-go/chat/completions',{})).headers.authorization,'Bearer go-key');
 	assert.equal(store.records.chatgpt.refresh,'rotated');
 });
+
+test('catalog API keys select the provider-specific inference host, base path and authentication header', async () => {
+	for (const [id,base,suffix,header] of [
+		['openrouter','https://openrouter.ai/api/v1','/chat/completions','authorization'],
+		['google','https://generativelanguage.googleapis.com/v1beta','/models/gemini-fixture:streamGenerateContent?alt=sse','x-goog-api-key'],
+		['zai','https://api.z.ai/api/paas/v4','/chat/completions','authorization'],
+		['zhipuai','https://open.bigmodel.cn/api/paas/v4','/chat/completions','authorization'],
+		['zhipuai-coding-plan','https://open.bigmodel.cn/api/coding/paas/v4','/chat/completions','authorization'],
+		['moonshotai','https://api.moonshot.ai/v1','/chat/completions','authorization'],
+		['kimi-code-plan-global','https://api.kimi.ai/coding/v1','/chat/completions','authorization'],
+		['kimi-code-plan-cn','https://api.kimi.com/coding/v1','/chat/completions','authorization'],
+		['minimax','https://api.minimax.io/anthropic/v1','/messages','x-api-key'],
+		['deepseek','https://api.deepseek.com','/chat/completions','authorization'],
+		['groq','https://api.groq.com/openai/v1','/chat/completions','authorization'],
+	]) {
+		const provider = providerFor(id,'one',{load:async () => ({generation:'one',provider:id,key:'fixture-key'})});
+		const route = '/'+id+suffix;
+		const bearer = header === 'authorization';
+		assert.equal(provider.bearer({[header]:bearer ? 'Bearer placeholder' : 'placeholder'},route),'Bearer placeholder',id);
+		const target = await provider.target(route,{});
+		assert.equal('https://'+target.hostname+target.path,base+suffix,id);
+		assert.equal(target.headers[header],bearer ? 'Bearer fixture-key' : 'fixture-key',id);
+	}
+});
