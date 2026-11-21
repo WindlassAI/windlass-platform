@@ -41,7 +41,7 @@ The App has no permission to change workflows. Ask the agent to undo that change
 **"GitHub did not let the GitHub App push to …. Its installation on … needs the permission "Contents: read and write"; if it has it, the repository's own rules keep the app out."**\
 Check the App's permissions on that account, and the repository's rules.
 
-**"Nothing was pushed: … would have gone to GitHub with the value of … in it."**\
+**"Nothing was pushed: … would have gone to GitHub with the value of … in it. The platform's own commit was undone, so the change is in the workspace as it was. Take the value out (and out of any commit that has it), then push again."**\
 A saved secret's value is in the changes. Ask the agent to take it out, then push again.
 
 ## Limits
@@ -87,8 +87,8 @@ You can check 5 codes in 10 minutes.
 **"An account can connect up to 3 machines."**\
 Remove a machine you no longer use.
 
-**"This machine's owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it."**\
-See [Allowed profiles](/docs/runner#allowed-profiles), or choose **Docker, hardened**.
+**"This machine’s owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it."**\
+See [Allowed profiles](/docs/runner#allowed-profiles), or choose **Hardened Docker on your machine "…"**.
 
 **"This machine has reached its own limit on running sandboxes, set by --max-running."**\
 The limit is set on the machine. Start the runner with a higher `--max-running`, or without it.

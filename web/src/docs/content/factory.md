@@ -133,4 +133,4 @@ Limits make items wait. They never refuse them. A waiting item says what it wait
 | Items filed from GitHub per day | 20 |
 | Drafts from GitHub waiting | 20 |
 
-When an item reaches its own budget of tokens, turns, working time or hosted sandbox time, it stops and asks you, for example "This item has used 6,000,000 of its 6,000,000 tokens."
+When an item reaches its own budget of tokens, turns, working time or hosted sandbox time, it stops and asks you, for example "This item has used 6M of its 6M tokens."

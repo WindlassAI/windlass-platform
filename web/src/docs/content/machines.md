@@ -67,8 +67,8 @@ Each machine has the switch **Send saved secrets to this machine**. It is on for
 
 When you start an agent, choose the machine under **on**. Each machine offers two Docker profiles:
 
-- **Docker, hardened**, always.
-- **Docker + Windlass sandbox**, only if you allow it when you start the runner, and only where Windlass's sandbox can start in a container there. See [Allowed profiles](/docs/runner#allowed-profiles).
+- **Hardened Docker on your machine "…"**, always.
+- **Docker + Windlass sandbox on your machine "…"**, only if you allow it when you start the runner, and only where Windlass's sandbox can start in a container there. See [Allowed profiles](/docs/runner#allowed-profiles).
 
 ### Turn limit and queueing
 
@@ -80,7 +80,7 @@ Each sandbox gets 1536 MiB of memory, at most 512 processes and no Linux capabil
 
 ## Claude Code on your machine
 
-Claude Code runs only on a machine whose runner was started with `--harness claude`, and only in the **Docker, hardened** profile. The runner must be a build that includes the Claude Code image. If it does not, it says "Use --harness claude with a runner built with the pinned Claude Code image."
+Claude Code runs only on a machine whose runner was started with `--harness claude`, and only in the hardened profile, **Hardened Docker on your machine "…"**. The runner must be a build that includes the Claude Code image. If it does not, it says "Use --harness claude with a runner built with the pinned Claude Code image."
 
 To add the flag, put `--harness claude` after the runner image in the command above.
 

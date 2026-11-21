@@ -18,7 +18,7 @@ Agents call the model through your ChatGPT account, so you sign in with it. The 
 
 If the time runs out, the page says "This attempt has run out of time." Choose **Start over** for a new attempt.
 
-> **Note** The address you paste must start with `http://127.0.0.1:1455/auth/callback?code=`. If it does not, the platform says "That is not the address the browser ended on."
+> **Note** The address you paste must start with `http://127.0.0.1:1455/auth/callback`. If it does not, the page says so and **Finish signing in** stays off. An address that is still not the page the browser ended on is refused with "That is not the address the browser ended on."
 
 ### Your ChatGPT connection
 
@@ -50,7 +50,7 @@ When you are back, the menu says **GitHub connected** and lists the accounts the
 
 ### What the GitHub App may do
 
-The platform acts as the App's installation. It keeps no GitHub token of yours. The App asks for these permissions, and nothing else:
+The platform acts as the App's installation. It keeps no GitHub token of yours. The App asks for these permissions:
 
 | Permission | Access | Why |
 | --- | --- | --- |
@@ -59,9 +59,10 @@ The platform acts as the App's installation. It keeps no GitHub token of yours. 
 | Checks | Read-only | Read CI on a work item's pull request. |
 | Commit statuses | Read-only | Read CI on a work item's pull request. |
 | Actions | Read-only | Read CI on a work item's pull request. |
+| Issues | Read and write | Read an issue filed as a work item, and comment on it. |
 | Metadata | Read-only | GitHub adds it to every App. |
 
-The three read-only CI permissions are used only by work items. Everything else works without them.
+The Issues permission and the three read-only CI permissions are used only by work items. Everything else works without them.
 
 Each token the platform makes for a clone or a push covers one repository and lasts an hour at most. It is given only to that one git command, and it is revoked when the command ends. The agent's sandbox is never given your GitHub access.
 

@@ -115,8 +115,8 @@ These are the platform's defaults. Whoever runs the platform can change them.
 | Note with an answer | 2,000 characters |
 | Clone of a repository | 3 minutes |
 | Setup command | 10 minutes |
-| Pull request title | 120 characters |
-| Pull request description or commit message | 4,000 characters |
+| Pull request title or commit message | 120 characters |
+| Pull request description | 4,000 characters |
 | Machines per account | 3 |
 | MCP servers per account | 20 |
 | Account secrets | 50 |

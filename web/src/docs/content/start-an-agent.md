@@ -28,7 +28,7 @@ A repository marked **read only** is one you can read on GitHub but not push to.
 
 ## Choose where it runs
 
-The **on** chip appears once you have paired one of your machines. It is **this platform** until you choose a machine.
+The **on** chip appears once you have paired one of your machines. It starts on the machine your last agent ran on, if that machine can still be used, and on **this platform** otherwise.
 
 - **This platform**: a sandbox the platform makes and controls. It counts against your daily sandbox time.
 - **A machine of yours**: the runner on that machine makes the sandbox. The platform's limits do not apply.
@@ -67,8 +67,8 @@ Windlass always has two modes. **Ask** is one. The other depends on the sandbox,
 | Mode | What it does | Offered in |
 | --- | --- | --- |
 | **Ask** | Ask before writes, commands, network access and MCP calls. | Every sandbox |
-| **Auto** | Use Windlass's command sandbox and ask when needed. | Docker + Windlass sandbox |
-| **Full** | Allow commands to run directly in the sandbox machine. | Docker, hardened |
+| **Auto** | Use Windlass’s command sandbox and ask when needed. | Docker + Windlass sandbox, E2B + Windlass sandbox, E2B |
+| **Full** | Allow commands to run directly in the sandbox machine. | Docker, hardened; E2B, microVM only |
 
 ### Claude Code modes
 
@@ -90,7 +90,7 @@ The **sandbox** chip sets where the agent's files live and its commands run. Eac
 
 - whether it runs what the sandbox contains and refuses the rest, or runs every call without asking;
 - whether commands can reach the network;
-- whether your sign-in can be read there. Your ChatGPT sign-in is never in the sandbox. With Claude Code, commands in the container can read your Claude login token.
+- whether commands can read the session's access token. Your ChatGPT sign-in itself is never in the sandbox. With Claude Code, commands in the container can read your Claude login token.
 
 The sandboxes on offer depend on the platform and on the machine. Read [Sandboxes and security](/docs/security) for what each one protects. A sandbox that cannot be used is listed under **Listed, but not usable on this deployment**, with the reason.
 
@@ -103,7 +103,7 @@ The platform takes each choice from the first of these that has one:
 1. what you choose when you launch the agent;
 2. the repository's default, in its settings;
 3. your account's default, in **Settings**;
-4. what your newest agent was launched with;
+4. what your newest agent on that repository was launched with, or your newest agent overall if none is on it;
 5. the platform's own default.
 
 See [Settings, usage and limits](/docs/settings) to save defaults.

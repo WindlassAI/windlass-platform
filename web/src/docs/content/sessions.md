@@ -34,7 +34,7 @@ When the agent is **idle**, type in **Tell the agent what to do** and press <kbd
 
 A finished session is not closed. Send another prompt to go on from where it stopped. There is no separate resume step.
 
-You can change the model, effort and mode before each prompt. A change made during a turn applies from the next prompt; the running turn keeps what it started with.
+You can change the model, effort and mode before each prompt. While a turn runs, only the mode can be changed, and the change applies from the next prompt.
 
 ## Steer a running agent
 

@@ -96,7 +96,7 @@ A new pairing allows only `docker-hardened`. To allow Windlass's own command san
 
 `docker-hardened` is always allowed, even if you leave it out. The runner saves your choice for this pairing, and uses it again when it restarts with no `--allow-profile`. To withdraw the Windlass profile, start it with `--allow-profile docker-hardened` alone. Its existing workspaces stay on disk.
 
-If an agent asks for a profile the machine does not allow, it is refused: "This machine's owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it."
+If an agent asks for a profile the machine does not allow, it is refused: "This machine’s owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it."
 
 See [The two Docker profiles](/docs/security#the-two-docker-profiles) for what each one protects.
 
@@ -116,7 +116,7 @@ Pass a variable with `-e`, for example `-e WLP_RUNNER_CPUS=2`, before the image 
 | "The pairing code expired, so restart the container or run `windlass-runner pair` to get a new code." | Restart the container, or run `pair`, and enter the new code. |
 | "The platform does not know this machine's key. Run `windlass-runner pair` to add the machine again." | The machine was removed, or its key was lost. Pair it again. |
 | "Another runner with this machine's key is connected. If you copied the key, stop the other runner; if you did not, remove the machine on the Machines page." | Stop the other runner, or remove the machine. |
-| "This runner is … ; the platform needs … or later. Update it with the command on the Machines page." | [Update the runner](/docs/machines#update-the-runner). |
+| "This runner is …; the platform needs … or later. Update it with the command on the Machines page." | [Update the runner](/docs/machines#update-the-runner). |
 | "Another runner holds the state lock. Waiting to retry." | Two runners share one volume. Stop one. |
 | "Docker needs at least 5 GB free to create a sandbox." | Free disk space on the machine. |
 
