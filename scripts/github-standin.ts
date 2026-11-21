@@ -345,9 +345,9 @@ export class GithubStandin {
 		}
 	}
 
-	featureCommit(repository: StandinRepository, parent: string, message: string, date: string): string {
+	featureCommit(repository: StandinRepository, parent: string, message: string, date: string, identity: { name: string; email: string }): string {
 		const tree = git(["show","-s","--format=%T",parent], repository.path);
-		const author = { GIT_AUTHOR_NAME:"Windlass", GIT_AUTHOR_EMAIL:"windlass@users.noreply.github.com", GIT_AUTHOR_DATE:date, GIT_COMMITTER_NAME:"Windlass", GIT_COMMITTER_EMAIL:"windlass@users.noreply.github.com", GIT_COMMITTER_DATE:date };
+		const author = { GIT_AUTHOR_NAME:identity.name, GIT_AUTHOR_EMAIL:identity.email, GIT_AUTHOR_DATE:date, GIT_COMMITTER_NAME:identity.name, GIT_COMMITTER_EMAIL:identity.email, GIT_COMMITTER_DATE:date };
 		return execFileSync("git",["commit-tree",tree,"-p",parent,"-m",message], { cwd:repository.path, encoding:"utf8", env:{...process.env,...author} }).trim();
 	}
 
@@ -770,14 +770,14 @@ export class GithubStandin {
 
 			if (rest.startsWith("/git/")) {
 				if (!this.allows(token,repository,"contents",method === "GET" ? "read" : "write")) return denied();
-				const fields = body as {ref:string; sha:string; tree:string; parents:string[]; message:string; author:{date:string}; force:boolean};
+				const fields = body as {ref:string; sha:string; tree:string; parents:string[]; message:string; author:{date:string; name:string; email:string}; force:boolean};
 				try {
 					if (rest.startsWith("/git/ref/heads/") && method === "GET") {
 						const sha = this.branchHead(repository,decodeURIComponent(rest.slice("/git/ref/heads/".length)));
 						return answer(sha ? 200 : 404,{object:{sha}});
 					}
 					if (rest.startsWith("/git/commits/") && method === "GET") return answer(200,{tree:{sha:git(["show","-s","--format=%T",rest.slice("/git/commits/".length)],repository.path)}});
-					if (rest === "/git/commits" && method === "POST") return answer(201,{sha:this.featureCommit(repository,fields.parents[0],fields.message,fields.author.date)});
+					if (rest === "/git/commits" && method === "POST") return answer(201,{sha:this.featureCommit(repository,fields.parents[0],fields.message,fields.author.date,fields.author)});
 					if (rest === "/git/refs" && method === "POST") {
 						git(["update-ref",fields.ref,fields.sha,"0".repeat(40)],repository.path);
 						return answer(201,{object:{sha:fields.sha}});

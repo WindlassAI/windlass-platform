@@ -30,6 +30,7 @@
 
 import { GithubProblem } from "../github/repos.js";
 import { PlanError } from "../factory/feature-plan.js";
+import { authorOf } from "../github/publish.js";
 import { openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
 import type { IssueBinding } from "../factory/intake.js";
@@ -496,7 +497,7 @@ async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read")
 	const resolved = await resolveBoundRepository(app, connection, meta.repository.id, installationId, access);
 	const { owner, name } = resolved.repository;
 	const pull = (number: number) => app.withToken(resolved.installation.id, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, owner, name, number));
-	return { app, installationId: resolved.installation.id, owner, name, pull, login: connection.user.login };
+	return { app, installationId: resolved.installation.id, owner, name, pull, author: authorOf(connection), login: connection.user.login };
 }
 
 function repositoryDirectory(c: Ctx, meta: ItemMeta) {
@@ -729,7 +730,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 						const sha = await refHead(app, token, owner, name, meta.repository.branch);
 						await take(c, { kind: "feature_seed", key, sha, at: Date.now() });
 					} else {
-						const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: meta.repository.branch, seed: item.seed, created: meta.createdAt, body: item.featurePlan!.spec.goal });
+						const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: meta.repository.branch, seed: item.seed, author: hub.author, created: meta.createdAt, body: item.featurePlan!.spec.goal });
 						await take(c, { kind: "feature_ready", key, ...opened, at: Date.now() });
 					}
 				});

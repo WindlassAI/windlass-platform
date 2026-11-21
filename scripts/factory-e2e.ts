@@ -207,7 +207,8 @@ async function api(path: string, init: RequestInit & { token?: string; key?: str
 
 const standin = new GithubStandin({ callbackUrl: `${API}/github/callback`, strictBranches: false });
 await standin.start();
-standin.addUser("ada");
+const ada = standin.addUser("ada");
+const identity = {name: ada.login, email: ada.id + "+" + ada.login + "@users.noreply.github.com"};
 const installation = standin.addInstallation("ada", "User");
 const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
 standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "read", statuses: "read", actions: "read" };
@@ -234,13 +235,13 @@ if (!only.length || only.includes("orchestrator")) {
 			const edited = await user.actOnItem({id:feature.id, action:{ kind:"edit_plan", version:page.plan.version, plan:page.plan }});
 			await refused(() => user.actOnItem({id:feature.id,action:{kind:"approve_plan",version:page.plan!.version}}), "item_conflict");
 			const base = standin.branchHead(harbor,"main")!, version = edited.plan!.version;
-			const seed = standin.featureCommit(harbor, base, "Start feature " + feature.id, new Date(feature.createdAt).toISOString());
+			const seed = standin.featureCommit(harbor, base, "Start feature " + feature.id, new Date(feature.createdAt).toISOString(), identity);
 			const heads: Record<string,string> = {};
 			const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0,16);
 			let parent = seed;
 			for (const s of edited.plan!.subtasks) {
 				const id = "i_" + hash(JSON.stringify([feature.id,version,s.key]));
-				parent = standin.featureCommit(harbor,parent,s.title,new Date(feature.createdAt).toISOString());
+				parent = standin.featureCommit(harbor,parent,s.title,new Date(feature.createdAt).toISOString(), identity);
 				heads["s_" + hash("item\n" + id)] = parent; setCi(harbor,parent,"success");
 			}
 			heads["s_" + hash("review\n" + feature.id)] = parent;

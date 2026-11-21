@@ -65,7 +65,7 @@ export function branchFor(title: string, sessionId: string): string {
 }
 
 /** The address GitHub credits a user's commits by, when the user keeps their own private. */
-function authorOf(connection: StoredConnection): { name: string; email: string } {
+export function authorOf(connection: StoredConnection): { name: string; email: string } {
 	return { name: connection.user.login, email: `${connection.user.id}+${connection.user.login}@users.noreply.github.com` };
 }
 

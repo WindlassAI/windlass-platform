@@ -336,3 +336,30 @@ test("a disabled GitHub orchestration request is refused before claiming the iss
 	assert.match(asked.refusal!,/disabled/i);
 	assert.equal(intake.issueMode("orchestrate",["bug"],false).refusal,null);
 });
+
+const identity = { name: "ada", email: "42+ada@users.noreply.github.com" };
+async function opening(refusal?: Error) {
+	const { openFeature } = await import("../server/src/github/feature.js");
+	const requests: any[] = [], pulls: any[] = [];
+	const app = {
+		call: async (request: any) => {
+			requests.push(request);
+			return { body: request.method === "POST" ? { sha: head } : { tree: { sha: head } } };
+		},
+		openPull: async () => null,
+		createPull: async (_token: string, _owner: string, _repo: string, input: any) => {
+			pulls.push(input);
+			if (input.draft && refusal) throw refusal;
+			return { ...pr, headSha: head, base: "main" };
+		},
+	};
+	await openFeature(app as never, "token", "ada", "repo", { id: "i_feature", title: "Search", base: "main", seed: head, created: 0, body: "Original goal", author: identity });
+	return { requests, pulls };
+}
+test("the feature marker credits the connected user as author and committer", async () => {
+	const { requests } = await opening();
+	const marker = requests.find(r => r.body?.parents).body;
+	const expected = { ...identity, date: new Date(0).toISOString() };
+	assert.deepEqual(marker.author, expected);
+	assert.deepEqual(marker.committer, expected);
+});

@@ -24,12 +24,12 @@ export async function advanceFeatureRef(app: GithubApp, token: string, owner: st
 }
 
 /** One empty marker commit gives the draft PR a distinct head. Fixed identity, date and parent make retries identical. */
-export async function openFeature(app: GithubApp, token: string, owner: string, repo: string, input: { id: string; title: string; base: string; seed: string; created: number; body: string }) {
+export async function openFeature(app: GithubApp, token: string, owner: string, repo: string, input: { id: string; title: string; base: string; seed: string; created: number; body: string; author: { name: string; email: string } }) {
 	const branch = featureBranch(input.id), root = "/repos/" + owner + "/" + repo, auth = { bearer: token };
 	if (branch === input.base) throw new Error("The feature branch must differ from the destination.");
 	const commit = await app.call({ path: root + "/git/commits/" + sha(input.seed), auth, what: "read the feature base tree" });
 	const tree = sha(obj(obj(commit.body).tree).sha);
-	const author = { name: "Windlass", email: "windlass@users.noreply.github.com", date: new Date(input.created).toISOString() };
+	const author = { ...input.author, date: new Date(input.created).toISOString() };
 	const marker = await app.call({ method: "POST", path: root + "/git/commits", auth, body: { tree, parents: [input.seed], author, committer: author, message: "Start feature " + input.id }, what: "create the feature start commit" });
 	const head = sha(obj(marker.body).sha);
 	try {
