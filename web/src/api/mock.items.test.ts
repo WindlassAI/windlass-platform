@@ -500,3 +500,20 @@ it("files an orchestrated feature, edits its budget by version, and lists the ch
 		expect(cancelled.children?.[0]?.state).toBe("cancelled");
 	} finally { mock.dispose(); }
 });
+
+it("lets a designer exercise the single suggestion and re-plan decisions", async () => {
+	const mock = make(), user = mock.user(auth);
+	try {
+		const feature = await user.createItem({repository:{id:7101}, title:"Search", body:"Make search work.", mode:"orchestrate", start:true});
+		const view = await user.item(feature.id);
+		const suggestion = await user.actOnItem(feature.id,{kind:"edit_plan",version:view.plan!.version,plan:{...view.plan!,subtasks:[],singleSuggested:"One file."}});
+		expect(suggestion.question?.kind).toBe("single_suggested");
+		const split = await user.actOnItem(feature.id,{kind:"answer",question:suggestion.question!.id,choice:"orchestrate_anyway"});
+		const approved = await user.actOnItem(feature.id,{kind:"approve_plan",version:split.plan!.version});
+		await user.actOnItem(approved.children![0]!.id,{kind:"cancel"});
+		const revision = await user.item(feature.id);
+		expect(revision.question?.kind).toBe("replan_approval");
+		expect(revision.budget).toEqual(view.budget);
+	} finally { mock.dispose(); }
+});
+

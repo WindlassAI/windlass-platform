@@ -289,7 +289,7 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now }: {
 	const [filing, setFiling] = useState(false);
 	const [open, setOpen] = useState(false);
 	const ended = useId();
-	const mine = items.list?.filter((item) => item.repository.id === repositoryId) ?? null;
+	const mine = items.list?.filter((item) => !item.parent && item.repository.id === repositoryId) ?? null;
 	const of = (state: ItemState) => mine?.filter((item) => item.state === state) ?? [];
 	const folded = FOLDED.flatMap((state) => of(state));
 	if (!offered) return null;

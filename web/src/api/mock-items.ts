@@ -1111,7 +1111,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			}
 		}
 		const plan = item.plan;
-		const current = plan?.status === "proposed" && item.question?.kind === "plan_approval";
+		const current = plan?.status === "proposed" && ["plan_approval","single_suggested","replan_approval"].includes(item.question?.kind ?? "");
 		const at = deps.now();
 		switch (action.kind) {
 			case "run_single":
@@ -1123,16 +1123,18 @@ export function createMockItems(deps: MockItemsDeps) {
 				let edited;
 				try { edited = validatePlan(action.plan, plan.compare.singleBudget, plan.budget); }
 				catch (error) { throw new PlatformError("user", (error as Error).message, { reason: "bad_input" }); }
-				return change(auth, item, { plan: { ...plan, ...edited, version: plan.version+1 }, question: { ...item.question!, id: item.id + ":plan" + (plan.version+1), text: edited.spec.goal } }, ["Edited the plan."], "person");
+				const kind = edited.singleSuggested ? "single_suggested" : item.question?.kind === "replan_approval" ? "replan_approval" : "plan_approval";
+				const offered = kind === "single_suggested" ? choices("run_single","orchestrate_anyway") : edited.questions.some(q => !q.answer) ? choices("revise","give_up") : choices("approve","revise","give_up");
+				return change(auth, item, { plan: { ...plan, ...edited, version: plan.version+1 }, question: { ...item.question!, kind, choices: offered, id: item.id + ":plan" + (plan.version+1), text: edited.singleSuggested ?? edited.spec.goal } }, ["Edited the plan."], "person");
 			}
 			case "approve_plan": {
 				if (!current || action.version !== plan.version || plan.singleSuggested || plan.questions.some(q => !q.answer)) throw conflict("Answer all questions on the current plan first.");
 				const sub = plan.subtasks.find(s => s.dependsOn.length === 0)!;
 				const session = await deps.session(auth, { title: sub.title, place: item.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id } });
-				if (item.plan !== plan || item.question?.kind !== "plan_approval" || plan.status !== "proposed") throw conflict("The plan changed.");
+				if (item.plan !== plan || !item.question || plan.status !== "proposed") throw conflict("The plan changed.");
 				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } } };
 				keptOf(auth).items.push(child); deps.itemChanged(auth, child);
-				return change(auth, item, { plan: { ...plan, status: "approved", approvedAt: at, approvedBy: "person:" + auth.profile.uid }, children: [summaryOf(child)], state: "waiting", question: null,
+				return change(auth, item, { plan: { ...plan, status: "approved", approvedAt: at, approvedBy: "person:" + auth.profile.uid }, children: keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf), state: "waiting", question: null,
 					wait: { reason: "children", sentence: "Running " + sub.title, since: at, retryAt: null }, run: { ...item.run!, step: { ...item.run!.step, kind: "subtasks" } },
 					pullRequest: { number: 1, url: item.repository.url + "/pull/1" } }, ["Approved the plan."], "person");
 			}
@@ -1152,10 +1154,26 @@ export function createMockItems(deps: MockItemsDeps) {
 				for (const child of keptOf(auth).items.filter(s => s.parent?.itemId === item.id && !["done","cancelled","failed"].includes(s.state))) await act(auth, child, {kind:"cancel"});
 				if (item.children?.length) item.children = keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf);
 				if (item.state === "done" || item.state === "cancelled") throw conflict(`This item is ${now} already.`);
-				return change(auth, item, { state: "cancelled", wait: null, question: null, run: item.run ? { ...item.run, endedAt: deps.now(), stopReason: item.run.endedAt === null ? "cancelled" : item.run.stopReason } : null }, ["Cancelled."], "person");
+				change(auth, item, { state: "cancelled", wait: null, question: null, run: item.run ? { ...item.run, endedAt: deps.now(), stopReason: item.run.endedAt === null ? "cancelled" : item.run.stopReason } : null }, ["Cancelled."], "person");
+				if (item.parent) {
+					const parent = itemOf(auth, item.parent.itemId);
+					if (parent.plan?.status === "approved") {
+						const version = parent.plan.version + 1;
+						const children = keptOf(auth).items.filter(s => s.parent?.itemId === parent.id).map(summaryOf);
+						const exhausted = children.filter(s => s.state === "cancelled").length > 2;
+						const text = exhausted ? "Two re-plans have been used." : "Review the revised plan after the stopped subtask.";
+						change(auth, parent, {children, plan:{...parent.plan,version,status:exhausted ? "superseded" : "proposed"},
+							wait:{reason:"person",sentence:text,retryAt:null,since:at}, question:{kind:exhausted ? "rounds" : "replan_approval",id:parent.id+":plan"+version,askedAt:at,text,choices:exhausted ? choices("give_up") : choices("approve","revise","give_up")}},[text],"platform");
+					}
+				}
+				return;
 			case "answer": {
 				const question = item.question;
 				if (question === null || question.id !== action.question) throw conflict("That question was answered already, here or in another tab.");
+				if (current && question.kind === "single_suggested") {
+					if (action.choice === "run_single") return act(auth, item, {kind:"run_single"});
+					if (action.choice === "orchestrate_anyway") return beginRun(auth,item,"Requested a split.");
+				}
 				if (current && action.choice === "approve") return act(auth,item,{kind:"approve_plan",version:plan.version});
 				if (current && action.choice === "revise") return beginRun(auth,item,"Revised the plan.");
 				const picked = question.choices.find((option) => option.id === action.choice);
