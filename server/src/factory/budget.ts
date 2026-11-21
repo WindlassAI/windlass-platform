@@ -102,10 +102,15 @@ export type PlaceNow =
 			/** Its control socket is online, but the runner did not open the session link. */
 			attachRetryAt: number | null;
 			keptFull: boolean;
+			slots?: { units: number; free: number };
 			/** Its sandboxes running, and how many its runner said it runs at most. */
 			running: number;
 			max: number;
 	  };
+
+export function slotWait(name: string, units: number, free: number): string {
+	return `Waiting for ${units} free slot${units === 1 ? "" : "s"} on ‘${name}’. ${free} free now.`;
+}
 
 export interface AdmissionInput {
 	at: number;
@@ -152,6 +157,7 @@ export function admit(input: AdmissionInput): Admission {
 	}
 
 	if (place.kind === "machine") {
+		if (place.slots && place.slots.free < place.slots.units) return wait("machine", slotWait(place.name, place.slots.units, place.slots.free));
 		if (place.keptFull) return wait("machine", `Waiting for room on your machine "${place.name}". Its runner has reached its limit on kept sandboxes.`);
 		if (place.running >= place.max) return wait("machine", `Waiting for ‘${place.name}’: ${place.running} of ${place.max} sandboxes running there.`);
 		return { ok: true };
