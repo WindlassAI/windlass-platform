@@ -1059,21 +1059,49 @@ function itemSession(c: CreateCtx): MakeSession {
 	return (_, profile, input, submission, item) => makeSession(c, profile, input, submission, item);
 }
 
-async function revokeTokens(c: UserCtx & { key: string[]; client(): unknown; conns: Parameters<typeof disconnectRevoked>[0] }): Promise<void> {
+type RevocationContext = UserCtx & {
+	key: string[];
+	client(): unknown;
+	conns: Parameters<typeof disconnectRevoked>[0];
+	schedule: { after(ms: number, action: string): Promise<string> };
+	log: { warn(entry: unknown): void };
+};
+
+const RETRY_DISCONNECT = "retryDisconnectRevoked";
+
+async function closeRevokedFeeds(c: RevocationContext, generation: number): Promise<void> {
+	// A temporarily unreachable session must not delay closing the others in the same pass.
+	let complete = true;
+	try {
+		await disconnectRevoked(c.conns, generation);
+	} catch {
+		complete = false;
+	}
+	const sessions = [...c.vars.sessions.keys()];
+	for (let i = 0; i < sessions.length; i += 16) {
+		await Promise.all(sessions.slice(i, i + 16).map(async id => {
+			try {
+				await sessionActor(c, c.key[0], id).internalDisconnectRevoked(generation);
+			} catch (error) {
+				if (!isActorGone(error)) complete = false;
+			}
+		}));
+	}
+	if (complete) {
+		await c.db.execute("UPDATE token_generation SET disconnected = MAX(disconnected, ?) WHERE id = 1", generation);
+	} else {
+		// Token checks already use the new generation. A durable retry closes any remaining passive feeds.
+		c.log.warn({ msg: "Retrying revoked session disconnects", generation });
+	}
+}
+
+async function revokeTokens(c: RevocationContext): Promise<void> {
+	// Arm recovery before committing the bump, including when the actor stops between the two writes.
+	await c.schedule.after(30_000, RETRY_DISCONNECT);
 	const [{ gen }] = await c.db.execute<{ gen: number }>("UPDATE token_generation SET gen = gen + 1 WHERE id = 1 RETURNING gen");
 	c.vars.tokenGen = Math.max(c.vars.tokenGen, gen);
 	c.vars.reached = true;
-	// Subscriptions already admitted can receive events without making another authenticated call.
-	await Promise.all([
-		disconnectRevoked(c.conns, gen),
-		...Array.from(c.vars.sessions.keys(), async id => {
-			try {
-				await sessionActor(c, c.key[0], id).internalDisconnectRevoked(gen);
-			} catch (error) {
-				if (!isActorGone(error)) throw error;
-			}
-		}),
-	]);
+	await closeRevokedFeeds(c, gen);
 }
 
 export const user = actor({
@@ -1082,7 +1110,7 @@ export const user = actor({
 	db: db({
 		onMigrate: async (db) => {
 			await db.execute("CREATE TABLE IF NOT EXISTS token_generation (id INTEGER PRIMARY KEY CHECK(id = 1), gen INTEGER NOT NULL)");
-			await db.execute("INSERT OR IGNORE INTO token_generation VALUES (1, 0)");
+			await db.execute("INSERT OR IGNORE INTO token_generation (id, gen) VALUES (1, 0)");
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS profile (
 					id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1181,6 +1209,7 @@ export const user = actor({
 			// Before the column checks below: the API token table is one of them.
 			for (const table of ITEM_TABLES) await db.execute(table);
 			for (const [table, column, definition] of [
+				["token_generation", "disconnected", "INTEGER NOT NULL DEFAULT 0"],
 				["repository_defaults", "screenshots", "INTEGER NOT NULL DEFAULT 0"],
 				["api_token", "window_count", "INTEGER NOT NULL DEFAULT 0"],
 				["sessions", "launch_claim", "INTEGER"],
@@ -1306,6 +1335,14 @@ export const user = actor({
 	},
 
 	actions: {
+		[RETRY_DISCONNECT]: async (c): Promise<void> => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			const [pending] = await c.db.execute<{ gen: number }>("SELECT gen FROM token_generation WHERE gen > disconnected");
+			if (pending) {
+				await c.schedule.after(30_000, RETRY_DISCONNECT);
+				await closeRevokedFeeds(c, pending.gen);
+			}
+		},
 		internalTokenGeneration: (c): number => { requireServiceFor(c, "call"); return c.vars.tokenGen; },
 		signOutEverywhere: async (c): Promise<void> => {
 			requireUser(c);
