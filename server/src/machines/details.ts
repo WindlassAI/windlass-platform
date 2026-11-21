@@ -4,11 +4,16 @@ export function machineDetails(input: MachineDetails): MachineDetails {
 	if (typeof input?.whenToUse !== "string" || input.whenToUse.length > 500) throw new Error("Use at most 500 characters for when to use this machine.");
 	if (!Array.isArray(input.tags) || input.tags.length > 12 || !input.tags.every(t => typeof t === "string" && /^[a-z0-9][a-z0-9_-]{0,23}$/i.test(t) && !/^(os|arch|screenshots)$/i.test(t)))
 		throw new Error("Use up to twelve owner tags of at most 24 characters each. OS, arch, screenshots and harness tags come from the runner.");
-	return { whenToUse: input.whenToUse.trim(), tags: [...new Set(input.tags)] };
+	const orchestrator = input.orchestrator === undefined ? "yes" : input.orchestrator;
+	if (!["yes", "named", "never"].includes(orchestrator)) throw new Error("Choose yes, named or never for orchestrator placement.");
+	return { whenToUse: input.whenToUse.trim(), tags: [...new Set(input.tags)], orchestrator };
 }
 
 export function plannerMachines(machines: MachineSummary[]) {
 	return machines.map(m => ({
+		machineId: m.machineId, orchestrator: m.orchestrator ?? "yes", repositorySecrets: m.sendSecrets,
+		availableProfiles: m.profiles?.filter(p => p.available).map(p => p.id) ?? [],
+		personalRunning: m.personalRunning ?? 0, slots: m.slots,
 		name: machineLabel(m), os: m.os, arch: m.arch, online: m.status === "online", tags: m.tags ?? [], whenToUse: m.whenToUse ?? "",
 		turns: m.turns, host: m.host, freeDiskBytes: m.freeDiskBytes, allowedProfiles: m.allowedProfiles, commandSandbox: m.commandSandbox,
 		egress: m.egress, screenshots: m.screenshots, harnesses: m.harnesses?.map(({ id, signIn }) => ({ id, signIn })),
