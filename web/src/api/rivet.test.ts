@@ -82,7 +82,7 @@ describe("the RivetKit client", () => {
 		const { source: from, token } = source({ endpoint: "https://engine.test", namespace: "production", tokens: true });
 		const client = createRivetClient("http://localhost:6420", "http://platform.test", from);
 		await settle();
-		expect(rivet.made).toEqual([{ endpoint: "https://engine.test", namespace: "production", getToken: token, devtools: false }]);
+		expect(rivet.made).toEqual([{ endpoint: "https://engine.test", namespace: "production", disableMetadataLookup: true, getToken: token, devtools: false }]);
 		expect(client.endpoint).toBe("https://engine.test");
 	});
 

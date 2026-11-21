@@ -147,7 +147,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		return createClient({
 			endpoint,
 			// The server's namespace goes with the server's endpoint; an endpoint the app was built with says its own.
-			...(connection.endpoint !== null ? { namespace: connection.namespace } : {}),
+			...(connection.endpoint !== null ? { namespace: connection.namespace, disableMetadataLookup: true } : {}),
 			// Asked before every request and every WebSocket open, and again when the engine refuses the answer.
 			...(connection.tokens ? { getToken: source.token } : {}),
 			// `devtools` defaults to true on localhost and injects a script from the endpoint; the app does not want it.
