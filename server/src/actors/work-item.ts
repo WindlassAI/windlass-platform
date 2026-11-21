@@ -30,7 +30,7 @@
 
 import { GithubProblem } from "../github/repos.js";
 import { PlanError } from "../factory/feature-plan.js";
-import { childItemId, itemSessionId } from "../factory/feature-plan.js";
+import { childItemId, itemSessionId } from "../factory/feature-ids.js";
 import { hasPushCi } from "../github/feature-ci.js";
 import { authorOf, branchFor } from "../github/publish.js";
 import { featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";

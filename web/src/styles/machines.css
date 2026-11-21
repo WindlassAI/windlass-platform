@@ -355,9 +355,10 @@
 @media (max-width: 760px) {
 	.machine-row {
 		grid-template-columns: 36px minmax(0, 1fr) auto;
+		/* The card's text takes the whole width; Remove sits beside the state, under it. */
 		grid-template-areas:
-			"glyph main remove"
-			". state state";
+			"glyph main main"
+			". state remove";
 		row-gap: 10px;
 		column-gap: 12px;
 		padding: 14px;
@@ -376,7 +377,7 @@
 	}
 	.machine-row > .machine-remove {
 		grid-area: remove;
-		align-self: start;
+		align-self: center;
 	}
 	.machine-notes,
 	.machine-details {
@@ -591,4 +592,69 @@
 	font-size: var(--text-13);
 	font-weight: var(--weight-medium);
 	color: var(--ink);
+}
+
+/* When to use the machine, for a feature's planner: one quiet line in its card, its tags as hairline chips. */
+.machine-use {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 6px;
+	margin-top: 8px;
+	font-size: var(--text-13);
+	line-height: 1.45;
+}
+.machine-use-text {
+	margin-right: 4px;
+	color: var(--ink-dim);
+}
+.machine-use-empty {
+	color: var(--ink-faint);
+}
+.machine-tag {
+	display: inline-flex;
+	align-items: center;
+	height: 20px;
+	padding: 0 6px;
+	border-radius: 5px;
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--ink-dim);
+}
+.machine-use-edit {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	margin-left: 4px;
+	font-size: 12px;
+	font-weight: var(--weight-medium);
+	color: var(--ink-faint);
+	text-decoration: none;
+}
+.machine-use-edit:hover {
+	color: var(--ink);
+}
+.machine-use-form {
+	display: grid;
+	gap: 8px;
+	margin-top: 10px;
+	padding: 12px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-pop);
+	background: var(--bg);
+}
+.machine-use-fields {
+	display: grid;
+	grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+	gap: 10px;
+}
+.machine-use-actions {
+	display: flex;
+	gap: 6px;
+}
+@media (max-width: 760px) {
+	.machine-use-fields {
+		grid-template-columns: minmax(0, 1fr);
+	}
 }

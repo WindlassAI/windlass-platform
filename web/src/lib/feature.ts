@@ -4,6 +4,7 @@
  * so that a figure the server would refuse is said at its field.
  */
 import type { FeaturePlan, ItemBudget } from "@contract";
+import { compact, sandboxTime } from "./format";
 
 /** How a work item runs, in the words of the composer's pill and the filing dialog. */
 export const ITEM_MODE_WORDS = {
@@ -33,10 +34,17 @@ export function closingReserve(single: ItemBudget): ItemBudget {
 	return { tokens: Math.ceil(single.tokens / 6), turns: 4, activeSeconds: Math.ceil(single.activeSeconds / 6), hostedSeconds: Math.ceil(single.hostedSeconds / 6) };
 }
 
-/** What the subtasks may share: the feature's budget less the closing reserve. */
-export function subtaskPool(plan: Pick<FeaturePlan, "budget" | "compare">): ItemBudget {
+/**
+ * What the subtasks may share (server/src/factory/blueprint.ts, `edit_plan`): the feature's budget less
+ * what it spent and the closing reserve, with back what subtasks that are done were given (a re-plan
+ * keeps them as they were).
+ */
+export function subtaskPool(plan: Pick<FeaturePlan, "budget" | "compare">, spent: ItemBudget, done: ItemBudget[] = []): ItemBudget {
 	const reserve = closingReserve(plan.compare.singleBudget);
-	return { tokens: plan.budget.tokens - reserve.tokens, turns: plan.budget.turns - reserve.turns, activeSeconds: plan.budget.activeSeconds - reserve.activeSeconds, hostedSeconds: plan.budget.hostedSeconds - reserve.hostedSeconds };
+	const back = sumBudgets(done);
+	const pool = { ...plan.budget };
+	for (const key of PLAN_DIMENSIONS) pool[key] = plan.budget[key] - spent[key] - reserve[key] + back[key];
+	return pool;
 }
 
 export function sumBudgets(budgets: ItemBudget[]): ItemBudget {
@@ -45,23 +53,52 @@ export function sumBudgets(budgets: ItemBudget[]): ItemBudget {
 	return total;
 }
 
+export type BudgetProblem = "low" | "high" | "bad";
+
 /**
- * What is wrong with a plan's subtask budgets, as the server would say it: per subtask and figure, and
- * per figure for the total. Empty when the server would take them.
+ * What is wrong with a plan's subtask budgets, as the server checks them: per subtask and figure (not
+ * a whole number, under the floor, over a single item's cap), and the figures whose total is over the
+ * pool. Empty when the server would take them.
  */
-export function budgetProblems(plan: Pick<FeaturePlan, "budget" | "compare">, budgets: Record<string, ItemBudget>): { fields: Record<string, Partial<Record<keyof ItemBudget, string>>>; total: Partial<Record<keyof ItemBudget, string>> } {
-	const single = plan.compare.singleBudget;
+export function budgetProblems(single: ItemBudget, pool: ItemBudget, budgets: Record<string, ItemBudget>): { fields: Record<string, Partial<Record<keyof ItemBudget, BudgetProblem>>>; total: Array<keyof ItemBudget>; any: boolean } {
 	const floor = subtaskFloor(single);
-	const pool = subtaskPool(plan);
-	const fields: Record<string, Partial<Record<keyof ItemBudget, string>>> = {};
+	const fields: Record<string, Partial<Record<keyof ItemBudget, BudgetProblem>>> = {};
+	let any = false;
 	for (const [key, budget] of Object.entries(budgets)) {
 		for (const dimension of PLAN_DIMENSIONS) {
 			const value = budget[dimension];
-			if (!Number.isSafeInteger(value) || value < floor[dimension] || value > single[dimension]) (fields[key] ??= {})[dimension] = `between ${floor[dimension]} and ${single[dimension]}`;
+			const problem: BudgetProblem | null = !Number.isSafeInteger(value) ? "bad" : value < floor[dimension] ? "low" : value > single[dimension] ? "high" : null;
+			if (problem) {
+				(fields[key] ??= {})[dimension] = problem;
+				any = true;
+			}
 		}
 	}
 	const sum = sumBudgets(Object.values(budgets));
-	const total: Partial<Record<keyof ItemBudget, string>> = {};
-	for (const dimension of PLAN_DIMENSIONS) if (sum[dimension] > pool[dimension]) total[dimension] = `over the ${pool[dimension]} the subtasks may share`;
-	return { fields, total };
+	const total = PLAN_DIMENSIONS.filter((dimension) => sum[dimension] > pool[dimension]);
+	return { fields, total, any: any || total.length > 0 };
 }
+
+/** A plan's budget figure as a field: tokens in millions, times in minutes. `spelled` says a figure in the page's words. */
+export interface PlanField {
+	key: keyof ItemBudget;
+	label: string;
+	short: string;
+	unit: string;
+	toInput(value: number): string;
+	fromInput(text: string): number;
+	spelled(value: number): string;
+}
+
+const trimmed = (value: number) => String(Number(value.toFixed(2)));
+const parse = (text: string, scale: number) => {
+	const value = text.trim() === "" ? Number.NaN : Number(text);
+	return Number.isFinite(value) ? Math.round(value * scale) : Number.NaN;
+};
+
+export const PLAN_FIELDS: PlanField[] = [
+	{ key: "tokens", label: "Tokens", short: "tokens", unit: "M", toInput: (value) => trimmed(value / 1e6), fromInput: (text) => parse(text, 1e6), spelled: compact },
+	{ key: "turns", label: "Turns", short: "turns", unit: "", toInput: String, fromInput: (text) => parse(text, 1), spelled: String },
+	{ key: "activeSeconds", label: "Working time", short: "working", unit: "min", toInput: (value) => trimmed(value / 60), fromInput: (text) => parse(text, 60), spelled: sandboxTime },
+	{ key: "hostedSeconds", label: "Hosted time", short: "hosted", unit: "min", toInput: (value) => trimmed(value / 60), fromInput: (text) => parse(text, 60), spelled: sandboxTime },
+];

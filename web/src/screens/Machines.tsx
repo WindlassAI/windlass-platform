@@ -21,7 +21,7 @@ import { hasReason } from "../api/client";
 import { CopyButton } from "../components/Copy";
 import { ClaudeSignIn } from "../components/ClaudeSignIn";
 import { Dialog } from "../components/Dialog";
-import { ArrowLeftIcon, CheckIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, CheckIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, PencilIcon, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
 import { RowsSkeleton } from "../components/Skeleton";
 import { SandboxState } from "../components/Status";
 import { HARNESS_NAMES, loginCommand, type ReportedHarness } from "../lib/acp";
@@ -29,7 +29,7 @@ import { absoluteTime, plural, relativeTime, spelledDuration } from "../lib/form
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
-import { machineHostNote, machineLabel } from "../lib/machines";
+import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, tagsOf } from "../lib/machines";
 
 /** What the top bar shows on this page: the way back and where one is. */
 export function MachinesCrumb() {
@@ -334,6 +334,104 @@ function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
 	);
 }
 
+/**
+ * What the owner says of the machine for the planner of a feature: when to use it, and tags. One
+ * quiet line in its card, edited in place; saved with `setMachineDetails`, checked first as the
+ * server checks it.
+ */
+function MachineUse({ machine, onChanged }: { machine: MachineSummary; onChanged(list: MachineSummary[]): void }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [editing, setEditing] = useState(false);
+	const [text, setText] = useState("");
+	const [tagText, setTagText] = useState("");
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const ids = { text: useId(), tags: useId(), note: useId() };
+	const whenToUse = machine.whenToUse ?? "";
+	const tags = machine.tags ?? [];
+	const typedTags = tagsOf(tagText);
+	const problem = editing ? machineDetailsProblem(text.trim(), typedTags) : null;
+	const changed = text.trim() !== whenToUse || JSON.stringify(typedTags) !== JSON.stringify(tags);
+	const edit = () => {
+		setText(whenToUse);
+		setTagText(tags.join(", "));
+		setError(null);
+		setEditing(true);
+	};
+	const save = (event: FormEvent) => {
+		event.preventDefault();
+		if (problem || busy) return;
+		setBusy(true);
+		setError(null);
+		client
+			.user(auth)
+			.setMachineDetails({ machineId: machine.machineId, whenToUse: text.trim(), tags: typedTags })
+			.then(
+				(list) => {
+					onChanged(list);
+					setBusy(false);
+					setEditing(false);
+				},
+				(failure: unknown) => {
+					setError(explain(failure));
+					setBusy(false);
+				},
+			);
+	};
+	if (!editing) {
+		return (
+			<div className="machine-use">
+				{whenToUse === "" && tags.length === 0 ? (
+					<span className="machine-use-empty">No note on when to use it.</span>
+				) : (
+					<>
+						{whenToUse !== "" ? <span className="machine-use-text">{whenToUse}</span> : null}
+						{tags.map((tag) => (
+							<span key={tag} className="machine-tag">
+								{tag}
+							</span>
+						))}
+					</>
+				)}
+				<button type="button" className="link machine-use-edit" onClick={edit} aria-label={`Edit when to use ${machineLabel(machine)}`}>
+					<PencilIcon size={11} />
+					{whenToUse === "" && tags.length === 0 ? "Add" : "Edit"}
+				</button>
+			</div>
+		);
+	}
+	return (
+		<form className="machine-use-form" onSubmit={save}>
+			<div className="machine-use-fields">
+				<div>
+					<label className="label" htmlFor={ids.text}>
+						When to use it
+					</label>
+					<input id={ids.text} className="input" value={text} maxLength={MAX_WHEN_TO_USE + 50} placeholder="Builds and browser tests; it has the GPU" onChange={(event) => setText(event.target.value)} readOnly={busy} aria-describedby={ids.note} data-autofocus autoFocus />
+				</div>
+				<div>
+					<label className="label" htmlFor={ids.tags}>
+						Tags<span className="label-optional">comma or space between</span>
+					</label>
+					<input id={ids.tags} className="input input-mono" value={tagText} placeholder="gpu, big-build" onChange={(event) => setTagText(event.target.value)} readOnly={busy} aria-describedby={ids.note} aria-invalid={problem !== null || undefined} />
+				</div>
+			</div>
+			<p className={`field-note${problem || error ? " tone-bad" : ""}`} id={ids.note} role={problem || error ? "alert" : undefined}>
+				{problem ?? error ?? "The planner of a feature reads this, with the machine's OS, capacity and what it can run, when it splits the work."}
+			</p>
+			<div className="machine-use-actions">
+				<button type="submit" className="button button-primary button-small" disabled={busy || problem !== null || !changed}>
+					{busy ? "Saving…" : "Save"}
+				</button>
+				<button type="button" className="button button-quiet button-small" onClick={() => setEditing(false)} disabled={busy}>
+					Cancel
+				</button>
+			</div>
+		</form>
+	);
+}
+
 function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: MachineSummary; info: MachinesInfo; now: number; onChanged(list: MachineSummary[]): void; onRemove(machine: MachineSummary): void }) {
 	const [open, setOpen] = useState(false);
 	const details = useId();
@@ -377,6 +475,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						</button>
 					</span>
 				</p>
+				<MachineUse machine={machine} onChanged={onChanged} />
 				<MachineAgents harnesses={machine.harnesses ?? []} />
 			</div>
 			<MachineState machine={machine} now={now} />
@@ -419,6 +518,16 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						<dt>Commands sandboxed by Windlass</dt>
 						<dd>{machine.commandSandbox === null ? <span className="tone-faint">not reported yet</span> : machine.commandSandbox.ok ? "yes" : <>no: {machine.commandSandbox.reason}</>}</dd>
 					</div>
+					{machine.turns || machine.host ? (
+						<div>
+							<dt>Capacity</dt>
+							<dd>
+								{machine.turns ? `${machine.turns.running} of ${machine.turns.max ?? "any number of"} turns running${machine.turns.queued ? `, ${machine.turns.queued} queued` : ""}` : null}
+								{machine.turns && machine.host ? " · " : null}
+								{machine.host ? `${machine.host.sandboxCpus} of ${machine.host.cpus} CPUs for sandboxes, ${diskSize(machine.host.memoryFreeBytes)} of ${diskSize(machine.host.memoryBytes)} memory free` : null}
+							</dd>
+						</div>
+					) : null}
 					<div>
 						<dt>Free disk</dt>
 						<dd>{machine.freeDiskBytes === null ? <span className="tone-faint">not reported yet</span> : diskSize(machine.freeDiskBytes)}</dd>

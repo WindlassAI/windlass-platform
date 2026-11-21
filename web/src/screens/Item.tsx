@@ -27,7 +27,8 @@
  */
 import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemView, type StepKind, type Verdict } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { hasReason } from "../api/client";
+import { hasReason, PlatformError } from "../api/client";
+import { PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown } from "../components/Blocks";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
@@ -176,32 +177,32 @@ export function ItemCrumb({ view }: { view: ItemView | null }) {
 
 // ---- acting on it -------------------------------------------------------------------------------
 
-interface Acting {
-	/** The action in flight, by its kind (or the chosen answer's id). */
-	busy: string | null;
-	error: string | null;
-	act(action: ItemAction): Promise<boolean>;
-}
+interface Acting extends PlanActing {}
 
-function useActing(id: string, onDone: (view: ItemView) => void): Acting {
+/** `onConflict`: the server refused an action because the item moved on (`item_conflict`); the page reads it again. */
+function useActing(id: string, onDone: (view: ItemView) => void, onConflict?: (kind: string) => void): Acting {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [busy, setBusy] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [failed, setFailed] = useState<Acting["failed"]>(null);
 	const act = async (action: ItemAction) => {
 		setBusy(action.kind === "answer" ? action.choice : action.kind);
 		setError(null);
+		setFailed(null);
 		try {
 			onDone(await client.user(auth).actOnItem(id, action));
 			setBusy(null);
 			return true;
 		} catch (failure) {
 			setError(explain(failure));
+			setFailed({ kind: action.kind, reason: failure instanceof PlatformError ? (failure.reason ?? null) : null });
 			setBusy(null);
+			if (hasReason(failure, "item_conflict")) onConflict?.(action.kind);
 			return false;
 		}
 	};
-	return { busy, error, act };
+	return { busy, error, failed, act };
 }
 
 function Failure({ error }: { error: string | null }) {
@@ -895,10 +896,23 @@ function ReadFirst({ view, acting }: { view: ItemView; acting: Acting }) {
 export function Item({ page }: { page: ItemPage }) {
 	const now = useNow(30_000);
 	const { view } = page;
-	const acting = useActing(view?.id ?? "", page.replace);
+	// A plan action refused because the plan moved on: the page reads the item again, and its card says so until the next action.
+	const [conflicted, setConflicted] = useState(false);
+	const acting = useActing(
+		view?.id ?? "",
+		(next) => {
+			setConflicted(false);
+			page.replace(next);
+		},
+		(kind) => {
+			if (kind === "edit_plan" || kind === "approve_plan") setConflicted(true);
+			page.reload();
+		},
+	);
 	// Both agents' screenshots, the builder's and the second reviewer's: their links are asked in one question.
 	const links = useScreenshotLinks(view?.id ?? "", view ? [...(view.report?.screenshots ?? []), ...view.reviews.flatMap(reviewShots)] : []);
 	const [dialog, setDialog] = useState<"cancel" | "send_back" | null>(null);
+	const review = usePlanReview(view, acting);
 	// Undefined for a hosted item and while the list is read; null once its machine is known to be removed.
 	const machine = useSessionMachine(view?.place);
 	const { platform } = useApp();
@@ -944,7 +958,20 @@ export function Item({ page }: { page: ItemPage }) {
 		<main className="home usage repo item">
 			<header className="home-head">
 				<div className="repo-head">
-					<p className="eyebrow">work item · {view.source === "github" ? "from GitHub" : view.source === "api" ? "from the API" : "from the web"}</p>
+					<p className="eyebrow">
+						{view.parent ? (
+							<>
+								subtask of{" "}
+								<a className="eyebrow-link" {...linkProps({ name: "item", id: view.parent.itemId })}>
+									{view.parent.title}
+								</a>
+							</>
+						) : (
+							<>
+								{view.mode === "orchestrate" ? "feature" : "work item"} · {view.source === "github" ? "from GitHub" : view.source === "api" ? "from the API" : "from the web"}
+							</>
+						)}
+					</p>
 					<h1 className="display display-small item-title">{view.title}</h1>
 					<p className="home-account repo-facts">
 						<a className="repo-link" {...linkProps({ name: "repository", id: repository.id })}>
@@ -1003,18 +1030,38 @@ export function Item({ page }: { page: ItemPage }) {
 				</p>
 			) : null}
 			{dialog === null && !view.question && !reading ? <Failure error={acting.error} /> : null}
+			{conflicted && !planOpen(view) ? (
+				<p className="callout callout-warn" role="status">
+					<WarnIcon />
+					<span>The plan changed while you read it, and is no longer waiting for approval. What is shown now is the latest.</span>
+				</p>
+			) : null}
 
 			<section className="usage-section item-where" aria-label="Where it is">
 				<ItemStages item={view} reviewer={reviewer} step={view.run?.step.kind ?? null} />
 				{/* A question is where the item is: its own block says so, with when it was asked. */}
-				{view.question ? <Question key={view.question.id} view={view} question={view.question} acting={acting} now={now} /> : <Now view={view} now={now} />}
+				{view.question && planOpen(view) ? (
+					<PlanQuestion view={view} review={review} acting={acting} conflicted={conflicted} when={<When at={view.question.askedAt} now={now} />} />
+				) : view.question ? (
+					<Question key={view.question.id} view={view} question={view.question} acting={acting} now={now} />
+				) : (
+					<Now view={view} now={now} />
+				)}
 				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
 			</section>
 
-			{view.children?.length ? <section className="usage-section" aria-label="Subtasks">
-				<h2 className="usage-title">Subtasks</h2>
-				<ul className="agent-list">{view.children.map(child => <ItemRow key={child.id} item={child} now={now} why={child.question?.text} />)}</ul>
-			</section> : null}
+			{view.plan ? (
+				<PlanSection view={view} review={review} acting={acting} />
+			) : view.children?.length ? (
+				<section className="usage-section" aria-label="Subtasks">
+					<h2 className="usage-title">Subtasks</h2>
+					<ul className="agents">
+						{view.children.map((child) => (
+							<ItemRow key={child.id} item={child} now={now} why={child.question?.text} reviewer={false} />
+						))}
+					</ul>
+				</section>
+			) : null}
 			{reading ? <ReadFirst view={view} acting={acting} /> : null}
 
 			<Verdicts view={view} now={now} />

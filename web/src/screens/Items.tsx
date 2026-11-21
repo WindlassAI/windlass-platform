@@ -283,12 +283,37 @@ export function ItemStages({ item, reviewer = true, step = null }: { item: Pick<
 	);
 }
 
+/** What an item asks, in a line for a list: a feature's plan question is its whole plan, so the list says only that it waits. */
+export function questionLine(item: ItemSummary): string | null {
+	if (!item.question) return null;
+	if (item.question.kind === "plan_approval") return "Its plan waits for your approval.";
+	if (item.question.kind === "replan_approval") return "A subtask stopped: its revised plan waits for your approval.";
+	return item.question.text;
+}
+
 /** Why the item is where it is, in a line: the server's sentence while it waits, and what ended it. */
 function rowWhy(item: ItemSummary): string | null {
+	if (item.question) return questionLine(item);
 	if (item.state === "waiting" && item.wait) return item.wait.sentence;
 	if (item.state === "draft") return "Not started.";
 	if (item.state === "queued") return "Started; waiting for its first turn.";
 	return null;
+}
+
+/** A row's title: a subtask, listed where it asks its person, says its feature first (the list's title is "feature — subtask"). */
+function RowTitle({ item }: { item: ItemSummary }) {
+	const prefix = item.parent ? `${item.parent.title} — ` : null;
+	if (!prefix || !item.title.startsWith(prefix)) return <>{item.title}</>;
+	return (
+		<>
+			<span className="item-row-feature">{item.parent!.title}</span>
+			<span className="item-row-feature-sep" aria-hidden="true">
+				/
+			</span>
+			<span className="visually-hidden">, subtask </span>
+			{item.title.slice(prefix.length)}
+		</>
+	);
 }
 
 /**
@@ -309,7 +334,7 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 			</span>
 			<div className="agent-main">
 				<a className="agent-title" {...linkProps({ name: "item", id: item.id })}>
-					{item.title}
+					<RowTitle item={item} />
 					{asks ? <span className="visually-hidden"> (waiting for your answer)</span> : null}
 				</a>
 				{line ? <p className="item-row-why">{line}</p> : null}

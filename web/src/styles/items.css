@@ -1191,3 +1191,366 @@
 		display: none;
 	}
 }
+
+/* ---- a feature's plan ------------------------------------------------------------------------ */
+
+/*
+ * An orchestrated item's plan (screens/FeaturePlan.tsx): one neutral card, the spec over the subtasks
+ * over their total, hairlines between. Keys, paths, commands and figures in the mono face; the accent
+ * only where something moves (a subtask's track) and the warning hues only on a figure that is wrong.
+ */
+.plan-goal {
+	max-width: 74ch;
+	margin-top: 6px;
+	font-size: var(--text-14);
+	line-height: 1.55;
+	color: var(--ink-dim);
+}
+.plan-card {
+	margin-top: 14px;
+	overflow: hidden;
+}
+.plan-spec {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 14px 24px;
+	padding: 14px 18px 16px;
+}
+.plan-spec dt,
+.plan-task-facts dt,
+.plan-total-head,
+.plan-total-figures dt,
+.plan-budget-label {
+	font-size: 11.5px;
+	color: var(--ink-faint);
+}
+.plan-spec dd {
+	margin-top: 4px;
+}
+.plan-spec ul,
+.plan-checks {
+	display: grid;
+	gap: 3px;
+	padding-left: 14px;
+	font-size: var(--text-13);
+	line-height: 1.5;
+	color: var(--ink-dim);
+}
+.plan-spec li::marker,
+.plan-checks li::marker {
+	color: var(--ink-faint);
+}
+.plan-code,
+.plan-path {
+	font-family: var(--font-mono);
+	font-size: 0.92em;
+	color: var(--ink);
+}
+.plan-single {
+	padding: 0 18px 14px;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+
+.plan-tasks {
+	list-style: none;
+	border-top: 1px solid var(--line);
+}
+.plan-task {
+	display: grid;
+	grid-template-columns: 22px minmax(0, 1fr) 150px;
+	column-gap: 14px;
+	padding: 14px 18px;
+}
+.plan-task + .plan-task {
+	border-top: 1px solid var(--line);
+}
+.plan-task-n {
+	display: inline-grid;
+	place-items: center;
+	width: 22px;
+	height: 22px;
+	margin-top: -1px;
+	border-radius: 50%;
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--ink-dim);
+	font-variant-numeric: tabular-nums;
+}
+.plan-task[class*="plan-task-is-"] .plan-task-n {
+	box-shadow: none;
+}
+.plan-task-main {
+	min-width: 0;
+}
+.plan-task-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 10px;
+}
+.plan-task-title {
+	font-size: var(--text-14);
+	font-weight: var(--weight-medium);
+	letter-spacing: -0.005em;
+	color: var(--ink);
+	text-decoration: none;
+}
+a.plan-task-title:hover {
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: 3px;
+}
+.plan-task-key {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--ink-faint);
+}
+.plan-task-head > .plan-task-key {
+	padding: 1px 6px;
+	border-radius: var(--radius-s);
+	box-shadow: inset 0 0 0 1px var(--line);
+}
+.plan-task-after {
+	font-size: 12px;
+	color: var(--ink-faint);
+}
+.plan-task-brief {
+	max-width: 74ch;
+	margin-top: 3px;
+	font-size: var(--text-13);
+	line-height: 1.5;
+	color: var(--ink-dim);
+}
+.plan-task-facts {
+	display: grid;
+	gap: 6px;
+	margin-top: 10px;
+}
+.plan-task-facts > div {
+	display: grid;
+	grid-template-columns: 76px minmax(0, 1fr);
+	gap: 10px;
+	align-items: baseline;
+}
+.plan-checks {
+	padding-left: 13px;
+}
+.plan-paths {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+.plan-path {
+	padding: 1px 6px;
+	border-radius: var(--radius-s);
+	background: var(--bg-active);
+	font-size: 11.5px;
+	color: var(--ink-dim);
+}
+
+/* Its budget, while the plan can be changed: four short fields with their unit inside and the range under. */
+.plan-budget {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px 14px;
+	margin-top: 12px;
+	padding-top: 10px;
+	border-top: 1px dashed var(--line);
+}
+.plan-budget-field {
+	display: grid;
+	gap: 3px;
+	width: 108px;
+}
+.plan-budget-input {
+	position: relative;
+	display: block;
+}
+.plan-budget-input .input {
+	height: var(--h-sm);
+	padding-right: 30px;
+	background: var(--bg);
+	font-variant-numeric: tabular-nums;
+}
+.plan-budget-unit {
+	position: absolute;
+	top: 50%;
+	right: 9px;
+	transform: translateY(-50%);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--ink-faint);
+	pointer-events: none;
+}
+.plan-budget-invalid .input {
+	border-color: var(--bad);
+	box-shadow: 0 0 0 1px var(--bad);
+}
+.plan-budget-range {
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--ink-faint);
+	white-space: nowrap;
+}
+.plan-budget-read {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px 16px;
+	margin-top: 10px;
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	color: var(--ink-dim);
+	font-variant-numeric: tabular-nums;
+}
+
+.plan-task-state {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 6px;
+	padding-top: 2px;
+}
+.plan-task-word {
+	font-size: 12px;
+	color: var(--ink-dim);
+}
+.plan-task-asks {
+	font-weight: var(--weight-medium);
+	color: var(--needs);
+}
+
+/* What they spend together, against what the feature may spend; the hatch is what is kept back. */
+.plan-total {
+	padding: 14px 18px 16px;
+	border-top: 1px solid var(--line);
+	background: var(--bg-sunk);
+}
+.plan-total-figures {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 12px 20px;
+	margin-top: 8px;
+}
+.plan-total-number {
+	margin-top: 2px;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	font-variant-numeric: tabular-nums;
+}
+.plan-meter {
+	margin-top: 6px;
+	height: 4px;
+}
+.plan-meter-kept {
+	margin-left: auto;
+	background: repeating-linear-gradient(-45deg, var(--ink-faint) 0 2px, transparent 2px 4px);
+	opacity: 0.6;
+}
+.plan-total-why {
+	margin-top: 4px;
+	font-size: 11.5px;
+}
+.plan-total-over .plan-total-number {
+	color: var(--bad);
+}
+.plan-total-note {
+	margin-top: 12px;
+}
+
+/* The approval question: the plan's own questions, each its options as a choice. */
+.plan-version {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
+}
+.plan-asks {
+	display: grid;
+	gap: 12px;
+	padding-top: 12px;
+	border-top: 1px solid var(--line);
+}
+.plan-ask {
+	display: grid;
+	gap: 6px;
+}
+.plan-ask-text {
+	font-size: var(--text-14);
+	line-height: 1.45;
+}
+.plan-ask-answered .plan-ask-text {
+	color: var(--ink-dim);
+}
+.plan-ask-answer {
+	font-size: var(--text-13);
+	color: var(--ink);
+}
+.plan-ask-answer::before {
+	content: "→ ";
+	color: var(--ink-faint);
+}
+.plan-ask-options {
+	justify-self: start;
+	flex-wrap: wrap;
+}
+.eyebrow-link {
+	color: var(--ink-dim);
+	text-decoration: none;
+	text-transform: none;
+	letter-spacing: 0;
+	font-family: var(--font-text);
+	font-size: var(--text-12);
+}
+.eyebrow-link:hover {
+	color: var(--ink);
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+/* A subtask in a list of items: its feature's name first, in the dim ink. */
+.item-row-feature {
+	color: var(--ink-dim);
+	font-weight: var(--weight-regular);
+}
+.item-row-feature-sep {
+	margin: 0 0.4em;
+	color: var(--ink-faint);
+	font-weight: var(--weight-regular);
+}
+
+@media (max-width: 760px) {
+	.plan-spec {
+		grid-template-columns: minmax(0, 1fr);
+		padding: 12px 14px 14px;
+	}
+	.plan-task {
+		grid-template-columns: 22px minmax(0, 1fr);
+		row-gap: 10px;
+		padding: 12px 14px;
+	}
+	.plan-task-state {
+		grid-column: 2;
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		padding-top: 0;
+	}
+	.plan-task-facts > div {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 3px;
+	}
+	.plan-budget {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	.plan-budget-field {
+		width: auto;
+	}
+	.plan-total {
+		padding: 12px 14px 14px;
+	}
+	.plan-total-figures {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+}

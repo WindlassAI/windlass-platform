@@ -19,3 +19,26 @@ export function machineHostNote(machine: Described): string | null {
 	const name = machine.name.trim();
 	return name !== "" && isMachineIdName(name) ? name : null;
 }
+
+/** The most an owner may write of when to use a machine, and of its tags (server/src/machines/details.ts, `machineDetails`). */
+export const MAX_WHEN_TO_USE = 500;
+export const MAX_MACHINE_TAGS = 12;
+const TAG = /^[a-z0-9][a-z0-9_-]{0,23}$/i;
+/** Tags the runner reports itself: an owner's may not take their names. */
+const RUNNER_TAGS = /^(os|arch|screenshots)$/i;
+
+/** The tags as typed, split at commas and spaces, each once. */
+export function tagsOf(text: string): string[] {
+	return [...new Set(text.split(/[\s,]+/).filter((tag) => tag !== ""))];
+}
+
+/** What the server would refuse in a machine's details, in a sentence; null when it takes them. */
+export function machineDetailsProblem(whenToUse: string, tags: string[]): string | null {
+	if (whenToUse.length > MAX_WHEN_TO_USE) return `Use at most ${MAX_WHEN_TO_USE} characters for when to use this machine.`;
+	if (tags.length > MAX_MACHINE_TAGS) return `Use at most ${MAX_MACHINE_TAGS} tags; there are ${tags.length}.`;
+	const reserved = tags.find((tag) => RUNNER_TAGS.test(tag));
+	if (reserved) return `“${reserved}” comes from the runner: OS, arch and screenshots are reported, not set.`;
+	const bad = tags.find((tag) => !TAG.test(tag));
+	if (bad) return `“${bad}” is not a tag: letters, digits, - and _, at most 24, starting with a letter or digit.`;
+	return null;
+}

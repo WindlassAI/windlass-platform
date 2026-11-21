@@ -1,10 +1,6 @@
-import { createHash } from "node:crypto";
+/* The ids of a feature's children are in feature-ids.ts: this file is shared with the web mock and stays free of Node modules. */
 import type { FeaturePlan, FeaturePlanEdit, ItemBudget, PlanSubtask } from "../contract.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
-
-export const childItemId = (parent: string, version: number, key: string) =>
-	"i_" + createHash("sha256").update(JSON.stringify([parent, version, key])).digest("hex").slice(0,16);
-export const itemSessionId = (item: string) => "s_" + createHash("sha256").update("item\n" + item).digest("hex").slice(0,16);
 
 export const dimensions = ["tokens", "turns", "activeSeconds", "hostedSeconds"] as const;
 export const emptyBudget = (): ItemBudget => ({ tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 });

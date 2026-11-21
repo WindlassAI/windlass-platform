@@ -274,6 +274,18 @@
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+/* A choice whose line says what it means: the line wraps, the icon stays with the label. */
+.ui-item-wrap {
+	align-items: flex-start;
+	padding-block: 7px;
+}
+.ui-item-wrap .ui-item-icon {
+	margin-top: 1px;
+}
+.ui-item-wrap .ui-item-description {
+	white-space: normal;
+	line-height: 1.4;
+}
 .ui-item-warn .ui-item-description,
 .ui-item-warn .ui-item-icon {
 	color: var(--warn);

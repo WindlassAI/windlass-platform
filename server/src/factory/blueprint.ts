@@ -35,7 +35,8 @@
 import type { ReviewRecord, TurnOutcome, Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
-import { childItemId, emptyBudget, closingReserve, featureCap, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
+import { childItemId } from "./feature-ids.js";
+import { emptyBudget, closingReserve, featureCap, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
 import { budgetStop, retryAt } from "./budget.js";
 import type { ChoiceId, CiProgress, Fact, HandoffReview, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";

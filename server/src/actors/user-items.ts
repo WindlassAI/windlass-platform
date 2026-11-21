@@ -21,7 +21,7 @@
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
-import { itemSessionId } from "../factory/feature-plan.js";
+import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
 import type { IntakeTrigger, IssueBinding } from "../factory/intake.js";

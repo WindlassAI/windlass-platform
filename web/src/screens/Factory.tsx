@@ -22,7 +22,7 @@ import { repositoryName, workingCounts } from "../lib/repositories";
 import { ITEM_SOURCES, linkProps, navigate, type ItemSource } from "../lib/router";
 import { useApp } from "../state/app";
 import { useFactoryLimits, useNow, useSessions } from "../state/hooks";
-import { asking, ItemRow, type ItemsState } from "./Items";
+import { asking, ItemRow, questionLine, type ItemsState } from "./Items";
 
 /** How an item was filed, in the filter's words. */
 export const SOURCE_WORD: Record<ItemSource, string> = { web: "web", api: "API", github: "GitHub issue" };
@@ -65,7 +65,7 @@ function Group({ id, name, items, now, reviewer, tone }: { id: string; name: str
 			</h2>
 			<ul className="agents factory-lane">
 				{items.map((item) => (
-					<ItemRow key={item.id} item={item} now={now} repository ci reviewer={reviewer} why={tone === "needs" ? item.question?.text : undefined} />
+					<ItemRow key={item.id} item={item} now={now} repository ci reviewer={reviewer} why={tone === "needs" ? questionLine(item) : undefined} />
 				))}
 			</ul>
 		</section>

@@ -917,7 +917,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const itemModeSpec: MenuSpec | null = orchestrateOffered
 		? {
 				label: "How it runs",
-				width: 320,
+				width: 340,
 				groups: [
 					{
 						id: "item-mode",
@@ -926,6 +926,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 							label: ITEM_MODE_WORDS[id].name,
 							icon: id === "single" ? <SingleIcon size={16} /> : <SplitIcon size={16} />,
 							description: ITEM_MODE_WORDS[id].description,
+							wrap: true,
 							checked: (id === "orchestrate") === orchestrating,
 							tone: id === "orchestrate" && orchestrating && orchestrateWarn ? ("warn" as const) : undefined,
 							onSelect: () => setOrchestrate(id === "orchestrate"),

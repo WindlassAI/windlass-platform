@@ -49,6 +49,8 @@ export interface MenuItem {
 	panel?: ReactNode;
 	/** The whole of a description that may be cut short. */
 	title?: string;
+	/** The description wraps onto more lines instead of being cut short: for a choice whose line says what it means. */
+	wrap?: boolean;
 }
 
 export interface MenuGroup {
@@ -320,7 +322,7 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 										data-value={item.value ?? item.id}
 										title={item.title}
 										data-highlighted={highlighted || undefined}
-										className={`ui-item${item.tone ? ` ui-item-${item.tone}` : ""}${item.description ? " ui-item-two" : ""}`}
+										className={`ui-item${item.tone ? ` ui-item-${item.tone}` : ""}${item.description ? " ui-item-two" : ""}${item.wrap ? " ui-item-wrap" : ""}`}
 										// The focus stays where it is (the list or the filter): a press must not take it.
 										onPointerDown={(event) => event.preventDefault()}
 										onPointerMove={() => {
