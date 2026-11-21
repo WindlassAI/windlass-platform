@@ -300,6 +300,8 @@ test("the whole-feature review uses child evidence and needs the pinned head and
 	item = advance(item, {kind:"turn_ended",key:currentKey(item)!,at:7,outcome:"succeeded",spend:{tokens:1,hostedSeconds:0},report:"Summary",changes:false,verified:null,flags:[]}).item;
 	item = advance(item, {kind:"published",key:currentKey(item)!,at:8,head,pr,openItems:1,webhooks:false}).item;
 	const ci = {kind:"ci_read" as const,key:currentKey(item)!, at:9, head, reading:{kind:"read" as const,head,runs:[{name:"build",app:"status",state:"passed" as const,conclusion:"success",url:null,summary:null}],logs:[],truncated:false},prHead:head,mergeable:true,openItems:1,webhooks:false};
+	const missing = advance(item, { ...ci, at:3_600_000, reading:{...ci.reading, runs:[]} }).item;
+	assert.deepEqual(missing.question?.choices.map(c => c.id), ["wait", "hand_over", "give_up"]);
 	const review = advance(item, ci as never).effects.find(e=>e.kind === "deliver");
 	assert.ok(review?.to === "review" && review.reviewerInput?.task.body.includes("page evidence") && review.reviewerInput.task.body.includes("index evidence"));
 	for (const reading of [

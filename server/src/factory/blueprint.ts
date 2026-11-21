@@ -769,6 +769,8 @@ function afterCi(c: Change, ci: CiProgress): void {
 		return;
 	}
 	if (ci.moved !== null) return handoff(c, skippedReview(MOVED));
+	if (item.mode === "orchestrate" && (ci.last?.state === "none" || ci.last?.state === "skipped"))
+		return ask(c, "ci_timeout", "No passing CI reported on the complete feature. Wait for a check or hand over the PR.", [choice("wait"), ...handOver(item), choice("give_up")], null, null);
 	if (!item.reviewer) return handoff(c, skippedReview("this item was created before second reviews were available"));
 	if (item.place.kind === "machine" || "off" in item.reviewer) {
 		const why = "off" in item.reviewer && item.reviewer.off === "deployment" ? "turned off for this deployment" : "in this sandbox the reviewer's commands would run with the network";
