@@ -850,6 +850,14 @@ const passedCi = ciRead([{ name: "build", state: "passed" }]);
 const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", PASSED), { kind: "published", webhooks: false, head, pr: { number: 7, url: "" }, openItems: 1 }];
 
 {
+	const child = newItem();
+	child.parent = { itemId: "i_feature", title: "Feature", key: "first" };
+	const waiting = walk(child, [...pushedRun(H(1)), { ...ciFact(pendingBuild), at: T0 + 96 * MINUTE }]);
+	expect("a subtask waiting on CI offers only wait or give up", waiting.item.question?.kind === "ci_timeout" &&
+		waiting.item.question.choices.map(choice => choice.id).join() === "wait,give_up");
+}
+
+{
 	// Run 1 passed its gate and CI at H(1); run 2 was sent back, its checks failed twice, and it pushed nothing.
 	const reviewed = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: passedCi, mergeable: true, openItems: 1 }]);
 	const first = effect(reviewed.last, "handoff");

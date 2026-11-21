@@ -477,7 +477,7 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 						</div>
 					) : null}
 					<div className="item-choices">
-						{question.choices.map((choice, index) => (
+						{question.choices.filter(choice => !view.parent || choice.id !== "hand_over").map((choice, index) => (
 							<button
 								key={choice.id}
 								type="button"
@@ -968,7 +968,7 @@ export function Item({ page }: { page: ItemPage }) {
 							</>
 						) : (
 							<>
-								{view.mode === "orchestrate" ? "feature" : "work item"} · {view.source === "github" ? "from GitHub" : view.source === "api" ? "from the API" : "from the web"}
+								{view.mode === "orchestrate" ? "Plan first" : view.plan?.status === "approved" ? "Plan first · one implementer" : "Quick"} · {view.source === "github" ? "from GitHub" : view.source === "api" ? "from the API" : "from the web"}
 							</>
 						)}
 					</p>
@@ -1005,12 +1005,12 @@ export function Item({ page }: { page: ItemPage }) {
 							{acting.busy === "start" ? "Starting…" : "Start"}
 						</button>
 					) : null}
-					{view.state === "failed" && machine !== null ? (
+					{view.state === "failed" && (view.canRetry ?? (!view.parent && view.mode !== "orchestrate")) && machine !== null ? (
 						<button type="button" className="button button-primary" onClick={() => acting.act({ kind: "retry" })} disabled={busy}>
 							{acting.busy === "retry" ? "Starting…" : "Retry"}
 						</button>
 					) : null}
-					{view.state === "review" && machine !== null ? (
+					{view.mode !== "orchestrate" && view.state === "review" && machine !== null ? (
 						<button type="button" className="button button-outline" onClick={() => setDialog("send_back")} disabled={busy}>
 							Send back…
 						</button>

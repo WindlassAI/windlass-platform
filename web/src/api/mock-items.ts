@@ -1244,7 +1244,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			}
 			case "run_single":
 				if (!current) throw conflict("The feature no longer has an open plan.");
-				item.mode = "single"; plan.status = "superseded"; item.budget = { ...plan.compare.singleBudget };
+				item.mode = "single"; plan.status = "approved"; plan.approvedAt = at; plan.approvedBy = "person:" + auth.profile.uid; item.budget = { ...plan.compare.singleBudget };
 				return beginRun(auth, item, "Run as single item.");
 			case "edit_plan": {
 				if (!current || action.version !== plan.version) throw conflict("Read the latest plan before editing.");
@@ -1272,10 +1272,10 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (item.state !== "draft") throw conflict(`This item is ${now}: only a draft can be started.`);
 				return beginRun(auth, item, "Started.");
 			case "retry":
-				if (item.state !== "failed") throw conflict(`This item is ${now}: only a failed item can be retried.`);
+				if (!canRetry(item)) throw conflict(`This item is ${now}: only a failed item can be retried.`);
 				return beginRun(auth, item, "Started again.");
 			case "send_back": {
-				if (item.state !== "review") throw conflict(`This item is ${now}: only an item in review can be sent back.`);
+				if (item.mode === "orchestrate" || item.state !== "review") throw conflict(`This item is ${now}: only an item in review can be sent back.`);
 				const note = action.note.trim();
 				if (note === "") throw new PlatformError("user", "Say what to change: the note is what the agent is given.", { reason: "bad_input" });
 				return beginRun(auth, item, `Sent back: ${note}`);
@@ -1328,6 +1328,9 @@ export function createMockItems(deps: MockItemsDeps) {
 		}
 	}
 
+	const canRetry = (item: ItemView) => item.state === "failed" && !item.parent && !item.children?.length;
+	const pageOf = (item: ItemView) => structuredClone({ ...item, canRetry: canRetry(item) });
+
 	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "item" | "itemAttachmentLinks" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
 		return {
 			async listItems() {
@@ -1336,7 +1339,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			},
 			async item(id) {
 				await answer(220);
-				return structuredClone(itemOf(auth, id));
+				return pageOf(itemOf(auth, id));
 			},
 			// As the server's `links`: the kept screenshots only, each a fresh ten-minute link. The mock's are the
 			// fixtures under web/public/mock/, with a query that differs on every answer as a signed link does.
@@ -1388,7 +1391,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				const id = `it_${fresh(12)}`;
 				const item: ItemView = {
 					id,
-					mode: input.mode ?? "single", parent: null, plan: null, children: [],
+					mode: input.mode ?? "orchestrate", parent: null, plan: null, children: [],
 					title,
 					repository,
 					place,
@@ -1399,7 +1402,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					question: null,
 					pullRequest: null,
 					verdict: null,
-					budget: input.mode === "orchestrate" ? featureCap(MOCK_FACTORY_LIMITS.item) : { ...MOCK_FACTORY_LIMITS.item },
+					budget: input.mode !== "single" ? featureCap(MOCK_FACTORY_LIMITS.item) : { ...MOCK_FACTORY_LIMITS.item },
 					spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
 					sessionId: session.id,
 					createdAt: at,
@@ -1429,7 +1432,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				await answer(360);
 				const item = itemOf(auth, id);
 				await act(auth, item, action);
-				return structuredClone(item);
+				return pageOf(item);
 			},
 			// Answered without work items too, as the server answers it: the ceiling on running agents is every agent's.
 			async factoryLimits() {

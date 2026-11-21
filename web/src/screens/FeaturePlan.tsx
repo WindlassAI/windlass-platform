@@ -270,8 +270,9 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 					{plan.spec.acceptance.length > 0 ? <SpecList term="Done when" lines={plan.spec.acceptance} /> : null}
 					{plan.spec.outOfScope.length > 0 ? <SpecList term="Not in it" lines={plan.spec.outOfScope} /> : null}
 				</dl>
-				{plan.singleSuggested ? <p className="plan-single">The planner suggests one item instead: {plan.singleSuggested}</p> : null}
+				{view.mode === "single" && plan.status === "approved" ? <p className="plan-single">One implementer follows this plan within the single-item budget.</p> : plan.singleSuggested ? <p className="plan-single">The planner suggests one item instead: {plan.singleSuggested}</p> : null}
 
+				{view.mode !== "single" && plan.subtasks.length > 0 ? <>
 				<ol className="plan-tasks" aria-label="Subtasks">
 					{plan.subtasks.map((task) => (
 						<SubtaskRow key={task.key} task={task} n={numbers.get(task.key)!} numbers={numbers} child={children.get(task.key) ?? null} fields={fields} editing={editing} drafts={review.drafts[task.key]} problems={review.problems.fields[task.key] ?? {}} floor={floor} single={single} disabled={acting.busy !== null} onChange={(field, text) => review.setDraft(task.key, field, text)} />
@@ -306,6 +307,7 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 						The feature may spend three single items ({PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} tokens, {plan.budget.turns} turns). {PLAN_FIELDS[0]!.spelled(reserve.tokens)} tokens and {reserve.turns} turns are kept for the summary and the review; the hatched part of each bar. A subtask gets at most one single item ({PLAN_FIELDS[0]!.spelled(single.tokens)} tokens, {single.turns} turns).
 					</p>
 				</div>
+				</> : null}
 			</div>
 		</section>
 	);

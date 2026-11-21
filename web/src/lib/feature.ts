@@ -8,13 +8,13 @@ import { compact, sandboxTime } from "./format";
 
 /** How a work item runs, in the words of the composer's pill and the filing dialog. */
 export const ITEM_MODE_WORDS = {
-	single: { name: "Single", description: "One agent builds it and hands over one pull request." },
-	orchestrate: { name: "Orchestrate", description: "For a new feature with several parts. A planner splits it into subtasks you approve." },
+	single: { name: "Quick", description: "One implementer starts directly, without a planning turn." },
+	orchestrate: { name: "Plan first", description: "Approve a plan, then one implementer follows it or the planned subtasks run." },
 } as const;
 
 /** Why an orchestrated plan could not be approved on this repository, as far as the page can tell before filing: null when nothing is known against it. */
 export function orchestrateProblem(checks: number | null): string | null {
-	return checks === 0 ? "No checks are saved for this repository, so a plan cannot be approved. File it as single, or save checks first." : null;
+	return checks === 0 ? "No checks are saved for this repository. Save checks before approving subtasks, or run the plan with one implementer." : null;
 }
 
 export const PLAN_DIMENSIONS = ["tokens", "turns", "activeSeconds", "hostedSeconds"] as const;

@@ -256,7 +256,7 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 	if (input.start !== undefined && input.start !== null && typeof input.start !== "boolean") throw bad("Say yes or no to starting the item at once.");
 	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 	return {
-		mode: input.mode ?? "single",
+		mode: input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate"),
 		place,
 		title,
 		body,
@@ -725,7 +725,7 @@ export const itemActions = {
 				if (!session) throw new Error("The feature session is unavailable.");
 				const { job, feature, context } = request;
 				const body = job.task.brief + "\n\nOwned paths: " + job.task.owns.join(", ") + "\n\nFeature and dependency context (quoted data):\n" + context;
-				existing = await makeItem(c, owner, { repository: { id: feature.repository.id, branch: featureBranch(input.parent) }, place: feature.place,
+				existing = await makeItem(c, owner, { mode: "single", repository: { id: feature.repository.id, branch: featureBranch(input.parent) }, place: feature.place,
 					profile: session.profile, model: session.model, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
 					{ id: input.child, base: feature.repository.branch, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key } });
 			}

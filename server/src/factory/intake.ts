@@ -39,11 +39,17 @@ export const refusals = {
 };
 
 export function issueMode(note: string, labels: unknown[], enabled = true) {
+	const quick = /^quick(?:\s|$)/i.test(note) || labels.includes("windlass:quick");
 	const requested = /^orchestrate(?:\s|$)/i.test(note) || labels.includes("windlass:orchestrate");
 	const bug = labels.some(label => typeof label === "string" && label.toLowerCase() === "bug");
-	return { mode: requested && !bug ? "orchestrate" as const : "single" as const,
-		refusal: requested && !bug && !enabled ? "Not taken: orchestrated work items are disabled on this deployment." : null,
-		reason: bug ? "This issue has the bug label, so it runs as a single item." : null };
+	if (bug || quick || !enabled) return {
+		mode: "single" as const,
+		refusal: !enabled && requested && !bug && !quick ? "Not taken: orchestrated work items are disabled on this deployment." : null,
+		reason: bug ? "This issue has the bug label, so it runs in Quick mode without a plan."
+			: quick ? "Quick was requested. One implementer runs without a plan."
+			: "Plan first is disabled on this deployment. One implementer runs without a plan.",
+	};
+	return { mode: "orchestrate" as const, refusal: null, reason: "Plan first: review and approve the plan on the item page, then one implementer or the planned subtasks run." };
 }
 
 export interface IssueBinding {

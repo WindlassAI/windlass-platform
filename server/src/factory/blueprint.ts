@@ -111,6 +111,10 @@ export function currentKey(item: FactoryItem): string | null {
 	return item.run === null ? null : stepKey(item.id, item.run.n, item.run.step.n, item.run.step.attempt);
 }
 
+export function canRetry(item: FactoryItem): boolean {
+	return item.state === "failed" && !item.machineRemoved && !item.parent && !item.jobs?.length;
+}
+
 /** The next state of `item` after `fact`, and what to do and record for it. A fact that changes nothing returns `item` itself, no effects and no events. */
 export function advance(item: FactoryItem, fact: Fact): Outcome {
 	const unchanged: Outcome = { item, effects: [], events: [] };
@@ -254,7 +258,7 @@ function apply(c: Change, fact: Fact): boolean {
 			beginRun(c, firstPlan(item, null));
 			return true;
 		case "retry":
-			if ((item.jobs?.length || item.parent) || item.state !== "failed" || item.machineRemoved) return false;
+			if (!canRetry(item)) return false;
 			c.say("Started again.");
 			beginRun(c, firstPlan(item, null));
 			return true;
@@ -421,10 +425,19 @@ function taskText(task: Task): string {
 }
 
 /** A run's first turn: the plan (step 0) when the item's plan is "approve", the task otherwise. */
-function firstPlan({ task, plan, mode }: FactoryItem, note: string | null): TurnPlan {
+function firstPlan({ task, plan, mode, featurePlan }: FactoryItem, note: string | null): TurnPlan {
 	const text = withNote(taskText(task), note);
 	if (mode === "orchestrate") return { ...IMPLEMENT, kind: "refine", charge: "plan", text: `Read the repository. File a proposal with file_plan. Suggest a single item for small or unverifiable work. Include open questions and budget each verifiable subtask.\n\n${text}` };
 	if (plan === "approve") return { ...IMPLEMENT, kind: "refine", charge: "plan", text: `Plan this work; do not change any file. File the plan with your report.\n\n${text}` };
+	if (featurePlan?.status === "approved") {
+		const { goal, requirements, acceptance, outOfScope } = featurePlan.spec;
+		const spec = [
+			["Goal", [goal]], ["Requirements", requirements], ["Done when", acceptance], ["Not in it", outOfScope],
+		] as const;
+		const sections = spec.map(([label, lines]) => label + ":\n" + lines.map(line => "- " + line).join("\n"));
+		for (const q of featurePlan.questions) if (q.answer) sections.push(q.text + "\n" + q.answer);
+		return { ...IMPLEMENT, text: text + "\n\nImplement the approved plan.\n" + sections.join("\n\n") };
+	}
 	return { ...IMPLEMENT, text };
 }
 
@@ -748,7 +761,7 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		}
 		case "pending":
 		case "retry":
-			if (since >= CI_POLLING.timeoutMs) return ask(c, "ci_timeout", `CI has not finished ${spellSeconds(since / 1000)} after the push.`, [choice("wait"), choice("hand_over"), choice("give_up")], null, null);
+			if (since >= CI_POLLING.timeoutMs) return ask(c, "ci_timeout", `CI has not finished ${spellSeconds(since / 1000)} after the push.`, [choice("wait"), ...handOver(c.item), choice("give_up")], null, null);
 			break;
 	}
 	pollCi(c, fact.openItems, reading.kind === "rate_limited" ? reading.retryAt : null, ciWaitSentence(ci.head, reading));
@@ -1026,9 +1039,14 @@ function runSingle(c: Change) {
 	c.item.mode = "single";
 	c.item.plan = "none";
 	c.item.budget = { ...c.item.singleBudget! };
-	if (c.item.featurePlan) c.item.featurePlan.status = "superseded";
+	const plan = c.item.featurePlan;
+	if (plan && c.item.filedTurn === c.key) {
+		plan.status = "approved";
+		plan.approvedBy = c.by;
+		plan.approvedAt = c.at;
+	} else if (plan) plan.status = "superseded";
 	c.item.question = null;
-	nextTurn(c, { ...IMPLEMENT, text: taskText(c.item.task) });
+	nextTurn(c, firstPlan(c.item, null));
 }
 
 const CHOICES: Record<ChoiceId, string> = {

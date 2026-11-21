@@ -21,11 +21,15 @@ test("an orchestrated filing starts with a planner and three single budgets", ()
 	assert.equal(start.item.run!.step.kind, "refine");
 	assert.match(start.effects.find(e => e.kind === "deliver")!.text, /file_plan/);
 });
-test("the bound label or first command word requests orchestration, bug wins with a reply", () => {
+test("issues plan first unless the bug label, quick label or leading quick command opts out", () => {
 	const label = edge("issues", { action: "labeled", installation: { id: 1 }, repository: { id: 2 }, issue: { number: 3 }, sender: { login: "sam", id: 4 }, label: { name: "windlass:orchestrate" } }, { slug: "windlass" });
 	assert.ok(label);
 	assert.equal(intake.issueMode("orchestrate please", []).mode, "orchestrate");
-	assert.equal(intake.issueMode("please orchestrate", []).mode, "single");
+	assert.equal(intake.issueMode("", []).mode, "orchestrate");
+	assert.equal(intake.issueMode("please be quick", []).mode, "orchestrate");
+	assert.equal(intake.issueMode("quickly", []).mode, "orchestrate");
+	assert.equal(intake.issueMode("QUICK please", ["windlass:orchestrate"]).mode, "single");
+	assert.equal(intake.issueMode("orchestrate", ["windlass:quick"]).mode, "single");
 	assert.equal(intake.issueMode("", ["windlass:orchestrate"]).mode, "orchestrate");
 	assert.deepEqual(intake.issueMode("orchestrate", ["BUG"]).mode, "single");
 	assert.match(intake.issueMode("orchestrate", ["bug"]).reason!, /bug/i);
@@ -91,6 +95,22 @@ test("single suggestion waits for either explicit choice, and planning spend car
 		if (choice === "run_single") assert.deepEqual(next.budget, single);
 	}
 });
+test("run_single gives the builder the current approved scope, including the owner’s edits", () => {
+	const item = proposed({ ...proposal(), subtasks: [], singleSuggested: "One implementer is enough." });
+	const spec = { goal: "Look up a record", requirements: ["Match the exact identifier"], acceptance: ["A missing identifier returns 404"], outOfScope: ["Prefix matching"] };
+	const edited = advance(item, { kind: "edit_plan", version: 1, plan: { ...item.featurePlan!, spec }, at: 4, by: "owner" }).item;
+	for (const fact of [{ kind: "run_single" }, { kind: "answer", choice: "run_single", question: edited.question!.id }] as const) {
+		const result = advance(edited, { ...fact, at: 5, by: "owner" });
+		const delivery = result.effects.find(e => e.kind === "deliver");
+		assert.equal(result.item.featurePlan?.status, "approved");
+		assert.equal(result.item.featurePlan?.approvedBy, "owner");
+		assert.ok(delivery);
+		assert.equal(delivery.agent, null);
+		for (const text of [task.body, spec.goal, ...spec.requirements, ...spec.acceptance, ...spec.outOfScope]) assert.ok(delivery.text.includes(text), text);
+		assert.ok(!delivery.text.includes("Index documents"));
+	}
+});
+
 test("a planner can file a plan without any builder publication tools", async () => {
 	const { turnHostTools, hostToolsMeta } = await import("../server/src/sandbox/turn.js");
 	const call = async () => "";
@@ -371,6 +391,9 @@ test("a withdrawn feature turn settles its late usage receipt exactly once", () 
 });
 
 test("a disabled GitHub orchestration request is refused before claiming the issue", () => {
+	const ordinary = intake.issueMode("", [], false);
+	assert.equal(ordinary.mode, "single");
+	assert.equal(ordinary.refusal, null);
 	const asked = intake.issueMode("orchestrate", [], false);
 	assert.match(asked.refusal!,/disabled/i);
 	assert.equal(intake.issueMode("orchestrate",["bug"],false).refusal,null);

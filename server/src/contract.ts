@@ -1494,6 +1494,7 @@ export interface ItemSummary {
 
 /** An item's page. */
 export interface ItemView extends ItemSummary {
+	canRetry?: boolean;
 	plan?: FeaturePlan | null;
 	children?: ItemSummary[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */

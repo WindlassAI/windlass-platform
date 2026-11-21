@@ -27,6 +27,7 @@ import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { clockTime, useMachines } from "./Machines";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
+import { ItemModePicker } from "../components/ItemModePicker";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 
 export interface ItemsState {
@@ -495,7 +496,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [placeChoice, setPlace] = useState<string | null>(null);
 	// A machine that was removed or can no longer be chosen while the form is open leaves the item on this platform, which the line then says.
 	const chosenMachine = mine.find((machine) => machine.machineId === placeChoice && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
-	const [orchestrate, setOrchestrate] = useState(false);
+	const [mode, setMode] = useState<"orchestrate" | "single">("orchestrate");
 	const [title, setTitle] = useState("");
 	const [body, setBody] = useState("");
 	const [criteria, setCriteria] = useState("");
@@ -515,7 +516,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, ...(orchestrate && platform.info?.items?.orchestrate && { mode: "orchestrate" as const }), ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}) };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}) };
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;
@@ -560,15 +561,8 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 						<span className="label" id={ids.mode}>
 							How it runs
 						</span>
-						<div className="segmented" role="radiogroup" aria-labelledby={ids.mode}>
-							{(["single", "orchestrate"] as const).map((option) => (
-								<label key={option} className={`segment${(option === "orchestrate") === orchestrate ? " segment-chosen" : ""}`}>
-									<input className="segment-radio" type="radio" name={ids.mode} value={option} checked={(option === "orchestrate") === orchestrate} disabled={busy} onChange={() => setOrchestrate(option === "orchestrate")} />
-									{ITEM_MODE_WORDS[option].name}
-								</label>
-							))}
-						</div>
-						<p className="field-note">{orchestrate ? `${ITEM_MODE_WORDS.orchestrate.description} Approving the plan needs saved checks and CI that reports on pushes.` : ITEM_MODE_WORDS.single.description}</p>
+						<ItemModePicker value={mode} onChange={setMode} disabled={busy} />
+						<p className="field-note">{ITEM_MODE_WORDS[mode].description}</p>
 					</div>
 				) : null}
 				<div>

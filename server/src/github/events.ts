@@ -88,8 +88,9 @@ export function edge(event: string, payload: unknown, meta: { slug: string } & P
 	const sender = { id: userId, login, association: sameAuthor ? str(subject.author_association) || "NONE" : "NONE" };
 	const n = id(issue.number);
 	if (event === "issues" && n) {
-		if ((["labeled", "unlabeled"].includes(action) && ["windlass", "windlass:orchestrate"].includes(str(obj(p.label).name))) || ["closed", "reopened", "edited", "deleted", "transferred"].includes(action))
-			return { ...base, event, data: { issue: n, sender, ...(obj(p.label).name === "windlass:orchestrate" && { label: "windlass:orchestrate" }) } };
+		const label = str(obj(p.label).name);
+		if ((["labeled", "unlabeled"].includes(action) && ["windlass", "windlass:orchestrate", "windlass:quick"].includes(label)) || ["closed", "reopened", "edited", "deleted", "transferred"].includes(action))
+			return { ...base, event, data: { issue: n, sender, ...((label === "windlass:orchestrate" || label === "windlass:quick") && { label }) } };
 	}
 	const commentId = decimalId(subject.id);
 	if (!commentId || commentId === "0") return null;

@@ -46,7 +46,7 @@ import { clientError, describeError, requireService, requireServiceFor, serviceP
 import { githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
-import { RULES, advance, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
+import { RULES, advance, canRetry, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
 import { itemComment, reportBlocks, REVIEW_PROFILE_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -236,6 +236,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 	return {
 		...summaryOf(stored),
 		plan: stored.item.featurePlan ?? null,
+		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
 		reviewNone: stored.meta.handoffReview?.reason ?? (!stored.item.reviewer ? "this item was created before second reviews were available" : "off" in stored.item.reviewer ? stored.item.reviewer.off === "profile" ? REVIEW_PROFILE_REASON : "turned off for this deployment" : null),
 		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),
