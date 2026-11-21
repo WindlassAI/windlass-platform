@@ -176,6 +176,8 @@ interface ConnParams {
 }
 
 interface UserVars {
+	/** A retry that fires during a slow sweep waits for its batch checkpoints. */
+	disconnectSweep?: Promise<void>;
 	tokenGen: number;
 	profile: UserProfile | null;
 	/** False until a valid token of this user has been seen: until then the actor may be a stranger's doing. */
@@ -1063,49 +1065,70 @@ type RevocationContext = UserCtx & {
 	key: string[];
 	client(): unknown;
 	conns: Parameters<typeof disconnectRevoked>[0];
-	schedule: { after(ms: number, action: string): Promise<string> };
+	schedule: { after(ms: number, action: string, attempt: number): Promise<string> };
 	log: { warn(entry: unknown): void };
 };
 
 const RETRY_DISCONNECT = "retryDisconnectRevoked";
 
-async function closeRevokedFeeds(c: RevocationContext, generation: number): Promise<void> {
-	// A temporarily unreachable session must not delay closing the others in the same pass.
-	let complete = true;
+// Six durable retries, starting after 30 seconds and ending with a 15-minute delay.
+const DISCONNECT_DELAYS = [30_000, 60_000, 120_000, 240_000, 480_000, 900_000];
+
+async function closeRevokedFeeds(c: RevocationContext, generation: number, lastTry: boolean): Promise<void> {
+	let userFeedsFailed = false;
 	try {
 		await disconnectRevoked(c.conns, generation);
 	} catch {
-		complete = false;
+		userFeedsFailed = true;
 	}
-	const sessions = [...c.vars.sessions.keys()];
+	// Only the session itself knows which sockets it has. Checkpoint each batch so a retry or
+	// actor restart visits only outstanding sessions. A newer generation owns its own marks.
+	const sessions = await c.db.execute<{ id: string }>("SELECT id FROM sessions WHERE disconnect_pending = ?", generation);
+	let failed = 0;
 	for (let i = 0; i < sessions.length; i += 16) {
-		await Promise.all(sessions.slice(i, i + 16).map(async id => {
+		if (generation < c.vars.tokenGen) return;
+		const closed = await Promise.all(sessions.slice(i, i + 16).map(async ({ id }) => {
 			try {
 				await sessionActor(c, c.key[0], id).internalDisconnectRevoked(generation);
 			} catch (error) {
-				if (!isActorGone(error)) complete = false;
+				if (!isActorGone(error)) return null;
 			}
+			return id;
 		}));
+		const done = closed.filter(id => id !== null);
+		failed += closed.length - done.length;
+		if (done.length) await c.db.execute("UPDATE sessions SET disconnect_pending = 0 WHERE disconnect_pending = ? AND id IN (SELECT value FROM json_each(?))", generation, JSON.stringify(done));
 	}
-	if (complete) {
-		await c.db.execute("UPDATE token_generation SET disconnected = MAX(disconnected, ?) WHERE id = 1", generation);
+	if (!userFeedsFailed && failed === 0) {
+		await c.db.execute("UPDATE token_generation SET disconnected = ? WHERE id = 1 AND gen = ?", generation, generation);
 	} else {
-		// Token checks already use the new generation. A durable retry closes any remaining passive feeds.
-		c.log.warn({ msg: "Retrying revoked session disconnects", generation });
+		c.log.warn({ msg: lastTry ? "Revoked feed disconnect retries exhausted" : "Retrying revoked feed disconnects", generation, failedSessions: failed, userFeedsFailed });
 	}
+}
+
+function sweep(c: RevocationContext, generation: number, lastTry = false): Promise<void> {
+	// The timer is already armed. If it fired during a slow pass, wait for that pass to
+	// checkpoint its successes before looking up the remaining sessions.
+	const previous = c.vars.disconnectSweep ?? Promise.resolve();
+	const run = previous.catch(() => undefined).then(() => closeRevokedFeeds(c, generation, lastTry));
+	c.vars.disconnectSweep = run;
+	return run.finally(() => {
+		if (c.vars.disconnectSweep === run) c.vars.disconnectSweep = undefined;
+	});
 }
 
 async function revokeTokens(c: RevocationContext, revokeApiTokens = false): Promise<void> {
 	// Arm recovery before committing the bump, including when the actor stops between the two writes.
-	await c.schedule.after(30_000, RETRY_DISCONNECT);
+	const job = await c.schedule.after(DISCONNECT_DELAYS[0], RETRY_DISCONNECT, 1);
 	const gen = await c.db.transaction(async tx => {
 		if (revokeApiTokens) await tx.execute("DELETE FROM api_token");
-		const [row] = await tx.execute<{ gen: number }>("UPDATE token_generation SET gen = gen + 1 WHERE id = 1 RETURNING gen");
+		const [row] = await tx.execute<{ gen: number }>("UPDATE token_generation SET gen = gen + 1, disconnect_job = ? WHERE id = 1 RETURNING gen", job);
+		await tx.execute("UPDATE sessions SET disconnect_pending = ?", row.gen);
 		return row.gen;
 	});
 	c.vars.tokenGen = Math.max(c.vars.tokenGen, gen);
 	c.vars.reached = true;
-	await closeRevokedFeeds(c, gen);
+	await sweep(c, gen);
 }
 
 export const user = actor({
@@ -1214,12 +1237,19 @@ export const user = actor({
 			for (const table of ITEM_TABLES) await db.execute(table);
 			for (const [table, column, definition] of [
 				["token_generation", "disconnected", "INTEGER NOT NULL DEFAULT 0"],
+				["token_generation", "disconnect_job", "TEXT"],
+				["sessions", "disconnect_pending", "INTEGER NOT NULL DEFAULT 0"],
 				["repository_defaults", "screenshots", "INTEGER NOT NULL DEFAULT 0"],
 				["api_token", "window_count", "INTEGER NOT NULL DEFAULT 0"],
 				["sessions", "launch_claim", "INTEGER"],
 			] as const) {
 				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
-				if (!columns.some((found) => found.name === column)) await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+				if (columns.some((found) => found.name === column)) continue;
+				await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+				if (column === "disconnect_pending") {
+					// A pre-upgrade sweep has a timer but no per-session checkpoints yet.
+					await db.execute("UPDATE sessions SET disconnect_pending = (SELECT gen FROM token_generation WHERE id = 1) WHERE EXISTS (SELECT 1 FROM token_generation WHERE gen > disconnected)");
+				}
 			}
 			// The last launch claim's generation (`UserVars.launchClaim`): kept on its own, so that it only ever grows.
 			await db.execute("CREATE TABLE IF NOT EXISTS launch_counter (id INTEGER PRIMARY KEY CHECK (id = 1), last INTEGER NOT NULL)");
@@ -1337,13 +1367,16 @@ export const user = actor({
 	},
 
 	actions: {
-		[RETRY_DISCONNECT]: async (c): Promise<void> => {
+		[RETRY_DISCONNECT]: async (c, attempt = 1): Promise<void> => {
 			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
-			const [pending] = await c.db.execute<{ gen: number }>("SELECT gen FROM token_generation WHERE gen > disconnected");
-			if (pending) {
-				await c.schedule.after(30_000, RETRY_DISCONNECT);
-				await closeRevokedFeeds(c, pending.gen);
-			}
+			const [pending] = await c.db.execute<{ gen: number; disconnect_job: string | null }>(
+				"SELECT gen, disconnect_job FROM token_generation WHERE gen > disconnected AND (disconnect_job = ? OR disconnect_job IS NULL)", c.scheduledFire.id);
+			if (!pending) return;
+			const delay = DISCONNECT_DELAYS[attempt];
+			// Arm recovery before the pass. Superseded jobs and duplicate deliveries do no work.
+			const next = delay === undefined ? "exhausted" : await c.schedule.after(delay, RETRY_DISCONNECT, attempt + 1);
+			const claimed = await c.db.execute("UPDATE token_generation SET disconnect_job = ? WHERE gen = ? AND gen > disconnected AND disconnect_job IS ? RETURNING gen", next, pending.gen, pending.disconnect_job);
+			if (claimed.length) await sweep(c, pending.gen, delay === undefined);
 		},
 		internalTokenGeneration: (c): number => { requireServiceFor(c, "call"); return c.vars.tokenGen; },
 		signOutEverywhere: async (c, options?: { revokeApiTokens: boolean }): Promise<void> => {
