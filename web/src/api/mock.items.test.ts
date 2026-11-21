@@ -487,16 +487,16 @@ it("files an orchestrated feature, edits its budget by version, and lists the ch
 		expect(page.mode).toBe("orchestrate");
 		const plan = structuredClone(page.plan!);
 		expect(plan.status).toBe("proposed");
-		plan.subtasks[0].budget.tokens -= 1;
+		plan.subtasks[0]!.budget.tokens -= 1;
 		const edit = { kind: "edit_plan" as const, version: plan.version, plan };
 		const edited = await user.actOnItem(made.id, edit);
 		expect(edited.plan!.version).toBe(plan.version + 1);
 		await expect(user.actOnItem(made.id, edit)).rejects.toMatchObject({ reason: "item_conflict" });
 		const approved = await user.actOnItem(made.id, { kind: "approve_plan", version: edited.plan!.version });
-		expect(approved.children?.[0].parent?.itemId).toBe(made.id);
+		expect(approved.children?.[0]?.parent?.itemId).toBe(made.id);
 		expect(approved.pullRequest).toBeTruthy();
 		expect((await user.listItems()).some(i => i.parent)).toBe(false);
 		const cancelled = await user.actOnItem(made.id, {kind: "cancel"});
-		expect(cancelled.children?.[0].state).toBe("cancelled");
+		expect(cancelled.children?.[0]?.state).toBe("cancelled");
 	} finally { mock.dispose(); }
 });

@@ -307,7 +307,8 @@ class FakeHandle implements SandboxHandle {
 	/** Understands the few commands the platform runs; anything else succeeds with no output. */
 	private interpret(command: string): ExecResult {
 		const files = this.sandbox.files;
-		const head = process.env.WLP_FAKE_REVIEW_HEAD;
+		const fixture = process.env.WLP_FAKE_FEATURE_HEADS;
+		const head = fixture ? (JSON.parse(readFileSync(fixture, "utf8")) as Record<string,string>)[this.sandbox.sessionId] : process.env.WLP_FAKE_REVIEW_HEAD;
 		if (this.sandbox.privateData && command.includes("wlp_git clone --quiet --single-branch") && process.env.WLP_FAKE_REVIEW_CLONE_503_ONCE && !this.sandbox.reviewCloneFailed) {
 			this.sandbox.reviewCloneFailed = true;
 			return { ...ok(), exitCode: 128, stderr: "fatal: unable to access repository: The requested URL returned error: 503" };
@@ -1077,7 +1078,18 @@ class FakeWindlass implements Windlass {
 					platformCalled = true;
 					const offered = turnHostTools(input);
 					const params = sessionOpenParams(sandbox.cwd, hostToolsMeta(offered, input.reportScreenshots));
-					if (input.onReview || input.onReport) emit({ type: "fake.session_open", data: { method: continued ? "session/resume" : "session/new", params }, seq: 0 });
+					if (input.onPlan) {
+						if (!input.planner || offered.size !== 1 || input.servers?.length || input.checks?.length) throw new Error("Planner received builder privileges.");
+						const reply = await input.onPlan({ messageId: "plan", callId: "file", arguments: {
+							spec: { goal: "Index and search documents", requirements:["Index documents"], outOfScope:[], acceptance:["Documents can be found."] },
+							questions: [], singleSuggested: null, subtasks:["index","search"].map((key,i) => ({
+								key,title:key,brief:"Implement " + key + ". (report)", acceptance:["Run pnpm test"],owns:[key+"/**"],dependsOn:i ? ["index"] : [],
+								budget:{tokens:500000,turns:3,activeSeconds:1200,hostedSeconds:1200},
+							})),
+						} }, signal ?? new AbortController().signal);
+						emit({type:"fake.plan_reply",data:{reply},seq:0});
+					}
+					if (input.onPlan || input.onReview || input.onReport) emit({ type: "fake.session_open", data: { method: continued ? "session/resume" : "session/new", params }, seq: 0 });
 					if (input.onReview) {
 						if (!this.sandboxes.all.get(sandbox.id)?.privateData || input.onPublish || input.onPush || input.onReport || input.onFetchBase || input.servers?.length || input.checks?.length || Object.keys(input.secrets?.env ?? {}).length || input.onQuestion || input.maxSteps !== 40) throw new Error("Reviewer received builder privileges.");
 						const ids = { messageId: "review_step", callId: "shell_1" };
@@ -1108,7 +1120,7 @@ class FakeWindlass implements Windlass {
 						["(push)", "push", input.onPush],
 						["(report)", "report", input.onReport],
 					] as const) {
-						if (!text.includes(word) || run === undefined || signal?.aborted) continue;
+						if (!(text.includes(word) || name === "report" && input.planner) || run === undefined || signal?.aborted) continue;
 						const fixture = process.env.WLP_FAKE_ATTACHMENT_PNG;
 						const pictured = name === "report" && text.includes("(screenshot)");
 						if (pictured && fixture) this.sandboxes.all.get(sandbox.id)!.shots.set(".wlp-shots/home.png", Buffer.from(fixture, "base64"));

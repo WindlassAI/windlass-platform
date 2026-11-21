@@ -202,3 +202,34 @@ test("child integration needs both gates, ignores duplicate receipts, and rebase
 		}
 	}
 });
+
+test("a stopped feature cannot turn its cap into a builder retry or lose child spend", () => {
+	const budget = {...single, turns:1};
+	const item = proposed(proposal());
+	const old = item.featurePlan!;
+	const next = advance(item,{kind:"approve_plan",version:old.version,at:5,by:"person"}).item;
+	next.spent.tokens = next.budget.tokens;
+	const paused = advance(next,{kind:"feature_ready",key:currentKey(next)!,pr,head,at:6}).item;
+	assert.equal(paused.question?.kind,"budget"); assert.equal(paused.jobs?.length,0);
+	assert.ok(paused.question!.choices.some(c => c.id === "revise"));
+	const revised = advance(paused,{kind:"answer",question:paused.question!.id,choice:"revise",by:"person",at:7});
+	assert.ok(revised.item.question?.kind === "budget" || revised.item.run?.step.kind === "refine");
+});
+test("a second re-plan can move only unused allocation and a third stop cannot dispatch a planner", () => {
+	let item = approved();
+	item = advance(item, {kind:"feature_ready",key:currentKey(item)!,pr,head,at:5}).item;
+	for (let i=0;i<3;i++) {
+		const last = item.jobs!.at(-1)!;
+		item = advance(item,{kind:"child_update",child:last.id,key:currentKey(item)!,state:"failed",spent:{...zero,turns:1},report:"Stopped",head:null,at:6+i}).item;
+		if(i===2) break;
+		const p = proposal();
+		assert.throws(()=>advance(item,{kind:"file_plan",plan:p,key:currentKey(item)!,at:10}),/unspent/);
+		p.subtasks[0].budget.turns -= i+1;
+		const key = currentKey(item)!;
+		item = advance(item,{kind:"file_plan",plan:p,key,at:10}).item;
+		item = advance(item,{kind:"turn_ended",key,at:11,outcome:"succeeded",spend:{tokens:1,hostedSeconds:0},verified:null,flags:[],changes:false,report:null}).item;
+		assert.equal(item.question!.kind,"replan_approval");
+		item = advance(item,{kind:"approve_plan",version:item.featurePlan!.version,by:"person",at:12}).item;
+	}
+	assert.equal(item.replans,2); assert.equal(item.question?.kind,"rounds");
+});

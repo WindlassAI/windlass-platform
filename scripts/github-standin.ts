@@ -345,6 +345,12 @@ export class GithubStandin {
 		}
 	}
 
+	featureCommit(repository: StandinRepository, parent: string, message: string, date: string): string {
+		const tree = git(["show","-s","--format=%T",parent], repository.path);
+		const author = { GIT_AUTHOR_NAME:"Windlass", GIT_AUTHOR_EMAIL:"windlass@users.noreply.github.com", GIT_AUTHOR_DATE:date, GIT_COMMITTER_NAME:"Windlass", GIT_COMMITTER_EMAIL:"windlass@users.noreply.github.com", GIT_COMMITTER_DATE:date };
+		return execFileSync("git",["commit-tree",tree,"-p",parent,"-m",message], { cwd:repository.path, encoding:"utf8", env:{...process.env,...author} }).trim();
+	}
+
 	branchHead(repository: StandinRepository, branch: string): string | null {
 		try {
 			return git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], repository.path);
@@ -533,7 +539,7 @@ export class GithubStandin {
 	private pullJson(pull: StandinPull): Record<string, unknown> {
 		const repository = this.repositories.get(pull.repository) as StandinRepository;
 		return {
-			number: pull.number,
+			number: pull.number, node_id: "PR_" + repository.id + "_" + pull.number,
 			html_url: `${this.url}/${repository.owner}/${repository.name}/pull/${pull.number}`,
 			state: pull.state,
 			draft: pull.draft,
@@ -543,7 +549,7 @@ export class GithubStandin {
 			merged_at: pull.merged ? new Date().toISOString() : null,
 			title: pull.title,
 			body: pull.body,
-			head: { ref: pull.head },
+			head: { ref: pull.head, ...(pull.head.startsWith("windlass/feature-i_") && { sha: this.branchHead(repository, pull.head) }) },
 			base: { ref: pull.base, sha: this.branchHead(repository, pull.base) },
 		};
 	}
@@ -610,6 +616,13 @@ export class GithubStandin {
 			return answer(200, { access_token: value, expires_in: 28800, refresh_token: `ghr_${randomBytes(18).toString("hex")}`, refresh_token_expires_in: 15897600, scope: "", token_type: "bearer" });
 		}
 
+		if (path === "/api/graphql" && request.method === "POST") {
+			const token = auth.token, args = body as { query?: string; variables?: {id?: string} };
+			const pull = this.pulls.find(p => "PR_" + p.repository + "_" + p.number === args.variables?.id);
+			if (!token || !pull || !this.allows(token,this.repositories.get(pull.repository)!,"pull_requests","write") || !args.query?.includes("markPullRequestReadyForReview")) return answer(403,{});
+			pull.draft = false;
+			return answer(200,{data:{markPullRequestReadyForReview:{pullRequest:{isDraft:false}}}});
+		}
 		if (!path.startsWith("/api/v3/")) return answer(404, { message: "Not Found" });
 		if (this.down) return answer(503, { message: "Service unavailable" });
 		const api = path.slice("/api/v3".length);
@@ -755,6 +768,29 @@ export class GithubStandin {
 				return answer(200, { permission: level, role_name: level, user: this.users.get(login) });
 			}
 
+			if (rest.startsWith("/git/")) {
+				if (!this.allows(token,repository,"contents",method === "GET" ? "read" : "write")) return denied();
+				const fields = body as {ref:string; sha:string; tree:string; parents:string[]; message:string; author:{date:string}; force:boolean};
+				try {
+					if (rest.startsWith("/git/ref/heads/") && method === "GET") {
+						const sha = this.branchHead(repository,decodeURIComponent(rest.slice("/git/ref/heads/".length)));
+						return answer(sha ? 200 : 404,{object:{sha}});
+					}
+					if (rest.startsWith("/git/commits/") && method === "GET") return answer(200,{tree:{sha:git(["show","-s","--format=%T",rest.slice("/git/commits/".length)],repository.path)}});
+					if (rest === "/git/commits" && method === "POST") return answer(201,{sha:this.featureCommit(repository,fields.parents[0],fields.message,fields.author.date)});
+					if (rest === "/git/refs" && method === "POST") {
+						git(["update-ref",fields.ref,fields.sha,"0".repeat(40)],repository.path);
+						return answer(201,{object:{sha:fields.sha}});
+					}
+					if (rest.startsWith("/git/refs/heads/") && method === "PATCH") {
+						const ref = rest.slice("/git/".length);
+						if (fields.force !== false) return answer(422,{message:"Forced update refused"});
+						git(["merge-base","--is-ancestor",ref,fields.sha],repository.path);
+						git(["update-ref",ref,fields.sha],repository.path);
+						return answer(200,{object:{sha:fields.sha}});
+					}
+				} catch { return answer(422,{message:"Ref update refused"}); }
+			}
 			if (rest === "/branches" && method === "GET") {
 				if (!this.allows(token, repository, "contents", "read")) return denied();
 				const names = git(["for-each-ref", "--format=%(refname:short)", "refs/heads"], repository.path).split("\n").filter((name) => name !== "");
@@ -767,7 +803,7 @@ export class GithubStandin {
 				if (!this.allows(token, repository, "contents", "read")) {
 					return answer(422, { message: "Validation Failed", errors: [{ resource: "PullRequest", code: "custom", message: "not all refs are readable" }] });
 				}
-				const fields = (body ?? {}) as { title?: string; body?: string; head?: string; base?: string };
+				const fields = (body ?? {}) as { title?: string; body?: string; head?: string; base?: string; draft?: boolean };
 				const head = String(fields.head ?? "");
 				const base = String(fields.base ?? "");
 				if (this.options.strictBranches !== false) {
@@ -780,7 +816,7 @@ export class GithubStandin {
 				if (this.pulls.some((pull) => pull.repository === repository.id && pull.state === "open" && pull.head === head && pull.base === base)) {
 					return answer(422, { message: "Validation Failed", errors: [{ resource: "PullRequest", code: "custom", message: `A pull request already exists for ${repository.owner}:${head}.` }] });
 				}
-				const pull: StandinPull = { number: this.pulls.filter((other) => other.repository === repository.id).length + 1, repository: repository.id, title: String(fields.title ?? ""), body: String(fields.body ?? ""), head, base, state: "open", merged: false, mergeable: null, draft: false, requestedReviewers: [], comments: [] };
+				const pull: StandinPull = { number: this.pulls.filter((other) => other.repository === repository.id).length + 1, repository: repository.id, title: String(fields.title ?? ""), body: String(fields.body ?? ""), head, base, state: "open", merged: false, mergeable: null, draft: fields.draft === true, requestedReviewers: [], comments: [] };
 				this.pulls.push(pull);
 				return answer(201, this.pullJson(pull));
 			}

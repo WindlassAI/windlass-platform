@@ -40,7 +40,8 @@ function unique(keys: string[]) {
 // Intersect the two small glob languages. A wildcard may consume an element or advance
 // without consuming. Remember each pair of positions to bound the search.
 function intersect(a: string[], b: string[], wildcard: string, match: (a: string, b: string) => boolean) {
-	const pending = [[0, 0]], seen = new Set<string>();
+	const pending: [number, number][] = [[0, 0]];
+	const seen = new Set<string>();
 	while (pending.length) {
 		const [i, j] = pending.pop()!, key = i + "/" + j;
 		if (seen.has(key)) continue;

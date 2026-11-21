@@ -20,8 +20,8 @@ import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
 import { verdictWords } from "../server/src/factory/verdict.js";
 import { localListeners } from "./check-listeners.js";
 import { type ChildProcess, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { createWriteStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { createWriteStream, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
@@ -120,7 +120,8 @@ class Server {
 		};
 		delete full.RIVET_ADMIN_TOKEN;
 		delete full.RIVET_ENDPOINT;
-		const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { cwd: SERVER_DIR, env: full, stdio: ["ignore", "pipe", "pipe"] });
+		const entry = env.WLP_FAKE_FEATURE_HEADS ? ["--input-type=module","--eval",'const {CI_POLLING} = await import("./src/github/ci.ts"); CI_POLLING.everyMs = 200; await import("./src/index.ts");'] : ["src/index.ts"];
+		const child = spawn(process.execPath, ["--import", "tsx", ...entry], { cwd: SERVER_DIR, env: full, stdio: ["ignore", "pipe", "pipe"] });
 		this.child = child;
 		const keep = (chunk: Buffer) => {
 			this.text += chunk.toString("utf8");
@@ -210,6 +211,50 @@ standin.addUser("ada");
 const installation = standin.addInstallation("ada", "User");
 const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
 standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "read", statuses: "read", actions: "read" };
+
+if (!only.length || only.includes("orchestrator")) {
+	const server = new Server();
+	try {
+		await check("orchestrator: real actors approve and integrate two checked children and hand over one reviewed PR", async () => {
+			const headsFile = join(server.storage, "fake-heads.json");
+			writeFileSync(headsFile, "{}");
+			const { user } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FAKE_FEATURE_HEADS: headsFile });
+			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{name:"build",command:"true"}] });
+			const single = (await user.factoryLimits()).item;
+			const feature = await user.createItem({ repository: {id:harbor.id}, title:"Search documents", body:"Index documents and show the result.", mode:"orchestrate", start:true });
+			const page = await untilItem(user, feature.id, "plan approval", v => !!v.question);
+			assert(page.plan?.status === "proposed", "The planner did not file a valid plan: " + page.question?.text);
+			assert(!page.pullRequest && !page.children?.length, "Work started before approval.");
+			const edited = await user.actOnItem({id:feature.id, action:{ kind:"edit_plan", version:page.plan.version, plan:page.plan }});
+			await refused(() => user.actOnItem({id:feature.id,action:{kind:"approve_plan",version:page.plan!.version}}), "item_conflict");
+			const base = standin.branchHead(harbor,"main")!, version = edited.plan!.version;
+			const seed = standin.featureCommit(harbor, base, "Start feature " + feature.id, new Date(feature.createdAt).toISOString());
+			const heads: Record<string,string> = {};
+			const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0,16);
+			let parent = seed;
+			for (const s of edited.plan!.subtasks) {
+				const id = "i_" + hash(JSON.stringify([feature.id,version,s.key]));
+				parent = standin.featureCommit(harbor,parent,s.title,new Date(feature.createdAt).toISOString());
+				heads["s_" + hash("item\n" + id)] = parent; setCi(harbor,parent,"success");
+			}
+			heads["s_" + hash("review\n" + feature.id)] = parent;
+			writeFileSync(headsFile, JSON.stringify(heads));
+			await user.actOnItem({id:feature.id,action:{kind:"approve_plan",version}});
+			const done = await untilItem(user,feature.id,"the feature handoff",v => {
+				if (v.question) throw new Error(v.question.text);
+				return v.state === "review";
+			}, 320_000);
+			assert(done.children?.length === 2 && done.children.every(s => s.state === "done" && !s.pullRequest && s.review?.state === "off"), "Children did not finish as branches.");
+			assert(done.spent.turns === 5 && done.budget.tokens === 3*single.tokens, "Unexpected feature spend " + JSON.stringify(done.spent));
+			assert(done.head === parent && done.reviews.length === 1 && done.report && done.pullRequest, "Missing final head, summary, review or PR.");
+			const ready = await waitFor("the single ready PR", () => standin.pulls.find(p=>p.number===done.pullRequest!.number && !p.draft && p.comments.length), 30_000);
+			assert(standin.branchHead(harbor, ready.head) === parent && standin.branchHead(harbor,"main") === base, "Incorrect ref after handoff.");
+			assert(!(await user.listItems()).some(i => i.parent), "A child leaked into the root list.");
+			return "two child heads fast-forwarded, one summary, one whole-feature review";
+		});
+	} finally { await server.stop(); server.remove(); }
+	if (only.length === 1) { await standin.stop(); process.exit(failed ? 1 : 0); }
+}
 
 if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 	const server = new Server();

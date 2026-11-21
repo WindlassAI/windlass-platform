@@ -1010,7 +1010,7 @@ export function Item({ page }: { page: ItemPage }) {
 
 			{view.children?.length ? <section className="usage-section" aria-label="Subtasks">
 				<h2 className="usage-title">Subtasks</h2>
-				{view.children.map(child => <ItemRow key={child.id} item={child} now={now} why={child.question?.text} />)}
+				<ul className="agent-list">{view.children.map(child => <ItemRow key={child.id} item={child} now={now} why={child.question?.text} />)}</ul>
 			</section> : null}
 			{reading ? <ReadFirst view={view} acting={acting} /> : null}
 

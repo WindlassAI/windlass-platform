@@ -22,7 +22,6 @@
  */
 
 import { featureBranch } from "../github/feature.js";
-import type { FeatureJob } from "../factory/types.js";
 import { githubIntake } from "./github-intake.js";
 import type { IntakeTrigger, IssueBinding } from "../factory/intake.js";
 import type { StoredConnection } from "../github/repos.js";
