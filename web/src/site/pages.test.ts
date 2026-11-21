@@ -7,7 +7,7 @@ import { appShellHtml, canonical, fileOf, llmsFullTxt, llmsTxt, pageHtml, robots
 import { PUBLIC_PAGES } from "./pages";
 import { renderSite } from "./render";
 
-const ASSETS = { stylesheets: ["/assets/index-abc.css"], entry: "/assets/index-abc.js", fonts: ["/assets/newsreader-latin-opsz-normal-abc.woff2"] };
+const ASSETS = { stylesheets: ["/assets/index-abc.css"], entry: "/assets/index-abc.js", fonts: ["/assets/geist-latin-wght-normal-abc.woff2"] };
 const BUILT = '<!doctype html>\n<html lang="en">\n\t<head>\n\t\t<meta charset="UTF-8" />\n\t\t<title>Windlass</title>\n\t\t<script type="module" crossorigin src="/assets/index-abc.js"></script>\n\t</head>\n\t<body><div id="root"></div></body>\n</html>\n';
 
 describe.each(PUBLIC_PAGES.map((page) => [page.path, page] as const))("the public page %s", (_path, page) => {

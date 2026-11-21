@@ -1,24 +1,46 @@
 /*
- * Design tokens. One set of names, two sets of values: dark (the default, after the Windlass
- * terminal interface: charcoal, an olive-yellow accent, pink for code) and light (the same hues on
- * warm paper). Components use the names only.
+ * Design tokens ("Helm"). One set of names, two sets of values: dark (the default: near-black
+ * graphite panels, one brass-lime accent) and light (the same hues on a cool white). Components use
+ * the names only. Every text colour here holds 4.5:1 against the page and the raised surfaces; the
+ * field edge holds 3:1.
+ *
+ * The older names (--bg-raised, --ink-dim, --accent-fill, …) are kept as the screens use them; the
+ * newer ones (--bg-overlay, --accent-text, --shadow-pop, --text-13, --r-item, --dur-*) are what new
+ * parts are built from.
  */
 :root {
-	--font-mono: "Commit Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
-	--font-text: "Instrument Sans Variable", "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-	--font-display: "Newsreader Variable", "Newsreader", "Iowan Old Style", Georgia, serif;
+	--font-text: "Geist Variable", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+	--font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+	/* No serif anywhere: headings are Geist at a heavier weight and tighter tracking. */
+	--font-display: var(--font-text);
 
-	/* Type: one scale for every screen. Mono for facts and code, sans for words, the serif for headings. */
-	--size-tiny: 0.6875rem;
-	--size-mono: 0.8125rem;
-	--size-mono-small: 0.75rem;
-	--size-text: 0.9375rem;
-	--size-small: 0.8125rem;
-	--size-title: 1.0625rem;
-	--size-heading: 1.5rem;
-	--size-dialog: 1.625rem;
+	/* Type: a dense app scale. 12 meta, 13 rows and menus, 14 body and inputs, 16 section titles, 20–24 page titles. Mono sits a pixel under the sans beside it. */
+	--text-11: 0.6875rem;
+	--text-12: 0.75rem;
+	--text-13: 0.8125rem;
+	--text-14: 0.875rem;
+	--text-15: 0.9375rem;
+	--text-16: 1rem;
+	--text-20: 1.25rem;
+	--text-24: 1.5rem;
+	--text-32: 2rem;
+	--weight-regular: 420;
+	--weight-medium: 520;
+	--weight-strong: 600;
+	--tracking-tight: -0.02em;
+	--tracking-display: -0.032em;
 
-	/* Space: a 4px step. Rows, sections and pages take their padding and gaps from here. */
+	/* The names the screens already use, on the scale above. */
+	--size-tiny: var(--text-11);
+	--size-mono: var(--text-13);
+	--size-mono-small: var(--text-12);
+	--size-text: var(--text-14);
+	--size-small: var(--text-13);
+	--size-title: var(--text-16);
+	--size-heading: var(--text-24);
+	--size-dialog: var(--text-24);
+
+	/* Space: a 4px step. */
 	--space-1: 4px;
 	--space-2: 8px;
 	--space-3: 12px;
@@ -29,91 +51,143 @@
 	--space-8: 48px;
 	--space-9: 64px;
 
+	/* Radius: an item inside a panel is rounder by less than its panel. */
 	--radius-s: 4px;
-	--radius-m: 7px;
+	--radius-m: 8px;
 	--radius-l: 12px;
 	--radius-pill: 999px;
+	--r-item: 6px;
+	--r-control: 8px;
+	--r-pop: 10px;
+	--r-box: 14px;
+	--r-sheet: 18px;
+
+	/* Control heights. */
+	--h-xs: 22px;
+	--h-sm: 28px;
+	--h-md: 32px;
+	--h-lg: 36px;
+	--h-touch: 44px;
 
 	/* The focus ring every control draws (base.css :focus-visible). */
 	--focus-width: 2px;
 
-	--topbar: 52px;
+	--topbar: 48px;
 	--gutter: clamp(16px, 4vw, 40px);
-	--measure: 900px;
-	--panel: 372px;
+	--measure: 880px;
+	--panel: 340px;
 
-	--ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+	/* Motion: short, ease-out, transform and opacity only. Nothing moves under reduced motion. */
+	--ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+	--ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+	--ease-sheet: cubic-bezier(0.2, 0.9, 0.25, 1);
+	--dur-hover: 100ms;
+	--dur-menu-in: 150ms;
+	--dur-menu-out: 100ms;
+	--dur-sheet: 260ms;
+
+	/* Layers. */
+	--z-bar: 20;
+	--z-pop: 60;
+	--z-sheet: 80;
+	--z-tooltip: 90;
 }
 
 :root,
 :root[data-theme="dark"] {
 	color-scheme: dark;
-	--bg: #15161a;
-	--bg-sunk: #0f1013;
-	--bg-raised: #1b1d22;
-	--bg-hover: #22252b;
-	--line: #2a2d34;
-	--line-strong: #3d414a;
+	--bg: #0b0c0e;
+	--bg-sunk: #08090a;
+	--bg-raised: #121316;
+	--bg-overlay: #17181c;
+	--bg-hover: rgb(255 255 255 / 0.045);
+	--bg-active: rgb(255 255 255 / 0.07);
+	--line: rgb(255 255 255 / 0.07);
+	--line-strong: rgb(255 255 255 / 0.12);
 	/* A form control's edge: 3:1 against the page, so a field is seen as one. */
-	--line-field: #636872;
-	--ink: #dddfd7;
-	--ink-dim: #a0a3a8;
-	/* Faint is still text: at least 4.5:1 on the page and on raised surfaces. */
-	--ink-faint: #858991;
-	--accent: #bcc46a;
-	--accent-strong: #d6de8a;
-	--accent-fill: #bcc46a;
-	--accent-fill-hover: #cdd57c;
-	--accent-ink: #15160d;
-	--accent-wash: rgb(188 196 106 / 0.1);
-	--code: #d995c6;
-	--bad: #e8807b;
+	--line-field: #5d6169;
+	--ink: #ecedee;
+	--ink-dim: #a1a4ab;
+	/* Faint is still text: at least 4.5:1 on the page and on the overlay. */
+	--ink-faint: #80848c;
+	--accent: #cfdb6e;
+	--accent-text: #cfdb6e;
+	--accent-strong: #e0ea8c;
+	--accent-fill: #cfdb6e;
+	--accent-fill-hover: #dbe57f;
+	--accent-ink: #121405;
+	--accent-wash: rgb(207 219 110 / 0.1);
+	--accent-wash-strong: rgb(207 219 110 / 0.18);
+	--accent-edge: rgb(207 219 110 / 0.45);
+	--code: #d99bc8;
+	--ok: #7cc9a4;
+	--ok-wash: rgb(124 201 164 / 0.1);
+	--bad: #ee7d77;
 	--bad-fill: #c9544f;
-	--bad-wash: rgb(232 128 123 / 0.1);
-	--warn: #e2ae66;
-	--warn-wash: rgb(226 174 102 / 0.1);
-	--info: #82c6b6;
-	--info-wash: rgb(130 198 182 / 0.09);
-	--add: #c8d07a;
-	--add-wash: rgb(188 196 106 / 0.11);
-	--del: #ea8b86;
-	--del-wash: rgb(232 128 123 / 0.11);
-	--shadow: 0 24px 60px -20px rgb(0 0 0 / 0.7), 0 2px 8px rgb(0 0 0 / 0.3);
-	--backdrop: rgb(8 9 11 / 0.66);
-	--grain: 0.05;
+	--bad-wash: rgb(238 125 119 / 0.1);
+	--warn: #e5b062;
+	--warn-wash: rgb(229 176 98 / 0.1);
+	--info: #82c6d6;
+	--info-wash: rgb(130 198 214 / 0.09);
+	--add: #a9d98b;
+	--add-wash: rgb(124 201 164 / 0.1);
+	--del: #ee8b86;
+	--del-wash: rgb(238 125 119 / 0.1);
+	--shadow: 0 0 0 1px rgb(255 255 255 / 0.06), 0 12px 32px -8px rgb(0 0 0 / 0.6), 0 28px 64px -24px rgb(0 0 0 / 0.55);
+	--shadow-pop: 0 0 0 1px rgb(255 255 255 / 0.07), 0 2px 4px rgb(0 0 0 / 0.35), 0 12px 32px -8px rgb(0 0 0 / 0.6), 0 28px 64px -24px rgb(0 0 0 / 0.55);
+	--shadow-box: inset 0 1px 0 rgb(255 255 255 / 0.03), 0 8px 24px -12px rgb(0 0 0 / 0.6);
+	--shadow-sheet: 0 -1px 0 rgb(255 255 255 / 0.12), 0 -24px 60px -20px rgb(0 0 0 / 0.6);
+	--shadow-button: inset 0 1px 0 rgb(255 255 255 / 0.35), 0 1px 2px rgb(0 0 0 / 0.25);
+	--backdrop: rgb(0 0 0 / 0.55);
+	--avatar: linear-gradient(140deg, #3a3d2a, #20221a);
+	--avatar-ink: #cfdb6e;
+	--grain: 0;
 }
 
 :root[data-theme="light"] {
 	color-scheme: light;
-	--bg: #f4f1e7;
-	--bg-sunk: #e9e5d7;
-	--bg-raised: #fcfaf3;
-	--bg-hover: #ebe7d9;
-	--line: #dad5c4;
-	--line-strong: #b9b39e;
-	--line-field: #88826c;
-	--ink: #1e1f1a;
-	--ink-dim: #4f5148;
-	--ink-faint: #66675c;
-	--accent: #5a6510;
-	--accent-strong: #434c08;
-	--accent-fill: #bcc558;
-	--accent-fill-hover: #aeb848;
-	--accent-ink: #1c1e0c;
-	--accent-wash: rgb(120 132 20 / 0.11);
-	--code: #9a3381;
-	--bad: #ac2f2a;
-	--bad-fill: #b83a34;
-	--bad-wash: rgb(172 47 42 / 0.08);
-	--warn: #8a5609;
-	--warn-wash: rgb(170 110 10 / 0.1);
-	--info: #1c6f5f;
-	--info-wash: rgb(28 111 95 / 0.08);
-	--add: #46520a;
-	--add-wash: rgb(120 132 20 / 0.16);
-	--del: #a32f2a;
-	--del-wash: rgb(172 47 42 / 0.1);
-	--shadow: 0 24px 60px -24px rgb(60 50 20 / 0.35), 0 2px 8px rgb(60 50 20 / 0.1);
-	--backdrop: rgb(60 56 40 / 0.42);
-	--grain: 0.035;
+	--bg: #fafaf9;
+	--bg-sunk: #f2f2ef;
+	--bg-raised: #ffffff;
+	--bg-overlay: #ffffff;
+	--bg-hover: rgb(16 17 20 / 0.04);
+	--bg-active: rgb(16 17 20 / 0.065);
+	--line: rgb(16 17 20 / 0.08);
+	--line-strong: rgb(16 17 20 / 0.13);
+	--line-field: #8c9098;
+	--ink: #16171a;
+	--ink-dim: #565961;
+	--ink-faint: #6a6d75;
+	--accent: #5c6a0c;
+	--accent-text: #5c6a0c;
+	--accent-strong: #485308;
+	--accent-fill: #cfdb6e;
+	--accent-fill-hover: #c3d05c;
+	--accent-ink: #121405;
+	--accent-wash: rgb(150 170 20 / 0.12);
+	--accent-wash-strong: rgb(150 170 20 / 0.2);
+	--accent-edge: #b7c34f;
+	--code: #a23d86;
+	--ok: #1d7a50;
+	--ok-wash: rgb(30 138 90 / 0.09);
+	--bad: #c2412f;
+	--bad-fill: #c2412f;
+	--bad-wash: rgb(194 65 47 / 0.08);
+	--warn: #945808;
+	--warn-wash: rgb(200 130 20 / 0.1);
+	--info: #1c6a80;
+	--info-wash: rgb(28 106 128 / 0.08);
+	--add: #2f6f17;
+	--add-wash: rgb(30 138 90 / 0.1);
+	--del: #a8332a;
+	--del-wash: rgb(194 65 47 / 0.09);
+	--shadow: 0 0 0 1px rgb(16 17 20 / 0.08), 0 12px 32px -10px rgb(16 17 20 / 0.18);
+	--shadow-pop: 0 0 0 1px rgb(16 17 20 / 0.08), 0 2px 4px rgb(16 17 20 / 0.05), 0 12px 32px -10px rgb(16 17 20 / 0.18);
+	--shadow-box: 0 1px 2px rgb(16 17 20 / 0.04), 0 8px 24px -14px rgb(16 17 20 / 0.16);
+	--shadow-sheet: 0 -1px 0 rgb(16 17 20 / 0.1), 0 -24px 60px -24px rgb(16 17 20 / 0.25);
+	--shadow-button: inset 0 1px 0 rgb(255 255 255 / 0.5), 0 1px 2px rgb(16 17 20 / 0.12);
+	--backdrop: rgb(20 20 24 / 0.32);
+	--avatar: #eef2c9;
+	--avatar-ink: #3e4708;
+	--grain: 0;
 }

@@ -16,8 +16,8 @@ import { createServer, type Plugin, type ResolvedConfig } from "vite";
 import type { AppAssets } from "./src/site/documents";
 import type { SiteFile } from "./src/site/render";
 
-/** The fonts the landing's first paint is set in: the display serif, upright and italic, latin only. */
-const PRELOAD_FONTS = [/^newsreader-latin-opsz-normal-[\w-]+\.woff2$/, /^newsreader-latin-opsz-italic-[\w-]+\.woff2$/];
+/** The font the landing's first paint is set in: Geist, upright, latin only. */
+const PRELOAD_FONTS = [/^geist-latin-wght-normal-[\w-]+\.woff2$/];
 
 /** What the built index.html links: its stylesheets and its entry module. */
 export function appAssets(builtIndex: string, assetFiles: string[]): AppAssets {

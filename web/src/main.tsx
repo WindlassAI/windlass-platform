@@ -1,12 +1,8 @@
-import "@fontsource/commit-mono/400.css";
-import "@fontsource/commit-mono/400-italic.css";
-import "@fontsource/commit-mono/700.css";
-import "@fontsource-variable/instrument-sans/wght.css";
-import "@fontsource-variable/instrument-sans/wght-italic.css";
-import "@fontsource-variable/newsreader/opsz.css";
-import "@fontsource-variable/newsreader/opsz-italic.css";
+import "@fontsource-variable/geist/wght.css";
+import "@fontsource-variable/geist-mono/wght.css";
 import "./styles/tokens.css";
 import "./styles/base.css";
+import "./styles/ui.css";
 import "./styles/shell.css";
 import "./styles/signin.css";
 import "./styles/home.css";
