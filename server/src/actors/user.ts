@@ -78,14 +78,14 @@ import { plannerMachines } from "../machines/details.js";
 
 import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
-import { launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
+import { machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
 import { ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
-import { assertOrigin, authenticate, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
+import { assertOrigin, disconnectRevoked, userActorCaller, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { config, githubConfig } from "../config.js";
 import {
 	type AccountDefaults,
@@ -115,6 +115,8 @@ import {
 	type SandboxPlace,
 	type MachineSummary,
 	type MachineClaim,
+	type MachineHostUpdate,
+	type UserActions,
 	type SandboxProfile,
 	type SavedRepository,
 	type SecretScope,
@@ -138,6 +140,7 @@ import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels }
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
+import { refreshSecretRows } from "../signin/secret-rows.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
 import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
 import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
@@ -175,6 +178,9 @@ interface ConnParams {
 }
 
 interface UserVars {
+	/** A retry that fires during a slow sweep waits for its batch checkpoints. */
+	disconnectSweep?: Promise<void>;
+	tokenGen: number;
 	profile: UserProfile | null;
 	/** False until a valid token of this user has been seen: until then the actor may be a stranger's doing. */
 	reached: boolean;
@@ -987,13 +993,14 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
 		const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
-		const options = offered?.options;
+		const options = offered?.optionsDigest && place.kind === "machine" ? await machineCatalog(c, place.machineId, offered.id, offered.optionsDigest) : undefined;
+		if (offered?.optionsDigest && !options) throw new UserError("The machine’s model list changed. Choose the model again.", { code: "bad_input" });
 		const modes = initialSessionModes(chosen.id, harness, !!item, options?.modes);
 		if (input.mode !== undefined) {
 			if (typeof input.mode !== "string" || !input.mode.trim() || (harness === "windlass" && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
 			modes.mode = input.mode;
 		}
-		const models = harness !== "windlass" ? initialHarnessModels(options) : await modelsOf(c, profile.demo);
+		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options ? "bad_input" : undefined);
 
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
@@ -1056,11 +1063,83 @@ function itemSession(c: CreateCtx): MakeSession {
 	return (_, profile, input, submission, item) => makeSession(c, profile, input, submission, item);
 }
 
+type RevocationContext = UserCtx & {
+	key: string[];
+	client(): unknown;
+	conns: Parameters<typeof disconnectRevoked>[0];
+	schedule: { after(ms: number, action: string, attempt: number): Promise<string> };
+	log: { warn(entry: unknown): void };
+};
+
+const RETRY_DISCONNECT = "retryDisconnectRevoked";
+
+// Six durable retries, starting after 30 seconds and ending with a 15-minute delay.
+const DISCONNECT_DELAYS = [30_000, 60_000, 120_000, 240_000, 480_000, 900_000];
+
+async function closeRevokedFeeds(c: RevocationContext, generation: number, lastTry: boolean): Promise<void> {
+	let userFeedsFailed = false;
+	try {
+		await disconnectRevoked(c.conns, generation);
+	} catch {
+		userFeedsFailed = true;
+	}
+	// Only the session itself knows which sockets it has. Checkpoint each batch so a retry or
+	// actor restart visits only outstanding sessions. A newer generation owns its own marks.
+	const sessions = await c.db.execute<{ id: string }>("SELECT id FROM sessions WHERE disconnect_pending = ?", generation);
+	let failed = 0;
+	for (let i = 0; i < sessions.length; i += 16) {
+		if (generation < c.vars.tokenGen) return;
+		const closed = await Promise.all(sessions.slice(i, i + 16).map(async ({ id }) => {
+			try {
+				await sessionActor(c, c.key[0], id).internalDisconnectRevoked(generation);
+			} catch (error) {
+				if (!isActorGone(error)) return null;
+			}
+			return id;
+		}));
+		const done = closed.filter(id => id !== null);
+		failed += closed.length - done.length;
+		if (done.length) await c.db.execute("UPDATE sessions SET disconnect_pending = 0 WHERE disconnect_pending = ? AND id IN (SELECT value FROM json_each(?))", generation, JSON.stringify(done));
+	}
+	if (!userFeedsFailed && failed === 0) {
+		await c.db.execute("UPDATE token_generation SET disconnected = ? WHERE id = 1 AND gen = ?", generation, generation);
+	} else {
+		c.log.warn({ msg: lastTry ? "Revoked feed disconnect retries exhausted" : "Retrying revoked feed disconnects", generation, failedSessions: failed, userFeedsFailed });
+	}
+}
+
+function sweep(c: RevocationContext, generation: number, lastTry = false): Promise<void> {
+	// The timer is already armed. If it fired during a slow pass, wait for that pass to
+	// checkpoint its successes before looking up the remaining sessions.
+	const previous = c.vars.disconnectSweep ?? Promise.resolve();
+	const run = previous.catch(() => undefined).then(() => closeRevokedFeeds(c, generation, lastTry));
+	c.vars.disconnectSweep = run;
+	return run.finally(() => {
+		if (c.vars.disconnectSweep === run) c.vars.disconnectSweep = undefined;
+	});
+}
+
+async function revokeTokens(c: RevocationContext, revokeApiTokens = false): Promise<void> {
+	// Arm recovery before committing the bump, including when the actor stops between the two writes.
+	const job = await c.schedule.after(DISCONNECT_DELAYS[0], RETRY_DISCONNECT, 1);
+	const gen = await c.db.transaction(async tx => {
+		if (revokeApiTokens) await tx.execute("DELETE FROM api_token");
+		const [row] = await tx.execute<{ gen: number }>("UPDATE token_generation SET gen = gen + 1, disconnect_job = ? WHERE id = 1 RETURNING gen", job);
+		await tx.execute("UPDATE sessions SET disconnect_pending = ?", row.gen);
+		return row.gen;
+	});
+	c.vars.tokenGen = Math.max(c.vars.tokenGen, gen);
+	c.vars.reached = true;
+	await sweep(c, gen);
+}
+
 export const user = actor({
 	options: { name: "User", icon: "user", actionTimeout: 180_000 },
 
 	db: db({
 		onMigrate: async (db) => {
+			await db.execute("CREATE TABLE IF NOT EXISTS token_generation (id INTEGER PRIMARY KEY CHECK(id = 1), gen INTEGER NOT NULL)");
+			await db.execute("INSERT OR IGNORE INTO token_generation (id, gen) VALUES (1, 0)");
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS profile (
 					id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1159,12 +1238,20 @@ export const user = actor({
 			// Before the column checks below: the API token table is one of them.
 			for (const table of ITEM_TABLES) await db.execute(table);
 			for (const [table, column, definition] of [
+				["token_generation", "disconnected", "INTEGER NOT NULL DEFAULT 0"],
+				["token_generation", "disconnect_job", "TEXT"],
+				["sessions", "disconnect_pending", "INTEGER NOT NULL DEFAULT 0"],
 				["repository_defaults", "screenshots", "INTEGER NOT NULL DEFAULT 0"],
 				["api_token", "window_count", "INTEGER NOT NULL DEFAULT 0"],
 				["sessions", "launch_claim", "INTEGER"],
 			] as const) {
 				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
-				if (!columns.some((found) => found.name === column)) await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+				if (columns.some((found) => found.name === column)) continue;
+				await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+				if (column === "disconnect_pending") {
+					// A pre-upgrade sweep has a timer but no per-session checkpoints yet.
+					await db.execute("UPDATE sessions SET disconnect_pending = (SELECT gen FROM token_generation WHERE id = 1) WHERE EXISTS (SELECT 1 FROM token_generation WHERE gen > disconnected)");
+				}
 			}
 			// The last launch claim's generation (`UserVars.launchClaim`): kept on its own, so that it only ever grows.
 			await db.execute("CREATE TABLE IF NOT EXISTS launch_counter (id INTEGER PRIMARY KEY CHECK (id = 1), last INTEGER NOT NULL)");
@@ -1212,6 +1299,7 @@ export const user = actor({
 	}),
 
 	createVars: async (c): Promise<UserVars> => {
+		const [{ gen }] = await c.db.execute<{ gen: number }>("SELECT gen FROM token_generation WHERE id = 1");
 		const [row] = await c.db.execute<{ uid: string; email: string | null; demo: number }>("SELECT uid, email, demo FROM profile WHERE id = 1");
 		const rows = await c.db.execute<{ summary: string; key: string | null; sent: string | null; launch_until: number | null; launch_claim: number | null }>("SELECT summary, key, sent, launch_until, launch_claim FROM sessions");
 		const launchUntil = new Map<string, number>();
@@ -1231,10 +1319,11 @@ export const user = actor({
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		return { profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items: await loadItems(c.db) };
+		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items: await loadItems(c.db) };
 	},
 
 	events: {
+		machineHost: event<MachineHostUpdate>({ canSubscribe: (c) => maySubscribe(c) }),
 		machines: event<MachineSummary[]>({ canSubscribe: (c) => maySubscribe(c) }),
 		sessions: event<SessionSummary[]>({ canSubscribe: (c) => maySubscribe(c) }),
 		usage: event<UsageNumbers>({ canSubscribe: (c) => maySubscribe(c) }),
@@ -1244,7 +1333,7 @@ export const user = actor({
 	onBeforeConnect: (c, params: ConnParams | undefined) => {
 		assertOrigin(c);
 		try {
-			const caller = authenticate(c.key, params);
+			const caller = userActorCaller(c, params);
 			if (caller.kind === "user") c.vars.reached = true;
 		} catch (error) {
 			// `getOrCreate` makes the actor before this hook runs, so a call without a valid token can
@@ -1255,7 +1344,7 @@ export const user = actor({
 	},
 
 	onConnect: async (c, conn) => {
-		const caller = authenticate(c.key, conn.params);
+		const caller = userActorCaller(c, conn.params);
 		if (caller.kind === "user") await rememberProfile(c, caller.profile);
 	},
 
@@ -1281,7 +1370,28 @@ export const user = actor({
 	},
 
 	actions: {
+		[RETRY_DISCONNECT]: async (c, attempt = 1): Promise<void> => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			const [pending] = await c.db.execute<{ gen: number; disconnect_job: string | null }>(
+				"SELECT gen, disconnect_job FROM token_generation WHERE gen > disconnected AND (disconnect_job = ? OR disconnect_job IS NULL)", c.scheduledFire.id);
+			if (!pending) return;
+			const delay = DISCONNECT_DELAYS[attempt];
+			// Arm recovery before the pass. Superseded jobs and duplicate deliveries do no work.
+			const next = delay === undefined ? "exhausted" : await c.schedule.after(delay, RETRY_DISCONNECT, attempt + 1);
+			const claimed = await c.db.execute("UPDATE token_generation SET disconnect_job = ? WHERE gen = ? AND gen > disconnected AND disconnect_job IS ? RETURNING gen", next, pending.gen, pending.disconnect_job);
+			if (claimed.length) await sweep(c, pending.gen, delay === undefined);
+		},
+		internalTokenGeneration: (c): number => { requireServiceFor(c, "call"); return c.vars.tokenGen; },
+		signOutEverywhere: async (c, options?: { revokeApiTokens: boolean }): Promise<void> => {
+			requireUser(c);
+			await revokeTokens(c, options?.revokeApiTokens === true);
+		},
+		internalRevokeTokens: async (c): Promise<void> => {
+			requireServiceFor(c, "revoke:" + c.key[0]);
+			await revokeTokens(c);
+		},
 		machines: (c): Promise<MachineSummary[]> => machineActions.machines(c),
+		machineCatalog: (c, input: Parameters<UserActions["machineCatalog"]>[0]): ReturnType<UserActions["machineCatalog"]> => machineActions.machineCatalog(c, input),
 		claimMachine: (c, input: { code: string }): Promise<MachineClaim> => machineActions.claimMachine(c, input),
 		confirmMachine: (c, input: { code: string }): Promise<MachineSummary> => machineActions.confirmMachine(c, input),
 		removeMachine: (c, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> => machineActions.removeMachine(c, input),
@@ -1296,9 +1406,9 @@ export const user = actor({
 		},
 		internalMachineApproval: (c, id: string): Promise<{ login: string | null } | null> => machineActions.internalMachineApproval(c, id),
 		internalMachineChanged: async (c, id: string, facts: MachineUpdate | null): Promise<void> => {
-			await machineActions.internalMachineChanged(c, id, facts);
+			const inventoryChanged = await machineActions.internalMachineChanged(c, id, facts);
 			if (facts === null) await notifyRemovedMachines(c, id);
-			queueChanged(c);
+			if (inventoryChanged) queueChanged(c);
 		},
 		// --- work items, the turn queue and API tokens (user-items.ts) ---
 		internalReserveAttachment: (c, input: import("../sandbox/attach.js").Reservation) => itemActions.internalReserveAttachment(c, input),
@@ -1731,6 +1841,7 @@ export const user = actor({
 			const send = session.place.kind === "hosted" || await machineSecrets(c.db, session.place.machineId) === true;
 			const redactOnly = !send && !!session.harness && session.harness !== "windlass";
 			const kept = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name") : [];
+			await refreshSecretRows(c.db, serverSealer(), c.key[0], ACCOUNT_SECRET_PROJECT, kept);
 			const account = {
 				secrets: kept.map((row) => ({ name: row.name, scope: row.scope === "agent" ? ("agent" as const) : ("setup" as const), sealed: row.sealed })),
 				servers: (await readServers(c.db)).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
@@ -1738,6 +1849,7 @@ export const user = actor({
 			const project = setupProjectKey(session.repository?.id);
 			if (project === null) return { project: null, secrets: [], checks: [], account, ...(redactOnly && { redactOnly }) };
 			const rows = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
+			await refreshSecretRows(c.db, serverSealer(), c.key[0], project, rows);
 			const { checks } = await readChecks(c.db, project);
 			return { project, ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},

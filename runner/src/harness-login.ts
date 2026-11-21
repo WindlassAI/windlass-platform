@@ -64,6 +64,7 @@ export async function loginFileState(machine: MachineDocker): Promise<"none" | "
 
 export async function pastedToken(signal: AbortSignal, provider?: string) {
 	const message = provider ? `Enter the ${provider} API key: ` : "Paste the token it printed (or one made by claude setup-token on any computer): ";
+	const invalid = provider ? `Enter a ${provider} API key of up to 4096 characters.` : "Expected one Claude setup token of at most 512 characters.";
 	let value = "";
 	if (process.stdin.isTTY) {
 		const stty = (arg: string) => spawnSync("stty", [arg], { stdio: ["inherit", "pipe", "ignore"], encoding: "utf8" });
@@ -75,16 +76,16 @@ export async function pastedToken(signal: AbortSignal, provider?: string) {
 	} else {
 		for await (const bytes of process.stdin) {
 			value += bytes.toString("utf8");
-			if (value.length > (provider ? 4098 : 514)) throw new RunnerError("Expected one Claude setup token of at most 512 characters.");
+			if (value.length > (provider ? 4098 : 514)) throw new RunnerError(invalid);
 		}
 		value = value.replace(/\r?\n$/, "");
 	}
 	if (provider) {
-		if (!/^[!-~]{1,4096}$/.test(value)) throw new RunnerError("Enter a provider API key of up to 4096 characters.");
+		if (!/^[!-~]{1,4096}$/.test(value)) throw new RunnerError(invalid);
 		return value;
 	}
 	if (value.length > 512 || !/^sk-ant-oat01-[A-Za-z0-9_-]+$/.test(value) || /\s/.test(value))
-		throw new RunnerError("Expected one Claude setup token of at most 512 characters.");
+		throw new RunnerError(invalid);
 	return value;
 }
 

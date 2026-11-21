@@ -18,13 +18,14 @@
 
 import { imageId } from "./check-image.js";
 import { localListeners } from "./check-listeners.js";
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createWriteStream, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { createClient, type Registry } from "../server/src/client.js";
 import { GithubStandin } from "./github-standin.js";
 import {
@@ -54,6 +55,8 @@ const API = process.env.WLP_E2E_API ?? `${new URL(ENDPOINT).protocol}//${new URL
 const MODE = (process.env.WLP_SANDBOX ?? "fake") as "fake" | "docker";
 const OWN_SERVER = endpointArg === undefined;
 const FAKE = MODE === "fake";
+const identityOnly = args.includes("--identity-only");
+if (identityOnly && (!OWN_SERVER || !FAKE)) throw new Error("--identity-only requires a local fake server");
 const sandboxImage = OWN_SERVER && MODE === "docker" ? await imageId() : undefined;
 /** How long one turn may take. A Docker turn creates a container and runs real commands. */
 const TURN_MS = FAKE ? 30_000 : 240_000;
@@ -555,6 +558,70 @@ async function identityChecks(client: Client, server: Server) {
 	const userOf = (auth: AuthResult) => client.user.get([auth.profile.uid], { params: { token: auth.token } });
 	const derived = (code: string) => uidOfAccount(`fake|${code}`);
 
+	await check("sign out everywhere revokes both sign-ins and direct session access", async () => {
+		const first = await signIn("my-sub");
+		const second = await signIn("my-sub");
+		const other = await signIn("their-sub");
+		const session = await userOf(first).createSession({ profile: "docker-windlass-sandbox" });
+		const direct = client.agentSession.get([first.profile.uid, session.id], { params: { token: first.token } });
+		const userSocket = userOf(first).connect();
+		const sessionSocket = direct.connect();
+		try {
+			userSocket.onError(() => {});
+			sessionSocket.onError(() => {});
+			userSocket.on("sessions", () => {});
+			sessionSocket.on("summary", () => {});
+			await Promise.all([userSocket.me(), sessionSocket.snapshot()]);
+			let userClosed = false, sessionClosed = false;
+			userSocket.onStatusChange(status => { if (status === "disconnected") userClosed = true; });
+			sessionSocket.onStatusChange(status => { if (status === "disconnected") sessionClosed = true; });
+			await userOf(second).signOutEverywhere();
+			await waitFor("both subscriptions to disconnect", () => userClosed && sessionClosed, 8_000, 40);
+		} finally {
+			await Promise.all([userSocket.dispose(), sessionSocket.dispose()]);
+		}
+		await refused(() => userOf(first).me(), "invalid_token");
+		await refused(() => userOf(second).me(), "invalid_token");
+		await refused(() => direct.snapshot(), "invalid_token");
+		await userOf(other).me();
+		const fresh = await signIn("my-sub");
+		await userOf(fresh).deleteSession(session.id);
+		return "both browsers refused, other account kept, new login works";
+	});
+
+	await check("sign out everywhere can revoke every API token of just this user", async () => {
+		const owner = await signIn("my-sub");
+		const other = await signIn("their-sub");
+		const mint = async (auth: AuthResult, name: string) => (await userOf(auth).createApiToken({ name, scopes: ["items:read"] })).secret;
+		const status = async (token: string) => (await fetch(API + "/api/items/missing", { headers: { authorization: "Bearer " + token } })).status;
+		const a = await mint(owner, "one");
+		const b = await mint(owner, "two");
+		const theirs = await mint(other, "other");
+		await userOf(owner).signOutEverywhere({ revokeApiTokens: false });
+		assert(await status(a) === 404, "opting out revoked an API token");
+		await userOf(await signIn("my-sub")).signOutEverywhere({ revokeApiTokens: true });
+		for (const token of [a, b]) assert(await status(token) === 401, "the API still accepted a revoked token");
+		assert(await status(theirs) === 404, "another user's API token was revoked");
+		return "opt-out preserved tokens, opt-in returned HTTP 401 for both, other account kept access";
+	});
+
+	await check("admin revocation targets one uid and survives restart", async () => {
+		const auth = await signIn("my-sub");
+		const uid = auth.profile.uid;
+		const { issueServiceToken } = await import("../server/src/tokens.js");
+		await refused(() => userOf(auth).internalRevokeTokens(), "forbidden");
+		await refused(() => client.user.get([uid], { params: { token: issueServiceToken("revoke:other") } }).internalRevokeTokens(), "forbidden");
+		const { stdout } = await promisify(execFile)(process.execPath, ["--import", "tsx", "src/revoke-user-tokens.ts", uid], {
+			cwd: SERVER_DIR, env: { ...process.env, WLP_SECRET: server.secret, RIVET_ENGINE: ENDPOINT }, encoding: "utf8", timeout: 30_000,
+		});
+		assert(stdout.includes(uid), "the revoke command did not acknowledge its uid");
+		await server.stop();
+		await server.start({ WLP_ITEMS: "1", WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
+		await refused(() => userOf(auth).me(), "invalid_token");
+		await userOf(await signIn("my-sub")).me();
+		return "old generation still refused after restart";
+	});
+
 	await check("returning email keeps its sessions and refreshes the second app's sign-in", async () => {
 		const first = await signIn("first-app");
 		const session = await userOf(first).createSession({ profile: "docker-windlass-sandbox" });
@@ -728,7 +795,7 @@ async function main(server: Server | null): Promise<void> {
 		assert(/^demo_[0-9a-f]{12}$/.test(a.profile.uid), `uid is ${a.profile.uid}`);
 		assert(a.profile.demo === true && a.profile.email === null, "profile is not a demo profile");
 		assert(a.profile.uid !== b.profile.uid, "two demo sign-ins gave the same uid");
-		assert(typeof a.token === "string" && a.token.split(".").length === 3, "the token has an unexpected shape");
+		assert(typeof a.token === "string" && a.token.split(".").length === 4, "the token has an unexpected shape");
 		const me = await client.user.getOrCreate([a.profile.uid], { params: { token: a.token } }).me();
 		assert(plain(me) === plain(a.profile), `user.me() is ${plain(me)}`);
 		const chatgpt = await client.user.getOrCreate([a.profile.uid], { params: { token: a.token } }).chatgpt();
@@ -754,11 +821,11 @@ async function main(server: Server | null): Promise<void> {
 		return "stateless action";
 	});
 	await check("auth: a tampered token is rejected", async () => {
-		const [version, payload, signature] = token.split(".");
+		const [version, kid, payload, signature] = token.split(".");
 		const forgedPayload = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(payload, "base64url").toString("utf8")), uid: userB.profile.uid }), "utf8").toString("base64url");
-		const flipped = `${version}.${payload}.${signature.slice(0, -2)}${signature.endsWith("AA") ? "BB" : "AA"}`;
+		const flipped = `${version}.${kid}.${payload}.${signature.slice(0, -2)}${signature.endsWith("AA") ? "BB" : "AA"}`;
 		await refused(() => client.user.getOrCreate([uid], { params: { token: flipped } }).me(), "invalid_token");
-		await refused(() => client.user.getOrCreate([userB.profile.uid], { params: { token: `${version}.${forgedPayload}.${signature}` } }).me(), "invalid_token");
+		await refused(() => client.user.getOrCreate([userB.profile.uid], { params: { token: `${version}.${kid}.${forgedPayload}.${signature}` } }).me(), "invalid_token");
 		await refused(() => client.user.getOrCreate([uid], { params: { token: "v1.e30.x" } }).me(), "invalid_token");
 		return "flipped signature, swapped payload, garbage";
 	});
@@ -3093,10 +3160,16 @@ async function idleChecks(server: Server, client: Client, uid: string, token: st
 				const countedBefore = (await row())?.seconds ?? 0;
 				const { turn } = await handle.prompt({ text: "Fix the failing test (slow)" });
 				await sleep(PROVIDER_MS + 1_500);
-				const mid = await handle.snapshot();
-				const held = (await row())?.heldSeconds ?? 0;
-				assert(mid.summary.status === "running", `the turn is ${mid.summary.status} when it is looked at`);
-				assert(held > 0, "mid-turn the session holds 0 s: the wake closed the prompt's hold");
+				// A waking provider can still be starting at the first sample. Check the hold
+				// throughout startup and on the running turn, before it can legitimately settle.
+				const { mid, held } = await waitFor("the resumed turn to run with its hold", async () => {
+					const mid = await handle.snapshot();
+					const held = (await row())?.heldSeconds ?? 0;
+					assert(held > 0, "mid-turn the session holds 0 s: the wake closed the prompt's hold");
+					if (mid.summary.status === "starting") return undefined;
+					assert(mid.summary.status === "running", `the turn is ${mid.summary.status} when it is looked at`);
+					return { mid, held };
+				}, TURN_MS, 100);
 				assert(mid.summary.sandbox === "running", `the running sandbox is recorded as ${mid.summary.sandbox}`);
 				const done = await waitFor("the turn to end", async () => {
 					const now = await handle.snapshot();
@@ -4314,7 +4387,7 @@ try {
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
 		if (FAKE) {
-			await server.start({ WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
+			await server.start({ WLP_ITEMS: "1", WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
 			const identityClient = newClient();
 			try {
 				await identityChecks(identityClient, server);
@@ -4323,9 +4396,9 @@ try {
 			}
 			await server.stop();
 		}
-		await server.start();
+		if (!identityOnly) await server.start();
 	}
-	await main(server);
+	if (!identityOnly) await main(server);
 } catch (error) {
 	crashed = true;
 	console.log(`FAIL  the run stopped early  -- ${describe(error)}`);

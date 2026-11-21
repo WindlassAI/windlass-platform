@@ -1342,11 +1342,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	// ---- identity -------------------------------------------------------------------------------
 
-	const tokenFor = (profile: UserProfile) => `mock:${profile.demo ? "demo" : "chatgpt"}:${profile.uid}:${profile.email ?? ""}`;
+	const revoked = new Map<string, string>();
+	const generation = (uid: string) => recall("wlp.mock.tokenGen." + uid) ?? revoked.get(uid) ?? "";
+	const tokenFor = (profile: UserProfile) => `mock:${profile.demo ? "demo" : "chatgpt"}:${profile.uid}:${profile.email ?? ""}${generation(profile.uid) ? ":" + generation(profile.uid) : ""}`;
 
 	function worldOf(auth: AuthResult): World {
-		const [scheme, kind, uid, email] = auth.token.split(":");
-		if (scheme !== "mock" || !uid || uid !== auth.profile.uid || (kind !== "demo" && kind !== "chatgpt")) {
+		const [scheme, kind, uid, email, gen = ""] = auth.token.split(":");
+		if (scheme !== "mock" || !uid || gen !== generation(uid) || uid !== auth.profile.uid || (kind !== "demo" && kind !== "chatgpt")) {
 			throw new PlatformError("unauthorized", "This sign-in is no longer accepted. Sign in again.");
 		}
 		let world = worlds.get(uid);
@@ -3071,7 +3073,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** The list as the server answers it: each sandbox named by its agent's title now, none for an agent that was deleted. */
 	function machinesView(auth: AuthResult): MachineSummary[] {
 		const world = worldOf(auth);
-		return machinesOf(auth).list.map((machine) => ({ ...machine, warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
+		return machinesOf(auth).list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map(({ options, ...entry }) => options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry), warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
 	}
 
 	function machinesChanged(auth: AuthResult): void {
@@ -3262,8 +3264,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** The calls of the Machines page. A machine paired here waits for its runner, which connects a few seconds later. */
-	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineDetails" | "setMachineSecrets"> {
+	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "machineCatalog" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineDetails" | "setMachineSecrets"> {
 		return {
+			async machineCatalog({ machineId, id, digest }) {
+				const entry = machineOf(auth, machineId).harnesses?.find(h => h.id === id);
+				return entry?.options && digest === String(entry.options.checkedAt) ? entry.options : null;
+			},
 			async machines() {
 				machinesOn();
 				const set = machinesOf(auth);
@@ -3338,6 +3344,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		return {
 			...machineCalls(auth),
 			...items.calls(auth),
+			async signOutEverywhere(options) {
+				const { uid } = world().profile;
+				if (options?.revokeApiTokens) items.revokeAllApiTokens(auth);
+				const next = crypto.randomUUID();
+				revoked.set(uid, next);
+				keep("wlp.mock.tokenGen." + uid, next);
+			},
 			async me() {
 				await latency();
 				return world().profile;

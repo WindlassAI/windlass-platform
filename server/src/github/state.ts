@@ -1,7 +1,6 @@
 /**
- * The two signed strings of connecting GitHub, both `gh1.<payload>.<signature>` in base64url, an
- * HMAC-SHA256 under the server's secret as the platform's own tokens are (tokens.ts). The prefix keeps
- * them apart from those: neither passes as the other.
+ * The two signed strings of connecting GitHub, both `gh2.<kid>.<payload>.<signature>` in base64url, an
+ * HMAC-SHA256 under separate derived keys.
  *
  *   state    goes to GitHub with the user and comes back to the server's callback route. It names the
  *            platform user it was made for, a number used once, and the web app's address to send the
@@ -26,13 +25,13 @@
 
 import type { GithubId } from "../contract.js";
 import { isGithubId } from "./ids.js";
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { config } from "../config.js";
+import { createHash, randomBytes } from "node:crypto";
+import { readSignedPayload, signedPayload } from "../signatures.js";
 
 export const STATE_TTL_MS = 10 * 60 * 1000;
 export const TICKET_TTL_MS = 5 * 60 * 1000;
 
-const PREFIX = "gh1";
+const PREFIX = "gh2";
 
 export interface StatePayload {
 	k: "state";
@@ -57,30 +56,13 @@ export interface TicketPayload extends ConfirmedConnection {
 	exp: number;
 }
 
-function sign(body: string): string {
-	return createHmac("sha256", config.secret).update(body).digest("base64url");
-}
-
 function encode(payload: StatePayload | TicketPayload): string {
-	const body = `${PREFIX}.${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}`;
-	return `${body}.${sign(body)}`;
+	return signedPayload(PREFIX, payload.k === "state" ? "github-state" : "github-ticket", payload);
 }
 
 function decode(token: unknown, now: number): Record<string, unknown> | null {
-	if (typeof token !== "string" || token.length > 8192) return null;
-	const parts = token.split(".");
-	if (parts.length !== 3 || parts[0] !== PREFIX) return null;
-	const expected = Buffer.from(sign(`${parts[0]}.${parts[1]}`), "utf8");
-	const given = Buffer.from(parts[2] as string, "utf8");
-	if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
-	let payload: unknown;
-	try {
-		payload = JSON.parse(Buffer.from(parts[1] as string, "base64url").toString("utf8"));
-	} catch {
-		return null;
-	}
-	if (typeof payload !== "object" || payload === null) return null;
-	const fields = payload as Record<string, unknown>;
+	const fields = readSignedPayload(token, PREFIX, 8192, kind => kind === "state" ? "github-state" : kind === "ticket" ? "github-ticket" : null);
+	if (!fields) return null;
 	if (typeof fields.exp !== "number" || fields.exp <= now) return null;
 	if (typeof fields.uid !== "string" || fields.uid === "" || typeof fields.nonce !== "string" || fields.nonce === "") return null;
 	return fields;

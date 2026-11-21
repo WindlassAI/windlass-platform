@@ -309,6 +309,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		const act = <K extends keyof UserActions & string>(name: K, ...args: Parameters<UserActions[K]>) => call<UserActions, K>(handle(), name, ...(args as never));
 		return {
 			me: () => act("me"),
+			signOutEverywhere: (...args) => act("signOutEverywhere", ...args),
 			chatgpt: () => act("chatgpt"),
 			models: () => act("models"),
 			listSessions: () => act("listSessions"),
@@ -345,6 +346,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			usage: () => act("usage"),
 			freeSandbox: (sessionId) => act("freeSandbox", sessionId),
 			machines: () => act("machines"),
+			machineCatalog: input => act("machineCatalog", input),
 			claimMachine: (input) => act("claimMachine", input),
 			confirmMachine: (input) => act("confirmMachine", input),
 			removeMachine: (input) => act("removeMachine", input),
@@ -382,6 +384,9 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 						}),
 						conn.on("usage" satisfies keyof UserEvents, (numbers: UsageNumbers) => {
 							if (live) feed.onUsage?.(numbers);
+						}),
+						conn.on("machineHost" satisfies keyof UserEvents, (update: UserEvents["machineHost"]) => {
+							if (live) feed.onMachineHost?.(update);
 						}),
 						conn.on("machines" satisfies keyof UserEvents, (machines: MachineSummary[]) => {
 							if (live) feed.onMachines?.(machines);

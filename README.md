@@ -35,9 +35,10 @@ terminal coding agent, and is built on [Rivet Actors](https://www.rivet.dev/acto
   sandboxes there. Nothing needs to reach the machine, and the platform's usage limits do not apply.
 - **Network modes on your machines.** Each machine chooses `restricted` (public sites through a checking
   proxy), `open` or `none` for its agents' commands.
-- **Claude Code as well as Windlass.** On your own machine, an agent can be Claude Code, signed in with your
-  Claude account. Its login stays in a relay outside the session container. OpenCode and Codex are planned,
-  not available yet.
+- **Claude Code and OpenCode as well as Windlass.** On your own machine, an agent can be Claude Code, signed
+  in with your Claude account, or OpenCode, with any API-key provider it knows or its free public models.
+  Sign-in happens in the machine's terminal, and the keys stay in a relay outside the session container.
+  Codex is planned.
 - **Live sessions you can steer.** The timeline streams reasoning, tool calls and answers. You answer the
   agent's questions, steer a running turn, stop one call or the whole turn, and read the diff.
 - **Pull requests with evidence.** The platform pushes and opens the pull request itself, so the sandbox
@@ -106,7 +107,4 @@ the user docs' [Sandboxes and security](https://windlass.parthg.dev/docs/securit
 
 ## License
 
-The code that runs on your machine (`runner/`, `sandbox/`, `server/src/runner/` and `server/src/sandbox/`) is
-[MIT](LICENSE-MIT). Everything else is [FSL-1.1-MIT](LICENSE.md): you may use, change and self-host it, but
-not offer it as a competing service, and each release becomes MIT two years later. [NOTICE.md](NOTICE.md)
-says which paths are which. Third-party components keep their own licenses.
+[Apache-2.0](LICENSE). Third-party components keep their own licenses; see [NOTICE.md](NOTICE.md).

@@ -4,6 +4,8 @@ Test host: Oracle Ampere, Linux arm64, two CPUs, 12 GB nominal RAM. Baseline sou
 
 The [security wave checks](#security-wave-on-loopback-staging) cover the restricted ingress, encrypted restore, sign-in key migration, hosted Docker refusal and browser policy.
 
+For runner releases, follow the [server and runner release order](runner-release.md).
+
 ## Bring-up and gateway
 
 From the repository root, the first build and start used an empty engine volume. The engine started first while the server image finished building.

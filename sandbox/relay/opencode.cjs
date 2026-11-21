@@ -178,9 +178,11 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 exports.providerFor = providerFor;
 if (process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY) {
 	const generation = process.env.WLP_OPENCODE_GENERATION;
+	const domain = process.env.WLP_OPENCODE_SESSION_DOMAIN;
+	if (!domain) throw new Error('Missing session signing domain.');
 	const publicKey = createPublicKey({ key: Buffer.from(process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY, 'base64'), format: 'der', type: 'spki' });
 	const socket = '/workspace/relay.sock';
 	rmSync(socket, { force: true });
 	createRelay({ publicKey, machine: process.env.WLP_OPENCODE_RELAY_MACHINE,
-		domain: 'windlass-opencode-relay-v1-' + generation, provider: providerFor((process.env.WLP_OPENCODE_PROVIDER || '').split(','), generation) }).listen(socket);
+		domain, provider: providerFor((process.env.WLP_OPENCODE_PROVIDER || '').split(','), generation) }).listen(socket);
 }

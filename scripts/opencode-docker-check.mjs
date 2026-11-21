@@ -144,10 +144,15 @@ try {
 	execFileSync(process.execPath,[bundle,'login','opencode','--provider','openai'],{input:token+'-key\n'});
 	const open = executor('open');
 	const third = await create('third',open);
+	const revoked = await cmd(['exec',first,'node','-e',`fetch('http://127.0.0.1:17892/openai/responses',{method:'POST',headers:{authorization:'Bearer '+process.env.WLP_SESSION_BEARER}}).then(r=>console.log(r.status))`]);
+	assert.equal(revoked, '401', 'a placeholder from before full logout must stay revoked');
 	await channelTurn(open, 'third', saved.get(third).id);
 	assert.match(await cmd(['logs',upstream]),/authorized api.openai.com \/v1\/responses/);
 	ok('Open API-key turn and resumed plan turn through the server harness and runner channel.');
 	await storeProvider(owner, {provider:'anthropic',key:token+'-key'});
+	await open.lifecycle('connect', saved.get(third).id, 'third');
+	await channelTurn(open, 'third', saved.get(third).id);
+	ok('The existing OpenCode sandbox still runs with its original placeholder after a second provider signs in.');
 	const anth = await create('anthropic',open);
 	await channelTurn(open,'anthropic',saved.get(anth).id,'anthropic/claude-opus-4-6');
 	ok('Anthropic API-key turn over the runner session channel.');

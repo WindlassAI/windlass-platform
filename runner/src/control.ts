@@ -1,3 +1,4 @@
+import { reportPublisher } from "../../server/src/runner/catalog.js";
 import { generateKeyPairSync, randomUUID, sign, type KeyObject } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
 import {
@@ -202,12 +203,11 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				let reportReady = false;
 				let policyReady: Promise<void>;
 				lastSent = Date.now();
-				let lastReport = "";
+				const publish = reportPublisher(send);
 				owner.publishReport = () => {
 					if (!reportReady || phase !== "online" || ws.readyState !== 1) return;
-					const report = { ...owner.report(), name };
-					const next = JSON.stringify(report);
-					if (next !== lastReport) { send(report); lastReport = next; lastSent = Date.now(); }
+					publish({ ...owner.report(), name });
+					lastSent = Date.now();
 				};
 				const attaching = new Map<string, string>();
 				const disconnect = () => ws.close();

@@ -54,7 +54,7 @@ function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode
 		(setup ? "docker run -it --rm" : "docker run -d --name windlass-runner --restart unless-stopped") + " \\",
 		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
 		"  -v windlass-runner:/var/lib/windlass-runner \\",
-		...(agents.openCode && setup?.importKeys ? ['  -v "${XDG_DATA_HOME:-$HOME/.local/share}/opencode:/import/opencode:ro" \\'] : []),
+		...(agents.openCode && setup?.importKeys ? ['  --mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly" \\'] : []),
 		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}`,
 	].join("\n");
 }
@@ -99,16 +99,20 @@ export function useMachines(enabled = true): MachinesState {
 	const auth = useAuth();
 	const [state, setState] = useState<{ list: MachineSummary[] | null; error: string | null }>({ list: null, error: null });
 	const asked = useRef(0);
+	const samplesDuringReload = useRef<Map<string, MachineSummary["host"]> | null>(null);
 
 	const reload = useCallback(() => {
 		const mine = ++asked.current;
+		const samples = new Map<string, MachineSummary["host"]>();
+		samplesDuringReload.current = samples;
 		client
 			.user(auth)
 			.machines()
 			.then(
-				(list) => mine === asked.current && setState({ list, error: null }),
+				(list) => mine === asked.current && setState({ list: list.map(machine =>
+					samples.has(machine.machineId) ? { ...machine, host: samples.get(machine.machineId) } : machine), error: null }),
 				(failure: unknown) => mine === asked.current && setState((now) => ({ list: now.list, error: explain(failure) })),
-			);
+			).finally(() => { if (samplesDuringReload.current === samples) samplesDuringReload.current = null; });
 	}, [client, auth, explain]);
 
 	const replace = useCallback((list: MachineSummary[]) => {
@@ -123,6 +127,11 @@ export function useMachines(enabled = true): MachinesState {
 		const close = client.user(auth).watch({
 			onSessions: () => undefined,
 			onMachines: replace,
+			onMachineHost: ({ machineId, host }) => {
+				samplesDuringReload.current?.set(machineId, host ?? undefined);
+				setState(now => ({ ...now, list: now.list?.map(machine =>
+					machine.machineId === machineId ? { ...machine, host: host ?? undefined } : machine) ?? null }));
+			},
 			onConnection: (connection) => {
 				if (connection !== "connected") return;
 				// What the actor sent while the feed was down is lost: the list is read again when it is back.
@@ -716,6 +725,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						<div className="machine-setup-agents">
 							{offersClaude && <label><input type="checkbox" checked={claude} onChange={event => setClaude(event.target.checked)} /> Enable Claude Code</label>}
 							{offersOpenCode && <label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>}
+							{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
 							{agents.openCode && <label><input type="checkbox" checked={importKeys} onChange={event => setImportKeys(event.target.checked)} /> Import existing OpenCode API keys during setup</label>}
 						</div>
 						<Command text={setup} label="The setup command" />

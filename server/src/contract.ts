@@ -1050,8 +1050,10 @@ export function machineLabel(machine: { name: string; os?: string; arch?: string
 	return name ? what + " (" + name.slice(0, 6).toLowerCase() + ")" : what;
 }
 
-/** One of the user's machines, as the Machines page lists it. */
+/** Latest host sample for an already listed machine. */
+export interface MachineHostUpdate { machineId: string; host: NonNullable<MachineSummary["host"]> | null }
 export interface MachineDetails { whenToUse: string; tags: string[]; orchestrator?: "yes" | "named" | "never" }
+/** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary extends Partial<MachineDetails> {
 	/** Additive runner sizing report. Older runners report turn counts and sandbox CPU instead. */
 	slots?: { max: number; busy: number; queued: number; unit: { cpus: number; memoryBytes: number; pids: number } };
@@ -1063,7 +1065,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; options?: HarnessOptions }>;
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -1626,6 +1628,7 @@ export interface ApiToken {
 }
 
 export interface UserActions {
+	signOutEverywhere(options?: { revokeApiTokens: boolean }): Promise<void>;
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
 	/**
@@ -1777,6 +1780,7 @@ export interface UserActions {
 	 * `machines_off` when the deployment has no machines (`PlatformInfo.machines`).
 	 */
 	machines(): Promise<MachineSummary[]>;
+	machineCatalog(input: { machineId: string; id: "claude" | "opencode"; digest: string }): Promise<HarnessOptions | null>;
 	/**
 	 * Looks up the code a runner printed ("XXXX-XXXX": Crockford base32, so case, spaces and dashes do
 	 * not matter, O reads as 0 and I and L as 1) and answers with what that machine said of itself. The
@@ -1832,6 +1836,7 @@ export interface UserEvents {
 	usage: UsageNumbers;
 	/** The user's machines, after one was paired or removed, or its status, warnings or secrets switch changed. */
 	machines: MachineSummary[];
+	machineHost: MachineHostUpdate;
 	/** The user's work items, newest first, after any of them changed. */
 	items: ItemSummary[];
 }

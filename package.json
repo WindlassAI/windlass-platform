@@ -2,7 +2,7 @@
   "name": "windlass-platform",
   "private": true,
   "version": "0.0.0",
-  "license": "FSL-1.1-MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@11.25.0",
   "scripts": {
@@ -12,7 +12,7 @@
     "dev:web": "pnpm --filter @windlass-platform/web dev",
     "shots": "node scripts/readme-shots.mjs",
     "typecheck": "pnpm -r typecheck",
-    "test": "node --test scripts/claude-relay-check.mjs scripts/opencode-relay-check.mjs scripts/runner-setup-check.mjs && pnpm --filter @windlass-platform/server exec tsx ../scripts/runner-opencode-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/runner-egress-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/factory-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/orchestrator-check.ts && WEBHOOK_ONLY='G3 feature' pnpm --filter @windlass-platform/server exec tsx ../scripts/webhook-check.ts && FACTORY_ONLY=orchestrator pnpm --filter @windlass-platform/server exec tsx ../scripts/factory-e2e.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/fairness-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/timeline-write-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/runner-e2e.ts fairness && pnpm --filter @windlass-platform/server exec tsx ../scripts/web-stage-check.ts && pnpm --filter @windlass-platform/web test && pnpm --filter @windlass-platform/server e2e"
+    "test": "pnpm --filter @windlass-platform/server exec tsx --test --test-concurrency=1 ../scripts/keyring-check.ts ../scripts/login-handover-check.ts ../scripts/revocation-check.ts && node --test scripts/claude-relay-check.mjs scripts/opencode-relay-check.mjs scripts/runner-setup-check.mjs && pnpm --filter @windlass-platform/server exec tsx ../scripts/runner-opencode-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/runner-egress-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/factory-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/orchestrator-check.ts && WEBHOOK_ONLY='G3 feature' pnpm --filter @windlass-platform/server exec tsx ../scripts/webhook-check.ts && FACTORY_ONLY=orchestrator pnpm --filter @windlass-platform/server exec tsx ../scripts/factory-e2e.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/fairness-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/timeline-write-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/runner-e2e.ts fairness && pnpm --filter @windlass-platform/server exec tsx ../scripts/web-stage-check.ts && pnpm --filter @windlass-platform/web test && pnpm --filter @windlass-platform/server e2e"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

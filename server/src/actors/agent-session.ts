@@ -125,7 +125,7 @@ import {
 	pushedForAgent,
 } from "../agent-publish.js";
 import { db, type RawAccess } from "rivetkit/db";
-import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, maySubscribe, requireService, requireUser } from "../auth.js";
+import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, checkGeneration, disconnectRevoked, requireService, requireServiceFor } from "../auth.js";
 import { config } from "../config.js";
 import {
 	generatedSessionTitle,
@@ -519,6 +519,27 @@ interface HeldSecrets {
 	/** The checks the user saved for the session's repository (repository-checks.ts); none for a session that is not on one. */
 	checks: RepositoryCheck[];
 	redactor: Redactor;
+}
+
+/** Agent-session sockets can outlive a browser login and can be served on a different host. */
+async function sessionCaller(c: { key: string[]; client(): unknown }, params: unknown) {
+	const caller = authenticate(c.key, params);
+	if (caller.kind === "user") checkGeneration(caller, await userActor(c, c.key[0]).internalTokenGeneration());
+	return caller;
+}
+
+async function requireSessionUser(c: { key: string[]; client(): unknown; conn?: { params: unknown } | null }) {
+	const caller = await sessionCaller(c, c.conn?.params);
+	if (caller.kind !== "user") throw new UserError("This action is for users.", { code: "forbidden" });
+}
+
+async function maySubscribe(c: Parameters<typeof requireSessionUser>[0]): Promise<boolean> {
+	try {
+		await requireSessionUser(c);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 interface SessionVars {
@@ -4096,6 +4117,9 @@ export const agentSession = actor({
 	options: {
 		name: "Agent session",
 		icon: "robot",
+		// A browser connection must read its generation from the user actor, which may be waking
+		// and migrating its database after a restart. Allow that actor its migration window.
+		onBeforeConnectTimeout: 30_000,
 		// `changes`, `diff` and the internal destroy wait on the sandbox; a turn itself runs in the
 		// background under `keepAwake` and is not bound by this.
 		actionTimeout: 120_000,
@@ -4364,9 +4388,9 @@ export const agentSession = actor({
 		machine: event<NonNullable<SessionSnapshot["machine"]>>({ canSubscribe: (c) => maySubscribe(c) }),
 	},
 
-	onBeforeConnect: (c, params: unknown) => {
+	onBeforeConnect: async (c, params: unknown) => {
 		assertOrigin(c);
-		if (!isRunnerSocket(c.request)) authenticate(c.key, params);
+		if (!isRunnerSocket(c.request)) await sessionCaller(c, params);
 		if (!c.vars.meta) throw new UserError("That agent does not exist.", { code: "session_not_found" });
 	},
 
@@ -4386,8 +4410,12 @@ export const agentSession = actor({
 	},
 
 	actions: {
+		internalDisconnectRevoked: async (c, generation: number): Promise<void> => {
+			requireServiceFor(c, "call");
+			await disconnectRevoked(c.conns, generation);
+		},
 		snapshot: async (c): Promise<SessionSnapshot> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			try {
 				const { sandboxes } = await layerOf(c, meta);
@@ -4420,7 +4448,7 @@ export const agentSession = actor({
 		},
 
 		setMode: async (c, input: { mode: string }): Promise<SessionSummary> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (meta.origin) throw new UserError("A work item and its reviewer use the profile’s approval mode.", { code: "bad_input" });
 			const mode = input?.mode;
@@ -4436,7 +4464,7 @@ export const agentSession = actor({
 		},
 
 		prompt: async (c, input: PromptInput): Promise<PromptAnswer> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (meta.origin) throw new UserError("This agent works for a work item, whose steps send its prompts. Answer the item, or send its work back with a note.", { code: "item_session" });
 			if (typeof input !== "object" || input === null || typeof input.text !== "string" || input.text.trim() === "") {
@@ -4464,7 +4492,7 @@ export const agentSession = actor({
 		},
 
 		stop: async (c): Promise<void> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			const turn = c.vars.turn;
 			if (!turn) return;
@@ -4483,8 +4511,8 @@ export const agentSession = actor({
 
 		// Synchronous from the check to the settling, so of two answers sent at once exactly one finds
 		// the question pending.
-		answer: (c, input: { questionId: string; choice: string; note?: string }): void => {
-			requireUser(c);
+		answer: async (c, input: { questionId: string; choice: string; note?: string }): Promise<void> => {
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (typeof input !== "object" || input === null || typeof input.questionId !== "string" || typeof input.choice !== "string") {
 				throw new UserError("Choose one of the question's answers.", { code: "bad_answer" });
@@ -4516,7 +4544,7 @@ export const agentSession = actor({
 		},
 
 		stopCall: async (c, input: { messageId: string; callId: string }): Promise<{ stopped: boolean; message: string | null }> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (typeof input !== "object" || input === null || typeof input.messageId !== "string" || input.messageId === "" || typeof input.callId !== "string" || input.callId === "") {
 				throw new UserError("Say which tool call to stop.", { code: "bad_call" });
@@ -4538,7 +4566,7 @@ export const agentSession = actor({
 		},
 
 		changes: async (c): Promise<WorkspaceFile[]> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			// The sandbox is this read's until it is done: it may resume a paused one and read it.
 			const release = takeSandbox(c);
@@ -4554,7 +4582,7 @@ export const agentSession = actor({
 		},
 
 		diff: async (c): Promise<string> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			const release = takeSandbox(c);
 			try {
@@ -4569,7 +4597,7 @@ export const agentSession = actor({
 		},
 
 		publishState: async (c): Promise<PublishState> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			try {
 				await checkPull(c, meta);
@@ -4580,7 +4608,7 @@ export const agentSession = actor({
 		},
 
 		publish: async (c, input: { message: PublishMessage }): Promise<PublishResult> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (meta.origin?.role === "reviewer") throw new UserError("The reviewer cannot publish.", { code: "reviewer" });
 			const message = cleanMessage(input);
@@ -4629,7 +4657,7 @@ export const agentSession = actor({
 		},
 
 		setPublishUnasked: async (c, input: { unasked: boolean }): Promise<SessionSummary> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (typeof input !== "object" || input === null || typeof input.unasked !== "boolean") throw new UserError("Say whether the agent may publish without asking.", { code: "bad_input" });
 			if (!meta.repo) throw new UserError("This agent does not work on a repository of your GitHub connection, so it has nowhere to publish to.", { code: "publish_blocked" });
@@ -4656,7 +4684,7 @@ export const agentSession = actor({
 		},
 
 		servers: async (c): Promise<SessionServers> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			try {
 				return await sessionServers(c, meta);
@@ -4666,7 +4694,7 @@ export const agentSession = actor({
 		},
 
 		approveServer: async (c, input: { name: string; fingerprint: string }): Promise<SessionServers> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (!capabilitiesOf(meta.harness).projectServerApproval) throw new UserError("Claude Code does not take project MCP servers here.", { code: "bad_server" });
 			if (meta.origin?.role === "reviewer") throw new UserError("The reviewer cannot start MCP servers.", { code: "reviewer" });
@@ -4704,7 +4732,7 @@ export const agentSession = actor({
 		},
 
 		forgetServer: async (c, input: { name: string }): Promise<SessionServers> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (!capabilitiesOf(meta.harness).projectServerApproval) throw new UserError("Claude Code does not take project MCP servers here.", { code: "bad_server" });
 			if (typeof input !== "object" || input === null || typeof input.name !== "string" || input.name === "" || input.name.length > 200) {

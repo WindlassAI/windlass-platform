@@ -366,7 +366,7 @@ await section("connect: a state works once, for the user it was signed for, and 
 
 	const fresh = store.begin("u_ada");
 	const parts = fresh.state.split(".");
-	const tampered = `${parts[0]}.${Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(parts[1] as string, "base64url").toString("utf8")), uid: "u_mallory" }), "utf8").toString("base64url")}.${parts[2]}`;
+	const tampered = `${parts[0]}.${parts[1]}.${Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(parts[2] as string, "base64url").toString("utf8")), uid: "u_mallory" }), "utf8").toString("base64url")}.${parts[3]}`;
 	const forged = await visit(standin.authorize("mallory", begun.url).replace(encodeURIComponent(begun.state), encodeURIComponent(tampered)));
 	expect("a state whose user was changed is refused", forged.error === "state" && forged.ticket === null, forged.location);
 	expect("and it did not use up the real one", store.pending.size > 0 && (await visit(standin.authorize("ada", fresh.url))).ticket !== null);

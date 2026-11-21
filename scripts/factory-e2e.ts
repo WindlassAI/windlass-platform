@@ -343,7 +343,7 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 		setCi(harbor, head, "success");
 		const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=";
 		const { config } = await import("../server/src/config.js");
-		const { client, user, auth } = await world(server, standin, { WLP_SECRET: config.secret.toString(), WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_BACKUP_DIR: join(server.storage, "shots"), WLP_FAKE_BUCKET_SIGNING_SECRET: randomBytes(32).toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_IDLE_SUSPEND_MS: "1000" });
+		const { client, user, auth } = await world(server, standin, { WLP_SECRET: config.signingKeys[0].secret.toString(), WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_BACKUP_DIR: join(server.storage, "shots"), WLP_FAKE_BUCKET_SIGNING_SECRET: randomBytes(32).toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_IDLE_SUSPEND_MS: "1000" });
 		await check("reviewer: platform info says the second review is on", async () => {
 			const info = (await (await fetch(`${API}/platform/info`)).json()) as { items?: { reviewer?: unknown } };
 			assert(info.items?.reviewer === true, `platform info has items: ${JSON.stringify(info.items)}`);
@@ -1047,7 +1047,7 @@ async function memoryChecks(): Promise<void> {
 				return promise;
 			},
 			schedule: { at: async () => "alarm", cancel: async () => true },
-			vars: { items: await loadItems(db as never), machines: new Map<string, { name: string; since: number; status: string; sandboxes: unknown[] }>(), sessions, usage: new UsageBook({ dailySeconds: 100_000, holdSeconds: 60, maxKept: 20 }), profile: null },
+			vars: { tokenGen: 0, items: await loadItems(db as never), machines: new Map<string, { name: string; since: number; status: string; sandboxes: unknown[] }>(), sessions, usage: new UsageBook({ dailySeconds: 100_000, holdSeconds: 60, maxKept: 20 }), profile: null },
 			client: () => ({
 				agentSession: { get: ([, id]: string[]) => ({ internalGrant: async () => (grantFails ? Promise.reject(new Error("the reply was lost")) : void grants.push(id as string)) }) },
 				workItem: { get: () => ({ internalFact: async () => undefined }) },
@@ -1114,7 +1114,7 @@ async function memoryChecks(): Promise<void> {
 		const q = await queue({});
 		const { issueUserToken } = await import("../server/src/tokens.js");
 		const profile = { uid: "u", email: null, demo: false };
-		(q.c.conn as { params: unknown }).params = { token: issueUserToken(profile) };
+		(q.c.conn as { params: unknown }).params = { token: issueUserToken(profile, 0) };
 		const items = config.items;
 		config.items = true;
 		let made: Item | null = null;
