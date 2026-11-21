@@ -25,8 +25,10 @@ To check the workspace, run `pnpm typecheck` and `WLP_SANDBOX=fake pnpm test`.
 See the [getting-started guide](web/src/docs/content/getting-started.md), [self-host guide](deploy/selfhost/README.md)
 and [contributor guide](CONTRIBUTING.md). Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
 
-**No license is granted yet for the first-party code. All rights reserved.** The code is visible for
-reading and discussion. Third-party components retain their own license terms.
+**License:** the code that runs on your machine (the runner, the sandbox images and the protocol they share) is
+MIT. Everything else is [FSL-1.1-MIT](LICENSE.md): use it, change it and self-host it freely, but don't offer it as
+a competing service; each release becomes MIT two years later. See [NOTICE.md](NOTICE.md) for which paths are which.
+Third-party components keep their own licenses.
 
 ![A session: the agent's tool calls, its answer, and the session panel](docs/screenshots/session.png)
 

@@ -2,6 +2,7 @@
   "name": "@windlass-platform/server",
   "private": true,
   "version": "0.0.0",
+  "license": "FSL-1.1-MIT",
   "type": "module",
   "scripts": {
     "dev": "WLP_DEMO=${WLP_DEMO:-1} tsx watch src/index.ts",
