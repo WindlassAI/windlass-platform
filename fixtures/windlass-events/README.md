@@ -10,8 +10,8 @@ Real output of `windlass --json`, one JSON object per line.
 
 Durable events have `v`, `data`, `seq`, `time`. Ephemeral ones (`text.delta`, `reasoning.delta`,
 `tool.input.delta`, `tool.progress`, `notice`, `workspace.changes`, `cli.summary`) have their fields at
-the top level and no `seq`. The schema is documented in
-`/home/ubuntu/projects/light-harness/docs/event-log.md`.
+the top level and no `seq`. The schema is documented in the
+[Windlass v0.5.0 event log](https://github.com/WindlassAI/windlass/blob/v0.5.0/docs/event-log.md).
 
 - `acp-approval-approved.jsonl`, `acp-approval-denied.jsonl`: the events of one turn driven over the Agent
   Client Protocol (`windlass acp`, events asked for at `initialize`) with a scripted model, in a container where

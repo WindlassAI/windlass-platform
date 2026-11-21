@@ -1,10 +1,34 @@
 # Windlass Platform
 
-A hosted home for [Windlass](https://github.com/parthg1901/windlass), the terminal coding agent: sign in with
+A hosted home for [Windlass](https://github.com/WindlassAI/windlass), the terminal coding agent: sign in with
 ChatGPT, launch agents, choose the sandbox each one works in, and watch every turn live in the browser.
 
 It is built on [Rivet Actors](https://www.rivet.dev/actors/docs). Each agent session is one actor that owns the
 conversation and drives a Windlass process inside a sandbox.
+
+## Quick start
+
+Run the demo with Node.js **22.22.2** (or a newer patch in 22.x) and **pnpm 11.25.0**.
+Use a machine supported by the local Rivet engine, such as Linux x64 or arm64. Fake sandboxes
+replay recorded Windlass sessions and need no Docker, account or API keys.
+
+```sh
+# From the repository root
+corepack enable pnpm
+pnpm install --frozen-lockfile
+WLP_SANDBOX=fake pnpm dev:server
+```
+
+In a second terminal, run `pnpm dev:web`. Open <http://localhost:5173/signin> and choose **Try the demo**.
+To check the workspace, run `pnpm typecheck` and `WLP_SANDBOX=fake pnpm test`.
+
+See the [getting-started guide](web/src/docs/content/getting-started.md), [self-host guide](deploy/selfhost/README.md)
+and [contributor guide](CONTRIBUTING.md). Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
+
+**License:** the code that runs on your machine (the runner, the sandbox images and the protocol they share) is
+MIT. Everything else is [FSL-1.1-MIT](LICENSE.md): use it, change it and self-host it freely, but don't offer it as
+a competing service; each release becomes MIT two years later. See [NOTICE.md](NOTICE.md) for which paths are which.
+Third-party components keep their own licenses.
 
 ![A session: the agent's tool calls, its answer, and the session panel](docs/screenshots/session.png)
 
@@ -12,7 +36,7 @@ conversation and drives a Windlass process inside a sandbox.
 
 ## Run it
 
-You need Node 22 or later, pnpm and Docker. The Windlass the platform runs is the released 0.5.0, which the
+For real containers, use the Node.js and pnpm versions above and install Docker. The Windlass the platform runs is the released 0.5.0, which the
 build scripts fetch by themselves (`sandbox/fetch-windlass.sh`: the release is pinned there by tag and by the
 SHA-256 of each executable, and a file that does not match is not installed).
 

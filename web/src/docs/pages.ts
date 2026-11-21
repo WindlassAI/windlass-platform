@@ -55,14 +55,14 @@ export const DOCS_PAGES: readonly DocsPage[] = [
 	{
 		slug: "machines",
 		title: "Use your own machine",
-		description: "Pair a machine of yours with one Docker command, so agents run there instead of in a hosted sandbox.",
+		description: "Pair a machine of yours with one Docker command, choose its network mode, and run agents there instead of in a hosted sandbox.",
 		section: "Your machines",
 		file: "machines.md",
 	},
 	{
 		slug: "runner",
 		title: "Runner reference",
-		description: "Every runner command and option: harnesses, turn limits, CPU caps, allowed profiles, status, logs, pruning and updates.",
+		description: "Every runner command and option: harnesses, network modes, names, turn limits, CPU caps, allowed profiles, status, logs and pruning.",
 		section: "Your machines",
 		file: "runner.md",
 	},
@@ -76,7 +76,7 @@ export const DOCS_PAGES: readonly DocsPage[] = [
 	{
 		slug: "factory",
 		title: "Factory",
-		description: "File work items from the page or from GitHub and let the pipeline take each one from agent to reviewed pull request.",
+		description: "File work items from the page, GitHub or the API, or orchestrate a feature into subtasks, and let the pipeline take each to a reviewed pull request.",
 		section: "Platform",
 		file: "factory.md",
 	},
@@ -97,7 +97,7 @@ export const DOCS_PAGES: readonly DocsPage[] = [
 	{
 		slug: "faq",
 		title: "FAQ",
-		description: "Short answers to common questions about Windlass: access, agents, models, sandboxes, your own machine and cost.",
+		description: "Short answers to common questions about Windlass: access, agents, models, sandboxes, your own machine, self-hosting and licenses.",
 		section: "Help",
 		file: "faq.md",
 	},

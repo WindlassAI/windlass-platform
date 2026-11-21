@@ -1,0 +1,1 @@
+This directory is under the MIT License: see LICENSE-MIT at the repository root, and NOTICE.md for how the repository is licensed.

@@ -47,6 +47,16 @@ The page shows what the machine says about itself: its name, OS, architecture an
 
 The runner then prints whose account it joined: `Paired with <your GitHub login>`. If that is not you, run `windlass-runner pair` again.
 
+### Name it
+
+The machine is named after its Docker daemon, or its hostname if Docker gives none. To choose the name yourself, add `--name` after the runner image, with `run` or `pair`:
+
+```sh
+<runner image> --platform <platform address> --name "Build box"
+```
+
+A name has 1 to 64 printable characters. The runner saves it and uses it again when it restarts without `--name`.
+
 > **Note** If the code expired, the runner says so. Restart the container, or run `windlass-runner pair`, to get a new code.
 
 ## What the machine receives
@@ -76,7 +86,71 @@ A runner runs 2 turns at once by default. More turns wait in a queue, in the ord
 
 ### CPU and memory
 
-Each sandbox gets 1536 MiB of memory, at most 512 processes and no Linux capabilities. Its CPU is capped at half the CPUs the runner can use, at least 0.5 CPU. To change the cap, set `WLP_RUNNER_CPUS` in the runner's environment.
+Each sandbox gets 1536 MiB of memory, at most 512 processes and no Linux capabilities. Its CPU is capped at half the CPUs the runner can use, at least 0.5 CPU. To change the cap, set `WLP_RUNNER_CPUS` in the runner's environment, for example `-e WLP_RUNNER_CPUS=2` before the image. **Details** on the Machines page shows the CPUs given to sandboxes under **Capacity**.
+
+## Network access
+
+Each machine has one network mode for its agents' commands. You choose it when you start the runner, with `--egress`:
+
+| Mode | What commands can reach |
+| --- | --- |
+| `restricted` | Public sites, through a web proxy the runner keeps beside each sandbox. Not your local network, the machine itself, Docker's networks or cloud metadata addresses. This is the default for a new pairing. |
+| `open` | The internet and your local network, directly. Agents on the machine still cannot reach each other. |
+| `none` | No network at all. An agent here cannot have a repository. |
+
+The runner saves the mode for this pairing, and uses it again when it restarts without `--egress`. It prints the mode when it starts, and `status` prints it too, for example "Network egress is restricted."
+
+### Restricted
+
+In `restricted` mode the sandbox has no network of its own. The runner sets `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` in it, and a web proxy on the machine connects for it:
+
+- Programs that use those settings get out, to any port. Programs that ignore them have no network.
+- The runner resolves names itself, on the machine, and checks the address before it connects.
+- Your private network (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` and `fc00::/7`) is refused, unless you allow a name with `--egress-allow`.
+- The machine's own addresses, every Docker network on it, `169.254.0.0/16` and other special ranges are always refused.
+
+A refused request gets `403 Forbidden`. For a plain `http:` request, the answer also says "blocked by runner egress policy".
+
+To let commands reach a host on your private network, name it:
+
+```sh
+<runner image> --platform <platform address> --egress restricted --egress-allow git.internal.example,registry.internal.example
+```
+
+Give exact DNS names, up to 64, separated by commas. IP addresses are refused. A listed name is still refused if it resolves to the machine itself, a Docker network or a metadata address. `--egress-allow` alone means `restricted`. `--egress restricted` without `--egress-allow` empties the list.
+
+### None
+
+In `none` mode commands have no network. A repository cannot be cloned there, so an agent on a repository is refused: "This machine uses --egress none. Start the session without a repository or restart the runner with --egress restricted." Start it with **No repository**, or change the mode.
+
+### Pairings made before network modes
+
+A machine paired before network modes existed stays `open` until you give `--egress`. Its runner says so when it starts: "Network egress is open for this existing pairing. Start the runner with --egress restricted to opt in."
+
+### Changing the mode
+
+The new mode applies to sandboxes the runner makes from then on. A kept sandbox made under another mode is paused, and using it again is refused: "This kept sandbox has a different network policy. Save its workspace and recreate the sandbox to use the runner’s current --egress setting." Take what you need from it, delete the agent and start a new one.
+
+### What the session shows
+
+When you choose **Hardened Docker on your machine "…"**, the **sandbox** chip and the session's **Sandbox** panel say what its commands can reach:
+
+| Mode | The network fact |
+| --- | --- |
+| `restricted` | "commands can reach public sites and hosts allowed by the owner through the web proxy" |
+| `open` | "commands can reach the internet and the local network" |
+| `none` | "commands have no network" |
+
+In **Docker + Windlass sandbox on your machine "…"**, commands have no network whatever the mode. A repository's setup command uses the machine's mode in both profiles.
+
+## Say when to use it
+
+You can tell the planner of an orchestrated work item what each machine is for. On the Machines page, choose **Add** beside "No note on when to use it.", or **Edit** once there is one. Fill in:
+
+- **When to use it**: a note of up to 500 characters, for example "Builds and browser tests; it has the GPU".
+- **Tags**: up to 12, with a comma or a space between them, for example `gpu, big-build`. A tag has letters, digits, `-` and `_`, starts with a letter or digit, and is up to 24 characters long. `os`, `arch` and `screenshots` come from the runner, so you cannot set them.
+
+Choose **Save**. The planner reads this, with the machine's OS, capacity and what it can run, when it splits a feature into subtasks. Nothing else reads it. See [Orchestrate](/docs/factory#orchestrate-a-feature).
 
 ## Claude Code on your machine
 
@@ -98,13 +172,26 @@ To sign out:
 docker exec windlass-runner windlass-runner logout claude
 ```
 
-The runner stores the setup token in a login volume on your machine. Its credential relay reads the token for each authorized request. Commands in a Claude session can use that session’s relay and consume subscription quota, including with `--egress none`.
+### Your Claude login stays out of the container
+
+The runner stores the setup token in a login volume on your machine. No session container mounts it. A separate relay container on the machine holds it instead, and is the only one that reads it.
+
+Each Claude session gets the relay's address and a placeholder in place of the token. The placeholder is signed by the machine's key and is good only for that session. The relay checks it on every request, then sends the request on to Anthropic with the real token. It takes only Claude's model requests. Anything else is refused: "Claude credential relay refused the request."
+
+So commands in a Claude session cannot read your token. They can still use that session's relay and consume subscription quota, in every network mode, `none` included.
 
 Older runners mounted the login volume in Claude sessions. On upgrade, archive any work you need from those stopped sessions, remove them, revoke the old token with Anthropic, and sign in with a fresh token before recreating the sessions.
 
 ## Machine details and warnings
 
-Each machine on the page shows its state: **Online**, **Offline since** a time, **Waiting for the runner**, or **Needs an update**. Choose **Details** to see whether commands can be sandboxed by Windlass, the free disk, and the sandbox limits set on the machine.
+Each machine on the page shows its state: **Online**, **Offline since** a time, **Waiting for the runner**, or **Needs an update**. Choose **Details** to see:
+
+- **Sandboxes**: the agents' sandboxes on it;
+- **Commands sandboxed by Windlass**: whether Windlass's own sandbox can start there, and why not;
+- **Capacity**: the turns running and queued, the CPUs given to sandboxes and the memory free;
+- **Free disk**;
+- **Sandbox limit**: the limits set on the machine with `--max-running` and `--max-sandboxes`;
+- the switch **Send saved secrets to this machine**.
 
 The page also warns you when:
 

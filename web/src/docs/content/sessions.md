@@ -63,7 +63,7 @@ With Windlass, you can also stop a single tool call: choose **Stop this call** o
 
 ### Session and sandbox
 
-**Session** lists the title, id, state, agent, model, mode, number of turns, repository and when it was created. **Sandbox** names the sandbox and the layers that isolate it.
+**Session** lists the title, id, state, agent, model, mode, number of turns, repository and when it was created. **Sandbox** names the sandbox and gives three facts: what the agent may run without asking, what its commands can reach on the network, and whether they can read the session's access token. On one of your machines, the network fact follows the machine's [network mode](/docs/machines#network-access). **How it is held** lists the layers that isolate it.
 
 ### Tokens and usage
 

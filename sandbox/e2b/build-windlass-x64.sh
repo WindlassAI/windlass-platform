@@ -2,6 +2,7 @@
 # Builds the x86_64 Windlass that E2B's microVMs need, from a local Windlass checkout, and writes
 # nothing into that checkout.
 #
+#   git clone --branch v0.5.0 https://github.com/WindlassAI/windlass.git ../windlass
 #   sandbox/e2b/build-windlass-x64.sh
 #   WINDLASS_SOURCE=<checkout> WINDLASS_OUT=<directory> sandbox/e2b/build-windlass-x64.sh
 #
@@ -25,9 +26,11 @@
 # first thing that runs it is the E2B template build.
 set -eu
 
-src="${WINDLASS_SOURCE:-/home/ubuntu/projects/wt-windlass-token-validity}"
-out="${WINDLASS_OUT:-/home/ubuntu/projects/windlass-local-builds}"
+root=$(cd "$(dirname "$0")/../.." && pwd)
+src="${WINDLASS_SOURCE:-$root/../windlass}"
+out="${WINDLASS_OUT:-$root/.data/windlass-builds}"
 [ -f "$src/scripts/build.ts" ] || { echo "build-windlass-x64.sh: $src is not a Windlass checkout (no scripts/build.ts); set WINDLASS_SOURCE" >&2; exit 1; }
+src=$(cd "$src" && pwd)  # The build runs from a temporary directory.
 command -v bun >/dev/null 2>&1 || { echo "build-windlass-x64.sh: bun is not installed" >&2; exit 1; }
 
 state() { (cd "$src" && git rev-parse HEAD && git status --porcelain --ignored); }

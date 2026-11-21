@@ -20,7 +20,7 @@ set -eu
 RELEASE=v0.5.0
 SUM_x64=955a2b63a34a2b3c0e7e8a77987a29326081f230524be6cd11f047a72461fef0
 SUM_arm64=c327ba95c1aa4aaa46ecb3d164088c1300ded7d18c588dce8931ef232dabfd3d
-BASE="https://github.com/parthg1901/windlass/releases/download/$RELEASE"
+BASE="https://github.com/WindlassAI/windlass/releases/download/$RELEASE"
 
 dir="${WINDLASS_RELEASE_DIR:-$HOME/.cache/windlass-platform/windlass-$RELEASE}"
 mkdir -p "$dir"
