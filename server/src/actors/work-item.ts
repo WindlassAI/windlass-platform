@@ -621,6 +621,7 @@ function live(item: FactoryItem, effect: Effect): boolean {
 	if (item.question?.kind === "machine_removed" || ENDED.has(item.state) || run === null) return false;
 	const key = currentKey(item);
 	switch (effect.kind) {
+		case "dispatch": return effect.key === key && run.step.kind === "subtasks";
 		case "deliver":
 			return effect.key === key && run.step.turn === "delivered";
 		case "check_turn":
@@ -812,6 +813,9 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 		return value;
 	};
 	switch (action?.kind) {
+		case "edit_plan": return { kind: action.kind, version: action.version, plan: action.plan, by, at };
+		case "approve_plan": return { kind: action.kind, version: action.version, by, at };
+		case "run_single": return { kind: action.kind, by, at };
 		case "start":
 		case "cancel":
 		case "retry":
@@ -835,6 +839,7 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 }
 
 const CONFLICT: Record<ItemAction["kind"], string> = {
+	edit_plan: "That plan has changed. Read the latest version.", approve_plan: "Review the latest plan and answer its questions first.", run_single: "This item cannot switch to single mode.",
 	start: "Only a draft can be started.",
 	cancel: "The item is done or cancelled already.",
 	retry: "Only an item that failed can be retried.",
@@ -927,6 +932,12 @@ export const workItem = actor({
 	actions: {
 		// --- called by `user` only ---------------------------------------------------------------
 
+		internalFilePlan: async (c, input: { key: string; plan: unknown }): Promise<string> => {
+			requireService(c);
+			try {
+				return await take(c, { ...input, kind: "file_plan", at: Date.now() }) ? "Plan filed. End your turn." : "This planning turn ended.";
+			} catch (error) { return describeError(error); }
+		},
 		internalSummary: (c): ItemSummary => {
 			requireService(c);
 			if (!c.vars.stored) throw new UserError("That item does not exist.", { code: "item_not_found" });

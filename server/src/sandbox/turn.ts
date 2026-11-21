@@ -120,6 +120,10 @@ import { TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.j
 
 export function turnHostTools(input: RunTurnInput) {
 	const tools = new Map<string, (call: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>>();
+	if (input.onPlan) {
+		tools.set("file_plan", input.onPlan);
+		return tools;
+	}
 	if (input.onReview) {
 		tools.set(REVIEW_TOOL, input.onReview);
 		return tools;
@@ -138,7 +142,7 @@ export function sessionOpenParams(cwd: string, meta: Record<string, unknown>) {
 }
 
 export function hostToolsMeta(tools: ReturnType<typeof turnHostTools>, screenshots?: boolean) {
-	return { hostTools: platformTools({ publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL), review: tools.has(REVIEW_TOOL), screenshots }, config.questionTimeoutMs) };
+	return { hostTools: platformTools({ plan: tools.has("file_plan"), publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL), review: tools.has(REVIEW_TOOL), screenshots }, config.questionTimeoutMs) };
 }
 
 /** The key of Windlass's extensions in `_meta` and in an error's `data`, and the prefix of its methods. */
@@ -497,7 +501,7 @@ class Turn {
 		if (mode !== "ask" && mode !== sandbox.approval) throw new Error("This sandbox profile does not offer that approval mode.");
 		this.approval = mode;
 		// A project definition takes precedence over a named user agent. Choose the name after checkout, on every open.
-		this.reviewerAgent = input.onReview ? `wlp-review-${randomId(16)}` : null;
+		this.reviewerAgent = (input.onReview || input.planner) ? `wlp-review-${randomId(16)}` : null;
 		this.redactor = input.secrets?.redactor ?? NO_REDACTION;
 		this.peer = new AcpConnection(
 			(line) => this.process?.write(`${line}\n`) ?? false,
@@ -647,8 +651,8 @@ class Turn {
 			this.sandbox.stopLeftovers("windlass"),
 			scriptPath === null ? undefined : this.sandbox.writeTextFile(scriptPath, JSON.stringify(this.input.script)),
 			agentFile === null ? undefined : this.sandbox.writeTextFile(agentFile, [
-				"---", `name: ${this.reviewerAgent}`, "description: Reviews this pull request independently.",
-				"disallowed-tools: subagent", "---", "Review the change yourself.", "",
+				"---", `name: ${this.reviewerAgent}`, this.input.planner ? "description: Read the repository and plan the feature." : "description: Reviews this pull request independently.",
+				this.input.planner ? "disallowed-tools: write, edit, shell, subagent" : "disallowed-tools: subagent", "---", this.input.planner ? "Read the repository and file the requested artifact." : "Review the change yourself.", "",
 			].join("\n")),
 			// The user's access token, in its file before the engine looks for it. An abort does not wait for it.
 			this.tokenFile === null ? undefined : this.unlessAborted(this.tokenFile.start()),
@@ -697,7 +701,7 @@ class Turn {
 				this.failure = { reason: "host_tools_required", message: "The sandbox needs Windlass 0.4.0 or later for host tools." };
 				return;
 			}
-			if (input.onReview && ["agent", "children", "requiredChecks"].some(key => !openKeys.includes(key))) {
+			if ((input.onReview || input.planner) && ["agent", "children", "requiredChecks"].some(key => !openKeys.includes(key))) {
 				this.failure = { reason: "engine", message: "This Windlass cannot open a restricted reviewer session with file_review." };
 				return;
 			}

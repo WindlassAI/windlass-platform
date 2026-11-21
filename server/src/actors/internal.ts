@@ -158,6 +158,7 @@ export interface SessionInternal {
 
 /** Actions of `workItem` that only actors may call. */
 export interface ItemInternal {
+	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;
 	internalSummary(): Promise<ItemSummary>;
 	internalView(): Promise<ItemView>;
 	internalAct(input: { action: ItemAction; by: string }): Promise<ItemView>;

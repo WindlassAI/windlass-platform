@@ -197,7 +197,7 @@ import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } 
 import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
-import { grantIsValid, type ReserveAnswer, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
+import { itemActor, grantIsValid, type ReserveAnswer, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
 import { REPORT_TAKEN } from "../agent-publish.js";
@@ -3259,7 +3259,8 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			// What the question about a project's server has to say depends on where this session runs.
 			const profile = layer.sandboxes.profile(meta.profile);
 			const held = active.secrets;
-			const tools = !reviewer && !!meta.repo && githubApp() !== null;
+			const planner = active.item?.row.agent === "planner";
+			const tools = !planner && !reviewer && !!meta.repo && githubApp() !== null;
 			const item = active.item;
 			const servers: ServerQuestionContext = {
 				profile,
@@ -3330,11 +3331,11 @@ fi`, { signal, timeoutMs: 5000 });
 			result = await harness.runTurn(sandbox, {
 				...common,
 				// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.
-				secrets: { ...turnEnvironment(reviewer ? [] : held.opened, reviewer ? [] : held.account, profile), redactor: held.redactor },
+				secrets: { ...turnEnvironment(planner || reviewer ? [] : held.opened, planner || reviewer ? [] : held.account, profile), redactor: held.redactor },
 				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
-				servers: reviewer ? [] : held.servers,
+				servers: planner || reviewer ? [] : held.servers,
 				// The checks the user saved for the repository: Windlass runs them before it calls the turn done, as required checks.
-				checks: reviewer ? [] : held.checks,
+				checks: planner || reviewer ? [] : held.checks,
 				// Windlass's question about a tool of one whose tools run without asking: the layer answers it, and the timeline says for whom and why.
 				onUnasked: (call) => {
 					if (open) note(c, turn, "info", unaskedNote(str(call.server)), { code: "question_allowed", call: { messageId: str(call.messageId), callId: str(call.callId) } });
@@ -3372,7 +3373,9 @@ fi`, { signal, timeoutMs: 5000 });
 					return tracked(filings);
 				} : undefined,
 				// A work item's agent files its report, which the platform puts on the pull request it pushes itself.
-				onReport: item && !reviewer && platformTool("report") ? (request, withdrawn) => {
+				planner,
+				onPlan: planner && item ? (request) => tracked(itemActor(c, meta.uid, item.row.itemId).internalFilePlan({ key: item.row.key, plan: held.redactor.deep(request.arguments) })) : undefined,
+				onReport: item && !planner && !reviewer && platformTool("report") ? (request, withdrawn) => {
 					const file = async () => {
 						if (!open || withdrawn.aborted) return "The report call ended. File it again.";
 						if (!browser && Array.isArray(request.arguments?.screenshots) && request.arguments.screenshots.length) return unavailable;

@@ -113,6 +113,7 @@ const DOCS = { repository: repository(7103, "acme", "lighthouse-docs", false) };
 
 /** The choices' labels (blueprint.ts, `CHOICES`). */
 const CHOICES: Record<ChoiceId, string> = {
+	run_single: "Run as single item", orchestrate_anyway: "Orchestrate anyway",
 	approve: "Approve the plan",
 	revise: "Revise the plan",
 	raise: "Raise the limit and go on",

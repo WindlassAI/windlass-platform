@@ -144,6 +144,7 @@ export interface HostToolDeclaration {
 
 /** Which of the tools a turn is offered: `publish` in a person's session, `report` in a work item's, `push` and `fetch_base` in both. */
 export interface PlatformToolOffer {
+	plan?: boolean;
 	publish: boolean;
 	report: boolean;
 	push: boolean;
@@ -188,6 +189,9 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		untrustedResult: false,
 		...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
 	});
+	if (offer.plan) return [tool("file_plan",
+		"Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?}], and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens,turns,activeSeconds,hostedSeconds}}]. To suggest single mode, give singleSuggested and an empty subtask list.",
+		{ type: "object", required: ["spec", "questions", "subtasks"], properties: { spec: { type: "object" }, questions: { type: "array", items: { type: "object" } }, subtasks: { type: "array", items: { type: "object" } }, singleSuggested: { type: ["string", "null"] } } })];
 	if (offer.review) return [tool(REVIEW_TOOL,
 		"File a recommendation and typed review blocks for this commit. To see completed shell command refs in execution order, call with {commands:true}; this lookup does not use a filing.",
 		{ type: "object", properties: {

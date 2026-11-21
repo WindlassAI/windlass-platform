@@ -51,3 +51,50 @@ test("validate the entire plan, including dependencies, paths and every budget d
 		const p = proposal(); mutate(p); assert.throws(() => validatePlan(p, single, featureCap(single)));
 	}
 });
+
+function started() {
+	const item = createItem({ id: "i_feature", task, mode: "orchestrate", place: { kind: "hosted" }, budget: single, reviewer: { on: true } });
+	return advance(item, { kind: "start", at: 1, by: "person" }).item;
+}
+function proposed(p: FeaturePlanEdit) {
+	const item = started(), key = currentKey(item)!;
+	const filed = advance(item, { kind: "file_plan", key, plan: p, at: 2 });
+	assert.equal(filed.item.featurePlan?.version, 1);
+	return advance(filed.item, { kind: "turn_ended", key, at: 3, outcome: "completed", changes: false, report: null, verified: null, flags: [], spend: { tokens: 10, hostedSeconds: 1 } }).item;
+}
+test("only the current answered plan can be approved and it dispatches children, never a builder turn", () => {
+	const p = proposal();
+	p.questions.push({ id: "target", text: "Which target?" });
+	const item = proposed(p);
+	const approve = { kind: "approve_plan" as const, version: 1, at: 4, by: "person:owner" };
+	assert.equal(advance(item, approve).item, item);
+	p.questions[0].answer = "Linux";
+	const edit = { kind: "edit_plan" as const, plan: p, version: 1, at: 5, by: "person:owner" };
+	const edited = advance(item, edit).item;
+	assert.equal(advance(edited, edit).item, edited);
+	assert.equal(advance(edited, approve).item, edited);
+	const next = advance(edited, { ...approve, version: 2 });
+	assert.equal(next.item.featurePlan?.approvedBy, approve.by);
+	assert.equal(next.item.run!.step.kind, "subtasks");
+	assert.ok(next.effects.some(e => e.kind === "dispatch"));
+	assert.equal(advance(next.item, { ...approve, version: 2 }).item, next.item);
+});
+test("single suggestion waits for either explicit choice, and planning spend carries into single mode", () => {
+	const p = { ...proposal(), subtasks: [], singleSuggested: "Only one file." };
+	const item = proposed(p);
+	assert.equal(item.question!.kind, "single_suggested");
+	assert.deepEqual(item.question!.choices.map(c => c.id), ["run_single", "orchestrate_anyway"]);
+	for (const choice of ["run_single", "orchestrate_anyway"] as const) {
+		const next = advance(item, { kind: "answer", choice, question: item.question!.id, by: "person", at: 4 }).item;
+		assert.equal(next.run!.step.kind, choice === "run_single" ? "implement" : "refine");
+		assert.equal(next.spent.tokens, 10);
+		if (choice === "run_single") assert.deepEqual(next.budget, single);
+	}
+});
+test("a planner can file a plan without any builder publication tools", async () => {
+	const { turnHostTools, hostToolsMeta } = await import("../server/src/sandbox/turn.js");
+	const call = async () => "";
+	const tools = turnHostTools({ onPlan: call, onReport: call, onPush: call, onFetchBase: call } as never);
+	assert.deepEqual([...tools.keys()], ["file_plan"]);
+	assert.deepEqual(hostToolsMeta(tools).hostTools.map(t => t.name), ["file_plan"]);
+});

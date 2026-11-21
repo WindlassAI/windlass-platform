@@ -35,7 +35,7 @@
 import type { ReviewRecord, TurnOutcome, Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
-import { featureCap } from "./feature-plan.js";
+import { featureCap, dimensions, validatePlan } from "./feature-plan.js";
 import { budgetStop } from "./budget.js";
 import type { ChoiceId, CiProgress, Fact, HandoffReview, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";
@@ -169,6 +169,27 @@ class Change {
 function apply(c: Change, fact: Fact): boolean {
 	const { item } = c;
 	switch (fact.kind) {
+		case "edit_plan":
+		case "file_plan": {
+			if (item.mode !== "orchestrate" || !item.singleBudget) return false;
+			if (fact.kind === "edit_plan") {
+				if (!item.featurePlan || item.featurePlan.version !== fact.version || !planQuestion(item)) return false;
+			} else if (!item.run?.step.turn || item.run.step.kind !== "refine" || c.key !== fact.key) return false;
+			const available = { ...item.budget };
+			for (const key of dimensions) available[key] -= item.spent[key];
+			const plan = validatePlan(fact.plan, item.singleBudget, available);
+			item.featurePlan = { ...plan, budget: { ...item.budget }, compare: { singleBudget: item.singleBudget }, version: (item.featurePlan?.version ?? 0) + 1, status: "proposed" };
+			if (fact.kind === "file_plan") item.filedTurn = fact.key;
+			else askPlan(c);
+			return true;
+		}
+		case "approve_plan":
+			if (!planQuestion(item) || item.featurePlan?.version !== fact.version) return false;
+			return approveFeature(c);
+		case "run_single":
+			if (!planQuestion(item) || item.replans) return false;
+			runSingle(c);
+			return true;
 		case "machine_removed":
 			if (item.place.kind !== "machine" || item.machineRemoved) return false;
 			item.machineRemoved = true;
@@ -207,7 +228,7 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "machine_removed" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "machine_removed" }>): boolean {
 	const run = c.item.run;
 	if (run === null) return false;
 	const step = run.step;
@@ -228,6 +249,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "start" | "retry" | "se
 		return false;
 	}
 	switch (fact.kind) {
+		case "file_plan": return false;
 		case "turn_waiting": {
 			if (fact.key !== key || step.turn !== "delivered") return false;
 			const now = c.item.wait;
@@ -388,6 +410,7 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		c.say(`The turn ${OUTCOME_WORDS[fact.outcome] ?? "did not finish"}; the step is tried again.`);
 		return nextTurn(c, { ...IMPLEMENT, kind, text: "You were interrupted. Continue from where you were.", newStep: false, charge: "interruptions" });
 	}
+	if (kind === "refine" && item.mode === "orchestrate") return askPlan(c);
 	if (kind === "refine") {
 		const more = run.rounds.plan < RULES.planRounds;
 		const report = fact.report;
@@ -771,7 +794,47 @@ function cancel(c: Change): void {
 // Questions
 // ---------------------------------------------------------------------------------------------
 
+function planQuestion(item: FactoryItem) {
+	return item.mode === "orchestrate" && ["plan_approval", "replan_approval", "single_suggested"].includes(item.question?.kind ?? "");
+}
+
+function askPlan(c: Change) {
+	const p = c.item.featurePlan;
+	const revise = c.run.rounds.plan < RULES.planRounds ? [choice("revise")] : [];
+	if (!p || c.item.filedTurn !== c.key)
+		return ask(c, "plan_approval", "The planner ended without filing a valid plan.", [...revise, choice("give_up")], null, null);
+	if (p.singleSuggested && !c.item.replans)
+		return ask(c, "single_suggested", p.singleSuggested, [choice("run_single"), choice("orchestrate_anyway")], null, null);
+	const unanswered = p.questions.filter(q => !q.answer);
+	const text = [p.spec.goal, ...p.subtasks.map(s => s.key + ". " + s.title), ...unanswered.map(q => q.text)].join("\n");
+	ask(c, c.item.replans ? "replan_approval" : "plan_approval", text, [...(unanswered.length ? [] : [choice("approve")]), ...revise, choice("give_up")], null, null);
+}
+
+function approveFeature(c: Change): boolean {
+	const p = c.item.featurePlan;
+	if (!p || p.status !== "proposed" || p.questions.some(q => !q.answer) || p.singleSuggested || c.item.filedTurn !== c.key) return false;
+	p.status = "approved";
+	p.approvedAt = c.at;
+	p.approvedBy = c.by;
+	c.item.question = null;
+	c.enter("subtasks");
+	c.state("waiting", { reason: "children", sentence: "Running the approved subtasks in dependency order.", retryAt: null });
+	c.effects.push({ kind: "dispatch", key: c.key });
+	c.say("The feature plan was approved.");
+	return true;
+}
+
+function runSingle(c: Change) {
+	c.item.mode = "single";
+	c.item.plan = "none";
+	c.item.budget = { ...c.item.singleBudget! };
+	if (c.item.featurePlan) c.item.featurePlan.status = "superseded";
+	c.item.question = null;
+	nextTurn(c, { ...IMPLEMENT, text: taskText(c.item.task) });
+}
+
 const CHOICES: Record<ChoiceId, string> = {
+	run_single: "Run as single item", orchestrate_anyway: "Orchestrate anyway",
 	approve: "Approve the plan",
 	revise: "Revise the plan",
 	raise: "Raise the limit and go on",
@@ -836,11 +899,18 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	const run = c.run;
 	const resume = question.resume;
 	switch (fact.choice) {
+		case "run_single":
+			runSingle(c);
+			break;
+		case "orchestrate_anyway":
+			nextTurn(c, { ...IMPLEMENT, kind: "refine", charge: "plan", text: "The person requests orchestration. File a plan with two to six verifiable subtasks." });
+			break;
 		case "approve":
+			if (item.mode === "orchestrate") return approveFeature(c);
 			nextTurn(c, { ...IMPLEMENT, text: withNote("Your plan is approved. Implement it.", note) });
 			break;
 		case "revise":
-			nextTurn(c, { ...IMPLEMENT, kind: "refine", charge: "plan", text: withNote("Revise your plan, and file it again with your report.", note) });
+			nextTurn(c, { ...IMPLEMENT, kind: "refine", charge: "plan", text: withNote("Revise your plan and file it again.", note) });
 			break;
 		case "raise":
 			raise(c, question.cause, fact.budget);

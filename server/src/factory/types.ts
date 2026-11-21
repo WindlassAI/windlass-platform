@@ -22,7 +22,7 @@ export type { ChoiceId, FactoryLimits, ItemBudget, ItemEvent, ItemState, Questio
 // The item
 // ---------------------------------------------------------------------------------------------
 
-export type TurnStepKind = "refine" | "implement" | "ci_fix" | "conflict" | "review";
+export type TurnStepKind = "summary" | "refine" | "implement" | "ci_fix" | "conflict" | "review";
 
 /** A step as the contract has it (`ItemStep`): a turn step's next delivery, a publish's retry and every poll of a wait step is a new attempt, so a fact about an earlier one is recognised by its key and ignored. */
 export type Step = ItemStep;
@@ -77,6 +77,8 @@ export type Task = ItemTask;
 export interface FactoryItem {
 	mode?: import("../contract.js").ItemMode;
 	singleBudget?: ItemBudget;
+	filedTurn?: string;
+	replans?: number;
 	featurePlan?: import("../contract.js").FeaturePlan;
 	parent?: NonNullable<import("../contract.js").ItemSummary["parent"]>;
 	id: string;
@@ -153,6 +155,10 @@ export interface TurnSpend {
 }
 
 export type Fact =
+	| { kind: "file_plan"; at: number; key: string; plan: unknown }
+	| { kind: "edit_plan"; at: number; by: string; version: number; plan: unknown }
+	| { kind: "approve_plan"; at: number; by: string; version: number }
+	| { kind: "run_single"; at: number; by: string }
 	| { kind: "start"; at: number; by: Cause }
 	| { kind: "machine_removed"; at: number }
 	| { kind: "cancel"; at: number; by: Cause }
@@ -204,6 +210,7 @@ export type Fact =
  * is performed again after a crash or a deploy is the same request (§2.5). `at`: not before then.
  */
 export type Effect =
+	| { kind: "dispatch"; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
 	| { kind: "deliver"; key: string; text: string; agent: "planner" | null; maxSteps: number; fetchBase: string | null; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */

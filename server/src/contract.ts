@@ -1113,7 +1113,7 @@ export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | 
  * the others end by themselves: "capacity" a free turn or sandbox, or the day's allowance; "machine" the
  * user's machine; "review_cap" fewer of the user's items in review; "ci" CI on the pushed commit.
  */
-export type WaitReason = "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
+export type WaitReason = "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
 export interface Wait {
@@ -1134,7 +1134,7 @@ export interface Waiting extends Wait {
  * are builder turns; "review" is a turn of the second agent; "gate" and "handoff" are the platform's decisions; "publish" is the
  * platform pushing; "ci" and "merged" are waits on GitHub.
  */
-export type StepKind = "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "review" | "handoff" | "merged";
+export type StepKind = "subtasks" | "summary" | "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "review" | "handoff" | "merged";
 
 /** The step a run is at. */
 export interface ItemStep {
@@ -1197,7 +1197,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session could not start the agent's turn (an old Windlass, a conversation it cannot open), in its words. */
-export type QuestionKind = "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
+export type QuestionKind = "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1209,7 +1209,7 @@ export type QuestionKind = "plan_approval" | "rounds" | "budget" | "no_change" |
  *   hand_over   hand the pull request to the person as it is, with its verdict
  *   give_up     the item fails
  */
-export type ChoiceId = "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
+export type ChoiceId = "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
 
 /** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
 export interface ItemQuestion {
@@ -1558,6 +1558,9 @@ export interface CreateItemInput {
 
 /** What a person does to an item: each is refused (`item_conflict`) where the item's state does not allow it. */
 export type ItemAction =
+	| { kind: "edit_plan"; version: number; plan: FeaturePlanEdit }
+	| { kind: "approve_plan"; version: number }
+	| { kind: "run_single" }
 	/** A draft: start it. */
 	| { kind: "start" }
 	| { kind: "cancel" }
