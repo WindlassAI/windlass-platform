@@ -83,6 +83,15 @@ function idMaker(): (text: string) => string {
 
 const CALLOUTS: Record<string, string> = { note: "Note", tip: "Tip", careful: "Careful" };
 
+/** The glyphs drawn beside a callout's label and in the copy button: the app's own icons, as markup. */
+const svg = (paths: string) => `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
+const CALLOUT_ICONS: Record<string, string> = {
+	note: svg('<circle cx="8" cy="8" r="5.6"/><path d="M8 7.4v3.4M8 5.2v.2"/>'),
+	tip: svg('<path d="M6.2 12.4h3.6M6.6 14h2.8M8 2.2a4 4 0 00-2.4 7.2c.4.3.6.8.6 1.3v.2h3.6v-.2c0-.5.2-1 .6-1.3A4 4 0 008 2.2z"/>'),
+	careful: svg('<path d="M8 2.4l6 10.6H2z"/><path d="M8 6.6v3M8 11.4v.2"/>'),
+};
+const COPY_ICON = svg('<rect x="5.6" y="5.6" width="7.6" height="7.6" rx="1.4"/><path d="M10.4 5.6V4.2a1.4 1.4 0 00-1.4-1.4H4.2a1.4 1.4 0 00-1.4 1.4V9a1.4 1.4 0 001.4 1.4h1.4"/>');
+
 const LANGUAGES: Record<string, string> = { sh: "shell", bash: "shell", shell: "shell", console: "shell", text: "text", json: "json", yaml: "yaml", ts: "typescript", js: "javascript" };
 
 const cache = new Map<string, DocsRendered>();
@@ -114,7 +123,7 @@ export function renderDocs(source: string): DocsRendered {
 			code({ text, lang }) {
 				const key = (lang ?? "").trim().toLowerCase();
 				const label = LANGUAGES[key] ?? (key || "text");
-				return `<div class="docs-code"><div class="docs-code-bar"><span class="docs-code-lang">${escapeHtml(label)}</span><button type="button" class="docs-copy" data-docs-copy>Copy</button></div><pre><code>${escapeHtml(text)}</code></pre></div>\n`;
+				return `<div class="docs-code"><div class="docs-code-bar"><span class="docs-code-lang">${escapeHtml(label)}</span><button type="button" class="docs-copy" data-docs-copy>${COPY_ICON}<span>Copy</span></button></div><pre><code>${escapeHtml(text)}</code></pre></div>\n`;
 			},
 			blockquote({ tokens }) {
 				const inner = this.parser.parse(tokens);
@@ -122,7 +131,7 @@ export function renderDocs(source: string): DocsRendered {
 				if (!match?.[1]) return `<blockquote>${inner}</blockquote>\n`;
 				const kind = match[1].toLowerCase();
 				const body = `<p>${inner.slice(match[0].length)}`;
-				return `<aside class="docs-callout docs-callout-${kind}" aria-label="${CALLOUTS[kind]}"><p class="docs-callout-label">${CALLOUTS[kind]}</p>${body}</aside>\n`;
+				return `<aside class="docs-callout docs-callout-${kind}" aria-label="${CALLOUTS[kind]}"><p class="docs-callout-label">${CALLOUT_ICONS[kind] ?? ""}${CALLOUTS[kind]}</p>${body}</aside>\n`;
 			},
 			table(token) {
 				const head = token.header.map((cell) => `<th${cell.align ? ` style="text-align:${cell.align}"` : ""}>${this.parser.parseInline(cell.tokens)}</th>`).join("");

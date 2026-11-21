@@ -16,6 +16,22 @@
 		}
 	}
 
+	// "/" (outside a field) or ⌘K / Ctrl K puts you in a static page's search (the docs') while its app is
+	// still on its way; once the app has the page, its own handler does this.
+	document.addEventListener("keydown", function (event) {
+		if (event.defaultPrevented || event.isComposing) return;
+		var chord = (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && (event.key === "k" || event.key === "K");
+		var slash = event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey;
+		if (!chord && !slash) return;
+		var target = event.target instanceof Element ? event.target : null;
+		if (slash && target && target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+		var field = document.querySelector("#root[data-public] input[data-docs-search]");
+		if (!field || field.offsetParent === null) return;
+		event.preventDefault();
+		field.focus();
+		field.select();
+	});
+
 	var app = document.querySelector('meta[name="wlp-app"]');
 	var everyone = !!document.querySelector('meta[name="wlp-app-for"][content="everyone"]');
 	if (app && (everyone || signedIn())) {

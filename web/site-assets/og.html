@@ -3,6 +3,8 @@
   The source of web/public/og.png, the public pages' Open Graph and Twitter image (1200 × 630).
   It is not served. To make the PNG again, open this file in Chromium at a 1200 × 630 viewport,
   from web/site-assets/ so that the fonts below resolve, and take a screenshot of the viewport.
+  Helm, as the landing: graphite, the brass-lime accent, Geist; the headline on the left and a
+  session's last steps in a frame that runs off the right edge.
 -->
 <html lang="en">
 	<head>
@@ -21,6 +23,7 @@
 			* {
 				box-sizing: border-box;
 				margin: 0;
+				padding: 0;
 			}
 			html,
 			body {
@@ -30,92 +33,280 @@
 			}
 			body {
 				position: relative;
-				background: #15161a;
-				color: #dddfd7;
-				font-family: "Geist Mono", monospace;
+				background: #0b0c0e;
+				color: #ecedee;
+				font-family: "Geist", sans-serif;
+				-webkit-font-smoothing: antialiased;
 			}
-			body::before {
-				content: "";
+			.grid {
 				position: absolute;
 				inset: 0;
-				opacity: 0.06;
-				background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0.9 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+				background-image: linear-gradient(rgb(255 255 255 / 0.07) 1px, transparent 1px), linear-gradient(90deg, rgb(255 255 255 / 0.07) 1px, transparent 1px);
+				background-size: 56px 56px;
+				background-position: -1px -1px;
+				-webkit-mask-image: radial-gradient(ellipse 70% 80% at 30% 40%, #000 15%, transparent 75%);
 			}
-			/* The windlass: a drum at the top, its line paid out down the left, the weight at the foot. */
-			.drum {
+			.glow {
 				position: absolute;
-				left: 62px;
-				top: 70px;
-				color: #bcc46a;
+				right: -120px;
+				bottom: -160px;
+				width: 760px;
+				height: 520px;
+				background: none;
+				filter: blur(20px);
 			}
-			.line {
+			.brand {
 				position: absolute;
-				left: 141px;
-				top: 118px;
-				bottom: 96px;
-				width: 3px;
-				background: linear-gradient(#bcc46a, #8f9650);
-			}
-			.weight {
-				position: absolute;
-				left: 128px;
-				bottom: 70px;
-				width: 29px;
-				height: 29px;
-				border-radius: 5px;
-				background: #bcc46a;
-			}
-			.word {
-				position: absolute;
-				left: 210px;
-				top: 78px;
-				font-weight: 700;
+				left: 72px;
+				top: 64px;
+				display: flex;
+				align-items: center;
+				gap: 14px;
 				font-size: 30px;
-				letter-spacing: -0.01em;
+				font-weight: 600;
+				letter-spacing: -0.02em;
 			}
-			.title {
+			.brand svg {
+				color: #cfdb6e;
+			}
+			.pill {
 				position: absolute;
-				left: 206px;
-				right: 70px;
-				top: 170px;
-				font-family: "Geist", sans-serif;
-				font-weight: 380;
-				font-size: 114px;
-				line-height: 0.98;
-				letter-spacing: -0.032em;
+				left: 72px;
+				top: 150px;
+				display: inline-flex;
+				align-items: center;
+				gap: 12px;
+				height: 44px;
+				padding: 0 20px 0 16px;
+				border-radius: 22px;
+				background: #121316;
+				box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12);
+				color: #a1a4ab;
+				font-size: 20px;
 			}
-			.title em {
-				color: #bcc46a;
-				font-weight: 360;
+			.pill b {
+				color: #ecedee;
+				font-weight: 520;
+			}
+			.pill svg {
+				color: #cfdb6e;
+			}
+			h1 {
+				position: absolute;
+				left: 68px;
+				top: 222px;
+				width: 720px;
+				font-size: 72px;
+				font-weight: 600;
+				line-height: 1;
+				letter-spacing: -0.045em;
+			}
+			h1 span {
+				display: block;
+				color: #80848c;
+			}
+			.sub {
+				position: absolute;
+				left: 72px;
+				top: 410px;
+				width: 640px;
+				color: #a1a4ab;
+				font-size: 25px;
+				line-height: 1.45;
+				letter-spacing: -0.01em;
 			}
 			.foot {
 				position: absolute;
-				left: 210px;
-				right: 70px;
-				bottom: 74px;
+				left: 72px;
+				bottom: 62px;
 				display: flex;
-				justify-content: space-between;
-				font-size: 21px;
-				color: #a0a3a8;
+				gap: 26px;
+				font-family: "Geist Mono", monospace;
+				font-size: 18px;
+				color: #80848c;
 			}
 			.foot b {
-				color: #bcc46a;
+				color: #cfdb6e;
 				font-weight: 400;
+			}
+			/* The frame: a session's last steps, running off the right edge. */
+			.frame {
+				position: absolute;
+				left: 800px;
+				top: 120px;
+				width: 520px;
+				height: 560px;
+				border-radius: 18px;
+				background: #121316;
+				box-shadow:
+					0 0 0 1px rgb(255 255 255 / 0.12),
+					0 40px 80px -30px #000;
+				overflow: hidden;
+			}
+			.done .ok {
+				color: #7cc9a4;
+				font-weight: 400;
+			}
+			.pr svg {
+				color: #7cc9a4;
+			}
+			.frame::before {
+				display: none;
+				content: "";
+				position: absolute;
+				top: 0;
+				left: 10%;
+				right: 10%;
+				height: 1px;
+				background: linear-gradient(90deg, transparent, #cfdb6e, transparent);
+			}
+			.bar {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				height: 52px;
+				padding: 0 22px;
+				border-bottom: 1px solid rgb(255 255 255 / 0.07);
+				font-size: 17px;
+				font-weight: 520;
+			}
+			.done {
+				display: inline-flex;
+				align-items: center;
+				gap: 7px;
+				height: 30px;
+				margin-left: 8px;
+				padding: 0 12px;
+				border-radius: 15px;
+				box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12);
+				color: #a1a4ab;
+				font-family: "Geist Mono", monospace;
+				font-size: 15px;
+				font-weight: 400;
+			}
+			.rows {
+				position: relative;
+				padding: 22px 22px 0 60px;
+			}
+			.rows::before {
+				content: "";
+				position: absolute;
+				left: 33px;
+				top: 30px;
+				bottom: -40px;
+				width: 1px;
+				background: rgb(255 255 255 / 0.12);
+			}
+			.row {
+				position: relative;
+				display: flex;
+				align-items: center;
+				gap: 14px;
+				height: 44px;
+				font-family: "Geist Mono", monospace;
+				font-size: 17px;
+				white-space: nowrap;
+			}
+			.row i {
+				position: absolute;
+				left: -38px;
+				width: 20px;
+				height: 20px;
+				display: grid;
+				place-items: center;
+				background: #121316;
+				color: #7cc9a4;
+				font-style: normal;
+			}
+			.row .v {
+				width: 56px;
+				color: #a1a4ab;
+				font-size: 15px;
+			}
+			.row .f {
+				color: #80848c;
+				font-size: 14px;
+			}
+			.add {
+				color: #7cc9a4;
+			}
+			.del {
+				color: #ee7d77;
+			}
+			.steer {
+				margin: 8px 0 10px -38px;
+				display: flex;
+				gap: 14px;
+			}
+			.steer .k {
+				flex: none;
+				width: 20px;
+				height: 20px;
+				margin-top: 14px;
+				border-radius: 50%;
+				background: #cfdb6e;
+			}
+			.steer .m {
+				padding: 12px 16px;
+				border-radius: 12px;
+				background: #17181c;
+				box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12);
+				font-size: 17px;
+				white-space: nowrap;
+			}
+			.steer .m small {
+				display: block;
+				margin-top: 4px;
+				color: #80848c;
+				font-family: "Geist Mono", monospace;
+				font-size: 13px;
+			}
+			.pr {
+				display: inline-flex;
+				align-items: center;
+				gap: 8px;
+				height: 34px;
+				margin-top: 12px;
+				padding: 0 14px;
+				border-radius: 17px;
+				box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12);
+				color: #ecedee;
+				font-size: 16px;
+				font-weight: 520;
 			}
 		</style>
 	</head>
 	<body>
-		<svg class="drum" width="88" height="88" viewBox="0 0 64 64" fill="none" aria-hidden="true">
-			<g stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-				<circle cx="32" cy="32" r="24" />
-				<path d="M32 8v13M11.2 44l11.4-6.6M52.8 44l-11.4-6.6" />
-				<circle cx="32" cy="32" r="4" fill="currentColor" stroke="none" />
-			</g>
-		</svg>
-		<div class="line"></div>
-		<div class="weight"></div>
-		<p class="word">windlass</p>
-		<h1 class="title">Put an agent to work, and <em>watch every turn.</em></h1>
-		<p class="foot"><span>Coding agents in sandboxes you choose</span><b>Windlass · Claude Code</b></p>
+		<div class="grid"></div>
+		<div class="glow"></div>
+		<p class="brand">
+			<svg width="34" height="34" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11.5" cy="11.5" r="7.5" /><path d="M11.5 4v4.2M5 15.25l3.64-2.1M18 15.25l-3.64-2.1" /><circle cx="11.5" cy="11.5" r="1.5" fill="currentColor" stroke="none" /><path d="M19 11.5V23" /><rect x="17" y="22" width="4" height="4" rx="1" fill="currentColor" stroke="none" /></svg>
+			windlass
+		</p>
+		<p class="pill">
+			<b>Coding agents</b>
+			in sandboxes you choose
+		</p>
+		<h1>Put an agent to work. <span>Watch every turn.</span></h1>
+		<p class="sub">Hosted or on your own machine. Steer it mid-turn, answer what it asks, take the work as a pull request.</p>
+		<p class="foot"><span>agents</span><b>Windlass · Claude Code</b></p>
+
+		<div class="frame">
+			<div class="bar">
+				Metres and feet
+				<span class="done"><b class="ok">✓</b> done</span>
+			</div>
+			<div class="rows">
+				<p class="row"><i>✓</i><span class="v">edit</span>lib/format.ts <span class="f"><span class="add">+11</span> <span class="del">−3</span></span></p>
+				<p class="row"><i>✓</i><span class="v">shell</span>pnpm vitest run</p>
+				<div class="steer">
+					<span class="k"></span>
+					<p class="m">Use Intl.NumberFormat for units. <small>you · sent while working · read at step 7</small></p>
+				</div>
+				<p class="row"><i>✓</i><span class="v">edit</span>lib/format.ts <span class="f"><span class="add">+6</span> <span class="del">−4</span></span></p>
+				<p class="row"><i>✓</i><span class="v">shell</span>pnpm vitest run <span class="f">9 passed</span></p>
+				<p class="pr"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4.4" cy="3.8" r="1.5" /><circle cx="4.4" cy="12.2" r="1.5" /><circle cx="11.6" cy="12.2" r="1.5" /><path d="M4.4 5.3v5.4M11.6 10.7V6.6a2.2 2.2 0 00-2.2-2.2H8.2M9.7 2.9L8.1 4.4l1.6 1.5" /></svg>Pull request opened</p>
+			</div>
+		</div>
 	</body>
 </html>
