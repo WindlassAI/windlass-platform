@@ -183,11 +183,11 @@ export const login = actor({
 						attempt.sealed = null;
 						throw new UserError(NOT_INVITED, { code: "not_invited" });
 					}
+					const generation: number = await c.client().user.getOrCreate([uid], { params: serviceParams() }).internalTokenGeneration();
 					await logins.adopt(attemptId, finished.attempt, uid);
 					// The user's actor has it: nothing of the sign-in stays here.
 					attempt.sealed = null;
 
-					const generation: number = await c.client().user.getOrCreate([uid], { params: serviceParams() }).internalTokenGeneration();
 					const token = issueUserToken(profile, generation);
 					const replaced = attempt.scheduleId;
 					attempt.scheduleId = await c.schedule.after(CLEANUP_DELAY_MS, "expire");
@@ -197,7 +197,7 @@ export const login = actor({
 					return { token, profile };
 				} catch (error) {
 					await save(c).catch(() => undefined);
-					throw clientError(c.log, error, "The sign-in could not be finished. Start again.");
+					throw clientError(c.log, error, "The sign-in could not be finished. Try the same address again.");
 				}
 			}),
 
@@ -209,10 +209,10 @@ export const login = actor({
 				try {
 					const { logins } = await getLayer();
 					const uid = `demo_${randomBytes(6).toString("hex")}`;
+					const generation: number = await c.client().user.getOrCreate([uid], { params: serviceParams() }).internalTokenGeneration();
 					await logins.ensureUserVolume(uid);
 
 					const profile: UserProfile = { uid, email: null, demo: true };
-					const generation: number = await c.client().user.getOrCreate([uid], { params: serviceParams() }).internalTokenGeneration();
 					const token = issueUserToken(profile, generation);
 					const replaced = attempt.scheduleId;
 					attempt.scheduleId = await c.schedule.after(CLEANUP_DELAY_MS, "expire");
