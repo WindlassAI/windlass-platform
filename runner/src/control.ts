@@ -202,10 +202,11 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				let phase: "challenge" | "welcome" | "online" = "challenge";
 				let heard = Date.now();
 				let loginReady = false;
+				let policyReady: Promise<void>;
 				lastSent = Date.now();
 				let lastReport = "";
 				owner.publishReport = () => {
-					if (phase !== "online" || ws.readyState !== 1) return;
+					if (!loginReady || phase !== "online" || ws.readyState !== 1) return;
 					const report = { ...owner.report(), name };
 					const next = JSON.stringify(report);
 					if (next !== lastReport) { send(report); lastReport = next; lastSent = Date.now(); }
@@ -238,6 +239,9 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						mayMaintain = true;
 						status("Online");
 						lastRefresh = Date.now();
+						policyReady = owner.checkAuthenticatedNetwork();
+						await policyReady;
+						if (active.aborted) return;
 						await owner.welcome(active);
 						loginReady = !active.aborted;
 						if (!active.aborted) owner.publishReport?.();
@@ -255,7 +259,8 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 							owner.publishReport?.();
 						}
 					} else if (f.kind === "attach") {
-						if (sessions.get(f.sessionId)?.refused) return;
+						await policyReady;
+						if (active.aborted || sessions.get(f.sessionId)?.refused) return;
 						attaching.set(f.sessionId, f.ticket);
 						try {
 							const client = await currentClient();

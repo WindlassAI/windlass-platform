@@ -156,7 +156,9 @@ const harnesses = list(object({ id: oneOf("claude"), adapter: line(64), image: l
 const profileList = list(machineProfile, MACHINE_PROFILES.length);
 export const validAllowedProfiles = is<MachineProfile[]>(v => profileList(v) && v.includes("docker-hardened") && new Set(v).size === v.length);
 export const validMachineName = is<string>(v => typeof v === "string" && v.length <= 64 && v.trim().length > 0 && !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(v));
+export const egressMode = oneOf("open", "restricted", "none");
 const report = object({
+	egress: optional(egressMode),
 	name: optional(validMachineName),
 	/** Absent on pre-policy runners, which allowed both Docker profiles. */
 	allowedProfiles: optional(validAllowedProfiles),

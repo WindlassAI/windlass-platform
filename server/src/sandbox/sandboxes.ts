@@ -367,6 +367,7 @@ async function forgetTokenFile(id: string): Promise<void> {
 /** What the hosted provider and a runner's differ in. */
 export type DockerSandboxOptions = {
 	cpus?: number;
+	network?: { name: string; env: Record<string, string>; mode: string };
 	/** The sandbox image; windlass-platform-sandbox:latest when left out. */
 	image?: string;
 	shotsImage?: string;
@@ -481,7 +482,9 @@ export class DockerSandboxes implements Sandboxes {
 				"--label",
 				`${LABEL}.profile=${input.profile}`,
 				...(this.machine === "" ? [] : ["--label", `${MACHINE_LABEL}=${this.machine}`]),
-				...commonRunFlags(this.options.cpus ?? 1),
+				...commonRunFlags(this.options.cpus ?? 1, this.options.network?.name),
+				...(this.options.network ? ["--label", `${LABEL}.egress=${this.options.network.mode}`,
+					...Object.entries(this.options.network.env).flatMap(([k, v]) => ["-e", k + "=" + v])] : []),
 				...flags,
 				...(this.options.claudeVolume ? ["--label", `${LABEL}.harness=claude`, "--log-driver", "none",
 					"--mount", `type=volume,src=${this.options.claudeVolume},dst=/run/wlp-harness/claude,readonly,volume-nocopy`] : []),

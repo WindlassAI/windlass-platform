@@ -76,7 +76,7 @@ export function ProfileFacts({ profile, claude = null }: { profile: SandboxProfi
 			</li>
 			<li>
 				<span className="fact-key">network</span>
-				<span className={`fact-value${profile.commandNetwork ? " fact-open" : ""}`}>{profile.commandNetwork ? "commands can reach the network" : "commands have no network"}</span>
+				<span className={`fact-value${profile.commandNetwork ? " fact-open" : ""}`}>{profile.commandNetworkText ?? (profile.commandNetwork ? "commands can reach the network" : "commands have no network")}</span>
 			</li>
 			<li>
 				<span className="fact-key">sign-in</span>

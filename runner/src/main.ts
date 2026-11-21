@@ -13,7 +13,8 @@ import { changeClaudeLogin, claudeSignIn } from "./harness-login.js";
 import { harnessImage, shotsImage } from "./policy.js";
 import { Executor } from "./docker-executor.js";
 import { requestPair, requestLoginReport, waitForPair } from "./pair-command.js";
-import { forgetKey, save, loadPair, pairingProfiles, tryLock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
+import { egressFlags } from "./egress-policy.js";
+import { egressNote, pairingEgress, forgetKey, save, loadPair, pairingProfiles, tryLock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
 
 const positiveInteger = is<number>(v => count(v) && v > 0);
 // Accept the first C3b snapshot on upgrade. Only harness.json records opt-in on new writes.
@@ -32,6 +33,7 @@ async function main() {
 		if (key === "CLAUDE_CODE_OAUTH_TOKEN" || (value && cleanClaudeOutput(value) !== value)) delete process.env[key];
 	}
 	const { positionals, values } = parseArgs({ allowPositionals: true, options: {
+		egress: { type: "string" }, "egress-allow": { type: "string" },
 		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, name: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
 	} });
 	const command = positionals[0] ?? "run";
@@ -40,9 +42,11 @@ async function main() {
 	const validCommand = auth ? positionals.length === 2 && positionals[1] === "claude"
 		: positionals.length <= 1 && ["run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
-		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune|login claude|logout claude] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--allow-profile ID ...].");
+		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune|login claude|logout claude] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]].");
 	if (values.name !== undefined && (!["run", "pair"].includes(command) || !validMachineName(values.name)))
 		throw new RunnerError("Use --name with run or pair and a printable name of 1 to 64 characters.");
+	const requestedEgress = egressFlags(values.egress, values["egress-allow"]);
+	if (requestedEgress && command !== "run") throw new RunnerError("Use --egress and --egress-allow with run.");
 	const flags = values["allow-profile"];
 	if (flags && (command !== "run" || flags.some(id => !machineProfile(id))))
 		throw new RunnerError("Use --allow-profile with run and a profile ID: docker-hardened or docker-windlass-sandbox.");
@@ -95,6 +99,7 @@ async function main() {
 		if (command === "status") {
 			const offered = status && (harness ?? status.claude);
 			console.log(`Runner ${VERSION}, protocol ${PROTOCOL_VERSION}. ${paired && !serviceRunning() ? "Stopped" : status?.connection ?? (paired ? "Paired" : "Unpaired")}`);
+			if (paired) console.log(egressNote(paired.current.machineId));
 			const caps = status ?? limits;
 			console.log(`Running turn limit: ${caps.maxTurns ?? "no limit"}`);
 			console.log(`Running sandbox limit: ${caps.maxRunning ?? "no limit"}`);
@@ -169,7 +174,11 @@ async function main() {
 				// the wrong account: the lock holder shuts its links before making a new key.
 				const connection = new AbortController();
 				const active = AbortSignal.any([abort.signal, connection.signal]);
-				const owner = new Executor(paired.current, limits, values.screenshots, claude, pairingProfiles(paired.current.machineId, profiles));
+				const policy = pairingEgress(paired.current.machineId, requestedEgress);
+				const note = egressNote(paired.current.machineId);
+				console.log(note);
+				audit(null, null, "egress", note);
+				const owner = new Executor(paired.current, limits, values.screenshots, claude, pairingProfiles(paired.current.machineId, profiles), policy);
 				const local = waitForPair(active, () => {}, async signedIn => {
 					await owner.serial(() => owner.loginChanged(signedIn));
 					owner.publishReport?.();
@@ -209,6 +218,6 @@ async function main() {
 }
 void main().catch(error => {
 	console.error(error?.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
-		? "Give --allow-profile a profile ID, each sandbox limit a positive whole number and --platform a URL." : category(error));
+		? "Give --egress a mode, --egress-allow a hostname list, --allow-profile a profile ID, each sandbox limit a positive whole number and --platform a URL." : category(error));
 	process.exitCode = 1;
 });

@@ -59,6 +59,28 @@ export async function machineFairnessChecks(check: Check, client: ReturnType<typ
 			}
 		});
 	}
+	await check("machine facts and the session profile carry the runner’s egress mode", async () => {
+		const session = await user.createSession({ place: { kind: "machine", machineId }, profile: "docker-hardened" });
+		const handle = client.agentSession.get([uid, session.id], { params: { token } });
+		try {
+			for (const mode of ["restricted", "none", undefined] as const) {
+				if (mode) runner.fake.report.egress = mode;
+				else delete runner.fake.report.egress;
+				runner.report();
+				await until("updated machine egress", async () => (await user.machines()).some(m => m.machineId === machineId && m.egress === (mode ?? "open")));
+				await until("updated session profile", async () => {
+					const profile = (await handle.snapshot()).profile;
+					const text = mode === "restricted" ? /public/ : mode === "none" ? /no network/ : /local network/;
+					return profile.commandNetwork === (mode !== "none") && text.test(profile.commandNetworkText ?? "");
+				});
+			}
+		} finally {
+			delete runner.fake.report.egress;
+			runner.report();
+			await user.deleteSession(session.id);
+		}
+		return "restricted, none and legacy open";
+	});
 	await check("a failed online publish recovers the machine list without another report", async () => {
 		const disk = 5555555;
 		const marker = join(storage, "fail-online-publish");

@@ -98,7 +98,7 @@ function ChosenSandbox({ profile, claude = null }: { profile: SandboxProfile; cl
 				) : (
 					<span className={profile.approval === "full" ? "fact-open" : undefined}>{profile.approval === "auto" ? "runs what the sandbox contains, refuses the rest" : "runs every call without asking"}</span>
 				)}
-				<span className={profile.commandNetwork ? "fact-open" : undefined}>{profile.commandNetwork ? "commands can reach the network" : "commands have no network"}</span>
+				<span className={profile.commandNetwork ? "fact-open" : undefined}>{profile.commandNetworkText ?? (profile.commandNetwork ? "commands can reach the network" : "commands have no network")}</span>
 				{claude ? (
 					<span className="fact-open">commands can read your Claude login token</span>
 				) : (

@@ -21,6 +21,7 @@ test("agent containers get low CPU shares and the machine's CPU cap", async () =
 			if (override) process.env.WLP_RUNNER_CPUS = override;
 			else delete process.env.WLP_RUNNER_CPUS;
 			const owner = new Executor(identity, {}, false, true);
+			owner.network.prepare = async () => {}; // This check captures session CPU flags without a daemon.
 			owner.disk = async () => 10_000_000_000;
 			owner.existing = async () => undefined;
 			owner.ownedVolume = async () => true;

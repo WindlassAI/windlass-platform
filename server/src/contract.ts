@@ -30,6 +30,8 @@ export type SandboxProfileId =
 	| "firecracker"
 	| "agentos";
 
+export type EgressMode = "open" | "restricted" | "none";
+
 export interface SandboxProfile {
 	id: SandboxProfileId;
 	/** Short display name, e.g. "Docker + Windlass sandbox". */
@@ -42,6 +44,7 @@ export interface SandboxProfile {
 	approval: "auto" | "full";
 	/** Whether commands the agent runs can reach the network. */
 	commandNetwork: boolean;
+	commandNetworkText?: string;
 	/**
 	 * Whether commands the agent runs can read the session's access token: the short-lived token of the
 	 * user's ChatGPT sign-in that each turn is handed. It lasts about an hour, and whoever reads it
@@ -1045,6 +1048,7 @@ export function machineLabel(machine: { name: string; os?: string; arch?: string
 
 /** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary {
+	egress?: EgressMode;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
 	harnesses?: Array<{ id: "claude"; adapter: string; image: string; signIn: "token" | "none" | "unknown"; options?: HarnessOptions }>;

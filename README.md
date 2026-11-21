@@ -679,6 +679,25 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   restarts use the saved choice. Upgrading an older pairing keeps both profiles. Start with
   `--allow-profile docker-hardened` alone to withdraw the Windlass opt-in. Its existing workspaces
   stay on disk and can be used again when the owner restores the flag.
+- **Network access on this machine.** New pairings use `--egress restricted`. Git over HTTPS,
+  package registries and model APIs use an HTTP proxy. Each agent has a loopback-only Docker
+  network. A small helper in that namespace carries proxy traffic over a private Unix socket.
+  Only the upstream helper uses Docker host networking so it can identify the host's own
+  interface addresses. It listens on the socket, runs unprivileged and has no Docker socket.
+  The proxy checks every DNS answer and connects to the checked address. Windlass's inner
+  command sandbox has its own loopback and cannot use the proxy.
+
+  To reach a private HTTP service, add exact DNS names with `--egress-allow git.office,mirror.office`.
+  This permits those names on RFC1918 or ULA addresses. Host interfaces, Linux bridge subnets,
+  loopback, link-local, cloud metadata and CGNAT remain blocked. Public sites are accessible
+  without listing them. Use `--egress none` for offline sessions or `--egress open` for direct
+  networking. Open sessions use a machine bridge with inter-container communication disabled.
+
+  Existing pairings keep open networking on upgrade. The status and log give the opt-in flag.
+  Restart the service with the chosen flags to save the mode and exceptions for this pairing.
+  An explicit `--egress restricted` clears earlier exceptions unless supplied again. When a
+  kept sandbox was created under a different mode, the runner stops it and preserves its files.
+  Restore the previous mode to resume it, or save its work and recreate it under the new mode.
 - **Launching on it.** The launch form lists the user's machines beside the platform's own sandboxes, each
   with its state. A machine whose runner has not reported yet cannot be chosen ("“nas” has not connected
   yet. Start its runner, and once the Machines page shows it online, start the agent again."), nor one
