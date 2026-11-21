@@ -690,8 +690,8 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   To reach a private HTTP service, add exact DNS names with `--egress-allow git.office,mirror.office`.
   This permits those names on RFC1918 or ULA addresses. Host interfaces, Linux bridge subnets,
   loopback, link-local, cloud metadata and CGNAT remain blocked. Public sites are accessible
-  without listing them. Use `--egress none` for offline sessions or `--egress open` for direct
-  networking. Open sessions use a machine bridge with inter-container communication disabled.
+  without listing them. Use `--egress none` to disable general networking. Claude sessions can still send Messages
+  and token-count requests through their local credential relay. Use `--egress open` for direct networking. Open sessions use a machine bridge with inter-container communication disabled.
 
   Existing pairings keep open networking on upgrade. The status and log give the opt-in flag.
   Restart the service with the chosen flags to save the mode and exceptions for this pairing.
@@ -748,22 +748,24 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
 
   The runner stores the token in `wlp-harness-claude-<machine id>`. The local login helper writes it.
   A per-machine relay reads this volume for each request. Each hardened Claude session gets a
-  signed placeholder bound to its endpoint on a private Docker bridge. Commands in the session
+  signed placeholder bound to its own loopback helper. Commands in the session
   can use the login and consume quota while it runs. The setup token stays in the relay.
   The relay sends Messages and token-count requests to `https://api.anthropic.com`.
   Conversations stay in their individual containers.
 
-  The agent keeps its ordinary egress interface. The runner also attaches it to an internal
-  IPv4 machine bridge for `http://wlp-relay:8080`. Docker’s isolated gateway mode keeps the host off this bridge. An egress proxy must bypass this local hostname.
-  The relay needs its own outbound HTTPS route and Docker's embedded DNS on the internal bridge.
+  In every egress mode Claude uses `http://127.0.0.1:17892`. A trusted helper in the
+  session’s network namespace forwards this port over a Unix socket to the relay. Each
+  connection carries the helper’s session identity. The relay checks it against the signed
+  placeholder before reading the token. The relay uses its own outbound HTTPS route to
+  Anthropic. The agent keeps its original interfaces and mounts.
   [Relay verification and Docker checks](sandbox/relay/README.md)
 
   `docker exec windlass-runner windlass-runner status` shows the local sign-in state.
   `docker exec windlass-runner windlass-runner logout claude` removes the relay and token for each
-  pairing. The runner's `prune` also removes the relay network and login volume.
+  pairing. The runner's `prune` also removes the socket and login volumes.
 
-  For the upgrade, stop the previous runner and its Claude sessions, archive any needed workspaces
-  locally, then install the updated runner with its pinned Claude image. The runner stops legacy
+  Update the server first. Stop the previous runner and its Claude sessions, archive any needed
+  workspaces locally, then install the runner with its pinned Claude image. The runner stops legacy
   sessions with credential mounts and refuses to reopen them. Recreate those sessions, revoke
   the previously exposed setup token, and sign in with a fresh one. Restore archived work selectively.
   Before rolling back to a runner that mounts credentials, log out and disable its Claude harness.

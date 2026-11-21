@@ -575,7 +575,7 @@ require("node:module").syncBuiltinESMExports();`);
 			assert.equal(box.Config.Image, claudePin); assert.equal(box.Config.Labels["dev.windlass-platform.harness"], "claude");
 			assert.equal(box.HostConfig.LogConfig.Type, "none");
 			assert.deepEqual(box.Mounts, []);
-			assert.ok(box.Config.Env.includes("ANTHROPIC_BASE_URL=http://wlp-relay:8080"));
+			assert.ok(box.Config.Env.includes("ANTHROPIC_BASE_URL=http://127.0.0.1:17892"));
 			assert.equal((await ch.request("run", { id, command: "test ! -e " + path })).exitCode, 0);
 			assert.equal((await ch.request("connect", { id }))?.harness, "claude");
 			await assert.rejects(ch.request("create", { profile: "docker-hardened" }), /different harness/);

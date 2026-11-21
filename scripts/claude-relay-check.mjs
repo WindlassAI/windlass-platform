@@ -1,6 +1,7 @@
 // Offline protocol checks. The Docker check also exercises the pinned adapter and the real TLS transport.
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
+import { connect } from 'node:net';
 import { request } from 'node:http';
 import { PassThrough } from 'node:stream';
 import { after, before, test } from 'node:test';
@@ -8,8 +9,8 @@ import { after, before, test } from 'node:test';
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 const machine = 'fixture-machine';
 const nonce = randomBytes(16).toString('hex');
-function credential(key = privateKey) {
-	return nonce + '.' + sign(null, Buffer.from('windlass-claude-relay-v1\n' + machine + '\n' + nonce), key).toString('base64url');
+function credential(key = privateKey, session = nonce) {
+	return session + '.' + sign(null, Buffer.from('windlass-claude-relay-v2\n' + machine + '\n' + session), key).toString('base64url');
 }
 const placeholder = credential();
 const token = 'sk-ant-oat01-' + randomBytes(24).toString('hex');
@@ -18,7 +19,6 @@ before(async () => {
 	const { createRelay } = await import('../sandbox/relay/server.cjs');
 	server = createRelay({
 		publicKey, machine, readToken: async () => login,
-		lookup: async name => name === 'cc-' + nonce + '.invalid.' ? [peer] : [],
 		forward: (options, callback) => {
 			sent = options;
 			const input = new PassThrough();
@@ -37,16 +37,20 @@ before(async () => {
 	await new Promise(done => server.listen(0, '127.0.0.1', done));
 	port = server.address().port;
 });
-after(() => { server?.closeAllConnections(); server?.close(); });
+after(() => { server?.close(); });
 function reset() {
 	sent = undefined;
 	login = token;
-	peer = '127.0.0.1';
+	peer = nonce;
 	upstream = { statusCode: 200, headers: { 'content-type': 'text/event-stream', 'x-private': token } };
 }
-function call({ bearer = placeholder, host = 'wlp-relay:8080', path = '/v1/messages?beta=true', method = 'POST' } = {}) {
+function call({ bearer = placeholder, host = '127.0.0.1:17892', path = '/v1/messages?beta=true', method = 'POST' } = {}) {
 	return new Promise((resolve, reject) => {
-		const req = request({ port, agent: false, hostname: '127.0.0.1', method, path, headers: {
+		const req = request({ createConnection() {
+			const socket = connect(port, '127.0.0.1');
+			socket.write(peer);
+			return socket;
+		}, method, path, headers: {
 			host, authorization: 'Bearer ' + bearer, 'anthropic-beta': 'oauth-2025-04-20', 'x-api-key': 'untrusted',
 		} }, resolve);
 		req.setTimeout(5000, () => req.destroy(Error('No streamed response received')));
@@ -79,11 +83,33 @@ test('foreign target, method and unapproved endpoint never reach upstream', asyn
 		reset(); assert.equal(await responseStatus(bad), 403); assert.equal(sent, undefined);
 	}
 });
-test('another machine, another source, and a removed DNS registration cannot use a lease', async () => {
-	for (const [bearer, addr] of [[credential(generateKeyPairSync('ed25519').privateKey), '127.0.0.1'],
-		[placeholder, '127.0.0.2'], [placeholder, undefined], ['unissued', '127.0.0.1']]) {
+test('another machine or session cannot use a lease', async () => {
+	for (const [bearer, addr] of [[credential(generateKeyPairSync('ed25519').privateKey), nonce],
+		[placeholder, randomBytes(16).toString('hex')], ['unissued', nonce]]) {
 		reset(); peer = addr; assert.equal(await responseStatus({ bearer }), 401); assert.equal(sent, undefined);
 	}
+});
+test('a fragmented helper identity applies to every request on its connection', async () => {
+	reset();
+	const socket = connect(port, '127.0.0.1');
+	let response = '';
+	socket.setEncoding('utf8');
+	const closed = new Promise((resolve, reject) => {
+		socket.on('data', chunk => { response += chunk; });
+		socket.on('end', resolve);
+		socket.on('error', reject);
+		socket.setTimeout(5000, () => socket.destroy(Error('Incomplete relay response')));
+	});
+	const post = (bearer, connection) => [
+		'POST /v1/messages HTTP/1.1', 'Host: 127.0.0.1:17892', 'Content-Length: 0',
+		'Authorization: Bearer ' + bearer, 'Connection: ' + connection, '', '',
+	].join('\r\n');
+	socket.write(nonce.slice(0, 9));
+	await new Promise(done => setTimeout(done, 10));
+	const foreign = credential(privateKey, randomBytes(16).toString('hex'));
+	socket.write(nonce.slice(9) + post(placeholder, 'keep-alive') + post(foreign, 'close'));
+	await closed;
+	assert.deepEqual([...response.matchAll(/HTTP\/1\.1 (\d+)/g)].map(match => match[1]), ['200', '401']);
 });
 test('logout takes effect on the next request', async () => {
 	reset(); login = undefined; assert.equal(await responseStatus(), 401); assert.equal(sent, undefined);

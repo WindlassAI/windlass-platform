@@ -109,8 +109,18 @@ function broker(allow) {
 	server.listen(socket);
 }
 if (process.argv[1] === "wlp-egress-broker") broker(JSON.parse(process.argv[2]));
-if (process.argv[1] === "wlp-egress-forward") {
-	const server = net.createServer(client => pipes(client, net.connect(socket)));
+// Only the trusted forwarder mounts these sockets. Write its fixed-width identity before
+// connecting the agent byte stream so even a second HTTP request has the same identity.
+function forward(port, path, nonce) {
+	const server = net.createServer(client => {
+		const upstream = net.connect(path);
+		if (nonce) upstream.write(nonce);
+		pipes(client, upstream);
+	});
 	server.maxConnections = 128;
-	server.listen(17891, "127.0.0.1");
+	server.listen(port, "127.0.0.1");
+}
+if (process.argv[1] === "wlp-egress-forward") {
+	if (process.argv[2] === "restricted") forward(17891, socket);
+	if (process.argv[3]) forward(17892, "/run/wlp-relay/relay.sock", process.argv[3]);
 }

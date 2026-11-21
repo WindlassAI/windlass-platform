@@ -164,6 +164,7 @@ const report = object({
 	allowedProfiles: optional(validAllowedProfiles),
 	/** The connected runner supports the pairing-wide login commands. Older ones omit this. */
 	claudeLogin: optional(oneOf(true)),
+	claudeRelay: optional(oneOf(true)),
 	harnesses: optional(harnesses),
 	kind: oneOf("report"),
 	docker: probe,

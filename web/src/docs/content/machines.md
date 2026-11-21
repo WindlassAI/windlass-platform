@@ -108,7 +108,9 @@ To sign out:
 docker exec windlass-runner windlass-runner logout claude
 ```
 
-The token is kept in a Docker volume on your machine and given only to Claude Code's containers, read-only. The platform can run commands in those containers, so those commands could read it there. Use Claude Code with code you trust.
+The runner stores the setup token in a login volume on your machine. Its credential relay reads the token for each authorized request. Commands in a Claude session can use that session’s relay and consume subscription quota, including with `--egress none`.
+
+Older runners mounted the login volume in Claude sessions. On upgrade, archive any work you need from those stopped sessions, remove them, revoke the old token with Anthropic, and sign in with a fresh token before recreating the sessions.
 
 ## Machine details and warnings
 

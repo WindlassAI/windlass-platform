@@ -24,7 +24,7 @@ export function machineProfiles(name: string | null | undefined, report: Report 
 			...(sandbox !== null && { unavailableReason: sandbox }) },
 		{ id: "docker-hardened", name: `Hardened Docker on ${machine}`,
 			summary: `Commands run directly in a container on ${machine} and can read the session's access token. With this network policy, ${commandNetworkText}. ${trust}`,
-			layers, approval: "full", commandNetworkText, commandNetwork: mode !== "none", commandsCanReadAccessToken: true, available: docker === null,
+			layers, approval: "full", ...(report?.claudeRelay && { claudeRelay: true }), commandNetworkText, commandNetwork: mode !== "none", commandsCanReadAccessToken: true, available: docker === null,
 			...(docker !== null && { unavailableReason: docker }) },
 	];
 }

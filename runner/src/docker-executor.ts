@@ -1,5 +1,5 @@
 import type { HarnessOptions } from "../../server/src/contract.js";
-import { ensureRelay, prepareRelay, removeRelay, removeRelayNetwork, stopLegacyClaude } from "./claude-relay.js";
+import { ensureRelay, prepareRelay, removeRelay, stopLegacyClaude } from "./claude-relay.js";
 import { probeClaudeOptions } from "./claude-options.js";
 import claudePackage from "../../sandbox/harness/claude/package.json";
 import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/control.js";
@@ -89,7 +89,7 @@ export class Executor extends MachineDocker {
 			this.claudeProvider = new DockerSandboxes({ cpus, network, machine: identity.machineId, image: this.claudePin, claudeRelay: () => this.prepareClaudeRelay() });
 		}
 	}
-	/** Caller holds the login lock through relay setup and agent network attachment. */
+	/** Caller holds the login lock while preparing the relay and issuing a session credential. */
 	prepareClaudeRelay() { return prepareRelay(this); }
 	requireClaude(profile: Profile) {
 		if (!this.claudeProvider) throw new Refusal("Claude Code is not turned on on this machine: start the runner with --harness claude.");
@@ -170,7 +170,7 @@ export class Executor extends MachineDocker {
 			const id = externalId(this.identity.machineId, raw);
 			found.add(id);
 			const box = this.boxes.get(id) ?? { raw, sessionId, profile, ...(harness === "claude" ? { harness: "claude" as const } : {}), usedAt: Date.now(), busy: 0, workspaceChecked: false };
-			this.boxes.set(id, Object.assign(box, { egress, legacyClaude: harness === "claude" && relay !== "1", state: state === "running" || state === "restarting" ? "running" as const : "paused" as const }));
+			this.boxes.set(id, Object.assign(box, { egress, legacyClaude: harness === "claude" && !/^[0-9a-f]{32}$/.test(relay), state: state === "running" || state === "restarting" ? "running" as const : "paused" as const }));
 		}
 		for (const [id, box] of this.boxes) {
 			if ((!onlySession || box.sessionId === onlySession) && !found.has(id)) this.boxes.delete(id);
@@ -194,12 +194,12 @@ export class Executor extends MachineDocker {
 		const running = new Set<string>();
 		for (const [id, box] of this.boxes) {
 			if (box.state !== "running") continue;
-			if ((box.egress || "open") !== this.network.policy.mode) {
+			if (box.legacyClaude || (box.egress || "open") !== this.network.policy.mode) {
 				await this.lifecycle("suspend", id);
 				continue;
 			}
 			if (!box.egress) await this.network.migrateOpen(containerName(box.raw));
-			if (box.egress === "restricted") {
+			if (box.egress === "restricted" || box.harness) {
 				await this.network.attach(box.raw, containerName(box.raw));
 				running.add(box.raw);
 			}
@@ -265,7 +265,7 @@ export class Executor extends MachineDocker {
 	report(): Report {
 		return { kind: "report", egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
-			...(this.claudePin ? { claudeLogin: true as const, harnesses: [{ id: "claude" as const,
+			...(this.claudePin ? { claudeLogin: true as const, claudeRelay: true as const, harnesses: [{ id: "claude" as const,
 				adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
 				image: this.claudePin.slice(this.claudePin.lastIndexOf("@") + 1), signIn: this.signIn,
 				...(this.signIn === "token" && this.claudeOptions && { options: this.claudeOptions }) }] } : {}),
@@ -412,7 +412,7 @@ export class Executor extends MachineDocker {
 		}
 		if (op === "destroy") await this.remove(id);
 		else {
-			if (box.egress === "restricted") await this.network.detach(box.raw);
+			if (box.egress === "restricted" || box.harness) await this.network.detach(box.raw);
 			await this.provider.suspend(box.raw);
 			const state = await this.provider.state(box.raw);
 			this.noteState(id, box, state);
@@ -428,7 +428,7 @@ export class Executor extends MachineDocker {
 	}
 	private async remove(id: string) {
 		const { raw, harness, egress } = this.boxes.get(id)!;
-		if (egress === "restricted") await this.network.detach(raw);
+		if (egress === "restricted" || harness) await this.network.detach(raw);
 		await this.provider.destroy(raw);
 		this.boxes.delete(id);
 		if (harness) await withLoginVolume(this, async () => {
@@ -472,7 +472,6 @@ export class Executor extends MachineDocker {
 			await this.network.prune();
 			const volumes = await docker(["volume", "ls", "-q", ...this.filters()], { check: true });
 			for (const name of volumes.stdout.trim().split(/\s+/).filter(Boolean)) await this.dropVolume(name);
-			await removeRelayNetwork(this);
 		});
 	}
 }

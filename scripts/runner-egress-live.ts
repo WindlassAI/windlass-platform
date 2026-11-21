@@ -52,7 +52,7 @@ let service: ReturnType<typeof spawn> | undefined;
 let output = "";
 async function start(extra: string[] = []) {
 	srv.state.report = null;
-	const flags = ["--platform", srv.platform, "--harness", "claude", "--allow-profile", "docker-windlass-sandbox", ...extra];
+	const flags = ["--name", "Wave ARM fixture", "--platform", srv.platform, "--harness", "claude", "--allow-profile", "docker-windlass-sandbox", ...extra];
 	const sock = "/var/run/docker.sock";
 	service = runnerImage
 		? spawn(realDocker, ["run", "--rm", "--pull", "never", "--name", serviceName, "--network", "host",
@@ -84,6 +84,10 @@ try {
 	await mkdir(state, { mode: 0o700 });
 	if (!runnerImage && !process.env.EGRESS_CHECK_BUNDLE) await exec(process.execPath, [join(root, "runner/bundle.mjs"), base, bundle, "claude=" + claude]);
 	await start();
+	assert.equal(srv.state.report!.name, "Wave ARM fixture");
+	assert.equal(srv.state.report!.claudeRelay, true);
+	assert.equal(srv.state.report!.harnesses?.[0]?.id, "claude");
+	console.log("PASS named runner reports its name, egress mode and Claude relay");
 	await srv.attach();
 	let first = srv.channel(srv.sessionId);
 	const a = await first.request("create", { profile: "docker-windlass-sandbox" });
@@ -180,3 +184,5 @@ try {
 	await rm(dir, { recursive: true, force: true });
 	console.log("Throwaway pairing cleaned up", srv.machineId);
 }
+// The embedded Rivet runtime retains native handles after shutdown. All fixture cleanup has finished.
+process.exit(0);

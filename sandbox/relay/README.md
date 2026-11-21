@@ -5,14 +5,17 @@ New session containers have no login mount. The relay and trusted login helpers
 mount the pairing's login volume. A stopped legacy container retains its original
 Docker mount until the owner archives its workspace and removes the container.
 The runner signs a random 128-bit nonce with the pairing's Ed25519 key. The signed
-message begins with `windlass-claude-relay-v1` and includes the machine ID. The
-relay receives the public key. Docker registers the nonce as a DNS alias on the
-session's endpoint. For each request the relay verifies the signature and resolves
-the alias afresh through Docker DNS. Its IPv4 address must match the TCP peer.
-Stopping or destroying the endpoint removes its registration. Docker registers it
-again on resume. The setup token is reread for every authorized request.
+message begins with `windlass-claude-relay-v2` and includes the machine ID. The
+relay receives the public key. At creation the runner stores the nonce in an immutable
+Docker label and configures a trusted helper in the session’s network namespace.
+The helper listens on `127.0.0.1:17892`. It connects to the pairing’s Unix socket,
+writes its fixed 32-character nonce, then pipes the agent’s bytes. Only the relay and
+trusted Claude helpers mount this socket volume. The relay checks the signed bearer
+against the connection’s nonce on every request before reading the setup token.
+Suspension removes the helper. Resume restores it using the label. A replacement
+session gets a fresh nonce even when it binds the same loopback port.
 
-The relay listens on the internal bridge address. Its separate uplink carries TLS
+The relay listens only on the Unix socket. Its Docker bridge carries outbound TLS
 to `api.anthropic.com:443`. The only accepted operations are POST to
 `/v1/messages` and `/v1/messages/count_tokens`, optionally with `?beta=true`.
 Successful JSON and SSE responses stream with backpressure. An upstream failure
@@ -73,33 +76,27 @@ pnpm exec tsx ../scripts/claude-relay-docker-check.mjs sha256:<local-Claude-imag
 The Docker proof uses the normal runner create, login, connect, and destroy paths.
 A test CLI maps session and credential resources into unique fixture names and
 routes the relay's uplink to an internal TLS recorder under the pinned DNS name.
-Only the relay adds the recorder's test CA to its client trust store. The check exercises the
-real ACP adapter with a deliberately unreachable HTTP proxy in its environment.
-The repository's scripted ACP peer has no upstream HTTP transport.
+Only the relay adds the recorder’s test CA to its client trust store. The real ACP
+adapter completes streamed turns with the restricted proxy configured and with an unreachable proxy. Two Claude
+sessions have only loopback, and each refuses the other’s bearer. The check also
+covers resume, replacement, logout, legacy mounts, and the model route in open
+and none modes.
 
-### Failure controls
+## Failure controls
 
-The old wrapper, given a mounted fixture file and an environment placeholder,
-failed with `FAIL wrapper replaced the placeholder from a file`. The updated
-wrapper kept the placeholder and passed the proxy bypass check. The old mount
-also made `test ! -r /run/wlp-harness/claude/token` exit 1.
-
-Each of seven independent changes to a disposable copy of the relay made its
-corresponding protocol case fail: passing the incoming bearer through, buffering
-until EOF, skipping the Host check, skipping the peer-address check, skipping
-signature verification, forwarding after logout, and returning redirect diagnostics.
-The Docker bridge check failed with `undefined` in place of `isolated` before
-isolated gateway mode was enabled. The logout check with a foreign container
-occupying the relay name reported `'token' !== 'none'` before unlinking the
-credential was moved ahead of relay cleanup.
+The original mounted wrapper replaced the placeholder from the login file, and its
+readability check failed. The relay protocol tests exercise bearer replacement,
+streaming before upstream EOF, foreign Host rejection, signature and session checks,
+logout, and redirect sanitization. A pipelined request carrying a different session’s
+signed bearer must receive HTTP 401 on the same connection. The Docker test also
+requires logout to delete the token when a foreign container occupies the relay name.
 
 ## Deployment assumptions
 
-Docker must support an IPv4 internal bridge with isolated gateway mode and
-provide trusted endpoint DNS. Agents keep their primary egress interface. The
-internal bridge is additional and is shared by the machine's Claude sessions.
-A future egress policy that also requires isolation between peers must account
-for this bridge. The wrapper includes `wlp-relay` in both forms of `NO_PROXY`.
-The relay's fixed TLS route needs outbound access to Anthropic. See the machine
-runner section of the repository README for upgrading existing sessions and
-rotating a previously exposed token.
+The runner trusts the Docker daemon, its pinned helper image, and the pairing key.
+Keep the login and socket volumes private to their designated containers. Restricted
+and none use Docker’s `none` network. Open uses the pairing bridge with inter-container
+communication disabled. The wrapper includes loopback in both forms of `NO_PROXY`.
+The relay needs outbound HTTPS to Anthropic in all modes. A command in a Claude
+session can call that session’s model API and consume quota. See the machine runner
+section of the repository README for the upgrade and credential rotation steps.

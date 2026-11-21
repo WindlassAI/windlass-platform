@@ -49,7 +49,7 @@ import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 import { allowanceState, useAccount, useAllowance, useModels, useNow } from "../state/hooks";
 import { ChevronIcon, SendIcon, WarnIcon } from "./Icons";
-import { Layers, ProfileFacts, type ClaudeFacts } from "./Layers";
+import { Layers, ProfileFacts, claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
 import { ModePicker } from "./Modes";
 import { HARNESS_PROFILE, HarnessChoice, PlaceCards, machineUnusable, offeredHarnesses } from "./PlaceChoice";
 import { RepositoryPicker, type PickedRepository } from "./RepositoryPicker";
@@ -68,7 +68,7 @@ function ProfileCard({ profile, name, checked, claude = null, onChoose }: { prof
 				<span className="profile-name">{profile.name}</span>
 				{profile.available ? null : <span className="chip">not available</span>}
 			</span>
-			<span className="profile-summary">{profile.summary}</span>
+			<span className="profile-summary">{claude ? "Claude Code and its commands run in the same container on this machine. Its owner controls the runner." : profile.summary}</span>
 			<Layers profile={profile} compact={!profile.available} />
 			{profile.available ? (
 				<ProfileFacts profile={profile} claude={claude} />
@@ -98,9 +98,9 @@ function ChosenSandbox({ profile, claude = null }: { profile: SandboxProfile; cl
 				) : (
 					<span className={profile.approval === "full" ? "fact-open" : undefined}>{profile.approval === "auto" ? "runs what the sandbox contains, refuses the rest" : "runs every call without asking"}</span>
 				)}
-				<span className={profile.commandNetwork ? "fact-open" : undefined}>{profile.commandNetworkText ?? (profile.commandNetwork ? "commands can reach the network" : "commands have no network")}</span>
+				<span className={profile.commandNetwork ? "fact-open" : undefined}>{commandNetworkFact(profile, claude)}</span>
 				{claude ? (
-					<span className="fact-open">commands can use your Claude login. Runners without a credential relay also expose the setup token.</span>
+					<span className="fact-open">commands can use your Claude login. {claudeLoginFact(profile)}</span>
 				) : (
 					<span className={profile.commandsCanReadAccessToken ? "fact-open" : undefined}>{profile.commandsCanReadAccessToken ? "commands can read the session's access token" : "commands cannot read the session's access token"}</span>
 				)}

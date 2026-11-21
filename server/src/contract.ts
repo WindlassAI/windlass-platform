@@ -45,6 +45,8 @@ export interface SandboxProfile {
 	/** Whether commands the agent runs can reach the network. */
 	commandNetwork: boolean;
 	commandNetworkText?: string;
+	/** Runner-confirmed credential isolation for Claude sessions using this profile. */
+	claudeRelay?: true;
 	/**
 	 * Whether commands the agent runs can read the session's access token: the short-lived token of the
 	 * user's ChatGPT sign-in that each turn is handed. It lasts about an hour, and whoever reads it
@@ -1049,6 +1051,7 @@ export function machineLabel(machine: { name: string; os?: string; arch?: string
 /** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary {
 	egress?: EgressMode;
+	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
 	harnesses?: Array<{ id: "claude"; adapter: string; image: string; signIn: "token" | "none" | "unknown"; options?: HarnessOptions }>;

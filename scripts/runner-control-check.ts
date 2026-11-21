@@ -93,11 +93,10 @@ expect("another process after the first went quiet replaces it", secondHello({ e
 const sockets: CheckSocket[] = [];
 class CheckSocket extends EventTarget {
 	readyState = 1;
-	sent: { kind: string; name?: string; sandbox?: string }[] = [];
+	sent: { kind: string; name?: string; sandbox?: string; egress?: string; claudeRelay?: boolean }[] = [];
 	constructor() { super(); sockets.push(this); }
 	send(text: string) {
-		const { kind, sandbox, name } = JSON.parse(text);
-		this.sent.push({ kind, sandbox, name });
+		this.sent.push(JSON.parse(text));
 	}
 	frame(frame: ServerFrame) {
 		assert.equal(this.readyState, 1);
@@ -178,7 +177,8 @@ async function withControl(answers: Response[], exercise: (runner: {
 	const owner = {
 		identity: { uid: "u_check", machineId: "m_0123456789abcdef" },
 		serial: async <T>(work: () => Promise<T>) => work(),
-		welcome: async () => {}, report: () => plainReport,
+		checkAuthenticatedNetwork: async () => {}, welcome: async () => {},
+		report: () => ({ ...plainReport, egress: "restricted", claudeRelay: true }),
 		requestedRemoval: async (id: string) => { if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox."); },
 		suspendAll: async () => {},
 	} as unknown as Executor;
@@ -192,7 +192,10 @@ async function withControl(answers: Response[], exercise: (runner: {
 				await until(() => socket.sent.some(f => f.kind === "hello"));
 				socket.frame({ kind: "welcome", idleSuspendMs: 60_000 });
 				await until(() => socket.sent.some(f => f.kind === "report"));
-				assert.equal(socket.sent.find(f => f.kind === "report")?.name, "Build host");
+				const report = socket.sent.find(f => f.kind === "report");
+				assert.equal(report?.name, "Build host");
+				assert.equal(report?.egress, "restricted");
+				assert.equal(report?.claudeRelay, true);
 				return socket;
 			} }).finally(() => abort.abort());
 		const [loop, checks] = await Promise.allSettled([done, test]);

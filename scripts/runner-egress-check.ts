@@ -10,7 +10,8 @@ import { machineProfiles } from "../server/src/machines/profiles.js";
 
 const report = { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: null, sandboxes: [] } as const;
 test("the wire accepts each egress mode and older reports", () => {
-	for (const egress of [undefined, "open", "restricted", "none"]) assert.ok(parseRunnerFrame(JSON.stringify({ ...report, egress })), String(egress));
+	for (const egress of [undefined, "open", "restricted", "none"]) assert.ok(parseRunnerFrame(JSON.stringify({ ...report, egress, name: "Test machine", claudeRelay: true })), String(egress));
+	assert.ok(parseRunnerFrame(JSON.stringify(report)));
 	assert.equal(parseRunnerFrame(JSON.stringify({ ...report, egress: "other" })), null);
 });
 test("machine profiles describe command networking separately from model networking", () => {

@@ -1,7 +1,8 @@
 // Runs in the trusted relay container. Only this process opens the login file.
-// The peer address comes from the TCP socket. Docker owns the per-session DNS aliases.
+// The trusted namespace forwarder prefixes each Unix stream with its fixed session nonce.
 const { createPublicKey, verify } = require('node:crypto');
-const { resolve4 } = require('node:dns').promises;
+const net = require('node:net');
+const { rmSync } = require('node:fs');
 const { readFile } = require('node:fs/promises');
 const http = require('node:http');
 const https = require('node:https');
@@ -16,17 +17,17 @@ function reject(res, status) {
 		message: 'Claude credential relay refused the request.' } }));
 }
 
-exports.createRelay = function createRelay({ publicKey, machine, lookup = resolve4,
+exports.createRelay = function createRelay({ publicKey, machine,
 	readToken = () => readFile('/run/wlp-harness/claude/token', 'utf8'), forward = https.request }) {
-	return http.createServer(async (req, res) => {
+	const sessions = new WeakMap();
+	const httpServer = http.createServer(async (req, res) => {
 		try {
-			if (req.headers.host !== 'wlp-relay:8080' || req.method !== 'POST' || !messages.has(req.url))
+			if (req.headers.host !== '127.0.0.1:17892' || req.method !== 'POST' || !messages.has(req.url))
 				return reject(res, 403);
 			const match = /^Bearer ([a-f0-9]{32})\.([A-Za-z0-9_-]{86})$/.exec(req.headers.authorization ?? '');
-			if (!match || !verify(null, Buffer.from('windlass-claude-relay-v1\n' + machine + '\n' + match[1]),
+			if (!match || !verify(null, Buffer.from('windlass-claude-relay-v2\n' + machine + '\n' + match[1]),
 				publicKey, Buffer.from(match[2], 'base64url'))) return reject(res, 401);
-			const addresses = await lookup('cc-' + match[1] + '.invalid.').catch(() => []);
-			if (addresses.length !== 1 || addresses[0] !== req.socket.remoteAddress) return reject(res, 401);
+			if (sessions.get(req.socket) !== match[1]) return reject(res, 401);
 			const token = await readToken().catch(() => undefined);
 			if (!token || token.length > 512 || !/^sk-ant-oat01-[A-Za-z0-9_-]+$/.test(token)) return reject(res, 401);
 
@@ -61,10 +62,35 @@ exports.createRelay = function createRelay({ publicKey, machine, lookup = resolv
 			req.pipe(up);
 		} catch { if (!res.headersSent) reject(res, 502); else res.destroy(); }
 	});
+	// Consume exactly one identity before the HTTP parser sees this connection. The
+	// remainder may already contain HTTP bytes or may arrive in subsequent packets.
+	const ingress = net.createServer(socket => {
+		socket.setTimeout(5000, () => socket.destroy());
+		socket.on('error', () => socket.destroy());
+		function identify() {
+			const bytes = socket.read(32);
+			if (!bytes) return;
+			socket.removeListener('readable', identify);
+			const nonce = bytes.toString('latin1');
+			if (!/^[0-9a-f]{32}$/.test(nonce)) return socket.destroy();
+			socket.setTimeout(0);
+			sessions.set(socket, nonce);
+			httpServer.emit('connection', socket);
+			socket.resume();
+		}
+		socket.on('readable', identify);
+	});
+	// The HTTP parser receives sockets from ingress. Give it the matching server
+	// lifecycle so Node enforces native header and request deadlines and clears its timer.
+	ingress.on('listening', () => httpServer.emit('listening'));
+	ingress.on('close', () => httpServer.close());
+	ingress.maxConnections = 256;
+	return ingress;
 };
 
 if (process.env.WLP_CLAUDE_RELAY_PUBLIC_KEY) {
 	const publicKey = createPublicKey({ key: Buffer.from(process.env.WLP_CLAUDE_RELAY_PUBLIC_KEY, 'base64'), format: 'der', type: 'spki' });
-	// Bind only the internal network interface. The uplink is for outbound TLS.
-	exports.createRelay({ publicKey, machine: process.env.WLP_CLAUDE_RELAY_MACHINE }).listen(8080, 'wlp-relay');
+	const socket = '/workspace/relay.sock';
+	rmSync(socket, { force: true });
+	exports.createRelay({ publicKey, machine: process.env.WLP_CLAUDE_RELAY_MACHINE }).listen(socket);
 }

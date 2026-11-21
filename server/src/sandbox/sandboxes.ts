@@ -387,10 +387,10 @@ export type DockerSandboxOptions = {
 	dataVolume(uid: string): Promise<string>;
 	claudeRelay?: never;
 } | {
-	/** Runner-only credentials and network attachment for a new Claude session. */
+	/** Runner-issued placeholder and immutable helper identity for a new Claude session. */
 	machine: string;
 	image: string;
-	claudeRelay(): Promise<{ env: string[]; attach(name: string): Promise<void> }>;
+	claudeRelay(): Promise<{ env: string[]; nonce: string }>;
 });
 
 export class DockerSandboxes implements Sandboxes {
@@ -487,7 +487,7 @@ export class DockerSandboxes implements Sandboxes {
 				...(this.options.network ? ["--label", `${LABEL}.egress=${this.options.network.mode}`,
 					...Object.entries(this.options.network.env).flatMap(([k, v]) => ["-e", k + "=" + v])] : []),
 				...flags,
-				...(relay ? ["--label", `${LABEL}.harness=claude`, "--label", `${LABEL}.relay-session=1`, "--log-driver", "none", ...relay.env] : []),
+				...(relay ? ["--label", `${LABEL}.harness=claude`, "--label", `${LABEL}.relay-session=${relay.nonce}`, "--log-driver", "none", ...relay.env] : []),
 				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
 				image,
 			],
@@ -499,8 +499,6 @@ export class DockerSandboxes implements Sandboxes {
 			if (/No such image|pull access denied|not found/i.test(message)) throw new Error(`the sandbox image ${image} is missing; run ${input.screenshots ? "WLP_SANDBOX_VARIANT=shots " : ""}sandbox/build.sh (${message})`);
 			throw new Error(`could not create the sandbox: ${message}`);
 		}
-		try { await relay?.attach(name); }
-		catch (error) { await docker(["rm", "-f", name], { check: true }); throw error; }
 		const init = await docker(["exec", "-w", WORKSPACE, name, "sh", "-c", 'git init -q && git commit -q --allow-empty -m "Empty workspace"'], { timeoutMs: 60_000 });
 		if (init.code !== 0) {
 			await docker(["rm", "-f", name]);

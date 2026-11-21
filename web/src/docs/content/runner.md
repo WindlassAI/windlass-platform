@@ -80,6 +80,9 @@ These options go after the runner image, with the `run` command or with no comma
 | `--max-turns N` | 2 | How many turns run at once. More wait in a queue. |
 | `--max-running N` | No limit | How many sandboxes may run at once. |
 | `--max-sandboxes N` | No limit | How many sandboxes may be kept on this machine. |
+| `--name TEXT` | Docker daemon name or system hostname | Set the machine’s display name for pairing and reports. |
+| `--egress MODE` | `restricted` for new pairings, `open` on first upgrade | Choose `restricted`, `open` or `none`. Claude keeps its session-local model relay in all three modes. |
+| `--egress-allow HOST[,HOST]` | Empty | With `--egress restricted`, permit exact private DNS names through the proxy. Host interfaces, Docker bridge addresses and metadata stay blocked. |
 | `--allow-profile ID` | `docker-hardened` | Which Docker profiles agents may use here. Repeat it for both. |
 | `--harness claude` | Off | Offers Claude Code on this machine. Needs a runner built with the Claude Code image. |
 | `--screenshots` | Off | Lets work-item sandboxes here take screenshots. Needs a runner built with the screenshots image. |

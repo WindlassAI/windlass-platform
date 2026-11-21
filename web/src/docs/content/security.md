@@ -18,7 +18,7 @@ Every Docker sandbox, on the platform or on a machine, is a container with:
 - 1536 MiB of memory, with no extra swap;
 - at most 512 processes;
 - a CPU cap and a small CPU share;
-- network through Docker's bridge.
+- network access according to the platform or machine policy.
 
 On a machine, the runner uses only the images pinned in its own build. The platform cannot name another image.
 
@@ -36,18 +36,18 @@ So that Windlass's bubblewrap sandbox can work inside it, the container runs und
 
 ### Docker, hardened
 
-`docker-hardened`. A container under Docker's default seccomp and AppArmor profiles. Commands run directly in it, with network, and can read the session's access token. Its Windlass modes are **Ask** and **Full**. Claude Code runs only in this profile.
+`docker-hardened`. A container under Docker's default seccomp and AppArmor profiles. Commands run directly in it with the container’s network policy. In a Windlass session they can read the turn’s access token. Its Windlass modes are **Ask** and **Full**. Claude Code runs only in this profile.
 
 | | Docker + Windlass sandbox | Docker, hardened |
 | --- | --- | --- |
 | Commands sandboxed again | Yes, by Windlass | No |
-| Network for commands | No | Yes |
+| Network for commands | No | Follows the container’s network policy |
 | Commands can read the access token | No | Yes |
 | Your ChatGPT sign-in in the container | Never | Never |
 | Windlass modes | Ask, Auto | Ask, Full |
 | Claude Code | No | Yes |
 
-> **Note** A repository's setup command runs with network access, outside the agent's command sandbox, in both profiles.
+> **Note** A repository’s setup command uses the container’s network policy in both profiles.
 
 ## E2B sandboxes
 
@@ -59,7 +59,7 @@ On a platform that runs on E2B, each sandbox is a microVM of its own, hosted by 
 
 ## On your machine
 
-A machine offers the same two Docker profiles: **Hardened Docker on your machine** always, and **Docker + Windlass sandbox on your machine** only if you allow it with `--allow-profile docker-windlass-sandbox`. A hardened container there can also reach the machine's local network.
+A machine offers the same two Docker profiles: **Hardened Docker on your machine** always, and **Docker + Windlass sandbox on your machine** only if you allow it with `--allow-profile docker-windlass-sandbox`. New pairings default to restricted web proxy access. Open mode permits direct internet and local network access. None disables general networking. Claude sessions retain their own model relay in every mode.
 
 ### What the platform can do there
 
@@ -71,7 +71,7 @@ The platform can ask the runner only for what its protocol names. In short, it c
 - read and write text files in a sandbox, and write secret files there;
 - start and finish a Claude Code sign-in on the machine.
 
-> **Careful** The platform can run any command in the containers the runner made, Claude Code's containers included. In a Claude Code container, those commands can read your Claude token.
+> **Careful** The platform can run any command in the containers the runner made, Claude Code's containers included. In a Claude Code container, commands can use the session’s model relay and consume your quota. Older runners with the login volume mounted in the session also expose the setup token.
 
 ### What the platform cannot do there
 

@@ -46,10 +46,20 @@ export function Layers({ profile, compact = false }: { profile: Pick<SandboxProf
 
 /**
  * Claude Code in a sandbox: the mode it runs in stands for the profile's approval, and its sign-in is
- * the user's Claude login, which its container holds.
+ * the machine owner's Claude login.
  */
 export interface ClaudeFacts {
 	mode: SessionMode;
+}
+
+export function commandNetworkFact(profile: SandboxProfile, claude: ClaudeFacts | null) {
+	if (claude && profile.claudeRelay && !profile.commandNetwork && profile.available)
+		return "commands can reach only this session’s Claude model relay";
+	return profile.commandNetworkText ?? (profile.commandNetwork ? "commands can reach the network" : "commands have no network");
+}
+
+export function claudeLoginFact(profile: SandboxProfile) {
+	return profile.claudeRelay ? "The machine’s relay holds the setup token." : "Runners without a credential relay also expose the setup token.";
 }
 
 /**
@@ -76,12 +86,12 @@ export function ProfileFacts({ profile, claude = null }: { profile: SandboxProfi
 			</li>
 			<li>
 				<span className="fact-key">network</span>
-				<span className={`fact-value${profile.commandNetwork ? " fact-open" : ""}`}>{profile.commandNetworkText ?? (profile.commandNetwork ? "commands can reach the network" : "commands have no network")}</span>
+				<span className={`fact-value${profile.commandNetwork ? " fact-open" : ""}`}>{commandNetworkFact(profile, claude)}</span>
 			</li>
 			<li>
 				<span className="fact-key">sign-in</span>
 				{claude ? (
-					<span className="fact-value fact-open">commands in this container can use your Claude login. Runners without a credential relay also expose the setup token.</span>
+					<span className="fact-value fact-open">commands in this container can use your Claude login. {claudeLoginFact(profile)}</span>
 				) : (
 					<span className="fact-value">
 						your ChatGPT sign-in is never in the sandbox

@@ -61,6 +61,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 			sandboxes: (report?.sandboxes ?? []).map(({ sessionId, state, usedAt }) => ({ sessionId, state, usedAt, title: titles.get(sessionId) ?? null })).sort((a, b) => b.usedAt - a.usedAt),
 			freeDiskBytes: report?.freeDiskBytes ?? null, commandSandbox: report?.commandSandbox ?? null,
 			...(report && { egress: report.egress ?? "open", allowedProfiles: report.allowedProfiles ?? [...MACHINE_PROFILES] }),
+			...(report?.claudeRelay && { claudeRelay: true as const }),
 			...(report?.harnesses ? { harnesses: report.harnesses } : {}),
 			...(report?.maxRunning !== undefined ? { maxRunning: report.maxRunning } : {}),
 			...(report?.maxSandboxes !== undefined ? { maxSandboxes: report.maxSandboxes } : {}) };

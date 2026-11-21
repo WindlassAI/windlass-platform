@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { docker, LABEL, LABEL_ARG } from "../../server/src/sandbox/docker.js";
+import { waitForListener } from "./helper-ready.js";
+import { relaySocketVolume } from "./claude-relay.js";
 import { type Egress } from "./egress-policy.js";
 import { image, type MachineDocker } from "./policy.js";
 import { Refusal } from "./state.js";
@@ -12,20 +14,6 @@ const roleLabel = LABEL + ".egress-helper";
 const revisionLabel = LABEL + ".egress-revision";
 const checked = (args: string[]) => docker(args, { check: true, timeoutMs: 30_000 });
 const icc = "com.docker.network.bridge.enable_icc";
-const ready = `
-const net = require("node:net");
-const deadline = Date.now() + 8000;
-const address = process.argv[1] === "broker" ? { path: "/workspace/egress.sock" } : { host: "127.0.0.1", port: 17891 };
-function probe() {
-	const socket = net.connect(address);
-	socket.once("connect", () => socket.end());
-	socket.on("error", () => {
-		if (Date.now() >= deadline) process.exit(1);
-		setTimeout(probe, 50);
-	});
-}
-probe();`;
-
 export class EgressNetwork {
 	readonly openNet: string;
 	private readonly prefix: string;
@@ -82,33 +70,50 @@ export class EgressNetwork {
 		if (!this.owns(labels) || labels[roleLabel] !== role) throw new Refusal("The egress helper name belongs to another container.");
 		return { id, running: running === "true", revision: labels[revisionLabel] };
 	}
-	private async ensure(role: "broker" | "forward", name: string, revision: string, network: string, source: string) {
+	private async ensure(role: "broker" | "forward", name: string, revision: string, network: string, source: string, mounts: string[], args: string[], probes: string[]) {
 		const existing = await this.helper(name, role);
 		if (existing?.revision === revision && existing.running) return;
 		if (existing) await checked(["rm", "-f", existing.id]);
 		// A runner upgrade may restore a kept session before welcome prepares the new pin.
 		await this.machine.ensureImage();
-		const volume = this.prefix + "-socket";
-		const args = role === "broker" ? [JSON.stringify(this.policy.allow)] : [];
 		const started = await checked(["run", "-d", "--pull", "never", "--name", name,
 			"--label", LABEL_ARG, ...this.machine.pairingLabelFlags, "--label", roleLabel + "=" + role,
 			"--label", revisionLabel + "=" + revision, "--network", network, "--user", "agent", "--cap-drop", "ALL",
 			"--read-only", "--security-opt", "no-new-privileges", "--pids-limit", "32", "--memory", "128m", "--cpus", "0.5",
-			"--log-driver", "none", "--mount", `type=volume,src=${volume},dst=/workspace${role === "forward" ? ",readonly" : ""}`,
+			"--log-driver", "none", ...mounts.flatMap(mount => ["--mount", mount]),
 			image, "node", "--input-type=module", "-e", source, "--", "wlp-egress-" + role, ...args]);
 		const id = started.stdout.trim();
-		try { await checked(["exec", id, "node", "-e", ready, role]); }
+		try { for (const probe of probes) await waitForListener(id, probe); }
 		catch (err) { await checked(["rm", "-f", id]); throw err; }
 	}
 	async attach(raw: string, container: string) {
-		if (this.policy.mode !== "restricted") return;
+		const proxyEnabled = this.policy.mode === "restricted";
+		const claude = raw.startsWith("claude-");
+		if (!proxyEnabled && !claude) return;
 		const source = typeof EGRESS_SOURCE === "string" ? EGRESS_SOURCE : readFileSync(join(import.meta.dirname, "egress-proxy.mjs"), "utf8");
-		const revision = createHash("sha256").update(JSON.stringify([image, source, this.policy.allow])).digest("hex");
-		await this.machine.ownedVolume(true, this.prefix + "-socket");
-		await this.ensure("broker", this.prefix, revision, "host", source);
-		// A stopped container receives a fresh loopback namespace on start.
-		const started = await checked(["inspect", "-f", "{{.Id}}|{{.State.StartedAt}}", container]);
-		await this.ensure("forward", this.prefix + "-" + raw, revision + "-" + started.stdout.trim().replace("|", "-"), "container:" + container, source);
+		const revision = createHash("sha256").update(JSON.stringify([image, source, this.policy])).digest("hex");
+		const mounts: string[] = [], probes: string[] = [];
+		if (proxyEnabled) {
+			const volume = this.prefix + "-socket";
+			await this.machine.ownedVolume(true, volume);
+			const mount = `type=volume,src=${volume},dst=/workspace`;
+			await this.ensure("broker", this.prefix, revision, "host", source, [mount], [JSON.stringify(this.policy.allow)], ["/workspace/egress.sock"]);
+			mounts.push(mount + ",readonly");
+			probes.push("17891");
+		}
+		// The nonce is an immutable runner-issued container label, outside the agent filesystem.
+		// Including StartedAt ties this helper to this incarnation of the network namespace.
+		const started = await checked(["inspect", "-f", `{{.Id}}|{{.State.StartedAt}}|{{with index .Config.Labels "${LABEL}.relay-session"}}{{.}}{{end}}`, container]);
+		const [id, since, nonce] = started.stdout.trim().split("|");
+		if (claude) {
+			if (!/^[0-9a-f]{32}$/.test(nonce)) throw new Refusal("This Claude session needs a new relay endpoint.");
+			const volume = relaySocketVolume(this.machine);
+			if (!await this.machine.ownedVolume(false, volume)) throw new Refusal("The Claude relay socket volume is missing.");
+			mounts.push(`type=volume,src=${volume},dst=/run/wlp-relay,readonly,volume-nocopy`);
+			probes.push("17892");
+		}
+		await this.ensure("forward", this.prefix + "-" + raw, [revision, id, since, nonce].join("-"), "container:" + container,
+			source, mounts, [this.policy.mode, ...(claude ? [nonce] : [])], probes);
 	}
 	async detach(raw: string) {
 		const helper = await this.helper(this.prefix + "-" + raw, "forward");
