@@ -454,7 +454,8 @@ async function check() {
 		const chunked: RequestInit & { duplex: "half" } = { method: "POST", body: chunks, duplex: "half" };
 		assert.equal((await fetch(origin + RUNNER_PAIR_PATH, chunked)).status, 413);
 		// Count actual admissions by the shared actor, without allocating a thousand throwaway actors.
-		const budget = client.pairingDirectory.get(["starts"], { params }).connect();
+		// The expiry checks above can outlast the service token used to set them up.
+		const budget = client.pairingDirectory.get(["starts"], { params: serviceParams() }).connect();
 		let admitted = 0;
 		try {
 			// Eleven earlier admissions are still in this ten-minute window (including the short-lived fixture).
