@@ -50,7 +50,7 @@ const state = await import("../server/src/github/state.js");
 const repos = await import("../server/src/github/repos.js");
 const publish = await import("../server/src/github/publish.js");
 const gitSteps = await import("../server/src/github/git.js");
-const { redact } = await import("../server/src/github/redact.js");
+const { redact, pushTokenKinds } = await import("../server/src/github/redact.js");
 type StoredConnection = import("../server/src/github/repos.js").StoredConnection;
 type StoredRepository = import("../server/src/github/publish.js").StoredRepository;
 type ConnectStore = import("../server/src/github/connect.js").ConnectStore;
@@ -813,6 +813,35 @@ await section("a push that would send a saved secret's value is refused, and the
 	await sandbox.run("git reset --quiet --hard HEAD~2 && echo clean > CLEAN.md");
 	const clean = await publish.pushWork(base, "Clean work");
 	expect("without the value, the push goes", clean.pushed && standin.branchHead(harbor, branch) === clean.head, JSON.stringify(clean));
+});
+
+await section("provider credentials are refused before any push token is issued", async () => {
+	const repository = stored(harbor, adaInstallation);
+	const sandbox = localSandbox("provider-credentials");
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const branch = "windlass/provider-credentials";
+	const input = { app, connection: adaConnection, repository, sandbox, branch, sessionId: "provider-credentials", pushed: null };
+	const examples = [
+		["Anthropic OAuth setup token", "sk-ant-oat01-"], ["Anthropic API key", "sk-ant-api03-"], ["Anthropic admin key", "sk-ant-admin01-"],
+		["OpenCode API key", "oc_sk_"], ["OpenRouter API key", "sk-or-v1-"], ["OpenAI API key", "sk-proj-"],
+		["Groq API key", "gsk_"], ["Google API key", "AIza"], ["Hugging Face access token", "hf_"],
+		["Perplexity API key", "pplx-"], ["xAI API key", "xai-"], ["NVIDIA API key", "nvapi-"],
+		["Fireworks API key", "fw_"], ["Cerebras API key", "csk-"], ["Vercel AI Gateway key", "vck_"],
+		["Kimi API key", "sk-kimi-"], ["Alibaba plan API key", "sk-sp-"], ["MiniMax API key", "sk-cp-"], ["provider API key", "sk-"],
+	] as const;
+	const values = examples.map(([, prefix]) => prefix + randomBytes(32).toString("hex"));
+	expect("each credential alone is identified, and prefix-only documentation is allowed",
+		examples.every(([kind, prefix], i) => pushTokenKinds(values[i]!).includes(kind) && pushTokenKinds(prefix + "…").length === 0));
+	const file = join(sandbox.cwd, values[0]!);
+	writeFileSync(file, values.join("\n"));
+	const staged = await sandbox.run("git add -A && git commit -qm fixtures && git rm -q -- " + values[0] + " && git commit -qm removed");
+	expect("the fixture credential file exists only in an earlier commit", staged.exitCode === 0);
+	const from = standin.minted.length;
+	const refused = await problem(() => publish.pushWork(input, "Check credential history"));
+	expect("the refusal identifies each kind, with no credential from a filename or blob in the message",
+		examples.every(([kind]) => refused?.message.includes(kind)) && values.every(value => !refused?.message.includes(value)));
+	expect("no push token was issued and the branch is absent", !standin.minted.slice(from).some(entry => entry.permissions?.contents === "write") &&
+		standin.branchHead(harbor, branch) === null);
 });
 
 await section("nested repositories are refused before turn-end diff, panel probe or commit", async () => {

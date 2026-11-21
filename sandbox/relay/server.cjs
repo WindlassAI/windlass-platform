@@ -2,7 +2,8 @@
 // The trusted namespace forwarder prefixes each Unix stream with its fixed session nonce.
 const { createPublicKey, verify } = require('node:crypto');
 const net = require('node:net');
-const { pipeline } = require('node:stream');
+const { pipeline, Transform } = require('node:stream');
+const { StringDecoder } = require('node:string_decoder');
 const { createGunzip, createInflate, createBrotliDecompress, createZstdDecompress } = require('node:zlib');
 const { rmSync } = require('node:fs');
 const { readFile } = require('node:fs/promises');
@@ -13,6 +14,44 @@ const decoders = new Map([['gzip', createGunzip], ['deflate', createInflate], ['
 const messages = new Set(['/v1/messages', '/v1/messages?beta=true', '/v1/messages/count_tokens', '/v1/messages/count_tokens?beta=true']);
 const requestHeaders = new Set(['accept', 'content-type', 'anthropic-beta', 'anthropic-version', 'user-agent', 'x-app',
 	'anthropic-dangerous-direct-browser-access', 'x-client-request-id', 'x-claude-code-session-id']);
+
+// Filter at the credential boundary, before any result can enter an agent file, log or ACP stream.
+function scrubStream(secrets) {
+	const decoder = new StringDecoder('utf8');
+	let pending = '';
+	function consume(text, final) {
+		const input = pending + text;
+		pending = '';
+		let result = '', start = 0;
+		while (start < input.length) {
+			let at = input.length, size = 0;
+			for (const secret of secrets) {
+				let i = input.indexOf(secret[0], start);
+				while (i >= 0 && i <= at) {
+					if (input.startsWith(secret, i)) {
+						if (i < at || secret.length > size) { at = i; size = secret.length; }
+						break;
+					}
+					if (!final && secret.startsWith(input.slice(i))) {
+						if (i < at) { at = i; size = 0; }
+						break;
+					}
+					i = input.indexOf(secret[0], i + 1);
+				}
+			}
+			result += input.slice(start, at);
+			if (!size) { pending = input.slice(at); break; }
+			result += '[redacted]';
+			start = at + size;
+		}
+		return result;
+	}
+	return new Transform({
+		transform(chunk, encoding, done) { done(null, consume(decoder.write(chunk), false)); },
+		flush(done) { done(null, consume(decoder.end(), true)); },
+	});
+}
+exports.scrubStream = scrubStream;
 
 function reject(res, status) {
 	let type = 'api_error', message = 'The provider rejected the request.';
@@ -46,6 +85,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				publicKey, Buffer.from(match[2], 'base64url'))) return reject(res, 401);
 			if (sessions.get(req.socket) !== match[1]) return reject(res, 401);
 			let target;
+			let claudeToken;
 			if (provider) {
 				target = await provider.target(req.url, req.headers);
 				if (!target) return reject(res, 401);
@@ -53,6 +93,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				const token = await readToken().catch(() => undefined);
 				if (!token || token.length > 512 || !/^sk-ant-oat01-[A-Za-z0-9_-]+$/.test(token)) return reject(res, 401);
 
+				claudeToken = token;
 				const headers = { authorization: 'Bearer ' + token };
 				for (const [key, value] of Object.entries(req.headers)) {
 					if (requestHeaders.has(key) || key.startsWith('x-stainless-')) headers[key] = value;
@@ -79,7 +120,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 					if (!decode) { reject(res, 502); reply.destroy(); return; }
 					stages.push(decode());
 				}
-				const filter = provider?.responseFilter?.();
+				const filter = claudeToken ? scrubStream([claudeToken]) : provider?.responseFilter?.();
 				if (filter) stages.push(filter);
 				res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
 				pipeline([...stages, res], () => {});

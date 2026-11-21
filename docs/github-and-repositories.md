@@ -163,9 +163,11 @@ platform does the git and GitHub work with the code and the tokens of the panel'
     sentence that says to fetch and merge it. A work item's publish step pushes the same way; the panel's
     push never forces.
   - Before sending work, the platform reads the message and patch of every outgoing commit as text,
-    including merge commits and binary files. It excludes history already seen on the base or work
-    branch. It refuses the push if the session's redaction finds a saved secret value, or if the history
-    read reaches 8 MB. Encoded values can escape redaction.
+    including merge commits and binary files. The session keeps its base commit in platform state.
+    GitHub confirms that commit independently of the sandbox. Only that base and the observed work
+    branch head can exclude history from the scan. The platform refuses a push when it finds a saved
+    secret value, a recognized credential shape, or 8 MB of history to check. For credential shapes,
+    the refusal names the kind of credential. Encoded values can escape detection.
     When it refuses the push, changes from the platform's own commit stay in the workspace.
   - Concurrent changes to the workspace's `.git` during `push` or `fetch_base` can no longer make
     platform Git run a workspace-defined program. Status, diff, probe, commit, history scan, fetch

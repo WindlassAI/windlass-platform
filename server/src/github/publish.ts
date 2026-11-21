@@ -28,7 +28,7 @@ import { type WorkDiff, verifiedSection, verifiedWords, withVerifiedSection, wor
 import { type GithubApp, GithubError, type Pull, type Repository } from "./app.js";
 import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, commitWork, outgoingPatch, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
 import { refHead } from "./feature.js";
-import { redact } from "./redact.js";
+import { pushTokenKinds, redact } from "./redact.js";
 import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveBoundRepository, resolveRepository } from "./repos.js";
 
 /** What a session keeps of the repository it was launched on. */
@@ -341,8 +341,14 @@ async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<type
 
 	// Nothing that holds the value of a saved secret leaves the sandbox: a setup command may have written one into a file,
 	// and the agent's push is never asked about. The proposed commit stays private until the scan and push succeed.
-	const leaking = input.redact ? secretFiles(await outgoingPatch(sandbox, baseSha, input.pushed), input.redact) : null;
-	if (leaking !== null && leaking.files.length > 0) {
+	const patch = await outgoingPatch(sandbox, baseSha, input.pushed);
+	const kinds = patch === null ? [] : pushTokenKinds(patch);
+	if (kinds.length) {
+		await discardHandover(sandbox, input.sessionId);
+		throw new GithubProblem("github_failed", `Nothing was pushed. Remove the following credentials from the commits to push: ${kinds.join(", ")}.`);
+	}
+	const leaking = secretFiles(patch, input.redact);
+	if (leaking.files.length > 0) {
 		await discardHandover(sandbox, input.sessionId);
 		throw new GithubProblem("github_failed", secretRefusal(leaking));
 	}
@@ -377,15 +383,16 @@ async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<type
  * The files whose lines in `patch` (git log -p) hold a saved secret's value, and the secrets' names; with
  * no patch to read (git did not answer), every push is refused: what would be sent cannot be looked at.
  */
-function secretFiles(patch: string | null, redact: (text: string) => string): { files: string[]; names: string[] } {
+function secretFiles(patch: string | null, redact?: (text: string) => string): { files: string[]; names: string[] } {
 	if (patch === null) return { files: ["(the commits to push could not be read)"], names: [] };
+	if (!redact) return { files: [], names: [] };
 	const files = new Set<string>();
 	const names = new Set<string>();
 	for (const part of patch.split(/\n(?=diff --git )/)) {
 		const cleaned = redact(part);
 		if (cleaned === part) continue;
 		const path = /^diff --git a\/(.+?) b\//.exec(part)?.[1] ?? "(a commit's message)";
-		files.add(path);
+		files.add(redact(path));
 		for (const match of cleaned.matchAll(/\[secret:([A-Za-z0-9_]+)\]/g)) if (!part.includes(match[0])) names.add(match[1] as string);
 	}
 	return { files: [...files], names: [...names] };

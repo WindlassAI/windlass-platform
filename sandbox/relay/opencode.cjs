@@ -1,10 +1,8 @@
 // This process owns refresh. Setup stops it before replacing or removing a login.
 const { createPublicKey, randomUUID } = require('node:crypto');
 const { readFile, rename, unlink, writeFile } = require('node:fs/promises');
-const { Transform } = require('node:stream');
-const { StringDecoder } = require('node:string_decoder');
 const { rmSync } = require('node:fs');
-const { createRelay } = require('./server.cjs');
+const { createRelay, scrubStream } = require('./server.cjs');
 
 const clientId = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const filename = '/run/wlp-harness/opencode/login.json';
@@ -47,42 +45,6 @@ function accountId(token) {
 	return c.chatgpt_account_id || c['https://api.openai.com/auth']?.chatgpt_account_id || c.organizations?.[0]?.id;
 }
 
-// Filter at the credential boundary, before any result can enter an agent file, log or ACP stream.
-function scrubStream(secrets) {
-	const decoder = new StringDecoder('utf8');
-	let pending = '';
-	function consume(text, final) {
-		const input = pending + text;
-		pending = '';
-		let result = '', start = 0;
-		while (start < input.length) {
-			let at = input.length, size = 0;
-			for (const secret of secrets) {
-				let i = input.indexOf(secret[0], start);
-				while (i >= 0 && i <= at) {
-					if (input.startsWith(secret, i)) {
-						if (i < at || secret.length > size) { at = i; size = secret.length; }
-						break;
-					}
-					if (!final && secret.startsWith(input.slice(i))) {
-						if (i < at) { at = i; size = 0; }
-						break;
-					}
-					i = input.indexOf(secret[0], i + 1);
-				}
-			}
-			result += input.slice(start, at);
-			if (!size) { pending = input.slice(at); break; }
-			result += '[redacted]';
-			start = at + size;
-		}
-		return result;
-	}
-	return new Transform({
-		transform(chunk, encoding, done) { done(null, consume(decoder.write(chunk), false)); },
-		flush(done) { done(null, consume(decoder.end(), true)); },
-	});
-}
 async function save(record) {
 	const temp = filename + '.' + randomUUID();
 	try {

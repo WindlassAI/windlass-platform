@@ -4,6 +4,7 @@ import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { connect } from 'node:net';
 import { request } from 'node:http';
 import { PassThrough } from 'node:stream';
+import { gzipSync } from 'node:zlib';
 import { after, before, test } from 'node:test';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -27,8 +28,8 @@ before(async () => {
 				const response = new PassThrough();
 				Object.assign(response, upstream);
 				callback(response);
-				response.write(upstream.statusCode === 200 ? 'first\n' : token);
-				release = () => response.end('last\n');
+				response.write(upstream.first ?? (upstream.statusCode === 200 ? 'first\n' : token));
+				release = () => response.end(upstream.last ?? 'last\n');
 				if (!upstream.holdOpen) release();
 			});
 			return input;
@@ -77,6 +78,30 @@ test('rewrite only the bearer, use the pinned TLS origin, stream before upstream
 	release();
 	assert.equal((await chunks.next()).value.toString(), 'last\n');
 });
+test('a successful upstream response cannot echo the setup token across chunks', async () => {
+	for (const type of ['application/json', 'text/event-stream']) {
+		reset();
+		upstream.headers['content-type'] = type;
+		upstream.first = 'before ' + token.slice(0, 17);
+		upstream.last = token.slice(17) + ' after';
+		const res = await call();
+		let body = '';
+		for await (const chunk of res) body += chunk;
+		assert.ok(body === 'before [redacted] after');
+	}
+});
+test('the Claude filter scrubs decoded provider responses', async () => {
+	reset();
+	upstream.headers['content-encoding'] = 'gzip';
+	upstream.first = gzipSync('before ' + token + ' after');
+	upstream.last = '';
+	const res = await call();
+	let body = '';
+	for await (const chunk of res) body += chunk;
+	assert.equal(res.statusCode, 200);
+	assert.ok(body === 'before [redacted] after');
+});
+
 test('foreign target, method and unapproved endpoint never reach upstream', async () => {
 	for (const bad of [{ host: 'foreign.invalid' }, { path: 'https://foreign.invalid/v1/messages' },
 		{ path: '//foreign.invalid/v1/messages' }, { path: '/api/oauth/profile' }, { method: 'GET' }]) {
