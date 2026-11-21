@@ -1,0 +1,113 @@
+# Windlass on one Linux host
+
+The server serves the built web app and platform HTTP routes. A separate Rivet 3.1.1 engine runs the actor gateway, scheduler and durable actor storage. The server opens an outbound node connection over the private Compose network. A paired Windlass runner on the host starts agent containers. Staging uses demo sign-in, fake sandboxes and a runner stand-in for the load test.
+
+## Bring up staging
+
+Use Docker Engine, Compose v2.24 or later, Bash, Git and OpenSSL. Run these commands from the repository root.
+
+```sh
+deploy/selfhost/init-env.sh staging
+stack=.data/selfhost/staging.env
+dc() { docker compose --env-file "$stack" -f deploy/selfhost/compose.yaml "$@"; }
+dc up -d --build --wait --wait-timeout 180
+dc ps
+curl -fsS http://127.0.0.1:16440/health
+curl -fsS http://127.0.0.1:16440/ | head -c 80
+```
+
+The initializer creates a private, git-ignored, mode-600 file and refuses to overwrite it. Keep a protected copy of the env file with the corresponding release. The app signing secret is also the default source of the sign-in encryption key. Engine archives contain actor data and engine signing keys. Restrict access to both.
+
+| Stack | Compose project | HTTP and web | Actor gateway | Initial volume |
+|---|---|---|---|---|
+| Staging | `wlp-staging` | `127.0.0.1:16440` | `127.0.0.1:16420` | `wlp-staging_engine-data` |
+| Live | `wlp-live` | `127.0.0.1:26440` | `127.0.0.1:26420` | `wlp-live_engine-data` |
+
+The two projects have separate networks, image tags, volumes and credentials. Each engine uses one leader and one writer to its volume. The volume contains both `log/` and `objects/`. The local filesystem object store supplies the cluster metadata and cold data. At first start the server waits for the admin API, creates the default namespace and pool if absent, then starts the registry. Readiness checks both the node's health and the server's ability to issue browser tokens.
+
+### Routing and a future live stack
+
+Publish **two origins** per stack through the future tunnel. Map the application hostname to the HTTP port and the gateway hostname to the actor gateway port. The latter needs HTTP and WebSocket upgrades. The web page and runners discover the gateway via the server. Keep token-bearing connection responses uncached. Peer, metrics and storage ports stay inside the engine container.
+
+Before first live boot, run `deploy/selfhost/init-env.sh live`, stage the target architecture's Windlass binary using `server/stage-windlass.sh`, and select the live env file in the commands above. Edit the application and gateway origins to the intended HTTPS names. Set the engine's canonical origin to that gateway name **before initializing its volume**. A tunnel may be installed later. The server issues tokens over Compose DNS, so the public hostname need not resolve from inside its container.
+
+The gateway URL clients dial (`WLP_PUBLIC_ENDPOINT`) and the engine's canonical leader URL (`SELFHOST_ENGINE_ORIGIN`) are separate settings. The latter determines the JWT issuer persisted in the signing ring. Keep it stable for the life of the data, including restores. For an existing loopback staging volume, keep its original canonical URL when assigning it a client-facing hostname. Changing the issuer of an existing ring can produce `503 auth.issuance_unavailable` even with correct admin credentials.
+
+The live preset selects the production image, disables demo login and runs real Windlass sign-in commands locally. Choose paired-machine sessions for real on-box workloads. The preset's hosted provider is fake. Configure a supported real provider separately if hosted sessions are required. Additional application settings, including the user allowlist, can go in a mode-600 server env file under `.data/selfhost/`. Configure and pair a runner for the intended stack independently. A runner paired to another deployment has its own identity and session data.
+
+### Resource allocation
+
+The engine has 4,096 CPU shares and a 2,304 MiB memory limit. The server has 3,072 shares and 1,792 MiB. Both restart unless explicitly stopped. For agent containers on the same Docker host and cgroup parent, use `--cpu-shares 256 --cpus 1.5 --memory 1536m`. Shares give the engine and server priority when CPUs are contended. Four busy agents each using their full memory allowance would consume 6 GiB before the platform, kernel, runner or another stack. Size both stacks together on a 12 GB host.
+
+### Configuration names
+
+| Purpose | Variables |
+|---|---|
+| Project, ports, data and release | `COMPOSE_PROJECT_NAME`, `SELFHOST_HTTP_PORT`, `SELFHOST_GATEWAY_PORT`, `SELFHOST_VOLUME`, `SELFHOST_RELEASE`, `SELFHOST_SERVER_TARGET`, `SELFHOST_SERVER_ENV_FILE` |
+| Public origins and canonical issuer | `WLP_PUBLIC_URL`, `WLP_PUBLIC_ENDPOINT`, `SELFHOST_ENGINE_ORIGIN`, `SELFHOST_ISSUER_GENERATION` |
+| Credentials and node version | `WLP_SECRET`, `RIVET_ADMIN_TOKEN`, `RIVET_NODE_VERSION` |
+| Application modes | `WLP_DEMO`, `WLP_SANDBOX`, `WLP_SIGNIN_RUNNER` |
+| Set by Compose for the server | `RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE`, `RIVET_POOL`, `WLP_TOKEN_ENDPOINT`, `WLP_WEB_ORIGINS`, `WLP_MACHINES`, `WLP_HTTP_PORT` |
+| Optional server settings | `WLP_SIGNIN_KEY`, `WLP_ALLOWED_EMAILS`, `WLP_ALLOWED_USERS`, `WLP_RUNNER_IMAGE`, `WLP_BUCKET_*` |
+
+The default optional server env file is `.data/selfhost/<compose-project>.server.env`. An explicit relative path is resolved from the Compose file's directory. Stack settings listed under `environment` in Compose take precedence over this file. Avoid printing expanded Compose configuration or unfiltered container inspections.
+
+## Backup and restore
+
+Use a Linux host with GNU coreutils, `flock`, Python 3, gzip and the AWS CLI for S3. Grant the backup credentials list/get/put/delete access to the project's prefix. Provide the backup environment through the operator's secret store. The scripts use a separate set of names from the platform's sandbox bucket.
+
+| Purpose | Variables |
+|---|---|
+| S3-compatible destination | `SELFHOST_BACKUP_ENDPOINT`, `SELFHOST_BACKUP_REGION`, `SELFHOST_BACKUP_BUCKET`, `SELFHOST_BACKUP_ACCESS_KEY_ID`, `SELFHOST_BACKUP_SECRET_ACCESS_KEY` |
+| Retention and local directory backend | `SELFHOST_BACKUP_KEEP`, `SELFHOST_BACKUP_DIR` |
+
+```sh
+archive=$(deploy/selfhost/backup.sh "$stack")
+fresh=$(deploy/selfhost/restore.sh "$stack" "$archive")
+```
+
+Both services must be running before a backup. The script stops the server first so actors can finish shutdown, stops the engine, checks both exit statuses and archives the whole mounted volume. The engine CLI exposes storage operations but no whole-engine online snapshot command. Stopping all writers gives the log and object store a common point in time. The script restarts the services immediately after the local tar copy, then compresses and publishes the archive. An interrupted copy triggers a restart attempt. Allow space under `.data/selfhost` for the uncompressed tar and archive. Downtime depends on graceful shutdown, data size and disk throughput. Check `dc ps` after recovery.
+
+Objects are stored at `<bucket>/<compose-project>/<archive-basename>`. After a successful upload, retention keeps the newest N timestamped snapshots for that project (default seven). Other object names and other projects' prefixes are preserved. On a versioned S3 bucket configure a bucket lifecycle for old versions and abandoned multipart uploads. For a local-only drill set `SELFHOST_BACKUP_DIR` to a private directory. It takes precedence over S3.
+
+Restore loads a named archive into a newly generated volume, prints its name and leaves the running stack alone. For a replacement host, build or load the matching engine image first. Restore the original stack secrets, project and canonical origin. To switch volumes during a maintenance window, stop the services, save the previous volume name, edit `SELFHOST_VOLUME` in the private stack env file to the printed name, and run `dc up -d --no-build --wait`. Verify a known user's session and timeline before retiring the previous volume. A smoke-test proof can be checked with the command below. These archives cover engine state. Runner workspaces, credentials on the runner, sandbox files, and optional bucket contents have independent backup requirements.
+
+## Test the stack
+
+Install workspace dependencies using `pnpm install --frozen-lockfile`. Run from the repository root against a local, demo-enabled stack with fake sandboxes.
+
+```sh
+server/node_modules/.bin/tsx scripts/selfhost-load.ts \
+  --origin http://127.0.0.1:16440 --project wlp-staging \
+  --sessions 4 --minutes 25 --burners --interval 10 --baseline 60 \
+  --proof .data/selfhost/load-proof.json
+# After restoring and switching to the new volume:
+server/node_modules/.bin/tsx scripts/selfhost-load.ts \
+  --origin http://127.0.0.1:16440 --project wlp-staging \
+  --verify .data/selfhost/load-proof.json
+```
+
+The generator signs in as a new demo user, pairs an in-process runner, opens K independent sessions and sends each another short turn after its previous turn ends. The fixture spaces ACP thoughts, text, tool calls and plan updates 250 ms apart. The optional burners are isolated, networkless containers with the agent CPU and memory settings above. An idle baseline precedes load. The test lets in-flight turns finish, removes the burners and samples recovery. It retains the demo account and timeline on the test stack. The optional mode-600 proof contains a demo credential and a digest of the persisted timeline. Use a fresh proof filename for each run.
+
+Every probe interval launches four concurrent reads, with a 30 s deadline per read. The page probe reads and checks the HTML. Actor probes use the browser's scoped token and read the user's session list, models and one rotating session's snapshot. The report prints successful-sample p50/p95/max in milliseconds (nearest rank), errors, completed turns, streamed updates, log severity and stall-signature counts, and engine/server restart deltas per run. Samples are grouped by request start time into idle, first 15 minutes, subsequent load and recovery. The load test can be interrupted with Ctrl-C.
+
+## Logs, upgrade and rollback
+
+```sh
+dc ps
+dc logs --since 10m engine server
+dc logs -f server
+```
+
+Docker rotates the services' JSON logs at 32 MiB with up to three files per service. Inspect the node's health and gateway token availability after restarts. Restrict access to raw logs.
+
+1. Record the current Git revision, engine and server image tags, private configuration and volume name. Take a backup at a quiet point.
+2. Build the new revision under a new `SELFHOST_RELEASE` tag and increase `RIVET_NODE_VERSION`. Run `dc build` and test it in staging.
+3. In a maintenance window run `dc stop server engine`, then `dc up -d --no-build --wait`. Check the web page, token issuance and a known actor read.
+4. To roll back, select the previous sources (including the bootstrap script), prior images and configuration. If the new engine or actor code migrated data, restore the pre-upgrade backup to a fresh volume and point `SELFHOST_VOLUME` there before restarting. Writes since that backup remain on the upgraded volume. Keep both volumes until verification is complete.
+
+## Rivet 3.1.1 implementation references
+
+The installed SDK reads the endpoint, token, namespace, pool and node version, then starts the serverful registry. The engine CLI resolver selects the static Linux binary for the architecture. The installed generated API declares namespace creation and the pool upsert. [SDK environment](../../server/node_modules/rivetkit/src/utils/env-vars.ts) · [Registry configuration](../../server/node_modules/rivetkit/src/registry/config/index.ts) · [Registry listener](../../server/node_modules/rivetkit/src/registry/index.ts) · [Pool API](../../server/node_modules/rivetkit/src/engine-client/api-endpoints.ts) · [CLI resolver](../../node_modules/.pnpm/@rivetkit+engine-cli@3.1.1/node_modules/@rivetkit/engine-cli/index.js)
+
+The npm engine package contains the executable. The matching tagged Rust source defines the two persistent paths, automatic single-node partition provisioning, environment overrides, admin authentication and derivation of the JWT issuer from the leader's public URL. [Storage validation](https://github.com/rivet-dev/rivet/blob/v3.1.1/engine/packages/config/src/config/mod.rs) · [Storage log and partitions](https://github.com/rivet-dev/rivet/blob/v3.1.1/engine/packages/config/src/config/depot.rs) · [Filesystem object store](https://github.com/rivet-dev/rivet/blob/v3.1.1/engine/packages/config/src/config/object_storage.rs) · [Configuration loader](https://github.com/rivet-dev/rivet/blob/v3.1.1/engine/packages/config/src/lib.rs) · [Topology](https://github.com/rivet-dev/rivet/blob/v3.1.1/engine/packages/config/src/config/topology.rs) · [Authentication](https://github.com/rivet-dev/rivet/blob/v3.1.1/engine/packages/config/src/config/auth.rs)

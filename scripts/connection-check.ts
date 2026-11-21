@@ -403,7 +403,7 @@ async function main(): Promise<void> {
 		`;
 		// Not a synchronous spawn: the stand-in runs in this process and has to answer meanwhile.
 		const child = await new Promise<{ stdout: string; stderr: string }>((done) => {
-			execFile(process.execPath, ["--import", "tsx", "--input-type=module", "-e", program], { env: process.env, encoding: "utf8" }, (_error, stdout, stderr) => done({ stdout, stderr }));
+			execFile(process.execPath, ["--import", "tsx", "--input-type=module", "-e", program], { env: { ...process.env, WLP_TOKEN_ENDPOINT: engine.url, WLP_PUBLIC_ENDPOINT: "https://gateway.example.invalid" }, encoding: "utf8" }, (_error, stdout, stderr) => done({ stdout, stderr }));
 		});
 		const result = JSON.parse(child.stdout.trim().split("\n").pop() ?? "{}") as { status?: number; cors?: string | null; body?: string };
 		expect(

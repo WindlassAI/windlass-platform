@@ -92,8 +92,8 @@ let tokens: ConnectionTokens | null | undefined;
 export function connectionTokens(): ConnectionTokens | null {
 	if (tokens === undefined) {
 		const adminToken = engineAdminToken();
-		const { endpoint, tokenTtlMs } = config.browsers;
-		tokens = adminToken !== null && endpoint !== null ? new ConnectionTokens({ endpoint, adminToken, namespace: config.engine.namespace, ttlMs: tokenTtlMs }) : null;
+		const { endpoint, tokenEndpoint, tokenTtlMs } = config.browsers;
+		tokens = adminToken !== null && endpoint !== null ? new ConnectionTokens({ endpoint: tokenEndpoint ?? endpoint, adminToken, namespace: config.engine.namespace, ttlMs: tokenTtlMs }) : null;
 	}
 	return tokens;
 }

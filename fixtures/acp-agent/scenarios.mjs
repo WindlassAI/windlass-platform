@@ -81,6 +81,13 @@ export const scenarios = {
 	*usage() {
 		yield { sessionUpdate: "usage_update", used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } };
 	},
+	*stream() {
+		const updates = [...scenarios.plain(), ...scenarios.tools(), ...scenarios.plan(), ...scenarios.plain()];
+		for (const update of updates) {
+			yield { delay: 250 };
+			yield update;
+		}
+	},
 	*slow() {
 		for (const part of ["Starting. ", "Reading. ", "Working. ", "Checking. ", "Finished."]) {
 			yield { delay: 300 };

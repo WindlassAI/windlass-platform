@@ -398,6 +398,8 @@ The web app's mock (`?mock=1`) has a plan of three models with different efforts
 `?mock=1&models=unavailable` plays a user whose plan could not be read, and the demo sign-in has the
 stand-in.
 
+For a single Linux host, the Compose kit includes the engine, web server, backups and synthetic load test. [Self-hosting guide](deploy/selfhost/README.md)
+
 ## Running on several servers
 
 Every server is one Rivet node. With `RIVET_ENDPOINT` set it starts no engine of its own: it opens an outbound

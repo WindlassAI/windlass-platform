@@ -1,0 +1,72 @@
+name: ${COMPOSE_PROJECT_NAME:?use the stack env file}
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "32m", max-file: "3" }
+
+services:
+  engine:
+    image: ${COMPOSE_PROJECT_NAME}-engine:${SELFHOST_RELEASE:-local}
+    build:
+      context: ../..
+      dockerfile: deploy/selfhost/engine.Dockerfile
+    environment:
+      RIVET__AUTH__JWT__ISSUER_GENERATION: ${SELFHOST_ISSUER_GENERATION:-1}
+      RIVET__AUTH__ADMIN_TOKEN: ${RIVET_ADMIN_TOKEN:?required}
+      RIVET__TOPOLOGY__DATACENTERS__DEFAULT__PUBLIC_URL: ${SELFHOST_ENGINE_ORIGIN:-${WLP_PUBLIC_ENDPOINT:?required}}
+    volumes:
+      - engine-data:/var/lib/rivet
+    ports:
+      - "127.0.0.1:${SELFHOST_GATEWAY_PORT:?required}:6420"
+    restart: unless-stopped
+    stop_grace_period: 10m
+    cpu_shares: 4096
+    mem_limit: 2304m
+    logging: *logging
+
+  server:
+    image: ${COMPOSE_PROJECT_NAME}-server:${SELFHOST_RELEASE:-local}
+    build:
+      context: ../..
+      dockerfile: server/Dockerfile
+      target: ${SELFHOST_SERVER_TARGET:-demo}
+    depends_on: [engine]
+    env_file:
+      - path: ${SELFHOST_SERVER_ENV_FILE:-../../.data/selfhost/${COMPOSE_PROJECT_NAME}.server.env}
+        required: false
+    environment:
+      RIVET_ENDPOINT: http://engine:6420
+      RIVET_TOKEN: ${RIVET_ADMIN_TOKEN}
+      RIVET_ADMIN_TOKEN: ${RIVET_ADMIN_TOKEN}
+      RIVET_NAMESPACE: default
+      RIVET_POOL: default
+      RIVET_NODE_VERSION: ${RIVET_NODE_VERSION:-1}
+      WLP_TOKEN_ENDPOINT: http://engine:6420
+      WLP_SECRET: ${WLP_SECRET:?required}
+      WLP_HTTP_PORT: 6440
+      WLP_PUBLIC_ENDPOINT: ${WLP_PUBLIC_ENDPOINT}
+      WLP_PUBLIC_URL: ${WLP_PUBLIC_URL:?required}
+      WLP_WEB_ORIGINS: ${WLP_PUBLIC_URL}
+      WLP_MACHINES: "1"
+      WLP_DEMO: ${WLP_DEMO:?required}
+      WLP_SANDBOX: ${WLP_SANDBOX:?required}
+      WLP_SIGNIN_RUNNER: ${WLP_SIGNIN_RUNNER:-}
+    volumes:
+      - ./bootstrap.mjs:/app/server/bootstrap.mjs:ro
+    command: [sh, -ec, "node bootstrap.mjs && exec node --import tsx src/index.ts"]
+    ports:
+      - "127.0.0.1:${SELFHOST_HTTP_PORT:?required}:6440"
+    healthcheck:
+      test: [CMD, node, -e, "Promise.all(['/health','/platform/connection'].map(p=>fetch('http://127.0.0.1:6440'+p))).then(rs=>process.exit(rs.every(r=>r.ok)?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    restart: unless-stopped
+    stop_grace_period: 60s
+    cpu_shares: 3072
+    mem_limit: 1792m
+    logging: *logging
+
+volumes:
+  engine-data:
+    name: ${SELFHOST_VOLUME:?required}

@@ -129,7 +129,7 @@ interface Served {
 }
 
 export class StandInRunner {
-	constructor(private readonly origin: string, private readonly endpoint: string, private readonly options: { claude?: boolean; stateDir?: string } = {}) {
+	constructor(private readonly origin: string, private readonly endpoint: string, private readonly options: { claude?: boolean; stateDir?: string; getToken?: () => Promise<string>; namespace?: string; onAcpUpdate?: () => void } = {}) {
 		if (options.claude) this.fake.report.harnesses = [{ id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fake", signIn: "token" }];
 	}
 
@@ -163,12 +163,12 @@ export class StandInRunner {
 		await user.claimMachine({ code: pairing.code });
 		await user.confirmMachine({ code: pairing.code });
 		const status = await this.fake.poll(this.origin, pairing);
-		assert(status?.state === "approved", `pairing ended ${JSON.stringify(status)}`);
+		assert(status?.state === "approved", `pairing ended ${status?.state ?? "without status"}`);
 		this.id = { uid: status.uid, machineId: status.machineId };
 	}
 
 	private client() {
-		return createClient<Registry>({ endpoint: this.endpoint, token: "default", namespace: "default" });
+		return createClient<Registry>({ endpoint: this.endpoint, token: "default", getToken: this.options.getToken, namespace: this.options.namespace ?? "default", disableMetadataLookup: true });
 	}
 
 	async openControl(version = MIN_RUNNER_VERSION) {
@@ -375,7 +375,10 @@ export class StandInRunner {
 				const isEngine = op.args.argv[0] === "windlass" && op.args.argv[1] === "acp";
 				let engine: AgentProcess | null;
 				if (op.args.argv[0] === "wlp-claude-acp" && box.harness === "claude" && this.options.claude) {
-					const agent = new FakeAcpAgent(line => channel.output(op.id, 1, line), this.options.stateDir);
+					const agent = new FakeAcpAgent(line => {
+						if (this.options.onAcpUpdate && JSON.parse(line).method === "session/update") this.options.onAcpUpdate();
+						channel.output(op.id, 1, line);
+					}, this.options.stateDir);
 					engine = { input: chunk => { this.acpInput.push(chunk); agent.input(chunk); }, stop: () => agent.stop() };
 				} else engine = isEngine ? new Engine((line) => channel.output(op.id, 1, line), meta => this.opens.set(sessionId, meta)) : null;
 				if (engine) box.engines.add(engine);

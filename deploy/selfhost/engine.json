@@ -1,0 +1,17 @@
+{
+  "guard": { "host": "0.0.0.0", "port": 6420 },
+  "topology": {
+    "datacenter_label": 1,
+    "datacenters": {
+      "default": {
+        "datacenter_label": 1, "is_leader": true,
+        "public_url": "http://127.0.0.1:6420",
+        "peer_url": "http://127.0.0.1:6421",
+        "proxy_url": "http://127.0.0.1:6420"
+      }
+    }
+  },
+  "storage": { "log_directory": "/var/lib/rivet/log", "auto_provision_partitions": 1 },
+  "object_storage": { "primary": { "file_system": { "path": "/var/lib/rivet/objects" } } },
+  "telemetry": { "enabled": false }
+}

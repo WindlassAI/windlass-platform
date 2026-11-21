@@ -85,8 +85,9 @@
  *                              A secret: it is sent to the engine as a bearer and to nothing else, and
  *                              is never logged or put in an error or an answer. The server uses it for
  *                              one thing, to issue the short-lived tokens it hands browsers
- *                              (connection-tokens.ts), and asks the engine at WLP_PUBLIC_ENDPOINT, which
- *                              must then be set. Unset: browsers are handed no token
+ *                              (connection-tokens.ts). Unset: browsers are handed no token
+ *   WLP_TOKEN_ENDPOINT         optional private route to the same engine for token issuance.
+ *                              Defaults to WLP_PUBLIC_ENDPOINT, the address advertised to browsers
  *   WLP_CONNECTION_TOKEN_TTL_MS
  *                              how long such a token lasts (default 3600000, one hour; at least one
  *                              minute, and at most the 24 hours a Rivet Cloud cluster issues one for).
@@ -243,6 +244,8 @@ export interface EngineConfig {
 }
 
 export interface BrowserConnectionConfig {
+	/** Optional private origin used only to issue the scoped gateway token. */
+	tokenEndpoint?: string;
 	/** WLP_PUBLIC_ENDPOINT without a trailing slash; null when browsers are to use the endpoint they were built with. */
 	endpoint: string | null;
 	/** True when RIVET_ADMIN_TOKEN is set: browsers are handed tokens this server issues with it. */
@@ -481,23 +484,27 @@ export function githubPrivateKey(env: NodeJS.ProcessEnv = process.env): string |
 /** A day: the longest a Rivet Cloud cluster issues a token for. */
 const MAX_CONNECTION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
-function readBrowsers(): BrowserConnectionConfig {
-	const raw = (process.env.WLP_PUBLIC_ENDPOINT ?? "").trim();
-	let endpoint: string | null = null;
-	if (raw !== "") {
-		let url: URL;
-		try {
-			url = new URL(raw);
-		} catch {
-			throw new Error("WLP_PUBLIC_ENDPOINT must be a URL, such as https://<name>-api.onrivet.dev");
-		}
-		if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("WLP_PUBLIC_ENDPOINT must be an http or https URL");
-		// It is handed to every browser as it is. The value is not repeated here: it may hold a token.
-		if (url.username !== "" || url.password !== "") throw new Error("WLP_PUBLIC_ENDPOINT must not carry a namespace or a token: browsers are handed both by the server");
-		endpoint = url.toString().replace(/\/+$/, "");
+function connectionEndpoint(name: "WLP_PUBLIC_ENDPOINT" | "WLP_TOKEN_ENDPOINT"): string | null {
+	const raw = (process.env[name] ?? "").trim();
+	if (!raw) return null;
+	let url: URL;
+	try {
+		url = new URL(raw);
+	} catch {
+		throw new Error(`${name} must be a URL`);
 	}
+	if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error(`${name} must be an http or https URL`);
+	// Never include a configured URL in a validation error: it may contain credentials.
+	if (url.username || url.password) throw new Error(`${name} must not carry a namespace or a token`);
+	if (name === "WLP_TOKEN_ENDPOINT" && (url.search || url.hash)) throw new Error(`${name} must not carry a query string or fragment`);
+	return url.toString().replace(/\/+$/, "");
+}
+
+function readBrowsers(): BrowserConnectionConfig {
+	const endpoint = connectionEndpoint("WLP_PUBLIC_ENDPOINT");
+	const tokenEndpoint = connectionEndpoint("WLP_TOKEN_ENDPOINT") ?? undefined;
 	const tokenTtlMs = Math.min(readDuration("WLP_CONNECTION_TOKEN_TTL_MS", 60 * 60 * 1000, 60_000), MAX_CONNECTION_TOKEN_TTL_MS);
-	return { endpoint, tokens: engineAdminToken() !== null, tokenTtlMs };
+	return { endpoint, tokenEndpoint, tokens: engineAdminToken() !== null, tokenTtlMs };
 }
 
 function readSecret(): Buffer {

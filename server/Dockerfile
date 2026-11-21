@@ -50,7 +50,7 @@ COPY fixtures fixtures
 # `vite build` alone: the web app's own `build` type-checks first, tests included, and those reach into the server's sources.
 RUN pnpm --filter @windlass-platform/web exec vite build
 
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim AS server-base
 ARG TARGETARCH
 ENV NODE_ENV=production
 
@@ -64,13 +64,6 @@ COPY server/src server/src
 # The fake layer replays these; config.ts names the directory.
 COPY fixtures fixtures
 
-# Windlass, for the sign-in commands the server runs itself (`windlass login ...`, server/src/signin/):
-# a build for this image's architecture with `login token --valid-for`. The turns do not use it: they
-# run in the sandbox provider's own image. server/stage-windlass.sh puts the builds where this line
-# finds them; run it before building.
-COPY --chmod=0755 server/vendor/windlass-linux-${TARGETARCH} /usr/local/bin/windlass
-ENV WLP_WINDLASS_BIN=/usr/local/bin/windlass
-
 # The web app, served by this server on its own port: the platform has one address.
 COPY --from=web /app/web/dist /app/web/dist
 ENV WLP_WEB_DIR=/app/web/dist
@@ -82,3 +75,15 @@ ENV WLP_SANDBOX=e2b
 # Rivet Cloud serves the port in PORT at the pool's public address; elsewhere WLP_HTTP_PORT or 6440.
 EXPOSE 6440
 CMD ["node", "--import", "tsx", "src/index.ts"]
+
+# Demo staging uses the in-memory sign-in and sandbox providers.
+FROM server-base AS demo
+ENV WLP_SANDBOX=fake
+
+FROM server-base AS production
+# Windlass, for the sign-in commands the server runs itself (`windlass login ...`, server/src/signin/):
+# a build for this image's architecture with `login token --valid-for`. The turns do not use it: they
+# run in the sandbox provider's own image. server/stage-windlass.sh puts the builds where this line
+# finds them; run it before building.
+COPY --chmod=0755 server/vendor/windlass-linux-${TARGETARCH} /usr/local/bin/windlass
+ENV WLP_WINDLASS_BIN=/usr/local/bin/windlass

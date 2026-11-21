@@ -24,8 +24,7 @@ export function startupProblem(config: Pick<Config, "engine" | "secretConfigured
 	if (config.engine.remote && !config.secretConfigured) {
 		return "[wlp] WLP_SECRET is not set: with a remote Rivet engine (RIVET_ENDPOINT) every server must sign tokens with the same secret, so set WLP_SECRET to one value of at least 16 characters on all of them.";
 	}
-	// The admin token says the engine asks browsers for a token. The server issues those at the address
-	// browsers use, and hands that address out with them: without it no browser could connect.
+	// A browser needs its reachable gateway address as well as the scoped token the server issues.
 	if (config.browsers.tokens && config.browsers.endpoint === null) {
 		return "[wlp] WLP_PUBLIC_ENDPOINT is not set: with RIVET_ADMIN_TOKEN the server issues the tokens browsers connect with and tells them where the engine is, so set WLP_PUBLIC_ENDPOINT to the address browsers reach the engine at (for a Rivet Cloud cluster, https://<name>-api.onrivet.dev).";
 	}
