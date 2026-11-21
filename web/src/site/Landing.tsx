@@ -2,20 +2,18 @@
  * The public landing page, at `/` for people who are not signed in. It is rendered twice from this one
  * component: to static HTML at build time (web/site-build.ts), which is what a visitor, a crawler or an
  * answer engine gets with no JavaScript at all, and by the app itself when a signed-out person lands on
- * `/` inside it. So it holds no state and reads nothing from the browser: what moves is CSS, and the
- * theme button is wired by whoever renders it (`onToggleTheme` in the app, public/site.js on the
- * static page).
+ * `/` inside it. So it holds no state and reads nothing from the browser: everything that moves is CSS
+ * (landing.css), and the theme button is wired by whoever renders it (`onToggleTheme` in the app,
+ * public/site.js on the static page).
  *
- * The page hangs on one line, the windlass's: it pays out from the drum at the top as the page is
- * read, past each chapter's knot, to the weight at the foot.
- *
- * The product pictures are illustrations made from the app's own glyphs and tokens, not screenshots:
- * they say so in their captions.
+ * The pictures are illustrations drawn from the app's own parts, not screenshots, and their captions say
+ * so. The hero's session plays on a loop; the steering card, the Factory's rope and the runner's line
+ * move too. Under prefers-reduced-motion each holds its finished state.
  */
 import type { ReactNode } from "react";
-import { AskIcon, CheckIcon, MergedIcon, MoonIcon, PullRequestIcon, SunIcon, ThoughtIcon } from "../components/Icons";
+import { ArrowUpIcon, AskIcon, BranchIcon, CheckIcon, CloudIcon, FileIcon, LockIcon, MachineIcon, MoonIcon, PullRequestIcon, RepoIcon, ShieldIcon, SteerIcon, StopIcon, SunIcon, ThoughtIcon, WarnIcon } from "../components/Icons";
 import { ACCESS_URL } from "./config";
-import { AGENTS, FACTORY_STEPS, FAQ, SESSION_FEATURES } from "./content";
+import { AGENTS, FACTORY_STEPS, FAQ, SESSION_FEATURES, type Feature } from "./content";
 
 export function Landing({ onToggleTheme }: { onToggleTheme?: () => void }) {
 	return (
@@ -24,11 +22,10 @@ export function Landing({ onToggleTheme }: { onToggleTheme?: () => void }) {
 				Skip to the content
 			</a>
 			<SiteBar onToggleTheme={onToggleTheme} />
-			<main id="main" className="landing-main">
-				<div className="landing-line" aria-hidden="true" />
+			<main id="main" className="lp-main">
 				<Hero />
 				<Sessions />
-				<Sandboxes />
+				<WhereItRuns />
 				<Factory />
 				<Agents />
 				<Questions />
@@ -39,13 +36,13 @@ export function Landing({ onToggleTheme }: { onToggleTheme?: () => void }) {
 	);
 }
 
-/* ---- the bar ------------------------------------------------------------------------------------ */
+/* ---- the mark and the bar ----------------------------------------------------------------------- */
 
-/** The drum of the mark, as its own group so that it can turn while the line pays out. */
-function MarkGlyph({ size }: { size: number }) {
+/** The windlass: the drum turns (CSS), the line hangs, the weight at its end. */
+function MarkGlyph({ size, turning = false }: { size: number; turning?: boolean }) {
 	return (
 		<svg width={size} height={size} viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true" focusable="false" className="mark">
-			<g className="mark-drum landing-drum-turn">
+			<g className={`mark-drum${turning ? " lp-turn" : ""}`}>
 				<circle cx="11.5" cy="11.5" r="7.5" />
 				<path d="M11.5 4v4.2M5 15.25l3.64-2.1M18 15.25l-3.64-2.1" />
 				<circle cx="11.5" cy="11.5" r="1.5" fill="currentColor" stroke="none" />
@@ -58,28 +55,33 @@ function MarkGlyph({ size }: { size: number }) {
 
 function SiteBar({ onToggleTheme }: { onToggleTheme?: () => void }) {
 	return (
-		<header className="landing-bar">
-			<div className="landing-bar-inner">
-				<a className="wordmark landing-wordmark" href="/" aria-label="Windlass, home">
-					<MarkGlyph size={22} />
-					<span className="wordmark-name">windlass</span>
+		<header className="lp-bar">
+			<div className="lp-wrap lp-bar-inner">
+				<a className="lp-brand" href="/" aria-label="Windlass, home">
+					<MarkGlyph size={22} turning />
+					<span>windlass</span>
 				</a>
-				<nav className="landing-nav" aria-label="On this page">
+				<nav className="lp-nav" aria-label="On this page">
 					<a href="#sessions">Sessions</a>
-					<a href="#sandboxes">Sandboxes</a>
+					<a href="#where">Where it runs</a>
 					<a href="#factory">Factory</a>
 					<a href="#agents">Agents</a>
 					<a href="#questions">FAQ</a>
 					<a href="/docs">Docs</a>
 				</nav>
-				<div className="landing-bar-end">
-					<button type="button" className="icon-button landing-theme" data-theme-toggle="" aria-label="Switch between the light and dark theme" title="Switch theme" onClick={onToggleTheme}>
-						<SunIcon className="landing-theme-sun" />
-						<MoonIcon className="landing-theme-moon" />
+				<div className="lp-bar-end">
+					<button type="button" className="icon-button lp-theme" data-theme-toggle="" aria-label="Switch between the light and dark theme" title="Switch theme" onClick={onToggleTheme}>
+						<SunIcon className="lp-theme-sun" />
+						<MoonIcon className="lp-theme-moon" />
 					</button>
-					<a className="button button-outline button-small landing-signin" href="/signin">
+					<a className={`lp-btn ${ACCESS_URL ? "lp-btn-line lp-bar-signin" : "lp-btn-accent"}`} href="/signin">
 						Sign in
 					</a>
+					{ACCESS_URL ? (
+						<a className="lp-btn lp-btn-accent" href={ACCESS_URL}>
+							Request access
+						</a>
+					) : null}
 				</div>
 			</div>
 		</header>
@@ -87,25 +89,29 @@ function SiteBar({ onToggleTheme }: { onToggleTheme?: () => void }) {
 }
 
 /** The ways in: "Request access" where the deployment names a place for it, and always "Sign in". */
-function Calls({ large = false }: { large?: boolean }) {
-	const size = large ? " button-large" : "";
+function Calls({ note = true }: { note?: boolean }) {
 	return (
-		<div className="landing-calls">
+		<div className="lp-calls">
 			{ACCESS_URL ? (
 				<>
-					<a className={`button button-primary${size}`} href={ACCESS_URL}>
+					<a className="lp-btn lp-btn-accent lp-btn-lg" href={ACCESS_URL}>
 						Request access
 					</a>
-					<a className={`button button-outline${size}`} href="/signin">
+					<a className="lp-btn lp-btn-line lp-btn-lg" href="/signin">
 						Sign in
 					</a>
 				</>
 			) : (
-				<a className={`button button-primary${size}`} href="/signin">
-					Sign in
-				</a>
+				<>
+					<a className="lp-btn lp-btn-accent lp-btn-lg" href="/signin">
+						Sign in
+					</a>
+					<a className="lp-btn lp-btn-line lp-btn-lg" href="/docs">
+						Read the docs
+					</a>
+				</>
 			)}
-			<p className="landing-calls-note">By invitation for now. No public sign-up, no pricing yet.</p>
+			{note ? <p className="lp-calls-note">By invitation for now. No public sign-up, no pricing yet.</p> : null}
 		</div>
 	);
 }
@@ -114,418 +120,669 @@ function Calls({ large = false }: { large?: boolean }) {
 
 function Hero() {
 	return (
-		<section className="landing-hero landing-grid" aria-labelledby="hero-title">
-			<div className="landing-rail">
-				<svg className="landing-drum" width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true" focusable="false">
-					<g className="landing-drum-turn" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-						<circle cx="32" cy="32" r="24" />
-						<path d="M32 8v13M11.2 44l11.4-6.6M52.8 44l-11.4-6.6" />
-						<circle cx="32" cy="32" r="4" fill="currentColor" stroke="none" />
-					</g>
-				</svg>
-			</div>
-			<div className="landing-hero-body">
-				<div className="landing-hero-text">
-					<p className="eyebrow landing-eyebrow">Coding agents, in sandboxes you choose</p>
-					<h1 id="hero-title" className="landing-title">
-						Put an agent to work, and <em>watch every turn.</em>
-					</h1>
-					<p className="landing-lede">
-						Windlass runs coding agents for you — its own agent, Windlass, and Claude Code — each in a sandbox of its own: hosted, or on a machine of yours. You see every file it reads and every command it runs, answer what it asks, and take the work as a pull request.
-					</p>
-					<Calls large />
+		<section className="lp-hero" aria-labelledby="hero-title">
+			<div className="lp-grid-bg" aria-hidden="true" />
+			<div className="lp-wrap">
+				<div className="lp-hero-top">
+					<div className="lp-hero-copy">
+						<p className="lp-eyebrow">
+							<MarkGlyph size={18} turning />
+							<b>Coding agents</b>
+							<span>in sandboxes you choose</span>
+						</p>
+						<h1 id="hero-title" className="lp-h1">
+							Put an agent to work.
+							<span className="lp-dim"> Watch every turn.</span>
+						</h1>
+						<p className="lp-lede">
+							Windlass runs coding agents — its own, Windlass, and Claude Code — each in a sandbox of its own: hosted, or on a machine of yours. Every file read and every command run shows up as it happens. Steer it, answer what it asks, and take the work as a pull request.
+						</p>
+						<Calls />
+					</div>
+					<dl className="lp-manifest">
+						<div>
+							<dt>agents</dt>
+							<dd>
+								<b>Windlass and Claude Code</b>
+								<span>OpenCode and Codex coming</span>
+							</dd>
+						</div>
+						<div>
+							<dt>sandbox</dt>
+							<dd>
+								<b>Hosted microVM, or your machine</b>
+								<span>a runner that dials out; nothing exposed</span>
+							</dd>
+						</div>
+						<div>
+							<dt>output</dt>
+							<dd>
+								<b>A pull request you review</b>
+								<span>checks, CI and a second agent first; never merges</span>
+							</dd>
+						</div>
+					</dl>
 				</div>
-				<SessionPicture />
+				<SessionFrame />
 			</div>
 		</section>
 	);
 }
 
-/** A row of the timeline as the app draws it: a glyph, a verb in mono, its subject, then quiet facts. */
-function ToolRow({ verb, subject, facts, step }: { verb: string; subject: ReactNode; facts: string; step: number }) {
+/** A row of the timeline as the app draws it: a glyph on the rope, a verb in mono, its subject, quiet facts. */
+function Row({ k, verb, subject, facts, glyph, className = "" }: { k: number; verb: string; subject: ReactNode; facts?: ReactNode; glyph?: ReactNode; className?: string }) {
 	return (
-		<li className={`pic-row pic-s${step}`}>
-			<CheckIcon size={14} className="pic-ok" />
-			<span className="pic-verb">{verb}</span>
-			<span className="pic-subject">{subject}</span>
-			<span className="pic-facts">· {facts}</span>
+		<li className={`lp-row lp-k${k} ${className}`}>
+			<span className="lp-row-glyph">{glyph ?? <CheckIcon size={13} />}</span>
+			<span className="lp-row-verb">{verb}</span>
+			<span className="lp-row-subject">{subject}</span>
+			{facts ? <span className="lp-row-facts">{facts}</span> : null}
 		</li>
 	);
 }
 
-function SessionPicture() {
+function SessionFrame() {
 	return (
-		<figure className="landing-picture pic-session">
-			<div className="pic-window" aria-hidden="true">
-				<div className="pic-bar">
-					<MarkGlyph size={16} />
-					<span className="pic-crumb">Fix the slug test and open a pull request</span>
-					<span className="pic-status">
-						<span className="pic-status-working">
-							<span className="pic-status-dot" /> working
+		<figure className="lp-stage">
+			<div className="lp-frame lp-loop" aria-hidden="true">
+				<div className="lp-frame-bar">
+					<span className="lp-dots">
+						<i />
+						<i />
+						<i />
+					</span>
+					<span className="lp-crumbs">harbor-web /</span>
+					<b className="lp-frame-title">Fix the slug test and open a pull request</b>
+					<span className="lp-status">
+						<span className="lp-status-working">
+							<MarkGlyph size={14} turning /> working <span className="lp-clock" />
 						</span>
-						<span className="pic-status-idle">
-							<span className="pic-status-dot" /> idle
+						<span className="lp-status-done">
+							<CheckIcon size={13} /> done · 5 steps
 						</span>
 					</span>
 				</div>
-				<ol className="pic-timeline">
-					<li className="pic-prompt pic-s0">
-						<span className="pic-caret">›</span> The slugify test fails on punctuation. Fix it and open a pull request.
-					</li>
-					<li className="pic-thought pic-s1">
-						<ThoughtIcon size={14} /> <em>thought</em> · Leading punctuation turns into dashes at the ends.
-					</li>
-					<ToolRow step={2} verb="read" subject="slugify/slugify.js" facts="8 lines · 9ms" />
-					<ToolRow step={3} verb="edit" subject="slugify/slugify.js" facts="+2 −1 · 6ms" />
-					<ToolRow step={4} verb="shell" subject={<code>node --test</code>} facts="exit 0 · 820ms" />
-					<li className="pic-text pic-s5">
-						Fixed: <code>slugify</code> now trims dashes at both ends, and both tests pass.
-					</li>
-					<li className="pic-done pic-s6">
-						<CheckIcon size={14} className="pic-ok" />
-						<span className="pic-verb">done</span> · checks passed · 5 steps
-						<span className="pic-pr">
-							<PullRequestIcon size={13} /> pull request opened
-						</span>
-					</li>
-				</ol>
-				<div className="pic-composer">
-					<span className="pic-caret">›</span>
-					<span className="pic-placeholder">Tell the agent what to do</span>
-					<span className="pic-cursor" />
+				<div className="lp-frame-main">
+					<p className="lp-person lp-k1">The slugify test fails on punctuation. Fix it and open a pull request.</p>
+					<ol className="lp-rows">
+						<Row k={2} verb="thought" glyph={<ThoughtIcon size={13} />} className="lp-row-thought" subject="Leading punctuation turns into dashes at the ends." />
+						<Row k={3} verb="read" subject={<code>slugify/slugify.js</code>} facts="8 lines · 9 ms" />
+						<Row
+							k={4}
+							verb="edit"
+							subject={<code>slugify/slugify.js</code>}
+							facts={
+								<>
+									<span className="lp-add">+2</span> <span className="lp-del">−1</span>
+								</>
+							}
+						/>
+						<li className="lp-diff lp-k5">
+							<span className="lp-diff-line lp-diff-del">{'-    .replace(/[^a-z0-9]+/g, "-");'}</span>
+							<span className="lp-diff-line lp-diff-add">{'+    .replace(/[^a-z0-9]+/g, "-")'}</span>
+							<span className="lp-diff-line lp-diff-add">{'+    .replace(/^-+|-+$/g, "");'}</span>
+						</li>
+						<li className="lp-row lp-k6 lp-row-shell">
+							<span className="lp-row-glyph">
+								<span className="lp-spin" />
+								<CheckIcon size={13} className="lp-shell-ok" />
+							</span>
+							<span className="lp-row-verb">shell</span>
+							<span className="lp-row-subject">
+								<code>node --test</code>
+							</span>
+							<span className="lp-row-facts">
+								<span className="lp-shell-running">running</span>
+								<span className="lp-shell-done">exit 0 · 820 ms</span>
+							</span>
+						</li>
+						<li className="lp-tail lp-k6">
+							<span className="lp-tail-1">✓ slugify › trims punctuation</span>
+							<span className="lp-tail-2">✓ slugify › keeps inner dashes</span>
+						</li>
+						<li className="lp-text lp-k7">
+							Fixed: <code>slugify</code> now trims dashes at both ends, and both tests pass.
+						</li>
+						<li className="lp-row lp-k8 lp-row-done">
+							<span className="lp-row-glyph">
+								<CheckIcon size={13} />
+							</span>
+							<span className="lp-row-verb">done</span>
+							<span className="lp-row-facts">checks passed · 5 steps</span>
+							<span className="lp-pr lp-k9">
+								<PullRequestIcon size={13} /> Pull request opened
+							</span>
+						</li>
+					</ol>
+					<div className="lp-composer">
+						<div className="lp-composer-field">
+							<span className="lp-typed">The slugify test fails on punctuation. Fix it and open a pull request.</span>
+							<span className="lp-placeholder">Steer — it reads this at its next step</span>
+						</div>
+						<div className="lp-composer-tools">
+							<span className="lp-pill">
+								<span className="lp-glyph lp-glyph-accent">W</span>Windlass
+							</span>
+							<span className="lp-pill">
+								<CloudIcon size={13} />
+								Hosted
+							</span>
+							<span className="lp-pill lp-pill-wide">
+								<RepoIcon size={13} />
+								harbor-web
+							</span>
+							<span className="lp-send">
+								<ArrowUpIcon size={14} className="lp-send-go" />
+								<StopIcon size={12} className="lp-send-stop" />
+							</span>
+						</div>
+					</div>
 				</div>
+				<aside className="lp-frame-side">
+					<p className="lp-side-h">Session</p>
+					<dl className="lp-side-dl">
+						<dt>Agent</dt>
+						<dd>Windlass</dd>
+						<dt>Sandbox</dt>
+						<dd>E2B microVM</dd>
+						<dt>Mode</dt>
+						<dd>Auto</dd>
+						<dt>Branch</dt>
+						<dd>
+							<code>wl/slug-trim</code>
+						</dd>
+					</dl>
+					<p className="lp-side-h">Context</p>
+					<span className="lp-meter">
+						<i />
+					</span>
+					<p className="lp-side-h">Files changed</p>
+					<p className="lp-side-row lp-side-empty lp-side-files-none">none yet</p>
+					<p className="lp-side-row lp-k4">
+						<code>slugify.js</code>
+						<span>
+							<span className="lp-add">+2</span> <span className="lp-del">−1</span>
+						</span>
+					</p>
+					<p className="lp-side-h">Checks</p>
+					<p className="lp-side-row lp-side-empty lp-side-checks-none">not run</p>
+					<p className="lp-side-row lp-side-check lp-k6b">
+						<CheckIcon size={13} /> <code>node --test</code>
+					</p>
+					<p className="lp-side-h">Pull request</p>
+					<p className="lp-side-row lp-side-empty lp-side-pr-none">after the turn</p>
+					<p className="lp-side-row lp-side-pr lp-k9">
+						<PullRequestIcon size={13} /> opened · ready for review
+					</p>
+				</aside>
 			</div>
-			<figcaption className="landing-caption">A session, drawn with the app’s own parts. Illustration, not a recording.</figcaption>
+			<figcaption className="lp-caption">
+				<span className="lp-live">
+					<i /> A session, drawn from the app’s own parts. It plays on a loop: an illustration, not a recording.
+				</span>
+				<span>Windlass · hosted</span>
+			</figcaption>
 		</figure>
 	);
 }
 
-/* ---- the chapters ------------------------------------------------------------------------------- */
+/* ---- the sections ------------------------------------------------------------------------------- */
 
-function Chapter({ id, number, eyebrow, title, lede, children, wide = false }: { id: string; number: string; eyebrow: string; title: ReactNode; lede: ReactNode; children: ReactNode; wide?: boolean }) {
+function Head({ id, number, kicker, title, dim, lede }: { id: string; number: string; kicker: string; title: string; dim: string; lede: ReactNode }) {
 	return (
-		<section id={id} className={`landing-chapter landing-grid${wide ? " landing-chapter-wide" : ""}`} aria-labelledby={`${id}-title`}>
-			<div className="landing-rail">
-				<span className="landing-knot" aria-hidden="true" />
-				<span className="landing-number" aria-hidden="true">
-					{number}
-				</span>
-			</div>
-			<div className="landing-chapter-body">
-				<header className="landing-chapter-head">
-					<p className="eyebrow">
-						<span className="landing-number-inline" aria-hidden="true">
-							{number} ·{" "}
-						</span>
-						{eyebrow}
-					</p>
-					<h2 id={`${id}-title`} className="landing-h2">
-						{title}
-					</h2>
-					<p className="landing-chapter-lede">{lede}</p>
-				</header>
-				{children}
+		<header className="lp-head">
+			<p className="lp-kicker">
+				<span className="lp-knot" aria-hidden="true" />
+				{number} — {kicker}
+			</p>
+			<h2 id={`${id}-title`} className="lp-h2">
+				{title}
+				<span className="lp-dim"> {dim}</span>
+			</h2>
+			<p className="lp-section-lede">{lede}</p>
+		</header>
+	);
+}
+
+const FEATURE_ICONS: Record<string, ReactNode> = {
+	start: <ArrowUpIcon size={15} />,
+	watch: <span className="lp-feat-prompt">›_</span>,
+	steer: <SteerIcon size={15} />,
+	ask: <AskIcon size={15} />,
+	diff: <FileIcon size={15} />,
+	publish: <PullRequestIcon size={15} />,
+};
+
+const feature = (key: string): Feature => {
+	const found = SESSION_FEATURES.find((item) => item.key === key);
+	if (!found) throw new Error(`No session feature ${key}`);
+	return found;
+};
+
+function Sessions() {
+	return (
+		<section id="sessions" className="lp-section" aria-labelledby="sessions-title">
+			<div className="lp-wrap">
+				<div className="lp-split">
+					<div>
+						<Head
+							id="sessions"
+							number="01"
+							kicker="Sessions"
+							title="Steer it mid-turn."
+							dim="No restart, no lost work."
+							lede="A session is one agent on one piece of work. It runs turn by turn and the browser shows each step as it happens, so you step in when it matters and leave it alone when it does not."
+						/>
+						<ul className="lp-feats">
+							{["start", "watch", "steer"].map((key) => {
+								const item = feature(key);
+								return (
+									<li key={key} className="lp-feat">
+										<span className="lp-feat-icon" aria-hidden="true">
+											{FEATURE_ICONS[key]}
+										</span>
+										<div>
+											<h3>{item.title}</h3>
+											<p>{item.text}</p>
+										</div>
+									</li>
+								);
+							})}
+						</ul>
+					</div>
+					<SteerCard />
+				</div>
+				<div className="lp-tiles">
+					<AskTile />
+					<DiffTile />
+					<PublishTile />
+				</div>
 			</div>
 		</section>
 	);
 }
 
-function Sessions() {
+function SteerCard() {
 	return (
-		<Chapter
-			id="sessions"
-			number="01"
-			eyebrow="Sessions"
-			title={
-				<>
-					You stay in the loop, <em>not in the way.</em>
-				</>
-			}
-			lede="A session is one agent on one piece of work. It runs turn by turn, and the browser shows each step as it happens, so you can step in when it matters and leave it alone when it does not."
-		>
-			<div className="landing-split">
-				<ul className="landing-features">
-					{SESSION_FEATURES.map((feature) => (
-						<li key={feature.key} className="landing-feature">
-							<h3 className="landing-feature-title">{feature.title}</h3>
-							<p>{feature.text}</p>
-						</li>
-					))}
-				</ul>
-				<QuestionPicture />
-			</div>
-		</Chapter>
-	);
-}
-
-function QuestionPicture() {
-	return (
-		<figure className="landing-picture pic-question">
-			<div className="pic-stack" aria-hidden="true">
-				<div className="pic-card pic-ask">
-					<p className="pic-ask-head">
-						<AskIcon size={15} /> The agent asks
-					</p>
-					<p className="pic-ask-text">
-						Run <code>pnpm install</code> with network access?
-					</p>
-					<p className="pic-ask-why">The command needs the registry. Commands have no network in this sandbox.</p>
-					<div className="pic-ask-choices">
-						<span className="pic-choice pic-choice-main">Allow once</span>
-						<span className="pic-choice">For this session</span>
-						<span className="pic-choice">Decline…</span>
-					</div>
+		<figure className="lp-steer">
+			<div className="lp-card lp-steer-card" aria-hidden="true">
+				<div className="lp-card-bar">
+					<b>Metres and feet settings panel</b>
+					<span className="lp-card-meta">
+						<span className="lp-glyph">C</span> Claude Code · on your machine
+					</span>
 				</div>
-				<div className="pic-card pic-diff">
-					<p className="pic-diff-head">
-						<span>slugify/slugify.js</span>
-						<span>
-							<span className="pic-add">+2</span> <span className="pic-del">−1</span>
+				<ol className="lp-rows lp-steer-rows">
+					<Row
+						k={0}
+						verb="edit"
+						subject={<code>lib/format.ts</code>}
+						facts={
+							<>
+								<span className="lp-add">+11</span> <span className="lp-del">−3</span>
+							</>
+						}
+					/>
+					<li className="lp-row lp-row-shell lp-s-shell">
+						<span className="lp-row-glyph">
+							<span className="lp-spin" />
 						</span>
-					</p>
-					<pre className="pic-diff-body">
-						<span className="pic-line">{"  return text.toLowerCase()"}</span>
-						<span className="pic-line pic-line-del">{"-    .replace(/[^a-z0-9]+/g, \"-\");"}</span>
-						<span className="pic-line pic-line-add">{"+    .replace(/[^a-z0-9]+/g, \"-\")"}</span>
-						<span className="pic-line pic-line-add">{"+    .replace(/^-+|-+$/g, \"\");"}</span>
-					</pre>
+						<span className="lp-row-verb">shell</span>
+						<span className="lp-row-subject">
+							<code>pnpm vitest run settings</code>
+						</span>
+						<span className="lp-stopcall">
+							<StopIcon size={9} /> Stop call
+						</span>
+					</li>
+					<li className="lp-steer-in lp-s1">
+						<span className="lp-steer-knot">
+							<SteerIcon size={12} />
+						</span>
+						<div className="lp-steer-msg">
+							<p>
+								Use <code>Intl.NumberFormat</code> for the units, not string templates.
+							</p>
+							<p className="lp-steer-meta">you · sent while working · read at step 7</p>
+						</div>
+					</li>
+					<Row k={0} verb="thought" glyph={<ThoughtIcon size={13} />} className="lp-row-thought lp-s2" subject="Switching the formatter to Intl.NumberFormat with unit “meter” and “foot”." />
+					<Row
+						k={0}
+						verb="edit"
+						className="lp-s3"
+						subject={<code>lib/format.ts</code>}
+						facts={
+							<>
+								<span className="lp-add">+6</span> <span className="lp-del">−4</span>
+							</>
+						}
+					/>
+					<Row k={0} verb="shell" className="lp-s4" subject={<code>pnpm vitest run settings</code>} facts="9 passed · 2.1 s" />
+				</ol>
+				<div className="lp-steer-composer">
+					<SteerIcon size={14} />
+					<span className="lp-steer-field">
+						<span className="lp-steer-typed">Use Intl.NumberFormat for the units, not string templates.</span>
+						<span className="lp-steer-ph">Steer — it reads this at its next step</span>
+					</span>
+					<span className="lp-send">
+						<ArrowUpIcon size={14} />
+					</span>
 				</div>
 			</div>
-			<figcaption className="landing-caption">A question, and the diff after the turn. Illustration.</figcaption>
+			<figcaption className="lp-caption">A message sent mid-turn, read at the agent’s next step. Illustration.</figcaption>
 		</figure>
 	);
 }
 
-function Sandboxes() {
+function Tile({ item, children }: { item: Feature; children: ReactNode }) {
 	return (
-		<Chapter
-			id="sandboxes"
-			number="02"
-			eyebrow="Where it runs"
-			title={
-				<>
-					Hosted, or on your own machine. <em>Always in a box.</em>
-				</>
-			}
-			lede="You choose the sandbox when you start an agent, and see its layers before it starts. Your sign-in never goes in: each turn is lent a short-lived token."
-			wide
-		>
-			<div className="landing-places">
-				<article className="landing-place">
-					<p className="landing-place-kicker">hosted</p>
-					<h3 className="landing-place-title">A microVM of its own</h3>
-					<p className="landing-place-text">Each hosted session gets a Firecracker microVM from E2B. Nothing to install: start an agent from the browser.</p>
-					<Layers
-						layers={[
-							{ name: "E2B microVM", detail: "Firecracker, hosted by E2B; commands run as a non-root user" },
-						]}
-					/>
-					<dl className="landing-facts">
-						<div>
-							<dt>idle</dt>
-							<dd>Suspended when nobody uses it; your next prompt resumes it with its files.</dd>
-						</div>
-						<div>
-							<dt>sign-in</dt>
-							<dd>Never in the sandbox. Each turn is lent a short-lived token.</dd>
-						</div>
-						<div>
-							<dt>time</dt>
-							<dd>Sandbox time counts against a daily allowance, on your usage page.</dd>
-						</div>
-					</dl>
-				</article>
-
-				<div className="landing-place-link" aria-hidden="true">
-					<span className="landing-platform">
-						<MarkGlyph size={18} /> platform
-					</span>
-					<span className="landing-platform-note">sessions · timeline · GitHub App · your sign-in, sealed</span>
-				</div>
-
-				<article className="landing-place">
-					<p className="landing-place-kicker">your machine</p>
-					<h3 className="landing-place-title">A runner that connects out</h3>
-					<p className="landing-place-text">
-						Pair a Linux machine with Docker. A small runner on it dials out to the platform and runs each session in a container there. <strong>Nothing on your machine needs to be reachable from outside.</strong>
-					</p>
-					<Layers
-						layers={[
-							{ name: "Docker container", detail: "non-root, no capabilities, seccomp, resource limits" },
-							{ name: "Windlass sandbox around each command", detail: "no network, writes only in the workspace, credentials hidden" },
-						]}
-					/>
-					<pre className="landing-command" aria-label="The command that starts the runner">
-						<code>
-							<span className="landing-prompt">$</span> docker run -d --name windlass-runner \{"\n"}
-							{"    "}-v /var/run/docker.sock:/var/run/docker.sock \{"\n"}
-							{"    "}-v windlass-runner:/var/lib/windlass-runner \{"\n"}
-							{"    "}&lt;runner image&gt; --platform &lt;platform address&gt;
-						</code>
-					</pre>
-				</article>
+		<article className="lp-tile">
+			<div className="lp-tile-pic" aria-hidden="true">
+				{children}
 			</div>
-			<p className="landing-note">
-				The Windlass sandbox profile is the strict one: a command that wants the network or a write outside the workspace has to ask you first. The hardened profile runs commands directly in the container, with network; the launch form says which promise each profile makes.
-			</p>
-		</Chapter>
+			<h3 className="lp-tile-title">
+				<span className="lp-feat-icon" aria-hidden="true">
+					{FEATURE_ICONS[item.key]}
+				</span>
+				{item.title}
+			</h3>
+			<p className="lp-tile-text">{item.text}</p>
+		</article>
 	);
 }
 
-/** Containment drawn as the session panel draws it: numbered boxes, each inside the one before. */
-function Layers({ layers }: { layers: { name: string; detail: string }[] }) {
-	const draw = (index: number): ReactNode => {
-		const layer = layers[index];
-		if (!layer) return <span className="landing-layer-core">the agent’s commands</span>;
-		return (
-			<div className="landing-layer">
-				<p className="landing-layer-name">
-					<span className="landing-layer-n" aria-hidden="true">
-						{index + 1}
-					</span>
-					{layer.name}
+function AskTile() {
+	return (
+		<Tile item={feature("ask")}>
+			<div className="lp-ask">
+				<p className="lp-ask-head">
+					<AskIcon size={14} /> The agent asks
 				</p>
-				<p className="landing-layer-detail">{layer.detail}</p>
-				{draw(index + 1)}
+				<p className="lp-ask-q">
+					Run <code>pnpm install</code> with network access?
+				</p>
+				<div className="lp-ask-choices">
+					<span className="lp-choice lp-choice-main">Allow once</span>
+					<span className="lp-choice">For this session</span>
+					<span className="lp-choice">Decline…</span>
+				</div>
 			</div>
-		);
-	};
-	return <div className="landing-layers">{draw(0)}</div>;
+		</Tile>
+	);
+}
+
+function DiffTile() {
+	return (
+		<Tile item={feature("diff")}>
+			<div className="lp-difftile">
+				<p className="lp-difftile-head">
+					<code>web/src/lib/format.ts</code>
+					<span>
+						<span className="lp-add">+6</span> <span className="lp-del">−4</span>
+					</span>
+				</p>
+				<pre>
+					<span className="lp-diff-line">{" export function length(m: number, unit: Unit) {"}</span>
+					<span className="lp-diff-line lp-diff-del">{"-  return unit === \"ft\" ? `${m * 3.28} ft` : `${m} m`;"}</span>
+					<span className="lp-diff-line lp-diff-add">{"+  const style = { style: \"unit\", unit: UNITS[unit] };"}</span>
+					<span className="lp-diff-line lp-diff-add">{"+  return new Intl.NumberFormat(locale, style)"}</span>
+				</pre>
+			</div>
+		</Tile>
+	);
+}
+
+function PublishTile() {
+	return (
+		<Tile item={feature("publish")}>
+			<div className="lp-prtile">
+				<p className="lp-prtile-title">
+					<PullRequestIcon size={15} /> Metres and feet settings panel
+				</p>
+				<p className="lp-prtile-branch">
+					<BranchIcon size={12} /> <code>wl/metres-feet</code> → <code>main</code>
+				</p>
+				<ul>
+					<li>
+						<CheckIcon size={12} /> checks passed
+					</li>
+					<li>
+						<CheckIcon size={12} /> 3 files · <span className="lp-add">+59</span> <span className="lp-del">−3</span>
+					</li>
+				</ul>
+				<span className="lp-prtile-state">Open</span>
+			</div>
+		</Tile>
+	);
+}
+
+/** The sandbox line, as the composer shows it under the task: what the chosen sandbox lets commands do. */
+function SandboxLine({ facts, open = false }: { facts: { text: string; open?: boolean }[]; open?: boolean }) {
+	return (
+		<p className={`lp-sandbox-line${open ? " lp-sandbox-open" : ""}`}>
+			{open ? <WarnIcon size={13} /> : <ShieldIcon size={13} />}
+			{facts.map((fact) => (
+				<span key={fact.text} className={fact.open ? "lp-fact-open" : undefined}>
+					{fact.text}
+				</span>
+			))}
+		</p>
+	);
+}
+
+function WhereItRuns() {
+	return (
+		<section id="where" className="lp-section lp-section-band" aria-labelledby="where-title">
+			<div className="lp-wrap">
+				<Head
+					id="where"
+					number="02"
+					kicker="Where it runs"
+					title="Hosted, or on your own machine."
+					dim="Always in a box."
+					lede="You choose the sandbox when you start an agent, and the composer says what it promises before anything runs. Your sign-in never goes in: each turn is lent a short-lived token."
+				/>
+				<div className="lp-places">
+					<article className="lp-place">
+						<p className="lp-place-kicker">
+							<CloudIcon size={15} /> hosted
+						</p>
+						<h3 className="lp-place-title">A microVM of its own</h3>
+						<p className="lp-place-text">Each hosted session gets a Firecracker microVM from E2B. Nothing to install: start an agent from the browser.</p>
+						<div className="lp-layers" aria-hidden="true">
+							<div className="lp-layer">
+								<p className="lp-layer-name">
+									<span>1</span> E2B microVM
+								</p>
+								<p className="lp-layer-detail">Firecracker, hosted by E2B</p>
+								<div className="lp-layer-core">the agent’s commands, as a non-root user</div>
+							</div>
+						</div>
+						<dl className="lp-facts">
+							<div>
+								<dt>idle</dt>
+								<dd>Suspended when nobody uses it; your next prompt resumes it with its files.</dd>
+							</div>
+							<div>
+								<dt>time</dt>
+								<dd>Sandbox time counts against a daily allowance, shown on your usage page.</dd>
+							</div>
+						</dl>
+						<SandboxLine facts={[{ text: "runs hosted" }, { text: "own microVM" }, { text: "suspends when idle" }]} />
+					</article>
+
+					<article className="lp-place">
+						<p className="lp-place-kicker">
+							<MachineIcon size={15} /> your machine
+						</p>
+						<h3 className="lp-place-title">A runner that dials out</h3>
+						<p className="lp-place-text">
+							Pair a Linux machine with Docker. A small runner on it connects out to the platform and runs each session in a container there. <strong>Nothing on your machine needs to be reachable from outside.</strong>
+						</p>
+						<div className="lp-dial" aria-hidden="true">
+							<div className="lp-dial-box">
+								<p className="lp-dial-label">your machine</p>
+								<div className="lp-dial-runner">
+									runner
+									<div className="lp-dial-container">
+										container
+										<span>commands</span>
+									</div>
+								</div>
+							</div>
+							<div className="lp-dial-line">
+								<span className="lp-dial-flow" />
+								<span className="lp-dial-word">dials out</span>
+							</div>
+							<div className="lp-dial-platform">
+								<MarkGlyph size={18} turning />
+								platform
+							</div>
+						</div>
+						<div className="lp-profiles">
+							<div className="lp-profile">
+								<p className="lp-profile-name">Docker + Windlass sandbox</p>
+								<SandboxLine facts={[{ text: "commands sandboxed" }, { text: "no network" }, { text: "token sealed" }]} />
+							</div>
+							<div className="lp-profile">
+								<p className="lp-profile-name">Hardened Docker</p>
+								<SandboxLine open facts={[{ text: "runs every call", open: true }, { text: "network on", open: true }, { text: "token readable", open: true }]} />
+							</div>
+						</div>
+					</article>
+				</div>
+				<p className="lp-note">
+					<LockIcon size={14} />
+					<span>
+						In the Windlass sandbox profile, a command that wants the network or a write outside the workspace has to ask you first. The hardened profile runs commands directly in the container, with network; the composer says which promise each profile makes.
+					</span>
+				</p>
+			</div>
+		</section>
+	);
 }
 
 function Factory() {
 	return (
-		<Chapter
-			id="factory"
-			number="03"
-			eyebrow="Factory"
-			title={
-				<>
-					File the work. <em>Get back a pull request.</em>
-				</>
-			}
-			lede="A work item is a task on one repository that the platform carries from start to pull request by itself. The next step is decided by what the platform observed — checks, CI, the review — never by what the agent says. It never merges: you do."
-			wide
-		>
-			<ol className="landing-steps">
-				{FACTORY_STEPS.map((step, index) => (
-					<li key={step.label} className={`landing-step${index === FACTORY_STEPS.length - 1 ? " landing-step-last" : ""}`}>
-						<span className="landing-step-label">{step.label}</span>
-						<span className="landing-step-text">{step.text}</span>
-					</li>
-				))}
-			</ol>
-			<FactoryPicture />
-		</Chapter>
+		<section id="factory" className="lp-section" aria-labelledby="factory-title">
+			<div className="lp-wrap">
+				<Head
+					id="factory"
+					number="03"
+					kicker="Factory"
+					title="File the work."
+					dim="Get back a pull request."
+					lede="A work item is a task on one repository that the platform carries to a pull request by itself. The next step is decided by what the platform observed — checks, CI, the review — never by what the agent says. It never merges: you do, on GitHub."
+				/>
+				<div className="lp-card lp-factory">
+					<div className="lp-factory-head" aria-hidden="true">
+						<span className="lp-factory-item">
+							<span className="lp-factory-dot" />
+							<b>Rate-limit the public API</b>
+						</span>
+						<span className="lp-factory-meta">
+							<code>northwind/harbor-api</code> · filed from issue #37
+						</span>
+					</div>
+					<ol className="lp-rope">
+						{FACTORY_STEPS.map((step, index) => (
+							<li key={step.label} className={`lp-step lp-step-${index}`}>
+								<span className="lp-step-knot" aria-hidden="true" />
+								<span className="lp-step-label">{step.label}</span>
+								<span className="lp-step-text">{step.text}</span>
+							</li>
+						))}
+					</ol>
+				</div>
+				<p className="lp-caption lp-caption-solo">A work item on its way to “Ready for you”. Illustration with a made-up repository.</p>
+			</div>
+		</section>
 	);
 }
 
-function FactoryPicture() {
-	return (
-		<figure className="landing-picture pic-factory">
-			<div className="pic-window" aria-hidden="true">
-				<div className="pic-factory-head">
-					<p className="pic-counts">
-						12 work items · 3 in progress · <span className="tone-accent">2 ready for you</span> · <span className="tone-info">1 needs you</span>
-					</p>
-					<p className="pic-factory-title">Factory</p>
-				</div>
-				<p className="pic-group pic-group-ask">Needs you</p>
-				<div className="pic-item">
-					<AskIcon size={15} className="tone-info" />
-					<div className="pic-item-body">
-						<p className="pic-item-title">Stop the import from timing out</p>
-						<p className="pic-item-why">The same failure came back after a fix, so the factory stopped instead of trying it again.</p>
-						<p className="pic-item-meta">
-							<code>your-org/harbor</code> · issue #37
-						</p>
-					</div>
-				</div>
-				<p className="pic-group">Ready for you</p>
-				<div className="pic-item">
-					<PullRequestIcon size={15} className="tone-accent" />
-					<div className="pic-item-body">
-						<p className="pic-item-title">Add a dark mode to the settings page</p>
-						<p className="pic-item-meta">
-							<code>your-org/harbor</code> · #52 · <span className="tone-accent">Ready for review</span> · CI passed · reviewed: approves · 3 screenshots
-						</p>
-					</div>
-				</div>
-				<div className="pic-item">
-					<PullRequestIcon size={15} className="tone-accent" />
-					<div className="pic-item-body">
-						<p className="pic-item-title">Retry uploads that fail on a dropped connection</p>
-						<p className="pic-item-meta">
-							<code>your-org/uploader</code> · #18 · <span className="tone-warn">Needs a look</span> · CI passed · reviewed: asks for changes
-						</p>
-					</div>
-				</div>
-				<p className="pic-group pic-group-quiet">Done</p>
-				<div className="pic-item pic-item-quiet">
-					<MergedIcon size={15} />
-					<div className="pic-item-body">
-						<p className="pic-item-title">Pin the image's base digest</p>
-					</div>
-				</div>
-			</div>
-			<figcaption className="landing-caption">The Factory page’s groups, drawn from the app. Illustration with made-up repositories.</figcaption>
-		</figure>
-	);
-}
+/** Two letters where one would repeat another agent's. */
+const GLYPHS: Record<string, string> = { "Claude Code": "C", OpenCode: "O", Codex: "Cx" };
 
 function Agents() {
 	return (
-		<Chapter
-			id="agents"
-			number="04"
-			eyebrow="Agents"
-			title={
-				<>
-					Bring the agent <em>you already trust.</em>
-				</>
-			}
-			lede="Windlass is the platform’s own agent: a coding agent for the terminal, built alongside the platform. Claude Code runs on a machine of yours, signed in there. More are on the way."
-		>
-			<dl className="landing-agents">
-				{AGENTS.map((agent) => (
-					<div key={agent.name} className={`landing-agent landing-agent-${agent.state}`}>
-						<dt className="landing-agent-name">{agent.name}</dt>
-						<dd className="landing-agent-state">{agent.state}</dd>
-						<dd className="landing-agent-where">{agent.where}</dd>
-					</div>
-				))}
-			</dl>
-		</Chapter>
+		<section id="agents" className="lp-section" aria-labelledby="agents-title">
+			<div className="lp-wrap">
+				<Head
+					id="agents"
+					number="04"
+					kicker="Agents"
+					title="Bring the agent"
+					dim="you already trust."
+					lede="Windlass is the platform’s own agent: a coding agent for the terminal, built alongside the platform. Claude Code runs on a machine of yours, signed in there. More are on the way."
+				/>
+				<ul className="lp-agents">
+					{AGENTS.map((agent) => (
+						<li key={agent.name} className={`lp-agent lp-agent-${agent.state}`}>
+							<span className={`lp-agent-glyph${agent.name === "Windlass" ? " lp-agent-glyph-accent" : ""}`} aria-hidden="true">
+								{agent.name === "Windlass" ? <MarkGlyph size={20} /> : (GLYPHS[agent.name] ?? agent.name.slice(0, 1))}
+							</span>
+							<h3 className="lp-agent-name">{agent.name}</h3>
+							<span className="lp-agent-state">{agent.state === "available" ? "Available" : "Coming"}</span>
+							<p className="lp-agent-where">{agent.where}</p>
+						</li>
+					))}
+				</ul>
+			</div>
+		</section>
 	);
 }
 
 function Questions() {
 	return (
-		<Chapter id="questions" number="05" eyebrow="Questions" title="What people ask first" lede="Short answers. The rest is in the app, which says what each choice promises before you make it.">
-			<div className="landing-faq">
-				{FAQ.map((item, index) => (
-					<details key={item.question} className="landing-faq-item" open={index === 0}>
-						<summary className="landing-faq-q">{item.question}</summary>
-						<p className="landing-faq-a">{item.answer}</p>
-					</details>
-				))}
+		<section id="questions" className="lp-section" aria-labelledby="questions-title">
+			<div className="lp-wrap lp-faq-wrap">
+				<div className="lp-faq-side">
+					<Head id="questions" number="05" kicker="Questions" title="What people" dim="ask first." lede="Short answers here. The docs go further, and the app says what each choice promises before you make it." />
+					<a className="lp-btn lp-btn-line" href="/docs/faq">
+						More in the docs
+					</a>
+				</div>
+				<div className="lp-faq">
+					{FAQ.map((item, index) => (
+						<details key={item.question} className="lp-faq-item" open={index === 0}>
+							<summary className="lp-faq-q">
+								<span>{item.question}</span>
+								<span className="lp-faq-plus" aria-hidden="true" />
+							</summary>
+							<p className="lp-faq-a">{item.answer}</p>
+						</details>
+					))}
+				</div>
 			</div>
-		</Chapter>
+		</section>
 	);
 }
 
 function Closing() {
 	return (
-		<section className="landing-closing landing-grid" aria-labelledby="closing-title">
-			<div className="landing-rail">
-				<span className="landing-weight" aria-hidden="true" />
-			</div>
-			<div className="landing-closing-body">
-				<h2 id="closing-title" className="landing-closing-title">
-					Hand it the work. <em>Keep your eyes on it.</em>
-				</h2>
-				<Calls large />
+		<section className="lp-closing" aria-labelledby="closing-title">
+			<div className="lp-wrap">
+				<div className="lp-closing-card">
+					<div className="lp-grid-bg" aria-hidden="true" />
+					<div className="lp-closing-mark" aria-hidden="true">
+						<svg width="72" height="72" viewBox="0 0 64 64" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+							<g className="lp-turn-slow">
+								<circle cx="32" cy="32" r="24" />
+								<path d="M32 8v13M11.2 44l11.4-6.6M52.8 44l-11.4-6.6" />
+								<circle cx="32" cy="32" r="4" fill="currentColor" stroke="none" />
+							</g>
+						</svg>
+						<span className="lp-closing-line" />
+						<span className="lp-closing-weight" />
+					</div>
+					<h2 id="closing-title" className="lp-h2 lp-closing-title">
+						Hand it the work.
+						<span className="lp-dim"> Keep your eyes on it.</span>
+					</h2>
+					<Calls />
+				</div>
 			</div>
 		</section>
 	);
@@ -533,17 +790,19 @@ function Closing() {
 
 function SiteFoot() {
 	return (
-		<footer className="landing-foot">
-			<div className="landing-foot-inner">
-				<span className="wordmark">
+		<footer className="lp-foot">
+			<div className="lp-wrap lp-foot-inner">
+				<span className="lp-brand lp-foot-brand">
 					<MarkGlyph size={18} />
-					<span className="wordmark-name">windlass</span>
+					<span>windlass</span>
 				</span>
-				<nav className="landing-foot-nav" aria-label="Site">
+				<nav className="lp-foot-nav" aria-label="Site">
+					<a href="/docs">Docs</a>
 					<a href="/signin">Sign in</a>
 					<a href="/llms.txt">llms.txt</a>
 					<a href="/sitemap.xml">Sitemap</a>
 				</nav>
+				<span className="lp-foot-note">By invitation for now</span>
 			</div>
 		</footer>
 	);
