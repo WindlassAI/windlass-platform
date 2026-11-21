@@ -8,9 +8,10 @@
 	align-items: baseline;
 	gap: 12px;
 	font-family: var(--font-display);
-	font-size: var(--size-heading);
-	font-weight: 450;
-	line-height: 1.2;
+	font-size: var(--text-16);
+	font-weight: var(--weight-strong);
+	line-height: 1.3;
+	letter-spacing: var(--tracking-tight);
 }
 .usage-count {
 	font-family: var(--font-mono);
@@ -51,9 +52,10 @@
 }
 .usage-figure strong {
 	font-family: var(--font-display);
-	font-size: clamp(1.75rem, 1.3rem + 1.6vw, 2.375rem);
-	font-weight: 450;
+	font-size: clamp(1.75rem, 1.4rem + 1.2vw, 2.125rem);
+	font-weight: var(--weight-strong);
 	line-height: 1.1;
+	letter-spacing: var(--tracking-display);
 	color: var(--ink);
 	font-variant-numeric: tabular-nums;
 }
