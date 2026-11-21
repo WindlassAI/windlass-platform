@@ -327,7 +327,11 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "cancel_subtask" | "chi
 				c.item.head = job.head;
 				nextChild(c);
 			} else if (job.state === "failed" || job.state === "cancelled") {
-				if (job.failure && c.item.jobs?.some(other => other.task.key !== job.task.key && other.failure === job.failure))
+				if (job.failure === "integration/no-ci" || job.failure === "integration/no-gate") {
+					// Only the last integrated feature head belongs on this PR. The stopped child's head was never integrated.
+					if (c.item.pr && c.item.head) c.run.ci = ciProgress(c.item.head, c.at, null, false);
+					ask(c, "rounds", "Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up.", [...handOver(c.item), choice("give_up")], null, null);
+				} else if (job.failure && c.item.jobs?.some(other => other.task.key !== job.task.key && other.failure === job.failure))
 					ask(c, "rounds", "Two subtasks stopped with the same failure. Inspect the feature before continuing.", [choice("give_up")], null, null);
 				else if ((c.item.replans ?? 0) >= 2)
 					ask(c, "rounds", "Two re-plans have been used. Review the feature and the stopped subtask.", [choice("give_up")], null, null);
@@ -570,6 +574,10 @@ function publish(c: Change): void {
 
 const shortSha = (head: string) => head.slice(0, 7);
 
+function ciProgress(head: string, since: number, gate: Run["gate"], webhooks: boolean): CiProgress {
+	return { webhooks, head, since, last: null, mergeable: null, gate, moved: null, handed: null, secondReview: null };
+}
+
 function published(c: Change, fact: Extract<Fact, { kind: "published" }>): void {
 	const { item, run } = c;
 	item.head = fact.head;
@@ -577,7 +585,7 @@ function published(c: Change, fact: Extract<Fact, { kind: "published" }>): void 
 	c.say(fact.pr ? `Pushed ${shortSha(fact.head)} to pull request #${fact.pr.number}.` : `Pushed subtask commit ${shortSha(fact.head)} for CI.`);
 	c.enter("ci");
 	// The gate this commit rests on is kept with it: a later turn's gate is not about it until it is pushed.
-	run.ci = { webhooks: fact.webhooks, head: fact.head, since: c.at, last: null, mergeable: null, gate: run.gate, moved: null, handed: null, secondReview: null };
+	run.ci = ciProgress(fact.head, c.at, run.gate, fact.webhooks);
 	if (item.machineRemoved) return askRemoved(c);
 	pollCi(c, fact.openItems, null, `Waiting for CI to start on ${shortSha(fact.head)}.`);
 }
@@ -748,7 +756,12 @@ const PERSON_HANDOVER = "handed over as it is, as you asked";
 function afterCi(c: Change, ci: CiProgress): void {
 	const { item, run } = c;
 	if (item.parent) {
-		if (ci.moved || ci.last?.state !== "passed" || !isSha(ci.head) || !ci.gate || gateResult(ci.gate.outcome, ci.gate.verified) !== "pass")
+		if (ci.last?.state === "none" || ci.last?.state === "skipped") {
+			run.lastFailure = "integration/no-ci";
+			return ask(c, "ci_timeout", "No passing CI reported on the subtask push. Wait for an external check or stop orchestration.", [choice("wait"), choice("give_up")], null, null);
+		}
+		if (!ci.gate || gateResult(ci.gate.outcome, ci.gate.verified) !== "pass") run.lastFailure = "integration/no-gate";
+		if (ci.moved || ci.last?.state !== "passed" || !isSha(ci.head) || run.lastFailure === "integration/no-gate")
 			return ask(c, "rounds", "This subtask needs passing local checks and CI on its commit before integration.", [choice("give_up")], null, null);
 		const { verdict, words } = verdictAt(c, ci);
 		c.storeVerdict = { kind: "verdict", verdict, words };
@@ -1113,6 +1126,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			beginRun(c, firstPlan(item, note));
 			break;
 		case "wait":
+			if (run.lastFailure === "integration/no-ci") run.lastFailure = null;
 			if (run.ci !== null) run.ci.since = c.at;
 			pollCi(c, 0, null, `Waiting for CI on ${shortSha(run.ci?.head ?? "")}, as you asked.`);
 			break;

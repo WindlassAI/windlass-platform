@@ -192,7 +192,13 @@ test("child integration needs both gates, ignores duplicate receipts, and rebase
 		const pushed = advance(gate, {kind:"published", at:3,key:currentKey(gate)!,head,pr:null,openItems:1,webhooks:false}).item;
 		assert.equal(pushed.pr,null);
 		const ci = { kind:"ci_read" as const, key:currentKey(pushed)!,at:4,head,reading:{kind:"read" as const,head,runs:[{name:"build",app:"status",state:"passed",conclusion:"success",url:null,summary:null}],logs:[],truncated:false},prHead:null,mergeable:null,openItems:1,webhooks:false };
+		const absent = advance(pushed, {...ci, at:3_600_000, reading:{...ci.reading, runs:[]}} as never).item;
+		assert.ok(absent.question!.choices.some(c => c.id === "wait"));
+		assert.equal(absent.run!.lastFailure, "integration/no-ci");
+		const waiting = advance(absent, { kind:"answer", question:absent.question!.id, choice:"wait", by:"person", at:3_600_001 });
+		assert.ok(waiting.effects.some(e => e.kind === "poll_ci"));
 		const result = advance(pushed,ci as never);
+		if (!checks) assert.equal(result.item.run!.lastFailure, "integration/no-gate");
 		assert.equal(result.effects.some(e=>e.kind === "integrate"),checks);
 		assert.equal(advance(result.item,ci as never).item,result.item);
 		if (checks) {
@@ -483,4 +489,16 @@ test("a redelivered planner must file in its own attempt before approval", () =>
 	item = advance(item, {kind:"turn_ended", key:currentKey(item)!, at:5, outcome:"succeeded", spend:{tokens:1,hostedSeconds:0}, report:null, changes:false, flags:[], verified:null}).item;
 	assert.match(item.question!.text, /without filing/);
 	assert.equal(advance(item, {kind:"approve_plan", version:item.featurePlan!.version, at:6, by:"person"}).item, item);
+});
+
+test("a missing integration prerequisite stops the feature at its last integrated head", () => {
+	const feature = approved();
+	const item = advance(feature, {kind:"feature_ready", key:currentKey(feature)!, head, pr, at:5}).item;
+	for (const failure of ["integration/no-ci", "integration/no-gate"]) {
+		const stopped = advance(item, {kind:"child_update", key:currentKey(item)!, child:item.jobs![0].id, state:"failed", failure, head:"b".repeat(40), report:"Stopped", spent:zero, at:6});
+		assert.equal(stopped.item.replans ?? 0, 0);
+		assert.deepEqual(stopped.item.question!.choices.map(c => c.id), ["hand_over","give_up"]);
+		const handoff = advance(stopped.item, {kind:"answer", question:stopped.item.question!.id, choice:"hand_over", by:"person", at:7});
+		assert.ok(handoff.effects.some(e => e.kind === "poll_ci" && e.head === head));
+	}
 });
