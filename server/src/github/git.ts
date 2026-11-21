@@ -29,6 +29,7 @@
  * a script reports (`wlp:` lines) is read where it is there and never required.
  */
 
+import { RUNNER_HTTP_PROXY } from "../runner/egress.js";
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { ExecResult, SandboxHandle } from "../sandbox/api.js";
@@ -59,6 +60,11 @@ function hostOf(url: string): string {
 	return `${parsed.protocol}//${parsed.host}`;
 }
 
+// Keep env -i for platform Git. Only the known runner endpoint may enter its clean environment.
+const GIT_PROXY = `wlp_proxy=''
+if [ "\${https_proxy:-}" = '${RUNNER_HTTP_PROXY}' ]; then wlp_proxy='${RUNNER_HTTP_PROXY}'; fi`;
+const PROXY_ENV = 'http_proxy="$wlp_proxy" https_proxy="$wlp_proxy"';
+
 /**
  * `wlp_git`: git as the platform runs it with a token. The token is in the shell variable WLP_T and
  * reaches git on descriptor 3; the helper is consulted for `host` only, answers `get` and ignores
@@ -67,9 +73,10 @@ function hostOf(url: string): string {
 function tokenGit(host: string): string {
 	const helper = `!f() { test "$1" = get || exit 0; echo username=x-access-token; printf password=; cat <&3; echo; }; f`;
 	return [
+		GIT_PROXY,
 		"wlp_git() {",
 		`	printf '%s' "$WLP_T" | {`,
-		`		env -i PATH=${SYSTEM_PATH} HOME=/nonexistent LANG=C.UTF-8 \\`,
+		`		env -i ${PROXY_ENV} PATH=${SYSTEM_PATH} HOME=/nonexistent LANG=C.UTF-8 \\`,
 		"			GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_REPLACE_OBJECTS=1 GIT_ATTR_NOSYSTEM=1 GIT_ALLOW_PROTOCOL=http:https \\",
 		"			GIT_CONFIG_COUNT=2 \\",
 		"			GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0= \\",
@@ -154,8 +161,8 @@ export const WORKSPACE_GIT_START = privateStart() + "\n" + capture();
 export const CLONE_GIT_START = [
 	`export PATH=${SYSTEM_PATH}`,
 	`if [ -e .git ] || [ -L .git ]; then (\n${privateStart()}\n); fi`,
-	PLAIN_GIT,
-	'git() { plain_git -C / "$@"; }',
+	GIT_PROXY,
+	`git() { ${GIT_ENV} ${PROXY_ENV} git ${SAFE_FLAGS} -C / "$@" </dev/null; }`,
 ].join("\n");
 
 /** The sentence for a workspace `wlp_guard` refused: `what` is the key or ".git". */

@@ -17,8 +17,7 @@ RUN cd /opt/wlp-claude \
  && rm -rf /tmp/wlp-claude-npm
 COPY --chmod=0644 managed-settings.json /etc/claude-code/managed-settings.json
 COPY --chmod=0755 wlp-claude-acp /usr/local/bin/wlp-claude-acp
-RUN chmod 0755 /etc/claude-code \
- && mkdir -p /run/wlp-harness/claude && chown agent:agent /run/wlp-harness
+RUN chmod 0755 /etc/claude-code
 USER agent
 # SHA-256 from https://downloads.claude.ai/claude-code-releases/2.1.328/manifest.json
 # These also match package/claude in the corresponding npm archives.

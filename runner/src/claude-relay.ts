@@ -1,0 +1,88 @@
+import { createHash, createPublicKey, randomBytes, sign } from "node:crypto";
+import { docker, LABEL, LABEL_ARG } from "../../server/src/sandbox/docker.js";
+import { waitForListener } from "./helper-ready.js";
+import { image, type MachineDocker } from "./policy.js";
+import { loadPair, Refusal, RunnerError } from "./state.js";
+
+declare const CLAUDE_RELAY_SCRIPT: string;
+const role = LABEL + ".credential-relay";
+export const relaySocketVolume = (m: MachineDocker) => "wlp-claude-socket-" + m.identity.machineId;
+export const relayUrl = "http://127.0.0.1:17892";
+const relayName = (m: MachineDocker) => "wlp-claude-relay-" + m.identity.machineId;
+const flags = (m: MachineDocker) => ["--label", LABEL_ARG, ...m.pairingLabelFlags, "--label", role + "=1"];
+
+function owned(labels: Record<string, string> | null, m: MachineDocker) {
+	return labels?.[LABEL] === "1" && labels[role] === "1" && Object.entries(m.labels).every(([k, v]) => labels[k] === v);
+}
+
+// A missing object is normal. A daemon or permissions failure must never authorize adoption.
+async function inspect(name: string) {
+	const result = await docker(["container", "inspect", name], { timeoutMs: 15_000 });
+	if (result.code === 0) return JSON.parse(result.stdout)[0];
+	if (/no such (container|object)/i.test(result.stderr)) return;
+	throw new RunnerError("Docker could not inspect the Claude relay.");
+}
+
+async function ownedRelay(m: MachineDocker) {
+	const box = await inspect(relayName(m));
+	if (box && !owned(box.Config.Labels, m)) throw new Refusal("The Claude relay container belongs to a different pairing.");
+	return box;
+}
+
+// Call under the login lock, including logout from a standalone runner command.
+export async function removeRelay(m: MachineDocker) {
+	const box = await ownedRelay(m);
+	if (box) await docker(["rm", "-f", box.Id], { check: true });
+}
+// The old image gave every session a volume reference. Preserve its workspace, but stop
+// the process before replacing the token. Docker cannot detach a container's volume.
+export async function stopLegacyClaude(m: MachineDocker) {
+	const running = await docker(["ps", "-q", "--filter", "volume=" + m.claudeVolume, "--filter", "label=" + LABEL + ".harness=claude", "--filter", "label=" + LABEL + ".session",
+		...Object.entries(m.labels).flatMap(([k, v]) => ["--filter", "label=" + k + "=" + v])], { check: true });
+	for (const id of running.stdout.trim().split(/\s+/).filter(Boolean))
+		await docker(["stop", "-t", "1", id], { check: true });
+}
+
+/** Caller holds the pairing login lock through credential and relay setup. */
+export async function ensureRelay(m: MachineDocker) {
+	const pair = loadPair();
+	if (!pair?.key || pair.current.machineId !== m.identity.machineId || pair.current.uid !== m.identity.uid)
+		throw new Refusal("The machine pairing changed while preparing the Claude relay.");
+	await m.ownedVolume(true, m.claudeVolume);
+	await m.ensureImage();
+	const socketVolume = relaySocketVolume(m);
+	await m.ownedVolume(true, socketVolume);
+	const version = createHash("sha256").update(CLAUDE_RELAY_SCRIPT).digest("hex");
+	const publicKey = createPublicKey(pair.key).export({ format: "der", type: "spki" }).toString("base64");
+	let box = await ownedRelay(m);
+	if (box && (box.Config.Labels[role + ".version"] !== version || box.Config.Image !== image ||
+		!box.Config.Env.includes("WLP_CLAUDE_RELAY_PUBLIC_KEY=" + publicKey))) {
+		await docker(["rm", "-f", box.Id], { check: true }); box = undefined;
+	}
+	if (!box) {
+		await docker(["create", "--pull", "never", "--name", relayName(m), ...flags(m), "--label", role + ".version=" + version,
+			"--user", "1000:1000", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+			"--log-driver", "none", "--memory", "192m", "--pids-limit", "48",
+			"--network", "bridge", "--mount", `type=volume,src=${socketVolume},dst=/workspace`,
+			"--mount", `type=volume,src=${m.claudeVolume},dst=/run/wlp-harness/claude,readonly,volume-nocopy`,
+			"-e", "WLP_CLAUDE_RELAY_PUBLIC_KEY=" + publicKey, "-e", "WLP_CLAUDE_RELAY_MACHINE=" + m.identity.machineId,
+			image, "node", "-e", CLAUDE_RELAY_SCRIPT], { check: true });
+		box = await ownedRelay(m);
+	}
+	if (!box.State.Running) {
+		await docker(["start", box.Id], { check: true });
+		try { await waitForListener(box.Id, "/workspace/relay.sock"); }
+		catch (error) { await docker(["rm", "-f", box.Id], { check: true }); throw error; }
+	}
+	return pair.key;
+}
+
+export async function prepareRelay(m: MachineDocker) {
+	const key = await ensureRelay(m);
+	const nonce = randomBytes(16).toString("hex");
+	const signature = sign(null, Buffer.from("windlass-claude-relay-v2\n" + m.identity.machineId + "\n" + nonce), key);
+	return {
+		env: ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=" + nonce + "." + signature.toString("base64url")],
+		nonce,
+	};
+}

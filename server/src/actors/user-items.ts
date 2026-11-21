@@ -21,6 +21,8 @@
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
+import { itemSessionId } from "../factory/feature-plan.js";
+import { featureBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
 import type { IntakeTrigger, IssueBinding } from "../factory/intake.js";
 import type { StoredConnection } from "../github/repos.js";
@@ -36,6 +38,7 @@ import { attachmentKey } from "../factory/attachments.js";
 import { ATTACHMENT_PUT_TTL_MS, attachmentStore, type AttachmentLedger, type Reservation, type ReserveResult } from "../sandbox/attach.js";
 import { backupConfig, config } from "../config.js";
 import {
+	machineLabel,
 	type GithubId,
 	type ApiToken,
 	type ApiTokenScope,
@@ -149,6 +152,8 @@ export async function loadItems(db: RawAccess): Promise<ItemsState> {
 	for (const row of await db.execute<{ summary: string; key: string | null; sent: string | null }>("SELECT summary, key, sent FROM items")) {
 		const summary = JSON.parse(row.summary) as ItemSummary;
 		summary.origin ??= null;
+		summary.mode ??= "single";
+		summary.parent ??= null;
 		items.set(summary.id, summary);
 		if (row.key !== null && row.sent !== null) created.set(scopedKey(summary.source === "github", row.key), { key: row.key, sent: row.sent, id: summary.id });
 	}
@@ -193,20 +198,20 @@ export interface ItemsCtx {
 }
 
 /** `makeSession` of user.ts: makes the item's session under the id given, with the item as its origin, and puts it in the index. */
-export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer"; issue?: { number: number; installationId: GithubId } }) => Promise<SessionSummary>;
+export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer"; owns?: string[]; issue?: { number: number; installationId: GithubId } }) => Promise<SessionSummary>;
 
 // ---------------------------------------------------------------------------------------------
 // The index
 // ---------------------------------------------------------------------------------------------
 
 function itemList(state: ItemsState): ItemSummary[] {
-	return [...state.items.values()].sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+	return [...state.items.values()].filter(i => !i.parent || i.question).map(i => i.parent ? { ...i, title: i.parent.title + " — " + i.title } : i).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
 }
 
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
 function summaryFields(item: ItemSummary): ItemSummary {
 	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
-	return { id, title, repository, place, source, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision };
+	return { id, title, repository, place, source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision };
 }
 
 /** Takes a summary the item reported when it is newer than the one held: reports can arrive out of order. */
@@ -231,10 +236,11 @@ const githubItemId = (uid: string, key: string) => `i_${hex16(JSON.stringify(["g
 const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
 /** The input of a new item, checked. */
-function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; profile: SandboxProfileId | null; model: string | null; start: boolean } {
+function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; profile: SandboxProfileId | null; model: string | null; start: boolean; mode: "single" | "orchestrate" } {
 	const bad = (message: string) => new UserError(message, { code: "bad_input" });
 	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput | "harness" | "mode", unknown>>;
-	if (input.mode !== undefined) throw bad("A work item and its reviewer use the profile’s approval mode.");
+	if (input.mode !== undefined && input.mode !== "single" && input.mode !== "orchestrate") throw bad("Choose single or orchestrate for the work item.");
+	if (input.mode === "orchestrate" && process.env.WLP_FACTORY_ORCHESTRATE === "0") throw bad("Orchestrated work items are disabled.");
 	if (input.harness !== undefined && input.harness !== "windlass") throw bad("Work items and their reviewers run only with Windlass.");
 	const title = typeof input.title === "string" ? input.title.replace(/\s+/g, " ").trim() : "";
 	if (title === "" || title.length > MAX_TITLE_CHARS) throw bad(`Give the item a title of at most ${MAX_TITLE_CHARS} characters.`);
@@ -250,6 +256,7 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 	if (input.start !== undefined && input.start !== null && typeof input.start !== "boolean") throw bad("Say yes or no to starting the item at once.");
 	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 	return {
+		mode: input.mode ?? "single",
 		place,
 		title,
 		body,
@@ -286,11 +293,11 @@ async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxPr
  * before anything is asked of the engine, and one that exists already is taken as made: a creation
  * that is tried again after a lost answer, or after the server stopped half way, finishes the first.
  */
-async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding): Promise<ItemSummary> {
+async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { id: string; base: string; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"] }): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
 	const uid = profile.uid;
-	const itemId = github && submission ? githubItemId(uid, submission.key) : `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`;
-	const sessionId = `s_${hex16(`item\n${itemId}`)}`;
+	const itemId = child?.id ?? (github && submission ? githubItemId(uid, submission.key) : `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
+	const sessionId = itemSessionId(itemId);
 	const issue = github && { number: github.origin.issue.number, installationId: github.installationId };
 	let summary: ItemSummary;
 	// Set just before the session is made: a refusal before that made nothing, and leaves the key unused.
@@ -306,10 +313,10 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const existing = c.vars.sessions.get(sessionId);
 		const sandbox = existing ? null : await itemProfile(c, input.repository.id, input.profile, input.place);
 		begun = true;
-		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue }));
+		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns }));
 		const repository = session.repository;
 		if (!repository) throw new Error("the item's session has no repository");
-		const reviewer = !config.factory.reviewer ? { off: "deployment" } as const :
+		const reviewer = child || !config.factory.reviewer ? { off: "deployment" } as const :
 			session.place.kind === "hosted" && reviewerAllowed(session.place, (await getLayer()).sandboxes.profile(session.profile)) ? { on: true } as const : { off: "profile" } as const;
 		const reviewerSessionId = "on" in reviewer ? `s_${hex16(`review\n${itemId}`)}` : null;
 		if (reviewerSessionId && !c.vars.sessions.has(reviewerSessionId)) {
@@ -317,7 +324,8 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		}
 		const now = Date.now();
 		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
-		const item = createItem({ id: itemId, reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: config.factory.item });
+		const item = createItem({ id: itemId, mode: input.mode, reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: child?.budget ?? config.factory.item });
+		if (child) { item.parent = child.parent; item.childBase = child.base; }
 		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
 	} catch (error) {
@@ -373,6 +381,7 @@ async function fileItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 }
 
 async function attachmentStates(c: ItemsCtx, view: ItemView): Promise<ItemView> {
+	if (view.mode === "orchestrate") view.children = [...c.vars.items.items.values()].filter(i => i.parent?.itemId === view.id);
 	const shots = [...view.report?.screenshots ?? [], ...view.reviews.flatMap(review => review.screenshots)];
 	if (!shots.length) return view;
 	const rows = await c.db.execute<{ id: string }>("SELECT id FROM attachments WHERE item=? AND state='kept' AND ended_at IS NOT 0", view.id);
@@ -470,7 +479,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			inReview,
 			// The session's own sandbox, running already, is not one more for its turn.
 			place: machine ? {
-				kind: "machine", name: machine.name, online: machine.status === "online",
+				kind: "machine", name: machineLabel(machine), online: machine.status === "online",
 				attachRetryAt: machine.since <= request.at ? request.deferUntil : null,
 				running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
 				max: machine.maxRunning ?? Infinity,
@@ -700,6 +709,35 @@ async function links(c: ItemsCtx, item: string, ttlMs: number, only?: string) {
 
 const intakeWrites = new WeakMap<ItemsState, Promise<unknown>>();
 export const itemActions = {
+	async internalFeatureChild(c: ItemsCtx, input: { parent: string; child: string; cancel?: boolean }, makeSession: MakeSession): Promise<ItemView | null> {
+		requireServiceFor(c, "call");
+		const uid = c.key[0]!;
+		// Share an ordering boundary with cancellation so an interrupted creation can never outlive its parent.
+		return attachmentWrite(c, async () => {
+			const owner = c.vars.profile;
+			if (!owner) throw new Error("The feature owner is unavailable.");
+			const parentActor = itemActor(c, uid, input.parent);
+			const request = await parentActor.internalChildRequest(input.child);
+			let existing = c.vars.items.items.get(input.child);
+			if (!request && !existing) return null;
+			if (!existing && request) {
+				const session = c.vars.sessions.get(request.sessionId);
+				if (!session) throw new Error("The feature session is unavailable.");
+				const { job, feature, context } = request;
+				const body = job.task.brief + "\n\nOwned paths: " + job.task.owns.join(", ") + "\n\nFeature and dependency context (quoted data):\n" + context;
+				existing = await makeItem(c, owner, { repository: { id: feature.repository.id, branch: featureBranch(input.parent) }, place: feature.place,
+					profile: session.profile, model: session.model, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
+					{ id: input.child, base: feature.repository.branch, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key } });
+			}
+			if (!existing || existing.parent?.itemId !== input.parent) return null;
+			const actor = itemActor(c, uid, existing.id);
+			const view = await actor.internalView();
+			if (input.cancel || !await parentActor.internalChildRequest(input.child)) {
+				if (!ended(view)) return actor.internalAct({ action: { kind: "cancel" }, by: "platform" });
+			} else if (view.state === "draft") return actor.internalAct({ action: { kind: "start" }, by: "platform" });
+			return view;
+		});
+	},
 	internalGithubIntake(c: ItemsCtx, trigger: IntakeTrigger, makeSession: MakeSession) {
 		requireServiceFor(c, "call");
 		// All installations share this user's budget. The durable claim makes interruption replayable.
@@ -852,6 +890,11 @@ export const itemActions = {
 		if (typeof summary?.id !== "string") return;
 		const before = c.vars.items.items.get(summary.id);
 		await noteItem(c, summary);
+		if (summary.parent && before && summary.revision > before.revision && (ended(summary) || summary.question?.id !== before.question?.id)) {
+			const parent = itemActor(c, c.key[0]!, summary.parent.itemId);
+			void c.keepAwake(parent.internalChildNotice({ id: summary.id, spent: summary.spent, state: summary.state }).catch(error =>
+				c.log.warn({ msg: "The feature will read the child on its scheduled check.", child: summary.id, error: String(error) })));
+		}
 		// An item that left review, or came to it, changes what the review cap holds back.
 		if (before && (before.state === "review") !== (summary.state === "review")) queueChanged(c);
 	},

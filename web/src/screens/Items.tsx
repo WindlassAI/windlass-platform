@@ -27,6 +27,7 @@ import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { clockTime, useMachines } from "./Machines";
 import { machineLabel } from "../lib/machines";
+import { ITEM_MODE_WORDS } from "../lib/feature";
 
 export interface ItemsState {
 	/** Null until it was read, and when it could not be. */
@@ -183,7 +184,7 @@ export function ItemGlyph({ item }: { item: Pick<ItemSummary, "state" | "questio
 }
 
 /** What a wait is for, in a word or two beside the track. */
-const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { capacity: "for a turn", machine: "for its machine", review_cap: "review cap", ci: "CI", person: "for you", budget: "budget" };
+const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { children: "subtasks", capacity: "for a turn", machine: "for its machine", review_cap: "review cap", ci: "CI", person: "for you", budget: "budget" };
 
 /**
  * Where an item is on its way to you, as a track of short bars (Helm's steps): built, pushed, CI, the
@@ -217,6 +218,7 @@ export function itemTrack(item: Pick<ItemSummary, "state" | "wait" | "pullReques
 /** The stage (from 1) a step of the blueprint belongs to: building and the checks, the push, CI and its fixes, the second review, the hand-over. */
 function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number {
 	switch (step) {
+		case "subtasks":
 		case "refine":
 		case "implement":
 		case "gate":
@@ -229,6 +231,7 @@ function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number 
 			return 3;
 		case "review":
 			return reviewer ? 4 : 3;
+		case "summary":
 		case "handoff":
 		case "merged":
 			return stages;
@@ -388,7 +391,7 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now }: {
 	const [filing, setFiling] = useState(false);
 	const [open, setOpen] = useState(false);
 	const ended = useId();
-	const mine = items.list?.filter((item) => item.repository.id === repositoryId) ?? null;
+	const mine = items.list?.filter((item) => !item.parent && item.repository.id === repositoryId) ?? null;
 	const of = (state: ItemState) => mine?.filter((item) => item.state === state) ?? [];
 	const folded = FOLDED.flatMap((state) => of(state));
 	if (!offered) return null;
@@ -467,6 +470,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [placeChoice, setPlace] = useState<string | null>(null);
 	// A machine that was removed or can no longer be chosen while the form is open leaves the item on this platform, which the line then says.
 	const chosenMachine = mine.find((machine) => machine.machineId === placeChoice && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
+	const [orchestrate, setOrchestrate] = useState(false);
 	const [title, setTitle] = useState("");
 	const [body, setBody] = useState("");
 	const [criteria, setCriteria] = useState("");
@@ -474,7 +478,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const last = useRef<Submission | null>(null);
-	const ids = { form: useId(), title: useId(), body: useId(), criteria: useId(), criteriaNote: useId() };
+	const ids = { form: useId(), title: useId(), body: useId(), criteria: useId(), criteriaNote: useId(), mode: useId() };
 	const acceptance = criteria
 		.split("\n")
 		.map((line) => line.trim())
@@ -486,7 +490,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}) };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, ...(orchestrate && platform.info?.items?.orchestrate && { mode: "orchestrate" as const }), ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}) };
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;
@@ -526,6 +530,22 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 			}
 		>
 			<form id={ids.form} className="item-form" onSubmit={file}>
+				{platform.info?.items?.orchestrate ? (
+					<div>
+						<span className="label" id={ids.mode}>
+							How it runs
+						</span>
+						<div className="segmented" role="radiogroup" aria-labelledby={ids.mode}>
+							{(["single", "orchestrate"] as const).map((option) => (
+								<label key={option} className={`segment${(option === "orchestrate") === orchestrate ? " segment-chosen" : ""}`}>
+									<input className="segment-radio" type="radio" name={ids.mode} value={option} checked={(option === "orchestrate") === orchestrate} disabled={busy} onChange={() => setOrchestrate(option === "orchestrate")} />
+									{ITEM_MODE_WORDS[option].name}
+								</label>
+							))}
+						</div>
+						<p className="field-note">{orchestrate ? `${ITEM_MODE_WORDS.orchestrate.description} Approving the plan needs saved checks and CI that reports on pushes.` : ITEM_MODE_WORDS.single.description}</p>
+					</div>
+				) : null}
 				<div>
 					<label className="label" htmlFor={ids.title}>
 						Title

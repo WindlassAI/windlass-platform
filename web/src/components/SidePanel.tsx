@@ -11,7 +11,7 @@
  *
  * The session's facts include the mode its next prompt runs in, for every agent, a work item's too,
  * which keeps its profile's. For Claude Code the sandbox's facts say that mode in place of the
- * profile's approval, and that its commands can read the Claude login it runs with.
+ * profile's approval, and that its commands can use the Claude login it runs with.
  */
 import type { PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
 import { useCallback, useEffect, useState, type ReactNode } from "react";

@@ -22,7 +22,7 @@ export type { ChoiceId, FactoryLimits, ItemBudget, ItemEvent, ItemState, Questio
 // The item
 // ---------------------------------------------------------------------------------------------
 
-export type TurnStepKind = "refine" | "implement" | "ci_fix" | "conflict" | "review";
+export type TurnStepKind = "summary" | "refine" | "implement" | "ci_fix" | "conflict" | "review";
 
 /** A step as the contract has it (`ItemStep`): a turn step's next delivery, a publish's retry and every poll of a wait step is a new attempt, so a fact about an earlier one is recognised by its key and ignored. */
 export type Step = ItemStep;
@@ -74,7 +74,31 @@ export interface Run extends ItemRun {
 /** The work as the item was given it (`ItemTask`). */
 export type Task = ItemTask;
 
+export interface FeatureJob {
+	failure?: string | null;
+	cancelRequested?: boolean;
+	id: string;
+	task: import("../contract.js").PlanSubtask;
+	state: import("../contract.js").ItemState;
+	spent: ItemBudget;
+	head: string | null;
+	report: string;
+}
+
 export interface FactoryItem {
+	jobs?: FeatureJob[];
+	forceSplit?: boolean;
+	seed?: string;
+	childBase?: string;
+	cancelAfterIntegration?: boolean;
+	approvedPlan?: import("../contract.js").FeaturePlan;
+	approvedAllocation?: ItemBudget;
+	mode?: import("../contract.js").ItemMode;
+	singleBudget?: ItemBudget;
+	filedTurn?: string;
+	replans?: number;
+	featurePlan?: import("../contract.js").FeaturePlan;
+	parent?: NonNullable<import("../contract.js").ItemSummary["parent"]>;
 	id: string;
 	/** Increased by every change; the actor stores a state only over the revision it read. */
 	revision: number;
@@ -149,6 +173,17 @@ export interface TurnSpend {
 }
 
 export type Fact =
+	| { kind: "feature_seed"; at: number; key: string; sha: string }
+	| { kind: "feature_ready"; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]> }
+	| { kind: "cancel_subtask"; key: string; by: string; at: number }
+	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
+	| { kind: "child_update"; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
+	| { kind: "integrated"; at: number; key: string }
+	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
+	| { kind: "file_plan"; at: number; key: string; plan: unknown }
+	| { kind: "edit_plan"; at: number; by: string; version: number; plan: unknown }
+	| { kind: "approve_plan"; at: number; by: string; version: number }
+	| { kind: "run_single"; at: number; by: string }
 	| { kind: "start"; at: number; by: Cause }
 	| { kind: "machine_removed"; at: number }
 	| { kind: "cancel"; at: number; by: Cause }
@@ -185,7 +220,7 @@ export type Fact =
 	  }
 	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; review: ItemReview | null; said: string | null; refused?: string | null; spend: TurnSpend }
 	/** `openItems`: the user's items not done, failed or cancelled; it sets how often CI is polled. */
-	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string }; openItems: number; webhooks: boolean }
+	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string } | null; openItems: number; webhooks: boolean }
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */
 	| { kind: "publish_failed"; at: number; key: string; said: string; transient: boolean }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
@@ -200,8 +235,13 @@ export type Fact =
  * is performed again after a crash or a deploy is the same request (§2.5). `at`: not before then.
  */
 export type Effect =
+	| { kind: "cancel_children"; key: string; ids: string[] }
+	| { kind: "notify_integrated"; key: string; head: string }
+	| { kind: "integrate"; key: string; head: string }
+	| { kind: "describe_feature"; key: string }
+	| { kind: "dispatch"; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
-	| { kind: "deliver"; key: string; text: string; agent: "planner" | null; maxSteps: number; fetchBase: string | null; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput }
+	| { kind: "deliver"; key: string; text: string; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }
 	| { kind: "withdraw"; key: string; to?: "review" }

@@ -6,6 +6,8 @@
  *   cd server && npx tsx ../scripts/runner-control-check.ts
  */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -49,6 +51,8 @@ expect("and for the HTTP answers", never(parsePairStatus, [...junk, { state: "ap
 expect("a hello and a report pass", parseRunnerFrame(JSON.stringify(hello))?.kind === "hello"
 	&& parseRunnerFrame(JSON.stringify({ kind: "report", docker: { ok: false, reason: "permission denied" }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [{ id: "m_0123456789abcdef-0123456789ab", sessionId: "s_0123456789abcdef", state: "paused", usedAt: 5 }] }))?.kind === "report");
 const plainReport = { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [] };
+expect("a report can update the machine name", parseRunnerFrame(JSON.stringify({ ...plainReport, name: "Build host" }))?.kind === "report");
+expect("invalid reported names are refused", ["", " ", "x".repeat(65), "line\nfeed", "a\u0085b", "a\u202eb"].every(name => !parseRunnerFrame(JSON.stringify({ ...plainReport, name }))));
 const harness = { id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fixture", signIn: "none" };
 expect("the server accepts each Claude sign-in state and refuses extra login fields or an unknown harness",
 	["token", "none", "unknown"].every(signIn => parseRunnerFrame(JSON.stringify({ ...plainReport, harnesses: [{ ...harness, signIn }] }))?.kind === "report")
@@ -89,11 +93,10 @@ expect("another process after the first went quiet replaces it", secondHello({ e
 const sockets: CheckSocket[] = [];
 class CheckSocket extends EventTarget {
 	readyState = 1;
-	sent: { kind: string; sandbox?: string }[] = [];
+	sent: { kind: string; name?: string; sandbox?: string; egress?: string; claudeRelay?: boolean }[] = [];
 	constructor() { super(); sockets.push(this); }
 	send(text: string) {
-		const { kind, sandbox } = JSON.parse(text);
-		this.sent.push({ kind, sandbox });
+		this.sent.push(JSON.parse(text));
 	}
 	frame(frame: ServerFrame) {
 		assert.equal(this.readyState, 1);
@@ -119,6 +122,39 @@ process.env.WLP_RUNNER_STATE_DIR = dir;
 Object.assign(globalThis, { SANDBOX_IMAGE: "sha256:" + "0".repeat(64), SHOTS_IMAGE_PIN: "" });
 const { control } = await import("../runner/src/control.js");
 const { RunnerError } = await import("../runner/src/state.js");
+const { resolveMachineName } = await import("../runner/src/machine-name.js");
+const { machineLabel } = await import("../server/src/contract.js");
+for (const [name, expected] of [[" F892B469D6C5 ", "Linux x64 machine (f892b4)"], ["A".repeat(64), "Linux x64 machine (aaaaaa)"], [" ", "Linux x64 machine"], ["0123456789abc", "0123456789abc"]]) {
+	expect("machine label: " + expected, machineLabel({ name, os: "Linux", arch: "x64" }) === expected);
+}
+expect("Docker host name takes priority", await resolveMachineName(undefined, async () => "nas") === "nas");
+expect("Docker failure falls back to the local hostname", await resolveMachineName(undefined, async () => { throw Error(); }) === (await import("node:os")).hostname().slice(0, 64));
+await assert.rejects(resolveMachineName("bad\nname"), /--name/);
+expect("explicit name survives restart without probing Docker", await resolveMachineName("Build host") === "Build host" && await resolveMachineName(undefined, async () => "nas") === "Build host");
+unlinkSync(join(dir, "name.json"));
+// Run the CLI against a refusing pairing endpoint. A named request is observable before approval.
+const interceptPair = `globalThis.SANDBOX_IMAGE = "fixture"; globalThis.SHOTS_IMAGE_PIN = "";
+	globalThis.fetch = async (_url, init) => { console.log("Pairing name=" + JSON.parse(init.body).name); return Response.json({}, { status: 400 }); };`;
+function runPair(...flags: string[]) {
+	return spawnSync(process.execPath, ["--import", "tsx", "--import", "data:text/javascript," + encodeURIComponent(interceptPair),
+		fileURLToPath(new URL("../runner/src/main.ts", import.meta.url)), "pair", "--platform", "https://runner-check.invalid", ...flags],
+		{ encoding: "utf8", timeout: 10_000 });
+}
+expect("the pair CLI sends --name and reuses it after restart", runPair("--name", "Workshop").stdout.includes("Pairing name=Workshop")
+	&& runPair().stdout.includes("Pairing name=Workshop"));
+expect("the CLI rejects an invalid override before pairing", runPair("--name", "x".repeat(65)).stderr.includes("printable name"));
+unlinkSync(join(dir, "name.json"));
+unlinkSync(join(dir, "lock"));
+const { waitForPair, requestPair } = await import("../runner/src/pair-command.js");
+let listening!: () => void;
+const ready = new Promise<void>(resolve => { listening = resolve; });
+const localRequest = waitForPair(new AbortController().signal, listening);
+await ready;
+const command = requestPair(undefined, "Workshop");
+const request = await localRequest;
+expect("a local pair command forwards its name to the running service", request?.name === "Workshop");
+request?.client.end();
+await command;
 const failedSandbox = "mm_0123456789abcdef-0123456789ab";
 const auditRows = (): { operation: string; sandbox: string | null; outcome: string }[] =>
 	readdirSync(dir).flatMap(file => readFileSync(join(dir, file), "utf8").trim().split("\n").map(line => JSON.parse(line)));
@@ -141,11 +177,12 @@ async function withControl(answers: Response[], exercise: (runner: {
 	const owner = {
 		identity: { uid: "u_check", machineId: "m_0123456789abcdef" },
 		serial: async <T>(work: () => Promise<T>) => work(),
-		welcome: async () => {}, report: () => plainReport,
+		checkAuthenticatedNetwork: async () => {}, welcome: async () => {},
+		report: () => ({ ...plainReport, egress: "restricted", claudeRelay: true }),
 		requestedRemoval: async (id: string) => { if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox."); },
 		suspendAll: async () => {},
 	} as unknown as Executor;
-	const done = control(owner, key, "https://runner-check.invalid", abort.signal, s => status.push(s), undefined);
+	const done = control(owner, key, "https://runner-check.invalid", abort.signal, s => status.push(s), undefined, "Build host");
 	try {
 		const test = exercise({ status, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
 			async online(socketIndex = 0) {
@@ -155,6 +192,10 @@ async function withControl(answers: Response[], exercise: (runner: {
 				await until(() => socket.sent.some(f => f.kind === "hello"));
 				socket.frame({ kind: "welcome", idleSuspendMs: 60_000 });
 				await until(() => socket.sent.some(f => f.kind === "report"));
+				const report = socket.sent.find(f => f.kind === "report");
+				assert.equal(report?.name, "Build host");
+				assert.equal(report?.egress, "restricted");
+				assert.equal(report?.claudeRelay, true);
 				return socket;
 			} }).finally(() => abort.abort());
 		const [loop, checks] = await Promise.allSettled([done, test]);

@@ -17,7 +17,7 @@ export function cpuFlags(cpus: number) {
 }
 
 /** What every session container gets: non-root, no privilege gain, no capabilities, limits for a 2-CPU host. */
-export const commonRunFlags = (cpus: number) => [
+export const commonRunFlags = (cpus: number, network = "bridge") => [
 	"--init",
 	"--user",
 	"agent",
@@ -26,7 +26,7 @@ export const commonRunFlags = (cpus: number) => [
 	"--cap-drop",
 	"ALL",
 	"--network",
-	"bridge",
+	network,
 	"--memory",
 	"1536m",
 	"--memory-swap",

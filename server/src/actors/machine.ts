@@ -4,7 +4,7 @@ import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, requireServiceFor, serviceParams } from "../auth.js";
 import { config } from "../config.js";
-import { MACHINE_EXPIRY_MS, type MachineClaim, type MachineStatus, type MachineWarning } from "../contract.js";
+import { isMachineIdName, machineLabel, MACHINE_EXPIRY_MS, type MachineClaim, type MachineStatus, type MachineWarning } from "../contract.js";
 import { MINUTE_MS } from "../http-limits.js";
 import { machineError, signed } from "../runner-keys.js";
 import { CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
@@ -23,7 +23,7 @@ const offline = () => new UserError("The machine disconnected during sign-in. St
 interface Socket { login(command: LoginCommand): Promise<LoginResult>; send(frame: ServerFrame): boolean; close(code: number, reason: string): void }
 interface Live { maxTurns?: number; offset: number; offersClaude?: boolean; claudeLogin?: boolean; ws: Socket; epoch: string; heardAt: number; connected: number; savedAt: number }
 /** `greeting` is the one control socket that has yet to say hello: a newer one replaces it. */
-interface Vars { retryOnFrame: boolean; nextSlotCheck: number; live: Live | null; work: Promise<void>; greeting: Socket | null }
+interface Vars { system?: { os: string; arch: string }; retryOnFrame: boolean; nextSlotCheck: number; live: Live | null; work: Promise<void>; greeting: Socket | null }
 interface Ctx {
 	db: RawAccess; vars: Vars; key: string[];
 	schedule: { at(timestamp: number, action: string, ...args: number[]): Promise<string>; list(): Promise<Array<{ action: string; runAt: number }>> };
@@ -32,7 +32,7 @@ interface Ctx {
 }
 interface Input { grant: string; details: MachineClaim; publicKey: string; expires: number }
 type Row = { name: string; version: string; public_key: string; created: number; seen: number | null; removed_at: number | null; remove_sandboxes: number; offset: number; duplicate: number | null; report: string | null };
-export interface MachineUpdate { status: MachineStatus; since: number; runnerVersion: string; warnings: MachineWarning[]; report: Report | null }
+export interface MachineUpdate { name?: string; turns?: { running: number; max: number | null; queued: number }; status: MachineStatus; since: number; runnerVersion: string; warnings: MachineWarning[]; report: Report | null }
 /** `publicKey` is the machine's Ed25519 key, SPKI in base64; it never changes (pairing again makes a new machine). */
 export interface MachineFacts { status: MachineStatus | "removed"; name: string; publicKey: string; report: Report | null }
 export type TurnSlot = { state: "granted" | "reconnecting" | "offline" | "removed" } | { state: "waiting"; busy: number; max: number };
@@ -70,6 +70,7 @@ async function requestSlot(c: Ctx, session: string, turn: number): Promise<TurnS
 	const grant = max === undefined || (busy < max && (!first || first === own));
 	if (!own) await c.db.execute("INSERT INTO turn_slots VALUES (?, ?, ?)", session, turn, Number(grant));
 	else if (grant) await c.db.execute("UPDATE turn_slots SET running = 1 WHERE session = ? AND turn = ?", session, turn);
+	if (!own || grant) await tell(c, await record(c));
 	return grant ? { state: "granted" } : { state: "waiting", busy, max: max! };
 }
 
@@ -82,7 +83,7 @@ async function reapSlots(c: Ctx) {
 			const summary = await sessionActor(c, c.key[0]!, row.session).internalSummary();
 			if (summary.turns === row.turn && summary.status !== "idle") return;
 		} catch (error) { if (!isActorGone(error)) return; }
-		await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", row.session, row.turn);
+		await ordered(c, async () => { await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", row.session, row.turn); await tell(c, await record(c)); });
 	}));
 }
 
@@ -97,10 +98,14 @@ function update(c: Ctx, row: Row): MachineUpdate {
 	if (report && !report.docker.ok) warnings.push({ kind: "docker", reason: report.docker.reason });
 	if (Math.abs(row.offset) > CLOCK_TOLERANCE_MS) warnings.push({ kind: "clock", offsetSeconds: Math.round(row.offset / 1000) });
 	if (row.duplicate !== null && Date.now() < row.duplicate + KEY_WARNING_MS) warnings.push({ kind: "key", at: row.duplicate });
-	return { status: c.vars.live ? "online" : row.seen === null ? "waiting" : "offline", since: c.vars.live?.connected ?? row.seen ?? row.created, runnerVersion: row.version, warnings, report };
+	return { name: row.name, status: c.vars.live ? "online" : row.seen === null ? "waiting" : "offline", since: c.vars.live?.connected ?? row.seen ?? row.created, runnerVersion: row.version, warnings, report };
 }
 async function publish(c: Ctx, row: Row) {
 	const facts = row.removed_at === null ? update(c, row) : null;
+	if (facts) {
+		const [slots] = await c.db.execute<{ running: number; queued: number }>("SELECT count(CASE WHEN running=1 THEN 1 END) AS running, count(CASE WHEN running=0 THEN 1 END) AS queued FROM turn_slots");
+		facts.turns = { ...slots, max: c.vars.live?.maxTurns ?? null };
+	}
 	const conflict = facts?.warnings.find(w => w.kind === "key");
 	if (conflict) {
 		// An earlier alarm rereads the last refusal. One alarm also covers repeated attempts and actor sleeps.
@@ -309,7 +314,7 @@ export const machine = actor({
 						const r = await record(c);
 						const report: Report = { ...frame, sandboxes: frame.sandboxes.map(s => ({ ...s, usedAt: Math.max(0, s.usedAt - r.offset) })) };
 						if (!r.report || !isDeepStrictEqual(JSON.parse(r.report), report)) {
-							const [changed] = await c.db.execute<Row>("UPDATE machine SET report = ? WHERE removed_at IS NULL RETURNING *", JSON.stringify(report));
+							const [changed] = await c.db.execute<Row>("UPDATE machine SET name = COALESCE(?, name), report = ? WHERE removed_at IS NULL RETURNING *", report.name ?? null, JSON.stringify(report));
 							await tell(c, changed);
 						}
 					}
@@ -330,7 +335,7 @@ export const machine = actor({
 		},
 		internalReleaseTurnSlot: async (c, session: string, turn: number): Promise<void> => {
 			requireServiceFor(c, "call");
-			await ordered(c, async () => { await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", session, turn); });
+			await ordered(c, async () => { await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", session, turn); await tell(c, await record(c)); });
 		},
 		internalFacts: async (c): Promise<MachineFacts> => {
 			requireServiceFor(c, "call");
@@ -338,7 +343,8 @@ export const machine = actor({
 			// No row: the actor was made without a valid reservation and is going away. To a session, and to a confirmation, that is a machine removed.
 			if (!r) return { name: "", status: "removed", publicKey: "", report: null };
 			const facts = update(c, r);
-			return { name: r.name, status: r.removed_at !== null ? "removed" : facts.status, publicKey: r.public_key, report: facts.report };
+			if (isMachineIdName(r.name) && !c.vars.system) c.vars.system = await user(c).internalMachineSystem(c.key[1]).catch(() => null) ?? undefined;
+			return { name: machineLabel({ name: r.name, ...c.vars.system }), status: r.removed_at !== null ? "removed" : facts.status, publicKey: r.public_key, report: facts.report };
 		},
 		internalConnection: async (c, proof: string, signature: string, limitByMachine = false): Promise<"unknown" | "active" | { removeSandboxes: boolean } | { retryAfter: number }> => {
 			requireServiceFor(c, "call");

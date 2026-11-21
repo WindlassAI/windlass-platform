@@ -90,7 +90,7 @@ The **sandbox** chip sets where the agent's files live and its commands run. Eac
 
 - whether it runs what the sandbox contains and refuses the rest, or runs every call without asking;
 - whether commands can reach the network;
-- whether commands can read the session's access token. Your ChatGPT sign-in itself is never in the sandbox. With Claude Code, commands in the container can read your Claude login token.
+- whether commands can read the session's access token. Your ChatGPT sign-in itself is never in the sandbox. Claude commands can use the machine’s login through the session’s model relay. Older runners may also expose the setup token.
 
 The sandboxes on offer depend on the platform and on the machine. Read [Sandboxes and security](/docs/security) for what each one protects. A sandbox that cannot be used is listed under **Listed, but not usable on this deployment**, with the reason.
 

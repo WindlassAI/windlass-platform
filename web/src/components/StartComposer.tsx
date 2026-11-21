@@ -49,8 +49,8 @@ import { useApp, useAuth } from "../state/app";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 import { allowanceState, useAccount, useAllowance, useModels, useNow } from "../state/hooks";
-import { ArrowUpIcon, BranchIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SendIcon, SlidersIcon, WarnIcon } from "./Icons";
-import type { ClaudeFacts } from "./Layers";
+import { ArrowUpIcon, BranchIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SendIcon, SingleIcon, SlidersIcon, SplitIcon, WarnIcon } from "./Icons";
+import { claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
 import { ModePicker, modeMenu } from "./Modes";
 import { HARNESS_PROFILE, machineUnusable, offeredHarnesses } from "./PlaceChoice";
 import { repositoryMenu, useBranches, useRepositorySearch, type PickedRepository } from "./RepositoryMenu";
@@ -64,6 +64,7 @@ import { SplitButton } from "./ui/Button";
 import { Tooltip } from "./ui/Tooltip";
 import { useSurface } from "./ui/useMediaQuery";
 import { machineLabel } from "../lib/machines";
+import { ITEM_MODE_WORDS, orchestrateProblem } from "../lib/feature";
 
 /** Whether any of the chosen sandbox's three facts is open: said in the warning tone. */
 function sandboxOpen(profile: SandboxProfile, claude: ClaudeFacts | null): boolean {
@@ -80,7 +81,7 @@ interface Fact {
 	open: boolean;
 }
 
-/** A sandbox's three facts (components/Layers.tsx, `ProfileFacts`) in a few words each. For Claude Code the approval is its mode, and its commands can read its login. */
+/** A sandbox's three facts (components/Layers.tsx, `ProfileFacts`) in a few words each. For Claude Code the approval is its mode, and its commands can use its login. */
 export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null = null): Fact[] {
 	return [
 		claude
@@ -88,9 +89,11 @@ export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null
 			: profile.approval === "auto"
 				? { text: "commands sandboxed", long: "runs what the sandbox contains, refuses the rest", open: false }
 				: { text: "runs every call", long: "runs every call without asking", open: true },
-		profile.commandNetwork ? { text: "network on", long: "commands can reach the network", open: true } : { text: "no network", long: "commands have no network", open: false },
+		claude && profile.claudeRelay && !profile.commandNetwork && profile.available
+			? { text: "Claude relay only", long: commandNetworkFact(profile, claude), open: false }
+			: { text: profile.commandNetwork ? "network on" : "no network", long: commandNetworkFact(profile, claude), open: profile.commandNetwork },
 		claude
-			? { text: "Claude login readable", long: "commands can read your Claude login token", open: true }
+			? { text: profile.claudeRelay ? "Claude login via relay" : "Claude login readable", long: `commands can use your Claude login. ${claudeLoginFact(profile)}`, open: true }
 			: profile.commandsCanReadAccessToken
 				? { text: "token readable", long: "commands can read the session's access token", open: true }
 				: { text: "token sealed", long: "commands cannot read the session's access token", open: false },
@@ -110,20 +113,20 @@ function launchLimit(numbers: UsageNumbers | null): { text: string; warn: boolea
 }
 
 /** What is saved as the defaults of the repository that is chosen: read when the choice changes. `defaults` is null while it is read and when it could not be. */
-function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefaults | null; reading: boolean; error: string | null } {
+function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefaults | null; checks: number | null; reading: boolean; error: string | null } {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const [state, setState] = useState<{ repositoryId: GithubId | null; defaults: RepositoryDefaults | null; error: string | null }>({ repositoryId: null, defaults: null, error: null });
+	const [state, setState] = useState<{ repositoryId: GithubId | null; defaults: RepositoryDefaults | null; checks: number | null; error: string | null }>({ repositoryId: null, defaults: null, checks: null, error: null });
 	useEffect(() => {
-		setState({ repositoryId, defaults: null, error: null });
+		setState({ repositoryId, defaults: null, checks: null, error: null });
 		if (repositoryId === null) return;
 		let current = true;
 		client
 			.user(auth)
 			.repository(repositoryId)
 			.then(
-				(view) => current && setState({ repositoryId, defaults: view.defaults, error: null }),
-				(failure: unknown) => current && setState({ repositoryId, defaults: null, error: explain(failure) }),
+				(view) => current && setState({ repositoryId, defaults: view.defaults, checks: view.saved.checks, error: null }),
+				(failure: unknown) => current && setState({ repositoryId, defaults: null, checks: null, error: explain(failure) }),
 			);
 		return () => {
 			current = false;
@@ -131,12 +134,11 @@ function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefau
 	}, [client, auth, explain, repositoryId]);
 	// What was read for another repository is not this one's.
 	const mine = state.repositoryId === repositoryId;
-	return { defaults: mine ? state.defaults : null, reading: repositoryId !== null && (!mine || (state.defaults === null && state.error === null)), error: mine ? state.error : null };
+	return { defaults: mine ? state.defaults : null, checks: mine ? state.checks : null, reading: repositoryId !== null && (!mine || (state.defaults === null && state.error === null)), error: mine ? state.error : null };
 }
 
-
 /** The pickers the composer opens: one at a time. The phone's settings sheet is one of them. */
-type Picker = "repo" | "where" | "agent" | "mode" | "criteria" | "plus" | "settings";
+type Picker = "repo" | "where" | "agent" | "mode" | "itemMode" | "criteria" | "plus" | "settings";
 
 /** "github.com/acme/web" for a pasted address: the chip's few words. */
 const shortAddress = (url: string) => url.replace(/^https:\/\//, "").replace(/\.git$/, "");
@@ -177,9 +179,10 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// Agent or work item: the page's, unless its user switched before leaving for GitHub on a page that offers the switch. Without work items on this deployment, an agent.
 	const [kindChoice, setKind] = useState<StartKind>((switchable ? draft?.kind : null) ?? startKind);
 	const item = kindChoice === "item" && Boolean(info?.items);
+	const [orchestrate, setOrchestrate] = useState(false);
 	const [criteria, setCriteria] = useState(draft?.criteria ?? "");
 	// The work item filed last from here, said under the field until another is written.
-	const [filed, setFiled] = useState<{ id: string; title: string; started: boolean } | null>(null);
+	const [filed, setFiled] = useState<{ id: string; title: string; started: boolean; feature: boolean } | null>(null);
 	// The user's own choices here: none until they make one, so that the defaults can stand in.
 	const [repoChoice, setRepoChoice] = useState<{ kind: "github"; picked: PickedRepository } | { kind: "address" } | { kind: "none" } | null>(draft?.repoUrl ? { kind: "address" } : null);
 	const [repoUrl, setRepoUrl] = useState(draft?.repoUrl ?? "");
@@ -408,6 +411,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		const input: Omit<CreateItemInput, "idempotencyKey"> = {
 			repository: { id: chosen.repository.id, branch: chosen.branch },
 			title: filing.title,
+			...(orchestrate && info?.items?.orchestrate && { mode: "orchestrate" as const }),
 			body: filing.body,
 			acceptance,
 			start: now,
@@ -421,7 +425,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			asked.current = null;
 			setPrompt("");
 			setCriteria("");
-			setFiled({ id: made.id, title: made.title, started: now });
+			setFiled({ id: made.id, title: made.title, started: now, feature: input.mode === "orchestrate" });
 		} catch (failure) {
 			setError(explain(failure));
 			if (MACHINE_REFUSALS.some((reason) => hasReason(failure, reason))) machines.reload();
@@ -905,6 +909,38 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		</div>
 	);
 
+	// ---- how a work item runs: single, or a feature a planner splits ------------------------------------
+	const orchestrateOffered = item && Boolean(info?.items?.orchestrate);
+	const orchestrating = orchestrateOffered && orchestrate;
+	const orchestrateWarn = orchestrating ? orchestrateProblem(saved.checks) : null;
+	const itemModeValue = orchestrating ? ITEM_MODE_WORDS.orchestrate.name : ITEM_MODE_WORDS.single.name;
+	const itemModeSpec: MenuSpec | null = orchestrateOffered
+		? {
+				label: "How it runs",
+				width: 320,
+				groups: [
+					{
+						id: "item-mode",
+						items: (["single", "orchestrate"] as const).map((id) => ({
+							id,
+							label: ITEM_MODE_WORDS[id].name,
+							icon: id === "single" ? <SingleIcon size={16} /> : <SplitIcon size={16} />,
+							description: ITEM_MODE_WORDS[id].description,
+							checked: (id === "orchestrate") === orchestrating,
+							tone: id === "orchestrate" && orchestrating && orchestrateWarn ? ("warn" as const) : undefined,
+							onSelect: () => setOrchestrate(id === "orchestrate"),
+						})),
+					},
+				],
+				footer: <p className={`ui-menu-note${orchestrateWarn ? " tone-warn" : ""}`}>{orchestrateWarn ?? "Approving a plan needs saved checks and CI that reports on pushes. Without them, file it as single."}</p>,
+			}
+		: null;
+	const itemModePill = (props: TriggerProps) => (
+		<Pill {...props} outlined className="mode-picker" data-picker="item-mode" data-value={itemModeValue} icon={orchestrating ? <SplitIcon size={14} /> : <SingleIcon size={14} />} dot={orchestrateWarn ? "warn" : null} dotLabel={orchestrateWarn ? "cannot be approved here" : undefined} disabled={busy !== null} aria-label={`How it runs: ${itemModeValue}`}>
+			{itemModeValue}
+		</Pill>
+	);
+
 	const hasSetup = chosen !== null && !item;
 	const setupForm = hasSetup ? (
 		<div className="start-setup">
@@ -967,8 +1003,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const anyOpen = facts.some((fact) => fact.open);
 
 	// ---- the phone: one summary row, a sheet of settings --------------------------------------------------
-	const summary = [item ? null : agentModel, placeName, repo.kind === "github" ? repo.picked.repository.name : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "no repository" : null, item ? null : (mode?.name ?? null), item && acceptance.length > 0 ? `${count(acceptance.length)} criteria` : null].filter((part) => part !== null);
-	const anyWarn = repoWarn || whereWarn || agentWarn || modeOpen || criteriaWrong !== null;
+	const summary = [item ? null : agentModel, placeName, repo.kind === "github" ? repo.picked.repository.name : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "no repository" : null, item ? null : (mode?.name ?? null), orchestrating ? "orchestrate" : null, item && acceptance.length > 0 ? `${count(acceptance.length)} criteria` : null].filter((part) => part !== null);
+	const anyWarn = repoWarn || whereWarn || agentWarn || modeOpen || criteriaWrong !== null || orchestrateWarn !== null;
 	const settingsSpec: MenuSpec = {
 		label: "Settings",
 		groups: [
@@ -979,6 +1015,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					...(showWhere ? [{ id: "where", label: mine.length > 0 ? "Where it runs" : "Sandbox", icon: chosenMachine ? <MachineIcon size={16} /> : <CloudIcon size={16} />, description: !item && chosenProfile ? `${placeName} · ${chosenProfile.name}` : placeName, tone: whereWarn ? ("warn" as const) : undefined, submenu: whereSpec }] : []),
 					{ id: "repo", label: "Repository", icon: <RepoIcon size={16} />, description: repoValue, tone: repoWarn ? ("warn" as const) : undefined, onSubmenuOpen: () => setOpen("settings"), ...(repoSpec ? { submenu: repoSpec } : { panel: addressForm }) },
 					...(!item && modeSpec && mode ? [{ id: "mode", label: "Mode", icon: <ShieldGlyph />, description: mode.name, tone: modeOpen ? ("warn" as const) : undefined, submenu: modeSpec }] : []),
+					...(itemModeSpec ? [{ id: "item-mode", label: "How it runs", icon: orchestrating ? <SplitIcon size={16} /> : <SingleIcon size={16} />, description: itemModeValue, tone: orchestrateWarn ? ("warn" as const) : undefined, submenu: itemModeSpec }] : []),
 					...(item ? [{ id: "criteria", label: "Acceptance criteria", icon: <SlidersIcon size={16} />, description: criteriaValue, tone: criteriaWrong ? ("warn" as const) : undefined, panel: criteriaField }] : []),
 					...(hasSetup && setupForm ? [{ id: "setup", label: "Setup and secrets", icon: <PlusIcon size={16} />, description: setupSummary ?? undefined, panel: setupForm }] : []),
 				],
@@ -1095,7 +1132,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								</Pill>
 							) : null}
 							<span className="start-tools-end">
-								{modeControl}
+								{itemModeSpec ? <Menu spec={itemModeSpec} align="end" open={open === "itemMode"} onOpenChange={openOnly("itemMode")} trigger={itemModePill} surface="popover" /> : modeControl}
 								<SplitButton type="submit" className="start-launch" icon={<SendIcon size={14} />} disabled={item ? !canFile : !canLaunch} menu={launchMenu} menuLabel={item ? "Filing options" : "Launch options"}>
 									{launchWord}
 								</SplitButton>
@@ -1130,9 +1167,14 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					Title: <span className="start-title-text">{filing.title}</span>
 				</p>
 			) : null}
+			{orchestrateWarn ? (
+				<p className="field-note tone-warn start-line" role="status">
+					{orchestrateWarn}
+				</p>
+			) : null}
 			{filed && !filing ? (
 				<p className="field-note start-line start-filed" role="status">
-					Filed “{filed.title}”{filed.started ? "" : " as a draft"}.{" "}
+					Filed “{filed.title}”{filed.started ? (filed.feature ? ": its plan comes to you for approval" : "") : " as a draft"}.{" "}
 					<a className="link" {...linkProps({ name: "item", id: filed.id })}>
 						Open
 					</a>

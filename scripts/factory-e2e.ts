@@ -16,10 +16,11 @@
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
+import { branchFor } from "../server/src/github/publish.js";
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
 import { verdictWords } from "../server/src/factory/verdict.js";
 import { localListeners } from "./check-listeners.js";
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createWriteStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
@@ -27,7 +28,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AuthResult, ItemSummary, ItemView } from "../server/src/contract.js";
+import type { AuthResult, ItemSummary, ItemView, PlatformInfo } from "../server/src/contract.js";
 import { createClient, type Registry } from "../server/src/client.js";
 import { StandInRunner } from "./runner-standin.js";
 import { GithubStandin, type StandinRepository, type StandinPull } from "./github-standin.js";
@@ -120,7 +121,8 @@ class Server {
 		};
 		delete full.RIVET_ADMIN_TOKEN;
 		delete full.RIVET_ENDPOINT;
-		const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { cwd: SERVER_DIR, env: full, stdio: ["ignore", "pipe", "pipe"] });
+		const entry = env.WLP_FEATURE_TEST_GIT ? ["--import", "../scripts/feature-git-fixture.ts", "src/index.ts"] : ["src/index.ts"];
+		const child = spawn(process.execPath, ["--import", "tsx", ...entry], { cwd: SERVER_DIR, env: full, stdio: ["ignore", "pipe", "pipe"] });
 		this.child = child;
 		const keep = (chunk: Buffer) => {
 			this.text += chunk.toString("utf8");
@@ -208,8 +210,75 @@ const standin = new GithubStandin({ callbackUrl: `${API}/github/callback`, stric
 await standin.start();
 standin.addUser("ada");
 const installation = standin.addInstallation("ada", "User");
-const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
+const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { ".github/workflows/build.yml": "on: pull_request\n", "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
 standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "read", statuses: "read", actions: "read" };
+
+if (!only.length || only.includes("orchestrator")) {
+	const server = new Server();
+	try {
+		await check("orchestrator: real actors approve and integrate two checked children and hand over one reviewed PR", async () => {
+			const { user } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
+			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{name:"build",command:"true"}] });
+			const single = (await user.factoryLimits()).item;
+			const token = (await user.createApiToken({ name: "feature", scopes: ["items:create", "items:read"] })).secret;
+			const filing = await api("/api/items", {method:"POST", token, key:"search-feature", body:JSON.stringify({repository:{id:harbor.id}, title:"Search documents", body:"Index documents and show the result.", mode:"orchestrate", start:true})});
+			assert(filing.status === 201 && typeof filing.body.id === "string", "The API refused feature filing.");
+			const feature = await user.item(filing.body.id);
+			const page = await untilItem(user, feature.id, "plan approval", v => !!v.question);
+			assert(page.plan?.status === "proposed", "The planner did not file a valid plan: " + page.question?.text);
+			assert(!page.pullRequest && !page.children?.length, "Work started before approval.");
+			const invalid = structuredClone(page.plan);
+			invalid.subtasks[0].budget.tokens = 0;
+			await refused(() => user.actOnItem({id:feature.id, action:{kind:"edit_plan", version:invalid.version, plan:invalid}}), "bad_input");
+			const edited = await user.actOnItem({id:feature.id, action:{ kind:"edit_plan", version:page.plan.version, plan:page.plan }});
+			await refused(() => user.actOnItem({id:feature.id,action:{kind:"approve_plan",version:page.plan!.version}}), "item_conflict");
+			const version = edited.plan!.version;
+			await user.saveRepositoryChecks({repositoryId:harbor.id,checks:[]});
+			const approve = () => user.actOnItem({id:feature.id, action:{kind:"approve_plan", version}});
+			const noChecks = await refused(approve, "bad_input");
+			assert(/single.*checks/i.test(noChecks), "Missing saved-check guidance: " + noChecks);
+			await user.saveRepositoryChecks({repositoryId:harbor.id,checks:[{name:"build",command:"true"}]});
+			const noCi = await refused(() => user.actOnItem({id:feature.id, action:{kind:"answer",question:edited.question!.id,choice:"approve"}}), "bad_input");
+			assert(/single.*push/i.test(noCi), "Missing push CI guidance: " + noCi);
+			standin.commit(harbor, "main", {".github/workflows/build.yml":"on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n"}, "Run build on push");
+			const base = standin.branchHead(harbor,"main")!;
+			await user.actOnItem({id:feature.id,action:{kind:"approve_plan",version}});
+			const done = await untilItem(user,feature.id,"the feature handoff",v => {
+				for (const child of v.children ?? []) {
+					const pushed = standin.branchHead(harbor, branchFor(child.title, child.sessionId));
+					if (pushed && !harbor.ci.has(pushed)) setCi(harbor, pushed, "success");
+				}
+				if (v.question) throw new Error(v.question.text);
+				return v.state === "review";
+			}, 320_000);
+			const read = await api("/api/items/" + feature.id, {token});
+			assert(read.status === 200 && Array.isArray(read.body.children) && read.body.children.length === 2, "The feature API omitted its children.");
+			assert(done.children?.length === 2 && done.children.every(s => s.verdict?.ci === "passed" && s.state === "done" && !s.pullRequest && s.review?.state === "off"), "Children did not finish as branches.");
+			assert(standin.fileOn(harbor, "windlass/feature-" + feature.id, "notes/turn-1.md") !== null, "Neither child built files on the feature branch");
+			assert(done.spent.turns === 5 && done.budget.tokens === 3*single.tokens, "Unexpected feature spend " + JSON.stringify(done.spent));
+			const [first, secondChild] = done.children;
+			const firstHead = standin.branchHead(harbor, branchFor(first.title, first.sessionId))!;
+			const parent = standin.branchHead(harbor, branchFor(secondChild.title, secondChild.sessionId))!;
+			const log = (format: string, sha: string) => execFileSync("git", ["show","-s","--format="+format,sha], {cwd:harbor.path,encoding:"utf8"}).trim();
+			assert(log("%P", parent) === firstHead, "The second child did not build directly on the first child's commit");
+			assert(log("%s", firstHead + "^") === "Start feature " + feature.id && log("%P", firstHead + "^") === base, "The first child missed the feature marker");
+			assert(done.head === parent && done.reviews.length === 1 && done.report && done.pullRequest, "Missing final head, summary, review or PR.");
+			const ready = await waitFor("the single ready PR", () => standin.pulls.find(p=>p.number===done.pullRequest!.number && !p.draft && p.comments.length), 30_000);
+			assert(standin.branchHead(harbor, ready.head) === parent && standin.branchHead(harbor,"main") === base, "Incorrect ref after handoff.");
+			assert(!(await user.listItems()).some(i => i.parent), "A child leaked into the root list.");
+			const second = await user.createItem({repository:{id:harbor.id}, title:"Cancel this feature", body:"Index and search documents.", mode:"orchestrate", start:true});
+			const proposal = await untilItem(user,second.id,"a second plan",v=>v.plan?.status==="proposed" && !!v.question);
+			await user.actOnItem({id:second.id,action:{kind:"approve_plan",version:proposal.plan!.version}});
+			const active = await untilItem(user,second.id,"a child before cancellation",v=>v.children?.length === 1);
+			await user.actOnItem({id:second.id,action:{kind:"cancel"}});
+			const stopped = await untilItem(user,active.children![0].id,"the cancelled child",v=>v.state === "cancelled");
+			const tree = await user.item(second.id);
+			assert(tree.state === "cancelled" && tree.children?.length === 1 && !stopped.pullRequest, "Cancellation dispatched more work.");
+			return "two child heads fast-forwarded, one summary, one whole-feature review; a second feature cancelled its child";
+		});
+	} finally { await server.stop(); server.remove(); }
+	if (only.length === 1) { await standin.stop(); process.exit(failed ? 1 : 0); }
+}
 
 if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 	const server = new Server();
@@ -1426,9 +1495,9 @@ try {
 	});
 
 	await check("on: with WLP_ITEMS=1 platform info says items are offered", async () => {
-		const info = (await (await fetch(`${API}/platform/info`)).json()) as { items?: { reviewer?: unknown } };
-		assert(info.items?.reviewer === false && Object.keys(info.items).length === 1, `platform info has items: ${JSON.stringify(info.items)}`);
-		return "items: { reviewer: false }";
+		const info = (await (await fetch(`${API}/platform/info`)).json()) as PlatformInfo;
+		assert(info.items?.reviewer === false && info.items.orchestrate === true, `platform info has items: ${JSON.stringify(info.items)}`);
+		return "orchestration enabled, reviewer disabled";
 	});
 
 	await check("ci: implement, gate, publish, CI with the stand-in's check runs, handoff with a verdict", async () => {

@@ -261,7 +261,7 @@ export class GithubApp {
 		}
 	}
 
-	private async call(call: Call, redirect: RequestRedirect = "follow"): Promise<{ status: number; body: unknown; next: boolean; link: string }> {
+	async call(call: Call, redirect: RequestRedirect = "follow"): Promise<{ status: number; body: unknown; next: boolean; link: string }> {
 		const response = await this.request(call, redirect);
 		const raw = await response.text().catch(() => "");
 		let body: unknown = null;
@@ -537,7 +537,7 @@ export class GithubApp {
 		return { number, requestedReviewers, url: text(fields.html_url), state, mergeable: typeof fields.mergeable === "boolean" ? fields.mergeable : null, title: text(fields.title), body: text(fields.body), head: text(record(fields.head).ref), headSha: text(record(fields.head).sha), baseSha: text(record(fields.base).sha), base: text(record(fields.base).ref) };
 	}
 
-	async createPull(token: string, owner: string, name: string, input: { title: string; body: string; head: string; base: string }): Promise<Pull> {
+	async createPull(token: string, owner: string, name: string, input: { title: string; body: string; head: string; base: string; draft?: boolean }): Promise<Pull> {
 		const answer = await this.call({ method: "POST", path: `/repos/${owner}/${name}/pulls`, body: input, auth: { bearer: token }, what: `open a pull request in ${owner}/${name}` });
 		const pull = this.pullOf(answer.body);
 		if (!pull) throw new GithubError(answer.status, "the answer describes no pull request", `could not open a pull request in ${owner}/${name}`);
@@ -622,14 +622,14 @@ export class GithubApp {
 
 	// Issue webhooks carry no labeler's event ID. Use the latest relevant transition in the issue's own history.
 	// https://docs.github.com/en/rest/issues/events#list-issue-events
-	async issueTransition(token: string, repo: Repository, number: number, action: string) {
+	async issueTransition(token: string, repo: Repository, number: number, action: string, triggerLabel = "windlass") {
 		const label = action === "labeled" || action === "unlabeled";
 		const { items, truncated } = await this.pages({ path: `/repos/${repo.owner}/${repo.name}/issues/${number}/events`, auth: { bearer: token }, what: "read the issue's events" }, body => {
 			if (!Array.isArray(body)) throw new Error("GitHub returned no issue event list");
 			return body.map(record);
 		});
 		if (truncated) return null;
-		const last = items.filter(r => label ? (r.event === "labeled" || r.event === "unlabeled") && record(r.label).name === "windlass"
+		const last = items.filter(r => label ? (r.event === "labeled" || r.event === "unlabeled") && record(r.label).name === triggerLabel
 			: r.event === action || (action === "closed" && r.event === "reopened")).at(-1);
 		if (!last || last.event !== action) return null;
 		const id = decimalId(last.id), author = githubPerson(last.actor);

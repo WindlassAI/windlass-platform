@@ -59,6 +59,44 @@ export async function machineFairnessChecks(check: Check, client: ReturnType<typ
 			}
 		});
 	}
+	await check("machine facts and the session profile carry the runner’s name, egress mode and relay capability", async () => {
+		const session = await user.createSession({ place: { kind: "machine", machineId }, profile: "docker-hardened" });
+		const handle = client.agentSession.get([uid, session.id], { params: { token } });
+		const repoInput = { place: { kind: "machine", machineId }, profile: "docker-hardened", repoUrl: "https://github.com/octocat/Hello-World.git" } as const;
+		const repositorySession = await user.createSession(repoInput);
+		const previous = (await user.machines()).find(m => m.machineId === machineId)!.name;
+		try {
+			runner.fake.report.name = "Workshop";
+			for (const mode of ["restricted", "none", undefined] as const) {
+				if (mode) {
+					runner.fake.report.egress = mode;
+					runner.fake.report.claudeRelay = true;
+				} else {
+					delete runner.fake.report.egress;
+					delete runner.fake.report.claudeRelay;
+				}
+				runner.report();
+				await until("updated machine egress", async () => (await user.machines()).some(m => m.machineId === machineId && m.name === "Workshop" && m.egress === (mode ?? "open") && m.claudeRelay === (mode ? true : undefined)));
+				if (mode === "none") {
+					await assert.rejects(user.createSession(repoInput), /--egress none/);
+					await assert.rejects(client.agentSession.get([uid, repositorySession.id], { params: { token } }).prompt({ text: "Inspect files" }), /--egress none/);
+				}
+				await until("updated session profile", async () => {
+					const profile = (await handle.snapshot()).profile;
+					const text = mode === "restricted" ? /public/ : mode === "none" ? /no network/ : /local network/;
+					return profile.name.includes("Workshop") && profile.claudeRelay === (mode ? true : undefined) && profile.commandNetwork === (mode !== "none") && text.test(profile.commandNetworkText ?? "");
+				});
+			}
+		} finally {
+			runner.fake.report.name = previous;
+			delete runner.fake.report.egress;
+			delete runner.fake.report.claudeRelay;
+			runner.report();
+			await user.deleteSession(repositorySession.id);
+			await user.deleteSession(session.id);
+		}
+		return "restricted, none and legacy open";
+	});
 	await check("a failed online publish recovers the machine list without another report", async () => {
 		const disk = 5555555;
 		const marker = join(storage, "fail-online-publish");

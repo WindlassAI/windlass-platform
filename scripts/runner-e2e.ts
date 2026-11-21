@@ -107,6 +107,11 @@ class Server {
  * `e2eMeta`, which reads its stored meta for a check (no page shows the machine's name kept at launch).
  */
 async function serverNode(): Promise<void> {
+	if (process.env.WLP_TEST_MODEL_SCRIPT) {
+		const { SandboxWindlass } = await import("../server/src/sandbox/turn.js");
+		const script = JSON.parse(readFileSync(process.env.WLP_TEST_MODEL_SCRIPT, "utf8"));
+		SandboxWindlass.prototype.demoScript = () => script;
+	}
 	const { agentSession } = await import("../server/src/actors/agent-session.js");
 	Object.assign(agentSession.config.actions!, { e2eMeta: (c: { vars: { meta: unknown } }) => c.vars.meta });
 	const { machine } = await import("../server/src/actors/machine.js");
@@ -932,7 +937,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 			});
 			await check("work items refuse a mode at creation", async () => {
 				const raw = { title: "Inspect", body: "Read the repo", repository: { id: repo.id }, mode: "ask" };
-				const code = await refusal(user.createItem(raw));
+				const code = await refusal(user.createItem(raw as never));
 				assert(code === "bad_input", String(code));
 				return code;
 			});
@@ -1475,7 +1480,14 @@ function snapshotOf(client: Client, uid: string, id: string, token: string): Pro
 }
 
 if (process.argv[2] === "node") await serverNode();
-else {
+else if (process.argv[2] === "egress") {
+	const server = new Server();
+	try {
+		const { sessionEgress } = await import("./runner-session-egress.js");
+		await sessionEgress(server.storage, ORIGIN, ENDPOINT, env => server.start(env));
+	} finally { await server.stop(); rmSync(server.storage, { recursive: true, force: true }); }
+	process.exit(0);
+} else {
 	await main();
 	process.exit(failed === 0 ? 0 : 1);
 }

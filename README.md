@@ -653,6 +653,11 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
     <WLP_RUNNER_IMAGE> --platform <WLP_PUBLIC_URL>
   ```
 
+  Append `--name "Build host"` after the image and its platform argument to set the name shown on the
+  Machines page. Use 1 to 64 printable characters. The runner remembers this name in its state volume.
+  Restarting the paired runner with a new name updates the listing on its next report. Without a configured name it
+  uses the Docker daemon’s host name when available, then its local hostname.
+
   For rootless Docker the socket to mount is `$XDG_RUNTIME_DIR/docker.sock`. The runner makes an Ed25519
   key pair, keeps the private key in its volume, sends the public key with its machine's host name,
   system, architecture and its own version to `POST /runner/pair`, and prints a code in
@@ -674,6 +679,29 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   restarts use the saved choice. Upgrading an older pairing keeps both profiles. Start with
   `--allow-profile docker-hardened` alone to withdraw the Windlass opt-in. Its existing workspaces
   stay on disk and can be used again when the owner restores the flag.
+- **Network access on this machine.** New pairings use `--egress restricted`. Git over HTTPS,
+  package registries and model APIs use an HTTP proxy. The platform’s own clone, fetch and push
+  commands use the same proxy. Each agent has a loopback-only Docker
+  network. A small helper in that namespace carries proxy traffic over a private Unix socket.
+  Only the upstream helper uses Docker host networking so it can identify the host's own
+  interface addresses. It listens on the socket, runs unprivileged and has no Docker socket.
+  The proxy checks every DNS answer and connects to the checked address. Windlass's inner
+  command sandbox has its own loopback and cannot use the proxy.
+
+  To reach a private HTTP service, add exact DNS names with `--egress-allow git.office,mirror.office`.
+  This permits those names on RFC1918 or ULA addresses. Host interfaces, Linux bridge subnets,
+  loopback, link-local, cloud metadata and CGNAT remain blocked. Public sites are accessible
+  without listing them. Use `--egress none` to disable general networking. This mode refuses
+  repository sessions at launch and when starting a turn. Use restricted mode for cloning and
+  publishing. Claude sessions can still send Messages and token-count requests through their local
+  credential relay. Use `--egress open` for direct networking. Open sessions use a machine bridge
+  with inter-container communication disabled.
+
+  Existing pairings keep open networking on upgrade. The status and log give the opt-in flag.
+  Restart the service with the chosen flags to save the mode and exceptions for this pairing.
+  An explicit `--egress restricted` clears earlier exceptions unless supplied again. When a
+  kept sandbox was created under a different mode, the runner stops it and preserves its files.
+  Restore the previous mode to resume it, or save its work and recreate it under the new mode.
 - **Launching on it.** The launch form lists the user's machines beside the platform's own sandboxes, each
   with its state. A machine whose runner has not reported yet cannot be chosen ("“nas” has not connected
   yet. Start its runner, and once the Machines page shows it online, start the agent again."), nor one
@@ -723,17 +751,28 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   terminal. Paste it at the hidden prompt. A token minted on another computer works there too.
 
   The runner stores the token in `wlp-harness-claude-<machine id>`. The local login helper writes it.
-  Among session containers, only this pairing's hardened Claude containers mount it, read-only. Their conversations stay in their individual containers. The platform receives
-  the harness id, adapter, image digest and sign-in state. The runner scrubs recognizable tokens from
-  command output and file replies. The platform can run commands in a Claude container, and those
-  commands and repository code can read, copy or transmit the token. Use this with a platform and code
-  you trust.
+  A per-machine relay reads this volume for each request. Each hardened Claude session gets a
+  signed placeholder bound to its own loopback helper. Commands in the session
+  can use the login and consume quota while it runs. The setup token stays in the relay.
+  The relay sends Messages and token-count requests to `https://api.anthropic.com`.
+  Conversations stay in their individual containers.
+
+  In every egress mode Claude uses `http://127.0.0.1:17892`. A trusted helper in the
+  session’s network namespace forwards this port over a Unix socket to the relay. Each
+  connection carries the helper’s session identity. The relay checks it against the signed
+  placeholder before reading the token. The relay uses its own outbound HTTPS route to
+  Anthropic. The agent keeps its original interfaces and mounts.
+  [Relay verification and Docker checks](sandbox/relay/README.md)
 
   `docker exec windlass-runner windlass-runner status` shows the local sign-in state.
-  `docker exec windlass-runner windlass-runner logout claude` removes the token from the current pairing and each previous
-  pairing, and prints one line per pairing.
-  If a sandbox still mounts the empty volume, the runner removes the volume when it destroys the last such sandbox. A running process that has already
-  loaded the token can retain it. The runner's `prune` command removes the login volume as well.
+  `docker exec windlass-runner windlass-runner logout claude` removes the relay and token for each
+  pairing. The runner's `prune` also removes the socket and login volumes.
+
+  Update the server first. Stop the previous runner and its Claude sessions, archive any needed
+  workspaces locally, then install the runner with its pinned Claude image. The runner stops legacy
+  sessions with credential mounts and refuses to reopen them. Recreate those sessions, revoke
+  the previously exposed setup token, and sign in with a fresh one. Restore archived work selectively.
+  Before rolling back to a runner that mounts credentials, log out and disable its Claude harness.
 - **What the runner cannot do, and what the platform cannot do.** The runner cannot start a container of
   another image, run anything on the machine outside the containers it made, touch a container or a volume
   it did not make, or reach a session that did not hand it a ticket. Each Windlass turn is
@@ -2237,6 +2276,43 @@ while the item has it; the item is cancelled instead, and the agent and what it 
 item is filed on its repository's Work view ("New work item…") or through the API below, and has a page
 of its own (`/items/<id>`) with its step, its log, its verdicts and its cost. The home screen lists, under
 "Needs you", every item that asks its person something.
+
+### Feature orchestration
+
+Select **Orchestrate** when filing a feature, send `"mode": "orchestrate"` to `POST /api/items`, or use the
+GitHub command `@windlass orchestrate` or the `windlass:orchestrate` label. Single is the default.
+An issue with the `bug` label runs as a single item and the issue reply explains the override.
+
+The planner reads the repository and proposes two to six subtasks with owned paths, dependencies,
+acceptance checks and individual caps. The feature starts with three times the single-item allowance
+in each dimension. Planning and children must leave four turns for the summary, review and a retry of each.
+One sixth of the single-item tokens, active seconds and hosted seconds is also reserved, rounded up.
+At the default limits that is 1M tokens, 40 active minutes and 20 hosted minutes. A feature budget
+raise specifies new limits and can add at most one single-item allowance in each dimension per raise. Each subtask needs two turns for implementation and verification, and at least 10% of the single-item
+tokens, active time and hosted time, with minimums of 1,000 tokens and 60 seconds of each time allowance.
+Each dimension is capped at the single-item limit. The approval question shows
+the proposed split. A client can answer plan questions or edit the split using `edit_plan` with the
+displayed version. `approve_plan` requires that same version and answered questions. On
+`item_conflict`, fetch the item again. A single-item suggestion needs an explicit choice.
+
+Approval requires saved checks and evidence of push CI on the planned Windlass branches. It opens
+a draft PR on `windlass/feature-<item-id>`. When GitHub refuses drafts, it opens an ordinary PR
+whose description marks the feature as in progress. Each child starts from that branch and
+has its own session. Passing local checks and passing CI on the child's pushed SHA let the platform
+fast-forward the feature branch. Repositories using only pull-request workflows need a push or
+external check for child commits. The preflight reads enabled Actions workflows and their branch filters. It also recognizes successful
+external checks or statuses on a prior standalone Windlass push. A missing child check offers a wait
+for late CI. Stopping there ends orchestration and offers handover of the last integrated head. Child questions appear
+in Needs you with the feature name. A stopped child can prompt up to two revised plans, each requiring
+approval. Cancel on the parent stops its children and keeps their branches. The final summary and
+whole-feature review go on the one feature PR. The owner merges it.
+
+The user action `setMachineDetails` accepts `machineId`, `whenToUse` and `tags`. The planner sees
+this inventory and the available machine capacity. All v1 children use the feature's selected place.
+Update the server before runners so it can read the optional host report. Older runners can keep serving
+work. `WLP_FACTORY_ORCHESTRATE=0` hides the filing control and blocks new orchestrated filings.
+
+### Work item availability
 
 Work items are off unless the deployment sets `WLP_ITEMS=1`. Off, the web app shows nothing of them (no
 work items on a repository's page, no "Needs you" for items, no API tokens on the Settings page, and an

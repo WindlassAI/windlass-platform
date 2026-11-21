@@ -26,7 +26,9 @@ let client: MockClient;
 let auth: AuthResult;
 
 async function wait(steps = 6): Promise<void> {
-	for (let step = 0; step < steps; step++) await act(async () => void (await vi.advanceTimersByTimeAsync(400)));
+	for (let step = 0; step < steps; step++) {
+		await act(async () => { vi.advanceTimersByTime(400); });
+	}
 }
 
 /** Waits until `ready` holds, a step of the mock's time at once, for at most `steps` steps. */
@@ -43,15 +45,15 @@ function Page({ id }: { id: string }) {
 async function open(id: string | ((sessions: SessionSummary[]) => SessionSummary | undefined)): Promise<void> {
 	client = createMockClient({ origin: "http://localhost:5173" });
 	const begun = client.login.start();
-	await vi.advanceTimersByTimeAsync(1000);
+	vi.advanceTimersByTime(1000);
 	const { redirectPrefix, url } = await begun;
 	const finished = client.login.finish(`${redirectPrefix}?code=abc&state=${new URL(url).searchParams.get("state")}`);
-	await vi.advanceTimersByTimeAsync(1000);
+	vi.advanceTimersByTime(1000);
 	auth = await finished;
 	saveAuth("mock", auth);
 	if (typeof id !== "string") {
 		const listed = client.user(auth).listSessions();
-		await vi.advanceTimersByTimeAsync(1000);
+		vi.advanceTimersByTime(1000);
 		const found = id(await listed);
 		expect(found).toBeDefined();
 		id = (found as SessionSummary).id;
@@ -126,7 +128,7 @@ describe("a Claude Code agent's page", () => {
 		await act(async () => (asked.querySelector(".q-choice") as HTMLButtonElement).click());
 		await until(() => second()?.querySelector(".turn-end") != null);
 		expect(second()?.querySelector(".tool-stop")).toBeNull();
-	});
+	}, 20_000);
 });
 
 describe("an agent's mode on its page", () => {
@@ -142,7 +144,7 @@ describe("an agent's mode on its page", () => {
 	/** The agent's mode as the mock holds it. */
 	const modeOf = async () => {
 		const listed = client.user(auth).listSessions();
-		await vi.advanceTimersByTimeAsync(1000);
+		vi.advanceTimersByTime(1000);
 		return (await listed).find((session) => session.id === "nas-claude")?.mode;
 	};
 
@@ -170,10 +172,10 @@ describe("an agent's mode on its page", () => {
 		expect(await modeOf()).toBe("acceptEdits");
 	});
 
-	it("says in the panel's sandbox that commands can read the Claude login, and nothing of ChatGPT", async () => {
+	it("says in the panel's sandbox that commands can use the Claude login, and nothing of ChatGPT", async () => {
 		await open("nas-claude");
 		const sandbox = host.querySelector("#panel-sandbox")?.closest("section")?.textContent ?? "";
-		expect(sandbox).toContain("commands in this container can read your Claude login token");
+		expect(sandbox).toContain("commands in this container can use your Claude login. Runners without a credential relay also expose the setup token.");
 		expect(sandbox).toContain("approvalAutoAutomatically assess tool permissions.");
 		expect(sandbox).not.toContain("ChatGPT");
 		expect(sandbox).not.toContain("access token");

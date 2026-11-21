@@ -459,6 +459,8 @@ export interface RunTurnInput {
 	 */
 	onPublish?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 	/** A work item's agent files its report; returns what the agent is told. Not given with `onPublish`. */
+	onPlan?: RunTurnInput["onReport"];
+	planner?: boolean;
 	onReport?: (request: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
 	onReview?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 	reportScreenshots?: boolean;

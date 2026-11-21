@@ -459,7 +459,7 @@ describe("the start composer's agent picker", () => {
 		agents();
 		agent("claude");
 		expect(sandboxLine()).toContain("runs in Auto mode");
-		expect(sandboxLine()).toContain("commands can read your Claude login token");
+		expect(sandboxLine()).toContain("commands can use your Claude login. Runners without a credential relay also expose the setup token.");
 		expect(sandboxLine()).not.toContain("access token");
 		expect(sandboxLine()).not.toContain("without asking");
 		// The sandbox's row, in nas's sandboxes: its facts in a few words, and in sentences for its title.
@@ -469,7 +469,7 @@ describe("the start composer's agent picker", () => {
 		const row = document.querySelector('.ui-pop-sub [aria-checked="true"]') as HTMLElement;
 		expect(row.querySelector(".ui-item-description")?.textContent).toBe("Auto mode · network on · Claude login readable");
 		expect(row.title).toContain("runs in Auto mode");
-		expect(row.title).toContain("commands can read your Claude login token");
+		expect(row.title).toContain("commands can use your Claude login. Runners without a credential relay also expose the setup token.");
 		expect(row.title).not.toContain("ChatGPT");
 		expect(row.title).not.toContain("runs every call without asking");
 	});

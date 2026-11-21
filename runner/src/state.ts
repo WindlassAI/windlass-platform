@@ -6,6 +6,8 @@ import { MACHINE_PROFILES, type MachineProfile } from "../../server/src/runner/p
 import { MACHINE_ID, validAllowedProfiles } from "../../server/src/runner/control.js";
 import { list, object, is, text, json, nullable } from "../../server/src/runner/check.js";
 import { NAME } from "../../server/src/sandbox/provider.js";
+import { egressFlags, open, restricted, type Egress } from "./egress-policy.js";
+import { egressMode } from "../../server/src/runner/control.js";
 import manifest from "../package.json";
 
 export const VERSION = manifest.version;
@@ -79,11 +81,29 @@ export function pairingProfiles(id: string, requested?: MachineProfile[]): Machi
 	if (!validAllowedProfiles(stored)) throw new RunnerError("Invalid profile policy in the runner state volume. Start the runner with --allow-profile docker-hardened to reset it.");
 	return stored;
 }
+const egressFile = (id: string) => `egress-${id}.json`;
+const validEgress = object({ mode: egressMode, allow: list(text(253), 64) });
+export function pairingEgress(id: string, requested?: Egress): Egress {
+	if (requested) {
+		save(egressFile(id), requested);
+		return requested;
+	}
+	const stored = read(egressFile(id));
+	if (stored === undefined) return open;
+	if (!validEgress(stored)) throw new RunnerError("Invalid egress policy. Set --egress to reset it.");
+	return egressFlags(stored.mode, stored.allow.length ? stored.allow.join(",") : undefined)!;
+}
+export function egressNote(id: string) {
+	if (read(egressFile(id)) === undefined) return "Network egress is open for this existing pairing. Start the runner with --egress restricted to opt in.";
+	const { mode, allow } = pairingEgress(id);
+	return `Network egress is ${mode}.${allow.length ? " Allowed hosts: " + allow.join(", ") : ""}`;
+}
 export function storePair(current: Identity, key: KeyObject, platform: string, profiles: MachineProfile[] = ["docker-hardened"]) {
 	const prior = loadPair();
 	const previous = prior ? [...prior.previous, prior.current].filter(m => m.machineId !== current.machineId) : [];
 	// Commit the policy before publishing the new key, including for standalone pairing.
 	save(policyFile(current.machineId), profiles);
+	save(egressFile(current.machineId), restricted);
 	save("pair.json", { current, previous, platform, key: key.export({ type: "pkcs8", format: "pem" }).toString() });
 	return { current, previous, key, platform };
 }

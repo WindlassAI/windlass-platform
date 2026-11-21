@@ -2,17 +2,19 @@ import { createInterface } from "node:readline/promises";
 import { setTimeout as wait } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { boolean, count, is, nullable, object, optional, text } from "../../server/src/runner/check.js";
-import { REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
+import { validMachineName, REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
 import { MACHINE_PROFILES, machineProfile, PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
 import type { Socket } from "node:net";
 import { audit, showLog } from "./audit.js";
+import { resolveMachineName } from "./machine-name.js";
 import { category, control, pair } from "./control.js";
 import { cleanClaudeOutput } from "./claude-output.js";
-import { changeClaudeLogin, claudeSignIn } from "./harness-login.js";
+import { changeClaudeLogin, claudeSignIn, retireClaudeRelay } from "./harness-login.js";
 import { harnessImage, shotsImage } from "./policy.js";
 import { Executor } from "./docker-executor.js";
 import { requestPair, requestLoginReport, waitForPair } from "./pair-command.js";
-import { forgetKey, save, loadPair, pairingProfiles, tryLock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
+import { egressFlags } from "./egress-policy.js";
+import { egressNote, pairingEgress, forgetKey, save, loadPair, pairingProfiles, tryLock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
 
 const positiveInteger = is<number>(v => count(v) && v > 0);
 // Accept the first C3b snapshot on upgrade. Only harness.json records opt-in on new writes.
@@ -31,7 +33,8 @@ async function main() {
 		if (key === "CLAUDE_CODE_OAUTH_TOKEN" || (value && cleanClaudeOutput(value) !== value)) delete process.env[key];
 	}
 	const { positionals, values } = parseArgs({ allowPositionals: true, options: {
-		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
+		egress: { type: "string" }, "egress-allow": { type: "string" },
+		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, name: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
 	} });
 	const command = positionals[0] ?? "run";
 	const auth = command === "login" || command === "logout";
@@ -39,7 +42,11 @@ async function main() {
 	const validCommand = auth ? positionals.length === 2 && positionals[1] === "claude"
 		: positionals.length <= 1 && ["run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
-		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune|login claude|logout claude] [--platform URL] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--allow-profile ID ...].");
+		throw new RunnerError("Use windlass-runner [run|pair|status|log|prune|login claude|logout claude] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]].");
+	if (values.name !== undefined && (!["run", "pair"].includes(command) || !validMachineName(values.name)))
+		throw new RunnerError("Use --name with run or pair and a printable name of 1 to 64 characters.");
+	const requestedEgress = egressFlags(values.egress, values["egress-allow"]);
+	if (requestedEgress && command !== "run") throw new RunnerError("Use --egress and --egress-allow with run.");
 	const flags = values["allow-profile"];
 	if (flags && (command !== "run" || flags.some(id => !machineProfile(id))))
 		throw new RunnerError("Use --allow-profile with run and a profile ID: docker-hardened or docker-windlass-sandbox.");
@@ -74,7 +81,7 @@ async function main() {
 			return;
 		}
 		if (command !== "status" && !tryLock()) {
-			if (command === "pair") return requestPair(values.platform);
+			if (command === "pair") return requestPair(values.platform, values.name);
 			if (command === "prune") throw new RunnerError("The runner service or another command is using this state volume. Stop the runner container or finish the command, then run prune in a one-off runner container with the same state volume and Docker socket.");
 			// Docker's restart policy would immediately relaunch a service that exits here.
 			console.error("Another runner holds the state lock. Waiting to retry.");
@@ -92,6 +99,7 @@ async function main() {
 		if (command === "status") {
 			const offered = status && (harness ?? status.claude);
 			console.log(`Runner ${VERSION}, protocol ${PROTOCOL_VERSION}. ${paired && !serviceRunning() ? "Stopped" : status?.connection ?? (paired ? "Paired" : "Unpaired")}`);
+			if (paired) console.log(egressNote(paired.current.machineId));
 			const caps = status ?? limits;
 			console.log(`Running turn limit: ${caps.maxTurns ?? "no limit"}`);
 			console.log(`Running sandbox limit: ${caps.maxRunning ?? "no limit"}`);
@@ -123,6 +131,7 @@ async function main() {
 			return;
 		}
 		let platform = origin(values.platform ?? paired?.platform ?? "");
+		let name = await resolveMachineName(values.name);
 		let needsPair = command === "pair" || !paired?.key;
 		let client: Socket | undefined;
 		let resumePlatform: string | undefined;
@@ -142,9 +151,10 @@ async function main() {
 		while (!abort.signal.aborted) {
 			let idle: string;
 			if (needsPair) {
-				const result = await pair(platform, abort.signal, say, profiles);
+				const result = await pair(platform, abort.signal, say, name, profiles);
 				if (abort.signal.aborted) { client?.end(); return; }
 				if (result.paired) {
+					if (paired) await retireClaudeRelay(new Executor(paired.current, limits));
 					paired = result.paired; resumePlatform = undefined;
 					client?.end(); client = undefined;
 					if (command === "pair") return;
@@ -165,7 +175,14 @@ async function main() {
 				// the wrong account: the lock holder shuts its links before making a new key.
 				const connection = new AbortController();
 				const active = AbortSignal.any([abort.signal, connection.signal]);
-				const owner = new Executor(paired.current, limits, values.screenshots, claude, pairingProfiles(paired.current.machineId, profiles));
+				const policy = pairingEgress(paired.current.machineId, requestedEgress);
+				const note = egressNote(paired.current.machineId);
+				console.log(note);
+				audit(null, null, "egress", note);
+				const owner = new Executor(paired.current, limits, values.screenshots, claude, pairingProfiles(paired.current.machineId, profiles), policy);
+				// Quarantine old mounts even when the platform is offline. Docker health refresh
+				// reports and retries an unavailable daemon. Legacy sessions cannot reconnect.
+				await owner.secureCredentialPath().catch(() => {});
 				const local = waitForPair(active, () => {}, async signedIn => {
 					await owner.serial(() => owner.loginChanged(signedIn));
 					owner.publishReport?.();
@@ -176,16 +193,17 @@ async function main() {
 				let removed: string | undefined;
 				try {
 					removed = await control(owner, paired.key, platform, active, saveStatus,
-						status?.machineId === paired.current.machineId ? status.idleSuspendMs ?? undefined : undefined);
+						status?.machineId === paired.current.machineId ? status.idleSuspendMs ?? undefined : undefined, name);
 				} finally { connection.abort(); }
 				const request = await local;
 				if (request && !abort.signal.aborted) {
+					if (request.name !== undefined) name = await resolveMachineName(request.name);
 					resumePlatform = platform;
 					client = request.client; platform = request.platform ?? platform; needsPair = true;
 					continue;
 				}
 				if (!removed) return;
-				forgetKey();
+				try { await retireClaudeRelay(owner); } finally { forgetKey(); }
 				paired = { ...paired, key: null };
 				idle = removed;
 			}
@@ -195,6 +213,7 @@ async function main() {
 				audit(null, null, "idle", idle); say(idle);
 				client?.end(); client = undefined;
 			});
+			if (requested?.name !== undefined) name = await resolveMachineName(requested.name);
 			client = requested?.client;
 			platform = requested?.platform ?? platform;
 			needsPair = true;
@@ -203,6 +222,6 @@ async function main() {
 }
 void main().catch(error => {
 	console.error(error?.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
-		? "Give --allow-profile a profile ID, each sandbox limit a positive whole number and --platform a URL." : category(error));
+		? "Give --egress a mode, --egress-allow a hostname list, --allow-profile a profile ID, each sandbox limit a positive whole number and --platform a URL." : category(error));
 	process.exitCode = 1;
 });

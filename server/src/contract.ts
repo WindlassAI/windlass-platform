@@ -30,6 +30,8 @@ export type SandboxProfileId =
 	| "firecracker"
 	| "agentos";
 
+export type EgressMode = "open" | "restricted" | "none";
+
 export interface SandboxProfile {
 	id: SandboxProfileId;
 	/** Short display name, e.g. "Docker + Windlass sandbox". */
@@ -42,6 +44,9 @@ export interface SandboxProfile {
 	approval: "auto" | "full";
 	/** Whether commands the agent runs can reach the network. */
 	commandNetwork: boolean;
+	commandNetworkText?: string;
+	/** Runner-confirmed credential isolation for Claude sessions using this profile. */
+	claudeRelay?: true;
 	/**
 	 * Whether commands the agent runs can read the session's access token: the short-lived token of the
 	 * user's ChatGPT sign-in that each turn is handed. It lasts about an hour, and whoever reads it
@@ -81,7 +86,7 @@ export interface PlatformInfo {
 	 * `reviewer` says whether a second agent reviews each handed-over change (WLP_FACTORY_REVIEWER=on),
 	 * so that the Factory page can say there is none before any item exists.
 	 */
-	items?: { reviewer: boolean };
+	items?: { reviewer: boolean; orchestrate?: boolean };
 }
 
 /**
@@ -91,7 +96,7 @@ export interface PlatformInfo {
  *   docker run -d --name windlass-runner --restart unless-stopped \
  *     -v /var/run/docker.sock:/var/run/docker.sock \
  *     -v windlass-runner:/var/lib/windlass-runner \
- *     <runnerImage> --platform <platformUrl>
+ *     <runnerImage> --platform <platformUrl> [--name "Build host"]
  *
  * For rootless Docker the socket to mount is `$XDG_RUNTIME_DIR/docker.sock`. To update, the same
  * command after `docker rm -f windlass-runner`: the volume keeps the key, so the machine stays paired.
@@ -677,7 +682,7 @@ export type Verified = ({
  * from the changes: `Verified.changedAfter`.
  */
 export interface VerifiedFlag {
-	kind: "tests_removed" | "tests_skipped" | "checks_changed" | "exit_ignored" | "agent_instructions_changed";
+	kind: "tests_removed" | "tests_skipped" | "checks_changed" | "exit_ignored" | "agent_instructions_changed" | "outside_scope";
 	/** What it was seen in: paths, at most a few. */
 	where: string[];
 }
@@ -1023,13 +1028,39 @@ export interface MachineSandbox {
 	usedAt: number;
 }
 
+/** Docker may supply a short or full container ID as the local hostname. */
+export function isMachineIdName(name: string): boolean {
+	return /^(?:[0-9a-f]{12}|[0-9a-f]{64})?$/i.test(name.trim());
+}
+
+/** An OS as runners report it ("linux", "darwin") by the name people use: "Linux", "macOS". */
+function osName(os: string | undefined): string {
+	const trimmed = (os ?? "").trim();
+	const known: Record<string, string> = { linux: "Linux", darwin: "macOS", windows: "Windows", win32: "Windows" };
+	return known[trimmed.toLowerCase()] ?? trimmed;
+}
+
+export function machineLabel(machine: { name: string; os?: string; arch?: string }): string {
+	const name = machine.name.trim();
+	if (!isMachineIdName(name)) return name;
+	const kind = [osName(machine.os), machine.arch?.trim()].filter(Boolean).join(" ");
+	const what = kind ? kind + " machine" : "Machine";
+	return name ? what + " (" + name.slice(0, 6).toLowerCase() + ")" : what;
+}
+
 /** One of the user's machines, as the Machines page lists it. */
-export interface MachineSummary {
+export interface MachineDetails { whenToUse: string; tags: string[] }
+export interface MachineSummary extends Partial<MachineDetails> {
+	turns?: { running: number; max: number | null; queued: number };
+	host?: { cpus: number; sandboxCpus: number; memoryBytes: number; memoryFreeBytes: number; load1: number | null };
+	screenshots?: boolean;
+	egress?: EgressMode;
+	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
 	harnesses?: Array<{ id: "claude"; adapter: string; image: string; signIn: "token" | "none" | "unknown"; options?: HarnessOptions }>;
 	machineId: string;
-	/** What the machine said of itself when it was paired: its host name, OS and architecture. Nobody checked them. */
+	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
 	os: string;
 	arch: string;
@@ -1086,7 +1117,7 @@ export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | 
  * the others end by themselves: "capacity" a free turn or sandbox, or the day's allowance; "machine" the
  * user's machine; "review_cap" fewer of the user's items in review; "ci" CI on the pushed commit.
  */
-export type WaitReason = "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
+export type WaitReason = "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
 export interface Wait {
@@ -1107,7 +1138,7 @@ export interface Waiting extends Wait {
  * are builder turns; "review" is a turn of the second agent; "gate" and "handoff" are the platform's decisions; "publish" is the
  * platform pushing; "ci" and "merged" are waits on GitHub.
  */
-export type StepKind = "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "review" | "handoff" | "merged";
+export type StepKind = "subtasks" | "summary" | "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "review" | "handoff" | "merged";
 
 /** The step a run is at. */
 export interface ItemStep {
@@ -1170,7 +1201,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session could not start the agent's turn (an old Windlass, a conversation it cannot open), in its words. */
-export type QuestionKind = "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
+export type QuestionKind = "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1182,7 +1213,7 @@ export type QuestionKind = "plan_approval" | "rounds" | "budget" | "no_change" |
  *   hand_over   hand the pull request to the person as it is, with its verdict
  *   give_up     the item fails
  */
-export type ChoiceId = "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
+export type ChoiceId = "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
 
 /** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
 export interface ItemQuestion {
@@ -1428,6 +1459,8 @@ export interface RoundCaps {
 
 /** An item as the user's index lists it. */
 export interface ItemSummary {
+	mode?: ItemMode;
+	parent?: { itemId: string; key: string; title: string } | null;
 	id: string;
 	title: string;
 	/** The repository of the user's GitHub connection it is on; `branch` is the base its pull request goes into. */
@@ -1459,6 +1492,8 @@ export interface ItemSummary {
 
 /** An item's page. */
 export interface ItemView extends ItemSummary {
+	plan?: FeaturePlan | null;
+	children?: ItemSummary[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
 	report: ItemReport | null;
 	/** Last ten, oldest first. */
@@ -1467,7 +1502,7 @@ export interface ItemView extends ItemSummary {
 	reviewNone: string | null;
 	task: ItemTask;
 	/** The run it is in, or ended last, with the rounds a run allows; null before it was started. */
-	run: (ItemRun & { caps: RoundCaps }) | null;
+	run: (ItemRun & { caps: RoundCaps; failureFingerprint?: string | null }) | null;
 	/** The commit pushed last. */
 	head: string | null;
 	/** Its log, oldest first: the runs and steps before the current one are read from it. */
@@ -1476,7 +1511,36 @@ export interface ItemView extends ItemSummary {
 	verdicts: Verdict[];
 }
 
+export type ItemMode = "single" | "orchestrate";
+
+export interface PlanSubtask {
+	key: string;
+	title: string;
+	brief: string;
+	acceptance: string[];
+	dependsOn: string[];
+	owns: string[];
+	budget: ItemBudget;
+}
+
+export interface FeaturePlanEdit {
+	questions: { id: string; text: string; options?: string[]; answer?: string }[];
+	spec: { goal: string; requirements: string[]; outOfScope: string[]; acceptance: string[] };
+	subtasks: PlanSubtask[];
+	singleSuggested: string | null;
+}
+
+export interface FeaturePlan extends FeaturePlanEdit {
+	version: number;
+	status: "proposed" | "approved" | "superseded";
+	budget: ItemBudget;
+	compare: { singleBudget: ItemBudget };
+	approvedBy?: string;
+	approvedAt?: number;
+}
+
 export interface CreateItemInput {
+	mode?: ItemMode;
 	/** A repository of the user's GitHub connection, by GitHub's id for it, and the base branch (default: the repository's default branch). */
 	repository: { id: GithubId; branch?: string };
 	/** At most MAX_TITLE_CHARS. */
@@ -1498,6 +1562,10 @@ export interface CreateItemInput {
 
 /** What a person does to an item: each is refused (`item_conflict`) where the item's state does not allow it. */
 export type ItemAction =
+	| { kind: "cancel_subtask"; key: string }
+	| { kind: "edit_plan"; version: number; plan: FeaturePlanEdit }
+	| { kind: "approve_plan"; version: number }
+	| { kind: "run_single" }
 	/** A draft: start it. */
 	| { kind: "start" }
 	| { kind: "cancel" }
@@ -1704,6 +1772,7 @@ export interface UserActions {
 	finishClaudeLogin(input: { machineId: string; code: string }): Promise<{ signedIn: true }>;
 	cancelClaudeLogin(input: { machineId: string }): Promise<{ cancelled: true }>;
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
+	setMachineDetails(input: { machineId: string; whenToUse: string; tags: string[] }): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
 	/** The user's work items, the newest first. */
 	listItems(): Promise<ItemSummary[]>;

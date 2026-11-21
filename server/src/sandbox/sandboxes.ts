@@ -367,6 +367,7 @@ async function forgetTokenFile(id: string): Promise<void> {
 /** What the hosted provider and a runner's differ in. */
 export type DockerSandboxOptions = {
 	cpus?: number;
+	network?: { name: string; env: Record<string, string>; mode: string };
 	/** The sandbox image; windlass-platform-sandbox:latest when left out. */
 	image?: string;
 	shotsImage?: string;
@@ -384,12 +385,12 @@ export type DockerSandboxOptions = {
 	 * it also takes old sign-ins out of (volumes.ts); a runner's is its own, so the two never share one.
 	 */
 	dataVolume(uid: string): Promise<string>;
-	claudeVolume?: never;
+	claudeRelay?: never;
 } | {
-	/** Set only by the runner after it checks the volume belongs to this pairing. */
+	/** Runner-issued placeholder and immutable helper identity for a new Claude session. */
 	machine: string;
 	image: string;
-	claudeVolume: string;
+	claudeRelay(): Promise<{ env: string[]; nonce: string }>;
 });
 
 export class DockerSandboxes implements Sandboxes {
@@ -451,19 +452,20 @@ export class DockerSandboxes implements Sandboxes {
 
 	async create(input: CreateSandboxInput): Promise<string> {
 		assertUid(input.uid);
-		const claude = this.options.claudeVolume !== undefined;
+		const claude = this.options.claudeRelay !== undefined;
 		if (claude !== (input.harness === "claude")) throw new SandboxUserError("Claude Code runs only on a machine offering it.");
 		if (claude && (input.profile !== "docker-hardened" || input.screenshots))
-			throw new SandboxUserError("The Claude login volume requires the hardened Claude Code image.");
+			throw new SandboxUserError("Claude Code requires the hardened Claude Code image.");
 		const image = input.screenshots ? this.shotsImage : this.image;
 		const profile = findProfile(input.profile);
 		const flags = PROFILE_RUN_FLAGS[input.profile];
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
 		// The reviewer cannot share transcripts or project-wide MCP approvals with the user's other sessions.
-		const volume = input.privateData || this.options.claudeVolume !== undefined ? null : await this.options.dataVolume(input.uid);
-		// Older runners adopt only wlp-session-<12 hex>. A login mount must be outside that namespace from creation.
+		const volume = input.privateData || this.options.claudeRelay !== undefined ? null : await this.options.dataVolume(input.uid);
+		// Older runners adopt only wlp-session-<12 hex>. Keep Claude sessions outside that namespace from creation.
 		const id = (claude ? "claude-" : "") + randomId(6);
 		const name = containerName(id);
+		const relay = await this.options.claudeRelay?.();
 		const result = await docker(
 			[
 				"run",
@@ -481,10 +483,11 @@ export class DockerSandboxes implements Sandboxes {
 				"--label",
 				`${LABEL}.profile=${input.profile}`,
 				...(this.machine === "" ? [] : ["--label", `${MACHINE_LABEL}=${this.machine}`]),
-				...commonRunFlags(this.options.cpus ?? 1),
+				...commonRunFlags(this.options.cpus ?? 1, this.options.network?.name),
+				...(this.options.network ? ["--label", `${LABEL}.egress=${this.options.network.mode}`,
+					...Object.entries(this.options.network.env).flatMap(([k, v]) => ["-e", k + "=" + v])] : []),
 				...flags,
-				...(this.options.claudeVolume ? ["--label", `${LABEL}.harness=claude`, "--log-driver", "none",
-					"--mount", `type=volume,src=${this.options.claudeVolume},dst=/run/wlp-harness/claude,readonly,volume-nocopy`] : []),
+				...(relay ? ["--label", `${LABEL}.harness=claude`, "--label", `${LABEL}.relay-session=${relay.nonce}`, "--log-driver", "none", ...relay.env] : []),
 				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
 				image,
 			],

@@ -351,6 +351,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			finishClaudeLogin: input => act("finishClaudeLogin", input),
 			cancelClaudeLogin: input => act("cancelClaudeLogin", input),
 			removeMachine: (input) => act("removeMachine", input),
+			setMachineDetails: input => act("setMachineDetails", input),
 			setMachineSecrets: (input) => act("setMachineSecrets", input),
 			listItems: () => act("listItems"),
 			item: (id) => act("item", id),

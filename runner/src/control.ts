@@ -1,5 +1,4 @@
 import { generateKeyPairSync, randomUUID, sign, type KeyObject } from "node:crypto";
-import { hostname } from "node:os";
 import { setTimeout as wait } from "node:timers/promises";
 import {
 	CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, PAIRING_POLL_MS, PAIRING_TTL_MS, REFUSED_RETRY_MS, REPORT_MS,
@@ -50,11 +49,11 @@ async function post(platform: string, path: string, body: PairRequest | PairPoll
 	try { value = JSON.parse(Buffer.concat(parts).toString("utf8")); } catch { /* Status still tells us whether to retry. */ }
 	return { status: response.status, value };
 }
-export async function pair(platform: string, signal: AbortSignal, say: (message: string) => void, profiles?: MachineProfile[]) {
+export async function pair(platform: string, signal: AbortSignal, say: (message: string) => void, name: string, profiles?: MachineProfile[]) {
 	const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 	const deadline = AbortSignal.any([signal, AbortSignal.timeout(PAIRING_TTL_MS)]);
 	const request: PairRequest = { publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
-		name: hostname().slice(0, 64), os: process.platform, arch: process.arch, runnerVersion: VERSION };
+		name, os: process.platform, arch: process.arch, runnerVersion: VERSION };
 	const again = "restart the container or run `windlass-runner pair` to get a new code.";
 	let response;
 	for (let attempt = 1; ; attempt++) {
@@ -111,7 +110,7 @@ async function openSocket(opening: Promise<WebSocket>, signal: AbortSignal) {
 	});
 }
 
-export async function control(owner: Executor, key: KeyObject, platform: string, signal: AbortSignal, saveStatus: (connection: string, idleSuspendMs?: number) => void, initialIdle: number | undefined) {
+export async function control(owner: Executor, key: KeyObject, platform: string, signal: AbortSignal, saveStatus: (connection: string, idleSuspendMs?: number) => void, initialIdle: number | undefined, name: string) {
 	// Gateway diagnostics can contain the access URL. Only our categorised errors go to the owner.
 	process.env.RIVET_LOG_LEVEL = "silent";
 	const { createClient } = await import("rivetkit/client");
@@ -203,11 +202,12 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				let phase: "challenge" | "welcome" | "online" = "challenge";
 				let heard = Date.now();
 				let loginReady = false;
+				let policyReady: Promise<void>;
 				lastSent = Date.now();
 				let lastReport = "";
 				owner.publishReport = () => {
-					if (phase !== "online" || ws.readyState !== 1) return;
-					const report = owner.report();
+					if (!loginReady || phase !== "online" || ws.readyState !== 1) return;
+					const report = { ...owner.report(), name };
 					const next = JSON.stringify(report);
 					if (next !== lastReport) { send(report); lastReport = next; lastSent = Date.now(); }
 				};
@@ -239,6 +239,9 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						mayMaintain = true;
 						status("Online");
 						lastRefresh = Date.now();
+						policyReady = owner.checkAuthenticatedNetwork();
+						await policyReady;
+						if (active.aborted) return;
 						await owner.welcome(active);
 						loginReady = !active.aborted;
 						if (!active.aborted) owner.publishReport?.();
@@ -256,7 +259,8 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 							owner.publishReport?.();
 						}
 					} else if (f.kind === "attach") {
-						if (sessions.get(f.sessionId)?.refused) return;
+						await policyReady;
+						if (active.aborted || sessions.get(f.sessionId)?.refused) return;
 						attaching.set(f.sessionId, f.ticket);
 						try {
 							const client = await currentClient();

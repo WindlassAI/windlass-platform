@@ -16,7 +16,7 @@ import { promisify } from "node:util";
 import { AcpConnection, LineSplitter } from "../server/src/sandbox/acp.js";
 import { docker, LABEL_ARG, MACHINE_LABEL, SHOTS_IMAGE } from "../server/src/sandbox/docker.js";
 import { containerName, DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
-import { COMMON_RUN_FLAGS } from "../server/src/sandbox/profiles.js";
+import { COMMON_RUN_FLAGS, commonRunFlags } from "../server/src/sandbox/profiles.js";
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
 import { PAIRING_TTL_MS, REFUSED_RETRY_MS, refuse, type Refusal } from "../server/src/runner/control.js";
 import { RUNNER_GRACE_MS } from "../server/src/runner/protocol.js";
@@ -311,11 +311,11 @@ for (const method of ["spawn", "spawnSync"]) {
   if (file === "docker") {
    if (/sk-ant-oat01-[A-Za-z0-9_-]+/.test(JSON.stringify([args, opts?.env ?? process.env]))) throw Error("credential passed to docker");
    if (args[0] === "run" && args.at(-1) === "wlp-claude-acp") {
-    const flags = ${JSON.stringify(COMMON_RUN_FLAGS)};
+    const flags = ${JSON.stringify(commonRunFlags(1, "none"))};
     if (!JSON.stringify(args).includes(JSON.stringify(flags).slice(1,-1))
-      || !args.some(v => v.includes("src=${volume},") && v.includes("dst=/run/wlp-harness/claude") && v.includes("readonly") && v.includes("volume-nocopy"))) throw Error("unsafe options probe");
+      || args.includes("--mount") || !args.includes("CLAUDE_CODE_OAUTH_TOKEN=options-only")) throw Error("unsafe options probe");
     fs.appendFileSync(${JSON.stringify(probeLog)}, args.at(-2) + "\\n");
-    // Run the fixture in the actual probe container with its flags and login mount.
+    // Run the fixture in the actual probe container with its offline flags.
     const fixture = ${JSON.stringify(join(root, "fixtures/acp-agent"))};
     args = [...args.slice(0,-2), "--mount", "type=bind,src=" + fixture + ",dst=/fixture,readonly", args.at(-2),
      ...(fs.existsSync(${JSON.stringify(failureFlag)}) ? ["false"] : ["node", "/fixture/agent.mjs"])];
@@ -574,14 +574,9 @@ require("node:module").syncBuiltinESMExports();`);
 			const box = await inspect(name);
 			assert.equal(box.Config.Image, claudePin); assert.equal(box.Config.Labels["dev.windlass-platform.harness"], "claude");
 			assert.equal(box.HostConfig.LogConfig.Type, "none");
-			assert.ok(box.Mounts.some((m: { Name?: string; Destination: string; RW: boolean }) => m.Name === volume && m.Destination === "/run/wlp-harness/claude" && !m.RW));
-			assert.ok(box.HostConfig.Mounts.some((m: { Source: string; VolumeOptions?: { NoCopy?: boolean } }) => m.Source === volume && m.VolumeOptions?.NoCopy));
-			assert.ok(!box.Mounts.some((m: { Name?: string }) => m.Name?.startsWith("wlp-machine-")));
-			const stored = await docker(["exec", name, "sha256sum", path], { check: true });
-			assert.ok(stored.stdout.split(" ")[0] === createHash("sha256").update(token).digest("hex"), "Stored login differs from stdin");
-			const perms = await ch.request("run", { id, command: 'id -u; stat -c "%u %a" ' + path + '; test -r ' + path + ' && ! touch /run/wlp-harness/claude/write-test' });
-			assert.equal(perms.exitCode, 0); assert.equal(perms.stdout, "1000\n1000 400\n");
-			assert.match(perms.stderr, /read-only/i);
+			assert.deepEqual(box.Mounts, []);
+			assert.ok(box.Config.Env.includes("ANTHROPIC_BASE_URL=http://127.0.0.1:17892"));
+			assert.equal((await ch.request("run", { id, command: "test ! -e " + path })).exitCode, 0);
 			assert.equal((await ch.request("connect", { id }))?.harness, "claude");
 			await assert.rejects(ch.request("create", { profile: "docker-hardened" }), /different harness/);
 			await srv.attach(srv.other);
@@ -590,10 +585,12 @@ require("node:module").syncBuiltinESMExports();`);
 			assert.ok(!(await inspect(containerName(ordinary.slice(-12)))).Mounts.some((m: { Name?: string }) => m.Name?.startsWith("wlp-harness-")));
 			assert.equal((await windlass.request("run", { id: ordinary, command: "test ! -e " + path })).exitCode, 0);
 			await assert.rejects(windlass.request("readTextFile", { id, path }), /another session/);
-			ok("Only the pinned hardened Claude session mounts this machine's login, read-only, with a uid-1000 mode-0400 file.");
+			ok("The hardened Claude session has only the relay placeholder and no login mount.");
 
 			// Exercise prefix and body boundaries on both file descriptors. No credential in the command.
-			const echo = 't=$(cat ' + path + '); for fd in 1 2; do printf "before <%s" "${t:0:6}" >&$fd; sleep .1; printf %s "${t:6:12}" >&$fd; sleep .1; printf "%s> after\\n" "${t:18}" >&$fd; done';
+			const scrubFile = "/tmp/claude-scrub-fixture";
+			await docker(["exec", name, "sh", "-c", "printf %s%s sk-ant- oat01-output_fixture > " + scrubFile], { check: true });
+			const echo = 't=$(cat ' + scrubFile + '); for fd in 1 2; do printf "before <%s" "${t:0:6}" >&$fd; sleep .1; printf %s "${t:6:12}" >&$fd; sleep .1; printf "%s> after\\n" "${t:18}" >&$fd; done';
 			const expected = "before <[claude token]> after\n";
 			const outputs = ["", "", ""];
 			const collect = (fd: 1 | 2, text: string) => { outputs[fd] += text; };
@@ -605,7 +602,7 @@ require("node:module").syncBuiltinESMExports();`);
 			assert.ok(outputs[1] === expected && outputs[2] === expected, "start leaked or damaged a stream");
 			const answer = await ch.request("ask", { id, argv: ["bash", "-c", echo] });
 			assert.ok(answer?.stdout === expected && answer.stderr === expected, "ask leaked or damaged a result");
-			assert.ok(await ch.request("readTextFile", { id, path }) === "[claude token]", "readTextFile leaked the token");
+			assert.ok(await ch.request("readTextFile", { id, path: scrubFile }) === "[claude token]", "readTextFile leaked the token");
 			await writeFile(calls, "");
 			const status = await owner(["status"]);
 			assert.match(status.output, /Claude Code.*signed in/);
@@ -691,7 +688,7 @@ require("node:module").syncBuiltinESMExports();`);
 			assert.ok((await docker(["volume", "inspect", volume])).code !== 0, "Prune kept the login volume");
 			assert.ok((await docker(["container", "inspect", setupName])).code !== 0, "Prune left the setup-token container");
 			ok("Prune removes a leftover setup-token container.");
-			ok("Discovery preserves the harness and opt-in. Logout unlinks a mounted token, removes the detached volume and publishes none. Prune removes a signed-in volume.");
+			ok("Discovery preserves the harness and opt-in. Logout removes the relay and detached login volume and publishes none. Prune removes a signed-in volume.");
 			return;
 		}
 		if (shotsPin) {

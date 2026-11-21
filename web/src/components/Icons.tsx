@@ -327,3 +327,22 @@ export const FactoryIcon = (props: IconProps) => (
 		<path d="M2.5 13.5V7l3.5 2V7l3.5 2V3.5h4v10z" />
 	</Svg>
 );
+
+/** Orchestrated: one piece of work split into parts. */
+export const SplitIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<rect x="2.2" y="6.3" width="3.4" height="3.4" rx="0.8" />
+		<path d="M5.6 8h1.8M7.4 3.6v8.8M7.4 3.6h2.4M7.4 8h2.4M7.4 12.4h2.4" />
+		<rect x="9.8" y="2.3" width="3.6" height="2.6" rx="0.8" />
+		<rect x="9.8" y="6.7" width="3.6" height="2.6" rx="0.8" />
+		<rect x="9.8" y="11.1" width="3.6" height="2.6" rx="0.8" />
+	</Svg>
+);
+
+/** A single piece of work. */
+export const SingleIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<rect x="3.2" y="5.2" width="9.6" height="5.6" rx="1.4" />
+		<path d="M6 8h4" />
+	</Svg>
+);

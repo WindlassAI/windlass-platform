@@ -38,12 +38,13 @@ import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
-import { inSecondReview, ItemGlyph, ItemStages, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
+import { inSecondReview, ItemGlyph, ItemRow, ItemStages, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
 import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
 
 /** The steps in words. Planning is not offered yet; the rest are every step a run goes through. */
 const STEP_WORD: Record<StepKind, string> = {
+	subtasks: "Subtasks", summary: "Feature summary",
 	refine: "Planning",
 	implement: "Implementing",
 	gate: "Checks",
@@ -1010,6 +1011,10 @@ export function Item({ page }: { page: ItemPage }) {
 				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
 			</section>
 
+			{view.children?.length ? <section className="usage-section" aria-label="Subtasks">
+				<h2 className="usage-title">Subtasks</h2>
+				<ul className="agent-list">{view.children.map(child => <ItemRow key={child.id} item={child} now={now} why={child.question?.text} />)}</ul>
+			</section> : null}
 			{reading ? <ReadFirst view={view} acting={acting} /> : null}
 
 			<Verdicts view={view} now={now} />

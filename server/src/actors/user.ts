@@ -1,3 +1,4 @@
+import { plannerMachines } from "../machines/details.js";
 /**
  * `user`, key [uid]: a user's profile, the index of their sessions, and their ChatGPT sign-in.
  *
@@ -151,6 +152,7 @@ import { getSignIns } from "../signin/index.js";
 import { serverSealer } from "../signin/seal.js";
 import { ownerOfAccount } from "./account-email.js";
 import { USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
+import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
@@ -973,6 +975,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	let summary: SessionSummary;
 	try {
 		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : null;
+		if (repoUrl && machine?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
 		if (harness === "claude" && !offered) throw new UserError("This machine does not offer Claude Code.", { code: "bad_input" });
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
@@ -1018,7 +1021,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(item ? { item: { id: item.itemId, role: item.role } } : {}),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
-			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role } } : {}),
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && {owns: item.owns}) } } : {}),
 			title: summary.title,
 			titleIsTyped: !item && givenTitle !== null,
 			place: summary.place,
@@ -1286,8 +1289,15 @@ export const user = actor({
 		finishClaudeLogin: (c, input: { machineId: string; code: string }) => machineActions.finishClaudeLogin(c, input),
 		cancelClaudeLogin: (c, input: { machineId: string }) => machineActions.cancelClaudeLogin(c, input),
 		removeMachine: (c, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> => machineActions.removeMachine(c, input),
+		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()]); },
+		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
 		setMachineSecrets: (c, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> => machineActions.setMachineSecrets(c, input),
 		internalMachineCreated: (c, id: string): Promise<boolean> => machineActions.internalMachineCreated(c, id),
+		internalMachineSystem: async (c, id: string): Promise<{ os: string; arch: string } | null> => {
+			requireServiceFor(c, "call");
+			const [row] = await c.db.execute<{ os: string; arch: string }>("SELECT os, arch FROM machines WHERE id = ?", id);
+			return row ?? null;
+		},
 		internalMachineApproval: (c, id: string): Promise<{ login: string | null } | null> => machineActions.internalMachineApproval(c, id),
 		internalMachineChanged: async (c, id: string, facts: MachineUpdate | null): Promise<void> => {
 			await machineActions.internalMachineChanged(c, id, facts);
@@ -1314,6 +1324,7 @@ export const user = actor({
 		revokeApiToken: (c, id: string): Promise<ApiToken[]> => itemActions.revokeApiToken(c, id),
 		internalApiCreateItem: (c, input: { token: string; item: CreateItemInput }): Promise<ItemSummary> => itemActions.internalApiCreateItem(c, input, itemSession(c)),
 		internalApiItem: (c, input: { token: string; id: string }): Promise<ItemView> => itemActions.internalApiItem(c, input),
+		internalFeatureChild: (c, input: { parent: string; child: string; cancel?: boolean }) => itemActions.internalFeatureChild(c, input, itemSession(c)),
 		internalItemChanged: (c, summary: ItemSummary): Promise<void> => itemActions.internalItemChanged(c, summary),
 		internalItemFacts: (c, ids: string[] | string): ItemFacts => itemActions.internalItemFacts(c, typeof ids === "string" ? [ids] : ids),
 		internalRequestTurn: (c, request: TurnRequest): Promise<TurnAnswer> => itemActions.internalRequestTurn(c, request),
@@ -1656,6 +1667,10 @@ export const user = actor({
 		},
 
 		/** The setup command of a session's repository, for that session when its sandbox is new. */
+		internalHasChecks: async (c, repositoryId: GithubId): Promise<boolean> => {
+			requireService(c);
+			return (await readChecks(c.db, setupKeyOf(repositoryId))).checks.length > 0;
+		},
 		internalSetupCommand: async (c, project: string): Promise<RepositorySetup> => {
 			requireService(c);
 			return readSetup(c.db, approvalText(project, 600));

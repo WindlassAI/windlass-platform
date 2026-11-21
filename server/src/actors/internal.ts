@@ -10,7 +10,7 @@
 
 import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
-import type { HarnessOptions, HarnessId, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { GithubId, HarnessOptions, HarnessId, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import type { ItemCreateInput, ItemPublishAnswer } from "./work-item.js";
@@ -43,7 +43,7 @@ export interface SessionCreateInput {
 	demo: boolean;
 	createdAt: number;
 	/** Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's. */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer" };
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[] };
 }
 
 /** The repository setting selects an image only for work item sessions, at sandbox creation. */
@@ -73,6 +73,9 @@ export type ReserveAnswer = { ok: true; hold: { id: string; seconds: number }; n
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
+	internalMachineSystem(id: string): Promise<{ os: string; arch: string } | null>;
+	internalFeatureChild(input: { parent: string; child: string; cancel?: boolean }): Promise<ItemView | null>;
+	internalPlannerMachines(): Promise<ReturnType<typeof import("../machines/details.js").plannerMachines>>;
 	internalSessionChanged(summary: SessionSummary): Promise<void>;
 	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
 	internalRemoveBackupLater(sessionId: string): Promise<void>;
@@ -89,6 +92,7 @@ export interface UserInternal {
 	/** Forgets the user's approvals of that server for a project. Answers with how many there were, and the project's approvals that are left. */
 	internalServerForget(input: { project: string; name: string }): Promise<{ forgotten: number; approvals: ServerApproval[] }>;
 	/** The setup command the user saved for a repository, by its key (setup-command.ts); `command` is "" when there is none. */
+	internalHasChecks(repositoryId: GithubId): Promise<boolean>;
 	internalSetupCommand(project: string): Promise<RepositorySetup>;
 	/** Takes a hold of the user's sandbox time for the session, and a place among the kept sandboxes when it needs one: both, or neither. */
 	internalReserve(input: ReserveRequest): Promise<ReserveAnswer>;
@@ -152,11 +156,14 @@ export interface SessionInternal {
 	/** Whether the turn of `turn` still runs (a `turn_running` fact with `check`), how it ended, or null when it has not started. */
 	internalCheckTurn(input: { turn: string; check: string }): Promise<Fact | null>;
 	/** Pushes the item's work and opens or updates its pull request, with the agent's report or else the item's title and body. */
-	internalPublish(input: { key: string; title: string; body: string }): Promise<ItemPublishAnswer>;
+	internalPublish(input: { key: string; title: string; body: string; branchOnly?: boolean }): Promise<ItemPublishAnswer>;
 }
 
 /** Actions of `workItem` that only actors may call. */
 export interface ItemInternal {
+	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { integratedHead?: string }): Promise<void>;
+	internalChildRequest(child: string): Promise<{ job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; context: string } | null>;
+	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;
 	internalSummary(): Promise<ItemSummary>;
 	internalView(): Promise<ItemView>;
 	internalAct(input: { action: ItemAction; by: string }): Promise<ItemView>;

@@ -129,6 +129,8 @@ import { assertOrigin, authenticate, clientError, describeError, isSandboxUserEr
 import { config } from "../config.js";
 import {
 	generatedSessionTitle,
+	isMachineIdName,
+	machineLabel,
 	type AcpUpdate,
 	type ModelList,
 	type LiveDelta,
@@ -163,10 +165,11 @@ import {
 } from "../contract.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
 import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutReview } from "../github/git.js";
+import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, problemOf, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
-import { ModelProblem, checkEffort, chosenModel, standInModels } from "../account-models.js";
+import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
 import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { RUNNER_SOCKET, MachineUnreachable, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
 import { runSetupCommand, stopLeftoverSetup } from "../sandbox/setup.js";
@@ -194,7 +197,7 @@ import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } 
 import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
-import { grantIsValid, type ReserveAnswer, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
+import { itemActor, grantIsValid, type ReserveAnswer, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
 import { REPORT_TAKEN } from "../agent-publish.js";
@@ -1857,7 +1860,7 @@ const verifiedLine = (pull: PullRequestInfo) => ` Its description reports: ${pul
  * checked that nothing is in the way. `shownIsEnough` for the item's step: its agent may have pushed
  * everything itself (`agentPush`), and then an open pull request is only described again.
  */
-async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false): Promise<PublishResult> {
+async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false, branchOnly = false): Promise<PublishResult> {
 	const app = githubApp();
 	if (!app || !meta.sandboxId) throw new UserError(publishBlocked(c, meta) ?? "There is nothing to push yet.", { code: "publish_blocked" });
 	// A suspend or removal of the idle sandbox finishes first, as before a prompt.
@@ -1878,6 +1881,13 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 	meta.publishBranch = branch;
 	try {
 		// An item's step pushes over the platform's own last push where its agent rebased and did not push; the panel's never forces.
+		if (branchOnly) {
+			const evidence = await evidenceOf(c, meta, null);
+			const pushed = await pushWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pushed: meta.pushedHead ?? null, lease: meta.platformPushed ?? null, redact: evidence.redact }, message.title);
+			if (pushed.workspaceChanged || !pushed.head) throw new UserError("Git did not confirm the checked child commit.", { code: "publish_failed" });
+			recordPushHead(meta, sandbox, pushed.head);
+			return { state: await afterPublish(c, meta, sandbox), opened: false };
+		}
 		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: itemPublish ? (meta.platformPushed ?? null) : null, message, shownIsEnough: itemPublish, retitle: itemPublish, evidence: await evidenceOf(c, meta, null) });
 		if (published.head) published.pushed = recordPushHead(meta, sandbox, published.head);
 		meta.pull = published.pull;
@@ -3256,7 +3266,9 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			// What the question about a project's server has to say depends on where this session runs.
 			const profile = layer.sandboxes.profile(meta.profile);
 			const held = active.secrets;
-			const tools = !reviewer && !!meta.repo && githubApp() !== null;
+			const planning = active.item?.row.agent === "planner";
+			const planner = planning || active.item?.row.agent === "summary";
+			const tools = !planner && !reviewer && !!meta.repo && githubApp() !== null;
 			const item = active.item;
 			const servers: ServerQuestionContext = {
 				profile,
@@ -3327,11 +3339,11 @@ fi`, { signal, timeoutMs: 5000 });
 			result = await harness.runTurn(sandbox, {
 				...common,
 				// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.
-				secrets: { ...turnEnvironment(reviewer ? [] : held.opened, reviewer ? [] : held.account, profile), redactor: held.redactor },
+				secrets: { ...turnEnvironment(planner || reviewer ? [] : held.opened, planner || reviewer ? [] : held.account, profile), redactor: held.redactor },
 				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
-				servers: reviewer ? [] : held.servers,
+				servers: planner || reviewer ? [] : held.servers,
 				// The checks the user saved for the repository: Windlass runs them before it calls the turn done, as required checks.
-				checks: reviewer ? [] : held.checks,
+				checks: planner || reviewer ? [] : held.checks,
 				// Windlass's question about a tool of one whose tools run without asking: the layer answers it, and the timeline says for whom and why.
 				onUnasked: (call) => {
 					if (open) note(c, turn, "info", unaskedNote(str(call.server)), { code: "question_allowed", call: { messageId: str(call.messageId), callId: str(call.callId) } });
@@ -3369,7 +3381,9 @@ fi`, { signal, timeoutMs: 5000 });
 					return tracked(filings);
 				} : undefined,
 				// A work item's agent files its report, which the platform puts on the pull request it pushes itself.
-				onReport: item && !reviewer && platformTool("report") ? (request, withdrawn) => {
+				planner,
+				onPlan: planning && item ? (request) => tracked(itemActor(c, meta.uid, item.row.itemId).internalFilePlan({ key: item.row.key, plan: held.redactor.deep(request.arguments) })) : undefined,
+				onReport: item && !planning && !reviewer && platformTool("report") ? (request, withdrawn) => {
 					const file = async () => {
 						if (!open || withdrawn.aborted) return "The report call ended. File it again.";
 						if (!browser && Array.isArray(request.arguments?.screenshots) && request.arguments.screenshots.length) return unavailable;
@@ -3773,8 +3787,11 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 			}
 		}
 
-		if (caps.signIn === "machine" && meta.place.kind === "machine") {
-			const facts = await runnerLink(c, meta.place.machineId).facts();
+		// The owner can change egress between session creation and its first prompt.
+		const facts = meta.place.kind === "machine" && (meta.repoUrl || caps.signIn === "machine")
+			? await runnerLink(c, meta.place.machineId).facts() : null;
+		if (meta.repoUrl && facts?.report?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
+		if (caps.signIn === "machine" && facts) {
 			const offered = facts.report?.harnesses?.find(entry => entry.id === meta.harness);
 			if (!offered) throw new UserError("This machine does not offer Claude Code.", { code: "bad_input" });
 			if (offered.signIn === "none") throw new UserError(machineLoginMessage(CLAUDE, facts.name), { code: "harness_signed_out" });
@@ -3903,6 +3920,8 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 			meta.reviewRun = run;
 			meta.reviewBase = row.checkout.baseSha;
 		}
+		const planning = row.agent === "planner" || row.agent === "summary";
+		const effort = planning ? plannerEffort((await userActor(c, meta.uid).internalModels()).models, meta.model) : null;
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		// The row is claimed before anything of the turn is: a withdrawal that came while the sandbox was being had leaves no
@@ -3920,9 +3939,9 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		meta.status = "starting";
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
-		const first = append(c, { turn, kind: "user", text: itemPrompt(row), model: meta.model, effort: null });
+		const first = append(c, { turn, kind: "user", text: itemPrompt(row), model: meta.model, effort });
 		publish(c);
-		const active: ActiveTurn = { number: turn, effort: null, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishes: new Set(), item: { row: { ...row, state: "started", turn, slot }, report: null, full: null, started: false, pushedAtStart: meta.pushedHead ?? null } };
+		const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishes: new Set(), item: { row: { ...row, state: "started", turn, slot }, report: null, full: null, started: false, pushedAtStart: meta.pushedHead ?? null } };
 		c.vars.turn = active;
 		await serial(c, () =>
 			c.db.transaction(async (tx) => {
@@ -3997,7 +4016,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 	if (meta.origin?.role === "reviewer") {
 		fact = reviewEndedFactOf(row.key, ended.outcome, meta.review, item.said ?? null, item.refused ?? null, ended.usage);
 	} else {
-		const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.branch, ended.checks, ended.verified).catch(() => []) : [];
+		const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.branch, ended.checks, ended.verified, meta.origin?.owns).catch(() => []) : [];
 		// Not known (git said nothing): taken as changed, and the push says whether there was anything. What the agent pushed itself in the turn is a change too.
 		const changed = ended.unpushed !== false || (meta.pushedHead ?? null) !== item.pushedAtStart;
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
@@ -4124,6 +4143,10 @@ export const agentSession = actor({
 		const [row] = await c.db.execute<{ data: string }>("SELECT data FROM meta WHERE id = 1");
 		const [last] = await c.db.execute<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM timeline");
 		const meta = row ? (JSON.parse(row.data) as SessionMeta) : null;
+		if (meta?.place.kind === "machine" && typeof meta.machineName === "string" && isMachineIdName(meta.machineName)) {
+			const system = await userActor(c, meta.uid).internalMachineSystem(meta.place.machineId).catch(() => null);
+			meta.machineName = machineLabel({ name: meta.machineName, ...system });
+		}
 		return {
 			meta,
 			nextSeq: (last?.seq ?? 0) + 1,
@@ -4747,7 +4770,7 @@ export const agentSession = actor({
 			return await closeCutTurn(c, meta, row);
 		},
 
-		internalPublish: async (c, input: { key: string; title: string; body: string }): Promise<ItemPublishAnswer> => {
+		internalPublish: async (c, input: { key: string; title: string; body: string; branchOnly?: boolean }): Promise<ItemPublishAnswer> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			if (meta.origin?.role === "reviewer") throw new UserError("The reviewer cannot publish.", { code: "reviewer" });
@@ -4763,11 +4786,11 @@ export const agentSession = actor({
 			try {
 				const report = meta.report?.run === Number(input.key.split(":")[1]) ? meta.report : null;
 				const body = report ? [report.description, report.concerns ? `**What the agent is unsure of:** ${report.concerns}` : ""].filter((part) => part !== "").join("\n\n") : String(input?.body ?? "");
-				const result = await c.keepAwake(publishSession(c, meta, repo, { title: report?.title || String(input?.title ?? meta.title), body }, true));
+				const result = await c.keepAwake(publishSession(c, meta, repo, { title: report?.title || String(input?.title ?? meta.title), body }, true, input.branchOnly));
 				const pull = result.state.pullRequest;
-				if (!pull) return { kind: "publish_failed", said: "GitHub opened no pull request", transient: true };
+				if (!input.branchOnly && !pull) return { kind: "publish_failed", said: "GitHub opened no pull request", transient: true };
 				// The commit git said it pushed; where git says nothing (a sandbox layer without git), the branch names it.
-				const answer = { kind: "published" as const, head: meta.pushedHead ?? pull.branch, pr: { number: pull.number, url: pull.url } };
+				const answer = { kind: "published" as const, head: meta.pushedHead ?? pull!.branch, pr: pull ? { number: pull.number, url: pull.url } : null };
 				await rememberPublish(c.db, String(input?.key ?? ""), answer);
 				return answer;
 			} catch (error) {

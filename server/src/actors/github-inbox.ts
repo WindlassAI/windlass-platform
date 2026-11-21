@@ -92,7 +92,7 @@ async function issueDelivery(d: Delivery, c: Ctx): Promise<"no item" | void> {
 			return "no item";
 		}
 		await c.client().user.get([link.uid], params).internalGithubIntake({ installationId: d.installationId, repositoryId: d.repositoryId, issue, senderId: sender.id,
-			...(d.event === "issue_comment" ? { via: "mention", commentId: d.data.commentId } : { via: "label" }) });
+			...(d.event === "issue_comment" ? { via: "mention", commentId: d.data.commentId } : { via: "label", label: d.data.label }) });
 		return;
 	}
 	if (d.action === "reopened") return "no item";

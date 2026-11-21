@@ -5,7 +5,7 @@ import { readAccountDefaults } from "../account-defaults.js";
 import { serviceParams } from "../auth.js";
 import { config } from "../config.js";
 import type { ItemSummary, UserProfile } from "../contract.js";
-import { recentSubject, refusals, taskOfIssue, type IntakeTrigger, type IssueFiling } from "../factory/intake.js";
+import { issueMode, recentSubject, refusals, taskOfIssue, type IntakeTrigger, type IssueFiling } from "../factory/intake.js";
 import type { GithubApp, Repository } from "../github/app.js";
 import { isAddressed } from "../github/events.js";
 import { readDefaults } from "../repository-defaults.js";
@@ -15,7 +15,7 @@ import type { ItemsCtx } from "./user-items.js";
 
 async function command(app: GithubApp, token: string, repo: Repository, trigger: IntakeTrigger) {
 	if (trigger.via === "label") {
-		const event = await app.issueTransition(token, repo, trigger.issue, "labeled");
+		const event = await app.issueTransition(token, repo, trigger.issue, "labeled", trigger.label);
 		return event && { ...event, note: "" };
 	}
 	const comment = await app.issueCommand(token, repo, trigger.issue, trigger.commentId);
@@ -39,7 +39,7 @@ async function existingItem(c: ItemsCtx, uid: string, id: string) {
 }
 
 async function quotaRefusal(c: ItemsCtx, draft: boolean, resuming?: string) {
-	const filed = [...c.vars.items.items.values()].filter(i => i.source === "github");
+	const filed = [...c.vars.items.items.values()].filter(i => i.source === "github" && !i.parent);
 	const midnight = Math.floor(Date.now() / 86_400_000) * 86_400_000;
 	const { githubItemsPerDay, githubDrafts } = config.factory;
 	const unindexed = "FROM github_item_keys k WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.id=k.id)";
@@ -77,7 +77,7 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 	const found = await readIssue(t.installationId, t.repositoryId, t.issue);
 	if (!found || found === "gone" || "movedIssueId" in found) return;
 	const { app, token, repo, issue } = found;
-	if (issue.state !== "open" || (t.via === "label" && !issue.labels.includes("windlass"))) return;
+	if (issue.state !== "open" || (t.via === "label" && !issue.labels.includes(t.label ?? "windlass"))) return;
 	const subject = await subjectRead(() => command(app, token, repo, t));
 	if (!subject || !recentSubject(subject.at) || subject.author.id !== t.senderId || !connected()) return;
 	let reason = !config.items ? refusals.off : access === "read" ? refusals.read : repo.archived ? refusals.archived : null;
@@ -107,14 +107,15 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 	}
 	if (!reason && create) {
 		const { task, trusted } = taskOfIssue({ ...issue, sender: subject.author, note: subject.note });
-		reason = await quotaRefusal(c, !trusted);
+		const { mode, reason: modeReason, refusal } = issueMode(subject.note, issue.labels, process.env.WLP_FACTORY_ORCHESTRATE !== "0");
+		reason = refusal ?? await quotaRefusal(c, !trusted);
 		if (!reason) {
 			const key = `github:${repo.id}#${issue.number}:${generation}`;
 			const defaults = await readDefaults(c.db, "github:" + repo.id);
 			const account = await readAccountDefaults(c.db);
-			const binding = { installationId: t.installationId, generation, triggeredAt: subject.at, senderId: subject.author.id, issueId: issue.id, contentDigest: contentDigest(issue),
+			const binding = { modeReason, triggerLabel: t.via === "label" ? t.label : undefined, installationId: t.installationId, generation, triggeredAt: subject.at, senderId: subject.author.id, issueId: issue.id, contentDigest: contentDigest(issue),
 				origin: { issue: { number: issue.number, url: issue.url, author: issue.author.login, trusted }, sender: subject.author.login } };
-			decision = { kind: "file", itemId: itemId(key), filing: { binding, input: { ...task, repository: { id: repo.id, branch: repo.defaultBranch },
+			decision = { kind: "file", itemId: itemId(key), filing: { binding, input: { ...task, mode, repository: { id: repo.id, branch: repo.defaultBranch },
 				profile: defaults.profile ?? account.profile ?? undefined, model: defaults.model ?? account.model ?? undefined, start: trusted, idempotencyKey: key } } };
 		}
 	}

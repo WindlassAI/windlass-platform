@@ -1,3 +1,4 @@
+import { machineDetails } from "../../../server/src/machines/details.js";
 /**
  * The mock `PlatformClient`: the whole backend in memory, with no network.
  *
@@ -1222,6 +1223,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			if (session.summary.item?.id === item.id && session.summary.status === status) return;
 			setSummary(world, session, { availableModes: [], item: { id: item.id, role: "builder" }, status, ...(status === "running" && session.summary.sandbox === "none" ? { sandbox: "running" as const } : {}) });
 		},
+		checks: (auth, repositoryId) => checksOf(worldOf(auth), repositoryId).checks.length,
 		machines: (auth) => (machineState === "off" ? null : { list: machinesOf(auth).list, minRunnerVersion: MOCK_MIN_RUNNER_VERSION }),
 	});
 
@@ -3062,7 +3064,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			commandSandbox: { ok: true },
 			freeDiskBytes: 61.4e9,
 			profiles: mockMachineProfiles(patch.name ?? "nas"),
-			sendSecrets: true,
+			sendSecrets: true, whenToUse: "Build and test", tags: ["big-build"], host: { cpus: 8, sandboxCpus: 4, memoryBytes: 16 * 2**30, memoryFreeBytes: 8 * 2**30, load1: 1 }, turns: { running: 0, queued: 0, max: 2 },
 			warnings: [],
 			harnesses: [{ ...MOCK_CLAUDE, options: { models: MOCK_CLAUDE_MODELS.models, defaultModel: MOCK_CLAUDE_MODELS.defaultModel, modes: [...CLAUDE_LAUNCH_MODES], checkedAt: at } }],
 			...patch,
@@ -3143,7 +3145,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** The calls of the Machines page. A machine paired here waits for its runner, which connects a few seconds later. */
-	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineSecrets" | "startClaudeLogin" | "finishClaudeLogin" | "cancelClaudeLogin"> {
+	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineDetails" | "setMachineSecrets" | "startClaudeLogin" | "finishClaudeLogin" | "cancelClaudeLogin"> {
 		function loginMachine(id: string) {
 			machinesOn();
 			const set = machinesOf(auth);
@@ -3224,6 +3226,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				machineOf(auth, machineId);
 				const set = machinesOf(auth);
 				set.list = set.list.filter((one) => one.machineId !== machineId);
+				machinesChanged(auth);
+				return machinesView(auth);
+			},
+			async setMachineDetails(input) {
+				machinesOn();
+				const machine = machineOf(auth, input.machineId);
+				try { Object.assign(machine, machineDetails(input)); } catch (error) { throw new PlatformError("user", (error as Error).message, { reason: "bad_input" }); }
 				machinesChanged(auth);
 				return machinesView(auth);
 			},
@@ -3902,7 +3911,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
 			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, platformUrl: origin } };
-			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false } }) };
+			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true } }) };
 		},
 		login: {
 			async start(): Promise<LoginStart> {
