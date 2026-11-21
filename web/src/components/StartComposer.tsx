@@ -39,7 +39,7 @@ import { isLimitRefusal } from "../api/errors";
 import { HARNESS_NAMES } from "../lib/acp";
 import { count, localTime, sandboxTime } from "../lib/format";
 import { effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault } from "../lib/models";
-import { CLAUDE_DEFAULT_MODE, OPEN_MODES, launchModes } from "../lib/modes";
+import { OPEN_MODES, launchModes } from "../lib/modes";
 import { itemOf, lastUsed, layerChoices, repositoryName, startingChoices, startingModel, startingProfile } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
@@ -68,7 +68,7 @@ function ProfileCard({ profile, name, checked, claude = null, onChoose }: { prof
 				<span className="profile-name">{profile.name}</span>
 				{profile.available ? null : <span className="chip">not available</span>}
 			</span>
-			<span className="profile-summary">{claude ? "Claude Code and its commands run in the same container on this machine. Its owner controls the runner." : profile.summary}</span>
+			<span className="profile-summary">{claude ? `${claude.opencode ? "OpenCode" : "Claude Code"} and its commands run in the same container on this machine. Its owner controls the runner.` : profile.summary}</span>
 			<Layers profile={profile} compact={!profile.available} />
 			{profile.available ? (
 				<ProfileFacts profile={profile} claude={claude} />
@@ -392,7 +392,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const chosenProfile = placeProfiles.find((candidate) => candidate.id === profile) ?? null;
 	const launch = launchModes(harness, chosenProfile);
 	// Claude Code's modes as its machine reported them, where it did.
-	const modes = launch && other && options.modes ? { modes: options.modes, default: options.modes.some((mode) => mode.id === CLAUDE_DEFAULT_MODE) ? CLAUDE_DEFAULT_MODE : (options.modes[0] as SessionMode).id } : launch;
+	const modes = launch && other && options.modes ? { modes: options.modes, default: options.modes.some((mode) => mode.id === launch.default) ? launch.default : (options.modes[0] as SessionMode).id } : launch;
 	const mode = modes ? (modes.modes.find((candidate) => candidate.id === modeChoice) ?? modes.modes.find((candidate) => candidate.id === lastOf?.mode) ?? modes.modes.find((candidate) => candidate.id === modes.default) ?? null) : null;
 	const claude: ClaudeFacts | null = other ? { opencode: harness === "opencode", mode: mode ?? { id: "build", name: "Build", description: null } } : null;
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
@@ -754,7 +754,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				<div className="harness-pick">
 					<span className="label">Agent</span>
 					<p className="field-fixed">Windlass</p>
-					{mine.some((machine) => offeredHarnesses(machine).length > 0) ? <p className="field-note">Claude Code is offered on a machine whose runner reports it: choose that machine under “on” first.</p> : null}
+					{mine.some((machine) => offeredHarnesses(machine).length > 0) ? <p className="field-note">Choose a machine under “on” to see the agents its runner offers.</p> : null}
 				</div>
 			)}
 			<div className="start-pop-section">

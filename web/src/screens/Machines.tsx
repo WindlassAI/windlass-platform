@@ -18,7 +18,7 @@
 import { MAX_MACHINES, type MachineClaim, type MachineSandbox, type MachineSummary, type MachineWarning, type MachinesInfo } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { hasReason } from "../api/client";
-import { CopyButton } from "../components/Copy";
+import { Command } from "../components/Command";
 import { HarnessStatus } from "../components/HarnessStatus";
 import { Dialog } from "../components/Dialog";
 import { ArrowLeftIcon, ChevronIcon, InfoIcon, Mark, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
@@ -150,19 +150,6 @@ export function MachineState({ machine, now }: { machine: MachineSummary; now: n
 			<span className="sandbox-state-dot" aria-hidden="true" />
 			{word}
 		</span>
-	);
-}
-
-/** A command to run on the machine, with the way to copy it. */
-export function Command({ text, label }: { text: string; label: string }) {
-	return (
-		<div className="machine-command">
-			<pre tabIndex={0} aria-label={label}>
-				{/* A short word, a flag such as "--restart", is never split after its hyphens; a long one, a path or the image's digest, fills its lines. */}
-				{text.split(/(\s+)/).map((part, index) => (index % 2 === 0 && part.length <= 24 ? <span key={index}>{part}</span> : part))}
-			</pre>
-			<CopyButton text={text} label={`Copy ${label.toLowerCase()}`} />
-		</div>
 	);
 }
 

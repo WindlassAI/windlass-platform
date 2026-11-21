@@ -322,7 +322,21 @@ describe("the start composer's agent picker", () => {
 		place("m_nas");
 		expect(agents()).toEqual(["Windlass", "Claude Code"]);
 		expect(text()).toContain("Claude Code: signed in");
-	});
+	}, 30_000);
+
+	it("launches OpenCode with its reported models, modes and terminal command", async () => {
+		await open();
+		place("m_workshop");
+		agents();
+		agent("opencode");
+		expect(text()).toContain("docker exec -it windlass-runner windlass-runner login opencode");
+		expect(value("agent")).toContain("OpenAI/GPT-5.4");
+		expect(modes().map(({ name, chosen }) => [name, chosen])).toEqual([["build", true], ["plan", false]]);
+		mode("plan");
+		await act(async () => ([...host.querySelectorAll(".start-foot button")].find(button => button.textContent === "Create without a prompt") as HTMLButtonElement).click());
+		await settle();
+		expect(created[0]).toMatchObject({ harness: "opencode", mode: "plan", profile: "docker-hardened" });
+	}, 30_000);
 
 	it("offers no other agent on a machine that reports none, nor on this platform", async () => {
 		await open();
