@@ -138,6 +138,7 @@ import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels }
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
+import { refreshSecretRows } from "../signin/secret-rows.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
 import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
 import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
@@ -1735,6 +1736,7 @@ export const user = actor({
 			const send = session.place.kind === "hosted" || await machineSecrets(c.db, session.place.machineId) === true;
 			const redactOnly = !send && session.harness === "claude";
 			const kept = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name") : [];
+			await refreshSecretRows(c.db, serverSealer(), c.key[0], ACCOUNT_SECRET_PROJECT, kept);
 			const account = {
 				secrets: kept.map((row) => ({ name: row.name, scope: row.scope === "agent" ? ("agent" as const) : ("setup" as const), sealed: row.sealed })),
 				servers: (await readServers(c.db)).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
@@ -1742,6 +1744,7 @@ export const user = actor({
 			const project = setupProjectKey(session.repository?.id);
 			if (project === null) return { project: null, secrets: [], checks: [], account, ...(redactOnly && { redactOnly }) };
 			const rows = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
+			await refreshSecretRows(c.db, serverSealer(), c.key[0], project, rows);
 			const { checks } = await readChecks(c.db, project);
 			return { project, ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},

@@ -104,14 +104,16 @@ export class SignInHolder {
 
 	/** Who is signed in and when the saved access token expires; null when nobody is. Never a token. */
 	async status(): Promise<ChatgptAccount | null> {
-		const row = this.unsaved ?? (await this.options.store.load());
-		if (row === null || row.sealed === null) return null;
-		try {
-			return accountOf(this.open(row.sealed));
-		} catch (error) {
-			if (error instanceof SandboxUserError) return null;
-			throw error;
-		}
+		return this.exclusive(async () => {
+			const row = this.unsaved ?? await this.options.store.load();
+			if (!row?.sealed) return null;
+			try {
+				return accountOf(await this.readMaterial(row, row.sealed));
+			} catch (error) {
+				if (error instanceof SandboxUserError) return null;
+				throw error;
+			}
+		});
 	}
 
 	/** The user's current access token: `AccessTokens.current` (sandbox/api.ts) says what it promises. */
@@ -191,7 +193,7 @@ export class SignInHolder {
 		if (this.unsaved !== null) await this.save(this.unsaved);
 		const row = { ...((await this.options.store.load()) ?? NOTHING) };
 		if (row.sealed === null) throw new SandboxUserError(NOT_SIGNED_IN);
-		const material = this.open(row.sealed);
+		const material = await this.readMaterial(row, row.sealed);
 
 		const controller = new AbortController();
 		this.running = controller;
@@ -255,6 +257,16 @@ export class SignInHolder {
 
 	private seal(material: SignInMaterial): string {
 		return this.options.sealer.seal("user", this.uid, JSON.stringify(material));
+	}
+
+	/** Called inside the holder's queue, so rewrapping cannot restore a forgotten or refreshed sign-in. */
+	private async readMaterial(row: StoredSignIn, sealed: string): Promise<SignInMaterial> {
+		const material = this.open(sealed);
+		if (!this.options.sealer.isCurrent(sealed)) {
+			row.sealed = this.seal(material);
+			await this.save(row);
+		}
+		return material;
 	}
 
 	/** The stored sign-in, opened. One that does not open is the user's to replace, and the operator's to hear about. */

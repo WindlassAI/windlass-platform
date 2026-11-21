@@ -62,7 +62,7 @@ export class SignInLogins implements ChatgptLogins {
 		if (state.finishedWith !== undefined) {
 			const account = accountOf(material);
 			if (state.finishedWith !== digest || account === null) throw new SandboxUserError("This sign-in attempt is no longer waiting for an address. Start the sign-in again.");
-			return { account, attempt };
+			return { account, attempt: this.options.sealer.isCurrent(attempt) ? attempt : this.seal(attemptId, state) };
 		}
 		const commands = await this.options.commands();
 		const finished = await commands.finish(material, pasted);
