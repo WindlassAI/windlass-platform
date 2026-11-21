@@ -52,7 +52,7 @@
 				bottom: -160px;
 				width: 760px;
 				height: 520px;
-				background: radial-gradient(ellipse at 50% 50%, rgb(207 219 110 / 0.18), transparent 65%);
+				background: none;
 				filter: blur(20px);
 			}
 			.brand {
@@ -140,11 +140,18 @@
 				background: #121316;
 				box-shadow:
 					0 0 0 1px rgb(255 255 255 / 0.12),
-					0 0 0 10px rgb(18 19 22 / 0.45),
 					0 40px 80px -30px #000;
 				overflow: hidden;
 			}
+			.done .ok {
+				color: #7cc9a4;
+				font-weight: 400;
+			}
+			.pr svg {
+				color: #7cc9a4;
+			}
 			.frame::before {
+				display: none;
 				content: "";
 				position: absolute;
 				top: 0;
@@ -171,8 +178,8 @@
 				margin-left: 8px;
 				padding: 0 12px;
 				border-radius: 15px;
-				background: rgb(124 201 164 / 0.12);
-				color: #7cc9a4;
+				box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12);
+				color: #a1a4ab;
 				font-family: "Geist Mono", monospace;
 				font-size: 15px;
 				font-weight: 400;
@@ -238,20 +245,19 @@
 				margin-top: 14px;
 				border-radius: 50%;
 				background: #cfdb6e;
-				box-shadow: 0 0 0 5px rgb(207 219 110 / 0.12);
 			}
 			.steer .m {
 				padding: 12px 16px;
 				border-radius: 12px;
-				background: rgb(207 219 110 / 0.1);
-				box-shadow: inset 0 0 0 1px rgb(207 219 110 / 0.3);
+				background: #17181c;
+				box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12);
 				font-size: 17px;
 				white-space: nowrap;
 			}
 			.steer .m small {
 				display: block;
 				margin-top: 4px;
-				color: #cfdb6e;
+				color: #80848c;
 				font-family: "Geist Mono", monospace;
 				font-size: 13px;
 			}
@@ -263,9 +269,8 @@
 				margin-top: 12px;
 				padding: 0 14px;
 				border-radius: 17px;
-				background: rgb(207 219 110 / 0.1);
-				box-shadow: inset 0 0 0 1px rgb(207 219 110 / 0.3);
-				color: #cfdb6e;
+				box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12);
+				color: #ecedee;
 				font-size: 16px;
 				font-weight: 520;
 			}
@@ -289,7 +294,7 @@
 		<div class="frame">
 			<div class="bar">
 				Metres and feet
-				<span class="done">✓ done</span>
+				<span class="done"><b class="ok">✓</b> done</span>
 			</div>
 			<div class="rows">
 				<p class="row"><i>✓</i><span class="v">edit</span>lib/format.ts <span class="f"><span class="add">+11</span> <span class="del">−3</span></span></p>
