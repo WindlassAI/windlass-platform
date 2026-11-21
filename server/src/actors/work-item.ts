@@ -28,6 +28,7 @@
  * item, with an id derived from the item's, so a creation tried again reaches the same two actors.
  */
 
+import { PlanError } from "../factory/feature-plan.js";
 import { openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
 import type { IssueBinding } from "../factory/intake.js";
@@ -236,7 +237,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),
 		task: stored.item.task,
 		// What the gate and CI read stays here: the page shows the run as the contract has it.
-		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, step: run.step, rounds: run.rounds, caps: ROUND_CAPS },
+		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, ...(stored.item.parent && {failureFingerprint: run.lastFailure}), step: run.step, rounds: run.rounds, caps: ROUND_CAPS },
 		head: stored.item.head,
 		report: run ? await latestReport(c.db, run.n) : null,
 		events: events.map((row) => JSON.parse(row.data) as ItemEvent),
@@ -707,7 +708,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 			const job = item.jobs?.at(-1);
 			if (effect.kind === "dispatch" && item.pr && job) {
 				const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });
-				if (v) await take(c, { kind: "child_update", key, child: v.id, state: v.state, head: v.head, spent: v.spent, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
+				if (v) await take(c, { kind: "child_update", key, child: v.id, state: v.state, head: v.head, spent: v.spent, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
 				return true;
 			}
 			const hub = await github(c, meta, "write");
@@ -983,6 +984,10 @@ export const workItem = actor({
 	actions: {
 		// --- called by `user` only ---------------------------------------------------------------
 
+		internalChildNotice: async (c, child: Pick<ItemSummary, "id" | "spent" | "state">) => {
+			requireServiceFor(c, "call");
+			await take(c, {kind: "child_notice", at: Date.now(), child: child.id, spent: child.spent, state: child.state});
+		},
 		internalChildRequest: (c, id: string) => {
 			requireService(c);
 			const s = c.vars.stored, job = s?.item.jobs?.at(-1);
@@ -1017,6 +1022,7 @@ export const workItem = actor({
 			try {
 				changed = await take(c, fact);
 			} catch (error) {
+				if (error instanceof PlanError) throw new UserError(error.message, { code: "bad_input" });
 				throw clientError(c.log, error, "The item could not be changed. Try again.");
 			}
 			if (!changed) throw new UserError(CONFLICT[input.action.kind], { code: "item_conflict" });

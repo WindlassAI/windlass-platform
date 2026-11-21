@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { createItem, advance, currentKey } from "../server/src/factory/blueprint.js";
 import * as intake from "../server/src/factory/intake.js";
 import { edge } from "../server/src/github/events.js";
-import type { ItemBudget, FeaturePlanEdit } from "../server/src/contract.js";
+import type { FeaturePlanEdit } from "../server/src/contract.js";
 
 const single = { tokens: 10000, turns: 10, activeSeconds: 1000, hostedSeconds: 500 };
 const zero = { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 };
@@ -204,7 +204,6 @@ test("child integration needs both gates, ignores duplicate receipts, and rebase
 });
 
 test("a stopped feature cannot turn its cap into a builder retry or lose child spend", () => {
-	const budget = {...single, turns:1};
 	const item = proposed(proposal());
 	const old = item.featurePlan!;
 	const next = advance(item,{kind:"approve_plan",version:old.version,at:5,by:"person"}).item;
@@ -233,3 +232,63 @@ test("a second re-plan can move only unused allocation and a third stop cannot d
 	}
 	assert.equal(item.replans,2); assert.equal(item.question?.kind,"rounds");
 });
+
+test("a child notice wakes a waiting feature and settles spend after cancellation without restarting it", () => {
+	const initial = approved();
+	const running = advance(initial, {kind:"feature_ready", key:currentKey(initial)!, head, pr, at:5}).item;
+	const notice = {kind:"child_notice" as const, child:running.jobs![0].id, state:"done" as const, spent:{...zero, tokens:120}, at:6};
+	const woke = advance(running, notice);
+	assert.ok(woke.effects.some(e => e.kind === "dispatch"));
+	const cancelled = advance(running, {kind:"cancel", at:7, by:"person"}).item;
+	const settled = advance(cancelled, notice);
+	assert.equal(settled.item.spent.tokens, 130);
+	assert.equal(settled.item.state, "cancelled");
+	assert.deepEqual(settled.effects, []);
+	assert.equal(advance(settled.item,notice).item, settled.item);
+});
+
+test("a re-plan respects the historical tree limit and repeated failures in different children stop the feature", () => {
+	const initial = approved();
+	const running = advance(initial, {kind:"feature_ready", key:currentKey(initial)!, head, pr, at:5}).item;
+	const job = running.jobs![0];
+	const fail = {kind:"child_update" as const, key:currentKey(running)!, child:job.id, at:6, state:"failed" as const, spent:zero, head:null, report:"Failed", failure:"gate/build"};
+	const first = advance(running, fail).item;
+	for (let n=0; n<5; n++) first.jobs!.push({...job, id:"i_old"+n, task:{...job.task,key:"old"+n}});
+	assert.throws(() => advance(first, {kind:"file_plan", key:currentKey(first)!, at:8, plan:proposal()}), /six|limit/i);
+	running.jobs!.unshift({...job, task:{...job.task,key:"another"}, state:"failed", failure:fail.failure});
+	const stopped = advance(running, fail);
+	assert.equal(stopped.item.question?.kind, "rounds");
+	assert.match(stopped.item.question!.text, /same failure/i);
+});
+
+test("an explicit orchestration choice cannot lead to another single suggestion", () => {
+	const p = { ...proposal(), subtasks: [], singleSuggested: "One part." };
+	const item = proposed(p);
+	const forced = advance(item, {kind:"answer", question:item.question!.id, choice:"orchestrate_anyway", by:"person", at:7}).item;
+	assert.throws(() => advance(forced, {kind:"file_plan", key:currentKey(forced)!, at:8, plan:p}), /subtasks/);
+});
+
+test("the planner uses the highest advertised reasoning effort of its model", async () => {
+	const {plannerEffort} = await import("../server/src/account-models.js");
+	assert.equal(plannerEffort([{id:"requested",name:null,efforts:["medium","max","high"]}], "requested"),"max");
+	assert.equal(plannerEffort([{id:"other",name:null,efforts:["high"]}], "requested"),null);
+});
+
+
+test("the whole-feature review uses child evidence and needs the pinned head and an available reviewer", () => {
+	let item = approved();
+	item = advance(item, {kind:"feature_ready", key:currentKey(item)!, head, pr, at:5}).item;
+	for (const jobKey of ["index","page"]) {
+		item = advance(item, {kind:"child_update", key:currentKey(item)!, child:item.jobs!.at(-1)!.id, state:"done", head, report:jobKey+" evidence", spent:zero, at:6}).item;
+	}
+	item = advance(item, {kind:"turn_ended",key:currentKey(item)!,at:7,outcome:"succeeded",spend:{tokens:1,hostedSeconds:0},report:"Summary",changes:false,verified:null,flags:[]}).item;
+	item = advance(item, {kind:"published",key:currentKey(item)!,at:8,head,pr,openItems:1,webhooks:false}).item;
+	const ci = {kind:"ci_read" as const,key:currentKey(item)!, at:9, head, reading:{kind:"read" as const,head,runs:[{name:"build",app:"status",state:"passed" as const,conclusion:"success",url:null,summary:null}],logs:[],truncated:false},prHead:head,mergeable:true,openItems:1,webhooks:false};
+	const review = advance(item, ci as never).effects.find(e=>e.kind === "deliver");
+	assert.ok(review?.to === "review" && review.reviewerInput?.task.body.includes("page evidence") && review.reviewerInput.task.body.includes("index evidence"));
+	for (const blocked of [advance({...item,reviewer:{off:"deployment"}},ci as never), advance(item,{...ci,prHead:"b".repeat(40)} as never)]) {
+		assert.ok(blocked.item.question);
+		assert.equal(blocked.effects.some(e => e.kind === "handoff"),false);
+	}
+});
+

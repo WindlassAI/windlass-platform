@@ -39,7 +39,7 @@ async function existingItem(c: ItemsCtx, uid: string, id: string) {
 }
 
 async function quotaRefusal(c: ItemsCtx, draft: boolean, resuming?: string) {
-	const filed = [...c.vars.items.items.values()].filter(i => i.source === "github");
+	const filed = [...c.vars.items.items.values()].filter(i => i.source === "github" && !i.parent);
 	const midnight = Math.floor(Date.now() / 86_400_000) * 86_400_000;
 	const { githubItemsPerDay, githubDrafts } = config.factory;
 	const unindexed = "FROM github_item_keys k WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.id=k.id)";

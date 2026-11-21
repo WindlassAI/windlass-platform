@@ -169,7 +169,7 @@ import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, problemOf, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
-import { ModelProblem, checkEffort, chosenModel, standInModels } from "../account-models.js";
+import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
 import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { RUNNER_SOCKET, MachineUnreachable, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
 import { runSetupCommand, stopLeftoverSetup } from "../sandbox/setup.js";
@@ -3920,6 +3920,8 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 			meta.reviewRun = run;
 			meta.reviewBase = row.checkout.baseSha;
 		}
+		const planning = row.agent === "planner" || row.agent === "summary";
+		const effort = planning ? plannerEffort((await userActor(c, meta.uid).internalModels()).models, meta.model) : null;
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		// The row is claimed before anything of the turn is: a withdrawal that came while the sandbox was being had leaves no
@@ -3937,9 +3939,9 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		meta.status = "starting";
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
-		const first = append(c, { turn, kind: "user", text: itemPrompt(row), model: meta.model, effort: null });
+		const first = append(c, { turn, kind: "user", text: itemPrompt(row), model: meta.model, effort });
 		publish(c);
-		const active: ActiveTurn = { number: turn, effort: null, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishes: new Set(), item: { row: { ...row, state: "started", turn, slot }, report: null, full: null, started: false, pushedAtStart: meta.pushedHead ?? null } };
+		const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishes: new Set(), item: { row: { ...row, state: "started", turn, slot }, report: null, full: null, started: false, pushedAtStart: meta.pushedHead ?? null } };
 		c.vars.turn = active;
 		await serial(c, () =>
 			c.db.transaction(async (tx) => {

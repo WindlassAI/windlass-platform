@@ -1502,7 +1502,7 @@ export interface ItemView extends ItemSummary {
 	reviewNone: string | null;
 	task: ItemTask;
 	/** The run it is in, or ended last, with the rounds a run allows; null before it was started. */
-	run: (ItemRun & { caps: RoundCaps }) | null;
+	run: (ItemRun & { caps: RoundCaps; failureFingerprint?: string | null }) | null;
 	/** The commit pushed last. */
 	head: string | null;
 	/** Its log, oldest first: the runs and steps before the current one are read from it. */

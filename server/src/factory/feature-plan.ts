@@ -9,8 +9,15 @@ export function featureCap(single: ItemBudget): ItemBudget {
 	return cap;
 }
 
+export class PlanError extends Error {}
+
+/** A budget-only reallocation keeps the approved scope. */
+export function planScope(plan: FeaturePlanEdit): string {
+	return JSON.stringify([plan.spec, plan.subtasks.map(({budget, ...scope}) => scope)]);
+}
+
 function requirePlan(ok: unknown, message: string): asserts ok {
-	if (!ok) throw new Error(message);
+	if (!ok) throw new PlanError(message);
 }
 
 function record(value: unknown): Record<string, unknown> {

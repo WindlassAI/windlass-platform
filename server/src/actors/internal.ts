@@ -160,6 +160,7 @@ export interface SessionInternal {
 
 /** Actions of `workItem` that only actors may call. */
 export interface ItemInternal {
+	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state">): Promise<void>;
 	internalChildRequest(child: string): Promise<{ job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; context: string } | null>;
 	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;
 	internalSummary(): Promise<ItemSummary>;

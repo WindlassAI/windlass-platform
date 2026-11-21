@@ -75,6 +75,7 @@ export interface Run extends ItemRun {
 export type Task = ItemTask;
 
 export interface FeatureJob {
+	failure?: string | null;
 	id: string;
 	task: import("../contract.js").PlanSubtask;
 	state: import("../contract.js").ItemState;
@@ -85,6 +86,7 @@ export interface FeatureJob {
 
 export interface FactoryItem {
 	jobs?: FeatureJob[];
+	forceSplit?: boolean;
 	seed?: string;
 	childBase?: string;
 	approvedPlan?: import("../contract.js").FeaturePlan;
@@ -171,7 +173,8 @@ export interface TurnSpend {
 export type Fact =
 	| { kind: "feature_seed"; at: number; key: string; sha: string }
 	| { kind: "feature_ready"; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]> }
-	| { kind: "child_update"; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
+	| { kind: "child_notice"; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
+	| { kind: "child_update"; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
 	| { kind: "file_plan"; at: number; key: string; plan: unknown }

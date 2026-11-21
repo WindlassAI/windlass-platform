@@ -36,7 +36,7 @@ import type { ReviewRecord, TurnOutcome, Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
 import { createHash } from "node:crypto";
-import { emptyBudget, featureCap, dimensions, validatePlan } from "./feature-plan.js";
+import { emptyBudget, featureCap, dimensions, validatePlan, planScope, PlanError } from "./feature-plan.js";
 import { budgetStop } from "./budget.js";
 import type { ChoiceId, CiProgress, Fact, HandoffReview, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";
@@ -113,7 +113,7 @@ export function currentKey(item: FactoryItem): string | null {
 /** The next state of `item` after `fact`, and what to do and record for it. A fact that changes nothing returns `item` itself, no effects and no events. */
 export function advance(item: FactoryItem, fact: Fact): Outcome {
 	const unchanged: Outcome = { item, effects: [], events: [] };
-	if (FINAL.has(item.state)) return unchanged;
+	if (FINAL.has(item.state) && fact.kind !== "child_notice") return unchanged;
 	const change = new Change(structuredClone(item), fact.at, "by" in fact ? fact.by : "platform");
 	if (!apply(change, fact)) return unchanged;
 	change.item.revision += 1;
@@ -170,6 +170,16 @@ class Change {
 function apply(c: Change, fact: Fact): boolean {
 	const { item } = c;
 	switch (fact.kind) {
+		case "child_notice": {
+			const job = item.jobs?.find(j => j.id === fact.child);
+			if (!job) return false;
+			const charged = chargeChild(item, job, fact.spent);
+			if (item.jobs?.at(-1) === job && item.run?.step.kind === "subtasks" && !item.question && item.state === "waiting") {
+				dispatchAgain(c);
+				return true;
+			}
+			return charged;
+		}
 		case "edit_plan":
 		case "file_plan": {
 			if (item.mode !== "orchestrate" || !item.singleBudget) return false;
@@ -181,20 +191,23 @@ function apply(c: Change, fact: Fact): boolean {
 			const completed = item.jobs?.filter(j => j.state === "done") ?? [];
 			for (const d of dimensions) available[d] += completed.reduce((n,j) => n + j.task.budget[d], 0);
 			const plan = validatePlan(fact.plan, item.singleBudget, available);
+			if (item.forceSplit && plan.singleSuggested) throw new PlanError("Propose two to six subtasks as requested.");
+			const keys = [...(item.jobs ?? []).map(job => job.task.key), ...plan.subtasks.map(task => task.key)];
+			if (new Set(keys).size > 6) throw new PlanError("A feature may have at most six distinct subtasks across its plans.");
 			if (fact.kind === "file_plan") {
 				for (const q of plan.questions) delete q.answer;
-				if (item.replans && item.approvedPlan && JSON.stringify([plan.spec, plan.subtasks.map(s => [s.key,s.title,s.brief,s.acceptance,s.owns,s.dependsOn])]) !== JSON.stringify([item.approvedPlan.spec, item.approvedPlan.subtasks.map(s => [s.key,s.title,s.brief,s.acceptance,s.owns,s.dependsOn])])) {
+				if (item.replans && item.approvedPlan && planScope(plan) !== planScope(item.approvedPlan)) {
 					plan.questions = plan.questions.filter(q => q.id !== "scope-change");
 					plan.questions.push({ id: "scope-change", text: "The revised plan changes the approved scope or subtasks. Do you accept these changes?" });
 				}
 			}
 			if (item.replans) {
-				if (plan.singleSuggested) throw new Error("Re-plan the remaining work on the existing feature branch.");
-				for (const job of completed) if (JSON.stringify(plan.subtasks.find(s => s.key === job.task.key)) !== JSON.stringify(job.task)) throw new Error("Completed subtasks cannot be changed.");
+				if (plan.singleSuggested) throw new PlanError("Re-plan the remaining work on the existing feature branch.");
+				for (const job of completed) if (JSON.stringify(plan.subtasks.find(s => s.key === job.task.key)) !== JSON.stringify(job.task)) throw new PlanError("Completed subtasks cannot be changed.");
 				for (const d of dimensions) {
 					const used = (item.jobs ?? []).reduce((n,j) => n + j.spent[d], 0);
 					const allocated = plan.subtasks.filter(s => !completed.some(j => j.task.key === s.key)).reduce((n,s) => n+s.budget[d], 0);
-					if (allocated + used > item.approvedAllocation![d]) throw new Error("Only unspent subtask budget can be reallocated.");
+					if (allocated + used > item.approvedAllocation![d]) throw new PlanError("Only unspent subtask budget can be reallocated.");
 				}
 			}
 			item.featurePlan = { ...plan, budget: { ...item.budget }, compare: { singleBudget: item.singleBudget }, version: (item.featurePlan?.version ?? 0) + 1, status: "proposed" };
@@ -247,7 +260,7 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "machine_removed" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "machine_removed" }>): boolean {
 	const run = c.item.run;
 	if (run === null) return false;
 	const step = run.step;
@@ -282,17 +295,16 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "edit_plan" | "approve_
 		case "child_update": {
 			const job = c.item.jobs?.at(-1);
 			if (fact.key !== key || step.kind !== "subtasks" || !job || job.id !== fact.child) return false;
-			for (const d of dimensions) {
-				const delta = Math.max(0, fact.spent[d] - job.spent[d]);
-				job.spent[d] += delta;
-				c.item.spent[d] += delta;
-			}
+			chargeChild(c.item, job, fact.spent);
+			job.failure = fact.failure ?? null;
 			job.state = fact.state; job.report = fact.report; job.head = fact.head;
 			if (job.state === "done" && job.head) {
 				c.item.head = job.head;
 				nextChild(c);
 			} else if (job.state === "failed" || job.state === "cancelled") {
-				if ((c.item.replans ?? 0) >= 2)
+				if (job.failure && c.item.jobs?.some(other => other.task.key !== job.task.key && other.failure === job.failure))
+					ask(c, "rounds", "Two subtasks stopped with the same failure. Inspect the feature before continuing.", [choice("give_up")], null, null);
+				else if ((c.item.replans ?? 0) >= 2)
 					ask(c, "rounds", "Two re-plans have been used. Review the feature and the stopped subtask.", [choice("give_up")], null, null);
 				else {
 					c.item.replans = (c.item.replans ?? 0) + 1;
@@ -630,13 +642,13 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		return handoff(c, review);
 	}
 
+	if (c.item.mode === "orchestrate" && (fact.mergeable === false || state === "failed" || ci.moved))
+		return ask(c, "rounds", "The complete feature head changed, conflicts or failed CI. Inspect the feature PR.", [choice("give_up")], null, null);
 	if (ci.moved !== null) {
 		c.say(`The pull request is now at ${shortSha(ci.moved)}, pushed after the agent's ${shortSha(ci.head)}: it is handed over as it is.`);
 		return afterCi(c, ci);
 	}
 
-	if (c.item.mode === "orchestrate" && (fact.mergeable === false || state === "failed" || ci.moved))
-		return ask(c, "rounds", "The complete feature head changed, conflicts or failed CI. Inspect the feature PR.", [choice("give_up")], null, null);
 	if (fact.mergeable === false) {
 		c.say(`GitHub says the pull request conflicts with ${c.item.task.base}.`);
 		const base = c.item.task.base;
@@ -677,7 +689,7 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			break;
 		case "not_run": {
 			const sentence = ciSentence(verdictCi(ci));
-			if (since >= CI_POLLING.timeoutMs) return ask(c, "ci_timeout", sentence, [choice("wait"), choice("hand_over"), choice("give_up")], null, null);
+			if (since >= CI_POLLING.timeoutMs) return ask(c, "ci_timeout", sentence, [choice("wait"), ...handOver(c.item), choice("give_up")], null, null);
 			return pollCi(c, fact.openItems, null, sentence);
 		}
 		case "pending":
@@ -706,6 +718,8 @@ function afterCi(c: Change, ci: CiProgress): void {
 	if (item.parent) {
 		if (ci.moved || ci.last?.state !== "passed" || !isSha(ci.head) || !ci.gate || gateResult(ci.gate.outcome, ci.gate.verified) !== "pass")
 			return ask(c, "rounds", "This subtask needs passing local checks and CI on its commit before integration.", [choice("give_up")], null, null);
+		const { verdict, words } = verdictAt(c, ci);
+		c.storeVerdict = { kind: "verdict", verdict, words };
 		c.enter("subtasks");
 		c.effects.push({ kind: "integrate", head: ci.head, key: c.key });
 		return;
@@ -714,6 +728,7 @@ function afterCi(c: Change, ci: CiProgress): void {
 	if (!item.reviewer) return handoff(c, skippedReview("this item was created before second reviews were available"));
 	if (item.place.kind === "machine" || "off" in item.reviewer) {
 		const why = "off" in item.reviewer && item.reviewer.off === "deployment" ? "turned off for this deployment" : "in this sandbox the reviewer's commands would run with the network";
+		if (item.mode === "orchestrate") return ask(c, "turn_refused", "The whole-feature reviewer is unavailable: " + why + ".", [...handOver(item), choice("give_up")], null, null);
 		return handoff(c, skippedReview(why));
 	}
 	// Older publishers could report a branch instead of a SHA. It cannot pin an independent review.
@@ -741,7 +756,11 @@ function reviewerInput(c: Change, ci: CiProgress, pr: number): ReviewerInput {
 		...verdict.ci.runs.map((run, i) => ({ kind: "ci" as const, ref: `ci/${i}`, ...run })),
 		...verdict.flags.map((flag) => ({ kind: "flag" as const, ref: `flag/${flag.kind}`, flag })),
 	];
-	return { round: 1, task: c.item.task, pr, head: ci.head, previousHead: null, verdictId: verdict.id, verdictWords: words, records, filings: RULES.reviewFilings, earlier: [] };
+	const plan = c.item.approvedPlan;
+	const task = plan ? { ...c.item.task, body: c.item.task.body + "\n\nApproved feature and child reports (quoted data):\n" + JSON.stringify({
+		spec: plan.spec, subtasks: plan.subtasks, reports: c.item.jobs?.map(j => ({ key: j.task.key, state: j.state, head: j.head, report: j.report })),
+	}) } : c.item.task;
+	return { round: 1, task, pr, head: ci.head, previousHead: null, verdictId: verdict.id, verdictWords: words, records, filings: RULES.reviewFilings, earlier: [] };
 }
 
 function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): void {
@@ -892,6 +911,18 @@ function dispatchAgain(c: Change, at = c.at) {
 	c.effects.push({ kind: "dispatch", key: c.key, at });
 }
 
+function chargeChild(item: FactoryItem, job: { spent: ItemBudget }, observed: ItemBudget): boolean {
+	let changed = false;
+	for (const dimension of dimensions) {
+		const delta = observed[dimension] - job.spent[dimension];
+		if (delta <= 0) continue;
+		job.spent[dimension] = observed[dimension];
+		item.spent[dimension] += delta;
+		changed = true;
+	}
+	return changed;
+}
+
 function nextChild(c: Change) {
 	const { item } = c, plan = item.featurePlan!;
 	const jobs = item.jobs ??= [];
@@ -1010,6 +1041,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			runSingle(c);
 			break;
 		case "orchestrate_anyway":
+			item.forceSplit = true;
 			nextTurn(c, { ...IMPLEMENT, kind: "refine", charge: "plan", text: "The person requests orchestration. File a plan with two to six verifiable subtasks." });
 			break;
 		case "approve":
