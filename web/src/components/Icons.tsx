@@ -252,3 +252,78 @@ export function Mark({ size = 20, turning = false, className }: { size?: number;
 		</svg>
 	);
 }
+
+/** A small chevron pointing down: the end of a picker's trigger. */
+export const ChevronDownIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M4.5 6.5 8 10l3.5-3.5" />
+	</Svg>
+);
+
+/** Pointing right: a row that opens a submenu. */
+export const ChevronRightIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M6.5 4.5 10 8l-3.5 3.5" />
+	</Svg>
+);
+
+/** Pointing left: back, in a sheet. */
+export const ChevronLeftIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M9.5 4.5 6 8l3.5 3.5" />
+	</Svg>
+);
+
+/** One of the user's machines: a screen on a stand. */
+export const MachineIcon = (props: IconProps) => (
+	<Svg {...props} strokeWidth={1.4}>
+		<rect x="2.5" y="3" width="11" height="7.5" rx="1.5" />
+		<path d="M6 13h4M8 10.5V13" />
+	</Svg>
+);
+
+/** Hosted: a sandbox the platform makes. */
+export const CloudIcon = (props: IconProps) => (
+	<Svg {...props} strokeWidth={1.4}>
+		<path d="M4.6 12.5h6.9a2.9 2.9 0 0 0 .4-5.8 4 4 0 0 0-7.6-.9A3.4 3.4 0 0 0 4.6 12.5Z" />
+	</Svg>
+);
+
+/** A repository: a book with its spine. */
+export const RepoIcon = (props: IconProps) => (
+	<Svg {...props} strokeWidth={1.4}>
+		<path d="M4 12.5V3.8A1.3 1.3 0 0 1 5.3 2.5H12.5v8H5.2A1.2 1.2 0 0 0 4 11.7" />
+		<path d="M4 12.5a1 1 0 0 0 1 1h2M9 13.5h3.5v-3" />
+	</Svg>
+);
+
+/** The agent's mode: a shield with a tick. */
+export const ShieldIcon = (props: IconProps) => (
+	<Svg {...props} strokeWidth={1.4}>
+		<path d="M8 2 13 4v3.6c0 3-2.2 5.2-5 6.4-2.8-1.2-5-3.4-5-6.4V4z" />
+		<path d="m6 8 1.5 1.5L10.5 6.5" />
+	</Svg>
+);
+
+/** Settings: three sliders. */
+export const SlidersIcon = (props: IconProps) => (
+	<Svg {...props} strokeWidth={1.4}>
+		<path d="M2.5 4.5h6M11.5 4.5h2M2.5 11.5h2M7.5 11.5h6" />
+		<circle cx="10" cy="4.5" r="1.5" />
+		<circle cx="6" cy="11.5" r="1.5" />
+	</Svg>
+);
+
+/** Up: send. */
+export const ArrowUpIcon = (props: IconProps) => (
+	<Svg {...props} strokeWidth={1.8}>
+		<path d="M8 13V3.5M4 7.5l4-4 4 4" />
+	</Svg>
+);
+
+/** The Factory: a sawtooth roof. */
+export const FactoryIcon = (props: IconProps) => (
+	<Svg {...props} strokeWidth={1.4}>
+		<path d="M2.5 13.5V7l3.5 2V7l3.5 2V3.5h4v10z" />
+	</Svg>
+);
