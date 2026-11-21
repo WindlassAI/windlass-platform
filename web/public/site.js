@@ -17,8 +17,11 @@
 	}
 
 	var app = document.querySelector('meta[name="wlp-app"]');
-	if (app && signedIn()) {
-		root.setAttribute("data-signed-in", "");
+	var everyone = !!document.querySelector('meta[name="wlp-app-for"][content="everyone"]');
+	if (app && (everyone || signedIn())) {
+		// The landing hides itself first for someone signed in (their agents take its place); a page loaded
+		// for everyone (the docs) stays visible until the app draws the same page over it.
+		if (!everyone) root.setAttribute("data-signed-in", "");
 		var script = document.createElement("script");
 		script.type = "module";
 		script.crossOrigin = "anonymous";

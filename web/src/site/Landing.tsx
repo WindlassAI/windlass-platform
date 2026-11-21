@@ -70,6 +70,7 @@ function SiteBar({ onToggleTheme }: { onToggleTheme?: () => void }) {
 					<a href="#factory">Factory</a>
 					<a href="#agents">Agents</a>
 					<a href="#questions">FAQ</a>
+					<a href="/docs">Docs</a>
 				</nav>
 				<div className="landing-bar-end">
 					<button type="button" className="icon-button landing-theme" data-theme-toggle="" aria-label="Switch between the light and dark theme" title="Switch theme" onClick={onToggleTheme}>

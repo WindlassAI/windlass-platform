@@ -14,6 +14,7 @@ import type { ReactElement } from "react";
 import { absolute, SITE_NAME, SITE_URL } from "./config";
 import { AGENTS, FACTORY_STEPS, FAQ, LANDING_DESCRIPTION, LANDING_TITLE, ONE_LINER, SESSION_FEATURES } from "./content";
 import { Landing } from "./Landing";
+import { docsPublicPages } from "../docs/public";
 
 export interface PublicPage {
 	/** The address: starts with "/", no trailing slash (but "/" itself), no extension. It is written to `<path>/index.html`. */
@@ -41,6 +42,12 @@ export interface PublicPage {
 	 * paint): true for "/" only, where the landing and the user's agents share an address.
 	 */
 	appForSignedIn?: boolean;
+	/**
+	 * Whether every visitor's browser loads the app's entry here after the static page shows: true for
+	 * the docs, whose search, contents and menu need it. The static markup stays visible until the app
+	 * replaces it with the same page, so nothing is hidden first.
+	 */
+	appForEveryone?: boolean;
 }
 
 export const DEFAULT_IMAGE = { path: "/og.png", alt: "Windlass: put an agent to work, and watch every turn.", width: 1200, height: 630 };
@@ -133,4 +140,4 @@ const landing: PublicPage = {
 };
 
 /** Every public page. Add yours here (see the comment at the top). */
-export const PUBLIC_PAGES: PublicPage[] = [landing];
+export const PUBLIC_PAGES: PublicPage[] = [landing, ...docsPublicPages().map((page) => ({ ...page, appForEveryone: true }))];

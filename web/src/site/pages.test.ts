@@ -76,8 +76,19 @@ describe("the landing page", () => {
 
 	it("names the app's entry for a signed-in visitor, and only there", () => {
 		expect(pageHtml(landing, body, ASSETS)).toContain('<meta name="wlp-app" content="/assets/index-abc.js" />');
-		for (const page of PUBLIC_PAGES.filter((other) => !other.appForSignedIn)) {
+		expect(pageHtml(landing, body, ASSETS)).not.toContain("wlp-app-for");
+		for (const page of PUBLIC_PAGES.filter((other) => !other.appForSignedIn && !other.appForEveryone)) {
 			expect(pageHtml(page, "", ASSETS)).not.toContain("wlp-app");
+		}
+	});
+
+	it("loads the app for every visitor of a docs page, so its search and menu work", () => {
+		const docs = PUBLIC_PAGES.filter((page) => page.path.startsWith("/docs"));
+		expect(docs.length).toBeGreaterThan(5);
+		for (const page of docs) {
+			const html = pageHtml(page, "", ASSETS);
+			expect(html).toContain('<meta name="wlp-app" content="/assets/index-abc.js" />');
+			expect(html).toContain('<meta name="wlp-app-for" content="everyone" />');
 		}
 	});
 });

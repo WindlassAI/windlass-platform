@@ -97,14 +97,14 @@ export const DOCS_PAGES: readonly DocsPage[] = [
 	{
 		slug: "faq",
 		title: "FAQ",
-		description: "Short answers to common questions about Windlass.",
+		description: "Short answers to common questions about Windlass: access, agents, models, sandboxes, your own machine and cost.",
 		section: "Help",
 		file: "faq.md",
 	},
 	{
 		slug: "glossary",
 		title: "Glossary",
-		description: "The words Windlass uses, in one place.",
+		description: "The words Windlass uses, from agent and turn to runner, profile and work item, each in a sentence or two.",
 		section: "Help",
 		file: "glossary.md",
 	},
