@@ -937,7 +937,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 			});
 			await check("work items refuse a mode at creation", async () => {
 				const raw = { title: "Inspect", body: "Read the repo", repository: { id: repo.id }, mode: "ask" };
-				const code = await refusal(user.createItem(raw));
+				const code = await refusal(user.createItem(raw as never));
 				assert(code === "bad_input", String(code));
 				return code;
 			});

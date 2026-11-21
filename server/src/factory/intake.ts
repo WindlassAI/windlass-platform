@@ -38,9 +38,9 @@ export const refusals = {
 	other: "Not taken: this issue already has a work item of another Windlass user.",
 };
 
-export function issueMode(note: string, labels: string[]) {
+export function issueMode(note: string, labels: unknown[]) {
 	const requested = /^orchestrate(?:\s|$)/i.test(note) || labels.includes("windlass:orchestrate");
-	const bug = labels.some(label => label.toLowerCase() === "bug");
+	const bug = labels.some(label => typeof label === "string" && label.toLowerCase() === "bug");
 	return { mode: requested && !bug ? "orchestrate" as const : "single" as const,
 		reason: requested && bug ? "This issue has the bug label, so it runs as a single item." : null };
 }

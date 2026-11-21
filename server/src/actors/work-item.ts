@@ -28,6 +28,7 @@
  * item, with an id derived from the item's, so a creation tried again reaches the same two actors.
  */
 
+import { openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
 import type { IssueBinding } from "../factory/intake.js";
 import type { GithubUser } from "../github/app.js";
@@ -85,7 +86,7 @@ export interface ItemCreateInput {
 }
 
 /** What a session answers about a turn of the item, as facts (session-inbox.ts). */
-export type ItemPublishAnswer = { kind: "published"; head: string; pr: { number: number; url: string } } | { kind: "publish_failed"; said: string; transient: boolean };
+export type ItemPublishAnswer = { kind: "published"; head: string; pr: { number: number; url: string } | null } | { kind: "publish_failed"; said: string; transient: boolean };
 
 interface Stored {
 	item: FactoryItem;
@@ -280,7 +281,7 @@ function queued<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void> {
 	if (fact.kind === "turn_ended" || fact.kind === "review_ended") {
 		const hostedSeconds = stored.item.place.kind === "hosted"
-			? lifetimeSeconds(stored.meta, await userActor(c, stored.meta.uid).internalItemFacts(sessionsOf(stored.meta)))
+			? lifetimeSeconds(stored.meta, await userActor(c, stored.meta.uid).internalItemFacts(sessionsOf(stored.meta))) + childSeconds(stored.item)
 			: 0;
 		await take(c, { ...fact, spend: { tokens: fact.spend?.tokens ?? 0, hostedSeconds } });
 	} else {
@@ -330,7 +331,7 @@ async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { b
 			effects.push({ kind: "issue_comment", key: "link", revision: next.revision });
 		if (before.state === "failed" && !ENDED.has(next.state)) effects.push({ kind: "register_issue", key: String(next.revision) });
 	}
-	if (fact.kind === "published") effects.push({ kind: "register", key: fact.key, pr: fact.pr.number, head: fact.head });
+	if (fact.kind === "published" && fact.pr) effects.push({ kind: "register", key: fact.key, pr: fact.pr.number, head: fact.head });
 	if (ENDED.has(next.state) && !ENDED.has(before.state)) effects.push({ kind: "forget", key: String(next.revision) });
 	try {
 		await queued(c, () =>
@@ -484,13 +485,13 @@ async function nudge(c: Ctx, input: GithubNudge): Promise<boolean> {
 }
 
 /** The repository as the user's connection reaches it now, and the app: what a poll of GitHub needs. */
-async function github(c: Ctx, meta: ItemMeta) {
+async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read") {
 	const app = githubApp();
 	if (!app) throw new Error("the deployment has no GitHub App");
 	const connection: StoredConnection | null = await userActor(c, meta.uid).internalGithubConnection();
 	if (!connection) throw new Error("the user's GitHub connection is gone");
 	const installationId = await binding(c) ?? (await resolveRepository(app, connection, meta.repository.id, "read")).installation.id;
-	const resolved = await resolveBoundRepository(app, connection, meta.repository.id, installationId, "read");
+	const resolved = await resolveBoundRepository(app, connection, meta.repository.id, installationId, access);
 	const { owner, name } = resolved.repository;
 	const pull = (number: number) => app.withToken(resolved.installation.id, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, owner, name, number));
 	return { app, installationId: resolved.installation.id, owner, name, pull, login: connection.user.login };
@@ -582,6 +583,8 @@ function sessionsOf(meta: ItemMeta): string[] {
 	return meta.reviewerSessionId ? [meta.sessionId, meta.reviewerSessionId] : [meta.sessionId];
 }
 
+const childSeconds = (item: FactoryItem) => (item.jobs ?? []).reduce((sum, j) => sum + j.spent.hostedSeconds, 0);
+
 function lifetimeSeconds(meta: ItemMeta, facts: ItemFacts): number {
 	const seen = new Set(meta.ledger.holds);
 	const fresh = facts.entries.filter((entry) => !seen.has(entry.hold));
@@ -596,7 +599,7 @@ async function factsOf(c: Ctx, meta: ItemMeta): Promise<ItemFacts> {
 	const facts = await userActor(c, meta.uid).internalItemFacts(sessionsOf(meta));
 	const stored = c.vars.stored;
 	if (stored?.item.place.kind === "hosted") {
-		const seconds = lifetimeSeconds(stored.meta, facts);
+		const seconds = lifetimeSeconds(stored.meta, facts) + childSeconds(stored.item);
 		if (seconds > stored.item.spent.hostedSeconds) await take(c, { kind: "spent", at: Date.now(), hostedSeconds: seconds });
 	}
 	return facts;
@@ -612,6 +615,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
  * it. A withdrawal is always wanted: it is what a cancel leaves.
  */
 function live(item: FactoryItem, effect: Effect): boolean {
+	if (effect.kind === "cancel_children") return true;
 	if (effect.kind === "issue_comment") return true;
 	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
 	if (effect.kind === "forget") return ENDED.has(item.state) || !item.run?.ci;
@@ -621,7 +625,9 @@ function live(item: FactoryItem, effect: Effect): boolean {
 	if (item.question?.kind === "machine_removed" || ENDED.has(item.state) || run === null) return false;
 	const key = currentKey(item);
 	switch (effect.kind) {
-		case "dispatch": return effect.key === key && run.step.kind === "subtasks";
+		case "describe_feature": return effect.key === key && run.step.kind === "publish" && !item.question;
+		case "integrate": return effect.key === key && run.step.kind === "subtasks" && !item.question;
+		case "dispatch": return !item.question && effect.key === key && run.step.kind === "subtasks";
 		case "deliver":
 			return effect.key === key && run.step.turn === "delivered";
 		case "check_turn":
@@ -629,7 +635,7 @@ function live(item: FactoryItem, effect: Effect): boolean {
 		case "publish":
 			return effect.key === key && run.step.kind === "publish";
 		case "poll_ci":
-			return effect.key === key && (run.step.kind === "ci" || run.step.kind === "handoff") && item.pr !== null;
+			return effect.key === key && (run.step.kind === "ci" || run.step.kind === "handoff") && (item.pr !== null || !!item.parent);
 		case "poll_pr":
 			return effect.key === prPollKey(item) && effect.pr === item.pr?.number;
 		case "handoff":
@@ -691,6 +697,46 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 	if (!sessionId) throw new Error("Review delivery has no reviewer session.");
 	const session = sessionActor(c, meta.uid, sessionId);
 	switch (effect.kind) {
+		case "cancel_children":
+			for (const child of effect.ids) await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child, cancel: true });
+			return true;
+		case "dispatch":
+		case "describe_feature":
+		case "integrate": {
+			const key = effect.key;
+			const job = item.jobs?.at(-1);
+			if (effect.kind === "dispatch" && item.pr && job) {
+				const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });
+				if (v) await take(c, { kind: "child_update", key, child: v.id, state: v.state, head: v.head, spent: v.spent, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
+				return true;
+			}
+			const hub = await github(c, meta, "write");
+			try {
+				await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { contents: "write", metadata: "read", pull_requests: "write" } }, async token => {
+					if (!live(c.vars.stored!.item, effect)) return;
+					const { app, owner, name } = hub;
+					if (effect.kind === "integrate") {
+						await advanceFeatureRef(app, token, owner, name, item.parent!.itemId, item.childBase!, effect.head);
+						await take(c, { kind: "integrated", key, at: Date.now() });
+					} else if (effect.kind === "describe_feature") {
+						const report = await latestReport(c.db, item.run!.n);
+						const body = [report?.title, ...report?.blocks.map(b => "text" in b ? b.text : "") ?? [], meta.github && "Closes #" + meta.github.origin.issue.number + "."].filter(Boolean).join("\n\n");
+						await app.updatePull(token, owner, name, item.pr!.number, { title: item.task.title, body });
+						await take(c, { kind: "published", key, at: Date.now(), pr: item.pr, head: item.head!, openItems: 1, webhooks: githubConfig().pollFallback });
+					} else if (!item.seed) {
+						const sha = await refHead(app, token, owner, name, meta.repository.branch);
+						await take(c, { kind: "feature_seed", key, sha, at: Date.now() });
+					} else {
+						const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: meta.repository.branch, seed: item.seed, created: meta.createdAt, body: item.featurePlan!.spec.goal });
+						await take(c, { kind: "feature_ready", key, ...opened, at: Date.now() });
+					}
+				});
+			} catch (error) {
+				if (!(error instanceof GithubError) || ![403,404,409,422].includes(error.status)) throw error;
+				await take(c, { kind: "feature_problem", key, at: Date.now(), reason: error.message, rebase: effect.kind === "integrate" && [409,422].includes(error.status) });
+			}
+			return true;
+		}
 		case "check_issue":
 			await c.db.execute("UPDATE item SET issue_checked_at=? WHERE id=1", Date.now());
 			await checkIssue(c, meta, effect);
@@ -751,7 +797,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 			const now = c.vars.stored;
 			if (!now || !live(now.item, effect)) return false;
 			const body = meta.github ? `${item.task.body}\n\nCloses #${meta.github.origin.issue.number}.` : item.task.body;
-			const answer = await session.internalPublish({ key: effect.key, title: item.task.title, body });
+			const answer = await session.internalPublish({ key: effect.key, title: item.task.title, body, branchOnly: !!item.parent });
 			const receipt = { at: Date.now(), key: effect.key };
 			await take(c, answer.kind === "published" ? { ...answer, ...receipt, openItems, webhooks: githubConfig().pollFallback } : { ...answer, ...receipt });
 			return true;
@@ -766,7 +812,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 				const reading = await readCi(hub.app, { installationId: hub.installationId, repositoryId: meta.repository.id, owner: hub.owner, name: hub.name, head: encodeURIComponent(effect.head) });
 				// GitHub works out whether a pull request can merge after a push, and says null until it has. Its head is the
 				// commit it holds now, which may be one pushed after the agent's.
-				const pull = await hub.pull(number).catch(() => null);
+				const pull = item.parent ? null : await hub.pull(number).catch(() => null);
 				return { reading, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
 			};
 			const { reading, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, mergeable: null, prHead: null, baseSha: null }));
@@ -785,6 +831,10 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 			const next = c.vars.handoff.then(async () => {
 				const latest = c.vars.stored?.item;
 				if (!latest?.pr || !live(latest, effect)) return false;
+				if (latest.mode === "orchestrate") {
+					const hub = await github(c, meta, "write");
+					await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } }, token => readyFeature(hub.app, token, hub.owner, hub.name, latest.pr!.number, latest.id));
+				}
 				await handoffOnGithub(c, meta, latest.pr.number, effect, row);
 				return true;
 			});
@@ -933,6 +983,12 @@ export const workItem = actor({
 	actions: {
 		// --- called by `user` only ---------------------------------------------------------------
 
+		internalChildRequest: (c, id: string) => {
+			requireService(c);
+			const s = c.vars.stored, job = s?.item.jobs?.at(-1);
+			if (!s || !job || job.id !== id || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || s.item.question || ENDED.has(s.item.state)) return null;
+			return { job, sessionId: s.meta.sessionId, feature: summaryOf(s), context: JSON.stringify({ spec: s.item.featurePlan.spec, reports: s.item.jobs?.filter(j => j.state === "done" && job.task.dependsOn.includes(j.task.key)).map(j => j.report) }) };
+		},
 		internalFilePlan: async (c, input: { key: string; plan: unknown }): Promise<string> => {
 			requireService(c);
 			try {

@@ -78,7 +78,7 @@ export async function platformInfo(): Promise<PlatformInfo> {
 	const app = githubInfo();
 	if (app) info.github = app;
 	if (config.machines) info.machines = { minRunnerVersion: MIN_RUNNER_VERSION, runnerImage: config.machines.runnerImage, platformUrl: config.machines.publicUrl };
-	if (config.items) info.items = { reviewer: config.factory.reviewer };
+	if (config.items) info.items = { reviewer: config.factory.reviewer, orchestrate: process.env.WLP_FACTORY_ORCHESTRATE !== "0" };
 	return info;
 }
 

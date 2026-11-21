@@ -74,6 +74,7 @@ export type ReserveAnswer = { ok: true; hold: { id: string; seconds: number }; n
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
 	internalMachineSystem(id: string): Promise<{ os: string; arch: string } | null>;
+	internalFeatureChild(input: { parent: string; child: string; cancel?: boolean }): Promise<ItemView | null>;
 	internalPlannerMachines(): Promise<ReturnType<typeof import("../machines/details.js").plannerMachines>>;
 	internalSessionChanged(summary: SessionSummary): Promise<void>;
 	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
@@ -154,11 +155,12 @@ export interface SessionInternal {
 	/** Whether the turn of `turn` still runs (a `turn_running` fact with `check`), how it ended, or null when it has not started. */
 	internalCheckTurn(input: { turn: string; check: string }): Promise<Fact | null>;
 	/** Pushes the item's work and opens or updates its pull request, with the agent's report or else the item's title and body. */
-	internalPublish(input: { key: string; title: string; body: string }): Promise<ItemPublishAnswer>;
+	internalPublish(input: { key: string; title: string; body: string; branchOnly?: boolean }): Promise<ItemPublishAnswer>;
 }
 
 /** Actions of `workItem` that only actors may call. */
 export interface ItemInternal {
+	internalChildRequest(child: string): Promise<{ job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; context: string } | null>;
 	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;
 	internalSummary(): Promise<ItemSummary>;
 	internalView(): Promise<ItemView>;

@@ -86,7 +86,7 @@ export interface PlatformInfo {
 	 * `reviewer` says whether a second agent reviews each handed-over change (WLP_FACTORY_REVIEWER=on),
 	 * so that the Factory page can say there is none before any item exists.
 	 */
-	items?: { reviewer: boolean };
+	items?: { reviewer: boolean; orchestrate?: boolean };
 }
 
 /**

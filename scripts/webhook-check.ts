@@ -39,7 +39,7 @@ async function testNode() {
 	// The fake sandbox pushes a branch without a git SHA. Give each published test PR a stable full head.
 	session.internalPublish = async (c, input) => {
 		const answer = await publish(c, input);
-		return answer.kind === "published" ? { ...answer, head: answer.pr.number.toString(16).padStart(40, "0") } : answer;
+		return answer.kind === "published" && answer.pr ? { ...answer, head: answer.pr.number.toString(16).padStart(40, "0") } : answer;
 	};
 	type ItemCtx = Parameters<NonNullable<typeof workItem.config.actions>["internalView"]>[0];
 	Object.assign(workItem.config.actions!, {

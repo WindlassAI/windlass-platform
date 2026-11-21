@@ -1860,7 +1860,7 @@ const verifiedLine = (pull: PullRequestInfo) => ` Its description reports: ${pul
  * checked that nothing is in the way. `shownIsEnough` for the item's step: its agent may have pushed
  * everything itself (`agentPush`), and then an open pull request is only described again.
  */
-async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false): Promise<PublishResult> {
+async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false, branchOnly = false): Promise<PublishResult> {
 	const app = githubApp();
 	if (!app || !meta.sandboxId) throw new UserError(publishBlocked(c, meta) ?? "There is nothing to push yet.", { code: "publish_blocked" });
 	// A suspend or removal of the idle sandbox finishes first, as before a prompt.
@@ -1881,6 +1881,13 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 	meta.publishBranch = branch;
 	try {
 		// An item's step pushes over the platform's own last push where its agent rebased and did not push; the panel's never forces.
+		if (branchOnly) {
+			const evidence = await evidenceOf(c, meta, null);
+			const pushed = await pushWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pushed: meta.pushedHead ?? null, lease: meta.platformPushed ?? null, redact: evidence.redact }, message.title);
+			if (pushed.workspaceChanged || !pushed.head) throw new UserError("Git did not confirm the checked child commit.", { code: "publish_failed" });
+			recordPushHead(meta, sandbox, pushed.head);
+			return { state: await afterPublish(c, meta, sandbox), opened: false };
+		}
 		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: itemPublish ? (meta.platformPushed ?? null) : null, message, shownIsEnough: itemPublish, retitle: itemPublish, evidence: await evidenceOf(c, meta, null) });
 		if (published.head) published.pushed = recordPushHead(meta, sandbox, published.head);
 		meta.pull = published.pull;
@@ -3259,7 +3266,8 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			// What the question about a project's server has to say depends on where this session runs.
 			const profile = layer.sandboxes.profile(meta.profile);
 			const held = active.secrets;
-			const planner = active.item?.row.agent === "planner";
+			const planning = active.item?.row.agent === "planner";
+			const planner = planning || active.item?.row.agent === "summary";
 			const tools = !planner && !reviewer && !!meta.repo && githubApp() !== null;
 			const item = active.item;
 			const servers: ServerQuestionContext = {
@@ -3374,8 +3382,8 @@ fi`, { signal, timeoutMs: 5000 });
 				} : undefined,
 				// A work item's agent files its report, which the platform puts on the pull request it pushes itself.
 				planner,
-				onPlan: planner && item ? (request) => tracked(itemActor(c, meta.uid, item.row.itemId).internalFilePlan({ key: item.row.key, plan: held.redactor.deep(request.arguments) })) : undefined,
-				onReport: item && !planner && !reviewer && platformTool("report") ? (request, withdrawn) => {
+				onPlan: planning && item ? (request) => tracked(itemActor(c, meta.uid, item.row.itemId).internalFilePlan({ key: item.row.key, plan: held.redactor.deep(request.arguments) })) : undefined,
+				onReport: item && !planning && !reviewer && platformTool("report") ? (request, withdrawn) => {
 					const file = async () => {
 						if (!open || withdrawn.aborted) return "The report call ended. File it again.";
 						if (!browser && Array.isArray(request.arguments?.screenshots) && request.arguments.screenshots.length) return unavailable;
@@ -4760,7 +4768,7 @@ export const agentSession = actor({
 			return await closeCutTurn(c, meta, row);
 		},
 
-		internalPublish: async (c, input: { key: string; title: string; body: string }): Promise<ItemPublishAnswer> => {
+		internalPublish: async (c, input: { key: string; title: string; body: string; branchOnly?: boolean }): Promise<ItemPublishAnswer> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			if (meta.origin?.role === "reviewer") throw new UserError("The reviewer cannot publish.", { code: "reviewer" });
@@ -4776,11 +4784,11 @@ export const agentSession = actor({
 			try {
 				const report = meta.report?.run === Number(input.key.split(":")[1]) ? meta.report : null;
 				const body = report ? [report.description, report.concerns ? `**What the agent is unsure of:** ${report.concerns}` : ""].filter((part) => part !== "").join("\n\n") : String(input?.body ?? "");
-				const result = await c.keepAwake(publishSession(c, meta, repo, { title: report?.title || String(input?.title ?? meta.title), body }, true));
+				const result = await c.keepAwake(publishSession(c, meta, repo, { title: report?.title || String(input?.title ?? meta.title), body }, true, input.branchOnly));
 				const pull = result.state.pullRequest;
-				if (!pull) return { kind: "publish_failed", said: "GitHub opened no pull request", transient: true };
+				if (!input.branchOnly && !pull) return { kind: "publish_failed", said: "GitHub opened no pull request", transient: true };
 				// The commit git said it pushed; where git says nothing (a sandbox layer without git), the branch names it.
-				const answer = { kind: "published" as const, head: meta.pushedHead ?? pull.branch, pr: { number: pull.number, url: pull.url } };
+				const answer = { kind: "published" as const, head: meta.pushedHead ?? pull!.branch, pr: pull ? { number: pull.number, url: pull.url } : null };
 				await rememberPublish(c.db, String(input?.key ?? ""), answer);
 				return answer;
 			} catch (error) {

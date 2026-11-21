@@ -37,6 +37,28 @@ function unique(keys: string[]) {
 	requirePlan(new Set(keys).size === keys.length, "Keys must be unique.");
 }
 
+// Intersect the two small glob languages. A wildcard may consume an element or advance
+// without consuming. Remember each pair of positions to bound the search.
+function intersect(a: string[], b: string[], wildcard: string, match: (a: string, b: string) => boolean) {
+	const pending = [[0, 0]], seen = new Set<string>();
+	while (pending.length) {
+		const [i, j] = pending.pop()!, key = i + "/" + j;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		if (i === a.length && j === b.length) return true;
+		const x = a[i], y = b[j];
+		if (x === wildcard) pending.push([i + 1, j]);
+		if (y === wildcard) pending.push([i, j + 1]);
+		if (x !== undefined && y !== undefined && (x === wildcard || y === wildcard || match(x, y)))
+			pending.push([x === wildcard ? i : i + 1, y === wildcard ? j : j + 1]);
+	}
+	return false;
+}
+
+function overlaps(a: string, b: string) {
+	return intersect(a.split("/"), b.split("/"), "**", (x, y) => intersect([...x], [...y], "*", (m,n) => m === n));
+}
+
 export function validatePlan(value: unknown, single: ItemBudget, available: ItemBudget): FeaturePlanEdit {
 	const p = record(value), spec = record(p.spec);
 	const singleSuggested = p.singleSuggested == null ? null : text(p.singleSuggested);
@@ -61,13 +83,20 @@ export function validatePlan(value: unknown, single: ItemBudget, available: Item
 		for (const path of owns) requirePlan(/^[\w.*@/-]+$/.test(path) && path.split("/").every(part => part && ![".", "..", ".git"].includes(part)), "Use repository-relative owned path globs.");
 		const dependsOn = lines(s.dependsOn, 0, 5).map(keyOf);
 		unique(dependsOn);
-		return { key: keyOf(s.key), title: text(s.title, MAX_TITLE_CHARS), brief: text(s.brief, MAX_ITEM_BODY_CHARS), acceptance: lines(s.acceptance, 1), owns, dependsOn, budget };
+		const acceptance = lines(s.acceptance, 1);
+		requirePlan(acceptance.some(line => /screenshot|`[^`]+`|(?:^|\s)(?:run|use|execute|npm|pnpm|yarn|bun|make|go test|cargo|pytest|python|docker|curl|gradle|mvn|dotnet|bash|sh)\s+\S/i.test(line)), "Name a check command or screenshot in each subtask’s acceptance.");
+		return { key: keyOf(s.key), title: text(s.title, MAX_TITLE_CHARS), brief: text(s.brief, MAX_ITEM_BODY_CHARS), acceptance, owns, dependsOn, budget };
 	});
 	unique(subtasks.map(s => s.key));
+	const ancestors = new Map<string, Set<string>>();
 	const done = new Set<string>();
 	while (done.size < subtasks.length) {
 		const next = subtasks.find(s => !done.has(s.key) && s.dependsOn.every(k => done.has(k)));
 		requirePlan(next, "Dependencies must name existing subtasks and form an acyclic graph.");
+		const deps = new Set(next.dependsOn.flatMap(k => [k, ...ancestors.get(k)!]));
+		for (const other of subtasks) if (done.has(other.key) && !deps.has(other.key))
+			requirePlan(!next.owns.some(p => other.owns.some(q => overlaps(p, q))), "Independent subtasks must not overlap owned paths.");
+		ancestors.set(next.key, deps);
 		done.add(next.key);
 	}
 	return { questions, singleSuggested, subtasks, spec: { goal: text(spec.goal, 2000), acceptance: lines(spec.acceptance, 1), requirements: lines(spec.requirements), outOfScope: lines(spec.outOfScope) } };

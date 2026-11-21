@@ -60,7 +60,7 @@ function proposed(p: FeaturePlanEdit) {
 	const item = started(), key = currentKey(item)!;
 	const filed = advance(item, { kind: "file_plan", key, plan: p, at: 2 });
 	assert.equal(filed.item.featurePlan?.version, 1);
-	return advance(filed.item, { kind: "turn_ended", key, at: 3, outcome: "completed", changes: false, report: null, verified: null, flags: [], spend: { tokens: 10, hostedSeconds: 1 } }).item;
+	return advance(filed.item, { kind: "turn_ended", key, at: 3, outcome: "succeeded", changes: false, report: null, verified: null, flags: [], spend: { tokens: 10, hostedSeconds: 1 } }).item;
 }
 test("only the current answered plan can be approved and it dispatches children, never a builder turn", () => {
 	const p = proposal();
@@ -114,6 +114,91 @@ test("planner inventory exposes capacity and validated owner text without sessio
 	for (const tags of [["harness:claude"], ["arch"], ["screenshots"], ["x".repeat(25)], Array(13).fill("a")]) assert.throws(() => machineDetails({ ...details, tags }));
 	assert.throws(() => machineDetails({ ...details, whenToUse: "x".repeat(501) }));
 	const [entry] = plannerMachines([{ ...details, name: "Box", sandboxes: [{ state: "running", sessionId: "private" }], turns: { running: 1, queued: 2, max: 1 }, sendSecrets: true }] as never);
-	assert.equal(entry.turns.queued, 2); assert.equal(entry.whenToUse, "Big builds");
+	assert.equal(entry.turns!.queued, 2); assert.equal(entry.whenToUse, "Big builds");
 	assert.doesNotMatch(JSON.stringify(entry), /private|sendSecrets/);
+});
+
+function approved() {
+	const item = proposed(proposal());
+	return advance(item, { kind: "approve_plan", version: 1, at: 4, by: "person" }).item;
+}
+const head = "a".repeat(40);
+const pr = { number: 12, url: "https://example.invalid/pull/12" };
+test("one child is reserved at a time, replay is harmless, cancellation includes the pending creation", () => {
+	const item = approved();
+	const ready = { kind: "feature_ready" as const, at: 5, key: currentKey(item)!, head, pr };
+	const next = advance(item, ready);
+	assert.equal(next.item.jobs?.length, 1);
+	assert.equal(next.item.jobs![0].task.key, "index");
+	assert.equal(advance(next.item, ready).item, next.item);
+	assert.ok(advance(next.item, { kind: "cancel", at: 6, by: "person" }).effects.some(e => e.kind === "cancel_children"));
+});
+test("stopped child spend is charged once and re-planning requires fresh approval", () => {
+	const item = approved();
+	const running = advance(item, { kind: "feature_ready", at: 5, key: currentKey(item)!, head, pr }).item;
+	const job = running.jobs![0];
+	const stopped = { kind: "child_update" as const, key: currentKey(running)!, child: job.id, at: 6, state: "failed" as const, spent: { ...zero, turns: 2 }, head: null, report: "Tests failed" };
+	const replan = advance(running, stopped);
+	assert.equal(replan.item.replans, 1);
+	assert.equal(replan.item.spent.turns, 3);
+	assert.equal(advance(replan.item, stopped).item, replan.item);
+	assert.equal(replan.item.run!.step.kind, "refine");
+	assert.equal(replan.item.featurePlan?.status, "superseded");
+});
+test("finished children unlock their dependents, and the final summary uses a read-only turn", () => {
+	let item = approved();
+	item = advance(item, { kind: "feature_ready", at: 5, key: currentKey(item)!, head, pr }).item;
+	for (const key of ["index", "page"]) {
+		const job = item.jobs!.at(-1)!; assert.equal(job.task.key, key);
+		item = advance(item, { kind: "child_update", child: job.id, key: currentKey(item)!, at: 9, state: "done", spent: { ...zero, turns: 1 }, head, report: key + " passed" }).item;
+	}
+	assert.equal(item.run!.step.kind, "summary"); assert.equal(item.pr!.number, 12);
+});
+test("feature ref updates are fast-forward only and confined to the platform feature branch", async () => {
+	const { advanceFeatureRef } = await import("../server/src/github/feature.js");
+	const calls: any[] = []; const app = { call: async (req: any) => { calls.push(req); return { body: { object: { sha: head } } }; } };
+	await advanceFeatureRef(app as never, "token", "owner", "repo", "i_feature", "main", head);
+	assert.equal(calls[0].method, "PATCH"); assert.equal(calls[0].body.force, false);
+	assert.match(calls[0].path, /git\/refs\/heads\/windlass\/feature-i_feature$/);
+	assert.doesNotMatch(calls[0].path, /\/main$/);
+	await assert.rejects(advanceFeatureRef(app as never, "token", "owner", "repo", "i_feature", "windlass/feature-i_feature", head));
+});
+
+test("a planner cannot answer its own questions or introduce a scope change without a question", () => {
+	const p = proposal(); p.questions.push({ id: "scope", text: "Include reports?", answer: "Yes" });
+	const initial = proposed(p);
+	assert.equal(initial.featurePlan!.questions[0].answer, undefined);
+	let old = approved();
+	old = advance(old, { kind: "feature_ready", key: currentKey(old)!, at: 5, head, pr }).item;
+	const stopped = advance(old, { kind: "child_update", child: old.jobs![0].id, key: currentKey(old)!, at: 6, state: "failed", spent: zero, report: "Stopped", head: null }).item;
+	const changed = proposal(); changed.spec.goal = "Different feature";
+	const filed = advance(stopped, { kind: "file_plan", key: currentKey(stopped)!, at: 7, plan: changed }).item;
+	assert.ok(filed.featurePlan!.questions.some(q => !q.answer));
+});
+test("independent subtasks cannot claim overlapping paths; each names a check or screenshot", async () => {
+	const {validatePlan, featureCap} = await plans();
+	const plan = proposal(), cap = featureCap(single);
+	plan.subtasks[1].dependsOn = []; plan.subtasks[1].owns = ["index/data.ts"];
+	assert.throws(() => validatePlan(plan, single, cap), /own|overlap/i);
+	plan.subtasks[1].dependsOn = ["index"]; assert.doesNotThrow(() => validatePlan(plan, single, cap));
+	plan.subtasks[1].acceptance = ["Looks good."]; assert.throws(() => validatePlan(plan, single, cap));
+});
+test("child integration needs both gates, ignores duplicate receipts, and rebases in the child on refusal", () => {
+	const child = createItem({ id: "i_child", task: {...task, base: "windlass/feature-i_feature"}, budget: single, place: {kind:"hosted"}, reviewer: {off:"deployment"} });
+	child.parent = {itemId:"i_feature",key:"index",title:task.title};
+	const start = advance(child, {kind:"start",at:1,by:"platform"}).item;
+	for (const checks of [false,true]) {
+		const gate = advance(start, { kind:"turn_ended", key:currentKey(start)!, at:2, outcome:"succeeded", verified: checks ? { state:"passed",turn:1,run:null,unrun:[],changedAfter:false } : null, flags:[], changes:true, report:null, spend:{tokens:1,hostedSeconds:0} }).item;
+		const pushed = advance(gate, {kind:"published", at:3,key:currentKey(gate)!,head,pr:null,openItems:1,webhooks:false}).item;
+		assert.equal(pushed.pr,null);
+		const ci = { kind:"ci_read" as const, key:currentKey(pushed)!,at:4,head,reading:{kind:"read" as const,head,runs:[{name:"build",app:"status",state:"passed",conclusion:"success",url:null,summary:null}],logs:[],truncated:false},prHead:null,mergeable:null,openItems:1,webhooks:false };
+		const result = advance(pushed,ci as never);
+		assert.equal(result.effects.some(e=>e.kind === "integrate"),checks);
+		assert.equal(advance(result.item,ci as never).item,result.item);
+		if (checks) {
+			const rejected = advance(result.item,{kind:"feature_problem",key:currentKey(result.item)!,at:5,reason:"not a fast-forward",rebase:true});
+			assert.equal(rejected.item.run!.step.kind,"conflict");
+			assert.match(rejected.effects.find(e=>e.kind==="deliver")!.text,/rebase/i);
+		}
+	}
 });
