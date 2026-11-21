@@ -11,6 +11,164 @@
 	flex: none;
 }
 
+/*
+ * The session's bar: the way back, its repository, the title and the turn's pill on the left; what runs
+ * it, the way out and the panel's toggle on the right. The app's tabs give way to the crumb here.
+ */
+.app-fixed > .topbar .topbar-tabs {
+	display: none;
+}
+.app-fixed > .topbar .topbar-middle {
+	gap: 12px;
+}
+.crumb-repo {
+	flex: none;
+	max-width: 22ch;
+	padding: 4px 6px;
+	margin: 0 -6px;
+	border-radius: var(--r-item);
+	font-size: var(--text-13);
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+	text-decoration: none;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.crumb-repo:hover {
+	color: var(--ink);
+	background: var(--bg-hover);
+}
+.crumb .crumb-title {
+	font-size: var(--text-14);
+	letter-spacing: var(--tracking-tight);
+}
+.crumb-pill {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	gap: 6px;
+	height: 24px;
+	padding: 0 9px 0 7px;
+	border: 1px solid var(--accent-edge);
+	border-radius: var(--radius-pill);
+	background: var(--accent-wash);
+	font-size: var(--text-12);
+	font-weight: var(--weight-medium);
+	color: var(--accent-text);
+	white-space: nowrap;
+	animation: arrive 200ms var(--ease) both;
+}
+.crumb-pill-waiting {
+	border-color: var(--needs-edge);
+	background: var(--needs-wash);
+	color: var(--needs);
+}
+.crumb-pill-time {
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	font-variant-numeric: tabular-nums;
+	opacity: 0.9;
+}
+.crumb-end {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: 6px;
+	margin-left: auto;
+	min-width: 0;
+}
+.crumb-facts {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	margin-right: 6px;
+	font-size: var(--text-12);
+	color: var(--ink-faint);
+	white-space: nowrap;
+}
+.crumb-facts > :not(:last-child)::after {
+	content: "·";
+	margin: 0 0.5em;
+}
+.crumb-facts .crumb-place {
+	padding: 0;
+	border: 0;
+	background: none;
+	font: inherit;
+	color: inherit;
+}
+.bar-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	height: var(--h-sm);
+	padding: 0 11px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--r-control);
+	background: var(--bg-raised);
+	font-size: var(--text-13);
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+	text-decoration: none;
+	white-space: nowrap;
+	transition:
+		background-color var(--dur-hover) var(--ease),
+		border-color var(--dur-hover) var(--ease);
+}
+.bar-button:hover:not([aria-disabled="true"]) {
+	border-color: var(--line-field);
+	background: var(--bg-overlay);
+}
+.bar-button[aria-disabled="true"] {
+	color: var(--ink-faint);
+	cursor: default;
+}
+.bar-pull {
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	color: var(--ok);
+	border-color: color-mix(in srgb, var(--ok) 35%, var(--line));
+	background: var(--ok-wash);
+}
+.bar-pull-state {
+	color: var(--ink-dim);
+}
+.bar-icon {
+	display: inline-grid;
+	place-items: center;
+	width: var(--h-sm);
+	height: var(--h-sm);
+	border: 0;
+	border-radius: var(--r-item);
+	background: none;
+	color: var(--ink-faint);
+	transition:
+		background-color var(--dur-hover) var(--ease),
+		color var(--dur-hover) var(--ease);
+}
+.bar-icon:hover {
+	color: var(--ink);
+	background: var(--bg-hover);
+}
+.bar-icon-on {
+	color: var(--ink);
+	background: var(--bg-active);
+}
+/* Hidden, the conversation takes the panel's room. */
+.session-panel-hidden {
+	grid-template-columns: minmax(0, 1fr);
+}
+.session-panel-hidden > .panel {
+	display: none;
+}
+@media (max-width: 1280px) {
+	.app-fixed > .topbar .topbar-docs,
+	.crumb-facts {
+		display: none;
+	}
+}
+
 .session {
 	flex: 1;
 	min-height: 0;
@@ -130,11 +288,8 @@
 }
 
 .turn {
-	padding-bottom: 26px;
-}
-.turn + .turn {
-	padding-top: 26px;
-	border-top: 1px solid var(--line);
+	position: relative;
+	padding-bottom: 30px;
 }
 
 .block {
@@ -158,25 +313,184 @@
 }
 
 /*
- * What the user sent, on the right: the other side of the exchange. No wider than a comfortable
- * line, and only as wide as its text, so a word is a small box at the edge and a long prompt a
- * column beside the agent's. The box is the composer's (raised, rounded, ruled), quieter.
+ * The timeline hangs from a line: a twisted rope down the left, one knot on it for each thing that
+ * happened, tinted by how it went, and a weight at the end. The weight glows and sways while the agent
+ * works, turns amber while it waits on you, and rests, unlit, when the turn is over. The knots carry
+ * a call's state, so the rows beside them need no glyph of their own; a subagent's calls, inside a
+ * row, keep theirs.
+ */
+.timeline {
+	--rail: 40px;
+	--rope-x: 13px;
+	/* From a block's left edge to the rope's centre. */
+	--on-rope: calc(var(--rope-x) - var(--rail));
+	--rope: repeating-linear-gradient(-55deg, var(--line-field) 0 2.5px, var(--line-strong) 2.5px 5px);
+}
+.timeline > .turn,
+.timeline > .working {
+	padding-left: var(--rail);
+}
+.timeline > .turn::before,
+.timeline > .working::before {
+	content: "";
+	position: absolute;
+	left: calc(var(--rope-x) - 1.5px);
+	top: 0;
+	bottom: 0;
+	width: 3px;
+	border-radius: 2px;
+	background: var(--rope);
+	opacity: 0.85;
+}
+/* The rope starts at the first prompt's knot. */
+.timeline > .turn:first-of-type::before {
+	top: 18px;
+}
+/* With nobody working, it ends a little below the last turn, in a weight at rest. */
+.timeline:not(:has(> .working)) > .turn:last-of-type::before {
+	bottom: 14px;
+}
+.timeline:not(:has(> .working)) > .turn:last-of-type::after {
+	content: "";
+	position: absolute;
+	left: calc(var(--rope-x) - 5px);
+	bottom: 4px;
+	width: 10px;
+	height: 10px;
+	border-radius: 3px;
+	background: var(--line-field);
+}
+
+.timeline > .turn > .block {
+	position: relative;
+}
+/* A knot: a ring on the rope by the block's first line. */
+.timeline > .turn > .block::before {
+	content: "";
+	position: absolute;
+	z-index: 1;
+	left: calc(var(--on-rope) - 4.5px);
+	top: 8px;
+	width: 9px;
+	height: 9px;
+	box-sizing: border-box;
+	border: 2px solid var(--line-field);
+	border-radius: 50%;
+	background: var(--bg);
+	transition:
+		border-color 240ms var(--ease),
+		background-color 240ms var(--ease),
+		box-shadow 240ms var(--ease);
+}
+/* The prompt: the heaviest knot, filled. A message sent mid-turn: the same, hollow. */
+.timeline > .turn > .block-user::before {
+	left: calc(var(--on-rope) - 6px);
+	top: 15px;
+	width: 12px;
+	height: 12px;
+	border-color: var(--ink);
+	background: var(--ink);
+	box-shadow: 0 0 0 4px var(--bg);
+}
+.timeline > .turn > .block-steer::before {
+	top: 12px;
+	background: var(--bg);
+	border-style: dashed;
+}
+/* What the agent said, and the platform's quiet lines: small, plain knots. */
+.timeline > .turn > :is(.block-text, .block-platform, .block-note, .block-taint)::before {
+	left: calc(var(--on-rope) - 3px);
+	top: 9px;
+	width: 6px;
+	height: 6px;
+	border: 0;
+	background: var(--ink-faint);
+	box-shadow: 0 0 0 3px var(--bg);
+}
+.timeline > .turn > :is(.block-platform, .block-note, .block-taint)::before {
+	top: 8px;
+	background: var(--line-field);
+}
+.timeline > .turn > .block-reasoning::before {
+	border-style: dotted;
+}
+/* How each call went. */
+.timeline > .turn > .block:has(> :is(.tool-done, .tool-checks-passed))::before {
+	border-color: var(--ink-dim);
+}
+.timeline > .turn > .block:has(> :is(.tool-failed, .tool-checks-failed))::before,
+.timeline > .turn > .block-error::before {
+	border-color: var(--bad);
+	background: var(--bad);
+}
+.timeline > .turn > .block:has(> :is(.tool-refused, .tool-interrupted, .tool-checks-error, .tool-checks-timed_out, .tool-checks-skipped))::before,
+.timeline > .turn > .block-notice:not(.block-taint)::before {
+	border-color: var(--warn);
+}
+.timeline > .turn > .block:has(> :is(.tool-queued, .tool-input))::before {
+	border-style: dashed;
+}
+.timeline > .turn > .block:has(> .tool-asking)::before {
+	border-color: var(--needs);
+	background: var(--needs);
+	box-shadow: 0 0 0 4px var(--needs-wash);
+}
+.timeline > .turn > .block:has(> :is(.tool-running, .tool-checks-running))::before {
+	border-color: var(--accent);
+	background: var(--accent);
+	box-shadow: 0 0 0 4px var(--accent-wash);
+	animation: knot-glow 1.6s ease-in-out infinite;
+}
+@keyframes knot-glow {
+	50% {
+		box-shadow: 0 0 0 6px var(--accent-wash);
+	}
+}
+/* The knots say a call's state: its row starts with its name. */
+.timeline > .turn > .block > .tool > .tool-row > .line-glyph,
+.timeline > .turn > .block > .tool > .tool-head > .tool-row > .line-glyph,
+.timeline > .turn > .block > .reasoning > .line-button > .line-glyph,
+.timeline > .turn > .block > .plan > .plan-head > .line-glyph,
+.timeline > .turn > .block > .system > .system-rule {
+	display: none;
+}
+.timeline > .turn > .block > .tool > :is(.tool-preview, .tool-body, .tool-refusal, .q-inline, .q-history, .tool-stop-refused),
+.timeline > .turn > .block > .tool > .q-asked > .q-history,
+.timeline > .turn > .block > .reasoning > .reasoning-body {
+	margin-left: 0;
+}
+/* How the turn ended: its glyph is the knot. */
+.timeline .turn-end-line {
+	padding-left: 0;
+}
+.timeline .turn-end-line > .line-glyph {
+	left: calc(var(--on-rope) - 10px);
+	width: 20px;
+	border-radius: 50%;
+	background: var(--bg);
+	z-index: 1;
+}
+.timeline .turn-end-message {
+	margin-left: 0;
+}
+
+/*
+ * What the user sent: a card the turn hangs from, on the line's heaviest knot. Who and when sit on
+ * the card's top line (the foot is drawn first), the words under them at reading size.
  */
 .user {
-	display: grid;
-	justify-items: end;
-	gap: 5px;
-	width: fit-content;
-	max-width: min(60ch, 82%);
-	margin-left: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 11px 16px 13px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--r-box);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
 }
 .user-text {
-	padding: 9px 14px 10px;
-	border: 1px solid var(--line);
-	border-radius: var(--radius-l);
-	background: var(--bg-raised);
-	font-size: 0.96875rem;
-	font-weight: 480;
+	font-size: var(--text-15);
+	font-weight: 450;
 	line-height: 1.55;
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
@@ -184,10 +498,17 @@
 .user-meta {
 	display: flex;
 	flex-wrap: wrap;
-	justify-content: flex-end;
+	align-items: baseline;
+	min-width: 0;
 	font-family: var(--font-mono);
 	font-size: var(--size-mono-small);
 	color: var(--ink-faint);
+}
+.user-who {
+	font-family: var(--font-text);
+	font-size: var(--text-13);
+	font-weight: var(--weight-strong);
+	color: var(--ink);
 }
 /* Separators trail their item, so a wrapped line never starts with one. */
 .user-meta > :not(:last-child)::after {
@@ -197,15 +518,17 @@
 
 /* A message sent while the turn ran: lighter than the prompt that started it, dashed as the composer was. */
 .block-steer {
-	margin: 16px 0;
+	margin: 14px 0;
+}
+.user-steer {
+	gap: 4px;
+	padding: 8px 14px 10px;
+	border-style: dashed;
+	background: none;
+	box-shadow: none;
 }
 .user-steer .user-text {
-	padding: 6px 12px 7px;
-	border-style: dashed;
-	border-color: var(--line-strong);
-	background: none;
-	font-size: 0.9375rem;
-	font-weight: 450;
+	font-size: var(--text-14);
 	color: var(--ink-dim);
 }
 .user-steer-word {
@@ -801,15 +1124,20 @@ button.output-more:hover {
 	color: var(--bad);
 }
 
-/* What is happening now. */
+/* What is happening now: the end of the line, with its weight. */
 .working {
+	position: relative;
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 4px 0 8px;
-	font-family: var(--font-mono);
-	font-size: var(--size-mono);
-	color: var(--accent);
+	min-height: 40px;
+	padding: 4px 0 12px;
+	font-size: var(--text-13);
+	font-weight: var(--weight-medium);
+	color: var(--accent-text);
+}
+.working > svg {
+	flex: none;
 }
 .working-stopping {
 	color: var(--warn);
@@ -818,12 +1146,61 @@ button.output-more:hover {
 	color: var(--needs);
 }
 .working-time {
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	font-weight: var(--weight-regular);
 	color: var(--ink-faint);
 	font-variant-numeric: tabular-nums;
 }
 .working-time::before {
 	content: "·";
 	margin-right: 8px;
+}
+.timeline > .working::before {
+	bottom: calc(50% + 4px);
+}
+.working-weight {
+	position: absolute;
+	left: calc(var(--rope-x, 13px) - 5.5px);
+	top: calc(50% - 8px);
+	width: 11px;
+	height: 11px;
+	border-radius: 3px;
+	background: var(--accent-fill);
+	box-shadow:
+		0 0 0 4px var(--accent-wash),
+		0 0 18px color-mix(in srgb, var(--accent-fill) 55%, transparent);
+	animation: weight-sway 2.4s ease-in-out infinite;
+}
+.working-waiting .working-weight {
+	background: var(--needs-fill);
+	box-shadow:
+		0 0 0 4px var(--needs-wash),
+		0 0 18px color-mix(in srgb, var(--needs-fill) 50%, transparent);
+	/* Waiting on you: still, as nothing moves until you answer. */
+	animation: none;
+}
+.working-stopping .working-weight {
+	background: var(--warn);
+	box-shadow: 0 0 0 4px var(--warn-wash);
+}
+.working-starting .working-weight {
+	background: transparent;
+	border: 1.5px dashed var(--accent);
+	box-shadow: none;
+}
+/* Not in a timeline yet (the first turn starting): the weight stands where the rope would be. */
+.working:not(.timeline > .working) {
+	padding-left: 40px;
+}
+@keyframes weight-sway {
+	0%,
+	100% {
+		transform: translateY(0);
+	}
+	50% {
+		transform: translateY(3px);
+	}
 }
 
 .jump {
@@ -2036,13 +2413,15 @@ button.output-more:hover {
 
 /* A prompt: before its line of facts, so that the facts keep the box's right edge while it is hidden. */
 .user-foot {
+	order: -1;
 	display: flex;
-	flex-direction: row-reverse;
 	align-items: center;
+	justify-content: space-between;
 	gap: 8px;
+	min-height: 20px;
 }
 .user-foot > .copy {
-	margin: -4px 0;
+	margin: -6px -8px -6px 0;
 }
 
 /*
@@ -2133,6 +2512,12 @@ button.output-more:hover {
 /* ---- narrow screens: the panel goes below the main column ------------------------------------ */
 
 @media (max-width: 1020px) {
+	.panel-toggle {
+		display: none;
+	}
+	.session-panel-hidden > .panel {
+		display: block;
+	}
 	.app-fixed {
 		height: auto;
 		min-height: 100dvh;
@@ -2281,6 +2666,26 @@ button.user-platform-line:hover {
 
 /* A phone: the toolbar keeps one row; the pills give way before Send does, and the key hints are not drawn. */
 @media (max-width: 640px) {
+	.crumb-repo,
+	.crumb-pill > span:not(.crumb-pill-time) {
+		display: none;
+	}
+	.crumb .crumb-title {
+		font-size: var(--text-13);
+	}
+	.bar-button {
+		width: var(--h-sm);
+		padding: 0;
+		justify-content: center;
+	}
+	.bar-button-label,
+	.bar-pull-state {
+		display: none;
+	}
+	.bar-pull {
+		width: auto;
+		padding: 0 8px;
+	}
 	.composer-tools {
 		flex-wrap: nowrap;
 		min-width: 0;

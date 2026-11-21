@@ -147,6 +147,9 @@ function PersonPrompt({ block }: { block: UserBlock }) {
 			</p>
 			<div className="user-foot">
 				<p className="user-meta">
+					<span className="user-who" aria-hidden="true">
+						You
+					</span>
 					{steer ? (
 						<span className="user-steer-word">
 							<SteerIcon size={12} />
