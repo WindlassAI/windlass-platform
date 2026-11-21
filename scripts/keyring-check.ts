@@ -1,4 +1,9 @@
 /** Independent server processes so each observes its own boot-time keyring. All keys are fixtures. */
+import "./check-secret.js";
+import { setImmediate as nextTurn } from "node:timers/promises";
+import { createFakeSignInCommands } from "../server/src/sandbox-fake.js";
+import { SignInHolder, type StoredSignIn } from "../server/src/signin/holder.js";
+import { createSealer } from "../server/src/signin/seal.js";
 import assert from "node:assert/strict";
 import { createHmac, hkdfSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -60,6 +65,58 @@ test("a saved sign-in is opened and re-sealed by a status read", () => {
 	})()`, blob);
 	assert.equal(result.split(".")[1], "new");
 	assert.match(server(`new:${fresh}`, 'serverSealer().open("user",profile.uid,input)', result), /sub/);
+});
+
+const material = JSON.stringify({ files: { "auth.json": JSON.stringify({ account: { sub: "test-sub" } }) } });
+
+test("current-key status returns while a token command is still running", async t => {
+	const sealer = createSealer(fresh);
+	const sealed = sealer.seal("user", "u", material);
+	const commands = createFakeSignInCommands();
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	let started!: () => void;
+	const running = new Promise<void>(resolve => { started = resolve; });
+	t.mock.method(commands, "token", async () => {
+		started();
+		await gate;
+		throw new Error("fixture stopped the refresh");
+	});
+	const holder = new SignInHolder({ uid: "u", sealer, commands, store: {
+		load: async () => ({ sealed, generation: 7, shortNoted: false }),
+		save: async () => assert.fail("a current key needs no save"),
+	} });
+	const refresh = assert.rejects(holder.accessToken(), /fixture stopped/);
+	try {
+		await running;
+		const account = await Promise.race([holder.status(), nextTurn().then(() => null)]);
+		assert.equal(account?.sub, "test-sub");
+	} finally {
+		release();
+		await refresh;
+	}
+});
+
+test("status reports the account and retries rotation after a failed re-seal save", async () => {
+	const sealer = createSealer([{ id: "new", secret: Buffer.from(fresh) }, { id: "old", secret: Buffer.from(old) }]);
+	const original = createSealer(old).seal("user", "u", material);
+	let row: StoredSignIn = { sealed: original, generation: 7, shortNoted: false };
+	let fail = true;
+	const log: string[] = [];
+	const holder = new SignInHolder({ uid: "u", sealer, commands: createFakeSignInCommands(), log: line => log.push(line), store: {
+		load: async () => ({ ...row }),
+		save: async next => {
+			if (fail) throw new Error("storage unavailable");
+			row = { ...next };
+		},
+	} });
+	assert.equal((await holder.status())?.sub, "test-sub");
+	assert.equal(row.sealed, original);
+	assert.equal(log.length, 1);
+	fail = false;
+	assert.equal((await holder.status())?.sub, "test-sub");
+	assert.ok(sealer.isCurrent(row.sealed!));
+	assert.equal(row.generation, 7);
 });
 
 test("account and repository reads replace old ciphertext without overwriting concurrent edits", () => {

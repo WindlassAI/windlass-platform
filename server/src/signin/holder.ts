@@ -104,16 +104,29 @@ export class SignInHolder {
 
 	/** Who is signed in and when the saved access token expires; null when nobody is. Never a token. */
 	async status(): Promise<ChatgptAccount | null> {
-		return this.exclusive(async () => {
-			const row = this.unsaved ?? await this.options.store.load();
-			if (!row?.sealed) return null;
-			try {
-				return accountOf(await this.readMaterial(row, row.sealed));
-			} catch (error) {
-				if (error instanceof SandboxUserError) return null;
-				throw error;
-			}
-		});
+		const row = this.unsaved ?? await this.options.store.load();
+		const sealed = row?.sealed;
+		if (!sealed) return null;
+		let material: SignInMaterial;
+		try {
+			material = this.open(sealed);
+		} catch (error) {
+			if (error instanceof SandboxUserError) return null;
+			throw error;
+		}
+		if (!this.options.sealer.isCurrent(sealed)) {
+			await this.exclusive(async () => {
+				// A refresh, adoption or logout may have won the queue since this snapshot.
+				if (this.unsaved) return;
+				try {
+					const latest = await this.options.store.load();
+					if (latest?.sealed === sealed) await this.options.store.save({ ...latest, sealed: this.seal(material) });
+				} catch {
+					this.log(`[wlp] sign-in.reseal_failed uid=${this.uid}: could not re-seal the saved sign-in; the next read will retry`);
+				}
+			});
+		}
+		return accountOf(material);
 	}
 
 	/** The user's current access token: `AccessTokens.current` (sandbox/api.ts) says what it promises. */
