@@ -3077,7 +3077,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			freeDiskBytes: 61.4e9,
 			egress: "open",
 			profiles: mockMachineProfiles(patch.name ?? "nas", {}, patch.egress),
-			sendSecrets: true, whenToUse: "Build and test", tags: ["big-build"], host: { cpus: 8, sandboxCpus: 4, memoryBytes: 16 * 2**30, memoryFreeBytes: 8 * 2**30, load1: 1 }, turns: { running: 0, queued: 0, max: 2 },
+			sendSecrets: true, orchestrator: "yes", whenToUse: "Build and test", tags: ["big-build"], host: { cpus: 8, sandboxCpus: 4, memoryBytes: 16 * 2**30, memoryFreeBytes: 8 * 2**30, load1: 1 }, turns: { running: 0, queued: 0, max: 2 },
 			warnings: [],
 			harnesses: [claude],
 			...patch,
@@ -3216,7 +3216,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			async setMachineDetails(input) {
 				machinesOn();
 				const machine = machineOf(auth, input.machineId);
-				try { Object.assign(machine, machineDetails(input)); } catch (error) { throw new PlatformError("user", (error as Error).message, { reason: "bad_input" }); }
+				try { Object.assign(machine, machineDetails({ ...machine, ...input })); } catch (error) { throw new PlatformError("user", (error as Error).message, { reason: "bad_input" }); }
 				machinesChanged(auth);
 				return machinesView(auth);
 			},
