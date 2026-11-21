@@ -703,6 +703,10 @@ async function checkIssue(c: Ctx, meta: ItemMeta, changes: IssueChanges) {
 	}
 }
 
+export function rescheduleChildPoll(db: Pick<RawAccess, "execute">, row: EffectRow, now: number) {
+	return db.execute("UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE id = ? AND effect = ?", retryAt(now, row.attempts + 1), row.id, row.effect);
+}
+
 /**
  * Performs one effect: what comes of it is taken as a fact. Throws when it could not be done, to be
  * tried again; answers false when the item as it is now does not want it, and nothing was done.
@@ -730,7 +734,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const changed = v && await take(c, { kind: "child_update", key, child: v.id, state: v.state, head: v.head, spent: v.spent, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
 				if (!changed && live(c.vars.stored!.item, effect)) {
 					// The child notice replaces this keyed effect immediately. An unchanged observation only moves its fallback timer.
-					await queued(c, () => c.db.execute("UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE id = ? AND effect = ?", retryAt(Date.now(), row.attempts + 1), row.id, row.effect));
+					await queued(c, () => rescheduleChildPoll(c.db, row, Date.now()));
 					return "deferred";
 				}
 				return true;

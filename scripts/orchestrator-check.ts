@@ -444,20 +444,31 @@ test("feature budget raises require an explicit increase bounded in every dimens
 	assert.equal(advance(stopped, {...raise, budget:{tokens:cap+single.tokens}}).item.budget.tokens, cap+single.tokens);
 });
 
-test("a quiet child costs at most 16 parent poll writes and one item revision in an hour", async () => {
+test("a quiet child needs 15 polls and one parent revision in the first hour", async () => {
 	const feature = approved();
 	let item = advance(feature, {kind:"feature_ready", key:currentKey(feature)!, head, pr, at:0}).item;
 	let polls = 0, revisions = 0, at = 0;
-	const { retryAt } = await import("../server/src/factory/budget.js");
+	const { rescheduleChildPoll } = await import("../server/src/actors/work-item.js");
+	const { DatabaseSync } = await import("node:sqlite");
+	const db = new DatabaseSync(":memory:");
+	db.exec("CREATE TABLE effects(id TEXT, effect TEXT, due_at INTEGER, attempts INTEGER); INSERT INTO effects VALUES ('poll','dispatch',0,0)");
+	const execute = (sql: string, ...args: (string | number)[]) => db.prepare(sql).run(...args);
 	while (at < 3_600_000) {
 		const next = advance(item, {kind:"child_update", key:currentKey(item)!, child:item.jobs![0].id, state:"waiting", spent:zero, head:null, report:"Waiting for owner", at});
 		if (next.item !== item) revisions++;
 		item = next.item;
 		const dispatch = next.effects.find(e => e.kind === "dispatch");
-		at = dispatch?.at ?? retryAt(at, polls);
+		if (dispatch) at = dispatch.at!;
+		else {
+			const row = db.prepare("SELECT * FROM effects").get() as {id:string; effect:string; due_at:number; attempts:number};
+			await rescheduleChildPoll({execute} as never, row, at);
+			at = Number(db.prepare("SELECT due_at FROM effects").get()!.due_at);
+		}
 		polls++;
 	}
-	assert.ok(polls <= 16, polls + " poll writes per hour");
+	assert.equal(polls, 15, polls + " polls per hour");
+	assert.equal(db.prepare("SELECT attempts FROM effects").get()!.attempts, 14);
+	db.close();
 	assert.equal(revisions, 1);
 	const notice = advance(item, {kind:"child_notice", child:item.jobs![0].id, state:"done", spent:zero, at});
 	assert.equal(notice.effects.find(e => e.kind === "dispatch")?.at, at);
@@ -486,8 +497,12 @@ test("a re-plan cannot edit completed work", () => {
 	assert.throws(() => advance(item, {kind:"file_plan", key:currentKey(item)!, plan, at:8}), /Completed subtasks/);
 });
 test("a redelivered planner must file in its own attempt before approval", () => {
-	let item = proposed(proposal());
-	item = advance(item, {kind:"answer", choice:"revise", question:item.question!.id, at:4, by:"person"}).item;
+	let item = started();
+	const filed = currentKey(item)!;
+	item = advance(item, {kind:"file_plan", key:filed, at:2, plan:proposal()}).item;
+	item = advance(item, {kind:"turn_ended", key:filed, at:3, outcome:"interrupted", spend:{tokens:1,hostedSeconds:0}, report:null, changes:false, flags:[], verified:null}).item;
+	assert.notEqual(currentKey(item), filed);
+	assert.equal(item.run!.step.attempt, 2);
 	item = advance(item, {kind:"turn_ended", key:currentKey(item)!, at:5, outcome:"succeeded", spend:{tokens:1,hostedSeconds:0}, report:null, changes:false, flags:[], verified:null}).item;
 	assert.match(item.question!.text, /without filing/);
 	assert.equal(advance(item, {kind:"approve_plan", version:item.featurePlan!.version, at:6, by:"person"}).item, item);
