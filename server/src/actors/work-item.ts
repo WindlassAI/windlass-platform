@@ -36,7 +36,7 @@ import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, t
 import type { IssueBinding } from "../factory/intake.js";
 import type { GithubUser } from "../github/app.js";
 import type { ItemReview } from "../contract.js";
-import { ledgerSeconds } from "../factory/budget.js";
+import { ledgerSeconds, retryAt } from "../factory/budget.js";
 import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
@@ -414,6 +414,7 @@ async function performRow(c: Ctx, row: EffectRow): Promise<void> {
 	c.vars.performing.add(row.id);
 	try {
 		const done = await perform(c, row);
+		if (done === "deferred") return;
 		await queued(c, async () => {
 			// Found not wanted, it is let go only if the stored item does not want it either: the decision that retired it may
 			// still be waiting for its write, which can fail, and the item read again then waits for this effect. That write
@@ -690,7 +691,7 @@ async function checkIssue(c: Ctx, meta: ItemMeta, changes: IssueChanges) {
  * Performs one effect: what comes of it is taken as a fact. Throws when it could not be done, to be
  * tried again; answers false when the item as it is now does not want it, and nothing was done.
  */
-async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
+async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	const effect: Effect = JSON.parse(row.effect);
 	const stored = c.vars.stored;
 	// Checked in the step that sends it: a cancel stored since the row was read leaves it undone.
@@ -710,7 +711,12 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean> {
 			const job = item.jobs?.at(-1);
 			if (effect.kind === "dispatch" && item.pr && job) {
 				const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });
-				if (v) await take(c, { kind: "child_update", key, child: v.id, state: v.state, head: v.head, spent: v.spent, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
+				const changed = v && await take(c, { kind: "child_update", key, child: v.id, state: v.state, head: v.head, spent: v.spent, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
+				if (!changed && live(c.vars.stored!.item, effect)) {
+					// The child notice replaces this keyed effect immediately. An unchanged observation only moves its fallback timer.
+					await queued(c, () => c.db.execute("UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE id = ? AND effect = ?", retryAt(Date.now(), row.attempts + 1), row.id, row.effect));
+					return "deferred";
+				}
 				return true;
 			}
 			try {

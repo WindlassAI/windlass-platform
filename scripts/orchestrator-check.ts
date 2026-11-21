@@ -425,3 +425,22 @@ test("feature budget raises require an explicit increase bounded in every dimens
 	}
 	assert.equal(advance(stopped, {...raise, budget:{tokens:cap+single.tokens}}).item.budget.tokens, cap+single.tokens);
 });
+
+test("a quiet child costs at most 16 parent poll writes and one item revision in an hour", async () => {
+	const feature = approved();
+	let item = advance(feature, {kind:"feature_ready", key:currentKey(feature)!, head, pr, at:0}).item;
+	let polls = 0, revisions = 0, at = 0;
+	const { retryAt } = await import("../server/src/factory/budget.js");
+	while (at < 3_600_000) {
+		const next = advance(item, {kind:"child_update", key:currentKey(item)!, child:item.jobs![0].id, state:"waiting", spent:zero, head:null, report:"Waiting for owner", at});
+		if (next.item !== item) revisions++;
+		item = next.item;
+		const dispatch = next.effects.find(e => e.kind === "dispatch");
+		at = dispatch?.at ?? retryAt(at, polls);
+		polls++;
+	}
+	assert.ok(polls <= 16, polls + " poll writes per hour");
+	assert.equal(revisions, 1);
+	const notice = advance(item, {kind:"child_notice", child:item.jobs![0].id, state:"done", spent:zero, at});
+	assert.equal(notice.effects.find(e => e.kind === "dispatch")?.at, at);
+});
