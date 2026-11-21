@@ -356,6 +356,28 @@ async function run() {
 			return { person, account: (await connectUser(login)).user };
 		};
 		const bots = (issue: Issue) => issue.comments.filter(c => c.user.login.endsWith("[bot]"));
+		await check("G3 feature filing binds the fetched command and label, and explains bug overrides", async () => {
+			const author = await newWriter("g3-feature-owner");
+			const named = make(175, reader);
+			const comment = standin.issueComment(named, author.person, "@windlass-fk4w orchestrate this feature");
+			await mention(named, comment.id, author.person);
+			assert.equal((await items(named, author.account))[0]?.mode, "orchestrate");
+
+			const labelled = make(176, reader);
+			standin.issueEvent(labelled, "labeled", author.person);
+			labelled.labels = ["windlass:orchestrate"];
+			labelled.events.at(-1)!.label = {name:"windlass:orchestrate"};
+			await delivered("issues", {...payload(labelled,author.person),action:"labeled",label:{name:"windlass:orchestrate"}});
+			assert.equal((await items(labelled,author.account))[0]?.mode,"orchestrate");
+
+			const bug = make(177, reader);
+			bug.labels.push("bug");
+			const fileBug = standin.issueComment(bug, author.person, "@windlass-fk4w");
+			await mention(bug, fileBug.id, author.person);
+			assert.equal((await items(bug,author.account))[0]?.mode,"single");
+			await until("bug reply",async () => bots(bug).length > 0);
+			assert.match(bots(bug)[0]!.body, /bug label.*single item/i);
+		});
 		await check("G3 snapshot strips hidden text, bounds task, identifies author and fences third-party text", () => {
 			const issue = make(40, reader);
 			const input = { title: "T".repeat(81), body: "<!-- hidden -->\u200dfirst\u202e\n" + Array.from({ length: 25 }, (_, i) => "- [ ] task " + i).join("\n") + "\n" + "X".repeat(30_000),

@@ -43,7 +43,7 @@ export function issueMode(note: string, labels: unknown[], enabled = true) {
 	const bug = labels.some(label => typeof label === "string" && label.toLowerCase() === "bug");
 	return { mode: requested && !bug ? "orchestrate" as const : "single" as const,
 		refusal: requested && !bug && !enabled ? "Not taken: orchestrated work items are disabled on this deployment." : null,
-		reason: requested && bug ? "This issue has the bug label, so it runs as a single item." : null };
+		reason: bug ? "This issue has the bug label, so it runs as a single item." : null };
 }
 
 export interface IssueBinding {
