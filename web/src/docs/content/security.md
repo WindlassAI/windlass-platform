@@ -59,7 +59,19 @@ On a platform that runs on E2B, each sandbox is a microVM of its own, hosted by 
 
 ## On your machine
 
-A machine offers the same two Docker profiles: **Hardened Docker on your machine** always, and **Docker + Windlass sandbox on your machine** only if you allow it with `--allow-profile docker-windlass-sandbox`. New pairings default to restricted web proxy access. Open mode permits direct internet and local network access. None disables general networking. Claude sessions retain their own model relay in every mode.
+A machine offers the same two Docker profiles: **Hardened Docker on your machine** always, and **Docker + Windlass sandbox on your machine** only if you allow it with `--allow-profile docker-windlass-sandbox`.
+
+Its network mode, set with `--egress`, decides what commands in the hardened profile can reach:
+
+- `restricted`, the default for a new pairing: public sites through the runner's web proxy. Your private network, the machine itself, Docker's networks and metadata addresses are refused, except private hosts you name with `--egress-allow`.
+- `open`: the internet and your local network, directly. Agents cannot reach each other.
+- `none`: no network, and no repository.
+
+See [Network access](/docs/machines#network-access) for the details.
+
+### Agent logins stay on the machine
+
+An agent's login is never inside its container. Claude Code's setup token lives in a login volume that no session mounts. A relay container on the machine reads it, and forwards each session's model requests to Anthropic with it. The session gets only a placeholder, signed for that one session, and the relay's address. Claude sessions keep their relay in every network mode. See [Your Claude login stays out of the container](/docs/machines#your-claude-login-stays-out-of-the-container).
 
 ### What the platform can do there
 

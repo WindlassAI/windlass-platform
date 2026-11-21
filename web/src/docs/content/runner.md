@@ -41,9 +41,10 @@ The runner takes one command. With none, it runs `run`.
 docker exec windlass-runner windlass-runner status
 ```
 
-It prints the runner's version, then its connection, then:
+It prints the runner's version, then its connection, then the network mode and the limits:
 
 ```text
+Network egress is restricted.
 Running turn limit: 2
 Running sandbox limit: no limit
 Kept sandbox limit: no limit
@@ -72,7 +73,7 @@ docker start windlass-runner
 
 ## Run options
 
-These options go after the runner image, with the `run` command or with no command.
+These options go after the runner image, with the `run` command or with no command. `--name` also works with `pair`.
 
 | Option | Default | What it does |
 | --- | --- | --- |
@@ -81,17 +82,19 @@ These options go after the runner image, with the `run` command or with no comma
 | `--max-running N` | No limit | How many sandboxes may run at once. |
 | `--max-sandboxes N` | No limit | How many sandboxes may be kept on this machine. |
 | `--name TEXT` | Docker daemon name or system hostname | Set the machine’s display name for pairing and reports. |
-| `--egress MODE` | `restricted` for new pairings, `open` on first upgrade | Choose `restricted`, `open` or `none`. Claude keeps its session-local model relay in all three modes. |
-| `--egress-allow HOST[,HOST]` | Empty | With `--egress restricted`, permit exact private DNS names through the proxy. Host interfaces, Docker bridge addresses and metadata stay blocked. |
+| `--egress MODE` | `restricted` for a new pairing; `open` for one made before network modes | The network mode of the agents' commands: `restricted`, `open` or `none`. See [Network access](/docs/machines#network-access). Claude Code keeps its model relay in all three. |
+| `--egress-allow HOST[,HOST]` | Empty | In `restricted` mode, let commands reach these hosts on your private network. Exact DNS names, up to 64. Given alone, it means `--egress restricted`. The machine's own addresses, Docker's networks and metadata addresses stay blocked. |
 | `--allow-profile ID` | `docker-hardened` | Which Docker profiles agents may use here. Repeat it for both. |
 | `--harness claude` | Off | Offers Claude Code on this machine. Needs a runner built with the Claude Code image. |
 | `--screenshots` | Off | Lets work-item sandboxes here take screenshots. Needs a runner built with the screenshots image. |
+
+The runner saves `--name`, `--egress`, `--egress-allow` and `--allow-profile` for this pairing, and uses them again when it restarts without them. `--harness` and `--screenshots` are not saved: give them each time you start the runner.
 
 `N` is a positive whole number. A turn that would pass `--max-running` or `--max-sandboxes` ends with, for example, "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." The Machines page shows these limits under **Sandbox limit**, and says they are set on the machine, not there.
 
 ### Allowed profiles
 
-A new pairing allows only `docker-hardened`. To allow Windlass's own command sandbox as well, start the runner with both:
+A new pairing allows only `docker-hardened`. A pairing made before this setting existed allows both, until you give `--allow-profile`. To allow Windlass's own command sandbox as well, start the runner with both:
 
 ```sh
 --allow-profile docker-hardened --allow-profile docker-windlass-sandbox
@@ -122,5 +125,12 @@ Pass a variable with `-e`, for example `-e WLP_RUNNER_CPUS=2`, before the image 
 | "This runner is …; the platform needs … or later. Update it with the command on the Machines page." | [Update the runner](/docs/machines#update-the-runner). |
 | "Another runner holds the state lock. Waiting to retry." | Two runners share one volume. Stop one. |
 | "Docker needs at least 5 GB free to create a sandbox." | Free disk space on the machine. |
+| "Use --egress open, restricted or none." | Give `--egress` one of the three modes. |
+| "Use --egress-allow with restricted and up to 64 comma-separated DNS hostnames." | List DNS names, not IP addresses, and leave out `--egress open` or `none`. |
+| "Use --egress and --egress-allow with run." | Give them to `run`, or with no command, not to `pair` or another command. |
+| "Use --name with run or pair and a printable name of 1 to 64 characters." | Shorten the name, or take out control characters. |
+| "Use --allow-profile with run and a profile ID: docker-hardened or docker-windlass-sandbox." | Give one of the two profile IDs. |
+| "Network egress is open for this existing pairing. Start the runner with --egress restricted to opt in." | Not an error. This pairing predates network modes. See [Network access](/docs/machines#network-access). |
+| "Docker could not apply the runner’s network policy." | The runner could not set up the sandbox's network. The Machines page shows it as a Docker warning. Check Docker on the machine, then restart the runner. |
 
 After the platform refuses it, a runner tries again in 10 minutes.
