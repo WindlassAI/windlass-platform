@@ -100,3 +100,31 @@ communication disabled. The wrapper includes loopback in both forms of `NO_PROXY
 The relay needs outbound HTTPS to Anthropic in all modes. A command in a Claude
 session can call that session’s model API and consume quota. See the machine runner
 section of the repository README for the upgrade and credential rotation steps.
+
+## OpenCode 1.19.6
+
+The OpenCode relay accepts one provider and one inference route per login. It
+sends OpenAI API requests to `api.openai.com`, ChatGPT subscription requests to
+`chatgpt.com`, Anthropic requests to `api.anthropic.com`, and explicitly selected
+public-model requests to `opencode.ai`. Only the relay exchanges a refresh token
+at `auth.openai.com`. It shares an in-flight refresh across concurrent requests
+and atomically replaces the credential in its private volume. Terminal setup
+stops that writer before changing the login. Logout removes local access.
+Account owners can revoke provider access separately.
+
+The image supplies OpenCode’s native OAuth client with a non-expiring session
+placeholder, keeping request formatting and model discovery in the client.
+Repository configuration is disabled. The loopback relay validates the
+namespace-bound placeholder, injects the provider credential and filters
+credential values before streaming results into the session.
+
+From `server/`, run the check with a local OpenCode harness image ID:
+
+```sh
+pnpm exec tsx ../scripts/opencode-docker-check.mjs sha256:<local-OpenCode-image-ID>
+```
+
+The check uses unique pairings and a TLS recording origin. It exercises device
+approval, expired credentials, API keys, public models, isolated session grants,
+and native ACP turns over the runner channel. The captured arm64 initialize and
+session/new replies are in `fixtures/opencode/handshake.jsonl`.

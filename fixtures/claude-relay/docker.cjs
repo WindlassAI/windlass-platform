@@ -3,14 +3,18 @@
 const { spawnSync } = require('node:child_process');
 const { F3_PREFIX: prefix, F3_MACHINE: machine, F3_DIR: dir } = process.env;
 if (!/^f3-check-[a-f0-9]{16}$/.test(prefix) || !/^m_[a-f0-9]{16}$/.test(machine)) process.exit(2);
-const volume = 'wlp-harness-claude-' + machine;
-const args = process.argv.slice(2).map(s => s.replaceAll(volume, prefix + '-login').replace(/wlp-session-(?:claude-)?[a-f0-9]{12}\b/g, name => name.replace('wlp-session-', prefix + '-box-')));
-if (args.some(s => /wlp-session-|wlp-harness-claude-|wlp-user-|wlp-live[-_]|wlp-staging-|windlass-runner[-:]|windlass-tunnel|windlass-platform-sandbox:latest/.test(s))) throw Error('Unexpected resource name');
+const harness = process.env.F3_HARNESS === 'opencode' ? 'opencode' : 'claude';
+const volume = 'wlp-harness-' + harness + '-' + machine;
+const args = process.argv.slice(2).map(s => s.replaceAll(volume, prefix + '-login').replace(/wlp-session-(?:(?:claude|opencode)-)?[a-f0-9]{12}\b/g, name => name.replace('wlp-session-', prefix + '-box-')));
+if (args.some(s => /wlp-session-|wlp-harness-|wlp-user-|wlp-live[-_]|wlp-staging-|windlass-runner[-:]|windlass-tunnel|windlass-platform-sandbox:latest/.test(s))) throw Error('Unexpected resource name');
 if (args[args.indexOf('--network') + 1] === 'bridge' || args[0] === 'network' && args[1] === 'connect' && args[2] === 'bridge') {
 	const at = args.indexOf('bridge'); args[at] = prefix + '-uplink';
 }
-if (args[0] === 'create' && args.includes('WLP_CLAUDE_RELAY_MACHINE=' + machine)) {
+if (args[0] === 'create' && args.includes('WLP_' + harness.toUpperCase() + '_RELAY_MACHINE=' + machine)) {
 	args.splice(1, 0, '--mount', 'type=bind,src=' + dir + '/cert.pem,dst=/fixture-ca.pem,readonly', '-e', 'NODE_EXTRA_CA_CERTS=/fixture-ca.pem');
+}
+if (harness === 'opencode' && args[0] === 'run' && args.includes('XDG_DATA_HOME=/login')) {
+	args.splice(1, 0, '--mount', 'type=bind,src='+dir+'/cert.pem,dst=/fixture-ca.pem,readonly', '-e', 'NODE_EXTRA_CA_CERTS=/fixture-ca.pem', '-e', 'OPENCODE_DISABLE_MODELS_FETCH=true');
 }
 const translate = args.includes('inspect') || args[0] === 'ps' || args[0] === 'volume' && args[1] === 'ls';
 const result = spawnSync('/usr/bin/docker', args, { stdio: ['inherit', translate ? 'pipe' : 'inherit', 'inherit'], encoding: 'utf8' });

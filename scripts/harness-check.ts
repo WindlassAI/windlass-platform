@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { PassThrough, type Readable } from "node:stream";
@@ -12,6 +12,7 @@ import { generatedSessionTitle, type AcpUpdate, type CreateItemInput } from "../
 import type { RunTurnInput, SandboxHandle, SandboxLayer } from "../server/src/sandbox/api.js";
 import { markTurnSandbox, type ProcessEnd, type StartOptions } from "../server/src/sandbox/provider.js";
 import { SecretRedactor } from "../server/src/repo-secrets.js";
+import { modeSelection, optionsOf } from "../server/src/sandbox/acp-options.js";
 import { FakeAcpAgent } from "./acp-agent-fake.js";
 
 // Compile this consumer along with the server so changes to the wire contract cannot undo narrowing.
@@ -28,6 +29,16 @@ const fixture = fileURLToPath(new URL("../fixtures/acp-agent/agent.mjs", import.
 const openParams = { cwd: "/workspace", mcpServers: [] };
 const block = (text: string) => [{ type: "text", text }];
 const ok = (name: string) => console.log(`ok  ${name}`);
+
+const capture = new URL("../fixtures/opencode/handshake.jsonl", import.meta.url);
+const [init, opened] = readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line).result);
+assert.equal(init.agentInfo.version, "1.19.6");
+assert.equal(opened.modes, undefined);
+const capturedModes = modeSelection(opened.modes, opened.configOptions);
+assert.deepEqual(capturedModes.modes.map(m => m.id), ["build", "plan"]);
+assert.equal(capturedModes.current, "build");
+const catalog = optionsOf(opened.configOptions).list;
+assert.ok(catalog && catalog.models.some(m => m.id === catalog.defaultModel && m.id.startsWith("openai/")));
 
 class Client {
 	private readonly lines: AsyncIterator<string>;

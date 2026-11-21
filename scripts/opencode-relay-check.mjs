@@ -51,3 +51,24 @@ test('API keys are scoped to the configured inference route and host', async () 
 		assert.equal(target.headers.host, undefined);
 	}
 });
+
+test('an active stream survives expiry while the next request rotates the account token', async t => {
+	const clock = t.mock.method(Date, 'now', () => 0);
+	let record = {generation:'one',provider:'chatgpt',access:'initial-access',refresh:'initial-refresh',expires:60000};
+	const renewed = 'eyJhbGciOiJub25lIn0.'+Buffer.from(JSON.stringify({organizations:[{id:'new-account'}]})).toString('base64url')+'.tag';
+	const provider = providerFor('chatgpt','one',{
+		load: async () => record, persist: async next => { record = next; },
+		exchange: async () => Response.json({access_token:renewed, refresh_token:'new-refresh', expires_in:3600}),
+	});
+	const first = await provider.target('/openai/responses',{});
+	assert.equal(first.headers.authorization,'Bearer initial-access');
+	const stream = provider.responseFilter();
+	const reading = text(stream);
+	stream.write('initial-');
+	clock.mock.mockImplementation(() => 60001);
+	const next = await provider.target('/openai/responses',{});
+	assert.equal(next.headers.authorization,'Bearer '+renewed);
+	assert.equal(next.headers['chatgpt-account-id'],'new-account');
+	stream.end('access '+renewed);
+	assert.equal(await reading,'[redacted] [redacted]');
+});
