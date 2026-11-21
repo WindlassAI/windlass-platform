@@ -9,9 +9,22 @@ terminal coding agent, and is built on [Rivet Actors](https://www.rivet.dev/acto
   [`web/src/docs/content/`](web/src/docs/content/)).
 - **Running, self-hosting or working on it:** the developer and operator docs, in [`docs/`](docs/README.md).
 
-![A session: the agent's tool calls, its answer, and the session panel](docs/screenshots/session.png)
+![A session: the agent's tool calls folded into rows of work, its answer, and the session panel](docs/screenshots/session.png)
+
+<details>
+<summary>More screenshots</summary>
+
+![Home: the composer and the agents that need you](docs/screenshots/home.png)
 
 ![The agent asks before a command gets network access](docs/screenshots/question.png)
+
+![The Factory: work items, what each one needs, and the turns running](docs/screenshots/factory.png)
+
+![The changes an agent made, before they are published](docs/screenshots/diff.png)
+
+<img src="docs/screenshots/phone.png" alt="Home on a phone" width="320">
+
+</details>
 
 ## What it does
 

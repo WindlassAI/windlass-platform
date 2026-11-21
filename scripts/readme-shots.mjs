@@ -305,7 +305,7 @@ async function main() {
 		await send("Page.addScriptToEvaluateOnNewDocument", {
 			source: `try { localStorage.setItem("wlp.theme", ${JSON.stringify(opts.theme)}); localStorage.setItem("wlp.auth.mock", ${JSON.stringify(JSON.stringify(MOCK_AUTH))}); } catch {}
 				${PAGE_HELPERS}
-				addEventListener("DOMContentLoaded", () => { const s = document.createElement("style"); s.textContent = "*, *::before, *::after { caret-color: transparent !important; }"; document.head.append(s); });`,
+				addEventListener("DOMContentLoaded", () => { const s = document.createElement("style"); s.textContent = "*, *::before, *::after { caret-color: transparent !important; } .mock-flag { display: none !important; }"; document.head.append(s); });`,
 		});
 		// The first page load makes Vite optimize the dependencies, which can reload the page once.
 		await capture(chrome, mock.origin, { ...SHOTS[0], name: "warm-up" }).catch(() => {});
