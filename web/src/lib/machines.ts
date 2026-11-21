@@ -11,27 +11,8 @@ interface Described {
 	arch: string;
 }
 
-/** A container's id as Docker gives it for a host name (12 hex characters, or the whole 64), or no name at all. */
-export function isMachineIdName(name: string): boolean {
-	const trimmed = name.trim();
-	return trimmed === "" || /^[0-9a-f]{12}$/i.test(trimmed) || /^[0-9a-f]{64}$/i.test(trimmed);
-}
-
-/** An OS as runners report it ("linux", "darwin") by the name people use: "Linux", "macOS". */
-function osName(os: string): string {
-	const trimmed = os.trim();
-	const known: Record<string, string> = { linux: "Linux", darwin: "macOS", windows: "Windows", win32: "Windows" };
-	return known[trimmed.toLowerCase()] ?? trimmed;
-}
-
-/** The machine's name for every place the page names it. */
-export function machineLabel(machine: Described): string {
-	const name = machine.name.trim();
-	if (!isMachineIdName(name)) return name;
-	const kind = [osName(machine.os), machine.arch.trim()].filter(Boolean).join(" ");
-	const what = kind === "" ? "Machine" : `${kind} machine`;
-	return name === "" ? what : `${what} (${name.slice(0, 6).toLowerCase()})`;
-}
+export { isMachineIdName, machineLabel } from "@contract";
+import { isMachineIdName } from "@contract";
 
 /** The host name the runner reported, where the label does not show it whole: shown beside the label, for finding the container. */
 export function machineHostNote(machine: Described): string | null {

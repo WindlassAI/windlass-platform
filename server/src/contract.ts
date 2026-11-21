@@ -1028,10 +1028,17 @@ export function isMachineIdName(name: string): boolean {
 	return /^(?:[0-9a-f]{12}|[0-9a-f]{64})?$/i.test(name.trim());
 }
 
+/** An OS as runners report it ("linux", "darwin") by the name people use: "Linux", "macOS". */
+function osName(os: string | undefined): string {
+	const trimmed = (os ?? "").trim();
+	const known: Record<string, string> = { linux: "Linux", darwin: "macOS", windows: "Windows", win32: "Windows" };
+	return known[trimmed.toLowerCase()] ?? trimmed;
+}
+
 export function machineLabel(machine: { name: string; os?: string; arch?: string }): string {
 	const name = machine.name.trim();
 	if (!isMachineIdName(name)) return name;
-	const kind = [machine.os?.trim(), machine.arch?.trim()].filter(Boolean).join(" ");
+	const kind = [osName(machine.os), machine.arch?.trim()].filter(Boolean).join(" ");
 	const what = kind ? kind + " machine" : "Machine";
 	return name ? what + " (" + name.slice(0, 6).toLowerCase() + ")" : what;
 }
