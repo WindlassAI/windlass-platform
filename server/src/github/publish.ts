@@ -25,13 +25,16 @@
 import type { GithubId, PublishMessage, PullRequestInfo, SessionRepository, Verified } from "../contract.js";
 import type { SandboxHandle } from "../sandbox/api.js";
 import { type WorkDiff, verifiedSection, verifiedWords, withVerifiedSection, workFlags } from "../verified.js";
-import { type GithubApp, GithubError, type Pull } from "./app.js";
+import { type GithubApp, GithubError, type Pull, type Repository } from "./app.js";
 import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, commitWork, outgoingPatch, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
+import { refHead } from "./feature.js";
 import { redact } from "./redact.js";
 import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveBoundRepository, resolveRepository } from "./repos.js";
 
 /** What a session keeps of the repository it was launched on. */
 export interface StoredRepository extends SessionRepository {
+	/** Base of the last successful clone or fetch, confirmed outside the sandbox. */
+	baseSha?: string | null;
 	/** Set only by issue intake, outside the agent's publish message. */
 	closesIssue?: number;
 	/** The installation that covered it when the session was made. A hint: the connection is asked again each time. */
@@ -104,6 +107,17 @@ function gitProblem(outcome: GitOutcome, what: "clone" | "push", repository: str
 	}
 }
 
+/** Only a base confirmed by GitHub may exclude history. A branch that moves during
+ * the operation leaves the scan unbounded until the next successful observation. */
+async function confirmBase(app: GithubApp, token: string, repo: StoredRepository, remote: Repository, outcome: GitOutcome, pinnedBase?: string) {
+	if (outcome.ok) {
+		const observed = outcome.marks.get("base");
+		const trusted = pinnedBase ?? (observed ? await refHead(app, token, remote.owner, remote.name, repo.branch).catch(() => null) : null);
+		repo.baseSha = trusted === observed ? trusted : null;
+	}
+	return outcome;
+}
+
 /** How a clone ended, for a session that had pushed work before. The workspace is on the base branch either way. */
 export interface Cloned {
 	/** The commit GitHub has the session's branch at, for `putOnWork` once the setup command has run; null when none was asked for or GitHub has none. */
@@ -131,7 +145,10 @@ export async function cloneRepository(app: GithubApp, connection: StoredConnecti
 		outcome = await app.withToken(
 			resolved.installation.id,
 			{ repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } },
-			(token) => cloneWithToken(sandbox, token, { url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), branch: repository.branch, directory: resolved.repository.name, work, signal, pinnedBase }),
+			async (token) => {
+				const clone = await cloneWithToken(sandbox, token, { url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), branch: repository.branch, directory: resolved.repository.name, work, signal, pinnedBase });
+				return confirmBase(app, token, repository, resolved.repository, clone, pinnedBase);
+			},
 			{ revokeAfter: true },
 		);
 	} catch (error) {
@@ -298,7 +315,18 @@ async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<type
 	const { installation } = resolved;
 	const name = fullName(resolved.repository);
 	const account = installation.account.login;
-	const committed = await commitWork(sandbox, { sessionId: input.sessionId, branch, base: repository.branch, pushed: input.pushed, author: authorOf(connection) }, message);
+	// Older sessions have no actor-held base. A clone or fetch racing a remote change
+	// can also leave it unknown. Recover from GitHub before deciding there is work.
+	if (repository.baseSha == null) {
+		try {
+			repository.baseSha = await app.withToken(installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } },
+				token => refHead(app, token, resolved.repository.owner, resolved.repository.name, repository.branch), { revokeAfter: true });
+		} catch (error) {
+			throw problemOf(error, account, name);
+		}
+	}
+	const baseSha = repository.baseSha;
+	const committed = await commitWork(sandbox, { sessionId: input.sessionId, branch, baseSha, pushed: input.pushed, author: authorOf(connection) }, message);
 	const unsafe = committed.marks.get("unsafe");
 	if (unsafe !== undefined) throw new GithubProblem("github_failed", unsafeWorkspace(unsafe));
 	if (!committed.ok) {
@@ -313,7 +341,7 @@ async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<type
 
 	// Nothing that holds the value of a saved secret leaves the sandbox: a setup command may have written one into a file,
 	// and the agent's push is never asked about. The proposed commit stays private until the scan and push succeed.
-	const leaking = input.redact ? secretFiles(await outgoingPatch(sandbox, repository.branch, input.pushed), input.redact) : null;
+	const leaking = input.redact ? secretFiles(await outgoingPatch(sandbox, baseSha, input.pushed), input.redact) : null;
 	if (leaking !== null && leaking.files.length > 0) {
 		await discardHandover(sandbox, input.sessionId);
 		throw new GithubProblem("github_failed", secretRefusal(leaking));
@@ -394,7 +422,7 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 	if (nothingNew && input.pushed === null) throw new GithubProblem("github_failed", `There is nothing to open a pull request with: the workspace has no changes and no commit that ${repository.branch} does not have.`);
 	const { head, committedFiles } = work;
 	// Read once everything is committed: what git says of the work now is what the pull request will show.
-	const said = evidenceSection(input.evidence, await readWork(sandbox, repository.branch), connection.user.login);
+	const said = evidenceSection(input.evidence, await readWork(sandbox, repository.baseSha ?? null), connection.user.login);
 
 	const now = Date.now();
 	const pushed = !nothingNew;
@@ -500,7 +528,10 @@ export async function fetchBase(app: GithubApp, connection: StoredConnection | n
 	const account = resolved.installation.account.login;
 	let fetched: GitOutcome;
 	try {
-		fetched = await app.withToken(resolved.installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } }, (token) => fetchWithToken(sandbox, token, { url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), base: repository.branch, work }), { revokeAfter: true });
+		fetched = await app.withToken(resolved.installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } }, async (token) => {
+			const fetch = await fetchWithToken(sandbox, token, { url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), base: repository.branch, work });
+			return confirmBase(app, token, repository, resolved.repository, fetch);
+		}, { revokeAfter: true });
 	} catch (error) {
 		throw problemOf(error, account, name);
 	}
@@ -520,7 +551,7 @@ export async function describePull(input: { app: GithubApp; connection: StoredCo
 	const { app, connection, repository, pull } = input;
 	if (!connection || !isOpen(pull)) return null;
 	try {
-		const said = evidenceSection(input.evidence, await readWork(input.sandbox, repository.branch), connection.user.login);
+		const said = evidenceSection(input.evidence, await readWork(input.sandbox, repository.baseSha ?? null), connection.user.login);
 		const resolved = await sessionRepository(app, connection, repository, "write");
 		const { owner, name } = resolved.repository;
 		return await app.withToken(resolved.installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read", pull_requests: "write" } }, async (token) => {
@@ -556,8 +587,9 @@ export async function refreshPull(app: GithubApp, connection: StoredConnection |
  * Whether the workspace has something GitHub does not, read from a sandbox that is running: true,
  * false, or null when git did not say (the sandbox layer's fake says nothing).
  */
-export async function hasUnpushedWork(sandbox: SandboxHandle, base: string, pushed: string | null): Promise<boolean | null> {
-	const probed = await probeWork(sandbox, base, pushed);
+export async function hasUnpushedWork(sandbox: SandboxHandle, baseSha: string | null, pushed: string | null): Promise<boolean | null> {
+	const probed = await probeWork(sandbox, baseSha, pushed);
 	if (!probed.ok || (!probed.marks.has("head") && !probed.marks.has("nothing"))) return null;
+	if (!baseSha && !pushed && !probed.marks.has("dirty") && probed.marks.has("head")) return null;
 	return probed.marks.has("dirty") || !probed.marks.has("nothing");
 }

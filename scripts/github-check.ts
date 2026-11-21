@@ -26,7 +26,7 @@
 import { imageId } from "./check-image.js";
 import { changedReviewPaths, checkoutReview, reviewCheckoutScript } from "../server/src/github/git.js";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -549,10 +549,10 @@ await section("publish: a pull request is opened, then the same branch is update
 	const sandbox = localSandbox("publish");
 	const repository = stored(harbor, adaInstallation);
 	await publish.cloneRepository(app, adaConnection, repository, sandbox);
-	expect("with no changes, git says there is nothing GitHub lacks", (await publish.hasUnpushedWork(sandbox, "main", null)) === false);
+	expect("with no changes, git says there is nothing GitHub lacks", (await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, null)) === false);
 	writeFileSync(join(sandbox.cwd, "src/add.ts"), "export const add = (a: number, b: number) => a + b\n");
 	writeFileSync(join(sandbox.cwd, "CHANGES.md"), "- add() adds\n");
-	expect("with changed files, it says there is", (await publish.hasUnpushedWork(sandbox, "main", null)) === true);
+	expect("with changed files, it says there is", (await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, null)) === true);
 
 	const from = standin.minted.length;
 	const input = { evidence: NOTHING_VERIFIED, app, connection: adaConnection, repository, sandbox, sessionId: "s_0123456789abcdef", branch: BRANCH };
@@ -574,7 +574,7 @@ await section("publish: a pull request is opened, then the same branch is update
 	expect("no file in the workspace, the home directory or /tmp holds a token", tokens.every((token) => filesHolding(sandbox.cwd, token).length === 0 && filesHolding(sandbox.home, token).length === 0) && readdirSync("/tmp").every((name) => !/^wlp-(push|publish|message)/.test(name)));
 	const local = await sandbox.run("git symbolic-ref --short HEAD; git status --porcelain; git config --list --local");
 	expect("the workspace is on the session's branch, clean, and its configuration is as it was", local.stdout.startsWith(`${BRANCH}\n`) && !tokens.some((token) => local.stdout.includes(token)) && !/helper|extraheader/i.test(local.stdout), local.stdout.split("\n").slice(0, 2).join(" | "));
-	expect("with everything pushed, git says there is nothing GitHub lacks", (await publish.hasUnpushedWork(sandbox, "main", first.head)) === false);
+	expect("with everything pushed, git says there is nothing GitHub lacks", (await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, first.head)) === false);
 
 	const nothing = await problem(() => publish.publishWork({ ...input, pull: first.pull, pushed: first.head, message: { title: "Again", body: "" } }));
 	expect("pushing again with nothing new is said so, and makes no commit", nothing?.message === `There is nothing to push: ${BRANCH} at GitHub already has everything in the workspace.` && standin.branchHead(harbor, BRANCH) === first.head, nothing?.message);
@@ -586,7 +586,7 @@ await section("publish: a pull request is opened, then the same branch is update
 	// The agent commits its own work: nothing is uncommitted, and the commit still has to go.
 	writeFileSync(join(sandbox.cwd, "CHANGES.md"), "- add() adds\n- and says so\n- twice\n");
 	await sandbox.run("git commit --quiet -am 'The agent commits by itself'");
-	expect("a commit of the agent's own is something GitHub lacks", (await publish.hasUnpushedWork(sandbox, "main", second.head)) === true);
+	expect("a commit of the agent's own is something GitHub lacks", (await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, second.head)) === true);
 	const third = await publish.publishWork({ ...input, pull: second.pull, pushed: second.head, message: { title: "unused", body: "" } });
 	expect("it is pushed as it is, with no commit of the platform's on top", third.committedFiles === 0 && standin.lastCommit(harbor, BRANCH).message === "The agent commits by itself" && !third.opened);
 
@@ -822,13 +822,13 @@ await section("nested repositories are refused before turn-end diff, panel probe
 	await publish.cloneRepository(app, adaConnection, repository, sandbox);
 	const inner = "packages/example/inner";
 	await sandbox.run(`mkdir -p ${inner} && git init -q ${inner} && git -C ${inner} commit -q --allow-empty -m inner`);
-	const input = { sessionId: "guard-nested", branch: "main", base: "main", pushed: null, author: { name: "Fixture", email: "fixture@example.invalid" } };
+	const input = { sessionId: "guard-nested", branch: "main", baseSha: repository.baseSha ?? null, pushed: null, author: { name: "Fixture", email: "fixture@example.invalid" } };
 	for (const state of ["untracked", "indexed", "unpopulated"]) {
 		if (state === "indexed") await sandbox.run(`git add -- ${inner}`);
 		if (state === "unpopulated") await sandbox.run(`mv ${inner} ../saved-inner`);
 		const why = state === "untracked" ? "nested" : "gitlink";
 		// Each sentinel is reached only if the generated command passes its guard and returns successfully.
-		for (const [name, command] of [["turn-end diff", DIFF_COMMAND], ["panel probe", gitSteps.probeScript("main", null)], ["commit", gitSteps.commitScript(input)]]) {
+		for (const [name, command] of [["turn-end diff", DIFF_COMMAND], ["panel probe", gitSteps.probeScript(repository.baseSha ?? null, null)], ["commit", gitSteps.commitScript(input)]]) {
 			const marker = join(sandbox.home, `completed-${state}-${name}`);
 			const result = await sandbox.run(`${command}\ntouch "$HOME/completed-${state}-${name}"`, { stdin: "Fixture\n" });
 			expect(`${state}: ${name} refused before completing`, result.exitCode === 3 && gitSteps.markers(result.stdout).get("unsafe") === why && !existsSync(marker));
@@ -851,13 +851,13 @@ await section("husky configuration works for the session and the platform push",
 	writeFileSync(join(sandbox.cwd, "work.txt"), "changed\n");
 	const status = await sandbox.run(STATUS_COMMAND);
 	const diff = await sandbox.run(DIFF_COMMAND);
-	const dirty = await publish.hasUnpushedWork(sandbox, "main", null);
+	const dirty = await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, null);
 	const branch = "windlass/husky-000001";
 	const input = { app, connection: adaConnection, repository, sandbox, sessionId: "guard-husky", branch, pushed: null };
 	const err = await problem(() => publish.pushWork(input, "Husky work"));
 	expect("husky status, diff, panel probe and push succeed without invoking any hook", setup.exitCode === 0 && status.stdout.includes("work.txt") && diff.stdout.includes("+changed") && dirty === true && err === null && standin.fileOn(harbor, branch, "work.txt") === "changed\n" && !existsSync(marker));
 	await sandbox.run("git config filter.lfs.required true");
-	const probe = await gitSteps.probeWork(sandbox, "main", null);
+	const probe = await gitSteps.probeWork(sandbox, repository.baseSha ?? null, null);
 	expect("a local LFS filter is still refused", !probe.ok && probe.marks.get("unsafe") === "filter.lfs.required");
 });
 
@@ -879,7 +879,7 @@ await section("private git captures file content and modes", async () => {
 	].join("\n"));
 	const status = await sandbox.run(STATUS_COMMAND);
 	const diff = await sandbox.run(DIFF_COMMAND);
-	const dirty = await publish.hasUnpushedWork(sandbox, "main", null);
+	const dirty = await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, null);
 	expect("private status, diff and probe see edits, removals and links", prepared.exitCode === 0 && status.stdout.includes("upload.data") && status.stdout.includes("src/add.ts") && diff.stdout.includes("+../outside") && !diff.stdout.includes("outside the worktree") && dirty === true);
 	const result = await publish.pushWork({ app, connection: adaConnection, repository, sandbox, branch, sessionId: "private-content", pushed: null }, "Snapshot content");
 	const tree = execFileSync("git", ["--git-dir", harbor.path, "ls-tree", "-r", branch], { encoding: "utf8" });
@@ -955,6 +955,29 @@ await section("screenshots in an earlier local commit stay off the remote", asyn
 	if (prepared.exitCode !== 0) throw new Error("could not prepare screenshot history");
 	const refused = await problem(() => publish.pushWork({ app, connection: adaConnection, repository, sandbox, branch, sessionId: "committed-screenshots", pushed: null }, "Fixture"));
 	expect("a later deletion cannot publish a screenshot in history", refused?.message.includes("contains .wlp-shots") === true && standin.branchHead(harbor, branch) === null);
+});
+
+await section("only a GitHub-confirmed base bounds the workspace", async () => {
+	const sandbox = localSandbox("base-state");
+	const repository = stored(harbor, adaInstallation);
+	const expected = standin.branchHead(harbor, repository.branch);
+	const legacy = join("/tmp", "wlp-base-" + createHash("sha256").update(sandbox.cwd + "\n" + repository.branch).digest("hex"));
+	writeFileSync(legacy, "obsolete fixture\n", { flag: "wx" });
+	try {
+		await publish.cloneRepository(app, adaConnection, repository, sandbox);
+		await publish.fetchBase(app, adaConnection, repository, sandbox);
+		expect("clone and fetch leave the obsolete record alone and keep the observed base in platform state",
+			readFileSync(legacy, "utf8") === "obsolete fixture\n" && repository.baseSha === expected);
+		const storedBase = JSON.parse(JSON.stringify(repository)).baseSha;
+		expect("the actor-held base survives serialization and identifies a clean workspace",
+			await publish.hasUnpushedWork(sandbox, storedBase, null) === false);
+		await sandbox.run("echo change > ordinary.txt && git add ordinary.txt && git commit -qm work && git update-ref refs/remotes/origin/main HEAD");
+		const work = await gitSteps.readWork(sandbox, storedBase);
+		expect("the probe and verification diff still report the work", await publish.hasUnpushedWork(sandbox, storedBase, null) === true &&
+			work?.files.some(file => file.path === "ordinary.txt") === true);
+	} finally {
+		rmSync(legacy, { force: true });
+	}
 });
 
 await section("outgoing history is checked before the push transport", async () => {
@@ -1062,8 +1085,8 @@ await section("a workspace whose git would start a program of the agent's is ref
 		const branch = `windlass/unsafe-${randomBytes(3).toString("hex")}`;
 		const before = standin.branchHead(harbor, branch);
 		const push = await problem(() => publish.pushWork({ app, connection: adaConnection, repository, sandbox, sessionId: "s_unsafe00000000", branch, pushed: null, lease: null }, "Try"));
-		const probe = await publish.hasUnpushedWork(sandbox, "main", null);
-		const read = await readWork(sandbox, "main");
+		const probe = await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, null);
+		const read = await readWork(sandbox, repository.baseSha ?? null);
 		const status = await sandbox.run(`${WORKSPACE_GIT_START}\ngit --no-optional-locks status --porcelain=v1`);
 		expect(
 			`${variant.name}: the push, the probe, the read and the session's status are refused, nothing is pushed, and no program of the workspace's ran`,
@@ -1380,7 +1403,7 @@ await section("a replaced sandbox: the workspace goes back on the session's bran
 	);
 	expect("what was pushed is in it, and what was not is not", seen.stdout.includes("KEPT.md") && !seen.stdout.includes("LOST.md"));
 	expect("the repository's configuration holds no token", !/x-access-token|ghs_|gh[a-z]_/.test(seen.stdout));
-	expect("nothing in it is something GitHub lacks", (await publish.hasUnpushedWork(replaced, "main", head)) === false);
+	expect("nothing in it is something GitHub lacks", (await publish.hasUnpushedWork(replaced, repository.baseSha ?? null, head)) === false);
 
 	writeFileSync(join(replaced.cwd, "AFTER.md"), "written in the new sandbox\n");
 	const next = await publish.publishWork({ ...input, sandbox: replaced, pull: pushed.pull, pushed: head, message: { title: "After the replacement", body: "" } });
@@ -1444,7 +1467,7 @@ await section("a replaced sandbox: the setup command runs on the base, never on 
 	const seen = await replaced.run("git symbolic-ref --short HEAD; cat README.md; ls node_modules BRANCH_ONLY.md");
 	expect(
 		"then the workspace is on the session's branch at the commit GitHub has, the setup's edit to a tracked file gone, its untracked file kept, and nothing counted as unpushed",
-		head === pushed.head && seen.stdout.startsWith(`${branch}\n`) && !seen.stdout.includes("rewritten by the setup") && seen.stdout.includes("kept.txt") && seen.stdout.includes("BRANCH_ONLY.md") && (await publish.hasUnpushedWork(replaced, "main", head)) === false,
+		head === pushed.head && seen.stdout.startsWith(`${branch}\n`) && !seen.stdout.includes("rewritten by the setup") && seen.stdout.includes("kept.txt") && seen.stdout.includes("BRANCH_ONLY.md") && (await publish.hasUnpushedWork(replaced, repository.baseSha ?? null, head)) === false,
 		`${head} ${pushed.head} | ${seen.stdout.split("\n").join(" | ")}`,
 	);
 });

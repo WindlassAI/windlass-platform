@@ -121,8 +121,8 @@ const WORKSPACE_GUARD = [
 
 const READ_TOKEN = `PATH=${SYSTEM_PATH}\nexport PATH\nIFS= read -r WLP_T || true`;
 
-// Each operation owns its repo, index and config in the platform's /tmp. Windlass mounts a
-// different /tmp for sandboxed commands. Never use workspace objects as Git alternates.
+// Each operation has a temporary repo, index and config. Direct agent commands share
+// this /tmp on some profiles. Never use workspace objects as Git alternates.
 function privateStart(options: { refs?: string[]; missing?: "nothing" | "norepo"; fetch?: boolean } = {}): string {
 	const refs = (options.refs ?? []).map(shellQuote).join(" ");
 	const missing = options.missing ? ` || { rc=$?; if [ "$rc" = 2 ]; then echo "wlp:${options.missing}"; exit 0; fi; exit "$rc"; }` : "";
@@ -173,15 +173,6 @@ export function unsafeWorkspace(what: string): string {
 	return `The workspace's git settings were changed in a way the platform does not run: ${named}, under which git would start a program of the repository's outside the agent's sandbox. Nothing was pushed or read. Undo that change in the workspace (git config --unset, or put .git back), or start a new agent.`;
 }
 
-/** Kept in the platform's /tmp, outside the agent's mount namespace. Scope it to this work tree and base. */
-function baseRecord(base: string): string {
-	return `base_file=/tmp/wlp-base-$( { pwd -P; printf '%s' ${shellQuote(base)}; } | sha256sum | cut -d' ' -f1)`;
-}
-
-function saveBase(base: string, revision: string): string {
-	return [baseRecord(base), 'record=$(mktemp "$base_file.XXXXXXXX")', `${revision} > "$record"`, 'mv -f -- "$record" "$base_file"'].join("\n");
-}
-
 /**
  * Clones `url` at `branch` into the workspace, as the plain clone of a pasted address does: a new
  * sandbox's workspace holds an empty repository and nothing else, which the clone replaces.
@@ -213,9 +204,8 @@ export function cloneScript(url: string, branch: string, directory: string, work
 		`echo "wlp:dir $target"`,
 		PLAIN_GIT,
 		...(pinnedBase ? ["WLP_T=", `plain_git -C "$target" checkout -q --detach ${pinnedBase}`] : []),
-		`(cd "$target" && {
-${saveBase(branch, "plain_git rev-parse --verify HEAD")}
-})`,
+		'base_sha=$(plain_git -C "$target" rev-parse --verify HEAD)',
+		'echo "wlp:base $base_sha"',
 	];
 	if (work !== undefined && work !== branch) {
 		lines.push(
@@ -280,7 +270,8 @@ export function fetchBaseScript(url: string, base: string, work: string | null =
 		...(work === null ? [] : [`if ${fetch(work)}; then set -- "$@" ${shellQuote(tracking(work))}; echo "wlp:fetchedwork"; fi`]),
 		"WLP_T=",
 		'bridge export "$@"',
-		saveBase(base, `git rev-parse --verify ${shellQuote(`${tracking(base)}^{commit}`)}`),
+		`base_sha=$(git rev-parse --verify ${shellQuote(`${tracking(base)}^{commit}`)})`,
+		'echo "wlp:base $base_sha"',
 		'echo "wlp:fetched"',
 	].join("\n");
 }
@@ -353,40 +344,38 @@ function handoverDirectory(attempt: string): string {
 	return `/tmp/wlp-git-attempt-${attempt.replace(/[^A-Za-z0-9_-]/g, "")}`;
 }
 
+function commitId(sha: string): string {
+	if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("Invalid GitHub commit SHA.");
+	return sha;
+}
+
 /**
  * Whether the workspace has anything GitHub does not: `wlp:nothing` when its HEAD is the commit last
  * pushed, or, before the first push, a commit the base branch already had when it was cloned.
  */
-function nothingNew(base: string, pushed: string | null): string[] {
-	const said = `nothing=1; echo "wlp:nothing"`;
-	if (pushed !== null) return ["nothing=0", `if [ "$head" = ${shellQuote(pushed)} ]; then ${said}; fi`];
-	return [
-		baseRecord(base),
-		"nothing=0",
-		// Older workspaces have no private record. Their tracking ref can suppress an unnecessary push,
-		// but outgoingPatch never uses it to exclude commits from the secret check.
-		`base_sha=${shellQuote(`refs/remotes/origin/${base}`)}`,
-		'if [ -f "$base_file" ]; then IFS= read -r base_sha < "$base_file"; fi',
-		`if GIT_NO_REPLACE_OBJECTS=1 git merge-base --is-ancestor "$head" "$base_sha" 2>/dev/null; then ${said}; fi`,
-	];
+function nothingNew(baseSha: string | null, pushed: string | null): string[] {
+	const said = 'nothing=1; echo "wlp:nothing"';
+	const lines = ["nothing=0"];
+	if (pushed) lines.push(`if [ "$head" = ${commitId(pushed)} ]; then ${said}; fi`);
+	else if (baseSha) lines.push(`if git merge-base --is-ancestor "$head" ${commitId(baseSha)}; then ${said}; fi`);
+	return lines;
 }
 
-/** Only commits the platform observed at GitHub can bound a scan of the outgoing history. */
-function outgoingBoundaries(base: string, pushed: string | null): string[] {
-	return [
-		baseRecord(base),
-		"set --",
-		...(pushed ? [`if git cat-file -e ${shellQuote(pushed + "^{commit}")}; then set -- ${shellQuote(pushed)}; fi`] : []),
-		'if [ -f "$base_file" ]; then IFS= read -r base_sha < "$base_file"; if git cat-file -e "$base_sha^{commit}"; then set -- "$@" "$base_sha"; fi; fi',
-	];
+/** A missing object never excludes history. Both IDs come from platform state. */
+function outgoingBoundaries(baseSha: string | null, pushed: string | null): string[] {
+	const lines = ["set --"];
+	for (const id of [baseSha, pushed]) {
+		if (id) lines.push(`if git cat-file -e '${commitId(id)}^{commit}' 2>/dev/null; then set -- "$@" ${id}; fi`);
+	}
+	return lines;
 }
 
 export interface CommitInput {
 	sessionId: string;
 	/** The branch the work goes on. */
 	branch: string;
-	/** The branch the session started from. */
-	base: string;
+	/** The base commit the platform observed at GitHub. */
+	baseSha: string | null;
 	/** The commit the platform last pushed, if it pushed before. */
 	pushed: string | null;
 	author: { name: string; email: string };
@@ -420,10 +409,10 @@ export function commitScript(input: CommitInput, attempt = input.sessionId): str
 		`if ! head=$(git rev-parse -q --verify 'HEAD^{commit}'); then echo "wlp:nothing"; exit 0; fi`,
 		`echo "wlp:committed $committed"`,
 		`echo "wlp:head $head"`,
-		...nothingNew(input.base, input.pushed),
-		'[ "$nothing" = 0 ] || exit 0',
 		VERIFY_OBJECTS,
-		...outgoingBoundaries(input.base, input.pushed),
+		...nothingNew(input.baseSha, input.pushed),
+		'[ "$nothing" = 0 ] || exit 0',
+		...outgoingBoundaries(input.baseSha, input.pushed),
 		// An earlier agent commit could contain a screenshot already removed from HEAD.
 		// Look up the root entry of each outgoing tree, including either side of a merge.
 		"set -o pipefail",
@@ -435,7 +424,7 @@ export function commitScript(input: CommitInput, attempt = input.sessionId): str
 }
 
 /** Reads the workspace's HEAD and whether GitHub lacks anything, without changing it. No token. */
-export function probeScript(base: string, pushed: string | null): string {
+export function probeScript(baseSha: string | null, pushed: string | null): string {
 	return [
 		"set -eu",
 		privateStart({ missing: "nothing" }),
@@ -444,7 +433,8 @@ export function probeScript(base: string, pushed: string | null): string {
 		`echo "wlp:head $head"`,
 		'git status --porcelain=v1 --untracked-files=normal --ignore-submodules=all > "$private/status"',
 		'if [ -s "$private/status" ]; then echo "wlp:dirty"; fi',
-		...nothingNew(base, pushed),
+		VERIFY_OBJECTS,
+		...nothingNew(baseSha, pushed),
 	].join("\n");
 }
 
@@ -592,7 +582,7 @@ export async function commitWork(sandbox: SandboxHandle, input: CommitInput, mes
 }
 
 /** Read the commit handed to the push, excluding only commits the platform observed at GitHub. */
-export async function outgoingPatch(sandbox: SandboxHandle, base: string, pushed: string | null): Promise<string | null> {
+export async function outgoingPatch(sandbox: SandboxHandle, baseSha: string | null, pushed: string | null): Promise<string | null> {
 	const pending = attempts.get(sandbox);
 	const limit = 8_000_000;
 	const script = [
@@ -603,7 +593,7 @@ export async function outgoingPatch(sandbox: SandboxHandle, base: string, pushed
 		`private=${shellQuote(handoverDirectory(pending?.id ?? ""))}`,
 		'git() { plain_git -C "$private" --git-dir="$private/repo" "$@"; }',
 		"set -o pipefail",
-		...outgoingBoundaries(base, pushed),
+		...outgoingBoundaries(baseSha, pushed),
 		'patch=$(mktemp /tmp/wlp-scan.XXXXXXXX)',
 		`trap 'rm -f "$patch"' EXIT`,
 		"status=0",
@@ -632,8 +622,8 @@ export async function outgoingPatch(sandbox: SandboxHandle, base: string, pushed
 	return Buffer.from(encoded, "base64").toString("utf8");
 }
 
-export function probeWork(sandbox: SandboxHandle, base: string, pushed: string | null): Promise<GitOutcome> {
-	return run(sandbox, probeScript(base, pushed), { stdin: "", timeoutMs: PROBE_TIMEOUT_MS });
+export function probeWork(sandbox: SandboxHandle, baseSha: string | null, pushed: string | null): Promise<GitOutcome> {
+	return run(sandbox, probeScript(baseSha, pushed), { stdin: "", timeoutMs: PROBE_TIMEOUT_MS });
 }
 
 /**
@@ -643,13 +633,14 @@ export function probeWork(sandbox: SandboxHandle, base: string, pushed: string |
  * and as they are. Each part ends with a line only this call knows. No token, and no program of the
  * repository's choosing is run for it: no external diff, no text conversion.
  */
-export function workScript(base: string, mark: string): string {
+export function workScript(baseSha: string, mark: string): string {
 	const diff = "git -c core.quotePath=false -c core.fsmonitor=false diff --no-ext-diff --no-textconv --no-color -M";
 	return [
 		"set -eu",
 		privateStart(),
 		"if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then exit 0; fi",
-		`base=$(git merge-base HEAD ${shellQuote(`refs/remotes/origin/${base}`)} 2>/dev/null) || exit 0`,
+		VERIFY_OBJECTS,
+		`base=$(git merge-base HEAD ${commitId(baseSha)} 2>/dev/null) || exit 0`,
 		`end() { printf '\\n%s\\n' ${shellQuote(mark)}; }`,
 		`${diff} --name-status -z "$base" HEAD | head -c 400000; end`,
 		`${diff} -U0 "$base" HEAD | head -c 2000000; end`,
@@ -658,9 +649,10 @@ export function workScript(base: string, mark: string): string {
 }
 
 /** `workScript`'s answer, or null when git did not give one (no repository, no such base, a sandbox that is not running). Never throws. */
-export async function readWork(sandbox: SandboxHandle, base: string): Promise<WorkDiff | null> {
+export async function readWork(sandbox: SandboxHandle, baseSha: string | null): Promise<WorkDiff | null> {
+	if (!baseSha) return null;
 	const mark = `wlp-${randomBytes(9).toString("hex")}`;
-	const result = await sandbox.run(workScript(base, mark), { timeoutMs: PROBE_TIMEOUT_MS }).catch(() => null);
+	const result = await sandbox.run(workScript(baseSha, mark), { timeoutMs: PROBE_TIMEOUT_MS }).catch(() => null);
 	if (result === null || result.exitCode !== 0) return null;
 	const parts = result.stdout.split(`\n${mark}\n`);
 	if (parts.length < 7) return null;

@@ -669,7 +669,7 @@ async function cases() {
 		try {
 			run(
 				"bash",
-				["-c", commitScript({ sessionId, branch: "work", base: "main", pushed: "0".repeat(40), author: { name: "test", email: "test@example.org" } })],
+				["-c", commitScript({ sessionId, branch: "work", baseSha: null, pushed: "0".repeat(40), author: { name: "test", email: "test@example.org" } })],
 				repo,
 				"normal change\n",
 			);

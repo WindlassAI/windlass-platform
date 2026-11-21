@@ -88,7 +88,7 @@ export async function sessionEgress(dir: string, origin: string, endpoint: strin
 					const fetched = await git(fetchBaseScript(repoUrl, "master"));
 					assert.match(fetched, /wlp:fetched/);
 					const branch = "egress-proof";
-					await git("echo egress > proof.txt\n{\n" + commitScript({ branch, base: "master", sessionId: session.id, pushed: null,
+					await git("echo egress > proof.txt\n{\n" + commitScript({ branch, baseSha: null, sessionId: session.id, pushed: null,
 						author: { name: "Fixture", email: "test@example.invalid" } }) + "\n} <<< 'Fixture commit'");
 					const pushed = await git(pushScript(session.id, url, branch));
 					const received = await docker("exec", remote, "git", "-C", "/tmp/remote.git", "rev-parse", "refs/heads/" + branch);

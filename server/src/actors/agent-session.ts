@@ -1804,7 +1804,7 @@ function publishBlocked(c: Ctx, meta: SessionMeta): string | null {
 async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, files: WorkspaceFile[] | null): Promise<boolean | null> {
 	if (c.vars.turn || !meta.sandboxId) return null;
 	if (files && files.length > 0) return true;
-	const key = `${meta.turns}:${meta.pushedHead ?? ""}:${meta.sandboxId}`;
+	const key = `${meta.turns}:${repo.baseSha ?? ""}:${meta.pushedHead ?? ""}:${meta.sandboxId}`;
 	if (c.vars.unpushed?.key === key) return c.vars.unpushed.value;
 	// Only a turn or a push changes the answer, and the key names both: what was found while the sandbox
 	// ran still holds while it is paused, so a paused sandbox is not started to be asked again.
@@ -1817,7 +1817,7 @@ async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, f
 		if (!c.vars.idling && (!hostedLimitsApply(meta.place) || meta.meter) && (await sandboxes.state(meta.sandboxId)) === "running") {
 			const sandbox = await sandboxes.connect(meta.sandboxId);
 			sandboxChanged(c);
-			if (sandbox && !c.vars.turn) value = await hasUnpushedWork(sandbox, repo.branch, meta.pushedHead ?? null);
+			if (sandbox && !c.vars.turn) value = await hasUnpushedWork(sandbox, repo.baseSha ?? null, meta.pushedHead ?? null);
 		}
 	} catch (error) {
 		c.log.warn({ msg: "could not read whether the workspace has commits to push", error: describeError(error) });
@@ -4062,7 +4062,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 	if (meta.origin?.role === "reviewer") {
 		fact = reviewEndedFactOf(row.key, ended.outcome, meta.review, item.said ?? null, item.refused ?? null, ended.usage);
 	} else {
-		const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.branch, ended.checks, ended.verified, meta.origin?.owns).catch(() => []) : [];
+		const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.baseSha ?? null, ended.checks, ended.verified, meta.origin?.owns).catch(() => []) : [];
 		// Not known (git said nothing): taken as changed, and the push says whether there was anything. What the agent pushed itself in the turn is a change too.
 		const changed = ended.unpushed !== false || (meta.pushedHead ?? null) !== item.pushedAtStart;
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
