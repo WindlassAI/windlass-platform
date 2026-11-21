@@ -289,6 +289,8 @@ async function clientCheck(state: string) {
 	const { harnessOf } = await import("../server/src/sandbox/harness.js");
 	const machine = { machine: { name: "Bench" } } as SandboxLayer;
 	const harness = harnessOf(machine, "claude");
+	assert.equal(harnessOf(machine, "opencode").id, "opencode");
+	assert.throws(() => harnessOf({} as SandboxLayer, "opencode"), /OpenCode runs only on a machine/);
 	assert.throws(() => harnessOf({} as SandboxLayer, "claude"), /only on a machine/);
 	const secret = "value-held-only-for-redaction";
 	const redactor = new SecretRedactor([{ name: "FIXTURE", value: secret }]);

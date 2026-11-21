@@ -58,21 +58,12 @@ expect("the server accepts each Claude sign-in state and refuses extra login fie
 	["token", "none", "unknown"].every(signIn => parseRunnerFrame(JSON.stringify({ ...plainReport, harnesses: [{ ...harness, signIn }] }))?.kind === "report")
 	&& [ { ...harness, signIn: "other" }, { ...harness, secret: "fixture" }, { ...harness, id: "other" } ].every(invalid =>
 		parseRunnerFrame(JSON.stringify({ ...plainReport, harnesses: [invalid] })) === null));
-const requestId = "f".repeat(32);
-const url = "https://claude.com/cai/oauth/authorize?state=fixture&code_challenge=fixture";
-const started = { kind: "harnessLogin.result", requestId, result: { url, expiresAt: Date.now() + 600_000 } };
-for (const [operation, args] of [["start", {}], ["finish", { code: "fixture#state" }], ["cancel", {}]] as const) {
-	const frame = { kind: "harnessLogin." + operation, requestId, ...args };
-	expect("control delivers the pairing's login " + operation, parseServerFrame(JSON.stringify(frame))?.kind === frame.kind);
+for (const op of ["start", "finish", "cancel"]) {
+	expect("the control socket rejects retired login operation " + op, !parseServerFrame(JSON.stringify({
+		kind: "harnessLogin." + op, requestId: "a".repeat(32), ...(op === "finish" ? { code: "fixture" } : {}),
+	})));
 }
-expect("control accepts only the public results of login", [started.result, { signedIn: true }, { cancelled: true }, { error: "Login failed." }]
-	.every(result => parseRunnerFrame(JSON.stringify({ ...started, result }))?.kind === started.kind));
-expect("control rejects an unsafe URL, extra login data, unbounded or multiline code and invalid request ids",
-	[{ url: url.replace("claude.com", "claude.com.invalid"), expiresAt: 1 }, { url: url.replace("//", "//user@"), expiresAt: 1 },
-	 { url: url + "&code_verifier=private", expiresAt: 1 }, { url: url + "a".repeat(8192), expiresAt: 1 }, { ...started.result, token: "fixture" }, { signedIn: false }].every(result =>
-		parseRunnerFrame(JSON.stringify({ ...started, result })) === null)
-	&& ["a".repeat(2049), "one\ntwo", "bad\r", "bad\u001b", ""].every(code => !parseServerFrame(JSON.stringify({ kind: "harnessLogin.finish", requestId, code })))
-	&& !parseServerFrame(JSON.stringify({ kind: "harnessLogin.start", requestId: "a".repeat(128) })));
+expect("the server accepts legacy page capability reports", !!parseRunnerFrame(JSON.stringify({ ...plainReport, claudeLogin: true })));
 const capped = parseRunnerFrame(JSON.stringify({ ...plainReport, maxRunning: 2, maxSandboxes: 5 }));
 expect("a report carries the caps its owner set, and a report with no caps also passes",
 	capped?.kind === "report" && capped.maxRunning === 2 && capped.maxSandboxes === 5 && parseRunnerFrame(JSON.stringify(plainReport))?.kind === "report");
@@ -277,39 +268,6 @@ try {
 				assert.equal(sockets.length, 1);
 			});
 		}
-	});
-	await checkControl("failed pending sign-in cleanup is audited once and the runner reconnects with its session open", async () => {
-		const { PageLogin } = await import("../runner/src/page-login.js");
-		let pending: InstanceType<typeof PageLogin> | undefined;
-		const failure = "Could not remove the Claude setup container.";
-		const request = mock.method(PageLogin.prototype, "request", async function (this: InstanceType<typeof PageLogin>) {
-			pending = this;
-			return started.result;
-		});
-		const close = mock.method(PageLogin.prototype, "close", async function (this: InstanceType<typeof PageLogin>) {
-			if (this === pending) {
-				pending = undefined;
-				throw new RunnerError(failure);
-			}
-		});
-		try {
-			await withControl([lease(), lease()], async r => {
-				const ws = await r.online();
-				ws.frame({ kind: "attach", sessionId: "s_live", ticket: "first" });
-				await until(() => sockets[1]?.sent.some(f => f.kind === "hello") === true);
-				const session = sockets[1];
-				ws.frame({ kind: "harnessLogin.start", requestId });
-				await until(() => ws.sent.some(f => f.kind === "harnessLogin.result"));
-				assert.ok(pending);
-				const before = auditRows().length;
-				ws.close();
-				await r.online(2);
-				assert.equal(session.readyState, 1, "Disconnect stopped the live session.");
-				const failures = auditRows().slice(before).filter(row => row.operation === "control" && row.outcome.includes(failure));
-				assert.equal(failures.length, 1);
-				assert.match(failures[0].outcome, /pending Claude sign-in/);
-			});
-		} finally { close.mock.restore(); request.mock.restore(); }
 	});
 	await checkControl("a failed removal is audited and left unacknowledged on the live control socket", async () => {
 		await withControl([lease()], async r => {

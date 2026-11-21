@@ -9,7 +9,7 @@ import type { Registry } from "../registry.js";
 import { machineProfiles } from "../machines/profiles.js";
 import { codeDigest } from "../runner-keys.js";
 import { MACHINE_ID, MIN_RUNNER_VERSION, PAIRING_TTL_MS, versionAtLeast } from "../runner/control.js";
-import { approvalCode, MACHINE_PROFILES, CLAUDE_LOGIN_MS, type LoginCommand, type LoginResult } from "../runner/protocol.js";
+import { MACHINE_PROFILES } from "../runner/protocol.js";
 import { createGrant, isActorGone } from "./internal.js";
 import type { MachineUpdate } from "./machine.js";
 import { asPairingError, pairingGone } from "./machine-pairing.js";
@@ -37,7 +37,6 @@ export function launchPlace(raw: unknown): SandboxPlace {
 export async function machineTables(db: RawAccess) {
 	await db.execute(`CREATE TABLE IF NOT EXISTS machines (id TEXT PRIMARY KEY, name TEXT NOT NULL, os TEXT NOT NULL, arch TEXT NOT NULL, facts TEXT NOT NULL,
 		send INTEGER NOT NULL DEFAULT 1, login TEXT, expires INTEGER)`);
-	await db.execute("CREATE TABLE IF NOT EXISTS claude_login_attempts (at INTEGER NOT NULL)");
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_claims (at INTEGER NOT NULL)");
 }
 
@@ -111,37 +110,7 @@ export async function logoutMachines(c: Ctx) {
 	});
 }
 
-async function claudeLogin(c: Ctx, machineId: string, command: LoginCommand): Promise<Exclude<LoginResult, { error: string }>> {
-	requireUser(c); enabled();
-	const now = Date.now();
-	await c.db.execute("DELETE FROM claude_login_attempts WHERE at <= ?", now - CLAUDE_LOGIN_MS);
-	const admitted = await c.db.execute("INSERT INTO claude_login_attempts SELECT ? WHERE (SELECT count(*) FROM claude_login_attempts) < 12 RETURNING at", now);
-	if (!admitted.length) throw new UserError("Too many Claude sign-in requests. Try again in ten minutes.", { code: "rate_limited" });
-	if (typeof machineId !== "string" || !MACHINE_ID.test(machineId) || await machineSecrets(c.db, machineId) === null) throw missing();
-	if (command.kind === "harnessLogin.finish" && !approvalCode(command.code))
-		throw new UserError("Paste the authorization code shown by Anthropic.", { code: "bad_input" });
-	const result = await machine(c, machineId).internalClaudeLogin(command);
-	if ("error" in result) throw new UserError(result.error, { code: "claude_login_failed" });
-	return result;
-}
-
-const unexpected = () => new UserError("The runner returned an unexpected sign-in reply.", { code: "claude_login_failed" });
 export const machineActions = {
-	async startClaudeLogin(c: Ctx, input: { machineId: string }) {
-		const result = await claudeLogin(c, input?.machineId, { kind: "harnessLogin.start", requestId: randomBytes(16).toString("hex") });
-		if (!("url" in result)) throw unexpected();
-		return result;
-	},
-	async finishClaudeLogin(c: Ctx, input: { machineId: string; code: string }) {
-		const result = await claudeLogin(c, input?.machineId, { kind: "harnessLogin.finish", requestId: randomBytes(16).toString("hex"), code: input?.code });
-		if (!("signedIn" in result)) throw unexpected();
-		return result;
-	},
-	async cancelClaudeLogin(c: Ctx, input: { machineId: string }) {
-		const result = await claudeLogin(c, input?.machineId, { kind: "harnessLogin.cancel", requestId: randomBytes(16).toString("hex") });
-		if (!("cancelled" in result)) throw unexpected();
-		return result;
-	},
 	async machines(c: Ctx): Promise<MachineSummary[]> {
 		requireUser(c); enabled();
 		return listMachines(c);

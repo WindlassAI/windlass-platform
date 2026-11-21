@@ -16,7 +16,7 @@ export function configChoices(option: Fields | undefined) {
 
 export function optionsOf(raw: unknown, previous?: ModelList | null) {
 	const options = objects(raw);
-	const model = options.find(o => o.category === "model" && o.type === "select");
+	const model = options.find(o => (o.category === "model" || o.id === "model") && o.type === "select");
 	const effort = options.find(o => o.category === "thought_level" && o.type === "select");
 	const efforts = configChoices(effort).map(value => value.id);
 	const current = text(model?.currentValue);

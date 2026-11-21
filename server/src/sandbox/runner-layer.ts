@@ -554,11 +554,11 @@ class RunnerSandboxes implements Sandboxes {
 		if (input.profile !== "docker-windlass-sandbox" && input.profile !== "docker-hardened") throw new SandboxUserError(`${findProfile(input.profile).name} does not run on a machine of yours.`);
 		// A `create` lost with its conversation may have made the sandbox: the runner answers the repeat with that one.
 		// Request the screenshots image only when this runner offers it.
-		if (input.harness === "claude" && input.profile !== "docker-hardened") throw new SandboxUserError("Claude Code requires the docker-hardened profile.");
+		if (input.harness && input.profile !== "docker-hardened") throw new SandboxUserError(`${input.harness === "claude" ? "Claude Code" : "OpenCode"} requires the docker-hardened profile.`);
 		const report = input.profile === "docker-windlass-sandbox" || input.harness || input.screenshots ? (await link.facts()).report : null;
 		if (report?.allowedProfiles && !report.allowedProfiles.includes(input.profile)) throw new SandboxUserError(PROFILE_DENIED);
 		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
-			throw new SandboxUserError("This machine's runner does not offer Claude Code. Update it and start it with --harness claude.");
+			throw new SandboxUserError(`This machine's runner does not offer ${input.harness === "claude" ? "Claude Code" : "OpenCode"}. Update it and start it with --harness ${input.harness}.`);
 		return await link.again("create", { profile: input.profile, ...(input.harness ? { harness: input.harness } : {}),
 			...(input.screenshots && !input.harness && report?.screenshots ? { screenshots: true } : {}) });
 	}
