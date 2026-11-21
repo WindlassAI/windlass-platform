@@ -126,6 +126,8 @@ export class RunnerLink {
 	private readonly tickets = new AttachTickets();
 	/** What the machine's actor last said of it. Had before the first ticket goes out: its key checks the hello. */
 	private heard: MachineFacts | null = null;
+	private reading?: Promise<MachineFacts>;
+	private checkedAt = 0;
 	private outstanding = 0;
 	/** The callers waiting for a socket, with the one deadline they share. */
 	private waiting: { promise: Promise<void>; settle(error?: Error): void } | null = null;
@@ -184,10 +186,26 @@ export class RunnerLink {
 		this.channel.close(SLEPT);
 	}
 
-	async facts(): Promise<MachineFacts> {
-		const facts = await this.machine.facts();
-		this.heard = facts;
-		return facts;
+	facts(): Promise<MachineFacts> {
+		return this.reading ??= this.machine.facts().then(facts => {
+			this.heard = facts;
+			this.checkedAt = Date.now();
+			return facts;
+		}).finally(() => { this.reading = undefined; });
+	}
+
+	/** Refresh an idle session's banner from the control socket's owner without an attach.
+	 * During a turn the session channel is the authority on whether its work is answering. */
+	async snapshotFacts(): Promise<void> {
+		if (this.closed) return;
+		if (this.channel.connected || this.outstanding) {
+			if (!this.heard) await this.initialFacts;
+			return;
+		}
+		const previous = this.found;
+		const facts = this.heard && Date.now() - this.checkedAt < 2000 ? this.heard : await this.facts();
+		if (this.closed || this.channel.connected || this.outstanding || previous !== this.found) return;
+		this.note(facts.status === "online" ? "answering" : facts.status === "removed" ? "removed" : "offline");
 	}
 
 	removeSandbox(id: string): Promise<void> {
@@ -346,6 +364,7 @@ export class RunnerLink {
 	private note(state: MachineReach["state"]): void {
 		if (this.found?.state === state) return;
 		this.found = { state, since: Date.now() };
+		if (state === "offline" || state === "removed") this.checkedAt = 0;
 		this.onReach?.(this.found);
 	}
 

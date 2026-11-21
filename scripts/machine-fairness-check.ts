@@ -1,10 +1,12 @@
 // Driven through the real actors by runner-e2e.ts fairness; Docker is a stand-in.
+import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { createClient, type Registry } from "../server/src/client.js";
 import { StandInRunner, until } from "./runner-standin.js";
 
 type Check = (name: string, run: () => Promise<string>) => Promise<void>;
-export async function machineFairnessChecks(check: Check, client: ReturnType<typeof createClient<Registry>>, runner: StandInRunner, token: string) {
+export async function machineFairnessChecks(check: Check, client: ReturnType<typeof createClient<Registry>>, runner: StandInRunner, token: string, storage: string) {
 	const { uid, machineId } = runner.id;
 	const user = client.user.get([uid], { params: { token } });
 	for (const scenario of ["FIFO admission", "stop while waiting", "reconnect while waiting"]) {
@@ -57,4 +59,46 @@ export async function machineFairnessChecks(check: Check, client: ReturnType<typ
 			}
 		});
 	}
+	await check("a failed online publish recovers the machine list without another report", async () => {
+		const disk = 5555555;
+		const marker = join(storage, "fail-online-publish");
+		writeFileSync(marker, "");
+		try {
+			runner.fake.report.freeDiskBytes = disk;
+			runner.report();
+			await until("the publish refusal", () => existsSync(marker + ".seen"));
+			rmSync(marker);
+			await until("the retried online publish", async () => (await user.machines()).some(m => m.freeDiskBytes === disk), 9000);
+		} finally { rmSync(marker, { force: true }); }
+		return "the index recovered from the same runner state";
+	});
+	await check("a session with a cached offline banner recovers on snapshot without a prompt", async () => {
+		const session = await user.createSession({ place: { kind: "machine", machineId }, profile: "docker-hardened" });
+		const handle = client.agentSession.get([uid, session.id], { params: { token } }).connect();
+		try {
+			await runner.setOffline(true);
+			await until("the offline machine", async () => (await user.machines()).some(m => m.status === "offline"));
+			await handle.prompt({ text: "while offline" });
+			await until("the failed turn and cached offline banner", async () => {
+				const snap = await handle.snapshot();
+				return snap.machine?.state === "offline" && snap.summary.lastOutcome === "error";
+			});
+			const marker = join(storage, "fail-online-publish");
+			rmSync(marker + ".seen", { force: true });
+			writeFileSync(marker, "");
+			try {
+				await runner.setOffline(false);
+				await until("the publish refusal", () => existsSync(marker + ".seen"));
+			} finally { rmSync(marker, { force: true }); }
+			// A changed report fixes the list even on the old server. The session must heal independently.
+			runner.fake.report.freeDiskBytes = 9876543;
+			runner.report();
+			await until("online list", async () => (await user.machines()).some(m => m.status === "online"));
+			const before = runner.attaches;
+			await until("the session snapshot to recover", async () => (await handle.snapshot()).machine?.state === "answering", 9000);
+			assert.equal((await handle.snapshot()).summary.turns, 1);
+			assert.equal(runner.attaches, before);
+		} finally { await handle.dispose(); await user.deleteSession(session.id); }
+		return "online on the next fresh snapshot, without an attach or another prompt";
+	});
 }

@@ -70,3 +70,27 @@ test("runner advertises two turn slots by default, and accepts a positive whole-
 	assert.ok(parse({}));
 	for (const cap of [0, -1, 1.5, "3", null]) assert.equal(parse({ maxTurns: cap }), null);
 });
+
+test("a snapshot during attach still waits for the first machine profile", async () => {
+	const { RunnerLink } = await import("../server/src/sandbox/runner-layer.js");
+	let release!: () => void;
+	const wait = new Promise<void>(resolve => { release = resolve; });
+	const link = new RunnerLink({ ...identity, sessionId: "s_test" }, {
+		facts: async () => {
+			await wait;
+			return { status: "online", name: "Fixture", publicKey: "", report: null };
+		},
+		attach: async () => ({ ok: false, reason: "offline" }),
+		removeSandbox: async () => {},
+	}, () => {});
+	const attach = link.ready().catch(() => {});
+	try {
+		let settled = false;
+		const snapshot = link.snapshotFacts().then(() => { settled = true; });
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(settled, false, "snapshot returned without its profile");
+		release();
+		await snapshot;
+		assert.equal(link.known?.name, "Fixture");
+	} finally { release(); link.close(); await attach; }
+});

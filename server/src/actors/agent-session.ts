@@ -4342,7 +4342,7 @@ export const agentSession = actor({
 			const meta = liveMeta(c);
 			try {
 				const { sandboxes } = await layerOf(c, meta);
-				if (c.vars.runner && !c.vars.runner.known) await within(c.vars.runner.initialFacts, PROFILE_WAIT_MS);
+				if (c.vars.runner) await within(c.vars.runner.snapshotFacts(), PROFILE_WAIT_MS);
 				const profile = sandboxes.profile(meta.profile);
 				return await serial(c, async () => {
 					await writeItems(c).catch((error) => c.log.error({ msg: "could not write the timeline", error: describeError(error) }));

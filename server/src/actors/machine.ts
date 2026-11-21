@@ -23,10 +23,10 @@ const offline = () => new UserError("The machine disconnected during sign-in. St
 interface Socket { login(command: LoginCommand): Promise<LoginResult>; send(frame: ServerFrame): boolean; close(code: number, reason: string): void }
 interface Live { maxTurns?: number; offset: number; offersClaude?: boolean; claudeLogin?: boolean; ws: Socket; epoch: string; heardAt: number; connected: number; savedAt: number }
 /** `greeting` is the one control socket that has yet to say hello: a newer one replaces it. */
-interface Vars { nextSlotCheck: number; live: Live | null; work: Promise<void>; greeting: Socket | null }
+interface Vars { retryOnFrame: boolean; nextSlotCheck: number; live: Live | null; work: Promise<void>; greeting: Socket | null }
 interface Ctx {
 	db: RawAccess; vars: Vars; key: string[];
-	schedule: { at(timestamp: number, action: string): Promise<string>; list(): Promise<Array<{ action: string; runAt: number }>> };
+	schedule: { at(timestamp: number, action: string, ...args: number[]): Promise<string>; list(): Promise<Array<{ action: string; runAt: number }>> };
 	// Actor references are resolved through this node's registry.
 	client(): any;
 }
@@ -111,20 +111,33 @@ async function publish(c: Ctx, row: Row) {
 	}
 	await user(c).internalMachineChanged(c.key[1], facts);
 }
-/**
- * For what a runner's frame changed: a user actor that is briefly away (its node restarting) must not
- * cost the runner its control socket, and with it every session's attach. Each publish carries the
- * whole row, so the next one puts the user's list right.
- */
-function tell(c: Ctx, row: Row | undefined): Promise<void> {
-	return row ? publish(c, row).catch((error) => machineError("publish machine change", error)) : Promise.resolve();
+// Keep the socket when the account index is unavailable. A retry reads current facts
+// under the same ordering as hello and disconnect; a delayed retry cannot undo either.
+async function tell(c: Ctx, row: Row | undefined, delay = 1000): Promise<void> {
+	if (!row) return;
+	try {
+		await publish(c, row);
+		c.vars.retryOnFrame = false;
+	} catch (error) {
+		machineError("publish machine change", error);
+		try {
+			const alarms = await c.schedule.list();
+			if (!alarms.some(a => a.action === "retryPublish" && a.runAt > Date.now()))
+				await c.schedule.at(Date.now() + delay, "retryPublish", Math.min(60_000, delay * 2));
+			c.vars.retryOnFrame = false;
+		} catch (error) {
+			// The scheduler can be down with the index. The next heartbeat or wake retries.
+			c.vars.retryOnFrame = true;
+			machineError("schedule machine publish", error);
+		}
+	}
 }
 
 async function disconnected(c: Ctx, ws: Socket) {
 	if (c.vars.live?.ws !== ws) return;
 	c.vars.live = null;
 	const [row] = await c.db.execute<Row>("UPDATE machine SET seen = ? WHERE removed_at IS NULL RETURNING *", Date.now());
-	if (row) await publish(c, row);
+	await tell(c, row);
 }
 
 async function revoke(c: Ctx, removeSandboxes: boolean, idle: boolean): Promise<void> {
@@ -154,7 +167,7 @@ export const machine = actor({
 		await db.execute("CREATE TABLE IF NOT EXISTS turn_slots (session TEXT NOT NULL, turn INTEGER NOT NULL, running INTEGER NOT NULL, PRIMARY KEY (session, turn))");
 		await db.execute("CREATE TABLE IF NOT EXISTS pending (sandbox TEXT PRIMARY KEY)");
 	} }),
-	createVars: (): Vars => ({ nextSlotCheck: 0, live: null, work: Promise.resolve(), greeting: null }),
+	createVars: (): Vars => ({ retryOnFrame: false, nextSlotCheck: 0, live: null, work: Promise.resolve(), greeting: null }),
 	onCreate: async (c, input?: Input) => {
 		if (!input || c.key.length !== 2 || !MACHINE_ID.test(c.key[1]!) || !grantIsValid(input.grant, c.key, "machine") || Date.now() >= input.expires) { c.destroy(); return; }
 		const now = Date.now();
@@ -169,7 +182,7 @@ export const machine = actor({
 	onWake: async c => {
 		const row = await record(c);
 		if (row && (row.seen !== null || row.removed_at !== null)) {
-			await publish(c, row);
+			await tell(c, row);
 		}
 	},
 	onSleep: async c => {
@@ -287,6 +300,7 @@ export const machine = actor({
 						await c.db.execute("UPDATE machine SET seen = ? WHERE removed_at IS NULL", now);
 						live.savedAt = now;
 					}
+					if (frame.kind === "heartbeat" && c.vars.retryOnFrame) await tell(c, await record(c));
 					if (frame.kind === "harnessLogin.result") loginReplies.get(frame.requestId)?.(frame.result);
 					if (frame.kind === "removed") await c.db.execute("DELETE FROM pending WHERE sandbox = ?", frame.sandbox);
 					if (frame.kind === "report") {
@@ -391,6 +405,10 @@ export const machine = actor({
 		internalRevoke: async (c, removeSandboxes: boolean) => {
 			requireServiceFor(c, "call");
 			await revoke(c, removeSandboxes, false);
+		},
+		retryPublish: async (c, delay: number) => {
+			if (!c.scheduledFire) throw new UserError("Only the machine's schedule can retry a publish.", { code: "forbidden" });
+			await ordered(c, async () => tell(c, await record(c), delay));
 		},
 		expireKeyWarning: async c => {
 			if (!c.scheduledFire) throw new UserError("Only the machine's schedule can expire its key warning.", { code: "forbidden" });

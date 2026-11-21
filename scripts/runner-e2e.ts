@@ -120,6 +120,15 @@ async function serverNode(): Promise<void> {
 	};
 	const { user } = await import("../server/src/actors/user.js");
 	const userActions = user.config.actions!;
+	const changed = userActions.internalMachineChanged;
+	const marker = join(process.env.RIVETKIT_STORAGE_PATH!, "fail-online-publish");
+	userActions.internalMachineChanged = async (c, id, facts) => {
+		if (facts?.status === "online" && existsSync(marker)) {
+			writeFileSync(marker + ".seen", "");
+			throw new Error("fixture user actor unavailable");
+		}
+		return changed(c, id, facts);
+	};
 	const readSecrets = userActions.internalSessionSecrets;
 	userActions.internalSessionSecrets = async (c, id) => {
 		const sealed = await readSecrets(c, id);
@@ -1016,7 +1025,7 @@ async function main(): Promise<void> {
 			await runner.connectControl();
 			await until("machine report", async () => (await user.machines()).some(m => m.commandSandbox));
 			const { machineFairnessChecks } = await import("./machine-fairness-check.js");
-			await machineFairnessChecks(check, client, runner, token);
+			await machineFairnessChecks(check, client, runner, token, server.storage);
 			return;
 		}
 		await check("launch on a paired machine that has never reported is refused", async () => {
