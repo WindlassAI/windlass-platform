@@ -18,10 +18,11 @@
  * with no action and no setting.
  */
 import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, type PublishState, type PullRequestInfo, type SandboxProfile, type SessionSummary } from "@contract";
-import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
+import { usePublishRequests } from "../state/sessionChrome";
 import { Dialog } from "./Dialog";
 import { BranchIcon, CrossIcon, ExternalIcon, LockIcon, MergedIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "./Icons";
 
@@ -239,6 +240,8 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [dialog, setDialog] = useState(false);
+	const [flash, setFlash] = useState(false);
+	const section = useRef<HTMLElement>(null);
 	const repository = summary.repository ?? null;
 	const idle = summary.status === "idle";
 	// The second reviewer of an item only reads: the server refuses it a push and a pull request.
@@ -274,6 +277,26 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 		return load();
 	}, [load, repository?.id, turnsEnded, idle, summary.sandbox, files]);
 
+	// "Publish pull request" in the bar: the dialog when it can open, otherwise this section, which says why not.
+	usePublishRequests(sessionId, () => {
+		const can = repository !== null && !reviewer && state !== null && error === null && (state.blocked ?? null) === null && idle;
+		const pending = files !== null && files > 0 ? true : state?.changes;
+		if (can && state && (pending !== false || opensFromPushed(summary.pullRequest ?? state.pullRequest ?? null, state.pushed, pending === false))) {
+			setDialog(true);
+			return;
+		}
+		const element = section.current;
+		if (!element) return;
+		element.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+		element.querySelector<HTMLElement>(".panel-title")?.focus({ preventScroll: true });
+		setFlash(true);
+	});
+	useEffect(() => {
+		if (!flash) return;
+		const timer = setTimeout(() => setFlash(false), 1400);
+		return () => clearTimeout(timer);
+	}, [flash]);
+
 	if (!repository) return null;
 	// The summary is told of a new pull request and of a change of its state; the panel's own read has the rest.
 	const pull = summary.pullRequest ?? state?.pullRequest ?? null;
@@ -288,8 +311,8 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 	const fromPushed = blocked === null && state !== null && opensFromPushed(pull, state.pushed, nothing);
 
 	return (
-		<section className="panel-section" aria-labelledby="panel-pull">
-			<h2 className="panel-title" id="panel-pull">
+		<section className={`panel-section${flash ? " panel-section-flash" : ""}`} aria-labelledby="panel-pull" ref={section}>
+			<h2 className="panel-title" id="panel-pull" tabIndex={-1}>
 				Pull request
 				<button type="button" className="icon-button icon-button-small" onClick={load} disabled={loading} aria-label="Read the pull request's state again" title="Reload">
 					<RefreshIcon size={13} className={loading ? "spin" : undefined} />

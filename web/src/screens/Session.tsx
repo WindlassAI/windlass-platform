@@ -22,18 +22,20 @@ import { useCallback, useMemo, useState } from "react";
 import { ClaudeSignIn } from "../components/ClaudeSignIn";
 import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
-import { ArrowLeftIcon, Mark, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, Mark, PullRequestIcon, WarnIcon } from "../components/Icons";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
-import { acpHarnessName, harnessModelsOf } from "../lib/acp";
-import { sessionModes } from "../lib/modes";
+import { acpHarnessName, harnessModelsOf, sessionModelWords } from "../lib/acp";
+import { currentMode, sessionModes } from "../lib/modes";
 import { SidePanel } from "../components/SidePanel";
-import { StatusBadge } from "../components/Status";
+import { STATUS_WORD, StatusBadge, StatusGlyph } from "../components/Status";
+import { Tooltip } from "../components/ui";
 import { localTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import type { ToolBlock } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { takeHandover } from "../state/handover";
-import { allowanceState, useAllowance, useModels, type useSession } from "../state/hooks";
+import { allowanceState, useAllowance, useModels, useNow, type useSession } from "../state/hooks";
+import { requestPublish, setPanelHidden, usePanelHidden } from "../state/sessionChrome";
 import { clockTime, useMachines } from "./Machines";
 import { machineLabel } from "../lib/machines";
 
@@ -51,29 +53,126 @@ export function useSessionMachine(place: SandboxPlace | undefined): MachineSumma
 	return list.find((machine) => machine.machineId === machineId) ?? null;
 }
 
-/** What the top bar shows for a session: the way back, its title and state. A work item's session is part of its item, and the way back is to the item. */
-export function SessionCrumb({ title, status, place, machine, item, harness }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: { id: string }; harness?: SessionSummary["harness"] }) {
+function PanelIcon({ size = 16 }: { size?: number }) {
+	return (
+		<svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+			<rect x="2" y="2.75" width="12" height="10.5" rx="2" />
+			<path d="M10 3v10" />
+		</svg>
+	);
+}
+
+/** The state beside the title: while a turn runs or waits on you, a pill with how long the turn has run; otherwise the plain badge. */
+function CrumbState({ status, since }: { status: SessionSummary["status"]; since: number | null }) {
+	const live = status === "running" || status === "starting" || status === "waiting";
+	const now = useNow(1000, live && since !== null);
+	if (!live) return <StatusBadge status={status} />;
+	const waiting = status === "waiting";
+	return (
+		<span className={`crumb-pill crumb-pill-${status}`} role="status" title={waiting ? "A question waits for your answer" : undefined}>
+			<StatusGlyph status={status} size={13} />
+			<span>{STATUS_WORD[status]}</span>
+			{since !== null ? <span className="crumb-pill-time">{clockDuration(now - since)}</span> : null}
+		</span>
+	);
+}
+
+/** "1:48", "12:05", "1:02:09": how long a turn has run, as a clock reads it. */
+function clockDuration(ms: number): string {
+	const seconds = Math.max(0, Math.floor(ms / 1000));
+	const pad = (value: number) => String(value).padStart(2, "0");
+	const hours = Math.floor(seconds / 3600);
+	const minutes = Math.floor((seconds % 3600) / 60);
+	return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
+}
+
+/** The way out from the bar: "Publish pull request" asks the panel to open its dialog; an open pull request is a link to it. */
+function BarPublish({ summary }: { summary: SessionSummary }) {
+	const pull = summary.pullRequest ?? null;
+	if (!summary.repository || summary.item) return null;
+	if (pull && pull.state !== "closed") {
+		return (
+			<a className="bar-button bar-pull" href={pull.url} target="_blank" rel="noreferrer" title={`${pull.title} · ${pull.state}`}>
+				<PullRequestIcon size={14} />
+				<span>#{pull.number}</span>
+				<span className="bar-pull-state">{pull.state}</span>
+			</a>
+		);
+	}
+	const busy = summary.status !== "idle";
+	return (
+		<Tooltip content={busy ? "Available when this turn ends" : "Commit, push and open a pull request"}>
+			<button type="button" className="bar-button" onClick={() => (busy ? undefined : requestPublish(summary.id))} aria-disabled={busy || undefined}>
+				<PullRequestIcon size={14} />
+				<span className="bar-button-label">Publish pull request</span>
+			</button>
+		</Tooltip>
+	);
+}
+
+/** Shows or hides the side panel, on a screen wide enough to have it beside the conversation. */
+function PanelToggle() {
+	const hidden = usePanelHidden();
+	return (
+		<Tooltip content={hidden ? "Show the session's details" : "Hide the session's details"}>
+			<button type="button" className={`bar-icon panel-toggle${hidden ? "" : " bar-icon-on"}`} onClick={() => setPanelHidden(!hidden)} aria-pressed={!hidden} aria-label="Session details">
+				<PanelIcon />
+			</button>
+		</Tooltip>
+	);
+}
+
+/**
+ * What the top bar shows for a session: the way back, its repository, its title and state, and on the
+ * right what runs it and the way out. A work item's session is part of its item, and the way back is to
+ * the item. `summary`, once known, adds the repository, the turn's time, the facts and the actions.
+ */
+export function SessionCrumb({ title, status, place, machine, item, harness, summary = null }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: { id: string }; harness?: SessionSummary["harness"]; summary?: SessionSummary | null }) {
+	const { platform } = useApp();
 	const harnessName = acpHarnessName({ harness });
 	const machineName = machine ? machineLabel(machine) : null;
+	const repository = summary?.repository ?? null;
+	const profile = summary ? platform.info?.profiles.find((one) => one.id === summary.profile) : undefined;
+	const live = summary !== null && (summary.status === "running" || summary.status === "starting" || summary.status === "waiting");
 	return (
-		<nav className="crumb" aria-label="Where you are">
-			<a className="crumb-back" {...linkProps(item ? { name: "item", id: item.id } : { name: "home" })}>
-				<ArrowLeftIcon size={14} />
-				<span>{item ? "Work item" : "Agents"}</span>
-			</a>
-			{title !== null ? (
-				<>
-					<span className="crumb-sep" aria-hidden="true">
-						/
-					</span>
-					<h1 className="crumb-title" title={title}>
-						{title}
-					</h1>
-				</>
-			) : null}
-			{status !== null ? <StatusBadge status={status} /> : null}
-			{place?.kind === "machine" ? <span className="chip crumb-place">{harnessName ? `${harnessName} on ${machineName ? `“${machineName}”` : "your machine"}` : `On ${machineName ?? "your machine"}`}</span> : null}
-		</nav>
+		<>
+			<nav className="crumb" aria-label="Where you are">
+				<a className="crumb-back" {...linkProps(item ? { name: "item", id: item.id } : { name: "home" })}>
+					<ArrowLeftIcon size={14} />
+					<span>{item ? "Work item" : "Agents"}</span>
+				</a>
+				{repository && !item ? (
+					<>
+						<span className="crumb-sep" aria-hidden="true">
+							/
+						</span>
+						<a className="crumb-repo" {...linkProps({ name: "repository", id: repository.id })} title={`${repository.owner}/${repository.name}`}>
+							{repository.name}
+						</a>
+					</>
+				) : null}
+				{title !== null ? (
+					<>
+						<span className="crumb-sep" aria-hidden="true">
+							/
+						</span>
+						<h1 className="crumb-title" title={title}>
+							{title}
+						</h1>
+					</>
+				) : null}
+				{status !== null ? <CrumbState status={status} since={live ? summary.updatedAt : null} /> : null}
+			</nav>
+			<div className="crumb-end">
+				<p className="crumb-facts">
+					{place?.kind === "machine" ? <span className="chip crumb-place">{harnessName ? `${harnessName} on ${machineName ? `“${machineName}”` : "your machine"}` : `On ${machineName ?? "your machine"}`}</span> : summary ? <span>{harnessName ?? "Windlass"}</span> : null}
+					{summary ? <span>{sessionModelWords(summary)}</span> : null}
+					{summary && profile ? <span>{currentMode(summary, profile).name}</span> : null}
+				</p>
+				{summary ? <BarPublish summary={summary} /> : null}
+				{summary ? <PanelToggle /> : null}
+			</div>
+		</>
 	);
 }
 
@@ -153,6 +252,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 	}, [api, explain]);
 	// A harness other than Windlass cannot stop one call of a turn: only the turn.
 	const harness = state.summary ? acpHarnessName(state.summary) : null;
+	const panelHidden = usePanelHidden();
 	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && harness === null ? stopCall : null }), [flow, stopCall, online, harness]);
 
 	if (state.phase === "missing") {
@@ -207,7 +307,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 	const reach = summary.place.kind === "machine" ? machineNote(state.machine, machine, summary.sandbox, Date.now(), summary.item !== undefined) : null;
 
 	return (
-		<main className="session">
+		<main className={`session${panelHidden ? " session-panel-hidden" : ""}`}>
 			<div className="session-main">
 				{state.connection === "reconnecting" ? (
 					<p className="banner banner-warn" role="status">

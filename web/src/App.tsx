@@ -49,7 +49,7 @@ function SessionRoute({ sessionId, theme, onToggleTheme }: { sessionId: string; 
 	return (
 		<div className="app app-fixed">
 			<TopBar theme={theme} onToggleTheme={onToggleTheme}>
-				<SessionCrumb title={state.summary?.title ?? null} status={state.summary?.status ?? null} place={state.summary?.place} machine={machine} item={state.summary?.item} harness={state.summary?.harness} />
+				<SessionCrumb title={state.summary?.title ?? null} status={state.summary?.status ?? null} place={state.summary?.place} machine={machine} item={state.summary?.item} harness={state.summary?.harness} summary={state.summary ?? null} />
 			</TopBar>
 			<Session key={sessionId} sessionId={sessionId} state={state} machine={machine} />
 		</div>
