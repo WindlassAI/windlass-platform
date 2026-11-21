@@ -50,13 +50,19 @@ export async function importOpenCode(file: string, ask: Ask, store: (id: string,
 		});
 	} catch { throw new RunnerError("Invalid OpenCode auth.json in the setup import mount."); }
 	finally { await handle.close(); }
+	let stored = false;
 	for (const {id,key} of entries) {
 		if (!key) {
-			if (await confirm(ask, id + " login can't be shared safely; sign in separately for the runner?"))
+			if (await confirm(ask, id + " login can't be shared safely; sign in separately for the runner?")) {
 				await login(id === "openai" ? "chatgpt" : supported(id) ? id : undefined);
+				stored = true;
+			}
 		} else if (supported(id)) {
-			if (await confirm(ask, providerName(id) + " (" + id + ") API key: import?")) await store(id,key);
+			if (await confirm(ask, providerName(id) + " (" + id + ") API key: import?")) {
+				await store(id,key);
+				stored = true;
+			}
 		} else console.log("Skipping " + id + ": no fixed inference route in this runner.");
 	}
-	return entries.length > 0;
+	return stored;
 }

@@ -14,18 +14,21 @@ test("setup reads the mounted file once and separately authorizes Go, Zen and a 
 	try {
 		await writeFile(file,input);
 		const prompts: string[] = [], keys: unknown[] = [], logins: string[] = [];
-		await importOpenCode(file, async prompt => {
+		const imported = await importOpenCode(file, async prompt => {
 			prompts.push(prompt);
 			if (prompts.length === 1) await writeFile(file,"{}");
 			return "";
 		}, async (provider,key) => { keys.push([provider,key]); }, async id => { logins.push(id ?? ""); });
+		assert.equal(imported, true);
 		assert.deepEqual(keys,[["opencode-go","fixture-go"],["opencode","fixture-zen"]]);
 		assert.deepEqual(logins,["chatgpt"]);
 		assert.match(prompts.join(" "),/can't be shared safely; sign in separately for the runner/i);
 		assert.doesNotMatch(prompts.join(" "),/foreign-|fixture-/);
 		assert.equal(await readFile(file,"utf8"),"{}");
 		await writeFile(file,input);
-		await importOpenCode(file, async () => "n", async () => assert.fail(), async () => assert.fail());
+		assert.equal(await importOpenCode(file, async () => "n", async () => assert.fail(), async () => assert.fail()), false);
+		await writeFile(file, JSON.stringify({ unsupported: { type: "api", key: "fixture" } }));
+		assert.equal(await importOpenCode(file, async () => assert.fail(), async () => assert.fail(), async () => assert.fail()), false);
 		await symlink(file,join(dir,"link"));
 		await assert.rejects(importOpenCode(join(dir,"link"),async () => "", async () => {}, async () => {}));
 	} finally { await rm(dir,{recursive:true,force:true}); }
@@ -37,7 +40,7 @@ test("an API-shaped subscription entry that also carries refresh material always
 		const file = join(dir, "auth.json");
 		await writeFile(file, JSON.stringify({openai:{type:"api",key:"subscription-key",refresh_token:"foreign-token"}}));
 		const logins: string[] = [];
-		await importOpenCode(file, async () => "y", async () => assert.fail("A subscription was imported"), async id => { logins.push(id!); });
+		assert.equal(await importOpenCode(file, async () => "y", async () => assert.fail("A subscription was imported"), async id => { logins.push(id!); }), true);
 		assert.deepEqual(logins,["chatgpt"]);
 	} finally { await rm(dir,{recursive:true,force:true}); }
 });

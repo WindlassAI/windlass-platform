@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-for (const importing of [false,true]) test(importing ? 'setup imports two API keys, declines a foreign refresh token and drops the mount' : 'setup pairs, skips Claude, accepts a hidden OpenCode key and prints the runnable Docker command', async () => {
+for (const mode of ['manual','import','decline']) test(mode === 'decline' ? 'declining every mounted credential falls through to regular login' : mode === 'import' ? 'setup imports two API keys, declines a foreign refresh token and drops the mount' : 'setup pairs, skips Claude, accepts a hidden OpenCode key and prints the runnable Docker command', async () => {
+	const importing = mode !== "manual", accept = mode === "import";
 	const root = fileURLToPath(new URL('../', import.meta.url));
 	const dir = await mkdtemp(join(root, '.setup-check-'));
 	const pin = 'sha256:'+'1'.repeat(64), id = 'm_'+'a'.repeat(16);
@@ -47,12 +48,13 @@ else if(a[0]==='volume' && a[1]==='inspect') console.log(JSON.stringify([{Driver
 else if(a[0]==='run' && a.includes('--network') && a.includes('none')) {
  if (!a.some(v=>v.includes('dst=/login,volume-nocopy'))) process.exit(3);
  process.chdir(${JSON.stringify(volume)}); fs.chownSync=()=>{};eval(a.at(-1));
+ fs.appendFileSync('revisions',JSON.parse(fs.readFileSync('login.json')).generation+'\\n');
 }
 else process.exitCode=2;
 `,{mode:0o755});
 		const env={...process.env,PATH:dir+':'+process.env.PATH,WLP_RUNNER_STATE_DIR:state};
 		const child=spawn('script',['-qef','-c',`"${process.execPath}" --require "${preload}" "${dir}/runner.cjs" setup --platform ${origin} --harness claude --harness opencode`,'/dev/null'],{env,stdio:['pipe','pipe','pipe']});
-		const prompts=[['Claude Code: sign in now?','n'],['OpenCode: sign in now?',''],...(importing ? [['(opencode-go) API key: import?',''],['(opencode) API key: import?',''],["can't be shared safely",'n']] : [['OpenCode provider','openai'],['Enter the openai API key','setup-fixture-secret']])];
+		const prompts=[['Claude Code: sign in now?','n'],['OpenCode: sign in now?',''],...(importing ? [['(opencode-go) API key: import?',accept ? '' : 'n'],['(opencode) API key: import?',accept ? '' : 'n'],["can't be shared safely",'n']] : []),...(!accept ? [['OpenCode provider','openai'],['Enter the openai API key','setup-fixture-secret']] : [])];
 		let output='', step=0;
 		child.stdout.on('data',chunk=>{output+=chunk;if(step<prompts.length && output.includes(prompts[step][0])) child.stdin.write(prompts[step++][1]+'\n');});
 		const timer=setTimeout(()=>child.kill('SIGTERM'),45000);
@@ -63,19 +65,34 @@ else process.exitCode=2;
 		assert.match(output,/ABCD-EFGH/);
 		assert.deepEqual(asked,['/runner/pair','/runner/pair/poll']);
 		const stored = JSON.parse(await readFile(join(volume,'login.json'),'utf8'));
-		const ids = importing ? ['opencode-go','opencode'] : ['openai'];
+		const ids = accept ? ['opencode-go','opencode'] : ['openai'];
 		assert.deepEqual(Object.keys(stored.records),ids);
-		for (const [i,id] of ids.entries()) assert.equal(stored.records[id].key,importing ? ['fixture-existing-go','fixture-existing-zen'][i] : 'setup-fixture-secret');
+		for (const [i,id] of ids.entries()) assert.equal(stored.records[id].key,accept ? ['fixture-existing-go','fixture-existing-zen'][i] : 'setup-fixture-secret');
 		assert.doesNotMatch(JSON.stringify(stored),/foreign-refresh|foreign-access/);
 		assert.ok(output.includes('-e WLP_RUNNER_STATE_DIR='+state));
 		assert.deepEqual(JSON.parse(await readFile(join(state,'opencode-'+id+'.json'),'utf8')).providers,ids);
 		for (const name of await readdir(state,{withFileTypes:true})) if (name.isFile())
 			assert.doesNotMatch(await readFile(join(state,name.name),'utf8'),/fixture-existing-|fixture-foreign-|setup-fixture-secret/);
+		if (accept) {
+			const revisions = (await readFile(join(volume,'revisions'),'utf8')).trim().split('\n');
+			const metadata = JSON.parse(await readFile(join(state,'opencode-'+id+'.json'),'utf8'));
+			assert.equal(revisions.length,2);
+			assert.notEqual(revisions[0],revisions[1]);
+			assert.equal(metadata.generation,revisions[1]);
+			assert.equal(metadata.sessionGeneration,revisions[0]);
+		}
 		if (importing) assert.equal(await readFile(source,'utf8'),fixture);
 		assert.doesNotMatch(output,/fixture-existing-|fixture-foreign-|\/import\/opencode|\/fixture\/source/);
 		assert.ok(output.includes(pin+' run --platform '+origin+' --harness claude --harness opencode'));
 		if (!importing) {
 			const bundle = join(dir, 'runner.cjs');
+			const piped = spawn(process.execPath,[bundle,'login','opencode','--provider','openai'],{env,stdio:['pipe','ignore','pipe']});
+			let error = '';
+			piped.stderr.setEncoding('utf8').on('data', chunk => { error += chunk; });
+			piped.stdin.end('a'.repeat(5000));
+			assert.notEqual(await new Promise(done => piped.once('close',done)),0);
+			assert.match(error,/openai API key.*4096/);
+			assert.doesNotMatch(error,/Claude/);
 			const published = 'registry.invalid/runner@' + pin;
 			const report = () => JSON.parse(execFileSync(process.execPath, [bundle,'capabilities'], {env:{...env,WLP_RUNNER_IMAGE:published}}));
 			assert.deepEqual(report(), { image:published, harnesses:['claude','opencode'] });
