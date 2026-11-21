@@ -1,3 +1,4 @@
+import { featureCap, validatePlan } from "../../../server/src/factory/feature-plan.js";
 /**
  * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
  * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
@@ -950,7 +951,7 @@ function withoutReviewer(view: ItemView): ItemView {
 	return { ...view, review: view.review ? { state: "off", recommendation: null } : null, reviews: [], reviewerSessionId: null, reviewNone: DEPLOYMENT_OFF };
 }
 
-const summaryOf = ({ task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => summary;
+const summaryOf = ({ plan: _plan, children: _children, task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => summary;
 
 function seedTokens(state: MockItemsState, at: number): ApiToken[] {
 	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
@@ -1005,7 +1006,7 @@ export function createMockItems(deps: MockItemsDeps) {
 	}
 
 	function changed(auth: AuthResult): void {
-		const list = keptOf(auth).items.map(summaryOf);
+		const list = keptOf(auth).items.filter(i => !i.parent || i.question).map(summaryOf);
 		for (const feed of deps.feeds(auth)) feed.onItems?.(list);
 	}
 
@@ -1073,6 +1074,19 @@ export function createMockItems(deps: MockItemsDeps) {
 		const at = deps.now();
 		const before = item.run;
 		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 }, caps: ROUND_CAPS };
+		if (item.mode === "orchestrate") {
+			run.step.kind = "refine"; run.step.turn = null; run.rounds.plan = 1;
+			const version = (item.plan?.version ?? 0) + 1;
+			const plan = item.plan = {
+				version, status: "proposed", questions: [], singleSuggested: null,
+				spec: { goal: item.title, requirements: [item.task.body], outOfScope: [], acceptance: item.task.acceptance.length ? item.task.acceptance : ["Complete the requested feature."] },
+				budget: item.budget, compare: { singleBudget: MOCK_FACTORY_LIMITS.item },
+				subtasks: ["implementation", "verification"].map((key, i) => ({ key, title: i ? "Verify the feature" : item.title, brief: i ? "Add regression coverage." : item.task.body,
+					acceptance: ["Run pnpm test"], dependsOn: i ? ["implementation"] : [], owns: [i ? "tests/**" : "src/**"], budget: { ...MOCK_FACTORY_LIMITS.item } })),
+			};
+			const text = plan.spec.goal;
+			return change(auth, item, { run, state: "waiting", wait: { reason: "person", since: at, retryAt: null, sentence: text }, question: { id: item.id + ":plan" + version, kind: "plan_approval", text, askedAt: at, choices: choices("approve","revise","give_up") } }, [said,"The planner filed a proposal."], "platform");
+		}
 		if (before && before.endedAt === null) Object.assign(before, { endedAt: at, stopReason: "retried" });
 		item.events.push({ at, by: `person:${auth.profile.uid}`, step: null, said });
 		change(auth, item, { state: "queued", wait: null, question: null, run, report: null, review: null, reviewNone: null }, [], "person");
@@ -1085,7 +1099,7 @@ export function createMockItems(deps: MockItemsDeps) {
 	const conflict = (why: string) => new PlatformError("user", why, { reason: "item_conflict" });
 	const STATE_WORDS: Record<ItemSummary["state"], string> = { draft: "a draft", queued: "queued", working: "working", waiting: "waiting", review: "in review", done: "done", failed: "failed", cancelled: "cancelled" };
 
-	function act(auth: AuthResult, item: ItemView, action: ItemAction): void {
+	async function act(auth: AuthResult, item: ItemView, action: ItemAction): Promise<void> {
 		const now = STATE_WORDS[item.state];
 		// An item whose machine was removed can only be handed over, given up or cancelled (blueprint.ts, `apply`), in the server's words.
 		if (machineOfItem(auth, item)?.machine === null) {
@@ -1096,7 +1110,32 @@ export function createMockItems(deps: MockItemsDeps) {
 				return askRemoved(auth, item);
 			}
 		}
+		const plan = item.plan;
+		const current = plan?.status === "proposed" && item.question?.kind === "plan_approval";
+		const at = deps.now();
 		switch (action.kind) {
+			case "run_single":
+				if (!current) throw conflict("The feature no longer has an open plan.");
+				item.mode = "single"; plan.status = "superseded"; item.budget = { ...plan.compare.singleBudget };
+				return beginRun(auth, item, "Run as single item.");
+			case "edit_plan": {
+				if (!current || action.version !== plan.version) throw conflict("Read the latest plan before editing.");
+				let edited;
+				try { edited = validatePlan(action.plan, plan.compare.singleBudget, plan.budget); }
+				catch (error) { throw new PlatformError("user", (error as Error).message, { reason: "bad_input" }); }
+				return change(auth, item, { plan: { ...plan, ...edited, version: plan.version+1 }, question: { ...item.question!, id: item.id + ":plan" + (plan.version+1), text: edited.spec.goal } }, ["Edited the plan."], "person");
+			}
+			case "approve_plan": {
+				if (!current || action.version !== plan.version || plan.singleSuggested || plan.questions.some(q => !q.answer)) throw conflict("Answer all questions on the current plan first.");
+				const sub = plan.subtasks.find(s => s.dependsOn.length === 0)!;
+				const session = await deps.session(auth, { title: sub.title, place: item.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id } });
+				if (item.plan !== plan || item.question?.kind !== "plan_approval" || plan.status !== "proposed") throw conflict("The plan changed.");
+				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } } };
+				keptOf(auth).items.push(child); deps.itemChanged(auth, child);
+				return change(auth, item, { plan: { ...plan, status: "approved", approvedAt: at, approvedBy: "person:" + auth.profile.uid }, children: [summaryOf(child)], state: "waiting", question: null,
+					wait: { reason: "children", sentence: "Running " + sub.title, since: at, retryAt: null }, run: { ...item.run!, step: { ...item.run!.step, kind: "subtasks" } },
+					pullRequest: { number: 1, url: item.repository.url + "/pull/1" } }, ["Approved the plan."], "person");
+			}
 			case "start":
 				if (item.state !== "draft") throw conflict(`This item is ${now}: only a draft can be started.`);
 				return beginRun(auth, item, "Started.");
@@ -1110,11 +1149,15 @@ export function createMockItems(deps: MockItemsDeps) {
 				return beginRun(auth, item, `Sent back: ${note}`);
 			}
 			case "cancel":
+				for (const child of keptOf(auth).items.filter(s => s.parent?.itemId === item.id && !["done","cancelled","failed"].includes(s.state))) await act(auth, child, {kind:"cancel"});
+				if (item.children?.length) item.children = keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf);
 				if (item.state === "done" || item.state === "cancelled") throw conflict(`This item is ${now} already.`);
 				return change(auth, item, { state: "cancelled", wait: null, question: null, run: item.run ? { ...item.run, endedAt: deps.now(), stopReason: item.run.endedAt === null ? "cancelled" : item.run.stopReason } : null }, ["Cancelled."], "person");
 			case "answer": {
 				const question = item.question;
 				if (question === null || question.id !== action.question) throw conflict("That question was answered already, here or in another tab.");
+				if (current && action.choice === "approve") return act(auth,item,{kind:"approve_plan",version:plan.version});
+				if (current && action.choice === "revise") return beginRun(auth,item,"Revised the plan.");
 				const picked = question.choices.find((option) => option.id === action.choice);
 				if (!picked) throw conflict("That is not one of the question's answers.");
 				const note = action.note?.trim() || null;
@@ -1141,7 +1184,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		return {
 			async listItems() {
 				await answer(240);
-				return keptOf(auth).items.map(summaryOf);
+				return keptOf(auth).items.filter(i => !i.parent || i.question).map(summaryOf);
 			},
 			async item(id) {
 				await answer(220);
@@ -1172,7 +1215,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					const made = taken && mine.items.find((one) => one.id === taken.id);
 					if (made) return summaryOf(made);
 				}
-				if ("mode" in input && input.mode !== undefined) throw new PlatformError("user", "A work item and its reviewer use the profile’s approval mode.", { reason: "bad_input" });
+				if (input.mode !== undefined && input.mode !== "single" && input.mode !== "orchestrate") throw new PlatformError("user", "Choose single or orchestrate.", { reason: "bad_input" });
 				const title = input.title.trim();
 				const acceptance = (input.acceptance ?? []).map((line) => line.trim()).filter((line) => line !== "");
 				if (title === "") throw new PlatformError("user", "A work item needs a title.", { reason: "bad_input" });
@@ -1197,6 +1240,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				const id = `it_${fresh(12)}`;
 				const item: ItemView = {
 					id,
+					mode: input.mode ?? "single", parent: null, plan: null, children: [],
 					title,
 					repository,
 					place,
@@ -1207,7 +1251,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					question: null,
 					pullRequest: null,
 					verdict: null,
-					budget: { ...MOCK_FACTORY_LIMITS.item },
+					budget: input.mode === "orchestrate" ? featureCap(MOCK_FACTORY_LIMITS.item) : { ...MOCK_FACTORY_LIMITS.item },
 					spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
 					sessionId: session.id,
 					createdAt: at,
@@ -1236,7 +1280,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			async actOnItem(id, action) {
 				await answer(360);
 				const item = itemOf(auth, id);
-				act(auth, item, action);
+				await act(auth, item, action);
 				return structuredClone(item);
 			},
 			// Answered without work items too, as the server answers it: the ceiling on running agents is every agent's.

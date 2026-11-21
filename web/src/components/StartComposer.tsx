@@ -239,6 +239,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// Agent or work item: the page's, unless its user switched before leaving for GitHub on a page that offers the switch. Without work items on this deployment, an agent.
 	const [kindChoice, setKind] = useState<StartKind>((switchable ? draft?.kind : null) ?? startKind);
 	const item = kindChoice === "item" && Boolean(info?.items);
+	const [orchestrate, setOrchestrate] = useState(false);
 	const [criteria, setCriteria] = useState(draft?.criteria ?? "");
 	// The work item filed last from here, said under the field until another is written.
 	const [filed, setFiled] = useState<{ id: string; title: string; started: boolean } | null>(null);
@@ -481,6 +482,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		const input: Omit<CreateItemInput, "idempotencyKey"> = {
 			repository: { id: chosen.repository.id, branch: chosen.branch },
 			title: filing.title,
+			...(orchestrate && info?.items?.orchestrate && { mode: "orchestrate" as const }),
 			body: filing.body,
 			acceptance,
 			start: now,
@@ -885,7 +887,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 
 	// Narrow, the chips after the second fold behind "more"; one that warns of something open stays. A work item has too few to fold.
 	const all: Array<{ chip: ReactNode; keep: boolean }> = item
-		? [{ chip: repoChip, keep: true }, ...(placeChip ? [{ chip: placeChip, keep: true }] : []), { chip: criteriaChip, keep: true }]
+		? [{ chip: repoChip, keep: true }, ...(placeChip ? [{ chip: placeChip, keep: true }] : []), { chip: criteriaChip, keep: true }, ...(info?.items?.orchestrate ? [{ chip: <label key="orchestrate" className="start-chip"><input type="checkbox" checked={orchestrate} disabled={busy !== null} onChange={e => setOrchestrate(e.target.checked)} /> Orchestrate</label>, keep: true }] : [])]
 		: [
 				{ chip: repoChip, keep: true },
 				...(placeChip ? [{ chip: placeChip, keep: true }] : []),

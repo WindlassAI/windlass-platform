@@ -29,7 +29,7 @@ function gateOf(seed: SeedVerdict): GateEvidence | null {
 describe("the mock's work items", () => {
 	it("says in platform info whether the second review is on, and without it gives no item one", async () => {
 		const off = createMockClient({ pace: 0, reviewer: false });
-		expect((await off.info()).items).toEqual({ reviewer: false });
+		expect((await off.info()).items).toEqual({ reviewer: false, orchestrate: true });
 		const list = await off.user(auth).listItems();
 		expect(list.some((item) => item.review !== null)).toBe(true);
 		expect(list.every((item) => item.review === null || item.review.state === "off")).toBe(true);
@@ -37,7 +37,7 @@ describe("the mock's work items", () => {
 	});
 
 	it("offers work items unless told not to, and without them refuses every item and API token call but the limits", async () => {
-		expect((await make().info()).items).toEqual({ reviewer: true });
+		expect((await make().info()).items).toEqual({ reviewer: true, orchestrate: true });
 		const off = make("off");
 		expect((await off.info()).items).toBeUndefined();
 		const user = off.user(auth);
@@ -477,4 +477,26 @@ describe("the screenshots on an item's page", () => {
 		await expect(off.user(auth).itemAttachmentLinks("it_any")).rejects.toMatchObject({ reason: "items_off" });
 		off.dispose();
 	});
+});
+
+it("files an orchestrated feature, edits its budget by version, and lists the children under one feature", async () => {
+	const mock = make(), user = mock.user(auth);
+	try {
+		const made = await user.createItem({ repository: { id: 7101 }, title: "Find documents", body: "Index and search.", mode: "orchestrate", start: true });
+		const page = await user.item(made.id);
+		expect(page.mode).toBe("orchestrate");
+		const plan = structuredClone(page.plan!);
+		expect(plan.status).toBe("proposed");
+		plan.subtasks[0].budget.tokens -= 1;
+		const edit = { kind: "edit_plan" as const, version: plan.version, plan };
+		const edited = await user.actOnItem(made.id, edit);
+		expect(edited.plan!.version).toBe(plan.version + 1);
+		await expect(user.actOnItem(made.id, edit)).rejects.toMatchObject({ reason: "item_conflict" });
+		const approved = await user.actOnItem(made.id, { kind: "approve_plan", version: edited.plan!.version });
+		expect(approved.children?.[0].parent?.itemId).toBe(made.id);
+		expect(approved.pullRequest).toBeTruthy();
+		expect((await user.listItems()).some(i => i.parent)).toBe(false);
+		const cancelled = await user.actOnItem(made.id, {kind: "cancel"});
+		expect(cancelled.children?.[0].state).toBe("cancelled");
+	} finally { mock.dispose(); }
 });

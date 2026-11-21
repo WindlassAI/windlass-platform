@@ -38,7 +38,7 @@ import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
-import { inSecondReview, ItemGlyph, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
+import { inSecondReview, ItemGlyph, ItemRow, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
 import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
 
@@ -1008,6 +1008,10 @@ export function Item({ page }: { page: ItemPage }) {
 				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
 			</section>
 
+			{view.children?.length ? <section className="usage-section" aria-label="Subtasks">
+				<h2 className="usage-title">Subtasks</h2>
+				{view.children.map(child => <ItemRow key={child.id} item={child} now={now} why={child.question?.text} />)}
+			</section> : null}
 			{reading ? <ReadFirst view={view} acting={acting} /> : null}
 
 			<Verdicts view={view} now={now} />

@@ -368,6 +368,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [placeChoice, setPlace] = useState<string | null>(null);
 	// A machine that was removed or can no longer be chosen while the form is open leaves the item on this platform, which the line then says.
 	const chosenMachine = mine.find((machine) => machine.machineId === placeChoice && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
+	const [orchestrate, setOrchestrate] = useState(false);
 	const [title, setTitle] = useState("");
 	const [body, setBody] = useState("");
 	const [criteria, setCriteria] = useState("");
@@ -387,7 +388,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}) };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, ...(orchestrate && platform.info?.items?.orchestrate && { mode: "orchestrate" as const }), ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}) };
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;
@@ -427,6 +428,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 			}
 		>
 			<form id={ids.form} className="item-form" onSubmit={file}>
+				{platform.info?.items?.orchestrate && <label><input type="checkbox" checked={orchestrate} disabled={busy} onChange={e => setOrchestrate(e.target.checked)} /> Orchestrate with a plan you approve</label>}
 				<div>
 					<label className="label" htmlFor={ids.title}>
 						Title

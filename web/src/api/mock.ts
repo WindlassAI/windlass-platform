@@ -3910,7 +3910,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
 			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, platformUrl: origin } };
-			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false } }) };
+			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true } }) };
 		},
 		login: {
 			async start(): Promise<LoginStart> {
