@@ -88,8 +88,8 @@ export class EgressNetwork {
 	}
 	async attach(raw: string, container: string) {
 		const proxyEnabled = this.policy.mode === "restricted";
-		const claude = raw.startsWith("claude-");
-		if (!proxyEnabled && !claude) return;
+		const harness = raw.startsWith("claude-") ? "claude" : raw.startsWith("opencode-") ? "opencode" : undefined;
+		if (!proxyEnabled && !harness) return;
 		const source = typeof EGRESS_SOURCE === "string" ? EGRESS_SOURCE : readFileSync(join(import.meta.dirname, "egress-proxy.mjs"), "utf8");
 		const revision = createHash("sha256").update(JSON.stringify([image, source, this.policy])).digest("hex");
 		const mounts: string[] = [], probes: string[] = [];
@@ -105,15 +105,15 @@ export class EgressNetwork {
 		// Including StartedAt ties this helper to this incarnation of the network namespace.
 		const started = await checked(["inspect", "-f", `{{.Id}}|{{.State.StartedAt}}|{{with index .Config.Labels "${LABEL}.relay-session"}}{{.}}{{end}}`, container]);
 		const [id, since, nonce] = started.stdout.trim().split("|");
-		if (claude) {
+		if (harness) {
 			if (!/^[0-9a-f]{32}$/.test(nonce)) throw new Refusal("This Claude session needs a new relay endpoint.");
-			const volume = relaySocketVolume(this.machine);
+			const volume = relaySocketVolume(this.machine, harness);
 			if (!await this.machine.ownedVolume(false, volume)) throw new Refusal("The Claude relay socket volume is missing.");
 			mounts.push(`type=volume,src=${volume},dst=/run/wlp-relay,readonly,volume-nocopy`);
 			probes.push("17892");
 		}
 		await this.ensure("forward", this.prefix + "-" + raw, [revision, id, since, nonce].join("-"), "container:" + container,
-			source, mounts, [this.policy.mode, ...(claude ? [nonce] : [])], probes);
+			source, mounts, [this.policy.mode, ...(harness ? [nonce] : [])], probes);
 	}
 	async detach(raw: string) {
 		const helper = await this.helper(this.prefix + "-" + raw, "forward");

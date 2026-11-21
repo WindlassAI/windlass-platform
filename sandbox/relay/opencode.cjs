@@ -7,6 +7,7 @@ const { createRelay } = require('./server.cjs');
 const clientId = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const filename = '/run/wlp-harness/opencode/login.json';
 const api = {
+	free: { hostname: 'opencode.ai', route: '/free/chat/completions', path: '/inference/openai/v1/chat/completions' },
 	openai: { hostname: 'api.openai.com', route: '/openai/responses', path: '/v1/responses' },
 	chatgpt: { hostname: 'chatgpt.com', route: '/openai/responses', path: '/backend-api/codex/responses' },
 	anthropic: { hostname: 'api.anthropic.com', route: '/anthropic/messages', path: '/v1/messages' },
@@ -52,13 +53,14 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 	}
 	return {
 		accepts: url => url === endpoint.route,
-		bearer: h => provider === 'anthropic' ? 'Bearer ' + h['x-api-key'] : h.authorization,
+		bearer: h => provider === 'free' ? 'Bearer ' + h['x-wlp-session'] : provider === 'anthropic' ? 'Bearer ' + h['x-api-key'] : h.authorization,
 		async target(url, h) {
 			if (url !== endpoint.route) return;
 			const record = await credential();
 			if (!record) return;
 			const headers = { 'content-type': 'application/json' };
-			if (provider === 'anthropic') {
+			if (provider === 'free') headers.authorization = 'Bearer public';
+			else if (provider === 'anthropic') {
 				headers['x-api-key'] = record.key;
 				headers['anthropic-version'] = '2023-06-01';
 				if (h['anthropic-beta']) headers['anthropic-beta'] = h['anthropic-beta'];

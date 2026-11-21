@@ -21,7 +21,7 @@ fi
 set -f
 for harness in ${WLP_RUNNER_HARNESSES:-}; do
   case "$harness" in
-    claude=*@sha256:*) set -- "$@" "$harness" ;;
+    claude=*@sha256:*|opencode=*@sha256:*) set -- "$@" "$harness" ;;
     *)
       image=$(sandbox/harness/build.sh "$harness" "$pin")
       set -- "$@" "$harness=$image" ;;

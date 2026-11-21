@@ -27,6 +27,13 @@ test('concurrent ChatGPT requests share a machine-side refresh and retain the ro
 	assert.equal(await provider.target('/openai/responses', {}), undefined);
 });
 
+test('explicit free model access uses only the public provider credential', async () => {
+	const p = providerFor('free', 'one', {load: async () => ({provider:'free',generation:'one'})});
+	assert.equal(p.bearer({'x-wlp-session':'placeholder'}), 'Bearer placeholder');
+	assert.deepEqual(await p.target('/free/chat/completions', {}), {hostname:'opencode.ai',
+		path:'/inference/openai/v1/chat/completions',headers:{'content-type':'application/json',authorization:'Bearer public'}});
+});
+
 test('API keys are scoped to the configured inference route and host', async () => {
 	for (const [id, route, hostname, header] of [['openai', '/openai/responses', 'api.openai.com', 'authorization'],
 		['anthropic', '/anthropic/messages', 'api.anthropic.com', 'x-api-key']]) {

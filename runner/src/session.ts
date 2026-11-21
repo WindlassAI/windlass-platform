@@ -66,12 +66,12 @@ class Conversation {
 		switch (op.name) {
 			case "create": {
 				const { harness, profile } = op.args;
-				if (harness) o.requireClaude(profile);
+				if (harness) o.requireHarness(profile, harness);
 				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session, profile, harness); });
 				if (existing) return existing;
 				const screenshots = !harness && op.args.screenshots === true && o.screenshots;
 				await o.ensureImage(); // The disk-space helper always uses the base pin.
-				if (harness) await o.prepareClaude(profile);
+				if (harness) await o.prepareHarness(profile, harness);
 				if (screenshots) await o.ensureImage(shotsImage);
 				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness); });
 			}
@@ -101,7 +101,7 @@ class Conversation {
 			switch (op.name) {
 				case "start": {
 					const p = h.start(op.args.argv, { ...op.args.options, ...streams }, op.args.tag);
-					const acp = (box.harness === "claude" && basename(op.args.argv[0] ?? "") === "wlp-claude-acp") || basename(op.args.argv[0] ?? "") === "windlass" && op.args.argv.includes("acp");
+					const acp = (box.harness && basename(op.args.argv[0] ?? "") === `wlp-${box.harness}-acp`) || basename(op.args.argv[0] ?? "") === "windlass" && op.args.argv.includes("acp");
 					this.processes.set(op.id, { p, acp, handle: h, id });
 					box.busy++;
 					// start() returns synchronously. Answer in this stack, before any pipe event can run.
