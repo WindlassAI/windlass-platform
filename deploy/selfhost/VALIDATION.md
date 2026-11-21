@@ -2,6 +2,8 @@
 
 Test host: Oracle Ampere, Linux arm64, two CPUs, 12 GB nominal RAM. Baseline source: `7bc117c`. The staging web and gateway ports were 16440 and 16420. All platform traffic in these checks stayed on loopback or the private Compose network. Production services, public tunnels and real agent credentials were outside the test.
 
+The [security wave checks](#security-wave-on-loopback-staging) cover the restricted ingress, encrypted restore, sign-in key migration, hosted Docker refusal and browser policy.
+
 ## Bring-up and gateway
 
 From the repository root, the first build and start used an empty engine volume. The engine started first while the server image finished building.
@@ -107,3 +109,56 @@ ALL PASSED: 146 passed, 0 failed, 1 skipped (sandbox layer: fake)
 ```
 
 The skip covers cloning a real repository in the fake layer. The runner end-to-end check passed 62 checks and the connection check passed all 58, including real token expiry against the local engine.
+
+## Security wave on loopback staging
+
+| Item | Commit | Implementation and checks |
+|---|---|---|
+| F7 | `74b55be` | [Ingress rules](tunnel.example.yml), [web gateway discovery](../../web/src/api/rivet.ts), [discovery regression](../../web/src/api/rivet.test.ts), [ingress integration check](../../scripts/selfhost-ingress-check.ts) |
+| F8 | `eb787c1` | [Backup](backup.sh), [restore](restore.sh), [age pin and archive names](archive-common.sh), [local backup checks](check-backup.sh) |
+| F1 | `1660a45` | [Configuration](../../server/src/config.ts), [startup refusal](../../server/src/startup.ts), [startup regression](../../scripts/connection-check.ts) |
+| F6.1 | `0b3de46` | [Initializer](init-env.sh), [Compose](compose.yaml), [key import](signin-key.env), [seal-key selection](../../server/src/config.ts), [migration regression](check-signin-key.sh) |
+| F13 | `5306117` | [Web headers](../../server/src/web.ts), [server wiring](../../server/src/index.ts), [HTML entry](../../web/index.html), [theme script](../../web/public/theme.js), [header checks](../../scripts/web-files-check.ts), [browser check](../../scripts/selfhost-csp-check.cjs) |
+
+Each implementation commit updates the [operator guide](README.md).
+
+These checks used the deployment changes based on `07f2365`, the existing `wlp-staging` Compose project and Rivet 3.1.1. The two origins were simulated locally. The staging volume kept its original canonical issuer.
+
+| Check | Before the change | After the change |
+|---|---|---|
+| Engine ingress | With the previous whole-host mapping, the ingress check failed at `/namespaces` and identified the engine port as its upstream. The web client configuration test failed because the discovered gateway still triggered a metadata lookup. | The candidate YAML passed cloudflared's offline matcher. An in-process runner paired, opened both real gateway sockets and delivered a successful streamed turn through a local reverse proxy. On a local TLS proxy using the same matcher, the genuine staging admin bearer got 404 on namespaces, pools, token issuance, node registration and the actor API. A Chromium demo login and user feed passed over HTTPS and WSS. |
+| Engine credentials | The private namespace list accepts the configured admin token (200). | The private engine issued a 60-second JWT with only `node:create` (200). The pool list refused that JWT (403). The tagged node-registration handler checks this grant. The drill did not register an additional engine node. |
+| Backups | The check reported `backup accepted a missing recipient`, `missing .age suffix`, `missing age header` and `tar could read the published object`. | The local object had the age v1 header, and tar refused it. Missing recipient and missing recovery identity were refused. A valid identity restored a fresh engine volume. An explicitly requested local plaintext backup also restored without an identity. The drill used the pinned Linux arm64 release and local directory backend. |
+| Docker hosting | The startup check reported `remote engine refuses the hosted Docker layer: condition not met`. | The server entry point exited 1 with the remote-engine Docker refusal. Embedded Docker, an explicit remote override and a fake remote provider passed the startup checks. |
+| Sign-in key | The live initializer check reported a missing independent key. An explicitly empty key silently fell back to the signing secret. | In an isolated fixture, Compose delivered the generated 32-byte key and preserved an existing server-env key on a legacy stack. A separate process reopened a sign-in after the signing secret changed and the old value became the seal key. An explicitly empty seal key was refused. |
+| Web headers | The web-file check had seven header failures. Chromium signed in, received a WebSocket frame and reported `Injected inline script executed`. | All 24 web-file cases passed. Chromium received a real user feed frame, blocked the injected script, and saw one-year HSTS on the TLS origin. cbor-x and Zod each made one caught eval probe. Both continued under the policy without an eval exception allowance. |
+
+The account-free ingress test invoked `cloudflared tunnel --config … ingress rule` locally and proxied HTTP and WebSocket requests to the selected loopback service. The browser TLS drill used a temporary loopback certificate. No Cloudflare route or public hostname was used.
+
+The current staging volume reproduced the surviving 3,954-item proof and a fresh 21-item session. The original 39-item session was present in the archived morning snapshot. We restored that snapshot on staging, verified the 39 items, backed up that volume with age and restored the encrypted object to a second volume. The source and decrypted timelines matched in all three comparisons.
+
+```text
+  39 items  fc5290410b89048e92305ad3f7c88b3c901e7abe087a32ae324543f6bdf74b41
+3954 items  49974fa911cf90ceb4b0160a7577bde58349e2a1d1e6452ff656cc40ad26c00e
+  21 items  53ca45a7fd55c2d645f1201e9076f81669564fe70baa44ff4dbd55a3a78e14da
+```
+
+The drill stopped staging before each volume change, checked the restored user's session and timeline, and returned to `wlp-staging_engine-data`. One backup attempt immediately after the smoke run detected an unclean service exit and skipped the archive. It restarted the stack and the retry completed after a clean stop.
+
+Reproduce on a loopback staging stack from the repository root. The backup check requires a private local drill directory, a recipient and its matching test identity as described in the [self-host guide](README.md#backup-and-restore). Its stdout is the archive basename. Follow the volume-switch and restore verification steps above using a proof verified on the source volume immediately before the drill.
+
+```sh
+server/node_modules/.bin/tsx scripts/selfhost-ingress-check.ts deploy/selfhost/tunnel.example.yml app.example.com engine.example.com
+archive=$(deploy/selfhost/check-backup.sh .data/selfhost/staging.env)
+fresh=$(deploy/selfhost/restore.sh .data/selfhost/staging.env "$archive")
+WLP_CHECK_SECTIONS=startup server/node_modules/.bin/tsx scripts/connection-check.ts
+deploy/selfhost/check-signin-key.sh
+server/node_modules/.bin/tsx scripts/web-files-check.ts
+node scripts/selfhost-csp-check.cjs http://127.0.0.1:16440
+```
+
+The original staging server tag was rebuilt during the browser test. Rebuilding the recorded `bf9db32` source reproduced its original Linux/arm64 runtime manifest, `sha256:bfc1ea5fcc6d76cbf9a3632adabbe74010a7fa0f7e8e821a7340e778d371e314`. At handback, the server was healthy on that manifest, and a read through the original engine volume reproduced the 3,954-item digest again. The temporary test image tag, drill volumes, archive copies and recovery identity were removed.
+
+The standalone web-stage check, run as `(cd web && npx tsx ../scripts/web-stage-check.ts)`, found all 19 bundled files. `pnpm typecheck` passed for runner, server and web. The connection check passed all 61 cases with the private staging engine, including real token expiry. On the first `WLP_DEMO=1 WLP_SANDBOX=fake pnpm test` run, 574 web tests passed and server end-to-end reported 145 passed, one failed and one skipped. The demo login actor had entered the engine's `destroying` state before the test could observe its `attempt_done` response.
+
+An unchanged full rerun passed. The two Node check scripts reported 4 and 3 passes, and all 5 runner fairness cases passed. Vitest reported 574 passes in 34 files. Server end-to-end reported 146 passed, 0 failed and 1 skipped. The skip covers cloning a repository with the fake sandbox provider.
