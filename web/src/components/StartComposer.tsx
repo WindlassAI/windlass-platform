@@ -1084,7 +1084,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					className="start-text"
 					rows={phone ? 1 : 2}
 					value={prompt}
-					placeholder={item ? "What should be done? The first line is its title." : "What should an agent do?"}
+					placeholder={item ? (phone ? "What should be done?" : "What should be done? The first line is its title.") : "What should an agent do?"}
 					onChange={(event) => setPrompt(event.target.value)}
 					onKeyDown={onKeyDown}
 					disabled={busy !== null}

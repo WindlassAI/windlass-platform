@@ -2280,3 +2280,27 @@ button.user-platform-line:hover {
 	background: none;
 	border-style: dashed;
 }
+
+/* A phone: the toolbar keeps one row; the pills give way before Send does, and the key hints are not drawn. */
+@media (max-width: 640px) {
+	.composer-tools {
+		flex-wrap: nowrap;
+		min-width: 0;
+	}
+	.composer-tools .ui-pill {
+		flex: 0 1 auto;
+		min-width: 0;
+	}
+	.composer-tools .ui-pill-value {
+		max-width: 14ch;
+	}
+	.composer-tools .mini-note {
+		display: none;
+	}
+	.composer-keys {
+		display: none;
+	}
+	.composer-tools-end {
+		flex: none;
+	}
+}
