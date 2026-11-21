@@ -2277,6 +2277,35 @@ item is filed on its repository's Work view ("New work item…") or through the 
 of its own (`/items/<id>`) with its step, its log, its verdicts and its cost. The home screen lists, under
 "Needs you", every item that asks its person something.
 
+### Feature orchestration
+
+Select **Orchestrate** when filing a feature, send `"mode": "orchestrate"` to `POST /api/items`, or use the
+GitHub command `@windlass orchestrate` or the `windlass:orchestrate` label. Single is the default.
+An issue with the `bug` label runs as a single item and the issue reply explains the override.
+
+The planner reads the repository and proposes two to six subtasks with owned paths, dependencies,
+acceptance checks and individual caps. The feature starts with three times the single-item allowance
+in each dimension. Planning, children, summary and review share it. Each subtask gets at least one
+token, turn, active second and hosted second, up to the single-item caps. The approval question shows
+the proposed split. A client can answer plan questions or edit the split using `edit_plan` with the
+displayed version. `approve_plan` requires that same version and answered questions. On
+`item_conflict`, fetch the item again. A single-item suggestion needs an explicit choice.
+
+Approval opens a draft PR on `windlass/feature-<item-id>`. Each child starts from that branch and
+has its own session. Passing local checks and passing CI on the child's pushed SHA let the platform
+fast-forward the feature branch. Repositories using only pull-request workflows need a push or
+external check for child commits. A missing child check leaves a question. Child questions appear
+in Needs you with the feature name. A stopped child can prompt up to two revised plans, each requiring
+approval. Cancel on the parent stops its children and keeps their branches. The final summary and
+whole-feature review go on the one feature PR. The owner merges it.
+
+The user action `setMachineDetails` accepts `machineId`, `whenToUse` and `tags`. The planner sees
+this inventory and the available machine capacity. All v1 children use the feature's selected place.
+Update the server before runners so it can read the optional host report. Older runners can keep serving
+work. `WLP_FACTORY_ORCHESTRATE=0` hides the filing control and blocks new orchestrated filings.
+
+### Work item availability
+
 Work items are off unless the deployment sets `WLP_ITEMS=1`. Off, the web app shows nothing of them (no
 work items on a repository's page, no "Needs you" for items, no API tokens on the Settings page, and an
 item's page is not found), the `user` actor's item and API token actions (`listItems`, `item`,
