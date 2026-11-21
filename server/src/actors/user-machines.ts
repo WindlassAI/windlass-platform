@@ -58,7 +58,9 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 		const sessions = [...c.vars.sessions.values()].filter(s => s.place.kind === "machine" && s.place.machineId === row.id);
 		const titles = new Map(sessions.map(s => [s.id, s.title]));
 		return {
-			...row.details ? JSON.parse(row.details) as import("../contract.js").MachineDetails : { whenToUse: "", tags: [] },
+			whenToUse: "", tags: [], orchestrator: "yes" as const,
+			...(row.details && JSON.parse(row.details) as import("../contract.js").MachineDetails),
+			personalRunning: sessions.filter(s => !s.item && s.status !== "idle").length,
 			host: report?.host, screenshots: report?.screenshots,
 			name: row.name, os: row.os, arch: row.arch, ...facts, machineId: row.id,
 			profiles: report ? machineProfiles(machineLabel(row), report) : [], sendSecrets: !!row.send, agents: sessions.length,
@@ -193,11 +195,15 @@ export const machineActions = {
 		catch (error) { if (isActorGone(error)) throw missing(); throw error; }
 		return listMachines(c);
 	},
-	async setMachineDetails(c: Ctx, input: { machineId: string; whenToUse: string; tags: string[] }) {
+	async setMachineDetails(c: Ctx, input: { machineId: string } & import("../contract.js").MachineDetails) {
 		requireUser(c); enabled();
 		let details;
 		try { details = machineDetails(input); } catch (error) { throw new UserError((error as Error).message, { code: "bad_input" }); }
-		const rows = await c.db.execute("INSERT OR REPLACE INTO machine_details SELECT id, ? FROM machines WHERE id=? AND expires IS NULL RETURNING id", JSON.stringify(details), input.machineId);
+		// Older settings forms send only text and tags. Preserve the owner's placement policy on those writes.
+		const rows = await c.db.execute(`INSERT OR REPLACE INTO machine_details SELECT m.id,
+			json_set(?, '$.orchestrator', COALESCE(?, json_extract(d.data, '$.orchestrator'), 'yes'))
+			FROM machines m LEFT JOIN machine_details d ON d.id=m.id WHERE m.id=? AND m.expires IS NULL RETURNING id`,
+			JSON.stringify(details), input.orchestrator ?? null, input.machineId);
 		if (!rows.length) throw missing();
 		return changed(c);
 	},

@@ -190,8 +190,8 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
 	});
 	if (offer.plan) return [tool("file_plan",
-		"Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?}], and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens,turns,activeSeconds,hostedSeconds}}]. To suggest single mode, give singleSuggested and an empty subtask list.",
-		{ type: "object", required: ["spec", "questions", "subtasks"], properties: { spec: { type: "object" }, questions: { type: "array", items: { type: "object" } }, subtasks: { type: "array", items: { type: "object" } }, singleSuggested: { type: ["string", "null"] } } })];
+		"Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?}], and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens,turns,activeSeconds,hostedSeconds}}]. For each subtask propose place {prefer: an owner machine name or hosted, reason: up to 200 characters, allow?: alternative names} and needs {tags?, screenshots?, egress?: open or restricted, profile?, harness?, cpus?, memoryGiB?}. Use the read-only owner descriptions, tags and sandbox capacity. Work items run Windlass. Overflow defaults to false and waits for the preferred place. Only approved alternatives may be used when overflow is true. To suggest single mode, give singleSuggested and an empty subtask list.",
+		{ type: "object", required: ["spec", "questions", "subtasks"], properties: { overflow: { type: "boolean" }, spec: { type: "object" }, questions: { type: "array", items: { type: "object" } }, subtasks: { type: "array", items: { type: "object" } }, singleSuggested: { type: ["string", "null"] } } })];
 	if (offer.review) return [tool(REVIEW_TOOL,
 		"File a recommendation and typed review blocks for this commit. To see completed shell command refs in execution order, call with {commands:true}; this lookup does not use a filing.",
 		{ type: "object", properties: {
