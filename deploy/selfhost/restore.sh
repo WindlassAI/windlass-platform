@@ -2,10 +2,20 @@
 source "$(dirname -- "$0")/archive-common.sh"
 name=${2:?usage: restore.sh stack.env archive-basename}
 archive_name "$name" || { echo "Invalid archive basename" >&2; exit 2; }
+archive="$work/data.tar.gz"
+if [[ $name == *.age ]]; then
+  : "${SELFHOST_BACKUP_AGE_IDENTITY:?set the path to the age identity file}"
+  [[ -f $SELFHOST_BACKUP_AGE_IDENTITY && -r $SELFHOST_BACKUP_AGE_IDENTITY ]] || { echo "Unreadable age identity file" >&2; exit 2; }
+  prepare_age
+  archive="$archive.age"
+fi
 if [[ -n ${store:-} ]]; then
-  cp "$store/$name" "$work/data.tar.gz"
+  cp "$store/$name" "$archive"
 else
-  "${s3[@]}" s3 cp "s3://$bucket/$project/$name" "$work/data.tar.gz" --only-show-errors
+  "${s3[@]}" s3 cp "s3://$bucket/$project/$name" "$archive" --only-show-errors
+fi
+if [[ $name == *.age ]]; then
+  "$age" --decrypt -i "$SELFHOST_BACKUP_AGE_IDENTITY" -o "$work/data.tar.gz" "$archive"
 fi
 gzip -t "$work/data.tar.gz"
 # The volume name is generated here; an existing volume is never a restore target.

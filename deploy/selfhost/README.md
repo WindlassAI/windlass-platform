@@ -67,21 +67,27 @@ The default optional server env file is `.data/selfhost/<compose-project>.server
 
 ## Backup and restore
 
-Use a Linux host with GNU coreutils, `flock`, Python 3, gzip and the AWS CLI for S3. Grant the backup credentials list/get/put/delete access to the project's prefix. Provide the backup environment through the operator's secret store. The scripts use a separate set of names from the platform's sandbox bucket.
+Use a Linux amd64 or arm64 host with curl, GNU tar and coreutils, `flock`, Python 3, gzip and the AWS CLI for S3. Grant the backup credentials list/get/put/delete access to the project's prefix. Provide the backup environment through the operator's secret store. The scripts use a separate set of names from the platform's sandbox bucket.
 
 | Purpose | Variables |
 |---|---|
 | S3-compatible destination | `SELFHOST_BACKUP_ENDPOINT`, `SELFHOST_BACKUP_REGION`, `SELFHOST_BACKUP_BUCKET`, `SELFHOST_BACKUP_ACCESS_KEY_ID`, `SELFHOST_BACKUP_SECRET_ACCESS_KEY` |
+| Encryption and recovery | `SELFHOST_BACKUP_AGE_RECIPIENT` (public key), `SELFHOST_BACKUP_AGE_IDENTITY` (identity file path at restore time) |
 | Retention and local directory backend | `SELFHOST_BACKUP_KEEP`, `SELFHOST_BACKUP_DIR` |
 
+Generate an age keypair on the recovery machine with `age-keygen -o windlass.agekey`. Keep the private identity off the platform host, with a protected recovery copy. Give the backup job only the public recipient (`age-keygen -y windlass.agekey`). The scripts download [age v1.3.2](https://github.com/FiloSottile/age/releases/tag/v1.3.2) for the host architecture and verify the release archive against its pinned SHA-256 before extracting the binary on each use. For offline operation, pre-stage the matching release tarball under `.data/selfhost/tools/`. Protect temporary plaintext tar files and allow space for both the gzip and encrypted archive.
+
 ```sh
+export SELFHOST_BACKUP_AGE_RECIPIENT='age1...'  # public recipient
 archive=$(deploy/selfhost/backup.sh "$stack")
+# On the recovery machine, with the same store configuration:
+export SELFHOST_BACKUP_AGE_IDENTITY=/secure/recovery/windlass.agekey
 fresh=$(deploy/selfhost/restore.sh "$stack" "$archive")
 ```
 
-Both services must be running before a backup. The script stops the server first so actors can finish shutdown, stops the engine, checks both exit statuses and archives the whole mounted volume. The engine CLI exposes storage operations but no whole-engine online snapshot command. Stopping all writers gives the log and object store a common point in time. The script restarts the services immediately after the local tar copy, then compresses and publishes the archive. An interrupted copy triggers a restart attempt. Allow space under `.data/selfhost` for the uncompressed tar and archive. Downtime depends on graceful shutdown, data size and disk throughput. Check `dc ps` after recovery.
+Both services must be running before a backup. The script stops the server first so actors can finish shutdown, stops the engine, checks both exit statuses and archives the whole mounted volume. The engine CLI exposes storage operations but no whole-engine online snapshot command. Stopping all writers gives the log and object store a common point in time. The script restarts the services immediately after the local tar copy, then compresses, encrypts and publishes the archive. An interrupted copy triggers a restart attempt. Allow space under `.data/selfhost` for the uncompressed tar and archive. Downtime depends on graceful shutdown, data size and disk throughput. Check `dc ps` after recovery.
 
-Objects are stored at `<bucket>/<compose-project>/<archive-basename>`. After a successful upload, retention keeps the newest N timestamped snapshots for that project (default seven). Other object names and other projects' prefixes are preserved. On a versioned S3 bucket configure a bucket lifecycle for old versions and abandoned multipart uploads. For a local-only drill set `SELFHOST_BACKUP_DIR` to a private directory. It takes precedence over S3.
+Objects are stored at `<bucket>/<compose-project>/<archive-basename>`. After a successful upload, retention keeps the newest N timestamped snapshots for that project (default seven). Other object names and other projects' prefixes are preserved. On a versioned S3 bucket configure a bucket lifecycle for old versions and abandoned multipart uploads. For a local-only drill set `SELFHOST_BACKUP_DIR` to a private directory. It takes precedence over S3. Only a local directory accepts an explicit plaintext backup: unset the recipient and set `SELFHOST_BACKUP_PLAINTEXT=1`. Both backends can restore legacy `.tar.gz` objects. Retention counts those alongside `.tar.gz.age` snapshots. Existing plaintext objects and older bucket versions need a separate retirement decision after a verified encrypted restore.
 
 Restore loads a named archive into a newly generated volume, prints its name and leaves the running stack alone. For a replacement host, build or load the matching engine image first. Restore the original stack secrets, project and canonical origin. To switch volumes during a maintenance window, stop the services, save the previous volume name, edit `SELFHOST_VOLUME` in the private stack env file to the printed name, and run `dc up -d --no-build --wait`. Verify a known user's session and timeline before retiring the previous volume. A smoke-test proof can be checked with the command below. These archives cover engine state. Runner workspaces, credentials on the runner, sandbox files, and optional bucket contents have independent backup requirements.
 
