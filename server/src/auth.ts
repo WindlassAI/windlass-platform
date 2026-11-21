@@ -66,11 +66,17 @@ export function checkGeneration(caller: Caller, generation: number): void {
 	}
 }
 
-/** The user's own actor has the durable generation in its vars. */
-export function requireUser(c: HasCaller & { vars: { tokenGen: number } }): UserProfile {
-	const caller = callerOf(c);
-	if (caller.kind !== "user") throw new UserError("This action is for users.", { code: "forbidden" });
+/** Only [uid] owns the generation for uid. A longer key is a different database. */
+export function userActorCaller(c: { key: string[]; vars: { tokenGen: number } }, params: unknown): Caller {
+	if (c.key.length !== 1 || !c.key[0]) throw new UserError("Invalid user actor key.", { code: "forbidden" });
+	const caller = authenticate(c.key, params);
 	checkGeneration(caller, c.vars.tokenGen);
+	return caller;
+}
+
+export function requireUser(c: HasCaller & { vars: { tokenGen: number } }): UserProfile {
+	const caller = userActorCaller(c, c.conn?.params);
+	if (caller.kind !== "user") throw new UserError("This action is for users.", { code: "forbidden" });
 	return caller.profile;
 }
 

@@ -33,3 +33,12 @@ test("a failed session disconnect is retried after the user's old token is inval
 		sql.close();
 	}
 });
+
+test("the generation belongs to the canonical single-uid user actor", () => {
+	const profile = { uid: "u_test", email: null, demo: false };
+	const params = { token: issueUserToken(profile, 0) };
+	const context = { vars: { tokenGen: 0, reached: true }, key: [profile.uid] };
+	const admit = (key: string[]) => user.config.onBeforeConnect!({ ...context, key } as never, params);
+	assert.doesNotThrow(() => admit([profile.uid]));
+	assert.throws(() => admit([profile.uid, "extra"]), { code: "forbidden" });
+});

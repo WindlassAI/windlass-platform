@@ -85,7 +85,7 @@ import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
-import { checkGeneration, disconnectRevoked, assertOrigin, authenticate, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
+import { assertOrigin, disconnectRevoked, userActorCaller, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { config, githubConfig } from "../config.js";
 import {
 	type AccountDefaults,
@@ -1296,8 +1296,7 @@ export const user = actor({
 	onBeforeConnect: (c, params: ConnParams | undefined) => {
 		assertOrigin(c);
 		try {
-			const caller = authenticate(c.key, params);
-			checkGeneration(caller, c.vars.tokenGen);
+			const caller = userActorCaller(c, params);
 			if (caller.kind === "user") c.vars.reached = true;
 		} catch (error) {
 			// `getOrCreate` makes the actor before this hook runs, so a call without a valid token can
@@ -1308,8 +1307,7 @@ export const user = actor({
 	},
 
 	onConnect: async (c, conn) => {
-		const caller = authenticate(c.key, conn.params);
-		checkGeneration(caller, c.vars.tokenGen);
+		const caller = userActorCaller(c, conn.params);
 		if (caller.kind === "user") await rememberProfile(c, caller.profile);
 	},
 
