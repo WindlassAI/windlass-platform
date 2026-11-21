@@ -1,4 +1,7 @@
 import { approvalText, featureCap, singleAfterPlanning, validatePlan } from "../../../server/src/factory/feature-plan.js";
+import { slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
+import { approveRoutes, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
+import { plannerMachines } from "../../../server/src/machines/details.js";
 /**
  * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
  * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
@@ -21,6 +24,7 @@ import { approvalText, featureCap, singleAfterPlanning, validatePlan } from "../
  * mock.ts wires it in with one hook: `createMockItems(…)` once, and `...items.calls(auth)` in the user's interface.
  */
 import {
+	machineLabel,
 	MAX_ACCEPTANCE_CRITERIA,
 	MAX_API_TOKENS,
 	MAX_ITEM_BODY_CHARS,
@@ -1092,7 +1096,73 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 	resuming.mode = "single";
 	resuming.budget = { ...resumePlan.compare.singleBudget };
 
-	return [search, exporting, writer, flag, theme, tokens, resuming];
+	// 5. Placement proposed: a subtask on each policy's machine. The last names "ci-box", whose owner said never: approval is refused with the server's reason.
+	const chartPlan = featurePlan(
+		1,
+		"proposed",
+		{
+			goal: "Catch visual regressions in the tide chart: capture it in both themes on every pull request and compare against a kept baseline.",
+			requirements: ["Fixtures for three tide days with known extremes.", "Captures at 1280 and 390 wide, light and dark.", "A diff that fails above 0.2% changed pixels."],
+			outOfScope: ["Other charts."],
+			acceptance: ["A screenshot of each capture.", "`pnpm test test/visual` passes."],
+		},
+		[
+			{ key: "fixtures", title: "Record the chart fixtures", brief: "Generate three tide days with known extremes and keep them in test/visual/fixtures.", acceptance: ["Run `pnpm test test/visual/fixtures.test.ts`."], dependsOn: [], owns: ["test/visual/fixtures/**"], budget: { tokens: 1_200_000, turns: 4, activeSeconds: 45 * 60, hostedSeconds: 20 * 60 },
+				place: { prefer: "nas", reason: "Big builds, and both its slots are free." }, needs: { cpus: 4, memoryGiB: 6 } },
+			{ key: "capture", title: "Capture the chart in both themes", brief: "Render the chart for each fixture at two widths and both themes, and save the captures.", acceptance: ["A screenshot of each capture."], dependsOn: ["fixtures"], owns: ["test/visual/capture/**"], budget: { tokens: 1_600_000, turns: 5, activeSeconds: 1 * HOUR_S, hostedSeconds: 30 * 60 },
+				place: { prefer: "studio", reason: "The only machine that reports screenshots.", allow: ["nas"] }, needs: { screenshots: true } },
+			{ key: "compare", title: "Compare captures against the baseline", brief: "Diff each capture against the kept baseline and fail above 0.2% changed pixels.", acceptance: ["Run `pnpm test test/visual`."], dependsOn: ["capture"], owns: ["test/visual/compare/**"], budget: { tokens: 900_000, turns: 3, activeSeconds: 40 * 60, hostedSeconds: 20 * 60 },
+				place: { prefer: "ci-box", reason: "Idle, with four slots free." } },
+		],
+	);
+	chartPlan.overflow = true;
+	const chart = feature(
+		{ n: 68, title: "Visual regression checks for the tide chart", on: HARBOR, state: "waiting", filed: 18, body: "Capture the tide chart on every pull request and compare it with a baseline.", acceptance: chartPlan.spec.acceptance, place: { kind: "machine", machineId: "m_nas" },
+			question: { kind: "plan_approval", text: approvalText(chartPlan), choices: choices("approve", "revise", "give_up"), asked: 4 },
+			run: { n: 1, started: 17, stopReason: null, rounds: { plan: 1, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "refine", started: 16 } },
+			events: [[17, "Started.", undefined, true], [16, "The planner's turn started.", [1, 1, "refine"]], [4, "The planner filed a proposal.", [1, 1, "refine"]]],
+			spent: { tokens: 290_000, turns: 1, activeSeconds: 9 * 60, hostedSeconds: 0 } },
+		chartPlan,
+		null,
+	);
+
+	// 6. Placed and running: the first subtask ran on the feature's machine, the second overflowed from the busy "studio" to "nas", and the third waits for two free slots on "studio".
+	const tablePlan = featurePlan(
+		1,
+		"approved",
+		{
+			goal: "Publish the nightly tide table as a PDF beside the CSV.",
+			requirements: ["One page per station.", "A proof screenshot of each page."],
+			outOfScope: ["Printing."],
+			acceptance: ["A screenshot of the first page.", "`pnpm test src/export` passes."],
+		},
+		[
+			{ key: "query", title: "Read the night's readings", brief: "Query the readings of the last night by station.", acceptance: ["Run `pnpm test src/export/query.test.ts`."], dependsOn: [], owns: ["src/export/query/**"], budget: { tokens: 800_000, turns: 3, activeSeconds: 30 * 60, hostedSeconds: 15 * 60 } },
+			{ key: "render", title: "Render the table as a PDF", brief: "Lay out one page per station with the headless browser.", acceptance: ["Run `pnpm test src/export/pdf.test.ts`."], dependsOn: ["query"], owns: ["src/export/pdf/**"], budget: { tokens: 1_400_000, turns: 4, activeSeconds: 50 * 60, hostedSeconds: 25 * 60 },
+				place: { prefer: "studio", reason: "Its browser is warm from the last export.", allow: ["nas"] } },
+			{ key: "proof", title: "Screenshot each page as a proof", brief: "Capture every page of the PDF and attach the first to the report.", acceptance: ["A screenshot of the first page."], dependsOn: ["render"], owns: ["test/export/proof/**"], budget: { tokens: 700_000, turns: 3, activeSeconds: 30 * 60, hostedSeconds: 15 * 60 },
+				place: { prefer: "studio", reason: "The only machine that reports screenshots." }, needs: { screenshots: true, cpus: 4 } },
+		],
+	);
+	tablePlan.overflow = true;
+	tablePlan.approvedAt = ago(55);
+	tablePlan.approvedBy = `person:${uid}`;
+	const table = feature(
+		{ n: 69, title: "Nightly tide table as a PDF", on: HARBOR, state: "waiting", filed: 75, pr: 71, body: "Publish the nightly tide table as a PDF too.", acceptance: tablePlan.spec.acceptance, place: { kind: "machine", machineId: "m_nas" },
+			run: { n: 1, started: 74, stopReason: null, rounds: { plan: 1, gate: 0, ci: 0, conflict: 0 }, step: { n: 2, kind: "subtasks", started: 55 } },
+			events: [[74, "Started.", undefined, true], [58, "The planner filed a proposal.", [1, 1, "refine"]], [55, "Approved the plan.", [1, 1, "refine"], true], [54, "Opened draft pull request #71 for the feature branch.", [1, 2, "subtasks"]], [33, "Integrated “Read the night's readings” at 9c1e7a2.", [1, 2, "subtasks"]], [8, "Integrated “Render the table as a PDF” at 51d0be4.", [1, 2, "subtasks"]]],
+			spent: { tokens: 1_900_000, turns: 6, activeSeconds: 48 * 60, hostedSeconds: 0 } },
+		tablePlan,
+		{ reason: "machine", sentence: slotWaitSentence("studio", 2, 0), since: ago(7), retryAt: at + 30_000 },
+	);
+	const nas: SandboxPlace = { kind: "machine", machineId: "m_nas" };
+	const query = child(table, "query", { n: 70, title: "", on: HARBOR, state: "done", filed: 54, place: nas, run: { n: 1, started: 54, ended: 33, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 33 } }, spent: { tokens: 610_000, turns: 2, activeSeconds: 19 * 60, hostedSeconds: 0 } });
+	query.placement = { place: nas, name: "nas", reason: "Same place as the feature", units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+	const render = child(table, "render", { n: 72, title: "", on: HARBOR, state: "done", filed: 32, place: nas, run: { n: 1, started: 32, ended: 8, stopReason: null, rounds: { plan: 0, gate: 1, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 8 } }, spent: { tokens: 1_020_000, turns: 3, activeSeconds: 27 * 60, hostedSeconds: 0 } });
+	render.placement = { place: nas, name: "nas", reason: "Approved overflow from ‘studio’", units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+	table.children = [query, render].map(summaryOf);
+
+	return [search, exporting, writer, flag, theme, tokens, resuming, chart, table, query, render];
 }
 
 /** The server's reason for no second review on a deployment without the reviewer (factory/blueprint.ts). */
@@ -1190,6 +1260,11 @@ export function createMockItems(deps: MockItemsDeps) {
 	}
 
 	/** Where an item on a machine stands with it now: null for a hosted item. */
+	/** The places a feature's subtasks may take, as the server reads them for placement: the user's machines, and the platform's own sandboxes. */
+	function placementInventory(auth: AuthResult): PlacementInventory {
+		return { machines: plannerMachines(deps.machines(auth)?.list ?? []), hostedProfiles: ["docker-windlass-sandbox", "docker-hardened"] };
+	}
+
 	function machineOfItem(auth: AuthResult, item: ItemView): { machine: MachineSummary | null } | null {
 		if (item.place.kind !== "machine") return null;
 		const { machineId } = item.place;
@@ -1296,15 +1371,25 @@ export function createMockItems(deps: MockItemsDeps) {
 			case "approve_plan": {
 				if (!current || action.version !== plan.version || plan.singleSuggested || plan.questions.some(q => !q.answer)) throw conflict("Answer all questions on the current plan first.");
 				if (deps.checks && deps.checks(auth, item.repository.id) === 0) throw new PlatformError("user", "Use a single item or add saved repository checks before approving orchestration.", { reason: "bad_input" });
+				// Every remaining subtask's place is bound now, and refused as the server refuses it (factory/placement.ts, `approveRoutes`).
+				const inventory: PlacementInventory = placementInventory(auth);
+				let routes;
+				try { routes = approveRoutes(plan, item.place, inventory, new Set()); }
+				catch (error) { throw new PlatformError("user", (error as Error).message, { reason: "bad_input" }); }
 				const sub = plan.subtasks.find(s => s.dependsOn.length === 0)!;
-				const session = await deps.session(auth, { title: sub.title, place: item.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id } });
+				const fit = choosePlacement(sub, routes[sub.key]!, inventory);
+				const approved = { plan: { ...plan, status: "approved" as const, approvedAt: at, approvedBy: "person:" + auth.profile.uid }, state: "waiting" as const, question: null, run: { ...item.run!, step: { ...item.run!.step, kind: "subtasks" as const } }, pullRequest: { number: 1, url: item.repository.url + "/pull/1" } };
+				// No place can take the first subtask yet: the feature waits for one, and says which and for what.
+				if (!fit.decision) return change(auth, item, { ...approved, wait: { reason: "machine", sentence: fit.wait ?? fit.refused ?? "", since: at, retryAt: at + 30_000 } }, ["Approved the plan."], "person");
+				const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id } });
 				if (item.plan !== plan || !item.question || plan.status !== "proposed") throw conflict("The plan changed.");
 				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:"Subtasks share the feature review.",
-					pullRequest:null, head:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } } };
+					pullRequest:null, head:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } },
+					place: fit.decision.place, placement: fit.decision };
+				delete child.placementReview;
 				keptOf(auth).items.push(child); deps.itemChanged(auth, child);
-				return change(auth, item, { plan: { ...plan, status: "approved", approvedAt: at, approvedBy: "person:" + auth.profile.uid }, children: keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf), state: "waiting", question: null,
-					wait: { reason: "children", sentence: "Running " + sub.title, since: at, retryAt: null }, run: { ...item.run!, step: { ...item.run!.step, kind: "subtasks" } },
-					pullRequest: { number: 1, url: item.repository.url + "/pull/1" } }, ["Approved the plan."], "person");
+				return change(auth, item, { ...approved, children: keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf),
+					wait: { reason: "children", sentence: "Running " + sub.title, since: at, retryAt: null } }, ["Approved the plan."], "person");
 			}
 			case "start":
 				if (item.state !== "draft") throw conflict(`This item is ${now}: only a draft can be started.`);
@@ -1369,6 +1454,24 @@ export function createMockItems(deps: MockItemsDeps) {
 	const canRetry = (item: ItemView) => item.state === "failed" && !item.parent && !item.children?.length;
 	const pageOf = (item: ItemView) => structuredClone({ ...item, canRetry: canRetry(item) });
 
+	/**
+	 * A feature's page while its plan is proposed carries the owner's current secrets policy for each place
+	 * the plan names, or inherits (user-items.ts, `attachmentStates`).
+	 */
+	function withPlacementReview(auth: AuthResult, view: ItemView): ItemView {
+		delete view.placementReview;
+		if (view.mode !== "orchestrate" || view.plan?.status !== "proposed") return view;
+		const names = new Set(view.plan.subtasks.flatMap((t) => (t.place ? [t.place.prefer, ...(t.place.allow ?? [])] : [])));
+		const parent = view.place;
+		const inheritsPlace = view.plan.subtasks.some((t) => !t.place);
+		if (inheritsPlace && parent.kind === "hosted") names.add("hosted");
+		view.placementReview = (deps.machines(auth)?.list ?? [])
+			.filter((m) => names.has(machineLabel(m)) || (parent.kind === "machine" && parent.machineId === m.machineId && inheritsPlace))
+			.map((m) => ({ name: machineLabel(m), sendSecrets: m.sendSecrets }));
+		if (names.has("hosted")) view.placementReview.push({ name: "hosted", sendSecrets: true });
+		return view;
+	}
+
 	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "item" | "itemAttachmentLinks" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
 		return {
 			async listItems() {
@@ -1377,7 +1480,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			},
 			async item(id) {
 				await answer(220);
-				return pageOf(itemOf(auth, id));
+				return withPlacementReview(auth, pageOf(itemOf(auth, id)));
 			},
 			// As the server's `links`: the kept screenshots only, each a fresh ten-minute link. The mock's are the
 			// fixtures under web/public/mock/, with a query that differs on every answer as a signed link does.
@@ -1470,7 +1573,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				await answer(360);
 				const item = itemOf(auth, id);
 				await act(auth, item, action);
-				return pageOf(item);
+				return withPlacementReview(auth, pageOf(item));
 			},
 			// Answered without work items too, as the server answers it: the ceiling on running agents is every agent's.
 			async factoryLimits() {

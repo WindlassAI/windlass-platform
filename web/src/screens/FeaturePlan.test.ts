@@ -374,3 +374,149 @@ describe("the rules the page checks before sending", () => {
 		expect(machineDetailsProblem("", Array.from({ length: 13 }, (_, n) => `t${n}`))).toContain("at most 12 tags");
 	});
 });
+
+describe("placement in a feature's plan", () => {
+	const row = (key: string) => [...host.querySelectorAll(".plan-task")].find((candidate) => candidate.querySelector(".plan-task-head > .plan-task-key")?.textContent === key) as HTMLElement;
+	const fact = (key: string, term: string) => [...row(key).querySelectorAll(".plan-task-facts > div")].find((candidate) => candidate.querySelector("dt")?.textContent === term)?.querySelector("dd")?.textContent ?? null;
+	const pill = (label: string) => [...host.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-label") === label) as HTMLButtonElement;
+	/** The places of the approval card's row `n`, each with its secrets words. */
+	const routePlaces = (n: number) => [...(host.querySelectorAll(".plan-question .plan-route")[n]?.querySelectorAll(".plan-route-places > li") ?? [])].map((place) => place.textContent!.replace(/\s+/g, " ").trim());
+	const menuRow = (name: string) => [...document.querySelectorAll('[role="menuitemradio"]')].find((candidate) => candidate.textContent?.startsWith(name)) as HTMLElement;
+
+	it("shows each subtask's place, needs and reason, and the server's reason for a place it refuses", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Visual regression checks for the tide chart");
+		await show(`/items/${feature.id}`);
+		expect(host.querySelector(".plan-placement")?.textContent).toContain("A subtask with no place runs where the feature does: nas.");
+		expect(pill("Runs on: nas")).toBeTruthy();
+		expect(fact("fixtures", "needs")).toBe("4 CPUs6 GiB memory");
+		expect(fact("capture", "runs on")).toContain("The only machine that reports screenshots.");
+		expect(pill("Alternatives: nas")).toBeTruthy();
+		// Before approval, from the server's own check; "studio" is busy, which is a wait and not a refusal.
+		expect(fact("compare", "can't place")).toBe("‘ci-box’: owner placement policy is never.");
+		expect(fact("capture", "can't place")).toBeNull();
+		await act(async () => button("Approve version 1")?.click());
+		await settle();
+		expect(host.querySelector(".plan-question .callout-bad")?.textContent).toBe("Compare captures against the baseline: ‘ci-box’: owner placement policy is never.");
+		expect((await api().item(feature.id)).plan?.status).toBe("proposed");
+	});
+
+	it("changes a place from the owner's machines, saves it as the next version, and places the first subtask on approval", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Visual regression checks for the tide chart");
+		await show(`/items/${feature.id}`);
+		act(() => pill("Runs on: ci-box").click());
+		expect(menuRow("ci-box")?.getAttribute("aria-disabled")).toBe("true");
+		act(() => menuRow("studio").click());
+		await settle(2);
+		expect(fact("compare", "can't place")).toBeNull();
+		expect(fact("compare", "runs on")).toContain("Chosen in plan review.");
+		await act(async () => button("Save as version 2")?.click());
+		await settle();
+		const saved = await api().item(feature.id);
+		expect(saved.plan?.subtasks[2]?.place).toEqual({ prefer: "studio", reason: "Chosen in plan review." });
+		expect(saved.plan?.overflow).toBe(true);
+		await act(async () => button("Approve version 2")?.click());
+		await settle();
+		const after = await api().item(feature.id);
+		expect(after.plan?.status).toBe("approved");
+		expect(after.children?.[0]?.placement).toMatchObject({ name: "nas", units: 2, reason: "Big builds, and both its slots are free." });
+		expect(fact("fixtures", "runs on")).toBe("nas · 2 slots secrets sentBig builds, and both its slots are free.");
+	});
+
+	it("turns overflow off as a plan change, and says the alternatives are not used", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Visual regression checks for the tide chart");
+		await show(`/items/${feature.id}`);
+		const off = [...host.querySelectorAll(".plan-overflow input")][0] as HTMLInputElement;
+		act(() => off.click());
+		await act(async () => button("Save as version 2")?.click());
+		await settle();
+		expect((await api().item(feature.id)).plan?.overflow).toBe(false);
+		expect(host.querySelector(".plan-routes-overflow")?.textContent).toBe("overflow off");
+		expect(routePlaces(1)).toEqual(["studio secrets sent", "or nas not used: overflow off"]);
+	});
+
+	it("lists on the approval card where each subtask runs, why, its alternatives and whether secrets go there", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Visual regression checks for the tide chart");
+		expect(feature.placementReview).toEqual([{ name: "nas", sendSecrets: true }, { name: "studio", sendSecrets: true }, { name: "ci-box", sendSecrets: false }]);
+		await show(`/items/${feature.id}`);
+		const card = host.querySelector(".plan-question .plan-routes") as HTMLElement;
+		expect(card.querySelector(".plan-routes-overflow")?.textContent).toBe("overflow allowed");
+		expect([...card.querySelectorAll(".plan-route-title")].map((title) => title.textContent)).toEqual(["Record the chart fixtures", "Capture the chart in both themes", "Compare captures against the baseline"]);
+		expect([...card.querySelectorAll(".plan-route-why")].map((why) => why.textContent)).toEqual(["Big builds, and both its slots are free.", "The only machine that reports screenshots.", "Idle, with four slots free."]);
+		expect(routePlaces(0)).toEqual(["nas secrets sent"]);
+		expect(routePlaces(1)).toEqual(["studio secrets sent", "or nas secrets sent"]);
+		expect(routePlaces(2)).toEqual(["ci-box no secrets"]);
+		expect(card.querySelectorAll(".plan-route")[2]?.querySelector(".plan-route-problem")?.textContent).toBe("Can't be placed: ‘ci-box’: owner placement policy is never.");
+	});
+
+	it("follows a machine's secrets switch, and always sends them to this platform", async () => {
+		make({ items: "features" });
+		await api().setMachineSecrets({ machineId: "m_nas", send: false });
+		const chart = await featureNamed("Visual regression checks for the tide chart");
+		await show(`/items/${chart.id}`);
+		expect(routePlaces(0)).toEqual(["nas no secrets"]);
+		expect(routePlaces(1)).toEqual(["studio secrets sent", "or nas no secrets"]);
+		act(() => root?.unmount());
+		root = null;
+		const search = await featureNamed("Search the docs from the command line");
+		await show(`/items/${search.id}`);
+		expect(routePlaces(0)).toEqual(["this platform the feature's secrets sent"]);
+		expect(host.querySelector(".plan-question .plan-route-why")?.textContent).toBe("Names no place: it runs where the feature does.");
+	});
+
+	it("says where each subtask ran and why, and which machine the next one waits for", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Nightly tide table as a PDF");
+		await show(`/items/${feature.id}`);
+		expect(fact("query", "ran on")).toBe("nas secrets were sentSame place as the feature");
+		expect(fact("render", "ran on")).toBe("nas secrets were sentApproved overflow from ‘studio’");
+		expect(fact("proof", "waits")).toBe("Waiting for 2 free slots on ‘studio’. 0 free now.");
+		expect(row("proof").querySelector(".plan-task-word")?.textContent).toBe("waits for a machine");
+		expect(pill("Runs on: studio")).toBeUndefined();
+	});
+});
+
+describe("a machine's placement policy", () => {
+	it("is chosen in its details, saved at once, and named on its card when it is not the default", async () => {
+		make({ items: "features" });
+		await show("/machines");
+		const cards = () => [...host.querySelectorAll(".machine-row")] as HTMLElement[];
+		const card = (name: string) => cards().find((candidate) => candidate.querySelector(".usage-kept-title")?.textContent === name)!;
+		expect(card("nas").querySelector(".machine-policy-note")).toBeNull();
+		expect(card("studio").querySelector(".machine-policy-note")?.textContent).toBe("features: when named");
+		expect(card("ci-box").querySelector(".machine-policy-note")?.textContent).toBe("features: never");
+		const group = card("nas").querySelector('[role="radiogroup"]') as HTMLElement;
+		expect(group.textContent).toBe("Any featureWhen namedNever");
+		expect(card("nas").querySelector(".machine-policy .field-note")?.textContent).toBe("Features may place subtasks here.");
+		await act(async () => (group.querySelector('input[value="never"]') as HTMLInputElement).click());
+		await settle();
+		expect((await api().machines()).find((machine) => machine.name === "nas")).toMatchObject({ orchestrator: "never", whenToUse: "Build and test", tags: ["big-build"] });
+		expect(card("nas").querySelector(".machine-policy-note")?.textContent).toBe("features: never");
+		expect(card("nas").querySelector(".machine-policy .field-note")?.textContent).toBe("Features never place subtasks here.");
+	});
+});
+
+describe("a turn's token counts", () => {
+	it("are folded behind a toggle at the end of the outcome line", async () => {
+		// jsdom lays nothing out: the timeline's scrolling is a no-op here.
+		Element.prototype.scrollTo ??= function () {} as Element["scrollTo"];
+		make({});
+		await show("/agents/add-test");
+		await settle(30);
+		const end = host.querySelector(".turn-end") as HTMLElement;
+		const toggle = end.querySelector(".turn-end-fold") as HTMLButtonElement;
+		expect(toggle.textContent).toBe("tokens");
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(toggle.title).toMatch(/^[\d,]+ in · [\d,]+ cached \(\d+%\) · [\d,]+ out$/);
+		expect(end.textContent).not.toContain(" cached (");
+		act(() => toggle.click());
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		const line = document.getElementById(toggle.getAttribute("aria-controls")!);
+		expect(line?.textContent).toMatch(/in.*cached.*out/);
+		act(() => toggle.click());
+		expect(end.textContent).not.toContain(" cached (");
+	});
+});

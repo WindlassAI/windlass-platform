@@ -28,6 +28,7 @@ import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, tagsOf } from "../lib/machines";
+import { ORCHESTRATOR_CHOICES, orchestratorNote, orchestratorOf, type Orchestrator } from "../lib/placement";
 
 /** What the top bar shows on this page: the way back and where one is. */
 export function MachinesCrumb() {
@@ -257,6 +258,56 @@ function SecretsSwitch({ machine, onChanged }: { machine: MachineSummary; onChan
 	);
 }
 
+/**
+ * Whether features may place subtasks on the machine (`MachineSummary.orchestrator`): a segmented
+ * choice of three, saved as soon as it is chosen with `setMachineDetails`, which keeps the note and tags.
+ */
+function PlacementPolicy({ machine, onChanged }: { machine: MachineSummary; onChanged(list: MachineSummary[]): void }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [busy, setBusy] = useState<Orchestrator | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const ids = { label: useId(), means: useId() };
+	const saved = orchestratorOf(machine);
+	const shown = busy ?? saved;
+	const set = (orchestrator: Orchestrator) => {
+		if (orchestrator === saved || busy) return;
+		setBusy(orchestrator);
+		setError(null);
+		client
+			.user(auth)
+			.setMachineDetails({ machineId: machine.machineId, whenToUse: machine.whenToUse ?? "", tags: machine.tags ?? [], orchestrator })
+			.then(
+				(list) => {
+					onChanged(list);
+					setBusy(null);
+				},
+				(failure: unknown) => {
+					setError(explain(failure));
+					setBusy(null);
+				},
+			);
+	};
+	return (
+		<div className="machine-policy">
+			<p className="machine-policy-label" id={ids.label}>
+				Subtasks of features
+			</p>
+			<div className="segmented machine-policy-choice" role="radiogroup" aria-labelledby={ids.label} aria-describedby={ids.means}>
+				{ORCHESTRATOR_CHOICES.map((choice) => (
+					<label key={choice.id} className={`segment${shown === choice.id ? " segment-chosen" : ""}`} title={choice.means}>
+						<input className="segment-radio" type="radio" name={ids.label} value={choice.id} checked={shown === choice.id} disabled={busy !== null} onChange={() => set(choice.id)} />
+						{choice.label}
+					</label>
+				))}
+			</div>
+			<p className={`field-note${error ? " tone-bad" : ""}`} id={ids.means} role={error ? "alert" : undefined}>
+				{error ?? ORCHESTRATOR_CHOICES.find((choice) => choice.id === shown)!.means}
+			</p>
+		</div>
+	);
+}
+
 /** An agent's sandbox on a machine: the agent, whether the sandbox runs, and when it was last used. */
 /** How many sandboxes the machine's runner may run and keep, as its owner started it: "no limit" unless a cap is set. */
 function sandboxLimit(machine: MachineSummary): string {
@@ -441,6 +492,11 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</div>
 				<p className="agent-meta">
 					<span>runner {machine.runnerVersion}</span>
+					{orchestratorNote(machine) ? (
+						<span className={`machine-policy-note machine-policy-note-${orchestratorOf(machine)}`} title={ORCHESTRATOR_CHOICES.find((choice) => choice.id === orchestratorOf(machine))!.means}>
+							{orchestratorNote(machine)}
+						</span>
+					) : null}
 					<span className="machine-sandbox-count">
 						{machine.sandboxes.length === 0 ? "no sandbox on it" : plural(machine.sandboxes.length, "agent's sandbox", "agents' sandboxes")}
 						{machine.maxSandboxes ? (
@@ -522,6 +578,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						</dd>
 					</div>
 				</dl>
+				<PlacementPolicy machine={machine} onChanged={onChanged} />
 				<SecretsSwitch machine={machine} onChanged={onChanged} />
 			</div>
 		</li>
