@@ -59,7 +59,12 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
 				reply.on('error', () => res.destroy());
 				res.on('close', () => reply.destroy());
-				reply.pipe(res);
+				const filter = provider?.responseFilter?.();
+				if (filter) {
+					filter.on('error', () => res.destroy());
+					res.on('close', () => filter.destroy());
+					reply.pipe(filter).pipe(res);
+				} else reply.pipe(res);
 			});
 			up.on('error', () => {
 				if (res.destroyed || res.writableEnded) return;

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { Readable } from 'node:stream';
+import { text } from 'node:stream/consumers';
 import test from 'node:test';
 import { providerFor } from '../sandbox/relay/opencode.cjs';
 
@@ -23,6 +25,9 @@ test('concurrent ChatGPT requests share a machine-side refresh and retain the ro
 		assert.equal(target.hostname, 'chatgpt.com');
 		assert.equal(target.path, '/backend-api/codex/responses');
 	}
+	const bytes = Buffer.from('π old-access old-refresh next-access next-refresh end');
+	const pieces = Readable.from(Array.from(bytes, b => Buffer.from([b])));
+	assert.equal(await text(pieces.pipe(provider.responseFilter())), 'π [redacted] [redacted] [redacted] [redacted] end');
 	record.generation = 'two';
 	assert.equal(await provider.target('/openai/responses', {}), undefined);
 });
