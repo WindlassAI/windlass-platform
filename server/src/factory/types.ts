@@ -90,6 +90,7 @@ export interface FactoryItem {
 	forceSplit?: boolean;
 	seed?: string;
 	childBase?: string;
+	cancelAfterIntegration?: boolean;
 	approvedPlan?: import("../contract.js").FeaturePlan;
 	approvedAllocation?: ItemBudget;
 	mode?: import("../contract.js").ItemMode;
@@ -175,7 +176,7 @@ export type Fact =
 	| { kind: "feature_seed"; at: number; key: string; sha: string }
 	| { kind: "feature_ready"; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]> }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
-	| { kind: "child_notice"; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
+	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
 	| { kind: "child_update"; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }

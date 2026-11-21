@@ -185,6 +185,11 @@ function apply(c: Change, fact: Fact): boolean {
 			const job = item.jobs?.find(j => j.id === fact.child);
 			if (!job) return false;
 			const charged = chargeChild(item, job, fact.spent);
+			if (item.state === "cancelled" && fact.state === "done" && fact.integratedHead && job === item.jobs?.at(-1) && (job.state !== "done" || job.head !== fact.integratedHead)) {
+				job.state = "done";
+				item.head = job.head = fact.integratedHead;
+				return true;
+			}
 			if (item.jobs?.at(-1) === job && item.run?.step.kind === "subtasks" && !item.question && item.state === "waiting") {
 				dispatchAgain(c);
 				return true;
@@ -257,6 +262,13 @@ function apply(c: Change, fact: Fact): boolean {
 			beginRun(c, { ...IMPLEMENT, text: `The person sent your work back: ${fact.note}` });
 			return true;
 		case "cancel":
+			// The durable fast-forward may already be at GitHub. Settle it before reporting a terminal child state.
+			if (item.parent && item.run?.step.kind === "subtasks" && !item.question) {
+				if (item.cancelAfterIntegration) return false;
+				item.cancelAfterIntegration = true;
+				c.say("Cancellation requested while confirming the feature branch update.");
+				return true;
+			}
 			cancel(c);
 			return true;
 		case "answer":
@@ -334,6 +346,10 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "cancel_subtask" | "chi
 			return true;
 		case "feature_problem":
 			if (fact.key !== key || c.item.question) return false;
+			if (c.item.cancelAfterIntegration) {
+				cancel(c);
+				return true;
+			}
 			if (fact.rebase && c.item.parent) {
 				nextTurn(c, { ...IMPLEMENT, kind: "conflict", charge: "conflict", fetchBase: c.item.task.base, text: "The feature branch moved. Rebase your own branch onto origin/" + c.item.task.base + " and resolve conflicts. Checks and CI must pass again." });
 			} else ask(c, "publish_refused", fact.reason, [choice("give_up")], null, null);

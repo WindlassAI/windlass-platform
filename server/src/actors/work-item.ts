@@ -163,6 +163,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		id: item.id,
 		mode: item.mode ?? "single",
 		parent: item.parent ?? null,
+		...(item.parent && item.state === "done" && item.head && { integratedHead: item.head }),
 		title: item.task.title,
 		repository: { provider: repository.provider, id: repository.id, owner: repository.owner, name: repository.name, branch: repository.branch, private: repository.private, url: repository.url },
 		place: item.place,
@@ -995,9 +996,9 @@ export const workItem = actor({
 	actions: {
 		// --- called by `user` only ---------------------------------------------------------------
 
-		internalChildNotice: async (c, child: Pick<ItemSummary, "id" | "spent" | "state">) => {
+		internalChildNotice: async (c, child: Pick<ItemSummary, "id" | "spent" | "state" | "integratedHead">) => {
 			requireServiceFor(c, "call");
-			await take(c, {kind: "child_notice", at: Date.now(), child: child.id, spent: child.spent, state: child.state});
+			await take(c, {kind: "child_notice", at: Date.now(), child: child.id, spent: child.spent, state: child.state, integratedHead: child.integratedHead});
 		},
 		internalChildRequest: (c, id: string) => {
 			requireService(c);

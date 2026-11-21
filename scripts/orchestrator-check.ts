@@ -196,6 +196,11 @@ test("child integration needs both gates, ignores duplicate receipts, and rebase
 		assert.equal(result.effects.some(e=>e.kind === "integrate"),checks);
 		assert.equal(advance(result.item,ci as never).item,result.item);
 		if (checks) {
+			const cancelling = advance(result.item, {kind:"cancel", at:5, by:"person"}).item;
+			const confirmed = advance(cancelling, {kind:"integrated", key:currentKey(cancelling)!, at:6}).item;
+			assert.equal(confirmed.state, "done", "record the verified commit even when cancellation raced the fast-forward");
+			const declined = advance(cancelling, {kind:"feature_problem", key:currentKey(cancelling)!, at:6, reason:"diverged", rebase:true}).item;
+			assert.equal(declined.state, "cancelled");
 			const rejected = advance(result.item,{kind:"feature_problem",key:currentKey(result.item)!,at:5,reason:"not a fast-forward",rebase:true});
 			assert.equal(rejected.item.run!.step.kind,"conflict");
 			assert.match(rejected.effects.find(e=>e.kind==="deliver")!.text,/rebase/i);
@@ -236,12 +241,14 @@ test("a second re-plan can move only unused allocation and a third stop cannot d
 test("a child notice wakes a waiting feature and settles spend after cancellation without restarting it", () => {
 	const initial = approved();
 	const running = advance(initial, {kind:"feature_ready", key:currentKey(initial)!, head, pr, at:5}).item;
-	const notice = {kind:"child_notice" as const, child:running.jobs![0].id, state:"done" as const, spent:{...zero, tokens:120}, at:6};
+	const notice = {kind:"child_notice" as const, child:running.jobs![0].id, state:"done" as const, integratedHead:"b".repeat(40), spent:{...zero, tokens:120}, at:6};
 	const woke = advance(running, notice);
 	assert.ok(woke.effects.some(e => e.kind === "dispatch"));
 	const cancelled = advance(running, {kind:"cancel", at:7, by:"person"}).item;
 	const settled = advance(cancelled, notice);
 	assert.equal(settled.item.spent.tokens, 130);
+	assert.equal(settled.item.head, notice.integratedHead);
+	assert.equal(settled.item.jobs![0].state, "done");
 	assert.equal(settled.item.state, "cancelled");
 	assert.deepEqual(settled.effects, []);
 	assert.equal(advance(settled.item,notice).item, settled.item);

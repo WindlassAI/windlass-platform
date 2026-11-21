@@ -891,7 +891,7 @@ export const itemActions = {
 		await noteItem(c, summary);
 		if (summary.parent && before && summary.revision > before.revision && (ended(summary) || summary.question?.id !== before.question?.id)) {
 			const parent = itemActor(c, c.key[0]!, summary.parent.itemId);
-			void c.keepAwake(parent.internalChildNotice({ id: summary.id, spent: summary.spent, state: summary.state }).catch(error =>
+			void c.keepAwake(parent.internalChildNotice({ id: summary.id, spent: summary.spent, state: summary.state, integratedHead: summary.integratedHead }).catch(error =>
 				c.log.warn({ msg: "The feature will read the child on its scheduled check.", child: summary.id, error: String(error) })));
 		}
 		// An item that left review, or came to it, changes what the review cap holds back.
