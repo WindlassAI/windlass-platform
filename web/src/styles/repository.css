@@ -427,3 +427,125 @@ a.agent-group-name:hover .agent-group-owner {
 .repo-screenshots .check {
 	margin-top: 12px;
 }
+
+/*
+ * Saved settings, on the account's and a repository's pages, in Helm's cards: the defaults' fields in
+ * one form card, the MCP servers, the secrets and the API tokens as hairline rows in a card the full
+ * width of the page. "Add…" in a section's head is a quiet secondary button.
+ */
+.usage .repo-fields,
+.usage .repo-saved > * {
+	max-width: none;
+}
+.usage .repo-saved > p {
+	max-width: 74ch;
+}
+.usage .repo-fields {
+	margin-top: 14px;
+	padding: 18px 20px 20px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-box);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
+}
+.usage .repo-saved > .secrets,
+.usage .repo-saved > .servers {
+	gap: 0;
+	margin-top: 14px;
+	overflow: hidden;
+	border: 1px solid var(--line);
+	border-radius: var(--r-box);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
+}
+.usage .repo-saved > .secrets > .secret,
+.usage .repo-saved > .servers > .server {
+	padding: 13px 16px 10px;
+	border-bottom: 1px solid var(--line);
+	transition: background-color var(--dur-hover) var(--ease);
+}
+.usage .repo-saved > .secrets > .secret:last-child,
+.usage .repo-saved > .servers > .server:last-child {
+	border-bottom: 0;
+}
+.usage .repo-saved > .secrets > .secret:hover,
+.usage .repo-saved > .servers > .server:hover {
+	background: var(--bg-hover);
+}
+.usage .repo-saved .secret-name,
+.usage .repo-saved .server-name {
+	font-weight: var(--weight-strong);
+}
+.usage .repo-saved .secret-scope {
+	padding: 1px 6px;
+	border-radius: 5px;
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	font-size: 11px;
+}
+.usage .repo-saved .secret-foot,
+.usage .repo-saved .server-foot {
+	margin-top: 2px;
+}
+.usage .usage-title .secret-add {
+	display: inline-flex;
+	align-items: center;
+	height: 26px;
+	padding: 0 10px;
+	border-radius: var(--r-item);
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	font-size: 12.5px;
+	font-weight: var(--weight-medium);
+	letter-spacing: 0;
+	color: var(--ink);
+	text-decoration: none;
+	transition: background-color var(--dur-hover) var(--ease);
+}
+.usage .usage-title .secret-add:hover:not(:disabled) {
+	background: var(--bg-hover);
+}
+.usage .usage-title .secret-add:disabled {
+	color: var(--ink-faint);
+}
+.usage .secret-change,
+.usage .server-foot .link {
+	text-decoration: none;
+}
+.usage .secret-change:hover:not(:disabled),
+.usage .server-foot .link:hover:not(:disabled) {
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+@media (max-width: 760px) {
+	.usage .repo-fields {
+		padding: 14px;
+	}
+	.usage .repo-saved > .secrets > .secret,
+	.usage .repo-saved > .servers > .server {
+		padding-left: 14px;
+		padding-right: 14px;
+	}
+}
+/* A setting's form in its card: the fields, their actions and their notes together. */
+.repo-form {
+	display: grid;
+	gap: 12px;
+	margin-top: 14px;
+	padding: 18px 20px;
+}
+.repo-form > :first-child,
+.repo-form .usage-note:first-child {
+	margin-top: 0;
+}
+.repo-form .usage-note,
+.repo-form .usage-lede {
+	margin-top: 0;
+}
+@media (max-width: 760px) {
+	.repo-form {
+		padding: 14px;
+	}
+}
+/* Fields inside a card sit on the page's ground, a step below the card, rather than the sunk well. */
+:is(.repo-form, .repo-fields) :is(.input, .select) {
+	background-color: var(--bg);
+}
